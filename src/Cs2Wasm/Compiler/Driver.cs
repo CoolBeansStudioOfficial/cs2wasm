@@ -415,7 +415,7 @@ internal sealed partial class Driver
             {
                 foreach (var i in b.AllInterfaces)
                 {
-                    if (Types.Key(Types.Canonical(i)) != ifaceKey) continue;
+                    if (Types.Key(Types.Canonical(i)) != ifaceKey && !(slot.ContainingType is INamedTypeSymbol sit && Types.VariantConvertible((INamedTypeSymbol)Types.Canonical(i), (INamedTypeSymbol)Types.Canonical(sit)))) continue;
                     var member = i.GetMembers(slot.Name).OfType<IMethodSymbol>().FirstOrDefault(x => Types.DocId(x.OriginalDefinition) == defId);
                     if (member == null) continue;
                     if (b.FindImplementationForInterfaceMember(member) is IMethodSymbol impl)

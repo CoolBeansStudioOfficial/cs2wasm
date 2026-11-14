@@ -477,7 +477,33 @@ internal sealed class Types
         if (c.IsValueType && FullName(target) == "System.ValueType") return true;
         foreach (var b in BaseChain(c)) if (Key(Canonical(b)) == tk) return true;
         foreach (var i in c.AllInterfaces) if (Key(Canonical(i)) == tk) return true;
+        // variance (out/in type parameters of interfaces and delegates)
+        if (target is INamedTypeSymbol { IsGenericType: true } tn && tn.TypeKind is TypeKind.Interface or TypeKind.Delegate)
+        {
+            if (c is INamedTypeSymbol cn && VariantConvertible(cn, tn)) return true;
+            foreach (var i in c.AllInterfaces) if (VariantConvertible(i, tn)) return true;
+        }
         return false;
+    }
+
+    /// <summary>`from` converts to `to` by variance: the same generic interface or delegate, each type argument
+    /// identical, or (out) a reference subtype, or (in) a reference supertype.</summary>
+    public bool VariantConvertible(INamedTypeSymbol from, INamedTypeSymbol to)
+    {
+        if (!SymbolEqualityComparer.Default.Equals(from.OriginalDefinition, to.OriginalDefinition)) return false;
+        var ps = to.OriginalDefinition.TypeParameters;
+        for (int i = 0; i < ps.Length; i++)
+        {
+            var a = Canonical(from.TypeArguments[i]); var b = Canonical(to.TypeArguments[i]);
+            if (Key(a) == Key(b)) continue;
+            switch (ps[i].Variance)
+            {
+                case VarianceKind.Out when IsRef(a) && IsRef(b) && IsSubtype(a, b): continue;
+                case VarianceKind.In when IsRef(a) && IsRef(b) && IsSubtype(b, a): continue;
+                default: return false;
+            }
+        }
+        return true;
     }
 }
 

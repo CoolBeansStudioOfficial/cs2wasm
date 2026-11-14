@@ -795,6 +795,7 @@ sealed partial class FunctionCompiler
         if (!fromVal && !toVal)
         {
             if (T.IsSubtype(from, to)) return; // implicit reference conversion
+            if (!explicitConv && conv != null) return; // C# says it is an implicit conversion: statically safe
             if (from.TypeKind == TypeKind.Interface && to.TypeKind == TypeKind.Interface && !explicitConv) return;
             // explicit reference conversion: checked cast
             int v = Scratch(ValType.I32);
@@ -1465,6 +1466,34 @@ sealed partial class FunctionCompiler
             E.Call(D.LibMethod("System.Delegate", ca.OperatorKind == BinaryOperatorKind.Add ? "Combine" : "Remove", 2).Fn);
             return lv.Store(Own.Owned, needResult);
         }
+        if (IsNullable(tt))
+        {
+            // lifted: x op= y is x = (x.HasValue && y.HasValue) ? x.Value op y.Value : null
+            var cur = lv.Load();
+            int la = E.AddLocal(ValType.I32);
+            int ct = TempStruct(tt);
+            { int src = E.AddLocal(ValType.I32); E.Set(src); E.Get(_fb); E.I32(ct); E.Op(Op.I32Add); E.Get(src); CopyStructInit(tt); }
+            E.Get(_fb); E.I32(ct); E.Op(Op.I32Add); E.Set(la);
+            int ra = LiftedOperand(ca.Value, IsNullable(vt) ? vt : tt);
+            var ntR = IsNullable(vt) ? vt : tt;
+            var u = Underlying(tt);
+            int res = TempStruct(tt);
+            E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.I32(0); E.I32(T.StorageOf(tt).size); E.Op(Op.MemoryFill);
+            E.Get(la); NullableHas(tt); E.Get(ra); NullableHas(ntR); E.Op(Op.I32And);
+            E.If();
+            var up = Types.PrimOf(u);
+            if (up == Prim.None) throw new CompileException($"lifted compound assignment on {tt} is not supported", ca.Syntax.GetLocation());
+            E.Get(la); NullableVal(tt);
+            E.Get(ra); NullableVal(ntR);
+            var ur = Underlying(ntR);
+            if (Types.Key(ur) != Types.Key(u)) { var tmpO = Own.None; ConvertValue(ur, u, false, ref tmpO, false, null); }
+            EmitArith(ca.OperatorKind, up, ca.IsChecked, up);
+            WrapNullable(tt, Own.None);
+            { int w = E.AddLocal(ValType.I32); E.Set(w); E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.Get(w); CopyStructInit(tt); }
+            E.End();
+            E.Get(_fb); E.I32(res); E.Op(Op.I32Add);
+            return lv.Store(Own.None, needResult);
+        }
         var pt = Types.PrimOf(tt);
         if (pt == Prim.None) throw new CompileException($"compound assignment on {tt} not supported", ca.Syntax.GetLocation());
         var opP = ca.OperatorKind is BinaryOperatorKind.LeftShift or BinaryOperatorKind.RightShift or BinaryOperatorKind.UnsignedRightShift
@@ -2020,6 +2049,19 @@ sealed partial class FunctionCompiler
                     var o = EmitValue(cv);
                     if (cv.Type != null) ConvertTop(TypeOf(cv), vt, ref o);
                     EmitCompare(BinaryOperatorKind.Equals, vt);
+                    return;
+                }
+            case IRelationalPatternOperation rp when IsNullable(vt):
+                {
+                    // T?: has a value and the value compares
+                    var u = Underlying(vt);
+                    E.Get(v); NullableHas(vt);
+                    E.If(ValType.I32);
+                    E.Get(v); NullableVal(vt);
+                    var ro = EmitValue(rp.Value);
+                    ConvertTop(TypeOf(rp.Value), u, ref ro);
+                    EmitCompare(rp.OperatorKind, u);
+                    E.Else(); E.I32(0); E.End();
                     return;
                 }
             case IRelationalPatternOperation rp:

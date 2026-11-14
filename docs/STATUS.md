@@ -65,7 +65,8 @@ Anonymous types: a slot per property, read-only properties, value `Equals`/`GetH
 `ToString` `{ A = 1, B = x }`, registered as object overrides since Roslyn exposes no symbols for them.
 
 Fixed on the way: `string == string` (the predefined operator) compared references; it now compares values, as C#
-defines it.
+defines it. Generic variance (`out`/`in` on interfaces and delegates) holds in conversions and interface dispatch;
+lifted compound assignment (`int? x; x += 1`) and relational patterns on nullable values work.
 
 `goto` (to a label in the same or an enclosing block, forward or backward, out of loops and `try`) compiles each
 labeled block as a dispatch loop over its segments; a backward `goto` releases what the block declared after the
