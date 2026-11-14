@@ -265,10 +265,14 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>obj.field = value (taking a count / copying a struct), field initially empty.</summary>
+    /// <summary>A store into the state machine (parameter 0).</summary>
+    void StoreToAddressFromStackM(int off, ITypeSymbol t, Own o) =>
+        StoreToAddressFromStack(() => E.Get(0), off, t, o, pub: Publish.Container, pubContainer: () => E.Get(0));
+
     void StoreToAddressFromStackCopy(int obj, int off, ITypeSymbol t, Func<Own> produce)
     {
         var o = produce();
-        StoreToAddressFromStack(() => E.Get(obj), off, t, o);
+        StoreToAddressFromStack(() => E.Get(obj), off, t, o, pub: Publish.Container, pubContainer: () => E.Get(obj));
     }
 
     // =====================================================================
@@ -616,7 +620,7 @@ sealed partial class FunctionCompiler
                 BeginTemps();
                 var cur = info.Machine.ExtraSlots["current"];
                 var o = EmitValueAs(yr.ReturnedValue!, info.ElementType!);
-                StoreToAddressFromStack(() => E.Get(0), cur.offset, info.ElementType!, o);
+                StoreToAddressFromStackM(cur.offset, info.ElementType!, o);
                 EndTemps();
                 int resume = NewSegment(b.Ordinal, i + 1, 0);
                 _yieldResumes.Add(resume);
@@ -663,7 +667,7 @@ sealed partial class FunctionCompiler
                         var rv = info.Machine.Extra("retval", info.ResultType, T);
                         BeginTemps();
                         var o = EmitValueAs(value, info.ResultType);
-                        StoreToAddressFromStack(() => E.Get(0), rv, info.ResultType, o);
+                        StoreToAddressFromStackM(rv, info.ResultType, o);
                         EndTemps();
                     }
                     int exit = _cfg!.Blocks.Length - 1;
@@ -971,7 +975,7 @@ sealed partial class FunctionCompiler
                         int off = info.Machine.Extra("spill" + (_spillCounter++), t, T);
                         BeginTemps();
                         var o = EmitValue(op);
-                        StoreToAddressFromStack(() => E.Get(0), off, t, o);
+                        StoreToAddressFromStackM(off, t, o);
                         EndTemps();
                         _precomputed[op] = (off, t);
                         break;
@@ -987,7 +991,7 @@ sealed partial class FunctionCompiler
                         Own ow;
                         if (getAwaiter.IsStatic) ow = EmitCallOps(getAwaiter, null, [a.Operation], false, a.Syntax, alreadyResolved: true);
                         else ow = EmitCallOps(getAwaiter, a.Operation, [], IsVirtualCall(a.Operation, getAwaiter), a.Syntax, alreadyResolved: true);
-                        StoreToAddressFromStack(() => E.Get(0), awOff, awT, ow);
+                        StoreToAddressFromStackM(awOff, awT, ow);
                         EndTemps();
                         int resume = NewSegment(b.Ordinal, opIndex, k + 1);
                         // if (!awaiter.IsCompleted) { state = resume; awaiter.OnCompleted(MoveNext); return; }
@@ -1033,7 +1037,7 @@ sealed partial class FunctionCompiler
                         {
                             int roff = info.Machine.Extra("result" + AwaitKey(a), rt, T);
                             var ro = CallWith(gr, false, () => PushAwaiter(awOff, awT), () => { }, null, null);
-                            StoreToAddressFromStack(() => E.Get(0), roff, rt, ro);
+                            StoreToAddressFromStackM(roff, rt, ro);
                             _precomputed[a] = (roff, rt);
                         }
                         EndTemps();
@@ -1128,7 +1132,7 @@ sealed partial class FunctionCompiler
         BeginTemps();
         var o = EmitValue(fc.Value);
         if (Types.Key(vt) != Types.Key(slot.type)) ConvertTop(vt, slot.type, ref o);
-        StoreToAddressFromStack(() => E.Get(0), slot.off, slot.type, o);
+        StoreToAddressFromStackM(slot.off, slot.type, o);
         EndTemps();
         return Own.None;
     }

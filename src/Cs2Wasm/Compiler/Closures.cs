@@ -104,7 +104,7 @@ sealed partial class FunctionCompiler
         int off = CapturedAddress(s); E.Set(a);
         var o = produce();
         ConvertTop(valueType, t, ref o);
-        StoreToAddressFromStack(() => E.Get(a), off, t, o);
+        StoreToAddressFromStack(() => E.Get(a), off, t, o, pub: Publish.Container, pubContainer: () => E.Get(a));
     }
 
     Own LoadCapturedThis()

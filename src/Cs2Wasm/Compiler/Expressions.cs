@@ -220,7 +220,8 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
-    void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null)
+    void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null,
+                                 Publish pub = Publish.Unknown, Action? pubContainer = null)
     {
         if (Types.IsStruct(t))
         {
@@ -239,6 +240,7 @@ sealed partial class FunctionCompiler
             // section 4.3: a site that can close a cycle links the value into the container's arena (resolved later)
             if (site != null) { E.Get(val); pushContainer!(); E.Call(site.Link); E.Set(val); }
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
+            EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
             int a = Scratch(ValType.I32);
             pushAddr(); E.Tee(a);
             E.Load(Op.I32Load, offset);
@@ -517,7 +519,8 @@ sealed partial class FunctionCompiler
             if (f.IsStatic) pin = D.Arenas.Pin(ft);
             else if ((site = D.Arenas.FieldSite(Owner(f), T.Field(f, Map))) != null) site.AddValue(valueType);
         }
-        StoreToAddressFromStack(() => E.Get(a), off, ft, o, site, () => E.Get(a), pin);
+        var pub = f.IsStatic ? (IsThreadStatic(f) ? Publish.None : Publish.Always) : f.ContainingType.IsValueType ? Publish.Unknown : Publish.Container;
+        StoreToAddressFromStack(() => E.Get(a), off, ft, o, site, () => E.Get(a), pin, pub, () => E.Get(a));
     }
 
     bool IsDirectAutoProperty(IPropertySymbol p, IOperation? instance)
@@ -744,7 +747,11 @@ sealed partial class FunctionCompiler
         if (IsSpanType(to) && !IsSpanType(from) || IsSpanType(to) && IsSpanType(from) && Types.Key(from.OriginalDefinition) != Types.Key(to.OriginalDefinition))
         {
             // first-class span conversions (C# 14): array/string/Span -> (ReadOnly)Span, through the library's operators
-            var op = FindImplicit(to, from, to) ?? FindImplicit(from, from, to) ?? throw new CompileException($"no span conversion from {from} to {to}");
+            var op = FindImplicit(to, from, to) ?? FindImplicit(from, from, to);
+            // array covariance: a Task<int>[] read as ReadOnlySpan<Task> (same references)
+            if (op == null && from is IArrayTypeSymbol { Rank: 1 } fa && !fa.ElementType.IsValueType && to is INamedTypeSymbol { Arity: 1 } tn && !tn.TypeArguments[0].IsValueType)
+                op = FindImplicit(to, D.LibCompilation.CreateArrayTypeSymbol(T.Canonical(tn.TypeArguments[0])), to);
+            if (op == null) throw new CompileException($"no span conversion from {from} to {to}");
             int v = Scratch(Types.WasmType(from) ?? ValType.I32); E.Set(v);
             o = CallWith(op, false, null, () => E.Get(v), null, null);
             FreeScratch(Types.WasmType(from) ?? ValType.I32, v);
@@ -1550,7 +1557,7 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown) : LValue(f, t)
     {
         int _addr = -1, _off;
         public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
@@ -1565,7 +1572,8 @@ sealed partial class FunctionCompiler
         public override Own Store(Own o, bool needResult)
         {
             if (site != null && !_noted) site.AddValue(Type);
-            F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin);
+            F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
+                pub, () => F.E.Get(container >= 0 ? container : _addr));
             return needResult ? Load() : Own.None;
         }
     }
@@ -1693,7 +1701,7 @@ sealed partial class FunctionCompiler
                     {
                         if (bf.IsStatic) { EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, bf, ft)); return 0; }
                         return EmitReceiverAddressForField(pr.Instance!) + T.FieldIn(owner, bf).Offset;
-                    }, psite, -1, ppin);
+                    }, psite, -1, ppin, bf.IsStatic ? Publish.Always : pr.Instance != null && !TypeOf(pr.Instance).IsValueType ? Publish.Container : Publish.Unknown);
                 }
                 if (pr.Property.ReturnsByRef) break;
                 return new PropLV(this, pr, t);
@@ -1701,18 +1709,18 @@ sealed partial class FunctionCompiler
             case IFieldReferenceOperation fr when Types.IsRef(t):
                 {
                     var field = fr.Field;
-                    if (field.IsStatic) return new MemLV(this, t, () => EmitAddressBase(target), pin: D.Arenas.Pin(t));
+                    if (field.IsStatic) return new MemLV(this, t, () => EmitAddressBase(target), pin: D.Arenas.Pin(t), pub: IsThreadStatic(StorageField(field)) ? Publish.None : Publish.Always);
                     if (fr.Instance != null && !TypeOf(fr.Instance).IsValueType)
                     {
                         var site = D.Arenas.FieldSite(Owner(field), T.FieldIn(Owner(field), StorageField(field)));
-                        return new MemLV(this, t, () => EmitAddressBase(target), site);
+                        return new MemLV(this, t, () => EmitAddressBase(target), site, pub: Publish.Container);
                     }
                     break;
                 }
-            case IArrayElementReferenceOperation ae when Types.IsRef(t) && TypeOf(ae.ArrayReference) is IArrayTypeSymbol at && D.Arenas.ArraySite(at) is { } asite:
+            case IArrayElementReferenceOperation ae when Types.IsRef(t) && TypeOf(ae.ArrayReference) is IArrayTypeSymbol at:
                 {
                     int keep = E.AddLocal(ValType.I32);
-                    return new MemLV(this, t, () => EmitArrayElementAddress(ae, keep), asite, keep);
+                    return new MemLV(this, t, () => EmitArrayElementAddress(ae, keep), D.Arenas.ArraySite(at), keep, pub: Publish.Container);
                 }
         }
         return new MemLV(this, t, () => EmitAddressBase(target));

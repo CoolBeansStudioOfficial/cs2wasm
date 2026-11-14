@@ -35,6 +35,8 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern void Fill(int dst, int value, int n);
         [Intrinsic] public static extern int Size();
         [Intrinsic] public static extern int Grow(int pages);
+        /// <summary>The int at an address, as a reference (for the atomic operations).</summary>
+        [Intrinsic] public static extern ref int RefI32(int addr);
     }
 
     /// <summary>Engine imports used by the library (section 7.4). The engine supplies these.</summary>
@@ -70,6 +72,8 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int AddressOf(object o);
         /// <summary>A null reference (address 0): what `fixed` over an empty span gives.</summary>
         [Intrinsic] public static extern ref T NullRef<T>();
+        /// <summary>Marks an object, and what it reaches, as shared between threads (section 4.5).</summary>
+        [Intrinsic] public static extern void Share(object o);
         /// <summary>Wraps an address whose count the caller owns.</summary>
         [Intrinsic] public static extern T Take<T>(int addr);
         /// <summary>Reads an address as a borrowed reference.</summary>
@@ -696,6 +700,7 @@ namespace Cs2Wasm.Runtime
             int tls = Rt.Alloc(Rt.TlsSize() + 16);
             t._stack = stack;
             t._tls = tls;
+            Rt.Share(t); // the worker reaches it, and through it the delegate and what it captured
             Rt.Retain(t); // the worker's reference, taken back in Run
             Atomic.Store32(ref s_spawned, 1);
             Atomic.Add32(ref s_live, 1);
@@ -755,6 +760,50 @@ namespace Cs2Wasm.Runtime
                 return;
             }
             Atomic.Wait32(ref s_generation, g, 1000000);
+        }
+    }
+
+    /// <summary>Section 4.5: marking objects shared (bit 30 of the count word), iteratively, with a per-thread worklist.</summary>
+    public static class Sharing
+    {
+        const int S = 0x40000000;
+        [System.ThreadStatic] static int t_buf, t_cap, t_len;
+        [Intrinsic] static extern void Visit(int obj);
+
+        static bool Mark(int x)
+        {
+            if (x == 0) return false;
+            int w = Mem.LoadI32(x);
+            if (w <= 0 || (w & S) != 0) return false;
+            Atomic.Store32(ref Mem.RefI32(x), w | S);
+            return true;
+        }
+
+        static void Push(int x)
+        {
+            if (t_len == t_cap)
+            {
+                int cap = t_cap == 0 ? 64 : t_cap * 2;
+                int nb = Rt.Alloc(cap * 4);
+                if (t_buf != 0) { Mem.Copy(nb, t_buf, t_len * 4); Rt.Free(t_buf, t_cap * 4); }
+                t_buf = nb; t_cap = cap;
+            }
+            Mem.StoreI32(t_buf + t_len * 4, x);
+            t_len++;
+        }
+
+        static void Drain()
+        {
+            while (t_len > 0) { t_len--; Visit(Mem.LoadI32(t_buf + t_len * 4)); }
+        }
+
+        public static void Share(int p) { if (Mark(p)) { Push(p); Drain(); } }
+        public static void MarkPush(int x) { if (Mark(x)) Push(x); }
+        public static void RevisitIfShared(int arr)
+        {
+            if (arr == 0) return;
+            int w = Mem.LoadI32(arr);
+            if (w > 0 && (w & S) != 0) { Visit(arr); Drain(); }
         }
     }
 

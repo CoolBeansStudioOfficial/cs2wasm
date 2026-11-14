@@ -158,7 +158,6 @@ are freed when their count reaches zero). Programs without marks pay nothing.
 
 Not done:
 - ownership specialization of functions, retroactive owners, the counting-elision statistics (4.1);
-- threads (4.5), see below: per-object sharing analysis.
 
 ### 4.5 Threads — partial
 Done: `System.Threading.Thread` runs on a real worker: each thread is a new instance of the module on the shared
@@ -172,10 +171,15 @@ workers and spin on the engine thread, which never blocks. An exception escaping
 escaping an export. The Node host (`host/worker.mjs`) runs each thread as a `worker_threads` Worker; once a worker
 exists, output is written through immediately so it stays in order.
 
-Counts: when the program can start a thread, `rt.retain`/`rt.release` become compare-and-swap loops for every
-object (immortal and arena count words are kept). This is program-wide, not the per-object analysis the spec asks for
-(only objects reached from more than one thread should pay for atomic counts): still to do. Programs that never start
-a thread keep plain counts, and the lock functions are empty.
+Counts (section 4.5): atomic only where an object is shared. A shared object has bit 30 of its count word set; its
+retains and releases are compare-and-swap loops, every other object's stay plain. An object is marked, with
+everything it reaches (iteratively, with a per-thread worklist), when it is published: stored into a static field,
+into an object or array that is already shared (containers known at the store: class fields, array elements,
+captured variables, state machines), handed to another thread (`Thread.Start`, the pool), or stored where the
+compiler cannot see the container (struct fields through addresses, struct copies) unless the address is on the
+storing thread's own stack. So an object another thread can reach is marked before it can, and an object one thread
+owns keeps plain counts (checked under stress with a per-thread allocation assertion during development).
+Programs that never start a thread contain none of this, and the lock functions are empty.
 
 Thread pool: background workers, one per core (`cs2wasm.processor_count`, at least two), started on first use and
 taking work from one queue. `Task.Run`, `ThreadPool.QueueUserWorkItem`, `Parallel.For`/`ForEach`/`Invoke` (chunks

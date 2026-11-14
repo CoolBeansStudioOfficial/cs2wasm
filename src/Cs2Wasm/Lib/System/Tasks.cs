@@ -51,6 +51,8 @@ namespace System.Threading.Tasks
         }
         public bool Wait(TimeSpan timeout) => Wait((int)timeout.TotalMilliseconds);
         public static void WaitAll(params Task[] tasks) { foreach (var t in tasks) t.Wait(); }
+        public static void WaitAll(ReadOnlySpan<Task> tasks) { foreach (var t in tasks) t.Wait(); }
+        public static int WaitAny(ReadOnlySpan<Task> tasks) => WaitAny(tasks.ToArray());
         public static int WaitAny(params Task[] tasks)
         {
             while (true)
@@ -583,6 +585,7 @@ namespace System.Threading
         internal static void Queue(Action a)
         {
             a = ExecutionContext.Flow(a);
+            Rt.Share(a); // a pool thread runs it
             Rt.RuntimeLock();
             (s_queue ??= new Collections.Generic.Queue<Action>()).Enqueue(a);
             bool start = s_started == 0;
@@ -1008,6 +1011,9 @@ namespace System.Threading
         public static long Read(ref long location) => Atomic.Load64(ref location);
         public static bool Read(ref bool location) { bool v = location; Atomic.Fence(); return v; }
         public static T Read<T>(ref T location) where T : class { T v = location; Atomic.Fence(); return v; }
+        public static void Write<T>(ref T location, T value) where T : class { Atomic.Fence(); location = value; Atomic.Fence(); }
+        public static double Read(ref double location) { double v = location; Atomic.Fence(); return v; }
+        public static void Write(ref double location, double value) { Atomic.Fence(); location = value; }
         public static void Write(ref int location, int value) => Atomic.Store32(ref location, value);
         public static void Write(ref long location, long value) => Atomic.Store64(ref location, value);
         public static void Write(ref bool location, bool value) { Atomic.Fence(); location = value; }

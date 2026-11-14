@@ -36,20 +36,27 @@ internal sealed partial class RuntimeFns
             e.If(); e.I32Addr(owner); e.I32(0); e.Emit(Op.I32AtomicStore, 0, 2); e.End();
         }
         if (!threads) return;
-        // retain(p): CAS the count up; immortal (-1) and dead (0) stay; arena members go through the runtime lock
+        // retain(p): plain for objects one thread owns; a shared object's count (bit 30 set) is a CAS loop;
+        // immortal (-1) and dead (0) stay; arena members go through the runtime lock
+        const int S = SharedBit;
         {
             var f = Retain; f.Body.Clear(); f.Locals.Clear();
             var e = new Emitter(f);
             int r = e.AddLocal(I);
             e.Get(0); e.If();
-            var brk = e.Block(); var top = e.Loop();
-            e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
+            e.Get(0); e.Load(Op.I32Load); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
             e.If();
+            e.Get(r); e.I32(S); e.Op(Op.I32And); e.Op(Op.I32Eqz);
+            e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Store(Op.I32Store);
+            e.Else();
+            var brk = e.Block(); var top = e.Loop();
             e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(brk);
+            e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Set(r);
             e.Br(top);
-            e.End();
-            if (arenas) { e.Get(r); e.I32(-1); e.Op(Op.I32LtS); e.If(); e.Call(LockEnter); e.Get(0); e.Call(retainSlow()); e.Call(LockExit); e.End(); }
             e.End(); e.End();
+            e.End();
+            if (arenas) { e.Else(); e.Get(r); e.I32(-1); e.Op(Op.I32LtS); e.If(); e.Call(LockEnter); e.Get(0); e.Call(retainSlow()); e.Call(LockExit); e.End(); }
+            e.End();
             e.End();
             e.Get(0);
         }
@@ -58,20 +65,31 @@ internal sealed partial class RuntimeFns
             var e = new Emitter(f);
             int r = e.AddLocal(I);
             e.Get(0); e.If();
-            var brk = e.Block(); var top = e.Loop();
-            e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(1); e.Op(Op.I32GtS);
+            e.Get(0); e.Load(Op.I32Load); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
             e.If();
-            e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(brk);
-            e.Br(top);
-            e.End();
+            e.Get(r); e.I32(S); e.Op(Op.I32And); e.Op(Op.I32Eqz);
+            e.If();
+            // owned by this thread
             e.Get(r); e.I32(1); e.Op(Op.I32Eq);
-            e.If();
-            e.Get(0); e.I32(1); e.I32(0); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.I32(1); e.Op(Op.I32Eq);
-            e.If(); e.Get(0); e.Call(Destroy); e.Br(brk); e.End();
-            e.Br(top);
+            e.If(); e.Get(0); e.I32(0); e.Store(Op.I32Store); e.Get(0); e.Call(Destroy);
+            e.Else(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Store(Op.I32Store);
             e.End();
-            if (arenas) { e.Get(r); e.I32(-1); e.Op(Op.I32LtS); e.If(); e.Call(LockEnter); e.Get(0); e.Call(releaseSlow()); e.Call(LockExit); e.End(); }
+            e.Else();
+            // shared: the count is r & ~S
+            var brk = e.Block(); var top = e.Loop();
+            e.Get(r); e.I32(~S); e.Op(Op.I32And); e.I32(1); e.Op(Op.I32Eq);
+            e.If();
+            e.Get(0); e.Get(r); e.I32(0); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq);
+            e.If(); e.Get(0); e.Call(Destroy); e.Br(brk); e.End();
+            e.Else();
+            e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(brk);
+            e.End();
+            e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Set(r);
+            e.Br(top);
             e.End(); e.End();
+            e.End();
+            if (arenas) { e.Else(); e.Get(r); e.I32(-1); e.Op(Op.I32LtS); e.If(); e.Call(LockEnter); e.Get(0); e.Call(releaseSlow()); e.Call(LockExit); e.End(); }
+            e.End();
             e.End();
         }
     }

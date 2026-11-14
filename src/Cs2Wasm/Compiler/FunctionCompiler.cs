@@ -1514,7 +1514,7 @@ sealed partial class FunctionCompiler
                     var slot = PrimarySlot(pp);
                     var v = _vars[pp];
                     BeginTemps();
-                    StoreToAddressFromStack(() => E.Get(_thisLocal), slot.Offset, slot.Type, LoadVar(v));
+                    StoreToAddressFromStack(() => E.Get(_thisLocal), slot.Offset, slot.Type, LoadVar(v), pub: Publish.Container, pubContainer: () => E.Get(_thisLocal));
                     EndTemps();
                 }
                 EmitFieldInitializers();

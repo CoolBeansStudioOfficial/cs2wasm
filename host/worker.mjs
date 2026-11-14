@@ -15,4 +15,10 @@ for (const imp of WebAssembly.Module.imports(module)) {
   imports[imp.module][imp.name] ??= () => 0;
 }
 const instance = new WebAssembly.Instance(module, imports);
-instance.exports.__thread_entry(...args);
+try { instance.exports.__thread_entry(...args); }
+catch (e) {
+  // the engine thread may be busy in a wait and never see a message: report here and end the process
+  writeSync(2, `worker failed: ${e && e.stack || e}
+`);
+  process.kill(process.pid);
+}

@@ -164,6 +164,7 @@ internal sealed partial class RuntimeFns
         {
             e.Get(1); e.Call(RetainStruct(t));
             e.Get(0); e.Get(1); e.I32(D.Types.StorageOf(t).size); e.Op(Op.MemoryCopy);
+            if (D.Types.LayoutOf(t).HasRefs) NoteStructCopy(e.Fn, t);
         });
     }
 
@@ -176,6 +177,7 @@ internal sealed partial class RuntimeFns
             e.Get(1); e.Call(RetainStruct(t));
             e.Get(0); e.Call(ReleaseStruct(t));
             e.Get(0); e.Get(1); e.I32(D.Types.StorageOf(t).size); e.Op(Op.MemoryCopy);
+            if (D.Types.LayoutOf(t).HasRefs) NoteStructCopy(e.Fn, t);
         });
     }
 
@@ -600,6 +602,10 @@ sealed class RuntimeGen
         // a worker instance starts here: its own stack, thread-local block and id, then the thread's delegate
         if (D.UsesThreads)
         {
+            // shared counts (section 4.5): the marking runtime, filled in at Finish
+            D.LibMethod("Cs2Wasm.Runtime.Sharing", "Share", 1);
+            D.LibMethod("Cs2Wasm.Runtime.Sharing", "MarkPush", 1);
+            D.LibMethod("Cs2Wasm.Runtime.Sharing", "RevisitIfShared", 1);
             // parking for snapshots (section 7.2)
             Export("cs2wasm_park", D.LibMethod("Cs2Wasm.Runtime.Threads", "ParkAll", 0));
             Export("cs2wasm_resume", D.LibMethod("Cs2Wasm.Runtime.Threads", "ResumeAll", 0));
@@ -610,6 +616,7 @@ sealed class RuntimeGen
             w.Exports.Add("__thread_entry");
             var e = new Emitter(w);
             e.Get(0); e.GSet(D.StackPointer);
+            e.Get(0); e.GSet(D.StackHi!); e.Get(0); e.I32(1 << 20); e.Op(Op.I32Sub); e.GSet(D.StackLo!);
             e.Get(1); e.GSet(D.TlsBase);
             e.Get(2); e.GSet(D.ThreadId);
             var blk = e.Block(ValType.I32);
@@ -650,6 +657,7 @@ sealed class RuntimeGen
         D.Rt.EmitCctorSupport(D.UsesThreads);
         D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == "ExecutionContext" && m.Compiled),
                            D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == "ExecutionContext" && m.Compiled));
+        D.EmitSharing(D.UsesThreads, Enumerable.Range(0, D.TypeById.Count).Where(id => D.Constructed.Contains(id)).Select(id => (id, D.TypeById[id])));
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
         EmitDestroyDispatch();
         EmitStubs();
@@ -854,6 +862,7 @@ sealed class RuntimeGen
             e.I32(D.DataBase); e.I32(0); e.I32(D.Data.Bytes.Count); e.Emit(Op.MemoryInit, 0, 0, D.Data);
         }
         e.I32(D.StackTop); e.GSet(D.StackPointer);
+        e.I32(D.StackTop); e.GSet(D.StackHi!); e.I32(D.StackTop - D.Options.StackSize); e.GSet(D.StackLo!);
         if (D.TlsSize > 0) { e.I32(D.TlsSize); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Alloc", 1).Fn); e.GSet(D.TlsBase); }
     }
 }

@@ -34,8 +34,8 @@ sealed partial class FunctionCompiler
             var el = tup.Elements[i];
             if (el is ITupleOperation inner && IsValueTuple(ft)) { EmitTuple(inner, ft); }
             else if (el.Type == null) EmitValue(el); // null literal / default
-            else { var o = EmitValueAs(el, ft); StoreToAddressFromStack(() => E.Get(_fb), off + slot.Offset, ft, o); continue; }
-            StoreToAddressFromStack(() => E.Get(_fb), off + slot.Offset, ft, Types.IsRef(ft) ? Own.Stable : Own.None);
+            else { var o = EmitValueAs(el, ft); StoreToAddressFromStack(() => E.Get(_fb), off + slot.Offset, ft, o, pub: Publish.None); continue; }
+            StoreToAddressFromStack(() => E.Get(_fb), off + slot.Offset, ft, Types.IsRef(ft) ? Own.Stable : Own.None, pub: Publish.None);
         }
         E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
         return Own.None;
@@ -55,7 +55,7 @@ sealed partial class FunctionCompiler
             if (Types.IsStruct(fs.Type)) { if (fs.Offset != 0) { E.I32(fs.Offset); E.Op(Op.I32Add); } o = Own.None; }
             else { E.Load(Types.LoadOp(fs.Type), fs.Offset); o = Types.IsRef(fs.Type) ? Own.Unstable : Own.None; }
             ConvertTop(fs.Type, ts.Type, ref o);
-            StoreToAddressFromStack(() => E.Get(_fb), off + ts.Offset, ts.Type, o);
+            StoreToAddressFromStack(() => E.Get(_fb), off + ts.Offset, ts.Type, o, pub: Publish.None);
         }
         FreeScratch(ValType.I32, src);
         E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
