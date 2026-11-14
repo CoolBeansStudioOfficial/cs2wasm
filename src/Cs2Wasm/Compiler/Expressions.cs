@@ -546,7 +546,7 @@ sealed partial class FunctionCompiler
             return Types.IsRef(ft) ? Own.Unstable : Own.None;
         }
         // array length is a plain load
-        if (p.Name is "Length" && pr.Instance != null && TypeOf(pr.Instance) is IArrayTypeSymbol { Rank: 1 })
+        if (p.Name is "Length" && pr.Instance != null && TypeOf(pr.Instance) is IArrayTypeSymbol)
         {
             var o = EmitValue(pr.Instance);
             ToTransient(o, TypeOf(pr.Instance));
@@ -603,8 +603,32 @@ sealed partial class FunctionCompiler
     int EmitArrayElementAddress(IArrayElementReferenceOperation ae, int keepArray = -1)
     {
         var at = (IArrayTypeSymbol)TypeOf(ae.ArrayReference);
-        if (at.Rank != 1) throw new CompileException("multi-dimensional arrays are not supported yet", ae.Syntax.GetLocation());
         var et = T.Canonical(at.ElementType);
+        if (at.Rank != 1)
+        {
+            // row-major: ((i0 * d1 + i1) * d2 + i2) ..., each index checked against its dimension
+            var o0 = EmitValue(ae.ArrayReference);
+            bool calls = ae.Indices.Any(ix => ix.DescendantsAndSelf().Any(x => x is IInvocationOperation or IObjectCreationOperation));
+            o0 = calls ? ToCallSafe(o0, at) : ToTransient(o0, at);
+            int a = E.AddLocal(ValType.I32);
+            E.Tee(a);
+            if (!IsKnownNonNull(ae.ArrayReference)) NullCheck(); else E.Op(Op.Drop);
+            var idxs = new int[at.Rank];
+            for (int i = 0; i < at.Rank; i++) { idxs[i] = E.AddLocal(ValType.I32); EmitIndex(ae.Indices[i]); E.Set(idxs[i]); }
+            int lin = E.AddLocal(ValType.I32);
+            E.I32(0); E.Set(lin);
+            for (int i = 0; i < at.Rank; i++)
+            {
+                E.Get(idxs[i]); E.Get(a); E.Load(Op.I32Load, Types.ArrayData + 4 * i); E.Op(Op.I32GeU);
+                E.If(); E.Call(Rt.ThrowIndex); E.End();
+                E.Get(lin); E.Get(a); E.Load(Op.I32Load, Types.ArrayData + 4 * i); E.Op(Op.I32Mul); E.Get(idxs[i]); E.Op(Op.I32Add); E.Set(lin);
+            }
+            E.Get(a); E.Get(lin);
+            int sz = T.StorageOf(et).size;
+            if (sz != 1) { E.I32(sz); E.Op(Op.I32Mul); }
+            E.Op(Op.I32Add);
+            return Types.ArrayDataOffset(at.Rank);
+        }
         var o = EmitValue(ae.ArrayReference);
         bool indexCalls = ae.Indices[0].DescendantsAndSelf().Any(x => x is IInvocationOperation or IObjectCreationOperation);
         o = indexCalls ? ToCallSafe(o, at) : ToTransient(o, at);

@@ -23,6 +23,8 @@ internal sealed partial class RuntimeFns
 
     public WasmFunction ArrayElemSize => _arrayElemSize ??= M.AddFunction("rt.array_elem_size", FT([I], [I]));
     public WasmFunction ArrayCounted => _arrayCounted ??= M.AddFunction("rt.array_counted", FT([I], [I]));
+    WasmFunction? _arrayRank;
+    public WasmFunction ArrayRank => _arrayRank ??= M.AddFunction("rt.array_rank", FT([I], [I]));
     WasmFunction ArrayRetainRange => _arrayRetain ??= M.AddFunction("rt.array_retain_range", FT([I, I, I], []));
     WasmFunction ArrayReleaseRange => _arrayRelease ??= M.AddFunction("rt.array_release_range", FT([I, I, I], []));
     public WasmFunction EnumInfo => _enumInfo ??= M.AddFunction("rt.enum_info", FT([I], [I]));
@@ -83,6 +85,19 @@ internal sealed partial class RuntimeFns
             {
                 e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
                 e.If(); e.I32(D.Types.StorageOf(D.Types.Canonical(at.ElementType)).size); e.Op(Op.Return); e.End();
+            }
+            e.I32(1);
+        }
+        if (_arrayRank != null)
+        {
+            var e = new Emitter(_arrayRank);
+            int tid = e.AddLocal(I);
+            e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
+            foreach (var (id, at) in ConstructedArrays())
+            {
+                if (at.Rank == 1) continue;
+                e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
+                e.If(); e.I32(at.Rank); e.Op(Op.Return); e.End();
             }
             e.I32(1);
         }

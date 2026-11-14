@@ -418,8 +418,9 @@ sealed class RuntimeGen
         {
             var et = D.Types.Canonical(at.ElementType);
             int size = D.Types.StorageOf(et).size;
-            if (clear && D.Types.NeedsRc(et)) { e.Get(0); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(0); e.Load(Op.I32Load, 12); e.Call(rt.ReleaseRange(et)); }
-            if (free) { e.Get(0); e.Get(0); e.Load(Op.I32Load, 12); e.I32(size); e.Op(Op.I32Mul); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Call(rt.Free); }
+            int data = Types.ArrayDataOffset(at.Rank);
+            if (clear && D.Types.NeedsRc(et)) { e.Get(0); e.I32(data); e.Op(Op.I32Add); e.Get(0); e.Load(Op.I32Load, 12); e.Call(rt.ReleaseRange(et)); }
+            if (free) { e.Get(0); e.Get(0); e.Load(Op.I32Load, 12); e.I32(size); e.Op(Op.I32Mul); e.I32(data); e.Op(Op.I32Add); e.Call(rt.Free); }
             return;
         }
         if (type.IsValueType)
@@ -531,7 +532,7 @@ sealed class RuntimeGen
                 if (ar.HasCyclicElements(t))
                 {
                     int i = ve.AddLocal(ValType.I32), end = ve.AddLocal(ValType.I32);
-                    ve.Get(0); ve.I32(Types.ArrayData); ve.Op(Op.I32Add); ve.Set(i);
+                    ve.Get(0); ve.I32(Types.ArrayDataOffset(((IArrayTypeSymbol)t).Rank)); ve.Op(Op.I32Add); ve.Set(i);
                     ve.Get(i); ve.Get(0); ve.Load(Op.I32Load, 12); ve.I32(2); ve.Op(Op.I32Shl); ve.Op(Op.I32Add); ve.Set(end);
                     var exit = ve.Block(); var top = ve.Loop();
                     ve.Get(i); ve.Get(end); ve.Op(Op.I32GeU); ve.BrIf(exit);

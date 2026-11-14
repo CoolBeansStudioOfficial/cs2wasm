@@ -412,6 +412,7 @@ sealed partial class FunctionCompiler
             case "Generic.Hash": E.Call(Rt.GenericHash(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Generic.Compare": E.Call(Rt.GenericCompare(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Array.ElementSize": E.Call(Rt.ArrayElemSize); return Own.None;
+            case "Array.RankOf": E.Call(Rt.ArrayRank); return Own.None;
             case "Array.HasCountedElements": E.Call(Rt.ArrayCounted); return Own.None;
             case "ArrayHelpers.CopyElements": E.Call(Rt.ArrayCopy); return Own.None;
             case "ArrayHelpers.ClearElements": E.Call(Rt.ArrayClear); return Own.None;
@@ -541,7 +542,7 @@ sealed partial class FunctionCompiler
     Own EmitArrayCreation(IArrayCreationOperation ac)
     {
         var at = (IArrayTypeSymbol)TypeOf(ac);
-        if (at.Rank != 1) throw new CompileException("multi-dimensional arrays are not supported yet", ac.Syntax.GetLocation());
+        if (at.Rank != 1) return EmitMdArrayCreation(ac, at);
         var et = T.Canonical(at.ElementType);
         int tid = D.MarkConstructed(at);
         int size = T.StorageOf(et).size;
@@ -565,14 +566,50 @@ sealed partial class FunctionCompiler
         return Own.Owned;
     }
 
-    void StoreElement(int arr, int idx, ITypeSymbol et, IOperation v)
+    /// <summary>new T[a, b] / new T[,] { {..}, {..} }: dimensions at 16, elements in row-major order after them.</summary>
+    Own EmitMdArrayCreation(IArrayCreationOperation ac, IArrayTypeSymbol at)
+    {
+        var et = T.Canonical(at.ElementType);
+        int tid = D.MarkConstructed(at);
+        int size = T.StorageOf(et).size;
+        int rank = at.Rank;
+        var dims = new int[rank];
+        int total = E.AddLocal(ValType.I64);
+        E.I64(1); E.Set(total);
+        for (int i = 0; i < rank; i++)
+        {
+            dims[i] = E.AddLocal(ValType.I32);
+            EmitIndexLength(ac.DimensionSizes[i]);
+            E.Tee(dims[i]); E.I32(0); E.Op(Op.I32LtS); E.If(); E.Call(Rt.ThrowOverflow); E.End();
+            E.Get(total); E.Get(dims[i]); E.Op(Op.I64ExtendI32U); E.Op(Op.I64Mul); E.Tee(total);
+            E.I64(0x7FFFFFFF); E.Op(Op.I64GtU); E.If(); E.Call(D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "OutOfMemory").Fn); E.End();
+        }
+        E.Get(total); E.Op(Op.I32WrapI64); E.I32(size); E.I32(tid); E.I32(Types.ArrayDataOffset(rank));
+        E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocArrayWithHeader", 4).Fn);
+        int arr = E.AddLocal(ValType.I32); E.Set(arr);
+        for (int i = 0; i < rank; i++) { E.Get(arr); E.Get(dims[i]); E.Store(Op.I32Store, Types.ArrayData + 4 * i); }
+        if (ac.Initializer != null)
+        {
+            var slot = new Slot { Local = arr, Type = at };
+            RegisterTemp(slot);
+            var flat = new List<IOperation>();
+            void Flatten(IArrayInitializerOperation ini) { foreach (var v in ini.ElementValues) if (v is IArrayInitializerOperation inner) Flatten(inner); else flat.Add(v); }
+            Flatten(ac.Initializer);
+            for (int i = 0; i < flat.Count; i++) StoreElement(arr, i, et, flat[i], Types.ArrayDataOffset(rank));
+            _temps[^1].Remove(slot);
+        }
+        E.Get(arr);
+        return Own.Owned;
+    }
+
+    void StoreElement(int arr, int idx, ITypeSymbol et, IOperation v, int dataOffset = Types.ArrayData)
     {
         int size = T.StorageOf(et).size;
         if (Types.IsStruct(et))
         {
             var o = EmitValueAs(v, et);
             int src = Scratch(ValType.I32); E.Set(src);
-            E.Get(arr); E.I32(Types.ArrayData + idx * size); E.Op(Op.I32Add); E.Get(src); CopyStructInit(et);
+            E.Get(arr); E.I32(dataOffset + idx * size); E.Op(Op.I32Add); E.Get(src); CopyStructInit(et);
             FreeScratch(ValType.I32, src);
             return;
         }
@@ -583,14 +620,14 @@ sealed partial class FunctionCompiler
             var o = EmitValueAs(v, et); ToOwned(o);
             int val = Scratch(ValType.I32); E.Set(val);
             if (site != null) { E.Get(val); E.Get(arr); E.Call(site.Link); E.Set(val); }
-            E.Get(arr); E.Get(val); E.Store(Op.I32Store, Types.ArrayData + idx * size);
+            E.Get(arr); E.Get(val); E.Store(Op.I32Store, dataOffset + idx * size);
             FreeScratch(ValType.I32, val);
             return;
         }
         var wt = Types.WasmType(et)!.Value;
         EmitValueAs(v, et);
         int sv = Scratch(wt); E.Set(sv);
-        E.Get(arr); E.Get(sv); E.Store(Types.StoreOp(et), Types.ArrayData + idx * size);
+        E.Get(arr); E.Get(sv); E.Store(Types.StoreOp(et), dataOffset + idx * size);
         FreeScratch(wt, sv);
     }
 

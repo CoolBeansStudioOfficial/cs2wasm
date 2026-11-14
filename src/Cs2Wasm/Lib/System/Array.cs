@@ -10,7 +10,17 @@ namespace System
     {
         public int Length => Mem.LoadI32(Rt.AddressOf(this) + 12);
         public long LongLength => Length;
-        public int Rank => 1;
+        public int Rank => RankOf(this);
+        [Intrinsic] internal static extern int RankOf(Array a);
+        public int GetLength(int dimension)
+        {
+            int rank = Rank;
+            if ((uint)dimension >= (uint)rank) throw new IndexOutOfRangeException();
+            return rank == 1 ? Length : Mem.LoadI32(Rt.AddressOf(this) + 16 + 4 * dimension);
+        }
+        public long GetLongLength(int dimension) => GetLength(dimension);
+        public int GetLowerBound(int dimension) { if ((uint)dimension >= (uint)Rank) throw new IndexOutOfRangeException(); return 0; }
+        public int GetUpperBound(int dimension) => GetLength(dimension) - 1;
 
         public static T[] Empty<T>() => EmptyArray<T>.Value;
 

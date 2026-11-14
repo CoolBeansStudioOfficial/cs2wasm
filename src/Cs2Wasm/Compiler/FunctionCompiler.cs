@@ -716,7 +716,7 @@ sealed partial class FunctionCompiler
         while (coll is IConversionOperation { IsImplicit: true } cv) coll = cv.Operand;
         var collType = T.Resolve(coll.Type!, Map);
         PushScope();
-        if (collType is IArrayTypeSymbol { Rank: 1 } at)
+        if (collType is IArrayTypeSymbol at)
         {
             // for (int i = 0; i < a.Length; i++) { var x = a[i]; body }
             BeginTemps();
@@ -741,8 +741,9 @@ sealed partial class FunctionCompiler
                 E.Get(arr); E.Get(i); var sz = T.StorageOf(elemType).size;
                 if (sz != 1) { E.I32(sz); E.Op(Op.I32Mul); }
                 E.Op(Op.I32Add);
-                if (Types.IsStruct(elemType)) { E.I32(Types.ArrayData); E.Op(Op.I32Add); return Own.None; }
-                E.Load(Types.LoadOp(elemType), Types.ArrayData);
+                int data = Types.ArrayDataOffset(at.Rank);
+                if (Types.IsStruct(elemType)) { E.I32(data); E.Op(Op.I32Add); return Own.None; }
+                E.Load(Types.LoadOp(elemType), data);
                 return Types.IsRef(elemType) ? Own.Unstable : Own.None;
             });
             EmitStatement(fe.Body);

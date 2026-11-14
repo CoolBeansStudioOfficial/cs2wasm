@@ -217,6 +217,15 @@ namespace Cs2Wasm.Runtime
             return a;
         }
 
+        public static int AllocArrayWithHeader(int length, int elemSize, int typeId, int dataOffset)
+        {
+            long total = dataOffset + (long)length * elemSize;
+            if (total > 0x7FFF0000L) ThrowHelpers.OutOfMemory();
+            int a = AllocObject((int)total, typeId);
+            Mem.StoreI32(a + 12, length);
+            return a;
+        }
+
         public static int AllocString(int length)
         {
             int a = AllocObject(16 + length * 2 + 2, 1);

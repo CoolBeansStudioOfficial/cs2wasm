@@ -55,6 +55,8 @@ internal sealed class Types
 {
     public const int ObjectHeader = 12; // rc, typeId, hash
     public const int ArrayData = 16;    // header + length
+    /// <summary>Where elements start: one-dimensional arrays at 16; others after their dimensions (from 16), 8-aligned.</summary>
+    public static int ArrayDataOffset(int rank) => rank == 1 ? ArrayData : (ArrayData + 4 * rank + 7) / 8 * 8;
     readonly Driver _d;
     readonly ConcurrentDictionary<string, Layout> _layouts = new();
     readonly HashSet<string> _layoutInProgress = [];
