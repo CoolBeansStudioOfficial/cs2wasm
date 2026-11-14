@@ -52,21 +52,30 @@ Iterators and async methods are lowered like Roslyn's: a state machine object ho
 dispatch loop over Roslyn's control-flow graph, one resumable segment per basic block and per suspension point, with
 a single exception handler that finds the catch or finally region of the segment that was running.
 
-Not done yet (a program using them gets a `CW0101` error naming the construct):
-- async and iterator lambdas and local functions; async iterators (`IAsyncEnumerable`, `await foreach`);
-  exception filters inside iterators and async methods; `await` inside `?:`, `&&`, `||`, `??` sub-expressions;
-- lambdas inside loops of an async method or iterator share one variable per loop instead of one per iteration;
-- non-record primary constructors (C# 12 classes), positional and list patterns;
-- multi-dimensional arrays, `stackalloc`, `fixed`, spans over stack or native memory;
-- reflection beyond `Type` names, `dynamic`, the interpreter for runtime code generation (section 8);
-- `goto`;
-- exception filters run in one pass (a filter runs after inner `finally` blocks, not before as in .NET).
+`goto` (to a label in the same or an enclosing block, forward or backward, out of loops and `try`) compiles each
+labeled block as a dispatch loop over its segments; a backward `goto` releases what the block declared after the
+label. `goto case` and `goto default` put the switch sections in a dispatch loop.
 
-Async on one thread: continuations run when the awaited task completes (or are posted to a captured
-`SynchronizationContext`); `Task.Run` work, `Task.Yield` and `Task.Delay` timers are queued and run when code blocks on
-a task (`.Result`, `Wait`, `GetAwaiter().GetResult()`), in posting order and timer order. `Scheduler.RunPending`
-exists for the engine to call each frame but is not exported yet. Timers do not wait for real time when a blocking
-wait drains them.
+Exception filters keep .NET's two-pass order: in a program with a filter, each `try`/`catch` keeps a record on a
+per-thread handler chain while its body runs, and `throw` (and `throw;`) first asks each record's test function
+(type tests and filters, in order; filter variables live in a display as for lambdas) which catch takes the
+exception, before unwinding runs any `finally`. An exception thrown inside a filter makes it false. Programs without
+filters pay nothing.
+
+Not done yet (a program using them gets a `CW0101` error naming the construct):
+- async iterators (`IAsyncEnumerable`, `await foreach`); exception filters inside iterators and async methods; `await`
+  inside `?:`, `&&`, `||`, `??` sub-expressions;
+- lambdas inside loops of an async method or iterator share one variable per loop instead of one per iteration;
+- `stackalloc`, `fixed`, spans over stack or native memory;
+- reflection beyond `Type` names, `dynamic`, the interpreter for runtime code generation (section 8);
+- filters and state machines: the first pass does not see the catch regions of an iterator's or async method's own
+  body, so a filter further out can run for an exception such a body then catches; and an export called back from
+  the engine does not hide outer frames' filters.
+
+Async: continuations run where the awaited task completes, or are posted to the captured `SynchronizationContext`;
+blocking waits (`.Result`, `Wait`, `GetAwaiter().GetResult()`) run the engine thread's posted work and timers. See
+section 4.5 for the thread pool and timers. `Scheduler.RunPending` exists for the engine to call each frame but is not
+exported yet.
 
 ### 4. Memory — partial
 Done: every heap object is reference counted with compile-time ownership: locals and fields own, reads of locals and

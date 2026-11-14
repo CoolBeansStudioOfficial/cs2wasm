@@ -141,10 +141,14 @@ sealed partial class FunctionCompiler
         _thisKey = _closure?.ThisKey ?? M.ContainingType;
         var self = SelfSymbol();
         var nested = body.Descendants().Where(o => o is IAnonymousFunctionOperation or ILocalFunctionOperation).ToList();
-        if (nested.Count == 0) return;
-        foreach (var n in nested)
+        // filters run in their own function in a program with filters (Filters.cs): their variables are captured
+        var filters = D.UsesFilters && _machine == null
+            ? body.Descendants().OfType<ICatchClauseOperation>().Where(c => c.Filter != null).Select(c => c.Filter!).ToList()
+            : [];
+        if (nested.Count == 0 && filters.Count == 0) return;
+        foreach (var n in nested.Concat(filters))
         {
-            foreach (var r in n.Descendants())
+            foreach (var r in filters.Contains(n) ? n.DescendantsAndSelf() : n.Descendants())
             {
                 ISymbol? sym = r switch
                 {

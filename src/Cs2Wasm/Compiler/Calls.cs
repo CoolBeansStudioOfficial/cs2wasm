@@ -440,7 +440,10 @@ sealed partial class FunctionCompiler
             case "Rt.TlsSize": E.I32Addr(new LateAddr(() => D.TlsSize)); return Own.None;
             case "Rt.RuntimeLock": E.Call(Rt.LockEnter); return Own.None;
             case "Rt.RuntimeUnlock": E.Call(Rt.LockExit); return Own.None;
-            case "Rt.Rethrow": E.Call(Rt.Retain); E.Emit(Op.Throw, 0, 0, D.ExceptionTag); return Own.None;
+            case "Rt.Rethrow":
+                E.Call(Rt.Retain);
+                if (D.UsesFilters) { int rx = E.AddLocal(ValType.I32); E.Tee(rx); E.Call(Rt.FirstPass); E.Get(rx); }
+                E.Emit(Op.Throw, 0, 0, D.ExceptionTag); return Own.None;
             case "Rt.StackPointer": E.GGet(D.StackPointer); return Own.None;
             case "Rt.SetStackPointer": E.GSet(D.StackPointer); return Own.None;
             case "Rt.InvokeExport": throw new CompileException("InvokeExport is not an intrinsic call");

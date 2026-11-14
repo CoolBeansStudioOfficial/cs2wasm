@@ -46,6 +46,7 @@ sealed class Ctl
     public Label? Break, Continue;
     public int ScopeDepth, TempDepth;
     public Action? FinallyAction;
+    public int GotoState = -1; // goto: the dispatch loop's state local (Continue is the loop)
     public int ExnLocal = -1, ExPtrLocal = -1; // inside a catch: the caught exception
 }
 
@@ -66,6 +67,10 @@ sealed partial class FunctionCompiler
     readonly List<HashSet<Slot>> _regions = [];
     readonly List<Ctl> _ctl = [];
     readonly Dictionary<ILabelSymbol, (Ctl ctl, bool isContinue)> _labels = new(SymbolEqualityComparer.Default);
+    /// <summary>goto targets: segment index in their dispatch loop, and (once emitted) the owned-slot count of the
+    /// label's block scope at the label, so a backward goto releases what was declared after it.</summary>
+    readonly Dictionary<ILabelSymbol, int> _gotoIndex = new(SymbolEqualityComparer.Default);
+    readonly Dictionary<ILabelSymbol, int> _gotoOwned = new(SymbolEqualityComparer.Default);
     readonly Stack<int> _refPool = new();
     readonly Dictionary<(int, int), Stack<int>> _structPool = [];
     readonly Dictionary<ValType, Stack<int>> _scratch = [];
@@ -548,15 +553,60 @@ sealed partial class FunctionCompiler
 
     void EmitStatements(IReadOnlyList<IOperation> ops, int start)
     {
+        var labeled = new List<int>();
         for (int i = start; i < ops.Count; i++)
+        {
+            if (ops[i] is IUsingDeclarationOperation) break;
+            if (ops[i] is ILabeledOperation) labeled.Add(i);
+        }
+        if (labeled.Count > 0) { EmitLabeledStatements(ops, start, labeled); return; }
+        EmitStatementsPlain(ops, start, ops.Count);
+    }
+
+    /// <summary>A block with labels: segments between labels inside a dispatch loop; goto L sets the state to L's
+    /// segment and branches to the loop, whose br_table enters that segment. Segments fall through in order.</summary>
+    void EmitLabeledStatements(IReadOnlyList<IOperation> ops, int start, List<int> labeled)
+    {
+        int n = labeled.Count + 1;
+        int st = E.AddLocal(ValType.I32);
+        E.I32(0); E.Set(st);
+        var exit = E.Block();
+        var disp = E.Loop();
+        var c = new Ctl { Kind = CtlKind.Block, Break = exit, Continue = disp, GotoState = st, ScopeDepth = _scopes.Count, TempDepth = _temps.Count };
+        _ctl.Add(c);
+        for (int k = 0; k < labeled.Count; k++)
+        {
+            var lbl = ((ILabeledOperation)ops[labeled[k]]).Label;
+            _labels[lbl] = (c, true);
+            _gotoIndex[lbl] = k + 1;
+        }
+        var segs = new Label[n];
+        for (int k = n - 1; k >= 0; k--) segs[k] = E.Block();
+        E.Get(st); E.BrTable(segs, segs[0]);
+        for (int k = 0; k < n; k++)
+        {
+            E.End();
+            int from = k == 0 ? start : labeled[k - 1];
+            int to = k < labeled.Count ? labeled[k] : ops.Count;
+            if (k > 0) _gotoOwned[((ILabeledOperation)ops[from]).Label] = _scopes[^1].Owned.Count;
+            EmitStatementsPlain(ops, from, to);
+        }
+        _ctl.Remove(c);
+        E.End(); E.End();
+    }
+
+    void EmitStatementsPlain(IReadOnlyList<IOperation> ops, int start, int end)
+    {
+        for (int i = start; i < end; i++)
         {
             if (ops[i] is IUsingDeclarationOperation ud)
             {
                 // the rest of the block is the body of the using
-                var rest = ops.Skip(i + 1).ToList();
+                var rest = ops.Skip(i + 1).Take(end - i - 1).ToList();
                 EmitUsingCore(ud.DeclarationGroup, () => EmitStatements(rest, 0));
                 return;
             }
+            if (i == start && ops[i] is ILabeledOperation lo) { if (lo.Operation != null) EmitStatement(lo.Operation); continue; }
             EmitStatement(ops[i]);
         }
     }
@@ -652,7 +702,25 @@ sealed partial class FunctionCompiler
     void EmitBranch(IBranchOperation br)
     {
         if (!_labels.TryGetValue(br.Target, out var t))
-            throw new CompileException("goto is not supported yet", br.Syntax.GetLocation());
+            throw new CompileException("goto to this label is not supported", br.Syntax.GetLocation());
+        if (_gotoIndex.TryGetValue(br.Target, out var seg) && t.ctl.GotoState >= 0)
+        {
+            int gi = _ctl.IndexOf(t.ctl);
+            for (int i = _ctl.Count - 1; i > gi; i--)
+                if (_ctl[i].Kind == CtlKind.TryFinally) EmitFinallyInline(i);
+            for (int i = _temps.Count - 1; i >= t.ctl.TempDepth; i--) foreach (var s in _temps[i]) ReleaseSlot(s);
+            for (int i = _scopes.Count - 1; i >= t.ctl.ScopeDepth; i--)
+                for (int j = _scopes[i].Owned.Count - 1; j >= 0; j--) ReleaseSlot(_scopes[i].Owned[j]);
+            // backward: what the label's block declared after the label is declared again
+            if (_gotoOwned.TryGetValue(br.Target, out var keep) && t.ctl.ScopeDepth > 0)
+            {
+                var owned = _scopes[t.ctl.ScopeDepth - 1].Owned;
+                for (int j = owned.Count - 1; j >= keep; j--) ReleaseSlot(owned[j]);
+            }
+            E.I32(seg); E.Set(t.ctl.GotoState);
+            E.Br(t.ctl.Continue!);
+            return;
+        }
         int idx = _ctl.IndexOf(t.ctl);
         for (int i = _ctl.Count - 1; i > idx; i--)
             if (_ctl[i].Kind == CtlKind.TryFinally) EmitFinallyInline(i);
@@ -912,8 +980,26 @@ sealed partial class FunctionCompiler
         var c = new Ctl { Kind = CtlKind.Switch, Break = end, ScopeDepth = _scopes.Count, TempDepth = _temps.Count };
         _ctl.Add(c);
         _labels[sw.ExitLabel] = (c, false);
+        // goto case / goto default: sections inside a dispatch loop; a state of -1 means "test the clauses"
+        var clauseLabels = new Dictionary<ILabelSymbol, int>(SymbolEqualityComparer.Default);
+        for (int i = 0; i < sw.Cases.Length; i++) foreach (var cl in sw.Cases[i].Clauses) if (cl.Label != null) clauseLabels[cl.Label] = i;
+        bool gotoCase = sw.Cases.Any(cs => cs.Body.Any(b => b.DescendantsAndSelf().OfType<IBranchOperation>().Any(br => clauseLabels.ContainsKey(br.Target))));
+        int sect = -1;
+        if (gotoCase)
+        {
+            sect = E.AddLocal(ValType.I32);
+            E.I32(-1); E.Set(sect);
+            c.Continue = E.Loop();
+            c.GotoState = sect;
+            foreach (var (lbl, i) in clauseLabels) { _labels[lbl] = (c, true); _gotoIndex[lbl] = i; }
+        }
         var labels = new Label[sw.Cases.Length];
         for (int i = sw.Cases.Length - 1; i >= 0; i--) labels[i] = E.Block();
+        if (gotoCase)
+        {
+            E.Get(sect); E.I32(0); E.Op(Op.I32GeS);
+            E.If(); E.Get(sect); E.BrTable(labels, labels[0]); E.End();
+        }
         int defaultIdx = -1;
         for (int i = 0; i < sw.Cases.Length; i++)
         {
@@ -947,6 +1033,7 @@ sealed partial class FunctionCompiler
             E.Br(end);
         }
         _ctl.Remove(c);
+        if (gotoCase) E.End();
         E.End();
         PopScope();
     }
@@ -1022,12 +1109,17 @@ sealed partial class FunctionCompiler
         //   ... dispatch on type ...
         // end
         _usesFrame = true;
+        bool twoPass = D.UsesFilters;
+        var (rec, savedChain) = twoPass ? PushHandlerRecord(tr) : (0, -1);
         var done = E.Block();
         var cblk = E.Block(new FuncType([], [ValType.I32, ValType.ExnRef]));
         var region = new HashSet<Slot>();
         _regions.Add(region);
         E.TryTable(null, (1, D.ExceptionTag, cblk));
+        Ctl? pop = null;
+        if (twoPass) { pop = new Ctl { Kind = CtlKind.TryFinally, FinallyAction = () => { E.Get(savedChain); E.GSet(D.EhChain); }, ScopeDepth = _scopes.Count, TempDepth = _temps.Count }; _ctl.Add(pop); }
         PushScope(); EmitStatement(tr.Body); PopScope();
+        if (pop != null) { _ctl.Remove(pop); E.Get(savedChain); E.GSet(D.EhChain); }
         E.End();
         _regions.Remove(region);
         E.Br(done);
@@ -1036,14 +1128,23 @@ sealed partial class FunctionCompiler
         E.Set(exn); E.Set(ex);
         E.Get(_fb); E.GSet(D.StackPointer);
         foreach (var s in region) ReleaseSlot(s);
-        E.Get(ex); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "OnCatch", 1).Fn);
-        foreach (var cc in tr.Catches)
+        int clause = -1;
+        if (twoPass)
         {
+            clause = E.AddLocal(ValType.I32);
+            EmitHandlerDecision(rec, savedChain, ex, clause);
+            E.Get(clause); E.Op(Op.I32Eqz); E.If(); E.Get(exn); E.Op(Op.ThrowRef); E.End();
+        }
+        E.Get(ex); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "OnCatch", 1).Fn);
+        for (int ci = 0; ci < tr.Catches.Length; ci++)
+        {
+            var cc = tr.Catches[ci];
             var et = cc.ExceptionType is { } t0 ? T.Resolve(t0, Map) : null;
             bool catchAll = et == null || Types.FullName(et) == "System.Exception" || Types.IsObject(et);
-            if (!catchAll) { E.Get(ex); E.Call(Rt.IsInst(et!)); }
+            if (twoPass) { E.Get(clause); E.I32(ci + 1); E.Op(Op.I32Eq); }
+            else if (!catchAll) { E.Get(ex); E.Call(Rt.IsInst(et!)); }
             else E.I32(1);
-            if (cc.Filter != null)
+            if (cc.Filter != null && !twoPass)
             {
                 E.If(ValType.I32);
                 PushScope();
@@ -1100,6 +1201,7 @@ sealed partial class FunctionCompiler
             // rethrow: the innermost catch's exception
             var c = _ctl.LastOrDefault(x => x.Kind == CtlKind.Catch) ?? throw new CompileException("rethrow outside catch");
             E.Get(c.ExPtrLocal); E.Call(Rt.Retain); E.Op(Op.Drop);
+            if (D.UsesFilters) { E.Get(c.ExPtrLocal); E.Call(Rt.FirstPass); }
             E.Get(c.ExnLocal); E.Op(Op.ThrowRef);
             return;
         }
@@ -1109,6 +1211,7 @@ sealed partial class FunctionCompiler
         E.Tee(t); NullCheck();
         E.Get(t);
         E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "OnThrow", 1).Fn);
+        if (D.UsesFilters) { E.Get(t); E.Call(Rt.FirstPass); }
         E.Get(t);
         E.Emit(Op.Throw, 0, 0, D.ExceptionTag);
         FreeScratch(ValType.I32, t);
