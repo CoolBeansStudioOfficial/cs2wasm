@@ -586,7 +586,7 @@ sealed partial class FunctionCompiler
         var getter = pr.Property.GetMethod ?? throw new CompileException("property has no getter: " + pr.Property.Name);
         if (getter.IsStatic && getter.ContainingType.TypeKind == TypeKind.Interface && pr.ConstrainedToType is { } ctt)
         {
-            var impl = D.Implementation(T.Resolve(ctt, Map), SubstMethod(getter)) ?? throw new CompileException($"no implementation of {getter} on {ctt}", pr.Syntax.GetLocation());
+            var impl = D.Implementation(T.Resolve(ctt, Map), SubstMethod(getter)) ?? SubstMethod(getter);
             return EmitCallOps(impl, null, pr.Arguments.Cast<IOperation>().ToList(), false, pr.Syntax, alreadyResolved: true);
         }
         return EmitCall(getter, pr.Instance, pr.Arguments.Cast<IOperation>().ToList(), IsVirtualCall(pr.Instance, getter), pr.Syntax);
@@ -950,7 +950,7 @@ sealed partial class FunctionCompiler
         if (b.IsLifted) return EmitLiftedBinary(b);
         if (b.OperatorMethod is { IsStatic: true, ContainingType.TypeKind: TypeKind.Interface } om && b.ConstrainedToType is { } bct)
         {
-            var impl = D.Implementation(T.Resolve(bct, Map), SubstMethod(om)) ?? throw new CompileException($"no implementation of {om} on {bct}", b.Syntax.GetLocation());
+            var impl = D.Implementation(T.Resolve(bct, Map), SubstMethod(om)) ?? SubstMethod(om);
             return EmitCallOps(impl, null, [b.LeftOperand, b.RightOperand], false, b.Syntax, alreadyResolved: true);
         }
         if (b.OperatorMethod != null && !IsBuiltinOperator(b.OperatorMethod))
@@ -1193,6 +1193,25 @@ sealed partial class FunctionCompiler
     Own EmitToStringOfValue(Func<Own> produce, ITypeSymbol t, string? format, IOperation? origin)
     {
         var obj = D.ObjectType;
+        if (IsNullable(t))
+        {
+            // T?: the value's string, or "" without one (as interpolation and ToString give)
+            var nt0 = T.Canonical(t);
+            produce();
+            int na = E.AddLocal(ValType.I32); E.Set(na);
+            int res = E.AddLocal(ValType.I32);
+            E.Get(na); NullableHas(nt0);
+            E.If();
+            var so = EmitToStringOfValue(() => { E.Get(na); NullableVal(nt0); return Own.None; }, Underlying(nt0), format, origin);
+            ToOwned(so); E.Set(res);
+            E.Else();
+            E.I32Addr(D.StringLiteral("")); E.Set(res);
+            E.End();
+            E.Get(res);
+            int keep = TempRef(D.StringType); E.Tee(keep); E.Op(Op.Drop);
+            E.Get(res);
+            return Own.Unstable;
+        }
         if (t.IsValueType)
         {
             // call T.ToString() / T.ToString(string) directly on the value

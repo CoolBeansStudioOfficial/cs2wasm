@@ -417,6 +417,22 @@ namespace System.Linq
         public static IEnumerable<TResult> Select<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, int, TResult> selector) { Null(source, "source"); Null(selector, "selector"); return new SelectIndexIterator<TSource, TResult>(source, selector); }
         public static IEnumerable<TResult> SelectMany<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, IEnumerable<TResult>> selector) { Null(source, "source"); Null(selector, "selector"); return new SelectManyIterator<TSource, TResult>(source, selector); }
         public static IEnumerable<T> Take<T>(this IEnumerable<T> source, int count) { Null(source, "source"); return new TakeIterator<T>(source, count); }
+        public static IEnumerable<T[]> Chunk<T>(this IEnumerable<T> source, int size)
+        {
+            Null(source, "source");
+            if (size < 1) throw new ArgumentOutOfRangeException("size");
+            return ChunkIterator(source, size);
+        }
+        static IEnumerable<T[]> ChunkIterator<T>(IEnumerable<T> source, int size)
+        {
+            var buf = new List<T>(size);
+            foreach (var x in source)
+            {
+                buf.Add(x);
+                if (buf.Count == size) { yield return buf.ToArray(); buf.Clear(); }
+            }
+            if (buf.Count > 0) yield return buf.ToArray();
+        }
         public static IEnumerable<T> Skip<T>(this IEnumerable<T> source, int count) { Null(source, "source"); return new SkipIterator<T>(source, count < 0 ? 0 : count); }
         public static IEnumerable<T> TakeWhile<T>(this IEnumerable<T> source, Func<T, bool> predicate) { Null(source, "source"); return new TakeWhileIterator<T>(source, predicate); }
         public static IEnumerable<T> SkipWhile<T>(this IEnumerable<T> source, Func<T, bool> predicate) { Null(source, "source"); return new SkipWhileIterator<T>(source, predicate); }

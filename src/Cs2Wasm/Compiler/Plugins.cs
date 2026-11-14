@@ -66,7 +66,7 @@ internal sealed partial class Driver
         {
             if (!mi.Compiled || mi.Impl is not (MethodImpl.Body)) continue;
             if (!_instrumented.Contains(RootMember(mi.Sym))) continue;
-            bool kickoff = (mi.Sym.IsAsync || mi.Sym.IsIterator) && !mi.Key.EndsWith(" MoveNext");
+            bool kickoff = (mi.Sym.IsAsync || mi.Sym.IsIterator || mi.Sym.OriginalDefinition.IsAsync || mi.Sym.OriginalDefinition.IsIterator) && !mi.Key.EndsWith(" MoveNext");
             if (kickoff) continue;
             mi.Fn.Body.Clear(); mi.Fn.Locals.Clear(); mi.Callees.Clear();
             mi.Compiled = false;

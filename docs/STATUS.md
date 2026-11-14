@@ -259,7 +259,7 @@ exported beside the stack pointer.
   LINQ with deferred execution, StringBuilder). Moving to upstream sources is open work. Invariant globalization
   semantics are followed (culture comparisons are ordinal, as in .NET's invariant mode). Case mapping covers
   ASCII, Latin-1, Greek and Cyrillic only. Present since: `Task` and friends, `Random`, `Stopwatch`,
-  `BitConverter`, `Type`, spans over arrays. Missing: `TimeZoneInfo`, `DateTimeOffset`, date parsing, `GodotSharp`. `DateTime` and `TimeSpan` follow .NET's tick arithmetic and the invariant culture's standard and custom formats; the clock and the local offset come from the engine.
+  `BitConverter`, `Type`, spans over arrays, `SortedDictionary`/`SortedList`/`SortedSet`, `BigInteger`, `Chunk`. Static abstract interface members resolve to the type argument's implementation; for the primitive types the generic math interfaces (`INumber<T>`: `Zero`, `One`, operators, comparisons, `Abs`/`Max`/...) lower to primitive code. Missing: `decimal`, `TimeZoneInfo`, `DateTimeOffset`, date parsing, `GodotSharp`. `DateTime` and `TimeSpan` follow .NET's tick arithmetic and the invariant culture's standard and custom formats; the clock and the local offset come from the engine.
 - 7.5–7.6: no GodotSharp, no browser build, budgets unmeasured.
 
 ### 8. Sandbox — partial

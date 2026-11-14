@@ -169,6 +169,14 @@ namespace System
             return (int)h;
         }
 
+        public static int CompareOrdinal(string strA, int indexA, string strB, int indexB, int length)
+        {
+            if (strA == null || strB == null) return strA == null ? (strB == null ? 0 : -1) : 1;
+            int la = Math.Min(length, strA._length - indexA), lb = Math.Min(length, strB._length - indexB);
+            int n = Math.Min(la, lb);
+            for (int i = 0; i < n; i++) { int d = strA.At(indexA + i) - strB.At(indexB + i); if (d != 0) return d; }
+            return la - lb;
+        }
         public static int CompareOrdinal(string strA, string strB)
         {
             if (Rt.AddressOf(strA) == Rt.AddressOf(strB)) return 0;
@@ -390,6 +398,47 @@ namespace System
             for (int i = 0; i < _length; i++)
                 if (Array.IndexOf(separator, At(i)) >= 0) { parts.Add(Substring(start, i - start)); start = i + 1; }
             parts.Add(Substring(start));
+            return parts.ToArray();
+        }
+        public string[] Split(char[] separator, StringSplitOptions options) => Split(separator, int.MaxValue, options);
+        public string[] Split(char[] separator, int count, StringSplitOptions options)
+        {
+            bool removeEmpty = (options & StringSplitOptions.RemoveEmptyEntries) != 0;
+            bool trim = (options & StringSplitOptions.TrimEntries) != 0;
+            var parts = new List<string>();
+            int start = 0;
+            for (int i = 0; i <= _length; i++)
+            {
+                bool sep = i == _length || (separator == null || separator.Length == 0 ? char.IsWhiteSpace(At(i)) : Array.IndexOf(separator, At(i)) >= 0);
+                if (!sep) continue;
+                if (parts.Count == count - 1 && i < _length) continue;
+                string part = Substring(start, i - start);
+                if (trim) part = part.Trim();
+                if (!removeEmpty || part.Length > 0) parts.Add(part);
+                start = i + 1;
+            }
+            return parts.ToArray();
+        }
+        public string[] Split(char separator, int count, StringSplitOptions options = StringSplitOptions.None) => Split(new[] { separator }, count, options);
+        public string[] Split(string[] separator, StringSplitOptions options)
+        {
+            if (separator == null || separator.Length == 0) return Split((char[])null, options);
+            if (separator.Length == 1) return SplitCore(separator[0], options);
+            var parts = new List<string>();
+            bool removeEmpty = (options & StringSplitOptions.RemoveEmptyEntries) != 0;
+            bool trim = (options & StringSplitOptions.TrimEntries) != 0;
+            int start = 0, i = 0;
+            while (i <= _length)
+            {
+                int hit = -1;
+                if (i < _length) foreach (var sp in separator) if (sp != null && sp._length > 0 && string.CompareOrdinal(this, i, sp, 0, sp._length) == 0 && (hit < 0 || sp._length > hit)) hit = sp._length;
+                if (hit < 0 && i < _length) { i++; continue; }
+                string part = Substring(start, i - start);
+                if (trim) part = part.Trim();
+                if (!removeEmpty || part.Length > 0) parts.Add(part);
+                if (i >= _length) break;
+                i += hit; start = i;
+            }
             return parts.ToArray();
         }
         public string[] Split(string separator) => SplitCore(separator, StringSplitOptions.None);

@@ -77,7 +77,10 @@ sealed partial class FunctionCompiler
     int _spillCounter;
     readonly Dictionary<IOperation, List<(int kind, IOperation op)>> _plans = [];
 
-    static bool IsStateMachine(IMethodSymbol m) => m.IsAsync || m.IsIterator;
+    static bool IsStateMachine(IMethodSymbol m) => IsAsyncM(m) || IsIteratorM(m);
+    // constructed generic methods do not always report these: ask the definition
+    static bool IsAsyncM(IMethodSymbol m) => m.IsAsync || m.OriginalDefinition.IsAsync;
+    static bool IsIteratorM(IMethodSymbol m) => m.IsIterator || m.OriginalDefinition.IsIterator;
 
     ITypeSymbol IntType => T.Canonical(D.Main.GetSpecialType(SpecialType.System_Int32));
 
@@ -96,8 +99,8 @@ sealed partial class FunctionCompiler
         var machine = new Display { Owner = null, Name = "<" + def.Name + ">d" };
         var info = new MachineInfo
         {
-            Machine = machine, Method = M, Map = Map, IsAsync = M.IsAsync, IsIterator = M.IsIterator,
-            MoveNext = D.Module.AddFunction("MoveNext of " + E.Fn.Name, M.IsIterator && !M.IsAsync ? new FuncType([ValType.I32], [ValType.I32]) : new FuncType([ValType.I32], [])),
+            Machine = machine, Method = M, Map = Map, IsAsync = IsAsyncM(M), IsIterator = IsIteratorM(M),
+            MoveNext = D.Module.AddFunction("MoveNext of " + E.Fn.Name, IsIteratorM(M) && !IsAsyncM(M) ? new FuncType([ValType.I32], [ValType.I32]) : new FuncType([ValType.I32], [])),
             Body = body,
             Cfg = nested ? NestedCfg(def, syntax) : null,
         };

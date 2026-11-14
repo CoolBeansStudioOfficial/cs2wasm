@@ -44,7 +44,7 @@ sealed partial class FunctionCompiler
         {
             var concrete = T.Resolve(ctt, Map);
             var slot = SubstMethod(target);
-            var impl = D.Implementation(concrete, slot) ?? throw new CompileException($"no implementation of {slot} on {concrete}", inv.Syntax.GetLocation());
+            var impl = D.Implementation(concrete, slot) ?? slot; // primitives: generic math, lowered in EmitCallInstr
             return EmitCallOps(impl, null, inv.Arguments, false, inv.Syntax, alreadyResolved: true);
         }
         return EmitCall(target, inv.Instance, inv.Arguments.Cast<IOperation>().ToList(), inv.IsVirtual, inv.Syntax);
@@ -283,6 +283,7 @@ sealed partial class FunctionCompiler
 
     Own EmitCallInstr(IMethodSymbol m, bool virt, SyntaxNode? syntax, int sretOff)
     {
+        if (IsStaticInterfaceMember(m) && TryStaticInterfaceMember(ref m, out var sim)) return sim;
         var rt = T.Canonical(m.ReturnType);
         if (D.IsIntrinsic(m)) return EmitIntrinsic(m);
         if (virt) E.Call(D.Stub(m));

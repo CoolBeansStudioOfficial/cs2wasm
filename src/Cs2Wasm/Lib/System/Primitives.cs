@@ -129,6 +129,22 @@ namespace System
         }
         public static int Parse(string s) => (int)Number.ParseInt64(s, MinValue, (ulong)MaxValue);
         public static int Parse(string s, IFormatProvider provider) => Parse(s);
+        public static int Parse(string s, System.Globalization.NumberStyles style) => Parse(s, style, null);
+        public static int Parse(string s, System.Globalization.NumberStyles style, IFormatProvider provider)
+        {
+            if ((style & System.Globalization.NumberStyles.AllowHexSpecifier) == 0) return Parse(s);
+            if (s == null) throw new ArgumentNullException("s");
+            var t = s.Trim();
+            if (t.Length == 0 || t.Length > 8) throw new FormatException("The input string '" + s + "' was not in a correct format.");
+            uint v = 0;
+            foreach (var c in t)
+            {
+                int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+                if (d < 0) throw new FormatException("The input string '" + s + "' was not in a correct format.");
+                v = v * 16 + (uint)d;
+            }
+            return (int)v;
+        }
         public static bool TryParse(string s, out int result) { if (Number.TryParseInt64(s, MinValue, (ulong)MaxValue, out long r, out _)) { result = (int)r; return true; } result = 0; return false; }
         public static int Max(int x, int y) => x > y ? x : y;
         public static int Min(int x, int y) => x < y ? x : y;
