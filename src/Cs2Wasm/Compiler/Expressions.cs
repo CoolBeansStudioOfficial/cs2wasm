@@ -15,10 +15,10 @@ sealed partial class FunctionCompiler
     {
         switch (op)
         {
-            case ISimpleAssignmentOperation sa: EmitAssign(sa, needResult: false); return;
-            case ICompoundAssignmentOperation ca: EmitCompound(ca, needResult: false); return;
-            case IIncrementOrDecrementOperation inc: EmitIncDec(inc, needResult: false); return;
-            case ICoalesceAssignmentOperation cas: EmitCoalesceAssign(cas, needResult: false); return;
+            case ISimpleAssignmentOperation sa: if (!TryInstrumentedWrite(sa, () => EmitAssign(sa, needResult: false), out _)) EmitAssign(sa, needResult: false); return;
+            case ICompoundAssignmentOperation ca: if (!TryInstrumentedWrite(ca, () => EmitCompound(ca, needResult: false), out _)) EmitCompound(ca, needResult: false); return;
+            case IIncrementOrDecrementOperation inc: if (!TryInstrumentedWrite(inc, () => EmitIncDec(inc, needResult: false), out _)) EmitIncDec(inc, needResult: false); return;
+            case ICoalesceAssignmentOperation cas: if (!TryInstrumentedWrite(cas, () => EmitCoalesceAssign(cas, needResult: false), out _)) EmitCoalesceAssign(cas, needResult: false); return;
             case IEventAssignmentOperation ea: EmitEventAssign(ea); return;
             case IDeconstructionAssignmentOperation da: EmitDeconstruction(da); return;
         }
@@ -56,6 +56,7 @@ sealed partial class FunctionCompiler
     Own EmitValueCore(IOperation op)
     {
         if (_machine != null && TryPrecomputed(op, out var pre)) return pre;
+        if (_captureOp != null && TryCaptured(op, out var cap)) return cap;
         if (op.ConstantValue.HasValue && op is not IAssignmentOperation)
             return EmitConstant(op.ConstantValue.Value, op.Type != null ? TypeOf(op) : null);
         switch (op)
@@ -69,8 +70,8 @@ sealed partial class FunctionCompiler
                 if (IsCaptured(p.Parameter)) return LoadCaptured(p.Parameter);
                 return LoadVar(_vars[p.Parameter]);
             case IInstanceReferenceOperation ir: return EmitThis(ir);
-            case IFieldReferenceOperation f: return EmitFieldLoad(f);
-            case IPropertyReferenceOperation pr: return EmitPropertyGet(pr);
+            case IFieldReferenceOperation f: return TryInstrumentedRead(f, () => EmitFieldLoad(f), out var r1) ? r1 : EmitFieldLoad(f);
+            case IPropertyReferenceOperation pr: return TryInstrumentedRead(pr, () => EmitPropertyGet(pr), out var r2) ? r2 : EmitPropertyGet(pr);
             case IEventReferenceOperation evr when Driver.IsFieldLikeEvent(evr.Event):
                 {
                     int off = EventStorage(evr.Event, () => { var o = EmitValue(evr.Instance!); ToTransient(o, TypeOf(evr.Instance!)); if (!IsKnownNonNull(evr.Instance!)) NullCheckKeep(); });
@@ -80,10 +81,10 @@ sealed partial class FunctionCompiler
             case IArrayElementReferenceOperation ae: return EmitArrayElementLoad(ae);
             case IBinaryOperation b: return EmitBinary(b);
             case IUnaryOperation u: return EmitUnary(u);
-            case ISimpleAssignmentOperation sa: return EmitAssign(sa, needResult: true);
-            case ICompoundAssignmentOperation ca: return EmitCompound(ca, needResult: true);
-            case IIncrementOrDecrementOperation inc: return EmitIncDec(inc, needResult: true);
-            case ICoalesceAssignmentOperation cas: return EmitCoalesceAssign(cas, needResult: true);
+            case ISimpleAssignmentOperation sa: return TryInstrumentedWrite(sa, () => EmitAssign(sa, needResult: true), out var w1) ? w1 : EmitAssign(sa, needResult: true);
+            case ICompoundAssignmentOperation ca: return TryInstrumentedWrite(ca, () => EmitCompound(ca, needResult: true), out var w2) ? w2 : EmitCompound(ca, needResult: true);
+            case IIncrementOrDecrementOperation inc: return TryInstrumentedWrite(inc, () => EmitIncDec(inc, needResult: true), out var w3) ? w3 : EmitIncDec(inc, needResult: true);
+            case ICoalesceAssignmentOperation cas: return TryInstrumentedWrite(cas, () => EmitCoalesceAssign(cas, needResult: true), out var w4) ? w4 : EmitCoalesceAssign(cas, needResult: true);
             case IInvocationOperation inv: return EmitInvocation(inv);
             case IObjectCreationOperation oc: return EmitObjectCreation(oc);
             case ITypeParameterObjectCreationOperation tpc: return EmitTypeParamCreation(tpc);

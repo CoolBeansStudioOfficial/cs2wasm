@@ -129,6 +129,50 @@ static class ApiChecks
             return r.Diagnostics.Any(d => d.Id == "TP0001") ? null : "plugin diagnostic missing";
         });
 
+        Check("plugin v2: accesses with conditions, update rules, def-use, aliasing, generated hooks, instrumented writes, clones without imports", () =>
+        {
+            var src = Header + """
+                namespace Game {
+                static class Engine { public static extern void Draw(int v); }
+                class Player {
+                    public float X; public float V = 2;
+                    public int Health { get; set; } = 10;
+                    public void Tick(float dt) { X += V * dt; }
+                    public void Hit(int d) { if (d > 0) Health -= d; }
+                }
+                class Enemy { }
+                static class Script {
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        var p = new Player();
+                        p.Tick(0.5f); p.Hit(3); p.Hit(0);
+                        Engine.Draw((int)(p.X * 10));
+                        Console.WriteLine(p.Health + " " + p.X);
+                        int s = 0;
+                        for (int i = 0; i < 4; i++) s += 3;
+                        Console.WriteLine(s + " " + new Enemy().GetHashCode());
+                    }
+                    [UnmanagedCallersOnly(EntryPoint = "frame")]
+                    static void Frame() { Engine.Draw(1); Console.WriteLine("frame"); }
+                }
+                }
+                """;
+            var table = BoundaryTable.FromJson("""{ "imports": [ { "method": "M:Game.Engine.Draw(System.Int32)", "module": "game", "name": "draw" } ] }""");
+            var plugin = new NetPlugin();
+            var r = Compile(src, new CompileOptions { Boundary = table, Plugins = [plugin] });
+            if (!r.Success) return Errors(r);
+            if (plugin.Problem != null) return plugin.Problem;
+            var path = Path.Combine(outDir, "api_plugin2.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            var want = "changed 7\n[engine] game.draw(10)\n7 1\n12 ";
+            if (!o.StartsWith(want)) return $"main output:\n{o}\nwanted to start with:\n{want}\n{e}";
+            var psi = new ProcessStartInfo("node", [Path.Combine(root, "host", "run.mjs"), path, "frame_quiet"]) { RedirectStandardOutput = true, RedirectStandardError = true };
+            using var pr = Process.Start(psi)!;
+            var qo = pr.StandardOutput.ReadToEnd(); var qe = pr.StandardError.ReadToEnd(); pr.WaitForExit();
+            return qo == "frame\n" ? null : "clone output: " + qo + qe;
+        });
+
         Check("source map maps code offsets to C# lines", () =>
         {
             var src = Header + "static class E {\n [UnmanagedCallersOnly(EntryPoint = \"main\")]\n static void M() {\n Console.WriteLine(1);\n }\n}";
@@ -197,6 +241,53 @@ static class ApiChecks
         });
 
         return results;
+    }
+
+    sealed class NetPlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public int InterfaceVersion => 2;
+        public string Name => "net";
+        void Fail(string m) { Problem ??= m; }
+        public void Run(PluginContext c)
+        {
+            var player = c.Compilation.GetTypeByMetadataName("Game.Player")!;
+            var health = player.GetMembers("Health").OfType<IPropertySymbol>().Single();
+            var writes = c.AccessesOf(health).Where(a => a.Kind != AccessKind.Read).ToList();
+            if (writes.Count != 1) { Fail("Health writes: " + writes.Count); return; }
+            if (writes[0].Kind != AccessKind.ReadWrite || writes[0].Conditions.Count != 1 || writes[0].Conditions[0].Test.Syntax.ToString() != "d > 0" || !writes[0].Conditions[0].WhenTrue)
+            { Fail("Health write condition: " + string.Join(",", writes[0].Conditions.Select(x => x.Test.Syntax + "=" + x.WhenTrue))); return; }
+            var tick = player.GetMembers("Tick").OfType<IMethodSymbol>().Single();
+            var rules = c.GetUpdateRules(tick);
+            if (rules.Count != 1 || rules[0].Target.Name != "X" || rules[0].Kind != UpdateKind.Add || rules[0].Loop != null || rules[0].Step!.Syntax.ToString() != "V * dt")
+            { Fail("Tick rules: " + string.Join("; ", rules.Select(x => x.Formula))); return; }
+            var script = c.Compilation.GetTypeByMetadataName("Game.Script")!;
+            var main = script.GetMembers("Main").OfType<IMethodSymbol>().Single();
+            var mrules = c.GetUpdateRules(main);
+            if (!mrules.Any(x => x.Target.Name == "s" && x.Kind == UpdateKind.Add && x.Loop != null && x.Formula == "s(n) = s(0) + n * (3)"))
+            { Fail("Main rules: " + string.Join("; ", mrules.Select(x => x.Formula))); return; }
+            if (!mrules.Any(x => x.Target.Name == "i" && x.StepSign == 1)) { Fail("loop counter rule missing"); return; }
+            var du = c.GetDefUse(main);
+            if (du == null || !du.Definitions.Keys.Any(k => k.Name == "s") || du.ReachingDefinitions.Count == 0) { Fail("def-use"); return; }
+            var x = player.GetMembers("X").OfType<IFieldSymbol>().Single();
+            if (c.PointsTo(x).Count != 0) { Fail("float field points to objects"); return; }
+            var creations = c.Accesses.Select(a => a.Operation).ToList();
+            // generated code: a hook that counts writes, and an export
+            var gen = c.AddSource("""
+                using System;
+                using System.Runtime.InteropServices;
+                public static class NetHooks {
+                    public static int Changes;
+                    public static void Changed(object o, int tag) { Changes++; Console.WriteLine("changed " + tag); }
+                    [UnmanagedCallersOnly(EntryPoint = "changes")] static int Count() => Changes;
+                }
+                """);
+            var hook = gen.GetTypeByMetadataName("NetHooks")!.GetMembers("Changed").OfType<IMethodSymbol>().Single();
+            c.InstrumentWrites(health, hook, tag: 7);
+            var frame = script.GetMembers("Frame").OfType<IMethodSymbol>().Single();
+            var draw = c.Compilation.GetTypeByMetadataName("Game.Engine")!.GetMembers("Draw").OfType<IMethodSymbol>().Single();
+            c.CloneWithSuppressedImports(frame, [draw], "frame_quiet");
+        }
     }
 
     sealed class CountingPlugin : ICompilerPlugin

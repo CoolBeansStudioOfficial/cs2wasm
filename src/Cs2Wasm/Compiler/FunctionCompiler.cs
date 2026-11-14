@@ -89,6 +89,7 @@ sealed partial class FunctionCompiler
         D = d; T = d.Types; E = new Emitter(fn); M = m; Inst = inst; Map = TypeMap.For(m);
         _closure = closure;
         if (closure != null) Map = closure.Map;
+        _clone = inst?.Clone ?? closure?.Clone;
         _spEntry = E.AddLocal(ValType.I32);
         _fb = E.AddLocal(ValType.I32);
     }
@@ -482,7 +483,7 @@ sealed partial class FunctionCompiler
     {
         int save = E.CurrentPos;
         if (op.Syntax is not BlockSyntax) E.CurrentPos = D.Position(op.Syntax) is var p && p >= 0 ? p : save;
-        try { EmitStatementCore(op); }
+        try { EmitStatementHooks(op); EmitStatementCore(op); }
         catch (CompileException ex) when (ex.Location == null) { throw new CompileException(ex.Message, op.Syntax.GetLocation()); }
         E.CurrentPos = save;
     }

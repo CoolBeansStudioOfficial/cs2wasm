@@ -289,6 +289,18 @@ sealed partial class FunctionCompiler
         else
         {
             var mi = D.Method(m);
+            if (_clone != null)
+            {
+                // a clone (section 7.1): suppressed imports do nothing; other bodies are cloned too
+                if (mi.Impl == MethodImpl.Import && _clone.Suppressed.Contains(mi.Key))
+                {
+                    for (int i = 0; i < mi.Fn.Type.Params.Length; i++) E.Op(Op.Drop);
+                    foreach (var r in mi.Fn.Type.Results)
+                        switch (r) { case ValType.I64: E.I64(0); break; case ValType.F32: E.F32(0); break; case ValType.F64: E.F64(0); break; default: E.I32(0); break; }
+                    return Own.None;
+                }
+                if (mi.Impl is MethodImpl.Body or MethodImpl.Synthesized) mi = D.CloneMethod(m, _clone);
+            }
             mi.FirstUse ??= syntax?.GetLocation();
             if (mi.Impl == MethodImpl.Missing && m.IsAbstract) throw new CompileException("call to abstract method " + m.ToDisplayString());
             E.Call(mi.Fn);

@@ -222,10 +222,19 @@ approximate Roslyn's generated names. Per-thread start export: `__thread_entry` 
 exported beside the stack pointer.
 
 ### 7. What Bazoodle needs — partial
-- 7.1 plugin passes: `ICompilerPlugin` (interface version 1) runs after lowering and before emission, sees the
-  reachable method instances and the call graph, and can add custom sections and diagnostics (checked). The
-  analyses it should expose beyond that (def-use, CFGs per lowered method, aliasing, closed forms of loop-carried
-  values, instrumentation, cloning with suppressed imports, generated functions) do not exist yet.
+- 7.1 plugin passes: `ICompilerPlugin` (interface version 2; version 1 plugins still run) runs after lowering and
+  the whole-program analyses, before optimization. It sees the reachable method instances and the call graph; every
+  read and write of fields, properties and events with the branch conditions it runs under; per method, the
+  control-flow graph (Roslyn's lowering), reaching-definition def-use chains, and update rules with closed forms
+  (x' = a·x + b per loop iteration or per call: `x += v * dt`, `v *= 0.9`, counters); the object types a field can
+  hold and a may-alias query (type-based, with the program's constructed types). It can add generated C# (compiled
+  against the program; its `[UnmanagedCallersOnly]` methods are exported), call hooks at member writes (before or
+  after), member reads and statements (methods with instrumented sites, their generic instances, lambdas and state
+  machine bodies are compiled again with the calls), export a clone of a method in which chosen imports do nothing
+  (its direct callees and lambdas are cloned too), and add custom sections and diagnostics (checked). Everything is
+  in Roslyn's terms (operations, symbols, locations). Limits: a clone's virtual calls reach the original
+  implementations; instrumented sites in static constructors and field initializers are not compiled again; getters
+  are assumed to have no effect when judging a rule's step invariant; alias answers are type-based.
 - 7.2 snapshot/restore: state is in memory plus the exported stack pointer; parking threads: not done.
 - 7.3 determinism: no relaxed SIMD (no SIMD at all), fixed-seed string hashing, allocation-order object hash codes,
   math computed in WASM (fdlibm ports, `Exp` in double-double), reproducible output (checked), NaN canonicalized

@@ -15,6 +15,8 @@ internal sealed class MethodInst
     public required string Key;
     public MethodImpl Impl;
     public bool Compiled;
+    /// <summary>Set for clones with suppressed imports (section 7.1).</summary>
+    public CloneSpec? Clone;
     public List<MethodInst> Callees = [];
     public Location? FirstUse;
     /// <summary>Set for lambdas and local functions: compiles the body with its closure information.</summary>
@@ -45,7 +47,11 @@ sealed class VirtualStub
 internal sealed partial class Driver
 {
     public readonly CSharpCompilation Main;
-    public readonly IReadOnlyList<Compilation> Inputs;
+    readonly List<Compilation> _inputs;
+    public IReadOnlyList<Compilation> Inputs => _inputs;
+    public bool IsInput(SyntaxTree t) => _inputs.Any(c => c.ContainsSyntaxTree(t));
+    /// <summary>Every type the program constructs (allocated objects' types).</summary>
+    public IEnumerable<ITypeSymbol> ConstructedTypes() => Constructed.Where(id => id > 0 && id < TypeById.Count && !DisplayById.ContainsKey(id) && !SyntheticById.ContainsKey(id)).Select(id => TypeById[id]);
     public readonly Library Lib;
     public readonly CompileOptions Options;
     public readonly Types Types;
@@ -99,7 +105,7 @@ internal sealed partial class Driver
     {
         Main = main;
         Options = options;
-        Inputs = [main, .. options.AdditionalCompilations];
+        _inputs = [main, .. options.AdditionalCompilations];
         Lib = new Library(main.References);
         Types = new Types(this);
         StackPointer = new WasmGlobal("__stack_pointer", ValType.I32, true, 0) { Export = "__stack_pointer" };
@@ -502,7 +508,7 @@ internal sealed partial class Driver
         rt.Prepare();
         FindRoots(rt);
         Drain(rt);
-        RunPlugins();
+        RunPlugins(rt);
         rt.FinishExports();
         Drain(rt);
         // cycles (section 4.3): the type graph is complete only now; arena runtime is compiled only if some site needs it
@@ -545,10 +551,16 @@ internal sealed partial class Driver
         }
     }
 
+    readonly HashSet<string> _exportNames = [];
     void FindRoots(RuntimeGen rt)
     {
-        var seen = new HashSet<string>();
-        foreach (var comp in Inputs)
+        foreach (var comp in Inputs) FindRootsIn(comp, rt);
+    }
+
+    void FindRootsIn(Compilation comp, RuntimeGen rt)
+    {
+        var seen = _exportNames;
+        {
             foreach (var t in AllTypes(comp.Assembly.GlobalNamespace))
                 foreach (var m in t.GetMembers().OfType<IMethodSymbol>())
                 {
@@ -560,6 +572,7 @@ internal sealed partial class Driver
                     if (!seen.Add(entry)) { Report(Diags.DuplicateExport, m.Locations.FirstOrDefault(), entry); continue; }
                     rt.Export(entry, Method(m));
                 }
+        }
     }
 
     public static IEnumerable<INamedTypeSymbol> AllTypes(INamespaceSymbol ns)

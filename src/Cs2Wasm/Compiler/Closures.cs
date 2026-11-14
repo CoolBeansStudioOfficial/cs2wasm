@@ -31,6 +31,7 @@ sealed class ClosureInfo
     public int ParamLocal = -1;
     public Dictionary<ISymbol, Display?> LocalFunctionEnvs = new(SymbolEqualityComparer.Default);
     public ISymbol? ThisKey;
+    public CloneSpec? Clone;
     public string? OuterKey;
     public IMethodSymbol? OuterMethod;
     public bool IsCapturedHere(ISymbol s) => false;
@@ -294,7 +295,7 @@ sealed partial class FunctionCompiler
 
     internal ClosureInfo MakeClosureInfo(TypeMap map, Display? env, ITypeSymbol? ret)
     {
-        var ci = new ClosureInfo { Map = map, Env = env, ReturnType = ret, ThisKey = _thisKey ?? M.ContainingType, OuterMethod = OuterMethod };
+        var ci = new ClosureInfo { Map = map, Env = env, ReturnType = ret, ThisKey = _thisKey ?? M.ContainingType, OuterMethod = OuterMethod, Clone = _clone };
         foreach (var kv in _lfEnvs) ci.LocalFunctionEnvs[kv.Key] = kv.Value;
         return ci;
     }

@@ -150,7 +150,7 @@ sealed partial class FunctionCompiler
         var sizeAddr = new LateAddr(() => machine.Size);
 
         // compile MoveNext later (it may add slots), with the machine as its environment
-        var ci = new ClosureInfo { Map = Map, Env = machine, ThisKey = thisKey, OuterMethod = nested ? OuterMethod : M };
+        var ci = new ClosureInfo { Map = Map, Env = machine, ThisKey = thisKey, OuterMethod = nested ? OuterMethod : M, Clone = _clone };
         foreach (var kv in _lfEnvs) ci.LocalFunctionEnvs[kv.Key] = kv.Value;
         if (_closure != null) foreach (var kv in _closure.LocalFunctionEnvs) ci.LocalFunctionEnvs[kv.Key] = kv.Value;
         var mnInst = new MethodInst { Sym = M, Fn = info.MoveNext, Key = InstanceKey + " MoveNext", Impl = MethodImpl.Body };
@@ -542,7 +542,7 @@ sealed partial class FunctionCompiler
     {
         var info = _machine!;
         if (info.DisposeFn == null) return;
-        var save = E;
+        info.DisposeFn.Body.Clear(); info.DisposeFn.Locals.Clear(); // MoveNext may be compiled again (instrumentation)
         var e = new Emitter(info.DisposeFn);
         int self = info.AsyncIterator ? 1 : 0;
         int exit = _cfg!.Blocks.Length - 1;
