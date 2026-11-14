@@ -260,7 +260,7 @@ exported beside the stack pointer.
   sequence (checked). Not done: `Unsafe.As`-style bit reads, scheduling-dependence marking.
   Transcendental functions are not guaranteed to round like .NET's (UCRT/glibc) in every case; the tested inputs
   match.
-- 7.4 the library: **cs2wasm's own library, not upstream `dotnet/runtime` trimmed** (the spec's decision). It is a
+- 7.4 the library: **cs2wasm's own library, not upstream `dotnet/runtime` trimmed** (this deviates from the spec, which requires upstream `dotnet/runtime` sources, trimmed). It is a
   self-contained corlib written for this project (about 6 500 lines: object model, strings, number formatting and
   parsing with .NET's exact rounding rules, math, exceptions, collections whose enumeration order matches .NET's,
   LINQ with deferred execution, StringBuilder). Moving to upstream sources is open work. Invariant globalization
