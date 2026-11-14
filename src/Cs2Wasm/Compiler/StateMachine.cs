@@ -188,7 +188,10 @@ sealed partial class FunctionCompiler
                     int toff = machine.ExtraSlots["task"].offset;
                     E.Get(obj); E.Call(D.Method(tcreate).Fn); E.Store(Op.I32Store, toff);
                 }
+                int ec = E.AddLocal(ValType.I32);
+                E.Call(Rt.EcSave); E.Set(ec);
                 E.Get(obj); E.Call(info.MoveNext);
+                E.Get(ec); E.Call(Rt.EcRestore);
                 if (info.TaskType != null)
                 {
                     E.Get(obj); E.Load(Op.I32Load, machine.ExtraSlots["task"].offset); E.Call(Rt.Retain);

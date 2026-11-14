@@ -53,9 +53,9 @@ static class Program
         var gate = new TaskCompletionSource<int>();
         g.Wire(b, gate);
         b.Press();
-        b.Press();
         Console.WriteLine("before gate");
         gate.SetResult(10);
+        b.Press(); // the gate is open: this one runs to the end at once (one continuation per task keeps .NET's order fixed)
         Console.WriteLine(g.Total(new[] { 1, 2, 3 }).Result);
         Console.WriteLine(string.Join(",", g.Labels(3)));
         Func<int, Task<string>> f = async n => { await Task.Delay(1); return "n=" + n; };

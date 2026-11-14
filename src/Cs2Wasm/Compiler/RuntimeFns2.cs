@@ -76,6 +76,61 @@ internal sealed partial class RuntimeFns
         }
     }
 
+    WasmFunction? _ecSave, _ecRestore;
+    /// <summary>Around an async method's first MoveNext: the caller's AsyncLocal context is put back afterwards.</summary>
+    public WasmFunction EcSave => _ecSave ??= M.AddFunction("rt.ec_save", FT([], [I]));
+    public WasmFunction EcRestore => _ecRestore ??= M.AddFunction("rt.ec_restore", FT([I], []));
+    public void EmitEcSupport(MethodInst? save, MethodInst? restore)
+    {
+        if (_ecSave != null) { var e = new Emitter(_ecSave); if (save != null) e.Call(save.Fn); else e.I32(0); }
+        if (_ecRestore != null && restore != null) { var e = new Emitter(_ecRestore); e.Get(0); e.Call(restore.Fn); e.Get(0); e.Call(Release); }
+    }
+
+    WasmFunction? _cctorEnter, _cctorExit;
+    /// <summary>cctor_enter(word) -> run?: claims a type's initialization. One thread: mark done and run. With threads:
+    /// done or our own (recursion) → no; free → claim; another thread's → wait until done.</summary>
+    public WasmFunction CctorEnter => _cctorEnter ??= M.AddFunction("rt.cctor_enter", FT([I], [I]));
+    public WasmFunction CctorExit => _cctorExit ??= M.AddFunction("rt.cctor_exit", FT([I], []));
+
+    public void EmitCctorSupport(bool threads)
+    {
+        if (_cctorEnter != null)
+        {
+            var e = new Emitter(_cctorEnter);
+            if (!threads)
+            {
+                e.Get(0); e.Load(Op.I32Load); e.I32(-1); e.Op(Op.I32Eq); e.If(); e.I32(0); e.Op(Op.Return); e.End();
+                e.Get(0); e.I32(-1); e.Store(Op.I32Store); e.I32(1);
+            }
+            else
+            {
+                int s = e.AddLocal(I);
+                var top = e.Loop();
+                e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(s); e.I32(-1); e.Op(Op.I32Eq);
+                e.Get(s); e.GGet(D.ThreadId); e.Op(Op.I32Eq); e.Op(Op.I32Or);
+                e.If(); e.I32(0); e.Op(Op.Return); e.End();
+                e.Get(s); e.Op(Op.I32Eqz);
+                e.If();
+                e.Get(0); e.I32(0); e.GGet(D.ThreadId); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Op(Op.I32Eqz);
+                e.If(); e.I32(1); e.Op(Op.Return); e.End();
+                e.Else();
+                // another thread runs it: workers sleep on the word, the engine thread spins
+                e.GGet(D.ThreadId); e.I32(1); e.Op(Op.I32Ne);
+                e.If(); e.Get(0); e.Get(s); e.I64(1000000); e.Emit(Op.MemoryAtomicWait32, 0, 2); e.Op(Op.Drop); e.End();
+                e.End();
+                e.Br(top);
+                e.End();
+                e.I32(0);
+            }
+        }
+        if (_cctorExit != null && threads)
+        {
+            var e = new Emitter(_cctorExit);
+            e.Get(0); e.I32(-1); e.Emit(Op.I32AtomicStore, 0, 2);
+            e.Get(0); e.I32(-1); e.Emit(Op.MemoryAtomicNotify, 0, 2); e.Op(Op.Drop);
+        }
+    }
+
     WasmFunction? _onDestroy;
     public WasmFunction OnDestroy => _onDestroy ??= M.AddFunction("rt.on_destroy", FT([I], [I]));
     public WasmFunction? OnDestroyIfMade => _onDestroy;

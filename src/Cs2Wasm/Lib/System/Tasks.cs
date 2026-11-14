@@ -263,7 +263,7 @@ namespace System.Threading.Tasks
     {
         readonly Action _action;
         readonly SynchronizationContext _context;
-        public Continuation(Action a, SynchronizationContext c) { _action = a; _context = c; }
+        public Continuation(Action a, SynchronizationContext c) { _action = ExecutionContext.Flow(a); _context = c; }
         public void Run()
         {
             if (_context != null && !_context.IsDefault) _context.Post(s => ((Action)s)(), _action);
@@ -462,6 +462,7 @@ namespace System.Runtime.CompilerServices
             public void UnsafeOnCompleted(Action continuation) => Post(continuation);
             static void Post(Action c)
             {
+                c = ExecutionContext.Flow(c);
                 var ctx = SynchronizationContext.Current;
                 if (ctx != null && !ctx.IsDefault) ctx.Post(s => ((Action)s)(), c);
                 else if (Rt.ThreadId() != 1) ThreadPool.Queue(c);
@@ -581,6 +582,7 @@ namespace System.Threading
 
         internal static void Queue(Action a)
         {
+            a = ExecutionContext.Flow(a);
             Rt.RuntimeLock();
             (s_queue ??= new Collections.Generic.Queue<Action>()).Enqueue(a);
             bool start = s_started == 0;
@@ -800,6 +802,7 @@ namespace System.Threading
         public void Start()
         {
             if (Atomic.CompareExchange32(ref _state, 0, 1) != 0) throw new ThreadStateException("Thread is running or terminated; it cannot restart.");
+            if (ExecutionContext.IsFlowing) _flow = ExecutionContext.Flow(() => { if (_start != null) _start(); else _pstart(_arg); });
             Threads.SpawnCore(this);
         }
         public void Start(object parameter)
@@ -809,9 +812,11 @@ namespace System.Threading
             Start();
         }
 
+        Action _flow;
         internal void Execute()
         {
-            if (_start != null) _start(); else _pstart(_arg);
+            if (_flow != null) { var f = _flow; _flow = null; f(); }
+            else if (_start != null) _start(); else _pstart(_arg);
             _arg = null;
         }
 
@@ -1220,5 +1225,77 @@ namespace Cs2Wasm.Runtime
     {
         public static ValueTask<bool> Wrap(Task<bool> t) => new ValueTask<bool>(t);
         public static ValueTask WrapDispose(Task<bool> t) => new ValueTask(t);
+    }
+}
+
+namespace System.Threading
+{
+    using Cs2Wasm.Runtime;
+
+    /// <summary>AsyncLocal values: an immutable chain per thread, captured where work is handed on (continuations,
+    /// the pool, Task.Run, Thread.Start) and restored around each async method's synchronous part, as in .NET.</summary>
+    public sealed class ExecutionContext
+    {
+        internal sealed class Node
+        {
+            public readonly object Key, Value; public readonly Node Next;
+            public Node(object k, object v, Node n) { Key = k; Value = v; Next = n; }
+        }
+
+        [ThreadStatic] internal static Node t_current;
+        internal static bool s_active;
+        readonly Node _node;
+        ExecutionContext(Node n) { _node = n; }
+
+        internal static bool IsFlowing => s_active;
+
+        public static ExecutionContext Capture() => new ExecutionContext(t_current);
+        public static void Run(ExecutionContext executionContext, ContextCallback callback, object state)
+        {
+            var saved = t_current;
+            t_current = executionContext._node;
+            try { callback(state); } finally { t_current = saved; }
+        }
+        public static bool IsFlowSuppressed() => false;
+
+        internal static Action Flow(Action a)
+        {
+            if (!s_active) return a;
+            var captured = t_current;
+            return () =>
+            {
+                var saved = t_current;
+                t_current = captured;
+                try { a(); } finally { t_current = saved; }
+            };
+        }
+
+        internal static object Get(object key)
+        {
+            for (var n = t_current; n != null; n = n.Next) if (n.Key == key) return n.Value;
+            return null;
+        }
+        internal static bool Has(object key)
+        {
+            for (var n = t_current; n != null; n = n.Next) if (n.Key == key) return true;
+            return false;
+        }
+        internal static void Set(object key, object value) { t_current = new Node(key, value, t_current); }
+
+        /// <summary>The kickoff of an async method keeps the caller's context: what the method sets stays inside it.</summary>
+        public static object SaveContext() => t_current;
+        public static void RestoreContext(object saved) { t_current = (Node)saved; }
+    }
+
+    public delegate void ContextCallback(object state);
+
+    public sealed class AsyncLocal<T>
+    {
+        public AsyncLocal() { ExecutionContext.s_active = true; }
+        public T Value
+        {
+            get { object v = ExecutionContext.Get(this); return v == null ? default : (T)v; }
+            set { ExecutionContext.Set(this, value); }
+        }
     }
 }

@@ -189,8 +189,14 @@ keep the Node host alive, as in .NET. Concurrent collections (`ConcurrentQueue`,
 `ConcurrentDictionary`) are the plain ones behind a lock, callbacks run outside it; `ConcurrentDictionary` enumerates
 in insertion order rather than .NET's bucket order.
 
-Not done: `AsyncLocal<T>` (no execution context flows with continuations), the build notice for blocking waits on the
-engine thread, freeing a finished thread's stack and thread-local block, static constructors guarded across threads (two threads can both run a type's static initializer), the
+`AsyncLocal<T>`: an immutable chain of values per thread, captured where work is handed on (continuations, the
+pool, `Task.Run`, `Thread.Start`, `Task.Yield`) and put back after each async method's synchronous part, so what an
+async method sets stays inside it, as in .NET; programs without `AsyncLocal` do not capture. Static constructors
+are thread-safe: a type's state word is claimed with compare-and-swap, other threads wait until it is done, and the
+thread running it sees its own partial initialization (recursion), as in .NET.
+
+Not done: the build notice for blocking waits on the
+engine thread, freeing a finished thread's stack and thread-local block, `TypeInitializationException` (an exception from a static constructor), the
 scheduling-dependence marks for the plugin (7.3), and parking workers for snapshots (7.2).
 
 ### 5. Optimization — minimal

@@ -1449,8 +1449,8 @@ sealed partial class FunctionCompiler
         if (si == null) return;
         // inside the type's own static constructor no guard is needed
         if (M.MethodKind == MethodKind.StaticConstructor && Types.Key(T.Resolve(M.ContainingType, Map)) == Types.Key(T.Resolve(ct, Map))) return;
-        E.I32Addr(si.Value.flag); E.Load(Op.I32Load8U);
-        E.Op(Op.I32Eqz); E.If(); E.Call(si.Value.fn); E.End();
+        E.I32Addr(si.Value.flag); E.Load(Op.I32Load);
+        E.I32(-1); E.Op(Op.I32Ne); E.If(); E.Call(si.Value.fn); E.End();
     }
 
     public static void CompileStaticInit(Driver d, INamedTypeSymbol t, WasmFunction fn, IAddress flag, IMethodSymbol? cctor)
@@ -1463,7 +1463,6 @@ sealed partial class FunctionCompiler
     void CompileStaticInitBody(INamedTypeSymbol t, IAddress flag, IMethodSymbol? cctor)
     {
         PushScope();
-        E.I32Addr(flag); E.I32(1); E.Store(Op.I32Store8);
         // base type's initializer first is not required by C#; static field initializers in textual order
         foreach (var m in t.GetMembers())
         {

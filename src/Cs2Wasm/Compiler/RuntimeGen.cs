@@ -584,6 +584,12 @@ sealed class RuntimeGen
 
     public void FinishExports()
     {
+        // AsyncLocal in the program: async kickoffs keep the caller's context
+        if (D.AllMethods.Any(m => m.Sym.MethodKind == MethodKind.Constructor && m.Sym.ContainingType?.Name == "AsyncLocal" && m.Compiled))
+        {
+            D.LibMethod("System.Threading.ExecutionContext", "SaveContext", 0);
+            D.LibMethod("System.Threading.ExecutionContext", "RestoreContext", 1);
+        }
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
             D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
@@ -632,6 +638,9 @@ sealed class RuntimeGen
     {
         if (D.Arenas.Enabled) EmitArenaSupport();
         EmitOnDestroy();
+        D.Rt.EmitCctorSupport(D.UsesThreads);
+        D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == "ExecutionContext" && m.Compiled),
+                           D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == "ExecutionContext" && m.Compiled));
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
         EmitDestroyDispatch();
         EmitStubs();

@@ -464,11 +464,18 @@ internal sealed partial class Driver
         bool hasInit = t.GetMembers().Any(m => m.IsStatic && (m is IFieldSymbol { IsConst: false } f && FieldInitializer(f) != null
                                                                || m is IPropertySymbol p && PropertyInitializer(p) != null));
         if (cctor == null && !hasInit) { _cctors[key] = null; return null; }
-        var flag = StaticAddress("init:" + key, 1, 1);
+        // state word: 0 not started, -1 done (or started on a single thread), else the id of the thread running it
+        var flag = StaticAddress("init:" + key, 4, 4);
         var sym = cctor ?? t.StaticConstructors.FirstOrDefault();
         var fn = Module.AddFunction("static init " + key, new FuncType([], []));
+        var body = Module.AddFunction("static init body " + key, new FuncType([], []));
+        {
+            var e = new Emitter(fn);
+            e.I32Addr(flag); e.Call(Rt.CctorEnter);
+            e.If(); e.Call(body); e.I32Addr(flag); e.Call(Rt.CctorExit); e.End();
+        }
         _cctors[key] = (flag, fn);
-        _pendingCctors.Enqueue((t, fn, flag, cctor));
+        _pendingCctors.Enqueue((t, body, flag, cctor));
         return _cctors[key];
     }
     readonly Queue<(INamedTypeSymbol, WasmFunction, IAddress, IMethodSymbol?)> _pendingCctors = new();
