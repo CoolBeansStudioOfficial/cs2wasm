@@ -162,10 +162,12 @@ complete under the runtime lock, so a continuation added while another thread co
 `SemaphoreSlim`, `ManualResetEventSlim`, `CountdownEvent`) run the engine thread's posted work and timers while they
 wait. Timers keep virtual time (the earliest fires at once) until a worker exists, so single-threaded programs stay
 deterministic; after that they fire when due. `ThreadLocal<T>` keeps values by thread id. Background threads do not
-keep the Node host alive, as in .NET.
+keep the Node host alive, as in .NET. Concurrent collections (`ConcurrentQueue`, `ConcurrentStack`, `ConcurrentBag`,
+`ConcurrentDictionary`) are the plain ones behind a lock, callbacks run outside it; `ConcurrentDictionary` enumerates
+in insertion order rather than .NET's bucket order.
 
 Not done: `AsyncLocal<T>` (no execution context flows with continuations), the build notice for blocking waits on the
-engine thread, concurrent collections, freeing a finished thread's stack and thread-local block, static constructors guarded across threads (two threads can both run a type's static initializer), the
+engine thread, freeing a finished thread's stack and thread-local block, static constructors guarded across threads (two threads can both run a type's static initializer), the
 scheduling-dependence marks for the plugin (7.3), and parking workers for snapshots (7.2).
 
 ### 5. Optimization — minimal
@@ -206,7 +208,7 @@ exported beside the stack pointer.
   LINQ with deferred execution, StringBuilder). Moving to upstream sources is open work. Invariant globalization
   semantics are followed (culture comparisons are ordinal, as in .NET's invariant mode). Case mapping covers
   ASCII, Latin-1, Greek and Cyrillic only. Present since: `Task` and friends, `Random`, `Stopwatch`,
-  `BitConverter`, `Type`, spans over arrays. Missing: `DateTime`, `TimeZoneInfo`, concurrent collections, `GodotSharp`.
+  `BitConverter`, `Type`, spans over arrays. Missing: `DateTime`, `TimeZoneInfo`, `GodotSharp`.
 - 7.5–7.6: no GodotSharp, no browser build, budgets unmeasured.
 
 ### 8. Sandbox — partial
