@@ -3,16 +3,16 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
-// CoreLibManifest externs <runtime-root> <manifest> <corelib-dir>: the implementation parts of the library's
-// `[LibraryImport]` partial methods that cs2wasm's boundary (<corelib-dir>/Boundary) does not implement. The module has
-// no native libraries (SPEC section 8), so each is marked with the capability it needs: reaching one is a build error
-// naming it, never a silent stub. Written to <corelib-dir>/Generated/Interop.Unavailable.g.cs.
+// The implementation parts of a library's `[LibraryImport]` partial methods that cs2wasm's boundary
+// (<upstream-dir>/<Library>/Boundary) does not implement. The module has no native libraries (SPEC section 8), so each
+// is marked with the capability it needs: reaching one is a build error naming it, never a silent stub. Written to
+// <upstream-dir>/<Library>/Generated/Interop.Unavailable.g.cs.
 static class Externs
 {
-    public static int Run(string root, string manifest, string corelib)
+    public static CSharpCompilation Run(string root, string upstream, string lib, IReadOnlyDictionary<string, CSharpCompilation> built)
     {
-        var output = Path.Combine(corelib, "Generated", "Interop.Unavailable.g.cs");
-        var comp = Check.Compile(root, manifest, corelib, exclude: output);
+        var output = Path.Combine(upstream, lib, "Generated", "Interop.Unavailable.g.cs");
+        var comp = Check.Compile(root, upstream, lib, built, exclude: output);
         var missing = comp.GetDiagnostics().Where(d => d.Id == "CS8795").ToList();
         var byType = new SortedDictionary<string, (INamedTypeSymbol Type, List<string> Methods)>(StringComparer.Ordinal);
         foreach (var d in missing)
@@ -22,11 +22,11 @@ static class Externs
             if (decl == null) continue;
             var m = comp.GetSemanticModel(tree).GetDeclaredSymbol(decl)!;
             var li = m.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name is "LibraryImportAttribute" or "DllImportAttribute");
-            var lib = li?.ConstructorArguments.FirstOrDefault().Value as string ?? "?";
+            var native = li?.ConstructorArguments.FirstOrDefault().Value as string ?? "?";
             var entry = li?.NamedArguments.FirstOrDefault(a => a.Key == "EntryPoint").Value.Value as string ?? m.Name;
             var key = m.ContainingType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
             if (!byType.TryGetValue(key, out var e)) byType[key] = e = (m.ContainingType, []);
-            e.Methods.Add(Method(m, decl.Modifiers.Any(SyntaxKind.UnsafeKeyword), $"platform invoke ({lib}!{entry})"));
+            e.Methods.Add(Method(m, decl.Modifiers.Any(SyntaxKind.UnsafeKeyword), $"platform invoke ({native}!{entry})"));
         }
 
         var sb = new StringBuilder();
@@ -50,10 +50,11 @@ static class Externs
             foreach (var _ in chain) sb.AppendLine("}");
             if (ns != null) sb.AppendLine("}");
         }
+        if (n == 0) { if (File.Exists(output)) File.Delete(output); return comp; }
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         File.WriteAllText(output, sb.ToString());
-        Console.WriteLine($"{n} unavailable platform invokes");
-        return 0;
+        Console.WriteLine($"{lib}: {n} unavailable platform invokes");
+        return Check.Compile(root, upstream, lib, built);
     }
 
     static readonly SymbolDisplayFormat Fq = SymbolDisplayFormat.FullyQualifiedFormat

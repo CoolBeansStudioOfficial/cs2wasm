@@ -1,0 +1,31 @@
+# System.Threading.Tasks.Parallel for cs2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.
+# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: cs2wasm supplies its own)
+define NET
+define NETCOREAPP
+define NET11_0
+define RELEASE
+define NET5_0_OR_GREATER
+define NET6_0_OR_GREATER
+define NET7_0_OR_GREATER
+define NET8_0_OR_GREATER
+define NET9_0_OR_GREATER
+define NET10_0_OR_GREATER
+define NET11_0_OR_GREATER
+define NETCOREAPP1_0_OR_GREATER
+define NETCOREAPP1_1_OR_GREATER
+define NETCOREAPP2_0_OR_GREATER
+define NETCOREAPP2_1_OR_GREATER
+define NETCOREAPP2_2_OR_GREATER
+define NETCOREAPP3_0_OR_GREATER
+define NETCOREAPP3_1_OR_GREATER
+reference System.Collections
+reference System.Collections.Concurrent
+reference System.Memory
+reference System.Threading
+file src/libraries/System.Threading.Tasks.Parallel/src/System/Threading/Tasks/Parallel.cs
+file src/libraries/System.Threading.Tasks.Parallel/src/System/Threading/Tasks/Parallel.ForEachAsync.cs
+file src/libraries/System.Threading.Tasks.Parallel/src/System/Threading/Tasks/ParallelETWProvider.cs
+file src/libraries/System.Threading.Tasks.Parallel/src/System/Threading/Tasks/ParallelLoopState.cs
+file src/libraries/System.Threading.Tasks.Parallel/src/System/Threading/Tasks/ParallelRangeManager.cs
+file src/libraries/System.Threading.Tasks.Parallel/src/System/Threading/Tasks/TaskReplicator.cs
+file src/libraries/Common/src/System/SR.cs

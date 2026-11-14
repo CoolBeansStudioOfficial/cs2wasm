@@ -1,63 +1,111 @@
-// CoreLibManifest <runtime-root> <out-file>                       evaluate CoreLib's projects into the manifest
-// CoreLibManifest resx <Strings.resx> <out.cs>                     generate the SR strings
-// CoreLibManifest check <runtime-root> <manifest> [extra-dir]       compile the manifest as a corlib, summarize errors
-// CoreLibManifest externs <runtime-root> <manifest> <corelib-dir>   the platform invokes the boundary does not implement
+// CoreLibManifest <runtime-root> <upstream-dir>                       evaluate the libraries, generate SR and the externs
+// CoreLibManifest check <runtime-root> <upstream-dir> [library]          compile the libraries, summarize errors
 //
-// Evaluates Mono's System.Private.CoreLib.csproj, with the shared projitems it imports (dotnet/runtime), for
-// cs2wasm's target and writes the manifest the compiler builds the library from: the defines and the source files
-// (relative to the runtime root), in project order. Only what those files use of MSBuild is implemented:
-// properties with conditions, $(X) expansion, projitems imports, and Compile items (Include/Remove, conditions).
+// Evaluates dotnet/runtime's projects for cs2wasm's target and writes, per library, <upstream-dir>/<Library>/:
+//   manifest.txt              the defines, the source files (relative to the runtime root) in project order, and the
+//                             libraries it references;
+//   Generated/SR.g.cs         its resource strings, as constants;
+//   Generated/Interop.Unavailable.g.cs   the platform invokes cs2wasm's boundary does not implement (Externs).
+// Only what those projects use of MSBuild is implemented: properties with conditions, $(X) expansion, projitems
+// imports, and Compile items (Include/Remove, conditions).
 //
-// The target: a 32-bit WASM build like Mono's browser one, with no hardware intrinsics and no event tracing. The
-// runtime-specific half (Mono's src/mono/System.Private.CoreLib/src) is listed as `runtime`: cs2wasm supplies its
-// own versions of those files, against its runtime (src/Cs2Wasm/CoreLib/Runtime).
+// The target: a 32-bit WASM build like Mono's browser one, with no hardware intrinsics and no event tracing.
+// System.Private.CoreLib is Mono's project; its runtime-specific half (src/mono/System.Private.CoreLib/src) is listed
+// as `runtime`: cs2wasm supplies its own versions of those files, against its runtime (<Library>/Runtime).
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
-if (args.Length >= 3 && args[0] == "resx") return Resx.Run(args[1], args[2]);
-if (args.Length >= 4 && args[0] == "externs") return Externs.Run(args[1], args[2], args[3]);
 if (args.Length >= 3 && args[0] == "check") return Check.Run(args[1], args[2], args.Length > 3 ? args[3] : null);
-if (args.Length < 2) { Console.Error.WriteLine("usage: CoreLibManifest <runtime-root> <out-file> | resx <resx> <out> | check <runtime-root> <manifest> [extra-dir]"); return 2; }
-return Manifest.Run(Path.GetFullPath(args[0]), args[1]);
+if (args.Length < 2) { Console.Error.WriteLine("usage: CoreLibManifest <runtime-root> <upstream-dir> | check <runtime-root> <upstream-dir> [library]"); return 2; }
+return Libraries.Run(Path.GetFullPath(args[0]), Path.GetFullPath(args[1]));
 
-static class Manifest
+static class Libraries
 {
-    static readonly Dictionary<string, string> props = new(StringComparer.OrdinalIgnoreCase);
-    static readonly List<string> files = [];
-    static readonly SortedSet<string> unknown = [];
-    // cs2wasm's choices: the projects may not override them
-    static readonly HashSet<string> pinned = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The libraries cs2wasm builds, each after those it references.</summary>
+    public static readonly string[] All =
+    [
+        "System.Private.CoreLib", "System.Collections", "System.Collections.NonGeneric", "System.ObjectModel", "System.Memory",
+        "System.Threading", "System.Collections.Concurrent", "System.Linq", "System.Console", "System.Runtime.Numerics",
+        "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions",
+    ];
 
-    public static int Run(string root, string output)
+    public static string Project(string root, string lib) => lib == "System.Private.CoreLib"
+        ? Path.Combine(root, "src", "mono", "System.Private.CoreLib", "System.Private.CoreLib.csproj")
+        : Path.Combine(root, "src", "libraries", lib, "src", lib + ".csproj");
+
+    public static string Resx(string root, string lib) => lib == "System.Private.CoreLib"
+        ? Path.Combine(root, "src", "libraries", "System.Private.CoreLib", "src", "Resources", "Strings.resx")
+        : Path.Combine(root, "src", "libraries", lib, "src", "Resources", "Strings.resx");
+
+    public static int Run(string root, string upstream)
     {
+        foreach (var lib in All)
+        {
+            var dir = Path.Combine(upstream, lib);
+            Directory.CreateDirectory(dir);
+            new Manifest(root, lib).Write(Path.Combine(dir, "manifest.txt"));
+            var resx = Resx(root, lib);
+            if (File.Exists(resx)) global::Resx.Run(resx, Path.Combine(dir, "Generated", "SR.g.cs"));
+        }
+        // the externs need each library compiled, with those it references
+        var built = new Dictionary<string, Microsoft.CodeAnalysis.CSharp.CSharpCompilation>();
+        foreach (var lib in All) built[lib] = Externs.Run(root, upstream, lib, built);
+        return 0;
+    }
+}
+
+sealed class Manifest
+{
+    readonly Dictionary<string, string> props = new(StringComparer.OrdinalIgnoreCase);
+    readonly List<string> files = [];
+    readonly List<string> references = [];
+    readonly SortedSet<string> unknown = [];
+    // cs2wasm's choices: the projects may not override them
+    readonly HashSet<string> pinned = new(StringComparer.OrdinalIgnoreCase);
+    readonly string root, lib;
+
+    public Manifest(string root, string lib)
+    {
+        this.root = root; this.lib = lib;
         var monoDir = Path.Combine(root, "src", "mono", "System.Private.CoreLib");
         var sep = Path.DirectorySeparatorChar.ToString();
         props["CommonPath"] = Path.Combine(root, "src", "libraries", "Common", "src") + sep;
         props["LibrariesProjectRoot"] = Path.Combine(root, "src", "libraries") + sep;
         props["BclSourcesRoot"] = Path.Combine(monoDir, "src");
+        props["CoreLibSharedDir"] = Path.Combine(root, "src", "libraries", "System.Private.CoreLib", "src") + sep;
+        props["CoreLibProject"] = Libraries.Project(root, "System.Private.CoreLib");
         props["Platform"] = "wasm";
         props["TargetArchitecture"] = "wasm";
         props["TargetOS"] = "browser";
         props["TargetsBrowser"] = "true";
+        props["TargetsWasm"] = "true";
+        props["TargetPlatformIdentifier"] = "browser";
         props["Is64Bit"] = "false";
         props["FeaturePerfTracing"] = "false";
+        props["FeatureWasmManagedThreads"] = "false";
         props["RuntimeFlavor"] = "Mono";
-        // what the SDK defines for a net11.0 project
         props["DefineConstants"] = "";
         foreach (var k in props.Keys) pinned.Add(k);
         pinned.Remove("DefineConstants");
-        Project(Path.Combine(monoDir, "System.Private.CoreLib.csproj"));
+        Project(Libraries.Project(root, lib));
+        // what the libraries' build adds to a project with resources (CoreLib has its own SR.cs)
+        if (lib != "System.Private.CoreLib" && File.Exists(Libraries.Resx(root, lib)))
+            files.Add(Path.Combine(root, "src", "libraries", "Common", "src", "System", "SR.cs"));
+    }
 
+    public void Write(string output)
+    {
         // with what the SDK defines for a net11.0 project
         var sdk = "NET;NETCOREAPP;NET11_0;RELEASE;" + string.Join(";", Enumerable.Range(5, 7).Select(v => $"NET{v}_0_OR_GREATER"))
             + ";NETCOREAPP1_0_OR_GREATER;NETCOREAPP1_1_OR_GREATER;NETCOREAPP2_0_OR_GREATER;NETCOREAPP2_1_OR_GREATER;NETCOREAPP2_2_OR_GREATER;NETCOREAPP3_0_OR_GREATER;NETCOREAPP3_1_OR_GREATER;";
         var defines = (sdk + props["DefineConstants"]).Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(d => d is not ("DEBUG" or "_LOGGING")).Distinct().ToList();
         var sb = new StringBuilder();
-        sb.AppendLine("# System.Private.CoreLib for cs2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.");
-        sb.AppendLine("# define <symbol> | file <path> (compiled) | runtime <path> (Mono's runtime half: cs2wasm supplies its own)");
+        sb.AppendLine($"# {lib} for cs2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.");
+        sb.AppendLine("# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: cs2wasm supplies its own)");
         foreach (var d in defines) sb.AppendLine("define " + d);
+        foreach (var r in references.Distinct()) sb.AppendLine("reference " + r);
         int missing = 0, runtime = 0, n = 0;
         foreach (var f in files.Distinct())
         {
@@ -68,21 +116,20 @@ static class Manifest
             else { n++; sb.AppendLine("file " + rel); }
         }
         File.WriteAllText(output, sb.ToString());
-        Console.WriteLine($"{n} files, {runtime} runtime, {missing} missing; defines: {string.Join(";", defines)}");
-        foreach (var u in unknown) Console.WriteLine("condition not understood: " + u);
-        return 0;
+        Console.WriteLine($"{lib}: {n} files, {runtime} runtime, {missing} missing, references {string.Join(" ", references.Distinct())}");
+        foreach (var u in unknown) Console.WriteLine("  condition not understood: " + u);
     }
 
-    static string Expand(string s) => Regex.Replace(s, @"\$\(([A-Za-z_][A-Za-z0-9_]*)\)", m => props.TryGetValue(m.Groups[1].Value, out var v) ? v : "");
+    string Expand(string s) => Regex.Replace(s, @"\$\(([A-Za-z_][A-Za-z0-9_]*)\)", m => props.TryGetValue(m.Groups[1].Value, out var v) ? v : "");
 
-    static bool Cond(XElement e)
+    bool Cond(XElement e)
     {
         var c = (string?)e.Attribute("Condition");
         return c == null || Eval(c);
     }
 
     // comparisons of quoted strings, and/or/!, parentheses
-    static bool Eval(string raw)
+    bool Eval(string raw)
     {
         var s = Expand(raw);
         var toks = Regex.Matches(s, @"'[^']*'|==|!=|\(|\)|!|[^\s()!=']+").Select(m => m.Value).ToList();
@@ -107,12 +154,13 @@ static class Manifest
         try { return Or(); } catch { unknown.Add(raw); return false; }
     }
 
-    static void Project(string path)
+    void Project(string path)
     {
         var doc = XDocument.Load(path);
         var dir = Path.GetDirectoryName(path)! + Path.DirectorySeparatorChar;
         props.TryGetValue("MSBuildThisFileDirectory", out var saved);
         props["MSBuildThisFileDirectory"] = dir;
+        string Full(string f) => Path.GetFullPath(Path.Combine(dir, Expand(f.Trim())));
         foreach (var el in doc.Root!.Elements())
         {
             switch (el.Name.LocalName)
@@ -120,7 +168,7 @@ static class Manifest
                 case "Import":
                     {
                         var ip = Expand((string?)el.Attribute("Project") ?? "");
-                        if (ip.EndsWith(".projitems", StringComparison.OrdinalIgnoreCase) && Cond(el)) Project(Path.GetFullPath(ip));
+                        if (ip.EndsWith(".projitems", StringComparison.OrdinalIgnoreCase) && Cond(el)) Project(Path.GetFullPath(Path.Combine(dir, ip)));
                         props["MSBuildThisFileDirectory"] = dir;
                         break;
                     }
@@ -130,17 +178,43 @@ static class Manifest
                     break;
                 case "ItemGroup":
                     if (!Cond(el)) break;
-                    foreach (var it in el.Elements().Where(x => x.Name.LocalName == "Compile"))
+                    foreach (var it in el.Elements())
                     {
                         if (!Cond(it)) continue;
-                        if ((string?)it.Attribute("Include") is { } inc)
-                            foreach (var f in inc.Split(';', StringSplitOptions.RemoveEmptyEntries)) files.Add(Path.GetFullPath(Expand(f.Trim())));
-                        if ((string?)it.Attribute("Remove") is { } rem)
-                            foreach (var f in rem.Split(';', StringSplitOptions.RemoveEmptyEntries)) files.Remove(Path.GetFullPath(Expand(f.Trim())));
+                        var inc = (string?)it.Attribute("Include");
+                        switch (it.Name.LocalName)
+                        {
+                            case "Compile":
+                                if (inc != null)
+                                    foreach (var f in inc.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                                    {
+                                        if (f.Contains('*')) files.AddRange(Glob(Full(f)));
+                                        else files.Add(Full(f));
+                                    }
+                                if ((string?)it.Attribute("Remove") is { } rem)
+                                    foreach (var f in rem.Split(';', StringSplitOptions.RemoveEmptyEntries)) files.Remove(Full(f));
+                                break;
+                            case "ProjectReference" when inc != null:
+                                {
+                                    var name = Path.GetFileNameWithoutExtension(Expand(inc));
+                                    if (Libraries.All.Contains(name) && name != "System.Private.CoreLib") references.Add(name);
+                                    break;
+                                }
+                        }
                     }
                     break;
             }
         }
         props["MSBuildThisFileDirectory"] = saved ?? "";
+    }
+
+    static IEnumerable<string> Glob(string pattern)
+    {
+        int star = pattern.IndexOf('*');
+        var baseDir = Path.GetDirectoryName(pattern[..star].TrimEnd('\\', '/') + Path.DirectorySeparatorChar)!;
+        bool recursive = pattern.Contains("**");
+        var filePat = Path.GetFileName(pattern);
+        if (!Directory.Exists(baseDir)) return [];
+        return Directory.GetFiles(baseDir, filePat, recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly).Order(StringComparer.Ordinal);
     }
 }
