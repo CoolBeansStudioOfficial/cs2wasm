@@ -323,6 +323,10 @@ results on every machine**. The compiler must not introduce variation:
   with only what the program reaches emitted. The parts that assume a garbage collector, threads or native interop are
   replaced at that boundary; everything else (formatting, collections, LINQ, text) is upstream's code and behaves
   exactly as .NET does.
+- **Invariant globalization (owner).** Programs run in .NET's invariant globalization mode: formatting, parsing,
+  comparison and casing are culture-invariant on every machine, so peers compute the same strings, and no ICU data is
+  shipped. Localized text is the embedder's concern (Bazoodle's translation layer). `TimeZoneInfo.Local` takes its UTC
+  offset from the engine's clock import; no time-zone database is shipped.
 - **Clock and randomness.** `DateTime.Now`, `Stopwatch` and `Environment.TickCount` read the engine's real-time
   import. `System.Random`'s default seed comes from the engine's seeded import (so it matches across peers).
   `Console.WriteLine` and `GD.Print` go to the engine's log import.
