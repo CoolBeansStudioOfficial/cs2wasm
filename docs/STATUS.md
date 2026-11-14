@@ -74,12 +74,12 @@ exception, before unwinding runs any `finally`. An exception thrown inside a fil
 filters pay nothing.
 
 Not done yet (a program using them gets a `CW0101` error naming the construct):
-- exception filters inside iterators and async methods;
 - spans over stack or native memory (`stackalloc` into a span allocates an array);
 - reflection beyond `Type` names, `dynamic`, the interpreter for runtime code generation (section 8);
-- filters and state machines: the first pass does not see the catch regions of an iterator's or async method's own
-  body, so a filter further out can run for an exception such a body then catches; and an export called back from
-  the engine does not hide outer frames' filters.
+- filters inside iterators and async methods run in one pass (when the exception reaches their catch, after the
+  `finally` blocks inside the try); an exception thrown by such a filter is not swallowed; the first pass of a throw
+  does not see an iterator's or async method's own catch regions, so a filter further out can run for an exception
+  such a body then catches; and an export called back from the engine does not hide outer frames' filters.
 
 Async: continuations run where the awaited task completes, or are posted to the captured `SynchronizationContext`;
 blocking waits (`.Result`, `Wait`, `GetAwaiter().GetResult()`) run the engine thread's posted work and timers. See

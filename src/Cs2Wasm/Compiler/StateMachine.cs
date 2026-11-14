@@ -452,9 +452,6 @@ sealed partial class FunctionCompiler
         if (info.Cfg != null) _cfg = info.Cfg;
         else if (info.Body is IMethodBodyOperation mb) _cfg = ControlFlowGraph.Create(mb);
         else throw new CompileException("state machine body");
-        foreach (var r in AllRegions(_cfg.Root))
-            if (r.Kind is ControlFlowRegionKind.Filter or ControlFlowRegionKind.FilterAndHandler)
-                throw new CompileException("exception filters in async methods and iterators are not supported yet", M.Locations.FirstOrDefault());
         // params live in the machine: no wasm params besides the machine pointer
         _closure!.ParamLocal = 0;
         foreach (var p in M.Parameters) _vars.Remove(p);
@@ -675,12 +672,15 @@ sealed partial class FunctionCompiler
                 BeginTemps(); EmitThrow(value); EndTemps(); return;
             case ControlFlowBranchSemantics.Rethrow:
                 {
-                    var catchRegion = EnclosingOf(_curBlock!.EnclosingRegion, ControlFlowRegionKind.Catch) ?? throw new CompileException("rethrow outside catch");
+                    var catchRegion = CatchOf(_curBlock!.EnclosingRegion) ?? throw new CompileException("rethrow outside catch");
                     int cs = CaughtSlot(catchRegion);
                     E.Get(0); E.Load(Op.I32Load, cs); E.Call(Rt.Retain);
                     E.Emit(Op.Throw, 0, 0, D.ExceptionTag);
                     return;
                 }
+            case ControlFlowBranchSemantics.StructuredExceptionHandling when EnclosingOf(_curBlock!.EnclosingRegion, ControlFlowRegionKind.Filter) is { } filterRegion:
+                EmitFilterEnd(filterRegion, value);
+                return;
             case ControlFlowBranchSemantics.StructuredExceptionHandling:
                 {
                     // end of a finally: rethrow a pending exception, else continue where the finally was entered from
@@ -721,7 +721,20 @@ sealed partial class FunctionCompiler
         return (_machine!.Machine.Extra(key + ".ret", IntType, T), _machine.Machine.Extra(key + ".exn", D.ObjectType, T));
     }
 
-    int CaughtSlot(ControlFlowRegion catchRegion) => _machine!.Machine.Extra("caught" + catchRegion.FirstBlockOrdinal, D.ObjectType, T);
+    int CaughtSlot(ControlFlowRegion catchRegion)
+    {
+        // a filtered catch's filter and handler share the slot of their FilterAndHandler region
+        if (catchRegion.Kind == ControlFlowRegionKind.Catch && catchRegion.EnclosingRegion?.Kind == ControlFlowRegionKind.FilterAndHandler) catchRegion = catchRegion.EnclosingRegion;
+        return _machine!.Machine.Extra("caught" + catchRegion.FirstBlockOrdinal, D.ObjectType, T);
+    }
+
+    /// <summary>The region whose caught exception code in `r` sees: a catch, or a filter's FilterAndHandler.</summary>
+    static ControlFlowRegion? CatchOf(ControlFlowRegion r)
+    {
+        for (var x = r; x != null; x = x.EnclosingRegion)
+            if (x.Kind is ControlFlowRegionKind.Catch or ControlFlowRegionKind.FilterAndHandler) return x;
+        return null;
+    }
 
     static ControlFlowRegion? EnclosingOf(ControlFlowRegion r, ControlFlowRegionKind kind)
     {
@@ -771,29 +784,7 @@ sealed partial class FunctionCompiler
             if (chain.Count == 0) continue;
             E.Get(_curLocal); E.I32(seg.id); E.Op(Op.I32Eq);
             E.If();
-            foreach (var (kind, region) in chain)
-            {
-                if (kind == 0)
-                {
-                    // catch region: type test
-                    var et = region.ExceptionType is { } t0 ? T.Resolve(t0, Map) : null;
-                    bool all = et == null || Types.FullName(et) is "System.Exception" or "System.Object";
-                    if (!all) { E.Get(ex); E.Call(Rt.IsInst(et!)); } else E.I32(1);
-                    E.If();
-                    int cs = CaughtSlot(region);
-                    E.Get(0); E.Load(Op.I32Load, cs); E.Call(Rt.Release);
-                    E.Get(0); E.Get(ex); E.Store(Op.I32Store, cs);
-                    E.Get(ex); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "OnCatch", 1).Fn);
-                    Goto(region.FirstBlockOrdinal);
-                    E.End();
-                }
-                else
-                {
-                    var (_, exnOff) = FinallySlots(region);
-                    E.Get(0); E.Get(ex); E.Store(Op.I32Store, exnOff);
-                    Goto(region.FirstBlockOrdinal);
-                }
-            }
+            foreach (var (kind, region) in chain) EmitHandlerEntry(kind, region, ex, retain: false);
             E.End();
         }
         // nothing handles it
@@ -830,7 +821,50 @@ sealed partial class FunctionCompiler
         E.Get(exn); E.Op(Op.ThrowRef);
     }
 
-    /// <summary>Handlers an exception raised in `r` reaches, innermost first: (0, catch) or (1, finally), up to the first finally.</summary>
+    /// <summary>One handler an exception in local `ex` may reach: a catch (0) or a filtered catch (2) take it if the
+    /// type matches (the filter's blocks then decide), a finally (1) always does. `retain`: `ex` is not ours to give.</summary>
+    void EmitHandlerEntry(int kind, ControlFlowRegion region, int ex, bool retain)
+    {
+        if (kind == 1)
+        {
+            var (_, exnOff) = FinallySlots(region);
+            E.Get(0); E.Get(ex); if (retain) E.Call(Rt.Retain); E.Store(Op.I32Store, exnOff);
+            Goto(region.FirstBlockOrdinal);
+            return;
+        }
+        var et = region.ExceptionType is { } t0 ? T.Resolve(t0, Map) : null;
+        bool all = et == null || Types.FullName(et) is "System.Exception" or "System.Object";
+        if (!all) { E.Get(ex); E.Call(Rt.IsInst(et!)); } else E.I32(1);
+        E.If();
+        int cs = CaughtSlot(region);
+        E.Get(0); E.Load(Op.I32Load, cs); E.Call(Rt.Release);
+        E.Get(0); E.Get(ex); if (retain) E.Call(Rt.Retain); E.Store(Op.I32Store, cs);
+        E.Get(ex); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "OnCatch", 1).Fn);
+        if (kind == 0) Goto(region.FirstBlockOrdinal);
+        else Goto(region.NestedRegions.First(n => n.Kind == ControlFlowRegionKind.Filter).FirstBlockOrdinal);
+        E.End();
+    }
+
+    /// <summary>A filter that ends without entering its handler (the graph branches into the handler when it is
+    /// true): try the catches after it, then rethrow from the filter's segment, whose handlers are outside this try.</summary>
+    void EmitFilterEnd(ControlFlowRegion filter, IOperation? value)
+    {
+        var fah = filter.EnclosingRegion!;
+        int ex = E.AddLocal(ValType.I32);
+        E.Get(0); E.Load(Op.I32Load, CaughtSlot(fah)); E.Set(ex);
+        var tac = fah.EnclosingRegion!;
+        bool after = false;
+        foreach (var n in tac.NestedRegions)
+        {
+            if (ReferenceEquals(n, fah)) { after = true; continue; }
+            if (!after) continue;
+            if (n.Kind == ControlFlowRegionKind.Catch) EmitHandlerEntry(0, n, ex, retain: true);
+            else if (n.Kind == ControlFlowRegionKind.FilterAndHandler) EmitHandlerEntry(2, n, ex, retain: true);
+        }
+        E.Get(ex); E.Call(Rt.Retain); E.Emit(Op.Throw, 0, 0, D.ExceptionTag);
+    }
+
+    /// <summary>Handlers an exception raised in `r` reaches, innermost first: (0, catch), (2, filtered catch) or (1, finally), up to the first finally.</summary>
     static List<(int kind, ControlFlowRegion region)> HandlerChain(ControlFlowRegion r)
     {
         var result = new List<(int, ControlFlowRegion)>();
@@ -839,7 +873,11 @@ sealed partial class FunctionCompiler
         {
             if (child?.Kind != ControlFlowRegionKind.Try) continue;
             if (x.Kind == ControlFlowRegionKind.TryAndCatch)
-                foreach (var n in x.NestedRegions) if (n.Kind == ControlFlowRegionKind.Catch) result.Add((0, n));
+                foreach (var n in x.NestedRegions)
+                {
+                    if (n.Kind == ControlFlowRegionKind.Catch) result.Add((0, n));
+                    else if (n.Kind == ControlFlowRegionKind.FilterAndHandler) result.Add((2, n));
+                }
             if (x.Kind == ControlFlowRegionKind.TryAndFinally)
             {
                 var fin = x.NestedRegions.First(n => n.Kind == ControlFlowRegionKind.Finally);
@@ -1134,7 +1172,7 @@ sealed partial class FunctionCompiler
 
     Own EmitCaughtException()
     {
-        var region = EnclosingOf(_curBlock!.EnclosingRegion, ControlFlowRegionKind.Catch) ?? throw new CompileException("caught exception outside catch");
+        var region = CatchOf(_curBlock!.EnclosingRegion) ?? throw new CompileException("caught exception outside catch");
         E.Get(0); E.Load(Op.I32Load, CaughtSlot(region));
         return Own.Unstable;
     }
