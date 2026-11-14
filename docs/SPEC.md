@@ -85,8 +85,8 @@ those semantics are what programs observe. Every feature of C# 14 is in scope, i
 .NET: GodotSharp installs its own, so script code returns to the engine thread after `await`. `Task.Run`, the thread
 pool, `Parallel` and `Thread` run on real worker threads (section 4.5).
 
-**Exceptions** use native WASM exception handling (owner; the `exnref` form, shipped in all major browsers; confirm the version
-floor). An exception that escapes an exported entry point must reach the engine as a catchable failure carrying the
+**Exceptions** use native WASM exception handling (owner; the `exnref` form, shipped in all major browsers; the
+version floor is checked by the owner). An exception that escapes an exported entry point must reach the engine as a catchable failure carrying the
 exception's type, message and C# stack trace with file and line (section 6.3). Exception filters (`when`) keep .NET's
 two-pass order where it is observable: a filter runs before the `finally` blocks of the frames it would unwind.
 
