@@ -380,6 +380,10 @@ What does exist, though .NET programs might expect it not to here (owner):
   module, and it compiles Roslyn too, so the editor needs no .NET runtime at all; Roslyn is the largest and most
   demanding test the memory model will get.
 - Desktop builds use the same browser toolchain; there is no native build path to keep in step.
+- **Headless too.** The same toolchain module runs outside a browser, in a WASM runtime (Wasmtime or a headless browser),
+  for an embedder's server-side builds: Bazoodle rebuilds every published game itself and compares the result with the
+  creator's build. Output is byte-identical wherever it runs (section 7.3), and the build-time code it runs (source
+  generators, analyzers) stays inside the WASM sandbox.
 
 ---
 
