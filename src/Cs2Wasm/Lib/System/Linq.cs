@@ -417,6 +417,49 @@ namespace System.Linq
         public static IEnumerable<TResult> Select<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, int, TResult> selector) { Null(source, "source"); Null(selector, "selector"); return new SelectIndexIterator<TSource, TResult>(source, selector); }
         public static IEnumerable<TResult> SelectMany<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, IEnumerable<TResult>> selector) { Null(source, "source"); Null(selector, "selector"); return new SelectManyIterator<TSource, TResult>(source, selector); }
         public static IEnumerable<T> Take<T>(this IEnumerable<T> source, int count) { Null(source, "source"); return new TakeIterator<T>(source, count); }
+        public static ILookup<TKey, T> ToLookup<T, TKey>(this IEnumerable<T> source, Func<T, TKey> keySelector) => ToLookup(source, keySelector, x => x, null);
+        public static ILookup<TKey, T> ToLookup<T, TKey>(this IEnumerable<T> source, Func<T, TKey> keySelector, IEqualityComparer<TKey> comparer) => ToLookup(source, keySelector, x => x, comparer);
+        public static ILookup<TKey, TElement> ToLookup<T, TKey, TElement>(this IEnumerable<T> source, Func<T, TKey> keySelector, Func<T, TElement> elementSelector) => ToLookup(source, keySelector, elementSelector, null);
+        public static ILookup<TKey, TElement> ToLookup<T, TKey, TElement>(this IEnumerable<T> source, Func<T, TKey> keySelector, Func<T, TElement> elementSelector, IEqualityComparer<TKey> comparer)
+        {
+            Null(source, "source");
+            var l = new Lookup<TKey, TElement>(comparer);
+            foreach (var x in source) l.Add(keySelector(x), elementSelector(x));
+            return l;
+        }
+        public static IEnumerable<TResult> Join<TOuter, TInner, TKey, TResult>(this IEnumerable<TOuter> outer, IEnumerable<TInner> inner, Func<TOuter, TKey> outerKeySelector, Func<TInner, TKey> innerKeySelector, Func<TOuter, TInner, TResult> resultSelector) =>
+            Join(outer, inner, outerKeySelector, innerKeySelector, resultSelector, null);
+        public static IEnumerable<TResult> Join<TOuter, TInner, TKey, TResult>(this IEnumerable<TOuter> outer, IEnumerable<TInner> inner, Func<TOuter, TKey> outerKeySelector, Func<TInner, TKey> innerKeySelector, Func<TOuter, TInner, TResult> resultSelector, IEqualityComparer<TKey> comparer)
+        {
+            Null(outer, "outer"); Null(inner, "inner");
+            return JoinIterator(outer, inner, outerKeySelector, innerKeySelector, resultSelector, comparer);
+        }
+        static IEnumerable<TResult> JoinIterator<TOuter, TInner, TKey, TResult>(IEnumerable<TOuter> outer, IEnumerable<TInner> inner, Func<TOuter, TKey> ok, Func<TInner, TKey> ik, Func<TOuter, TInner, TResult> rs, IEqualityComparer<TKey> cmp)
+        {
+            var lookup = (Lookup<TKey, TInner>)ToLookup(inner, ik, x => x, cmp);
+            foreach (var o in outer)
+            {
+                var k = ok(o);
+                if (k == null || !lookup.Contains(k)) continue;
+                foreach (var i in lookup[k]) yield return rs(o, i);
+            }
+        }
+        public static IEnumerable<TResult> GroupJoin<TOuter, TInner, TKey, TResult>(this IEnumerable<TOuter> outer, IEnumerable<TInner> inner, Func<TOuter, TKey> outerKeySelector, Func<TInner, TKey> innerKeySelector, Func<TOuter, IEnumerable<TInner>, TResult> resultSelector) =>
+            GroupJoin(outer, inner, outerKeySelector, innerKeySelector, resultSelector, null);
+        public static IEnumerable<TResult> GroupJoin<TOuter, TInner, TKey, TResult>(this IEnumerable<TOuter> outer, IEnumerable<TInner> inner, Func<TOuter, TKey> outerKeySelector, Func<TInner, TKey> innerKeySelector, Func<TOuter, IEnumerable<TInner>, TResult> resultSelector, IEqualityComparer<TKey> comparer)
+        {
+            Null(outer, "outer"); Null(inner, "inner");
+            return GroupJoinIterator(outer, inner, outerKeySelector, innerKeySelector, resultSelector, comparer);
+        }
+        static IEnumerable<TResult> GroupJoinIterator<TOuter, TInner, TKey, TResult>(IEnumerable<TOuter> outer, IEnumerable<TInner> inner, Func<TOuter, TKey> ok, Func<TInner, TKey> ik, Func<TOuter, IEnumerable<TInner>, TResult> rs, IEqualityComparer<TKey> cmp)
+        {
+            var lookup = (Lookup<TKey, TInner>)ToLookup(inner, ik, x => x, cmp);
+            foreach (var o in outer)
+            {
+                var k = ok(o);
+                yield return rs(o, k == null ? new TInner[0] : lookup[k]);
+            }
+        }
         public static IEnumerable<T[]> Chunk<T>(this IEnumerable<T> source, int size)
         {
             Null(source, "source");

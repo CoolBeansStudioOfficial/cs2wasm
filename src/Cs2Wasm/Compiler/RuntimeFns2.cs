@@ -182,6 +182,9 @@ internal sealed partial class RuntimeFns
     WasmFunction ArrayRetainRange => _arrayRetain ??= M.AddFunction("rt.array_retain_range", FT([I, I, I], []));
     WasmFunction ArrayReleaseRange => _arrayRelease ??= M.AddFunction("rt.array_release_range", FT([I, I, I], []));
     public WasmFunction EnumInfo => _enumInfo ??= M.AddFunction("rt.enum_info", FT([I], [I]));
+    WasmFunction? _enumInfoId;
+    /// <summary>The enum table by type id (Enum's static API).</summary>
+    public WasmFunction EnumInfoId => _enumInfoId ??= M.AddFunction("rt.enum_info_id", FT([I], [I]));
 
     /// <summary>(src, si, dst, di, length, size): copy elements with counts; overlapping ranges are fine.</summary>
     public WasmFunction ArrayCopy => _arrayCopy ??= MakeArrayCopy();
@@ -287,10 +290,10 @@ internal sealed partial class RuntimeFns
     /// <summary>Per boxed enum type: [count][flags][size][unsigned] then 16-byte entries (value i64, name).</summary>
     public void EmitEnumInfo()
     {
-        if (_enumInfo == null) return;
-        var e = new Emitter(_enumInfo);
-        int tid = e.AddLocal(I);
-        e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
+        if (_enumInfo == null && _enumInfoId == null) return;
+        if (_enumInfo != null) { var e0 = new Emitter(_enumInfo); e0.Get(0); e0.Load(Op.I32Load, 4); e0.Call(EnumInfoId); }
+        var e = new Emitter(EnumInfoId);
+        int tid = 0;
         foreach (var id in D.Constructed)
         {
             if (D.DisplayById.ContainsKey(id) || D.TypeById[id] is not INamedTypeSymbol { TypeKind: TypeKind.Enum } et) continue;

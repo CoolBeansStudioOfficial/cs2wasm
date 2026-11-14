@@ -115,9 +115,11 @@ sealed partial class FunctionCompiler
             case ICaughtExceptionOperation: return EmitCaughtException();
             case IIsNullOperation isn: return EmitIsNull(isn);
             case IFlowAnonymousFunctionOperation fa: throw new CompileException("lambda without delegate conversion", fa.Syntax.GetLocation());
+            case IAnonymousObjectCreationOperation aoc: return EmitAnonymousCreation(aoc);
             case ITypeOfOperation to:
                 {
                     var tt = T.Resolve(to.TypeOperand, Map);
+                    if (tt.TypeKind == TypeKind.Enum) D.MarkConstructed(tt); // Enum's API reads its table
                     E.I32(D.TypeId(tt));
                     var fromId = D.LibType("System.Type").GetMembers("FromId").OfType<IMethodSymbol>().First();
                     E.Call(D.Method(fromId).Fn);
@@ -1054,6 +1056,16 @@ sealed partial class FunctionCompiler
         var resT = TypeOf(b);
         if (kind == BinaryOperatorKind.Add && (Types.IsString(lt) || Types.IsString(rt)) && Types.IsString(resT))
             return EmitStringConcat(b.LeftOperand, b.RightOperand);
+        if (kind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && Types.IsString(lt) && Types.IsString(rt)
+            && b.LeftOperand.ConstantValue is not { HasValue: true, Value: null } && b.RightOperand.ConstantValue is not { HasValue: true, Value: null })
+        {
+            // string == string is value equality (the predefined operator), not reference equality
+            var o1 = EmitValue(b.LeftOperand); ToCallSafe(o1, lt);
+            var o2 = EmitValue(b.RightOperand); ToCallSafe(o2, rt);
+            E.Call(D.LibMethod("System.String", "Equals", 2).Fn);
+            if (kind == BinaryOperatorKind.NotEquals) E.Op(Op.I32Eqz);
+            return Own.None;
+        }
         if (kind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && (Types.IsRef(lt) || Types.IsRef(rt) || lt.TypeKind == TypeKind.Pointer))
         {
             var o1 = EmitValue(b.LeftOperand); o1 = ToTransient(o1, lt);

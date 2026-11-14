@@ -380,6 +380,20 @@ internal sealed class Types
             else offset = ObjectHeader;
             l.Align = 8;
         }
+        if (t.IsAnonymousType)
+        {
+            // anonymous types: a slot per property
+            foreach (var ap in t.GetMembers().OfType<IPropertySymbol>())
+            {
+                var pt = Canonical(ap.Type);
+                var (asize, aalign) = StorageOf(pt);
+                offset = (offset + aalign - 1) / aalign * aalign;
+                l.Fields.Add(new FieldSlot { Symbol = ap, Type = pt, Offset = offset });
+                offset += asize;
+                l.Align = Math.Max(l.Align, aalign);
+                if (NeedsRc(pt)) l.HasRefs = true;
+            }
+        }
         foreach (var m in t.GetMembers())
         {
             if (!IsInstanceStorage(m)) continue;

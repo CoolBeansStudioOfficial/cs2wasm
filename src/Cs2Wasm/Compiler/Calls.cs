@@ -430,6 +430,7 @@ sealed partial class FunctionCompiler
             case "ArrayHelpers.CopyElements": E.Call(Rt.ArrayCopy); return Own.None;
             case "ArrayHelpers.ClearElements": E.Call(Rt.ArrayClear); return Own.None;
             case "EnumFormat.Info": E.Call(Rt.EnumInfo); return Own.None;
+            case "EnumFormat.InfoOfId": E.Call(Rt.EnumInfoId); return Own.None;
             case "Type.FullNameOf": E.Call(Rt.TypeNameById); return Own.Stable;
             case "Type.ShortNameOf": E.Call(Rt.TypeShortNameById); return Own.Stable;
             case "Type.FlagsOf": E.Call(Rt.TypeFlagsById); return Own.None;

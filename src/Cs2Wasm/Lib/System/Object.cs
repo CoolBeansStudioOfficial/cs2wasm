@@ -26,12 +26,12 @@ namespace System
         public override int GetHashCode() => 0;
     }
 
-    public abstract class Enum : ValueType
+    public abstract partial class Enum : ValueType
     {
         public override string ToString() => EnumFormat.Format(this);
     }
 
-    internal static class EnumFormat
+    internal static partial class EnumFormat
     {
         [Intrinsic] public static extern int Info(object boxedEnum);
 

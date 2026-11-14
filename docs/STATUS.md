@@ -61,6 +61,12 @@ of an iterator or async method capture live in displays held by the machine, as 
 one per loop iteration, so each iteration's lambdas see their own variable and a lambda stored in a local makes no
 cycle with the machine.
 
+Anonymous types: a slot per property, read-only properties, value `Equals`/`GetHashCode` (Roslyn's hash) and
+`ToString` `{ A = 1, B = x }`, registered as object overrides since Roslyn exposes no symbols for them.
+
+Fixed on the way: `string == string` (the predefined operator) compared references; it now compares values, as C#
+defines it.
+
 `goto` (to a label in the same or an enclosing block, forward or backward, out of loops and `try`) compiles each
 labeled block as a dispatch loop over its segments; a backward `goto` releases what the block declared after the
 label. `goto case` and `goto default` put the switch sections in a dispatch loop. `fixed` holds the array, string
@@ -259,7 +265,7 @@ exported beside the stack pointer.
   LINQ with deferred execution, StringBuilder). Moving to upstream sources is open work. Invariant globalization
   semantics are followed (culture comparisons are ordinal, as in .NET's invariant mode). Case mapping covers
   ASCII, Latin-1, Greek and Cyrillic only. Present since: `Task` and friends, `Random`, `Stopwatch`,
-  `BitConverter`, `Type`, spans over arrays, `SortedDictionary`/`SortedList`/`SortedSet`, `BigInteger`, `Chunk`. Static abstract interface members resolve to the type argument's implementation; for the primitive types the generic math interfaces (`INumber<T>`: `Zero`, `One`, operators, comparisons, `Abs`/`Max`/...) lower to primitive code. `decimal` has .NET's representation and arithmetic (scale kept on addition, summed on multiplication, half-even rounding when a result does not fit, 28-29 digit quotients, conversions from double to 15 digits), formatting, parsing, `Math`/LINQ overloads (checked against .NET). Missing: `TimeZoneInfo`, `DateTimeOffset`, date parsing, `GodotSharp`. `DateTime` and `TimeSpan` follow .NET's tick arithmetic and the invariant culture's standard and custom formats; the clock and the local offset come from the engine.
+  `BitConverter`, `Type`, spans over arrays, `SortedDictionary`/`SortedList`/`SortedSet`, `PriorityQueue` (.NET's quaternary heap, so ties come out in the same order), `LinkedList`, `BigInteger`, `Chunk`, `Join`/`GroupJoin`/`ToLookup`, `Enum`'s static API (`GetValues`, `GetNames`, `Parse`/`TryParse` with flags, `IsDefined`, `GetName`, format strings, `HasFlag`, `CompareTo`). Static abstract interface members resolve to the type argument's implementation; for the primitive types the generic math interfaces (`INumber<T>`: `Zero`, `One`, operators, comparisons, `Abs`/`Max`/...) lower to primitive code. `decimal` has .NET's representation and arithmetic (scale kept on addition, summed on multiplication, half-even rounding when a result does not fit, 28-29 digit quotients, conversions from double to 15 digits), formatting, parsing, `Math`/LINQ overloads (checked against .NET). Missing: `TimeZoneInfo`, `DateTimeOffset`, date parsing, `GodotSharp`. `DateTime` and `TimeSpan` follow .NET's tick arithmetic and the invariant culture's standard and custom formats; the clock and the local offset come from the engine.
 - 7.5–7.6: no GodotSharp, no browser build, budgets unmeasured.
 
 ### 8. Sandbox — partial

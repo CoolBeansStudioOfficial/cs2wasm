@@ -1503,6 +1503,7 @@ sealed partial class FunctionCompiler
     void Synthesize()
     {
         var def = M.OriginalDefinition;
+        if (_anonType != null || def.ContainingType.IsAnonymousType) { EmitAnonymousMember(); return; }
         if (def.ContainingType.IsRecord && def.IsImplicitlyDeclared && !(def.AssociatedSymbol is IPropertySymbol ap && Driver.AutoPropertyField(ap) != null) || def.ContainingType.IsRecord && def.MethodKind == MethodKind.Constructor && !Driver.HasBody(def)) { EmitRecordMember(); return; }
         if (def.MethodKind == MethodKind.Constructor)
         {

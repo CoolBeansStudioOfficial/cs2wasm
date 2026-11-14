@@ -336,6 +336,7 @@ internal sealed partial class Driver
         if (def.ContainingType.TypeKind == TypeKind.Delegate && def.Name == "Invoke") return true;
         if (def.MethodKind == MethodKind.Constructor && def.ContainingType.TypeKind == TypeKind.Struct && def.Parameters.Length == 0) return true;
         if (def.ContainingType.IsRecord) return true;
+        if (def.ContainingType.IsAnonymousType) return true;
         return false;
     }
 
