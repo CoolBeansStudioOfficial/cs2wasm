@@ -350,6 +350,10 @@ results on every machine**. The compiler must not introduce variation:
   is the bar to measure against (GodotSharp's reachable part comes on top).
 - **Call cost:** calls between the module and the engine cost about 3 to 5 ns each in Chrome. Keep the boundary thin.
 - **Run-time speed:** match or beat the same C# under .NET NativeAOT on average.
+- **Toolchain download (owner):** as small as possible; the ballpark aim is **20 to 30 MB** for everything a creator
+  downloads to build (Roslyn and cs2wasm as self-hosted WASM, plus the library sources or their cached analysis). It is
+  fetched lazily on the first build and cached, measured and reported with every release. Self-hosting (section 9) is
+  the main lever: no .NET runtime in the download.
 
 ---
 
