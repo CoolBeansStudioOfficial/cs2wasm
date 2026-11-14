@@ -329,6 +329,10 @@ sealed partial class FunctionCompiler
             case "Rt.HeapBase": E.I32Addr(new LateAddr(() => D.HeapBase)); return Own.None;
             case "Rt.Retain": E.Call(Rt.Retain); E.Op(Op.Drop); return Own.None;
             case "Rt.Release": E.Call(Rt.Release); return Own.None;
+            case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
+            case "Rt.ArenaClearObject": E.Call(Rt.ArenaClearFn); return Own.None;
+            case "Rt.ArenaFreeObject": E.Call(Rt.ArenaFreeFn); return Own.None;
+            case "Rt.ArenaVisitObject": E.Call(Rt.ArenaVisitFn); return Own.None;
             case "Rt.TypeName": E.Call(Rt.TypeNameFn); return Own.Stable;
             case "Rt.IsInstanceOf": E.Call(Rt.IsInst(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Rt.Unreachable": E.Op(Op.Unreachable); return Own.None;
@@ -550,8 +554,11 @@ sealed partial class FunctionCompiler
         }
         if (Types.IsRef(et))
         {
+            var site = D.Arenas.ArraySite(D.Main.CreateArrayTypeSymbol(et));
+            site?.AddValue(StaticValueType(v));
             var o = EmitValueAs(v, et); ToOwned(o);
             int val = Scratch(ValType.I32); E.Set(val);
+            if (site != null) { E.Get(val); E.Get(arr); E.Call(site.Link); E.Set(val); }
             E.Get(arr); E.Get(val); E.Store(Op.I32Store, Types.ArrayData + idx * size);
             FreeScratch(ValType.I32, val);
             return;

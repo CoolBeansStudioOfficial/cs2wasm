@@ -385,58 +385,182 @@ sealed class RuntimeGen
     WasmFunction MakeDestroy(int id)
     {
         var f = D.Module.AddFunction("destroy " + id, new FuncType([ValType.I32], []));
-        var e = new Emitter(f);
+        EmitDestroy(new Emitter(f), id, clear: true, free: true);
+        return f;
+    }
+
+    /// <summary>An object's destruction: clear (finalizer, release of counted contents) and/or free (its memory).</summary>
+    void EmitDestroy(Emitter e, int id, bool clear, bool free)
+    {
         var rt = D.Rt;
         if (D.DisplayById.TryGetValue(id, out var disp))
         {
-            e.Get(0); e.Load(Op.I32Load, 12); e.Call(rt.Release);
-            foreach (var (off, t) in disp.Vars.Select(v => disp.Slots[v]).Concat(disp.ExtraSlots.Values))
+            if (clear)
             {
-                if (Types.IsRef(t)) { e.Get(0); e.Load(Op.I32Load, off); e.Call(rt.Release); }
-                else if (Types.IsStruct(t) && D.Types.LayoutOf(t).HasRefs) { e.Get(0); e.I32(off); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(t)); }
+                e.Get(0); e.Load(Op.I32Load, 12); e.Call(rt.Release);
+                foreach (var (off, t) in disp.Vars.Select(v => disp.Slots[v]).Concat(disp.ExtraSlots.Values))
+                {
+                    if (Types.IsRef(t)) { e.Get(0); e.Load(Op.I32Load, off); e.Call(rt.Release); }
+                    else if (Types.IsStruct(t) && D.Types.LayoutOf(t).HasRefs) { e.Get(0); e.I32(off); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(t)); }
+                }
             }
-            e.Get(0); e.I32(disp.Size); e.Call(rt.Free);
-            return f;
+            if (free) { e.Get(0); e.I32(disp.Size); e.Call(rt.Free); }
+            return;
         }
         var type = D.TypeById[id];
         if (id == 1)
         {
             // string: header + length + chars + terminator
-            e.Get(0); e.Get(0); e.Load(Op.I32Load, 12); e.I32(1); e.Op(Op.I32Shl); e.I32(Types.ArrayData + 2); e.Op(Op.I32Add); e.Call(rt.Free);
-            return f;
+            if (free) { e.Get(0); e.Get(0); e.Load(Op.I32Load, 12); e.I32(1); e.Op(Op.I32Shl); e.I32(Types.ArrayData + 2); e.Op(Op.I32Add); e.Call(rt.Free); }
+            return;
         }
         if (type is IArrayTypeSymbol at)
         {
             var et = D.Types.Canonical(at.ElementType);
             int size = D.Types.StorageOf(et).size;
-            if (D.Types.NeedsRc(et)) { e.Get(0); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(0); e.Load(Op.I32Load, 12); e.Call(rt.ReleaseRange(et)); }
-            e.Get(0); e.Get(0); e.Load(Op.I32Load, 12); e.I32(size); e.Op(Op.I32Mul); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Call(rt.Free);
-            return f;
+            if (clear && D.Types.NeedsRc(et)) { e.Get(0); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(0); e.Load(Op.I32Load, 12); e.Call(rt.ReleaseRange(et)); }
+            if (free) { e.Get(0); e.Get(0); e.Load(Op.I32Load, 12); e.I32(size); e.Op(Op.I32Mul); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Call(rt.Free); }
+            return;
         }
         if (type.IsValueType)
         {
             int off = FunctionCompilerHelpers.BoxDataOffset(D.Types, type);
-            if (Types.IsStruct(type) && D.Types.LayoutOf(type).HasRefs) { e.Get(0); e.I32(off); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(type)); }
-            e.Get(0); e.I32(off + D.Types.StorageOf(type).size); e.Call(rt.Free);
-            return f;
+            if (clear && Types.IsStruct(type) && D.Types.LayoutOf(type).HasRefs) { e.Get(0); e.I32(off); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(type)); }
+            if (free) { e.Get(0); e.I32(off + D.Types.StorageOf(type).size); e.Call(rt.Free); }
+            return;
         }
         // class: finalizer, then fields, then the memory
-        var fin = FindFinalizer(type);
-        if (fin != null)
-        {
-            // the finalizer may resurrect nothing observable here; it runs with a temporary count
-            e.Get(0); e.I32(1); e.Store(Op.I32Store);
-            e.Get(0); e.Call(D.Method(fin).Fn);
-            e.Get(0); e.I32(0); e.Store(Op.I32Store);
-        }
         var l = D.Types.LayoutOf(type);
-        foreach (var fs in l.Fields)
+        if (clear)
         {
-            if (Types.IsRef(fs.Type)) { e.Get(0); e.Load(Op.I32Load, fs.Offset); e.Call(rt.Release); }
-            else if (Types.IsStruct(fs.Type) && D.Types.LayoutOf(fs.Type).HasRefs) { e.Get(0); e.I32(fs.Offset); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(fs.Type)); }
+            var fin = FindFinalizer(type);
+            if (fin != null)
+            {
+                // the finalizer may resurrect nothing observable here; it runs with a temporary count
+                e.Get(0); e.I32(1); e.Store(Op.I32Store);
+                e.Get(0); e.Call(D.Method(fin).Fn);
+                e.Get(0); e.I32(0); e.Store(Op.I32Store);
+            }
+            foreach (var fs in l.Fields)
+            {
+                if (Types.IsRef(fs.Type)) { e.Get(0); e.Load(Op.I32Load, fs.Offset); e.Call(rt.Release); }
+                else if (Types.IsStruct(fs.Type) && D.Types.LayoutOf(fs.Type).HasRefs) { e.Get(0); e.I32(fs.Offset); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(fs.Type)); }
+            }
         }
-        e.Get(0); e.I32(Math.Max(l.Size, Types.ObjectHeader)); e.Call(rt.Free);
-        return f;
+        if (free) { e.Get(0); e.I32(Math.Max(l.Size, Types.ObjectHeader)); e.Call(rt.Free); }
+    }
+
+    // ---------------- arenas (section 4.3) ----------------
+    void EmitArenaSupport()
+    {
+        var rt = D.Rt;
+        var ar = D.Arenas;
+        var retainSlow = ar.RuntimeFn("ArenaRetain", 1);
+        var releaseSlow = ar.RuntimeFn("ArenaRelease", 1);
+        // retain(p) -> p: count +1; a member (count word below -1) counts on its arena
+        {
+            var f = rt.Retain; f.Body.Clear(); f.Locals.Clear();
+            var e = new Emitter(f);
+            int r = e.AddLocal(ValType.I32);
+            e.Get(0); e.If();
+            e.Get(0); e.Load(Op.I32Load); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
+            e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Store(Op.I32Store);
+            e.Else(); e.Get(r); e.I32(-1); e.Op(Op.I32LtS); e.If(); e.Get(0); e.Call(retainSlow); e.End();
+            e.End();
+            e.End();
+            e.Get(0);
+        }
+        {
+            var f = rt.Release; f.Body.Clear(); f.Locals.Clear();
+            var e = new Emitter(f);
+            int r = e.AddLocal(ValType.I32);
+            e.Get(0); e.If();
+            e.Get(0); e.Load(Op.I32Load); e.Tee(r); e.I32(1); e.Op(Op.I32GtS);
+            e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Store(Op.I32Store);
+            e.Else();
+            e.Get(r); e.I32(1); e.Op(Op.I32Eq); e.If(); e.Get(0); e.I32(0); e.Store(Op.I32Store); e.Get(0); e.Call(rt.Destroy);
+            e.Else(); e.Get(r); e.I32(-1); e.Op(Op.I32LtS); e.If(); e.Get(0); e.Call(releaseSlow); e.End();
+            e.End();
+            e.End();
+            e.End();
+        }
+        // Array.Copy / Array.Clear into arrays whose elements can close a cycle go element by element
+        if (ar.AnyArrayCycle)
+        {
+            if (rt.ArrayCopyIfMade is { } copy)
+            {
+                var pre = new Emitter(new WasmFunction("tmp", copy.Type));
+                pre.Get(5); pre.I32(4); pre.Op(Op.I32Eq);
+                pre.Get(2); pre.Load(Op.I32Load, 4); pre.Call(rt.SccOfFn); pre.I32(0); pre.Op(Op.I32Ne); pre.Op(Op.I32And);
+                pre.If();
+                for (int i = 0; i < 5; i++) pre.Get(i);
+                pre.Call(ar.RuntimeFn("ArenaArrayCopy", 5)); pre.Op(Op.Return);
+                pre.End();
+                copy.Body.InsertRange(0, pre.Body);
+            }
+            if (rt.ArrayClearIfMade is { } clr)
+            {
+                var pre = new Emitter(new WasmFunction("tmp", clr.Type));
+                pre.Get(3); pre.I32(4); pre.Op(Op.I32Eq);
+                pre.Get(0); pre.Load(Op.I32Load, 4); pre.Call(rt.SccOfFn); pre.I32(0); pre.Op(Op.I32Ne); pre.Op(Op.I32And);
+                pre.If();
+                for (int i = 0; i < 3; i++) pre.Get(i);
+                pre.Call(ar.RuntimeFn("ArenaArrayClear", 3)); pre.Op(Op.Return);
+                pre.End();
+                clr.Body.InsertRange(0, pre.Body);
+            }
+        }
+        // per cycle-capable type: clear, free, visit (member-to-member slots); dispatch on the type id
+        var clearFns = new Dictionary<int, WasmFunction>();
+        var freeFns = new Dictionary<int, WasmFunction>();
+        var visitFns = new Dictionary<int, WasmFunction>();
+        var visit = ar.RuntimeFn("ArenaVisit", 1);
+        foreach (var id in ar.CycleTypes)
+        {
+            var c = D.Module.AddFunction("arena.clear " + id, new FuncType([ValType.I32], []));
+            EmitDestroy(new Emitter(c), id, clear: true, free: false);
+            clearFns[id] = c;
+            var fr = D.Module.AddFunction("arena.free " + id, new FuncType([ValType.I32], []));
+            EmitDestroy(new Emitter(fr), id, clear: false, free: true);
+            freeFns[id] = fr;
+            var t = D.TypeById[id];
+            var v = D.Module.AddFunction("arena.visit " + id, new FuncType([ValType.I32], []));
+            var ve = new Emitter(v);
+            if (t is IArrayTypeSymbol)
+            {
+                if (ar.HasCyclicElements(t))
+                {
+                    int i = ve.AddLocal(ValType.I32), end = ve.AddLocal(ValType.I32);
+                    ve.Get(0); ve.I32(Types.ArrayData); ve.Op(Op.I32Add); ve.Set(i);
+                    ve.Get(i); ve.Get(0); ve.Load(Op.I32Load, 12); ve.I32(2); ve.Op(Op.I32Shl); ve.Op(Op.I32Add); ve.Set(end);
+                    var exit = ve.Block(); var top = ve.Loop();
+                    ve.Get(i); ve.Get(end); ve.Op(Op.I32GeU); ve.BrIf(exit);
+                    ve.Get(i); ve.Call(visit);
+                    ve.Get(i); ve.I32(4); ve.Op(Op.I32Add); ve.Set(i);
+                    ve.Br(top);
+                    ve.End(); ve.End();
+                }
+            }
+            else
+                foreach (var off in ar.CyclicFieldOffsets(t)) { ve.Get(0); ve.I32(off); ve.Op(Op.I32Add); ve.Call(visit); }
+            visitFns[id] = v;
+        }
+        void Dispatch(WasmFunction? fn, Dictionary<int, WasmFunction> per)
+        {
+            if (fn == null) return;
+            var e = new Emitter(fn);
+            int tid = e.AddLocal(ValType.I32);
+            e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
+            foreach (var (id, f) in per)
+            {
+                e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
+                e.If(); e.Get(0); e.Call(f); e.Op(Op.Return); e.End();
+            }
+        }
+        Dispatch(rt.ArenaClearFnIfMade, clearFns);
+        Dispatch(rt.ArenaFreeFnIfMade, freeFns);
+        Dispatch(rt.ArenaVisitFnIfMade, visitFns);
+        if (rt.SccOfIfMade is { } scc) EmitIdTable(scc, D.TypeById.Count, i => (null, ar.SccOf(i)));
     }
 
     IMethodSymbol? FindFinalizer(ITypeSymbol t)
@@ -477,6 +601,7 @@ sealed class RuntimeGen
 
     public void Finish()
     {
+        if (D.Arenas.Enabled) EmitArenaSupport();
         EmitDestroyDispatch();
         EmitStubs();
         EmitTypeTests();

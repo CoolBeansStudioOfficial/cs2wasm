@@ -5,13 +5,13 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 15 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 17 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces, collections, LINQ and closures,
   generics and pattern matching, nullable value types, tuples, iterators, async/await on one thread, `typeof` and
-  seeded `Random`, records) produce output identical to .NET 11's, byte for byte.
-- **API checks:** 10 checks of the module shape and embedder API pass (boundary imports, sandbox errors, custom and
-  version sections, shared memory import, reproducible output, exception reporting at exports, plugin passes,
-  source map).
+  seeded `Random`, records, reference cycles) produce output identical to .NET 11's, byte for byte.
+- **API checks:** 13 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
+  custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
+  passes, source map, cycles bounded in a fixed 16 MB memory, no arena code without cycle-capable types).
 - **Module size (gzip -9, measured):** "hello" 5.0 KB (12.7 KB raw); the LINQ/closures test 43 KB (156 KB raw);
   the async test 20 KB (71 KB raw). The Rust 2D game bar in the spec is 24 KB; no size work has been done beyond
   reachability and the final cleanup pass, and the library's number formatting and exception machinery is in
@@ -76,11 +76,63 @@ exception unwinding. Structs are inline values carrying their references' owners
 owner releases (checked: deterministic order). Freed memory is reused (size-class free lists): a 300 000-iteration
 allocation loop stays inside the initial 16 MB.
 
+Cycles (4.3): done for class fields and arrays of references, see the design below. Checked: a loop building
+1 000 000 two-object cycles and a long-lived tree that keeps dropping subtrees (100 000 rounds) both run in a fixed
+16 MB memory (no growth allowed); without arenas they need 505 and 432 pages and fail. Two conformance programs
+(`016_cycles`, `017_cycle_stress`: 60 000 random mutations of a cyclic graph) match .NET. A program whose types cannot
+form cycles contains no arena code (checked).
+
+#### Cycle design (section 4.3)
+
+**Which types are cycle-capable: field-target analysis.** Every store of a reference into a class field or an array
+element is a *site* (`Compiler/Arenas.cs`). The compiler records, per site, the static types of the values stored
+there, before conversion (`a.Tag = node` records `Node`, not `object`; `null` records nothing). Generic code is
+monomorphized, so `List<Node>._items` is a `Node[]` site that only ever receives `Node`. When the whole program is
+lowered, the type graph has an edge from every constructed type that has the slot to every constructed type that is
+a subtype of a recorded value type (a covariant array only to its own element type). Its strongly connected
+components with a cycle are the cycle-capable groups. This is what keeps `object`, interface and delegate fields from
+merging everything into one component: an `object` field only points at what the program puts in it. A site whose
+edges stay inside one group is *cyclic*; all other sites compile to the plain counted store. Sites are emitted as
+calls to placeholder functions and resolved once the graph is known (`Arenas.Resolve`), so non-cyclic stores cost
+nothing, and a program with no cyclic site gets no arena runtime at all. A slot whose address is taken (`ref`/`out`,
+`ref` returns, spans over the array) is written outside the protocol, so its site is kept plain.
+
+**Arenas at run time** (`Lib/Runtime/Runtime.cs`, `Arena*`). Objects start as plain counted objects. A store at a
+cyclic site, when the value and the container belong to the same group, puts both into one arena: a plain object
+joins the container's arena (or a new one), two arenas merge (the smaller one's members move, so merging is
+O(n log n) overall). The stored reference is then not counted. A member's header holds `-arena` in the count word
+(values below -1; -1 stays immortal) and its index in the arena's member table in the hash word (the hash code moves
+to the table). The table keeps, per member, its *outside* count: references from locals, statics, other objects and
+other arenas. `rt.retain`/`rt.release` take the arena path only for count words below -1, so plain objects pay one
+never-taken branch. The arena is freed when the sum of outside counts reaches zero; member-to-member slots are cut
+first, then finalizers run and outside references are released, then the memory is freed.
+
+**Scoping and splitting.** An arena is the set of objects linked by cyclic-site stores: an object graph, not a type
+and not the program. Objects stored in statics are *pinned* and never join an arena (statics never end, and shared
+singletons such as `Array.Empty<T>()` would otherwise join every graph). Arenas never split into components; instead
+an arena **sweeps** itself: overwriting a member-to-member reference, or a member's outside count falling to zero,
+is a dirty event, and after as many dirty events as half the arena's size the arena marks from its members with
+outside counts, through member-to-member slots only, and frees the unmarked members. The cost is proportional to the
+one arena and amortized over the operations that produced the garbage; nothing else is scanned. This is what keeps a
+long-lived graph (a scene tree whose children come and go, a `List<T>` whose old arrays are replaced) bounded.
+*Owner review:* the sweep is a mark of one arena triggered by the program's own stores, which is how this design
+answers "when they split"; it is not a heap scan, but it is a tracing step.
+
+**What is not covered** (references there stay counted, so a cycle closed only through them still leaks):
+- references inside structs embedded in heap objects (`Dictionary` entries, `KeyValuePair`, tuples in fields);
+- closure display slots and delegate targets, so an event-handler cycle (`node.Clicked += () => node.Foo()`) leaks;
+- iterator and async state machines; slots whose address is taken.
+- The analysis is per type, not per allocation site: chained LINQ iterators (`Where` over `Select` over `Where`) are
+  cycle-capable and pay the link cost though no instance ever forms a cycle.
+- Finalizers of members run when the arena is freed or swept, in table order; a finalizer that stores references
+  into its arena while the arena is being freed is not supported (the store stays counted). Arenas are
+  single-threaded (no atomic counts, section 4.5).
+- Size: the arena runtime adds about 4 KB (raw) to modules that need it.
+
+Also fixed on the way: freeing a large block at the top of the heap moved the bump pointer back without clearing
+the block, so later objects could start with stale fields (found by the sweep's temporary buffers).
+
 Not done:
-- **cycles (4.3): no arenas yet — reference cycles leak.** A loop building 200 000 two-object cycles grew memory to
-  about 41 MB. This is the most important open gap in the memory model. Analysis so far: a type-level cycle graph built
-  naively puts every type with an `object`, interface or delegate field into one strongly connected component, so
-  arena scoping needs the ownership analysis to narrow field targets first; not designed yet.
 - ownership specialization of functions, retroactive owners, the counting-elision statistics (4.1);
 - weak references, `ConditionalWeakTable` (4.4);
 - threads (4.5): no workers, no atomic counts, no thread statics, no parking (7.2).

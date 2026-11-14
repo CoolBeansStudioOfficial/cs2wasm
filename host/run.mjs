@@ -39,3 +39,4 @@ if (!fn) { console.error(`no export '${entry}'`); process.exit(2); }
 let r;
 try { r = fn(); } finally { flush(); }
 if (r !== undefined && process.env.CS2WASM_PRINT_RESULT) console.log(`=> ${r}`);
+if (process.env.CS2WASM_PRINT_MEMORY) console.error(`memory: ${memory.buffer.byteLength / 65536} pages`);

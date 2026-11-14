@@ -137,6 +137,65 @@ static class ApiChecks
             return r.SourceMap != null && r.SourceMap.Contains("\"sources\":[") && r.SourceMap.Contains("map.cs") && r.SourceMap.Contains("\"mappings\":\"") ? null : "bad map: " + r.SourceMap?[..Math.Min(200, r.SourceMap.Length)];
         });
 
+        // Memory checks (section 4.3): the module runs in a fixed 16 MB memory (256 pages, no growth allowed), so
+        // anything that leaks runs out of memory and fails with OutOfMemoryException.
+        string? Bounded(string name, string body, string want)
+        {
+            var src = Header + "using System.Collections.Generic;\n" + body;
+            var r = Compile(src, new CompileOptions());
+            if (!r.Success) return Errors(r);
+            var path = Path.Combine(outDir, name + ".wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, code) = Node(root, path, extra: ["--pages", "256", "--max-pages", "256"]);
+            return o == want && code == 0 ? null : $"exit {code}, output «{o}»{(e.Length > 0 ? "\n" + e : "")}";
+        }
+
+        Check("cycles: 1 000 000 two-object cycles run in a fixed 16 MB memory", () => Bounded("api_cycles_pairs", """
+            class N { public N O; }
+            static class P {
+                [UnmanagedCallersOnly(EntryPoint = "main")]
+                static void M() {
+                    int s = 0;
+                    for (int i = 0; i < 1000000; i++) { var a = new N(); var b = new N(); a.O = b; b.O = a; if (a.O.O == a) s++; }
+                    Console.WriteLine(s);
+                }
+            }
+            """, "1000000\n"));
+
+        Check("cycles: a long-lived tree that keeps dropping subtrees stays in a fixed 16 MB memory (arena sweep)", () => Bounded("api_cycles_tree", """
+            class T {
+                public T Parent; public List<T> Kids = new(); public object Tag;
+                public T Add(T c) { c.Parent = this; Kids.Add(c); return c; }
+            }
+            static class P {
+                [UnmanagedCallersOnly(EntryPoint = "main")]
+                static void M() {
+                    var root = new T();
+                    for (int i = 0; i < 100000; i++) {
+                        var sub = root.Add(new T());
+                        for (int j = 0; j < 4; j++) sub.Add(new T()).Tag = sub;
+                        if (root.Kids.Count > 8) root.Kids.RemoveAt(0);
+                    }
+                    Console.WriteLine(root.Kids.Count + " " + root.Kids[0].Kids.Count);
+                }
+            }
+            """, "8 4\n"));
+
+        Check("cycles: a program whose types cannot form cycles gets no arena code", () =>
+        {
+            var src = Header + """
+                class A { public object X; public B Child; }
+                class B { public object Y; public string S; }
+                static class P {
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void M() { var a = new A { X = "s", Child = new B { S = "t" } }; a.Child.Y = 1; a.X = a.Child.S; Console.WriteLine(a.X); }
+                }
+                """;
+            var r = Compile(src, new CompileOptions());
+            if (!r.Success) return Errors(r);
+            return Encoding.UTF8.GetString(r.Module!).Contains("ArenaLink") ? "arena runtime present" : null;
+        });
+
         return results;
     }
 
@@ -159,9 +218,9 @@ static class ApiChecks
 
     static string Errors(CompileResult r) => string.Join("; ", r.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Select(d => d.Id + " " + d.GetMessage()));
 
-    static (string, string, int) Node(string root, string wasm, bool printResult = false)
+    static (string, string, int) Node(string root, string wasm, bool printResult = false, string[]? extra = null)
     {
-        var psi = new ProcessStartInfo("node", [Path.Combine(root, "host", "run.mjs"), wasm, "main"]) { RedirectStandardOutput = true, RedirectStandardError = true };
+        var psi = new ProcessStartInfo("node", [Path.Combine(root, "host", "run.mjs"), wasm, "main", .. extra ?? []]) { RedirectStandardOutput = true, RedirectStandardError = true };
         if (printResult) psi.Environment["CS2WASM_PRINT_RESULT"] = "1";
         using var p = Process.Start(psi)!;
         var o = p.StandardOutput.ReadToEnd(); var e = p.StandardError.ReadToEnd();

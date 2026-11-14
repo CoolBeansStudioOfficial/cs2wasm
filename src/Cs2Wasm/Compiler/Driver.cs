@@ -50,6 +50,7 @@ internal sealed partial class Driver
     public readonly CompileOptions Options;
     public readonly Types Types;
     public readonly WasmModule Module = new();
+    public Arenas Arenas = null!;
     public readonly List<Diagnostic> Diagnostics = [];
     public CSharpCompilation LibCompilation => Lib.Compilation;
     public ITypeSymbol ObjectType => Types.Canonical(Main.GetSpecialType(SpecialType.System_Object));
@@ -457,6 +458,7 @@ internal sealed partial class Driver
         foreach (var e in Lib.Errors) Report(Diags.LibraryError, e.Location, e.GetMessage());
         if (Diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error)) return;
 
+        Arenas = new Arenas(this);
         var rt = new RuntimeGen(this);
         rt.Prepare();
         FindRoots(rt);
@@ -464,6 +466,10 @@ internal sealed partial class Driver
         RunPlugins();
         rt.FinishExports();
         Drain(rt);
+        // cycles (section 4.3): the type graph is complete only now; arena runtime is compiled only if some site needs it
+        Arenas.Analyze();
+        if (Arenas.Enabled) { Arenas.RequestRuntime(); Drain(rt); }
+        Arenas.Resolve();
         rt.Finish();
     }
 

@@ -29,6 +29,19 @@ internal sealed partial class RuntimeFns
 
     /// <summary>(src, si, dst, di, length, size): copy elements with counts; overlapping ranges are fine.</summary>
     public WasmFunction ArrayCopy => _arrayCopy ??= MakeArrayCopy();
+    public WasmFunction? ArrayCopyIfMade => _arrayCopy;
+    public WasmFunction? ArrayClearIfMade => _arrayClear;
+
+    // arenas (section 4.3): dispatch on the type id of a member; bodies are emitted with the type graph
+    WasmFunction? _arenaClear, _arenaFree, _arenaVisit, _sccOf;
+    public WasmFunction ArenaClearFn => _arenaClear ??= M.AddFunction("rt.arena_clear", FT([I], []));
+    public WasmFunction ArenaFreeFn => _arenaFree ??= M.AddFunction("rt.arena_free", FT([I], []));
+    public WasmFunction ArenaVisitFn => _arenaVisit ??= M.AddFunction("rt.arena_visit", FT([I], []));
+    public WasmFunction SccOfFn => _sccOf ??= M.AddFunction("rt.scc_of", FT([I], [I]));
+    public WasmFunction? ArenaClearFnIfMade => _arenaClear;
+    public WasmFunction? ArenaFreeFnIfMade => _arenaFree;
+    public WasmFunction? ArenaVisitFnIfMade => _arenaVisit;
+    public WasmFunction? SccOfIfMade => _sccOf;
     /// <summary>(array, index, length, size): release and zero elements.</summary>
     public WasmFunction ArrayClear => _arrayClear ??= MakeArrayClear();
 

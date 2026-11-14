@@ -212,7 +212,7 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
-    void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o)
+    void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null)
     {
         if (Types.IsStruct(t))
         {
@@ -228,12 +228,16 @@ sealed partial class FunctionCompiler
         E.Set(val);
         if (Types.IsRef(t))
         {
+            // section 4.3: a site that can close a cycle links the value into the container's arena (resolved later)
+            if (site != null) { E.Get(val); pushContainer!(); E.Call(site.Link); E.Set(val); }
+            if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
             int a = Scratch(ValType.I32);
             pushAddr(); E.Tee(a);
             E.Load(Op.I32Load, offset);
             int old = Scratch(ValType.I32); E.Set(old);
             E.Get(a); E.Get(val); E.Store(Op.I32Store, offset);
-            E.Get(old); E.Call(Rt.Release);
+            E.Get(old);
+            if (site != null) { pushContainer!(); E.Call(site.Unlink); } else E.Call(Rt.Release);
             FreeScratch(ValType.I32, old); FreeScratch(ValType.I32, a);
         }
         else { pushAddr(); E.Get(val); E.Store(Types.StoreOp(t), offset); }
@@ -312,8 +316,24 @@ sealed partial class FunctionCompiler
     /// <summary>Pushes the address of a storage location.</summary>
     void EmitAddress(IOperation op)
     {
+        NoteAddressTaken(op);
         int off = EmitAddressBase(op);
         if (off != 0) { E.I32(off); E.Op(Op.I32Add); }
+    }
+
+    /// <summary>A reference slot whose address escapes is written without the arena protocol: its site stays plain.</summary>
+    void NoteAddressTaken(IOperation op)
+    {
+        while (op is IConversionOperation { Conversion.IsIdentity: true } c) op = c.Operand;
+        switch (op)
+        {
+            case IFieldReferenceOperation { Field.IsStatic: false } f when f.Instance != null && !TypeOf(f.Instance).IsValueType && Types.IsRef(TypeOf(f)):
+                if (D.Arenas.FieldSite(Owner(f.Field), T.FieldIn(Owner(f.Field), StorageField(f.Field))) is { } s) s.AddressTaken = true;
+                break;
+            case IArrayElementReferenceOperation ae when TypeOf(ae.ArrayReference) is IArrayTypeSymbol at:
+                if (D.Arenas.ArraySite(at) is { } a) a.AddressTaken = true;
+                break;
+        }
     }
 
     /// <summary>Pushes a base address and returns a constant offset to add.</summary>
@@ -459,7 +479,13 @@ sealed partial class FunctionCompiler
         E.Set(a);
         var o = produce();
         ConvertTop(valueType, ft, ref o);
-        StoreToAddressFromStack(() => E.Get(a), off, ft, o);
+        Arenas.Site? site = null; WasmFunction? pin = null;
+        if (Types.IsRef(ft))
+        {
+            if (f.IsStatic) pin = D.Arenas.Pin(ft);
+            else if ((site = D.Arenas.FieldSite(Owner(f), T.Field(f, Map))) != null) site.AddValue(valueType);
+        }
+        StoreToAddressFromStack(() => E.Get(a), off, ft, o, site, () => E.Get(a), pin);
     }
 
     bool IsDirectAutoProperty(IPropertySymbol p, IOperation? instance)
@@ -547,7 +573,7 @@ sealed partial class FunctionCompiler
         return Types.IsRef(et) ? Own.Unstable : Own.None;
     }
 
-    int EmitArrayElementAddress(IArrayElementReferenceOperation ae)
+    int EmitArrayElementAddress(IArrayElementReferenceOperation ae, int keepArray = -1)
     {
         var at = (IArrayTypeSymbol)TypeOf(ae.ArrayReference);
         if (at.Rank != 1) throw new CompileException("multi-dimensional arrays are not supported yet", ae.Syntax.GetLocation());
@@ -557,6 +583,7 @@ sealed partial class FunctionCompiler
         o = indexCalls ? ToCallSafe(o, at) : ToTransient(o, at);
         int arr = Scratch(ValType.I32);
         E.Tee(arr);
+        if (keepArray >= 0) { E.Tee(keepArray); }
         if (!IsKnownNonNull(ae.ArrayReference)) NullCheck(); else E.Op(Op.Drop);
         int idx = Scratch(ValType.I32);
         EmitIndex(ae.Indices[0]);
@@ -1213,6 +1240,7 @@ sealed partial class FunctionCompiler
         }
         var tt = TypeOf(target);
         var lv = LValueOf(target);
+        lv.Note(StaticValueType(sa.Value));
         lv.Prepare();
         Own o = Types.IsStruct(tt) ? EmitValue(sa.Value) : EmitValueAs(sa.Value, tt);
         if (Types.IsStruct(tt) && sa.Value.Type != null) ConvertTop(TypeOf(sa.Value), tt, ref o);
@@ -1370,6 +1398,7 @@ sealed partial class FunctionCompiler
         var tt = TypeOf(cas.Target);
         if (!Types.IsRef(tt)) throw new CompileException("??= on nullable value types is not supported yet", cas.Syntax.GetLocation());
         var lv = LValueOf(cas.Target);
+        lv.Note(StaticValueType(cas.Value));
         lv.Prepare();
         lv.Load();
         E.Op(Op.I32Eqz);
@@ -1409,6 +1438,10 @@ sealed partial class FunctionCompiler
         public abstract Own Load();
         /// <summary>Stores the value on the stack; if needResult, pushes the stored value (borrowed from the target).</summary>
         public abstract Own Store(Own o, bool needResult);
+        protected bool _noted;
+        /// <summary>The static type of the value about to be stored (before conversion), for the cycle analysis.</summary>
+        public void Note(ITypeSymbol? vt) { _noted = true; NoteValue(vt); }
+        public virtual void NoteValue(ITypeSymbol? vt) { }
     }
 
     sealed class VarLV(FunctionCompiler f, Var v) : LValue(f, v.Type)
@@ -1422,10 +1455,11 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null) : LValue(f, t)
     {
         int _addr = -1, _off;
         public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
+        public override void NoteValue(ITypeSymbol? vt) { site?.AddValue(vt); }
         public override Own Load()
         {
             F.E.Get(_addr);
@@ -1435,7 +1469,8 @@ sealed partial class FunctionCompiler
         }
         public override Own Store(Own o, bool needResult)
         {
-            F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o);
+            if (site != null && !_noted) site.AddValue(Type);
+            F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin);
             return needResult ? Load() : Own.None;
         }
     }
@@ -1524,6 +1559,15 @@ sealed partial class FunctionCompiler
         }
     }
 
+    /// <summary>The static type of a value before implicit conversions; null for the null literal.</summary>
+    ITypeSymbol? StaticValueType(IOperation v)
+    {
+        while (v is IConversionOperation { IsImplicit: true } c) v = c.Operand;
+        if (v.ConstantValue is { HasValue: true, Value: null }) return null;
+        if (v is IDefaultValueOperation) return null;
+        return v.Type == null ? null : TypeOf(v);
+    }
+
     LValue LValueOf(IOperation target)
     {
         while (target is IConversionOperation { Conversion.IsIdentity: true } c) target = c.Operand;
@@ -1544,15 +1588,37 @@ sealed partial class FunctionCompiler
                     var bf = Driver.AutoPropertyField(pr.Property.OriginalDefinition)!;
                     var ft = T.Resolve(pr.Property.Type, Map);
                     var owner = Owner(pr.Property);
+                    Arenas.Site? psite = null; WasmFunction? ppin = null;
+                    if (Types.IsRef(ft))
+                    {
+                        if (bf.IsStatic) ppin = D.Arenas.Pin(ft);
+                        else if (pr.Instance != null && !TypeOf(pr.Instance).IsValueType) psite = D.Arenas.FieldSite(owner, T.FieldIn(owner, bf));
+                    }
                     return new MemLV(this, ft, () =>
                     {
                         if (bf.IsStatic) { EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, bf, ft)); return 0; }
                         return EmitReceiverAddressForField(pr.Instance!) + T.FieldIn(owner, bf).Offset;
-                    });
+                    }, psite, -1, ppin);
                 }
                 if (pr.Property.ReturnsByRef) break;
                 return new PropLV(this, pr, t);
             case IDeclarationExpressionOperation de: return LValueOf(de.Expression);
+            case IFieldReferenceOperation fr when Types.IsRef(t):
+                {
+                    var field = fr.Field;
+                    if (field.IsStatic) return new MemLV(this, t, () => EmitAddressBase(target), pin: D.Arenas.Pin(t));
+                    if (fr.Instance != null && !TypeOf(fr.Instance).IsValueType)
+                    {
+                        var site = D.Arenas.FieldSite(Owner(field), T.FieldIn(Owner(field), StorageField(field)));
+                        return new MemLV(this, t, () => EmitAddressBase(target), site);
+                    }
+                    break;
+                }
+            case IArrayElementReferenceOperation ae when Types.IsRef(t) && TypeOf(ae.ArrayReference) is IArrayTypeSymbol at && D.Arenas.ArraySite(at) is { } asite:
+                {
+                    int keep = E.AddLocal(ValType.I32);
+                    return new MemLV(this, t, () => EmitArrayElementAddress(ae, keep), asite, keep);
+                }
         }
         return new MemLV(this, t, () => EmitAddressBase(target));
     }
