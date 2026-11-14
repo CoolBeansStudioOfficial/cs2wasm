@@ -698,6 +698,7 @@ namespace Cs2Wasm.Runtime
             t._tls = tls;
             Rt.Retain(t); // the worker's reference, taken back in Run
             Atomic.Store32(ref s_spawned, 1);
+            Atomic.Add32(ref s_live, 1);
             if (Engine.ThreadSpawn(stack + StackSize, tls, t._id, Rt.AddressOf(t), t.IsBackground ? 1 : 0) != 0)
             {
                 Rt.Release(t);
@@ -713,6 +714,7 @@ namespace Cs2Wasm.Runtime
             try { t.Execute(); }
             finally
             {
+                Atomic.Add32(ref s_live, -1);
                 System.Threading.Thread.SetCurrent(null);
                 Atomic.Store32(ref t._state, 2);
                 Atomic.Notify(ref t._state, -1);
@@ -723,8 +725,28 @@ namespace Cs2Wasm.Runtime
         internal static void WakeAll() { Atomic.Add32(ref s_generation, 1); Atomic.Notify(ref s_generation, -1); }
 
         /// <summary>Waits for s_generation to move from g (the engine thread spins: it never blocks).</summary>
+        // ---------------- parking (section 7.2) ----------------
+        static int s_parkRequested, s_parked, s_live;
+
+        /// <summary>Engine: ask every worker to stop at its next safe point (a wait, the end of a work item, an await).</summary>
+        public static void ParkAll() { Atomic.Store32(ref s_parkRequested, 1); WakeAll(); }
+        /// <summary>Engine: let parked workers go on.</summary>
+        public static void ResumeAll() { Atomic.Store32(ref s_parkRequested, 0); Atomic.Notify(ref s_parkRequested, -1); }
+        /// <summary>How many workers are parked; all are when this equals <see cref="LiveCount"/>.</summary>
+        public static int ParkedCount() => Atomic.Load32(ref s_parked);
+        public static int LiveCount() => Atomic.Load32(ref s_live);
+
+        internal static void SafePoint()
+        {
+            if (Atomic.Load32(ref s_parkRequested) == 0 || Rt.ThreadId() == 1) return;
+            Atomic.Add32(ref s_parked, 1);
+            while (Atomic.Load32(ref s_parkRequested) != 0) Atomic.Wait32(ref s_parkRequested, 1, -1);
+            Atomic.Add32(ref s_parked, -1);
+        }
+
         internal static void WaitGeneration(int g)
         {
+            SafePoint();
             // bounded, so timers and deadlines are rechecked: 1 ms
             if (Rt.ThreadId() == 1)
             {

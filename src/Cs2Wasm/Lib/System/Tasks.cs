@@ -611,7 +611,7 @@ namespace System.Threading
                 Action a = s_queue.Count > 0 ? s_queue.Dequeue() : null;
                 int g = Atomic.Load32(ref Threads.s_generation);
                 Rt.RuntimeUnlock();
-                if (a != null) { a(); a = null; continue; }
+                if (a != null) { a(); a = null; Threads.SafePoint(); continue; }
                 Threads.WaitGeneration(g);
             }
         }
@@ -826,7 +826,8 @@ namespace System.Threading
             while (Atomic.Load32(ref _state) != 2)
             {
                 if (Rt.ThreadId() == 1) continue; // the engine thread never blocks
-                Atomic.Wait32(ref _state, 1, -1);
+                Threads.SafePoint();
+                Atomic.Wait32(ref _state, 1, 1000000);
             }
         }
         public bool Join(int millisecondsTimeout)
@@ -851,7 +852,8 @@ namespace System.Threading
             {
                 long left = end - Engine.MonotonicNs();
                 if (left <= 0) return;
-                if (Rt.ThreadId() != 1) Atomic.Wait32(ref dummy, 0, left);
+                Threads.SafePoint();
+                if (Rt.ThreadId() != 1) Atomic.Wait32(ref dummy, 0, left > 1000000 ? 1000000 : left);
             }
         }
         public static void Sleep(TimeSpan timeout) => Sleep((int)timeout.TotalMilliseconds);

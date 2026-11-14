@@ -173,6 +173,56 @@ static class ApiChecks
             return qo == "frame\n" ? null : "clone output: " + qo + qe;
         });
 
+        Check("threads park at safe points on the engine's request and resume (section 7.2); the engine pump is exported", () =>
+        {
+            var src = Header + """
+                using System.Threading;
+                static class P {
+                    static int s_count, s_stop;
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        for (int i = 0; i < 2; i++)
+                            new Thread(() => { while (Volatile.Read(ref s_stop) == 0) { Interlocked.Increment(ref s_count); Thread.Sleep(1); } }) { IsBackground = true }.Start();
+                    }
+                    [UnmanagedCallersOnly(EntryPoint = "count")] static int Count() => Volatile.Read(ref s_count);
+                    [UnmanagedCallersOnly(EntryPoint = "stop")] static void Stop() => Volatile.Write(ref s_stop, 1);
+                }
+                """;
+            var r = Compile(src, new CompileOptions());
+            if (!r.Success) return Errors(r);
+            var mod = new Wasm(r.Module!);
+            foreach (var x in new[] { "cs2wasm_park", "cs2wasm_resume", "cs2wasm_parked_count", "cs2wasm_live_workers" })
+                if (!mod.Exports.Contains(x)) return "missing export " + x + ": " + string.Join(",", mod.Exports);
+            var path = Path.Combine(outDir, "api_park.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var js = Path.Combine(outDir, "api_park.mjs");
+            var engine = new Uri(Path.Combine(root, "host", "engine.mjs")).AbsoluteUri;
+            File.WriteAllText(js, $$"""
+                import { readFileSync } from 'node:fs';
+                import { cs2wasmImports, threadImports } from '{{engine}}';
+                const module = new WebAssembly.Module(readFileSync(process.argv[2]));
+                const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
+                const out = { write: (s) => process.stdout.write(s), error: (t, m, s) => { console.error(t, m, s); process.exit(3); } };
+                const inst = new WebAssembly.Instance(module, { env: { memory }, cs2wasm: { ...cs2wasmImports(module, () => memory, out), ...threadImports(module, memory, out) } });
+                const x = inst.exports;
+                const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+                x.init(); x.main();
+                await sleep(100);
+                x.cs2wasm_park();
+                let t = 0;
+                while (x.cs2wasm_parked_count() !== x.cs2wasm_live_workers() && t++ < 400) await sleep(5);
+                const c1 = x.count(); await sleep(60); const c2 = x.count();
+                x.cs2wasm_resume(); await sleep(60); const c3 = x.count();
+                x.stop();
+                console.log(x.cs2wasm_live_workers() === 2 && c1 === c2 && c3 > c2 && c1 > 0 ? 'ok' : `bad ${c1} ${c2} ${c3} parked ${x.cs2wasm_parked_count()}`);
+                process.exit(0);
+                """);
+            var psi = new ProcessStartInfo("node", [js, path]) { RedirectStandardOutput = true, RedirectStandardError = true };
+            using var pr = Process.Start(psi)!;
+            var o = pr.StandardOutput.ReadToEnd(); var e = pr.StandardError.ReadToEnd(); pr.WaitForExit();
+            return o.Trim() == "ok" ? null : o + e;
+        });
+
         Check("source map maps code offsets to C# lines", () =>
         {
             var src = Header + "static class E {\n [UnmanagedCallersOnly(EntryPoint = \"main\")]\n static void M() {\n Console.WriteLine(1);\n }\n}";

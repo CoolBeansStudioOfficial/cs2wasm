@@ -593,9 +593,17 @@ sealed class RuntimeGen
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
             D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
+        // the engine pumps posted work and timers each frame (section 4.5)
+        if (D.AllMethods.Any(m => m.Sym.Name is "Post" or "AddTimer" && m.Sym.ContainingType?.Name == "Scheduler" && m.Compiled))
+            Export("cs2wasm_run_pending", D.LibMethod("Cs2Wasm.Runtime.Scheduler", "RunPending", 0));
         // a worker instance starts here: its own stack, thread-local block and id, then the thread's delegate
         if (D.UsesThreads)
         {
+            // parking for snapshots (section 7.2)
+            Export("cs2wasm_park", D.LibMethod("Cs2Wasm.Runtime.Threads", "ParkAll", 0));
+            Export("cs2wasm_resume", D.LibMethod("Cs2Wasm.Runtime.Threads", "ResumeAll", 0));
+            Export("cs2wasm_parked_count", D.LibMethod("Cs2Wasm.Runtime.Threads", "ParkedCount", 0));
+            Export("cs2wasm_live_workers", D.LibMethod("Cs2Wasm.Runtime.Threads", "LiveCount", 0));
             var run = D.LibMethod("Cs2Wasm.Runtime.Threads", "Run", 1);
             var w = D.Module.AddFunction("__thread_entry", new FuncType([ValType.I32, ValType.I32, ValType.I32, ValType.I32], []));
             w.Exports.Add("__thread_entry");

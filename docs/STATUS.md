@@ -83,8 +83,8 @@ Not done yet (a program using them gets a `CW0101` error naming the construct):
 
 Async: continuations run where the awaited task completes, or are posted to the captured `SynchronizationContext`;
 blocking waits (`.Result`, `Wait`, `GetAwaiter().GetResult()`) run the engine thread's posted work and timers. See
-section 4.5 for the thread pool and timers. `Scheduler.RunPending` exists for the engine to call each frame but is not
-exported yet.
+section 4.5 for the thread pool and timers. The engine runs posted work and due timers each frame through the
+`cs2wasm_run_pending` export (present when the program posts work or uses timers).
 
 ### 4. Memory — partial
 Done: every heap object is reference counted with compile-time ownership: locals and fields own, reads of locals and
@@ -158,7 +158,7 @@ are freed when their count reaches zero). Programs without marks pay nothing.
 
 Not done:
 - ownership specialization of functions, retroactive owners, the counting-elision statistics (4.1);
-- threads (4.5), see below: per-object sharing analysis, `AsyncLocal<T>`, parking (7.2).
+- threads (4.5), see below: per-object sharing analysis.
 
 ### 4.5 Threads — partial
 Done: `System.Threading.Thread` runs on a real worker: each thread is a new instance of the module on the shared
@@ -197,7 +197,7 @@ thread running it sees its own partial initialization (recursion), as in .NET.
 
 Not done: the build notice for blocking waits on the
 engine thread, freeing a finished thread's stack and thread-local block, `TypeInitializationException` (an exception from a static constructor), the
-scheduling-dependence marks for the plugin (7.3), and parking workers for snapshots (7.2).
+and the scheduling-dependence marks for the plugin (7.3).
 
 ### 5. Optimization — minimal
 Done: reachability from exports (only reached methods are emitted), devirtualization when a virtual call has one
@@ -235,7 +235,10 @@ exported beside the stack pointer.
   in Roslyn's terms (operations, symbols, locations). Limits: a clone's virtual calls reach the original
   implementations; instrumented sites in static constructors and field initializers are not compiled again; getters
   are assumed to have no effect when judging a rule's step invariant; alias answers are type-based.
-- 7.2 snapshot/restore: state is in memory plus the exported stack pointer; parking threads: not done.
+- 7.2 snapshot/restore: state is in memory plus the exported stack pointer (and `__tls_base`). With threads, the
+  module exports `cs2wasm_park`, `cs2wasm_resume`, `cs2wasm_parked_count` and `cs2wasm_live_workers`: workers stop at
+  their next safe point (a wait, `Sleep`, `Join`, the end of a pool work item, which is also where an `await`
+  returns) and wait until resumed; the engine snapshots once the parked count equals the live count (checked).
 - 7.3 determinism: no relaxed SIMD (no SIMD at all), fixed-seed string hashing, allocation-order object hash codes,
   math computed in WASM (fdlibm ports, `Exp` in double-double), reproducible output (checked), NaN canonicalized
   where bits are read (`BitConverter`), `Random()`'s seed from the engine and `Random(seed)` giving .NET's
