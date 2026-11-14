@@ -65,6 +65,7 @@ sealed partial class FunctionCompiler
                 if (IsCaptured(l.Local)) return LoadCaptured(l.Local);
                 return LoadVar(LocalVar(l.Local));
             case IParameterReferenceOperation p:
+                if (IsPrimaryParamHere(p.Parameter)) { var ps = PrimarySlot(p.Parameter); PushPrimaryThis(); if (Types.IsStruct(ps.Type)) { E.I32(ps.Offset); E.Op(Op.I32Add); return Own.None; } E.Load(Types.LoadOp(ps.Type), ps.Offset); return Types.IsRef(ps.Type) ? Own.Unstable : Own.None; }
                 if (IsCaptured(p.Parameter)) return LoadCaptured(p.Parameter);
                 return LoadVar(_vars[p.Parameter]);
             case IInstanceReferenceOperation ir: return EmitThis(ir);
@@ -274,6 +275,23 @@ sealed partial class FunctionCompiler
         StoreVar(v, o);
     }
 
+    /// <summary>A primary-constructor parameter used outside that constructor lives in the object.</summary>
+    bool IsPrimaryParamHere(IParameterSymbol p) =>
+        p.ContainingSymbol is IMethodSymbol c && Driver.IsPrimaryCtor(c) &&
+        !(SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, M.OriginalDefinition) && _closure == null && _machine == null);
+
+    FieldSlot PrimarySlot(IParameterSymbol p)
+    {
+        var owner = (INamedTypeSymbol)T.Resolve(p.ContainingSymbol.ContainingType, Map);
+        return T.LayoutOf(owner).Fields.First(f => SymbolEqualityComparer.Default.Equals(f.Symbol, p.OriginalDefinition));
+    }
+
+    void PushPrimaryThis()
+    {
+        if (_closure != null) { LoadCapturedThis(); return; }
+        E.Get(_thisLocal);
+    }
+
     Own EmitThis(IInstanceReferenceOperation ir)
     {
         switch (ir.ReferenceKind)
@@ -308,7 +326,7 @@ sealed partial class FunctionCompiler
         return op switch
         {
             ILocalReferenceOperation l => IsCaptured(l.Local) || LocalVar(l.Local).InMemory,
-            IParameterReferenceOperation p => IsCaptured(p.Parameter) || _vars[p.Parameter].InMemory,
+            IParameterReferenceOperation p => IsPrimaryParamHere(p.Parameter) || IsCaptured(p.Parameter) || _vars[p.Parameter].InMemory,
             IFieldReferenceOperation f => f.Field.IsStatic || f.Instance == null || !TypeOf(f.Instance).IsValueType || IsAddressable(f.Instance),
             IArrayElementReferenceOperation => true,
             IInstanceReferenceOperation => M.ContainingType?.IsValueType == true || _closure != null,
@@ -366,6 +384,7 @@ sealed partial class FunctionCompiler
                 }
             case IParameterReferenceOperation p:
                 {
+                    if (IsPrimaryParamHere(p.Parameter)) { PushPrimaryThis(); return PrimarySlot(p.Parameter).Offset; }
                     if (IsCaptured(p.Parameter)) return CapturedAddress(p.Parameter);
                     var v = _vars[p.Parameter];
                     if (!v.InMemory) throw new CompileException("internal: address of register parameter " + p.Parameter.Name);
@@ -1625,6 +1644,7 @@ sealed partial class FunctionCompiler
                 { var v = LocalVar(l.Local); if (!v.InMemory) return new VarLV(this, v); }
                 break;
             case IParameterReferenceOperation p:
+                if (IsPrimaryParamHere(p.Parameter)) break;
                 if (IsCaptured(p.Parameter)) return new CapturedLV(this, p.Parameter, t);
                 { var v = _vars[p.Parameter]; if (!v.InMemory) return new VarLV(this, v); }
                 break;
@@ -1913,20 +1933,166 @@ sealed partial class FunctionCompiler
             case IRecursivePatternOperation rp:
                 {
                     var mt = rp.MatchedType != null ? T.Resolve(rp.MatchedType, Map) : vt;
-                    if (rp.DeconstructionSubpatterns.Length > 0) throw new CompileException("positional patterns are not supported yet", rp.Syntax.GetLocation());
                     EmitTestType(v, vt, mt);
                     E.If(ValType.I32);
                     // narrowed value
                     int nv = Narrowed(v, vt, mt);
                     if (rp.DeclaredSymbol != null) BindPatternVariable(rp.DeclaredSymbol, v, vt, mt);
                     _patternInputs.Add((nv, mt));
-                    EmitSubpatterns(rp.PropertySubpatterns, 0);
+                    if (rp.DeconstructionSubpatterns.Length > 0)
+                    {
+                        var parts = PositionalParts(rp, nv, mt);
+                        EmitPartPatterns(rp.DeconstructionSubpatterns, parts, 0, () => EmitSubpatterns(rp.PropertySubpatterns, 0));
+                    }
+                    else EmitSubpatterns(rp.PropertySubpatterns, 0);
                     _patternInputs.RemoveAt(_patternInputs.Count - 1);
                     E.Else(); E.I32(0); E.End();
                     return;
                 }
+            case IListPatternOperation lp:
+                {
+                    EmitListPattern(lp, v, vt);
+                    return;
+                }
         }
         throw new CompileException("unsupported pattern " + pat.Kind, pat.Syntax.GetLocation());
+    }
+
+    /// <summary>Values for a positional pattern: tuple fields, or the out parameters of Deconstruct.</summary>
+    List<(int local, ITypeSymbol type)> PositionalParts(IRecursivePatternOperation rp, int nv, ITypeSymbol mt)
+    {
+        var parts = new List<(int, ITypeSymbol)>();
+        if (rp.DeconstructSymbol is IMethodSymbol dm)
+        {
+            var m = SubstMethod(dm);
+            var temps = new List<(int off, ITypeSymbol t)>();
+            foreach (var p in m.Parameters.Skip(m.IsStatic ? 1 : 0))
+            {
+                var pt = T.Canonical(p.Type);
+                temps.Add((Types.IsStruct(pt) ? TempStruct(pt) : TempValue(pt), pt));
+            }
+            CallWith(m, !mt.IsValueType && IsVirtualDispatch(m), m.IsStatic ? null : () => E.Get(nv), () =>
+            {
+                if (m.IsStatic) E.Get(nv);
+                foreach (var (off, _) in temps) { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); }
+            }, null, rp.Syntax);
+            foreach (var (off, pt) in temps)
+            {
+                int l = E.AddLocal(Types.WasmType(pt) ?? ValType.I32);
+                E.Get(_fb);
+                if (Types.IsStruct(pt)) { E.I32(off); E.Op(Op.I32Add); } else E.Load(Types.LoadOp(pt), off);
+                E.Set(l);
+                parts.Add((l, pt));
+            }
+            return parts;
+        }
+        if (IsValueTuple(mt))
+        {
+            foreach (var f in TupleFields(mt))
+            {
+                var slot = T.FieldIn(mt, f);
+                int l = E.AddLocal(Types.WasmType(slot.Type) ?? ValType.I32);
+                E.Get(nv);
+                if (Types.IsStruct(slot.Type)) { if (slot.Offset != 0) { E.I32(slot.Offset); E.Op(Op.I32Add); } } else E.Load(Types.LoadOp(slot.Type), slot.Offset);
+                E.Set(l);
+                parts.Add((l, slot.Type));
+            }
+            return parts;
+        }
+        throw new CompileException("positional pattern on " + mt + " (ITuple) is not supported yet", rp.Syntax.GetLocation());
+    }
+
+    void EmitPartPatterns(System.Collections.Immutable.ImmutableArray<IPatternOperation> pats, List<(int local, ITypeSymbol type)> parts, int i, Action rest)
+    {
+        if (i >= pats.Length) { rest(); return; }
+        EmitPattern(pats[i], parts[i].local, parts[i].type);
+        E.If(ValType.I32);
+        EmitPartPatterns(pats, parts, i + 1, rest);
+        E.Else(); E.I32(0); E.End();
+    }
+
+    /// <summary>[a, b, .. rest, z]: length test, element patterns from the front and the back, slice pattern.</summary>
+    void EmitListPattern(IListPatternOperation lp, int v, ITypeSymbol vt)
+    {
+        var pats = lp.Patterns;
+        int slice = -1;
+        for (int i = 0; i < pats.Length; i++) if (pats[i] is ISlicePatternOperation) slice = i;
+        int fixedCount = pats.Length - (slice >= 0 ? 1 : 0);
+        var arr = vt as IArrayTypeSymbol;
+        var et = arr != null ? T.Canonical(arr.ElementType) : T.Canonical(((IPropertySymbol)lp.IndexerSymbol!).Type);
+        // null input never matches
+        if (!vt.IsValueType) { E.Get(v); E.Op(Op.I32Eqz); E.If(ValType.I32); E.I32(0); E.Else(); }
+        int len = E.AddLocal(ValType.I32);
+        if (arr != null) { E.Get(v); E.Load(Op.I32Load, 12); }
+        else
+        {
+            var lenProp = (IPropertySymbol)lp.LengthSymbol!;
+            var g = SubstMethod(lenProp.GetMethod!);
+            CallWith(g, !vt.IsValueType && IsVirtualDispatch(g), () => E.Get(v), () => { }, null, lp.Syntax);
+        }
+        E.Set(len);
+        E.Get(len); E.I32(fixedCount); E.Op(slice >= 0 ? Op.I32GeS : Op.I32Eq);
+        E.If(ValType.I32);
+        void PushIndex(int i)
+        {
+            if (slice < 0 || i < slice) E.I32(i);
+            else { E.Get(len); E.I32(pats.Length - i); E.Op(Op.I32Sub); }
+        }
+        int Element(int i)
+        {
+            int l = E.AddLocal(Types.WasmType(et) ?? ValType.I32);
+            if (arr != null)
+            {
+                int size = T.StorageOf(et).size;
+                E.Get(v); PushIndex(i);
+                if (size != 1) { E.I32(size); E.Op(Op.I32Mul); }
+                E.Op(Op.I32Add);
+                if (Types.IsStruct(et)) { E.I32(Types.ArrayData); E.Op(Op.I32Add); } else E.Load(Types.LoadOp(et), Types.ArrayData);
+            }
+            else
+            {
+                var idx = (IPropertySymbol)lp.IndexerSymbol!;
+                var g = SubstMethod(idx.GetMethod!);
+                var o = CallWith(g, !vt.IsValueType && IsVirtualDispatch(g), () => E.Get(v), () => PushIndex(i), null, lp.Syntax);
+                if (Types.IsRef(et) && o == Own.Owned) { int tl = TempRef(et); E.Set(tl); return tl; }
+            }
+            E.Set(l);
+            return l;
+        }
+        void Next(int i)
+        {
+            if (i >= pats.Length) { E.I32(1); return; }
+            if (pats[i] is ISlicePatternOperation sp)
+            {
+                if (sp.Pattern == null) { Next(i + 1); return; }
+                // the slice value: a sub-array, or Slice(start, length)
+                ITypeSymbol sliceT;
+                if (arr != null)
+                {
+                    sliceT = arr;
+                    var sub = D.LibType("Cs2Wasm.Runtime.Slices").GetMembers("SubArray").OfType<IMethodSymbol>().First().Construct(et);
+                    CallWith(sub, false, null, () => { E.Get(v); E.I32(slice); E.Get(len); E.I32(fixedCount); E.Op(Op.I32Sub); }, null, sp.Syntax);
+                }
+                else
+                {
+                    var sm = (IMethodSymbol)sp.SliceSymbol!;
+                    var m = SubstMethod(sm);
+                    sliceT = T.Canonical(m.ReturnType);
+                    CallWith(m, false, () => E.Get(v), () => { E.I32(slice); E.Get(len); E.I32(fixedCount); E.Op(Op.I32Sub); }, null, sp.Syntax);
+                }
+                int sl = Types.IsRef(sliceT) ? TempRef(sliceT) : E.AddLocal(ValType.I32);
+                E.Set(sl);
+                EmitPattern(sp.Pattern, sl, sliceT);
+                E.If(ValType.I32); Next(i + 1); E.Else(); E.I32(0); E.End();
+                return;
+            }
+            int el = Element(i);
+            EmitPattern(pats[i], el, et);
+            E.If(ValType.I32); Next(i + 1); E.Else(); E.I32(0); E.End();
+        }
+        Next(0);
+        E.Else(); E.I32(0); E.End();
+        if (!vt.IsValueType) E.End();
     }
 
     void EmitSubpatterns(System.Collections.Immutable.ImmutableArray<IPropertySubpatternOperation> subs, int i)

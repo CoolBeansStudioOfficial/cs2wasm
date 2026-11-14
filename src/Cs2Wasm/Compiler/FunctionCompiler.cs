@@ -1314,7 +1314,27 @@ sealed partial class FunctionCompiler
         if (def.ContainingType.IsRecord && def.IsImplicitlyDeclared && !(def.AssociatedSymbol is IPropertySymbol ap && Driver.AutoPropertyField(ap) != null) || def.ContainingType.IsRecord && def.MethodKind == MethodKind.Constructor && !Driver.HasBody(def)) { EmitRecordMember(); return; }
         if (def.MethodKind == MethodKind.Constructor)
         {
-            if (M.ContainingType.TypeKind == TypeKind.Struct && M.Parameters.Length == 0 && !def.IsImplicitlyDeclared) { }
+            if (Driver.IsPrimaryCtor(def))
+            {
+                // capture the parameters, run the initializers, then the base constructor from the base list
+                foreach (var pp in M.Parameters)
+                {
+                    var slot = PrimarySlot(pp);
+                    var v = _vars[pp];
+                    BeginTemps();
+                    StoreToAddressFromStack(() => E.Get(_thisLocal), slot.Offset, slot.Type, LoadVar(v));
+                    EndTemps();
+                }
+                EmitFieldInitializers();
+                var decl = def.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax>().First();
+                var baseSyntax = decl.BaseList?.Types.OfType<Microsoft.CodeAnalysis.CSharp.Syntax.PrimaryConstructorBaseTypeSyntax>().FirstOrDefault();
+                if (baseSyntax != null && D.ModelFor(baseSyntax.SyntaxTree).GetOperation(baseSyntax) is IOperation bop)
+                {
+                    BeginTemps(); EmitDiscard(bop is IExpressionStatementOperation es ? es.Operation : bop); EndTemps();
+                }
+                else EmitImplicitBaseCtor();
+                return;
+            }
             EmitFieldInitializers();
             EmitImplicitBaseCtor();
             return;

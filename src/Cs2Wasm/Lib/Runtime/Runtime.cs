@@ -620,6 +620,17 @@ namespace Cs2Wasm.Runtime
         }
     }
 
+    public static class Slices
+    {
+        /// <summary>The sub-array a `..` slice pattern or range binds.</summary>
+        public static T[] SubArray<T>(T[] array, int start, int length)
+        {
+            var r = new T[length];
+            for (int i = 0; i < length; i++) r[i] = array[start + i];
+            return r;
+        }
+    }
+
     public static class ThrowHelpers
     {
         public static void NullReference() => throw new NullReferenceException();

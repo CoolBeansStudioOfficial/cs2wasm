@@ -152,6 +152,12 @@ sealed partial class FunctionCompiler
                     IParameterReferenceOperation p => p.Parameter,
                     _ => null,
                 };
+                if (sym is IParameterSymbol pps && pps.ContainingSymbol is IMethodSymbol pc && Driver.IsPrimaryCtor(pc) && _closure == null && !M.IsStatic)
+                {
+                    // a primary-constructor parameter read inside a lambda: the lambda needs `this`
+                    if (!_capturedHere.ContainsKey(_thisKey!)) AddCaptured(_thisKey!, s_fnKey, T.Resolve(M.ContainingType, Map));
+                    continue;
+                }
                 if (sym != null)
                 {
                     if (!SymbolEqualityComparer.Default.Equals(sym.ContainingSymbol, self) && !SymbolEqualityComparer.Default.Equals(sym.ContainingSymbol?.OriginalDefinition, self.OriginalDefinition)) continue;

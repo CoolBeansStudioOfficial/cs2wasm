@@ -299,6 +299,7 @@ internal sealed partial class Driver
     {
         var def = m.OriginalDefinition;
         if (def.MethodKind == MethodKind.Constructor && def.IsImplicitlyDeclared) return true;
+        if (IsPrimaryCtor(def)) return true;
         if (def.MethodKind == MethodKind.StaticConstructor) return true;
         if (def.MethodKind is MethodKind.PropertyGet or MethodKind.PropertySet && def.AssociatedSymbol is IPropertySymbol p && AutoPropertyField(p) != null) return true;
         if (def.MethodKind is MethodKind.EventAdd or MethodKind.EventRemove && def.AssociatedSymbol is IEventSymbol e && IsFieldLikeEvent(e)) return true;
@@ -313,6 +314,11 @@ internal sealed partial class Driver
                                                                                   || SymbolEqualityComparer.Default.Equals(f.AssociatedSymbol, p));
 
     /// <summary>`event Action E;` — an event whose storage the compiler provides (Roslyn exposes no backing field).</summary>
+    /// <summary>A C# 12 primary constructor of a class or struct (not a record): its parameters are captured state.</summary>
+    public static bool IsPrimaryCtor(IMethodSymbol m) =>
+        m.MethodKind == MethodKind.Constructor && !m.ContainingType.IsRecord &&
+        m.OriginalDefinition.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax { ParameterList: not null });
+
     public static bool IsFieldLikeEvent(IEventSymbol e) =>
         e.OriginalDefinition.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax);
 

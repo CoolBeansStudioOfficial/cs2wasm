@@ -391,6 +391,18 @@ internal sealed class Types
             l.Align = Math.Max(l.Align, align);
             if (NeedsRc(ft)) l.HasRefs = true;
         }
+        // primary constructor parameters (C# 12 classes and structs): captured state
+        foreach (var pc in t.InstanceConstructors.Where(Driver.IsPrimaryCtor))
+            foreach (var pp in pc.Parameters)
+            {
+                var pt = Canonical(pp.Type);
+                var (psize, palign) = StorageOf(pt);
+                offset = (offset + palign - 1) / palign * palign;
+                l.Fields.Add(new FieldSlot { Symbol = pp.OriginalDefinition, Type = pt, Offset = offset });
+                offset += psize;
+                l.Align = Math.Max(l.Align, palign);
+                if (NeedsRc(pt)) l.HasRefs = true;
+            }
         // field-like events: storage for the delegate
         foreach (var ev in t.GetMembers().OfType<IEventSymbol>())
         {
