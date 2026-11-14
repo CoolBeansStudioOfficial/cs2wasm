@@ -629,9 +629,11 @@ sealed partial class FunctionCompiler
         {
             var m = conv.MethodSymbol;
             var argT = T.Resolve(m.Parameters[0].Type, Map);
-            var o = EmitValueAs(c.Operand, argT);
-            if (Types.IsRef(argT)) ToCallSafe(o, argT);
-            var r = EmitCallCore(SubstMethod(m), null, [], false, preArgs: 1);
+            var r = CallWith(SubstMethod(m), false, null, () =>
+            {
+                var o = EmitValueAs(c.Operand, argT);
+                if (Types.IsRef(argT)) ToCallSafe(o, argT);
+            }, null, c.Syntax);
             var rt = T.Resolve(m.ReturnType, Map);
             ConvertTop(rt, to, ref r);
             return r;
@@ -683,6 +685,15 @@ sealed partial class FunctionCompiler
         if (Types.Key(from) == Types.Key(to)) return;
         var pf = Types.PrimOf(from); var pt = Types.PrimOf(to);
         if (ConvertNullable(from, to, isChecked, ref o)) return;
+        if (IsSpanType(to) && !IsSpanType(from) || IsSpanType(to) && IsSpanType(from) && Types.Key(from.OriginalDefinition) != Types.Key(to.OriginalDefinition))
+        {
+            // first-class span conversions (C# 14): array/string/Span -> (ReadOnly)Span, through the library's operators
+            var op = FindImplicit(to, from, to) ?? FindImplicit(from, from, to) ?? throw new CompileException($"no span conversion from {from} to {to}");
+            int v = Scratch(Types.WasmType(from) ?? ValType.I32); E.Set(v);
+            o = CallWith(op, false, null, () => E.Get(v), null, null);
+            FreeScratch(Types.WasmType(from) ?? ValType.I32, v);
+            return;
+        }
         if (pf != Prim.None && pt != Prim.None)
         {
             if (from.TypeKind == TypeKind.Pointer || to.TypeKind == TypeKind.Pointer) { NumericConvert(pf == Prim.U32 && from.TypeKind == TypeKind.Pointer ? Prim.U32 : pf, pt, isChecked); return; }
@@ -719,6 +730,17 @@ sealed partial class FunctionCompiler
         if (IsValueTuple(from) && IsValueTuple(to)) { ConvertTuple(from, to); return; }
         if (Types.Key(from.OriginalDefinition) == Types.Key(to.OriginalDefinition)) return;
         throw new CompileException($"unsupported conversion from {from} to {to}");
+    }
+
+    static bool IsSpanType(ITypeSymbol t) => t is INamedTypeSymbol { Arity: 1 } n && Types.FullName(n) is "System.Span`1" or "System.ReadOnlySpan`1";
+
+    IMethodSymbol? FindImplicit(ITypeSymbol owner, ITypeSymbol from, ITypeSymbol to)
+    {
+        if (T.Canonical(owner) is not INamedTypeSymbol n) return null;
+        foreach (var m in n.GetMembers("op_Implicit").OfType<IMethodSymbol>())
+            if (Types.Key(T.Canonical(m.Parameters[0].Type)) == Types.Key(T.Canonical(from)) && Types.Key(T.Canonical(m.ReturnType)) == Types.Key(T.Canonical(to)))
+                return D.CanonicalMethod(m);
+        return null;
     }
 
     static bool IsNullable(ITypeSymbol t) => t is INamedTypeSymbol { Arity: 1 } n && Types.FullName(n) == "System.Nullable`1";
@@ -1257,13 +1279,15 @@ sealed partial class FunctionCompiler
         {
             var m = ca.OperatorMethod;
             var p0 = T.Resolve(m.Parameters[0].Type, Map);
-            var cur = lv.Load();
-            ConvertTop(tt, p0, ref cur);
-            ToCallSafe(cur, p0);
             var p1 = T.Resolve(m.Parameters[1].Type, Map);
-            var ov = EmitValueAs(ca.Value, p1);
-            if (Types.IsRef(p1)) ToCallSafe(ov, p1);
-            var r = EmitCallCore(SubstMethod(m), null, [], false, preArgs: 2);
+            var r = CallWith(SubstMethod(m), false, null, () =>
+            {
+                var cur = lv.Load();
+                ConvertTop(tt, p0, ref cur);
+                if (Types.IsStruct(p0)) CopyToTemp(p0); else ToCallSafe(cur, p0);
+                var ov = EmitValueAs(ca.Value, p1);
+                if (Types.IsRef(p1)) ToCallSafe(ov, p1);
+            }, null, ca.Syntax);
             ConvertTop(T.Resolve(m.ReturnType, Map), tt, ref r);
             return lv.Store(r, needResult);
         }
@@ -1300,6 +1324,16 @@ sealed partial class FunctionCompiler
         return lv.Store(Own.None, needResult);
     }
 
+    /// <summary>Stack: struct address → address of a temporary copy (a by-value struct argument).</summary>
+    void CopyToTemp(ITypeSymbol t)
+    {
+        int src = Scratch(ValType.I32); E.Set(src);
+        int off = TempStruct(t);
+        E.Get(_fb); E.I32(off); E.Op(Op.I32Add); E.Get(src); CopyStructInit(t);
+        FreeScratch(ValType.I32, src);
+        E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+    }
+
     static Prim Promote(Prim a, Prim b)
     {
         if (a == Prim.F64 || b == Prim.F64) return Prim.F64;
@@ -1324,12 +1358,16 @@ sealed partial class FunctionCompiler
         bool isInc = inc.Kind == OperationKind.Increment;
         if (inc.OperatorMethod != null)
         {
-            var cur = lv.Load();
+            Own cur = Own.None;
             int old = -1;
-            if (needResult && inc.IsPostfix) { cur = ToCallSafe(cur, tt); old = Scratch(Types.WasmType(tt)!.Value); E.Tee(old); }
-            var r = EmitCallCore(SubstMethod(inc.OperatorMethod), null, [], false, preArgs: 1);
+            var r = CallWith(SubstMethod(inc.OperatorMethod), false, null, () =>
+            {
+                cur = lv.Load();
+                if (Types.IsStruct(tt)) CopyToTemp(tt); else cur = ToCallSafe(cur, tt);
+                if (needResult && inc.IsPostfix) { old = E.AddLocal(Types.WasmType(tt) ?? ValType.I32); E.Tee(old); }
+            }, null, inc.Syntax);
             var res = lv.Store(r, needResult && !inc.IsPostfix);
-            if (old >= 0) { E.Get(old); FreeScratch(Types.WasmType(tt)!.Value, old); return cur; }
+            if (old >= 0) { E.Get(old); return cur; }
             return res;
         }
         if (IsNullable(tt))
@@ -1396,11 +1434,12 @@ sealed partial class FunctionCompiler
     Own EmitCoalesceAssign(ICoalesceAssignmentOperation cas, bool needResult)
     {
         var tt = TypeOf(cas.Target);
-        if (!Types.IsRef(tt)) throw new CompileException("??= on nullable value types is not supported yet", cas.Syntax.GetLocation());
+        if (!Types.IsRef(tt) && !IsNullable(tt)) throw new CompileException("??= on this type is not supported", cas.Syntax.GetLocation());
         var lv = LValueOf(cas.Target);
         lv.Note(StaticValueType(cas.Value));
         lv.Prepare();
         lv.Load();
+        if (IsNullable(tt)) NullableHas(tt);
         E.Op(Op.I32Eqz);
         E.If();
         var o = EmitValueAs(cas.Value, tt);
@@ -1515,8 +1554,8 @@ sealed partial class FunctionCompiler
         public override Own Load()
         {
             var g = pr.Property.GetMethod ?? throw new CompileException("property has no getter");
-            PushRecvAndArgs();
-            return F.EmitCallCore(F.SubstMethod(g), null, [], !_recvIsStruct && F.IsVirtualCall(pr.Instance, g), preArgs: (_recv >= 0 ? 1 : 0) + _args.Count, forceInstance: _recv >= 0, receiverType: pr.Instance != null ? F.TypeOf(pr.Instance) : null);
+            var gm = F.SubstMethod(g);
+            return F.CallWith(gm, !_recvIsStruct && F.IsVirtualCall(pr.Instance, g), _recv >= 0 ? () => F.E.Get(_recv) : null, () => { foreach (var (l, _) in _args) F.E.Get(l); }, null, pr.Syntax);
         }
         public override Own Store(Own o, bool needResult)
         {
@@ -1529,9 +1568,8 @@ sealed partial class FunctionCompiler
                 v = F.Scratch(ValType.I32); F.E.Set(v);
             }
             else { v = F.Scratch(Types.WasmType(vt)!.Value); F.E.Set(v); }
-            PushRecvAndArgs();
-            F.E.Get(v);
-            F.EmitCallCore(F.SubstMethod(s), null, [], !_recvIsStruct && F.IsVirtualCall(pr.Instance, s), preArgs: (_recv >= 0 ? 1 : 0) + _args.Count + 1, forceInstance: _recv >= 0, receiverType: pr.Instance != null ? F.TypeOf(pr.Instance) : null);
+            var sm = F.SubstMethod(s);
+            F.CallWith(sm, !_recvIsStruct && F.IsVirtualCall(pr.Instance, s), _recv >= 0 ? () => F.E.Get(_recv) : null, () => { foreach (var (l, _) in _args) F.E.Get(l); F.E.Get(v); }, null, pr.Syntax);
             if (needResult) { F.E.Get(v); F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v); return Types.IsRef(vt) ? Own.Stable : Own.None; }
             F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v);
             return Own.None;
@@ -1973,11 +2011,70 @@ sealed partial class FunctionCompiler
     // =====================================================================
     Own EmitPointerOp(IOperation op)
     {
+        if (op.Syntax is StackAllocArrayCreationExpressionSyntax or ImplicitStackAllocArrayCreationExpressionSyntax) return EmitStackAlloc(op);
         var t = op.Type != null ? TypeOf(op) : throw new CompileException($"unsupported construct '{op.Syntax}'", op.Syntax.GetLocation());
         int off = EmitPointerAddress(op);
         if (Types.IsStruct(t)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
         E.Load(Types.LoadOp(t), off);
         return Types.IsRef(t) ? Own.Unstable : Own.None;
+    }
+
+    /// <summary>stackalloc: into a span (array-backed, so it may outlive nothing it should not), or raw shadow-stack memory for a pointer.</summary>
+    Own EmitStackAlloc(IOperation op)
+    {
+        var model = D.ModelFor(op.Syntax.SyntaxTree);
+        InitializerExpressionSyntax? init = op.Syntax switch
+        {
+            StackAllocArrayCreationExpressionSyntax s => s.Initializer,
+            ImplicitStackAllocArrayCreationExpressionSyntax i => i.Initializer,
+            _ => null,
+        };
+        ExpressionSyntax? sizeExpr = op.Syntax is StackAllocArrayCreationExpressionSyntax sa && sa.Type is ArrayTypeSyntax at2 && at2.RankSpecifiers[0].Sizes[0] is not OmittedArraySizeExpressionSyntax ? at2.RankSpecifiers[0].Sizes[0] : null;
+        var t = op.Type != null ? TypeOf(op) : throw new CompileException("stackalloc without a type", op.Syntax.GetLocation());
+        ITypeSymbol et;
+        bool span = t is INamedTypeSymbol { Arity: 1 } nt && Types.FullName(nt) is "System.Span`1" or "System.ReadOnlySpan`1";
+        if (span) et = T.Canonical(((INamedTypeSymbol)t).TypeArguments[0]);
+        else if (t is IPointerTypeSymbol pt) et = T.Canonical(pt.PointedAtType);
+        else throw new CompileException("unsupported stackalloc target " + t, op.Syntax.GetLocation());
+        int size = T.StorageOf(et).size;
+        var elems = init?.Expressions.Select(e => model.GetOperation(e)!).ToList() ?? [];
+        void PushCount()
+        {
+            if (sizeExpr != null) EmitIndexLength(model.GetOperation(sizeExpr)!);
+            else E.I32(elems.Count);
+        }
+        if (span)
+        {
+            var arrT = D.LibCompilation.CreateArrayTypeSymbol(et);
+            int tid = D.MarkConstructed(arrT);
+            PushCount(); E.I32(size); E.I32(tid); E.Call(Rt.AllocArray);
+            int arr = E.AddLocal(ValType.I32); E.Set(arr);
+            var slot = new Slot { Local = arr, Type = arrT };
+            RegisterTemp(slot);
+            for (int i = 0; i < elems.Count; i++) StoreElement(arr, i, et, elems[i]);
+            var ctor = ((INamedTypeSymbol)T.Canonical(t)).InstanceConstructors.First(c => c.Parameters.Length == 1);
+            int off = TempStruct(t);
+            CallWith(ctor, false, () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); }, () => E.Get(arr), null, op.Syntax);
+            E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+            return Own.None;
+        }
+        // pointer: carve zeroed memory off the shadow stack; the function's exit restores the stack pointer
+        _usesFrame = true;
+        int bytes = Scratch(ValType.I32);
+        PushCount(); E.I32(size); E.Op(Op.I32Mul); E.I32(7); E.Op(Op.I32Add); E.I32(-8); E.Op(Op.I32And); E.Set(bytes);
+        E.GGet(D.StackPointer); E.Get(bytes); E.Op(Op.I32Sub);
+        int p = E.AddLocal(ValType.I32); E.Tee(p); E.GSet(D.StackPointer);
+        E.Get(p); E.I32(0); E.Get(bytes); E.Op(Op.MemoryFill);
+        FreeScratch(ValType.I32, bytes);
+        for (int i = 0; i < elems.Count; i++)
+        {
+            var wt = Types.WasmType(et)!.Value;
+            E.Get(p);
+            EmitValueAs(elems[i], et);
+            E.Store(Types.StoreOp(et), i * size);
+        }
+        E.Get(p);
+        return Own.None;
     }
 
     int EmitPointerAddress(IOperation op)

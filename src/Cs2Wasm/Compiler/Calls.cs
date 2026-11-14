@@ -137,14 +137,38 @@ sealed partial class FunctionCompiler
     void PushArgs(IMethodSymbol m, IReadOnlyList<IOperation> args)
     {
         var byParam = new IOperation?[m.Parameters.Length];
+        var convs = new IMethodSymbol?[m.Parameters.Length];
         int k = 0;
         foreach (var a in args)
         {
-            if (a is IArgumentOperation ao && ao.Parameter != null) byParam[ao.Parameter.Ordinal] = ao.Value;
+            if (a is IArgumentOperation ao && ao.Parameter != null)
+            {
+                byParam[ao.Parameter.Ordinal] = ao.Value;
+                // a user-defined conversion of the argument lives on the argument, not in the tree
+                if (ao.InConversion.IsUserDefined && ao.InConversion.MethodSymbol is { } cm) convs[ao.Parameter.Ordinal] = cm;
+            }
             else if (k < byParam.Length) byParam[k] = a;
             k++;
         }
-        for (int i = 0; i < m.Parameters.Length; i++) PushArg(m.Parameters[i], byParam[i]);
+        for (int i = 0; i < m.Parameters.Length; i++)
+        {
+            if (convs[i] is { } cm && byParam[i] is { } v) PushConvertedArg(m.Parameters[i], v, cm);
+            else PushArg(m.Parameters[i], byParam[i]);
+        }
+    }
+
+    void PushConvertedArg(IParameterSymbol p, IOperation value, IMethodSymbol conversion)
+    {
+        var cm = SubstMethod(conversion);
+        var argT = T.Canonical(cm.Parameters[0].Type);
+        var pt = T.Canonical(p.Type);
+        var r = CallWith(cm, false, null, () =>
+        {
+            var o = EmitValueAs(value, argT);
+            if (Types.IsRef(argT)) ToCallSafe(o, argT);
+        }, null, value.Syntax);
+        ConvertTop(T.Canonical(cm.ReturnType), pt, ref r);
+        if (Types.IsRef(pt)) ToCallSafe(r, pt);
     }
 
     void PushArg(IParameterSymbol p, IOperation? value)

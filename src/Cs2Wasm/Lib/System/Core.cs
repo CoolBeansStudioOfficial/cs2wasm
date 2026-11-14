@@ -220,6 +220,7 @@ namespace System.Runtime.CompilerServices
     [AttributeUsage(AttributeTargets.Property)] public sealed class IndexerNameAttribute : Attribute { public IndexerNameAttribute(string indexerName) { } }
     [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class | AttributeTargets.Assembly)] public sealed class ExtensionAttribute : Attribute { }
     [AttributeUsage(AttributeTargets.All)] public sealed class CompilerGeneratedAttribute : Attribute { }
+    [AttributeUsage(AttributeTargets.All)] public sealed class TupleElementNamesAttribute : Attribute { public TupleElementNamesAttribute(string[] transformNames) { } }
     [AttributeUsage(AttributeTargets.All)] public sealed class IsReadOnlyAttribute : Attribute { }
     [AttributeUsage(AttributeTargets.All)] public sealed class IsByRefLikeAttribute : Attribute { }
     [AttributeUsage(AttributeTargets.All)] public sealed class IsUnmanagedAttribute : Attribute { }

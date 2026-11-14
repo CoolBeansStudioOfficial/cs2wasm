@@ -110,7 +110,7 @@ namespace System
         }
         public Enumerator GetEnumerator() => new Enumerator(this);
         public static implicit operator ReadOnlySpan<T>(T[] array) => new ReadOnlySpan<T>(array);
-        public override string ToString() => "System.ReadOnlySpan<" + Cs2Wasm.Runtime.Rt.TypeName(_array) + ">[" + _length.ToString() + "]";
+        public override string ToString() => typeof(T) == typeof(char) ? new string(ToArray() as char[]) : "System.ReadOnlySpan<" + typeof(T).Name + ">[" + _length.ToString() + "]";
 
         public ref struct Enumerator
         {
@@ -124,6 +124,9 @@ namespace System
     public static class MemoryExtensions
     {
         public static Span<T> AsSpan<T>(this T[] array) => new Span<T>(array);
+        public static ReadOnlySpan<char> AsSpan(this string text) => text;
+        public static ReadOnlySpan<char> AsSpan(this string text, int start) => ((ReadOnlySpan<char>)text).Slice(start);
+        public static ReadOnlySpan<char> AsSpan(this string text, int start, int length) => ((ReadOnlySpan<char>)text).Slice(start, length);
         public static Span<T> AsSpan<T>(this T[] array, int start) => new Span<T>(array, start, array.Length - start);
         public static Span<T> AsSpan<T>(this T[] array, int start, int length) => new Span<T>(array, start, length);
         public static bool SequenceEqual<T>(this ReadOnlySpan<T> span, ReadOnlySpan<T> other) where T : IEquatable<T>

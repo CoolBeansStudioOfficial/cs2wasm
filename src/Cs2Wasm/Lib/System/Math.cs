@@ -154,6 +154,7 @@ namespace System
         public static double Acosh(double x) => CMath.Acosh(x);
         public static double Atanh(double x) => CMath.Atanh(x);
         public static double Cbrt(double d) => CMath.Cbrt(d);
+        public static (double Sin, double Cos) SinCos(double x) => (CMath.Sin(x), CMath.Cos(x));
         public static double ReciprocalEstimate(double d) => 1.0 / d;
         public static double ReciprocalSqrtEstimate(double d) => 1.0 / Rt.Sqrt(d);
         public static double MaxMagnitude(double x, double y) { double ax = Rt.Abs(x), ay = Rt.Abs(y); if (ax > ay || double.IsNaN(ax)) return x; if (ax == ay) return double.IsNegative(x) ? y : x; return y; }
@@ -195,6 +196,7 @@ namespace System
         public static float Cosh(float x) => (float)CMath.Cosh(x);
         public static float Tanh(float x) => (float)CMath.Tanh(x);
         public static float Cbrt(float x) => (float)CMath.Cbrt(x);
+        public static (float Sin, float Cos) SinCos(float x) => ((float)CMath.Sin(x), (float)CMath.Cos(x));
         public static float FusedMultiplyAdd(float x, float y, float z) => (float)((double)x * y + z);
     }
 }

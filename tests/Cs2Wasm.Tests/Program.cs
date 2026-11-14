@@ -14,17 +14,43 @@ var outDir = Path.Combine(root, "tests", "out");
 Directory.CreateDirectory(outDir);
 string? filter = args.FirstOrDefault(a => !a.StartsWith("--"));
 bool verbose = args.Contains("--verbose");
-var files = Directory.GetFiles(dir, "*.cs").Order(StringComparer.Ordinal).Where(f => filter == null || Path.GetFileName(f).Contains(filter)).ToList();
+// programs: each file in tests/Conformance, and each folder in tests/Godot (its files plus the upstream GodotSharp
+// sources it lists in godot-sources.txt, from $CS2WASM_GODOTSHARP or ../bazoodle/godot/modules/mono/glue/GodotSharp/GodotSharp)
+var programs = new List<(string name, List<(string path, string text)> sources, string[] symbols)>();
+foreach (var f in Directory.GetFiles(dir, "*.cs").Order(StringComparer.Ordinal))
+    programs.Add((Path.GetFileNameWithoutExtension(f), [(f, File.ReadAllText(f))], []));
+var godotDir = Path.Combine(root, "tests", "Godot");
+var godotSharp = Environment.GetEnvironmentVariable("CS2WASM_GODOTSHARP")
+    ?? Path.GetFullPath(Path.Combine(root, "..", "bazoodle", "godot", "modules", "mono", "glue", "GodotSharp", "GodotSharp"));
+var skipped = new List<string>();
+if (Directory.Exists(godotDir))
+    foreach (var d in Directory.GetDirectories(godotDir).Order(StringComparer.Ordinal))
+    {
+        var name = "godot_" + Path.GetFileName(d);
+        var list = Path.Combine(d, "godot-sources.txt");
+        var srcs = Directory.GetFiles(d, "*.cs").Order(StringComparer.Ordinal).Select(f => (f, File.ReadAllText(f))).ToList();
+        if (File.Exists(list))
+        {
+            if (!Directory.Exists(godotSharp)) { skipped.Add(name); continue; }
+            foreach (var rel in File.ReadAllLines(list).Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith('#')))
+            {
+                var full = Path.Combine(godotSharp, rel);
+                srcs.Add((full, File.ReadAllText(full)));
+            }
+        }
+        programs.Add((name, srcs, ["GODOT"]));
+    }
 int pass = 0, fail = 0;
 var report = new StringBuilder();
-foreach (var file in files)
+foreach (var n in skipped) { var l = $"SKIP {n} (GodotSharp sources not found at {godotSharp})"; Console.WriteLine(l); report.AppendLine(l); }
+foreach (var (name, sources, symbols) in programs.Where(p => filter == null || p.name.Contains(filter)))
 {
-    var name = Path.GetFileNameWithoutExtension(file);
-    var src = File.ReadAllText(file);
+    var src = sources[0].text;
+    var file = sources[0].path;
     var expectError = src.Contains("// expect-error:");
-    var comp = Frontend.CreateCompilation(name, [(file, src)]);
+    var comp = Frontend.CreateCompilation(name, sources, preprocessorSymbols: symbols);
     var errs = comp.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
-    if (errs.Count > 0) { Fail(name, "C# errors:\n" + string.Join("\n", errs)); continue; }
+    if (errs.Count > 0) { Fail(name, "C# errors:\n" + string.Join("\n", errs.Take(20))); continue; }
 
     var sw = Stopwatch.StartNew();
     var result = Cs2WasmCompiler.Compile(comp, new CompileOptions());

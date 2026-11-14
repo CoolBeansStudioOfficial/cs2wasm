@@ -18,6 +18,7 @@ namespace System
         public extern String(char c, int count);
         public extern String(char[] value);
         public extern String(char[] value, int startIndex, int length);
+        public extern String(ReadOnlySpan<char> value);
 
         public int Length => _length;
 
@@ -151,6 +152,8 @@ namespace System
             return true;
         }
         public static bool operator ==(string a, string b) => Equals(a, b);
+        public static implicit operator ReadOnlySpan<char>(string value) => value == null ? default : new ReadOnlySpan<char>(value.ToCharArray());
+        public static string Ctor(ReadOnlySpan<char> value) => value.Length == 0 ? "" : Ctor(value.ToArray());
         public static bool operator !=(string a, string b) => !Equals(a, b);
         public override bool Equals(object obj) => obj is string s && Equals(this, s);
         public bool Equals(string value) => Equals(this, value);

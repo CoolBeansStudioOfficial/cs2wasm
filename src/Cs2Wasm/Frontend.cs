@@ -37,9 +37,10 @@ public static class Frontend
         return list;
     });
 
-    public static CSharpCompilation CreateCompilation(string assemblyName, IEnumerable<(string path, string text)> sources, IEnumerable<MetadataReference>? extraReferences = null)
+    public static CSharpCompilation CreateCompilation(string assemblyName, IEnumerable<(string path, string text)> sources, IEnumerable<MetadataReference>? extraReferences = null, IEnumerable<string>? preprocessorSymbols = null)
     {
-        var trees = sources.Select(s => CSharpSyntaxTree.ParseText(Microsoft.CodeAnalysis.Text.SourceText.From(s.text, System.Text.Encoding.UTF8), ParseOptions, path: s.path)).ToList();
+        var opts = preprocessorSymbols == null ? ParseOptions : ParseOptions.WithPreprocessorSymbols(preprocessorSymbols);
+        var trees = sources.Select(s => CSharpSyntaxTree.ParseText(Microsoft.CodeAnalysis.Text.SourceText.From(s.text, System.Text.Encoding.UTF8), opts, path: s.path)).ToList();
         return CSharpCompilation.Create(assemblyName, trees, DefaultReferences().Concat(extraReferences ?? []),
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, deterministic: true,
                 nullableContextOptions: NullableContextOptions.Enable));
