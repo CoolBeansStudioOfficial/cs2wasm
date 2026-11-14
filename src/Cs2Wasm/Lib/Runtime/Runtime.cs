@@ -68,6 +68,8 @@ namespace Cs2Wasm.Runtime
     public static class Rt
     {
         [Intrinsic] public static extern int AddressOf(object o);
+        /// <summary>A null reference (address 0): what `fixed` over an empty span gives.</summary>
+        [Intrinsic] public static extern ref T NullRef<T>();
         /// <summary>Wraps an address whose count the caller owns.</summary>
         [Intrinsic] public static extern T Take<T>(int addr);
         /// <summary>Reads an address as a borrowed reference.</summary>

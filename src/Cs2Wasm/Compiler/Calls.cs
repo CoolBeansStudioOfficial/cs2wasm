@@ -434,6 +434,7 @@ sealed partial class FunctionCompiler
             case "Atomic.Notify": E.Emit(Op.MemoryAtomicNotify, 0, 2); return Own.None;
             case "Atomic.Fence": E.Emit(Op.AtomicFence); return Own.None;
             case "Rt.ThreadId": E.GGet(D.ThreadId); return Own.None;
+            case "Rt.NullRef": E.I32(0); return Own.None;
             case "Rt.SetThreadId": E.GSet(D.ThreadId); return Own.None;
             case "Rt.TlsBase": E.GGet(D.TlsBase); return Own.None;
             case "Rt.SetTlsBase": E.GSet(D.TlsBase); return Own.None;

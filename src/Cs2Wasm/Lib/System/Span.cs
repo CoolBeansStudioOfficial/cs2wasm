@@ -31,6 +31,7 @@ namespace System
             }
         }
 
+        public ref T GetPinnableReference() { if (_length == 0) return ref Cs2Wasm.Runtime.Rt.NullRef<T>(); return ref _array[_start]; }
         public Span<T> Slice(int start) => Slice(start, _length - start);
         public Span<T> Slice(int start, int length)
         {
@@ -78,6 +79,7 @@ namespace System
             _array = array; _start = start; _length = length;
         }
 
+        public ref readonly T GetPinnableReference() { if (_length == 0) return ref Cs2Wasm.Runtime.Rt.NullRef<T>(); return ref _array[_start]; }
         public int Length => _length;
         public bool IsEmpty => _length == 0;
         public static ReadOnlySpan<T> Empty => default;

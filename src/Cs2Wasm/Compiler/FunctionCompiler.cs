@@ -544,6 +544,9 @@ sealed partial class FunctionCompiler
             case IEmptyOperation: break;
             case ILocalFunctionOperation: break; // compiled when referenced
             case IUsingDeclarationOperation: throw new CompileException("using declaration outside a block");
+            case { Kind: OperationKind.None, Syntax: FixedStatementSyntax fs }:
+                EmitFixed(fs);
+                break;
             default:
                 if (op.Kind == OperationKind.None || op is IInvalidOperation) throw new CompileException($"unsupported statement '{op.Syntax}'", op.Syntax.GetLocation());
                 BeginTemps(); EmitDiscard(op); EndTemps();
@@ -609,6 +612,80 @@ sealed partial class FunctionCompiler
             if (i == start && ops[i] is ILabeledOperation lo) { if (lo.Operation != null) EmitStatement(lo.Operation); continue; }
             EmitStatement(ops[i]);
         }
+    }
+
+    /// <summary>fixed: nothing moves without a collector, so pinning is holding the object for the statement and
+    /// taking the address of its data (arrays and strings: null or empty gives a null pointer, as in C#).</summary>
+    void EmitFixed(FixedStatementSyntax fs)
+    {
+        var model = D.ModelFor(fs.SyntaxTree);
+        PushScope();
+        foreach (var v in fs.Declaration.Variables)
+        {
+            var sym = (ILocalSymbol)model.GetDeclaredSymbol(v)!;
+            var initExpr = v.Initializer!.Value;
+            var init = model.GetOperation(initExpr)!;
+            while (init is IConversionOperation { IsImplicit: true } cv) init = cv.Operand;
+            var it = TypeOf(init);
+            int ptr = E.AddLocal(ValType.I32);
+            if (it is IArrayTypeSymbol at || Types.IsString(it))
+            {
+                BeginTemps();
+                var o = EmitValue(init);
+                int h = E.AddLocal(ValType.I32);
+                ToOwned(o); E.Set(h); AddOwned(new Slot { Local = h, Type = it });
+                EndTemps();
+                int data = it is IArrayTypeSymbol a2 ? Types.ArrayDataOffset(a2.Rank) : 16;
+                E.Get(h); E.Op(Op.I32Eqz);
+                E.If(ValType.I32); E.I32(0);
+                E.Else();
+                E.Get(h); E.Load(Op.I32Load, 12); E.Op(Op.I32Eqz);
+                E.If(ValType.I32); E.I32(0); E.Else(); E.Get(h); E.I32(data); E.Op(Op.I32Add); E.End();
+                E.End();
+                E.Set(ptr);
+            }
+            else if (it is IPointerTypeSymbol)
+            {
+                BeginTemps(); EmitValue(init); EndTemps(ValType.I32); E.Set(ptr);
+            }
+            else
+            {
+                // the GetPinnableReference pattern (spans and user types): the reference it returns
+                var gpr = it.GetMembers("GetPinnableReference").OfType<IMethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 0)
+                    ?? throw new CompileException("fixed on " + it + " is not supported", initExpr.GetLocation());
+                BeginTemps();
+                var m = SubstMethod(gpr);
+                if (Types.IsStruct(T.Canonical(it)))
+                {
+                    int tmp = TempStruct(T.Canonical(it));
+                    EmitValue(init);
+                    // copy the struct value into the temp, then call on its address
+                    int src = E.AddLocal(ValType.I32);
+                    E.Set(src);
+                    E.Get(_fb); E.I32(tmp); E.Op(Op.I32Add); E.Get(src); CopyStructInit(T.Canonical(it));
+                    _wantRefReturnAddress = true;
+                    CallWith(m, false, () => { E.Get(_fb); E.I32(tmp); E.Op(Op.I32Add); }, () => { }, null, initExpr);
+                    _wantRefReturnAddress = false;
+                }
+                else
+                {
+                    var oo = EmitValue(init);
+                    int h = E.AddLocal(ValType.I32);
+                    ToOwned(oo); E.Set(h); AddOwned(new Slot { Local = h, Type = it });
+                    _wantRefReturnAddress = true;
+                    CallWith(m, IsVirtualDispatch(m), () => E.Get(h), () => { }, null, initExpr);
+                    _wantRefReturnAddress = false;
+                }
+                EndTemps(ValType.I32);
+                E.Set(ptr);
+            }
+            var lv = LocalVar(sym);
+            E.Get(ptr); E.Set(lv.Local);
+        }
+        PushScope();
+        EmitStatement(model.GetOperation(fs.Statement)!);
+        PopScope();
+        PopScope();
     }
 
     void EmitDeclaration(IVariableDeclarationOperation decl)
