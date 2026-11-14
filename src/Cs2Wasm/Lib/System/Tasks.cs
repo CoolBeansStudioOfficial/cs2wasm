@@ -305,7 +305,12 @@ namespace System.Threading.Tasks
         public bool IsCompletedSuccessfully => _task == null || _task.IsCompletedSuccessfully;
         public Task AsTask() => _task ?? Task.CompletedTask;
         public ValueTaskAwaiter GetAwaiter() => new ValueTaskAwaiter(_task);
+        public System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable ConfigureAwait(bool continueOnCapturedContext) => new System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable(_task, continueOnCapturedContext);
         public static ValueTask<TResult> FromResult<TResult>(TResult result) => new ValueTask<TResult>(result);
+        public static ValueTask FromException(Exception exception) => new ValueTask(Task.FromException(exception));
+        public bool IsFaulted => _task != null && _task.IsFaulted;
+        public bool IsCanceled => _task != null && _task.IsCanceled;
+        internal Task TaskOrNull => _task;
     }
 
     public readonly struct ValueTask<TResult>
@@ -318,6 +323,10 @@ namespace System.Threading.Tasks
         public TResult Result => _task == null ? _result : _task.Result;
         public Task<TResult> AsTask() => _task ?? Task.FromResult(_result);
         public ValueTaskAwaiter<TResult> GetAwaiter() => new ValueTaskAwaiter<TResult>(_task, _result);
+        public System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable<TResult> ConfigureAwait(bool continueOnCapturedContext) => new System.Runtime.CompilerServices.ConfiguredValueTaskAwaitable<TResult>(_task, _result, continueOnCapturedContext);
+        public bool IsCompletedSuccessfully => _task == null || _task.IsCompletedSuccessfully;
+        public bool IsFaulted => _task != null && _task.IsFaulted;
+        public bool IsCanceled => _task != null && _task.IsCanceled;
     }
 
     namespace Sources { }
@@ -388,6 +397,38 @@ namespace System.Runtime.CompilerServices
             public void OnCompleted(Action continuation) => _task.AddContinuation(continuation, _ctx);
             public void UnsafeOnCompleted(Action continuation) => _task.AddContinuation(continuation, _ctx);
             public TResult GetResult() { if (!_task.IsCompleted) Scheduler.RunUntil(_task); _task.ThrowIfFailed(); return _task._result; }
+        }
+    }
+
+    public readonly struct ConfiguredValueTaskAwaitable
+    {
+        readonly Task _task; readonly bool _ctx;
+        internal ConfiguredValueTaskAwaitable(Task t, bool ctx) { _task = t; _ctx = ctx; }
+        public ConfiguredValueTaskAwaiter GetAwaiter() => new ConfiguredValueTaskAwaiter(_task, _ctx);
+        public readonly struct ConfiguredValueTaskAwaiter : ICriticalNotifyCompletion
+        {
+            readonly Task _task; readonly bool _ctx;
+            internal ConfiguredValueTaskAwaiter(Task t, bool ctx) { _task = t; _ctx = ctx; }
+            public bool IsCompleted => _task == null || _task.IsCompleted;
+            public void OnCompleted(Action continuation) { if (_task == null) continuation(); else _task.AddContinuation(continuation, _ctx); }
+            public void UnsafeOnCompleted(Action continuation) => OnCompleted(continuation);
+            public void GetResult() { if (_task == null) return; if (!_task.IsCompleted) Scheduler.RunUntil(_task); _task.ThrowIfFailed(); }
+        }
+    }
+
+    public readonly struct ConfiguredValueTaskAwaitable<TResult>
+    {
+        readonly Task<TResult> _task; readonly TResult _result; readonly bool _ctx;
+        internal ConfiguredValueTaskAwaitable(Task<TResult> t, TResult r, bool ctx) { _task = t; _result = r; _ctx = ctx; }
+        public ConfiguredValueTaskAwaiter GetAwaiter() => new ConfiguredValueTaskAwaiter(_task, _result, _ctx);
+        public readonly struct ConfiguredValueTaskAwaiter : ICriticalNotifyCompletion
+        {
+            readonly Task<TResult> _task; readonly TResult _result; readonly bool _ctx;
+            internal ConfiguredValueTaskAwaiter(Task<TResult> t, TResult r, bool ctx) { _task = t; _result = r; _ctx = ctx; }
+            public bool IsCompleted => _task == null || _task.IsCompleted;
+            public void OnCompleted(Action continuation) { if (_task == null) continuation(); else _task.AddContinuation(continuation, _ctx); }
+            public void UnsafeOnCompleted(Action continuation) => OnCompleted(continuation);
+            public TResult GetResult() { if (_task == null) return _result; if (!_task.IsCompleted) Scheduler.RunUntil(_task); _task.ThrowIfFailed(); return _task._result; }
         }
     }
 
@@ -1107,5 +1148,77 @@ namespace Cs2Wasm.Runtime
                 while ((a = TakeWork()) != null) a();
             }
         }
+    }
+}
+
+namespace System
+{
+    public interface IAsyncDisposable { System.Threading.Tasks.ValueTask DisposeAsync(); }
+}
+
+namespace System.Collections.Generic
+{
+    using System.Threading;
+    using System.Threading.Tasks;
+    public interface IAsyncEnumerable<out T> { IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default); }
+    public interface IAsyncEnumerator<out T> : IAsyncDisposable { T Current { get; } ValueTask<bool> MoveNextAsync(); }
+}
+
+namespace System.Threading.Tasks
+{
+    using System.Collections.Generic;
+    using System.Threading;
+    using System.Runtime.CompilerServices;
+
+    public static class TaskAsyncEnumerableExtensions
+    {
+        public static ConfiguredCancelableAsyncEnumerable<T> ConfigureAwait<T>(this IAsyncEnumerable<T> source, bool continueOnCapturedContext) => new ConfiguredCancelableAsyncEnumerable<T>(source, default);
+        public static ConfiguredCancelableAsyncEnumerable<T> WithCancellation<T>(this IAsyncEnumerable<T> source, CancellationToken cancellationToken) => new ConfiguredCancelableAsyncEnumerable<T>(source, cancellationToken);
+        public static ConfiguredAsyncDisposable ConfigureAwait(this IAsyncDisposable source, bool continueOnCapturedContext) => new ConfiguredAsyncDisposable(source);
+    }
+}
+
+namespace System.Runtime.CompilerServices
+{
+    using System.Collections.Generic;
+    using System.Threading;
+    using System.Threading.Tasks;
+
+    public readonly struct ConfiguredCancelableAsyncEnumerable<T>
+    {
+        readonly IAsyncEnumerable<T> _source;
+        readonly CancellationToken _token;
+        internal ConfiguredCancelableAsyncEnumerable(IAsyncEnumerable<T> source, CancellationToken token) { _source = source; _token = token; }
+        public ConfiguredCancelableAsyncEnumerable<T> ConfigureAwait(bool continueOnCapturedContext) => this;
+        public ConfiguredCancelableAsyncEnumerable<T> WithCancellation(CancellationToken cancellationToken) => new ConfiguredCancelableAsyncEnumerable<T>(_source, cancellationToken);
+        public Enumerator GetAsyncEnumerator() => new Enumerator(_source.GetAsyncEnumerator(_token));
+        public readonly struct Enumerator
+        {
+            readonly IAsyncEnumerator<T> _e;
+            internal Enumerator(IAsyncEnumerator<T> e) { _e = e; }
+            public T Current => _e.Current;
+            public ConfiguredValueTaskAwaitable<bool> MoveNextAsync() => _e.MoveNextAsync().ConfigureAwait(true);
+            public ConfiguredValueTaskAwaitable DisposeAsync() => _e.DisposeAsync().ConfigureAwait(true);
+        }
+    }
+
+    public readonly struct ConfiguredAsyncDisposable
+    {
+        readonly IAsyncDisposable _source;
+        internal ConfiguredAsyncDisposable(IAsyncDisposable source) { _source = source; }
+        public ConfiguredValueTaskAwaitable DisposeAsync() => _source.DisposeAsync().ConfigureAwait(true);
+    }
+
+    [AttributeUsage(AttributeTargets.Method)] public sealed class AsyncIteratorStateMachineAttribute : Attribute { public AsyncIteratorStateMachineAttribute(Type t) { } }
+    [AttributeUsage(AttributeTargets.Parameter)] public sealed class EnumeratorCancellationAttribute : Attribute { }
+}
+
+namespace Cs2Wasm.Runtime
+{
+    using System.Threading.Tasks;
+    public static class AsyncIter
+    {
+        public static ValueTask<bool> Wrap(Task<bool> t) => new ValueTask<bool>(t);
+        public static ValueTask WrapDispose(Task<bool> t) => new ValueTask(t);
     }
 }

@@ -16,6 +16,10 @@ namespace Cs2Wasm.Compiler;
 sealed class MachineInfo
 {
     public bool IsAsync, IsIterator, ReturnsEnumerable, ReturnsVoid;
+    /// <summary>A plain iterator: MoveNext returns whether there is a current element.</summary>
+    public bool SyncIterator => IsIterator && !IsAsync;
+    /// <summary>An async iterator (IAsyncEnumerable/IAsyncEnumerator): MoveNext completes the pending MoveNextAsync promise.</summary>
+    public bool AsyncIterator => IsIterator && IsAsync;
     public required Display Machine;
     public ITypeSymbol? ElementType;   // iterator: T
     public ITypeSymbol? ResultType;    // async: T of Task<T>, or null
@@ -27,6 +31,8 @@ sealed class MachineInfo
     public IOperation Body = null!;
     /// <summary>The control-flow graph of the body (for lambdas and local functions, taken from the enclosing method's).</summary>
     public ControlFlowGraph? Cfg;
+    /// <summary>Iterator Dispose / DisposeAsync: filled after MoveNext, when the suspension points are known.</summary>
+    public WasmFunction? DisposeFn;
 }
 
 internal sealed partial class Driver
@@ -89,7 +95,7 @@ sealed partial class FunctionCompiler
         var info = new MachineInfo
         {
             Machine = machine, Method = M, Map = Map, IsAsync = M.IsAsync, IsIterator = M.IsIterator,
-            MoveNext = D.Module.AddFunction("MoveNext of " + E.Fn.Name, M.IsIterator ? new FuncType([ValType.I32], [ValType.I32]) : new FuncType([ValType.I32], [])),
+            MoveNext = D.Module.AddFunction("MoveNext of " + E.Fn.Name, M.IsIterator && !M.IsAsync ? new FuncType([ValType.I32], [ValType.I32]) : new FuncType([ValType.I32], [])),
             Body = body,
             Cfg = nested ? NestedCfg(def, syntax) : null,
         };
@@ -99,7 +105,7 @@ sealed partial class FunctionCompiler
         if (info.IsIterator)
         {
             var n = (INamedTypeSymbol)ret;
-            info.ReturnsEnumerable = n.Name == "IEnumerable";
+            info.ReturnsEnumerable = n.Name is "IEnumerable" or "IAsyncEnumerable";
             info.ElementType = n.Arity == 1 ? T.Canonical(n.TypeArguments[0]) : D.ObjectType;
         }
         else
@@ -132,6 +138,7 @@ sealed partial class FunctionCompiler
         if (info.IsIterator)
         {
             machine.Extra("current", info.ElementType!, T);
+            if (info.AsyncIterator) machine.Extra("promise", D.LibType("System.Threading.Tasks.Task`1").Construct(T.Canonical(D.Main.GetSpecialType(SpecialType.System_Boolean))), T);
             if (info.ReturnsEnumerable)
                 foreach (var p in M.Parameters) machine.Extra("init:" + p.Name, T.Resolve(p.Type, Map), T);
         }
@@ -164,7 +171,7 @@ sealed partial class FunctionCompiler
             if (info.IsIterator)
             {
                 E.Get(obj); E.I32(info.ReturnsEnumerable ? -2 : 0); E.Store(Op.I32Store, stateOff);
-                RegisterIterator(info, tid);
+                if (info.AsyncIterator) RegisterAsyncIterator(info, tid); else RegisterIterator(info, tid);
                 E.Get(obj); E.Call(Rt.Retain);
                 _retLocal = E.AddLocal(ValType.I32); E.Set(_retLocal);
                 EmitReturnSequence(true);
@@ -326,11 +333,97 @@ sealed partial class FunctionCompiler
         }
         st.Impls[K(ietor, "get_Current")] = gco;
         var disp = D.Module.AddFunction("Dispose of " + machine.Name, new FuncType([ValType.I32], []));
-        { var e = new Emitter(disp); e.Get(0); e.I32(-1); e.Store(Op.I32Store, stateOff); }
+        info.DisposeFn = disp;
         st.Impls[K(idisp, "Dispose")] = disp;
         var reset = D.Module.AddFunction("Reset of " + machine.Name, new FuncType([ValType.I32], []));
         { var e = new Emitter(reset); e.Call(D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "NotSupported", 0).Fn); }
         st.Impls[K(ietor, "Reset")] = reset;
+        D.SyntheticById[tid] = st;
+    }
+
+    /// <summary>Async iterator: the pending MoveNextAsync completes with `value`.</summary>
+    void CompletePromise(bool value)
+    {
+        var info = _machine!;
+        var promise = info.Machine.ExtraSlots["promise"];
+        var set = ((INamedTypeSymbol)promise.type).GetMembers("TrySetResultT").OfType<IMethodSymbol>().First();
+        CallWith(set, false, () => { E.Get(0); E.Load(Op.I32Load, promise.offset); }, () => E.I32(value ? 1 : 0), null, null);
+        E.Op(Op.Drop);
+    }
+
+    /// <summary>IAsyncEnumerable/IAsyncEnumerator over the machine: MoveNextAsync makes a fresh promise and runs
+    /// MoveNext, which completes it at the next `yield return` (true), the end (false), or an exception.</summary>
+    void RegisterAsyncIterator(MachineInfo info, int tid)
+    {
+        if (D.SyntheticById.ContainsKey(tid)) return;
+        var et = info.ElementType!;
+        var machine = info.Machine;
+        int stateOff = machine.ExtraSlots["state"].offset, curOff = machine.ExtraSlots["current"].offset;
+        var (promiseOff, promiseT) = machine.ExtraSlots["promise"];
+        var ienT = (INamedTypeSymbol)T.Canonical(D.Main.GetTypeByMetadataName("System.Collections.Generic.IAsyncEnumerable`1")!.Construct(et));
+        var ietorT = (INamedTypeSymbol)T.Canonical(D.Main.GetTypeByMetadataName("System.Collections.Generic.IAsyncEnumerator`1")!.Construct(et));
+        var idisp = (INamedTypeSymbol)T.Canonical(D.Main.GetTypeByMetadataName("System.IAsyncDisposable")!);
+        var st = new SyntheticType { Name = machine.Name, Interfaces = [ietorT, idisp] };
+        if (info.ReturnsEnumerable) st.Interfaces.Add(ienT);
+        IMethodSymbol Member(INamedTypeSymbol t, string name) => D.CanonicalMethod(t.GetMembers(name).OfType<IMethodSymbol>().First());
+        string K(INamedTypeSymbol t, string name) => Types.MethodKey(Member(t, name));
+
+        if (info.ReturnsEnumerable)
+        {
+            var gm = Member(ienT, "GetAsyncEnumerator");
+            var ge = D.Module.AddFunction("GetAsyncEnumerator of " + machine.Name, Driver.Signature(gm, T));
+            var e = new Emitter(ge);
+            e.Get(0); e.Load(Op.I32Load, stateOff); e.I32(-2); e.Op(Op.I32Eq);
+            e.If(); e.Get(0); e.I32(0); e.Store(Op.I32Store, stateOff); e.Get(0); e.Call(Rt.Retain); e.Op(Op.Return); e.End();
+            int n = e.AddLocal(ValType.I32);
+            e.I32Addr(new LateAddr(() => machine.Size)); e.I32(tid); e.Call(Rt.AllocObject); e.Set(n);
+            foreach (var p in M.Parameters)
+            {
+                var (off, pt) = machine.Slots[p.OriginalDefinition];
+                if (!machine.ExtraSlots.TryGetValue("init:" + p.Name, out var init)) continue;
+                CopyField(e, n, off, 0, init.offset, pt);
+                CopyField(e, n, init.offset, 0, init.offset, pt);
+            }
+            if (machine.Slots.TryGetValue(M.ContainingType, out var thisSlot)) CopyField(e, n, thisSlot.offset, 0, thisSlot.offset, thisSlot.type);
+            if (machine.Parent != null) CopyField(e, n, 12, 0, 12, D.ObjectType);
+            e.Get(n);
+            st.Impls[K(ienT, "GetAsyncEnumerator")] = ge;
+        }
+        // MoveNextAsync(): ValueTask<bool> written to the return slot (param 0), `this` is param 1
+        {
+            var mm = Member(ietorT, "MoveNextAsync");
+            var f = D.Module.AddFunction("MoveNextAsync of " + machine.Name, Driver.Signature(mm, T));
+            var e = new Emitter(f);
+            var create = ((INamedTypeSymbol)promiseT).GetMembers("CreateForAsyncT").OfType<IMethodSymbol>().First();
+            int p = e.AddLocal(ValType.I32);
+            e.Call(D.Method(D.CanonicalMethod(create)).Fn); e.Set(p);
+            e.Get(1); e.Load(Op.I32Load, promiseOff); e.Call(Rt.Release);
+            e.Get(1); e.Get(p); e.Store(Op.I32Store, promiseOff);
+            // a finished machine answers false at once
+            e.Get(1); e.Load(Op.I32Load, stateOff); e.I32(-1); e.Op(Op.I32Eq);
+            e.If();
+            var set = ((INamedTypeSymbol)promiseT).GetMembers("TrySetResultT").OfType<IMethodSymbol>().First();
+            e.Get(p); e.I32(0); e.Call(D.Method(D.CanonicalMethod(set)).Fn); e.Op(Op.Drop);
+            e.Else();
+            e.Get(1); e.Call(info.MoveNext);
+            e.End();
+            e.Get(0); e.Get(p); e.Call(D.LibMethod("Cs2Wasm.Runtime.AsyncIter", "Wrap", 1).Fn);
+            st.Impls[K(ietorT, "MoveNextAsync")] = f;
+        }
+        {
+            var getCur = Member(ietorT, "get_Current");
+            var gc = D.Module.AddFunction("Current of " + machine.Name, Driver.Signature(getCur, T));
+            var e = new Emitter(gc);
+            if (Types.IsStruct(et)) { e.Get(0); e.Get(1); e.I32(curOff); e.Op(Op.I32Add); e.Call(Rt.CopyInit(et)); }
+            else { e.Get(0); e.Load(Types.LoadOp(et), curOff); if (Types.IsRef(et)) e.Call(Rt.Retain); }
+            st.Impls[K(ietorT, "get_Current")] = gc;
+        }
+        {
+            var dm = Member(idisp, "DisposeAsync");
+            var f = D.Module.AddFunction("DisposeAsync of " + machine.Name, Driver.Signature(dm, T));
+            info.DisposeFn = f;
+            st.Impls[K(idisp, "DisposeAsync")] = f;
+        }
         D.SyntheticById[tid] = st;
     }
 
@@ -388,7 +481,7 @@ sealed partial class FunctionCompiler
             E.End();
         }
         // finished or disposed: nothing to do
-        if (info.IsIterator) { E.I32(0); E.Op(Op.Return); } else E.Op(Op.Return);
+        if (info.SyncIterator) { E.I32(0); E.Op(Op.Return); } else E.Op(Op.Return);
         E.End(); // try_table
         E.Op(Op.Unreachable);
         E.End(); // handler block
@@ -397,9 +490,10 @@ sealed partial class FunctionCompiler
         E.Get(_fb); E.GSet(D.StackPointer);
         EmitMachineExceptionDispatch(ex, exn);
         E.End(); // loop
-        if (info.IsIterator) { E.I32(0); }
+        if (info.SyncIterator) { E.I32(0); }
         _usesFrame = true;
         PopScopeNoRelease();
+        EmitIteratorDispose();
         FinishMachine();
     }
 
@@ -430,6 +524,55 @@ sealed partial class FunctionCompiler
     {
         yield return r;
         foreach (var n in r.NestedRegions) foreach (var x in AllRegions(n)) yield return x;
+    }
+
+    readonly List<int> _yieldResumes = [];
+
+    /// <summary>Dispose of a suspended iterator runs the finally blocks around its `yield return`, innermost first, as
+    /// .NET does; then the iterator is finished.</summary>
+    void EmitIteratorDispose()
+    {
+        var info = _machine!;
+        if (info.DisposeFn == null) return;
+        var save = E;
+        var e = new Emitter(info.DisposeFn);
+        int self = info.AsyncIterator ? 1 : 0;
+        int exit = _cfg!.Blocks.Length - 1;
+        foreach (var id in _yieldResumes)
+        {
+            var b = _cfg.Blocks[_segments[id].block];
+            var fins = new List<ControlFlowRegion>();
+            ControlFlowRegion? child = null;
+            for (var x = b.EnclosingRegion; x != null; child = x, x = x.EnclosingRegion)
+                if (x.Kind == ControlFlowRegionKind.TryAndFinally && child?.Kind == ControlFlowRegionKind.Try)
+                    fins.Add(x.NestedRegions.First(n => n.Kind == ControlFlowRegionKind.Finally));
+            if (fins.Count == 0) continue;
+            e.Get(self); e.Load(Op.I32Load, _dispatchStateOff); e.I32(id); e.Op(Op.I32Eq);
+            e.If();
+            for (int i = 0; i < fins.Count; i++)
+            {
+                var (retOff, _) = FinallySlots(fins[i]);
+                int next = i + 1 < fins.Count ? fins[i + 1].FirstBlockOrdinal : exit;
+                e.Get(self); e.I32(next); e.Store(Op.I32Store, retOff);
+            }
+            e.Get(self); e.I32(fins[0].FirstBlockOrdinal); e.Store(Op.I32Store, _dispatchStateOff);
+            if (info.AsyncIterator)
+            {
+                var (promiseOff, promiseT) = info.Machine.ExtraSlots["promise"];
+                var create = ((INamedTypeSymbol)promiseT).GetMembers("CreateForAsyncT").OfType<IMethodSymbol>().First();
+                int p = e.AddLocal(ValType.I32);
+                e.Call(D.Method(D.CanonicalMethod(create)).Fn); e.Set(p);
+                e.Get(self); e.Load(Op.I32Load, promiseOff); e.Call(Rt.Release);
+                e.Get(self); e.Get(p); e.Store(Op.I32Store, promiseOff);
+                e.Get(self); e.Call(info.MoveNext);
+                e.Get(0); e.Get(p); e.Call(D.LibMethod("Cs2Wasm.Runtime.AsyncIter", "WrapDispose", 1).Fn);
+            }
+            else { e.Get(self); e.Call(info.MoveNext); e.Op(Op.Drop); }
+            e.Op(Op.Return);
+            e.End();
+        }
+        e.Get(self); e.I32(-1); e.Store(Op.I32Store, _dispatchStateOff);
+        if (info.AsyncIterator) { e.Get(0); e.I32(0); e.I32(T.StorageOf(T.Canonical(D.LibType("System.Threading.Tasks.ValueTask"))).size); e.Op(Op.MemoryFill); }
     }
 
     int NewSegment(int block, int op, int action)
@@ -467,7 +610,9 @@ sealed partial class FunctionCompiler
                 StoreToAddressFromStack(() => E.Get(0), cur.offset, info.ElementType!, o);
                 EndTemps();
                 int resume = NewSegment(b.Ordinal, i + 1, 0);
+                _yieldResumes.Add(resume);
                 SetState(resume);
+                if (info.AsyncIterator) { CompletePromise(true); E.Op(Op.Return); return; }
                 E.I32(1); E.Op(Op.Return);
                 return;
             }
@@ -580,6 +725,7 @@ sealed partial class FunctionCompiler
     {
         var info = _machine!;
         SetState(-1);
+        if (info.AsyncIterator) { CompletePromise(false); E.Op(Op.Return); return; }
         if (info.IsIterator) { E.I32(0); E.Op(Op.Return); return; }
         if (info.TaskType != null)
         {
@@ -642,6 +788,16 @@ sealed partial class FunctionCompiler
             E.End();
         }
         // nothing handles it
+        if (info.AsyncIterator)
+        {
+            SetState(-1);
+            var promise = info.Machine.ExtraSlots["promise"].offset;
+            E.Get(0); E.Load(Op.I32Load, promise); E.Get(ex);
+            E.Call(D.LibMethod("System.Threading.Tasks.Task", "TrySetExceptionCore", 1).Fn); E.Op(Op.Drop);
+            E.Get(ex); E.Call(Rt.Release);
+            E.Op(Op.Return);
+            return;
+        }
         if (info.IsAsync && info.TaskType != null)
         {
             SetState(-1);
@@ -773,11 +929,10 @@ sealed partial class FunctionCompiler
                 case 1:
                     {
                         var a = (IAwaitOperation)op;
-                        var ai = D.ModelFor(a.Syntax.SyntaxTree).GetAwaitExpressionInfo((AwaitExpressionSyntax)a.Syntax);
-                        if (ai.GetAwaiterMethod == null || ai.GetResultMethod == null) throw new CompileException("await on this type is not supported", a.Syntax.GetLocation());
-                        var getAwaiter = SubstMethod(ai.GetAwaiterMethod);
+                        var ai = AwaitInfo(a);
+                        var getAwaiter = SubstMethod(ai.getAwaiter);
                         var awT = T.Canonical(getAwaiter.ReturnType);
-                        int awOff = info.Machine.Extra("awaiter" + a.Syntax.SpanStart, awT, T);
+                        int awOff = info.Machine.Extra("awaiter" + AwaitKey(a), awT, T);
                         BeginTemps();
                         Own ow;
                         if (getAwaiter.IsStatic) ow = EmitCallOps(getAwaiter, null, [a.Operation], false, a.Syntax, alreadyResolved: true);
@@ -787,7 +942,7 @@ sealed partial class FunctionCompiler
                         int resume = NewSegment(b.Ordinal, opIndex, k + 1);
                         // if (!awaiter.IsCompleted) { state = resume; awaiter.OnCompleted(MoveNext); return; }
                         BeginTemps();
-                        var isc = SubstMethod(ai.IsCompletedProperty!.GetMethod!);
+                        var isc = SubstMethod(ai.isCompleted.GetMethod!);
                         CallWith(isc, false, () => PushAwaiter(awOff, awT), () => { }, null, null);
                         EndTemps(ValType.I32);
                         E.Op(Op.I32Eqz);
@@ -803,7 +958,7 @@ sealed partial class FunctionCompiler
                             int dl = TempRef(actionT); E.Tee(dl);
                         }, null, null);
                         EndTemps();
-                        if (info.IsIterator) E.I32(0);
+                        if (info.SyncIterator) E.I32(0);
                         E.Op(Op.Return);
                         E.End();
                         Goto(resume);
@@ -812,11 +967,11 @@ sealed partial class FunctionCompiler
                 case 2:
                     {
                         var a = (IAwaitOperation)op;
-                        var ai = D.ModelFor(a.Syntax.SyntaxTree).GetAwaitExpressionInfo((AwaitExpressionSyntax)a.Syntax);
-                        var getAwaiter = SubstMethod(ai.GetAwaiterMethod!);
+                        var ai = AwaitInfo(a);
+                        var getAwaiter = SubstMethod(ai.getAwaiter);
                         var awT = T.Canonical(getAwaiter.ReturnType);
-                        int awOff = info.Machine.Extra("awaiter" + a.Syntax.SpanStart, awT, T);
-                        var gr = SubstMethod(ai.GetResultMethod!);
+                        int awOff = info.Machine.Extra("awaiter" + AwaitKey(a), awT, T);
+                        var gr = SubstMethod(ai.getResult);
                         var rt = T.Canonical(gr.ReturnType);
                         BeginTemps();
                         if (Types.IsVoid(rt))
@@ -826,7 +981,7 @@ sealed partial class FunctionCompiler
                         }
                         else
                         {
-                            int roff = info.Machine.Extra("result" + a.Syntax.SpanStart, rt, T);
+                            int roff = info.Machine.Extra("result" + AwaitKey(a), rt, T);
                             var ro = CallWith(gr, false, () => PushAwaiter(awOff, awT), () => { }, null, null);
                             StoreToAddressFromStack(() => E.Get(0), roff, rt, ro);
                             _precomputed[a] = (roff, rt);
@@ -843,6 +998,30 @@ sealed partial class FunctionCompiler
             }
         }
         return true;
+    }
+
+    readonly Dictionary<IOperation, int> _awaitKeys = [];
+    int AwaitKey(IAwaitOperation a) { if (!_awaitKeys.TryGetValue(a, out var k)) _awaitKeys[a] = k = _awaitKeys.Count; return k; }
+
+    /// <summary>The awaiter pattern of an await: from the semantic model for `await e`, or by lookup for the awaits
+    /// the control-flow graph makes itself (`await foreach`, `await using`).</summary>
+    (IMethodSymbol getAwaiter, IPropertySymbol isCompleted, IMethodSymbol getResult) AwaitInfo(IAwaitOperation a)
+    {
+        if (a.Syntax is AwaitExpressionSyntax aes)
+        {
+            var ai = D.ModelFor(a.Syntax.SyntaxTree).GetAwaitExpressionInfo(aes);
+            if (ai.GetAwaiterMethod == null || ai.GetResultMethod == null || ai.IsCompletedProperty == null) throw new CompileException("await on this type is not supported", a.Syntax.GetLocation());
+            return (ai.GetAwaiterMethod, ai.IsCompletedProperty, ai.GetResultMethod);
+        }
+        var ot = a.Operation.Type ?? throw new CompileException("await without a type", a.Syntax.GetLocation());
+        IMethodSymbol? ga = null;
+        for (var t = ot as INamedTypeSymbol; t != null && ga == null; t = t.BaseType)
+            ga = t.GetMembers("GetAwaiter").OfType<IMethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 0 && !m.IsStatic);
+        if (ga == null) throw new CompileException("await on " + ot + " is not supported", a.Syntax.GetLocation());
+        var awT = ga.ReturnType;
+        var isc = awT.GetMembers("IsCompleted").OfType<IPropertySymbol>().First();
+        var gr = awT.GetMembers("GetResult").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 0);
+        return (ga, isc, gr);
     }
 
     WasmFunction MoveNextVoidThunk(MachineInfo info)

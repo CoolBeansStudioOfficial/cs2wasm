@@ -50,7 +50,12 @@ properties, value equality, `ToString`/`PrintMembers`, `with`, copy/clone, `==`,
 
 Iterators and async methods are lowered like Roslyn's: a state machine object holds every local; its MoveNext is a
 dispatch loop over Roslyn's control-flow graph, one resumable segment per basic block and per suspension point, with
-a single exception handler that finds the catch or finally region of the segment that was running.
+a single exception handler that finds the catch or finally region of the segment that was running. Async iterators
+(`IAsyncEnumerable<T>`, `IAsyncEnumerator<T>`) use the same machine: `MoveNextAsync` makes a fresh promise and runs
+MoveNext, which completes it at the next `yield return`, at the end, or with the exception. `await foreach` and
+`await using` (also with `WithCancellation`/`ConfigureAwait`) come from the control-flow graph's own lowering.
+Disposing a suspended iterator (`Dispose`, `DisposeAsync`, leaving a `foreach` early) runs the `finally` blocks
+around its `yield return`, innermost first, as .NET does.
 
 `goto` (to a label in the same or an enclosing block, forward or backward, out of loops and `try`) compiles each
 labeled block as a dispatch loop over its segments; a backward `goto` releases what the block declared after the
@@ -65,8 +70,7 @@ exception, before unwinding runs any `finally`. An exception thrown inside a fil
 filters pay nothing.
 
 Not done yet (a program using them gets a `CW0101` error naming the construct):
-- async iterators (`IAsyncEnumerable`, `await foreach`); exception filters inside iterators and async methods; `await`
-  inside `?:`, `&&`, `||`, `??` sub-expressions;
+- exception filters inside iterators and async methods; `await` inside `?:`, `&&`, `||`, `??` sub-expressions;
 - lambdas inside loops of an async method or iterator share one variable per loop instead of one per iteration;
 - spans over stack or native memory (`stackalloc` into a span allocates an array);
 - reflection beyond `Type` names, `dynamic`, the interpreter for runtime code generation (section 8);
