@@ -59,7 +59,7 @@ Not done yet (a program using them gets a `CW0101` error naming the construct):
 - non-record primary constructors (C# 12 classes), positional and list patterns;
 - multi-dimensional arrays, `stackalloc`, `fixed`, spans over stack or native memory;
 - reflection beyond `Type` names, `dynamic`, the interpreter for runtime code generation (section 8);
-- `goto`; `lock` compiles but takes no lock (there are no threads yet);
+- `goto`;
 - exception filters run in one pass (a filter runs after inner `finally` blocks, not before as in .NET).
 
 Async on one thread: continuations run when the awaited task completes (or are posted to a captured
@@ -126,7 +126,7 @@ answers "when they split"; it is not a heap scan, but it is a tracing step.
   cycle-capable and pay the link cost though no instance ever forms a cycle.
 - Finalizers of members run when the arena is freed or swept, in table order; a finalizer that stores references
   into its arena while the arena is being freed is not supported (the store stays counted). Arenas are
-  single-threaded (no atomic counts, section 4.5).
+  not thread-aware beyond the runtime lock: arena operations take it, but a cycle shared across threads is untested.
 - Size: the arena runtime adds about 4 KB (raw) to modules that need it.
 
 Also fixed on the way: freeing a large block at the top of the heap moved the bump pointer back without clearing
@@ -135,7 +135,29 @@ the block, so later objects could start with stale fields (found by the sweep's 
 Not done:
 - ownership specialization of functions, retroactive owners, the counting-elision statistics (4.1);
 - weak references, `ConditionalWeakTable` (4.4);
-- threads (4.5): no workers, no atomic counts, no thread statics, no parking (7.2).
+- threads (4.5), see below: per-object sharing analysis, thread pool, `Task.Run`/`Parallel` on workers, parking (7.2).
+
+### 4.5 Threads — partial
+Done: `System.Threading.Thread` runs on a real worker: each thread is a new instance of the module on the shared
+memory, started through the engine import `cs2wasm.thread_spawn(stackTop, tls, id, arg)` at the per-thread export
+`__thread_entry`, which sets that instance's stack pointer, thread-local block and thread id (globals) before running
+the delegate. Each thread gets a 1 MB shadow stack and a thread-local block holding `[ThreadStatic]` fields. The WASM
+atomic instructions are emitted for `Interlocked`, `Volatile` and the runtime; `lock` is `Monitor.Enter`/`Exit` in a
+`try`/`finally`, and `Monitor` is a real reentrant lock per object with `Wait`/`Pulse`/`PulseAll`. The allocator and
+the lock table share one reentrant runtime lock. `Join`, `Sleep` and lock waits block with `memory.atomic.wait32` on
+workers and spin on the engine thread, which never blocks. An exception escaping a thread is reported like one
+escaping an export. The Node host (`host/worker.mjs`) runs each thread as a `worker_threads` Worker; once a worker
+exists, output is written through immediately so it stays in order.
+
+Counts: when the program can start a thread, `rt.retain`/`rt.release` become compare-and-swap loops for every
+object (immortal and arena count words are kept). This is program-wide, not the per-object analysis the spec asks for
+(only objects reached from more than one thread should pay for atomic counts): still to do. Programs that never start
+a thread keep plain counts, and the lock functions are empty.
+
+Not done: the thread pool sized to the device's cores, with `Task.Run` and `Parallel` on it (`Task.Run` still runs on
+the engine thread's scheduler), `ThreadLocal<T>`, `AsyncLocal<T>`, freeing a finished thread's stack and thread-local
+block, static constructors guarded across threads (two threads can both run a type's static initializer), the
+scheduling-dependence marks for the plugin (7.3), and parking workers for snapshots (7.2).
 
 ### 5. Optimization — minimal
 Done: reachability from exports (only reached methods are emitted), devirtualization when a virtual call has one
@@ -144,7 +166,7 @@ implementation or the receiver type is sealed, a final pass over the WASM (ident
 Not done: inlining, escape analysis (stack allocation of non-escaping objects), constant folding beyond Roslyn's,
 local packing, data segment packing.
 
-### 6. The module — done except threads
+### 6. The module — done
 32-bit core module, imported shared memory (`env.memory`, size from options), passive data segment initialized by the
 `init` export, exports from `[UnmanagedCallersOnly(EntryPoint)]` wrapped so no exception crosses them (reported
 through `cs2wasm.report_exception`, export returns 0), boundary-table imports (one typed import per allowed method;
@@ -154,7 +176,8 @@ source map. The stack pointer global is exported (`__stack_pointer`, section 7.2
 Stack traces: `Exception.StackTrace` and `ToString()` give C# frames with file and line in .NET's format
 (`   at Program.Depth(Int32 n) in C:\...\x.cs:line 25`), captured through the engine at `throw` only (no cost on
 paths that do not throw) and cut at the catching frame as in .NET. Lambda and local-function frame names
-approximate Roslyn's generated names. Per-thread start export: not done (no threads).
+approximate Roslyn's generated names. Per-thread start export: `__thread_entry` (section 4.5), with `__tls_base`
+exported beside the stack pointer.
 
 ### 7. What Bazoodle needs — partial
 - 7.1 plugin passes: `ICompilerPlugin` (interface version 1) runs after lowering and before emission, sees the
@@ -174,7 +197,7 @@ approximate Roslyn's generated names. Per-thread start export: not done (no thre
   LINQ with deferred execution, StringBuilder). Moving to upstream sources is open work. Invariant globalization
   semantics are followed (culture comparisons are ordinal, as in .NET's invariant mode). Case mapping covers
   ASCII, Latin-1, Greek and Cyrillic only. Present since: `Task` and friends, `Random`, `Stopwatch`,
-  `BitConverter`, `Type`, spans over arrays. Missing: `DateTime`, `TimeZoneInfo`, threads, `GodotSharp`.
+  `BitConverter`, `Type`, spans over arrays. Missing: `DateTime`, `TimeZoneInfo`, the thread pool, `GodotSharp`.
 - 7.5–7.6: no GodotSharp, no browser build, budgets unmeasured.
 
 ### 8. Sandbox — partial

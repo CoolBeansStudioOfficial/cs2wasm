@@ -441,28 +441,238 @@ namespace System.Threading
         public void Dispose() { }
     }
 
-    /// <summary>`lock` compiles to Monitor; with one thread, entering never waits.</summary>
+    public delegate void ThreadStart();
+    public delegate void ParameterizedThreadStart(object obj);
+
+    /// <summary>A real thread: a worker instance on the shared memory (section 4.5).</summary>
+    public sealed class Thread
+    {
+        readonly ThreadStart _start;
+        readonly ParameterizedThreadStart _pstart;
+        object _arg;
+        internal int _id, _state, _stack, _tls; // state: 0 unstarted, 1 running, 2 finished
+        public string Name { get; set; }
+        public bool IsBackground { get; set; }
+
+        [ThreadStatic] static Thread t_current;
+
+        public Thread(ThreadStart start) { if (start == null) throw new ArgumentNullException("start"); _start = start; _id = Threads.NewId(); }
+        public Thread(ParameterizedThreadStart start) { if (start == null) throw new ArgumentNullException("start"); _pstart = start; _id = Threads.NewId(); }
+        public Thread(ThreadStart start, int maxStackSize) : this(start) { }
+        Thread(int id) { _id = id; _state = 1; }
+
+        public static Thread CurrentThread => t_current ??= new Thread(Rt.ThreadId());
+        internal static void SetCurrent(Thread t) { t_current = t; }
+        public int ManagedThreadId => _id;
+        public bool IsAlive => Atomic.Load32(ref _state) == 1;
+        public bool IsThreadPoolThread => false;
+
+        public void Start()
+        {
+            if (Atomic.CompareExchange32(ref _state, 0, 1) != 0) throw new ThreadStateException("Thread is running or terminated; it cannot restart.");
+            Threads.SpawnCore(this);
+        }
+        public void Start(object parameter)
+        {
+            if (_pstart == null) throw new InvalidOperationException("The thread was created with a ThreadStart delegate that does not accept a parameter.");
+            _arg = parameter;
+            Start();
+        }
+
+        internal void Execute()
+        {
+            if (_start != null) _start(); else _pstart(_arg);
+            _arg = null;
+        }
+
+        public void Join()
+        {
+            if (Atomic.Load32(ref _state) == 0) throw new ThreadStateException("Thread has not been started.");
+            while (Atomic.Load32(ref _state) != 2)
+            {
+                if (Rt.ThreadId() == 1) continue; // the engine thread never blocks
+                Atomic.Wait32(ref _state, 1, -1);
+            }
+        }
+        public bool Join(int millisecondsTimeout)
+        {
+            if (millisecondsTimeout == -1) { Join(); return true; }
+            long end = Engine.MonotonicNs() + (long)millisecondsTimeout * 1000000;
+            while (Atomic.Load32(ref _state) != 2)
+            {
+                long left = end - Engine.MonotonicNs();
+                if (left <= 0) return false;
+                if (Rt.ThreadId() != 1) Atomic.Wait32(ref _state, 1, left);
+            }
+            return true;
+        }
+
+        public static void Sleep(int millisecondsTimeout)
+        {
+            if (millisecondsTimeout < -1) throw new ArgumentOutOfRangeException("millisecondsTimeout");
+            long end = Engine.MonotonicNs() + (long)millisecondsTimeout * 1000000;
+            int dummy = 0;
+            while (true)
+            {
+                long left = end - Engine.MonotonicNs();
+                if (left <= 0) return;
+                if (Rt.ThreadId() != 1) Atomic.Wait32(ref dummy, 0, left);
+            }
+        }
+        public static void Sleep(TimeSpan timeout) => Sleep((int)timeout.TotalMilliseconds);
+        public static bool Yield() => true;
+        public static void SpinWait(int iterations) { }
+        public static void MemoryBarrier() => Atomic.Fence();
+    }
+
+    public class ThreadStateException : SystemException
+    {
+        public ThreadStateException() : base("Thread was in an invalid state for the operation being executed.") { }
+        public ThreadStateException(string message) : base(message) { }
+    }
+
+    public class SynchronizationLockException : SystemException
+    {
+        public SynchronizationLockException() : base("Object synchronization method was called from an unsynchronized block of code.") { }
+        public SynchronizationLockException(string message) : base(message) { }
+    }
+
+    /// <summary>`lock` compiles to Monitor: a reentrant lock per object, kept in a table by address under the runtime lock.</summary>
     public static class Monitor
     {
-        public static void Enter(object obj) { if (obj == null) throw new ArgumentNullException("obj"); }
-        public static void Enter(object obj, ref bool lockTaken) { if (obj == null) throw new ArgumentNullException("obj"); lockTaken = true; }
-        public static void Exit(object obj) { }
-        public static bool TryEnter(object obj) => true;
-        public static void Wait(object obj) { }
-        public static void Pulse(object obj) { }
-        public static void PulseAll(object obj) { }
+        sealed class Entry { public int Owner, Depth, Waiters, Signals; }
+        static Collections.Generic.Dictionary<int, Entry> s_locks;
+
+        static Entry Get(object obj, bool create)
+        {
+            s_locks ??= new Collections.Generic.Dictionary<int, Entry>();
+            int key = Rt.AddressOf(obj);
+            if (s_locks.TryGetValue(key, out var e)) return e;
+            if (!create) return null;
+            e = new Entry();
+            s_locks[key] = e;
+            return e;
+        }
+
+        static void Drop(object obj, Entry e) { if (e.Depth == 0 && e.Waiters == 0) s_locks.Remove(Rt.AddressOf(obj)); }
+
+        public static void Enter(object obj)
+        {
+            if (obj == null) throw new ArgumentNullException("obj");
+            int me = Rt.ThreadId();
+            while (true)
+            {
+                Rt.RuntimeLock();
+                var e = Get(obj, true);
+                if (e.Owner == 0 || e.Owner == me) { e.Owner = me; e.Depth++; Rt.RuntimeUnlock(); return; }
+                int g = Atomic.Load32(ref Threads.s_generation);
+                Rt.RuntimeUnlock();
+                Threads.WaitGeneration(g);
+            }
+        }
+        public static void Enter(object obj, ref bool lockTaken) { Enter(obj); lockTaken = true; }
+        public static bool TryEnter(object obj)
+        {
+            if (obj == null) throw new ArgumentNullException("obj");
+            int me = Rt.ThreadId();
+            Rt.RuntimeLock();
+            var e = Get(obj, true);
+            bool ok = e.Owner == 0 || e.Owner == me;
+            if (ok) { e.Owner = me; e.Depth++; } else Drop(obj, e);
+            Rt.RuntimeUnlock();
+            return ok;
+        }
+        public static void TryEnter(object obj, ref bool lockTaken) { lockTaken = TryEnter(obj); }
+        public static bool IsEntered(object obj)
+        {
+            Rt.RuntimeLock();
+            var e = Get(obj, false);
+            bool r = e != null && e.Owner == Rt.ThreadId();
+            Rt.RuntimeUnlock();
+            return r;
+        }
+
+        public static void Exit(object obj)
+        {
+            if (obj == null) throw new ArgumentNullException("obj");
+            Rt.RuntimeLock();
+            var e = Get(obj, false);
+            if (e == null || e.Owner != Rt.ThreadId()) { Rt.RuntimeUnlock(); throw new SynchronizationLockException(); }
+            if (--e.Depth == 0) { e.Owner = 0; Drop(obj, e); }
+            Rt.RuntimeUnlock();
+            Threads.WakeAll();
+        }
+
+        public static bool Wait(object obj) => Wait(obj, -1);
+        public static bool Wait(object obj, int millisecondsTimeout)
+        {
+            if (obj == null) throw new ArgumentNullException("obj");
+            int me = Rt.ThreadId();
+            long end = millisecondsTimeout < 0 ? long.MaxValue : Engine.MonotonicNs() + (long)millisecondsTimeout * 1000000;
+            Rt.RuntimeLock();
+            var e = Get(obj, false);
+            if (e == null || e.Owner != me) { Rt.RuntimeUnlock(); throw new SynchronizationLockException(); }
+            int depth = e.Depth;
+            e.Owner = 0; e.Depth = 0; e.Waiters++;
+            bool signaled = false;
+            while (true)
+            {
+                if (e.Signals > 0) { e.Signals--; signaled = true; }
+                if (signaled || Engine.MonotonicNs() >= end)
+                {
+                    if (e.Owner == 0) { e.Waiters--; e.Owner = me; e.Depth = depth; Rt.RuntimeUnlock(); return signaled; }
+                }
+                int g = Atomic.Load32(ref Threads.s_generation);
+                Rt.RuntimeUnlock();
+                Threads.WakeAll();
+                Threads.WaitGeneration(g);
+                Rt.RuntimeLock();
+            }
+        }
+        public static void Pulse(object obj)
+        {
+            Rt.RuntimeLock();
+            var e = Get(obj, false);
+            if (e == null || e.Owner != Rt.ThreadId()) { Rt.RuntimeUnlock(); throw new SynchronizationLockException(); }
+            if (e.Signals < e.Waiters) e.Signals++;
+            Rt.RuntimeUnlock();
+            Threads.WakeAll();
+        }
+        public static void PulseAll(object obj)
+        {
+            Rt.RuntimeLock();
+            var e = Get(obj, false);
+            if (e == null || e.Owner != Rt.ThreadId()) { Rt.RuntimeUnlock(); throw new SynchronizationLockException(); }
+            e.Signals = e.Waiters;
+            Rt.RuntimeUnlock();
+            Threads.WakeAll();
+        }
     }
 
     public static class Interlocked
     {
-        public static int Increment(ref int location) => ++location;
-        public static long Increment(ref long location) => ++location;
-        public static int Decrement(ref int location) => --location;
-        public static long Decrement(ref long location) => --location;
-        public static int Add(ref int location, int value) => location += value;
-        public static long Add(ref long location, long value) => location += value;
-        public static int Exchange(ref int location, int value) { int o = location; location = value; return o; }
-        public static int CompareExchange(ref int location, int value, int comparand) { int o = location; if (o == comparand) location = value; return o; }
+        public static int Increment(ref int location) => Atomic.Add32(ref location, 1) + 1;
+        public static long Increment(ref long location) => Atomic.Add64(ref location, 1) + 1;
+        public static int Decrement(ref int location) => Atomic.Add32(ref location, -1) - 1;
+        public static long Decrement(ref long location) => Atomic.Add64(ref location, -1) - 1;
+        public static int Add(ref int location, int value) => Atomic.Add32(ref location, value) + value;
+        public static long Add(ref long location, long value) => Atomic.Add64(ref location, value) + value;
+        public static int Exchange(ref int location, int value) => Atomic.Exchange32(ref location, value);
+        public static long Exchange(ref long location, long value) => Atomic.Exchange64(ref location, value);
+        public static int CompareExchange(ref int location, int value, int comparand) => Atomic.CompareExchange32(ref location, comparand, value);
+        public static long CompareExchange(ref long location, long value, long comparand) => Atomic.CompareExchange64(ref location, comparand, value);
+        public static long Read(ref long location) => Atomic.Load64(ref location);
+        public static void MemoryBarrier() => Atomic.Fence();
+    }
+
+    public static class Volatile
+    {
+        public static int Read(ref int location) => Atomic.Load32(ref location);
+        public static long Read(ref long location) => Atomic.Load64(ref location);
+        public static bool Read(ref bool location) { bool v = location; Atomic.Fence(); return v; }
+        public static void Write(ref int location, int value) => Atomic.Store32(ref location, value);
+        public static void Write(ref long location, long value) => Atomic.Store64(ref location, value);
+        public static void Write(ref bool location, bool value) { Atomic.Fence(); location = value; }
     }
 
 }

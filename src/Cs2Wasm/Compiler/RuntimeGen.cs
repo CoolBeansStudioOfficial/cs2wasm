@@ -578,6 +578,25 @@ sealed class RuntimeGen
 
     public void FinishExports()
     {
+        // a worker instance starts here: its own stack, thread-local block and id, then the thread's delegate
+        if (D.UsesThreads)
+        {
+            var run = D.LibMethod("Cs2Wasm.Runtime.Threads", "Run", 1);
+            var w = D.Module.AddFunction("__thread_entry", new FuncType([ValType.I32, ValType.I32, ValType.I32, ValType.I32], []));
+            w.Exports.Add("__thread_entry");
+            var e = new Emitter(w);
+            e.Get(0); e.GSet(D.StackPointer);
+            e.Get(1); e.GSet(D.TlsBase);
+            e.Get(2); e.GSet(D.ThreadId);
+            var blk = e.Block(ValType.I32);
+            e.TryTable(null, (0, D.ExceptionTag, blk));
+            e.Get(3); e.Call(run.Fn);
+            e.Op(Op.Return);
+            e.End();
+            e.Op(Op.Unreachable);
+            e.End();
+            e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1).Fn);
+        }
         // export wrappers
         foreach (var (name, mi) in _exports)
         {
@@ -603,6 +622,7 @@ sealed class RuntimeGen
     public void Finish()
     {
         if (D.Arenas.Enabled) EmitArenaSupport();
+        D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
         EmitDestroyDispatch();
         EmitStubs();
         EmitTypeTests();

@@ -69,6 +69,24 @@ internal sealed partial class Driver
     public int DataBase = 16, StaticBase, StackTop, HeapBase;
 
     public readonly WasmGlobal StackPointer;
+    /// <summary>Per instance (thread): its managed thread id (1 = the engine thread) and thread-local block.</summary>
+    public readonly WasmGlobal ThreadId, TlsBase;
+    int _tlsSize;
+    public int TlsSize => (_tlsSize + 15) / 16 * 16;
+    readonly Dictionary<string, int> _tls = [];
+    /// <summary>Offset of a [ThreadStatic] field in the thread-local block.</summary>
+    public int ThreadStaticOffset(INamedTypeSymbol owner, ISymbol storage, ITypeSymbol type)
+    {
+        var key = Types.Key(Types.Canonical(owner)) + "::" + storage.MetadataName;
+        if (_tls.TryGetValue(key, out var off)) return off;
+        var (size, align) = Types.StorageOf(type);
+        _tlsSize = (_tlsSize + align - 1) / align * align;
+        off = _tlsSize; _tlsSize += size;
+        _tls[key] = off;
+        return off;
+    }
+    /// <summary>True once the program can start a thread: counts become atomic and the runtime lock is real.</summary>
+    public bool UsesThreads => AllMethods.Any(m => m.Sym.Name == "SpawnCore" && m.Sym.ContainingType?.Name == "Threads" && m.Compiled);
     public readonly WasmTag ExceptionTag;
     readonly List<SourcePos> _positions = [];
     readonly Dictionary<SourcePos, int> _posIndex = [];
@@ -86,6 +104,10 @@ internal sealed partial class Driver
         Types = new Types(this);
         StackPointer = new WasmGlobal("__stack_pointer", ValType.I32, true, 0) { Export = "__stack_pointer" };
         Module.Globals.Add(StackPointer);
+        ThreadId = new WasmGlobal("__thread_id", ValType.I32, true, 1);
+        Module.Globals.Add(ThreadId);
+        TlsBase = new WasmGlobal("__tls_base", ValType.I32, true, 0) { Export = "__tls_base" };
+        Module.Globals.Add(TlsBase);
         ExceptionTag = new WasmTag("cs_exception", new FuncType([ValType.I32], []));
         Module.Tags.Add(ExceptionTag);
         Module.MemoryMinPages = options.MemoryInitialPages;

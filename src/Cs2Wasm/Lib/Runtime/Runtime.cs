@@ -40,6 +40,8 @@ namespace Cs2Wasm.Runtime
     /// <summary>Engine imports used by the library (section 7.4). The engine supplies these.</summary>
     public static class Engine
     {
+        /// <summary>Starts a worker instance that calls __thread_entry(stackTop, tls, id, arg); 0 when started.</summary>
+        [Import("cs2wasm", "thread_spawn")] public static extern int ThreadSpawn(int stackTop, int tls, int id, int arg);
         /// <summary>Console output: UTF-16 text at (ptr, length in chars).</summary>
         [Import("cs2wasm", "write")] public static extern void Write(int ptr, int len);
         /// <summary>An exception escaped an export: type name, message, stack trace (UTF-16 ptr/len pairs).</summary>
@@ -134,7 +136,21 @@ namespace Cs2Wasm.Runtime
             s_end = Mem.Size() * 65536;
         }
 
+        [Intrinsic] public static extern int ThreadId();
+        [Intrinsic] public static extern int TlsBase();
+        [Intrinsic] public static extern int TlsSize();
+        [Intrinsic] public static extern void RuntimeLock();
+        [Intrinsic] public static extern void RuntimeUnlock();
+
         public static int Alloc(int size)
+        {
+            RuntimeLock();
+            int a = AllocCore(size);
+            RuntimeUnlock();
+            return a;
+        }
+
+        static int AllocCore(int size)
         {
             if (s_top == 0) InitHeap();
             size = (size + 7) & ~7;
@@ -181,6 +197,13 @@ namespace Cs2Wasm.Runtime
 
         public static void Free(int addr, int size)
         {
+            RuntimeLock();
+            FreeCore(addr, size);
+            RuntimeUnlock();
+        }
+
+        static void FreeCore(int addr, int size)
+        {
             size = (size + 7) & ~7;
             if (size < 16) size = 16;
             if (size <= MaxSmall)
@@ -202,8 +225,7 @@ namespace Cs2Wasm.Runtime
             int a = Alloc(size);
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
-            s_hash++;
-            Mem.StoreI32(a + 8, s_hash);
+            Mem.StoreI32(a + 8, Atomic.Add32(ref s_hash, 1) + 1);
             return a;
         }
 
@@ -626,6 +648,74 @@ namespace Cs2Wasm.Runtime
             else ux >>>= -ex + 1;
             ux |= sx;
             return F64FromBits(ux);
+        }
+    }
+
+    /// <summary>The threads proposal's atomic instructions on a location (ref = its address).</summary>
+    public static class Atomic
+    {
+        [Intrinsic] public static extern int Load32(ref int location);
+        [Intrinsic] public static extern void Store32(ref int location, int value);
+        [Intrinsic] public static extern int Add32(ref int location, int value);
+        [Intrinsic] public static extern int Exchange32(ref int location, int value);
+        [Intrinsic] public static extern int CompareExchange32(ref int location, int expected, int replacement);
+        [Intrinsic] public static extern long Load64(ref long location);
+        [Intrinsic] public static extern void Store64(ref long location, long value);
+        [Intrinsic] public static extern long Add64(ref long location, long value);
+        [Intrinsic] public static extern long Exchange64(ref long location, long value);
+        [Intrinsic] public static extern long CompareExchange64(ref long location, long expected, long replacement);
+        /// <summary>0 woken, 1 value differed, 2 timed out. Traps where the thread may not block (the engine thread).</summary>
+        [Intrinsic] public static extern int Wait32(ref int location, int expected, long timeoutNs);
+        [Intrinsic] public static extern int Notify(ref int location, int count);
+        [Intrinsic] public static extern void Fence();
+    }
+
+    /// <summary>Worker threads (section 4.5): each runs an instance of the module on the shared memory.</summary>
+    public static class Threads
+    {
+        internal const int StackSize = 1 << 20;
+        static int s_nextId = 1;
+        /// <summary>Bumped whenever a lock is released or a monitor pulsed; waiters sleep on it.</summary>
+        internal static int s_generation;
+
+        internal static int NewId() => Atomic.Add32(ref s_nextId, 1) + 1;
+
+        internal static void SpawnCore(System.Threading.Thread t)
+        {
+            int stack = Rt.Alloc(StackSize);
+            int tls = Rt.Alloc(Rt.TlsSize() + 16);
+            t._stack = stack;
+            t._tls = tls;
+            Rt.Retain(t); // the worker's reference, taken back in Run
+            if (Engine.ThreadSpawn(stack + StackSize, tls, t._id, Rt.AddressOf(t)) != 0)
+            {
+                Rt.Release(t);
+                throw new System.OutOfMemoryException("Thread failed to start.");
+            }
+        }
+
+        /// <summary>The worker side: runs the delegate, then marks the thread finished and wakes joiners.</summary>
+        public static void Run(int threadAddr)
+        {
+            var t = Rt.Take<System.Threading.Thread>(threadAddr);
+            System.Threading.Thread.SetCurrent(t);
+            try { t.Execute(); }
+            finally
+            {
+                System.Threading.Thread.SetCurrent(null);
+                Atomic.Store32(ref t._state, 2);
+                Atomic.Notify(ref t._state, -1);
+                WakeAll();
+            }
+        }
+
+        internal static void WakeAll() { Atomic.Add32(ref s_generation, 1); Atomic.Notify(ref s_generation, -1); }
+
+        /// <summary>Waits for s_generation to move from g (the engine thread spins: it never blocks).</summary>
+        internal static void WaitGeneration(int g)
+        {
+            if (Rt.ThreadId() == 1) { while (Atomic.Load32(ref s_generation) == g) { } return; }
+            Atomic.Wait32(ref s_generation, g, 1000000);
         }
     }
 

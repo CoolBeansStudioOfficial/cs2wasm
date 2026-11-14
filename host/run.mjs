@@ -1,7 +1,7 @@
 // Minimal engine for tests: creates the shared memory, supplies cs2wasm's engine imports, logs boundary calls.
 // usage: node host/run.mjs module.wasm [export=main] [--pages N] [--max-pages N]
-import { readFileSync } from 'node:fs';
-import { cs2wasmImports } from './engine.mjs';
+import { readFileSync, writeSync } from 'node:fs';
+import { cs2wasmImports, threadImports } from './engine.mjs';
 
 const args = process.argv.slice(2);
 const file = args[0];
@@ -15,16 +15,18 @@ for (let i = 1; i < args.length; i++) {
 const module = new WebAssembly.Module(readFileSync(file));
 const memory = new WebAssembly.Memory({ initial: pages, maximum: maxPages, shared: true });
 let buf = '';
-const flush = () => { if (buf) { process.stdout.write(buf); buf = ''; } };
+const flush = () => { if (buf) { writeSync(1, buf); buf = ''; } };
+let threaded = false; // once a worker exists, output is written through at once so it interleaves in order
 const out = {
-  write: (s) => { buf += s; if (buf.length > 65536) flush(); },
+  write: (s) => { if (threaded) { writeSync(1, s); return; } buf += s; if (buf.length > 65536) flush(); },
   error: (type, message, stack) => {
     flush();
     process.stderr.write(`Unhandled exception. ${type}: ${message}${stack ? '\n' + stack : ''}\n`);
     process.exitCode = 3;
   },
 };
-const imports = { env: { memory }, cs2wasm: cs2wasmImports(module, () => memory, out) };
+const spawned = () => { if (!threaded) { flush(); threaded = true; } };
+const imports = { env: { memory }, cs2wasm: { ...cs2wasmImports(module, () => memory, out), ...threadImports(module, memory, out, spawned) } };
 // any other import is an engine boundary method: log the call (stub boundary, proof 3)
 for (const imp of WebAssembly.Module.imports(module)) {
   if (imp.kind !== 'function') continue;

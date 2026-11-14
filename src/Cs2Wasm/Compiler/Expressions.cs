@@ -402,6 +402,7 @@ sealed partial class FunctionCompiler
                     if (field.IsStatic)
                     {
                         EmitStaticInitGuardForField(Owner(field));
+                        if (IsThreadStatic(storage)) { E.GGet(D.TlsBase); return D.ThreadStaticOffset(Owner(field), storage, T.Resolve(field.Type, Map)); }
                         E.I32Addr(D.StaticField(Owner(field), storage, T.Resolve(field.Type, Map)));
                         return 0;
                     }
@@ -496,12 +497,15 @@ sealed partial class FunctionCompiler
         });
     }
 
+    static bool IsThreadStatic(ISymbol f) => f.GetAttributes().Any(a => a.AttributeClass?.Name == "ThreadStaticAttribute");
+
     void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce)
     {
         var ft = T.Resolve(f.Type, Map);
         int a = E.AddLocal(ValType.I32);
         int off;
-        if (f.IsStatic) { EmitStaticInitGuardForField(Owner(f)); E.I32Addr(D.StaticField(Owner(f), f, ft)); off = 0; }
+        if (f.IsStatic && IsThreadStatic(f)) { EmitStaticInitGuardForField(Owner(f)); E.GGet(D.TlsBase); off = D.ThreadStaticOffset(Owner(f), f, ft); }
+        else if (f.IsStatic) { EmitStaticInitGuardForField(Owner(f)); E.I32Addr(D.StaticField(Owner(f), f, ft)); off = 0; }
         else { recv!(); off = T.Field(f, Map).Offset; }
         E.Set(a);
         var o = produce();

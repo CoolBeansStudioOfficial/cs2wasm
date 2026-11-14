@@ -6,6 +6,76 @@ namespace Cs2Wasm.Compiler;
 /// <summary>Type-specialized helpers: generic equality, hashing and comparison; array element operations; enum names.</summary>
 internal sealed partial class RuntimeFns
 {
+    WasmFunction? _lockEnter, _lockExit;
+    /// <summary>The runtime lock (allocator, arenas, task continuations): reentrant, owned by a thread id. Empty without threads.</summary>
+    public WasmFunction LockEnter => _lockEnter ??= M.AddFunction("rt.lock_enter", FT([], []));
+    public WasmFunction LockExit => _lockExit ??= M.AddFunction("rt.lock_exit", FT([], []));
+
+    /// <summary>Fills in the lock and, when threads exist, makes retain/release atomic.</summary>
+    public void EmitThreadSupport(bool threads, Func<WasmFunction> retainSlow, Func<WasmFunction> releaseSlow, bool arenas)
+    {
+        if (threads) { _ = LockEnter; _ = LockExit; }
+        var owner = D.StaticAddress("rt.lock.owner", 4, 4);
+        var depth = D.StaticAddress("rt.lock.depth", 4, 4);
+        if (_lockEnter != null && threads)
+        {
+            var e = new Emitter(_lockEnter);
+            // reentrant: if we own it, depth++; else CAS 0 -> id, spinning (waiting where allowed)
+            e.I32Addr(owner); e.Emit(Op.I32AtomicLoad, 0, 2); e.GGet(D.ThreadId); e.Op(Op.I32Eq);
+            e.If(); e.I32Addr(depth); e.I32Addr(depth); e.Load(Op.I32Load); e.I32(1); e.Op(Op.I32Add); e.Store(Op.I32Store); e.Op(Op.Return); e.End();
+            var brk = e.Block(); var top = e.Loop();
+            e.I32Addr(owner); e.I32(0); e.GGet(D.ThreadId); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Op(Op.I32Eqz); e.BrIf(brk);
+            e.Br(top); e.End(); e.End();
+            e.I32Addr(depth); e.I32(1); e.Store(Op.I32Store);
+        }
+        if (_lockExit != null && threads)
+        {
+            var e = new Emitter(_lockExit);
+            e.I32Addr(depth); e.I32Addr(depth); e.Load(Op.I32Load); e.I32(1); e.Op(Op.I32Sub); e.Store(Op.I32Store);
+            e.I32Addr(depth); e.Load(Op.I32Load); e.Op(Op.I32Eqz);
+            e.If(); e.I32Addr(owner); e.I32(0); e.Emit(Op.I32AtomicStore, 0, 2); e.End();
+        }
+        if (!threads) return;
+        // retain(p): CAS the count up; immortal (-1) and dead (0) stay; arena members go through the runtime lock
+        {
+            var f = Retain; f.Body.Clear(); f.Locals.Clear();
+            var e = new Emitter(f);
+            int r = e.AddLocal(I);
+            e.Get(0); e.If();
+            var brk = e.Block(); var top = e.Loop();
+            e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
+            e.If();
+            e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(brk);
+            e.Br(top);
+            e.End();
+            if (arenas) { e.Get(r); e.I32(-1); e.Op(Op.I32LtS); e.If(); e.Call(LockEnter); e.Get(0); e.Call(retainSlow()); e.Call(LockExit); e.End(); }
+            e.End(); e.End();
+            e.End();
+            e.Get(0);
+        }
+        {
+            var f = Release; f.Body.Clear(); f.Locals.Clear();
+            var e = new Emitter(f);
+            int r = e.AddLocal(I);
+            e.Get(0); e.If();
+            var brk = e.Block(); var top = e.Loop();
+            e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(1); e.Op(Op.I32GtS);
+            e.If();
+            e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(brk);
+            e.Br(top);
+            e.End();
+            e.Get(r); e.I32(1); e.Op(Op.I32Eq);
+            e.If();
+            e.Get(0); e.I32(1); e.I32(0); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.I32(1); e.Op(Op.I32Eq);
+            e.If(); e.Get(0); e.Call(Destroy); e.Br(brk); e.End();
+            e.Br(top);
+            e.End();
+            if (arenas) { e.Get(r); e.I32(-1); e.Op(Op.I32LtS); e.If(); e.Call(LockEnter); e.Get(0); e.Call(releaseSlow()); e.Call(LockExit); e.End(); }
+            e.End(); e.End();
+            e.End();
+        }
+    }
+
     WasmFunction? _clamp;
     /// <summary>(v, lo, hi) → v clamped to [lo, hi].</summary>
     public WasmFunction ClampI32 => _clamp ??= MakeClamp();

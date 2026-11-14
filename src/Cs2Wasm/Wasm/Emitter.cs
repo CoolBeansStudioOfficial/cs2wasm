@@ -40,6 +40,7 @@ internal sealed class Emitter
         Wasm.Op.I32Load8S or Wasm.Op.I32Load8U or Wasm.Op.I64Load8S or Wasm.Op.I64Load8U or Wasm.Op.I32Store8 or Wasm.Op.I64Store8 => 0,
         Wasm.Op.I32Load16S or Wasm.Op.I32Load16U or Wasm.Op.I64Load16S or Wasm.Op.I64Load16U or Wasm.Op.I32Store16 or Wasm.Op.I64Store16 => 1,
         Wasm.Op.I64Load or Wasm.Op.F64Load or Wasm.Op.I64Store or Wasm.Op.F64Store => 3,
+        Wasm.Op.I64AtomicLoad or Wasm.Op.I64AtomicStore or Wasm.Op.I64AtomicRmwAdd or Wasm.Op.I64AtomicRmwSub or Wasm.Op.I64AtomicRmwXchg or Wasm.Op.I64AtomicRmwCmpxchg or Wasm.Op.MemoryAtomicWait64 => 3,
         _ => 2,
     };
 

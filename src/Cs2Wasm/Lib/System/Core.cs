@@ -211,7 +211,7 @@ namespace System
         public static int TickCount => (int)(Engine.MonotonicNs() / 1000000);
         public static long TickCount64 => Engine.MonotonicNs() / 1000000;
         public static int ProcessorCount => 1;
-        public static int CurrentManagedThreadId => 1;
+        public static int CurrentManagedThreadId => Rt.ThreadId();
     }
 }
 

@@ -519,9 +519,20 @@ sealed partial class FunctionCompiler
             case IThrowOperation th: BeginTemps(); EmitThrow(th.Exception); EndTemps(); break;
             case IUsingOperation u: EmitUsing(u.Resources, u.Body, u.Locals); break;
             case ILockOperation lk:
-                BeginTemps(); EmitDiscard(lk.LockedValue); EndTemps();
-                EmitStatement(lk.Body);
-                break;
+                {
+                    // Monitor.Enter(o); try { body } finally { Monitor.Exit(o); } with o held for the statement
+                    PushScope();
+                    BeginTemps();
+                    var o = EmitValue(lk.LockedValue);
+                    int l = E.AddLocal(ValType.I32);
+                    ToOwned(o); E.Set(l); AddOwned(new Slot { Local = l, Type = D.ObjectType });
+                    EndTemps();
+                    E.Get(l); E.Call(D.LibMethod("System.Threading.Monitor", "Enter", 1).Fn);
+                    EmitTryFinallyCore(() => { PushScope(); EmitStatement(lk.Body); PopScope(); },
+                        () => { E.Get(l); E.Call(D.LibMethod("System.Threading.Monitor", "Exit", 1).Fn); });
+                    PopScope();
+                    break;
+                }
             case ILabeledOperation lb:
                 if (lb.Operation != null) EmitStatement(lb.Operation);
                 break;
