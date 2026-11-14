@@ -1,0 +1,75 @@
+namespace Cs2Wasm.Wasm;
+
+internal sealed class Label { public string Name = ""; public override string ToString() => Name; }
+
+/// <summary>Appends instructions to a function body, tracking structured-control depth for branch labels.</summary>
+internal sealed class Emitter
+{
+    public readonly WasmFunction Fn;
+    readonly List<Label?> _blocks = [];
+    public int CurrentPos = -1;
+    public Emitter(WasmFunction fn) { Fn = fn; }
+
+    public List<Instr> Body => Fn.Body;
+
+    public int AddLocal(ValType t) { Fn.Locals.Add(t); return Fn.Type.Params.Length + Fn.Locals.Count - 1; }
+
+    public ref Instr Emit(Op op, long imm = 0, long imm2 = 0, object? r = null)
+    {
+        Fn.Body.Add(new Instr { Op = op, Imm = imm, Imm2 = imm2, Ref = r, Pos = CurrentPos });
+        return ref System.Runtime.InteropServices.CollectionsMarshal.AsSpan(Fn.Body)[^1];
+    }
+
+    public void I32(int v) => Emit(Wasm.Op.I32Const, v);
+    public void I32Addr(IAddress a, int offset = 0) => Emit(Wasm.Op.I32Const, offset, 0, a);
+    public void I64(long v) => Emit(Wasm.Op.I64Const, v);
+    public void F32(float v) => Emit(Wasm.Op.F32Const, BitConverter.SingleToInt32Bits(v));
+    public void F64(double v) => Emit(Wasm.Op.F64Const, BitConverter.DoubleToInt64Bits(v));
+    public void Get(int l) => Emit(Wasm.Op.LocalGet, l);
+    public void Set(int l) => Emit(Wasm.Op.LocalSet, l);
+    public void Tee(int l) => Emit(Wasm.Op.LocalTee, l);
+    public void GGet(WasmGlobal g) => Emit(Wasm.Op.GlobalGet, 0, 0, g);
+    public void GSet(WasmGlobal g) => Emit(Wasm.Op.GlobalSet, 0, 0, g);
+    public void Call(WasmFunction f) => Emit(Wasm.Op.Call, 0, 0, f);
+    public void Op(Op op) => Emit(op);
+    public void Load(Op op, int offset = 0) => Emit(op, offset, NaturalAlign(op));
+    public void Store(Op op, int offset = 0) => Emit(op, offset, NaturalAlign(op));
+
+    static int NaturalAlign(Op op) => op switch
+    {
+        Wasm.Op.I32Load8S or Wasm.Op.I32Load8U or Wasm.Op.I64Load8S or Wasm.Op.I64Load8U or Wasm.Op.I32Store8 or Wasm.Op.I64Store8 => 0,
+        Wasm.Op.I32Load16S or Wasm.Op.I32Load16U or Wasm.Op.I64Load16S or Wasm.Op.I64Load16U or Wasm.Op.I32Store16 or Wasm.Op.I64Store16 => 1,
+        Wasm.Op.I64Load or Wasm.Op.F64Load or Wasm.Op.I64Store or Wasm.Op.F64Store => 3,
+        _ => 2,
+    };
+
+    // ---- structured control ----
+    public Label Block(object? bt = null, string name = "") { var l = new Label { Name = name }; Emit(Wasm.Op.Block, 0, 0, bt); _blocks.Add(l); return l; }
+    public Label Loop(object? bt = null, string name = "") { var l = new Label { Name = name }; Emit(Wasm.Op.Loop, 0, 0, bt); _blocks.Add(l); return l; }
+    public Label If(object? bt = null) { var l = new Label(); Emit(Wasm.Op.If, 0, 0, bt); _blocks.Add(l); return l; }
+    public void Else() => Emit(Wasm.Op.Else);
+    public void End() { Emit(Wasm.Op.End); _blocks.RemoveAt(_blocks.Count - 1); }
+
+    /// <summary>Opens a try_table; catch labels refer to enclosing blocks (resolved now, outside the try_table).</summary>
+    public Label TryTable(object? bt, params (byte kind, WasmTag? tag, Label target)[] catches)
+    {
+        var info = new TryTableInfo { BlockType = bt };
+        foreach (var c in catches) info.Catches.Add(new CatchClause { Kind = c.kind, Tag = c.tag, Label = Depth(c.target) });
+        var l = new Label();
+        Emit(Wasm.Op.TryTable, 0, 0, info);
+        _blocks.Add(l);
+        return l;
+    }
+
+    public int Depth(Label l)
+    {
+        for (int i = _blocks.Count - 1; i >= 0; i--)
+            if (ReferenceEquals(_blocks[i], l)) return _blocks.Count - 1 - i;
+        throw new InvalidOperationException("label not in scope: " + l.Name);
+    }
+
+    public void Br(Label l) => Emit(Wasm.Op.Br, Depth(l));
+    public void BrIf(Label l) => Emit(Wasm.Op.BrIf, Depth(l));
+    public void BrTable(Label[] targets, Label dflt) => Emit(Wasm.Op.BrTable, Depth(dflt), 0, targets.Select(Depth).ToArray());
+    public int OpenBlocks => _blocks.Count;
+}

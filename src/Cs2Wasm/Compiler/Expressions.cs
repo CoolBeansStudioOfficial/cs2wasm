@@ -1,0 +1,1938 @@
+using Cs2Wasm.Wasm;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Operations;
+using Microsoft.CodeAnalysis.FlowAnalysis;
+
+namespace Cs2Wasm.Compiler;
+
+sealed partial class FunctionCompiler
+{
+    ITypeSymbol TypeOf(IOperation op) => T.Resolve(op.Type ?? throw new CompileException($"expression has no type: {op.Syntax}", op.Syntax.GetLocation()), Map);
+
+    void EmitDiscard(IOperation op)
+    {
+        switch (op)
+        {
+            case ISimpleAssignmentOperation sa: EmitAssign(sa, needResult: false); return;
+            case ICompoundAssignmentOperation ca: EmitCompound(ca, needResult: false); return;
+            case IIncrementOrDecrementOperation inc: EmitIncDec(inc, needResult: false); return;
+            case ICoalesceAssignmentOperation cas: EmitCoalesceAssign(cas, needResult: false); return;
+            case IEventAssignmentOperation ea: EmitEventAssign(ea); return;
+            case IDeconstructionAssignmentOperation da: EmitDeconstruction(da); return;
+        }
+        var t = op.Type;
+        var o = EmitValue(op);
+        if (t == null || Types.IsVoid(t)) return;
+        Drop(o, t);
+    }
+
+    void EmitCondition(IOperation op)
+    {
+        var o = EmitValue(op);
+        var t = TypeOf(op);
+        if (Types.PrimOf(t) != Prim.Bool) throw new CompileException("condition is not bool: " + op.Syntax, op.Syntax.GetLocation());
+    }
+
+    /// <summary>Emit a value converted to <paramref name="target"/> (implicit conversions the operation tree left out).</summary>
+    Own EmitValueAs(IOperation op, ITypeSymbol target)
+    {
+        var o = EmitValue(op);
+        if (op.Type == null) return o; // null literal etc.
+        var from = TypeOf(op);
+        ConvertTop(from, target, ref o);
+        return o;
+    }
+
+    Own EmitValue(IOperation op)
+    {
+        int save = E.CurrentPos;
+        try { return EmitValueCore(op); }
+        catch (CompileException ex) when (ex.Location == null) { throw new CompileException(ex.Message, op.Syntax.GetLocation()); }
+        finally { E.CurrentPos = save; }
+    }
+
+    Own EmitValueCore(IOperation op)
+    {
+        if (_machine != null && TryPrecomputed(op, out var pre)) return pre;
+        if (op.ConstantValue.HasValue && op is not IAssignmentOperation)
+            return EmitConstant(op.ConstantValue.Value, op.Type != null ? TypeOf(op) : null);
+        switch (op)
+        {
+            case IConversionOperation c: return EmitConversion(c);
+            case ILocalReferenceOperation l:
+                if (IsCaptured(l.Local)) return LoadCaptured(l.Local);
+                return LoadVar(LocalVar(l.Local));
+            case IParameterReferenceOperation p:
+                if (IsCaptured(p.Parameter)) return LoadCaptured(p.Parameter);
+                return LoadVar(_vars[p.Parameter]);
+            case IInstanceReferenceOperation ir: return EmitThis(ir);
+            case IFieldReferenceOperation f: return EmitFieldLoad(f);
+            case IPropertyReferenceOperation pr: return EmitPropertyGet(pr);
+            case IArrayElementReferenceOperation ae: return EmitArrayElementLoad(ae);
+            case IBinaryOperation b: return EmitBinary(b);
+            case IUnaryOperation u: return EmitUnary(u);
+            case ISimpleAssignmentOperation sa: return EmitAssign(sa, needResult: true);
+            case ICompoundAssignmentOperation ca: return EmitCompound(ca, needResult: true);
+            case IIncrementOrDecrementOperation inc: return EmitIncDec(inc, needResult: true);
+            case ICoalesceAssignmentOperation cas: return EmitCoalesceAssign(cas, needResult: true);
+            case IInvocationOperation inv: return EmitInvocation(inv);
+            case IObjectCreationOperation oc: return EmitObjectCreation(oc);
+            case ITypeParameterObjectCreationOperation tpc: return EmitTypeParamCreation(tpc);
+            case IArrayCreationOperation ac: return EmitArrayCreation(ac);
+            case IConditionalOperation co: return EmitConditionalExpr(co);
+            case ICoalesceOperation coal: return EmitCoalesce(coal);
+            case IIsTypeOperation it: return EmitIsType(it);
+            case IIsPatternOperation ip: return EmitIsPattern(ip);
+            case ISwitchExpressionOperation se: return EmitSwitchExpression(se);
+            case IInterpolatedStringOperation iso: return EmitInterpolatedString(iso);
+            case IDefaultValueOperation dv: return EmitDefault(TypeOf(dv));
+            case IConditionalAccessOperation ca2: return EmitConditionalAccess(ca2);
+            case IConditionalAccessInstanceOperation: return EmitConditionalInstance();
+            case IDelegateCreationOperation dc: return EmitDelegateCreation(dc);
+            case IThrowOperation th: EmitThrow(th.Exception); E.Op(Op.Unreachable); return th.Type != null && Types.IsRef(TypeOf(th)) ? Own.Owned : Own.None;
+            case IAddressOfOperation ao: EmitAddress(ao.Reference); return Own.None;
+            case IDeclarationExpressionOperation de: return EmitValue(de.Expression);
+            case ISizeOfOperation so: E.I32(T.StorageOf(T.Resolve(so.TypeOperand, Map)).size); return Own.None;
+            case IAnonymousFunctionOperation af: throw new CompileException("lambda without delegate conversion", af.Syntax.GetLocation());
+            case IParenthesizedOperation pa: return EmitValue(pa.Operand);
+            case IObjectOrCollectionInitializerOperation: throw new CompileException("initializer outside creation");
+            case INameOfOperation: break;
+            case ITupleOperation tu: return EmitTuple(tu);
+            case ITupleBinaryOperation tb: return EmitTupleBinary(tb);
+            case IAwaitOperation: throw new CompileException(_machine == null ? "await outside an async method" : "internal: await result not computed", op.Syntax.GetLocation());
+            case IFlowCaptureOperation fc: return EmitFlowCapture(fc);
+            case IFlowCaptureReferenceOperation fcr: return EmitFlowCaptureReference(fcr);
+            case ICaughtExceptionOperation: return EmitCaughtException();
+            case IIsNullOperation isn: return EmitIsNull(isn);
+            case IFlowAnonymousFunctionOperation fa: throw new CompileException("lambda without delegate conversion", fa.Syntax.GetLocation());
+            case ITypeOfOperation to:
+                {
+                    var tt = T.Resolve(to.TypeOperand, Map);
+                    E.I32(D.TypeId(tt));
+                    var fromId = D.LibType("System.Type").GetMembers("FromId").OfType<IMethodSymbol>().First();
+                    E.Call(D.Method(fromId).Fn);
+                    return Own.Owned;
+                }
+            case ICollectionExpressionOperation ce: return EmitCollectionExpression(ce);
+            case IWithOperation wo: return EmitWith(wo);
+        }
+        if (op.Kind == OperationKind.None) return EmitPointerOp(op);
+        throw new CompileException($"unsupported expression '{op.Syntax}' ({op.Kind})", op.Syntax.GetLocation());
+    }
+
+    Own EmitConstant(object? value, ITypeSymbol? t)
+    {
+        if (value == null)
+        {
+            if (t != null && Types.IsStruct(t)) return EmitDefault(t);
+            E.I32(0); return t != null && Types.WasmType(t) is { } vt && vt != ValType.I32 ? PushZero(vt) : Own.Stable;
+        }
+        if (value is string s) { E.I32Addr(D.StringLiteral(s)); return Own.Stable; }
+        var p = t != null ? Types.PrimOf(t) : Prim.None;
+        if (p == Prim.None)
+            p = value switch { bool => Prim.Bool, char => Prim.Char, sbyte => Prim.I8, byte => Prim.U8, short => Prim.I16, ushort => Prim.U16, int => Prim.I32, uint => Prim.U32, long => Prim.I64, ulong => Prim.U64, float => Prim.F32, double => Prim.F64, _ => Prim.None };
+        if (value is decimal) throw new CompileException("decimal is not supported yet");
+        switch (Types.WasmPrim(p))
+        {
+            case ValType.I64: E.I64(value switch { ulong u => unchecked((long)u), _ => Convert.ToInt64(value) }); break;
+            case ValType.F32: E.F32(Convert.ToSingle(value)); break;
+            case ValType.F64: E.F64(Convert.ToDouble(value)); break;
+            default:
+                E.I32(value switch
+                {
+                    bool b => b ? 1 : 0, char c => c, uint u => unchecked((int)u), ulong ul => unchecked((int)ul), long l => unchecked((int)l),
+                    float f => (int)f, double d => (int)d,
+                    _ => Convert.ToInt32(value),
+                });
+                break;
+        }
+        return Own.None;
+    }
+
+    Own PushZero(ValType vt)
+    {
+        E.Op(Op.Drop);
+        switch (vt) { case ValType.I64: E.I64(0); break; case ValType.F32: E.F32(0); break; case ValType.F64: E.F64(0); break; default: E.I32(0); break; }
+        return Own.None;
+    }
+
+    Own EmitDefault(ITypeSymbol t)
+    {
+        if (Types.IsStruct(t))
+        {
+            int off = TempStruct(t);
+            E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+            return Own.None;
+        }
+        var vt = Types.WasmType(t) ?? ValType.I32;
+        switch (vt) { case ValType.I64: E.I64(0); break; case ValType.F32: E.F32(0); break; case ValType.F64: E.F64(0); break; default: E.I32(0); break; }
+        return Types.IsRef(t) ? Own.Stable : Own.None;
+    }
+
+    // =====================================================================
+    // variables
+    // =====================================================================
+    Own LoadVar(Var v)
+    {
+        if (!v.InMemory) { E.Get(v.Local); return Types.IsRef(v.Type) ? Own.Stable : Own.None; }
+        E.Get(v.AddrLocal);
+        if (Types.IsStruct(v.Type)) { if (v.Offset != 0) { E.I32(v.Offset); E.Op(Op.I32Add); } return Own.None; }
+        E.Load(Types.LoadOp(v.Type), v.Offset);
+        if (!Types.IsRef(v.Type)) return Own.None;
+        return v.AddrLocal == _fb && !IsRefLocal(v) ? Own.Stable : Own.Unstable;
+    }
+
+    void PushVarAddress(Var v)
+    {
+        if (!v.InMemory) throw new CompileException("address of register variable");
+        E.Get(v.AddrLocal);
+        if (v.Offset != 0) { E.I32(v.Offset); E.Op(Op.I32Add); }
+    }
+
+    /// <summary>Value on the stack is stored into the variable, taking ownership as needed.</summary>
+    void StoreVar(Var v, Own o)
+    {
+        var t = v.Type;
+        if (!v.InMemory)
+        {
+            if (Types.IsRef(t))
+            {
+                ToOwned(o);
+                int nv = Scratch(ValType.I32); E.Set(nv);
+                E.Get(v.Local); E.Call(Rt.Release);
+                E.Get(nv); E.Set(v.Local);
+                FreeScratch(ValType.I32, nv);
+            }
+            else E.Set(v.Local);
+            return;
+        }
+        StoreToAddressFromStack(() => E.Get(v.AddrLocal), v.Offset, t, o);
+    }
+
+    /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
+    void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o)
+    {
+        if (Types.IsStruct(t))
+        {
+            int src = Scratch(ValType.I32); E.Set(src);
+            pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); }
+            E.Get(src); CopyStructAssign(t);
+            FreeScratch(ValType.I32, src);
+            return;
+        }
+        var vt = Types.WasmType(t)!.Value;
+        int val = Scratch(vt);
+        if (Types.IsRef(t)) ToOwned(o);
+        E.Set(val);
+        if (Types.IsRef(t))
+        {
+            int a = Scratch(ValType.I32);
+            pushAddr(); E.Tee(a);
+            E.Load(Op.I32Load, offset);
+            int old = Scratch(ValType.I32); E.Set(old);
+            E.Get(a); E.Get(val); E.Store(Op.I32Store, offset);
+            E.Get(old); E.Call(Rt.Release);
+            FreeScratch(ValType.I32, old); FreeScratch(ValType.I32, a);
+        }
+        else { pushAddr(); E.Get(val); E.Store(Types.StoreOp(t), offset); }
+        FreeScratch(vt, val);
+    }
+
+    void CopyStructInit(ITypeSymbol t)
+    {
+        // stack: dst src
+        if (T.LayoutOf(t).HasRefs) { E.Call(Rt.CopyInit(t)); return; }
+        E.I32(T.StorageOf(t).size); E.Op(Op.MemoryCopy);
+    }
+
+    void CopyStructAssign(ITypeSymbol t)
+    {
+        if (T.LayoutOf(t).HasRefs) { E.Call(Rt.CopyAssign(t)); return; }
+        E.I32(T.StorageOf(t).size); E.Op(Op.MemoryCopy);
+    }
+
+    void EmitStoreToVar(ILocalSymbol sym, IOperation value) => EmitStoreToVarFrom(sym, value.Type != null ? TypeOf(value) : T.Resolve(sym.Type, Map), () => EmitValue(value));
+
+    void EmitStoreToVarFrom(ISymbol sym, ITypeSymbol valueType, Func<Own> produce)
+    {
+        if (IsCaptured(sym)) { StoreCaptured(sym, valueType, produce); return; }
+        var v = sym is ILocalSymbol l ? LocalVar(l) : _vars[sym];
+        var o = produce();
+        ConvertTop(valueType, v.Type, ref o);
+        StoreVar(v, o);
+    }
+
+    Own EmitThis(IInstanceReferenceOperation ir)
+    {
+        switch (ir.ReferenceKind)
+        {
+            case InstanceReferenceKind.ImplicitReceiver:
+                {
+                    var (local, type) = _implicitReceivers[^1];
+                    E.Get(local);
+                    return Types.IsRef(type) ? Own.Stable : Own.None;
+                }
+            case InstanceReferenceKind.PatternInput:
+                {
+                    var (local, type) = _patternInputs[^1];
+                    E.Get(local);
+                    return Types.IsRef(type) ? Own.Stable : Own.None;
+                }
+        }
+        if (_closure != null) return LoadCapturedThis();
+        if (_thisLocal < 0) throw new CompileException("'this' in static context");
+        E.Get(_thisLocal);
+        return M.ContainingType.IsValueType ? Own.None : Own.Stable;
+    }
+
+    readonly List<(int local, ITypeSymbol type)> _patternInputs = [];
+
+    // =====================================================================
+    // addresses (lvalues in memory)
+    // =====================================================================
+    bool IsAddressable(IOperation op)
+    {
+        while (op is IConversionOperation { Conversion.IsIdentity: true } c) op = c.Operand;
+        return op switch
+        {
+            ILocalReferenceOperation l => IsCaptured(l.Local) || LocalVar(l.Local).InMemory,
+            IParameterReferenceOperation p => IsCaptured(p.Parameter) || _vars[p.Parameter].InMemory,
+            IFieldReferenceOperation f => f.Field.IsStatic || f.Instance == null || !TypeOf(f.Instance).IsValueType || IsAddressable(f.Instance),
+            IArrayElementReferenceOperation => true,
+            IInstanceReferenceOperation => M.ContainingType?.IsValueType == true || _closure != null,
+            IPropertyReferenceOperation pr => pr.Property.ReturnsByRef || pr.Property.ReturnsByRefReadonly,
+            IInvocationOperation inv => inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly,
+            IDeclarationExpressionOperation => true,
+            _ => op.Kind == OperationKind.None,
+        };
+    }
+
+    /// <summary>Pushes the address of a storage location.</summary>
+    void EmitAddress(IOperation op)
+    {
+        int off = EmitAddressBase(op);
+        if (off != 0) { E.I32(off); E.Op(Op.I32Add); }
+    }
+
+    /// <summary>Pushes a base address and returns a constant offset to add.</summary>
+    int EmitAddressBase(IOperation op)
+    {
+        while (op is IConversionOperation { Conversion.IsIdentity: true } c) op = c.Operand;
+        switch (op)
+        {
+            case IDeclarationExpressionOperation de: return EmitAddressBase(de.Expression);
+            case IDiscardOperation dis:
+                {
+                    var dt = TypeOf(dis);
+                    int off = Types.IsStruct(dt) ? TempStruct(dt) : TempValue(dt);
+                    E.Get(_fb); return off;
+                }
+            case ILocalReferenceOperation l:
+                {
+                    if (IsCaptured(l.Local)) return CapturedAddress(l.Local);
+                    var v = LocalVar(l.Local);
+                    if (!v.InMemory) throw new CompileException("internal: address of register local " + l.Local.Name);
+                    E.Get(v.AddrLocal); return v.Offset;
+                }
+            case IParameterReferenceOperation p:
+                {
+                    if (IsCaptured(p.Parameter)) return CapturedAddress(p.Parameter);
+                    var v = _vars[p.Parameter];
+                    if (!v.InMemory) throw new CompileException("internal: address of register parameter " + p.Parameter.Name);
+                    E.Get(v.AddrLocal); return v.Offset;
+                }
+            case IInstanceReferenceOperation ir:
+                if (ir.ReferenceKind == InstanceReferenceKind.ImplicitReceiver) { E.Get(_implicitReceivers[^1].local); return 0; }
+                if (ir.ReferenceKind == InstanceReferenceKind.PatternInput) { E.Get(_patternInputs[^1].local); return 0; }
+                if (_closure != null) { LoadCapturedThis(); return 0; }
+                E.Get(_thisLocal); return 0;
+            case IFieldReferenceOperation f:
+                {
+                    var field = f.Field;
+                    var storage = StorageField(field);
+                    if (field.IsStatic)
+                    {
+                        EmitStaticInitGuardForField(Owner(field));
+                        E.I32Addr(D.StaticField(Owner(field), storage, T.Resolve(field.Type, Map)));
+                        return 0;
+                    }
+                    var slot = T.FieldIn(Owner(field), storage);
+                    var it = TypeOf(f.Instance!);
+                    if (it.IsValueType && Types.PrimOf(it) == Prim.None)
+                    {
+                        if (IsAddressable(f.Instance!)) return EmitAddressBase(f.Instance!) + slot.Offset;
+                        EmitValue(f.Instance!); return slot.Offset; // rvalue struct: its temp
+                    }
+                    var o = EmitValue(f.Instance!);
+                    ToTransient(o, it);
+                    if (!IsKnownNonNull(f.Instance!)) NullCheckKeep();
+                    return slot.Offset;
+                }
+            case IArrayElementReferenceOperation ae: return EmitArrayElementAddress(ae);
+            case IInvocationOperation inv when inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly:
+                { var save = _wantRefReturnAddress; _wantRefReturnAddress = true; try { EmitInvocation(inv); } finally { _wantRefReturnAddress = save; } return 0; }
+            case IPropertyReferenceOperation pr when pr.Property.ReturnsByRef || pr.Property.ReturnsByRefReadonly:
+                { var save = _wantRefReturnAddress; _wantRefReturnAddress = true; try { EmitPropertyGetCall(pr); } finally { _wantRefReturnAddress = save; } return 0; }
+            case IConversionOperation cv when cv.Operand is IAnonymousFunctionOperation == false && IsAddressable(cv.Operand) && T.StorageOf(TypeOf(cv)).size == T.StorageOf(TypeOf(cv.Operand)).size:
+                return EmitAddressBase(cv.Operand);
+        }
+        if (op.Kind == OperationKind.None) return EmitPointerAddress(op);
+        // rvalue: materialize a temporary
+        var t = TypeOf(op);
+        if (Types.IsStruct(t)) { EmitValue(op); return 0; }
+        int tmp = TempValue(t);
+        var own = EmitValue(op);
+        if (Types.IsRef(t)) ToOwned(own);
+        int sv = Scratch(Types.WasmType(t)!.Value); E.Set(sv);
+        E.Get(_fb); E.Get(sv); E.Store(Types.StoreOp(t), tmp);
+        FreeScratch(Types.WasmType(t)!.Value, sv);
+        E.Get(_fb);
+        return tmp;
+    }
+
+    /// <summary>A frame slot holding a temporary non-struct value (for `in` arguments of rvalues).</summary>
+    int TempValue(ITypeSymbol t)
+    {
+        int off = AllocFrame(t);
+        if (Types.IsRef(t)) RegisterTemp(new Slot { FrameOffset = off, Type = t });
+        return off;
+    }
+
+    static IFieldSymbol StorageField(IFieldSymbol f) => f.CorrespondingTupleField ?? f;
+
+    bool IsKnownNonNull(IOperation op)
+    {
+        while (op is IConversionOperation c && c.Conversion.IsReference) op = c.Operand;
+        return op is IInstanceReferenceOperation or IObjectCreationOperation or IArrayCreationOperation or IDelegateCreationOperation || (op.ConstantValue.HasValue && op.ConstantValue.Value != null);
+    }
+
+    void NullCheck()
+    {
+        E.Op(Op.I32Eqz); E.If(); E.Call(Rt.ThrowNullRef); E.End();
+    }
+
+    /// <summary>Null-check the value on top of the stack, leaving it there.</summary>
+    void NullCheckKeep()
+    {
+        int t = Scratch(ValType.I32);
+        E.Tee(t); NullCheck(); E.Get(t);
+        FreeScratch(ValType.I32, t);
+    }
+
+    // =====================================================================
+    // fields, properties, arrays
+    // =====================================================================
+    Own EmitFieldLoad(IFieldReferenceOperation f)
+    {
+        var ft = T.Resolve(f.Field.Type, Map);
+        if (f.Field.IsConst) return EmitConstant(f.Field.ConstantValue, ft);
+        if (f.Field.IsFixedSizeBuffer) { EmitAddress(f); return Own.None; }
+        int off = EmitAddressBase(f);
+        if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
+        E.Load(Types.LoadOp(ft), off);
+        return Types.IsRef(ft) ? Own.Unstable : Own.None;
+    }
+
+    void EmitStoreField(IFieldSymbol f, Action? recv, IOperation value)
+    {
+        var ft = T.Resolve(f.Type, Map);
+        EmitStoreFieldFrom(f, recv, value.Type != null ? TypeOf(value) : ft, () =>
+        {
+            if (Types.IsStruct(ft) && IsDirectStructProducer(value))
+            {
+                // construct into a temp, then copy (field may be read by the constructor arguments)
+                return EmitValue(value);
+            }
+            return EmitValue(value);
+        });
+    }
+
+    void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce)
+    {
+        var ft = T.Resolve(f.Type, Map);
+        int a = E.AddLocal(ValType.I32);
+        int off;
+        if (f.IsStatic) { EmitStaticInitGuardForField(Owner(f)); E.I32Addr(D.StaticField(Owner(f), f, ft)); off = 0; }
+        else { recv!(); off = T.Field(f, Map).Offset; }
+        E.Set(a);
+        var o = produce();
+        ConvertTop(valueType, ft, ref o);
+        StoreToAddressFromStack(() => E.Get(a), off, ft, o);
+    }
+
+    bool IsDirectAutoProperty(IPropertySymbol p, IOperation? instance)
+    {
+        if (p.Parameters.Length > 0) return false;
+        if (p.IsVirtual || p.IsAbstract || p.IsOverride || p.ContainingType.TypeKind == TypeKind.Interface) return false;
+        if (p.IsExtern) return false;
+        var bf = Driver.AutoPropertyField(p.OriginalDefinition);
+        if (bf == null) return false;
+        // accessors must be compiler-generated (no `field` keyword bodies)
+        var acc = p.OriginalDefinition.GetMethod ?? p.OriginalDefinition.SetMethod;
+        if (p.OriginalDefinition.GetMethod is { } g && Driver.HasBody(g)) return false;
+        if (p.OriginalDefinition.SetMethod is { } s && Driver.HasBody(s)) return false;
+        return acc != null;
+    }
+
+    Own EmitPropertyGet(IPropertyReferenceOperation pr)
+    {
+        var p = pr.Property;
+        if (IsDirectAutoProperty(p, pr.Instance))
+        {
+            var bf = Driver.AutoPropertyField(p.OriginalDefinition)!;
+            var ft = T.Resolve(bf.Type, Map);
+            int off;
+            var owner = Owner(p);
+            ft = T.Resolve(p.Type, Map);
+            if (p.IsStatic) { EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, bf, ft)); off = 0; }
+            else off = EmitReceiverAddressForField(pr.Instance!) + T.FieldIn(owner, bf).Offset;
+            if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
+            E.Load(Types.LoadOp(ft), off);
+            return Types.IsRef(ft) ? Own.Unstable : Own.None;
+        }
+        // array length is a plain load
+        if (p.Name is "Length" && pr.Instance != null && TypeOf(pr.Instance) is IArrayTypeSymbol { Rank: 1 })
+        {
+            var o = EmitValue(pr.Instance);
+            ToTransient(o, TypeOf(pr.Instance));
+            NullCheckKeep();
+            E.Load(Op.I32Load, 12);
+            return Own.None;
+        }
+        return EmitPropertyGetCall(pr);
+    }
+
+    IFieldSymbol SubstField(IFieldSymbol bf, IOperation instance) => bf;
+
+    int EmitReceiverAddressForField(IOperation instance)
+    {
+        var it = TypeOf(instance);
+        if (it.IsValueType && Types.PrimOf(it) == Prim.None)
+        {
+            if (IsAddressable(instance)) return EmitAddressBase(instance);
+            EmitValue(instance); return 0;
+        }
+        var o = EmitValue(instance);
+        ToTransient(o, it);
+        if (!IsKnownNonNull(instance)) NullCheckKeep();
+        return 0;
+    }
+
+    Own EmitPropertyGetCall(IPropertyReferenceOperation pr)
+    {
+        var getter = pr.Property.GetMethod ?? throw new CompileException("property has no getter: " + pr.Property.Name);
+        if (getter.IsStatic && getter.ContainingType.TypeKind == TypeKind.Interface && pr.ConstrainedToType is { } ctt)
+        {
+            var impl = D.Implementation(T.Resolve(ctt, Map), SubstMethod(getter)) ?? throw new CompileException($"no implementation of {getter} on {ctt}", pr.Syntax.GetLocation());
+            return EmitCallOps(impl, null, pr.Arguments.Cast<IOperation>().ToList(), false, pr.Syntax, alreadyResolved: true);
+        }
+        return EmitCall(getter, pr.Instance, pr.Arguments.Cast<IOperation>().ToList(), IsVirtualCall(pr.Instance, getter), pr.Syntax);
+    }
+
+    bool IsVirtualCall(IOperation? instance, IMethodSymbol m)
+    {
+        if (m.IsStatic) return false;
+        if (instance is IInstanceReferenceOperation { Syntax: BaseExpressionSyntax }) return false;
+        return m.IsVirtual || m.IsAbstract || m.IsOverride || m.ContainingType.TypeKind == TypeKind.Interface;
+    }
+
+    Own EmitArrayElementLoad(IArrayElementReferenceOperation ae)
+    {
+        var et = TypeOf(ae);
+        int off = EmitArrayElementAddress(ae);
+        if (Types.IsStruct(et)) { E.I32(off); E.Op(Op.I32Add); return Own.None; }
+        E.Load(Types.LoadOp(et), off);
+        return Types.IsRef(et) ? Own.Unstable : Own.None;
+    }
+
+    int EmitArrayElementAddress(IArrayElementReferenceOperation ae)
+    {
+        var at = (IArrayTypeSymbol)TypeOf(ae.ArrayReference);
+        if (at.Rank != 1) throw new CompileException("multi-dimensional arrays are not supported yet", ae.Syntax.GetLocation());
+        var et = T.Canonical(at.ElementType);
+        var o = EmitValue(ae.ArrayReference);
+        bool indexCalls = ae.Indices[0].DescendantsAndSelf().Any(x => x is IInvocationOperation or IObjectCreationOperation);
+        o = indexCalls ? ToCallSafe(o, at) : ToTransient(o, at);
+        int arr = Scratch(ValType.I32);
+        E.Tee(arr);
+        if (!IsKnownNonNull(ae.ArrayReference)) NullCheck(); else E.Op(Op.Drop);
+        int idx = Scratch(ValType.I32);
+        EmitIndex(ae.Indices[0]);
+        E.Set(idx);
+        E.Get(idx); E.Get(arr); E.Load(Op.I32Load, 12); E.Op(Op.I32GeU);
+        E.If(); E.Call(Rt.ThrowIndex); E.End();
+        E.Get(arr); E.Get(idx);
+        int size = T.StorageOf(et).size;
+        if (size != 1) { E.I32(size); E.Op(Op.I32Mul); }
+        E.Op(Op.I32Add);
+        FreeScratch(ValType.I32, idx); FreeScratch(ValType.I32, arr);
+        return Types.ArrayData;
+    }
+
+    /// <summary>Pushes an i32 index; 64-bit and unsigned indices out of range become an out-of-range index.</summary>
+    void EmitIndex(IOperation index)
+    {
+        var it = TypeOf(index);
+        var p = Types.PrimOf(it);
+        EmitValue(index);
+        if (Types.Is64(p))
+        {
+            int t = Scratch(ValType.I64);
+            E.Tee(t); E.I64(0x7FFFFFFF); E.Op(Op.I64GtU);
+            E.If(ValType.I32); E.I32(-1); E.Else(); E.Get(t); E.Op(Op.I32WrapI64); E.End();
+            FreeScratch(ValType.I64, t);
+        }
+        else if (p is Prim.IntPtr or Prim.UIntPtr or Prim.I32 or Prim.U32 or Prim.I16 or Prim.U16 or Prim.I8 or Prim.U8 or Prim.Char) { }
+        else throw new CompileException("unsupported index type " + it);
+    }
+
+    // =====================================================================
+    // conversions
+    // =====================================================================
+    Own EmitConversion(IConversionOperation c)
+    {
+        var to = TypeOf(c);
+        if (c.Operand is IAnonymousFunctionOperation af) return EmitLambdaDelegate(af, to);
+        if (c.Operand is IDelegateCreationOperation or IMethodReferenceOperation && to.TypeKind == TypeKind.Delegate && c.Operand is IMethodReferenceOperation mr)
+            return EmitMethodGroupDelegate(mr, to);
+        var conv = c.Conversion;
+        if (conv.IsUserDefined && conv.MethodSymbol != null)
+        {
+            var m = conv.MethodSymbol;
+            var argT = T.Resolve(m.Parameters[0].Type, Map);
+            var o = EmitValueAs(c.Operand, argT);
+            if (Types.IsRef(argT)) ToCallSafe(o, argT);
+            var r = EmitCallCore(SubstMethod(m), null, [], false, preArgs: 1);
+            var rt = T.Resolve(m.ReturnType, Map);
+            ConvertTop(rt, to, ref r);
+            return r;
+        }
+        if (c.Operand.Type == null)
+        {
+            // null literal or default literal
+            if (Types.IsStruct(to)) return EmitDefault(to);
+            var o = EmitValue(c.Operand);
+            return o;
+        }
+        var from = TypeOf(c.Operand);
+        if (c.IsTryCast)
+        {
+            var o = EmitValue(c.Operand);
+            o = ToTransient(o, from);
+            if (IsNullable(to))
+            {
+                int ov = Scratch(ValType.I32); E.Set(ov);
+                int res = TempStruct(to);
+                E.Get(ov); E.Call(Rt.IsExactBox(Underlying(to)));
+                E.If();
+                E.Get(ov); EmitUnbox(Underlying(to)); WrapNullable(to, Own.None);
+                int w = Scratch(ValType.I32); E.Set(w);
+                E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.Get(w); CopyStructInit(to);
+                FreeScratch(ValType.I32, w);
+                E.End();
+                FreeScratch(ValType.I32, ov);
+                E.Get(_fb); E.I32(res); E.Op(Op.I32Add);
+                return Own.None;
+            }
+            int v = Scratch(ValType.I32);
+            E.Set(v);
+            E.Get(v); E.Call(Rt.IsInst(to));
+            E.If(ValType.I32); E.Get(v); E.Else(); E.I32(0); E.End();
+            FreeScratch(ValType.I32, v);
+            return o == Own.None ? Own.None : Own.Unstable;
+        }
+        var own = EmitValue(c.Operand);
+        ConvertValue(from, to, conv.IsNumeric || from.TypeKind == TypeKind.Enum || to.TypeKind == TypeKind.Enum ? c.IsChecked : false, ref own, explicitConv: !conv.IsImplicit, conv);
+        return own;
+    }
+
+    void ConvertTop(ITypeSymbol from, ITypeSymbol to, ref Own o) => ConvertValue(from, to, false, ref o, false, null);
+
+    void ConvertValue(ITypeSymbol from, ITypeSymbol to, bool isChecked, ref Own o, bool explicitConv, CommonConversion? conv)
+    {
+        from = T.Canonical(from); to = T.Canonical(to);
+        if (Types.Key(from) == Types.Key(to)) return;
+        var pf = Types.PrimOf(from); var pt = Types.PrimOf(to);
+        if (ConvertNullable(from, to, isChecked, ref o)) return;
+        if (pf != Prim.None && pt != Prim.None)
+        {
+            if (from.TypeKind == TypeKind.Pointer || to.TypeKind == TypeKind.Pointer) { NumericConvert(pf == Prim.U32 && from.TypeKind == TypeKind.Pointer ? Prim.U32 : pf, pt, isChecked); return; }
+            NumericConvert(pf, pt, isChecked);
+            return;
+        }
+        bool fromVal = from.IsValueType, toVal = to.IsValueType;
+        if (fromVal && !toVal)
+        {
+            // boxing
+            EmitBox(from, o);
+            o = Own.Owned;
+            return;
+        }
+        if (!fromVal && toVal)
+        {
+            // unboxing
+            o = ToTransient(o, from);
+            EmitUnbox(to);
+            o = Own.None;
+            return;
+        }
+        if (!fromVal && !toVal)
+        {
+            if (T.IsSubtype(from, to)) return; // implicit reference conversion
+            if (from.TypeKind == TypeKind.Interface && to.TypeKind == TypeKind.Interface && !explicitConv) return;
+            // explicit reference conversion: checked cast
+            int v = Scratch(ValType.I32);
+            E.Tee(v); E.Get(v);
+            E.If(); E.Get(v); E.Call(Rt.IsInst(to)); E.Op(Op.I32Eqz); E.If(); E.Get(v); E.Call(Rt.ThrowInvalidCast(to)); E.End(); E.End();
+            FreeScratch(ValType.I32, v);
+            return;
+        }
+        if (IsValueTuple(from) && IsValueTuple(to)) { ConvertTuple(from, to); return; }
+        if (Types.Key(from.OriginalDefinition) == Types.Key(to.OriginalDefinition)) return;
+        throw new CompileException($"unsupported conversion from {from} to {to}");
+    }
+
+    static bool IsNullable(ITypeSymbol t) => t is INamedTypeSymbol { Arity: 1 } n && Types.FullName(n) == "System.Nullable`1";
+
+    void EmitBox(ITypeSymbol vt, Own o)
+    {
+        int tid = D.MarkConstructed(vt);
+        var (size, align) = T.StorageOf(vt);
+        int dataOff = align >= 8 ? 16 : Types.ObjectHeader;
+        if (Types.IsStruct(vt))
+        {
+            int src = Scratch(ValType.I32); E.Set(src);
+            E.I32(dataOff + size); E.I32(tid); E.Call(Rt.AllocObject);
+            int obj = Scratch(ValType.I32); E.Tee(obj);
+            E.I32(dataOff); E.Op(Op.I32Add); E.Get(src); CopyStructInit(vt);
+            E.Get(obj);
+            FreeScratch(ValType.I32, obj); FreeScratch(ValType.I32, src);
+            return;
+        }
+        var wt = Types.WasmType(vt)!.Value;
+        int val = Scratch(wt); E.Set(val);
+        E.I32(dataOff + size); E.I32(tid); E.Call(Rt.AllocObject);
+        int o2 = Scratch(ValType.I32); E.Tee(o2);
+        E.Get(val); E.Store(Types.StoreOp(vt), dataOff);
+        E.Get(o2);
+        FreeScratch(ValType.I32, o2); FreeScratch(wt, val);
+    }
+
+    public static int BoxDataOffset(Types t, ITypeSymbol vt) => t.StorageOf(vt).align >= 8 ? 16 : Types.ObjectHeader;
+
+    /// <summary>Stack: object → value (or struct address inside the box).</summary>
+    void EmitUnbox(ITypeSymbol vt)
+    {
+        int obj = Scratch(ValType.I32);
+        E.Tee(obj);
+        NullCheck();
+        E.Get(obj); E.Call(Rt.UnboxCheck(vt));
+        E.Get(obj);
+        int off = BoxDataOffset(T, vt);
+        if (Types.IsStruct(vt)) { E.I32(off); E.Op(Op.I32Add); }
+        else E.Load(Types.LoadOp(vt), off);
+        FreeScratch(ValType.I32, obj);
+    }
+
+    void NumericConvert(Prim from, Prim to, bool isChecked)
+    {
+        if (from == to) return;
+        var wf = Types.WasmPrim(from); var wt = Types.WasmPrim(to);
+        if (Types.IsFloat(from))
+        {
+            if (Types.IsFloat(to)) { E.Op(to == Prim.F64 ? Op.F64PromoteF32 : Op.F32DemoteF64); return; }
+            if (isChecked) { E.Call(Rt.CheckedFloatToInt(from, to)); return; }
+            // .NET saturates (since .NET 9) to the 32/64-bit range, then narrows
+            bool to64 = Types.Is64(to);
+            bool unsigned = to is Prim.U32 or Prim.U64 or Prim.UIntPtr;
+            Op op = (from, to64, unsigned) switch
+            {
+                (Prim.F32, false, false) => Op.I32TruncSatF32S, (Prim.F32, false, true) => Op.I32TruncSatF32U,
+                (Prim.F32, true, false) => Op.I64TruncSatF32S, (Prim.F32, true, true) => Op.I64TruncSatF32U,
+                (_, false, false) => Op.I32TruncSatF64S, (_, false, true) => Op.I32TruncSatF64U,
+                (_, true, false) => Op.I64TruncSatF64S, _ => Op.I64TruncSatF64U,
+            };
+            E.Op(op);
+            if (Types.PrimSize(to) < 4)
+            {
+                var (mn, mx) = Range(to);
+                E.I32((int)mn); E.I32((int)mx); E.Call(Rt.ClampI32);
+            }
+            return;
+        }
+        if (Types.IsFloat(to))
+        {
+            bool srcUnsigned = !Types.IsSigned(from) && from != Prim.Bool;
+            Op op = (to, wf, srcUnsigned) switch
+            {
+                (Prim.F32, ValType.I64, false) => Op.F32ConvertI64S, (Prim.F32, ValType.I64, true) => Op.F32ConvertI64U,
+                (Prim.F32, _, false) => Op.F32ConvertI32S, (Prim.F32, _, true) => Op.F32ConvertI32U,
+                (_, ValType.I64, false) => Op.F64ConvertI64S, (_, ValType.I64, true) => Op.F64ConvertI64U,
+                (_, _, false) => Op.F64ConvertI32S, _ => Op.F64ConvertI32U,
+            };
+            E.Op(op);
+            return;
+        }
+        // integer to integer
+        if (isChecked) CheckIntRange(from, to);
+        if (wf == ValType.I32 && wt == ValType.I64) { E.Op(Types.IsSigned(from) ? Op.I64ExtendI32S : Op.I64ExtendI32U); return; }
+        if (wf == ValType.I64 && wt == ValType.I32) { E.Op(Op.I32WrapI64); Narrow(to); return; }
+        if (wf == ValType.I32 && wt == ValType.I32) { if (Types.PrimSize(to) < 4 && (Types.PrimSize(to) < Types.PrimSize(from) || Types.IsSigned(from) != Types.IsSigned(to))) Narrow(to); }
+    }
+
+    void Narrow(Prim to)
+    {
+        switch (to)
+        {
+            case Prim.U8: E.I32(0xFF); E.Op(Op.I32And); break;
+            case Prim.I8: E.Op(Op.I32Extend8S); break;
+            case Prim.U16: case Prim.Char: E.I32(0xFFFF); E.Op(Op.I32And); break;
+            case Prim.I16: E.Op(Op.I32Extend16S); break;
+            case Prim.Bool: E.I32(0); E.Op(Op.I32Ne); break;
+        }
+    }
+
+    static (long min, ulong max) Range(Prim p) => p switch
+    {
+        Prim.I8 => (sbyte.MinValue, (ulong)sbyte.MaxValue), Prim.U8 => (0, byte.MaxValue),
+        Prim.I16 => (short.MinValue, (ulong)short.MaxValue), Prim.U16 or Prim.Char => (0, ushort.MaxValue),
+        Prim.I32 or Prim.IntPtr => (int.MinValue, int.MaxValue), Prim.U32 or Prim.UIntPtr => (0, uint.MaxValue),
+        Prim.I64 => (long.MinValue, long.MaxValue), _ => (0, ulong.MaxValue),
+    };
+
+    /// <summary>Checked integer conversion: throw OverflowException when the value does not fit.</summary>
+    void CheckIntRange(Prim from, Prim to)
+    {
+        var (fmin, fmax) = Range(from); var (tmin, tmax) = Range(to);
+        bool needLow = fmin < tmin, needHigh = fmax > tmax;
+        if (!needLow && !needHigh) return;
+        bool f64 = Types.Is64(from);
+        int t = Scratch(f64 ? ValType.I64 : ValType.I32);
+        E.Tee(t);
+        // compare in the source's signedness
+        bool signed = Types.IsSigned(from);
+        if (f64)
+        {
+            if (needLow && needHigh) { E.I64(tmin); E.Op(Op.I64LtS); E.Get(t); E.I64(unchecked((long)tmax)); E.Op(signed ? Op.I64GtS : Op.I64GtU); E.Op(Op.I32Or); }
+            else if (needLow) { E.I64(tmin); E.Op(Op.I64LtS); }
+            else { E.I64(unchecked((long)tmax)); E.Op(signed ? Op.I64GtS : Op.I64GtU); }
+        }
+        else
+        {
+            if (needLow && needHigh) { E.I32((int)tmin); E.Op(Op.I32LtS); E.Get(t); E.I32(unchecked((int)tmax)); E.Op(signed ? Op.I32GtS : Op.I32GtU); E.Op(Op.I32Or); }
+            else if (needLow) { E.I32((int)tmin); E.Op(Op.I32LtS); }
+            else { E.I32(unchecked((int)(uint)tmax)); E.Op(signed ? Op.I32GtS : Op.I32GtU); }
+        }
+        E.If(); E.Call(Rt.ThrowOverflow); E.End();
+        E.Get(t);
+        FreeScratch(f64 ? ValType.I64 : ValType.I32, t);
+    }
+
+    // =====================================================================
+    // binary / unary
+    // =====================================================================
+    Own EmitBinary(IBinaryOperation b)
+    {
+        if (b.IsLifted) return EmitLiftedBinary(b);
+        if (b.OperatorMethod is { IsStatic: true, ContainingType.TypeKind: TypeKind.Interface } om && b.ConstrainedToType is { } bct)
+        {
+            var impl = D.Implementation(T.Resolve(bct, Map), SubstMethod(om)) ?? throw new CompileException($"no implementation of {om} on {bct}", b.Syntax.GetLocation());
+            return EmitCallOps(impl, null, [b.LeftOperand, b.RightOperand], false, b.Syntax, alreadyResolved: true);
+        }
+        if (b.OperatorMethod != null && !IsBuiltinOperator(b.OperatorMethod))
+        {
+            var m = SubstMethod(b.OperatorMethod);
+            return EmitCall(b.OperatorMethod, null, [b.LeftOperand, b.RightOperand], false, b.Syntax);
+        }
+        var ltN = b.LeftOperand.Type != null ? TypeOf(b.LeftOperand) : null;
+        var rtN = b.RightOperand.Type != null ? TypeOf(b.RightOperand) : null;
+        if ((ltN != null && IsNullable(ltN)) || (rtN != null && IsNullable(rtN))) return EmitLiftedBinary(b);
+        if (ltN == null || rtN == null)
+        {
+            // comparison with an untyped null
+            var other = ltN == null ? b.RightOperand : b.LeftOperand;
+            var ot = ltN ?? rtN;
+            if (ot != null && ot.IsValueType)
+            {
+                // a non-nullable value is never null
+                Drop(EmitValue(other), ot);
+                E.I32(b.OperatorKind == BinaryOperatorKind.NotEquals ? 1 : 0);
+                return Own.None;
+            }
+            var oo = EmitValue(other); ToTransient(oo, ot ?? D.ObjectType);
+            E.Op(Op.I32Eqz);
+            if (b.OperatorKind == BinaryOperatorKind.NotEquals) E.Op(Op.I32Eqz);
+            return Own.None;
+        }
+        var lt = ltN;
+        var rt = rtN;
+        var kind = b.OperatorKind;
+        if (kind is BinaryOperatorKind.ConditionalAnd or BinaryOperatorKind.ConditionalOr)
+        {
+            EmitCondition(b.LeftOperand);
+            E.If(ValType.I32);
+            if (kind == BinaryOperatorKind.ConditionalAnd) { EmitCondition(b.RightOperand); E.Else(); E.I32(0); }
+            else { E.I32(1); E.Else(); EmitCondition(b.RightOperand); }
+            E.End();
+            return Own.None;
+        }
+        var resT = TypeOf(b);
+        if (kind == BinaryOperatorKind.Add && (Types.IsString(lt) || Types.IsString(rt)) && Types.IsString(resT))
+            return EmitStringConcat(b.LeftOperand, b.RightOperand);
+        if (kind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && (Types.IsRef(lt) || Types.IsRef(rt) || lt.TypeKind == TypeKind.Pointer))
+        {
+            var o1 = EmitValue(b.LeftOperand); o1 = ToTransient(o1, lt);
+            var o2 = EmitValue(b.RightOperand); ToTransient(o2, rt);
+            E.Op(kind == BinaryOperatorKind.Equals ? Op.I32Eq : Op.I32Ne);
+            return Own.None;
+        }
+        // pointer arithmetic
+        if (lt.TypeKind == TypeKind.Pointer && kind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract && rt.TypeKind != TypeKind.Pointer)
+        {
+            EmitValue(b.LeftOperand);
+            EmitValue(b.RightOperand); var prt = Types.PrimOf(rt); if (Types.Is64(prt)) E.Op(Op.I32WrapI64);
+            int es = T.StorageOf(T.Canonical(((IPointerTypeSymbol)lt).PointedAtType)).size;
+            if (es != 1) { E.I32(es); E.Op(Op.I32Mul); }
+            E.Op(kind == BinaryOperatorKind.Add ? Op.I32Add : Op.I32Sub);
+            return Own.None;
+        }
+        if (lt.TypeKind == TypeKind.Pointer && rt.TypeKind == TypeKind.Pointer && kind == BinaryOperatorKind.Subtract)
+        {
+            EmitValue(b.LeftOperand); EmitValue(b.RightOperand); E.Op(Op.I32Sub);
+            int es = T.StorageOf(T.Canonical(((IPointerTypeSymbol)lt).PointedAtType)).size;
+            if (es != 1) { E.I32(es); E.Op(Op.I32DivS); }
+            E.Op(Op.I64ExtendI32S);
+            return Own.None;
+        }
+        // operand type: shifts keep the left type; everything else operates in the left type (Roslyn converted operands)
+        var opT = lt;
+        var p = Types.PrimOf(opT);
+        if (p == Prim.None) throw new CompileException($"unsupported operator {kind} on {opT}", b.Syntax.GetLocation());
+        EmitValue(b.LeftOperand);
+        EmitValue(b.RightOperand);
+        if (kind is BinaryOperatorKind.LeftShift or BinaryOperatorKind.RightShift or BinaryOperatorKind.UnsignedRightShift)
+        {
+            if (Types.Is64(p) && !Types.Is64(Types.PrimOf(rt))) E.Op(Op.I64ExtendI32U);
+            else if (!Types.Is64(p) && Types.Is64(Types.PrimOf(rt))) E.Op(Op.I32WrapI64);
+        }
+        else if (Types.PrimOf(rt) != p)
+        {
+            NumericConvert(Types.PrimOf(rt), p, false);
+        }
+        EmitArith(kind, p, b.IsChecked, Types.PrimOf(resT));
+        return Own.None;
+    }
+
+    static bool IsBuiltinOperator(IMethodSymbol m) => false;
+
+    /// <summary>Stack: a b (in prim p) → result.</summary>
+    void EmitArith(BinaryOperatorKind kind, Prim p, bool isChecked, Prim result)
+    {
+        var w = Types.WasmPrim(p);
+        bool signed = Types.IsSigned(p) || p == Prim.Bool;
+        bool f = Types.IsFloat(p);
+        switch (kind)
+        {
+            case BinaryOperatorKind.Equals: case BinaryOperatorKind.NotEquals:
+            case BinaryOperatorKind.LessThan: case BinaryOperatorKind.LessThanOrEqual:
+            case BinaryOperatorKind.GreaterThan: case BinaryOperatorKind.GreaterThanOrEqual:
+                EmitCompare(kind, p); return;
+        }
+        if (isChecked && !f && kind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract or BinaryOperatorKind.Multiply)
+        {
+            E.Call(Rt.CheckedArith(kind, p));
+            return;
+        }
+        Op op = (kind, w) switch
+        {
+            (BinaryOperatorKind.Add, ValType.I32) => Op.I32Add, (BinaryOperatorKind.Add, ValType.I64) => Op.I64Add,
+            (BinaryOperatorKind.Add, ValType.F32) => Op.F32Add, (BinaryOperatorKind.Add, ValType.F64) => Op.F64Add,
+            (BinaryOperatorKind.Subtract, ValType.I32) => Op.I32Sub, (BinaryOperatorKind.Subtract, ValType.I64) => Op.I64Sub,
+            (BinaryOperatorKind.Subtract, ValType.F32) => Op.F32Sub, (BinaryOperatorKind.Subtract, ValType.F64) => Op.F64Sub,
+            (BinaryOperatorKind.Multiply, ValType.I32) => Op.I32Mul, (BinaryOperatorKind.Multiply, ValType.I64) => Op.I64Mul,
+            (BinaryOperatorKind.Multiply, ValType.F32) => Op.F32Mul, (BinaryOperatorKind.Multiply, ValType.F64) => Op.F64Mul,
+            (BinaryOperatorKind.Divide, ValType.F32) => Op.F32Div, (BinaryOperatorKind.Divide, ValType.F64) => Op.F64Div,
+            (BinaryOperatorKind.And, ValType.I32) => Op.I32And, (BinaryOperatorKind.And, ValType.I64) => Op.I64And,
+            (BinaryOperatorKind.Or, ValType.I32) => Op.I32Or, (BinaryOperatorKind.Or, ValType.I64) => Op.I64Or,
+            (BinaryOperatorKind.ExclusiveOr, ValType.I32) => Op.I32Xor, (BinaryOperatorKind.ExclusiveOr, ValType.I64) => Op.I64Xor,
+            (BinaryOperatorKind.LeftShift, ValType.I32) => Op.I32Shl, (BinaryOperatorKind.LeftShift, ValType.I64) => Op.I64Shl,
+            (BinaryOperatorKind.RightShift, ValType.I32) => signed ? Op.I32ShrS : Op.I32ShrU,
+            (BinaryOperatorKind.RightShift, ValType.I64) => signed ? Op.I64ShrS : Op.I64ShrU,
+            (BinaryOperatorKind.UnsignedRightShift, ValType.I32) => Op.I32ShrU,
+            (BinaryOperatorKind.UnsignedRightShift, ValType.I64) => Op.I64ShrU,
+            (BinaryOperatorKind.Divide, _) or (BinaryOperatorKind.Remainder, _) => Op.Nop,
+            _ => throw new CompileException($"unsupported operator {kind} on {p}"),
+        };
+        if (op == Op.Nop)
+        {
+            if (f) { E.Call(Rt.FloatRem(w)); return; }
+            E.Call(Rt.IntDiv(kind == BinaryOperatorKind.Divide, w, signed));
+            return;
+        }
+        E.Op(op);
+        // results of narrow types are int in C#, so no narrowing here (Roslyn converts back where needed)
+        if (p is Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.Char && result == p) Narrow(p);
+    }
+
+    void EmitCompare(BinaryOperatorKind kind, ITypeSymbol t) => EmitCompare(kind, Types.PrimOf(t) is var p && p != Prim.None ? p : Prim.U32);
+
+    void EmitCompare(BinaryOperatorKind kind, Prim p)
+    {
+        var w = Types.WasmPrim(p);
+        bool signed = Types.IsSigned(p);
+        Op op = (kind, w) switch
+        {
+            (BinaryOperatorKind.Equals, ValType.I32) => Op.I32Eq, (BinaryOperatorKind.Equals, ValType.I64) => Op.I64Eq,
+            (BinaryOperatorKind.Equals, ValType.F32) => Op.F32Eq, (BinaryOperatorKind.Equals, ValType.F64) => Op.F64Eq,
+            (BinaryOperatorKind.NotEquals, ValType.I32) => Op.I32Ne, (BinaryOperatorKind.NotEquals, ValType.I64) => Op.I64Ne,
+            (BinaryOperatorKind.NotEquals, ValType.F32) => Op.F32Ne, (BinaryOperatorKind.NotEquals, ValType.F64) => Op.F64Ne,
+            (BinaryOperatorKind.LessThan, ValType.I32) => signed ? Op.I32LtS : Op.I32LtU,
+            (BinaryOperatorKind.LessThan, ValType.I64) => signed ? Op.I64LtS : Op.I64LtU,
+            (BinaryOperatorKind.LessThan, ValType.F32) => Op.F32Lt, (BinaryOperatorKind.LessThan, ValType.F64) => Op.F64Lt,
+            (BinaryOperatorKind.LessThanOrEqual, ValType.I32) => signed ? Op.I32LeS : Op.I32LeU,
+            (BinaryOperatorKind.LessThanOrEqual, ValType.I64) => signed ? Op.I64LeS : Op.I64LeU,
+            (BinaryOperatorKind.LessThanOrEqual, ValType.F32) => Op.F32Le, (BinaryOperatorKind.LessThanOrEqual, ValType.F64) => Op.F64Le,
+            (BinaryOperatorKind.GreaterThan, ValType.I32) => signed ? Op.I32GtS : Op.I32GtU,
+            (BinaryOperatorKind.GreaterThan, ValType.I64) => signed ? Op.I64GtS : Op.I64GtU,
+            (BinaryOperatorKind.GreaterThan, ValType.F32) => Op.F32Gt, (BinaryOperatorKind.GreaterThan, ValType.F64) => Op.F64Gt,
+            (BinaryOperatorKind.GreaterThanOrEqual, ValType.I32) => signed ? Op.I32GeS : Op.I32GeU,
+            (BinaryOperatorKind.GreaterThanOrEqual, ValType.I64) => signed ? Op.I64GeS : Op.I64GeU,
+            (BinaryOperatorKind.GreaterThanOrEqual, ValType.F32) => Op.F32Ge, (BinaryOperatorKind.GreaterThanOrEqual, ValType.F64) => Op.F64Ge,
+            _ => throw new CompileException("bad comparison " + kind),
+        };
+        E.Op(op);
+    }
+
+    Own EmitUnary(IUnaryOperation u)
+    {
+        if (u.IsLifted) return EmitLiftedUnary(u);
+        if (u.OperatorMethod != null) return EmitCall(u.OperatorMethod, null, [u.Operand], false, u.Syntax);
+        var t = TypeOf(u.Operand);
+        var p = Types.PrimOf(t);
+        var w = Types.WasmPrim(p);
+        switch (u.OperatorKind)
+        {
+            case UnaryOperatorKind.Plus: EmitValue(u.Operand); return Own.None;
+            case UnaryOperatorKind.Not: EmitValue(u.Operand); E.Op(Op.I32Eqz); return Own.None;
+            case UnaryOperatorKind.BitwiseNegation:
+                EmitValue(u.Operand);
+                if (w == ValType.I64) { E.I64(-1); E.Op(Op.I64Xor); } else { E.I32(-1); E.Op(Op.I32Xor); if (Types.PrimSize(p) < 4 && TypeOf(u) is var rt && Types.PrimOf(rt) == p) Narrow(p); }
+                return Own.None;
+            case UnaryOperatorKind.Minus:
+                if (w == ValType.F32 || w == ValType.F64) { EmitValue(u.Operand); E.Op(w == ValType.F32 ? Op.F32Neg : Op.F64Neg); return Own.None; }
+                if (w == ValType.I64) { E.I64(0); EmitValue(u.Operand); EmitArith(BinaryOperatorKind.Subtract, p, u.IsChecked, p); }
+                else { E.I32(0); EmitValue(u.Operand); EmitArith(BinaryOperatorKind.Subtract, p, u.IsChecked, p); }
+                return Own.None;
+        }
+        throw new CompileException("unsupported unary operator " + u.OperatorKind, u.Syntax.GetLocation());
+    }
+
+    // =====================================================================
+    // strings
+    // =====================================================================
+    Own EmitStringConcat(IOperation a, IOperation b)
+    {
+        // flatten a + b + c ... into String.Concat calls of two strings
+        var parts = new List<IOperation>();
+        void Flatten(IOperation x)
+        {
+            if (x is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add, OperatorMethod: null } bb && bb.Type != null && Types.IsString(TypeOf(bb)))
+            { Flatten(bb.LeftOperand); Flatten(bb.RightOperand); }
+            else parts.Add(x);
+        }
+        Flatten(a); Flatten(b);
+        return ConcatParts(parts.Select(p => (Func<Own>)(() => EmitToString(p))).ToList());
+    }
+
+    Own ConcatParts(List<Func<Own>> parts)
+    {
+        var concat = D.LibMethod("System.String", "Concat2", 2);
+        var first = parts[0]();
+        first = ToCallSafe(first, D.StringType);
+        Own acc = first;
+        for (int i = 1; i < parts.Count; i++)
+        {
+            var o = parts[i]();
+            ToCallSafe(o, D.StringType);
+            E.Call(concat.Fn);
+            acc = Own.Owned;
+            if (i < parts.Count - 1) acc = ToCallSafe(acc, D.StringType);
+        }
+        if (parts.Count == 1)
+        {
+            // a single part still becomes a non-null string
+            E.Call(D.LibMethod("System.String", "OrEmpty", 1).Fn);
+            acc = Own.Unstable;
+        }
+        return acc;
+    }
+
+    /// <summary>Pushes a string for any value: strings as-is (null stays null; Concat treats it as empty), others via ToString().</summary>
+    Own EmitToString(IOperation op, string? format = null)
+    {
+        while (op is IConversionOperation { Conversion.IsImplicit: true } cv && cv.Operand.Type != null && cv.Type != null && (cv.Conversion.IsReference || (cv.Operand.Type.IsValueType && !cv.Type.IsValueType))) op = cv.Operand;
+        var t = TypeOf(op);
+        if (Types.IsString(t) && format == null) return EmitValue(op);
+        return EmitToStringOfValue(() => EmitValue(op), t, format, op);
+    }
+
+    Own EmitToStringOfValue(Func<Own> produce, ITypeSymbol t, string? format, IOperation? origin)
+    {
+        var obj = D.ObjectType;
+        if (t.IsValueType)
+        {
+            // call T.ToString() / T.ToString(string) directly on the value
+            var nt = (INamedTypeSymbol)T.Canonical(t);
+            IMethodSymbol? m = format != null
+                ? nt.GetMembers("ToString").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 1 && Types.IsString(x.Parameters[0].Type))
+                  ?? nt.GetMembers("ToString").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 2 && Types.IsString(x.Parameters[0].Type))
+                : nt.GetMembers("ToString").OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 0 && !x.IsStatic);
+            if (t.TypeKind == TypeKind.Enum)
+            {
+                // enums format through their boxed form
+                var o0 = produce();
+                EmitBox(t, o0);
+                int b = TempRef(obj); E.Set(b);
+                var tsE = obj.GetMembers("ToString").OfType<IMethodSymbol>().First(x => x.Parameters.Length == 0);
+                E.Get(b);
+                return EmitCallCore(tsE, null, [], true, preArgs: 1, forceInstance: true);
+            }
+            if (m == null) throw new CompileException($"{t} has no ToString{(format != null ? "(string)" : "")} in cs2wasm's library yet");
+            var own = produce();
+            int recv;
+            if (Types.IsStruct(nt)) { recv = Scratch(ValType.I32); E.Set(recv); }
+            else
+            {
+                // primitives: method takes the address of the value
+                int off = TempValue(nt);
+                int sv = Scratch(Types.WasmType(nt)!.Value); E.Set(sv);
+                E.Get(_fb); E.Get(sv); E.Store(Types.StoreOp(nt), off);
+                FreeScratch(Types.WasmType(nt)!.Value, sv);
+                recv = Scratch(ValType.I32); E.Get(_fb); E.I32(off); E.Op(Op.I32Add); E.Set(recv);
+            }
+            E.Get(recv);
+            FreeScratch(ValType.I32, recv);
+            if (format != null)
+            {
+                E.I32Addr(D.StringLiteral(format));
+                if (m.Parameters.Length == 2) E.I32(0);
+                return EmitCallCore(m, null, [], false, preArgs: m.Parameters.Length + 1, forceInstance: true);
+            }
+            return EmitCallCore(m, null, [], false, preArgs: 1, forceInstance: true);
+        }
+        // reference: null → "" ; else virtual ToString()
+        var o = produce();
+        o = ToCallSafe(o, t);
+        int v = Scratch(ValType.I32); E.Set(v);
+        E.Get(v);
+        E.If(ValType.I32);
+        E.Get(v);
+        if (format != null && T.IsSubtype(t, D.Types.Canonical(D.Main.GetTypeByMetadataName("System.IFormattable")!)))
+        {
+            var fm = D.Main.GetTypeByMetadataName("System.IFormattable")!.GetMembers("ToString").OfType<IMethodSymbol>().First();
+            E.I32Addr(D.StringLiteral(format)); E.I32(0);
+            EmitCallCore(fm, null, [], true, preArgs: 3, forceInstance: true);
+        }
+        else
+        {
+            var ts = obj.GetMembers("ToString").OfType<IMethodSymbol>().First(x => x.Parameters.Length == 0);
+            EmitCallCore(ts, null, [], true, preArgs: 1, forceInstance: true);
+        }
+        E.Else();
+        E.I32Addr(D.StringLiteral(""));
+        E.End();
+        FreeScratch(ValType.I32, v);
+        // both branches are owned (+1) or immortal; treat as owned (release of an immortal literal is a no-op)
+        return Own.Owned;
+    }
+
+    Own EmitInterpolatedString(IInterpolatedStringOperation iso)
+    {
+        var parts = new List<Func<Own>>();
+        foreach (var part in iso.Parts)
+        {
+            switch (part)
+            {
+                case IInterpolatedStringTextOperation text:
+                    {
+                        var s = (string?)text.Text.ConstantValue.Value ?? "";
+                        parts.Add(() => { E.I32Addr(D.StringLiteral(s)); return Own.Stable; });
+                        break;
+                    }
+                case IInterpolationOperation ip:
+                    {
+                        var fmt = ip.FormatString?.ConstantValue.Value as string;
+                        var align = ip.Alignment?.ConstantValue.Value is int a ? a : (int?)null;
+                        parts.Add(() =>
+                        {
+                            var o = EmitToString(ip.Expression, fmt);
+                            if (align is int al && al != 0)
+                            {
+                                o = ToCallSafe(o, D.StringType);
+                                E.I32(al);
+                                E.Call(D.LibMethod("System.String", "Align", 2).Fn);
+                                return Own.Owned;
+                            }
+                            return o;
+                        });
+                        break;
+                    }
+                default: throw new CompileException("unsupported interpolation part", part.Syntax.GetLocation());
+            }
+        }
+        if (parts.Count == 0) { E.I32Addr(D.StringLiteral("")); return Own.Stable; }
+        return ConcatParts(parts);
+    }
+
+    // =====================================================================
+    // assignment
+    // =====================================================================
+    Own EmitAssign(ISimpleAssignmentOperation sa, bool needResult)
+    {
+        if (sa.IsRef)
+        {
+            // ref reassignment: ref local = ref expr
+            if (sa.Target is ILocalReferenceOperation rl)
+            {
+                var v = LocalVar(rl.Local);
+                EmitAddress(sa.Value); E.Set(v.AddrLocal);
+                if (needResult) throw new CompileException("ref assignment as value is not supported");
+                return Own.None;
+            }
+            throw new CompileException("ref assignment target not supported", sa.Syntax.GetLocation());
+        }
+        var target = sa.Target;
+        if (target is IDiscardOperation)
+        {
+            var o0 = EmitValue(sa.Value);
+            if (needResult) return o0;
+            Drop(o0, sa.Value.Type);
+            return Own.None;
+        }
+        var tt = TypeOf(target);
+        var lv = LValueOf(target);
+        lv.Prepare();
+        Own o = Types.IsStruct(tt) ? EmitValue(sa.Value) : EmitValueAs(sa.Value, tt);
+        if (Types.IsStruct(tt) && sa.Value.Type != null) ConvertTop(TypeOf(sa.Value), tt, ref o);
+        return lv.Store(o, needResult);
+    }
+
+    Own EmitCompound(ICompoundAssignmentOperation ca, bool needResult)
+    {
+        var tt = TypeOf(ca.Target);
+        var lv = LValueOf(ca.Target);
+        lv.Prepare();
+        var vt = TypeOf(ca.Value);
+        if (ca.OperatorMethod != null)
+        {
+            var m = ca.OperatorMethod;
+            var p0 = T.Resolve(m.Parameters[0].Type, Map);
+            var cur = lv.Load();
+            ConvertTop(tt, p0, ref cur);
+            ToCallSafe(cur, p0);
+            var p1 = T.Resolve(m.Parameters[1].Type, Map);
+            var ov = EmitValueAs(ca.Value, p1);
+            if (Types.IsRef(p1)) ToCallSafe(ov, p1);
+            var r = EmitCallCore(SubstMethod(m), null, [], false, preArgs: 2);
+            ConvertTop(T.Resolve(m.ReturnType, Map), tt, ref r);
+            return lv.Store(r, needResult);
+        }
+        if (ca.OperatorKind == BinaryOperatorKind.Add && Types.IsString(tt))
+        {
+            var cur = lv.Load();
+            var curL = ToCallSafe(cur, tt);
+            int c0 = Scratch(ValType.I32); E.Set(c0);
+            var r = ConcatParts([() => { E.Get(c0); return Own.Stable; }, () => EmitToString(ca.Value)]);
+            FreeScratch(ValType.I32, c0);
+            return lv.Store(r, needResult);
+        }
+        if (ca.OperatorKind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract && tt.TypeKind == TypeKind.Delegate)
+        {
+            var cur = lv.Load(); ToCallSafe(cur, tt);
+            var ov = EmitValue(ca.Value); ToCallSafe(ov, tt);
+            E.Call(D.LibMethod("System.Delegate", ca.OperatorKind == BinaryOperatorKind.Add ? "Combine" : "Remove", 2).Fn);
+            return lv.Store(Own.Owned, needResult);
+        }
+        var pt = Types.PrimOf(tt);
+        if (pt == Prim.None) throw new CompileException($"compound assignment on {tt} not supported", ca.Syntax.GetLocation());
+        var opP = ca.OperatorKind is BinaryOperatorKind.LeftShift or BinaryOperatorKind.RightShift or BinaryOperatorKind.UnsignedRightShift
+            ? Promote(pt, pt) : Promote(pt, Types.PrimOf(vt));
+        if (tt.TypeKind == TypeKind.Enum || pt == Prim.Bool) opP = pt;
+        lv.Load();
+        NumericConvert(pt, opP, false);
+        EmitValue(ca.Value);
+        var vp = Types.PrimOf(vt);
+        if (ca.OperatorKind is BinaryOperatorKind.LeftShift or BinaryOperatorKind.RightShift or BinaryOperatorKind.UnsignedRightShift)
+        { if (Types.Is64(opP) && !Types.Is64(vp)) E.Op(Op.I64ExtendI32U); else if (!Types.Is64(opP) && Types.Is64(vp)) E.Op(Op.I32WrapI64); }
+        else NumericConvert(vp, opP, false);
+        EmitArith(ca.OperatorKind, opP, ca.IsChecked, opP);
+        NumericConvert(opP, pt, ca.IsChecked && opP != pt);
+        return lv.Store(Own.None, needResult);
+    }
+
+    static Prim Promote(Prim a, Prim b)
+    {
+        if (a == Prim.F64 || b == Prim.F64) return Prim.F64;
+        if (a == Prim.F32 || b == Prim.F32) return Prim.F32;
+        if (a == Prim.U64 || b == Prim.U64) return Prim.U64;
+        if (a == Prim.I64 || b == Prim.I64) return Prim.I64;
+        if (a == Prim.U32 || b == Prim.U32)
+        {
+            var o = a == Prim.U32 ? b : a;
+            return o is Prim.I8 or Prim.I16 or Prim.I32 ? Prim.I64 : Prim.U32;
+        }
+        if (a == Prim.IntPtr || b == Prim.IntPtr) return Prim.IntPtr;
+        if (a == Prim.UIntPtr || b == Prim.UIntPtr) return Prim.UIntPtr;
+        return Prim.I32;
+    }
+
+    Own EmitIncDec(IIncrementOrDecrementOperation inc, bool needResult)
+    {
+        var tt = TypeOf(inc.Target);
+        var lv = LValueOf(inc.Target);
+        lv.Prepare();
+        bool isInc = inc.Kind == OperationKind.Increment;
+        if (inc.OperatorMethod != null)
+        {
+            var cur = lv.Load();
+            int old = -1;
+            if (needResult && inc.IsPostfix) { cur = ToCallSafe(cur, tt); old = Scratch(Types.WasmType(tt)!.Value); E.Tee(old); }
+            var r = EmitCallCore(SubstMethod(inc.OperatorMethod), null, [], false, preArgs: 1);
+            var res = lv.Store(r, needResult && !inc.IsPostfix);
+            if (old >= 0) { E.Get(old); FreeScratch(Types.WasmType(tt)!.Value, old); return cur; }
+            return res;
+        }
+        if (IsNullable(tt))
+        {
+            // lifted: has ? value ± 1 : null
+            var u = Underlying(tt);
+            var up = Types.PrimOf(u);
+            var uw = Types.WasmPrim(up);
+            var cur = lv.Load();
+            int ca = E.AddLocal(ValType.I32); E.Set(ca);
+            int old = -1;
+            if (needResult && inc.IsPostfix) { old = TempStruct(tt); E.Get(_fb); E.I32(old); E.Op(Op.I32Add); E.Get(ca); CopyStructInit(tt); }
+            int res = TempStruct(tt);
+            E.Get(ca); NullableHas(tt);
+            E.If();
+            E.Get(ca); NullableVal(tt);
+            switch (uw) { case ValType.I64: E.I64(1); break; case ValType.F32: E.F32(1); break; case ValType.F64: E.F64(1); break; default: E.I32(1); break; }
+            var uop = Types.PrimSize(up) < 4 ? (Types.IsSigned(up) ? Prim.I32 : Prim.U32) : up;
+            EmitArith(isInc ? BinaryOperatorKind.Add : BinaryOperatorKind.Subtract, uop, inc.IsChecked && uop == up, uop);
+            if (uop != up) Narrow(up);
+            WrapNullable(tt, Own.None);
+            int wn = Scratch(ValType.I32); E.Set(wn);
+            E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.Get(wn); CopyStructInit(tt);
+            FreeScratch(ValType.I32, wn);
+            E.End();
+            E.Get(_fb); E.I32(res); E.Op(Op.I32Add);
+            var stored = lv.Store(Own.None, needResult && !inc.IsPostfix);
+            if (old >= 0) { E.Get(_fb); E.I32(old); E.Op(Op.I32Add); return Own.None; }
+            return stored;
+        }
+        var p = Types.PrimOf(tt);
+        if (p == Prim.None) throw new CompileException("++/-- on " + tt);
+        var w = Types.WasmPrim(p);
+        lv.Load();
+        int oldV = -1;
+        if (needResult && inc.IsPostfix) { oldV = Scratch(w); E.Tee(oldV); }
+        var opP = Types.PrimSize(p) < 4 ? (Types.IsSigned(p) ? Prim.I32 : Prim.U32) : p;
+        if (tt.TypeKind == TypeKind.Pointer)
+        {
+            E.I32(T.StorageOf(T.Canonical(((IPointerTypeSymbol)tt).PointedAtType)).size);
+            E.Op(isInc ? Op.I32Add : Op.I32Sub);
+        }
+        else
+        {
+            switch (w)
+            {
+                case ValType.I64: E.I64(1); break;
+                case ValType.F32: E.F32(1); break;
+                case ValType.F64: E.F64(1); break;
+                default: E.I32(1); break;
+            }
+            EmitArith(isInc ? BinaryOperatorKind.Add : BinaryOperatorKind.Subtract, opP, inc.IsChecked && opP == p, opP);
+            if (opP != p) { if (inc.IsChecked) CheckIntRange(opP == Prim.I32 ? Prim.I32 : Prim.U32, p); Narrow(p); }
+        }
+        if (oldV >= 0)
+        {
+            lv.Store(Own.None, false);
+            E.Get(oldV); FreeScratch(w, oldV);
+            return Own.None;
+        }
+        return lv.Store(Own.None, needResult);
+    }
+
+    Own EmitCoalesceAssign(ICoalesceAssignmentOperation cas, bool needResult)
+    {
+        var tt = TypeOf(cas.Target);
+        if (!Types.IsRef(tt)) throw new CompileException("??= on nullable value types is not supported yet", cas.Syntax.GetLocation());
+        var lv = LValueOf(cas.Target);
+        lv.Prepare();
+        lv.Load();
+        E.Op(Op.I32Eqz);
+        E.If();
+        var o = EmitValueAs(cas.Value, tt);
+        lv.Store(o, false);
+        E.End();
+        if (!needResult) return Own.None;
+        return lv.Load();
+    }
+
+    void EmitEventAssign(IEventAssignmentOperation ea)
+    {
+        var er = (IEventReferenceOperation)ea.EventReference;
+        var ev = er.Event;
+        var acc = ea.Adds ? ev.AddMethod! : ev.RemoveMethod!;
+        // field-like events inside their own type assign the field directly through the accessor anyway
+        EmitDiscardCall(acc, er.Instance, [ea.HandlerValue], IsVirtualCall(er.Instance, acc), ea.Syntax);
+    }
+
+    void EmitDiscardCall(IMethodSymbol m, IOperation? inst, IReadOnlyList<IOperation> args, bool virt, SyntaxNode syn)
+    {
+        var o = EmitCall(m, inst, args, virt, syn);
+        var rt = T.Resolve(m.ReturnType, Map);
+        if (!Types.IsVoid(rt)) Drop(o, rt);
+    }
+
+    void EmitDeconstruction(IDeconstructionAssignmentOperation da) => EmitDeconstructionCore(da);
+
+    // ---------------- lvalues ----------------
+    abstract class LValue
+    {
+        protected readonly FunctionCompiler F;
+        public readonly ITypeSymbol Type;
+        protected LValue(FunctionCompiler f, ITypeSymbol t) { F = f; Type = t; }
+        public abstract void Prepare();
+        public abstract Own Load();
+        /// <summary>Stores the value on the stack; if needResult, pushes the stored value (borrowed from the target).</summary>
+        public abstract Own Store(Own o, bool needResult);
+    }
+
+    sealed class VarLV(FunctionCompiler f, Var v) : LValue(f, v.Type)
+    {
+        public override void Prepare() { }
+        public override Own Load() => F.LoadVar(v);
+        public override Own Store(Own o, bool needResult)
+        {
+            F.StoreVar(v, o);
+            return needResult ? F.LoadVar(v) : Own.None;
+        }
+    }
+
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase) : LValue(f, t)
+    {
+        int _addr = -1, _off;
+        public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
+        public override Own Load()
+        {
+            F.E.Get(_addr);
+            if (Types.IsStruct(Type)) { if (_off != 0) { F.E.I32(_off); F.E.Op(Op.I32Add); } return Own.None; }
+            F.E.Load(Types.LoadOp(Type), _off);
+            return Types.IsRef(Type) ? Own.Unstable : Own.None;
+        }
+        public override Own Store(Own o, bool needResult)
+        {
+            F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o);
+            return needResult ? Load() : Own.None;
+        }
+    }
+
+    sealed class PropLV(FunctionCompiler f, IPropertyReferenceOperation pr, ITypeSymbol t) : LValue(f, t)
+    {
+        int _recv = -1; bool _recvIsStruct;
+        readonly List<(int local, ITypeSymbol type)> _args = [];
+        public override void Prepare()
+        {
+            var p = pr.Property;
+            if (!p.IsStatic)
+            {
+                var it = F.TypeOf(pr.Instance!);
+                _recvIsStruct = it.IsValueType;
+                if (_recvIsStruct)
+                {
+                    if (F.IsAddressable(pr.Instance!)) F.EmitAddress(pr.Instance!); else F.EmitValue(pr.Instance!);
+                }
+                else
+                {
+                    var o = F.EmitValue(pr.Instance!);
+                    F.ToCallSafe(o, it);
+                    if (!F.IsKnownNonNull(pr.Instance!)) F.NullCheckKeep();
+                }
+                _recv = F.E.AddLocal(ValType.I32); F.E.Set(_recv);
+            }
+            foreach (var a in pr.Arguments)
+            {
+                var at = F.T.Resolve(a.Parameter!.Type, F.Map);
+                var o = F.EmitValueAs(a.Value, at);
+                if (Types.IsRef(at)) F.ToCallSafe(o, at);
+                int l = F.E.AddLocal(Types.WasmType(at) ?? ValType.I32); F.E.Set(l);
+                _args.Add((l, at));
+            }
+        }
+        void PushRecvAndArgs()
+        {
+            if (_recv >= 0) F.E.Get(_recv);
+            foreach (var (l, _) in _args) F.E.Get(l);
+        }
+        public override Own Load()
+        {
+            var g = pr.Property.GetMethod ?? throw new CompileException("property has no getter");
+            PushRecvAndArgs();
+            return F.EmitCallCore(F.SubstMethod(g), null, [], !_recvIsStruct && F.IsVirtualCall(pr.Instance, g), preArgs: (_recv >= 0 ? 1 : 0) + _args.Count, forceInstance: _recv >= 0, receiverType: pr.Instance != null ? F.TypeOf(pr.Instance) : null);
+        }
+        public override Own Store(Own o, bool needResult)
+        {
+            var s = pr.Property.SetMethod ?? throw new CompileException("property has no setter");
+            var vt = Type;
+            int v;
+            if (Types.IsRef(vt))
+            {
+                o = F.ToCallSafe(o, vt);
+                v = F.Scratch(ValType.I32); F.E.Set(v);
+            }
+            else { v = F.Scratch(Types.WasmType(vt)!.Value); F.E.Set(v); }
+            PushRecvAndArgs();
+            F.E.Get(v);
+            F.EmitCallCore(F.SubstMethod(s), null, [], !_recvIsStruct && F.IsVirtualCall(pr.Instance, s), preArgs: (_recv >= 0 ? 1 : 0) + _args.Count + 1, forceInstance: _recv >= 0, receiverType: pr.Instance != null ? F.TypeOf(pr.Instance) : null);
+            if (needResult) { F.E.Get(v); F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v); return Types.IsRef(vt) ? Own.Stable : Own.None; }
+            F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v);
+            return Own.None;
+        }
+    }
+
+    sealed class CapturedLV(FunctionCompiler f, ISymbol sym, ITypeSymbol t) : LValue(f, t)
+    {
+        public override void Prepare() { }
+        public override Own Load() => F.LoadCaptured(sym);
+        public override Own Store(Own o, bool needResult)
+        {
+            int off = 0;
+            int a = F.Scratch(ValType.I32);
+            // value is on the stack; compute the address after it
+            var vt = Types.WasmType(Type) ?? ValType.I32;
+            int v = F.Scratch(vt);
+            if (Types.IsRef(Type)) F.ToOwned(o);
+            F.E.Set(v);
+            off = F.CapturedAddress(sym); F.E.Set(a);
+            F.E.Get(v);
+            F.StoreToAddressFromStack(() => F.E.Get(a), off, Type, Types.IsRef(Type) ? Own.Owned : Own.None);
+            F.FreeScratch(vt, v); F.FreeScratch(ValType.I32, a);
+            return needResult ? F.LoadCaptured(sym) : Own.None;
+        }
+    }
+
+    LValue LValueOf(IOperation target)
+    {
+        while (target is IConversionOperation { Conversion.IsIdentity: true } c) target = c.Operand;
+        var t = TypeOf(target);
+        switch (target)
+        {
+            case ILocalReferenceOperation l:
+                if (IsCaptured(l.Local)) return new CapturedLV(this, l.Local, t);
+                { var v = LocalVar(l.Local); if (!v.InMemory) return new VarLV(this, v); }
+                break;
+            case IParameterReferenceOperation p:
+                if (IsCaptured(p.Parameter)) return new CapturedLV(this, p.Parameter, t);
+                { var v = _vars[p.Parameter]; if (!v.InMemory) return new VarLV(this, v); }
+                break;
+            case IPropertyReferenceOperation pr:
+                if (IsDirectAutoProperty(pr.Property, pr.Instance))
+                {
+                    var bf = Driver.AutoPropertyField(pr.Property.OriginalDefinition)!;
+                    var ft = T.Resolve(pr.Property.Type, Map);
+                    var owner = Owner(pr.Property);
+                    return new MemLV(this, ft, () =>
+                    {
+                        if (bf.IsStatic) { EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, bf, ft)); return 0; }
+                        return EmitReceiverAddressForField(pr.Instance!) + T.FieldIn(owner, bf).Offset;
+                    });
+                }
+                if (pr.Property.ReturnsByRef) break;
+                return new PropLV(this, pr, t);
+            case IDeclarationExpressionOperation de: return LValueOf(de.Expression);
+        }
+        return new MemLV(this, t, () => EmitAddressBase(target));
+    }
+
+    // =====================================================================
+    // conditional / coalesce / type tests
+    // =====================================================================
+    Own EmitConditionalExpr(IConditionalOperation co)
+    {
+        var rt = TypeOf(co);
+        var vt = Types.WasmType(rt) ?? ValType.I32;
+        EmitCondition(co.Condition);
+        E.If(vt);
+        var a = EmitValueAs(co.WhenTrue, rt);
+        if (Types.IsRef(rt)) ToOwned(a);
+        E.Else();
+        var b = EmitValueAs(co.WhenFalse!, rt);
+        if (Types.IsRef(rt)) ToOwned(b);
+        E.End();
+        return Types.IsRef(rt) ? Own.Owned : Own.None;
+    }
+
+    Own EmitCoalesce(ICoalesceOperation c)
+    {
+        var lt = TypeOf(c.Value);
+        var rt = TypeOf(c);
+        if (IsNullable(lt)) return EmitNullableCoalesce(c);
+        if (!Types.IsRef(lt)) throw new CompileException("?? on this type is not supported", c.Syntax.GetLocation());
+        var o = EmitValue(c.Value);
+        ToOwned(o);
+        int t = Scratch(ValType.I32);
+        E.Tee(t);
+        E.If(ValType.I32);
+        E.Get(t);
+        E.Else();
+        var o2 = EmitValueAs(c.WhenNull, rt);
+        if (Types.IsRef(rt)) ToOwned(o2);
+        E.End();
+        FreeScratch(ValType.I32, t);
+        return Own.Owned;
+    }
+
+    Own EmitIsType(IIsTypeOperation it)
+    {
+        var vt = TypeOf(it.ValueOperand);
+        var target = T.Resolve(it.TypeOperand, Map);
+        var o = EmitValue(it.ValueOperand);
+        if (vt.IsValueType)
+        {
+            Drop(o, vt);
+            E.I32(T.IsSubtype(vt, target) || Types.Key(vt) == Types.Key(target) ? 1 : 0);
+        }
+        else
+        {
+            ToTransient(o, vt);
+            EmitTypeTest(target);
+        }
+        if (it.IsNegated) E.Op(Op.I32Eqz);
+        return Own.None;
+    }
+
+    /// <summary>Stack: object pointer → i32 (non-null and an instance of target).</summary>
+    void EmitTypeTest(ITypeSymbol target)
+    {
+        if (target.IsValueType)
+        {
+            int v = Scratch(ValType.I32);
+            E.Tee(v);
+            E.If(ValType.I32); E.Get(v); E.Call(Rt.IsExactBox(target)); E.Else(); E.I32(0); E.End();
+            FreeScratch(ValType.I32, v);
+            return;
+        }
+        E.Call(Rt.IsInst(target));
+    }
+
+    Own EmitConditionalAccess(IConditionalAccessOperation ca)
+    {
+        var it = TypeOf(ca.Operation);
+        var rt = ca.Type != null ? TypeOf(ca) : null;
+        bool voidResult = rt == null || Types.IsVoid(rt);
+        if (!voidResult && rt!.IsValueType && !IsNullable(rt)) throw new CompileException("?. producing a value type is not supported", ca.Syntax.GetLocation());
+        var o = EmitValue(ca.Operation);
+        int v;
+        ITypeSymbol instType = it;
+        if (it.IsValueType)
+        {
+            // a nullable: test HasValue, the instance is the value; a plain value type is never null
+            v = E.AddLocal(Types.WasmType(it) ?? ValType.I32);
+            E.Set(v);
+            if (IsNullable(it))
+            {
+                instType = Underlying(it);
+                int inner = E.AddLocal(Types.WasmType(instType) ?? ValType.I32);
+                E.Get(v); NullableHas(it);
+                E.If(); E.Get(v); NullableVal(it); E.Set(inner); E.End();
+                E.Get(v); NullableHas(it);
+                v = inner;
+            }
+            else E.I32(1);
+        }
+        else
+        {
+            o = ToCallSafe(o, it);
+            v = E.AddLocal(ValType.I32);
+            E.Tee(v);
+        }
+        _condAccess.Add((v, instType));
+        if (voidResult)
+        {
+            E.If();
+            EmitDiscard(ca.WhenNotNull);
+            E.End();
+            _condAccess.RemoveAt(_condAccess.Count - 1);
+            return Own.None;
+        }
+        E.If(ValType.I32);
+        var r = EmitValueAs(ca.WhenNotNull, rt!);
+        if (Types.IsRef(rt!)) ToOwned(r);
+        E.Else();
+        if (IsNullable(rt!)) EmitDefault(rt!); else E.I32(0);
+        E.End();
+        _condAccess.RemoveAt(_condAccess.Count - 1);
+        return Types.IsRef(rt!) ? Own.Owned : Own.None;
+    }
+
+    readonly List<(int local, ITypeSymbol type)> _condAccess = [];
+
+    Own EmitConditionalInstance()
+    {
+        var (l, t) = _condAccess[^1];
+        E.Get(l);
+        return Types.IsRef(t) ? Own.Stable : Own.None;
+    }
+
+    // =====================================================================
+    // patterns
+    // =====================================================================
+    Own EmitIsPattern(IIsPatternOperation ip)
+    {
+        var vt = TypeOf(ip.Value);
+        int v = BindValue(ip.Value, vt);
+        EmitPattern(ip.Pattern, v, vt);
+        return Own.None;
+    }
+
+    /// <summary>Evaluates a value into a local held until the end of the statement.</summary>
+    int BindValue(IOperation op, ITypeSymbol vt)
+    {
+        var o = EmitValue(op);
+        if (Types.IsRef(vt)) { ToCallSafe(o, vt); }
+        int v = E.AddLocal(Types.WasmType(vt) ?? ValType.I32);
+        E.Set(v);
+        return v;
+    }
+
+    /// <summary>Pushes an i32 telling whether the value in local <paramref name="v"/> (of type vt) matches.</summary>
+    void EmitPattern(IPatternOperation pat, int v, ITypeSymbol vt)
+    {
+        switch (pat)
+        {
+            case IDiscardPatternOperation: E.I32(1); return;
+            case IConstantPatternOperation cp:
+                {
+                    var cv = cp.Value;
+                    if (cv.ConstantValue.HasValue && cv.ConstantValue.Value == null)
+                    {
+                        E.Get(v);
+                        if (IsNullable(vt)) NullableHas(vt);
+                        E.Op(Op.I32Eqz); return;
+                    }
+                    if (IsNullable(vt))
+                    {
+                        var u0 = Underlying(vt);
+                        E.Get(v); NullableHas(vt);
+                        E.If(ValType.I32);
+                        E.Get(v); NullableVal(vt);
+                        var o0 = EmitValue(cv); if (cv.Type != null) ConvertTop(TypeOf(cv), u0, ref o0);
+                        EmitCompare(BinaryOperatorKind.Equals, u0);
+                        E.Else(); E.I32(0); E.End();
+                        return;
+                    }
+                    if (Types.IsString(vt))
+                    {
+                        E.Get(v); EmitValue(cv); E.Call(D.LibMethod("System.String", "Equals", 2).Fn); return;
+                    }
+                    if (!vt.IsValueType)
+                    {
+                        // object o is 5 / is "x"
+                        var ct = TypeOf(cv);
+                        if (Types.IsString(ct)) { E.Get(v); E.Call(Rt.IsInst(ct)); E.If(ValType.I32); E.Get(v); EmitValue(cv); E.Call(D.LibMethod("System.String", "Equals", 2).Fn); E.Else(); E.I32(0); E.End(); return; }
+                        E.Get(v); EmitTypeTest(ct);
+                        E.If(ValType.I32);
+                        E.Get(v); E.Load(Types.LoadOp(ct), BoxDataOffset(T, ct));
+                        EmitValue(cv);
+                        EmitCompare(BinaryOperatorKind.Equals, ct);
+                        E.Else(); E.I32(0); E.End();
+                        return;
+                    }
+                    E.Get(v);
+                    var o = EmitValue(cv);
+                    if (cv.Type != null) ConvertTop(TypeOf(cv), vt, ref o);
+                    EmitCompare(BinaryOperatorKind.Equals, vt);
+                    return;
+                }
+            case IRelationalPatternOperation rp:
+                {
+                    if (!vt.IsValueType)
+                    {
+                        var ct = TypeOf(rp.Value);
+                        E.Get(v); EmitTypeTest(ct);
+                        E.If(ValType.I32);
+                        E.Get(v); E.Load(Types.LoadOp(ct), BoxDataOffset(T, ct));
+                        EmitValue(rp.Value); EmitCompare(rp.OperatorKind, ct);
+                        E.Else(); E.I32(0); E.End();
+                        return;
+                    }
+                    E.Get(v);
+                    var o = EmitValue(rp.Value);
+                    ConvertTop(TypeOf(rp.Value), vt, ref o);
+                    EmitCompare(rp.OperatorKind, vt);
+                    return;
+                }
+            case INegatedPatternOperation np: EmitPattern(np.Pattern, v, vt); E.Op(Op.I32Eqz); return;
+            case IBinaryPatternOperation bp:
+                EmitPattern(bp.LeftPattern, v, vt);
+                E.If(ValType.I32);
+                if (bp.OperatorKind == BinaryOperatorKind.And) { EmitPattern(bp.RightPattern, v, vt); E.Else(); E.I32(0); }
+                else { E.I32(1); E.Else(); EmitPattern(bp.RightPattern, v, vt); }
+                E.End();
+                return;
+            case ITypePatternOperation tp:
+                EmitTestType(v, vt, T.Resolve(tp.MatchedType, Map));
+                return;
+            case IDeclarationPatternOperation dp:
+                {
+                    var mt = dp.MatchedType != null ? T.Resolve(dp.MatchedType, Map) : vt;
+                    if (dp.MatchesNull) { BindPatternVariable(dp.DeclaredSymbol, v, vt, mt); E.I32(1); return; }
+                    EmitTestType(v, vt, mt);
+                    if (dp.DeclaredSymbol == null) return;
+                    E.If(ValType.I32);
+                    BindPatternVariable(dp.DeclaredSymbol, v, vt, mt);
+                    E.I32(1);
+                    E.Else(); E.I32(0); E.End();
+                    return;
+                }
+            case IRecursivePatternOperation rp:
+                {
+                    var mt = rp.MatchedType != null ? T.Resolve(rp.MatchedType, Map) : vt;
+                    if (rp.DeconstructionSubpatterns.Length > 0) throw new CompileException("positional patterns are not supported yet", rp.Syntax.GetLocation());
+                    EmitTestType(v, vt, mt);
+                    E.If(ValType.I32);
+                    // narrowed value
+                    int nv = Narrowed(v, vt, mt);
+                    if (rp.DeclaredSymbol != null) BindPatternVariable(rp.DeclaredSymbol, v, vt, mt);
+                    _patternInputs.Add((nv, mt));
+                    EmitSubpatterns(rp.PropertySubpatterns, 0);
+                    _patternInputs.RemoveAt(_patternInputs.Count - 1);
+                    E.Else(); E.I32(0); E.End();
+                    return;
+                }
+        }
+        throw new CompileException("unsupported pattern " + pat.Kind, pat.Syntax.GetLocation());
+    }
+
+    void EmitSubpatterns(System.Collections.Immutable.ImmutableArray<IPropertySubpatternOperation> subs, int i)
+    {
+        if (i >= subs.Length) { E.I32(1); return; }
+        var sp = subs[i];
+        var mt = TypeOf(sp.Member);
+        int mv = BindValue(sp.Member, mt);
+        EmitPattern(sp.Pattern, mv, mt);
+        E.If(ValType.I32);
+        EmitSubpatterns(subs, i + 1);
+        E.Else(); E.I32(0); E.End();
+    }
+
+    void EmitTestType(int v, ITypeSymbol vt, ITypeSymbol mt)
+    {
+        if (IsNullable(vt) && !IsNullable(mt))
+        {
+            E.Get(v); NullableHas(vt);
+            if (!(Types.Key(Underlying(vt)) == Types.Key(T.Canonical(mt)) || T.IsSubtype(Underlying(vt), mt))) { E.Op(Op.Drop); E.I32(0); }
+            return;
+        }
+        if (vt.IsValueType)
+        {
+            E.I32(Types.Key(T.Canonical(vt)) == Types.Key(T.Canonical(mt)) || T.IsSubtype(vt, mt) ? 1 : 0);
+            return;
+        }
+        if (!mt.IsValueType && T.IsSubtype(vt, mt)) { E.Get(v); E.I32(0); E.Op(Op.I32Ne); return; }
+        E.Get(v); EmitTypeTest(mt);
+    }
+
+    int Narrowed(int v, ITypeSymbol vt, ITypeSymbol mt)
+    {
+        if (IsNullable(vt) && !IsNullable(mt))
+        {
+            var u = Underlying(vt);
+            int nv0 = E.AddLocal(Types.WasmType(u) ?? ValType.I32);
+            E.Get(v); NullableVal(vt); E.Set(nv0);
+            if (Types.IsRef(mt) && !Types.IsRef(u)) { var bo = Own.None; E.Get(nv0); EmitBox(u, bo); int bl = TempRef(mt); E.Set(bl); return bl; }
+            return nv0;
+        }
+        if (!vt.IsValueType && mt.IsValueType)
+        {
+            int nv = E.AddLocal(Types.WasmType(mt) ?? ValType.I32);
+            E.Get(v);
+            int off = BoxDataOffset(T, mt);
+            if (Types.IsStruct(mt)) { E.I32(off); E.Op(Op.I32Add); } else E.Load(Types.LoadOp(mt), off);
+            E.Set(nv);
+            return nv;
+        }
+        return v;
+    }
+
+    void BindPatternVariable(ISymbol? sym, int v, ITypeSymbol vt, ITypeSymbol mt)
+    {
+        if (sym is not ILocalSymbol l) return;
+        int nv = Narrowed(v, vt, mt);
+        EmitStoreToVarFrom(l, mt, () =>
+        {
+            E.Get(nv);
+            return Types.IsRef(mt) ? Own.Stable : Own.None;
+        });
+    }
+
+    Own EmitSwitchExpression(ISwitchExpressionOperation se)
+    {
+        var vt = TypeOf(se.Value);
+        var rt = TypeOf(se);
+        int v = BindValue(se.Value, vt);
+        var wt = Types.WasmType(rt) ?? ValType.I32;
+        var done = E.Block(wt);
+        foreach (var arm in se.Arms)
+        {
+            EmitPattern(arm.Pattern, v, vt);
+            if (arm.Guard != null) { E.If(ValType.I32); EmitCondition(arm.Guard); E.Else(); E.I32(0); E.End(); }
+            E.If();
+            var o = EmitValueAs(arm.Value, rt);
+            if (Types.IsRef(rt)) ToOwned(o);
+            E.Br(done);
+            E.End();
+        }
+        E.Call(Rt.ThrowSwitch);
+        E.Op(Op.Unreachable);
+        E.End();
+        return Types.IsRef(rt) ? Own.Owned : Own.None;
+    }
+
+    // =====================================================================
+    // pointers (no public IOperation kind: read the syntax)
+    // =====================================================================
+    Own EmitPointerOp(IOperation op)
+    {
+        var t = op.Type != null ? TypeOf(op) : throw new CompileException($"unsupported construct '{op.Syntax}'", op.Syntax.GetLocation());
+        int off = EmitPointerAddress(op);
+        if (Types.IsStruct(t)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
+        E.Load(Types.LoadOp(t), off);
+        return Types.IsRef(t) ? Own.Unstable : Own.None;
+    }
+
+    int EmitPointerAddress(IOperation op)
+    {
+        var syn = op.Syntax;
+        var children = op.ChildOperations.ToList();
+        switch (syn)
+        {
+            case PrefixUnaryExpressionSyntax pu when pu.IsKind(SyntaxKind.PointerIndirectionExpression):
+                EmitValue(children[0]); return 0;
+            case ElementAccessExpressionSyntax when children.Count == 2 && children[0].Type is IPointerTypeSymbol pt:
+                {
+                    EmitValue(children[0]);
+                    var ip = Types.PrimOf(TypeOf(children[1]));
+                    EmitValue(children[1]); if (Types.Is64(ip)) E.Op(Op.I32WrapI64);
+                    int es = T.StorageOf(T.Canonical(pt.PointedAtType)).size;
+                    if (es != 1) { E.I32(es); E.Op(Op.I32Mul); }
+                    E.Op(Op.I32Add);
+                    return 0;
+                }
+        }
+        throw new CompileException($"unsupported construct '{syn}'", syn.GetLocation());
+    }
+}

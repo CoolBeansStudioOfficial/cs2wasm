@@ -1,0 +1,380 @@
+using System.Text;
+
+namespace Cs2Wasm.Wasm;
+
+internal sealed class WasmModule
+{
+    public readonly List<WasmFunction> Functions = [];
+    public readonly List<WasmGlobal> Globals = [];
+    public readonly List<WasmTag> Tags = [];
+    public readonly List<DataSegment> Data = [];
+    public readonly List<CustomSection> CustomSections = [];
+    public readonly List<WasmFunction> Table = [];
+    public string MemoryModule = "env", MemoryName = "memory";
+    public int MemoryMinPages = 256, MemoryMaxPages = 16384;
+    public bool MemoryShared = true;
+
+    public WasmFunction AddFunction(string name, FuncType type)
+    {
+        var f = new WasmFunction(name, type) { Order = Functions.Count };
+        Functions.Add(f);
+        return f;
+    }
+
+    public WasmFunction AddImport(string module, string name, string debugName, FuncType type)
+    {
+        var f = AddFunction(debugName, type);
+        f.ImportModule = module; f.ImportName = name;
+        return f;
+    }
+
+    public int TableSlot(WasmFunction f)
+    {
+        if (!f.InTable) { f.InTable = true; f.TableIndex = Table.Count; Table.Add(f); }
+        return f.TableIndex;
+    }
+
+    /// <summary>One emitted instruction that has a source position: absolute byte offset in the module.</summary>
+    public readonly record struct LineEntry(int Offset, int Pos);
+
+    public sealed class Encoded
+    {
+        public byte[] Bytes = [];
+        public List<LineEntry> Lines = [];
+        public List<WasmFunction> FunctionOrder = [];
+    }
+
+    public Encoded Encode(bool optimize)
+    {
+        foreach (var f in Functions) ResolveForwards(f);
+        if (optimize)
+        {
+            foreach (var f in Functions) if (!f.IsImport) Peephole.Run(f);
+            MergeIdenticalBodies();
+            foreach (var f in Functions) ResolveForwards(f);
+        }
+
+        // Which functions are live: exported, in the table, or called from a live function.
+        var live = new HashSet<WasmFunction>();
+        var work = new Stack<WasmFunction>();
+        foreach (var f in Functions) if (f.Exports.Count > 0 || f.InTable) { live.Add(f); work.Push(f); }
+        var callCounts = new Dictionary<WasmFunction, int>();
+        while (work.Count > 0)
+        {
+            var f = work.Pop();
+            foreach (var ins in f.Body)
+                if (ins.Op == Op.Call && ins.Ref is WasmFunction g)
+                {
+                    callCounts[g] = callCounts.GetValueOrDefault(g) + 1;
+                    if (live.Add(g)) work.Push(g);
+                }
+        }
+
+        var imports = Functions.Where(f => f.IsImport && live.Contains(f)).ToList();
+        var defined = Functions.Where(f => !f.IsImport && live.Contains(f))
+            .OrderByDescending(f => callCounts.GetValueOrDefault(f)).ThenBy(f => f.Order).ToList();
+        int idx = 0;
+        foreach (var f in imports) f.Index = idx++;
+        foreach (var f in defined) f.Index = idx++;
+
+        // Globals: most used first (all are defined, none imported).
+        var gUse = new Dictionary<WasmGlobal, int>();
+        foreach (var f in defined) foreach (var ins in f.Body)
+            if (ins.Ref is WasmGlobal g) gUse[g] = gUse.GetValueOrDefault(g) + 1;
+        var globals = Globals.Where(g => gUse.ContainsKey(g) || g.Export != null)
+            .OrderByDescending(g => gUse.GetValueOrDefault(g)).ThenBy(g => Globals.IndexOf(g)).ToList();
+        for (int i = 0; i < globals.Count; i++) globals[i].Index = i;
+        for (int i = 0; i < Tags.Count; i++) Tags[i].Index = i;
+        for (int i = 0; i < Data.Count; i++) Data[i].Index = i;
+
+        // Types
+        var types = new List<FuncType>();
+        var typeIdx = new Dictionary<FuncType, int>();
+        int TypeOf(FuncType t) { if (!typeIdx.TryGetValue(t, out var i)) { i = types.Count; types.Add(t); typeIdx[t] = i; } return i; }
+        foreach (var f in imports) TypeOf(f.Type);
+        foreach (var f in defined) TypeOf(f.Type);
+        foreach (var t in Tags) TypeOf(t.Type);
+        foreach (var f in defined) foreach (var ins in f.Body)
+        {
+            if (ins.Op == Op.CallIndirect) TypeOf((FuncType)ins.Ref!);
+            var bt = ins.Ref is TryTableInfo tti ? tti.BlockType : (ins.Op is Op.Block or Op.Loop or Op.If ? ins.Ref : null);
+            if (bt is FuncType ft) TypeOf(ft);
+        }
+
+        var w = new Writer();
+        w.Bytes(0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00);
+
+        Section(w, 1, s =>
+        {
+            s.U32(types.Count);
+            foreach (var t in types)
+            {
+                s.Byte(0x60); s.U32(t.Params.Length); foreach (var p in t.Params) s.Byte((byte)p);
+                s.U32(t.Results.Length); foreach (var r in t.Results) s.Byte((byte)r);
+            }
+        });
+        Section(w, 2, s =>
+        {
+            s.U32(imports.Count + 1);
+            s.Name(MemoryModule); s.Name(MemoryName); s.Byte(0x02);
+            s.Byte((byte)(MemoryShared ? 0x03 : 0x01)); s.U32(MemoryMinPages); s.U32(MemoryMaxPages);
+            foreach (var f in imports) { s.Name(f.ImportModule!); s.Name(f.ImportName!); s.Byte(0x00); s.U32(TypeOf(f.Type)); }
+        });
+        Section(w, 3, s => { s.U32(defined.Count); foreach (var f in defined) s.U32(TypeOf(f.Type)); });
+        if (Table.Count > 0)
+            Section(w, 4, s => { s.U32(1); s.Byte(0x70); s.Byte(0x01); s.U32(Table.Count); s.U32(Table.Count); });
+        if (Tags.Count > 0)
+            Section(w, 13, s => { s.U32(Tags.Count); foreach (var t in Tags) { s.Byte(0); s.U32(TypeOf(t.Type)); } });
+        if (globals.Count > 0)
+            Section(w, 6, s =>
+            {
+                s.U32(globals.Count);
+                foreach (var g in globals)
+                {
+                    s.Byte((byte)g.Type); s.Byte((byte)(g.Mutable ? 1 : 0));
+                    switch (g.Type)
+                    {
+                        case ValType.I32: s.Byte(0x41); s.S32((int)g.Init); break;
+                        case ValType.I64: s.Byte(0x42); s.S64(g.Init); break;
+                        case ValType.F32: s.Byte(0x43); s.Bytes(BitConverter.GetBytes((int)g.Init)); break;
+                        case ValType.F64: s.Byte(0x44); s.Bytes(BitConverter.GetBytes(g.Init)); break;
+                    }
+                    s.Byte(0x0B);
+                }
+            });
+        var exports = new List<(string name, byte kind, int idx)>();
+        foreach (var f in defined.Concat(imports)) foreach (var e in f.Exports) exports.Add((e, 0, f.Index));
+        foreach (var g in globals) if (g.Export != null) exports.Add((g.Export, 3, g.Index));
+        exports.Sort((a, b) => string.CompareOrdinal(a.name, b.name));
+        Section(w, 7, s => { s.U32(exports.Count); foreach (var e in exports) { s.Name(e.name); s.Byte(e.kind); s.U32(e.idx); } });
+        if (Table.Count > 0)
+            Section(w, 9, s =>
+            {
+                s.U32(1); s.U32(0); s.Byte(0x41); s.S32(0); s.Byte(0x0B);
+                s.U32(Table.Count); foreach (var f in Table) s.U32(f.Index);
+            });
+        if (Data.Count > 0) Section(w, 12, s => s.U32(Data.Count));
+
+        // Code section: encode bodies, remembering source positions.
+        var result = new Encoded { FunctionOrder = imports.Concat(defined).ToList() };
+        var code = new Writer();
+        var relLines = new List<LineEntry>();
+        code.U32(defined.Count);
+        foreach (var f in defined)
+        {
+            var body = new Writer();
+            var runs = new List<(int n, ValType t)>();
+            foreach (var l in f.Locals)
+                if (runs.Count > 0 && runs[^1].t == l) runs[^1] = (runs[^1].n + 1, l); else runs.Add((1, l));
+            body.U32(runs.Count); foreach (var (n, t) in runs) { body.U32(n); body.Byte((byte)t); }
+            var bodyLines = new List<(int off, int pos)>();
+            int lastPos = -1;
+            foreach (var ins in f.Body)
+            {
+                if (ins.Pos >= 0 && ins.Pos != lastPos) { bodyLines.Add((body.Length, ins.Pos)); lastPos = ins.Pos; }
+                EncodeInstr(body, ins, TypeOf);
+            }
+            body.Byte(0x0B);
+            code.U32(body.Length);
+            int start = code.Length;
+            foreach (var (off, pos) in bodyLines) relLines.Add(new LineEntry(start + off, pos));
+            code.Bytes(body.ToArray());
+        }
+        w.Byte(10); w.U32(code.Length);
+        int codeStart = w.Length;
+        w.Bytes(code.ToArray());
+        foreach (var l in relLines) result.Lines.Add(new LineEntry(codeStart + l.Offset, l.Pos));
+
+        if (Data.Count > 0)
+            Section(w, 11, s =>
+            {
+                s.U32(Data.Count);
+                foreach (var d in Data) { s.U32(1); s.U32(d.Bytes.Count); s.Bytes(d.Bytes.ToArray()); }
+            });
+
+        // name section
+        var names = new Writer();
+        names.Name("name");
+        var fnNames = new Writer();
+        var all = imports.Concat(defined).ToList();
+        fnNames.U32(all.Count);
+        foreach (var f in all) { fnNames.U32(f.Index); fnNames.Name(f.Name); }
+        names.Byte(1); names.U32(fnNames.Length); names.Bytes(fnNames.ToArray());
+        if (globals.Count > 0)
+        {
+            var gn = new Writer();
+            gn.U32(globals.Count);
+            foreach (var g in globals) { gn.U32(g.Index); gn.Name(g.Name); }
+            names.Byte(7); names.U32(gn.Length); names.Bytes(gn.ToArray());
+        }
+        if (Tags.Count > 0)
+        {
+            var tn = new Writer();
+            tn.U32(Tags.Count);
+            foreach (var t in Tags) { tn.U32(t.Index); tn.Name(t.Name); }
+            names.Byte(11); names.U32(tn.Length); names.Bytes(tn.ToArray());
+        }
+        w.Byte(0); w.U32(names.Length); w.Bytes(names.ToArray());
+
+        foreach (var cs in CustomSections)
+        {
+            var s = new Writer();
+            s.Name(cs.Name); s.Bytes(cs.Data);
+            w.Byte(0); w.U32(s.Length); w.Bytes(s.ToArray());
+        }
+        result.Bytes = w.ToArray();
+        return result;
+    }
+
+    static void ResolveForwards(WasmFunction f)
+    {
+        var body = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(f.Body);
+        for (int i = 0; i < body.Length; i++)
+            if (body[i].Op == Op.Call && body[i].Ref is WasmFunction g)
+            {
+                int guard = 0;
+                while (g.ForwardTo != null && guard++ < 64) g = g.ForwardTo;
+                body[i].Ref = g;
+            }
+    }
+
+    void MergeIdenticalBodies()
+    {
+        for (int round = 0; round < 4; round++)
+        {
+            var seen = new Dictionary<string, WasmFunction>();
+            bool changed = false;
+            foreach (var f in Functions)
+            {
+                if (f.IsImport || f.ForwardTo != null || f.Exports.Count > 0 || f.InTable) continue;
+                var key = BodyKey(f);
+                if (seen.TryGetValue(key, out var other)) { f.ForwardTo = other; changed = true; }
+                else seen[key] = f;
+            }
+            if (!changed) break;
+            foreach (var f in Functions) ResolveForwards(f);
+        }
+    }
+
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, string> s_ids = new();
+    static int s_next;
+    static string Id(object o) => s_ids.GetValue(o, _ => Interlocked.Increment(ref s_next).ToString());
+
+    static string BodyKey(WasmFunction f)
+    {
+        var sb = new StringBuilder();
+        foreach (var p in f.Type.Params) sb.Append((char)p);
+        sb.Append('|'); foreach (var r in f.Type.Results) sb.Append((char)r);
+        sb.Append('|'); foreach (var l in f.Locals) sb.Append((char)l);
+        foreach (var ins in f.Body)
+        {
+            sb.Append(';').Append((int)ins.Op).Append(',').Append(ins.Imm).Append(',').Append(ins.Imm2);
+            switch (ins.Ref)
+            {
+                case null: break;
+                case WasmFunction g: sb.Append(",f").Append(g.Order); break;
+                case ValType vt: sb.Append(",v").Append((int)vt); break;
+                case FuncType ft: sb.Append(",t").Append(string.Join(".", ft.Params)).Append('>').Append(string.Join(".", ft.Results)); break;
+                case int[] arr: sb.Append(",b").Append(string.Join(".", arr)); break;
+                case TryTableInfo tti:
+                    sb.Append(",tt").Append(tti.BlockType?.ToString());
+                    foreach (var c in tti.Catches) sb.Append(':').Append(c.Kind).Append(c.Tag?.Name).Append(c.Label);
+                    break;
+                case IAddress a: sb.Append(",a").Append(Id(a)); break;
+                default: sb.Append(",o").Append(Id(ins.Ref)); break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    void EncodeInstr(Writer b, Instr ins, Func<FuncType, int> typeOf)
+    {
+        var op = ins.Op;
+        if ((int)op > 0xFF) { b.Byte((byte)((int)op >> 8)); b.U32((int)op & 0xFF); }
+        else b.Byte((byte)op);
+        switch (op)
+        {
+            case Op.Block: case Op.Loop: case Op.If: BlockType(b, ins.Ref, typeOf); break;
+            case Op.TryTable:
+                {
+                    var tti = (TryTableInfo)ins.Ref!;
+                    BlockType(b, tti.BlockType, typeOf);
+                    b.U32(tti.Catches.Count);
+                    foreach (var c in tti.Catches)
+                    {
+                        b.Byte(c.Kind);
+                        if (c.Kind < 2) b.U32(c.Tag!.Index);
+                        b.U32(c.Label);
+                    }
+                    break;
+                }
+            case Op.Throw: b.U32(((WasmTag)ins.Ref!).Index); break;
+            case Op.Br: case Op.BrIf: b.U32((int)ins.Imm); break;
+            case Op.BrTable:
+                {
+                    var t = (int[])ins.Ref!;
+                    b.U32(t.Length); foreach (var x in t) b.U32(x); b.U32((int)ins.Imm);
+                    break;
+                }
+            case Op.Call: b.U32(((WasmFunction)ins.Ref!).Index); break;
+            case Op.CallIndirect: b.U32(typeOf((FuncType)ins.Ref!)); b.U32(0); break;
+            case Op.LocalGet: case Op.LocalSet: case Op.LocalTee: b.U32((int)ins.Imm); break;
+            case Op.GlobalGet: case Op.GlobalSet: b.U32(((WasmGlobal)ins.Ref!).Index); break;
+            case >= Op.I32Load and <= Op.I64Store32: b.U32((int)ins.Imm2); b.U32((int)ins.Imm); break;
+            case Op.MemorySize: case Op.MemoryGrow: b.Byte(0); break;
+            case Op.I32Const:
+                b.S32(ins.Ref is IAddress a ? a.Address + (int)ins.Imm : (int)ins.Imm); break;
+            case Op.I64Const: b.S64(ins.Imm); break;
+            case Op.F32Const: b.Bytes(BitConverter.GetBytes((int)ins.Imm)); break;
+            case Op.F64Const: b.Bytes(BitConverter.GetBytes(ins.Imm)); break;
+            case Op.MemoryInit: b.U32(((DataSegment)ins.Ref!).Index); b.Byte(0); break;
+            case Op.DataDrop: b.U32(((DataSegment)ins.Ref!).Index); break;
+            case Op.MemoryCopy: b.Byte(0); b.Byte(0); break;
+            case Op.MemoryFill: b.Byte(0); break;
+        }
+    }
+
+    static void BlockType(Writer b, object? bt, Func<FuncType, int> typeOf)
+    {
+        switch (bt)
+        {
+            case null: b.Byte(0x40); break;
+            case ValType v: b.Byte((byte)v); break;
+            case FuncType ft: b.S64(typeOf(ft)); break;
+            default: throw new InvalidOperationException("bad block type");
+        }
+    }
+
+    static void Section(Writer w, byte id, Action<Writer> body)
+    {
+        var s = new Writer(); body(s);
+        w.Byte(id); w.U32(s.Length); w.Bytes(s.ToArray());
+    }
+}
+
+internal sealed class Writer
+{
+    readonly MemoryStream _ms = new();
+    public int Length => (int)_ms.Length;
+    public void Byte(byte b) => _ms.WriteByte(b);
+    public void Bytes(params byte[] b) => _ms.Write(b);
+    public void U32(int v)
+    {
+        uint u = (uint)v;
+        do { byte x = (byte)(u & 0x7F); u >>= 7; if (u != 0) x |= 0x80; Byte(x); } while (u != 0);
+    }
+    public void S32(int v) => S64(v);
+    public void S64(long v)
+    {
+        while (true)
+        {
+            byte x = (byte)(v & 0x7F); v >>= 7;
+            bool done = (v == 0 && (x & 0x40) == 0) || (v == -1 && (x & 0x40) != 0);
+            if (!done) x |= 0x80;
+            Byte(x);
+            if (done) break;
+        }
+    }
+    public void Name(string s) { var b = Encoding.UTF8.GetBytes(s); U32(b.Length); Bytes(b); }
+    public byte[] ToArray() => _ms.ToArray();
+}

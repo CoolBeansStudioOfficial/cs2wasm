@@ -18,7 +18,7 @@ output.
 
 | Topic | Decision |
 |---|---|
-| Input | A Roslyn `Compilation` (C# 14, .NET 10 library surface), read through Roslyn's **operation tree** (`IOperation`) and semantic model. Not IL: the operation tree keeps the source-level facts the memory analysis needs |
+| Input | A Roslyn `Compilation` (C# 15, .NET 11 library surface), read through Roslyn's **operation tree** (`IOperation`) and semantic model. Not IL: the operation tree keeps the source-level facts the memory analysis needs |
 | Output | One 32-bit **core** WASM module with imported memory. Not a component (browsers do not run the component model), not WasmGC |
 | Pipeline | Roslyn, then the compiler. No intermediate language, no second compiler (no Rust, no LLVM, no C) |
 | Correctness | **The same observable output as the program under .NET.** Observable output is the sequence of calls the module makes to its imports, and their arguments. How the compiler gets there is free |
@@ -65,7 +65,7 @@ C# sources ──> Roslyn (parse, bind, source generators, diagnostics) ──> 
 The compiler does its own lowering on the operation tree. Where Roslyn's own emitter defines a lowering (async state
 machines, iterator state machines, closure classes, pattern-matching decision trees, string interpolation handlers,
 `using`, `foreach`, `lock`, records, tuples, LINQ query syntax), the compiler **follows the same semantics**, because
-those semantics are what programs observe. Every feature of C# 14 is in scope, including:
+those semantics are what programs observe. Every feature of C# 15 is in scope, including:
 
 - classes, structs (including `ref struct`, `readonly`), records, interfaces with default methods, generics with
   constraints (including static abstract members), nullable value types, enums, delegates and events, lambdas and

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>cs2wasmc</AssemblyName>
+    <PackageId>Cs2Wasm.Cli</PackageId>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Cs2Wasm/Cs2Wasm.csproj" />
+  </ItemGroup>
+</Project>
