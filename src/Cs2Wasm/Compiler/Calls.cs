@@ -793,7 +793,7 @@ sealed partial class FunctionCompiler
 
     Own EmitLambdaDelegate(IAnonymousFunctionOperation af, ITypeSymbol dt)
     {
-        var env = CurrentEnv();
+        var env = _machine != null ? MachineEnvAt(af.Syntax) : CurrentEnv();
         var fn = D.Lambda(this, af, Map, env);
         PushDisplayPtr(env, retain: true);
         NewDelegate(dt, fn.Fn);

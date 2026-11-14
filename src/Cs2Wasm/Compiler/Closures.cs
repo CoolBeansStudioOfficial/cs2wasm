@@ -52,6 +52,7 @@ sealed partial class FunctionCompiler
     bool IsCaptured(ISymbol s)
     {
         if (_capturedHere.ContainsKey(s)) return true;
+        if (TryMachineCapture(s, out _)) return true;
         for (var d = _closure?.Env; d != null; d = d.Parent) if (d.Slots.ContainsKey(s)) return true;
         return false;
     }
@@ -63,6 +64,11 @@ sealed partial class FunctionCompiler
         {
             E.Get(d.Local);
             return d.Slots[s].offset;
+        }
+        if (TryMachineCapture(s, out var md))
+        {
+            E.Get(_closure!.ParamLocal); E.Load(Op.I32Load, md.SlotOff);
+            return md.D.Slots[s].offset;
         }
         E.Get(_closure!.ParamLocal);
         for (var x = _closure.Env; x != null; x = x.Parent)
@@ -76,6 +82,7 @@ sealed partial class FunctionCompiler
     ITypeSymbol CapturedType(ISymbol s)
     {
         if (_capturedHere.TryGetValue(s, out var d)) return d.Slots[s].type;
+        if (TryMachineCapture(s, out var md)) return md.D.Slots[s].type;
         for (var x = _closure?.Env; x != null; x = x.Parent) if (x.Slots.TryGetValue(s, out var slot)) return slot.type;
         throw new CompileException("captured variable not found: " + s.Name);
     }
@@ -112,7 +119,8 @@ sealed partial class FunctionCompiler
     void PushDisplayPtr(Display? target, bool retain)
     {
         if (target == null) { E.I32(0); return; }
-        if (ReferenceEquals(target.Owner, this)) { E.Get(target.Local); }
+        if (MachineDisplayOf(target) is { } mdisp) { E.Get(_closure!.ParamLocal); E.Load(Op.I32Load, mdisp.SlotOff); }
+        else if (ReferenceEquals(target.Owner, this)) { E.Get(target.Local); }
         else
         {
             if (_closure == null) throw new CompileException("internal: display not reachable");

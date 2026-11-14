@@ -33,6 +33,8 @@ sealed class MachineInfo
     public ControlFlowGraph? Cfg;
     /// <summary>Iterator Dispose / DisposeAsync: filled after MoveNext, when the suspension points are known.</summary>
     public WasmFunction? DisposeFn;
+    /// <summary>Displays for the variables lambdas capture (MachineDisplays.cs), or null.</summary>
+    public MachineDisplays? Displays;
 }
 
 internal sealed partial class Driver
@@ -135,6 +137,7 @@ sealed partial class FunctionCompiler
         foreach (var l in body.DescendantsAndSelf().OfType<IUsingOperation>()) foreach (var ls in l.Locals) AddMachineVar(machine, ls, T.Resolve(ls.Type, Map));
         foreach (var l in body.DescendantsAndSelf().OfType<IBlockOperation>()) foreach (var ls in l.Locals) AddMachineVar(machine, ls, T.Resolve(ls.Type, Map));
         int stateOff = machine.Extra("state", IntType, T);
+        info.Displays = PlanMachineDisplays(info, body, thisKey, nested);
         if (info.IsIterator)
         {
             machine.Extra("current", info.ElementType!, T);
@@ -459,6 +462,11 @@ sealed partial class FunctionCompiler
         _dispatchStateOff = info.Machine.ExtraSlots["state"].offset;
         _curLocal = E.AddLocal(ValType.I32);
         for (int i = 0; i < _cfg.Blocks.Length; i++) _segments.Add((i, i, 0, 0));
+        PreassignCaptures();
+        PlanDisplayStarts();
+        if (info.Displays != null)
+            foreach (var lf in info.Body.Descendants().OfType<ILocalFunctionOperation>())
+                _lfEnvs[lf.Symbol.OriginalDefinition] = MachineEnvAt(lf.Syntax);
         // entry: the block after Entry
         var dispatch = E.Loop();
         _dispatch = dispatch;
@@ -591,7 +599,8 @@ sealed partial class FunctionCompiler
     {
         _curBlock = b;
         var info = _machine!;
-        if (b.Kind == BasicBlockKind.Entry) { EmitCfgBranch(b.FallThroughSuccessor!, null); return; }
+        if (b.Kind == BasicBlockKind.Entry) { EmitMachineDisplaysEntry(); EmitCfgBranch(b.FallThroughSuccessor!, null); return; }
+        if (opStart == 0 && actionStart == 0) EmitDisplayStartsFor(b);
         if (b.Kind == BasicBlockKind.Exit) { EmitMachineCompletion(null); return; }
         for (int i = opStart; i < b.Operations.Length; i++)
         {
@@ -1069,14 +1078,44 @@ sealed partial class FunctionCompiler
     // CFG-only operations
     Own EmitFlowCapture(IFlowCaptureOperation fc)
     {
-        var t = fc.Value.Type != null ? TypeOf(fc.Value) : D.ObjectType;
-        int off = _machine!.Machine.Extra("cap" + fc.Id.GetHashCode() + "_" + fc.Syntax.SpanStart, t, T);
-        _captureSlots[fc.Id] = (off, t);
+        var vt = fc.Value.Type != null ? TypeOf(fc.Value) : D.ObjectType;
+        if (!_captureSlots.TryGetValue(fc.Id, out var slot))
+        {
+            int off0 = _machine!.Machine.Extra("cap" + fc.Id.GetHashCode() + "_" + fc.Syntax.SpanStart, vt, T);
+            _captureSlots[fc.Id] = slot = (off0, vt);
+        }
         BeginTemps();
         var o = EmitValue(fc.Value);
-        StoreToAddressFromStack(() => E.Get(0), off, t, o);
+        if (Types.Key(vt) != Types.Key(slot.type)) ConvertTop(vt, slot.type, ref o);
+        StoreToAddressFromStack(() => E.Get(0), slot.off, slot.type, o);
         EndTemps();
         return Own.None;
+    }
+
+    /// <summary>Slots for the graph's flow captures, before any segment is emitted: segments are emitted in queue order,
+    /// so a capture can be read in a segment emitted before the one that writes it (after an await). Its type is
+    /// the readers' (both branches of `?:` and `??` write one capture).</summary>
+    void PreassignCaptures()
+    {
+        var writes = new Dictionary<CaptureId, IFlowCaptureOperation>();
+        var readTypes = new Dictionary<CaptureId, ITypeSymbol>();
+        foreach (var b in _cfg!.Blocks)
+        {
+            var roots = b.Operations.AsEnumerable();
+            if (b.BranchValue != null) roots = roots.Append(b.BranchValue);
+            foreach (var r in roots)
+                foreach (var o in r.DescendantsAndSelf())
+                {
+                    if (o is IFlowCaptureOperation fc && !writes.ContainsKey(fc.Id)) writes[fc.Id] = fc;
+                    else if (o is IFlowCaptureReferenceOperation fr && fr.Type != null && !readTypes.ContainsKey(fr.Id)) readTypes[fr.Id] = TypeOf(fr);
+                }
+        }
+        foreach (var (id, fc) in writes)
+        {
+            var t = readTypes.TryGetValue(id, out var rt) ? rt : fc.Value.Type != null ? TypeOf(fc.Value) : D.ObjectType;
+            int off = _machine!.Machine.Extra("cap" + id.GetHashCode() + "_" + fc.Syntax.SpanStart, t, T);
+            _captureSlots[id] = (off, t);
+        }
     }
 
     readonly Dictionary<CaptureId, (int off, ITypeSymbol type)> _captureSlots = [];

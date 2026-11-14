@@ -55,7 +55,11 @@ a single exception handler that finds the catch or finally region of the segment
 MoveNext, which completes it at the next `yield return`, at the end, or with the exception. `await foreach` and
 `await using` (also with `WithCancellation`/`ConfigureAwait`) come from the control-flow graph's own lowering.
 Disposing a suspended iterator (`Dispose`, `DisposeAsync`, leaving a `foreach` early) runs the `finally` blocks
-around its `yield return`, innermost first, as .NET does.
+around its `yield return`, innermost first, as .NET does. `await` works inside `?:`, `&&`, `||`, `??` and `?.` (the
+graph's flow captures get machine slots before any segment is emitted). Variables that lambdas or local functions
+of an iterator or async method capture live in displays held by the machine, as in Roslyn: one for the method and
+one per loop iteration, so each iteration's lambdas see their own variable and a lambda stored in a local makes no
+cycle with the machine.
 
 `goto` (to a label in the same or an enclosing block, forward or backward, out of loops and `try`) compiles each
 labeled block as a dispatch loop over its segments; a backward `goto` releases what the block declared after the
@@ -70,8 +74,7 @@ exception, before unwinding runs any `finally`. An exception thrown inside a fil
 filters pay nothing.
 
 Not done yet (a program using them gets a `CW0101` error naming the construct):
-- exception filters inside iterators and async methods; `await` inside `?:`, `&&`, `||`, `??` sub-expressions;
-- lambdas inside loops of an async method or iterator share one variable per loop instead of one per iteration;
+- exception filters inside iterators and async methods;
 - spans over stack or native memory (`stackalloc` into a span allocates an array);
 - reflection beyond `Type` names, `dynamic`, the interpreter for runtime code generation (section 8);
 - filters and state machines: the first pass does not see the catch regions of an iterator's or async method's own
