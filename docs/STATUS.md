@@ -54,7 +54,9 @@ a single exception handler that finds the catch or finally region of the segment
 
 `goto` (to a label in the same or an enclosing block, forward or backward, out of loops and `try`) compiles each
 labeled block as a dispatch loop over its segments; a backward `goto` releases what the block declared after the
-label. `goto case` and `goto default` put the switch sections in a dispatch loop.
+label. `goto case` and `goto default` put the switch sections in a dispatch loop. `fixed` holds the array, string
+or object for the statement and gives its data address (nothing moves without a collector); `GetPinnableReference`
+is used for spans and user types.
 
 Exception filters keep .NET's two-pass order: in a program with a filter, each `try`/`catch` keeps a record on a
 per-thread handler chain while its body runs, and `throw` (and `throw;`) first asks each record's test function
@@ -66,7 +68,7 @@ Not done yet (a program using them gets a `CW0101` error naming the construct):
 - async iterators (`IAsyncEnumerable`, `await foreach`); exception filters inside iterators and async methods; `await`
   inside `?:`, `&&`, `||`, `??` sub-expressions;
 - lambdas inside loops of an async method or iterator share one variable per loop instead of one per iteration;
-- `stackalloc`, `fixed`, spans over stack or native memory;
+- spans over stack or native memory (`stackalloc` into a span allocates an array);
 - reflection beyond `Type` names, `dynamic`, the interpreter for runtime code generation (section 8);
 - filters and state machines: the first pass does not see the catch regions of an iterator's or async method's own
   body, so a filter further out can run for an exception such a body then catches; and an export called back from
@@ -217,7 +219,7 @@ exported beside the stack pointer.
   LINQ with deferred execution, StringBuilder). Moving to upstream sources is open work. Invariant globalization
   semantics are followed (culture comparisons are ordinal, as in .NET's invariant mode). Case mapping covers
   ASCII, Latin-1, Greek and Cyrillic only. Present since: `Task` and friends, `Random`, `Stopwatch`,
-  `BitConverter`, `Type`, spans over arrays. Missing: `DateTime`, `TimeZoneInfo`, `GodotSharp`.
+  `BitConverter`, `Type`, spans over arrays. Missing: `TimeZoneInfo`, `DateTimeOffset`, date parsing, `GodotSharp`. `DateTime` and `TimeSpan` follow .NET's tick arithmetic and the invariant culture's standard and custom formats; the clock and the local offset come from the engine.
 - 7.5–7.6: no GodotSharp, no browser build, budgets unmeasured.
 
 ### 8. Sandbox — partial

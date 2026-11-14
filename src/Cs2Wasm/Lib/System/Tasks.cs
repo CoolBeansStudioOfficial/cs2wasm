@@ -983,19 +983,6 @@ namespace System
         public System.Collections.ObjectModel.ReadOnlyCollection<Exception> InnerExceptions => new System.Collections.ObjectModel.ReadOnlyCollection<Exception>(_inner);
     }
 
-    public readonly struct TimeSpan
-    {
-        readonly long _ticks;
-        public TimeSpan(long ticks) { _ticks = ticks; }
-        public long Ticks => _ticks;
-        public double TotalMilliseconds => _ticks / 10000.0;
-        public double TotalSeconds => _ticks / 10000000.0;
-        public int Milliseconds => (int)(_ticks / 10000 % 1000);
-        public int Seconds => (int)(_ticks / 10000000 % 60);
-        public static TimeSpan FromMilliseconds(double ms) => new TimeSpan((long)(ms * 10000));
-        public static TimeSpan FromSeconds(double s) => new TimeSpan((long)(s * 10000000));
-        public static readonly TimeSpan Zero = new TimeSpan(0);
-    }
 }
 
 namespace System.Threading.Tasks
