@@ -35,6 +35,12 @@ internal sealed partial class RuntimeFns
 internal sealed partial class Driver
 {
     public WasmGlobal? StackLo, StackHi;
+    bool? _mayUseThreads;
+    /// <summary>Whether the program's source names anything that starts threads; publication code is emitted only
+    /// then (it is removed again at the end if no thread is actually reachable).</summary>
+    public bool MayUseThreads => _mayUseThreads ??= Inputs.Any(c => c.SyntaxTrees.Any(t => t.GetRoot().DescendantNodes()
+        .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.SimpleNameSyntax>()
+        .Any(n => n.Identifier.ValueText is "Thread" or "ThreadPool" or "Parallel" or "Run" or "StartNew" or "QueueUserWorkItem")));
 
     /// <summary>Fills in the sharing functions (threads) or removes their calls (no threads).</summary>
     internal void EmitSharing(bool threads, IEnumerable<(int id, ITypeSymbol type)> types)
@@ -157,6 +163,7 @@ sealed partial class FunctionCompiler
     /// <summary>The value (in `val`) is about to be stored: publish it as the destination requires.</summary>
     void EmitPublish(int val, Publish pub, Action? container, Action pushAddr)
     {
+        if (!D.MayUseThreads) return;
         switch (pub)
         {
             case Publish.None: return;

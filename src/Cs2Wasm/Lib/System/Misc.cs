@@ -14,6 +14,8 @@ namespace System
         [Intrinsic] static extern string FullNameOf(int typeId);
         [Intrinsic] static extern string ShortNameOf(int typeId);
         [Intrinsic] static extern int FlagsOf(int typeId);
+        [Intrinsic] internal static extern int MetaOf(int typeId);
+        internal int Id => _id;
 
         /// <summary>One Type object per type, so typeof(A) == typeof(A) holds by reference.</summary>
         internal static Type FromId(int id)
@@ -215,13 +217,6 @@ namespace System
     }
 }
 
-namespace System.Reflection
-{
-    public abstract class MemberInfo
-    {
-        public abstract string Name { get; }
-    }
-}
 
 namespace System.Diagnostics
 {

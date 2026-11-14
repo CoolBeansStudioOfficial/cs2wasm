@@ -1,5 +1,6 @@
 using Cs2Wasm.Wasm;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Operations;
 
 namespace Cs2Wasm.Compiler;
 
@@ -78,7 +79,53 @@ internal sealed class Arenas
     {
         owner = D.Types.Canonical(owner);
         if (owner.IsValueType || !Types.IsRef(slot.Type)) return null;
+        if (ImmutableEdge(owner, slot)) return null;
         return Get("f " + Types.Key(owner) + " " + slot.Offset, owner, false, slot.Offset);
+    }
+
+    readonly Dictionary<string, bool> _keepsThis = [];
+
+    /// <summary>A readonly field (or get-only auto-property) is set only while its object is being constructed. If no
+    /// constructor of the type or its bases lets `this` out before then, nothing the stored value reaches can refer
+    /// back to the new object, so the store cannot close a cycle and is no edge of the type graph (an exception's
+    /// inner exception, say).</summary>
+    bool ImmutableEdge(ITypeSymbol owner, FieldSlot slot)
+    {
+        bool ro = slot.Symbol switch
+        {
+            IFieldSymbol f => f.IsReadOnly,
+            IPropertySymbol p => p.SetMethod == null,
+            _ => false,
+        };
+        if (!ro) return false;
+        for (var t = owner as INamedTypeSymbol; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
+            if (!KeepsThis(t)) return false;
+        return true;
+    }
+
+    bool KeepsThis(INamedTypeSymbol t)
+    {
+        var k = Types.Key(t.OriginalDefinition);
+        if (_keepsThis.TryGetValue(k, out var r)) return r;
+        r = true;
+        foreach (var c in t.OriginalDefinition.InstanceConstructors)
+            foreach (var sr in c.DeclaringSyntaxReferences)
+            {
+                var model = D.ModelFor(sr.SyntaxTree);
+                if (model.GetOperation(sr.GetSyntax()) is not { } body) continue;
+                foreach (var op in body.DescendantsAndSelf())
+                {
+                    if (op is not Microsoft.CodeAnalysis.Operations.IInstanceReferenceOperation ir) continue;
+                    // `this` used only to reach its own fields and auto-properties stays in
+                    if (ir.Parent is Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation) continue;
+                    if (ir.Parent is Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation pr && Driver.AutoPropertyField(pr.Property.OriginalDefinition) != null) continue;
+                    if (ir.Parent is Microsoft.CodeAnalysis.Operations.IInvocationOperation { TargetMethod.MethodKind: MethodKind.Constructor }) continue; // : base(...) / : this(...)
+                    r = false;
+                }
+            }
+        // field initializers cannot use `this`; implicit constructors only call the base one
+        _keepsThis[k] = r;
+        return r;
     }
 
     /// <summary>The site for the elements of an array of references.</summary>

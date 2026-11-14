@@ -587,6 +587,9 @@ sealed class RuntimeGen
 
     public void FinishExports()
     {
+        // reflection metadata (section 8): thunks and attribute factories compile in the next round
+        D.AnalyzeReflection();
+        D.RequestAttributeFactories();
         // AsyncLocal in the program: async kickoffs keep the caller's context
         if (D.AllMethods.Any(m => m.Sym.MethodKind == MethodKind.Constructor && m.Sym.ContainingType?.Name == "AsyncLocal" && m.Compiled))
         {
@@ -653,6 +656,7 @@ sealed class RuntimeGen
     public void Finish()
     {
         if (D.Arenas.Enabled) EmitArenaSupport();
+        D.EmitReflectionTables();
         EmitOnDestroy();
         D.Rt.EmitCctorSupport(D.UsesThreads);
         D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == "ExecutionContext" && m.Compiled),

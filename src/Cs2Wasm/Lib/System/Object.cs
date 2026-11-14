@@ -78,7 +78,7 @@ namespace System
         }
     }
 
-    public abstract class Attribute { }
+    public abstract partial class Attribute { }
 
 
     public static class GC

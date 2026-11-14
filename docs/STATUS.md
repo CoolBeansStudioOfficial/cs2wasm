@@ -264,7 +264,23 @@ exported beside the stack pointer.
 
 ### 8. Sandbox — partial
 Files, sockets, processes, environment and registry members, and platform invoke, are build errors naming the
-capability (`CW0003`, `CW0004`). `unsafe` code and pointers compile. Not done: reflection metadata, the interpreter.
+capability (`CW0003`, `CW0004`). `unsafe` code and pointers compile. Reflection metadata is kept for what the
+program's reflection can be proven to reach (a trimming analysis): `typeof(X).GetMethod("M")` keeps X.M,
+`GetMethods()`/`GetProperties()`/`GetFields()` keep that kind of X's members, `GetConstructors`/`Activator` keep
+constructors, a type marked `[DynamicallyAccessedMembers]` keeps everything, and reflection on a Type the compiler
+cannot see is warning `CW0201`. Kept members get records in the data segment and thunks that unbox arguments, call
+and box the result: `Type.GetMethods/GetMethod/GetProperties/GetProperty/GetFields/GetField/GetConstructors/
+GetConstructor/GetMembers` with `BindingFlags` (inherited members, overrides, `DeclaredOnly`), `MethodInfo.Invoke`
+(`TargetInvocationException`, `TargetParameterCountException`), `PropertyInfo`/`FieldInfo` `GetValue`/`SetValue`,
+`ConstructorInfo.Invoke`, `Activator.CreateInstance` (also with arguments and `<T>`), custom attributes with
+constructor and named arguments (`GetCustomAttribute<T>`, `IsDefined`), `BaseType`, `GetInterfaces`,
+`IsAssignableFrom`, and .NET's `ToString` forms and member order (checked against .NET). Not done: generic methods
+and `ref` parameters through reflection, `MakeGenericType`, `Type.GetType(string)`, events and nested types, the
+interpreter (`Reflection.Emit`, `Expression.Compile`) and `dynamic`.
+
+Also: a readonly field (or get-only auto-property) set only in constructors that keep `this` in is not an edge of
+the cycle analysis (section 4.3), so an exception's inner exception no longer brings the arena runtime into every
+program.
 
 ### 9. Hosting and self-hosting — not started
 The compiler runs on .NET. It has not been run on the browser .NET runtime, and it does not compile itself

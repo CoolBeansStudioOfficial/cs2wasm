@@ -7,7 +7,7 @@ namespace System
     {
         public new Type GetType() => base.GetType();
         internal string _message;
-        Exception _innerException;
+        readonly Exception _innerException;
         internal string _stackTrace;
         internal string _fullTrace;
         internal int _throwDepth;

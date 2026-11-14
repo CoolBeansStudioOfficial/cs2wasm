@@ -432,6 +432,16 @@ sealed partial class FunctionCompiler
             case "Type.FullNameOf": E.Call(Rt.TypeNameById); return Own.Stable;
             case "Type.ShortNameOf": E.Call(Rt.TypeShortNameById); return Own.Stable;
             case "Type.FlagsOf": E.Call(Rt.TypeFlagsById); return Own.None;
+            case "Type.MetaOf": E.Call(D.MetaOf); return Own.None;
+            case "Reflect.Invoke":
+                {
+                    // (thunk + 1, target, args): call_indirect
+                    int a2 = E.AddLocal(ValType.I32), a1 = E.AddLocal(ValType.I32), fi = E.AddLocal(ValType.I32);
+                    E.Set(a2); E.Set(a1); E.Set(fi);
+                    E.Get(a1); E.Get(a2); E.Get(fi); E.I32(1); E.Op(Op.I32Sub);
+                    E.Emit(Op.CallIndirect, 0, 0, Driver.ThunkType);
+                    return Own.Owned;
+                }
             case "Atomic.Load32": E.Emit(Op.I32AtomicLoad, 0, 2); return Own.None;
             case "Atomic.Store32": E.Emit(Op.I32AtomicStore, 0, 2); return Own.None;
             case "Atomic.Add32": E.Emit(Op.I32AtomicRmwAdd, 0, 2); return Own.None;
