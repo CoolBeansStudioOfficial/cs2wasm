@@ -301,7 +301,7 @@ internal sealed partial class Driver
         if (def.MethodKind == MethodKind.Constructor && def.IsImplicitlyDeclared) return true;
         if (def.MethodKind == MethodKind.StaticConstructor) return true;
         if (def.MethodKind is MethodKind.PropertyGet or MethodKind.PropertySet && def.AssociatedSymbol is IPropertySymbol p && AutoPropertyField(p) != null) return true;
-        if (def.MethodKind is MethodKind.EventAdd or MethodKind.EventRemove && def.AssociatedSymbol is IEventSymbol e && EventField(e) != null) return true;
+        if (def.MethodKind is MethodKind.EventAdd or MethodKind.EventRemove && def.AssociatedSymbol is IEventSymbol e && IsFieldLikeEvent(e)) return true;
         if (def.ContainingType.TypeKind == TypeKind.Delegate && def.Name == "Invoke") return true;
         if (def.MethodKind == MethodKind.Constructor && def.ContainingType.TypeKind == TypeKind.Struct && def.Parameters.Length == 0) return true;
         if (def.ContainingType.IsRecord) return true;
@@ -311,6 +311,10 @@ internal sealed partial class Driver
     public static IFieldSymbol? AutoPropertyField(IPropertySymbol p) =>
         p.ContainingType.GetMembers().OfType<IFieldSymbol>().FirstOrDefault(f => SymbolEqualityComparer.Default.Equals(f.AssociatedSymbol, p.OriginalDefinition)
                                                                                   || SymbolEqualityComparer.Default.Equals(f.AssociatedSymbol, p));
+
+    /// <summary>`event Action E;` — an event whose storage the compiler provides (Roslyn exposes no backing field).</summary>
+    public static bool IsFieldLikeEvent(IEventSymbol e) =>
+        e.OriginalDefinition.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax);
 
     public static IFieldSymbol? EventField(IEventSymbol e) =>
         e.ContainingType.GetMembers(e.Name).OfType<IFieldSymbol>().FirstOrDefault()

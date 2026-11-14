@@ -70,6 +70,12 @@ sealed partial class FunctionCompiler
             case IInstanceReferenceOperation ir: return EmitThis(ir);
             case IFieldReferenceOperation f: return EmitFieldLoad(f);
             case IPropertyReferenceOperation pr: return EmitPropertyGet(pr);
+            case IEventReferenceOperation evr when Driver.IsFieldLikeEvent(evr.Event):
+                {
+                    int off = EventStorage(evr.Event, () => { var o = EmitValue(evr.Instance!); ToTransient(o, TypeOf(evr.Instance!)); if (!IsKnownNonNull(evr.Instance!)) NullCheckKeep(); });
+                    E.Load(Op.I32Load, off);
+                    return Own.Unstable;
+                }
             case IArrayElementReferenceOperation ae: return EmitArrayElementLoad(ae);
             case IBinaryOperation b: return EmitBinary(b);
             case IUnaryOperation u: return EmitUnary(u);
@@ -343,6 +349,8 @@ sealed partial class FunctionCompiler
         switch (op)
         {
             case IDeclarationExpressionOperation de: return EmitAddressBase(de.Expression);
+            case IEventReferenceOperation evr when Driver.IsFieldLikeEvent(evr.Event):
+                return EventStorage(evr.Event, () => { var o = EmitValue(evr.Instance!); ToTransient(o, TypeOf(evr.Instance!)); if (!IsKnownNonNull(evr.Instance!)) NullCheckKeep(); });
             case IDiscardOperation dis:
                 {
                     var dt = TypeOf(dis);

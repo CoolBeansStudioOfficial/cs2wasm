@@ -1353,17 +1353,15 @@ sealed partial class FunctionCompiler
         }
         if (def.MethodKind is MethodKind.EventAdd or MethodKind.EventRemove && def.AssociatedSymbol is IEventSymbol ev)
         {
-            var bf = Driver.EventField(ev)!;
-            var dt = T.Resolve(bf.Type, Map);
+            var dt = T.Resolve(ev.Type, Map);
             var combine = D.LibMethod("System.Delegate", def.MethodKind == MethodKind.EventAdd ? "Combine" : "Remove", 2);
-            EmitStoreFieldFrom(bf, bf.IsStatic ? null : () => E.Get(_thisLocal), dt, () =>
-            {
-                if (bf.IsStatic) E.I32Addr(D.StaticField(Owner(bf), bf, dt)); else E.Get(_thisLocal);
-                E.Load(Op.I32Load, bf.IsStatic ? 0 : T.Field(bf, Map).Offset);
-                LoadVar(_vars[M.Parameters[0]]);
-                E.Call(combine.Fn);
-                return Own.Owned;
-            });
+            int baseL = E.AddLocal(ValType.I32);
+            int off = EventStorage(ev, () => E.Get(_thisLocal));
+            E.Set(baseL);
+            E.Get(baseL); E.Load(Op.I32Load, off);
+            LoadVar(_vars[M.Parameters[0]]);
+            E.Call(combine.Fn);
+            StoreToAddressFromStack(() => E.Get(baseL), off, dt, Own.Owned);
             return;
         }
         if (def.ContainingType.TypeKind == TypeKind.Delegate && def.Name == "Invoke")
@@ -1376,6 +1374,16 @@ sealed partial class FunctionCompiler
     }
 
     INamedTypeSymbol Owner(ISymbol member) => (INamedTypeSymbol)T.Resolve(member.ContainingType, Map);
+
+    /// <summary>Pushes the base address of a field-like event's storage; returns its offset.</summary>
+    int EventStorage(IEventSymbol ev, Action pushInstance)
+    {
+        var owner = Owner(ev);
+        if (ev.IsStatic) { EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, ev, T.Resolve(ev.Type, Map))); return 0; }
+        pushInstance();
+        var slot = T.LayoutOf(owner).Fields.First(f => f.Symbol is IEventSymbol e && e.Name == ev.Name);
+        return slot.Offset;
+    }
 
     void EmitStaticInitGuardForField(INamedTypeSymbol owner)
     {

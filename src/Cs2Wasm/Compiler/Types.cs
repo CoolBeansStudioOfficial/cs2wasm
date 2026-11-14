@@ -391,6 +391,17 @@ internal sealed class Types
             l.Align = Math.Max(l.Align, align);
             if (NeedsRc(ft)) l.HasRefs = true;
         }
+        // field-like events: storage for the delegate
+        foreach (var ev in t.GetMembers().OfType<IEventSymbol>())
+        {
+            if (ev.IsStatic || !Driver.IsFieldLikeEvent(ev)) continue;
+            var et = Canonical(ev.Type);
+            offset = (offset + 3) / 4 * 4;
+            l.Fields.Add(new FieldSlot { Symbol = ev, Type = et, Offset = offset });
+            offset += 4;
+            l.Align = Math.Max(l.Align, 4);
+            l.HasRefs = true;
+        }
         if (t.TypeKind == TypeKind.Struct)
         {
             if (l.Fields.Count == 0 && offset == 0) offset = 1; // empty struct is one byte, as in .NET

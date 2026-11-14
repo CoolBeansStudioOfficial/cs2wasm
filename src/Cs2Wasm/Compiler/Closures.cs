@@ -292,6 +292,7 @@ sealed partial class FunctionCompiler
 
     void CompileNestedBody(IOperation body)
     {
+        if (IsStateMachine(M)) { CompileKickoff(body); return; }
         SetupParams();
         E.CurrentPos = D.Position(body.Syntax);
         PreScan(body);

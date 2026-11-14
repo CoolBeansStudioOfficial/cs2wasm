@@ -25,6 +25,8 @@ sealed class MachineInfo
     public required IMethodSymbol Method;
     public required TypeMap Map;
     public IOperation Body = null!;
+    /// <summary>The control-flow graph of the body (for lambdas and local functions, taken from the enclosing method's).</summary>
+    public ControlFlowGraph? Cfg;
 }
 
 internal sealed partial class Driver
@@ -74,13 +76,14 @@ sealed partial class FunctionCompiler
     // =====================================================================
     // kickoff: the method itself creates the machine
     // =====================================================================
-    void CompileKickoff()
+    void CompileKickoff(IOperation? nestedBody = null)
     {
         var def = M.OriginalDefinition;
-        if (def.MethodKind is MethodKind.LocalFunction or MethodKind.AnonymousFunction)
-            throw new CompileException("async and iterator lambdas and local functions are not supported yet", def.Locations.FirstOrDefault());
+        bool nested = nestedBody != null;
         SetupParams();
-        var (body, syntax) = GetBody(def);
+        IOperation body; SyntaxNode syntax;
+        if (nested) { body = nestedBody!; syntax = body.Syntax; }
+        else (body, syntax) = GetBody(def);
         E.CurrentPos = D.Position(syntax);
         var machine = new Display { Owner = null, Name = "<" + def.Name + ">d" };
         var info = new MachineInfo
@@ -88,6 +91,7 @@ sealed partial class FunctionCompiler
             Machine = machine, Method = M, Map = Map, IsAsync = M.IsAsync, IsIterator = M.IsIterator,
             MoveNext = D.Module.AddFunction("MoveNext of " + E.Fn.Name, M.IsIterator ? new FuncType([ValType.I32], [ValType.I32]) : new FuncType([ValType.I32], [])),
             Body = body,
+            Cfg = nested ? NestedCfg(def, syntax) : null,
         };
         info.MoveNext.FrameName = Driver.FrameName(M);
         var ret = T.Resolve(M.ReturnType, Map);
@@ -114,8 +118,9 @@ sealed partial class FunctionCompiler
         }
         // the machine holds parameters, `this`, and every local of the body
         foreach (var p in M.Parameters) AddMachineVar(machine, p.OriginalDefinition, T.Resolve(p.Type, Map));
-        var thisKey = (ISymbol)M.ContainingType;
-        if (!M.IsStatic) AddMachineVar(machine, thisKey, T.Resolve(M.ContainingType, Map));
+        var thisKey = nested ? (_closure!.ThisKey ?? M.ContainingType) : (ISymbol)M.ContainingType;
+        if (!nested && !M.IsStatic) AddMachineVar(machine, thisKey, T.Resolve(M.ContainingType, Map));
+        if (nested) machine.Parent = _closure!.Env;
         foreach (var l in body.DescendantsAndSelf().OfType<IVariableDeclaratorOperation>()) AddMachineVar(machine, l.Symbol, T.Resolve(l.Symbol.Type, Map));
         foreach (var l in body.DescendantsAndSelf().OfType<ILocalReferenceOperation>().Where(x => x.IsDeclaration)) AddMachineVar(machine, l.Local, T.Resolve(l.Local.Type, Map));
         foreach (var l in body.DescendantsAndSelf().OfType<IDeclarationPatternOperation>()) if (l.DeclaredSymbol is ILocalSymbol ls) AddMachineVar(machine, ls, T.Resolve(ls.Type, Map));
@@ -135,7 +140,9 @@ sealed partial class FunctionCompiler
         var sizeAddr = new LateAddr(() => machine.Size);
 
         // compile MoveNext later (it may add slots), with the machine as its environment
-        var ci = new ClosureInfo { Map = Map, Env = machine, ThisKey = thisKey, OuterMethod = M };
+        var ci = new ClosureInfo { Map = Map, Env = machine, ThisKey = thisKey, OuterMethod = nested ? OuterMethod : M };
+        foreach (var kv in _lfEnvs) ci.LocalFunctionEnvs[kv.Key] = kv.Value;
+        if (_closure != null) foreach (var kv in _closure.LocalFunctionEnvs) ci.LocalFunctionEnvs[kv.Key] = kv.Value;
         var mnInst = new MethodInst { Sym = M, Fn = info.MoveNext, Key = InstanceKey + " MoveNext", Impl = MethodImpl.Body };
         mnInst.Compile = () => { var fc = new FunctionCompiler(D, info.MoveNext, M, mnInst, ci) { _machine = info }; fc.CompileMoveNext(); };
         D.EnqueueExtra(mnInst);
@@ -145,6 +152,7 @@ sealed partial class FunctionCompiler
             int obj = E.AddLocal(ValType.I32);
             E.I32Addr(sizeAddr); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
             AddOwned(new Slot { Local = obj, Type = D.ObjectType });
+            if (nested) { E.Get(obj); E.Get(_closure!.ParamLocal); E.Call(Rt.Retain); E.Store(Op.I32Store, 12); }
             foreach (var p in M.Parameters)
             {
                 var (off, pt) = machine.Slots[p.OriginalDefinition];
@@ -152,7 +160,7 @@ sealed partial class FunctionCompiler
                 if (info.IsIterator && info.ReturnsEnumerable)
                     StoreToAddressFromStackCopy(obj, machine.ExtraSlots["init:" + p.Name].offset, pt, () => LoadVar(_vars[p]));
             }
-            if (!M.IsStatic) StoreToAddressFromStackCopy(obj, machine.Slots[thisKey].offset, T.Resolve(M.ContainingType, Map), () => { E.Get(_thisLocal); return Own.Stable; });
+            if (!nested && !M.IsStatic) StoreToAddressFromStackCopy(obj, machine.Slots[thisKey].offset, T.Resolve(M.ContainingType, Map), () => { E.Get(_thisLocal); return Own.Stable; });
             if (info.IsIterator)
             {
                 E.Get(obj); E.I32(info.ReturnsEnumerable ? -2 : 0); E.Store(Op.I32Store, stateOff);
@@ -195,6 +203,42 @@ sealed partial class FunctionCompiler
             }
         }
         Finish();
+    }
+
+    /// <summary>The CFG of a lambda or local function, found inside its enclosing member's CFG.</summary>
+    ControlFlowGraph NestedCfg(IMethodSymbol def, SyntaxNode bodySyntax)
+    {
+        var member = bodySyntax.AncestorsAndSelf().FirstOrDefault(n => n is BaseMethodDeclarationSyntax or AccessorDeclarationSyntax || (n is ArrowExpressionClauseSyntax && n.Parent is PropertyDeclarationSyntax or IndexerDeclarationSyntax))
+            ?? throw new CompileException("cannot find the member enclosing an async lambda", def.Locations.FirstOrDefault());
+        var model = D.ModelFor(member.SyntaxTree);
+        var root = model.GetOperation(member);
+        ControlFlowGraph cfg = root switch
+        {
+            IMethodBodyOperation mb => ControlFlowGraph.Create(mb),
+            IConstructorBodyOperation cb => ControlFlowGraph.Create(cb),
+            IBlockOperation { Parent: null } bl => ControlFlowGraph.Create(bl),
+            _ => throw new CompileException("cannot build the control-flow graph around an async lambda", def.Locations.FirstOrDefault()),
+        };
+        return FindNested(cfg, def) ?? throw new CompileException("async lambda not found in its member's control-flow graph", def.Locations.FirstOrDefault());
+    }
+
+    static ControlFlowGraph? FindNested(ControlFlowGraph cfg, IMethodSymbol target)
+    {
+        foreach (var lf in cfg.LocalFunctions)
+        {
+            var g = cfg.GetLocalFunctionControlFlowGraph(lf);
+            if (SymbolEqualityComparer.Default.Equals(lf, target)) return g;
+            if (FindNested(g, target) is { } r) return r;
+        }
+        foreach (var b in cfg.Blocks)
+            foreach (var op in b.Operations.Concat(b.BranchValue != null ? [b.BranchValue] : []))
+                foreach (var fa in op.DescendantsAndSelf().OfType<IFlowAnonymousFunctionOperation>())
+                {
+                    var g = cfg.GetAnonymousFunctionControlFlowGraph(fa);
+                    if (SymbolEqualityComparer.Default.Equals(fa.Symbol, target)) return g;
+                    if (FindNested(g, target) is { } r) return r;
+                }
+        return null;
     }
 
     void AddMachineVar(Display d, ISymbol s, ITypeSymbol t)
@@ -247,7 +291,8 @@ sealed partial class FunctionCompiler
                 CopyField(e, n, off, 0, init.offset, pt);
                 CopyField(e, n, init.offset, 0, init.offset, pt);
             }
-            if (!M.IsStatic) { var (off, tt) = machine.Slots[M.ContainingType]; CopyField(e, n, off, 0, off, tt); }
+            if (machine.Slots.TryGetValue(M.ContainingType, out var thisSlot)) CopyField(e, n, thisSlot.offset, 0, thisSlot.offset, thisSlot.type);
+            if (machine.Parent != null) CopyField(e, n, 12, 0, 12, D.ObjectType);
             e.Get(n);
         }
         st.Impls[K(ienT, "GetEnumerator")] = ge;
@@ -308,8 +353,9 @@ sealed partial class FunctionCompiler
     void CompileMoveNext()
     {
         var info = _machine!;
-        if (info.Body is not IMethodBodyOperation mb) throw new CompileException("state machine body");
-        _cfg = ControlFlowGraph.Create(mb);
+        if (info.Cfg != null) _cfg = info.Cfg;
+        else if (info.Body is IMethodBodyOperation mb) _cfg = ControlFlowGraph.Create(mb);
+        else throw new CompileException("state machine body");
         foreach (var r in AllRegions(_cfg.Root))
             if (r.Kind is ControlFlowRegionKind.Filter or ControlFlowRegionKind.FilterAndHandler)
                 throw new CompileException("exception filters in async methods and iterators are not supported yet", M.Locations.FirstOrDefault());
