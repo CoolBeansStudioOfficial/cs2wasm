@@ -202,8 +202,10 @@ scheduling-dependence marks for the plugin (7.3), and parking workers for snapsh
 ### 5. Optimization — minimal
 Done: reachability from exports (only reached methods are emitted), devirtualization when a virtual call has one
 implementation or the receiver type is sealed, a final pass over the WASM (identical-body merging, `local.set`/`get`
-→ `local.tee`, dead code after unconditional branches, call targets ordered by use for short indices).
-Not done: inlining, escape analysis (stack allocation of non-escaping objects), constant folding beyond Roslyn's,
+→ `local.tee`, dead code after unconditional branches, call targets ordered by use for short indices), and inlining
+of leaf functions (no calls, no throws: getters, setters, accessors, thunks) where the copy is about as small as the
+call, or the function has a single call site; stack traces are unchanged because inlined code cannot throw.
+Not done: inlining of functions that call or throw, escape analysis (stack allocation of non-escaping objects), constant folding beyond Roslyn's,
 local packing, data segment packing.
 
 ### 6. The module — done

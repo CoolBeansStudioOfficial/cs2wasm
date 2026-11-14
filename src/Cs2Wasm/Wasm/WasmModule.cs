@@ -49,6 +49,7 @@ internal sealed class WasmModule
         foreach (var f in Functions) ResolveForwards(f);
         if (optimize)
         {
+            Inliner.Run(Functions);
             foreach (var f in Functions) if (!f.IsImport) Peephole.Run(f);
             MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
