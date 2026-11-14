@@ -426,6 +426,7 @@ sealed class RuntimeGen
         if (type.IsValueType)
         {
             int off = FunctionCompilerHelpers.BoxDataOffset(D.Types, type);
+            if (clear) { e.Get(0); e.Call(rt.OnDestroy); e.Op(Op.Drop); }
             if (clear && Types.IsStruct(type) && D.Types.LayoutOf(type).HasRefs) { e.Get(0); e.I32(off); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(type)); }
             if (free) { e.Get(0); e.I32(off + D.Types.StorageOf(type).size); e.Call(rt.Free); }
             return;
@@ -435,13 +436,18 @@ sealed class RuntimeGen
         if (clear)
         {
             var fin = FindFinalizer(type);
+            // weak references to it are cleared first; GC.SuppressFinalize can skip the finalizer
+            e.Get(0); e.Call(rt.OnDestroy);
             if (fin != null)
             {
+                e.If();
                 // the finalizer may resurrect nothing observable here; it runs with a temporary count
                 e.Get(0); e.I32(1); e.Store(Op.I32Store);
                 e.Get(0); e.Call(D.Method(fin).Fn);
                 e.Get(0); e.I32(0); e.Store(Op.I32Store);
+                e.End();
             }
+            else e.Op(Op.Drop);
             foreach (var fs in l.Fields)
             {
                 if (Types.IsRef(fs.Type)) { e.Get(0); e.Load(Op.I32Load, fs.Offset); e.Call(rt.Release); }
@@ -578,6 +584,9 @@ sealed class RuntimeGen
 
     public void FinishExports()
     {
+        // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
+        if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
+            D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
         // a worker instance starts here: its own stack, thread-local block and id, then the thread's delegate
         if (D.UsesThreads)
         {
@@ -622,6 +631,7 @@ sealed class RuntimeGen
     public void Finish()
     {
         if (D.Arenas.Enabled) EmitArenaSupport();
+        EmitOnDestroy();
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
         EmitDestroyDispatch();
         EmitStubs();
@@ -631,6 +641,29 @@ sealed class RuntimeGen
         EmitTypeNames();
         D.LayoutMemory();
         EmitInit();
+    }
+
+    /// <summary>rt.on_destroy(p): 1 if p's finalizer runs. Without marks in the program it is `1`, and the calls whose
+    /// result is dropped are removed.</summary>
+    void EmitOnDestroy()
+    {
+        var f = D.Rt.OnDestroyIfMade;
+        if (f == null) return;
+        var marks = D.AllMethods.FirstOrDefault(m => m.Sym.Name == "OnDestroy" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled);
+        var e = new Emitter(f);
+        if (marks != null) { e.Get(0); e.Call(marks.Fn); return; }
+        e.I32(1);
+        foreach (var fn in D.Module.Functions)
+        {
+            var b = fn.Body;
+            for (int i = 0; i + 2 < b.Count; i++)
+                if (b[i].Op == Op.LocalGet && b[i + 1].Op == Op.Call && ReferenceEquals(b[i + 1].Ref, f) && b[i + 2].Op == Op.Drop)
+                {
+                    b[i] = b[i] with { Op = Op.Nop, Ref = null };
+                    b[i + 1] = b[i + 1] with { Op = Op.Nop, Ref = null };
+                    b[i + 2] = b[i + 2] with { Op = Op.Nop, Ref = null };
+                }
+        }
     }
 
     void EmitDestroyDispatch()

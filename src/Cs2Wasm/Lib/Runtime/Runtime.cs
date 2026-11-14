@@ -146,6 +146,9 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern void RuntimeLock();
         [Intrinsic] public static extern void RuntimeUnlock();
 
+        /// <summary>Bytes from the heap's start to its top (freed blocks included).</summary>
+        public static long HeapUsed() => s_top == 0 ? 0 : s_top - HeapBase();
+
         public static int Alloc(int size)
         {
             RuntimeLock();

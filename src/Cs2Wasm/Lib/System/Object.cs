@@ -86,9 +86,20 @@ namespace System
         public static void Collect() { }
         public static void Collect(int generation) { }
         public static void KeepAlive(object obj) { }
-        public static void SuppressFinalize(object obj) { }
-        public static void ReRegisterForFinalize(object obj) { }
+        public static void SuppressFinalize(object obj)
+        {
+            if (obj == null) throw new ArgumentNullException("obj");
+            Cs2Wasm.Runtime.ObjectMarks.Set(obj, Cs2Wasm.Runtime.ObjectMarks.FinalizerSuppressed);
+        }
+        public static void ReRegisterForFinalize(object obj)
+        {
+            if (obj == null) throw new ArgumentNullException("obj");
+            Cs2Wasm.Runtime.ObjectMarks.Clear(obj, Cs2Wasm.Runtime.ObjectMarks.FinalizerSuppressed);
+        }
         public static void WaitForPendingFinalizers() { }
-        public static long GetTotalMemory(bool forceFullCollection) => 0;
+        public static long GetTotalMemory(bool forceFullCollection) => Cs2Wasm.Runtime.Rt.HeapUsed();
+        public static int CollectionCount(int generation) => 0;
+        public static int MaxGeneration => 0;
+        public static int GetGeneration(object obj) => 0;
     }
 }

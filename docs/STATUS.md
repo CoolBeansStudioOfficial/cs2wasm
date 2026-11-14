@@ -150,9 +150,14 @@ answers "when they split"; it is not a heap scan, but it is a tracing step.
 Also fixed on the way: freeing a large block at the top of the heap moved the bump pointer back without clearing
 the block, so later objects could start with stale fields (found by the sweep's temporary buffers).
 
+Weak references (4.4): `WeakReference`, `WeakReference<T>` and `ConditionalWeakTable` keep handles to their
+targets; a target carries a mark (a side table by address, consulted by the destroy path only while marks exist), and
+when its count reaches zero its handles are cleared before its finalizer runs; a table's entry, and its value, go
+with the key. `GC.SuppressFinalize`/`ReRegisterForFinalize` are marks too; `GC.Collect` has nothing to do (objects
+are freed when their count reaches zero). Programs without marks pay nothing.
+
 Not done:
 - ownership specialization of functions, retroactive owners, the counting-elision statistics (4.1);
-- weak references, `ConditionalWeakTable` (4.4);
 - threads (4.5), see below: per-object sharing analysis, `AsyncLocal<T>`, parking (7.2).
 
 ### 4.5 Threads — partial

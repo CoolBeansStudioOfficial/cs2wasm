@@ -76,6 +76,10 @@ internal sealed partial class RuntimeFns
         }
     }
 
+    WasmFunction? _onDestroy;
+    public WasmFunction OnDestroy => _onDestroy ??= M.AddFunction("rt.on_destroy", FT([I], [I]));
+    public WasmFunction? OnDestroyIfMade => _onDestroy;
+
     WasmFunction? _clamp;
     /// <summary>(v, lo, hi) → v clamped to [lo, hi].</summary>
     public WasmFunction ClampI32 => _clamp ??= MakeClamp();
