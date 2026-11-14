@@ -344,6 +344,7 @@ sealed class RuntimeGen
     }
 
     public void Export(string name, MethodInst mi) => _exports.Add((name, mi));
+    public IEnumerable<MethodInst> UserExports => _exports.Where(e => !e.name.StartsWith("cs2wasm_")).Select(e => e.mi);
 
     /// <summary>Generates destroy functions for newly constructed types and resolves virtual calls; true if new work appeared.</summary>
     public bool Expand()

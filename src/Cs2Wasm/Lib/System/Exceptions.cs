@@ -261,3 +261,14 @@ namespace System.Collections.Generic
         public KeyNotFoundException(string message, Exception innerException) : base(message, innerException) { }
     }
 }
+
+namespace System
+{
+    public sealed class TypeInitializationException : SystemException
+    {
+        readonly string _typeName;
+        public TypeInitializationException(string fullTypeName, Exception innerException)
+            : base("The type initializer for '" + fullTypeName + "' threw an exception.", innerException) { _typeName = fullTypeName; }
+        public string TypeName => _typeName ?? "";
+    }
+}

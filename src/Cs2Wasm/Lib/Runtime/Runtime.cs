@@ -771,6 +771,9 @@ namespace Cs2Wasm.Runtime
 
     public static class ThrowHelpers
     {
+        /// <summary>The exception a failed static initializer leaves: thrown now and at every later access.</summary>
+        public static object TypeInitFailed(string typeName, object inner) =>
+            new System.TypeInitializationException(typeName, inner as System.Exception);
         public static void NullReference() => throw new NullReferenceException();
         public static void IndexOutOfRange() => throw new IndexOutOfRangeException();
         public static void Overflow() => throw new OverflowException();

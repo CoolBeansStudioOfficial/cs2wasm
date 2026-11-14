@@ -476,9 +476,35 @@ internal sealed partial class Driver
         var fn = Module.AddFunction("static init " + key, new FuncType([], []));
         var body = Module.AddFunction("static init body " + key, new FuncType([], []));
         {
+            // an exception from the initializer: TypeInitializationException now and at every later access (-2)
+            var saved = StaticAddress("tie:" + key, 4, 4);
             var e = new Emitter(fn);
             e.I32Addr(flag); e.Call(Rt.CctorEnter);
-            e.If(); e.Call(body); e.I32Addr(flag); e.Call(Rt.CctorExit); e.End();
+            e.If();
+            {
+                var done = e.Block();
+                var caught = e.Block(ValType.I32);
+                e.TryTable(null, (0, ExceptionTag, caught));
+                e.Call(body);
+                e.End();
+                e.I32Addr(flag); e.Call(Rt.CctorExit);
+                e.Br(done);
+                e.End();
+                // inner exception on the stack (owned): wrap it
+                int inner = e.AddLocal(ValType.I32);
+                e.Set(inner);
+                e.I32Addr(saved); e.I32Addr(StringLiteral(t.ContainingType != null ? t.MetadataName : ClrName(t))); e.Get(inner);
+                e.Call(LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "TypeInitFailed", 2).Fn);
+                e.Store(Op.I32Store);
+                e.Get(inner); e.Call(Rt.Release);
+                e.I32Addr(flag); e.Call(Rt.CctorFail);
+                e.I32Addr(saved); e.Load(Op.I32Load); e.Call(Rt.Retain); e.Emit(Op.Throw, 0, 0, ExceptionTag);
+                e.End();
+            }
+            e.Else();
+            e.I32Addr(flag); e.Load(Op.I32Load); e.I32(-2); e.Op(Op.I32Eq);
+            e.If(); e.I32Addr(saved); e.Load(Op.I32Load); e.Call(Rt.Retain); e.Emit(Op.Throw, 0, 0, ExceptionTag); e.End();
+            e.End();
         }
         _cctors[key] = (flag, fn);
         _pendingCctors.Enqueue((t, body, flag, cctor));
@@ -515,6 +541,7 @@ internal sealed partial class Driver
         Arenas.Analyze();
         if (Arenas.Enabled) { Arenas.RequestRuntime(); Drain(rt); }
         Arenas.Resolve();
+        ReportEngineThreadBlocking(rt.UserExports);
         rt.Finish();
     }
 

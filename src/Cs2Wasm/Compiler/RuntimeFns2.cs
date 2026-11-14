@@ -86,7 +86,8 @@ internal sealed partial class RuntimeFns
         if (_ecRestore != null && restore != null) { var e = new Emitter(_ecRestore); e.Get(0); e.Call(restore.Fn); e.Get(0); e.Call(Release); }
     }
 
-    WasmFunction? _cctorEnter, _cctorExit;
+    WasmFunction? _cctorEnter, _cctorExit, _cctorFail;
+    public WasmFunction CctorFail => _cctorFail ??= M.AddFunction("rt.cctor_fail", FT([I], []));
     /// <summary>cctor_enter(word) -> run?: claims a type's initialization. One thread: mark done and run. With threads:
     /// done or our own (recursion) → no; free → claim; another thread's → wait until done.</summary>
     public WasmFunction CctorEnter => _cctorEnter ??= M.AddFunction("rt.cctor_enter", FT([I], [I]));
@@ -99,14 +100,14 @@ internal sealed partial class RuntimeFns
             var e = new Emitter(_cctorEnter);
             if (!threads)
             {
-                e.Get(0); e.Load(Op.I32Load); e.I32(-1); e.Op(Op.I32Eq); e.If(); e.I32(0); e.Op(Op.Return); e.End();
+                e.Get(0); e.Load(Op.I32Load); e.If(); e.I32(0); e.Op(Op.Return); e.End();
                 e.Get(0); e.I32(-1); e.Store(Op.I32Store); e.I32(1);
             }
             else
             {
                 int s = e.AddLocal(I);
                 var top = e.Loop();
-                e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(s); e.I32(-1); e.Op(Op.I32Eq);
+                e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(s); e.I32(0); e.Op(Op.I32LtS);
                 e.Get(s); e.GGet(D.ThreadId); e.Op(Op.I32Eq); e.Op(Op.I32Or);
                 e.If(); e.I32(0); e.Op(Op.Return); e.End();
                 e.Get(s); e.Op(Op.I32Eqz);
@@ -122,6 +123,12 @@ internal sealed partial class RuntimeFns
                 e.End();
                 e.I32(0);
             }
+        }
+        if (_cctorFail != null)
+        {
+            var e = new Emitter(_cctorFail);
+            e.Get(0); e.I32(-2); if (threads) e.Emit(Op.I32AtomicStore, 0, 2); else e.Store(Op.I32Store);
+            if (threads) { e.Get(0); e.I32(-1); e.Emit(Op.MemoryAtomicNotify, 0, 2); e.Op(Op.Drop); }
         }
         if (_cctorExit != null && threads)
         {

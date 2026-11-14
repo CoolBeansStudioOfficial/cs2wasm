@@ -583,3 +583,48 @@ internal sealed class PluginHost
         _rt.Export(exportName, mi);
     }
 }
+
+internal sealed partial class Driver
+{
+    static readonly HashSet<string> s_blocking = ["Task.Wait", "Task.WaitAll", "Task.WaitAny", "Task.get_Result", "TaskAwaiter.GetResult",
+        "ValueTaskAwaiter.GetResult", "Thread.Join", "Thread.Sleep", "SemaphoreSlim.Wait", "ManualResetEventSlim.Wait", "CountdownEvent.Wait", "Monitor.Wait"];
+
+    static string? BlockingName(IMethodSymbol m)
+    {
+        var name = m.ContainingType?.Name + "." + m.Name;
+        return s_blocking.Contains(name) ? m.ContainingType!.Name + "." + (m.Name == "get_Result" ? "Result" : m.Name) : null;
+    }
+
+    /// <summary>Section 4.5: a blocking wait the engine thread can reach (an export and what it calls directly, not
+    /// lambdas handed to other threads) is a build notice naming it.</summary>
+    void ReportEngineThreadBlocking(IEnumerable<MethodInst> exports)
+    {
+        var seen = new HashSet<MethodInst>();
+        var work = new Queue<MethodInst>(exports);
+        var reported = new HashSet<(string, int)>();
+        while (work.Count > 0)
+        {
+            var mi = work.Dequeue();
+            if (!seen.Add(mi) || mi.Sym.MethodKind == MethodKind.AnonymousFunction || mi.Key.EndsWith(" MoveNext")) continue;
+            foreach (var c in mi.Callees) work.Enqueue(c);
+            if (!mi.Callees.Any(c => BlockingName(c.Sym) != null)) continue;
+            var def = mi.Sym.OriginalDefinition;
+            foreach (var r in def.DeclaringSyntaxReferences)
+            {
+                if (!IsInput(r.SyntaxTree)) continue;
+                var node = r.GetSyntax();
+                var model = ModelFor(node.SyntaxTree);
+                foreach (var sn in node.DescendantNodes(n => n is not (AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax)))
+                {
+                    if (sn is not (InvocationExpressionSyntax or MemberAccessExpressionSyntax)) continue;
+                    var sym = model.GetSymbolInfo(sn).Symbol;
+                    var m = sym as IMethodSymbol ?? (sym as IPropertySymbol)?.GetMethod;
+                    if (m == null || BlockingName(m) is not { } bn) continue;
+                    if (sym is IMethodSymbol && sn is MemberAccessExpressionSyntax) continue; // the invocation reports it
+                    if (!reported.Add((sn.SyntaxTree.FilePath, sn.SpanStart))) continue;
+                    Report(Diags.BlockingWait, sn.GetLocation(), bn);
+                }
+            }
+        }
+    }
+}

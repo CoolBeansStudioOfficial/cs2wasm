@@ -223,6 +223,16 @@ static class ApiChecks
             return o.Trim() == "ok" ? null : o + e;
         });
 
+        Check("a blocking wait the engine thread reaches is a build notice; one in work handed to the pool is not", () =>
+        {
+            var src = Header + "using System.Threading.Tasks;\nstatic class E {\n static void Helper() => Task.Delay(1).Wait();\n [UnmanagedCallersOnly(EntryPoint = \"main\")]\n static void M() { Helper(); var t = Task.Run(() => Task.Delay(1).Wait()); Console.WriteLine(t.IsCompleted); }\n}";
+            var r = Compile(src, new CompileOptions(), "block.cs");
+            if (!r.Success) return Errors(r);
+            var notes = r.Diagnostics.Where(d => d.Id == "CW0200").ToList();
+            if (notes.Count != 1) return "notices: " + string.Join("; ", notes.Select(n => n.GetMessage() + " @" + n.Location.GetLineSpan().StartLinePosition));
+            return notes[0].Location.GetLineSpan().StartLinePosition.Line == 4 && notes[0].GetMessage().Contains("Task.Wait") ? null : "notice: " + notes[0];
+        });
+
         Check("source map maps code offsets to C# lines", () =>
         {
             var src = Header + "static class E {\n [UnmanagedCallersOnly(EntryPoint = \"main\")]\n static void M() {\n Console.WriteLine(1);\n }\n}";

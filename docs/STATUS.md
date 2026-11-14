@@ -195,8 +195,12 @@ async method sets stays inside it, as in .NET; programs without `AsyncLocal` do 
 are thread-safe: a type's state word is claimed with compare-and-swap, other threads wait until it is done, and the
 thread running it sees its own partial initialization (recursion), as in .NET.
 
-Not done: the build notice for blocking waits on the
-engine thread, freeing a finished thread's stack and thread-local block, `TypeInitializationException` (an exception from a static constructor), the
+A blocking wait the engine thread can reach (an export and what it calls directly; not lambdas handed to other
+threads) is build notice `CW0200` naming it (`Task.Wait`, `.Result`, `GetResult`, `WaitAll`/`WaitAny`, `Join`,
+`Sleep`, `SemaphoreSlim`/`ManualResetEventSlim`/`CountdownEvent` waits, `Monitor.Wait`; checked). An exception from a
+static initializer becomes `TypeInitializationException`, thrown again at every later access, as in .NET.
+
+Not done: a contended `lock` on the engine thread is not reported; freeing a finished thread's stack and thread-local block,
 and the scheduling-dependence marks for the plugin (7.3).
 
 ### 5. Optimization — minimal
