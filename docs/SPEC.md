@@ -10,6 +10,8 @@ Words used throughout: **the compiler** is this project; **the embedder** is the
 editor); **the engine** is Bazoodle's Godot build, which loads and calls the module; **the module** is the compiler's
 output.
 
+**Licence:** MIT. Bazoodle's own plugin (section 7.1) is not part of this project.
+
 ---
 
 ## 1. Goals and fixed decisions
@@ -74,7 +76,10 @@ those semantics are what programs observe. Every feature of C# 14 is in scope, i
 - iterators (`yield return`), pattern matching of every kind, `switch` expressions, `checked`/`unchecked`,
   exceptions with `try`/`catch`/`finally`/`when`, `using` and `await using`, `stackalloc`, `Span<T>`;
 - generics: instantiate per type where it pays (value types always), share code between reference-type instantiations
-  where it does not; the choice is the compiler's.
+  where it does not; the choice is the compiler's;
+- static constructors and static field initialization with .NET's rules (`beforefieldinit`, first access, once per
+  program, thread-safe);
+- `dynamic`, through the C# runtime binder on the reflection metadata kept (section 8) and the interpreter.
 
 **Async follows .NET's threading.** A continuation runs where the current `SynchronizationContext` posts it, as in
 .NET: GodotSharp installs its own, so script code returns to the engine thread after `await`. `Task.Run`, the thread
@@ -82,10 +87,14 @@ pool, `Parallel` and `Thread` run on real worker threads (section 4.5).
 
 **Exceptions** use native WASM exception handling (owner; the `exnref` form, shipped in all major browsers; confirm the version
 floor). An exception that escapes an exported entry point must reach the engine as a catchable failure carrying the
-exception's type, message and C# stack trace with file and line (section 6.3).
+exception's type, message and C# stack trace with file and line (section 6.3). Exception filters (`when`) keep .NET's
+two-pass order where it is observable: a filter runs before the `finally` blocks of the frames it would unwind.
 
-**Integer and floating-point semantics** are C#'s: unchecked arithmetic wraps, `checked` throws, division by zero throws,
-float behaviour is IEEE 754 as WASM gives it. Determinism rules are in section 7.3.
+**Stack overflow ends the instance**, as it ends the process under .NET; the engine reports it. **Out of memory** throws
+`OutOfMemoryException` when the engine's memory limit is reached, as .NET does.
+
+**Integer and floating-point semantics** are C#'s: unchecked arithmetic wraps, `checked` throws, integer division by
+zero throws, float behaviour is IEEE 754 as WASM gives it. Determinism rules are in section 7.3.
 
 ---
 
@@ -155,7 +164,9 @@ Threads are how Bazoodle gets the most out of a device, so game code has real on
   memory-safe and gives some outcome .NET allows.
 - **No thread ever blocks the engine thread.** A blocking wait on the engine thread (`Task.Wait`, `.Result`, a
   contended `lock` held for long) is allowed by the language but reported as a build notice where the compiler can see
-  it; the browser forbids blocking the page thread, and the engine thread must keep its frame budget.
+  it; the engine thread must keep its frame budget.
+- **Thread-local state:** `[ThreadStatic]`, `ThreadLocal<T>` and `AsyncLocal<T>` work. Each worker's instance keeps its
+  own stack pointer and thread-local block in memory.
 - **Engine calls from worker threads follow Godot's own rules**: thread-safe servers and resources may be called, the
   scene tree may not (Godot's thread guards report it, as in stock Godot).
 
@@ -185,23 +196,33 @@ heap compact (reuse freed space) because a snapshot's cost is proportional to th
 
 ### 6.1 Shape
 
-- 32-bit core WASM, **memory imported** from the engine (the engine creates it; start with a large initial size,
-  because growing memory is slow in Chrome: about 2.1 s to build a 256 MB heap).
+- 32-bit core WASM, **shared memory imported** from the engine (the engine creates it, with the maximum it allows;
+  shared because threads need it; start with a large initial size, because growing memory is slow in Chrome: about
+  2.1 s to build a 256 MB heap). The module has its own memory, separate from the engine's.
 - **Imports: the engine's functions and nothing else.** There is no WASI layer. Console output, time and randomness
   come from engine imports that the library calls (section 7.4).
 - **Roots.** A game has no `Main`. The roots of reachability are the exported entry points (section 6.2). Objects live
   between calls; the engine holds some of them through handles.
+- **Initialization.** An exported `init` runs once before any other export (memory layout, statics that are not lazy,
+  the thread pool). Worker instances have their own per-thread start export.
 - **Exports.** A static method marked `[UnmanagedCallersOnly(EntryPoint = "name")]` becomes a WASM export with that
   name. Its parameters and result are WASM numbers (and pointers into the module's memory).
+- **No exception crosses an export.** Each export is wrapped: an exception that escapes it is reported through the
+  engine's exception-report import (type, message, stack trace) and the export returns its failure value. The engine
+  never has to catch a WASM exception itself.
 - **Custom sections supplied by the embedder** are written into the module as given (Bazoodle writes a
   `platform.scripts` record that its editor reads without running the module).
+- **A version section** records the compiler version and the ABI version, so the engine can refuse a module it does
+  not understand.
 
 ### 6.2 The engine boundary
 
 The module talks to the engine only through a **boundary table** that the embedder supplies (section 7.5): methods
 with no C# body (`extern`, or marked by an attribute the table names) that become WASM imports, with their WASM
 signatures. There is one typed import per allowed engine method. A method the program calls that is not in the table,
-and has no body, is a build error naming it.
+and has no body, is a build error naming it. Marshalling (which values are copied through memory, which are engine
+handles) is Bazoodle's C# code on top of these imports, so the compiler needs only numbers and pointers at the
+boundary.
 
 ### 6.3 Debug information
 
@@ -249,8 +270,9 @@ A plugin pass, run after lowering and the whole-program analyses and before spec
 - **clone with changes:** a copy of a method (and what it calls) in which calls to chosen imports are suppressed;
 - **emit custom sections** and **diagnostics** (errors fail the build; notices are listed).
 
-Plugins are .NET assemblies loaded by the embedder and passed to the compiler in-process. The interface is versioned.
-A program built with no plugins is ordinary C# compiled to WASM.
+Plugins are C# libraries written against the compiler's plugin interface. While the compiler runs on the .NET runtime
+they are assemblies passed in-process; once it compiles itself (section 9) they are compiled into the toolchain module
+with it. The interface is versioned. A program built with no plugins is ordinary C# compiled to WASM.
 
 ### 7.2 Snapshot, restore and partial runs
 
@@ -275,6 +297,11 @@ results on every machine**. The compiler must not introduce variation:
   fixed one makes `Dictionary` and `HashSet` iterate the same on every machine). `object.GetHashCode` and
   `RuntimeHelpers.GetHashCode` come from a per-instance counter in allocation order, never from addresses that vary.
 - **Nothing depends on memory addresses** in observable output.
+- **Math functions are computed in WASM, never imported from JavaScript.** `Math.Sin`, `Math.Exp`, `MathF.Pow` and the
+  rest come from the library compiled into the module (upstream's managed code or a portable implementation), because
+  browsers' `Math` functions differ between engines. Only operations WASM defines exactly (`sqrt`, the basic
+  arithmetic, `min`, `max`, rounding) use WASM instructions directly.
+- **The output is reproducible:** the same inputs give a byte-identical module.
 - Time and randomness come only from engine imports (section 7.4); the engine decides what they return.
 - **Thread timing is not hidden from the plugin.** The compiler's analyses mark every value that can depend on
   scheduling (a race, a float sum accumulated by several threads, the order of a concurrent collection, whichever task
@@ -305,7 +332,7 @@ results on every machine**. The compiler must not introduce variation:
 - The boundary table (section 6.2), generated from Godot's `extension_api.json` with a blocklist; the engine side
   of each import already exists.
 - Patched GodotSharp sources, Bazoodle's source generators and the `Bazoodle` namespaces.
-- Custom sections (section 6.1) and the rewritten compilation (section 7.1).
+- Custom sections (section 6.1) and its networking plugin (section 7.1).
 - The engine that loads the module, with the entry-point ABI it calls: create an instance, call a method, get and set
   a property, raise a signal, serialize and restore state, typed field get and set by index (generated as ordinary C#
   with `[UnmanagedCallersOnly]` exports, so the compiler sees nothing special).
@@ -358,7 +385,8 @@ What does exist, though .NET programs might expect it not to here (owner):
 
 ## 10. Testing and evidence
 
-- **The oracle is .NET.** A conformance suite of C# programs runs under .NET and through the compiler; their output
+- **The oracle is .NET.** A conformance suite of C# programs (starting from Roslyn's and `dotnet/runtime`'s own test
+  programs where they fit) runs under .NET and through the compiler; their output
   (console output, or the logged sequence of import calls) must match exactly. Every language feature in section 3 has
   programs in the suite, including the hard cases: cycles, finalizers, weak references, exceptions through async,
   custom awaiters, generic virtual methods.
@@ -392,5 +420,5 @@ What does exist, though .NET programs might expect it not to here (owner):
 - Roslyn operation tree: <https://learn.microsoft.com/dotnet/api/microsoft.codeanalysis.ioperation>
 - WebAssembly exception handling: <https://github.com/WebAssembly/exception-handling>
 - Godot 4.7.2 `modules/mono` (GodotSharp, `Godot.SourceGenerators`, `bindings_generator.cpp`)
-- Bazoodle's engine spec, `docs/design/engine-and-toolchain.md` sections 2 and 3 and its appendix (the boundary and
-  the GodotSharp reuse)
+- The engine side (Bazoodle's private repository) is not needed to build the compiler: proofs 1 and 2 need no engine,
+  and proof 3 uses a stub boundary that logs calls
