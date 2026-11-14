@@ -39,6 +39,8 @@ namespace System
         public static void WriteLine(ulong value) => Out(string.Concat2(Number.UInt64ToString(value), "\n"));
         public static void WriteLine(float value) => Out(string.Concat2(value.ToString(), "\n"));
         public static void WriteLine(double value) => Out(string.Concat2(value.ToString(), "\n"));
+        public static void WriteLine(decimal value) => Out(string.Concat2(value.ToString(), "\n"));
+        public static void Write(decimal value) => Out(value.ToString());
         public static void WriteLine(char[] buffer) => Out(string.Concat2(buffer == null ? "" : string.Ctor(buffer), "\n"));
         public static void WriteLine(string format, object arg0) => Out(string.Concat2(string.Format(format, arg0), "\n"));
         public static void WriteLine(string format, object arg0, object arg1) => Out(string.Concat2(string.Format(format, arg0, arg1), "\n"));

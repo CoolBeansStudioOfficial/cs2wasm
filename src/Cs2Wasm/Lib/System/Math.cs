@@ -15,6 +15,18 @@ namespace System
         public static short Abs(short value) { if (value < 0) { if (value == short.MinValue) throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); return (short)-value; } return value; }
         public static sbyte Abs(sbyte value) { if (value < 0) { if (value == sbyte.MinValue) throw new OverflowException("Negating the minimum value of a twos complement number is invalid."); return (sbyte)-value; } return value; }
         public static double Abs(double value) => Rt.Abs(value);
+        public static decimal Abs(decimal value) => decimal.Abs(value);
+        public static decimal Max(decimal a, decimal b) => decimal.Max(a, b);
+        public static decimal Min(decimal a, decimal b) => decimal.Min(a, b);
+        public static decimal Floor(decimal d) => decimal.Floor(d);
+        public static decimal Ceiling(decimal d) => decimal.Ceiling(d);
+        public static decimal Truncate(decimal d) => decimal.Truncate(d);
+        public static int Sign(decimal d) => decimal.Sign(d);
+        public static decimal Round(decimal d) => decimal.Round(d);
+        public static decimal Round(decimal d, int decimals) => decimal.Round(d, decimals);
+        public static decimal Round(decimal d, MidpointRounding mode) => decimal.Round(d, mode);
+        public static decimal Round(decimal d, int decimals, MidpointRounding mode) => decimal.Round(d, decimals, mode);
+        public static decimal Clamp(decimal value, decimal min, decimal max) => value < min ? min : value > max ? max : value;
         public static float Abs(float value) => Rt.AbsF(value);
 
         public static int Max(int a, int b) => a >= b ? a : b;

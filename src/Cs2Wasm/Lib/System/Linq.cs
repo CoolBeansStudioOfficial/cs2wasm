@@ -778,6 +778,24 @@ namespace System.Linq
             if (n == 0) throw NoElements();
             return s / n;
         }
+        public static decimal Sum(this IEnumerable<decimal> source) { decimal s = 0; foreach (var x in source) s += x; return s; }
+        public static decimal Sum<T>(this IEnumerable<T> source, Func<T, decimal> selector) => Sum(Select(source, selector));
+        public static decimal Average(this IEnumerable<decimal> source)
+        {
+            decimal s = 0; long n = 0;
+            foreach (var x in source) { s += x; n++; }
+            if (n == 0) throw NoElements();
+            return s / n;
+        }
+        public static decimal Average<T>(this IEnumerable<T> source, Func<T, decimal> selector) => Average(Select(source, selector));
+        public static decimal Max(this IEnumerable<decimal> source)
+        {
+            using (var e = source.GetEnumerator()) { if (!e.MoveNext()) throw NoElements(); var m = e.Current; while (e.MoveNext()) if (e.Current > m) m = e.Current; return m; }
+        }
+        public static decimal Min(this IEnumerable<decimal> source)
+        {
+            using (var e = source.GetEnumerator()) { if (!e.MoveNext()) throw NoElements(); var m = e.Current; while (e.MoveNext()) if (e.Current < m) m = e.Current; return m; }
+        }
         public static double Average<T>(this IEnumerable<T> source, Func<T, int> selector) => Average(Select(source, selector));
         public static double Average<T>(this IEnumerable<T> source, Func<T, double> selector) => Average(Select(source, selector));
 

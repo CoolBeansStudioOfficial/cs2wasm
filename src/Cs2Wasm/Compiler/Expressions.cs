@@ -141,7 +141,7 @@ sealed partial class FunctionCompiler
         var p = t != null ? Types.PrimOf(t) : Prim.None;
         if (p == Prim.None)
             p = value switch { bool => Prim.Bool, char => Prim.Char, sbyte => Prim.I8, byte => Prim.U8, short => Prim.I16, ushort => Prim.U16, int => Prim.I32, uint => Prim.U32, long => Prim.I64, ulong => Prim.U64, float => Prim.F32, double => Prim.F64, _ => Prim.None };
-        if (value is decimal) throw new CompileException("decimal is not supported yet");
+        if (value is decimal dec) return EmitDecimalConstant(dec);
         switch (Types.WasmPrim(p))
         {
             case ValType.I64: E.I64(value switch { ulong u => unchecked((long)u), _ => Convert.ToInt64(value) }); break;
@@ -757,6 +757,17 @@ sealed partial class FunctionCompiler
             FreeScratch(Types.WasmType(from) ?? ValType.I32, v);
             return;
         }
+        if (IsDecimal(from) || IsDecimal(to))
+        {
+            var dop = FindConversion(IsDecimal(to) ? to : from, from, to);
+            if (dop != null)
+            {
+                int dv = Scratch(Types.WasmType(from) ?? ValType.I32); E.Set(dv);
+                o = CallWith(dop, false, null, () => E.Get(dv), null, null);
+                FreeScratch(Types.WasmType(from) ?? ValType.I32, dv);
+                return;
+            }
+        }
         if (pf != Prim.None && pt != Prim.None)
         {
             if (from.TypeKind == TypeKind.Pointer || to.TypeKind == TypeKind.Pointer) { NumericConvert(pf == Prim.U32 && from.TypeKind == TypeKind.Pointer ? Prim.U32 : pf, pt, isChecked); return; }
@@ -796,6 +807,54 @@ sealed partial class FunctionCompiler
     }
 
     static bool IsSpanType(ITypeSymbol t) => t is INamedTypeSymbol { Arity: 1 } n && Types.FullName(n) is "System.Span`1" or "System.ReadOnlySpan`1";
+
+    static bool IsDecimal(ITypeSymbol? t) => t?.SpecialType == SpecialType.System_Decimal || t is INamedTypeSymbol { Name: "Decimal", ContainingNamespace.Name: "System" } n && n.ContainingNamespace.ContainingNamespace?.IsGlobalNamespace == true;
+
+    IMethodSymbol DecimalOp(string name, int arity) =>
+        D.CanonicalMethod(D.LibType("System.Decimal").GetMembers(name).OfType<IMethodSymbol>().First(m => m.Parameters.Length == arity));
+
+    IMethodSymbol? DecimalOpFor(BinaryOperatorKind k) => k switch
+    {
+        BinaryOperatorKind.Add => DecimalOp("op_Addition", 2),
+        BinaryOperatorKind.Subtract => DecimalOp("op_Subtraction", 2),
+        BinaryOperatorKind.Multiply => DecimalOp("op_Multiply", 2),
+        BinaryOperatorKind.Divide => DecimalOp("op_Division", 2),
+        BinaryOperatorKind.Remainder => DecimalOp("op_Modulus", 2),
+        BinaryOperatorKind.Equals => DecimalOp("op_Equality", 2),
+        BinaryOperatorKind.NotEquals => DecimalOp("op_Inequality", 2),
+        BinaryOperatorKind.LessThan => DecimalOp("op_LessThan", 2),
+        BinaryOperatorKind.LessThanOrEqual => DecimalOp("op_LessThanOrEqual", 2),
+        BinaryOperatorKind.GreaterThan => DecimalOp("op_GreaterThan", 2),
+        BinaryOperatorKind.GreaterThanOrEqual => DecimalOp("op_GreaterThanOrEqual", 2),
+        _ => null,
+    };
+
+    /// <summary>decimal's built-in operators are the library Decimal's operator methods.</summary>
+    IMethodSymbol? DecimalBinary(BinaryOperatorKind k, IOperation l, IOperation r) =>
+        l.Type != null && r.Type != null && IsDecimal(TypeOf(l)) && IsDecimal(TypeOf(r)) ? DecimalOpFor(k) : null;
+
+    IMethodSymbol? FindConversion(ITypeSymbol owner, ITypeSymbol from, ITypeSymbol to)
+    {
+        if (T.Canonical(owner) is not INamedTypeSymbol n) return null;
+        foreach (var name in new[] { "op_Implicit", "op_Explicit" })
+            foreach (var m in n.GetMembers(name).OfType<IMethodSymbol>())
+                if (Types.Key(T.Canonical(m.Parameters[0].Type)) == Types.Key(T.Canonical(from)) && Types.Key(T.Canonical(m.ReturnType)) == Types.Key(T.Canonical(to)))
+                    return D.CanonicalMethod(m);
+        return null;
+    }
+
+    /// <summary>A decimal constant: the struct's fields (as .NET's layout) in a temporary.</summary>
+    Own EmitDecimalConstant(decimal d)
+    {
+        var t = T.Canonical(D.LibType("System.Decimal"));
+        var bits = decimal.GetBits(d);
+        int off = TempStruct(t);
+        var l = T.LayoutOf(t);
+        void Field(string name, int v) { var f = l.Fields.First(x => x.Symbol.Name == name); E.Get(_fb); E.I32(v); E.Store(Op.I32Store, off + f.Offset); }
+        Field("_lo", bits[0]); Field("_mid", bits[1]); Field("_hi", bits[2]); Field("_flags", bits[3]);
+        E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+        return Own.None;
+    }
 
     IMethodSymbol? FindImplicit(ITypeSymbol owner, ITypeSymbol from, ITypeSymbol to)
     {
@@ -953,6 +1012,8 @@ sealed partial class FunctionCompiler
             var impl = D.Implementation(T.Resolve(bct, Map), SubstMethod(om)) ?? SubstMethod(om);
             return EmitCallOps(impl, null, [b.LeftOperand, b.RightOperand], false, b.Syntax, alreadyResolved: true);
         }
+        if (b.OperatorMethod == null && DecimalBinary(b.OperatorKind, b.LeftOperand, b.RightOperand) is { } dop)
+            return EmitCall(dop, null, [b.LeftOperand, b.RightOperand], false, b.Syntax);
         if (b.OperatorMethod != null && !IsBuiltinOperator(b.OperatorMethod))
         {
             var m = SubstMethod(b.OperatorMethod);
@@ -1121,6 +1182,8 @@ sealed partial class FunctionCompiler
     {
         if (u.IsLifted) return EmitLiftedUnary(u);
         if (u.OperatorMethod != null) return EmitCall(u.OperatorMethod, null, [u.Operand], false, u.Syntax);
+        if (IsDecimal(TypeOf(u.Operand)) && u.OperatorKind is UnaryOperatorKind.Minus or UnaryOperatorKind.Plus)
+            return EmitCall(DecimalOp(u.OperatorKind == UnaryOperatorKind.Minus ? "op_UnaryNegation" : "op_UnaryPlus", 1), null, [u.Operand], false, u.Syntax);
         var t = TypeOf(u.Operand);
         var p = Types.PrimOf(t);
         var w = Types.WasmPrim(p);
@@ -1357,9 +1420,10 @@ sealed partial class FunctionCompiler
         var lv = LValueOf(ca.Target);
         lv.Prepare();
         var vt = TypeOf(ca.Value);
-        if (ca.OperatorMethod != null)
+        var caOp = ca.OperatorMethod ?? (IsDecimal(tt) ? DecimalOpFor(ca.OperatorKind) : null);
+        if (caOp != null)
         {
-            var m = ca.OperatorMethod;
+            var m = caOp;
             var p0 = T.Resolve(m.Parameters[0].Type, Map);
             var p1 = T.Resolve(m.Parameters[1].Type, Map);
             var r = CallWith(SubstMethod(m), false, null, () =>
@@ -1438,11 +1502,12 @@ sealed partial class FunctionCompiler
         var lv = LValueOf(inc.Target);
         lv.Prepare();
         bool isInc = inc.Kind == OperationKind.Increment;
-        if (inc.OperatorMethod != null)
+        var incOp = inc.OperatorMethod ?? (IsDecimal(tt) ? DecimalOp(isInc ? "op_Increment" : "op_Decrement", 1) : null);
+        if (incOp != null)
         {
             Own cur = Own.None;
             int old = -1;
-            var r = CallWith(SubstMethod(inc.OperatorMethod), false, null, () =>
+            var r = CallWith(SubstMethod(incOp), false, null, () =>
             {
                 cur = lv.Load();
                 if (Types.IsStruct(tt)) CopyToTemp(tt); else cur = ToCallSafe(cur, tt);

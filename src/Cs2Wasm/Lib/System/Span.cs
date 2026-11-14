@@ -126,6 +126,22 @@ namespace System
     public static class MemoryExtensions
     {
         public static Span<T> AsSpan<T>(this T[] array) => new Span<T>(array);
+        public static T Max<T>(this ReadOnlySpan<T> span)
+        {
+            if (span.Length == 0) throw new InvalidOperationException("Sequence contains no elements");
+            var c = System.Collections.Generic.Comparer<T>.Default;
+            T m = span[0];
+            for (int i = 1; i < span.Length; i++) if (c.Compare(span[i], m) > 0) m = span[i];
+            return m;
+        }
+        public static T Min<T>(this ReadOnlySpan<T> span)
+        {
+            if (span.Length == 0) throw new InvalidOperationException("Sequence contains no elements");
+            var c = System.Collections.Generic.Comparer<T>.Default;
+            T m = span[0];
+            for (int i = 1; i < span.Length; i++) if (c.Compare(span[i], m) < 0) m = span[i];
+            return m;
+        }
         public static ReadOnlySpan<char> AsSpan(this string text) => text;
         public static ReadOnlySpan<char> AsSpan(this string text, int start) => ((ReadOnlySpan<char>)text).Slice(start);
         public static ReadOnlySpan<char> AsSpan(this string text, int start, int length) => ((ReadOnlySpan<char>)text).Slice(start, length);
