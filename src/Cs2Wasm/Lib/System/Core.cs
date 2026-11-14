@@ -210,7 +210,7 @@ namespace System
         public static string NewLine => "\n";
         public static int TickCount => (int)(Engine.MonotonicNs() / 1000000);
         public static long TickCount64 => Engine.MonotonicNs() / 1000000;
-        public static int ProcessorCount => 1;
+        public static int ProcessorCount { get { int n = Engine.ProcessorCount(); return n < 1 ? 1 : n; } }
         public static int CurrentManagedThreadId => Rt.ThreadId();
     }
 }

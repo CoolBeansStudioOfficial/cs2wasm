@@ -5,6 +5,7 @@ namespace System
 {
     public class Exception
     {
+        public new Type GetType() => base.GetType();
         internal string _message;
         Exception _innerException;
         internal string _stackTrace;

@@ -1,6 +1,7 @@
-// Tasks and async support. Until threads exist (section 4.5), everything runs on the calling thread:
-// continuations run when the awaited task completes (or are posted to the captured SynchronizationContext),
-// and blocking waits run pending work (posted callbacks, due timers) until the task completes.
+// Tasks and async support. Task.Run and Parallel run on the thread pool (section 4.5); continuations run where the
+// task completes, or are posted to the captured SynchronizationContext. Blocking waits on the engine thread run its
+// posted work and timers until the task completes; with no other thread in the program, timers fire in virtual
+// time (the earliest at once), so single-threaded programs are deterministic.
 #pragma warning disable CS0436, CS0659, CS0661
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -25,7 +26,7 @@ namespace System.Threading.Tasks
 
         public static Task CompletedTask => s_completed;
         public int Id { get { if (_id == 0) _id = ++s_ids; return _id; } }
-        public bool IsCompleted => _state != 0;
+        public bool IsCompleted => Atomic.Load32(ref _state) != 0;
         public bool IsCompletedSuccessfully => _state == 1;
         public bool IsFaulted => _state == 2;
         public bool IsCanceled => _state == 3;
@@ -41,49 +42,74 @@ namespace System.Threading.Tasks
             if (_state == 2) throw new AggregateException(_exception);
             if (_state == 3) throw new AggregateException(new TaskCanceledException());
         }
-        public bool Wait(int millisecondsTimeout) { Wait(); return true; }
+        public bool Wait(int millisecondsTimeout)
+        {
+            if (millisecondsTimeout == -1) { Wait(); return true; }
+            if (!Scheduler.RunUntil(this, Engine.MonotonicNs() + (long)millisecondsTimeout * 1000000)) return false;
+            Wait();
+            return true;
+        }
+        public bool Wait(TimeSpan timeout) => Wait((int)timeout.TotalMilliseconds);
+        public static void WaitAll(params Task[] tasks) { foreach (var t in tasks) t.Wait(); }
+        public static int WaitAny(params Task[] tasks)
+        {
+            while (true)
+            {
+                for (int i = 0; i < tasks.Length; i++) if (tasks[i].IsCompleted) return i;
+                int g = Atomic.Load32(ref Threads.s_generation);
+                for (int i = 0; i < tasks.Length; i++) if (tasks[i].IsCompleted) return i;
+                if (!Scheduler.Step()) Threads.WaitGeneration(g);
+            }
+        }
         public void Dispose() { }
 
         internal bool TrySetResultCore()
         {
-            if (_state != 0) return false;
-            _state = 1;
-            RunContinuations();
+            Rt.RuntimeLock();
+            if (_state != 0) { Rt.RuntimeUnlock(); return false; }
+            CompleteLocked(1);
             return true;
         }
 
         internal bool TrySetExceptionCore(object ex)
         {
-            if (_state != 0) return false;
-            if (ex is OperationCanceledException) { _state = 3; _exception = (Exception)ex; }
-            else { _state = 2; _exception = (Exception)ex; }
-            RunContinuations();
+            Rt.RuntimeLock();
+            if (_state != 0) { Rt.RuntimeUnlock(); return false; }
+            _exception = (Exception)ex;
+            CompleteLocked(ex is OperationCanceledException ? 3 : 2);
             return true;
         }
 
         internal bool TrySetCanceledCore()
         {
-            if (_state != 0) return false;
-            _state = 3;
-            _exception = new TaskCanceledException();
-            RunContinuations();
+            var ex = new TaskCanceledException();
+            Rt.RuntimeLock();
+            if (_state != 0) { Rt.RuntimeUnlock(); return false; }
+            _exception = ex;
+            CompleteLocked(3);
             return true;
+        }
+
+        /// <summary>Called holding the runtime lock: publishes the state, releases the lock, then runs continuations.</summary>
+        internal void CompleteLocked(int state)
+        {
+            Atomic.Store32(ref _state, state);
+            var list = _continuations;
+            _continuations = null;
+            Rt.RuntimeUnlock();
+            if (Threads.Spawned) Threads.WakeAll();
+            if (list == null) return;
+            for (int i = 0; i < list.Count; i++) list[i].Run();
         }
 
         internal void AddContinuation(Action action, bool captureContext)
         {
             var ctx = captureContext ? SynchronizationContext.Current : null;
             var c = new Continuation(action, ctx);
-            if (_state != 0) { c.Run(); return; }
+            Rt.RuntimeLock();
+            if (_state != 0) { Rt.RuntimeUnlock(); c.Run(); return; }
             (_continuations ??= new List<Continuation>()).Add(c);
-        }
-
-        void RunContinuations()
-        {
-            var list = _continuations;
-            _continuations = null;
-            if (list == null) return;
-            for (int i = 0; i < list.Count; i++) list[i].Run();
+            Rt.RuntimeUnlock();
         }
 
         internal void ThrowIfFailed()
@@ -115,7 +141,7 @@ namespace System.Threading.Tasks
         public static Task Run(Action action)
         {
             var t = new Task();
-            Scheduler.Post(() =>
+            ThreadPool.Queue(() =>
             {
                 try { action(); t.TrySetResultCore(); }
                 catch (Exception e) { t.TrySetExceptionCore(e); }
@@ -125,7 +151,7 @@ namespace System.Threading.Tasks
         public static Task<TResult> Run<TResult>(Func<TResult> function)
         {
             var t = new Task<TResult>();
-            Scheduler.Post(() =>
+            ThreadPool.Queue(() =>
             {
                 try { t.TrySetResultT(function()); }
                 catch (Exception e) { t.TrySetExceptionCore(e); }
@@ -135,7 +161,7 @@ namespace System.Threading.Tasks
         public static Task Run(Func<Task> function)
         {
             var t = new Task();
-            Scheduler.Post(() =>
+            ThreadPool.Queue(() =>
             {
                 Task inner;
                 try { inner = function(); }
@@ -147,7 +173,7 @@ namespace System.Threading.Tasks
         public static Task<TResult> Run<TResult>(Func<Task<TResult>> function)
         {
             var t = new Task<TResult>();
-            Scheduler.Post(() =>
+            ThreadPool.Queue(() =>
             {
                 Task<TResult> inner;
                 try { inner = function(); }
@@ -170,7 +196,7 @@ namespace System.Threading.Tasks
             foreach (var t in list)
                 t.AddContinuation(() =>
                 {
-                    if (--remaining == 0)
+                    if (Interlocked.Decrement(ref remaining) == 0)
                     {
                         Exception first = null;
                         foreach (var x in list) if (x._state >= 2 && first == null) first = x._exception;
@@ -189,7 +215,7 @@ namespace System.Threading.Tasks
             foreach (var t in list)
                 t.AddContinuation(() =>
                 {
-                    if (--remaining == 0)
+                    if (Interlocked.Decrement(ref remaining) == 0)
                     {
                         Exception first = null;
                         var values = new TResult[list.Count];
@@ -223,9 +249,11 @@ namespace System.Threading.Tasks
         }
         internal bool TrySetResultT(TResult result)
         {
-            if (_state != 0) return false;
+            Rt.RuntimeLock();
+            if (_state != 0) { Rt.RuntimeUnlock(); return false; }
             _result = result;
-            return TrySetResultCore();
+            CompleteLocked(1);
+            return true;
         }
         public new TaskAwaiter<TResult> GetAwaiter() => new TaskAwaiter<TResult>(this);
         public new ConfiguredTaskAwaitable<TResult> ConfigureAwait(bool continueOnCapturedContext) => new ConfiguredTaskAwaitable<TResult>(this, continueOnCapturedContext);
@@ -395,6 +423,7 @@ namespace System.Runtime.CompilerServices
             {
                 var ctx = SynchronizationContext.Current;
                 if (ctx != null && !ctx.IsDefault) ctx.Post(s => ((Action)s)(), c);
+                else if (Rt.ThreadId() != 1) ThreadPool.Queue(c);
                 else Scheduler.Post(c);
             }
             public void GetResult() { }
@@ -413,7 +442,7 @@ namespace System.Threading
 
     public class SynchronizationContext
     {
-        static SynchronizationContext s_current;
+        [ThreadStatic] static SynchronizationContext s_current;
         public static SynchronizationContext Current => s_current;
         public static void SetSynchronizationContext(SynchronizationContext syncContext) { s_current = syncContext; }
         internal virtual bool IsDefault => Rt.TypeId(this) == Rt.TypeIdOf<SynchronizationContext>();
@@ -434,10 +463,269 @@ namespace System.Threading
 
     public class CancellationTokenSource : IDisposable
     {
-        bool _canceled;
-        public bool IsCancellationRequested => _canceled;
+        int _canceled;
+        public bool IsCancellationRequested => Atomic.Load32(ref _canceled) != 0;
         public CancellationToken Token => new CancellationToken(this);
-        public void Cancel() { _canceled = true; }
+        public void Cancel() { Atomic.Store32(ref _canceled, 1); }
+        public void Dispose() { }
+    }
+
+    public delegate void WaitCallback(object state);
+
+}
+
+namespace System.Threading.Tasks
+{
+    using System.Collections.Generic;
+
+    public struct ParallelLoopResult { public bool IsCompleted => true; }
+    public class ParallelOptions { public int MaxDegreeOfParallelism { get; set; } = -1; public CancellationToken CancellationToken { get; set; } }
+
+    /// <summary>Parallel loops: the range is split into chunks run on the thread pool and the calling thread.</summary>
+    public static class Parallel
+    {
+        public static ParallelLoopResult For(int fromInclusive, int toExclusive, Action<int> body) => For(fromInclusive, toExclusive, new ParallelOptions(), body);
+        public static ParallelLoopResult For(int fromInclusive, int toExclusive, ParallelOptions parallelOptions, Action<int> body)
+        {
+            if (body == null) throw new ArgumentNullException("body");
+            long n = (long)toExclusive - fromInclusive;
+            if (n <= 0) return default;
+            int workers = Environment.ProcessorCount;
+            if (parallelOptions.MaxDegreeOfParallelism > 0 && parallelOptions.MaxDegreeOfParallelism < workers) workers = parallelOptions.MaxDegreeOfParallelism;
+            if (workers < 1) workers = 1;
+            int next = fromInclusive;
+            Exception failure = null;
+            object gate = new object();
+            Action run = () =>
+            {
+                while (true)
+                {
+                    int i = Interlocked.Increment(ref next) - 1;
+                    if (i >= toExclusive || Volatile.Read(ref failure) != null) return;
+                    try { body(i); }
+                    catch (Exception e) { lock (gate) { if (failure == null) failure = e; } return; }
+                }
+            };
+            var tasks = new Task[workers - 1];
+            for (int w = 0; w < tasks.Length; w++) tasks[w] = Task.Run(run);
+            run();
+            for (int w = 0; w < tasks.Length; w++) tasks[w].Wait();
+            if (failure != null) throw new AggregateException(failure);
+            return default;
+        }
+        public static ParallelLoopResult ForEach<TSource>(IEnumerable<TSource> source, Action<TSource> body)
+        {
+            var items = new List<TSource>(source);
+            return For(0, items.Count, i => body(items[i]));
+        }
+        public static ParallelLoopResult ForEach<TSource>(IEnumerable<TSource> source, ParallelOptions parallelOptions, Action<TSource> body)
+        {
+            var items = new List<TSource>(source);
+            return For(0, items.Count, parallelOptions, i => body(items[i]));
+        }
+        public static void Invoke(params Action[] actions) => For(0, actions.Length, i => actions[i]());
+    }
+}
+
+namespace System.Threading
+{
+    using System.Threading.Tasks;
+
+
+    /// <summary>Background workers, one per core, taking work from one queue (section 4.5).</summary>
+    public static class ThreadPool
+    {
+        static Collections.Generic.Queue<Action> s_queue;
+        static int s_started, s_threads;
+
+        internal static void Queue(Action a)
+        {
+            Rt.RuntimeLock();
+            (s_queue ??= new Collections.Generic.Queue<Action>()).Enqueue(a);
+            bool start = s_started == 0;
+            s_started = 1;
+            Rt.RuntimeUnlock();
+            if (start)
+            {
+                int n = Environment.ProcessorCount;
+                if (n < 2) n = 2;
+                for (int i = 0; i < n; i++)
+                {
+                    var t = new Thread(Loop) { IsBackground = true };
+                    t._pool = true;
+                    t.Start();
+                }
+                s_threads = n;
+            }
+            Threads.WakeAll();
+        }
+
+        static void Loop()
+        {
+            while (true)
+            {
+                Rt.RuntimeLock();
+                Action a = s_queue.Count > 0 ? s_queue.Dequeue() : null;
+                int g = Atomic.Load32(ref Threads.s_generation);
+                Rt.RuntimeUnlock();
+                if (a != null) { a(); a = null; continue; }
+                Threads.WaitGeneration(g);
+            }
+        }
+
+        public static bool QueueUserWorkItem(WaitCallback callBack) => QueueUserWorkItem(callBack, null);
+        public static bool QueueUserWorkItem(WaitCallback callBack, object state)
+        {
+            if (callBack == null) throw new ArgumentNullException("callBack");
+            Queue(() => callBack(state));
+            return true;
+        }
+        public static int ThreadCount => s_threads;
+        public static long PendingWorkItemCount { get { Rt.RuntimeLock(); long n = s_queue == null ? 0 : s_queue.Count; Rt.RuntimeUnlock(); return n; } }
+    }
+
+    /// <summary>A value per thread, kept by thread id under the runtime lock.</summary>
+    public class ThreadLocal<T> : IDisposable
+    {
+        readonly Func<T> _factory;
+        readonly Collections.Generic.Dictionary<int, T> _values = new Collections.Generic.Dictionary<int, T>();
+        public ThreadLocal() { }
+        public ThreadLocal(Func<T> valueFactory) { _factory = valueFactory; }
+        public ThreadLocal(bool trackAllValues) { }
+        public ThreadLocal(Func<T> valueFactory, bool trackAllValues) { _factory = valueFactory; }
+        public T Value
+        {
+            get
+            {
+                int id = Rt.ThreadId();
+                Rt.RuntimeLock();
+                bool has = _values.TryGetValue(id, out var v);
+                Rt.RuntimeUnlock();
+                if (has) return v;
+                v = _factory != null ? _factory() : default;
+                Rt.RuntimeLock();
+                _values[id] = v;
+                Rt.RuntimeUnlock();
+                return v;
+            }
+            set { int id = Rt.ThreadId(); Rt.RuntimeLock(); _values[id] = value; Rt.RuntimeUnlock(); }
+        }
+        public bool IsValueCreated { get { Rt.RuntimeLock(); bool r = _values.ContainsKey(Rt.ThreadId()); Rt.RuntimeUnlock(); return r; } }
+        public Collections.Generic.IList<T> Values
+        {
+            get
+            {
+                var l = new Collections.Generic.List<T>();
+                Rt.RuntimeLock();
+                foreach (var kv in _values) l.Add(kv.Value);
+                Rt.RuntimeUnlock();
+                return l;
+            }
+        }
+        public void Dispose() { Rt.RuntimeLock(); _values.Clear(); Rt.RuntimeUnlock(); }
+    }
+
+    public class SemaphoreSlim : IDisposable
+    {
+        int _count;
+        readonly int _max;
+        public SemaphoreSlim(int initialCount) : this(initialCount, int.MaxValue) { }
+        public SemaphoreSlim(int initialCount, int maxCount)
+        {
+            if (initialCount < 0 || initialCount > maxCount) throw new ArgumentOutOfRangeException("initialCount");
+            _count = initialCount; _max = maxCount;
+        }
+        public int CurrentCount => Atomic.Load32(ref _count);
+        bool TryTake()
+        {
+            while (true)
+            {
+                int c = Atomic.Load32(ref _count);
+                if (c == 0) return false;
+                if (Atomic.CompareExchange32(ref _count, c, c - 1) == c) return true;
+            }
+        }
+        public void Wait()
+        {
+            while (true)
+            {
+                int g = Atomic.Load32(ref Threads.s_generation);
+                if (TryTake()) return;
+                if (!Scheduler.Step()) Threads.WaitGeneration(g);
+            }
+        }
+        public bool Wait(int millisecondsTimeout)
+        {
+            long end = millisecondsTimeout < 0 ? long.MaxValue : Engine.MonotonicNs() + (long)millisecondsTimeout * 1000000;
+            while (true)
+            {
+                int g = Atomic.Load32(ref Threads.s_generation);
+                if (TryTake()) return true;
+                if (Engine.MonotonicNs() >= end) return false;
+                if (!Scheduler.Step()) Threads.WaitGeneration(g);
+            }
+        }
+        public Task WaitAsync()
+        {
+            if (TryTake()) return Task.CompletedTask;
+            return Task.Run(() => Wait());
+        }
+        public int Release() => Release(1);
+        public int Release(int releaseCount)
+        {
+            if (releaseCount < 1) throw new ArgumentOutOfRangeException("releaseCount");
+            while (true)
+            {
+                int c = Atomic.Load32(ref _count);
+                if (c + releaseCount > _max) throw new SemaphoreFullException();
+                if (Atomic.CompareExchange32(ref _count, c, c + releaseCount) == c) { Threads.WakeAll(); return c; }
+            }
+        }
+        public void Dispose() { }
+    }
+
+    public class SemaphoreFullException : SystemException
+    {
+        public SemaphoreFullException() : base("Adding the specified count to the semaphore would cause it to exceed its maximum count.") { }
+    }
+
+    public class ManualResetEventSlim : IDisposable
+    {
+        int _set;
+        public ManualResetEventSlim() { }
+        public ManualResetEventSlim(bool initialState) { _set = initialState ? 1 : 0; }
+        public bool IsSet => Atomic.Load32(ref _set) != 0;
+        public void Set() { Atomic.Store32(ref _set, 1); Threads.WakeAll(); }
+        public void Reset() { Atomic.Store32(ref _set, 0); }
+        public void Wait()
+        {
+            while (true)
+            {
+                int g = Atomic.Load32(ref Threads.s_generation);
+                if (IsSet) return;
+                if (!Scheduler.Step()) Threads.WaitGeneration(g);
+            }
+        }
+        public void Dispose() { }
+    }
+
+    public class CountdownEvent : IDisposable
+    {
+        int _count;
+        public CountdownEvent(int initialCount) { _count = initialCount; }
+        public int CurrentCount => Atomic.Load32(ref _count);
+        public bool IsSet => CurrentCount <= 0;
+        public bool Signal() { bool done = Atomic.Add32(ref _count, -1) - 1 <= 0; if (done) Threads.WakeAll(); return done; }
+        public void AddCount() => Atomic.Add32(ref _count, 1);
+        public void Wait()
+        {
+            while (true)
+            {
+                int g = Atomic.Load32(ref Threads.s_generation);
+                if (IsSet) return;
+                if (!Scheduler.Step()) Threads.WaitGeneration(g);
+            }
+        }
         public void Dispose() { }
     }
 
@@ -451,6 +739,7 @@ namespace System.Threading
         readonly ParameterizedThreadStart _pstart;
         object _arg;
         internal int _id, _state, _stack, _tls; // state: 0 unstarted, 1 running, 2 finished
+        internal bool _pool;
         public string Name { get; set; }
         public bool IsBackground { get; set; }
 
@@ -465,7 +754,7 @@ namespace System.Threading
         internal static void SetCurrent(Thread t) { t_current = t; }
         public int ManagedThreadId => _id;
         public bool IsAlive => Atomic.Load32(ref _state) == 1;
-        public bool IsThreadPoolThread => false;
+        public bool IsThreadPoolThread => _pool;
 
         public void Start()
         {
@@ -670,6 +959,7 @@ namespace System.Threading
         public static int Read(ref int location) => Atomic.Load32(ref location);
         public static long Read(ref long location) => Atomic.Load64(ref location);
         public static bool Read(ref bool location) { bool v = location; Atomic.Fence(); return v; }
+        public static T Read<T>(ref T location) where T : class { T v = location; Atomic.Fence(); return v; }
         public static void Write(ref int location, int value) => Atomic.Store32(ref location, value);
         public static void Write(ref long location, long value) => Atomic.Store64(ref location, value);
         public static void Write(ref bool location, bool value) { Atomic.Fence(); location = value; }
@@ -745,53 +1035,89 @@ namespace Cs2Wasm.Runtime
 
         sealed class Timer { public long Due; public int Seq; public Task Task; }
 
-        public static void Post(Action a) => (s_work ??= new Queue<Action>()).Enqueue(a);
+        /// <summary>Work for the engine thread (the default SynchronizationContext posts here).</summary>
+        public static void Post(Action a)
+        {
+            Rt.RuntimeLock();
+            (s_work ??= new Queue<Action>()).Enqueue(a);
+            Rt.RuntimeUnlock();
+            if (Threads.Spawned) Threads.WakeAll();
+        }
 
         internal static void AddTimer(Task t, int ms)
         {
             long due = Engine.MonotonicNs() / 1000000 + ms;
+            Rt.RuntimeLock();
             (s_timers ??= new List<Timer>()).Add(new Timer { Due = due, Seq = ++s_seq, Task = t });
+            Rt.RuntimeUnlock();
         }
 
-        /// <summary>Runs one posted item or the earliest timer; false if nothing is pending.</summary>
-        public static bool RunOne()
+        static Action TakeWork()
         {
-            if (s_work != null && s_work.Count > 0) { s_work.Dequeue()(); return true; }
+            if (Rt.ThreadId() != 1) return null;
+            Rt.RuntimeLock();
+            Action a = s_work != null && s_work.Count > 0 ? s_work.Dequeue() : null;
+            Rt.RuntimeUnlock();
+            return a;
+        }
+
+        /// <summary>The earliest timer, if it is due by `now` (or any, when `now` is long.MaxValue).</summary>
+        static Task TakeTimer(long now)
+        {
+            Rt.RuntimeLock();
+            Task r = null;
             if (s_timers != null && s_timers.Count > 0)
             {
                 int best = 0;
                 for (int i = 1; i < s_timers.Count; i++)
                     if (s_timers[i].Due < s_timers[best].Due || (s_timers[i].Due == s_timers[best].Due && s_timers[i].Seq < s_timers[best].Seq)) best = i;
-                var t = s_timers[best];
-                s_timers.RemoveAt(best);
-                t.Task.TrySetResultCore();
-                return true;
+                if (s_timers[best].Due <= now) { r = s_timers[best].Task; s_timers.RemoveAt(best); }
             }
+            Rt.RuntimeUnlock();
+            return r;
+        }
+
+        /// <summary>Runs one posted item (engine thread) or a timer; false if nothing could run now. Without other
+        /// threads, the earliest timer fires at once (virtual time); with them, timers fire when due.</summary>
+        public static bool Step()
+        {
+            var a = TakeWork();
+            if (a != null) { a(); return true; }
+            var t = TakeTimer(Threads.Spawned ? Engine.MonotonicNs() / 1000000 : long.MaxValue);
+            if (t != null) { t.TrySetResultCore(); return true; }
             return false;
         }
 
-        internal static void RunUntil(Task t)
+        public static bool RunOne() => Step();
+
+        internal static void RunUntil(Task t) => RunUntil(t, long.MaxValue);
+
+        /// <summary>Waits for t, running what this thread may run meanwhile; false at the deadline (monotonic ns).</summary>
+        internal static bool RunUntil(Task t, long deadlineNs)
         {
             while (!t.IsCompleted)
-                if (!RunOne()) throw new InvalidOperationException("The task cannot complete: nothing left to run on this thread.");
+            {
+                int g = Atomic.Load32(ref Threads.s_generation);
+                if (t.IsCompleted) break;
+                if (Step()) continue;
+                if (!Threads.Spawned) throw new InvalidOperationException("The task cannot complete: nothing left to run on this thread.");
+                if (deadlineNs != long.MaxValue && Engine.MonotonicNs() >= deadlineNs) return false;
+                Threads.WaitGeneration(g);
+            }
+            return true;
         }
 
         /// <summary>Runs posted work and the timers that are due (the engine calls this once per frame).</summary>
         public static void RunPending()
         {
-            while (s_work != null && s_work.Count > 0) s_work.Dequeue()();
-            if (s_timers == null) return;
+            Action a;
+            while ((a = TakeWork()) != null) a();
             long now = Engine.MonotonicNs() / 1000000;
-            while (true)
+            Task t;
+            while ((t = TakeTimer(now)) != null)
             {
-                int best = -1;
-                for (int i = 0; i < s_timers.Count; i++)
-                    if (s_timers[i].Due <= now && (best < 0 || s_timers[i].Due < s_timers[best].Due || (s_timers[i].Due == s_timers[best].Due && s_timers[i].Seq < s_timers[best].Seq))) best = i;
-                if (best < 0) break;
-                var t = s_timers[best];
-                s_timers.RemoveAt(best);
-                t.Task.TrySetResultCore();
-                while (s_work != null && s_work.Count > 0) s_work.Dequeue()();
+                t.TrySetResultCore();
+                while ((a = TakeWork()) != null) a();
             }
         }
     }

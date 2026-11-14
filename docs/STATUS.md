@@ -135,7 +135,7 @@ the block, so later objects could start with stale fields (found by the sweep's 
 Not done:
 - ownership specialization of functions, retroactive owners, the counting-elision statistics (4.1);
 - weak references, `ConditionalWeakTable` (4.4);
-- threads (4.5), see below: per-object sharing analysis, thread pool, `Task.Run`/`Parallel` on workers, parking (7.2).
+- threads (4.5), see below: per-object sharing analysis, `AsyncLocal<T>`, parking (7.2).
 
 ### 4.5 Threads — partial
 Done: `System.Threading.Thread` runs on a real worker: each thread is a new instance of the module on the shared
@@ -154,9 +154,18 @@ object (immortal and arena count words are kept). This is program-wide, not the 
 (only objects reached from more than one thread should pay for atomic counts): still to do. Programs that never start
 a thread keep plain counts, and the lock functions are empty.
 
-Not done: the thread pool sized to the device's cores, with `Task.Run` and `Parallel` on it (`Task.Run` still runs on
-the engine thread's scheduler), `ThreadLocal<T>`, `AsyncLocal<T>`, freeing a finished thread's stack and thread-local
-block, static constructors guarded across threads (two threads can both run a type's static initializer), the
+Thread pool: background workers, one per core (`cs2wasm.processor_count`, at least two), started on first use and
+taking work from one queue. `Task.Run`, `ThreadPool.QueueUserWorkItem`, `Parallel.For`/`ForEach`/`Invoke` (chunks
+claimed with `Interlocked`, the caller works too) and `await Task.Yield()` off the engine thread run there. Tasks
+complete under the runtime lock, so a continuation added while another thread completes the task runs exactly once;
+`SynchronizationContext.Current` is per thread. Blocking waits (`Task.Wait`/`Result`, `WaitAll`/`WaitAny`,
+`SemaphoreSlim`, `ManualResetEventSlim`, `CountdownEvent`) run the engine thread's posted work and timers while they
+wait. Timers keep virtual time (the earliest fires at once) until a worker exists, so single-threaded programs stay
+deterministic; after that they fire when due. `ThreadLocal<T>` keeps values by thread id. Background threads do not
+keep the Node host alive, as in .NET.
+
+Not done: `AsyncLocal<T>` (no execution context flows with continuations), the build notice for blocking waits on the
+engine thread, concurrent collections, freeing a finished thread's stack and thread-local block, static constructors guarded across threads (two threads can both run a type's static initializer), the
 scheduling-dependence marks for the plugin (7.3), and parking workers for snapshots (7.2).
 
 ### 5. Optimization — minimal
@@ -197,7 +206,7 @@ exported beside the stack pointer.
   LINQ with deferred execution, StringBuilder). Moving to upstream sources is open work. Invariant globalization
   semantics are followed (culture comparisons are ordinal, as in .NET's invariant mode). Case mapping covers
   ASCII, Latin-1, Greek and Cyrillic only. Present since: `Task` and friends, `Random`, `Stopwatch`,
-  `BitConverter`, `Type`, spans over arrays. Missing: `DateTime`, `TimeZoneInfo`, the thread pool, `GodotSharp`.
+  `BitConverter`, `Type`, spans over arrays. Missing: `DateTime`, `TimeZoneInfo`, concurrent collections, `GodotSharp`.
 - 7.5–7.6: no GodotSharp, no browser build, budgets unmeasured.
 
 ### 8. Sandbox — partial

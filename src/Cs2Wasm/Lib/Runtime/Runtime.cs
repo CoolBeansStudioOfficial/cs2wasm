@@ -41,7 +41,9 @@ namespace Cs2Wasm.Runtime
     public static class Engine
     {
         /// <summary>Starts a worker instance that calls __thread_entry(stackTop, tls, id, arg); 0 when started.</summary>
-        [Import("cs2wasm", "thread_spawn")] public static extern int ThreadSpawn(int stackTop, int tls, int id, int arg);
+        [Import("cs2wasm", "thread_spawn")] public static extern int ThreadSpawn(int stackTop, int tls, int id, int arg, int background);
+        /// <summary>Cores the pool may use (navigator.hardwareConcurrency on the web).</summary>
+        [Import("cs2wasm", "processor_count")] public static extern int ProcessorCount();
         /// <summary>Console output: UTF-16 text at (ptr, length in chars).</summary>
         [Import("cs2wasm", "write")] public static extern void Write(int ptr, int len);
         /// <summary>An exception escaped an export: type name, message, stack trace (UTF-16 ptr/len pairs).</summary>
@@ -675,6 +677,9 @@ namespace Cs2Wasm.Runtime
     {
         internal const int StackSize = 1 << 20;
         static int s_nextId = 1;
+        static int s_spawned;
+        /// <summary>True once a worker exists: waits use real time and wake on s_generation.</summary>
+        public static bool Spawned => Atomic.Load32(ref s_spawned) != 0;
         /// <summary>Bumped whenever a lock is released or a monitor pulsed; waiters sleep on it.</summary>
         internal static int s_generation;
 
@@ -687,7 +692,8 @@ namespace Cs2Wasm.Runtime
             t._stack = stack;
             t._tls = tls;
             Rt.Retain(t); // the worker's reference, taken back in Run
-            if (Engine.ThreadSpawn(stack + StackSize, tls, t._id, Rt.AddressOf(t)) != 0)
+            Atomic.Store32(ref s_spawned, 1);
+            if (Engine.ThreadSpawn(stack + StackSize, tls, t._id, Rt.AddressOf(t), t.IsBackground ? 1 : 0) != 0)
             {
                 Rt.Release(t);
                 throw new System.OutOfMemoryException("Thread failed to start.");
@@ -714,7 +720,13 @@ namespace Cs2Wasm.Runtime
         /// <summary>Waits for s_generation to move from g (the engine thread spins: it never blocks).</summary>
         internal static void WaitGeneration(int g)
         {
-            if (Rt.ThreadId() == 1) { while (Atomic.Load32(ref s_generation) == g) { } return; }
+            // bounded, so timers and deadlines are rechecked: 1 ms
+            if (Rt.ThreadId() == 1)
+            {
+                long end = Engine.MonotonicNs() + 1000000;
+                while (Atomic.Load32(ref s_generation) == g && Engine.MonotonicNs() < end) { }
+                return;
+            }
             Atomic.Wait32(ref s_generation, g, 1000000);
         }
     }

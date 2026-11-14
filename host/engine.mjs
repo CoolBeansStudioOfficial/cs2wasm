@@ -1,4 +1,5 @@
 import { Worker } from 'node:worker_threads';
+import { availableParallelism } from 'node:os';
 // Reference implementation of the engine imports cs2wasm's library calls (module "cs2wasm").
 // An embedder (Bazoodle's engine) supplies the same functions; this one is used by the tests.
 //
@@ -7,7 +8,8 @@ import { Worker } from 'node:worker_threads';
 //   now_ms() -> f64, monotonic_ns() -> i64, random_seed() -> i32, utc_offset_minutes(f64) -> i32
 //   capture_stack(ptr, cap) -> len         C# stack trace of the caller, .NET format
 //   stack_depth() -> i32                   number of visible C# frames
-//   thread_spawn(sp, tls, id, arg) -> i32   start a worker instance at __thread_entry (threadImports)
+//   thread_spawn(sp, tls, id, arg, bg) -> i32 start a worker instance at __thread_entry (threadImports)
+//   processor_count() -> i32               cores for the thread pool
 
 function readU32(bytes, pos) {
   let r = 0, shift = 0, b;
@@ -90,11 +92,13 @@ export function cs2wasmImports(module, getMemory, out) {
 /** thread_spawn for Node: a worker_threads Worker per thread, sharing the module and memory. */
 export function threadImports(module, memory, out, onSpawn) {
   return {
-    thread_spawn: (sp, tls, id, arg) => {
+    processor_count: () => availableParallelism(),
+    thread_spawn: (sp, tls, id, arg, background) => {
       onSpawn?.();
       const w = new Worker(new URL('./worker.mjs', import.meta.url), { workerData: { module, memory, args: [sp, tls, id, arg] } });
       w.on('message', (m) => { if (m.unhandled) { process.stderr.write(m.unhandled); process.exit(3); } });
       w.on('error', (e) => { process.stderr.write(String(e && e.stack || e) + '\n'); process.exit(4); });
+      if (background) w.unref(); // background threads do not keep the process alive, as in .NET
       return 0;
     },
   };

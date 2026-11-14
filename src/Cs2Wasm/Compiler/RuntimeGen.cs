@@ -803,6 +803,7 @@ sealed class RuntimeGen
             e.I32(D.DataBase); e.I32(0); e.I32(D.Data.Bytes.Count); e.Emit(Op.MemoryInit, 0, 0, D.Data);
         }
         e.I32(D.StackTop); e.GSet(D.StackPointer);
+        if (D.TlsSize > 0) { e.I32(D.TlsSize); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Alloc", 1).Fn); e.GSet(D.TlsBase); }
     }
 }
 
