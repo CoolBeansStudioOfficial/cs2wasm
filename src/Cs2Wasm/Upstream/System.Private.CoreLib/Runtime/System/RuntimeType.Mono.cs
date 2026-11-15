@@ -2361,20 +2361,19 @@ namespace System
 
         private RuntimeEventInfo[] GetEvents_internal(string? name, MemberListType listType, RuntimeType reflectedType)
         {
-            var refh = new RuntimeTypeHandle(reflectedType);
-            var this_type = this;
-            using (var namePtr = new Mono.SafeStringMarshal(name))
-            using (var h = new Mono.SafeGPtrArrayHandle(GetEvents_native(new QCallTypeHandle(ref this_type), namePtr.Value, listType)))
+            // cs2wasm: the events are the add_/remove_ accessor pairs among the methods the compiler kept
+            var methods = GetMethodsByName(null, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly, MemberListType.All, reflectedType);
+            var list = new List<RuntimeEventInfo>();
+            foreach (var add in methods)
             {
-                int n = h.Length;
-                var a = new RuntimeEventInfo[n];
-                for (int i = 0; i < n; i++)
-                {
-                    var eh = new Mono.RuntimeEventHandle(h[i]);
-                    a[i] = (RuntimeEventInfo)RuntimeEventInfo.GetEventFromHandle(eh, refh);
-                }
-                return a;
+                if ((Cs2Wasm.Runtime.Meta.I((int)add.mhandle, 2) & (1 << 12)) == 0 || !add.Name.StartsWith("add_", StringComparison.Ordinal)) continue;
+                string evName = add.Name.Substring(4);
+                if (!Cs2Wasm.Runtime.Meta.NameMatches(name, listType, evName)) continue;
+                RuntimeMethodInfo? remove = null;
+                foreach (var m in methods) if (m.Name == "remove_" + evName && (Cs2Wasm.Runtime.Meta.I((int)m.mhandle, 2) & (1 << 12)) != 0) { remove = m; break; }
+                list.Add(new RuntimeEventInfo { _declaring = this, _reflected = reflectedType, _name = evName, _add = add, _remove = remove });
             }
+            return list.ToArray();
         }
 
                 private static void GetInterfaces(QCallTypeHandle type, ObjectHandleOnStack res)

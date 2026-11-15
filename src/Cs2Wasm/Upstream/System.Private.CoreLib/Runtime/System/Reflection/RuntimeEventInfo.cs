@@ -54,7 +54,23 @@ namespace System.Reflection
         private IntPtr handle;
 #pragma warning restore 169
 
-                private static void get_event_info(RuntimeEventInfo ev, out MonoEventInfo info) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_event_info): cs2wasm's reflection reads the compiler's metadata");
+        // cs2wasm: an event is its accessors from the compiler's metadata (RuntimeType.GetEvents_internal pairs them)
+        internal RuntimeType? _declaring, _reflected;
+        internal string? _name;
+        internal MethodInfo? _add, _remove;
+
+        internal RuntimeEventInfo() { }
+
+        private static void get_event_info(RuntimeEventInfo ev, out MonoEventInfo info)
+        {
+            info = default;
+            info.declaring_type = ev._declaring!;
+            info.reflected_type = ev._reflected!;
+            info.name = ev._name!;
+            info.add_method = ev._add!;
+            info.remove_method = ev._remove!;
+            info.other_methods = Array.Empty<MethodInfo>();
+        }
 
         internal static MonoEventInfo GetEventInfo(RuntimeEventInfo ev)
         {

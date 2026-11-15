@@ -125,7 +125,9 @@ sealed partial class FunctionCompiler
         }
         if (IsStateMachine(M)) { CompileKickoff(); return; }
         SetupParams();
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         var (body, syntax) = GetBody(def);
+        Driver.BindTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
         E.CurrentPos = D.Position(syntax);
         PreScan(body);
         using (BodyScope())

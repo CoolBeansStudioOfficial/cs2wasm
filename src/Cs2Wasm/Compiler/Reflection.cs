@@ -35,7 +35,7 @@ internal sealed partial class Driver
     public WasmFunction MetaOf => _metaOf ??= Module.AddFunction("rt.meta_of", new FuncType([ValType.I32], [ValType.I32]));
     public static readonly FuncType ThunkType = new([ValType.I32, ValType.I32], [ValType.I32]);
 
-    static readonly HashSet<string> s_reflectNames = ["GetMethod", "GetMethods", "GetProperty", "GetProperties", "GetField", "GetFields",
+    static readonly HashSet<string> s_reflectNames = ["GetMethod", "GetMethods", "GetProperty", "GetProperties", "GetField", "GetFields", "GetEvent", "GetEvents",
         "GetConstructor", "GetConstructors", "GetMember", "GetMembers", "GetCustomAttributes", "GetCustomAttribute", "IsDefined", "GetInterfaces"];
 
     /// <summary>Finds the reflection the program does (FinishExports, before the last compile round).</summary>
@@ -84,7 +84,7 @@ internal sealed partial class Driver
         if (owner is "MemberInfo" or "CustomAttributeExtensions" or "Attribute") return; // attributes of kept members are kept with them
         var t = op.Instance != null ? ReceiverType(op.Instance, map) : null;
         string? name = null;
-        if (m.Name is "GetMethod" or "GetProperty" or "GetField" or "GetMember" && op.Arguments.Length > 0 && op.Arguments[0].Value.ConstantValue is { HasValue: true, Value: string s }) name = s;
+        if (m.Name is "GetMethod" or "GetProperty" or "GetField" or "GetMember" or "GetEvent" && op.Arguments.Length > 0 && op.Arguments[0].Value.ConstantValue is { HasValue: true, Value: string s }) name = s;
         if (t == null && name != null)
         {
             // a member named by a constant on a type the compiler cannot see: that member of every type the program
@@ -142,7 +142,11 @@ internal sealed partial class Driver
                 if (!want) continue;
                 switch (mem)
                 {
-                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => p.RefKind == RefKind.None && !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !ms.ReturnType.IsRefLikeType && !ms.IsExtern:
+                    case IEventSymbol ev:
+                        if (ev.AddMethod is { } ea) yield return ea;
+                        if (ev.RemoveMethod is { } er) yield return er;
+                        break;
+                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke or MethodKind.EventAdd or MethodKind.EventRemove } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => p.RefKind == RefKind.None && !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !ms.ReturnType.IsRefLikeType && !ms.IsExtern:
                         yield return ms; break;
                     case IMethodSymbol { MethodKind: MethodKind.Constructor } cs when SymbolEqualityComparer.Default.Equals(x, t) && cs.Parameters.All(p => p.RefKind == RefKind.None && !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !t.IsAbstract && !t.IsRefLikeType:
                         yield return cs; break;
@@ -281,6 +285,8 @@ internal sealed partial class Driver
     }
 
     const int FStatic = 1, FPublic = 2, FVirtual = 4, FAbstract = 8, FReadOnly = 16, FPrivate = 32, FFamily = 64, FAssembly = 128;
+    /// <summary>A method that is an event's add or remove accessor (GetEvents pairs them).</summary>
+    const int FEventAccessor = 1 << 12;
     static int Access(ISymbol s) => s.DeclaredAccessibility switch
     {
         Accessibility.Public => FPublic,
@@ -319,7 +325,8 @@ internal sealed partial class Driver
                 case IMethodSymbol ms:
                     {
                         var (na, aa) = Attrs(ms);
-                        int flags = (ms.IsStatic ? FStatic : 0) | Access(ms) | (ms.IsVirtual || ms.IsOverride || ms.IsAbstract ? FVirtual : 0) | (ms.IsAbstract ? FAbstract : 0);
+                        int flags = (ms.IsStatic ? FStatic : 0) | Access(ms) | (ms.IsVirtual || ms.IsOverride || ms.IsAbstract ? FVirtual : 0) | (ms.IsAbstract ? FAbstract : 0)
+                            | (ms.MethodKind is MethodKind.EventAdd or MethodKind.EventRemove ? FEventAccessor : 0);
                         methods.AddRange([Str(ms.Name), ms.ReturnsVoid ? -1 : ExtTypeId(ms.ReturnType), flags, Thunk(ms), ms.Parameters.Length,
                             Ints(ms.Parameters.Select(p => ExtTypeId(p.Type))).Address, Ints(ms.Parameters.Select(p => Str(p.Name))).Address, na, aa, ExtTypeId(ms.ContainingType)]);
                         nm++;

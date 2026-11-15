@@ -648,13 +648,22 @@ internal sealed partial class Driver
         e.ContainingType.GetMembers(e.Name).OfType<IFieldSymbol>().FirstOrDefault()
         ?? e.ContainingType.GetMembers().OfType<IFieldSymbol>().FirstOrDefault(f => SymbolEqualityComparer.Default.Equals(f.AssociatedSymbol, e.OriginalDefinition));
 
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<SyntaxTree, SemanticModel> s_libModels = new();
+
     public SemanticModel ModelFor(SyntaxTree tree)
     {
         lock (_models)
         {
             if (_models.TryGetValue(tree, out var m)) return m;
             Compilation? comp = Inputs.FirstOrDefault(c => c.ContainsSyntaxTree(tree));
-            comp ??= Lib.CompilationOf(tree);
+            if (comp == null && Lib.CompilationOf(tree) is { } lc)
+            {
+                // the library's compilations outlive a build: so do their models, and the bodies they have bound
+                // (section 7.6: caching the analysis of library compilations is allowed)
+                m = s_libModels.GetOrAdd(tree, t => lc.GetSemanticModel(t));
+                _models[tree] = m;
+                return m;
+            }
             if (comp == null) throw new CompileException("no compilation contains " + tree.FilePath);
             m = comp.GetSemanticModel(tree);
             _models[tree] = m;
@@ -831,10 +840,12 @@ internal sealed partial class Driver
     readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
     readonly bool _times = Environment.GetEnvironmentVariable("CS2WASM_TIMES") == "1";
     /// <summary>CS2WASM_TIMES=1: milliseconds since the last mark, per phase.</summary>
+    /// <summary>Time spent binding method bodies (Roslyn's GetOperation), for CS2WASM_TIMES.</summary>
+    public static long BindTicks;
     public void Mark(string phase)
     {
         if (!_times) return;
-        Console.Error.WriteLine($"  {_clock.ElapsedMilliseconds,6} ms  {phase}");
+        Console.Error.WriteLine($"  {_clock.ElapsedMilliseconds,6} ms  {phase}  (binding so far {BindTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms)");
         _clock.Restart();
     }
 

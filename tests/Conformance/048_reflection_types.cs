@@ -11,6 +11,13 @@ class Outer
 
 class Box<T> { public T Value = default!; }
 
+class Btn
+{
+    public event Action? Clicked;
+    public event EventHandler? Changed;
+    public void Click() { Clicked?.Invoke(); Changed?.Invoke(this, EventArgs.Empty); }
+}
+
 static class Program
 {
     [UnmanagedCallersOnly(EntryPoint = "main")]
@@ -36,5 +43,19 @@ static class Program
         foreach (var n in typeof(Outer).GetNestedTypes(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)) Console.Write(n.Name + " ");
         Console.WriteLine();
         Console.WriteLine(typeof(Outer.Inner).IsNested + " " + typeof(Outer.Inner).DeclaringType!.Name + " " + typeof(Outer.Inner).FullName);
+
+        // events
+        var evs = typeof(Btn).GetEvents();
+        Console.WriteLine(evs.Length);
+        foreach (var e in evs) Console.WriteLine(e.Name + " " + e.EventHandlerType!.Name + " " + e.GetAddMethod()!.Name + " " + e.GetRemoveMethod()!.Name);
+        var b = new Btn();
+        var clicked = typeof(Btn).GetEvent("Clicked")!;
+        Action h = () => Console.WriteLine("clicked");
+        clicked.AddEventHandler(b, h);
+        typeof(Btn).GetEvent("Changed")!.AddEventHandler(b, new EventHandler((s, a) => Console.WriteLine("changed by " + s!.GetType().Name)));
+        b.Click();
+        clicked.RemoveEventHandler(b, h);
+        b.Click();
+        Console.WriteLine(typeof(Btn).GetEvent("Nope") == null);
     }
 }

@@ -20,8 +20,10 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
   LZ-packed data and frame names about 6 KB); NetWasm's build of the same program is 28,383 bytes. The conformance
   programs are 30–300 KB raw (`tests/Cs2Wasm.Tests` prints each size). The Rust 2D game bar in the spec (24 KB
   compressed) is for a game with GodotSharp, which is not built yet.
-- **Build time:** 150–800 ms per test program on the .NET runtime (desktop), after the first compile. Not measured
-  in the browser.
+- **Build time (desktop .NET, measured):** a fresh process takes 3.5–4 s to parse the library first; after that a
+  conformance program builds in 0.4–2.1 s (1.35 s on average over the suite), the library's semantic models and
+  bound bodies being kept between builds (section 7.6 allows caching the library's analysis). `CS2WASM_TIMES=1`
+  prints the phases. Not measured in the browser.
 - **Run-time speed vs NativeAOT:** unmeasured.
 - **Reference-count operations removed at compile time (static, `CS2WASM_STATS=1`):** a scheme without ownership
   analysis pays an increment and a decrement for every reference transfer (assignment, initializer, argument,
@@ -317,10 +319,11 @@ exported beside the stack pointer.
   dropped, constructed types pruned to live code, invariant globalization folded. Reflection over members reads the
   compiler's reflection records through Mono's icalls (`Boundary/Meta.cs`). Missing: `Delegate.CreateDelegate`/
   `DynamicInvoke`, reflection on generic instantiations, `Array.CreateInstance` of array types the program never
-  makes. Build time is about 4 s for `Console.WriteLine(42)` and up to 9 s for the larger conformance programs
-  (desktop .NET), against the spec's "a few seconds" in the browser: unmeasured in the browser, and the library's
-  analysis is not cached yet.
-- 7.5–7.6: no GodotSharp, no browser build, budgets unmeasured.
+  makes. Build time: see Results (the library's models and bound bodies are kept between builds in one process).
+- 7.5–7.6: GodotSharp's math types compile and match (proof 2); the generated wrappers (Node2D) and the boundary
+  table are Bazoodle's (7.5) and do not exist yet, so proofs 3 and 4 wait on them. No browser build (the browser
+  .NET runtime's workload is not installed here); budgets: module size and desktop build time measured (Results),
+  call cost and run-time speed against NativeAOT unmeasured.
 
 ### 8. Sandbox — partial
 Files, sockets, processes, environment and registry members, and platform invoke, are build errors naming the
@@ -339,10 +342,11 @@ constructor and named arguments (`GetCustomAttribute<T>`, `IsDefined`), `BaseTyp
 calling assembly and CoreLib); generic type definitions (`typeof(List<>)`: `IsGenericTypeDefinition`, its parameters
 as `GetGenericArguments()`), `GetGenericTypeDefinition`, and `MakeGenericType` (folded at compile time when the
 definition and the arguments are `typeof` constants, so the instance's code exists; otherwise the instances the
-program makes); `GetNestedTypes`/`GetNestedType`; reflection in the library's own code, such as
+program makes); `GetNestedTypes`/`GetNestedType`; events (`GetEvents`/`GetEvent`, `AddEventHandler`,
+`RemoveEventHandler`: an event is its kept accessor pair); reflection in the library's own code, such as
 System.Linq.Expressions asking a delegate type for `Invoke` (a member named by a constant on a type the compiler
 cannot see is kept on every type the program names that has it). `Expression.Compile` runs on upstream's
-interpreter. Not done: generic methods (`MakeGenericMethod`) and `ref` parameters through reflection, events,
+interpreter. Not done: generic methods (`MakeGenericMethod`) and `ref` parameters through reflection, the
 `FullName` of a generic instance (.NET qualifies its arguments with their assemblies), `Reflection.Emit` and
 `dynamic`.
 
