@@ -615,6 +615,13 @@ sealed partial class RuntimeGen
             D.LibMethod("Cs2Wasm.Runtime.Sharing", "Share", 1);
             D.LibMethod("Cs2Wasm.Runtime.Sharing", "MarkPush", 1);
             D.LibMethod("Cs2Wasm.Runtime.Sharing", "RevisitIfShared", 1);
+            // deferred destruction of shared objects (upstream)
+            if (Library.UseUpstream)
+            {
+                D.LibMethod("Cs2Wasm.Runtime.Limbo", "Add", 1);
+                D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportEnter", 0);
+                D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportExit", 0);
+            }
             // parking for snapshots (section 7.2)
             Export("cs2wasm_park", D.LibMethod("Cs2Wasm.Runtime.Threads", "ParkAll", 0));
             Export("cs2wasm_resume", D.LibMethod("Cs2Wasm.Runtime.Threads", "ResumeAll", 0));
@@ -644,16 +651,21 @@ sealed partial class RuntimeGen
             w.Exports.Add(name);
             var e = new Emitter(w);
             var res = mi.Fn.Type.Results;
+            // threads (upstream): the engine thread holds nothing uncounted outside exports (Limbo)
+            var limbo = D.UsesThreads && Library.UseUpstream;
+            if (limbo) e.Call(D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportEnter", 0).Fn);
             var blk = e.Block(ValType.I32);
             var tti = e.TryTable(null, (0, D.ExceptionTag, blk));
             for (int i = 0; i < mi.Fn.Type.Params.Length; i++) e.Get(i);
             e.Call(mi.Fn);
+            if (limbo) e.Call(D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportExit", 0).Fn);
             e.Op(Op.Return);
             e.End();
             e.Op(Op.Unreachable);
             e.End();
             // exception pointer on the stack
             e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1).Fn);
+            if (limbo) e.Call(D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportExit", 0).Fn);
             foreach (var r in res)
                 switch (r) { case ValType.I64: e.I64(0); break; case ValType.F32: e.F32(0); break; case ValType.F64: e.F64(0); break; default: e.I32(0); break; }
         }

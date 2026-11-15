@@ -1583,6 +1583,18 @@ sealed partial class FunctionCompiler
 
     void EmitSubstitutedBody(string value)
     {
+        // cs2wasm's own substitution: `=>Type.Method`, the body is a call to a boundary method taking the same
+        // parameters (the instance first)
+        if (value.StartsWith("=>"))
+        {
+            int dot = value.LastIndexOf('.');
+            int n = M.Parameters.Length + (M.IsStatic ? 0 : 1);
+            var target = D.LibMethod(value[2..dot], value[(dot + 1)..], n).Sym;
+            var own = CallWith(target, false, null, () => { for (int i = 0; i < n; i++) E.Get(i); }, null, null);
+            if (!M.ReturnsVoid && Types.IsRef(T.Resolve(M.ReturnType, Map)) && own is Own.Stable or Own.Unstable) E.Call(Rt.Retain);
+            E.Op(Op.Return);
+            return;
+        }
         if (M.ReturnsVoid) return;
         var rt = T.Resolve(M.ReturnType, Map);
         if (Types.PrimOf(rt) == Prim.Bool) E.I32(value == "true" ? 1 : 0);

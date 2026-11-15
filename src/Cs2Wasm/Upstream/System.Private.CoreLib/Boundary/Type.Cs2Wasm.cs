@@ -29,7 +29,7 @@ namespace System
                 if ((uint)id >= (uint)table.Length)
                 {
                     var bigger = new RuntimeType?[Math.Max(table.Length * 2, id + 1)];
-                    Array.Copy(table, bigger, table.Length);
+                    for (int i = 0; i < table.Length; i++) bigger[i] = table[i];
                     s_byId = table = bigger;
                 }
                 return table[id] ??= new RuntimeType(id);

@@ -150,8 +150,8 @@ answers "when they split"; it is not a heap scan, but it is a tracing step.
 - The analysis is per type, not per allocation site: chained LINQ iterators (`Where` over `Select` over `Where`) are
   cycle-capable and pay the link cost though no instance ever forms a cycle.
 - Finalizers of members run when the arena is freed or swept, in table order; a finalizer that stores references
-  into its arena while the arena is being freed is not supported (the store stays counted). Arenas are
-  not thread-aware beyond the runtime lock: arena operations take it, but a cycle shared across threads is untested.
+  into its arena while the arena is being freed is not supported (the store stays counted). Arena
+  operations take the runtime lock; a cycle among shared objects is not collected (shared objects stay out of arenas).
 - Size: the arena runtime adds about 4 KB (raw) to modules that need it.
 
 Also fixed on the way: freeing a large block at the top of the heap moved the bump pointer back without clearing
@@ -187,6 +187,18 @@ compiler cannot see the container (struct fields through addresses, struct copie
 storing thread's own stack. So an object another thread can reach is marked before it can, and an object one thread
 owns keeps plain counts (checked under stress with a per-thread allocation assertion during development).
 Programs that never start a thread contain none of this, and the lock functions are empty.
+
+Deferred destruction (upstream library): .NET lets one thread read a reference from a shared field while another
+overwrites it, and upstream's threading code does so (benign races in tasks, the pool, `Parallel`). With counting,
+the overwriting thread's release could destroy the object between the reader's load and its retain. So a shared
+object whose count reaches zero waits in limbo (count word: shared bit, limbo bit, count 0) and is destroyed once
+every thread running program code has passed a safe point since (a wait, the end of a pool work item, the start or
+end of a thread or of an export), where a thread holds only counted references (arguments read from memory are
+retained before calls); a count taken meanwhile keeps it alive. Epoch-based: per-thread epochs, quiescent threads
+(blocked, idle, or the engine thread between exports) hold nothing back (`Boundary/Runtime.cs`, `Limbo`). A thread
+that computes for a long time without a safe point delays the destruction of shared garbage, not its correctness.
+Shared objects never join arenas (their counts are atomic, arena counts are under the runtime lock), and sharing an
+arena member marks its arena shared: it takes no more members and what its members reach is shared too.
 
 Thread pool: background workers, one per core (`cs2wasm.processor_count`, at least two), started on first use and
 taking work from one queue. `Task.Run`, `ThreadPool.QueueUserWorkItem`, `Parallel.For`/`ForEach`/`Invoke` (chunks
@@ -272,12 +284,13 @@ exported beside the stack pointer.
   platform invokes the sandbox lacks (build errors when reached). Upstream files replaced: the tz database
   reader (no database; the engine's offset) and the browser pool's JS-loop yield. The compiler folds what the
   target fixes (`IsHardwareAccelerated`/`IsSupported` false, no event tracing, invariant globalization) and
-  compiles only the side of a branch taken. The conformance suite runs on it: 58 of 59 checks pass (the arena check,
-  below, does not). Reflection over members reads the compiler's reflection records through Mono's icalls
-  (`Boundary/Meta.cs`): methods, constructors, fields, properties, invocation, attributes. Not yet: the arena check
-  (upstream's own types are cycle-capable to the type-graph analysis: exception chains, `object[]` holding
-  `object`, StringBuilder chunks, encoder fallback buffers, so every program gets the arena runtime), module size
-  (about 1.5 MB for hello world) and build time (about 10 s), `Delegate.CreateDelegate`/`DynamicInvoke`,
+  compiles only the side of a branch taken. The conformance suite passes on it (59 of 59). Reflection over members reads the compiler's reflection records through Mono's icalls
+  (`Boundary/Meta.cs`): methods, constructors, fields, properties, invocation, attributes. Upstream's own types make
+  every program carry the arena runtime (exception chains, `object[]` holding `object`, StringBuilder chunks, and
+  encoders with their fallback buffers, which do form cycles); the program's own types pay only if they can form
+  cycles (`CompileResult.CycleCapableTypes` lists the cycle-capable types). Not yet: module size
+  (1.3 MB, 340 KB gzipped, for hello world, against 13 KB with cs2wasm's own library) and build time (about
+  10 s against 2 s), `Delegate.CreateDelegate`/`DynamicInvoke`,
   reflection on generic instantiations, `Array.CreateInstance` of array types the program never makes.
   Until the suite passes on it, the default is still **cs2wasm's own library** (a deviation from the spec). It is a
   self-contained corlib written for this project (about 6 500 lines: object model, strings, number formatting and

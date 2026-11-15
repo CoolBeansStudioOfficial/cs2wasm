@@ -68,7 +68,7 @@ namespace Cs2Wasm.Runtime
             Mem.Copy(addr, Rt.AddressOf(value) + TypeInfo.BoxOffset(v), size);
         }
 
-        static bool IsNullable(int id) => (TypeInfo.Flags2(id) & 4) != 0 && TypeInfo.FullName(id).StartsWith("System.Nullable`1", StringComparison.Ordinal);
+        static bool IsNullable(int id) => (TypeInfo.Flags2(id) & 4) != 0 && TypeInfo.Name(id) == "Nullable`1" && TypeInfo.Namespace(id) == "System";
 
         /// <summary>The object a QCall handle points at (a slot holding the reference).</summary>
         internal static T Handle<T>(ObjectHandleOnStack h) where T : class => Rt.Borrow<T>(Mem.LoadI32(Unsafe.As<ObjectHandleOnStack, int>(ref h)));

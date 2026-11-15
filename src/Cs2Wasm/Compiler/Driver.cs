@@ -160,8 +160,19 @@ internal sealed partial class Driver
     public int MarkConstructed(ITypeSymbol t)
     {
         var id = TypeId(t);
-        Constructed.Add(id);
+        if (Constructed.Add(id) && s_whyConstructed is { } why && (why == "enum" ? t.TypeKind == TypeKind.Enum : Types.Key(t).Contains(why)))
+            Console.Error.WriteLine($"constructed {Types.Key(t)} in {(Compiling != null ? Display(Compiling.Sym) : "?")}{WhyReachedAlways(Compiling)}");
         return id;
+    }
+
+    /// <summary>CS2WASM_WHY_CONSTRUCTED=Name (or "enum"): where the program first makes objects (or boxes) of a type.</summary>
+    static readonly string? s_whyConstructed = Environment.GetEnvironmentVariable("CS2WASM_WHY_CONSTRUCTED") is { Length: > 0 } w ? w : null;
+
+    string WhyReachedAlways(MethodInst? mi)
+    {
+        var chain = new List<string>();
+        for (var x = mi?.ReachedFrom; x != null && chain.Count < 12; x = x.ReachedFrom) chain.Add(Display(x.Sym));
+        return chain.Count == 0 ? "" : " <- " + string.Join(" <- ", chain);
     }
 
     // ---------------- statics ----------------

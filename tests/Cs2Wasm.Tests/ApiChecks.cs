@@ -285,7 +285,7 @@ static class ApiChecks
             }
             """, "8 4\n"));
 
-        Check("cycles: a program whose types cannot form cycles gets no arena code", () =>
+        Check("cycles: types that cannot form cycles never pay for arenas", () =>
         {
             var src = Header + """
                 class A { public object X; public B Child; }
@@ -297,7 +297,9 @@ static class ApiChecks
                 """;
             var r = Compile(src, new CompileOptions());
             if (!r.Success) return Errors(r);
-            return Encoding.UTF8.GetString(r.Module!).Contains("ArenaLink") ? "arena runtime present" : null;
+            // the program's types never pay (the library's own may be cycle-capable: upstream's encoders are)
+            if (r.CycleCapableTypes.FirstOrDefault(t => t is "A" or "B") is { } bad) return bad + " is cycle-capable";
+            return r.CycleCapableTypes.Count == 0 && Encoding.UTF8.GetString(r.Module!).Contains("ArenaLink") ? "arena runtime present without cycle-capable types" : null;
         });
 
         return results;

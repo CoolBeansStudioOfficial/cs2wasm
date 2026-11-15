@@ -56,6 +56,9 @@ public sealed class CompileResult
     public ImmutableArray<Diagnostic> Diagnostics { get; init; }
     /// <summary>Source map v3 mapping module byte offsets to C# files and lines.</summary>
     public string? SourceMap { get; init; }
+    /// <summary>The cycle-capable types (section 4.3): their objects live in arenas; every other type's stores are
+    /// plain counted stores.</summary>
+    public IReadOnlyList<string> CycleCapableTypes { get; init; } = [];
     public bool Success => Module != null;
 }
 
@@ -81,7 +84,11 @@ public static class Cs2WasmCompiler
             d.Report(Diags.Unsupported, ex.Location, ex.Message);
         }
         if (d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error)) bytes = null;
-        return new CompileResult { Module = bytes, SourceMap = bytes == null ? null : map, Diagnostics = [.. d.Diagnostics] };
+        return new CompileResult
+        {
+            Module = bytes, SourceMap = bytes == null ? null : map, Diagnostics = [.. d.Diagnostics],
+            CycleCapableTypes = bytes == null ? [] : d.Arenas.CycleTypes.Select(id => Types.Key(d.TypeById[id])).ToList(),
+        };
     }
 }
 

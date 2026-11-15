@@ -134,6 +134,9 @@ namespace System
             CopySlow(sourceArray, sourceIndex, destinationArray, destinationIndex, length, reliable);
         }
 
+        // cs2wasm: the copies FastCopy does not do, by element type id (Cs2WasmArrays.GetBoxed/SetBoxed): references
+        // with a check per element, boxing into and unboxing out of reference arrays. Primitive widening (int[] into
+        // long[]) is not supported yet.
         private static void CopySlow(Array sourceArray, int sourceIndex, Array destinationArray, int destinationIndex, int length, bool reliable)
         {
             int source_pos = sourceIndex - sourceArray.GetLowerBound(0);
@@ -152,77 +155,29 @@ namespace System
             if (dest_pos > destinationArray.Length - length)
                 throw new ArgumentException(SR.Arg_LongerThanDestArray, nameof(destinationArray));
 
-            Type src_type = sourceArray.GetType().GetElementType()!;
-            Type dst_type = destinationArray.GetType().GetElementType()!;
-            Type dst_elem_type = dst_type;
-            bool dst_type_vt = dst_type.IsValueType && Nullable.GetUnderlyingType(dst_type) == null;
-
-            bool src_is_enum = src_type.IsEnum;
-            bool dst_is_enum = dst_type.IsEnum;
-
-            if (src_is_enum)
-                src_type = Enum.GetUnderlyingType(src_type);
-            if (dst_is_enum)
-                dst_type = Enum.GetUnderlyingType(dst_type);
-
-            if (reliable)
+            int se = Cs2Wasm.Runtime.TypeInfo.ElementId(Cs2Wasm.Runtime.Rt.TypeId(sourceArray));
+            int de = Cs2Wasm.Runtime.TypeInfo.ElementId(Cs2Wasm.Runtime.Rt.TypeId(destinationArray));
+            bool sv = (Cs2Wasm.Runtime.TypeInfo.Flags(se) & 1) != 0, dv = (Cs2Wasm.Runtime.TypeInfo.Flags(de) & 1) != 0;
+            if (sv && dv)
             {
-                if (!dst_type.Equals(src_type) &&
-                    !(dst_type.IsPrimitive && src_type.IsPrimitive &&
-                      CanChangePrimitive(ObjectHandleOnStack.Create(ref dst_type), ObjectHandleOnStack.Create(ref src_type), true)))
-                {
-                    throw new ArrayTypeMismatchException(SR.ArrayTypeMismatch_CantAssignType);
-                }
+                if (Cs2Wasm.Runtime.Cs2WasmArrays.PrimitiveKind(se) != 0 && Cs2Wasm.Runtime.Cs2WasmArrays.PrimitiveKind(de) != 0 && !reliable)
+                    throw Cs2Wasm.Runtime.TypeInfo.NotYet("Array.Copy with primitive widening");
+                throw new ArrayTypeMismatchException(SR.ArrayTypeMismatch_CantAssignType);
             }
-            else
+            if (sv ? !Cs2Wasm.Runtime.TypeInfo.IsAssignable(de, se)
+                   : !dv && !Cs2Wasm.Runtime.TypeInfo.IsAssignable(de, se) && !Cs2Wasm.Runtime.TypeInfo.IsAssignable(se, de)
+                     && (Cs2Wasm.Runtime.TypeInfo.Flags(se) & 8) == 0 && (Cs2Wasm.Runtime.TypeInfo.Flags(de) & 8) == 0
+                     || dv && !Cs2Wasm.Runtime.TypeInfo.IsAssignable(se, de))
+                throw new ArrayTypeMismatchException(SR.ArrayTypeMismatch_CantAssignType);
+
+            bool forward = !ReferenceEquals(sourceArray, destinationArray) || source_pos > dest_pos;
+            for (int k = 0; k < length; k++)
             {
-                if (!CanAssignArrayElement(src_type, dst_type))
-                {
-                    throw new ArrayTypeMismatchException(SR.ArrayTypeMismatch_CantAssignType);
-                }
-            }
-
-            Array src = sourceArray;
-            ObjectHandleOnStack src_handle = ObjectHandleOnStack.Create(ref src);
-            Array dst = destinationArray;
-            ObjectHandleOnStack dst_handle = ObjectHandleOnStack.Create(ref dst);
-            object? srcval = null;
-            ObjectHandleOnStack val_handle = ObjectHandleOnStack.Create(ref srcval);
-
-            if (!ReferenceEquals(sourceArray, destinationArray) || source_pos > dest_pos)
-            {
-                for (int i = 0; i < length; i++)
-                {
-                    GetValueImpl(src_handle, val_handle, source_pos + i);
-
-                    if (dst_type_vt && (srcval == null || (src_type == typeof(object) && !dst_elem_type.IsAssignableFrom(srcval.GetType()))))
-                        throw new InvalidCastException(SR.InvalidCast_DownCastArrayElement);
-
-                    try
-                    {
-                        SetValueRelaxedImpl(dst_handle, val_handle, dest_pos + i);
-                    }
-                    catch (ArgumentException)
-                    {
-                        throw CreateArrayTypeMismatchException();
-                    }
-                }
-            }
-            else
-            {
-                for (int i = length - 1; i >= 0; i--)
-                {
-                    GetValueImpl(src_handle, val_handle, source_pos + i);
-
-                    try
-                    {
-                        SetValueRelaxedImpl(dst_handle, val_handle, dest_pos + i);
-                    }
-                    catch (ArgumentException)
-                    {
-                        throw CreateArrayTypeMismatchException();
-                    }
-                }
+                int i = forward ? k : length - 1 - k;
+                object? v = Cs2Wasm.Runtime.Cs2WasmArrays.GetBoxed(sourceArray, source_pos + i);
+                if (dv ? v == null : v != null && !Cs2Wasm.Runtime.TypeInfo.IsAssignable(de, Cs2Wasm.Runtime.Rt.TypeId(v)))
+                    throw new InvalidCastException(SR.InvalidCast_DownCastArrayElement);
+                Cs2Wasm.Runtime.Cs2WasmArrays.SetBoxed(destinationArray, dest_pos + i, v);
             }
         }
 

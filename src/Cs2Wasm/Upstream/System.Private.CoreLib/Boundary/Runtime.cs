@@ -172,7 +172,7 @@ namespace Cs2Wasm.Runtime
                 int head = Mem.LoadI32(slot);
                 if (head != 0)
                 {
-                    Mem.StoreI32(slot, Mem.LoadI32(head));
+                    Mem.StoreI32(slot, Mem.LoadI32(head + 8));
                     Mem.Fill(head, 0, size);
                     return head;
                 }
@@ -219,8 +219,10 @@ namespace Cs2Wasm.Runtime
             if (size < 16) size = 16;
             if (size <= MaxSmall)
             {
+                // the link is at 8: word 0 (an object's count) stays 0, dead, for a reference read just before the free
                 int slot = s_table + (size >> 3) * 4;
-                Mem.StoreI32(addr, Mem.LoadI32(slot));
+                Mem.StoreI32(addr, 0);
+                Mem.StoreI32(addr + 8, Mem.LoadI32(slot));
                 Mem.StoreI32(slot, addr);
                 return;
             }
@@ -288,7 +290,11 @@ namespace Cs2Wasm.Runtime
         // dirty events as half its size, so its cost is amortized over the operations that produced the garbage.
         // A pinned object (stored in a static) has bit 31 of its hash word set and never joins an arena.
         // ------------------------------------------------------------------
-        const int ArenaBusy = 1, ArenaPendingFree = 2;
+        // ArenaShared: another thread can reach the arena's members (Sharing): it takes no more members, and the
+        // objects its members reach are shared. Shared objects never join an arena (their counts are atomic, an
+        // arena's are under the runtime lock); cycles among them are not collected.
+        const int ArenaBusy = 1, ArenaPendingFree = 2, ArenaShared = 4;
+        const int SharedCount = 0x40000000;
         static int s_visitArena, s_visitMode, s_markStack, s_markTop;
 
         [Intrinsic] static extern int SccOf(int typeId);
@@ -392,15 +398,24 @@ namespace Cs2Wasm.Runtime
         public static int ArenaLink(int val, int container)
         {
             if (val == 0 || container == 0) return val;
+            RuntimeLock();
+            int r = ArenaLinkCore(val, container);
+            RuntimeUnlock();
+            return r;
+        }
+
+        static int ArenaLinkCore(int val, int container)
+        {
             int cv = Mem.LoadI32(val), ca = Mem.LoadI32(container);
+            if (cv > 0 && (cv & SharedCount) != 0 || ca > 0 && (ca & SharedCount) != 0) return val; // shared: counted
             if (cv == -1 || cv == 0 || ca == -1 || ca == 0) return val; // immortal, or being destroyed
             int g = SccOf(Mem.LoadI32(val + 4));
             if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return val;
             if (ca > 0 && Mem.LoadI32(container + 8) < 0) return val; // pinned
             if (cv > 0 && Mem.LoadI32(val + 8) < 0) return val;
             int ra = ca < -1 ? -ca : 0, rv = cv < -1 ? -cv : 0;
-            if (ra != 0 && (Mem.LoadI32(ra + 20) & ArenaBusy) != 0) return val;
-            if (rv != 0 && (Mem.LoadI32(rv + 20) & ArenaBusy) != 0) return val;
+            if (ra != 0 && (Mem.LoadI32(ra + 20) & (ArenaBusy | ArenaShared)) != 0) return val;
+            if (rv != 0 && (Mem.LoadI32(rv + 20) & (ArenaBusy | ArenaShared)) != 0) return val;
             int ar = ra;
             if (ar == 0) { ar = rv != 0 ? rv : NewArena(); ArenaAdd(ar, container); }
             cv = Mem.LoadI32(val); // val may be the container itself
@@ -417,9 +432,27 @@ namespace Cs2Wasm.Runtime
         public static void ArenaUnlink(int old, int container)
         {
             if (old == 0) return;
+            RuntimeLock();
             int co = Mem.LoadI32(old);
-            if (co < -1 && co == Mem.LoadI32(container)) { ArenaDirty(-co); return; } // uncounted: it may be garbage now
-            Release(Borrow<object>(old));
+            bool member = co < -1 && co == Mem.LoadI32(container);
+            if (member) ArenaDirty(-co); // uncounted: it may be garbage now
+            RuntimeUnlock();
+            if (!member) Release(Borrow<object>(old));
+        }
+
+        /// <summary>Sharing reached a member of the arena: the arena becomes shared, and every member is queued so
+        /// that what the members reach is shared too.</summary>
+        internal static void ShareArena(int ar)
+        {
+            RuntimeLock();
+            int flags = Mem.LoadI32(ar + 20);
+            if ((flags & ArenaShared) == 0)
+            {
+                Mem.StoreI32(ar + 20, flags | ArenaShared);
+                int n = Mem.LoadI32(ar + 4);
+                for (int i = 0; i < n; i++) Sharing.PushMember(Mem.LoadI32(ArenaEntry(ar, i)));
+            }
+            RuntimeUnlock();
         }
 
         /// <summary>A store into a static field: the object stays out of arenas (statics never end).</summary>
@@ -522,6 +555,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>Array.Copy into an array whose elements can close a cycle: element by element, as stores.</summary>
         public static void ArenaArrayCopy(int src, int si, int dst, int di, int length)
         {
+            // (each element's link and unlink take the runtime lock)
             int s = src + 16 + si * 4, d = dst + 16 + di * 4;
             bool back = src == dst && si < di;
             for (int k = 0; k < length; k++)
@@ -592,6 +626,12 @@ namespace Cs2Wasm.Runtime
             }
             e._stackTraceString = keep <= 0 ? null : pos < 0 ? full : full.Substring(0, pos - 1);
         }
+
+        /// <summary>Exception.GetStackTrace (manifest substitution): the trace captured when it was thrown.</summary>
+        public static string StackTraceOf(Exception e) => e._stackTraceString ?? e._fullTrace ?? "";
+
+        /// <summary>StackTrace.ToString(TraceFormat) (manifest substitution): cs2wasm's StackTrace has no frames (traces are text).</summary>
+        public static string EmptyTrace(System.Diagnostics.StackTrace t, int format) => "";
 
         public static long CheckedMulI64(long a, long b)
         {
@@ -714,6 +754,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>The worker side: runs the delegate, then marks the thread finished and wakes joiners.</summary>
         public static void Run(int threadAddr)
         {
+            Limbo.Active();
             var t = Rt.Take<System.Threading.Thread>(threadAddr);
             System.Threading.Thread.SetCurrent(t);
             try { t.StartCallback(); }
@@ -722,6 +763,7 @@ namespace Cs2Wasm.Runtime
                 Atomic.Add32(ref s_live, -1);
                 System.Threading.Thread.OnThreadExiting(t);
                 System.Threading.Thread.SetCurrent(null);
+                Limbo.Quiescent();
                 WakeAll();
             }
         }
@@ -742,6 +784,7 @@ namespace Cs2Wasm.Runtime
 
         internal static void SafePoint()
         {
+            Limbo.Checkpoint();
             if (Atomic.Load32(ref s_parkRequested) == 0 || Rt.ThreadId() == 1) return;
             Atomic.Add32(ref s_parked, 1);
             while (Atomic.Load32(ref s_parkRequested) != 0) Atomic.Wait32(ref s_parkRequested, 1, -1);
@@ -762,6 +805,117 @@ namespace Cs2Wasm.Runtime
         }
     }
 
+    /// <summary>
+    /// Section 4.5: a shared object whose count reaches zero is not destroyed at once. Another thread may have read a
+    /// reference to it from shared memory just before the store that dropped it, and not counted it yet, as .NET's
+    /// racing reads allow. It waits in limbo (count word: shared, in limbo, count 0) until every thread that runs
+    /// program code has passed a safe point since: a wait, the end of a work item, the start or end of a thread or of
+    /// an export, where a thread holds only counted references. A count taken meanwhile keeps it alive (the count
+    /// rises from 0 again). Epoch-based reclamation: per-thread epochs (0: quiescent), a global epoch, and entries
+    /// [object, epoch when it entered].
+    /// </summary>
+    public static class Limbo
+    {
+        const int S = 0x40000000, L = 0x20000000;
+        static int s_epoch = 1, s_table, s_cap, s_list, s_listCap, s_count, s_since;
+        [System.ThreadStatic] static int t_depth;
+        [Intrinsic] static extern void DestroyObject(int p);
+
+        static void SetEpoch(int value)
+        {
+            int id = Rt.ThreadId();
+            if (id >= Atomic.Load32(ref s_cap))
+            {
+                Rt.RuntimeLock();
+                if (id >= s_cap)
+                {
+                    int cap = Math.Max(16, Math.Max(s_cap * 2, id + 1));
+                    int t = Rt.Alloc(cap * 4);
+                    if (s_table != 0) { Mem.Copy(t, s_table, s_cap * 4); Rt.Free(s_table, s_cap * 4); }
+                    s_table = t;
+                    Atomic.Store32(ref s_cap, cap);
+                }
+                Atomic.Store32(ref Mem.RefI32(s_table + 4 * id), value);
+                Rt.RuntimeUnlock();
+                return;
+            }
+            Atomic.Store32(ref Mem.RefI32(s_table + 4 * id), value);
+        }
+
+        /// <summary>The thread runs program code: what it reads from now on is protected.</summary>
+        public static void Active() => SetEpoch(Atomic.Load32(ref s_epoch));
+        /// <summary>The thread holds no references that are not counted, and runs no program code until Active.</summary>
+        public static void Quiescent() => SetEpoch(0);
+        /// <summary>A safe point: the thread holds only counted references.</summary>
+        public static void Checkpoint() { Active(); if (Atomic.Load32(ref s_count) != 0) Collect(); }
+        public static void ExportEnter() { if (t_depth++ == 0) Active(); }
+        public static void ExportExit() { if (--t_depth == 0) { Quiescent(); if (Atomic.Load32(ref s_count) != 0) Collect(); } }
+
+        /// <summary>The count of shared object p fell to zero (its count word is already S | L).</summary>
+        public static void Add(int p)
+        {
+            Rt.RuntimeLock();
+            if (s_count == s_listCap)
+            {
+                int cap = Math.Max(64, s_listCap * 2);
+                int l = Rt.Alloc(cap * 8);
+                if (s_list != 0) { Mem.Copy(l, s_list, s_count * 8); Rt.Free(s_list, s_listCap * 8); }
+                s_list = l; s_listCap = cap;
+            }
+            Mem.StoreI32(s_list + 8 * s_count, p);
+            Mem.StoreI32(s_list + 8 * s_count + 4, Atomic.Load32(ref s_epoch));
+            Atomic.Store32(ref s_count, s_count + 1);
+            bool go = ++s_since >= 64;
+            Rt.RuntimeUnlock();
+            if (go) Collect();
+        }
+
+        /// <summary>Destroys the entries every thread has passed a safe point since; advances the epoch.</summary>
+        public static void Collect()
+        {
+            Rt.RuntimeLock();
+            int min = int.MaxValue;
+            for (int i = 0; i < s_cap; i++)
+            {
+                int e = Atomic.Load32(ref Mem.RefI32(s_table + 4 * i));
+                if (e != 0 && e < min) min = e;
+            }
+            int ready = 0, keep = 0, n = s_count;
+            int list = n == 0 ? 0 : Rt.Alloc(n * 4);
+            for (int i = 0; i < n; i++)
+            {
+                int p = Mem.LoadI32(s_list + 8 * i), e = Mem.LoadI32(s_list + 8 * i + 4);
+                if (e < min) { Mem.StoreI32(list + 4 * ready, p); ready++; }
+                else { Mem.StoreI32(s_list + 8 * keep, p); Mem.StoreI32(s_list + 8 * keep + 4, e); keep++; }
+            }
+            Atomic.Store32(ref s_count, keep);
+            s_since = 0;
+            Atomic.Add32(ref s_epoch, 1);
+            Rt.RuntimeUnlock();
+            for (int i = 0; i < ready; i++) Finish(Mem.LoadI32(list + 4 * i));
+            if (list != 0) Rt.Free(list, n * 4);
+        }
+
+        /// <summary>Destroys p unless a count was taken while it waited.</summary>
+        static void Finish(int p)
+        {
+            ref int w = ref Mem.RefI32(p);
+            while (true)
+            {
+                int v = Atomic.Load32(ref w);
+                if ((v & ~(S | L)) == 0) { if (Atomic.CompareExchange32(ref w, v, 0) == v) { DestroyObject(p); return; } }
+                else if (Atomic.CompareExchange32(ref w, v, v & ~L) == v) return;
+            }
+        }
+
+        /// <summary>ThreadPool.NotifyWorkItemComplete (manifest substitution): the end of a work item is a safe point.</summary>
+        internal static bool NotifyWorkItemComplete(System.Threading.ThreadInt64PersistentCounter.ThreadLocalNode node, int currentTimeMs)
+        {
+            Checkpoint();
+            return System.Threading.PortableThreadPool.ThreadPoolInstance.NotifyWorkItemComplete(node, currentTimeMs);
+        }
+    }
+
     /// <summary>Section 4.5: marking objects shared (bit 30 of the count word), iteratively, with a per-thread worklist.</summary>
     public static class Sharing
     {
@@ -773,6 +927,7 @@ namespace Cs2Wasm.Runtime
         {
             if (x == 0) return false;
             int w = Mem.LoadI32(x);
+            if (w < -1) { Rt.ShareArena(-w); return false; } // an arena member: the arena is shared, its members queued
             if (w <= 0 || (w & S) != 0) return false;
             Atomic.Store32(ref Mem.RefI32(x), w | S);
             return true;
@@ -796,7 +951,9 @@ namespace Cs2Wasm.Runtime
             while (t_len > 0) { t_len--; Visit(Mem.LoadI32(t_buf + t_len * 4)); }
         }
 
-        public static void Share(int p) { if (Mark(p)) { Push(p); Drain(); } }
+        public static void Share(int p) { if (Mark(p)) Push(p); Drain(); }
+
+        internal static void PushMember(int member) => Push(member);
         public static void MarkPush(int x) { if (Mark(x)) Push(x); }
         public static void RevisitIfShared(int arr)
         {

@@ -89,6 +89,8 @@ internal sealed class Library
     {
         var root = UpstreamSources.Root;
         var own = Resources("upstream/").ToList();
+        UpstreamSources.Ensure(own.Where(r => r.Name.EndsWith("/manifest.txt"))
+            .SelectMany(r => r.Text.Split('\n').Select(l => l.Trim()).Where(l => l.StartsWith("file ")).Select(l => l[5..])));
         var built = new List<CSharpCompilation>();
         foreach (var lib in UpstreamSources.Libraries)
         {
@@ -182,8 +184,59 @@ internal static class UpstreamSources
         "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions",
     ];
 
-    /// <summary>CS2WASM_RUNTIME_SOURCES, else the cache (%LOCALAPPDATA%/cs2wasm/runtime-v11.0.0).</summary>
+    public const string Repository = "https://github.com/dotnet/runtime.git";
+
+    static string? Override => Environment.GetEnvironmentVariable("CS2WASM_RUNTIME_SOURCES") is { Length: > 0 } r ? r : null;
+
+    /// <summary>CS2WASM_RUNTIME_SOURCES, else the cache (CS2WASM_CACHE or %LOCALAPPDATA%/cs2wasm, then runtime-v11.0.0).</summary>
     public static string Root =>
-        Environment.GetEnvironmentVariable("CS2WASM_RUNTIME_SOURCES") is { Length: > 0 } r ? r
-        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "cs2wasm", "runtime-" + Tag);
+        Override ?? Path.Combine(Environment.GetEnvironmentVariable("CS2WASM_CACHE") is { Length: > 0 } c ? c
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "cs2wasm"), "runtime-" + Tag);
+
+    /// <summary>Makes sure the cache has the files the manifests list: on first use a sparse, blobless clone of
+    /// dotnet/runtime at the tag with only those files; later, the files a newer manifest adds. A directory given by
+    /// CS2WASM_RUNTIME_SOURCES is used as it is.</summary>
+    public static void Ensure(IEnumerable<string> files)
+    {
+        var root = Root;
+        var missing = files.Distinct().Where(f => !File.Exists(Path.Combine(root, f))).ToList();
+        if (missing.Count == 0 || Override != null) return;
+        using var mutex = new Mutex(false, "cs2wasm-runtime-sources-" + Tag);
+        try { mutex.WaitOne(); } catch (AbandonedMutexException) { }
+        try
+        {
+            missing = missing.Where(f => !File.Exists(Path.Combine(root, f))).ToList();
+            if (missing.Count == 0) return;
+            var patterns = string.Join("\n", missing.Select(f => "/" + f.Replace('\\', '/'))) + "\n";
+            if (!Directory.Exists(Path.Combine(root, ".git")))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(root)!);
+                Console.Error.WriteLine($"cs2wasm: fetching the dotnet/runtime {Tag} library sources into {root} (once)");
+                Git(null, "clone", "--filter=blob:none", "--no-checkout", "--depth", "1", "--branch", Tag, Repository, root);
+                Git(root, "sparse-checkout", "set", "--no-cone", "--stdin", patterns);
+                Git(root, "checkout", Tag);
+            }
+            else Git(root, "sparse-checkout", "add", "--stdin", patterns);
+        }
+        finally { mutex.ReleaseMutex(); }
+    }
+
+    /// <summary>Runs git (in `dir`); the last argument after "--stdin" is written to its input.</summary>
+    static void Git(string? dir, params string[] args)
+    {
+        string? input = null;
+        int stdin = Array.IndexOf(args, "--stdin");
+        if (stdin >= 0 && stdin == args.Length - 2) { input = args[^1]; args = args[..^1]; }
+        var psi = new System.Diagnostics.ProcessStartInfo("git") { RedirectStandardInput = input != null, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false };
+        if (dir != null) { psi.ArgumentList.Add("-C"); psi.ArgumentList.Add(dir); }
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        System.Diagnostics.Process p;
+        try { p = System.Diagnostics.Process.Start(psi)!; }
+        catch (Exception e) { throw new CompileException($"the library sources (dotnet/runtime {Tag}) are not in {Root} and git could not be run to fetch them ({e.Message}); set CS2WASM_RUNTIME_SOURCES to a checkout"); }
+        if (input != null) { p.StandardInput.Write(input); p.StandardInput.Close(); }
+        var err = p.StandardError.ReadToEndAsync();
+        p.StandardOutput.ReadToEnd();
+        p.WaitForExit();
+        if (p.ExitCode != 0) throw new CompileException($"fetching the library sources failed: git {string.Join(" ", args)}: {err.Result.Trim()}");
+    }
 }

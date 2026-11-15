@@ -39,6 +39,9 @@ internal sealed partial class RuntimeFns
         // retain(p): plain for objects one thread owns; a shared object's count (bit 30 set) is a CAS loop;
         // immortal (-1) and dead (0) stay; arena members go through the runtime lock
         const int S = SharedBit;
+        // upstream: a shared object's last release puts it in limbo (Boundary/Runtime.cs, Limbo); the hand-written
+        // library destroys it at once
+        var limboAdd = Library.UseUpstream ? D.LibMethod("Cs2Wasm.Runtime.Limbo", "Add", 1).Fn : null;
         {
             var f = Retain; f.Body.Clear(); f.Locals.Clear();
             var e = new Emitter(f);
@@ -79,8 +82,18 @@ internal sealed partial class RuntimeFns
             var brk = e.Block(); var top = e.Loop();
             e.Get(r); e.I32(~S); e.Op(Op.I32And); e.I32(1); e.Op(Op.I32Eq);
             e.If();
-            e.Get(0); e.Get(r); e.I32(0); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq);
-            e.If(); e.Get(0); e.Call(Destroy); e.Br(brk); e.End();
+            // the last count of a shared object: into limbo (count word S | L), destroyed once every thread has
+            // passed a safe point since (Limbo)
+            if (limboAdd != null)
+            {
+                e.Get(0); e.Get(r); e.I32(S | LimboBit); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq);
+                e.If(); e.Get(0); e.Call(limboAdd); e.Br(brk); e.End();
+            }
+            else
+            {
+                e.Get(0); e.Get(r); e.I32(0); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq);
+                e.If(); e.Get(0); e.Call(Destroy); e.Br(brk); e.End();
+            }
             e.Else();
             e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(brk);
             e.End();

@@ -16,6 +16,8 @@ enum Publish { Unknown, None, Always, Container }
 internal sealed partial class RuntimeFns
 {
     public const int SharedBit = 0x40000000;
+    /// <summary>With SharedBit: the object waits in limbo (its count reached zero; Limbo).</summary>
+    public const int LimboBit = 0x20000000;
     WasmFunction? _pubInto, _pubAt, _pubAlways, _share, _shareVisit;
     /// <summary>(value, container) -> value: shares the value if the container is shared.</summary>
     public WasmFunction PublishInto => _pubInto ??= M.AddFunction("rt.publish_into", FT([I, I], [I]));
