@@ -173,6 +173,23 @@ internal sealed partial class Driver
     /// <summary>A type's id if it has one already (tables must not add types).</summary>
     public int? ExistingTypeId(ITypeSymbol t) => _typeIds.TryGetValue(Types.Key(Types.Canonical(t)), out var id) ? id : null;
 
+    int[] _extId = [];
+    List<int> _intId = [];
+    /// <summary>How many types the module numbers (RuntimeGen.AssignTypeIds).</summary>
+    public int TypeCount;
+    public void SetTypeNumbers(List<int> internals)
+    {
+        _intId = internals;
+        _extId = new int[TypeById.Count];
+        Array.Fill(_extId, -1);
+        for (int k = 0; k < internals.Count; k++) _extId[internals[k]] = k;
+        TypeCount = internals.Count;
+        Module.TypeIdMap = i => ExtId(i) is int x && x >= 0 ? x : throw new CompileException("internal: type " + (i < TypeById.Count ? TypeById[i] : (object)i) + " is used at run time but has no number");
+    }
+    /// <summary>The module's number for an internal type id, -1 when the module never meets the type.</summary>
+    public int ExtId(int id) => id >= 0 && id < _extId.Length ? _extId[id] : -1;
+    public int IntId(int ext) => _intId[ext];
+
     /// <summary>The function being compiled (types it constructs are live only if it is), or null.</summary>
     public WasmFunction? CurrentFn;
     /// <summary>For each constructed type: the functions that construct it; null in the set: made outside any.</summary>

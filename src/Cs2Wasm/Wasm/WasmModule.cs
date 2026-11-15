@@ -46,6 +46,10 @@ internal sealed class WasmModule
         return live;
     }
 
+    static readonly List<(int, string)>? s_sizes = Environment.GetEnvironmentVariable("CS2WASM_SIZES") == "1" ? [] : null;
+    static readonly string? s_dump = Environment.GetEnvironmentVariable("CS2WASM_DUMP") is { Length: > 0 } d ? d : null;
+    /// <summary>The module's number for each internal type id (Driver.AssignTypeIds).</summary>
+    public Func<int, int>? TypeIdMap;
     readonly HashSet<int> _deadTable = [];
     WasmFunction? _tableTrap;
 
@@ -224,13 +228,20 @@ internal sealed class WasmModule
             foreach (var ins in f.Body)
             {
                 if (ins.Pos >= 0 && ins.Pos != lastPos) { bodyLines.Add((body.Length, ins.Pos)); lastPos = ins.Pos; }
-                EncodeInstr(body, ins, TypeOf);
+                try { EncodeInstr(body, ins, TypeOf); } catch (Exception ex) when (ex.Message.StartsWith("internal: type")) { throw new Exception(ex.Message + " (in " + f.Name + ")"); }
             }
             body.Byte(0x0B);
+            if (s_sizes != null) s_sizes.Add((body.Length, f.FrameName ?? f.Name));
+            if (s_dump != null && (f.FrameName ?? f.Name).Contains(s_dump)) { Console.Error.WriteLine($"== {f.FrameName ?? f.Name} ({body.Length} bytes)"); foreach (var ins in f.Body) Console.Error.WriteLine("  " + ins); }
             code.U32(body.Length);
             int start = code.Length;
             foreach (var (off, pos) in bodyLines) relLines.Add(new LineEntry(start + off, pos));
             code.Bytes(body.ToArray());
+        }
+        if (s_sizes != null)
+        {
+            Console.Error.WriteLine($"code {code.Length} bytes in {defined.Count} functions; largest:");
+            foreach (var (n, name) in s_sizes.OrderByDescending(x => x.Item1).Take(40)) Console.Error.WriteLine($"  {n,7} {(name.Length > 110 ? name[..110] : name)}");
         }
         w.Byte(10); w.U32(code.Length);
         int codeStart = w.Length;
@@ -379,7 +390,7 @@ internal sealed class WasmModule
             case >= Op.MemoryAtomicNotify and <= Op.I32AtomicRmw16CmpxchgU: b.U32((int)ins.Imm2); b.U32((int)ins.Imm); break;
             case Op.MemorySize: case Op.MemoryGrow: b.Byte(0); break;
             case Op.I32Const:
-                b.S32(ins.Ref is IAddress a ? a.Address + (int)ins.Imm : (int)ins.Imm); break;
+                b.S32(ins.Ref is IAddress a ? a.Address + (int)ins.Imm : ins.Ref is TypeIdRef tr ? TypeIdMap!(tr.Id) : (int)ins.Imm); break;
             case Op.I64Const: b.S64(ins.Imm); break;
             case Op.F32Const: b.Bytes(BitConverter.GetBytes((int)ins.Imm)); break;
             case Op.F64Const: b.Bytes(BitConverter.GetBytes(ins.Imm)); break;

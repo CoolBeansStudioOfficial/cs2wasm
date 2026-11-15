@@ -216,15 +216,44 @@ internal sealed partial class Driver
         e.Get(0); e.Set(tid);
         foreach (var (id, addr) in records)
         {
-            e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
+            e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
             e.If(); e.I32Addr(addr); e.Op(Op.Return); e.End();
         }
         e.I32(0);
     }
 
+    int ExtTypeId(ITypeSymbol t) => ExtId(TypeId(t));
+
+    /// <summary>The types the reflection records name (numbered for the module: RuntimeGen.AssignTypeIds).</summary>
+    internal IEnumerable<ITypeSymbol> ReflectedTypes()
+    {
+        if (_reflect == null) yield break;
+        foreach (var (t, all, names, ctors) in _reflect.Types.Values)
+        {
+            yield return t;
+            if (t.BaseType != null) yield return t.BaseType;
+            foreach (var i in t.AllInterfaces) yield return i;
+            foreach (var a in KeptAttributes(t)) yield return a.AttributeClass!;
+            foreach (var m in KeptMembers(t, all, names, ctors))
+            {
+                yield return m.ContainingType;
+                foreach (var a in KeptAttributes(m is IMethodSymbol { AssociatedSymbol: IPropertySymbol pp } ? pp : m)) yield return a.AttributeClass!;
+                switch (m)
+                {
+                    case IFieldSymbol f: yield return f.Type; break;
+                    case IMethodSymbol ms:
+                        if (!ms.ReturnsVoid) yield return ms.ReturnType;
+                        foreach (var p in ms.Parameters) yield return p.Type;
+                        if (ms.AssociatedSymbol is IPropertySymbol prop) yield return prop.Type;
+                        break;
+                }
+            }
+        }
+    }
+
     int Thunk(ISymbol m) => _reflThunks.TryGetValue(ThunkKey(m), out var f) && f.Body.Count > 0 ? RootSlot(f) + 1 : 0;
     int RootSlot(WasmFunction f) { f.TableRoot = true; return Module.TableSlot(f); }
-    int TypeIdOrVoid(ITypeSymbol t) => TypeId(t);
+    int TypeIdOrVoid(ITypeSymbol t) => ExtTypeId(t);
     int Str(string s) => StringLiteral(s).Address;
 
     IAddress Ints(IEnumerable<int> values) { var b = values.SelectMany(BitConverter.GetBytes).ToArray(); return DataBlob(b.Length == 0 ? new byte[4] : b, 4); }
@@ -235,7 +264,7 @@ internal sealed partial class Driver
         var ints = new List<int>();
         foreach (var a in list)
         {
-            ints.Add(TypeId(a.AttributeClass!));
+            ints.Add(ExtTypeId(a.AttributeClass!));
             ints.Add(RootSlot(AttributeFactory(a)) + 1);
         }
         return (list.Count, Ints(ints).Address);
@@ -265,15 +294,15 @@ internal sealed partial class Driver
                 case IFieldSymbol f:
                     {
                         var (na, aa) = Attrs(f);
-                        fields.AddRange([Str(f.Name), TypeId(f.Type), (f.IsStatic ? FStatic : 0) | Access(f) | (f.IsReadOnly ? FReadOnly : 0), Thunk(f), TypeId(f.ContainingType), na, aa]);
+                        fields.AddRange([Str(f.Name), ExtTypeId(f.Type), (f.IsStatic ? FStatic : 0) | Access(f) | (f.IsReadOnly ? FReadOnly : 0), Thunk(f), ExtTypeId(f.ContainingType), na, aa]);
                         nf++;
                         break;
                     }
                 case IMethodSymbol { MethodKind: MethodKind.Constructor } c:
                     {
                         var (na, aa) = Attrs(c);
-                        ctors.AddRange([(c.IsStatic ? FStatic : 0) | Access(c), Thunk(c), c.Parameters.Length, Ints(c.Parameters.Select(p => TypeId(p.Type))).Address, Ints(c.Parameters.Select(p => Str(p.Name))).Address, na, aa]);
-                        if (Library.UseUpstream) ctors.Add(TypeId(c.ContainingType));
+                        ctors.AddRange([(c.IsStatic ? FStatic : 0) | Access(c), Thunk(c), c.Parameters.Length, Ints(c.Parameters.Select(p => ExtTypeId(p.Type))).Address, Ints(c.Parameters.Select(p => Str(p.Name))).Address, na, aa]);
+                        if (Library.UseUpstream) ctors.Add(ExtTypeId(c.ContainingType));
                         nc++;
                         break;
                     }
@@ -281,15 +310,15 @@ internal sealed partial class Driver
                     {
                         var (na, aa) = Attrs(ms);
                         int flags = (ms.IsStatic ? FStatic : 0) | Access(ms) | (ms.IsVirtual || ms.IsOverride || ms.IsAbstract ? FVirtual : 0) | (ms.IsAbstract ? FAbstract : 0);
-                        methods.AddRange([Str(ms.Name), ms.ReturnsVoid ? -1 : TypeId(ms.ReturnType), flags, Thunk(ms), ms.Parameters.Length,
-                            Ints(ms.Parameters.Select(p => TypeId(p.Type))).Address, Ints(ms.Parameters.Select(p => Str(p.Name))).Address, na, aa, TypeId(ms.ContainingType)]);
+                        methods.AddRange([Str(ms.Name), ms.ReturnsVoid ? -1 : ExtTypeId(ms.ReturnType), flags, Thunk(ms), ms.Parameters.Length,
+                            Ints(ms.Parameters.Select(p => ExtTypeId(p.Type))).Address, Ints(ms.Parameters.Select(p => Str(p.Name))).Address, na, aa, ExtTypeId(ms.ContainingType)]);
                         nm++;
                         if (ms.AssociatedSymbol is IPropertySymbol p && seenProps.Add(Types.Key(p.ContainingType) + "." + p.Name))
                         {
                             var (pa, pb) = Attrs(p);
                             int g = p.GetMethod != null ? Thunk(p.GetMethod) : 0, s = p.SetMethod != null ? Thunk(p.SetMethod) : 0;
                             int pflags = (p.IsStatic ? FStatic : 0) | Access(p.GetMethod ?? p.SetMethod!) | (p.GetMethod?.DeclaredAccessibility == Accessibility.Public ? 256 : 0) | (p.SetMethod?.DeclaredAccessibility == Accessibility.Public ? 512 : 0);
-                            props.AddRange([Str(p.Name), TypeId(p.Type), pflags, g, s, TypeId(p.ContainingType), pa, pb]);
+                            props.AddRange([Str(p.Name), ExtTypeId(p.Type), pflags, g, s, ExtTypeId(p.ContainingType), pa, pb]);
                             np++;
                         }
                         break;
@@ -298,7 +327,7 @@ internal sealed partial class Driver
         }
         var (ta, tb) = Attrs(t);
         var rec = new[] { nf, Ints(fields).Address, np, Ints(props).Address, nm, Ints(methods).Address, nc, Ints(ctors).Address, ta, tb,
-            t.BaseType != null ? TypeId(t.BaseType) + 1 : 0, t.Interfaces.Length, Ints(t.AllInterfaces.Select(i => TypeId(i))).Address };
+            t.BaseType != null ? ExtTypeId(t.BaseType) + 1 : 0, t.Interfaces.Length, Ints(t.AllInterfaces.Select(i => ExtTypeId(i))).Address };
         return Ints(rec);
     }
 }
@@ -364,13 +393,13 @@ sealed partial class FunctionCompiler
                         if (t.IsValueType)
                         {
                             int dataOff = FunctionCompilerHelpers.BoxDataOffset(T, t);
-                            E.I32(dataOff + T.StorageOf(t).size); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+                            E.I32(dataOff + T.StorageOf(t).size); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
                             if (!ctor.IsImplicitlyDeclared)
                                 CallWith(ctor, false, () => { E.Get(obj); E.I32(dataOff); E.Op(Op.I32Add); }, () => { for (int i = 0; i < ctor.Parameters.Length; i++) PushArgAs(i, ctor.Parameters[i].Type); }, null, null);
                         }
                         else
                         {
-                            E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+                            E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
                             CallWith(ctor, false, () => E.Get(obj), () => { for (int i = 0; i < ctor.Parameters.Length; i++) PushArgAs(i, ctor.Parameters[i].Type); }, null, null);
                         }
                         E.Get(obj);
@@ -437,7 +466,7 @@ sealed partial class FunctionCompiler
             var t = T.Canonical(ctor.ContainingType);
             int tid = D.MarkConstructed(t);
             int obj = E.AddLocal(ValType.I32);
-            E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+            E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
             CallWith(ctor, false, () => E.Get(obj), () =>
             {
                 for (int i = 0; i < ctor.Parameters.Length; i++) PushTypedConstant(a.ConstructorArguments[i], ctor.Parameters[i].Type);
@@ -472,7 +501,7 @@ sealed partial class FunctionCompiler
         target = T.Canonical(target);
         if (c.Kind == TypedConstantKind.Type && c.Value is ITypeSymbol ts)
         {
-            E.I32(D.TypeId(T.Canonical(ts)));
+            E.Tid(D.TypeId(T.Canonical(ts)));
             var fromId = D.LibType("System.Type").GetMembers("FromId").OfType<IMethodSymbol>().First();
             E.Call(D.Method(fromId).Fn);
             int tl = TempRef(D.ObjectType); E.Tee(tl);

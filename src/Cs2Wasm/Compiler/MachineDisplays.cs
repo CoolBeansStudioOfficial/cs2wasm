@@ -134,7 +134,7 @@ sealed partial class FunctionCompiler
     void EmitAllocMachineDisplay(MachineDisplay d)
     {
         E.Get(0); E.Load(Op.I32Load, d.SlotOff); E.Call(Rt.Release);
-        E.Get(0); E.I32(d.D.Size); E.I32(d.D.TypeId); E.Call(Rt.AllocObject); E.Store(Op.I32Store, d.SlotOff);
+        E.Get(0); E.I32(d.D.Size); E.Tid(d.D.TypeId); E.Call(Rt.AllocObject); E.Store(Op.I32Store, d.SlotOff);
         E.Get(0); E.Load(Op.I32Load, d.SlotOff);
         if (d.Parent != null) { E.Get(0); E.Load(Op.I32Load, d.Parent.SlotOff); E.Call(Rt.Retain); }
         else if (_machine!.Machine.Parent != null) { E.Get(0); E.Load(Op.I32Load, 12); E.Call(Rt.Retain); }

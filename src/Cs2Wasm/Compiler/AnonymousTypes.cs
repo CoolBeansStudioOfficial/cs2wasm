@@ -36,7 +36,7 @@ sealed partial class FunctionCompiler
         int tid = D.MarkConstructed(at);
         RegisterAnonymous(at, tid);
         int obj = E.AddLocal(ValType.I32);
-        E.I32(Math.Max(T.LayoutOf(at).Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+        E.I32(Math.Max(T.LayoutOf(at).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
         var slot = new Slot { Local = obj, Type = at };
         RegisterTemp(slot);
         foreach (var init in ac.Initializers)
@@ -124,7 +124,7 @@ sealed partial class FunctionCompiler
                     var ctor = sbT.InstanceConstructors.First(c => c.Parameters.Length == 0);
                     int tid = D.MarkConstructed(sbT);
                     int sb = E.AddLocal(ValType.I32);
-                    E.I32(Math.Max(T.LayoutOf(sbT).Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(sb);
+                    E.I32(Math.Max(T.LayoutOf(sbT).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(sb);
                     AddOwned(new Slot { Local = sb, Type = sbT });
                     CallWith(D.CanonicalMethod(ctor), false, () => E.Get(sb), () => { }, null, null);
                     var appendS = SbAppend("System.String"); var appendO = SbAppend("System.Object");

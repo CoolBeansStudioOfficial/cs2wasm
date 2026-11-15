@@ -99,7 +99,7 @@ internal sealed partial class Driver
             e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
             foreach (var (id, type) in types)
             {
-                e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
+                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
                 e.If();
                 if (DisplayById.TryGetValue(id, out var disp))
                 {

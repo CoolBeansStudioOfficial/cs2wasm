@@ -22,6 +22,34 @@ internal sealed partial class RuntimeFns
 
 sealed partial class RuntimeGen
 {
+    /// <summary>
+    /// Numbers the types the module can meet at run time, densely: the types live code constructs, the type ids live
+    /// code has as constants (typeof, type tests), the types reflection reports, and what the requested type tables
+    /// lead to from those (base, element, generic arguments, declaring type, interfaces). Every table indexed by type id
+    /// then has an entry for those only. 0 (object) and 1 (string) keep their numbers.
+    /// </summary>
+    void AssignTypeIds()
+    {
+        var kinds = D.Rt.TypeInfoFns.Keys.ToHashSet();
+        var q = new HashSet<int> { 0, 1 };
+        var work = new Stack<int>();
+        void Add(int id) { if (id >= 0 && q.Add(id)) work.Push(id); }
+        foreach (var id in D.Constructed) Add(id);
+        foreach (var f in _prunedLive ?? D.Module.LiveFunctions())
+            foreach (var ins in f.Body)
+                if (ins.Ref is TypeIdRef tr) Add(tr.Id);
+        foreach (var t in D.ReflectedTypes()) Add(D.TypeId(t));
+        foreach (var id in q.ToList()) work.Push(id);
+        while (work.Count > 0)
+        {
+            int id = work.Pop();
+            if (id <= 0 || id >= D.TypeById.Count || D.SyntheticById.ContainsKey(id) || D.DisplayById.ContainsKey(id)) continue;
+            foreach (var r in Related(D.TypeById[id], kinds)) Add(D.TypeId(r));
+            if (kinds.Contains("array_of") && D.ExistingTypeId(D.Types.LibCompilationArray(D.TypeById[id])) is int ai && D.Constructed.Contains(ai)) Add(ai);
+        }
+        D.SetTypeNumbers(q.Order().ToList());
+    }
+
     /// <summary>Gives ids to the types the requested tables refer to.</summary>
     void CloseTypeInfo()
     {
@@ -64,19 +92,19 @@ sealed partial class RuntimeGen
 
     void EmitTypeInfo()
     {
-        int n = D.TypeById.Count;
+        int n = D.TypeCount;
         bool Real(int i) => i > 0 && !D.SyntheticById.ContainsKey(i) && !D.DisplayById.ContainsKey(i);
         IAddress Ids(IEnumerable<ITypeSymbol> types)
         {
-            var ids = types.Select(x => D.TypeId(D.Types.Canonical(x))).ToList();
+            var ids = types.Select(x => D.ExtId(D.TypeId(D.Types.Canonical(x)))).ToList();
             return D.DataBlob([.. BitConverter.GetBytes(ids.Count), .. ids.SelectMany(BitConverter.GetBytes)], 4);
         }
         foreach (var (kind, fn) in D.Rt.TypeInfoFns)
         {
             Func<int, (IAddress?, int)> entry = kind switch
             {
-                "base" => i => (null, Real(i) && BaseOf(D.TypeById[i]) is { } b ? D.TypeId(b) : -1),
-                "element" => i => (null, Real(i) && ElementOf(D.TypeById[i]) is { } e ? D.TypeId(D.Types.Canonical(e)) : -1),
+                "base" => i => (null, Real(i) && BaseOf(D.TypeById[i]) is { } b ? D.ExtId(D.TypeId(b)) : -1),
+                "element" => i => (null, Real(i) && ElementOf(D.TypeById[i]) is { } e ? D.ExtId(D.TypeId(D.Types.Canonical(e))) : -1),
                 "rank" => i => (null, Real(i) && D.TypeById[i] is IArrayTypeSymbol a ? a.Rank : 0),
                 "namespace" => i => (D.StringLiteral(Real(i) ? NamespaceOf(D.TypeById[i]) : ""), 0),
                 "attrs" => i => (null, Real(i) ? AttributesOf(D.TypeById[i]) : 0),
@@ -84,11 +112,11 @@ sealed partial class RuntimeGen
                 "flags2" => i => (null, Real(i) ? Flags2(D.TypeById[i]) : 0),
                 "generic_args" => i => (Real(i) && D.TypeById[i] is INamedTypeSymbol { IsGenericType: true } g ? Ids(g.TypeArguments) : Ids([]), 0),
                 "interfaces" => i => (Ids(Real(i) ? D.TypeById[i].AllInterfaces : []), 0),
-                "declaring" => i => (null, Real(i) && D.TypeById[i].ContainingType is { } ct ? D.TypeId(D.Types.Canonical(ct)) : -1),
+                "declaring" => i => (null, Real(i) && D.TypeById[i].ContainingType is { } ct ? D.ExtId(D.TypeId(D.Types.Canonical(ct))) : -1),
                 // a value type's size (the data of its box), an object's instance size
                 "size" => i => (null, Real(i) && D.TypeById[i] is INamedTypeSymbol nt and not { TypeKind: TypeKind.Interface } ? (nt.IsValueType ? D.Types.StorageOf(nt).size : D.Types.LayoutOf(nt).Size) : 0),
                 // the id of the type's one-dimensional array type, when the program has one (Array.CreateInstance)
-                "array_of" => i => (null, Real(i) && D.ExistingTypeId(D.Types.LibCompilationArray(D.TypeById[i])) is int ai ? ai : -1),
+                "array_of" => i => (null, Real(i) && D.ExistingTypeId(D.Types.LibCompilationArray(D.TypeById[i])) is int ai ? D.ExtId(ai) : -1),
                 "box_offset" => i => (null, Real(i) && D.TypeById[i].IsValueType ? FunctionCompilerHelpers.BoxDataOffset(D.Types, D.TypeById[i]) : 0),
                 _ => throw new CompileException("type info " + kind),
             };

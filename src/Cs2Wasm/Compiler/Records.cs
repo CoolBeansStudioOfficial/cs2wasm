@@ -40,7 +40,7 @@ sealed partial class FunctionCompiler
                     var copy = rt.InstanceConstructors.First(c => c.Parameters.Length == 1 && Types.Key(T.Canonical(c.Parameters[0].Type)) == Types.Key(rt));
                     int tid = D.MarkConstructed(rt);
                     int obj = E.AddLocal(ValType.I32);
-                    E.I32(Math.Max(T.LayoutOf(rt).Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+                    E.I32(Math.Max(T.LayoutOf(rt).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
                     CallWith(D.CanonicalMethod(copy), false, () => E.Get(obj), () => E.Get(_thisLocal), null, null);
                     _retLocal = obj;
                     EmitReturnSequence(true);
@@ -48,7 +48,7 @@ sealed partial class FunctionCompiler
                 }
             case "get_EqualityContract":
                 {
-                    E.I32(D.TypeId(rt));
+                    E.Tid(D.TypeId(rt));
                     var fromId = D.LibType("System.Type").GetMembers("FromId").OfType<IMethodSymbol>().First();
                     E.Call(D.Method(fromId).Fn);
                     _retLocal = E.AddLocal(ValType.I32); E.Set(_retLocal);
@@ -275,7 +275,7 @@ sealed partial class FunctionCompiler
         var ctor = sbT.InstanceConstructors.First(c => c.Parameters.Length == 0);
         int tid = D.MarkConstructed(sbT);
         int sb = E.AddLocal(ValType.I32);
-        E.I32(Math.Max(T.LayoutOf(sbT).Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(sb);
+        E.I32(Math.Max(T.LayoutOf(sbT).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(sb);
         AddOwned(new Slot { Local = sb, Type = sbT });
         CallWith(D.CanonicalMethod(ctor), false, () => E.Get(sb), () => { }, null, null);
         var appendS = SbAppend("System.String"); var appendC = SbAppend("System.Char");

@@ -296,7 +296,7 @@ sealed partial class FunctionCompiler
     {
         int tid = D.MarkConstructed(t);
         int obj = E.AddLocal(ValType.I32);
-        E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+        E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
         var ctor = t.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 0)
             ?? throw new CompileException(t + " has no parameterless constructor", syntax?.GetLocation());
         var slot = new Slot { Local = obj, Type = t };
@@ -444,7 +444,7 @@ sealed partial class FunctionCompiler
                         throw new CompileException($"Activator.CreateInstance<{t}>(): {t} has no parameterless constructor", null);
                     int tid = D.MarkConstructed(t);
                     int obj = E.AddLocal(ValType.I32);
-                    E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+                    E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
                     CallWith(D.CanonicalMethod(ctor), false, () => E.Get(obj), () => { }, null, null);
                     E.Get(obj);
                     return Own.Owned;
@@ -579,8 +579,8 @@ sealed partial class FunctionCompiler
             case "Rt.Take": return Own.Owned;
             case "Rt.Borrow": return Own.Unstable;
             case "Rt.TypeId": E.Load(Op.I32Load, 4); return Own.None;
-            case "Rt.TypeIdOf": E.I32(D.TypeId(T.Canonical(m.TypeArguments[0]))); return Own.None;
-            case "Rt.MarkConstructed": E.I32(D.MarkConstructed(T.Canonical(m.TypeArguments[0]))); return Own.None;
+            case "Rt.TypeIdOf": E.Tid(D.TypeId(T.Canonical(m.TypeArguments[0]))); return Own.None;
+            case "Rt.MarkConstructed": E.Tid(D.MarkConstructed(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Rt.HeapBase": E.I32Addr(new LateAddr(() => D.HeapBase)); return Own.None;
             case "Rt.Retain": E.Call(Rt.Retain); E.Op(Op.Drop); return Own.None;
             case "Rt.Release": E.Call(Rt.Release); return Own.None;
@@ -762,7 +762,7 @@ sealed partial class FunctionCompiler
         int tid = D.MarkConstructed(t);
         var layout = T.LayoutOf(t);
         int obj = E.AddLocal(ValType.I32);
-        E.I32(Math.Max(layout.Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject);
+        E.I32(Math.Max(layout.Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject);
         E.Set(obj);
         var slot = new Slot { Local = obj, Type = t };
         RegisterTemp(slot); // released if the constructor throws; ownership is handed out below
@@ -829,7 +829,7 @@ sealed partial class FunctionCompiler
         int tid = D.MarkConstructed(t);
         var layout = T.LayoutOf(t);
         int obj = E.AddLocal(ValType.I32);
-        E.I32(Math.Max(layout.Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+        E.I32(Math.Max(layout.Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
         var ctor = nt.InstanceConstructors.First(c => c.Parameters.Length == 0);
         CallWith(D.CanonicalMethod(ctor), false, () => E.Get(obj), () => { }, null, tpc.Syntax);
         if (tpc.Initializer != null) EmitInitializer(tpc.Initializer, obj, t);
@@ -845,7 +845,7 @@ sealed partial class FunctionCompiler
         int tid = D.MarkConstructed(at);
         int size = T.StorageOf(et).size;
         EmitIndexLength(ac.DimensionSizes[0]);
-        E.I32(size); E.I32(tid);
+        E.I32(size); E.Tid(tid);
         E.Call(Rt.AllocArray);
         if (ac.Initializer == null) return Own.Owned;
         int arr = E.AddLocal(ValType.I32);
@@ -890,7 +890,7 @@ sealed partial class FunctionCompiler
             E.Get(total); E.Get(dims[i]); E.Op(Op.I64ExtendI32U); E.Op(Op.I64Mul); E.Tee(total);
             E.I64(0x7FFFFFFF); E.Op(Op.I64GtU); E.If(); E.Call(D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "OutOfMemory").Fn); E.End();
         }
-        E.Get(total); E.Op(Op.I32WrapI64); E.I32(size); E.I32(tid); E.I32(Types.ArrayDataOffset(rank));
+        E.Get(total); E.Op(Op.I32WrapI64); E.I32(size); E.Tid(tid); E.I32(Types.ArrayDataOffset(rank));
         E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocArrayWithHeader", 4).Fn);
         int arr = E.AddLocal(ValType.I32); E.Set(arr);
         for (int i = 0; i < rank; i++) { E.Get(arr); E.Get(dims[i]); E.Store(Op.I32Store, Types.ArrayData + 4 * i); }
@@ -958,7 +958,7 @@ sealed partial class FunctionCompiler
         {
             var et = T.Canonical(at.ElementType);
             int tid = D.MarkConstructed(at);
-            E.I32(ce.Elements.Length); E.I32(T.StorageOf(et).size); E.I32(tid); E.Call(Rt.AllocArray);
+            E.I32(ce.Elements.Length); E.I32(T.StorageOf(et).size); E.Tid(tid); E.Call(Rt.AllocArray);
             int arr = E.AddLocal(ValType.I32); E.Set(arr);
             var slot = new Slot { Local = arr, Type = at };
             RegisterTemp(slot);
@@ -973,7 +973,7 @@ sealed partial class FunctionCompiler
             var et = T.Canonical(span.TypeArguments[0]);
             var arrT = D.LibCompilation.CreateArrayTypeSymbol(et);
             int tid = D.MarkConstructed(arrT);
-            E.I32(ce.Elements.Length); E.I32(T.StorageOf(et).size); E.I32(tid); E.Call(Rt.AllocArray);
+            E.I32(ce.Elements.Length); E.I32(T.StorageOf(et).size); E.Tid(tid); E.Call(Rt.AllocArray);
             int arr = E.AddLocal(ValType.I32); E.Set(arr);
             var slot = new Slot { Local = arr, Type = arrT };
             RegisterTemp(slot);
@@ -991,7 +991,7 @@ sealed partial class FunctionCompiler
             int tid = D.MarkConstructed(t);
             var layout = T.LayoutOf(t);
             int obj = E.AddLocal(ValType.I32);
-            E.I32(Math.Max(layout.Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+            E.I32(Math.Max(layout.Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
             var slot = new Slot { Local = obj, Type = t };
             RegisterTemp(slot);
             CallWith(ctorR, false, () => E.Get(obj), () => { for (int i = 0; i < ctorR.Parameters.Length; i++) PushArg(ctorR.Parameters[i], null); }, null, ce.Syntax);
@@ -1017,7 +1017,7 @@ sealed partial class FunctionCompiler
             }
             var arrT = D.LibCompilation.CreateArrayTypeSymbol(et);
             int tid = D.MarkConstructed(arrT);
-            E.I32(ce.Elements.Length); E.I32(T.StorageOf(et).size); E.I32(tid); E.Call(Rt.AllocArray);
+            E.I32(ce.Elements.Length); E.I32(T.StorageOf(et).size); E.Tid(tid); E.Call(Rt.AllocArray);
             int arr = E.AddLocal(ValType.I32); E.Set(arr);
             var slot = new Slot { Local = arr, Type = arrT };
             RegisterTemp(slot);
@@ -1070,7 +1070,7 @@ sealed partial class FunctionCompiler
         int target = Scratch(ValType.I32); E.Set(target);
         int tid = D.MarkConstructed(dt);
         var layout = T.LayoutOf(dt);
-        E.I32(Math.Max(layout.Size, 24)); E.I32(tid); E.Call(Rt.AllocObject);
+        E.I32(Math.Max(layout.Size, 24)); E.Tid(tid); E.Call(Rt.AllocObject);
         int obj = Scratch(ValType.I32); E.Tee(obj);
         E.Get(target); E.Store(Op.I32Store, DelegateTarget);
         E.Get(obj); E.I32Fn(D.Module, fn); E.Store(Op.I32Store, DelegateFn);

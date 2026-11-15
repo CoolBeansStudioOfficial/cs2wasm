@@ -164,7 +164,7 @@ sealed partial class FunctionCompiler
                 {
                     var tt = T.Resolve(to.TypeOperand, Map);
                     if (tt.TypeKind == TypeKind.Enum) D.MarkConstructed(tt); // Enum's API reads its table
-                    E.I32(D.TypeId(tt));
+                    E.Tid(D.TypeId(tt));
                     var fromId = D.LibType("System.Type").GetMembers("FromId").OfType<IMethodSymbol>().First();
                     E.Call(D.Method(fromId).Fn);
                     return Own.Owned;
@@ -543,10 +543,20 @@ sealed partial class FunctionCompiler
 
     static IFieldSymbol StorageField(IFieldSymbol f) => f.CorrespondingTupleField ?? f;
 
-    bool IsKnownNonNull(IOperation op)
+    bool IsKnownNonNull(IOperation op, int depth = 0)
     {
         while (op is IConversionOperation c && c.Conversion.IsReference) op = c.Operand;
+        if (op is ILocalReferenceOperation lr && depth < 4) return LocalKnownNonNull(lr.Local, depth);
         return op is IInstanceReferenceOperation or IObjectCreationOperation or IArrayCreationOperation or IDelegateCreationOperation || (op.ConstantValue.HasValue && op.ConstantValue.Value != null);
+    }
+
+    /// <summary>A local of this method assigned only by its declaration, from a value that is never null.</summary>
+    bool LocalKnownNonNull(ILocalSymbol l, int depth)
+    {
+        if (l.IsRef || l.Type.IsValueType || WrittenLocals().Contains(l)) return false;
+        var decl = l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
+        if (decl == null || !M.OriginalDefinition.DeclaringSyntaxReferences.Any(r => r.SyntaxTree == decl.SyntaxTree && r.Span.Contains(decl.Span))) return false;
+        return D.ModelFor(decl.SyntaxTree).GetOperation(decl) is IVariableDeclaratorOperation { Initializer.Value: { } init } && IsKnownNonNull(init, depth + 1);
     }
 
     void NullCheck()
@@ -1006,7 +1016,7 @@ sealed partial class FunctionCompiler
         if (Types.IsStruct(vt))
         {
             int src = Scratch(ValType.I32); E.Set(src);
-            E.I32(dataOff + size); E.I32(tid); E.Call(Rt.AllocObject);
+            E.I32(dataOff + size); E.Tid(tid); E.Call(Rt.AllocObject);
             int obj = Scratch(ValType.I32); E.Tee(obj);
             E.I32(dataOff); E.Op(Op.I32Add); E.Get(src); CopyStructInit(vt);
             E.Get(obj);
@@ -1015,7 +1025,7 @@ sealed partial class FunctionCompiler
         }
         var wt = Types.WasmType(vt)!.Value;
         int val = Scratch(wt); E.Set(val);
-        E.I32(dataOff + size); E.I32(tid); E.Call(Rt.AllocObject);
+        E.I32(dataOff + size); E.Tid(tid); E.Call(Rt.AllocObject);
         int o2 = Scratch(ValType.I32); E.Tee(o2);
         E.Get(val); E.Store(Types.StoreOp(vt), dataOff);
         E.Get(o2);
@@ -2638,7 +2648,7 @@ sealed partial class FunctionCompiler
             // the hand-written library's spans are over arrays
             var arrT = D.LibCompilation.CreateArrayTypeSymbol(et);
             int tid = D.MarkConstructed(arrT);
-            PushCount(); E.I32(size); E.I32(tid); E.Call(Rt.AllocArray);
+            PushCount(); E.I32(size); E.Tid(tid); E.Call(Rt.AllocArray);
             int arr = E.AddLocal(ValType.I32); E.Set(arr);
             var slot = new Slot { Local = arr, Type = arrT };
             RegisterTemp(slot);

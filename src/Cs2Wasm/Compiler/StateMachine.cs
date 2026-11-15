@@ -163,7 +163,7 @@ sealed partial class FunctionCompiler
         using (BodyScope())
         {
             int obj = E.AddLocal(ValType.I32);
-            E.I32Addr(sizeAddr); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+            E.I32Addr(sizeAddr); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
             AddOwned(new Slot { Local = obj, Type = D.ObjectType });
             if (nested) { E.Get(obj); E.Get(_closure!.ParamLocal); E.Call(Rt.Retain); E.Store(Op.I32Store, 12); }
             foreach (var p in M.Parameters)
@@ -302,7 +302,7 @@ sealed partial class FunctionCompiler
             e.Get(0); e.Load(Op.I32Load, stateOff); e.I32(-2); e.Op(Op.I32Eq);
             e.If(); e.Get(0); e.I32(0); e.Store(Op.I32Store, stateOff); e.Get(0); e.Call(Rt.Retain); e.Op(Op.Return); e.End();
             int n = e.AddLocal(ValType.I32);
-            e.I32Addr(new LateAddr(() => machine.Size)); e.I32(tid); e.Call(Rt.AllocObject); e.Set(n);
+            e.I32Addr(new LateAddr(() => machine.Size)); e.Tid(tid); e.Call(Rt.AllocObject); e.Set(n);
             foreach (var p in M.Parameters)
             {
                 var (off, pt) = machine.Slots[p.OriginalDefinition];
@@ -337,7 +337,7 @@ sealed partial class FunctionCompiler
                 int tidB = D.MarkConstructed(et);
                 int dataOff = BoxDataOffset(T, et);
                 int b = e.AddLocal(ValType.I32);
-                e.I32(dataOff + T.StorageOf(et).size); e.I32(tidB); e.Call(Rt.AllocObject); e.Set(b);
+                e.I32(dataOff + T.StorageOf(et).size); e.Tid(tidB); e.Call(Rt.AllocObject); e.Set(b);
                 if (Types.IsStruct(et)) { e.Get(b); e.I32(dataOff); e.Op(Op.I32Add); e.Get(0); e.I32(curOff); e.Op(Op.I32Add); e.Call(Rt.CopyInit(et)); }
                 else { e.Get(b); e.Get(0); e.Load(Types.LoadOp(et), curOff); e.Store(Types.StoreOp(et), dataOff); }
                 e.Get(b);
@@ -403,7 +403,7 @@ sealed partial class FunctionCompiler
             e.Get(0); e.Load(Op.I32Load, stateOff); e.I32(-2); e.Op(Op.I32Eq);
             e.If(); e.Get(0); e.I32(0); e.Store(Op.I32Store, stateOff); e.Get(0); e.Call(Rt.Retain); e.Op(Op.Return); e.End();
             int n = e.AddLocal(ValType.I32);
-            e.I32Addr(new LateAddr(() => machine.Size)); e.I32(tid); e.Call(Rt.AllocObject); e.Set(n);
+            e.I32Addr(new LateAddr(() => machine.Size)); e.Tid(tid); e.Call(Rt.AllocObject); e.Set(n);
             foreach (var p in M.Parameters)
             {
                 var (off, pt) = machine.Slots[p.OriginalDefinition];

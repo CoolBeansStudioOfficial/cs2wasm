@@ -254,7 +254,7 @@ internal sealed partial class RuntimeFns
             e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
             foreach (var (id, at) in ConstructedArrays())
             {
-                e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
+                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
                 e.If(); e.I32(D.Types.StorageOf(D.Types.Canonical(at.ElementType)).size); e.Op(Op.Return); e.End();
             }
             e.I32(1);
@@ -267,7 +267,7 @@ internal sealed partial class RuntimeFns
             foreach (var (id, at) in ConstructedArrays())
             {
                 if (at.Rank == 1) continue;
-                e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
+                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
                 e.If(); e.I32(at.Rank); e.Op(Op.Return); e.End();
             }
             e.I32(1);
@@ -280,7 +280,7 @@ internal sealed partial class RuntimeFns
             foreach (var (id, at) in ConstructedArrays())
             {
                 if (!D.Types.NeedsRc(D.Types.Canonical(at.ElementType))) continue;
-                e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
+                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
                 e.If(); e.I32(1); e.Op(Op.Return); e.End();
             }
             e.I32(0);
@@ -295,7 +295,7 @@ internal sealed partial class RuntimeFns
             {
                 var et = D.Types.Canonical(at.ElementType);
                 if (!D.Types.NeedsRc(et)) continue;
-                e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
+                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
                 e.If(); e.Get(1); e.Get(2); e.Call(release ? ReleaseRange(et) : RetainRange(et)); e.Op(Op.Return); e.End();
             }
         }
@@ -332,7 +332,7 @@ internal sealed partial class RuntimeFns
                 relocs.Add((blob.Count, D.StringLiteral(name))); I32b(0); I32b(0);
             }
             var addr = D.DataBlob([.. blob], 8, relocs);
-            e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
+            e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
             e.If(); e.I32Addr(addr); e.Op(Op.Return); e.End();
         }
         e.Op(Op.Unreachable);

@@ -563,14 +563,14 @@ sealed partial class RuntimeGen
             e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
             foreach (var (id, f) in per)
             {
-                e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
+                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
                 e.If(); e.Get(0); e.Call(f); e.Op(Op.Return); e.End();
             }
         }
         Dispatch(rt.ArenaClearFnIfMade, clearFns);
         Dispatch(rt.ArenaFreeFnIfMade, freeFns);
         Dispatch(rt.ArenaVisitFnIfMade, visitFns);
-        if (rt.SccOfIfMade is { } scc) EmitIdTable(scc, D.TypeById.Count, i => (null, ar.SccOf(i)));
+        _emitScc = () => { if (rt.SccOfIfMade is { } scc) EmitIdTable(scc, D.TypeById.Count, i => (null, ar.SccOf(i))); };
     }
 
     IMethodSymbol? FindFinalizer(ITypeSymbol t)
@@ -678,9 +678,11 @@ sealed partial class RuntimeGen
     /// destructor in the destroy dispatch. Fixpoint: liveness over calls, the stub cases and destructors of the types
     /// still constructed; then the types constructed by live functions (or outside any function); until nothing changes.
     /// </summary>
+    HashSet<WasmFunction>? _prunedLive;
     void PruneConstructed()
     {
         var types = D.Constructed.ToHashSet();
+        var unboxThrows = D.Rt.BoxTests.Values.Where(x => !x.exact).ToDictionary(x => x.fn, x => D.Rt.ThrowInvalidCast(x.type));
         while (true)
         {
             var destroyOf = new Dictionary<WasmFunction, int>();
@@ -692,9 +694,12 @@ sealed partial class RuntimeGen
                         foreach (var (k, c) in stub.Cases)
                             if (c.impl != null && (k.StartsWith("synthetic#") || types.Contains(int.Parse(k[(k.LastIndexOf('#') + 1)..])))) r.Add(c.impl.Fn);
                 if (f == D.Rt.Destroy) foreach (var (id, df) in _destroyFns) if (types.Contains(id)) r.Add(df);
+                // (the unbox tests are written after pruning: a failed unbox throws InvalidCastException)
+                if (unboxThrows.TryGetValue(f, out var th)) r.Add(th);
                 return r;
             });
             var next = types.Where(id => !D.ConstructedBy.TryGetValue(id, out var by) || by.Contains(null) || by.Any(f => f != null && live.Contains(f))).ToHashSet();
+            _prunedLive = live;
             if (next.Count == types.Count) break;
             types = next;
         }
@@ -706,21 +711,25 @@ sealed partial class RuntimeGen
         foreach (var id in _destroyFns.Keys.ToList()) if (!types.Contains(id)) _destroyFns.Remove(id);
     }
 
+    Action? _emitScc;
+
     public void Finish()
     {
         CloseTypeInfo();
         if (D.Arenas.Enabled) EmitArenaSupport();
-        D.EmitReflectionTables();
         EmitOnDestroy();
         D.Rt.EmitCctorSupport(D.UsesThreads);
         var ecOwner = Library.UseUpstream ? "AsyncSupport" : "ExecutionContext";
         D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled),
                            D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled));
-        D.EmitSharing(D.UsesThreads, Enumerable.Range(0, D.TypeById.Count).Where(id => D.Constructed.Contains(id)).Select(id => (id, D.TypeById[id])));
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
         D.Rt.EmitArrayDispatch();
         // (every function but the dispatch tables below exists now)
         PruneConstructed();
+        AssignTypeIds();
+        _emitScc?.Invoke();
+        D.EmitReflectionTables();
+        D.EmitSharing(D.UsesThreads, Enumerable.Range(0, D.TypeById.Count).Where(id => D.Constructed.Contains(id)).Select(id => (id, D.TypeById[id])));
         EmitDestroyDispatch();
         EmitStubs();
         EmitTypeTests();
@@ -756,7 +765,7 @@ sealed partial class RuntimeGen
     void EmitDestroyDispatch()
     {
         var e = new Emitter(D.Rt.Destroy);
-        int n = D.TypeById.Count;
+        int n = D.TypeCount;
         var targets = new Label[n];
         var dflt = e.Block();
         var blocks = new Label[n];
@@ -766,7 +775,7 @@ sealed partial class RuntimeGen
         for (int i = 0; i < n; i++)
         {
             e.End();
-            if (_destroyFns.TryGetValue(i, out var fn)) { e.Get(0); e.Call(fn); e.Op(Op.Return); }
+            if (_destroyFns.TryGetValue(D.IntId(i), out var fn)) { e.Get(0); e.Call(fn); e.Op(Op.Return); }
             else e.Op(Op.Unreachable);
         }
         e.End();
@@ -788,7 +797,7 @@ sealed partial class RuntimeGen
             foreach (var (ckey, (type, impl, boxed)) in stub.Cases)
             {
                 int id = ckey.StartsWith("synthetic#") ? int.Parse(ckey[10..]) : D.TypeId(type);
-                e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
+                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
                 e.If();
                 for (int i = 0; i < nparams; i++)
                 {
@@ -841,8 +850,9 @@ sealed partial class RuntimeGen
         }
     }
 
-    static void EmitIdSetTest(Emitter e, int tid, List<int> ids)
+    void EmitIdSetTest(Emitter e, int tid, List<int> internalIds)
     {
+        var ids = internalIds.Select(D.ExtId).Where(x => x >= 0).Distinct().ToList();
         ids.Sort();
         e.I32(0);
         // runs of consecutive ids become range checks
@@ -861,7 +871,7 @@ sealed partial class RuntimeGen
     void EmitTypeNames()
     {
         { var e = new Emitter(D.Rt.TypeNameFn); e.Get(0); e.Load(Op.I32Load, 4); e.Call(D.Rt.TypeNameById); }
-        int n = D.TypeById.Count;
+        int n = D.TypeCount;
         string Full(int i) => i == 0 ? "?" : D.SyntheticById.TryGetValue(i, out var syn) ? syn.Name : D.DisplayById.ContainsKey(i) ? "<>c__DisplayClass" : Driver.ClrName(D.TypeById[i]);
         string Short(int i)
         {
@@ -895,24 +905,38 @@ sealed partial class RuntimeGen
         return f;
     }
 
-    void EmitIdTable(WasmFunction fn, int n, Func<int, (IAddress? addr, int value)> entry)
+    void EmitIdTable(WasmFunction fn, int nInternal, Func<int, (IAddress? addr, int value)> entryOfInternal)
     {
+        int n = D.TypeCount;
+        (IAddress?, int) entry(int ext) => entryOfInternal(D.IntId(ext));
+        // a table in the data (narrowest element that holds every value; addresses are relocated), read by index;
+        // an id out of range reads as type 0's entry
         var e = new Emitter(fn);
-        var dflt = e.Block();
-        var blocks = new Label[n];
-        for (int i = n - 1; i >= 0; i--) blocks[i] = e.Block();
-        e.Get(0);
-        e.BrTable(blocks, dflt);
+        var vals = Enumerable.Range(0, n).Select(entry).ToList();
+        bool addrs = vals.Any(x => x.Item1 != null);
+        int lo = addrs ? 0 : vals.Min(x => x.Item2), hi = addrs ? 0 : vals.Max(x => x.Item2);
+        var (width, load) = addrs ? (4, Op.I32Load)
+            : lo >= 0 && hi <= 255 ? (1, Op.I32Load8U) : lo >= -128 && hi <= 127 ? (1, Op.I32Load8S)
+            : lo >= 0 && hi <= 65535 ? (2, Op.I32Load16U) : lo >= -32768 && hi <= 32767 ? (2, Op.I32Load16S) : (4, Op.I32Load);
+        var blob = new byte[n * width];
+        var relocs = new List<(int, IAddress)>();
         for (int i = 0; i < n; i++)
         {
-            e.End();
-            var (a, v) = entry(i);
-            if (a != null) e.I32Addr(a); else e.I32(v);
-            e.Op(Op.Return);
+            var (a, v) = vals[i];
+            if (a != null) relocs.Add((i * 4, a));
+            else for (int b = 0; b < width; b++) blob[i * width + b] = (byte)(v >> (8 * b));
         }
-        e.End();
-        var (a0, v0) = entry(0);
+        var table = relocs.Count > 0 ? D.DataBlob(blob, width, relocs) : D.DataBlob(blob, width);
+        e.Get(0); e.I32(n); e.Op(Op.I32LtU);
+        e.If(ValType.I32);
+        e.Get(0);
+        if (width > 1) { e.I32(width == 2 ? 1 : 2); e.Op(Op.I32Shl); }
+        e.I32Addr(table); e.Op(Op.I32Add);
+        e.Load(load);
+        e.Else();
+        var (a0, v0) = vals[0];
         if (a0 != null) e.I32Addr(a0); else e.I32(v0);
+        e.End();
     }
 
     void EmitInit()
@@ -1093,13 +1117,14 @@ internal sealed partial class Driver
         int nfn = enc.FunctionOrder.Count == 0 ? 0 : enc.FunctionOrder.Max(f => f.Index) + 1;
         fr.U32(nfn);
         var bits = new byte[(nfn + 7) / 8];
-        foreach (var f in enc.FunctionOrder) if (f.FrameName != null) bits[f.Index >> 3] |= (byte)(1 << (f.Index & 7));
+        var onStack = FramesSeenByTraces(enc.FunctionOrder);
+        foreach (var f in enc.FunctionOrder) if (f.FrameName != null && onStack.Contains(f)) bits[f.Index >> 3] |= (byte)(1 << (f.Index & 7));
         fr.Bytes(bits);
         var strings = new List<string>();
         var stringIndex = new Dictionary<string, int>();
         int Str(string s) { if (!stringIndex.TryGetValue(s, out int i)) { i = strings.Count; strings.Add(s); stringIndex[s] = i; } return i; }
         var framesW = new Writer();
-        var libFrames = enc.FunctionOrder.Select(f => (f, i: f.Index)).Where(x => x.f.FrameName != null && !x.f.ProgramCode).ToList();
+        var libFrames = enc.FunctionOrder.Select(f => (f, i: f.Index)).Where(x => x.f.FrameName != null && !x.f.ProgramCode && onStack.Contains(x.f)).ToList();
         framesW.U32(libFrames.Count);
         foreach (var (f, i) in libFrames)
         {
@@ -1180,6 +1205,46 @@ internal sealed partial class Driver
         }
         sb.Append("\"}");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// The functions that can be on the stack when a trace is taken: the stack is read only when an exception is
+    /// thrown (Rt.OnThrow) or caught (Rt.OnCatch), so only functions that can reach one of those (by calls; an
+    /// indirect call reaches whatever a table function reaches) ever appear in a trace or a frame count.
+    /// </summary>
+    HashSet<WasmFunction> FramesSeenByTraces(List<WasmFunction> fns)
+    {
+        var targets = new HashSet<WasmFunction>();
+        foreach (var n in new[] { "OnThrow", "OnCatch" })
+            if (_methods.Values.FirstOrDefault(m => m.Sym.Name == n && m.Sym.ContainingType?.ToDisplayString() == "Cs2Wasm.Runtime.Rt") is { } mi) targets.Add(mi.Fn);
+        var callers = new Dictionary<WasmFunction, List<WasmFunction>>();
+        var indirect = new List<WasmFunction>();
+        var inTable = new HashSet<WasmFunction>();
+        foreach (var f in fns)
+            foreach (var ins in f.Body)
+            {
+                if (ins.Op == Op.CallIndirect) indirect.Add(f);
+                else if (ins.Ref is WasmFunction g && ins.Op == Op.Call)
+                {
+                    if (!callers.TryGetValue(g, out var l)) callers[g] = l = [];
+                    l.Add(f);
+                }
+                else if (ins.Ref is WasmFunction t && ins.Op == Op.I32Const) inTable.Add(t);
+            }
+        foreach (var f in fns) if (f.TableRoot) inTable.Add(f);
+        var seen = new HashSet<WasmFunction>();
+        var work = new Stack<WasmFunction>();
+        void Mark(WasmFunction f)
+        {
+            if (!seen.Add(f)) return;
+            work.Push(f);
+            if (inTable.Contains(f)) { foreach (var c in indirect) Mark(c); indirect.Clear(); }
+        }
+        foreach (var t in targets) Mark(t);
+        if (targets.Count == 0) foreach (var f in fns) seen.Add(f);
+        while (work.Count > 0)
+            if (callers.TryGetValue(work.Pop(), out var cs)) foreach (var c in cs) Mark(c);
+        return seen;
     }
 
     static void Vlq(StringBuilder sb, int v)

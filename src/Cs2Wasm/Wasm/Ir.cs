@@ -74,6 +74,17 @@ internal sealed class FuncType : IEquatable<FuncType>
 /// <summary>A value whose address is fixed only when the module is laid out (statics, literals, tables).</summary>
 internal interface IAddress { int Address { get; } }
 
+/// <summary>An i32.const that is a type id: the compiler numbers the types the module needs only at the end
+/// (Driver.AssignTypeIds), and the encoder writes that number.</summary>
+internal sealed class TypeIdRef
+{
+    public readonly int Id;
+    TypeIdRef(int id) { Id = id; }
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<int, TypeIdRef> s_all = new();
+    public static TypeIdRef Of(int id) => s_all.GetOrAdd(id, i => new TypeIdRef(i));
+    public override string ToString() => "type#" + Id;
+}
+
 internal sealed class FixedAddress(int a) : IAddress { public int Address { get; } = a; }
 
 internal readonly record struct SourcePos(int File, int Line);

@@ -21,6 +21,8 @@ internal sealed class Emitter
     }
 
     public void I32(int v) => Emit(Wasm.Op.I32Const, v);
+    /// <summary>A type id (by the compiler's internal numbering; the module's number is written by the encoder).</summary>
+    public void Tid(int id) => Emit(Wasm.Op.I32Const, id, 0, TypeIdRef.Of(id));
     /// <summary>A function's table index (a delegate's or filter's target): the function is live only while some
     /// live code loads it.</summary>
     public void I32Fn(WasmModule m, WasmFunction f) => Emit(Wasm.Op.I32Const, m.TableSlot(f), 0, f);

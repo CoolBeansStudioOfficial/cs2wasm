@@ -260,7 +260,7 @@ sealed partial class FunctionCompiler
         if (d.Local < 0) d.Local = E.AddLocal(ValType.I32);
         // release the previous iteration's display, allocate a fresh one
         E.Get(d.Local); E.Call(Rt.Release);
-        E.I32(d.Size); E.I32(d.TypeId); E.Call(Rt.AllocObject); E.Set(d.Local);
+        E.I32(d.Size); E.Tid(d.TypeId); E.Call(Rt.AllocObject); E.Set(d.Local);
         E.Get(d.Local); PushDisplayPtr(d.Parent, retain: true); E.Store(Op.I32Store, 12);
         if (key == s_fnKey)
         {
