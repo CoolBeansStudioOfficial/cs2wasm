@@ -66,7 +66,8 @@ static partial class Locals
             }
         // a borrow: retained into a local and released again before anything could drop the owner's reference (no
         // call, store, or control flow in between, nothing else reads the local after)
-        for (int i = 0; i + 1 < n; i++)
+        // (with threads another thread may drop the owner's reference meanwhile: the count keeps the value alive)
+        for (int i = 0; i + 1 < n && !Threads; i++)
         {
             if (!IsRt(b[i], "rt.retain") || b[i + 1].Op is not (Op.LocalSet or Op.LocalTee)) continue;
             int t = (int)b[i + 1].Imm;

@@ -5,13 +5,13 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 44 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 45 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
   and concurrent collections, `typeof` and seeded `Random`, records, reference cycles, weak references and
   finalizers, reflection, decimal, date and time, enum formatting, spans and `stackalloc`, `ref struct`, ref returns,
-  C# 14 extension members) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
+  C# 14 extension members, value-type equality) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
   GodotSharp math proof (proof 2).
 - **API checks:** 16 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
   custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
@@ -339,4 +339,6 @@ the Node2D wrapper generator, `hello2d`, and self-hosting).
 
 - `Environment.NewLine` is `\n` (as .NET on Linux and in browsers); the test runner normalizes .NET-on-Windows output.
 - `IntPtr.Size` is 4 (32-bit WASM).
-- `ValueType.Equals`/`GetHashCode` for structs that do not override them compare addresses / return 0.
+- `ValueType.GetHashCode` for structs that do not override it hashes the value's bytes (FNV-1a), not .NET's
+  per-process randomized hash; both are legal, and cs2wasm's is the same on every machine (section 7.3).
+  `ValueType.Equals` is .NET's: bytes when the struct can be compared bit by bit, else field by field.

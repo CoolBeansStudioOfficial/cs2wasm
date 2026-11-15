@@ -111,7 +111,8 @@ sealed partial class FunctionCompiler
                     ToCallSafe(o, recvType);
                     if (!IsKnownNonNull(instance)) NullCheckKeep();
                 };
-                if (recvType is INamedTypeSymbol { IsSealed: true } sealedT && virt && sealedT.TypeKind == TypeKind.Class)
+                // (anonymous types' Equals/GetHashCode/ToString are synthesized: no symbol to find, so they dispatch)
+                if (recvType is INamedTypeSymbol { IsSealed: true, IsAnonymousType: false } sealedT && virt && sealedT.TypeKind == TypeKind.Class)
                 {
                     var impl = D.Implementation(sealedT, m);
                     if (impl != null) { m = impl; virt = false; }
@@ -648,9 +649,6 @@ sealed partial class FunctionCompiler
                     E.Call(Rt.RetainRange(et));
                     return Own.None;
                 }
-            case "Generic.Equals": E.Call(Rt.GenericEquals(T.Canonical(m.TypeArguments[0]))); return Own.None;
-            case "Generic.Hash": E.Call(Rt.GenericHash(T.Canonical(m.TypeArguments[0]))); return Own.None;
-            case "Generic.Compare": E.Call(Rt.GenericCompare(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Array.ElementSize": case "Cs2WasmArrays.ElementSize": E.Call(Rt.ArrayElemSize); return Own.None;
             case "Array.RankOf": case "Cs2WasmArrays.RankOf": E.Call(Rt.ArrayRank); return Own.None;
             case "Array.HasCountedElements": case "Cs2WasmArrays.HasCountedElements": E.Call(Rt.ArrayCounted); return Own.None;

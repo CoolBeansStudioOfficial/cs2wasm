@@ -400,7 +400,7 @@ internal sealed partial class RuntimeFns
             // struct: Equals(T) if declared, else Equals(object) through a box
             var eqT = FindMethod(t, "Equals", t);
             if (eqT != null) { e.Get(0); e.Get(1); e.Call(D.Method(eqT).Fn); return; }
-            var slow = D.LibMethod("System.Collections.Generic.Generic", "SlowEquals").Sym;
+            var slow = D.LibMethod("Cs2Wasm.Runtime.Generics", "SlowEquals").Sym;
             e.Get(0); e.Get(1); e.Call(D.Method(slow.Construct(t)).Fn);
         });
     }
@@ -448,51 +448,6 @@ internal sealed partial class RuntimeFns
             var h = FindMethod(t, "GetHashCode", null);
             if (h != null && Types.Key(D.Types.Canonical(h.ContainingType)) == Types.Key(t)) { e.Get(0); e.Call(D.Method(h).Fn); return; }
             e.I32(0);
-        });
-    }
-
-    public WasmFunction GenericCompare(ITypeSymbol t)
-    {
-        var w = W(t);
-        return GenericFn("compare", t, FT([w, w], [I]), e =>
-        {
-            var p = Types.PrimOf(t);
-            if (p != Prim.None)
-            {
-                bool f = Types.IsFloat(p), signed = Types.IsSigned(p);
-                Op lt = (w, signed) switch { (ValType.I64, true) => Op.I64LtS, (ValType.I64, false) => Op.I64LtU, (ValType.F32, _) => Op.F32Lt, (ValType.F64, _) => Op.F64Lt, (_, true) => Op.I32LtS, _ => Op.I32LtU };
-                Op gt = (w, signed) switch { (ValType.I64, true) => Op.I64GtS, (ValType.I64, false) => Op.I64GtU, (ValType.F32, _) => Op.F32Gt, (ValType.F64, _) => Op.F64Gt, (_, true) => Op.I32GtS, _ => Op.I32GtU };
-                e.Get(0); e.Get(1); e.Op(lt); e.If(); e.I32(-1); e.Op(Op.Return); e.End();
-                e.Get(0); e.Get(1); e.Op(gt); e.If(); e.I32(1); e.Op(Op.Return); e.End();
-                if (f)
-                {
-                    var ne = p == Prim.F32 ? Op.F32Ne : Op.F64Ne;
-                    // equal, or at least one NaN: NaN sorts first
-                    e.Get(0); e.Get(0); e.Op(ne);
-                    e.If(ValType.I32); e.Get(1); e.Get(1); e.Op(ne); e.If(ValType.I32); e.I32(0); e.Else(); e.I32(-1); e.End();
-                    e.Else(); e.Get(1); e.Get(1); e.Op(ne); e.End();
-                    return;
-                }
-                e.I32(0);
-                return;
-            }
-            var icT = D.Main.GetTypeByMetadataName("System.IComparable`1")!.Construct(t);
-            var ic = D.Main.GetTypeByMetadataName("System.IComparable")!;
-            bool hasGeneric = D.Types.IsSubtype(t, icT);
-            bool hasPlain = D.Types.IsSubtype(t, ic);
-            if (Types.IsRef(t))
-            {
-                e.Get(0); e.Op(Op.I32Eqz); e.If(); e.Get(1); e.Op(Op.I32Eqz); e.If(ValType.I32); e.I32(0); e.Else(); e.I32(-1); e.End(); e.Op(Op.Return); e.End();
-                e.Get(1); e.Op(Op.I32Eqz); e.If(); e.I32(1); e.Op(Op.Return); e.End();
-                if (hasGeneric) { e.Get(0); e.Get(1); e.Call(D.Stub(icT.GetMembers("CompareTo").OfType<IMethodSymbol>().First())); return; }
-                if (hasPlain) { e.Get(0); e.Get(1); e.Call(D.Stub(ic.GetMembers("CompareTo").OfType<IMethodSymbol>().First())); return; }
-                e.Call(D.LibMethod("System.Collections.Generic.Generic", "CompareFailed").Fn); e.I32(0);
-                return;
-            }
-            var cmp = FindMethod(t, "CompareTo", t);
-            if (cmp != null) { e.Get(0); e.Get(1); e.Call(D.Method(cmp).Fn); return; }
-            var slow = D.LibMethod("System.Collections.Generic.Generic", "SlowCompare").Sym;
-            e.Get(0); e.Get(1); e.Call(D.Method(slow.Construct(t)).Fn);
         });
     }
 }

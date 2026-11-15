@@ -384,7 +384,10 @@ sealed partial class RuntimeGen
                 var impl = D.Implementation(t, stub.Slot);
                 if (impl == null) continue;
                 bool boxed = t.IsValueType && Types.Key(D.Types.Canonical(impl.ContainingType)) == Types.Key(D.Types.Canonical(t));
-                var mi = D.Method(impl, stub.Consts);
+                var mi = t.IsValueType && impl.Name == "Equals" && impl.Parameters.Length == 1 && impl.ContainingType.SpecialType == SpecialType.System_ValueType
+                    && !FunctionCompiler.CanCompareBits(D.Types, t) && Types.PrimOf(t) == Prim.None && t.TypeKind != TypeKind.Enum
+                    ? FunctionCompiler.ValueEquals(D, t, stub.Slot)
+                    : D.Method(impl, stub.Consts);
                 stub.Cases[Types.Key(t) + "#" + id] = (t, mi, boxed);
                 any = true;
             }
@@ -607,9 +610,6 @@ sealed partial class RuntimeGen
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
             D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
-        // the engine pumps posted work and timers each frame (section 4.5)
-        if (D.AllMethods.Any(m => m.Sym.Name is "Post" or "AddTimer" && m.Sym.ContainingType?.Name == "Scheduler" && m.Compiled))
-            Export("cs2wasm_run_pending", D.LibMethod("Cs2Wasm.Runtime.Scheduler", "RunPending", 0));
         // a worker instance starts here: its own stack, thread-local block and id, then the thread's delegate
         if (D.UsesThreads)
         {
@@ -725,6 +725,7 @@ sealed partial class RuntimeGen
                            D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled));
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
         D.Rt.EmitArrayDispatch();
+        D.Module.UsesThreads = D.UsesThreads;
         // single-threaded: what only another thread could make run goes (before pruning, so what it reached does)
         if (D.Rt.SingleThreadedIfMade is { } st)
         {
@@ -833,6 +834,7 @@ sealed partial class RuntimeGen
             var e = new Emitter(fn);
             var ids = D.Constructed.Where(id => D.SyntheticById.TryGetValue(id, out var syn)
                     ? syn.Interfaces.Any(i => Types.Key(i) == Types.Key(target)) || Types.IsObject(target)
+                      || id < D.TypeById.Count && D.TypeById[id] is { } st && Types.Key(st) == Types.Key(target)
                     : !D.DisplayById.ContainsKey(id) && D.Types.IsSubtype(D.TypeById[id], target)).ToList();
             e.Get(0); e.Op(Op.I32Eqz); e.If(); e.I32(0); e.Op(Op.Return); e.End();
             if (ids.Count == 0) { e.I32(0); continue; }

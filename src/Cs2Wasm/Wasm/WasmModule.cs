@@ -13,6 +13,8 @@ internal sealed class WasmModule
     public string MemoryModule = "env", MemoryName = "memory";
     public int MemoryMinPages = 256, MemoryMaxPages = 16384;
     public bool MemoryShared = true;
+    /// <summary>The program can start threads (another thread may drop a reference this one reads).</summary>
+    public bool UsesThreads = true;
 
     public WasmFunction AddFunction(string name, FuncType type)
     {
@@ -121,6 +123,7 @@ internal sealed class WasmModule
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_LOCALS") != "1")
             {
                 Locals.MayThrow = ComputeMayThrow();
+                Locals.Threads = UsesThreads;
                 try { foreach (var f in Functions) if (!f.IsImport) Locals.Run(f); }
                 finally { Locals.MayThrow = null; }
                 if (Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH") != "1")

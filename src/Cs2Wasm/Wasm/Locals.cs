@@ -31,6 +31,8 @@ static partial class Locals
 
     /// <summary>The functions an exception can come out of (WasmModule.Encode sets it before this pass); null: any call.</summary>
     [ThreadStatic] public static HashSet<WasmFunction>? MayThrow;
+    /// <summary>The program can start threads: a borrow is safe only from this thread's own changes.</summary>
+    [ThreadStatic] public static bool Threads;
 
     static bool IsThrowing(Op op) => op is Op.Call or Op.CallIndirect or Op.Throw or Op.ThrowRef;
     static bool IsThrowing(in Instr ins) => ins.Op is Op.CallIndirect or Op.Throw or Op.ThrowRef

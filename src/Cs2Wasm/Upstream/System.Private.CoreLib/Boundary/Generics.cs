@@ -15,5 +15,10 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern object NewOfNullableArg<T>(string openGenericClass);
         /// <summary>new Open&lt;T1, T2&gt;().</summary>
         [Intrinsic] public static extern object New<T1, T2>(string openGenericClass);
+
+        /// <summary>The compiler's generic equality for a struct without Equals(T) (records, tuples, anonymous types:
+        /// EqualityComparer&lt;T&gt;.Default's ObjectEqualityComparer): Equals(object) on the value.</summary>
+        public static bool SlowEquals<T>(T a, T b) => a!.Equals((object?)b);
+
     }
 }

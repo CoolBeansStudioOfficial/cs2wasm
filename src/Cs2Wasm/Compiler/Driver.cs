@@ -197,6 +197,8 @@ internal sealed partial class Driver
     public WasmFunction? CurrentFn;
     /// <summary>For each constructed type: the functions that construct it; null in the set: made outside any.</summary>
     public readonly Dictionary<int, HashSet<WasmFunction?>> ConstructedBy = [];
+    /// <summary>Field-wise ValueType.Equals per struct (ValueEquality.cs).</summary>
+    public readonly Dictionary<string, MethodInst> ValueEqualsFns = [];
 
     public int MarkConstructed(ITypeSymbol t)
     {
