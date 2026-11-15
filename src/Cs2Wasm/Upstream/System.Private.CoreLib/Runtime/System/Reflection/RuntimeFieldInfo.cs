@@ -310,7 +310,7 @@ namespace System.Reflection
             }
         }
 
-                internal static int get_metadata_token(RuntimeFieldInfo monoField) => 0x04000000 | (monoField.Entry & 0xFFFFFF);
+                internal static int get_metadata_token(RuntimeFieldInfo monoField) => Cs2Wasm.Runtime.Meta.I(monoField.Entry, 7);
 
                 private Type[] GetTypeModifiers(bool optional, int genericArgumentPosition = -1) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetTypeModifiers): cs2wasm's reflection reads the compiler's metadata");
 

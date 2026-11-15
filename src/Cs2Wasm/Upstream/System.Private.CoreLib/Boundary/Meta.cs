@@ -16,7 +16,40 @@ namespace Cs2Wasm.Runtime
     /// </summary>
     internal static class Meta
     {
-        public const int FieldSize = 7, CtorSize = 8, MethodSize = 11, PropSize = 8;
+        public const int FieldSize = 8, CtorSize = 10, MethodSize = 13, PropSize = 9;
+
+        /// <summary>A parameter's default value from a defaults blob (Compiler/Reflection.cs: Defaults); DBNull when none.</summary>
+        public static object? DefaultValue(int defs, int i, Type parameterType)
+        {
+            int k = defs == 0 ? 0 : I(defs, 3 * i);
+            if (k == 0) return DBNull.Value;
+            int lo = I(defs, 3 * i + 1), hi = I(defs, 3 * i + 2);
+            long wide = (uint)lo | ((long)hi << 32);
+            object? v = (k & 0xFF) switch
+            {
+                1 => null,
+                2 => lo != 0,
+                3 => (char)lo,
+                4 => (sbyte)lo,
+                5 => (byte)lo,
+                6 => (short)lo,
+                7 => (ushort)lo,
+                8 => lo,
+                9 => (uint)lo,
+                10 => wide,
+                11 => (ulong)wide,
+                12 => BitConverter.Int32BitsToSingle(lo),
+                13 => BitConverter.Int64BitsToDouble(wide),
+                14 => S(lo),
+                _ => DBNull.Value,
+            };
+            if ((k & 0x100) != 0 && v != null)
+            {
+                var et = parameterType.IsByRef ? parameterType.GetElementType()! : parameterType;
+                v = Enum.ToObject(et, v);
+            }
+            return v;
+        }
         /// <summary>A by-ref type's id: its element's with this bit; a parameter word's out and in bits.</summary>
         public const int ByRef = 0x40000000, ParamOut = 0x20000000, ParamIn = 0x10000000;
         public const int FStatic = 1, FPublic = 2, FVirtual = 4, FAbstract = 8, FReadOnly = 16, FPrivate = 32, FFamily = 64, FAssembly = 128;
@@ -37,6 +70,9 @@ namespace Cs2Wasm.Runtime
             if ((flags & FStatic) != 0) a |= 0x10;
             if ((flags & FVirtual) != 0) a |= 0x40;
             if ((flags & FAbstract) != 0) a |= 0x400;
+            if ((flags & (1 << 13)) != 0) a |= 0x800; // SpecialName
+            if ((flags & (1 << 14)) != 0) a |= 0x20;  // Final
+            if ((flags & (1 << 15)) != 0) a |= 0x100; // NewSlot
             return (MethodAttributes)a;
         }
 

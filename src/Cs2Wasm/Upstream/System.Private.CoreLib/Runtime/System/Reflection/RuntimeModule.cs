@@ -400,7 +400,7 @@ namespace System.Reflection
         private protected override ModuleHandle GetModuleHandleImpl() => new ModuleHandle(_impl);
 
         // This calls ves_icall_reflection_get_token, so needs a Module argument
-                internal static int get_MetadataToken(Module module) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_MetadataToken): cs2wasm's reflection reads the compiler's metadata");
+                internal static int get_MetadataToken(Module module) => 0x00000001;
 
                 internal static int GetMDStreamVersion(IntPtr module) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetMDStreamVersion): cs2wasm's reflection reads the compiler's metadata");
 

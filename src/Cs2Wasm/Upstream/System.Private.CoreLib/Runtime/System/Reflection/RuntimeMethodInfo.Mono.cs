@@ -153,7 +153,11 @@ namespace System.Reflection
             {
                 int w = Cs2Wasm.Runtime.Meta.I(types, i);
                 int attrs = ((w & Cs2Wasm.Runtime.Meta.ParamOut) != 0 ? (int)ParameterAttributes.Out : 0) | ((w & Cs2Wasm.Runtime.Meta.ParamIn) != 0 ? (int)ParameterAttributes.In : 0);
-                r[i] = new RuntimeParameterInfo(Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(names, i)), Cs2Wasm.Runtime.Meta.TypeAt(w & ~(Cs2Wasm.Runtime.Meta.ParamOut | Cs2Wasm.Runtime.Meta.ParamIn)), i, attrs, DBNull.Value, member, null!);
+                var pt = Cs2Wasm.Runtime.Meta.TypeAt(w & ~(Cs2Wasm.Runtime.Meta.ParamOut | Cs2Wasm.Runtime.Meta.ParamIn));
+                // a default value: [opt] with a constant (HasDefault), as C# emits an optional parameter
+                var dv = Cs2Wasm.Runtime.Meta.DefaultValue(Cs2Wasm.Runtime.Meta.I(e, (h & 1) != 0 ? 8 : 11), i, pt);
+                if (dv != DBNull.Value) attrs |= (int)(ParameterAttributes.Optional | ParameterAttributes.HasDefault);
+                r[i] = new RuntimeParameterInfo(Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(names, i)), pt, i, attrs, dv!, member, null!);
             }
             return r;
         }
@@ -330,7 +334,7 @@ namespace System.Reflection
                 // cs2wasm: the records do not link overrides to the methods they override
                 internal static RuntimeMethodInfo get_base_method(RuntimeMethodInfo method, bool definition) => method;
 
-                internal static int get_metadata_token(RuntimeMethodInfo method) => 0x06000000 | ((int)method.mhandle & 0xFFFFFF);
+                internal static int get_metadata_token(RuntimeMethodInfo method) => Cs2Wasm.Runtime.Meta.I((int)method.mhandle, 12);
 
         public override MethodInfo GetBaseDefinition()
         {
@@ -1025,6 +1029,6 @@ namespace System.Reflection
             }
         }
 
-                internal static int get_metadata_token(RuntimeConstructorInfo method) => 0x06000000 | ((int)method.mhandle & 0xFFFFFF);
+                internal static int get_metadata_token(RuntimeConstructorInfo method) => Cs2Wasm.Runtime.Meta.I((int)method.mhandle - 1, 9);
     }
 }

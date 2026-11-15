@@ -2513,7 +2513,8 @@ namespace System
             }
         }
 
-                private static void GetNamespace(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.TypeInfo.Namespace(Cs2Wasm.Runtime.TypeInfo.Id(type)));
+        // (as Mono's: null for the global namespace)
+                private static void GetNamespace(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.TypeInfo.Namespace(Cs2Wasm.Runtime.TypeInfo.Id(type)) is { Length: > 0 } ns ? ns : null);
 
         public override string? Namespace
         {

@@ -529,7 +529,7 @@ namespace System.Reflection
             }
         }
 
-                internal static int get_metadata_token(RuntimePropertyInfo monoProperty) => 0x17000000 | ((int)monoProperty.prop & 0xFFFFFF);
+                internal static int get_metadata_token(RuntimePropertyInfo monoProperty) => Cs2Wasm.Runtime.Meta.I((int)monoProperty.prop, 8);
 
                 private static PropertyInfo internal_from_handle_type(IntPtr event_handle, IntPtr type_handle) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's internal_from_handle_type): cs2wasm's reflection reads the compiler's metadata");
 

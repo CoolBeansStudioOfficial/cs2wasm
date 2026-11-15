@@ -311,8 +311,12 @@ sealed partial class FunctionCompiler
                 E.Fn.Body = save;
                 v.Local = -1; v.AddrLocal = _fb; v.Offset = off;
             }
-            if (p.RefKind == RefKind.None && Types.IsRef(pt) && (_assignedParams.Contains(p) || _assignedParams.Contains(p.OriginalDefinition)))
+            // a parameter the body assigns, or whose address it takes (a `ref` argument can be written through:
+            // `MakeCount(ref args)`), owns its value: the caller's stays the caller's
+            if (p.RefKind == RefKind.None && Types.IsRef(pt) && (_assignedParams.Contains(p) || _assignedParams.Contains(p.OriginalDefinition)
+                || _addrTaken.Contains(p) || _addrTaken.Contains(p.OriginalDefinition)))
             {
+                _assignedParams.Add(p);
                 var save = E.Fn.Body; E.Fn.Body = _entryCode;
                 if (v.InMemory) { E.Get(v.AddrLocal); E.Load(Op.I32Load, v.Offset); E.Call(Rt.Retain); E.Op(Op.Drop); }
                 else { E.Get(v.Local); E.Call(Rt.Retain); E.Op(Op.Drop); }

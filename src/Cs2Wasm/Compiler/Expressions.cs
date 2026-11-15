@@ -13,6 +13,14 @@ sealed partial class FunctionCompiler
 
     void EmitDiscard(IOperation op)
     {
+        if (D.Dynamic.Any && D.Dynamic.Find(op, "op") is { } ds
+            && op is not (ICompoundAssignmentOperation { Target: not (IDynamicMemberReferenceOperation or IDynamicIndexerAccessOperation) }
+                or IIncrementOrDecrementOperation { Target: not (IDynamicMemberReferenceOperation or IDynamicIndexerAccessOperation) }))
+        {
+            var dso = EmitDynamicSite(op, ds);
+            if (!ds.Void) Drop(dso, D.ObjectType);
+            return;
+        }
         switch (op)
         {
             case ISimpleAssignmentOperation sa: if (!TryInstrumentedWrite(sa, () => EmitAssign(sa, needResult: false), out _)) EmitAssign(sa, needResult: false); return;
@@ -61,6 +69,7 @@ sealed partial class FunctionCompiler
             return EmitConstant(op.ConstantValue.Value, op.Type != null ? TypeOf(op) : null);
         if (op.Type is { SpecialType: SpecialType.System_Boolean } && Fold(op) is bool known) { E.I32(known ? 1 : 0); return Own.None; }
         if (op is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add } ub && Utf8Concat(ub) is { } u8bytes) return EmitUtf8Span(u8bytes, TypeOf(ub));
+        if (D.Dynamic.Any && TryEmitDynamic(op) is { } dyo) return dyo;
         switch (op)
         {
             // query syntax: Roslyn's translation (Where/Select/GroupBy... calls)
@@ -1700,7 +1709,7 @@ sealed partial class FunctionCompiler
         var lv = LValueOf(ca.Target);
         lv.Prepare();
         var vt = TypeOf(ca.Value);
-        var caOp = ca.OperatorMethod ?? (IsDecimal(tt) ? DecimalOpFor(ca.OperatorKind) : null);
+        var caOp = ca.OperatorMethod ?? DynamicOperatorSite(ca) ?? (IsDecimal(tt) ? DecimalOpFor(ca.OperatorKind) : null);
         if (caOp != null)
         {
             var m = caOp;
@@ -1820,7 +1829,7 @@ sealed partial class FunctionCompiler
         var lv = LValueOf(inc.Target);
         lv.Prepare();
         bool isInc = inc.Kind == OperationKind.Increment;
-        var incOp = inc.OperatorMethod ?? (IsDecimal(tt) ? DecimalOp(isInc ? "op_Increment" : "op_Decrement", 1) : null);
+        var incOp = inc.OperatorMethod ?? DynamicOperatorSite(inc) ?? (IsDecimal(tt) ? DecimalOp(isInc ? "op_Increment" : "op_Decrement", 1) : null);
         if (incOp != null)
         {
             Own cur = Own.None;

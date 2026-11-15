@@ -95,7 +95,8 @@ exception, before unwinding runs any `finally`. An exception thrown inside a fil
 filters pay nothing.
 
 Not done yet (a program using them gets a `CW0101` error naming the construct):
-- `dynamic` (Microsoft.CSharp is built, its binder not yet run) and `Reflection.Emit` (section 8);
+- `Reflection.Emit` (section 8); in `dynamic` code, `&&`/`||` with a static left operand, `ref`/`out` arguments of
+  dynamic calls and the value of a dynamic member's postfix `++`/`--`;
 - expression trees with captured variables, generic method calls, user-defined operators or statement bodies (a
   build error names the construct); `Expression.Compile` runs on upstream's interpreter (`046_expressions`);
 - filters inside iterators and async methods run in one pass (when the exception reaches their catch, after the
@@ -361,8 +362,20 @@ place) or a frame slot copied back for a reference; a null argument for a value 
 assemblies' names (a library's version and key token are the running .NET's, the program's as the C# compiler
 emits it); `FullName`/`AssemblyQualifiedName` qualify generic arguments with their assemblies, and nested types of
 generic types carry the outer arguments as .NET's do. Not done: `MakeGenericMethod` with arguments the compiler cannot
-see, `Assembly.GetTypes`/`GetType(name)`/`GetCallingAssembly`, `Reflection.Emit` and
-`dynamic`.
+see, `Assembly.GetTypes`/`GetType(name)`/`GetCallingAssembly` and `Reflection.Emit`.
+
+`dynamic` (`055_dynamic`, matching .NET's output and binder errors) runs on upstream's C# runtime binder
+(Microsoft.CSharp) as Roslyn lowers it: each dynamic operation is a `CallSite<D>` made once from `Binder.InvokeMember`,
+`GetMember`/`SetMember`, `GetIndex`/`SetIndex`, `Invoke`, `InvokeConstructor`, `BinaryOperation`, `UnaryOperation`
+or `Convert` with Roslyn's flags (`&&`/`||` as an `IsFalse`/`IsTrue` test, then the logical operator), argument infos and delegate type, written as C# in a generated class of the program
+(`Compiler/DynamicLowering.cs`) and called where the operation is; compound assignments and `++`/`--` on members get,
+operate and set. The binder binds against reflection: the member names the sites use are kept on every type the
+program names (and on generic definitions, which the binder reads), with what the binder asks of metadata now kept
+too: operators and conversions (`SpecialName`, `Final`, `NewSlot` attributes), indexers (`[DefaultMember]` as C#
+emits it), optional parameters' default values, `init` and `in` modifiers, one metadata token per definition (shared by
+a generic type's instances), generic parameters (position, attributes, constraints, declaring method), modules. Its
+expression trees run on upstream's interpreter. A program using `dynamic` carries the binder (about 3 MB, a minute
+to build).
 
 Also: a readonly field (or get-only auto-property) set only in constructors that keep `this` in is not an edge of
 the cycle analysis (section 4.3), so an exception's inner exception no longer brings the arena runtime into every

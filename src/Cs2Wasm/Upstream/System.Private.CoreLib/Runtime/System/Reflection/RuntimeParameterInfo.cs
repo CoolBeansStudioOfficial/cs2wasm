@@ -395,7 +395,17 @@ namespace System.Reflection
             }
         }
 
-                internal static Type[] GetTypeModifiers(Type type, MemberInfo member, int position, bool optional, int genericArgumentPosition = -1) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetTypeModifiers): cs2wasm's reflection reads the compiler's metadata");
+        // cs2wasm: the required modifiers C# emits that the records know: an init accessor's modreq(IsExternalInit)
+        // on its return, an `in` parameter's modreq(InAttribute); no optional ones
+        internal static Type[] GetTypeModifiers(Type type, MemberInfo member, int position, bool optional, int genericArgumentPosition = -1)
+        {
+            if (optional || genericArgumentPosition != -1 || member is not RuntimeMethodInfo m) return Type.EmptyTypes;
+            int e = (int)m.mhandle;
+            if (position == -1) return (Cs2Wasm.Runtime.Meta.I(e, 2) & (1 << 16)) != 0 ? [typeof(System.Runtime.CompilerServices.IsExternalInit)] : Type.EmptyTypes;
+            int types = Cs2Wasm.Runtime.Meta.I(e, 5);
+            return position < Cs2Wasm.Runtime.Meta.I(e, 4) && (Cs2Wasm.Runtime.Meta.I(types, position) & Cs2Wasm.Runtime.Meta.ParamIn) != 0
+                ? [typeof(System.Runtime.InteropServices.InAttribute)] : Type.EmptyTypes;
+        }
 
         internal static ParameterInfo New(ParameterInfo pinfo, Type? type, MemberInfo member, int position)
         {

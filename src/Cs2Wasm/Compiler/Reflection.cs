@@ -137,6 +137,22 @@ internal sealed partial class Driver
             foreach (var n in dec.GetMembers().OfType<IMethodSymbol>().Where(m => m.MethodKind is MethodKind.UserDefinedOperator or MethodKind.Conversion).Select(m => m.Name).Distinct())
                 keep.Keep(dec, n);
         }
+        if (Dynamic.Any)
+        {
+            for (int id = 0; id < TypeById.Count; id++)
+            {
+                if (TypeById[id] is not INamedTypeSymbol nt || nt.IsUnboundGenericType || nt.TypeArguments.Any(a => a is ITypeParameterSymbol) || SyntheticById.ContainsKey(id) || DisplayById.ContainsKey(id)) continue;
+                if (nt.ContainingNamespace?.ToDisplayString() is { } ns && (ns.StartsWith("Microsoft.CSharp") || ns.StartsWith("Cs2Wasm"))) continue;
+                foreach (var name in Dynamic.MemberNames)
+                    if (name != ".ctor" && nt.GetMembers(name).Any())
+                    {
+                        keep.Keep(nt, name);
+                        // (the binder reads a generic instance's members from its definition too)
+                        if (nt.IsGenericType && !SymbolEqualityComparer.Default.Equals(nt, nt.OriginalDefinition)) keep.Keep(nt.OriginalDefinition, name);
+                    }
+            }
+            foreach (var ct in Dynamic.ConstructedTypes) keep.Keep(ct, null, ctors: true);
+        }
         if (wantsDelegateMethod)
             foreach (var rm in delegateRefs)
                 if (rm.IsGenericMethod) keep.KeepInstance(rm.ContainingType, rm); else keep.Keep(rm.ContainingType, rm.Name);
@@ -150,7 +166,8 @@ internal sealed partial class Driver
         // thunks for the kept members (compiled in the next round)
         foreach (var (t, all, names, ctors) in keep.Types.Values.ToList())
             foreach (var m in KeptMembers(t, all, names, ctors))
-                if (m is not IMethodSymbol { IsGenericMethod: true } gd || !IsMethodDefinition(gd)) ThunkFor(m);
+                // (a generic method definition, or a member of a generic type definition, has no code: no thunk)
+                if ((m is not IMethodSymbol { IsGenericMethod: true } gd || !IsMethodDefinition(gd)) && !OfOpenType(m)) ThunkFor(m);
     }
 
     void Visit(IInvocationOperation op, TypeMap map, ReflectionKeep keep, bool input = true)
@@ -270,7 +287,7 @@ internal sealed partial class Driver
             var members = isObject ? x.GetMembers().OfType<IMethodSymbol>().Where(m => m.MethodKind == MethodKind.Ordinary).OrderBy(m => m.Name == "GetType" ? 0 : 1).Cast<ISymbol>() : x.GetMembers();
             foreach (var mem in members)
             {
-                bool want = all || names.Contains(mem.Name) || ctors && mem is IMethodSymbol { MethodKind: MethodKind.Constructor } && SymbolEqualityComparer.Default.Equals(x, t);
+                bool want = all || names.Contains(mem.Name) || names.Contains(mem.MetadataName) || ctors && mem is IMethodSymbol { MethodKind: MethodKind.Constructor } && SymbolEqualityComparer.Default.Equals(x, t);
                 if (!want) continue;
                 switch (mem)
                 {
@@ -284,11 +301,11 @@ internal sealed partial class Driver
                         if (_reflect != null && _reflect.GenericInstances.TryGetValue(Compiler.Types.Key(t), out var insts))
                             foreach (var inst in insts) if (SymbolEqualityComparer.Default.Equals(inst.OriginalDefinition, gm.OriginalDefinition)) yield return inst;
                         break;
-                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke or MethodKind.EventAdd or MethodKind.EventRemove } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !ms.ReturnType.IsRefLikeType && !ms.ReturnsByRef && !ms.ReturnsByRefReadonly && !ms.IsExtern:
+                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke or MethodKind.EventAdd or MethodKind.EventRemove or MethodKind.UserDefinedOperator or MethodKind.Conversion } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !ms.ReturnType.IsRefLikeType && !ms.ReturnsByRef && !ms.ReturnsByRefReadonly && !ms.IsExtern:
                         yield return ms; break;
                     case IMethodSymbol { MethodKind: MethodKind.Constructor } cs when SymbolEqualityComparer.Default.Equals(x, t) && cs.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !t.IsAbstract && !t.IsRefLikeType:
                         yield return cs; break;
-                    case IPropertySymbol ps when !ps.IsIndexer:
+                    case IPropertySymbol ps:
                         if (AutoPropertyField(ps.OriginalDefinition) is { } bf) yield return bf;
                         if (ps.GetMethod is { } g && !g.IsAbstract) yield return g;
                         if (ps.SetMethod is { } s2 && !s2.IsAbstract) yield return s2;
@@ -349,8 +366,17 @@ internal sealed partial class Driver
         }
     }
 
-    static IEnumerable<AttributeData> KeptAttributes(ISymbol s) => s.GetAttributes().Where(a => a.AttributeClass != null && a.AttributeConstructor != null
-        && a.AttributeClass.ContainingNamespace?.ToDisplayString() is not ("System.Runtime.CompilerServices" or "System.Diagnostics.CodeAnalysis" or "System.Runtime.InteropServices"));
+    IEnumerable<AttributeData> KeptAttributes(ISymbol s) => s.GetAttributes().Where(a => a.AttributeClass != null && a.AttributeConstructor != null
+        && a.AttributeClass.ContainingNamespace?.ToDisplayString() is not ("System.Runtime.CompilerServices" or "System.Diagnostics.CodeAnalysis" or "System.Runtime.InteropServices"))
+        .Concat(SynthesizedAttributes(s));
+
+    /// <summary>[DefaultMember(name)] on a type that declares an indexer, as the C# compiler emits it (from the
+    /// generated carrier class: DynamicLowering.cs).</summary>
+    IEnumerable<AttributeData> SynthesizedAttributes(ISymbol s)
+    {
+        if (s is not INamedTypeSymbol nt || nt.GetMembers().OfType<IPropertySymbol>().FirstOrDefault(p => p.IsIndexer) is not { } ix) yield break;
+        if (Main.GetTypeByMetadataName("Cs2Wasm.Generated.DefaultMember_" + ix.MetadataName)?.GetAttributes().FirstOrDefault() is { } a) yield return a;
+    }
 
     // ---------------- the tables (Finish, before memory layout) ----------------
     internal void EmitReflectionTables()
@@ -375,6 +401,53 @@ internal sealed partial class Driver
     }
 
     int ExtTypeId(ITypeSymbol t) => ExtId(TypeId(t));
+
+    // a member's metadata token: one per definition (List<int>.Add and List<T>.Add share it, as in metadata)
+    readonly Dictionary<string, int> _tokens = [];
+    int Token(int table, ISymbol m)
+    {
+        var key = table + Types.DocId(m.OriginalDefinition is IMethodSymbol { ReducedFrom: { } rf } ? rf : m.OriginalDefinition);
+        if (!_tokens.TryGetValue(key, out var t))
+        {
+            _tokenRows[table] = _tokenRows.GetValueOrDefault(table) + 1;
+            _tokens[key] = t = table | _tokenRows[table];
+        }
+        return t;
+    }
+    readonly Dictionary<int, int> _tokenRows = [];
+
+    /// <summary>A method's parameters' default values (0 when none has one): per parameter [kind, low, high],
+    /// kind 0 none, 1 null, else the constant's SpecialType kind (Meta.DefaultValue), with 0x100 for an enum.</summary>
+    int Defaults(IMethodSymbol m)
+    {
+        if (!m.Parameters.Any(p => p.HasExplicitDefaultValue)) return 0;
+        var l = new List<int>();
+        foreach (var p in m.Parameters)
+        {
+            if (!p.HasExplicitDefaultValue) { l.AddRange([0, 0, 0]); continue; }
+            var v = p.ExplicitDefaultValue;
+            int en = p.Type.TypeKind == TypeKind.Enum ? 0x100 : 0;
+            switch (v)
+            {
+                case null: l.AddRange([1, 0, 0]); break;
+                case bool b: l.AddRange([2 | en, b ? 1 : 0, 0]); break;
+                case char c: l.AddRange([3 | en, c, 0]); break;
+                case sbyte x: l.AddRange([4 | en, x, 0]); break;
+                case byte x: l.AddRange([5 | en, x, 0]); break;
+                case short x: l.AddRange([6 | en, x, 0]); break;
+                case ushort x: l.AddRange([7 | en, x, 0]); break;
+                case int x: l.AddRange([8 | en, x, 0]); break;
+                case uint x: l.AddRange([9 | en, (int)x, 0]); break;
+                case long x: l.AddRange([10 | en, (int)x, (int)(x >> 32)]); break;
+                case ulong x: l.AddRange([11 | en, (int)x, (int)(x >> 32)]); break;
+                case float x: l.AddRange([12, BitConverter.SingleToInt32Bits(x), 0]); break;
+                case double x: { long bits = BitConverter.DoubleToInt64Bits(x); l.AddRange([13, (int)bits, (int)(bits >> 32)]); break; }
+                case string x: l.AddRange([14, Str(x), 0]); break;
+                default: l.AddRange([0, 0, 0]); break; // decimal: from its attribute (not kept)
+            }
+        }
+        return Ints(l).Address;
+    }
 
     // ---------------- assemblies: a table of full names (the program's first), by index ----------------
     readonly List<IAssemblySymbol> _assemblies = [];
@@ -449,6 +522,13 @@ internal sealed partial class Driver
 
     static bool IsMethodDefinition(IMethodSymbol m) => m.TypeArguments.Zip(m.TypeParameters).All(x => x.First is ITypeParameterSymbol tp && tp.Name == x.Second.Name && tp.TypeParameterKind == TypeParameterKind.Method);
 
+    static bool OfOpenType(ISymbol m)
+    {
+        for (var t = m.ContainingType; t != null; t = t.ContainingType)
+            if (t.TypeArguments.Any(a => a is ITypeParameterSymbol)) return true;
+        return false;
+    }
+
     int Thunk(ISymbol m) => _reflThunks.TryGetValue(ThunkKey(m), out var f) && f.Body.Count > 0 ? RootSlot(f) + 1 : 0;
     int RootSlot(WasmFunction f) { f.TableRoot = true; return Module.TableSlot(f); }
     int TypeIdOrVoid(ITypeSymbol t) => ExtTypeId(t);
@@ -471,6 +551,28 @@ internal sealed partial class Driver
     const int FStatic = 1, FPublic = 2, FVirtual = 4, FAbstract = 8, FReadOnly = 16, FPrivate = 32, FFamily = 64, FAssembly = 128;
     /// <summary>A method that is an event's add or remove accessor (GetEvents pairs them).</summary>
     const int FEventAccessor = 1 << 12;
+    /// <summary>MethodAttributes the CLR gives: SpecialName (accessors, operators), Final, NewSlot.</summary>
+    const int FSpecialName = 1 << 13, FFinal = 1 << 14, FNewSlot = 1 << 15, FInitOnly = 1 << 16;
+
+    static int MethodShape(IMethodSymbol ms)
+    {
+        int f = (ms.IsInitOnly ? FInitOnly : 0) | (ms.MethodKind is MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.EventAdd or MethodKind.EventRemove
+            or MethodKind.UserDefinedOperator or MethodKind.Conversion ? FSpecialName : 0);
+        if (ms.IsStatic) return f;
+        bool virt = ms.IsVirtual || ms.IsAbstract || ms.IsOverride;
+        if (ms.ContainingType.TypeKind == TypeKind.Interface) return f | (virt ? FNewSlot : 0);
+        if (virt)
+        {
+            if (!ms.IsOverride) f |= FNewSlot;
+            if (ms.IsSealed) f |= FFinal;
+            return f;
+        }
+        // an implicit implementation of an interface method: virtual, final, a new slot
+        foreach (var i in ms.ContainingType.AllInterfaces)
+            foreach (var im in i.GetMembers(ms.Name).OfType<IMethodSymbol>())
+                if (SymbolEqualityComparer.Default.Equals(ms.ContainingType.FindImplementationForInterfaceMember(im), ms)) return f | FFinal | FNewSlot | FVirtual;
+        return f;
+    }
     static int Access(ISymbol s) => s.DeclaredAccessibility switch
     {
         Accessibility.Public => FPublic,
@@ -495,7 +597,7 @@ internal sealed partial class Driver
                 case IFieldSymbol f:
                     {
                         var (na, aa) = Attrs(f);
-                        fields.AddRange([Str(f.Name), ExtTypeId(f.Type), (f.IsStatic ? FStatic : 0) | Access(f) | (f.IsReadOnly ? FReadOnly : 0), Thunk(f), ExtTypeId(f.ContainingType), na, aa]);
+                        fields.AddRange([Str(f.Name), ExtTypeId(f.Type), (f.IsStatic ? FStatic : 0) | Access(f) | (f.IsReadOnly ? FReadOnly : 0), Thunk(f), ExtTypeId(f.ContainingType), na, aa, Token(0x04000000, f)]);
                         nf++;
                         break;
                     }
@@ -504,6 +606,8 @@ internal sealed partial class Driver
                         var (na, aa) = Attrs(c);
                         ctors.AddRange([(c.IsStatic ? FStatic : 0) | Access(c), Thunk(c), c.Parameters.Length, Ints(c.Parameters.Select(ParamWord)).Address, Ints(c.Parameters.Select(p => Str(p.Name))).Address, na, aa]);
                         ctors.Add(ExtTypeId(c.ContainingType));
+                        ctors.Add(Defaults(c));
+                        ctors.Add(Token(0x06000000, c));
                         nc++;
                         break;
                     }
@@ -511,17 +615,18 @@ internal sealed partial class Driver
                     {
                         var (na, aa) = Attrs(ms);
                         int flags = (ms.IsStatic ? FStatic : 0) | Access(ms) | (ms.IsVirtual || ms.IsOverride || ms.IsAbstract ? FVirtual : 0) | (ms.IsAbstract ? FAbstract : 0)
-                            | (ms.MethodKind is MethodKind.EventAdd or MethodKind.EventRemove ? FEventAccessor : 0);
+                            | (ms.MethodKind is MethodKind.EventAdd or MethodKind.EventRemove ? FEventAccessor : 0) | MethodShape(ms);
                         methods.AddRange([Str(ms.Name), ms.ReturnsVoid ? -1 : ExtTypeId(ms.ReturnType), flags, Thunk(ms), ms.Parameters.Length,
-                            Ints(ms.Parameters.Select(ParamWord)).Address, Ints(ms.Parameters.Select(p => Str(p.Name))).Address, na, aa, ExtTypeId(ms.ContainingType), 0]);
+                            Ints(ms.Parameters.Select(ParamWord)).Address, Ints(ms.Parameters.Select(p => Str(p.Name))).Address, na, aa, ExtTypeId(ms.ContainingType), 0, Defaults(ms), Token(0x06000000, ms)]);
                         methodSyms.Add(ms);
                         nm++;
                         if (ms.AssociatedSymbol is IPropertySymbol p && seenProps.Add(Types.Key(p.ContainingType) + "." + p.Name))
                         {
                             var (pa, pb) = Attrs(p);
-                            int g = p.GetMethod != null ? Thunk(p.GetMethod) : 0, s = p.SetMethod != null ? Thunk(p.SetMethod) : 0;
+                            // (an accessor without code, of a generic definition: -1, present)
+                            int g = p.GetMethod != null ? Thunk(p.GetMethod) is var gt && gt != 0 ? gt : -1 : 0, s = p.SetMethod != null ? Thunk(p.SetMethod) is var st && st != 0 ? st : -1 : 0;
                             int pflags = (p.IsStatic ? FStatic : 0) | Access(p.GetMethod ?? p.SetMethod!) | (p.GetMethod?.DeclaredAccessibility == Accessibility.Public ? 256 : 0) | (p.SetMethod?.DeclaredAccessibility == Accessibility.Public ? 512 : 0);
-                            props.AddRange([Str(p.Name), ExtTypeId(p.Type), pflags, g, s, ExtTypeId(p.ContainingType), pa, pb]);
+                            props.AddRange([Str(p.MetadataName), ExtTypeId(p.Type), pflags, g, s, ExtTypeId(p.ContainingType), pa, pb, Token(0x17000000, p)]);
                             np++;
                         }
                         break;
@@ -532,7 +637,7 @@ internal sealed partial class Driver
         // instance its arguments and its definition's entry; written into the entries once the array has its place
         var methodsBlob = (DataAddr)Ints(methods);
         int mBase = methodsBlob.Address;
-        int EntryAt(int j) => mBase + 4 * 11 * j;
+        int EntryAt(int j) => mBase + 4 * 13 * j;
         for (int i = 0; i < methodSyms.Count; i++) NoteMethodEntry(t, methodSyms[i], EntryAt(i));
         for (int i = 0; i < methodSyms.Count; i++)
         {
@@ -551,7 +656,7 @@ internal sealed partial class Driver
                 int def = Enumerable.Range(0, methodSyms.Count).FirstOrDefault(j => IsMethodDefinition(methodSyms[j]) && SymbolEqualityComparer.Default.Equals(methodSyms[j].OriginalDefinition, ms.OriginalDefinition), -1);
                 g = [2, ms.TypeArguments.Length, .. ms.TypeArguments.Select(a => ExtTypeId(a)), def < 0 ? 0 : EntryAt(def)];
             }
-            PatchData(methodsBlob, (i * 11 + 10) * 4, Ints(g).Address);
+            PatchData(methodsBlob, (i * 13 + 10) * 4, Ints(g).Address);
         }
         var (ta, tb) = Attrs(t);
         var rec = new[] { nf, Ints(fields).Address, np, Ints(props).Address, nm, mBase, nc, Ints(ctors).Address, ta, tb,

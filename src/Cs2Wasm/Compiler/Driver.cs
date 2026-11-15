@@ -74,6 +74,8 @@ sealed class VirtualStub
 internal sealed partial class Driver
 {
     public readonly CSharpCompilation Main;
+    public readonly DynamicLowering Dynamic;
+    readonly CompileException? _dynamicError;
     readonly List<Compilation> _inputs;
     public IReadOnlyList<Compilation> Inputs => _inputs;
     public bool IsInput(SyntaxTree t) => _inputs.Any(c => c.ContainsSyntaxTree(t));
@@ -133,6 +135,9 @@ internal sealed partial class Driver
 
     public Driver(CSharpCompilation main, CompileOptions options)
     {
+        // dynamic operations: call sites in a generated class of the program (DynamicLowering.cs)
+        try { main = DynamicLowering.Rewrite(main, out Dynamic); }
+        catch (CompileException ex) { Dynamic = new DynamicLowering(); _dynamicError = ex; }
         Main = main;
         Options = options;
         _inputs = [main, .. options.AdditionalCompilations];
@@ -858,6 +863,7 @@ internal sealed partial class Driver
 
     public void Run()
     {
+        if (_dynamicError != null) throw _dynamicError;
         Mark("start (library ready)");
         foreach (var e in Main.GetDiagnostics())
             if (e.Severity == DiagnosticSeverity.Error) { Diagnostics.Add(e); }
