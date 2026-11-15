@@ -409,6 +409,22 @@ sealed partial class FunctionCompiler
                 E.I32(BoxDataOffset(T, Arg(0))); E.Op(Op.I32Add); return Own.None;
             case "System.SpanHelpers.memmove": E.Op(Op.MemoryCopy); return Own.None; // memory.copy allows overlap
             case "System.SpanHelpers.memset": E.Op(Op.MemoryFill); return Own.None;
+            // an object's data right after its header (a box's value)
+            case "System.Runtime.CompilerServices.RuntimeHelpers.GetRawData": E.I32(Types.ObjectHeader); E.Op(Op.I32Add); return Own.None;
+            case "System.Runtime.CompilerServices.RuntimeHelpers.IsBitwiseEquatable":
+                E.I32(Types.PrimOf(Arg(0)) is not (Prim.None or Prim.F32 or Prim.F64) ? 1 : 0); return Own.None;
+            case "System.Runtime.CompilerServices.RuntimeHelpers.IsReferenceOrContainsReferences":
+                E.I32(Types.IsRef(Arg(0)) || T.NeedsRc(Arg(0)) ? 1 : 0); return Own.None;
+            case "System.Runtime.CompilerServices.RuntimeHelpers.ObjectHasComponentSize":
+                {
+                    // strings (type id 1) and arrays
+                    int tid = Scratch(ValType.I32);
+                    E.Load(Op.I32Load, 4); E.Tee(tid); E.I32(1); E.Op(Op.I32Eq);
+                    E.Get(tid); E.Call(Rt.TypeFlagsById); E.I32(4); E.Op(Op.I32And); E.I32(0); E.Op(Op.I32Ne);
+                    E.Op(Op.I32Or);
+                    FreeScratch(ValType.I32, tid);
+                    return Own.None;
+                }
             case "System.Threading.Interlocked.MemoryBarrier":
             case "System.Threading.Volatile.ReadBarrier":
             case "System.Threading.Volatile.WriteBarrier":

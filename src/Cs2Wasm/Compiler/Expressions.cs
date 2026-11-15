@@ -553,6 +553,8 @@ sealed partial class FunctionCompiler
     {
         var ft = T.Resolve(f.Field.Type, Map);
         if (f.Field.IsConst) return EmitConstant(f.Field.ConstantValue, ft);
+        // string.Empty: the runtime's to set (upstream declares it without a value): the "" literal
+        if (f.Field is { IsStatic: true, Name: "Empty" } && Types.IsString(f.Field.ContainingType) && D.IsLibrary(f.Field)) { E.I32Addr(D.StringLiteral("")); return Own.Stable; }
         // a primitive's own field (int.m_value) is the value itself
         if (!f.Field.IsStatic && f.Instance != null && Types.PrimOf(TypeOf(f.Instance)) is not Prim.None && Types.PrimOf(ft) == Types.PrimOf(TypeOf(f.Instance)))
         {
@@ -950,7 +952,14 @@ sealed partial class FunctionCompiler
         int off = TempStruct(t);
         var l = T.LayoutOf(t);
         void Field(string name, int v) { var f = l.Fields.First(x => x.Symbol.Name == name); E.Get(_fb); E.I32(v); E.Store(Op.I32Store, off + f.Offset); }
-        Field("_lo", bits[0]); Field("_mid", bits[1]); Field("_hi", bits[2]); Field("_flags", bits[3]);
+        if (l.Fields.Any(x => x.Symbol.Name == "_lo64"))
+        {
+            // upstream's decimal: _flags, _hi32, _lo64
+            Field("_flags", bits[3]); Field("_hi32", bits[2]);
+            var lo = l.Fields.First(x => x.Symbol.Name == "_lo64");
+            E.Get(_fb); E.I64((long)(((ulong)(uint)bits[1] << 32) | (uint)bits[0])); E.Store(Op.I64Store, off + lo.Offset);
+        }
+        else { Field("_lo", bits[0]); Field("_mid", bits[1]); Field("_hi", bits[2]); Field("_flags", bits[3]); }
         E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
         return Own.None;
     }
@@ -970,7 +979,7 @@ sealed partial class FunctionCompiler
     {
         int tid = D.MarkConstructed(vt);
         var (size, align) = T.StorageOf(vt);
-        int dataOff = align >= 8 ? 16 : Types.ObjectHeader;
+        int dataOff = BoxDataOffset(T, vt);
         if (Types.IsStruct(vt))
         {
             int src = Scratch(ValType.I32); E.Set(src);
@@ -1175,7 +1184,7 @@ sealed partial class FunctionCompiler
         {
             EmitValue(b.LeftOperand);
             EmitValue(b.RightOperand); var prt = Types.PrimOf(rt); if (Types.Is64(prt)) E.Op(Op.I32WrapI64);
-            int es = T.StorageOf(T.Canonical(((IPointerTypeSymbol)lt).PointedAtType)).size;
+            int es = T.StorageOf(T.Resolve(((IPointerTypeSymbol)lt).PointedAtType, Map)).size;
             if (es != 1) { E.I32(es); E.Op(Op.I32Mul); }
             E.Op(kind == BinaryOperatorKind.Add ? Op.I32Add : Op.I32Sub);
             return Own.None;
@@ -1183,7 +1192,7 @@ sealed partial class FunctionCompiler
         if (lt.TypeKind == TypeKind.Pointer && rt.TypeKind == TypeKind.Pointer && kind == BinaryOperatorKind.Subtract)
         {
             EmitValue(b.LeftOperand); EmitValue(b.RightOperand); E.Op(Op.I32Sub);
-            int es = T.StorageOf(T.Canonical(((IPointerTypeSymbol)lt).PointedAtType)).size;
+            int es = T.StorageOf(T.Resolve(((IPointerTypeSymbol)lt).PointedAtType, Map)).size;
             if (es != 1) { E.I32(es); E.Op(Op.I32DivS); }
             E.Op(Op.I64ExtendI32S);
             return Own.None;
@@ -1636,7 +1645,7 @@ sealed partial class FunctionCompiler
             // p += n: n elements
             lv.Load();
             EmitValue(ca.Value); if (Types.Is64(Types.PrimOf(vt))) E.Op(Op.I32WrapI64);
-            int es = T.StorageOf(T.Canonical(ptrT.PointedAtType)).size;
+            int es = T.StorageOf(T.Resolve(ptrT.PointedAtType, Map)).size;
             if (es != 1) { E.I32(es); E.Op(Op.I32Mul); }
             E.Op(ca.OperatorKind == BinaryOperatorKind.Add ? Op.I32Add : Op.I32Sub);
             return lv.Store(Own.None, needResult);
@@ -1742,7 +1751,7 @@ sealed partial class FunctionCompiler
         var opP = Types.PrimSize(p) < 4 ? (Types.IsSigned(p) ? Prim.I32 : Prim.U32) : p;
         if (tt.TypeKind == TypeKind.Pointer)
         {
-            E.I32(T.StorageOf(T.Canonical(((IPointerTypeSymbol)tt).PointedAtType)).size);
+            E.I32(T.StorageOf(T.Resolve(((IPointerTypeSymbol)tt).PointedAtType, Map)).size);
             E.Op(isInc ? Op.I32Add : Op.I32Sub);
         }
         else
@@ -2536,7 +2545,7 @@ sealed partial class FunctionCompiler
         ITypeSymbol et;
         bool span = t is INamedTypeSymbol { Arity: 1 } nt && Types.FullName(nt) is "System.Span`1" or "System.ReadOnlySpan`1";
         if (span) et = T.Canonical(((INamedTypeSymbol)t).TypeArguments[0]);
-        else if (t is IPointerTypeSymbol pt) et = T.Canonical(pt.PointedAtType);
+        else if (t is IPointerTypeSymbol pt) et = T.Resolve(pt.PointedAtType, Map);
         else throw new CompileException("unsupported stackalloc target " + t, op.Syntax.GetLocation());
         int size = T.StorageOf(et).size;
         var elems = init?.Expressions.Select(e => model.GetOperation(e)!).ToList() ?? [];
@@ -2613,7 +2622,7 @@ sealed partial class FunctionCompiler
                     EmitValue(children[0]);
                     var ip = Types.PrimOf(TypeOf(children[1]));
                     EmitValue(children[1]); if (Types.Is64(ip)) E.Op(Op.I32WrapI64);
-                    int es = T.StorageOf(T.Canonical(pt.PointedAtType)).size;
+                    int es = T.StorageOf(T.Resolve(pt.PointedAtType, Map)).size;
                     if (es != 1) { E.I32(es); E.Op(Op.I32Mul); }
                     E.Op(Op.I32Add);
                     return 0;

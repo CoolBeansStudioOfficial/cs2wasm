@@ -260,7 +260,23 @@ exported beside the stack pointer.
   sequence (checked). Not done: `Unsafe.As`-style bit reads, scheduling-dependence marking.
   Transcendental functions are not guaranteed to round like .NET's (UCRT/glibc) in every case; the tested inputs
   match.
-- 7.4 the library: **cs2wasm's own library, not upstream `dotnet/runtime` trimmed** (this deviates from the spec, which requires upstream `dotnet/runtime` sources, trimmed). It is a
+- 7.4 the library — **moving to upstream, in progress.** The upstream library is built and used when
+  `CS2WASM_UPSTREAM=1`: dotnet/runtime v11.0.0's System.Private.CoreLib (Mono's project, for a 32-bit browser
+  target with multithreading and without event tracing) and eleven libraries above it (Collections, Linq,
+  Console, Numerics, Concurrent, Parallel, RegularExpressions, ...), each its own compilation, from the files
+  tools/CoreLibManifest evaluates from their projects (`src/Cs2Wasm/Upstream/<Library>/manifest.txt`; sources from
+  the cache `%LOCALAPPDATA%/cs2wasm/runtime-v11.0.0` or `CS2WASM_RUNTIME_SOURCES`). Hand-written code is only the
+  runtime boundary: Mono's runtime half (`Runtime/`, its internal calls implemented over cs2wasm's runtime),
+  `Boundary/` (memory, counting, exceptions, threads, engine imports, the System.Native calls that are the
+  engine's: clock, seeded randomness, low-level monitor, console output), generated SR strings, and the
+  platform invokes the sandbox lacks (build errors when reached). Upstream files replaced: the tz database
+  reader (no database; the engine's offset) and the browser pool's JS-loop yield. The compiler folds what the
+  target fixes (`IsHardwareAccelerated`/`IsSupported` false, no event tracing, invariant globalization) and
+  compiles only the side of a branch taken. Hello world runs on it (Console, StreamWriter, UTF-8 encoding,
+  number formatting are upstream's). Not yet: the conformance suite on it, module size (about 3 MB for a
+  trivial program) and build time (about 14 s), reflection over members (types are), async continuations and
+  timers on the engine thread, finalizers and weak handles (they hold their target).
+  Until the suite passes on it, the default is still **cs2wasm's own library** (a deviation from the spec). It is a
   self-contained corlib written for this project (about 6 500 lines: object model, strings, number formatting and
   parsing with .NET's exact rounding rules, math, exceptions, collections whose enumeration order matches .NET's,
   LINQ with deferred execution, StringBuilder). Moving to upstream sources is open work. Invariant globalization

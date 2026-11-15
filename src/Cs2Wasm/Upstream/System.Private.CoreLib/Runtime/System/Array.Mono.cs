@@ -26,8 +26,7 @@ namespace System
 
         public int Length
         {
-            [Intrinsic]
-            get => Length;
+            get => (int)Unsafe.As<RawData>(this).Count;
         }
 
         // This could return a length greater than int.MaxValue
@@ -52,8 +51,7 @@ namespace System
 
         public int Rank
         {
-            [Intrinsic]
-            get => Rank;
+            get => Cs2Wasm.Runtime.Cs2WasmArrays.RankOf(this);
         }
 
         public static unsafe void Clear(Array array)

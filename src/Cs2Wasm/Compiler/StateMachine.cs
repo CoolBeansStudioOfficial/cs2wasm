@@ -186,8 +186,7 @@ sealed partial class FunctionCompiler
             {
                 if (info.TaskType != null)
                 {
-                    var create = D.LibMethod("System.Threading.Tasks.Task", "CreateForAsync", 0);
-                    var tcreate = info.ResultType == null ? create.Sym : ((INamedTypeSymbol)info.TaskType).GetMembers("CreateForAsyncT").OfType<IMethodSymbol>().First();
+                    var tcreate = info.ResultType == null ? AsyncMember("CreateForAsync", null) : AsyncMember("CreateForAsyncT", info.TaskType);
                     int toff = machine.ExtraSlots["task"].offset;
                     E.Get(obj); E.Call(D.Method(tcreate).Fn); E.Store(Op.I32Store, toff);
                 }
@@ -355,11 +354,26 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Async iterator: the pending MoveNextAsync completes with `value`.</summary>
+    /// <summary>What a state machine calls on its task: the upstream library's Cs2Wasm.Runtime.AsyncSupport (Task and
+    /// Task&lt;T&gt; are not partial there), or the hand-written library's own members of Task.</summary>
+    IMethodSymbol AsyncMember(string name, ITypeSymbol? taskType)
+    {
+        if (Library.UseUpstream)
+        {
+            var m = D.LibType("Cs2Wasm.Runtime.AsyncSupport").GetMembers(name).OfType<IMethodSymbol>().First();
+            if (m.IsGenericMethod) m = m.Construct(((INamedTypeSymbol)T.Canonical(taskType!)).TypeArguments[0]);
+            return D.CanonicalMethod(m);
+        }
+        if (name is "Wrap" or "WrapDispose") return D.LibMethod("Cs2Wasm.Runtime.AsyncIter", name, 1).Sym;
+        if (taskType != null) return ((INamedTypeSymbol)taskType).GetMembers(name).OfType<IMethodSymbol>().First();
+        return D.LibMethod("System.Threading.Tasks.Task", name, name == "TrySetExceptionCore" ? 1 : 0).Sym;
+    }
+
     void CompletePromise(bool value)
     {
         var info = _machine!;
         var promise = info.Machine.ExtraSlots["promise"];
-        var set = ((INamedTypeSymbol)promise.type).GetMembers("TrySetResultT").OfType<IMethodSymbol>().First();
+        var set = AsyncMember("TrySetResultT", promise.type);
         CallWith(set, false, () => { E.Get(0); E.Load(Op.I32Load, promise.offset); }, () => E.I32(value ? 1 : 0), null, null);
         E.Op(Op.Drop);
     }
@@ -407,7 +421,7 @@ sealed partial class FunctionCompiler
             var mm = Member(ietorT, "MoveNextAsync");
             var f = D.Module.AddFunction("MoveNextAsync of " + machine.Name, Driver.Signature(mm, T));
             var e = new Emitter(f);
-            var create = ((INamedTypeSymbol)promiseT).GetMembers("CreateForAsyncT").OfType<IMethodSymbol>().First();
+            var create = AsyncMember("CreateForAsyncT", promiseT);
             int p = e.AddLocal(ValType.I32);
             e.Call(D.Method(D.CanonicalMethod(create)).Fn); e.Set(p);
             e.Get(1); e.Load(Op.I32Load, promiseOff); e.Call(Rt.Release);
@@ -415,12 +429,12 @@ sealed partial class FunctionCompiler
             // a finished machine answers false at once
             e.Get(1); e.Load(Op.I32Load, stateOff); e.I32(-1); e.Op(Op.I32Eq);
             e.If();
-            var set = ((INamedTypeSymbol)promiseT).GetMembers("TrySetResultT").OfType<IMethodSymbol>().First();
+            var set = AsyncMember("TrySetResultT", promiseT);
             e.Get(p); e.I32(0); e.Call(D.Method(D.CanonicalMethod(set)).Fn); e.Op(Op.Drop);
             e.Else();
             e.Get(1); e.Call(info.MoveNext);
             e.End();
-            e.Get(0); e.Get(p); e.Call(D.LibMethod("Cs2Wasm.Runtime.AsyncIter", "Wrap", 1).Fn);
+            e.Get(0); e.Get(p); e.Call(D.Method(AsyncMember("Wrap", null)).Fn);
             st.Impls[K(ietorT, "MoveNextAsync")] = f;
         }
         {
@@ -574,13 +588,13 @@ sealed partial class FunctionCompiler
             if (info.AsyncIterator)
             {
                 var (promiseOff, promiseT) = info.Machine.ExtraSlots["promise"];
-                var create = ((INamedTypeSymbol)promiseT).GetMembers("CreateForAsyncT").OfType<IMethodSymbol>().First();
+                var create = AsyncMember("CreateForAsyncT", promiseT);
                 int p = e.AddLocal(ValType.I32);
                 e.Call(D.Method(D.CanonicalMethod(create)).Fn); e.Set(p);
                 e.Get(self); e.Load(Op.I32Load, promiseOff); e.Call(Rt.Release);
                 e.Get(self); e.Get(p); e.Store(Op.I32Store, promiseOff);
                 e.Get(self); e.Call(info.MoveNext);
-                e.Get(0); e.Get(p); e.Call(D.LibMethod("Cs2Wasm.Runtime.AsyncIter", "WrapDispose", 1).Fn);
+                e.Get(0); e.Get(p); e.Call(D.Method(AsyncMember("WrapDispose", null)).Fn);
             }
             else { e.Get(self); e.Call(info.MoveNext); e.Op(Op.Drop); }
             e.Op(Op.Return);
@@ -764,12 +778,12 @@ sealed partial class FunctionCompiler
             var task = info.Machine.ExtraSlots["task"].offset;
             if (info.ResultType == null)
             {
-                E.Get(0); E.Load(Op.I32Load, task); E.Call(D.LibMethod("System.Threading.Tasks.Task", "TrySetResultCore", 0).Fn); E.Op(Op.Drop);
+                E.Get(0); E.Load(Op.I32Load, task); E.Call(D.Method(AsyncMember("TrySetResultCore", null)).Fn); E.Op(Op.Drop);
             }
             else
             {
                 var rv = info.Machine.Extra("retval", info.ResultType, T);
-                var set = ((INamedTypeSymbol)info.TaskType).GetMembers("TrySetResultT").OfType<IMethodSymbol>().First();
+                var set = AsyncMember("TrySetResultT", info.TaskType);
                 CallWith(set, false, () => { E.Get(0); E.Load(Op.I32Load, task); }, () =>
                 {
                     E.Get(0);
@@ -803,7 +817,7 @@ sealed partial class FunctionCompiler
             SetState(-1);
             var promise = info.Machine.ExtraSlots["promise"].offset;
             E.Get(0); E.Load(Op.I32Load, promise); E.Get(ex);
-            E.Call(D.LibMethod("System.Threading.Tasks.Task", "TrySetExceptionCore", 1).Fn); E.Op(Op.Drop);
+            E.Call(D.Method(AsyncMember("TrySetExceptionCore", null)).Fn); E.Op(Op.Drop);
             E.Get(ex); E.Call(Rt.Release);
             E.Op(Op.Return);
             return;
@@ -813,7 +827,7 @@ sealed partial class FunctionCompiler
             SetState(-1);
             var task = info.Machine.ExtraSlots["task"].offset;
             E.Get(0); E.Load(Op.I32Load, task); E.Get(ex);
-            E.Call(D.LibMethod("System.Threading.Tasks.Task", "TrySetExceptionCore", 1).Fn); E.Op(Op.Drop);
+            E.Call(D.Method(AsyncMember("TrySetExceptionCore", null)).Fn); E.Op(Op.Drop);
             E.Get(ex); E.Call(Rt.Release);
             E.Op(Op.Return);
             return;

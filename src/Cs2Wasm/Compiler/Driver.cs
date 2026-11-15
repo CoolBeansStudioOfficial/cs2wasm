@@ -315,6 +315,7 @@ internal sealed partial class Driver
                 or "ByteOffset" or "SkipInit" or "SubtractByteOffset" or "Unbox",
             "System.Threading.Interlocked" => m.Name == "MemoryBarrier",
             "System.SpanHelpers" => m.Name is "memmove" or "memset",
+            "System.Runtime.CompilerServices.RuntimeHelpers" => m.Name is "GetRawData" or "IsBitwiseEquatable" or "IsReferenceOrContainsReferences" or "ObjectHasComponentSize",
             "System.Threading.Volatile" => m.Name is "ReadBarrier" or "WriteBarrier",
             "System.Object" => m.Name == "GetType" && Library.UseUpstream,
             _ => false,
@@ -593,6 +594,21 @@ internal sealed partial class Driver
         Arenas.Resolve();
         ReportEngineThreadBlocking(rt.UserExports);
         rt.Finish();
+        if (Environment.GetEnvironmentVariable("CS2WASM_STATS") == "1") PrintStats();
+    }
+
+    /// <summary>CS2WASM_STATS=1: what the program reaches, by namespace and by type (instructions), largest first.</summary>
+    void PrintStats()
+    {
+        var compiled = AllMethods.Where(m => m.Compiled).ToList();
+        string Ns(MethodInst m) => m.Sym.ContainingType?.ContainingNamespace?.ToDisplayString() ?? "?";
+        string Ty(MethodInst m) => m.Sym.ContainingType is { } t ? Types.FullName(t.OriginalDefinition) : "?";
+        Console.Error.WriteLine($"{compiled.Count} methods, {compiled.Sum(m => m.Fn.Body.Count)} instructions");
+        foreach (var g in compiled.GroupBy(Ns).OrderByDescending(g => g.Sum(m => m.Fn.Body.Count)).Take(25))
+            Console.Error.WriteLine($"  {g.Sum(m => m.Fn.Body.Count),8} {g.Count(),5}  {g.Key}");
+        Console.Error.WriteLine("types:");
+        foreach (var g in compiled.GroupBy(Ty).OrderByDescending(g => g.Sum(m => m.Fn.Body.Count)).Take(40))
+            Console.Error.WriteLine($"  {g.Sum(m => m.Fn.Body.Count),8} {g.Count(),5}  {g.Key}");
     }
 
     void Drain(RuntimeGen rt)

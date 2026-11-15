@@ -17,7 +17,9 @@ static class Intrinsics
             foreach (var decl in tree.GetRoot().DescendantNodes().Where(d => d is MethodDeclarationSyntax or PropertyDeclarationSyntax))
             {
                 var attrs = decl is MethodDeclarationSyntax md ? md.AttributeLists : ((PropertyDeclarationSyntax)decl).AttributeLists;
-                if (!attrs.SelectMany(a => a.Attributes).Any(a => a.Name.ToString() is "Intrinsic" or "IntrinsicAttribute")) continue;
+                // (on a property or on one of its accessors)
+                var accessorAttrs = decl is PropertyDeclarationSyntax pd && pd.AccessorList != null ? pd.AccessorList.Accessors.SelectMany(a => a.AttributeLists) : [];
+                if (!attrs.Concat(accessorAttrs).SelectMany(a => a.Attributes).Any(a => a.Name.ToString() is "Intrinsic" or "IntrinsicAttribute")) continue;
                 var sym = model.GetDeclaredSymbol(decl);
                 if (sym == null) continue;
                 SyntaxNode? body = decl switch
