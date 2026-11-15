@@ -371,6 +371,7 @@ sealed partial class FunctionCompiler
             IInlineArrayAccessOperation => true,
             IInvocationOperation inv => inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly,
             IDeclarationExpressionOperation => true,
+            IConditionalOperation { IsRef: true } => true,
             IInterpolatedStringHandlerArgumentPlaceholderOperation { PlaceholderKind: InterpolatedStringArgumentPlaceholderKind.TrailingValidityArgument } => true,
             _ => op.Kind == OperationKind.None,
         };
@@ -406,6 +407,14 @@ sealed partial class FunctionCompiler
         switch (op)
         {
             case IDeclarationExpressionOperation de: return EmitAddressBase(de.Expression);
+            case IConditionalOperation { IsRef: true } rc:
+                {
+                    // c ? ref a : ref b: the address of one of them
+                    if (Fold(rc.Condition) is bool known) { EmitAddress(known ? rc.WhenTrue : rc.WhenFalse!); return 0; }
+                    EmitCondition(rc.Condition);
+                    E.If(ValType.I32); EmitAddress(rc.WhenTrue); E.Else(); EmitAddress(rc.WhenFalse!); E.End();
+                    return 0;
+                }
             case IInterpolatedStringHandlerArgumentPlaceholderOperation { PlaceholderKind: InterpolatedStringArgumentPlaceholderKind.TrailingValidityArgument }:
                 E.Get(_fb); return _handlers[^1].successOffset;
             case IEventReferenceOperation evr when Driver.IsFieldLikeEvent(evr.Event):
@@ -981,7 +990,7 @@ sealed partial class FunctionCompiler
         FreeScratch(ValType.I32, o2); FreeScratch(wt, val);
     }
 
-    public static int BoxDataOffset(Types t, ITypeSymbol vt) => t.StorageOf(vt).align >= 8 ? 16 : Types.ObjectHeader;
+    public static int BoxDataOffset(Types t, ITypeSymbol vt) => FunctionCompilerHelpers.BoxDataOffset(t, vt);
 
     /// <summary>Stack: object → value (or struct address inside the box).</summary>
     void EmitUnbox(ITypeSymbol vt)
@@ -1620,6 +1629,16 @@ sealed partial class FunctionCompiler
             { int w = E.AddLocal(ValType.I32); E.Set(w); E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.Get(w); CopyStructInit(tt); }
             E.End();
             E.Get(_fb); E.I32(res); E.Op(Op.I32Add);
+            return lv.Store(Own.None, needResult);
+        }
+        if (tt is IPointerTypeSymbol ptrT && ca.OperatorKind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract)
+        {
+            // p += n: n elements
+            lv.Load();
+            EmitValue(ca.Value); if (Types.Is64(Types.PrimOf(vt))) E.Op(Op.I32WrapI64);
+            int es = T.StorageOf(T.Canonical(ptrT.PointedAtType)).size;
+            if (es != 1) { E.I32(es); E.Op(Op.I32Mul); }
+            E.Op(ca.OperatorKind == BinaryOperatorKind.Add ? Op.I32Add : Op.I32Sub);
             return lv.Store(Own.None, needResult);
         }
         var pt = Types.PrimOf(tt);
@@ -2526,8 +2545,10 @@ sealed partial class FunctionCompiler
             if (sizeExpr != null) EmitIndexLength(model.GetOperation(sizeExpr)!);
             else E.I32(elems.Count);
         }
-        if (span)
+        var spanPtrCtor = span ? ((INamedTypeSymbol)T.Canonical(t)).InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 2 && c.Parameters[0].Type is IPointerTypeSymbol) : null;
+        if (span && spanPtrCtor == null)
         {
+            // the hand-written library's spans are over arrays
             var arrT = D.LibCompilation.CreateArrayTypeSymbol(et);
             int tid = D.MarkConstructed(arrT);
             PushCount(); E.I32(size); E.I32(tid); E.Call(Rt.AllocArray);
@@ -2535,20 +2556,36 @@ sealed partial class FunctionCompiler
             var slot = new Slot { Local = arr, Type = arrT };
             RegisterTemp(slot);
             for (int i = 0; i < elems.Count; i++) StoreElement(arr, i, et, elems[i]);
-            var ctor = ((INamedTypeSymbol)T.Canonical(t)).InstanceConstructors.First(c => c.Parameters.Length == 1);
-            int off = TempStruct(t);
-            CallWith(ctor, false, () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); }, () => E.Get(arr), null, op.Syntax);
-            E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+            var actor = ((INamedTypeSymbol)T.Canonical(t)).InstanceConstructors.First(c => c.Parameters.Length == 1);
+            int aoff = TempStruct(t);
+            CallWith(actor, false, () => { E.Get(_fb); E.I32(aoff); E.Op(Op.I32Add); }, () => E.Get(arr), null, op.Syntax);
+            E.Get(_fb); E.I32(aoff); E.Op(Op.I32Add);
             return Own.None;
         }
-        // pointer: carve zeroed memory off the shadow stack; the function's exit restores the stack pointer
+        // carve zeroed memory off the shadow stack; the function's exit restores the stack pointer (a span over it
+        // cannot outlive the method: C#'s ref safety rules)
         _usesFrame = true;
         int bytes = Scratch(ValType.I32);
-        PushCount(); E.I32(size); E.Op(Op.I32Mul); E.I32(7); E.Op(Op.I32Add); E.I32(-8); E.Op(Op.I32And); E.Set(bytes);
+        int count = E.AddLocal(ValType.I32);
+        PushCount(); E.Tee(count); E.I32(size); E.Op(Op.I32Mul); E.I32(7); E.Op(Op.I32Add); E.I32(-8); E.Op(Op.I32And); E.Set(bytes);
         E.GGet(D.StackPointer); E.Get(bytes); E.Op(Op.I32Sub);
         int p = E.AddLocal(ValType.I32); E.Tee(p); E.GSet(D.StackPointer);
         E.Get(p); E.I32(0); E.Get(bytes); E.Op(Op.MemoryFill);
         FreeScratch(ValType.I32, bytes);
+        if (span)
+        {
+            for (int i = 0; i < elems.Count; i++)
+            {
+                E.Get(p);
+                EmitValueAs(elems[i], et);
+                E.Store(Types.StoreOp(et), i * size);
+            }
+            // Span<T>(void* pointer, int length)
+            int off = TempStruct(t);
+            CallWith(spanPtrCtor!, false, () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); }, () => { E.Get(p); E.Get(count); }, null, op.Syntax);
+            E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+            return Own.None;
+        }
         for (int i = 0; i < elems.Count; i++)
         {
             var wt = Types.WasmType(et)!.Value;

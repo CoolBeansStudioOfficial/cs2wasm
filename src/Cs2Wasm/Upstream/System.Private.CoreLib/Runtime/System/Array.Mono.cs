@@ -15,14 +15,12 @@ namespace System
 {
     public partial class Array
     {
+        // cs2wasm's array layout: after the object header the length, then the elements from 16 (other ranks keep
+        // their lengths there and start their elements after them: Cs2WasmArrays.Data)
         [StructLayout(LayoutKind.Sequential)]
         internal sealed class RawData
         {
-            public IntPtr Bounds;
             public uint Count;
-#if !TARGET_32BIT
-            private uint _Pad;
-#endif
             public byte Data;
         }
 

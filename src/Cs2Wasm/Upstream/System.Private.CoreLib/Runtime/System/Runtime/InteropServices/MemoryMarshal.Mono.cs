@@ -38,7 +38,7 @@ namespace System.Runtime.InteropServices
         [Intrinsic]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static ref byte GetArrayDataReference(Array array) =>
-            // Mono uses same layout for SZARRAY and MDARRAY; see comment on Array+RawData (in Array.Mono.cs) for details
-            ref Unsafe.As<Array.RawData>(array).Data;
+            // cs2wasm: other ranks' elements start after their lengths
+            ref Unsafe.AsRef<byte>((void*)Cs2Wasm.Runtime.Cs2WasmArrays.Data(array));
     }
 }

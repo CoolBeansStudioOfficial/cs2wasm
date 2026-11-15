@@ -876,7 +876,8 @@ sealed partial class RuntimeGen
 
 static class FunctionCompilerHelpers
 {
-    public static int BoxDataOffset(Types t, ITypeSymbol vt) => t.StorageOf(vt).align >= 8 ? 16 : Types.ObjectHeader;
+    /// <summary>Where a box keeps its value. The upstream library reads it right after the header (RuntimeHelpers.GetRawData).</summary>
+    public static int BoxDataOffset(Types t, ITypeSymbol vt) => !Library.UseUpstream && t.StorageOf(vt).align >= 8 ? 16 : Types.ObjectHeader;
 }
 
 internal sealed partial class Driver

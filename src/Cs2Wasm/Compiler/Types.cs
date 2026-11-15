@@ -409,6 +409,10 @@ internal sealed class Types
                 if (NeedsRc(pt)) l.HasRefs = true;
             }
         }
+        // [StructLayout(LayoutKind.Explicit)]: fields at their [FieldOffset]s (from the start of the data)
+        var layoutAttr = t.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "StructLayoutAttribute");
+        bool explicitLayout = layoutAttr is { ConstructorArguments: [{ Value: int kind }] } && kind == 2;
+        int dataStart = offset, explicitEnd = offset;
         foreach (var m in t.GetMembers())
         {
             if (!IsInstanceStorage(m)) continue;
@@ -417,12 +421,24 @@ internal sealed class Types
             var ft = f.RefKind != RefKind.None ? _d.LibCompilation.CreatePointerTypeSymbol(Canonical(f.Type)) : Canonical(f.Type);
             var (size, align) = StorageOf(ft);
             if (f.IsFixedSizeBuffer) size *= Math.Max(1, f.FixedSize);
+            if (explicitLayout && f.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "FieldOffsetAttribute") is { ConstructorArguments: [{ Value: int fo }] })
+            {
+                l.Fields.Add(new FieldSlot { Symbol = f, Type = ft, Offset = dataStart + fo });
+                explicitEnd = Math.Max(explicitEnd, dataStart + fo + size);
+                l.Align = Math.Max(l.Align, align);
+                if (NeedsRc(ft)) l.HasRefs = true;
+                continue;
+            }
             offset = (offset + align - 1) / align * align;
             l.Fields.Add(new FieldSlot { Symbol = f, Type = ft, Offset = offset });
             offset += size;
             l.Align = Math.Max(l.Align, align);
             if (NeedsRc(ft)) l.HasRefs = true;
         }
+        if (explicitLayout) offset = Math.Max(offset, explicitEnd);
+        // [StructLayout(Size = n)]: at least n bytes (SpanHelpers' Block16/Block64 have no fields)
+        if (layoutAttr?.NamedArguments.FirstOrDefault(a => a.Key == "Size").Value.Value is int minSize && minSize > 0)
+            offset = Math.Max(offset, dataStart + minSize);
         // primary constructor parameters (C# 12 classes and structs): captured state
         foreach (var pc in t.InstanceConstructors.Where(Driver.IsPrimaryCtor))
             foreach (var pp in pc.Parameters)
