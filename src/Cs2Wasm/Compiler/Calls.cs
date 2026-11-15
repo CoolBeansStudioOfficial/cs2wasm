@@ -65,6 +65,16 @@ sealed partial class FunctionCompiler
         Action? pushThis = null;
         ITypeSymbol? recvType = null;
         bool virt = isVirtual;
+        // `((ISpanFormattable)value).TryFormat(...)` on a value of a known value type (generic code over T = int):
+        // call the type's own implementation, as the JIT does, instead of boxing and dispatching to every
+        // implementation of the interface. Only for types whose methods cannot change `this` (primitives, enums,
+        // readonly structs), so calling on the value is calling on the box's copy.
+        if (!m.IsStatic && isVirtual && instance is IConversionOperation { OperatorMethod: null } box
+            && TypeOf(instance) is { TypeKind: TypeKind.Interface or TypeKind.Class } && TypeOf(box.Operand) is var bt
+            && bt.IsValueType && bt.TypeKind != TypeKind.TypeParameter && !IsNullable(bt)
+            && (Types.PrimOf(bt) != Prim.None || bt is INamedTypeSymbol { IsReadOnly: true })
+            && D.Implementation(bt, m) is { } dimpl && Types.Key(T.Canonical(dimpl.ContainingType)) == Types.Key(T.Canonical(bt)))
+            instance = box.Operand;
         if (!m.IsStatic && instance != null)
         {
             recvType = TypeOf(instance);

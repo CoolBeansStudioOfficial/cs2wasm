@@ -48,6 +48,8 @@ sealed class VirtualStub
     public Dictionary<string, (ITypeSymbol type, MethodInst? impl, bool boxed)> Cases = [];
     /// <summary>Constant arguments every call through this stub passes (each implementation's specialized copy is called).</summary>
     public IReadOnlyDictionary<int, ConstArg>? Consts;
+    /// <summary>The method whose compilation first called through this stub (CS2WASM_WHY_STUBS).</summary>
+    public MethodInst? MadeBy;
 }
 
 internal sealed partial class Driver
@@ -492,7 +494,7 @@ internal sealed partial class Driver
         var key = Types.MethodKey(slot);
         if (Stubs.TryGetValue(key, out var s)) return s.Fn;
         var fn = Module.AddFunction("virtual " + Display(slot), Signature(slot, Types));
-        s = new VirtualStub { Slot = slot, Fn = fn, IsInterface = slot.ContainingType.TypeKind == TypeKind.Interface };
+        s = new VirtualStub { Slot = slot, Fn = fn, IsInterface = slot.ContainingType.TypeKind == TypeKind.Interface, MadeBy = Compiling };
         Stubs[key] = s;
         return fn;
     }
@@ -678,6 +680,10 @@ internal sealed partial class Driver
         if (Environment.GetEnvironmentVariable("CS2WASM_WHY_METHODS") is { Length: > 0 } whyM)
             foreach (var m in compiled.Where(m => Display(m.Sym).Contains(whyM)).OrderByDescending(m => m.Fn.Body.Count).Take(15))
                 Console.Error.WriteLine($"why {m.Fn.Body.Count} {Display(m.Sym)}{WhyReachedAlways(m)}");
+        // CS2WASM_WHY_STUBS=Text: which method first calls through each matching dispatch stub, and its targets
+        if (Environment.GetEnvironmentVariable("CS2WASM_WHY_STUBS") is { Length: > 0 } whyS)
+            foreach (var (k, st) in Stubs.Where(x => x.Key.Contains(whyS)))
+                Console.Error.WriteLine($"stub {k} ({st.Cases.Count} targets) <- {(st.MadeBy != null ? Display(st.MadeBy.Sym) + WhyReachedAlways(st.MadeBy) : "?")}");
         Console.Error.WriteLine("types:");
         foreach (var g in compiled.GroupBy(Ty).OrderByDescending(g => g.Sum(m => m.Fn.Body.Count)).Take(40))
             Console.Error.WriteLine($"  {g.Sum(m => m.Fn.Body.Count),8} {g.Count(),5}  {g.Key}");

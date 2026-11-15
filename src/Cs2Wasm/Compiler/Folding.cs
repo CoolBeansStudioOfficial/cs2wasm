@@ -17,6 +17,7 @@ sealed partial class FunctionCompiler
     bool? Fold(IOperation op)
     {
         if (Inst?.Consts != null && FoldBound(op) is bool fb) return fb;
+        if (FoldKnownNull(op) is bool fn) return fn;
         switch (op)
         {
             case { ConstantValue: { HasValue: true, Value: bool b } }: return b;
@@ -202,5 +203,70 @@ sealed partial class FunctionCompiler
         };
         if (expr is not LiteralExpressionSyntax) return null;
         return D.ModelFor(expr.SyntaxTree).GetConstantValue(expr) is { HasValue: true, Value: bool v } ? v : null;
+    }
+}
+
+sealed partial class FunctionCompiler
+{
+    HashSet<ILocalSymbol>? _writtenLocals;
+
+    /// <summary>`x == null` / `x != null` / `x is null` where x is known to be null: a null literal, a library call
+    /// substituted to an empty body (Environment.GetEnvironmentVariable: the sandbox has no environment), or a local
+    /// initialized from one and never assigned again.</summary>
+    bool? FoldKnownNull(IOperation op)
+    {
+        switch (op)
+        {
+            case IBinaryOperation { OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals, OperatorMethod: null } b:
+                {
+                    var side = IsNullLiteral(b.RightOperand) ? b.LeftOperand : IsNullLiteral(b.LeftOperand) ? b.RightOperand : null;
+                    if (side == null || !KnownNull(side, 0)) return null;
+                    return b.OperatorKind == BinaryOperatorKind.Equals;
+                }
+            case IIsPatternOperation { Pattern: IConstantPatternOperation { Value: var pv } } ip when IsNullLiteral(pv) && KnownNull(ip.Value, 0): return true;
+            case IIsPatternOperation { Pattern: INegatedPatternOperation { Pattern: IConstantPatternOperation { Value: var nv } } } np when IsNullLiteral(nv) && KnownNull(np.Value, 0): return false;
+        }
+        return null;
+    }
+
+    bool KnownNull(IOperation op, int depth)
+    {
+        while (op is IConversionOperation { OperatorMethod: null } c) op = c.Operand;
+        switch (op)
+        {
+            case IInvocationOperation inv when !inv.TargetMethod.ReturnsVoid && !inv.TargetMethod.ReturnType.IsValueType && Library.Substitution(inv.TargetMethod) == "":
+                return true;
+            case ILocalReferenceOperation lr when depth < 4:
+                {
+                    var l = lr.Local;
+                    if (l.IsRef || WrittenLocals().Contains(l)) return false;
+                    var decl = l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
+                    if (decl == null || D.ModelFor(decl.SyntaxTree).GetOperation(decl) is not IVariableDeclaratorOperation { Initializer.Value: { } init }) return false;
+                    return IsNullLiteral(init) || KnownNull(init, depth + 1);
+                }
+        }
+        return false;
+    }
+
+    /// <summary>The locals of the method being compiled that are assigned other than by their declaration.</summary>
+    HashSet<ILocalSymbol> WrittenLocals()
+    {
+        if (_writtenLocals != null) return _writtenLocals;
+        _writtenLocals = new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default);
+        foreach (var r in M.OriginalDefinition.DeclaringSyntaxReferences)
+        {
+            if (D.ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax()) is not { } body) continue;
+            foreach (var o in body.DescendantsAndSelf())
+            {
+                if (o is not ILocalReferenceOperation lr) continue;
+                var p = o.Parent;
+                if (p is ISimpleAssignmentOperation a && a.Target == o || p is ICompoundAssignmentOperation ca && ca.Target == o
+                    || p is IIncrementOrDecrementOperation || p is IAddressOfOperation || p is IDeconstructionAssignmentOperation
+                    || p is IArgumentOperation { Parameter.RefKind: not RefKind.None } || p is ITupleOperation
+                    || lr.IsDeclaration && p is not IVariableDeclaratorOperation)
+                    _writtenLocals.Add(lr.Local);
+            }
+        }
+        return _writtenLocals;
     }
 }

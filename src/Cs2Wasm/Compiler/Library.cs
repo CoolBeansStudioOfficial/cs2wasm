@@ -97,7 +97,8 @@ internal sealed class Library
             var prefix = "upstream/" + lib + "/";
             var manifest = own.FirstOrDefault(r => r.Name == prefix + "manifest.txt").Text
                 ?? throw new CompileException("library manifest missing: " + lib);
-            var lines = manifest.Split('\n').Select(l => l.Trim()).ToList();
+            // (not Trim(): an empty substitution value is a trailing tab)
+            var lines = manifest.Split('\n').Select(l => l.Trim(' ', '\r')).ToList();
             foreach (var l in lines.Where(l => l.StartsWith("substitute\t")))
             {
                 var parts = l.Split('\t');

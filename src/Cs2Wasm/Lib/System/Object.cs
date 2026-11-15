@@ -39,7 +39,7 @@ namespace System
         {
             // table: [count][flags][size of underlying] then (value i64, name) pairs
             int t = Info(e);
-            long v = Value(e, Mem.LoadI32(t + 8));
+            long v = Value(e, Mem.LoadI32(t + 8), Mem.LoadI32(t + 12) != 0);
             int count = Mem.LoadI32(t);
             for (int i = 0; i < count; i++)
             {
@@ -68,11 +68,11 @@ namespace System
             return unsigned ? Number.UInt64ToString((ulong)v) : Number.Int64ToString(v);
         }
 
-        static long Value(object e, int size)
+        static long Value(object e, int size, bool unsigned)
         {
             int a = Rt.AddressOf(e) + 12;
-            if (size == 1) return Mem.LoadI8(a);
-            if (size == 2) return Mem.LoadI16(a);
+            if (size == 1) return unsigned ? Mem.LoadU8(a) : Mem.LoadI8(a);
+            if (size == 2) return unsigned ? Mem.LoadU16(a) : Mem.LoadI16(a);
             if (size == 8) return Mem.LoadI64(a + 4);
             return Mem.LoadI32(a);
         }

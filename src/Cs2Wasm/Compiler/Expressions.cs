@@ -1467,8 +1467,16 @@ sealed partial class FunctionCompiler
                 var o0 = produce();
                 EmitBox(t, o0);
                 int b = TempRef(obj); E.Set(b);
-                var tsE = obj.GetMembers("ToString").OfType<IMethodSymbol>().First(x => x.Parameters.Length == 0);
                 E.Get(b);
+                if (format != null)
+                {
+                    // Enum.ToString(string): "D", "X", "F", "G"
+                    var tsF = D.LibType("System.Enum").GetMembers("ToString").OfType<IMethodSymbol>()
+                        .First(x => x.Parameters.Length == 1 && Types.IsString(x.Parameters[0].Type));
+                    E.I32Addr(D.StringLiteral(format));
+                    return EmitCallCore(tsF, null, [], false, preArgs: 2, forceInstance: true);
+                }
+                var tsE = obj.GetMembers("ToString").OfType<IMethodSymbol>().First(x => x.Parameters.Length == 0);
                 return EmitCallCore(tsE, null, [], true, preArgs: 1, forceInstance: true);
             }
             if (m == null) throw new CompileException($"{t} has no ToString{(format != null ? "(string)" : "")} in cs2wasm's library yet");

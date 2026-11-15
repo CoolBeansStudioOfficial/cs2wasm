@@ -196,7 +196,9 @@ every thread running program code has passed a safe point since (a wait, the end
 end of a thread or of an export), where a thread holds only counted references (arguments read from memory are
 retained before calls); a count taken meanwhile keeps it alive. Epoch-based: per-thread epochs, quiescent threads
 (blocked, idle, or the engine thread between exports) hold nothing back (`Boundary/Runtime.cs`, `Limbo`). A thread
-that computes for a long time without a safe point delays the destruction of shared garbage, not its correctness.
+that computes for a long time without a safe point delays the destruction of shared garbage, not its correctness;
+a collection that cannot free anything returns at once, and collections run when the list has grown by half, so
+their cost stays linear.
 Shared objects never join arenas (their counts are atomic, arena counts are under the runtime lock), and sharing an
 arena member marks its arena shared: it takes no more members and what its members reach is shared too.
 
@@ -289,10 +291,15 @@ exported beside the stack pointer.
   every program carry the arena runtime (exception chains, `object[]` holding `object`, StringBuilder chunks, and
   encoders with their fallback buffers, which do form cycles); the program's own types pay only if they can form
   cycles (`CompileResult.CycleCapableTypes` lists the cycle-capable types). Not yet: module size
-  (0.92 MB for hello world, against 13 KB with cs2wasm's own library; constant-argument specialization of
-  `[AggressiveInlining]` methods and short forwarders, and `string.Format` with a constant format lowered to
-  concatenation, Specialization.cs and FormatLowering.cs, take about 1%: the general formatting paths stay reachable
-  through interface calls on boxed numbers, item formats such as `{0:X4}` in resource strings, and enum formatting) and build time (about
+  (0.85 MB for hello world, against 13 KB with cs2wasm's own library). Done for size: constant-argument
+  specialization of `[AggressiveInlining]` methods and short forwarders (Specialization.cs); `string.Format` with a
+  constant format lowered to concatenation (FormatLowering.cs; resource strings are constants); interface calls on
+  values of known primitive or readonly-struct type call the type's method instead of boxing and dispatching; enum
+  formatting reads the compiler's enum tables (`Boundary/EnumFormat.cs`, upstream's algorithm over one value
+  instead of a copy per storage type); no environment variables in the sandbox, so the runtime's configuration
+  reads fold (a local set once from a known null is null). What remains large: number formatting (still reached
+  through `string.Format` with item formats such as `{0:X4}` and with a provider), `AppContext` configuration
+  parsing, dictionary and encoding code that Console really uses and build time (about
   10 s against 2 s), `Delegate.CreateDelegate`/`DynamicInvoke`,
   reflection on generic instantiations, `Array.CreateInstance` of array types the program never makes.
   Until the suite passes on it, the default is still **cs2wasm's own library** (a deviation from the spec). It is a

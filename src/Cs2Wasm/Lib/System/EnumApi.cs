@@ -5,7 +5,7 @@ using Cs2Wasm.Runtime;
 
 namespace System
 {
-    public abstract partial class Enum
+    public abstract partial class Enum : IFormattable
     {
         // ---------------- values of an enum (boxed or generic) ----------------
         internal long RawValue => EnumFormat.ValueOf(this);
@@ -29,6 +29,8 @@ namespace System
             return RawValue.CompareTo(e.RawValue);
         }
 
+        public string ToString(string format, IFormatProvider provider) => ToString(format);
+
         public string ToString(string format)
         {
             if (string.IsNullOrEmpty(format) || format == "G" || format == "g") return ToString();
@@ -40,8 +42,8 @@ namespace System
                 case "D": case "d": return Mem.LoadI32(t + 12) != 0 ? ((ulong)v & Mask(size)).ToString() : v.ToString();
                 case "X": case "x":
                     {
-                        var s = ((ulong)v & Mask(size)).ToString("X" + (size * 2));
-                        return format == "x" ? s.ToLowerInvariant() : s;
+                        // uppercase for "x" too, as .NET writes it
+                        return ((ulong)v & Mask(size)).ToString("X" + (size * 2));
                     }
                 case "F": case "f": return EnumFormat.FormatFlags(t, v) ?? ToString();
             }
@@ -162,7 +164,7 @@ namespace System
     {
         [Intrinsic] public static extern int InfoOfId(int typeId);
 
-        public static long ValueOf(object e) { int t = Info(e); return Value(e, Mem.LoadI32(t + 8)); }
+        public static long ValueOf(object e) { int t = Info(e); return Value(e, Mem.LoadI32(t + 8), Mem.LoadI32(t + 12) != 0); }
 
         public static string FormatFlags(int t, long v)
         {

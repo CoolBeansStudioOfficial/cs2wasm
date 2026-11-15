@@ -147,6 +147,12 @@ sealed class Manifest
             sb.AppendLine("substitute	method	System.Enum	System.Boolean AreSorted(TStorage[])	true");
             // C# declares no enums over float, double, char or nint (as for NativeAOT): no code for them
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Enum.cs	#define RARE_ENUMS	#undef RARE_ENUMS");
+            // the sandbox has no environment variables (section 8): the runtime's configuration reads fold
+            sb.AppendLine("substitute	method	System.Environment	System.String GetEnvironmentVariable(System.String)	");
+            // enum formatting over the compiler's enum tables (Boundary/EnumFormat.cs), not a copy per storage type
+            sb.AppendLine("substitute	method	System.Enum	System.String ToString()	=>Cs2Wasm.Runtime.EnumFormat.ToString");
+            sb.AppendLine("substitute	method	System.Enum	System.String ToString(System.String)	=>Cs2Wasm.Runtime.EnumFormat.ToString");
+            sb.AppendLine("substitute	method	System.Enum	System.Boolean System.ISpanFormattable.TryFormat(System.Span`1,System.Int32&,System.ReadOnlySpan`1,System.IFormatProvider)	=>Cs2Wasm.Runtime.EnumFormat.TryFormat");
             // the end of a work item is a safe point for deferred destruction (Boundary/Runtime.cs, Limbo)
             sb.AppendLine("substitute\tmethod\tSystem.Threading.ThreadPool\tSystem.Boolean NotifyWorkItemComplete(System.Threading.ThreadInt64PersistentCounter/ThreadLocalNode,System.Int32)\t=>Cs2Wasm.Runtime.Limbo.NotifyWorkItemComplete");
         }

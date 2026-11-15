@@ -820,7 +820,7 @@ namespace Cs2Wasm.Runtime
     public static class Limbo
     {
         const int S = 0x40000000, L = 0x20000000;
-        static int s_epoch = 1, s_table, s_cap, s_list, s_listCap, s_count, s_since;
+        static int s_epoch = 1, s_table, s_cap, s_list, s_listCap, s_count, s_since, s_oldest = int.MaxValue;
         [System.ThreadStatic] static int t_depth;
         [Intrinsic] static extern void DestroyObject(int p);
 
@@ -865,10 +865,13 @@ namespace Cs2Wasm.Runtime
                 if (s_list != 0) { Mem.Copy(l, s_list, s_count * 8); Rt.Free(s_list, s_listCap * 8); }
                 s_list = l; s_listCap = cap;
             }
+            int ep = Atomic.Load32(ref s_epoch);
             Mem.StoreI32(s_list + 8 * s_count, p);
-            Mem.StoreI32(s_list + 8 * s_count + 4, Atomic.Load32(ref s_epoch));
+            Mem.StoreI32(s_list + 8 * s_count + 4, ep);
+            if (ep < s_oldest) s_oldest = ep;
             Atomic.Store32(ref s_count, s_count + 1);
-            bool go = ++s_since >= 64;
+            // (a collection scans the list: run one when the list has grown by half since, so the cost stays linear)
+            bool go = ++s_since >= Math.Max(64, s_count >> 1);
             Rt.RuntimeUnlock();
             if (go) Collect();
         }
@@ -883,14 +886,23 @@ namespace Cs2Wasm.Runtime
                 int e = Atomic.Load32(ref Mem.RefI32(s_table + 4 * i));
                 if (e != 0 && e < min) min = e;
             }
-            int ready = 0, keep = 0, n = s_count;
+            // nothing can be ready while some thread has not passed a safe point since the oldest entry came in
+            if (min <= s_oldest)
+            {
+                s_since = 0;
+                Atomic.Add32(ref s_epoch, 1);
+                Rt.RuntimeUnlock();
+                return;
+            }
+            int ready = 0, keep = 0, n = s_count, oldest = int.MaxValue;
             int list = n == 0 ? 0 : Rt.Alloc(n * 4);
             for (int i = 0; i < n; i++)
             {
                 int p = Mem.LoadI32(s_list + 8 * i), e = Mem.LoadI32(s_list + 8 * i + 4);
                 if (e < min) { Mem.StoreI32(list + 4 * ready, p); ready++; }
-                else { Mem.StoreI32(s_list + 8 * keep, p); Mem.StoreI32(s_list + 8 * keep + 4, e); keep++; }
+                else { Mem.StoreI32(s_list + 8 * keep, p); Mem.StoreI32(s_list + 8 * keep + 4, e); keep++; if (e < oldest) oldest = e; }
             }
+            s_oldest = keep == 0 ? int.MaxValue : oldest;
             Atomic.Store32(ref s_count, keep);
             s_since = 0;
             Atomic.Add32(ref s_epoch, 1);
