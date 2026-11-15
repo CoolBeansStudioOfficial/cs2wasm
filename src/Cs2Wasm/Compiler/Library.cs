@@ -39,7 +39,6 @@ internal sealed class Library
         foreach (var c in All)
         {
             foreach (var t in c.SyntaxTrees) _trees.Add(t);
-            Index(c.Assembly.GlobalNamespace);
         }
     }
 
@@ -141,22 +140,31 @@ internal sealed class Library
         }
     }
 
-    void Index(INamespaceOrTypeSymbol ns)
+    /// <summary>The library's type with a reference type's metadata name, looked up when first asked for (walking all
+    /// of the libraries' declarations up front costs seconds on every build): the first public one in library order,
+    /// else the first.</summary>
+    INamedTypeSymbol? Lookup(INamedTypeSymbol def)
     {
-        foreach (var m in ns.GetMembers())
+        var name = MetadataName(def);
+        lock (_types)
+            if (_types.TryGetValue(name, out var known)) return known;
+        INamedTypeSymbol? found = null;
+        foreach (var c in All)
         {
-            if (m is INamedTypeSymbol t)
-            {
-                // a public type wins over an internal one with the same name in another library
-                if (t.Locations.Any(l => l.IsInSource))
-                {
-                    var id = Types.DocId(t);
-                    if (!_types.TryGetValue(id, out var prev) || (!IsVisible(prev) && IsVisible(t))) _types[id] = t;
-                }
-                Index(t);
-            }
-            else if (m is INamespaceSymbol n) Index(n);
+            if (c.Assembly.GetTypeByMetadataName(name) is not { } t || !t.Locations.Any(l => l.IsInSource)) continue;
+            if (found == null) found = t;
+            else if (!IsVisible(found) && IsVisible(t)) { found = t; break; }
+            if (IsVisible(found)) break;
         }
+        lock (_types) _types[name] = found!;
+        return found;
+    }
+
+    static string MetadataName(INamedTypeSymbol t)
+    {
+        if (t.ContainingType is { } ct) return MetadataName(ct) + "+" + t.MetadataName;
+        var ns = t.ContainingNamespace;
+        return ns == null || ns.IsGlobalNamespace ? t.MetadataName : ns.ToDisplayString() + "." + t.MetadataName;
     }
 
     static bool IsVisible(INamedTypeSymbol t)
@@ -173,7 +181,7 @@ internal sealed class Library
     {
         if (def.Name != "Interop" || !def.ContainingNamespace.IsGlobalNamespace)
             foreach (var c in All) if (SymbolEqualityComparer.Default.Equals(c.Assembly, def.ContainingAssembly)) return def;
-        return _types.GetValueOrDefault(Types.DocId(def));
+        return Lookup(def.OriginalDefinition);
     }
 
     /// <summary>A library type by metadata name, the corlib's first.</summary>

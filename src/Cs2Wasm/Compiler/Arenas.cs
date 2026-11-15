@@ -237,34 +237,53 @@ internal sealed class Arenas
         var nodes = D.Constructed.Where(id => id != 0 && !D.DisplayById.ContainsKey(id) && !D.SyntheticById.ContainsKey(id))
             .Select(id => (id, t: D.TypeById[id])).ToList();
         int n = D.TypeById.Count;
-        var adj = new List<int>[n];
-        for (int i = 0; i < n; i++) adj[i] = [];
-        var siteEdges = new Dictionary<Site, List<(int c, int t)>>();
+        // the type graph: an edge from a container type to each type a site of it can hold, through one node per
+        // site (per site and array type for arrays) so that the edges are containers plus targets, not their
+        // product; such a node passes paths through, so the types' components and cycles are the same
+        var subs = new SubtypeIndex(D.Types);
+        foreach (var (id, t) in nodes) subs.Add(id, t is IArrayTypeSymbol ? null : t);
+        IEnumerable<(int id, ITypeSymbol t)> SubtypesOf(ITypeSymbol target)
+        {
+            var cl = subs.Candidates(target);
+            foreach (var id in cl == subs.All ? cl : cl.Concat(subs.Special))
+                if (D.Types.IsSubtype(D.TypeById[id], target)) yield return (id, D.TypeById[id]);
+        }
+        var adj = new List<List<int>>();
+        for (int i = 0; i < n; i++) adj.Add([]);
+        var siteNodes = new Dictionary<Site, List<int>>();
         foreach (var s in _sites.Values)
         {
-            var edges = new List<(int, int)>();
-            siteEdges[s] = edges;
+            var hubs = new List<int>();
+            siteNodes[s] = hubs;
             if (s.AddressTaken || s.Values.Count == 0) continue;
-            var containers = nodes.Where(x => s.IsArray ? x.t is IArrayTypeSymbol && D.Types.IsSubtype(x.t, s.Container)
-                                                        : x.t.TypeKind == TypeKind.Class && x.t is not IArrayTypeSymbol && D.Types.IsSubtype(x.t, s.Container)).ToList();
+            var containers = SubtypesOf(s.Container).Where(x => s.IsArray ? x.t is IArrayTypeSymbol : x.t.TypeKind == TypeKind.Class && x.t is not IArrayTypeSymbol).ToList();
             if (containers.Count == 0) continue;
-            var targets = nodes.Where(x => !x.t.IsValueType && s.Values.Values.Any(v => D.Types.IsSubtype(x.t, v))).ToList();
-            foreach (var c in containers)
-                foreach (var t in targets)
+            var targets = s.Values.Values.SelectMany(SubtypesOf).Where(x => !x.t.IsValueType).Select(x => x.id).Distinct().ToList();
+            if (targets.Count == 0) continue;
+            int Hub(IEnumerable<int> to) { int h = adj.Count; adj.Add([.. to]); hubs.Add(h); return h; }
+            if (!s.IsArray)
+            {
+                int h = Hub(targets);
+                foreach (var c in containers) adj[c.id].Add(h);
+            }
+            else
+                foreach (var c in containers)
                 {
                     // a covariant array (string[] seen as object[]) only ever holds its own element type
-                    if (c.t is IArrayTypeSymbol cat && !D.Types.IsSubtype(t.t, cat.ElementType)) continue;
-                    adj[c.id].Add(t.id); edges.Add((c.id, t.id));
+                    var et = ((IArrayTypeSymbol)c.t).ElementType;
+                    var held = targets.Where(t => D.Types.IsSubtype(D.TypeById[t], et)).ToList();
+                    if (held.Count > 0) adj[c.id].Add(Hub(held));
                 }
         }
+        int total = adj.Count;
 
         // Tarjan's strongly connected components (iterative)
-        _scc = new int[n];
-        var index = new int[n]; var low = new int[n]; var onStack = new bool[n];
+        var scc = new int[total];
+        var index = new int[total]; var low = new int[total]; var onStack = new bool[total];
         Array.Fill(index, -1);
         var stack = new Stack<int>();
         int next = 0, sccCount = 0;
-        for (int root = 0; root < n; root++)
+        for (int root = 0; root < total; root++)
         {
             if (index[root] >= 0 || adj[root].Count == 0) continue;
             var work = new Stack<(int v, int i)>();
@@ -290,15 +309,22 @@ internal sealed class Arenas
                 var comp = new List<int>();
                 int x;
                 do { x = stack.Pop(); onStack[x] = false; comp.Add(x); } while (x != v);
-                bool cyclic = comp.Count > 1 || adj[v].Contains(v);
-                if (!cyclic) continue;
+                // (no node has an edge to itself: a type's own cycle goes through a site's node)
+                if (comp.Count < 2) continue;
                 sccCount++;
-                foreach (var m in comp) _scc[m] = sccCount;
+                foreach (var m in comp) scc[m] = sccCount;
             }
         }
+        // (numbered by their smallest type id: the numbers do not depend on the order the search met them)
+        var renumber = new Dictionary<int, int>();
+        foreach (var g in Enumerable.Range(0, n).Where(id => scc[id] != 0).GroupBy(id => scc[id]).OrderBy(g => g.Min()))
+            renumber[g.Key] = renumber.Count + 1;
+        for (int i = 0; i < total; i++) if (scc[i] != 0) scc[i] = renumber.GetValueOrDefault(scc[i], -1);
+        _scc = scc[..n];
         for (int id = 0; id < n; id++) if (_scc[id] != 0) CycleTypes.Add(id);
-        foreach (var (s, edges) in siteEdges)
-            s.Cyclic = edges.Any(e => _scc[e.c] != 0 && _scc[e.c] == _scc[e.t]);
+        // a site is cyclic when one of its nodes is on a cycle (then some container and a type it holds are on it)
+        foreach (var (s, hubs) in siteNodes)
+            s.Cyclic = hubs.Any(h => scc[h] != 0);
         Enabled = _sites.Values.Any(s => s.Cyclic);
         AnyArrayCycle = Enabled && CycleTypes.Any(id => D.TypeById[id] is IArrayTypeSymbol);
         if (Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1")

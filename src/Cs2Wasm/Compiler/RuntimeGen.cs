@@ -332,12 +332,10 @@ sealed partial class RuntimeGen
     readonly Dictionary<int, WasmFunction> _destroyFns = [];
     // virtual dispatch: the constructed types in the order they appeared, indexed by each of their supertypes; each
     // stub walks the lists it needs from where it last stopped (every stub and type pair is looked at once)
-    readonly List<int> _order = [];
-    readonly HashSet<int> _ordered = [];
-    readonly Dictionary<string, List<int>> _bySuper = [];
-    /// <summary>Types any stub looks at: arrays (covariance), closure objects and synthetic types.</summary>
-    readonly List<int> _special = [];
-    readonly Dictionary<string, (int own, int special, int all)> _stubPos = [];
+    SubtypeIndex? _index;
+    readonly Dictionary<string, (List<int> list, int own, int special)> _stubPos = [];
+
+    bool IsSpecial(int id) => D.SyntheticById.ContainsKey(id) || D.DisplayById.ContainsKey(id) || D.TypeById[id] is IArrayTypeSymbol;
     readonly List<(string name, MethodInst mi)> _exports = [];
     readonly WasmFunction _init;
 
@@ -366,17 +364,8 @@ sealed partial class RuntimeGen
     public bool Expand()
     {
         bool any = D.ExpandObjectArrayThunks() | D.ExpandAttributeArrays() | D.ExpandDynamicInvokeThunks() | D.ExpandInterpreterTypes();
-        foreach (var id in D.Constructed)
-        {
-            if (!_ordered.Add(id)) continue;
-            _order.Add(id);
-            if (D.SyntheticById.ContainsKey(id) || D.DisplayById.ContainsKey(id) || D.TypeById[id] is IArrayTypeSymbol) { _special.Add(id); continue; }
-            foreach (var k in SupertypeKeys(D.TypeById[id]))
-            {
-                if (!_bySuper.TryGetValue(k, out var l)) _bySuper[k] = l = [];
-                l.Add(id);
-            }
-        }
+        _index ??= new SubtypeIndex(D.Types);
+        foreach (var id in D.Constructed) _index.Add(id, IsSpecial(id) ? null : D.TypeById[id]);
         foreach (var id in D.Constructed.ToList())
         {
             if (_destroyFns.ContainsKey(id)) continue;
@@ -385,22 +374,16 @@ sealed partial class RuntimeGen
         }
         foreach (var (key, stub) in D.Stubs.ToList())
         {
-            // the types this stub can dispatch to: those with the slot's type among their supertypes, the special
-            // ones, or all of them (object's slots, variant generic interfaces and delegates)
-            var owner = stub.Slot.ContainingType;
-            bool all = Types.IsObject(owner) || owner is { IsGenericType: true, TypeKind: TypeKind.Interface or TypeKind.Delegate }
-                && owner.OriginalDefinition.TypeParameters.Any(p => p.Variance != VarianceKind.None);
-            var ownList = all ? null : _bySuper.GetValueOrDefault(Types.Key(D.Types.Canonical(owner)));
-            var pos = _stubPos.GetValueOrDefault(key);
+            // the types this stub can dispatch to (those that may be subtypes of the slot's type, and the special
+            // ones), from where it stopped last time
+            if (!_stubPos.TryGetValue(key, out var pos)) pos = (_index.Candidates(stub.Slot.ContainingType), 0, 0);
             var fresh = new List<int>();
-            if (all) { for (int i = pos.all; i < _order.Count; i++) fresh.Add(_order[i]); pos.all = _order.Count; }
-            else
-            {
-                if (ownList != null) { for (int i = pos.own; i < ownList.Count; i++) fresh.Add(ownList[i]); pos.own = ownList.Count; }
-                for (int i = pos.special; i < _special.Count; i++) fresh.Add(_special[i]);
-                pos.special = _special.Count;
-            }
+            for (int i = pos.own; i < pos.list.Count; i++) fresh.Add(pos.list[i]);
+            pos.own = pos.list.Count;
+            if (pos.list != _index.All) { for (int i = pos.special; i < _index.Special.Count; i++) fresh.Add(_index.Special[i]); pos.special = _index.Special.Count; }
             _stubPos[key] = pos;
+            // (by id, as each round's new cases always came: the stubs' code does not depend on the index)
+            fresh.Sort();
             foreach (var id in fresh)
             {
                 if (D.SyntheticById.TryGetValue(id, out var syn))
@@ -438,7 +421,6 @@ sealed partial class RuntimeGen
     }
 
     /// <summary>The keys of a type, its base types and its interfaces (what IsSubtype finds without variance).</summary>
-    IEnumerable<string> SupertypeKeys(ITypeSymbol t) => D.Types.SupertypeKeys(t).Append(Types.Key(D.Types.Canonical(t))).Distinct();
 
     WasmFunction MakeDestroy(int id)
     {
@@ -953,25 +935,14 @@ sealed partial class RuntimeGen
 
     void EmitTypeTests()
     {
-        // the constructed types by each of their supertypes (the candidates of a test; IsSubtype still decides)
-        var bySuper = new Dictionary<string, List<int>>();
-        var special = new List<int>();
-        foreach (var id in D.Constructed)
-        {
-            if (D.SyntheticById.ContainsKey(id) || D.DisplayById.ContainsKey(id) || D.TypeById[id] is IArrayTypeSymbol) { special.Add(id); continue; }
-            foreach (var k in SupertypeKeys(D.TypeById[id]))
-            {
-                if (!bySuper.TryGetValue(k, out var l)) bySuper[k] = l = [];
-                l.Add(id);
-            }
-        }
+        // the candidates of each test (the constructed types now: some were pruned; IsSubtype still decides)
+        var index = new SubtypeIndex(D.Types);
+        foreach (var id in D.Constructed) index.Add(id, IsSpecial(id) ? null : D.TypeById[id]);
         foreach (var (key, (target, fn)) in D.Rt.IsInstFns)
         {
             var e = new Emitter(fn);
-            bool all = Types.IsObject(target) || target is INamedTypeSymbol { IsGenericType: true, TypeKind: TypeKind.Interface or TypeKind.Delegate } gt
-                && gt.OriginalDefinition.TypeParameters.Any(p => p.Variance != VarianceKind.None) || target is not INamedTypeSymbol;
-            IEnumerable<int> candidates = all ? D.Constructed
-                : (bySuper.GetValueOrDefault(Types.Key(D.Types.Canonical(target))) ?? []).Concat(special);
+            var cl = index.Candidates(target);
+            IEnumerable<int> candidates = cl == index.All ? cl : cl.Concat(index.Special);
             var ids = candidates.Where(id => D.SyntheticById.TryGetValue(id, out var syn)
                     ? syn.Interfaces.Any(i => Types.Key(i) == Types.Key(target)) || Types.IsObject(target)
                       || id < D.TypeById.Count && D.TypeById[id] is { } st && Types.Key(st) == Types.Key(target)
