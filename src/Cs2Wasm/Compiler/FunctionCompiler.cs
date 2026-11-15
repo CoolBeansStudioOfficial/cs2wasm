@@ -509,6 +509,11 @@ sealed partial class FunctionCompiler
                 if (r.Kind != OperationKind.Return) throw new CompileException("iterators (yield) are not supported yet", op.Syntax.GetLocation());
                 EmitReturn(r.ReturnedValue);
                 break;
+            case IConditionalOperation c when Fold(c.Condition) is bool known:
+                // only the side taken is compiled (Folding)
+                if (known) { PushScope(); EmitStatement(c.WhenTrue); PopScope(); }
+                else if (c.WhenFalse != null) { PushScope(); EmitStatement(c.WhenFalse); PopScope(); }
+                break;
             case IConditionalOperation c:
                 BeginTemps(); EmitCondition(c.Condition); EndTemps(ValType.I32);
                 E.If();

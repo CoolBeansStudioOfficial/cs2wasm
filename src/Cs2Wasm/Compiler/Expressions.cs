@@ -59,6 +59,7 @@ sealed partial class FunctionCompiler
         if (_captureOp != null && TryCaptured(op, out var cap)) return cap;
         if (op.ConstantValue.HasValue && op is not IAssignmentOperation)
             return EmitConstant(op.ConstantValue.Value, op.Type != null ? TypeOf(op) : null);
+        if (op.Type is { SpecialType: SpecialType.System_Boolean } && Fold(op) is bool known) { E.I32(known ? 1 : 0); return Own.None; }
         switch (op)
         {
             case IConversionOperation c: return EmitConversion(c);
@@ -1857,6 +1858,12 @@ sealed partial class FunctionCompiler
     Own EmitConditionalExpr(IConditionalOperation co)
     {
         var rt = TypeOf(co);
+        if (Fold(co.Condition) is bool known)
+        {
+            var o = EmitValueAs(known ? co.WhenTrue : co.WhenFalse!, rt);
+            if (Types.IsRef(rt)) { ToOwned(o); return Own.Owned; }
+            return o;
+        }
         var vt = Types.WasmType(rt) ?? ValType.I32;
         EmitCondition(co.Condition);
         E.If(vt);
