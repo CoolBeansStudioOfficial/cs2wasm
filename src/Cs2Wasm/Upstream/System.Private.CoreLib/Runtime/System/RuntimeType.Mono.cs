@@ -2306,7 +2306,7 @@ namespace System
         {
             RuntimeType[] args = Cs2Wasm.Runtime.TypeInfo.Types(Cs2Wasm.Runtime.TypeInfo.GenericArgs(Cs2Wasm.Runtime.TypeInfo.Id(type)));
             if (runtimeArray) Cs2Wasm.Runtime.TypeInfo.Set(res, args);
-            else { var t = new Type[args.Length]; Array.Copy(args, t, args.Length); Cs2Wasm.Runtime.TypeInfo.Set(res, t); }
+            else { var t = new Type[args.Length]; for (int i = 0; i < args.Length; i++) t[i] = args[i]; Cs2Wasm.Runtime.TypeInfo.Set(res, t); }
         }
 
         internal string? getFullName(bool full_name, bool assembly_qualified)

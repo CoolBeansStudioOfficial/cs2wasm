@@ -84,7 +84,7 @@ sealed partial class FunctionCompiler
         var test = FilterTest(tr);
         E.GGet(D.EhChain); E.Set(saved);
         E.Get(_fb); E.Get(saved); E.Store(Op.I32Store, rec);
-        E.Get(_fb); E.I32(D.Module.TableSlot(test)); E.Store(Op.I32Store, rec + 4);
+        E.Get(_fb); E.I32Fn(D.Module, test); E.Store(Op.I32Store, rec + 4);
         E.Get(_fb); PushDisplayPtr(CurrentEnv(), retain: false); E.Store(Op.I32Store, rec + 8);
         E.Get(_fb); E.I32(rec); E.Op(Op.I32Add); E.GSet(D.EhChain);
         return (rec, saved);
@@ -140,7 +140,7 @@ sealed partial class FunctionCompiler
             int saved = E.AddLocal(ValType.I32);
             E.GGet(D.EhChain); E.Set(saved);
             E.Get(_fb); E.Get(saved); E.Store(Op.I32Store, brec);
-            E.Get(_fb); E.I32(D.Module.TableSlot(Rt.EhBoundary)); E.Store(Op.I32Store, brec + 4);
+            E.Get(_fb); E.I32Fn(D.Module, Rt.EhBoundary); E.Store(Op.I32Store, brec + 4);
             E.Get(_fb); E.I32(0); E.Store(Op.I32Store, brec + 8);
             E.Get(_fb); E.I32(brec); E.Op(Op.I32Add); E.GSet(D.EhChain);
             var done = E.Block();

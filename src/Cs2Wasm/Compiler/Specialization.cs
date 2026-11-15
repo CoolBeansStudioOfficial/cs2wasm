@@ -105,8 +105,11 @@ internal sealed partial class Driver
         foreach (var r in def.DeclaringSyntaxReferences)
         {
             if (ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax()) is not { } body) continue;
+            // (the body's own size: local functions are compiled on their own)
+            var inLocal = body.Descendants().OfType<ILocalFunctionOperation>().SelectMany(l => l.DescendantsAndSelf()).ToHashSet();
             foreach (var op in body.DescendantsAndSelf())
             {
+                if (inLocal.Contains(op)) continue;
                 size++;
                 if (op.Kind is OperationKind.YieldReturn or OperationKind.YieldBreak) return ([], [], 0);
                 if (op is not IParameterReferenceOperation p || !SymbolEqualityComparer.Default.Equals(p.Parameter.ContainingSymbol.OriginalDefinition, def)) continue;

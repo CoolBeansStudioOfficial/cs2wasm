@@ -136,6 +136,13 @@ sealed class Manifest
         foreach (var d in defines) sb.AppendLine("define " + d);
         foreach (var r in references.Distinct()) sb.AppendLine("reference " + r);
         foreach (var (path, why) in replaced) sb.AppendLine($"replaced {path}  # {why}");
+        // the console writes to the engine's log import (Boundary/EngineConsole.cs)
+        if (lib == "System.Console")
+        {
+            sb.AppendLine("substitute	method	System.Console	System.IO.TextWriter CreateOutputWriter(System.IO.Stream)	=>System.Cs2WasmConsole.CreateOutputWriter");
+            sb.AppendLine("substitute	method	System.ConsolePal	System.IO.Stream OpenStandardOutput()	=>System.Cs2WasmConsole.OpenStandardOutput");
+            sb.AppendLine("substitute	method	System.ConsolePal	System.IO.Stream OpenStandardError()	=>System.Cs2WasmConsole.OpenStandardError");
+        }
         // feature switches without a trimmer substitution that cs2wasm fixes: no code is generated at run time
         if (lib == "System.Private.CoreLib")
         {
@@ -149,6 +156,18 @@ sealed class Manifest
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Enum.cs	#define RARE_ENUMS	#undef RARE_ENUMS");
             // the sandbox has no environment variables (section 8): the runtime's configuration reads fold
             sb.AppendLine("substitute	method	System.Environment	System.String GetEnvironmentVariable(System.String)	");
+            // no garbage collector: a gen-2 collection callback never fires (array pools are not trimmed)
+            sb.AppendLine("substitute	method	System.Gen2GcCallback	System.Void Register(System.Func`2,System.Object)	");
+            sb.AppendLine("substitute	method	System.Gen2GcCallback	System.Void Register(System.Func`1)	");
+            sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	_allTlsBuckets.Add(tlsBuckets, null);	");
+            sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	Gen2GcCallback.Register(s => ((SharedArrayPool<T>)s).Trim(), this);	");
+            sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	_allTlsBuckets = new ConditionalWeakTable<SharedArrayPoolThreadLocalArray[], object?>();	_allTlsBuckets = null!;");
+            // resource keys are not used for messages (System.Resources.UseSystemResourceKeys is off, as by default)
+            sb.AppendLine("substitute	method	System.SR	System.Boolean UsingResourceKeys()	false");
+            // a WASM worker has no processor number: the thread's id stands for it (a hint, as in .NET)
+            sb.AppendLine("substitute	method	System.Environment	System.String GetEnvironmentVariableCore(System.String)	");
+            sb.AppendLine("substitute	method	System.Environment	System.String GetEnvironmentVariableCore_NoArrayPool(System.String)	");
+            sb.AppendLine("substitute	method	System.Threading.Thread	System.Int32 GetCurrentProcessorId()	=>Cs2Wasm.Runtime.Rt.CurrentProcessorId");
             // enum formatting over the compiler's enum tables (Boundary/EnumFormat.cs), not a copy per storage type
             sb.AppendLine("substitute	method	System.Enum	System.String ToString()	=>Cs2Wasm.Runtime.EnumFormat.ToString");
             sb.AppendLine("substitute	method	System.Enum	System.String ToString(System.String)	=>Cs2Wasm.Runtime.EnumFormat.ToString");

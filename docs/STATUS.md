@@ -294,7 +294,13 @@ exported beside the stack pointer.
   every program carry the arena runtime (exception chains, `object[]` holding `object`, StringBuilder chunks, and
   encoders with their fallback buffers, which do form cycles); the program's own types pay only if they can form
   cycles (`CompileResult.CycleCapableTypes` lists the cycle-capable types). Not yet: module size
-  (0.85 MB for hello world, against 13 KB with cs2wasm's own library). Done for size: constant-argument
+  (123 KB for `Console.WriteLine(42)`, from 844 KB; the goal is below NetWasm's 28,383 B). Done for size, besides
+  the earlier items: the console writes UTF-16 to the engine directly (`System.Console/Boundary/EngineConsole.cs`);
+  no gen-2 GC callbacks and no pool trimming tables (no GC); no environment variables and no processor numbers in
+  the sandbox; resource keys off (`SR.UsingResourceKeys()` false); unread static fields lose initializers without
+  effect (a second compilation of the static initializers once the program is known); function-table entries and
+  data chunks are kept only when live code refers to them; types count as constructed only where live code
+  constructs them (a fixpoint before the dispatch stubs, destructors and type tests are emitted)). Done for size: constant-argument
   specialization of `[AggressiveInlining]` methods and short forwarders (Specialization.cs); `string.Format` with a
   constant format lowered to concatenation (FormatLowering.cs; resource strings are constants); interface calls on
   values of known primitive or readonly-struct type call the type's method instead of boxing and dispatching; enum

@@ -28,6 +28,27 @@ internal sealed class WasmModule
         return f;
     }
 
+    /// <summary>The functions reachable from the exports and the data's table references (before optimization:
+    /// a superset of what the encoder keeps).</summary>
+    public HashSet<WasmFunction> LiveFunctions(Func<WasmFunction, IEnumerable<WasmFunction>>? extra = null)
+    {
+        var live = new HashSet<WasmFunction>();
+        var work = new Stack<WasmFunction>();
+        foreach (var f in Functions) if (f.Exports.Count > 0 || f.TableRoot) { live.Add(f); work.Push(f); }
+        while (work.Count > 0)
+        {
+            var f = work.Pop();
+            if (f.ForwardTo != null && live.Add(f.ForwardTo)) work.Push(f.ForwardTo);
+            foreach (var ins in f.Body)
+                if (ins.Ref is WasmFunction g && (ins.Op == Op.Call || ins.Op == Op.I32Const) && live.Add(g)) work.Push(g);
+            if (extra != null) foreach (var g in extra(f)) if (live.Add(g)) work.Push(g);
+        }
+        return live;
+    }
+
+    readonly HashSet<int> _deadTable = [];
+    WasmFunction? _tableTrap;
+
     public int TableSlot(WasmFunction f)
     {
         if (!f.InTable) { f.InTable = true; f.TableIndex = Table.Count; Table.Add(f); }
@@ -73,7 +94,8 @@ internal sealed class WasmModule
         // Which functions are live: exported, in the table, or called from a live function.
         var live = new HashSet<WasmFunction>();
         var work = new Stack<WasmFunction>();
-        foreach (var f in Functions) if (f.Exports.Count > 0 || f.InTable) { live.Add(f); work.Push(f); }
+        // (a table entry is live when live code loads its index, or data refers to it)
+        foreach (var f in Functions) if (f.Exports.Count > 0 || f.TableRoot) { live.Add(f); work.Push(f); }
         var callCounts = new Dictionary<WasmFunction, int>();
         while (work.Count > 0)
         {
@@ -84,6 +106,19 @@ internal sealed class WasmModule
                     callCounts[g] = callCounts.GetValueOrDefault(g) + 1;
                     if (live.Add(g)) work.Push(g);
                 }
+                else if (ins.Op == Op.I32Const && ins.Ref is WasmFunction t && live.Add(t)) work.Push(t);
+        }
+        // table entries no live code can load: one trap in their place (indices stay as they are)
+        if (Table.Any(f => !live.Contains(f)))
+        {
+            var t0 = Table.First(f => !live.Contains(f));
+            var trap = new WasmFunction("table trap", t0.Type) { Order = int.MaxValue };
+            trap.Body.Add(new Instr { Op = Op.Unreachable, Pos = -1 });
+            Functions.Add(trap);
+            live.Add(trap);
+            for (int i = 0; i < Table.Count; i++)
+                if (!live.Contains(Table[i])) { _deadTable.Add(i); }
+            _tableTrap = trap;
         }
 
         var imports = Functions.Where(f => f.IsImport && live.Contains(f)).ToList();
@@ -167,7 +202,8 @@ internal sealed class WasmModule
             Section(w, 9, s =>
             {
                 s.U32(1); s.U32(0); s.Byte(0x41); s.S32(0); s.Byte(0x0B);
-                s.U32(Table.Count); foreach (var f in Table) s.U32(f.Index);
+                s.U32(Table.Count);
+                for (int i = 0; i < Table.Count; i++) s.U32(_deadTable.Contains(i) ? _tableTrap!.Index : Table[i].Index);
             });
         if (Data.Count > 0) Section(w, 12, s => s.U32(Data.Count));
 

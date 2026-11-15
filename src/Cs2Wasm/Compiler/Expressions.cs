@@ -515,6 +515,7 @@ sealed partial class FunctionCompiler
         if (field.IsStatic)
         {
             EmitStaticInitGuardForField(Owner(field));
+            D.StaticReads.Add(Driver.StaticKey(Owner(field), storage));
             if (IsThreadStatic(storage)) { E.GGet(D.TlsBase); return D.ThreadStaticOffset(Owner(field), storage, T.Resolve(field.Type, Map)); }
             E.I32Addr(D.StaticField(Owner(field), storage, T.Resolve(field.Type, Map)));
             return 0;
@@ -645,7 +646,7 @@ sealed partial class FunctionCompiler
             int off;
             var owner = Owner(p);
             ft = T.Resolve(p.Type, Map);
-            if (p.IsStatic) { EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, bf, ft)); off = 0; }
+            if (p.IsStatic) { D.StaticReads.Add(Driver.StaticKey(owner, bf)); EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, bf, ft)); off = 0; }
             else off = EmitReceiverAddressForField(pr.Instance!) + T.FieldIn(owner, bf).Offset;
             if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
             E.Load(Types.LoadOp(ft), off);
@@ -2055,7 +2056,7 @@ sealed partial class FunctionCompiler
                     }
                     return new MemLV(this, ft, () =>
                     {
-                        if (bf.IsStatic) { EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, bf, ft)); return 0; }
+                        if (bf.IsStatic) { D.StaticReads.Add(Driver.StaticKey(owner, bf)); EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, bf, ft)); return 0; }
                         return EmitReceiverAddressForField(pr.Instance!) + T.FieldIn(owner, bf).Offset;
                     }, psite, -1, ppin, bf.IsStatic ? Publish.Always : pr.Instance != null && !TypeOf(pr.Instance).IsValueType ? Publish.Container : Publish.Unknown);
                 }

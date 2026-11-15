@@ -671,6 +671,41 @@ sealed partial class RuntimeGen
         }
     }
 
+    /// <summary>
+    /// Types are constructed for the module only where live code constructs them. Compilation marks a type
+    /// constructed wherever an allocation is compiled, also in code that later turned out dead (an initializer left
+    /// out, a branch the whole program never takes); its virtual methods then stay in the dispatch stubs and its
+    /// destructor in the destroy dispatch. Fixpoint: liveness over calls, the stub cases and destructors of the types
+    /// still constructed; then the types constructed by live functions (or outside any function); until nothing changes.
+    /// </summary>
+    void PruneConstructed()
+    {
+        var types = D.Constructed.ToHashSet();
+        while (true)
+        {
+            var destroyOf = new Dictionary<WasmFunction, int>();
+            var live = D.Module.LiveFunctions(f =>
+            {
+                var r = new List<WasmFunction>();
+                foreach (var stub in D.Stubs.Values)
+                    if (stub.Fn == f)
+                        foreach (var (k, c) in stub.Cases)
+                            if (c.impl != null && (k.StartsWith("synthetic#") || types.Contains(int.Parse(k[(k.LastIndexOf('#') + 1)..])))) r.Add(c.impl.Fn);
+                if (f == D.Rt.Destroy) foreach (var (id, df) in _destroyFns) if (types.Contains(id)) r.Add(df);
+                return r;
+            });
+            var next = types.Where(id => !D.ConstructedBy.TryGetValue(id, out var by) || by.Contains(null) || by.Any(f => f != null && live.Contains(f))).ToHashSet();
+            if (next.Count == types.Count) break;
+            types = next;
+        }
+        if (types.Count == D.Constructed.Count) return;
+        D.Constructed.IntersectWith(types);
+        foreach (var stub in D.Stubs.Values)
+            foreach (var k in stub.Cases.Keys.ToList())
+                if (!k.StartsWith("synthetic#") && !types.Contains(int.Parse(k[(k.LastIndexOf('#') + 1)..]))) stub.Cases.Remove(k);
+        foreach (var id in _destroyFns.Keys.ToList()) if (!types.Contains(id)) _destroyFns.Remove(id);
+    }
+
     public void Finish()
     {
         CloseTypeInfo();
@@ -683,10 +718,12 @@ sealed partial class RuntimeGen
                            D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled));
         D.EmitSharing(D.UsesThreads, Enumerable.Range(0, D.TypeById.Count).Where(id => D.Constructed.Contains(id)).Select(id => (id, D.TypeById[id])));
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
+        D.Rt.EmitArrayDispatch();
+        // (every function but the dispatch tables below exists now)
+        PruneConstructed();
         EmitDestroyDispatch();
         EmitStubs();
         EmitTypeTests();
-        D.Rt.EmitArrayDispatch();
         D.Rt.EmitEnumInfo();
         EmitTypeNames();
         D.LayoutMemory();

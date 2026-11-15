@@ -33,9 +33,19 @@ sealed class StaticSlot(Driver d, int offset) : IAddress
     public int Address => d.StaticBase + Offset;
 }
 
-sealed class DataAddr(Driver d, int offset) : IAddress
+/// <summary>A piece of the data section (a string literal, a blob): moved or dropped by the final layout
+/// (Driver.LayoutMemory) unless its address was taken as a number before then.</summary>
+sealed class DataChunk
 {
-    public int Address => d.DataBase + offset;
+    public int Offset, Length, Align;
+    public int Final = -1;
+    public List<(int at, IAddress target)>? Relocs;
+}
+
+sealed class DataAddr(Driver d, DataChunk chunk) : IAddress
+{
+    public DataChunk Chunk => chunk;
+    public int Address => d.ChunkAddress(chunk);
 }
 
 sealed class LateAddr(Func<int> f) : IAddress { public int Address => f(); }
@@ -163,9 +173,16 @@ internal sealed partial class Driver
     /// <summary>A type's id if it has one already (tables must not add types).</summary>
     public int? ExistingTypeId(ITypeSymbol t) => _typeIds.TryGetValue(Types.Key(Types.Canonical(t)), out var id) ? id : null;
 
+    /// <summary>The function being compiled (types it constructs are live only if it is), or null.</summary>
+    public WasmFunction? CurrentFn;
+    /// <summary>For each constructed type: the functions that construct it; null in the set: made outside any.</summary>
+    public readonly Dictionary<int, HashSet<WasmFunction?>> ConstructedBy = [];
+
     public int MarkConstructed(ITypeSymbol t)
     {
         var id = TypeId(t);
+        if (!ConstructedBy.TryGetValue(id, out var by)) ConstructedBy[id] = by = [];
+        by.Add(CurrentFn);
         if (Constructed.Add(id) && s_whyConstructed is { } why && (why == "enum" ? t.TypeKind == TypeKind.Enum : Types.Key(t).Contains(why)))
             Console.Error.WriteLine($"constructed {Types.Key(t)} in {(Compiling != null ? Display(Compiling.Sym) : "?")}{WhyReachedAlways(Compiling)}");
         return id;
@@ -214,7 +231,7 @@ internal sealed partial class Driver
         AddI32(-1); AddI32(1); AddI32(0); AddI32(s.Length);
         foreach (var c in s) { Data.Bytes.Add((byte)c); Data.Bytes.Add((byte)(c >> 8)); }
         Data.Bytes.Add(0); Data.Bytes.Add(0);
-        a = new DataAddr(this, off);
+        a = new DataAddr(this, NewChunk(off, 8));
         _literals[s] = a;
         _literalBytes += Data.Bytes.Count - off;
         return a;
@@ -226,7 +243,81 @@ internal sealed partial class Driver
         int off = Data.Bytes.Count;
         Data.Bytes.AddRange(bytes);
         if (_blobs != null) { var k = Compiling != null ? Display(Compiling.Sym) : "(tables)"; _blobs.TryGetValue(k, out int n); _blobs[k] = n + bytes.Length; }
-        return new DataAddr(this, off);
+        return new DataAddr(this, NewChunk(off, align));
+    }
+
+    /// <summary>A blob with addresses in it: each (byte offset, target) is written when the layout is final.</summary>
+    public IAddress DataBlob(byte[] bytes, int align, List<(int at, IAddress target)> relocs)
+    {
+        var a = (DataAddr)DataBlob(bytes, align);
+        a.Chunk.Relocs = relocs;
+        return a;
+    }
+
+    readonly List<DataChunk> _chunks = [];
+    bool _dataFinal, _dataPinned;
+
+    DataChunk NewChunk(int off, int align)
+    {
+        var c = new DataChunk { Offset = off, Length = Data.Bytes.Count - off, Align = Math.Max(1, align) };
+        _chunks.Add(c);
+        return c;
+    }
+
+    /// <summary>A chunk's address; taken before the final layout, it pins the data where it is.</summary>
+    public int ChunkAddress(DataChunk c)
+    {
+        if (!_dataFinal && !_dataPinned)
+        {
+            _dataPinned = true;
+            if (Environment.GetEnvironmentVariable("CS2WASM_DEBUG_PIN") != null) Console.Error.WriteLine("data pinned at " + Environment.StackTrace);
+        }
+        return DataBase + (c.Final >= 0 ? c.Final : c.Offset);
+    }
+
+    /// <summary>Keeps the chunks live code refers to (directly, or through the relocations of live chunks), packed in
+    /// their order, and writes the relocations. Nothing moves when some address was taken as a number earlier.</summary>
+    void CompactData()
+    {
+        var liveFns = Module.LiveFunctions();
+        var live = new HashSet<DataChunk>();
+        var work = new Stack<DataChunk>();
+        void Mark(DataChunk c) { if (live.Add(c)) work.Push(c); }
+        foreach (var f in liveFns)
+            foreach (var ins in f.Body)
+                if (ins.Ref is DataAddr da) Mark(da.Chunk);
+        while (work.Count > 0)
+        {
+            var c = work.Pop();
+            if (c.Relocs != null) foreach (var (_, t) in c.Relocs) if (t is DataAddr ta) Mark(ta.Chunk);
+        }
+        if (Environment.GetEnvironmentVariable("CS2WASM_STATS") != null)
+            Console.Error.WriteLine($"  data chunks: {live.Count}/{_chunks.Count} live, {live.Sum(c => c.Length)} of {_chunks.Sum(c => c.Length)} bytes; functions live {liveFns.Count}/{Module.Functions.Count}");
+        var old = Data.Bytes.ToArray();
+        if (!_dataPinned)
+        {
+            var bytes = new List<byte>();
+            foreach (var c in _chunks)
+            {
+                if (!live.Contains(c)) continue;
+                while (bytes.Count % c.Align != 0) bytes.Add(0);
+                c.Final = bytes.Count;
+                for (int i = 0; i < c.Length; i++) bytes.Add(old[c.Offset + i]);
+            }
+            Data.Bytes.Clear();
+            Data.Bytes.AddRange(bytes);
+        }
+        _dataFinal = true;
+        foreach (var c in _chunks)
+        {
+            if (c.Relocs == null || !_dataPinned && !live.Contains(c)) continue;
+            int at0 = c.Final >= 0 ? c.Final : c.Offset;
+            foreach (var (at, t) in c.Relocs)
+            {
+                var v = BitConverter.GetBytes(t.Address);
+                for (int i = 0; i < 4; i++) Data.Bytes[at0 + at + i] = v[i];
+            }
+        }
     }
 
     void Align(int n) { while (Data.Bytes.Count % n != 0) Data.Bytes.Add(0); }
@@ -625,6 +716,13 @@ internal sealed partial class Driver
         return _cctors[key];
     }
     readonly Queue<(INamedTypeSymbol, WasmFunction, IAddress, IMethodSymbol?)> _pendingCctors = new();
+    readonly List<(INamedTypeSymbol, WasmFunction, IAddress, IMethodSymbol?)> _compiledCctors = [];
+
+    /// <summary>Static fields some compiled code reads (or takes the address of), by owner and name.</summary>
+    public readonly HashSet<string> StaticReads = [];
+    public static string StaticKey(ITypeSymbol owner, ISymbol storage) => Types.Key(owner) + "::" + storage.Name;
+    /// <summary>The second compilation of the static initializers: initializers of unread fields that have no effect are left out.</summary>
+    public bool SkipUnreadInits;
 
     public static EqualsValueClauseSyntax? FieldInitializer(IFieldSymbol f) =>
         f.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<VariableDeclaratorSyntax>().FirstOrDefault()?.Initializer;
@@ -651,6 +749,18 @@ internal sealed partial class Driver
         RunPlugins(rt);
         rt.FinishExports();
         Drain(rt);
+        // static fields nothing reads: the whole program is known now, so their initializers that have no effect go
+        // (and with them what only they reached, which the encoder no longer finds live)
+        SkipUnreadInits = true;
+        foreach (var by in ConstructedBy.Values) by.RemoveWhere(f => _compiledCctors.Any(c => c.Item2 == f));
+        foreach (var (t, fn, flag, cctor) in _compiledCctors.ToList())
+        {
+            fn.Body.Clear(); fn.Locals.Clear();
+            CurrentFn = fn;
+            try { FunctionCompiler.CompileStaticInit(this, t, fn, flag, cctor); }
+            catch (CompileException ex) { Report(Diags.Unsupported, ex.Location ?? t.Locations.FirstOrDefault(), ex.Message); }
+        }
+        Drain(rt);
         // cycles (section 4.3): the type graph is complete only now; arena runtime is compiled only if some site needs it
         Arenas.Analyze();
         if (Arenas.Enabled) { Arenas.RequestRuntime(); Drain(rt); }
@@ -663,7 +773,9 @@ internal sealed partial class Driver
     /// <summary>CS2WASM_STATS=1: what the program reaches, by namespace and by type (instructions), largest first.</summary>
     void PrintStats()
     {
-        var compiled = AllMethods.Where(m => m.Compiled).ToList();
+        // (what the encoder keeps: reachable from the exports through calls and table loads)
+        var liveFns = Module.LiveFunctions();
+        var compiled = AllMethods.Where(m => m.Compiled && liveFns.Contains(m.Fn)).ToList();
         string Ns(MethodInst m) => m.Sym.ContainingType?.ContainingNamespace?.ToDisplayString() ?? "?";
         string Ty(MethodInst m) => m.Sym.ContainingType is { } t ? Types.FullName(t.OriginalDefinition) : "?";
         Console.Error.WriteLine($"{compiled.Count} methods, {compiled.Sum(m => m.Fn.Body.Count)} instructions");
@@ -692,6 +804,53 @@ internal sealed partial class Driver
         if (Environment.GetEnvironmentVariable("CS2WASM_WHY_STUBS") is { Length: > 0 } whyS)
             foreach (var (k, st) in Stubs.Where(x => x.Key.Contains(whyS)))
                 Console.Error.WriteLine($"stub {k} ({st.Cases.Count} targets) <- {(st.MadeBy != null ? Display(st.MadeBy.Sym) + WhyReachedAlways(st.MadeBy) : "?")}");
+        // CS2WASM_STATS_TREE=depth: the first-reach tree (each method under the method whose compilation first asked for
+        // it), with each subtree's instructions, the large subtrees only
+        if (int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_STATS_TREE"), out int depth))
+        {
+            var kids = new Dictionary<MethodInst, List<MethodInst>>();
+            var roots = new List<MethodInst>();
+            foreach (var m in compiled)
+                if (m.ReachedFrom is { } p && p.Compiled) { if (!kids.TryGetValue(p, out var l)) kids[p] = l = []; l.Add(m); } else roots.Add(m);
+            var size = new Dictionary<MethodInst, long>();
+            long Size(MethodInst m)
+            {
+                if (size.TryGetValue(m, out var v)) return v;
+                size[m] = 0;
+                v = m.Fn.Body.Count + (kids.TryGetValue(m, out var l) ? l.Sum(Size) : 0);
+                size[m] = v;
+                return v;
+            }
+            long total = compiled.Sum(m => (long)m.Fn.Body.Count);
+            void Print(MethodInst m, int d)
+            {
+                Console.Error.WriteLine($"{new string(' ', d * 2)}{Size(m),7} {Display(m.Sym)}");
+                if (d >= depth || !kids.TryGetValue(m, out var l)) return;
+                foreach (var c in l.OrderByDescending(Size).Where(c => Size(c) * 100 >= total).Take(12)) Print(c, d + 1);
+            }
+            foreach (var r in roots.OrderByDescending(Size).Where(r => Size(r) * 200 >= total)) Print(r, 0);
+        }
+        // CS2WASM_WHY_LIVE=Text: the shortest chain of calls (or table loads) from an export to each live function whose
+        // name contains it (what keeps it in the module)
+        if (Environment.GetEnvironmentVariable("CS2WASM_WHY_LIVE") is { Length: > 0 } whyL)
+        {
+            var parent = new Dictionary<WasmFunction, WasmFunction?>();
+            var q = new Queue<WasmFunction>();
+            foreach (var f in Module.Functions) if (f.Exports.Count > 0 || f.TableRoot) { parent[f] = null; q.Enqueue(f); }
+            while (q.Count > 0)
+            {
+                var f = q.Dequeue();
+                var next = f.Body.Where(i => i.Ref is WasmFunction && (i.Op == Op.Call || i.Op == Op.I32Const)).Select(i => (WasmFunction)i.Ref!);
+                if (f.ForwardTo != null) next = next.Append(f.ForwardTo);
+                foreach (var g in next) if (!parent.ContainsKey(g)) { parent[g] = f; q.Enqueue(g); }
+            }
+            foreach (var f in parent.Keys.Where(f => f.Name.Contains(whyL)).Take(8))
+            {
+                var chain = new List<string>();
+                for (WasmFunction? x = f; x != null && chain.Count < 30; x = parent[x]) chain.Add(x.Name.Length > 90 ? x.Name[..90] : x.Name);
+                Console.Error.WriteLine("live " + string.Join(" <- ", chain));
+            }
+        }
         Console.Error.WriteLine("types:");
         foreach (var g in compiled.GroupBy(Ty).OrderByDescending(g => g.Sum(m => m.Fn.Body.Count)).Take(40))
             Console.Error.WriteLine($"  {g.Sum(m => m.Fn.Body.Count),8} {g.Count(),5}  {g.Key}");
@@ -712,6 +871,7 @@ internal sealed partial class Driver
                     if (mi.Compiled) continue;
                     mi.Compiled = true;
                     Compiling = mi;
+                    CurrentFn = mi.Fn;
                     try { if (mi.Compile != null) mi.Compile(); else FunctionCompiler.Compile(this, mi); }
                     catch (CompileException ex)
                     {
@@ -731,11 +891,15 @@ internal sealed partial class Driver
                 else
                 {
                     var (t, fn, flag, cctor) = _pendingCctors.Dequeue();
+                    _compiledCctors.Add((t, fn, flag, cctor));
+                    CurrentFn = fn;
                     try { FunctionCompiler.CompileStaticInit(this, t, fn, flag, cctor); }
                     catch (CompileException ex) { Report(Diags.Unsupported, ex.Location ?? t.Locations.FirstOrDefault(), ex.Message); }
                 }
+                CurrentFn = null;
             }
             Compiling = null; // what virtual dispatch adds is reached by no one method
+            CurrentFn = null;
             if (rt.Expand()) progress = true;
         }
     }
@@ -786,6 +950,7 @@ internal sealed partial class Driver
     // ---------------- final memory layout ----------------
     public void LayoutMemory()
     {
+        CompactData();
         while (Data.Bytes.Count % 16 != 0) Data.Bytes.Add(0);
         StaticBase = DataBase + Data.Bytes.Count;
         int staticEnd = StaticBase + (_staticSize + 15) / 16 * 16;

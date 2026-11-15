@@ -1544,6 +1544,38 @@ sealed partial class FunctionCompiler
         fc.CompileStaticInitBody(t, flag, cctor);
     }
 
+    /// <summary>A static initializer whose fields no compiled code reads, and whose value has no effect to keep:
+    /// constants, null, delegates (lambdas, method groups), arrays of constants.</summary>
+    bool UnreadAndPure(INamedTypeSymbol t, IOperation op)
+    {
+        IEnumerable<ISymbol> fields = op switch
+        {
+            IFieldInitializerOperation fi => fi.InitializedFields,
+            IPropertyInitializerOperation pi => pi.InitializedProperties.Select(p => (ISymbol?)Driver.AutoPropertyField(p)).Where(f => f != null)!,
+            _ => [],
+        };
+        var value = (op as ISymbolInitializerOperation)?.Value;
+        if (value == null || !fields.Any()) return false;
+        var owner = T.Canonical(t);
+        if (fields.Any(f => D.StaticReads.Contains(Driver.StaticKey(owner, f)))) return false;
+        return PureInit(value);
+    }
+
+    static bool PureInit(IOperation v)
+    {
+        while (v is IConversionOperation { OperatorMethod: null } c) v = c.Operand;
+        return v switch
+        {
+            { ConstantValue.HasValue: true } => true,
+            IDefaultValueOperation => true,
+            IDelegateCreationOperation { Target: IAnonymousFunctionOperation or IMethodReferenceOperation { Instance: null } } => true,
+            IAnonymousFunctionOperation => true,
+            IArrayCreationOperation { DimensionSizes: var ds, Initializer: var init } =>
+                ds.All(d => d.ConstantValue.HasValue) && (init == null || init.ElementValues.All(PureInit)),
+            _ => false,
+        };
+    }
+
     void CompileStaticInitBody(INamedTypeSymbol t, IAddress flag, IMethodSymbol? cctor)
     {
         PushScope();
@@ -1559,6 +1591,7 @@ sealed partial class FunctionCompiler
             };
             if (init == null) continue;
             var op = D.ModelFor(init.SyntaxTree).GetOperation(init);
+            if (D.SkipUnreadInits && op != null && UnreadAndPure(t, op)) continue;
             E.CurrentPos = D.Position(init);
             if (op != null) PreScan(op); // `out var` in an initializer declares a variable whose address is taken
             BeginTemps();
@@ -1647,7 +1680,7 @@ sealed partial class FunctionCompiler
             if (def.MethodKind == MethodKind.PropertyGet)
             {
                 var ft = T.Resolve(bf.Type, Map);
-                if (bf.IsStatic) { EmitStaticInitGuardForField(Owner(bf)); E.I32Addr(D.StaticField(Owner(bf), bf, ft)); }
+                if (bf.IsStatic) { D.StaticReads.Add(Driver.StaticKey(Owner(bf), bf)); EmitStaticInitGuardForField(Owner(bf)); E.I32Addr(D.StaticField(Owner(bf), bf, ft)); }
                 else { E.Get(_thisLocal); }
                 int off = bf.IsStatic ? 0 : T.Field(bf, Map).Offset;
                 if (Types.IsStruct(ft))
@@ -1700,7 +1733,7 @@ sealed partial class FunctionCompiler
     int EventStorage(IEventSymbol ev, Action pushInstance)
     {
         var owner = Owner(ev);
-        if (ev.IsStatic) { EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, ev, T.Resolve(ev.Type, Map))); return 0; }
+        if (ev.IsStatic) { D.StaticReads.Add(Driver.StaticKey(owner, ev)); EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, ev, T.Resolve(ev.Type, Map))); return 0; }
         pushInstance();
         var slot = T.LayoutOf(owner).Fields.First(f => f.Symbol is IEventSymbol e && e.Name == ev.Name);
         return slot.Offset;

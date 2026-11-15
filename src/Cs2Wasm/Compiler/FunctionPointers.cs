@@ -17,7 +17,7 @@ sealed partial class FunctionCompiler
         if (op is not IAddressOfOperation { Reference: IMethodReferenceOperation mr }) return null;
         var m = SubstMethod(mr.Method);
         if (!m.IsStatic) throw new CompileException("a function pointer to an instance method", op.Syntax.GetLocation());
-        E.I32(D.Module.TableSlot(D.Method(m).Fn));
+        E.I32Fn(D.Module, D.Method(m).Fn);
         return Own.None;
     }
 

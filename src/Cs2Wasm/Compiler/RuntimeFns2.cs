@@ -323,14 +323,15 @@ internal sealed partial class RuntimeFns
             dedup.Sort((a, b) => ((ulong)a.value).CompareTo((ulong)b.value));
             bool flags = et.GetAttributes().Any(a => a.AttributeClass?.Name == "FlagsAttribute");
             var blob = new List<byte>();
+            var relocs = new List<(int, IAddress)>();
             void I32b(int v) => blob.AddRange(BitConverter.GetBytes(v));
             I32b(dedup.Count); I32b(flags ? 1 : 0); I32b(Types.PrimSize(p)); I32b(unsigned ? 1 : 0);
             foreach (var (value, name) in dedup)
             {
                 blob.AddRange(BitConverter.GetBytes(value));
-                I32b(D.StringLiteral(name).Address); I32b(0);
+                relocs.Add((blob.Count, D.StringLiteral(name))); I32b(0); I32b(0);
             }
-            var addr = D.DataBlob([.. blob], 8);
+            var addr = D.DataBlob([.. blob], 8, relocs);
             e.Get(tid); e.I32(id); e.Op(Op.I32Eq);
             e.If(); e.I32Addr(addr); e.Op(Op.Return); e.End();
         }

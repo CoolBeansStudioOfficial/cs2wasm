@@ -154,6 +154,7 @@ internal sealed partial class Driver
         var key = ThunkKey(member);
         if (_reflThunks.TryGetValue(key, out var f)) return f;
         f = Module.AddFunction("reflect " + member.ToDisplayString(), ThunkType);
+        f.TableRoot = true; // the reflection tables refer to it
         _reflThunks[key] = f;
         var mi = new MethodInst { Sym = LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1).Sym, Fn = f, Key = "thunk " + key, Impl = MethodImpl.Body };
         mi.Compile = () => FunctionCompiler.CompileReflectionThunk(this, f, member, mi);
@@ -176,6 +177,7 @@ internal sealed partial class Driver
             MarkConstructed(Types.LibCompilationArray(LibType("System.AttributeUsageAttribute")));
         }
         f = Module.AddFunction("attribute " + key, ThunkType);
+        f.TableRoot = true; // the reflection tables refer to it
         _attrFactories[key] = f;
         var mi = new MethodInst { Sym = LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1).Sym, Fn = f, Key = "attr " + key, Impl = MethodImpl.Body };
         mi.Compile = () => FunctionCompiler.CompileAttributeFactory(this, f, a, mi);
@@ -220,7 +222,8 @@ internal sealed partial class Driver
         e.I32(0);
     }
 
-    int Thunk(ISymbol m) => _reflThunks.TryGetValue(ThunkKey(m), out var f) && f.Body.Count > 0 ? Module.TableSlot(f) + 1 : 0;
+    int Thunk(ISymbol m) => _reflThunks.TryGetValue(ThunkKey(m), out var f) && f.Body.Count > 0 ? RootSlot(f) + 1 : 0;
+    int RootSlot(WasmFunction f) { f.TableRoot = true; return Module.TableSlot(f); }
     int TypeIdOrVoid(ITypeSymbol t) => TypeId(t);
     int Str(string s) => StringLiteral(s).Address;
 
@@ -233,7 +236,7 @@ internal sealed partial class Driver
         foreach (var a in list)
         {
             ints.Add(TypeId(a.AttributeClass!));
-            ints.Add(Module.TableSlot(AttributeFactory(a)) + 1);
+            ints.Add(RootSlot(AttributeFactory(a)) + 1);
         }
         return (list.Count, Ints(ints).Address);
     }

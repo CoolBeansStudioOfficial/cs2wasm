@@ -45,3 +45,6 @@ file src/libraries/Common/src/Interop/Unix/Interop.Libraries.cs
 file src/libraries/Common/src/Interop/Unix/Interop.Errors.cs
 file src/libraries/Common/src/Interop/Unix/Interop.IOErrors.cs
 file src/libraries/Common/src/System/SR.cs
+substitute	method	System.Console	System.IO.TextWriter CreateOutputWriter(System.IO.Stream)	=>System.Cs2WasmConsole.CreateOutputWriter
+substitute	method	System.ConsolePal	System.IO.Stream OpenStandardOutput()	=>System.Cs2WasmConsole.OpenStandardOutput
+substitute	method	System.ConsolePal	System.IO.Stream OpenStandardError()	=>System.Cs2WasmConsole.OpenStandardError

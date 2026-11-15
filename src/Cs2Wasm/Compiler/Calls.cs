@@ -1073,7 +1073,7 @@ sealed partial class FunctionCompiler
         E.I32(Math.Max(layout.Size, 24)); E.I32(tid); E.Call(Rt.AllocObject);
         int obj = Scratch(ValType.I32); E.Tee(obj);
         E.Get(target); E.Store(Op.I32Store, DelegateTarget);
-        E.Get(obj); E.I32(D.Module.TableSlot(fn)); E.Store(Op.I32Store, DelegateFn);
+        E.Get(obj); E.I32Fn(D.Module, fn); E.Store(Op.I32Store, DelegateFn);
         E.Get(obj);
         FreeScratch(ValType.I32, obj); FreeScratch(ValType.I32, target);
     }

@@ -21,6 +21,9 @@ internal sealed class Emitter
     }
 
     public void I32(int v) => Emit(Wasm.Op.I32Const, v);
+    /// <summary>A function's table index (a delegate's or filter's target): the function is live only while some
+    /// live code loads it.</summary>
+    public void I32Fn(WasmModule m, WasmFunction f) => Emit(Wasm.Op.I32Const, m.TableSlot(f), 0, f);
     public void I32Addr(IAddress a, int offset = 0) => Emit(Wasm.Op.I32Const, offset, 0, a);
     public void I64(long v) => Emit(Wasm.Op.I64Const, v);
     public void F32(float v) => Emit(Wasm.Op.F32Const, BitConverter.SingleToInt32Bits(v));

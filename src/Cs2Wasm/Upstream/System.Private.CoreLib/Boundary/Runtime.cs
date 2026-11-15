@@ -261,6 +261,17 @@ namespace Cs2Wasm.Runtime
             return a;
         }
 
+        /// <summary>Thread.GetCurrentProcessorId (manifest substitution): no processor numbers in WASM; the thread's.</summary>
+        public static int CurrentProcessorId() => ThreadId() - 1;
+
+        /// <summary>A string of the first n chars of buf (the runtime's own, without the public constructor's checks).</summary>
+        public static string StringOf(char[] buf, int n)
+        {
+            int a = AllocString(n);
+            Mem.Copy(a + 16, ArrayData(buf), n * 2);
+            return Take<string>(a);
+        }
+
         public static int AllocString(int length)
         {
             int a = AllocObject(16 + length * 2 + 2, 1);
@@ -607,7 +618,7 @@ namespace Cs2Wasm.Runtime
             if (ex is not Exception e) return;
             var buf = new char[16384];
             int n = Engine.CaptureStack(ArrayData(buf), buf.Length);
-            e._fullTrace = n > 0 ? new string(buf, 0, n) : null;
+            e._fullTrace = n > 0 ? StringOf(buf, n) : null;
             e._throwDepth = Engine.StackDepth();
             e._stackTraceString = e._fullTrace;
         }
