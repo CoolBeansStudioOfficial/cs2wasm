@@ -94,6 +94,8 @@ export function threadImports(module, memory, out, onSpawn) {
   return {
     processor_count: () => availableParallelism(),
     thread_spawn: (sp, tls, id, arg, background) => {
+      if (process.env.CS2WASM_TRACE_THREADS) process.stderr.write(`[thread_spawn id=${id} background=${background}]
+`);
       onSpawn?.();
       const w = new Worker(new URL('./worker.mjs', import.meta.url), { workerData: { module, memory, args: [sp, tls, id, arg] } });
       w.on('message', (m) => { if (m.unhandled) { process.stderr.write(m.unhandled); process.exit(3); } });

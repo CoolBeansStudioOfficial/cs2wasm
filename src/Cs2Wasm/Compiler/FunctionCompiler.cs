@@ -542,6 +542,25 @@ sealed partial class FunctionCompiler
             case ITryOperation tr: EmitTry(tr); break;
             case IThrowOperation th: BeginTemps(); EmitThrow(th.Exception); EndTemps(); break;
             case IUsingOperation u: EmitUsing(u.Resources, u.Body, u.Locals); break;
+            case ILockOperation lk when TypeOf(lk.LockedValue) is INamedTypeSymbol { Name: "Lock" } lockT && Types.FullName(lockT) == "System.Threading.Lock":
+                {
+                    // C# 13: lock on a System.Threading.Lock is `using (l.EnterScope()) { body }`
+                    PushScope();
+                    var enterScope = lockT.GetMembers("EnterScope").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 0);
+                    var scopeT = T.Canonical(enterScope.ReturnType);
+                    int sc = TempStruct(scopeT);
+                    BeginTemps();
+                    var lo = EmitValue(lk.LockedValue);
+                    int ll = E.AddLocal(ValType.I32);
+                    ToOwned(lo); E.Set(ll); AddOwned(new Slot { Local = ll, Type = lockT });
+                    EndTemps();
+                    CallWith(D.CanonicalMethod(enterScope), false, () => E.Get(ll), () => { }, () => { E.Get(_fb); E.I32(sc); E.Op(Op.I32Add); }, lk.Syntax);
+                    var dispose = ((INamedTypeSymbol)scopeT).GetMembers("Dispose").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 0);
+                    EmitTryFinallyCore(() => { PushScope(); EmitStatement(lk.Body); PopScope(); },
+                        () => { CallWith(D.CanonicalMethod(dispose), false, () => { E.Get(_fb); E.I32(sc); E.Op(Op.I32Add); }, () => { }, null, lk.Syntax); });
+                    PopScope();
+                    break;
+                }
             case ILockOperation lk:
                 {
                     // Monitor.Enter(o); try { body } finally { Monitor.Exit(o); } with o held for the statement
@@ -1358,6 +1377,16 @@ sealed partial class FunctionCompiler
             var o = EmitValue(resources);
             int l = E.AddLocal(ValType.I32);
             if (Types.IsRef(rt)) { ToOwned(o); E.Set(l); AddOwned(new Slot { Local = l, Type = rt }); }
+            else if (Types.IsStruct(rt))
+            {
+                // a struct resource (Lock.Scope): its own frame slot, so the body's temporaries cannot reuse it
+                int src = Scratch(ValType.I32); E.Set(src);
+                int fo = AllocFrame(rt);
+                _usesFrame = true;
+                E.Get(_fb); E.I32(fo); E.Op(Op.I32Add); E.Tee(l); E.Get(src); CopyStructInit(rt);
+                FreeScratch(ValType.I32, src);
+                if (T.NeedsRc(rt)) AddOwned(new Slot { FrameOffset = fo, Type = rt });
+            }
             else E.Set(l);
             EndTemps();
             held.Add((l, rt, null));
