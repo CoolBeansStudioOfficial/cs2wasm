@@ -135,6 +135,9 @@ sealed class Manifest
         foreach (var d in defines) sb.AppendLine("define " + d);
         foreach (var r in references.Distinct()) sb.AppendLine("reference " + r);
         foreach (var (path, why) in replaced) sb.AppendLine($"replaced {path}  # {why}");
+        // feature switches without a trimmer substitution that cs2wasm fixes: no code is generated at run time
+        if (lib == "System.Private.CoreLib")
+            sb.AppendLine("substitute	method	System.Runtime.CompilerServices.RuntimeFeature	System.Boolean get_IsDynamicCodeSupported()	false");
         // the trimmer's substitutions that apply with cs2wasm's features: method bodies the compiler replaces
         // (`stub`: an empty body, or the value), fields with a fixed value
         foreach (var x in substitutionFiles.Distinct().Where(File.Exists))

@@ -30,6 +30,12 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int EnumInfo(int id);
         /// <summary>[count, ids...]</summary>
         [Intrinsic] public static extern int GenericArgs(int id);
+        /// <summary>The id of the type's one-dimensional array type, -1 when the program has none.</summary>
+        [Intrinsic] public static extern int ArrayOf(int id);
+        /// <summary>The type's reflection record (Meta), 0 when reflection does not reach it.</summary>
+        [Intrinsic] public static extern int Meta(int id);
+        /// <summary>Calls a reflection thunk or attribute factory by its table index + 1.</summary>
+        [Intrinsic] public static extern object? Invoke(int thunk, object? target, object?[]? args);
         /// <summary>[count, ids...]: all the interfaces the type implements.</summary>
         [Intrinsic] public static extern int Interfaces(int id);
 

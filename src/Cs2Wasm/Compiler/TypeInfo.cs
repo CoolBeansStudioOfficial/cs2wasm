@@ -87,6 +87,8 @@ sealed partial class RuntimeGen
                 "declaring" => i => (null, Real(i) && D.TypeById[i].ContainingType is { } ct ? D.TypeId(D.Types.Canonical(ct)) : -1),
                 // a value type's size (the data of its box), an object's instance size
                 "size" => i => (null, Real(i) && D.TypeById[i] is INamedTypeSymbol nt and not { TypeKind: TypeKind.Interface } ? (nt.IsValueType ? D.Types.StorageOf(nt).size : D.Types.LayoutOf(nt).Size) : 0),
+                // the id of the type's one-dimensional array type, when the program has one (Array.CreateInstance)
+                "array_of" => i => (null, Real(i) && D.ExistingTypeId(D.Types.LibCompilationArray(D.TypeById[i])) is int ai ? ai : -1),
                 "box_offset" => i => (null, Real(i) && D.TypeById[i].IsValueType ? FunctionCompilerHelpers.BoxDataOffset(D.Types, D.TypeById[i]) : 0),
                 _ => throw new CompileException("type info " + kind),
             };

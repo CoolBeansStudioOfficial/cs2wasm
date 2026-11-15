@@ -75,8 +75,39 @@ namespace System.Reflection
         private GetterAdapter? cached_getter;
 #pragma warning restore 649
 
-                internal static void get_property_info(RuntimePropertyInfo prop, ref MonoPropertyInfo info,
-                                   PInfo req_info) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_property_info): cs2wasm's reflection reads the compiler's metadata");
+                internal static void get_property_info(RuntimePropertyInfo prop, ref MonoPropertyInfo info, PInfo req_info)
+        {
+            // cs2wasm: from the compiler's reflection record; the accessors are the record's methods get_/set_<name>
+            int e = (int)prop.prop;
+            var declaring = Cs2Wasm.Runtime.Meta.TypeAt(Cs2Wasm.Runtime.Meta.I(e, 5));
+            info.parent = prop.reftype ?? declaring;
+            info.declaring_type = declaring;
+            info.name = Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(e, 0));
+            info.attrs = PropertyAttributes.None;
+            info.get_method = Cs2Wasm.Runtime.Meta.I(e, 3) != 0 ? Accessor(prop, "get_" + info.name, declaring)! : null!;
+            info.set_method = Cs2Wasm.Runtime.Meta.I(e, 4) != 0 ? Accessor(prop, "set_" + info.name, declaring)! : null!;
+        }
+
+        private Type? reftype;
+
+        internal RuntimePropertyInfo(int entry, Type reflected)
+        {
+            prop = (IntPtr)entry;
+            reftype = reflected;
+        }
+
+        static MethodInfo? Accessor(RuntimePropertyInfo prop, string name, Type declaring)
+        {
+            int rec = Cs2Wasm.Runtime.Meta.Record((RuntimeType)(prop.reftype ?? declaring));
+            if (rec == 0) return null;
+            int n = Cs2Wasm.Runtime.Meta.I(rec, 4), a = Cs2Wasm.Runtime.Meta.I(rec, 5), did = ((RuntimeType)declaring).TypeId;
+            for (int i = 0; i < n; i++)
+            {
+                int m = a + 4 * Cs2Wasm.Runtime.Meta.MethodSize * i;
+                if (Cs2Wasm.Runtime.Meta.I(m, 9) == did && Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(m, 0)) == name) return new RuntimeMethodInfo(m, name, prop.reftype ?? declaring);
+            }
+            return null;
+        }
 
                 internal static Type[] GetTypeModifiers(RuntimePropertyInfo prop, bool optional, int genericArgumentPosition = -1) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetTypeModifiers): cs2wasm's reflection reads the compiler's metadata");
 
@@ -493,7 +524,7 @@ namespace System.Reflection
             }
         }
 
-                internal static int get_metadata_token(RuntimePropertyInfo monoProperty) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_metadata_token): cs2wasm's reflection reads the compiler's metadata");
+                internal static int get_metadata_token(RuntimePropertyInfo monoProperty) => 0x17000000 | ((int)monoProperty.prop & 0xFFFFFF);
 
                 private static PropertyInfo internal_from_handle_type(IntPtr event_handle, IntPtr type_handle) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's internal_from_handle_type): cs2wasm's reflection reads the compiler's metadata");
 

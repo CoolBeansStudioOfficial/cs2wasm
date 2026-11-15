@@ -121,8 +121,11 @@ internal sealed partial class Driver
     {
         for (var x = t; x != null; x = x.BaseType)
         {
-            if (x.SpecialType == SpecialType.System_Object) break;
-            foreach (var mem in x.GetMembers())
+            // upstream: object's methods are inherited members too (GetType first, as the runtime lists them)
+            bool isObject = x.SpecialType == SpecialType.System_Object || Compiler.Types.IsObject(x);
+            if (isObject && !Library.UseUpstream) break;
+            var members = isObject ? x.GetMembers().OfType<IMethodSymbol>().Where(m => m.MethodKind == MethodKind.Ordinary).OrderBy(m => m.Name == "GetType" ? 0 : 1).Cast<ISymbol>() : x.GetMembers();
+            foreach (var mem in members)
             {
                 bool want = all || names.Contains(mem.Name) || ctors && mem is IMethodSymbol { MethodKind: MethodKind.Constructor } && SymbolEqualityComparer.Default.Equals(x, t);
                 if (!want) continue;
@@ -165,6 +168,13 @@ internal sealed partial class Driver
     {
         var key = AttrKey(a);
         if (_attrFactories.TryGetValue(key, out var f)) return f;
+        // GetCustomAttributes returns an array of the attribute's type (upstream: Array.CreateInstance)
+        if (Library.UseUpstream)
+        {
+            for (var at = (INamedTypeSymbol?)a.AttributeClass; at != null && !Compiler.Types.IsObject(at); at = at.BaseType) MarkConstructed(Types.LibCompilationArray(at));
+            // and AttributeUsage, which GetCustomAttributes reads of the attribute's type
+            MarkConstructed(Types.LibCompilationArray(LibType("System.AttributeUsageAttribute")));
+        }
         f = Module.AddFunction("attribute " + key, ThunkType);
         _attrFactories[key] = f;
         var mi = new MethodInst { Sym = LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1).Sym, Fn = f, Key = "attr " + key, Impl = MethodImpl.Body };
@@ -260,6 +270,7 @@ internal sealed partial class Driver
                     {
                         var (na, aa) = Attrs(c);
                         ctors.AddRange([(c.IsStatic ? FStatic : 0) | Access(c), Thunk(c), c.Parameters.Length, Ints(c.Parameters.Select(p => TypeId(p.Type))).Address, Ints(c.Parameters.Select(p => Str(p.Name))).Address, na, aa]);
+                        if (Library.UseUpstream) ctors.Add(TypeId(c.ContainingType));
                         nc++;
                         break;
                     }

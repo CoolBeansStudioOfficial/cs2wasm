@@ -2166,22 +2166,24 @@ namespace System
 
                 internal static IntPtr GetMethodsByName_native(QCallTypeHandle type, IntPtr namePtr, BindingFlags bindingAttr, MemberListType listType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection over methods (outside the compiler's metadata)");
 
+        // cs2wasm: the members come from the compiler's reflection record for the type (Boundary/Meta.cs), which lists
+        // the type's members and then its bases'; a base member a derived one hides by signature is left out
         internal RuntimeMethodInfo[] GetMethodsByName(string? name, BindingFlags bindingAttr, MemberListType listType, RuntimeType reflectedType)
         {
-            var this_type = this;
-            var refh = new RuntimeTypeHandle(reflectedType);
-            using (var namePtr = new Mono.SafeStringMarshal(name))
-            using (var h = new Mono.SafeGPtrArrayHandle(GetMethodsByName_native(new QCallTypeHandle(ref this_type), namePtr.Value, bindingAttr, listType)))
+            int rec = Cs2Wasm.Runtime.Meta.Record(this);
+            if (rec == 0) return Array.Empty<RuntimeMethodInfo>();
+            int n = Cs2Wasm.Runtime.Meta.I(rec, 4), a = Cs2Wasm.Runtime.Meta.I(rec, 5), id = TypeId;
+            var list = new List<RuntimeMethodInfo>();
+            var seen = new HashSet<string>();
+            for (int i = 0; i < n; i++)
             {
-                int n = h.Length;
-                var a = new RuntimeMethodInfo[n];
-                for (int i = 0; i < n; i++)
-                {
-                    var mh = new RuntimeMethodHandle(h[i]);
-                    a[i] = (RuntimeMethodInfo)RuntimeMethodInfo.GetMethodFromHandleNoGenericCheck(mh, refh);
-                }
-                return a;
+                int e = a + 4 * Cs2Wasm.Runtime.Meta.MethodSize * i;
+                if (!seen.Add(Cs2Wasm.Runtime.Meta.SigKey(e))) continue;
+                string mn = Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(e, 0));
+                if (!Cs2Wasm.Runtime.Meta.Binds(bindingAttr, Cs2Wasm.Runtime.Meta.I(e, 2), Cs2Wasm.Runtime.Meta.I(e, 9) != id) || !Cs2Wasm.Runtime.Meta.NameMatches(name, listType, mn)) continue;
+                list.Add(new RuntimeMethodInfo(e, mn, reflectedType));
             }
+            return list.ToArray();
         }
 
                 private static IntPtr GetPropertiesByName_native(QCallTypeHandle type, IntPtr name, BindingFlags bindingAttr, MemberListType listType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection over properties (outside the compiler's metadata)");
@@ -2190,37 +2192,37 @@ namespace System
 
         private RuntimeConstructorInfo[] GetConstructors_internal(BindingFlags bindingAttr, RuntimeType reflectedType)
         {
-            var refh = new RuntimeTypeHandle(reflectedType);
-            var this_type = this;
-            using (var h = new Mono.SafeGPtrArrayHandle(GetConstructors_native(new QCallTypeHandle(ref this_type), bindingAttr)))
+            int rec = Cs2Wasm.Runtime.Meta.Record(this);
+            if (rec == 0) return Array.Empty<RuntimeConstructorInfo>();
+            int n = Cs2Wasm.Runtime.Meta.I(rec, 6), a = Cs2Wasm.Runtime.Meta.I(rec, 7);
+            var list = new List<RuntimeConstructorInfo>();
+            for (int i = 0; i < n; i++)
             {
-                int n = h.Length;
-                var a = new RuntimeConstructorInfo[n];
-                for (int i = 0; i < n; i++)
-                {
-                    var mh = new RuntimeMethodHandle(h[i]);
-                    a[i] = (RuntimeConstructorInfo)RuntimeMethodInfo.GetMethodFromHandleNoGenericCheck(mh, refh);
-                }
-                return a;
+                int e = a + 4 * Cs2Wasm.Runtime.Meta.CtorSize * i;
+                if (Cs2Wasm.Runtime.Meta.Binds(bindingAttr, Cs2Wasm.Runtime.Meta.I(e, 0), false)) list.Add(new RuntimeConstructorInfo(e + 1, reflectedType));
             }
+            return list.ToArray();
         }
 
         private RuntimePropertyInfo[] GetPropertiesByName(string? name, BindingFlags bindingAttr, MemberListType listType, RuntimeType reflectedType)
         {
-            var refh = new RuntimeTypeHandle(reflectedType);
-            var this_type = this;
-            using (var namePtr = new Mono.SafeStringMarshal(name))
-            using (var h = new Mono.SafeGPtrArrayHandle(GetPropertiesByName_native(new QCallTypeHandle(ref this_type), namePtr.Value, bindingAttr, listType)))
+            int rec = Cs2Wasm.Runtime.Meta.Record(this);
+            if (rec == 0) return Array.Empty<RuntimePropertyInfo>();
+            int n = Cs2Wasm.Runtime.Meta.I(rec, 2), a = Cs2Wasm.Runtime.Meta.I(rec, 3), id = TypeId;
+            var list = new List<RuntimePropertyInfo>();
+            var seen = new HashSet<string>();
+            for (int i = 0; i < n; i++)
             {
-                int n = h.Length;
-                var a = new RuntimePropertyInfo[n];
-                for (int i = 0; i < n; i++)
-                {
-                    var ph = new Mono.RuntimePropertyHandle(h[i]);
-                    a[i] = (RuntimePropertyInfo)RuntimePropertyInfo.GetPropertyFromHandle(ph, refh);
-                }
-                return a;
+                int e = a + 4 * Cs2Wasm.Runtime.Meta.PropSize * i;
+                string pn = Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(e, 0));
+                if (!seen.Add(pn)) continue;
+                // a property is public when an accessor is
+                int pf = Cs2Wasm.Runtime.Meta.I(e, 2);
+                int flags = (pf & Cs2Wasm.Runtime.Meta.FStatic) | ((pf & (256 | 512)) != 0 ? Cs2Wasm.Runtime.Meta.FPublic : (pf & ~(Cs2Wasm.Runtime.Meta.FPublic | 256 | 512)));
+                if (!Cs2Wasm.Runtime.Meta.Binds(bindingAttr, flags, Cs2Wasm.Runtime.Meta.I(e, 5) != id) || !Cs2Wasm.Runtime.Meta.NameMatches(name, listType, pn)) continue;
+                list.Add(new RuntimePropertyInfo(e, reflectedType));
             }
+            return list.ToArray();
         }
 
         public override InterfaceMapping GetInterfaceMap([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods | DynamicallyAccessedMemberTypes.NonPublicMethods)] Type interfaceType)
@@ -2276,7 +2278,14 @@ namespace System
             return getFullName(false, false)!;
         }
 
-                private static object CreateInstanceInternal(QCallTypeHandle type) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Activator.CreateInstance");
+                // a value type without a constructor: a zeroed box
+                private static object CreateInstanceInternal(QCallTypeHandle type)
+        {
+            int id = Cs2Wasm.Runtime.TypeInfo.Id(type);
+            int off = Cs2Wasm.Runtime.TypeInfo.BoxOffset(id), size = Cs2Wasm.Runtime.TypeInfo.Size(id);
+            int box = Cs2Wasm.Runtime.Rt.AllocObject(off + size, id);
+            return Cs2Wasm.Runtime.Rt.Take<object>(box);
+        }
 
                 private static void GetDeclaringMethod(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, null);
 
@@ -2329,20 +2338,17 @@ namespace System
 
         private RuntimeFieldInfo[] GetFields_internal(string? name, BindingFlags bindingAttr, MemberListType listType, RuntimeType reflectedType)
         {
-            var refh = new RuntimeTypeHandle(reflectedType);
-            var this_type = this;
-            using (var namePtr = new Mono.SafeStringMarshal(name))
-            using (var h = new Mono.SafeGPtrArrayHandle(GetFields_native(new QCallTypeHandle(ref this_type), namePtr.Value, bindingAttr, listType)))
+            int rec = Cs2Wasm.Runtime.Meta.Record(this);
+            if (rec == 0) return Array.Empty<RuntimeFieldInfo>();
+            int n = Cs2Wasm.Runtime.Meta.I(rec, 0), a = Cs2Wasm.Runtime.Meta.I(rec, 1), id = TypeId;
+            var list = new List<RuntimeFieldInfo>();
+            for (int i = 0; i < n; i++)
             {
-                int n = h.Length;
-                var a = new RuntimeFieldInfo[n];
-                for (int i = 0; i < n; i++)
-                {
-                    var fh = new RuntimeFieldHandle(h[i]);
-                    a[i] = (RuntimeFieldInfo)FieldInfo.GetFieldFromHandle(fh, refh);
-                }
-                return a;
+                int e = a + 4 * Cs2Wasm.Runtime.Meta.FieldSize * i;
+                if (!Cs2Wasm.Runtime.Meta.Binds(bindingAttr, Cs2Wasm.Runtime.Meta.I(e, 2), Cs2Wasm.Runtime.Meta.I(e, 4) != id) || !Cs2Wasm.Runtime.Meta.NameMatches(name, listType, Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(e, 0)))) continue;
+                list.Add(new RuntimeFieldInfo(e, reflectedType));
             }
+            return list.ToArray();
         }
 
         private RuntimeEventInfo[] GetEvents_internal(string? name, MemberListType listType, RuntimeType reflectedType)

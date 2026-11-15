@@ -312,6 +312,9 @@ sealed partial class FunctionCompiler
     {
         bool sret = ReturnsStruct(m);
         int sretOff = -1;
+        // wanting this call's ref return as an address is not wanting its arguments' (`ref span[i].GetRawData()`)
+        bool wantAddress = _wantRefReturnAddress;
+        _wantRefReturnAddress = false;
         if (sret)
         {
             if (intoAddr != null) intoAddr();
@@ -319,6 +322,7 @@ sealed partial class FunctionCompiler
         }
         pushThis?.Invoke();
         pushArgs();
+        _wantRefReturnAddress = wantAddress;
         return EmitCallInstr(m, virt && IsVirtualDispatch(m), syntax, sretOff);
     }
 
@@ -650,10 +654,13 @@ sealed partial class FunctionCompiler
             case "TypeInfo.DeclaringId": E.Call(Rt.TypeInfo("declaring")); return Own.None;
             case "TypeInfo.Size": E.Call(Rt.TypeInfo("size")); return Own.None;
             case "TypeInfo.BoxOffset": E.Call(Rt.TypeInfo("box_offset")); return Own.None;
+            case "TypeInfo.ArrayOf": E.Call(Rt.TypeInfo("array_of")); return Own.None;
+            case "TypeInfo.Meta": E.Call(D.MetaOf); return Own.None;
             case "Type.ShortNameOf": E.Call(Rt.TypeShortNameById); return Own.Stable;
             case "Type.FlagsOf": E.Call(Rt.TypeFlagsById); return Own.None;
             case "Type.MetaOf": E.Call(D.MetaOf); return Own.None;
             case "Reflect.Invoke":
+            case "TypeInfo.Invoke":
                 {
                     // (thunk + 1, target, args): call_indirect
                     int a2 = E.AddLocal(ValType.I32), a1 = E.AddLocal(ValType.I32), fi = E.AddLocal(ValType.I32);

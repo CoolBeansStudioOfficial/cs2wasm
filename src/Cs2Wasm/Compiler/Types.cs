@@ -218,6 +218,8 @@ internal sealed class Types
     readonly Dictionary<string, ITypeSymbol> _canon = [];
 
     /// <summary>Maps library types that came from reference assemblies onto cs2wasm's library sources.</summary>
+    public IArrayTypeSymbol LibCompilationArray(ITypeSymbol element) => _d.LibCompilation.CreateArrayTypeSymbol(Canonical(element), 1);
+
     public ITypeSymbol Canonical(ITypeSymbol t)
     {
         if (t is IDynamicTypeSymbol) return _d.ObjectType;

@@ -164,7 +164,9 @@ internal sealed class Library
 
     /// <summary>Errors of the hand-written library (the upstream libraries are checked when they are generated, and
     /// binding all of them on every build would cost seconds).</summary>
-    public IEnumerable<Diagnostic> Errors => UseUpstream ? [] : Compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error);
+    public IEnumerable<Diagnostic> Errors => UseUpstream
+        ? Environment.GetEnvironmentVariable("CS2WASM_LIB_ERRORS") == "1" ? All.SelectMany(c => c.GetDiagnostics()).Where(d => d.Severity == DiagnosticSeverity.Error) : []
+        : Compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error);
 }
 
 /// <summary>Where the dotnet/runtime sources the library is built from are.</summary>

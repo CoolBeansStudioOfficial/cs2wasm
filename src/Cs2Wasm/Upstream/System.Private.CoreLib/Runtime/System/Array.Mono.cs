@@ -287,7 +287,12 @@ namespace System
 
         private static unsafe void InternalCreate(ref Array? result, IntPtr elementType, int rank, int* lengths, int* lowerBounds)
         {
-            throw new NotSupportedException("cs2wasm: Array.CreateInstance is not supported yet");
+            // cs2wasm: one-dimensional arrays of a type the program makes arrays of (TypeInfo.ArrayOf)
+            int e = (int)elementType;
+            int at = rank == 1 && (lowerBounds == null || lowerBounds[0] == 0) ? Cs2Wasm.Runtime.TypeInfo.ArrayOf(e) : -1;
+            if (at < 0) throw Cs2Wasm.Runtime.TypeInfo.NotYet("Array.CreateInstance of an array type the program never makes");
+            int size = (Cs2Wasm.Runtime.TypeInfo.Flags(e) & 1) != 0 ? Cs2Wasm.Runtime.TypeInfo.Size(e) : 4;
+            result = Cs2Wasm.Runtime.Rt.Take<Array>(Cs2Wasm.Runtime.Rt.AllocArray(lengths[0], size, at));
         }
 
         private static unsafe Array InternalCreateFromArrayType(Type arrayType, int rank, int* pLengths, int* pLowerBounds)

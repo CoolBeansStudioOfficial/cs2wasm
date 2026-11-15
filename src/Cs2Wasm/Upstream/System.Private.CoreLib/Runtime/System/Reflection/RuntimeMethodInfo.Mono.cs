@@ -86,9 +86,30 @@ namespace System.Reflection
         private CallingConventions callconv;
 #pragma warning restore 649
 
-                private static void get_method_info(IntPtr handle, out MonoMethodInfo info) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_method_info): cs2wasm's reflection reads the compiler's metadata");
+                private static void get_method_info(IntPtr handle, out MonoMethodInfo info)
+        {
+            // cs2wasm: from the compiler's reflection record (Boundary/Meta.cs); a constructor's handle is odd
+            int h = (int)handle;
+            info = default;
+            if ((h & 1) != 0)
+            {
+                int e = h - 1, flags = Cs2Wasm.Runtime.Meta.I(e, 0);
+                info.parent = Cs2Wasm.Runtime.Meta.TypeAt(Cs2Wasm.Runtime.Meta.I(e, 7));
+                info.ret = typeof(void);
+                info.attrs = Cs2Wasm.Runtime.Meta.MethodAttrs(flags) | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName;
+                info.callconv = (flags & Cs2Wasm.Runtime.Meta.FStatic) != 0 ? CallingConventions.Standard : CallingConventions.Standard | CallingConventions.HasThis;
+            }
+            else
+            {
+                int flags = Cs2Wasm.Runtime.Meta.I(h, 2);
+                info.parent = Cs2Wasm.Runtime.Meta.TypeAt(Cs2Wasm.Runtime.Meta.I(h, 9));
+                info.ret = Cs2Wasm.Runtime.Meta.TypeAt(Cs2Wasm.Runtime.Meta.I(h, 1));
+                info.attrs = Cs2Wasm.Runtime.Meta.MethodAttrs(flags);
+                info.callconv = (flags & Cs2Wasm.Runtime.Meta.FStatic) != 0 ? CallingConventions.Standard : CallingConventions.Standard | CallingConventions.HasThis;
+            }
+        }
 
-                private static int get_method_attributes(IntPtr handle) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_method_attributes): cs2wasm's reflection reads the compiler's metadata");
+                private static int get_method_attributes(IntPtr handle) => (int)GetMethodInfo(handle).attrs;
 
         internal static MonoMethodInfo GetMethodInfo(IntPtr handle)
         {
@@ -122,14 +143,23 @@ namespace System.Reflection
             return GetMethodInfo(handle).iattrs;
         }
 
-                private static ParameterInfo[] get_parameter_info(IntPtr handle, MemberInfo member) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_parameter_info): cs2wasm's reflection reads the compiler's metadata");
+                private static ParameterInfo[] get_parameter_info(IntPtr handle, MemberInfo member)
+        {
+            int h = (int)handle;
+            int e = (h & 1) != 0 ? h - 1 : h, at = (h & 1) != 0 ? 2 : 4;
+            int n = Cs2Wasm.Runtime.Meta.I(e, at), types = Cs2Wasm.Runtime.Meta.I(e, at + 1), names = Cs2Wasm.Runtime.Meta.I(e, at + 2);
+            var r = new ParameterInfo[n];
+            for (int i = 0; i < n; i++)
+                r[i] = new RuntimeParameterInfo(Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(names, i)), Cs2Wasm.Runtime.Meta.TypeAt(Cs2Wasm.Runtime.Meta.I(types, i)), i, 0, DBNull.Value, member, null!);
+            return r;
+        }
 
         internal static ParameterInfo[] GetParametersInfo(IntPtr handle, MemberInfo member)
         {
             return get_parameter_info(handle, member);
         }
 
-                private static MarshalAsAttribute get_retval_marshal(IntPtr handle) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_retval_marshal): cs2wasm's reflection reads the compiler's metadata");
+                private static MarshalAsAttribute get_retval_marshal(IntPtr handle) => null!;
 
         internal static ParameterInfo GetReturnParameterInfo(RuntimeMethodInfo method)
         {
@@ -260,7 +290,14 @@ namespace System.Reflection
             return GetMethodFromHandleInternalType_native(method_handle, type_handle, true);
         }
 
-                private static MethodBase GetMethodFromHandleInternalType_native(IntPtr method_handle, IntPtr type_handle, bool genericCheck) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetMethodFromHandleInternalType_native): cs2wasm's reflection reads the compiler's metadata");
+                private static MethodBase GetMethodFromHandleInternalType_native(IntPtr method_handle, IntPtr type_handle, bool genericCheck)
+        {
+            int h = (int)method_handle;
+            var declaring = MonoMethodInfo.GetDeclaringType(method_handle);
+            Type reflected = type_handle != IntPtr.Zero ? Cs2Wasm.Runtime.TypeInfo.Type((int)type_handle) : declaring;
+            if ((h & 1) != 0) return new RuntimeConstructorInfo(h, reflected);
+            return new RuntimeMethodInfo(h, Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(h, 0)), reflected);
+        }
 
         internal RuntimeMethodInfo()
         {
@@ -271,11 +308,20 @@ namespace System.Reflection
             this.mhandle = mhandle.Value;
         }
 
-                internal static string get_name(MethodBase method) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_name): cs2wasm's reflection reads the compiler's metadata");
+        /// <summary>cs2wasm: a method of the compiler's reflection record (its entry's address).</summary>
+        internal RuntimeMethodInfo(int entry, string name, Type reflected)
+        {
+            mhandle = (IntPtr)entry;
+            this.name = name;
+            reftype = reflected;
+        }
 
-                internal static RuntimeMethodInfo get_base_method(RuntimeMethodInfo method, bool definition) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_base_method): cs2wasm's reflection reads the compiler's metadata");
+                internal static string get_name(MethodBase method) => method is RuntimeConstructorInfo c ? ((Cs2Wasm.Runtime.Meta.I((int)c.mhandle - 1, 0) & Cs2Wasm.Runtime.Meta.FStatic) != 0 ? ".cctor" : ".ctor") : Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I((int)((RuntimeMethodInfo)method).mhandle, 0));
 
-                internal static int get_metadata_token(RuntimeMethodInfo method) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_metadata_token): cs2wasm's reflection reads the compiler's metadata");
+                // cs2wasm: the records do not link overrides to the methods they override
+                internal static RuntimeMethodInfo get_base_method(RuntimeMethodInfo method, bool definition) => method;
+
+                internal static int get_metadata_token(RuntimeMethodInfo method) => 0x06000000 | ((int)method.mhandle & 0xFFFFFF);
 
         public override MethodInfo GetBaseDefinition()
         {
@@ -373,7 +419,13 @@ namespace System.Reflection
          * The exc argument is used to capture exceptions thrown by the icall.
          * Exceptions thrown by the called method propagate normally.
          */
-                internal object? InternalInvoke(object? obj, IntPtr *args, out Exception? exc) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalInvoke): cs2wasm's reflection reads the compiler's metadata");
+                internal object? InternalInvoke(object? obj, IntPtr *args, out Exception? exc)
+        {
+            exc = null;
+            int thunk = Cs2Wasm.Runtime.Meta.I((int)mhandle, 3);
+            if (thunk == 0) throw Cs2Wasm.Runtime.TypeInfo.NotYet("invoking " + Name + " (the compiler kept no call for it)");
+            return Cs2Wasm.Runtime.TypeInfo.Invoke(thunk, obj, Cs2Wasm.Runtime.Meta.ArgsFrom(args, ArgumentTypes));
+        }
 
         public override RuntimeMethodHandle MethodHandle
         {
@@ -643,7 +695,7 @@ namespace System.Reflection
 
                 private MethodInfo MakeGenericMethod_impl(Type[] types) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's MakeGenericMethod_impl): cs2wasm's reflection reads the compiler's metadata");
 
-                public override Type[] GetGenericArguments() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetGenericArguments): cs2wasm's reflection reads the compiler's metadata");
+                public override Type[] GetGenericArguments() => Type.EmptyTypes;
 
                 private MethodInfo GetGenericMethodDefinition_impl() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetGenericMethodDefinition_impl): cs2wasm's reflection reads the compiler's metadata");
 
@@ -656,9 +708,9 @@ namespace System.Reflection
             return res;
         }
 
-        public override bool IsGenericMethodDefinition => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's IsGenericMethodDefinition): cs2wasm's reflection reads the compiler's metadata");
+        public override bool IsGenericMethodDefinition => false;
 
-        public override bool IsGenericMethod => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's IsGenericMethod): cs2wasm's reflection reads the compiler's metadata");
+        public override bool IsGenericMethod => false;
 
         public override bool ContainsGenericParameters
         {
@@ -793,7 +845,21 @@ namespace System.Reflection
          * InternalInvoke() receives the parameters correctly converted by the binder
          * to match the types of the method signature.
          */
-                internal object InternalInvoke(object? obj, IntPtr *args, out Exception? exc) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalInvoke): cs2wasm's reflection reads the compiler's metadata");
+                internal object InternalInvoke(object? obj, IntPtr *args, out Exception? exc)
+        {
+            exc = null;
+            if (obj != null) throw Cs2Wasm.Runtime.TypeInfo.NotYet("running a constructor on an existing object");
+            int thunk = Cs2Wasm.Runtime.Meta.I((int)mhandle - 1, 1);
+            if (thunk == 0) throw Cs2Wasm.Runtime.TypeInfo.NotYet("invoking a constructor of " + DeclaringType + " (the compiler kept no call for it)");
+            return Cs2Wasm.Runtime.TypeInfo.Invoke(thunk, null, Cs2Wasm.Runtime.Meta.ArgsFrom(args, ArgumentTypes))!;
+        }
+
+        /// <summary>cs2wasm: a constructor of the compiler's reflection record (its entry's address + 1).</summary>
+        internal RuntimeConstructorInfo(int handle, Type reflected)
+        {
+            mhandle = (IntPtr)handle;
+            reftype = reflected;
+        }
 
         public override RuntimeMethodHandle MethodHandle
         {
@@ -909,6 +975,6 @@ namespace System.Reflection
             }
         }
 
-                internal static int get_metadata_token(RuntimeConstructorInfo method) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_metadata_token): cs2wasm's reflection reads the compiler's metadata");
+                internal static int get_metadata_token(RuntimeConstructorInfo method) => 0x06000000 | ((int)method.mhandle & 0xFFFFFF);
     }
 }

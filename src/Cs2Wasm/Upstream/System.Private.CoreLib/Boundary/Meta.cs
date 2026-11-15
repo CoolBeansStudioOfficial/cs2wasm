@@ -1,0 +1,121 @@
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+
+namespace Cs2Wasm.Runtime
+{
+    /// <summary>
+    /// The reflection records the compiler keeps (Compiler/Reflection.cs) for what the program's reflection can be
+    /// proven to reach, read for Mono's reflection icalls. A member's handle is the address of its entry; a
+    /// constructor's handle is its entry's address + 1. Entries (i32s):
+    /// type [nfields, fields, nprops, props, nmethods, methods, nctors, ctors, nattrs, attrs, base id + 1, ...];
+    /// field [name, type, flags, thunk, declaring, nattrs, attrs]; ctor [flags, thunk, nparams, param types,
+    /// param names, nattrs, attrs, declaring]; method [name, return type (-1 void), flags, thunk, nparams, param
+    /// types, param names, nattrs, attrs, declaring]; property [name, type, flags, get thunk, set thunk, declaring,
+    /// nattrs, attrs]. Attributes are [type id, factory] pairs. Thunks are (target, object[] args) -> object.
+    /// </summary>
+    internal static class Meta
+    {
+        public const int FieldSize = 7, CtorSize = 8, MethodSize = 10, PropSize = 8;
+        public const int FStatic = 1, FPublic = 2, FVirtual = 4, FAbstract = 8, FReadOnly = 16, FPrivate = 32, FFamily = 64, FAssembly = 128;
+
+        public static int I(int addr, int index) => Mem.LoadI32(addr + 4 * index);
+        public static string S(int addr) => addr == 0 ? "" : Rt.Borrow<string>(addr);
+        public static RuntimeType TypeAt(int id) => id == -1 ? (RuntimeType)typeof(void) : TypeInfo.Type(id);
+
+        /// <summary>The record of a type, or 0 when the program's reflection does not reach it.</summary>
+        public static int Record(RuntimeType t) => TypeInfo.Meta(t.TypeId);
+
+        public static int Access(int flags) =>
+            (flags & FPublic) != 0 ? 6 : (flags & FPrivate) != 0 ? 1 : (flags & (FFamily | FAssembly)) == (FFamily | FAssembly) ? 5 : (flags & FFamily) != 0 ? 4 : 3;
+
+        public static MethodAttributes MethodAttrs(int flags)
+        {
+            int a = Access(flags) | 0x80; // HideBySig
+            if ((flags & FStatic) != 0) a |= 0x10;
+            if ((flags & FVirtual) != 0) a |= 0x40;
+            if ((flags & FAbstract) != 0) a |= 0x400;
+            return (MethodAttributes)a;
+        }
+
+        public static FieldAttributes FieldAttrs(int flags)
+        {
+            int a = Access(flags);
+            if ((flags & FStatic) != 0) a |= 0x10;
+            if ((flags & FReadOnly) != 0) a |= 0x20;
+            return (FieldAttributes)a;
+        }
+
+        /// <summary>Whether a member passes the binding flags (Mono's filtering in mono_class_get_methods_by_name).</summary>
+        public static bool Binds(BindingFlags f, int flags, bool inherited)
+        {
+            bool isPublic = (flags & FPublic) != 0, isStatic = (flags & FStatic) != 0;
+            if (isPublic ? (f & BindingFlags.Public) == 0 : (f & BindingFlags.NonPublic) == 0) return false;
+            if (isStatic ? (f & BindingFlags.Static) == 0 : (f & BindingFlags.Instance) == 0) return false;
+            if (inherited)
+            {
+                if ((f & BindingFlags.DeclaredOnly) != 0) return false;
+                if (isStatic && (f & BindingFlags.FlattenHierarchy) == 0) return false;
+                if ((flags & FPrivate) != 0) return false;
+            }
+            return true;
+        }
+
+        public static bool NameMatches(string? name, RuntimeType.MemberListType listType, string candidate) =>
+            listType switch
+            {
+                RuntimeType.MemberListType.CaseSensitive => name == candidate,
+                RuntimeType.MemberListType.CaseInsensitive => string.Equals(name, candidate, StringComparison.OrdinalIgnoreCase),
+                _ => true,
+            };
+
+        public static RuntimeType[] ParamTypes(int count, int addr)
+        {
+            var r = new RuntimeType[count];
+            for (int i = 0; i < count; i++) r[i] = TypeAt(I(addr, i));
+            return r;
+        }
+
+        /// <summary>A method's parameter types as a signature key, for hiding base methods by signature.</summary>
+        public static string SigKey(int entry)
+        {
+            int n = I(entry, 4), pt = I(entry, 5);
+            var s = S(I(entry, 0)) + "(";
+            for (int i = 0; i < n; i++) s += I(pt, i) + ",";
+            return s;
+        }
+
+        /// <summary>The objects a thunk is called with: Mono's argument pointers (a reference's slot, a value's box data).</summary>
+        public static unsafe object?[]? ArgsFrom(IntPtr* args, RuntimeType[] types)
+        {
+            if (types.Length == 0) return null;
+            var r = new object?[types.Length];
+            for (int i = 0; i < types.Length; i++)
+            {
+                int p = (int)args[i];
+                r[i] = types[i].IsValueType ? Rt.Borrow<object>(p - Rt.BoxDataOffset<int>()) : Rt.Borrow<object>(Mem.LoadI32(p));
+            }
+            return r;
+        }
+
+        /// <summary>The attributes of an attribute list that are a `filter` (all when null).</summary>
+        public static Attribute[] Attributes(int count, int addr, Type? filter)
+        {
+            var list = new List<Attribute>();
+            for (int i = 0; i < count; i++)
+            {
+                var at = TypeInfo.Type(I(addr, 2 * i));
+                if (filter != null && !filter.IsAssignableFrom(at)) continue;
+                list.Add((Attribute)TypeInfo.Invoke(I(addr, 2 * i + 1), null, null)!);
+            }
+            return list.ToArray();
+        }
+
+        public static bool AnyAttribute(int count, int addr, Type? filter)
+        {
+            for (int i = 0; i < count; i++)
+                if (filter == null || filter.IsAssignableFrom(TypeInfo.Type(I(addr, 2 * i)))) return true;
+            return false;
+        }
+    }
+}

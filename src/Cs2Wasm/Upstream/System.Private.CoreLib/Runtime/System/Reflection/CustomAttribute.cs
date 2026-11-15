@@ -51,11 +51,33 @@ namespace System.Reflection
             if ((obj is Type))
                 return true;
 
-            corlib ??= typeof(int).Assembly;
-            return obj.GetType().Assembly != corlib;
+            // cs2wasm: the runtime's own providers (assemblies are not reflected over)
+            return obj is not (RuntimeMethodInfo or RuntimeConstructorInfo or RuntimeFieldInfo or RuntimePropertyInfo or RuntimeEventInfo or RuntimeParameterInfo or RuntimeAssembly or RuntimeModule);
         }
 
-                internal static Attribute[] GetCustomAttributesInternal(ICustomAttributeProvider obj, Type attributeType, bool pseudoAttrs) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetCustomAttributesInternal): cs2wasm's reflection reads the compiler's metadata");
+                internal static Attribute[] GetCustomAttributesInternal(ICustomAttributeProvider obj, Type attributeType, bool pseudoAttrs)
+        {
+            var (n, a) = AttributeList(obj);
+            return Cs2Wasm.Runtime.Meta.Attributes(n, a, attributeType);
+        }
+
+        /// <summary>cs2wasm: where the compiler's reflection record keeps a provider's attributes.</summary>
+        static (int count, int addr) AttributeList(ICustomAttributeProvider obj)
+        {
+            switch (obj)
+            {
+                case RuntimeType t:
+                    {
+                        int rec = Cs2Wasm.Runtime.Meta.Record(t);
+                        return rec == 0 ? (0, 0) : (Cs2Wasm.Runtime.Meta.I(rec, 8), Cs2Wasm.Runtime.Meta.I(rec, 9));
+                    }
+                case RuntimeMethodInfo m: return (Cs2Wasm.Runtime.Meta.I((int)m.mhandle, 7), Cs2Wasm.Runtime.Meta.I((int)m.mhandle, 8));
+                case RuntimeConstructorInfo c: return (Cs2Wasm.Runtime.Meta.I((int)c.mhandle - 1, 5), Cs2Wasm.Runtime.Meta.I((int)c.mhandle - 1, 6));
+                case RuntimeFieldInfo f: return (Cs2Wasm.Runtime.Meta.I((int)f.FieldHandle.Value, 5), Cs2Wasm.Runtime.Meta.I((int)f.FieldHandle.Value, 6));
+                case RuntimePropertyInfo p: return (Cs2Wasm.Runtime.Meta.I((int)p.prop, 6), Cs2Wasm.Runtime.Meta.I((int)p.prop, 7));
+                default: return (0, 0);
+            }
+        }
 
         internal static object[]? GetPseudoCustomAttributes(ICustomAttributeProvider obj, Type attributeType)
         {
@@ -594,7 +616,11 @@ namespace System.Reflection
             return false;
         }
 
-                private static bool IsDefinedInternal(ICustomAttributeProvider obj, Type AttributeType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's IsDefinedInternal): cs2wasm's reflection reads the compiler's metadata");
+                private static bool IsDefinedInternal(ICustomAttributeProvider obj, Type AttributeType)
+        {
+            var (n, a) = AttributeList(obj);
+            return Cs2Wasm.Runtime.Meta.AnyAttribute(n, a, AttributeType);
+        }
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2075:UnrecognizedReflectionPattern",
             Justification = "Linker analyzes base properties and marks them")]

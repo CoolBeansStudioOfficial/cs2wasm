@@ -154,6 +154,9 @@ internal sealed partial class Driver
         return id;
     }
 
+    /// <summary>A type's id if it has one already (tables must not add types).</summary>
+    public int? ExistingTypeId(ITypeSymbol t) => _typeIds.TryGetValue(Types.Key(Types.Canonical(t)), out var id) ? id : null;
+
     public int MarkConstructed(ITypeSymbol t)
     {
         var id = TypeId(t);
@@ -247,6 +250,8 @@ internal sealed partial class Driver
         for (var x = mi; x != null && chain.Count < 30; x = x.ReachedFrom) chain.Add(Display(x.Sym));
         return " [reached: " + string.Join(" <- ", chain) + "]";
     }
+
+    public readonly HashSet<string> ReportedCapabilities = [];
 
     public MethodInst Method(IMethodSymbol m)
     {

@@ -1721,6 +1721,25 @@ sealed partial class FunctionCompiler
         return null;
     }
 
+    /// <summary>A capability the sandbox lacks, reported where the program's own code first reaches the library
+    /// member that needs it (once per capability and place), or where it is used when no program code leads to it.</summary>
+    void ReportCapability(Location? loc, string name, string capability)
+    {
+        MethodInst? prev = null;
+        var c = D.Compiling;
+        while (c != null && D.IsLibrary(c.Sym)) { prev = c; c = c.ReachedFrom; }
+        if (c != null && prev?.FirstUse is { } userLoc)
+        {
+            if (!D.ReportedCapabilities.Add(capability + "@" + userLoc.GetLineSpan())) return;
+            D.ReportedCapabilities.Add(capability);
+            D.Report(Diags.SandboxCapability, userLoc, Driver.Display(prev.Sym) + " (through " + name + ")", capability);
+            return;
+        }
+        // reached only inside the library: once per capability
+        if (!D.ReportedCapabilities.Add(capability)) return;
+        D.Report(Diags.SandboxCapability, loc, name, capability);
+    }
+
     void ReportMissing(IMethodSymbol m, Location? loc)
     {
         loc ??= m.Locations.FirstOrDefault(l => l.IsInSource);
@@ -1728,13 +1747,26 @@ sealed partial class FunctionCompiler
         if (Environment.GetEnvironmentVariable("CS2WASM_DEBUG") != null)
             Console.Error.WriteLine($"missing {name} asm={m.ContainingAssembly?.Name} type-asm={m.ContainingType?.ContainingAssembly?.Name} key={Types.MethodKey(m)} {Environment.StackTrace}");
         var def = m.OriginalDefinition;
-        if (Driver.MissingCapability(def) is { } needed && !needed.StartsWith("platform invoke")) { D.Report(Diags.SandboxCapability, loc, name, needed); return; }
-        // an upstream library's native call (System.Native's): the capability it stands for, when one is known
-        if (D.IsLibrary(m) && Driver.MissingCapability(def) is { } pinv && NativeCapability(pinv) is { } nc) { D.Report(Diags.SandboxCapability, loc, name, nc); return; }
+        if (Driver.MissingCapability(def) is { } needed && !needed.StartsWith("platform invoke")) { ReportCapability(loc, name, needed); return; }
+        // an upstream library's native call (System.Native's): the capability the program's call into the library
+        // stands for (File.ReadAllText: the file system), or the native function's
+        if (D.IsLibrary(m) && Driver.MissingCapability(def) is { } pinv && pinv.StartsWith("platform invoke"))
+        {
+            if ((EntryCapability() ?? NativeCapability(pinv)) is { } nc) { ReportCapability(loc, name, nc); return; }
+            // a native call reached only inside the library, once the program is already told what it lacks
+            if (D.ReportedCapabilities.Count > 0) return;
+        }
         if (def.GetDllImportData() != null || def.GetAttributes().Any(a => a.AttributeClass?.Name is "DllImportAttribute" or "LibraryImportAttribute"))
         { D.Report(Diags.PlatformInvoke, loc, name); return; }
         if (!D.IsLibrary(m) && def.Locations.Any(l => l.IsInSource))
         { D.Report(Diags.MissingBoundary, loc, Types.CommentId(m)); return; }
+        if (CapabilityOf(m) is { } cap) D.Report(Diags.SandboxCapability, loc, name, cap);
+        else D.Report(Diags.LibraryMissing, loc, name);
+    }
+
+    /// <summary>The sandbox capability a library member stands for, by its type.</summary>
+    static string? CapabilityOf(IMethodSymbol m)
+    {
         var ns = m.ContainingNamespace?.ToDisplayString() ?? "";
         var tn = Types.FullName(m.ContainingType);
         string? cap = ns switch
@@ -1746,7 +1778,15 @@ sealed partial class FunctionCompiler
         };
         if (tn == "System.Diagnostics.Process") cap = "processes";
         if (tn == "System.Environment" && (m.Name.Contains("Environment") || m.Name is "SetEnvironmentVariable" or "GetEnvironmentVariables" or "Exit" or "GetCommandLineArgs" or "get_CurrentDirectory")) cap = m.Name == "Exit" ? "processes" : "the environment";
-        if (cap != null) D.Report(Diags.SandboxCapability, loc, name, cap);
-        else D.Report(Diags.LibraryMissing, loc, name);
+        return cap;
+    }
+
+    /// <summary>The capability of the library member the program's own code called to get here, if any.</summary>
+    string? EntryCapability()
+    {
+        MethodInst? prev = null;
+        var c = D.Compiling;
+        while (c != null && D.IsLibrary(c.Sym)) { prev = c; c = c.ReachedFrom; }
+        return c != null && prev != null ? CapabilityOf(prev.Sym) : null;
     }
 }

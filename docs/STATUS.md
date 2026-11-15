@@ -272,10 +272,13 @@ exported beside the stack pointer.
   platform invokes the sandbox lacks (build errors when reached). Upstream files replaced: the tz database
   reader (no database; the engine's offset) and the browser pool's JS-loop yield. The compiler folds what the
   target fixes (`IsHardwareAccelerated`/`IsSupported` false, no event tracing, invariant globalization) and
-  compiles only the side of a branch taken. Hello world runs on it (Console, StreamWriter, UTF-8 encoding,
-  number formatting are upstream's). Not yet: the conformance suite on it, module size (about 3 MB for a
-  trivial program) and build time (about 14 s), reflection over members (types are), async continuations and
-  timers on the engine thread, finalizers and weak handles (they hold their target).
+  compiles only the side of a branch taken. The conformance suite runs on it: 58 of 59 checks pass (the arena check,
+  below, does not). Reflection over members reads the compiler's reflection records through Mono's icalls
+  (`Boundary/Meta.cs`): methods, constructors, fields, properties, invocation, attributes. Not yet: the arena check
+  (upstream's own types are cycle-capable to the type-graph analysis: exception chains, `object[]` holding
+  `object`, StringBuilder chunks, encoder fallback buffers, so every program gets the arena runtime), module size
+  (about 1.5 MB for hello world) and build time (about 10 s), `Delegate.CreateDelegate`/`DynamicInvoke`,
+  reflection on generic instantiations, `Array.CreateInstance` of array types the program never makes.
   Until the suite passes on it, the default is still **cs2wasm's own library** (a deviation from the spec). It is a
   self-contained corlib written for this project (about 6 500 lines: object model, strings, number formatting and
   parsing with .NET's exact rounding rules, math, exceptions, collections whose enumeration order matches .NET's,

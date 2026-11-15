@@ -53,6 +53,20 @@ namespace System.Reflection
         private Type? type;
         private FieldAttributes attrs;
 #pragma warning restore 649
+        private Type? reftype;
+
+        internal RuntimeFieldInfo() { }
+
+        /// <summary>cs2wasm: a field of the compiler's reflection record (its entry's address).</summary>
+        internal RuntimeFieldInfo(int entry, Type reflected)
+        {
+            fhandle = new RuntimeFieldHandle((IntPtr)entry);
+            name = Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(entry, 0));
+            attrs = Cs2Wasm.Runtime.Meta.FieldAttrs(Cs2Wasm.Runtime.Meta.I(entry, 2));
+            reftype = reflected;
+        }
+
+        int Entry => (int)fhandle.Value;
 
         public override Module Module
         {
@@ -74,7 +88,7 @@ namespace System.Reflection
 
         public override bool IsCollectible => false;
 
-                internal override object UnsafeGetValue(object obj) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's UnsafeGetValue): cs2wasm's reflection reads the compiler's metadata");
+                internal override object UnsafeGetValue(object obj) => GetValueInternal(obj)!;
 
         internal override void CheckConsistency(object target)
         {
@@ -148,11 +162,11 @@ namespace System.Reflection
             }
         }
 
-                private Type ResolveType() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's ResolveType): cs2wasm's reflection reads the compiler's metadata");
+                private Type ResolveType() => Cs2Wasm.Runtime.Meta.TypeAt(Cs2Wasm.Runtime.Meta.I(Entry, 1));
 
         public override Type FieldType => type ??= ResolveType();
 
-                private Type GetParentType(bool declaring) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetParentType): cs2wasm's reflection reads the compiler's metadata");
+                private Type GetParentType(bool declaring) => declaring || reftype == null ? Cs2Wasm.Runtime.Meta.TypeAt(Cs2Wasm.Runtime.Meta.I(Entry, 4)) : reftype;
 
         public override Type ReflectedType
         {
@@ -194,7 +208,12 @@ namespace System.Reflection
 
                 internal override int GetFieldOffset() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetFieldOffset): cs2wasm's reflection reads the compiler's metadata");
 
-                private object? GetValueInternal(object? obj) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetValueInternal): cs2wasm's reflection reads the compiler's metadata");
+                private object? GetValueInternal(object? obj)
+        {
+            int thunk = Cs2Wasm.Runtime.Meta.I(Entry, 3);
+            if (thunk == 0) throw Cs2Wasm.Runtime.TypeInfo.NotYet("reading " + Name + " (the compiler kept no access for it)");
+            return Cs2Wasm.Runtime.TypeInfo.Invoke(thunk, obj, null);
+        }
 
         public override object? GetValue(object? obj)
         {
@@ -217,7 +236,12 @@ namespace System.Reflection
             return $"{FieldType.FormatTypeName()} {name}";
         }
 
-                private static void SetValueInternal(FieldInfo fi, object? obj, object? value) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's SetValueInternal): cs2wasm's reflection reads the compiler's metadata");
+                private static void SetValueInternal(FieldInfo fi, object? obj, object? value)
+        {
+            int thunk = Cs2Wasm.Runtime.Meta.I(((RuntimeFieldInfo)fi).Entry, 3);
+            if (thunk == 0) throw Cs2Wasm.Runtime.TypeInfo.NotYet("writing " + fi.Name + " (the compiler kept no access for it)");
+            Cs2Wasm.Runtime.TypeInfo.Invoke(thunk, obj, new object?[] { value });
+        }
 
         public override void SetValue(object? obj, object? val, BindingFlags invokeAttr, Binder? binder, CultureInfo? culture)
         {
@@ -281,7 +305,7 @@ namespace System.Reflection
             }
         }
 
-                internal static int get_metadata_token(RuntimeFieldInfo monoField) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_metadata_token): cs2wasm's reflection reads the compiler's metadata");
+                internal static int get_metadata_token(RuntimeFieldInfo monoField) => 0x04000000 | (monoField.Entry & 0xFFFFFF);
 
                 private Type[] GetTypeModifiers(bool optional, int genericArgumentPosition = -1) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetTypeModifiers): cs2wasm's reflection reads the compiler's metadata");
 
