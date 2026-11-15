@@ -5,6 +5,8 @@ using Microsoft.CodeAnalysis;
 // cs2wasm command-line wrapper (for tests; embedders call Cs2WasmCompiler.Compile in process).
 // usage: cs2wasm <file.cs | dir>... -o out.wasm [--boundary table.json] [--map out.wasm.map]
 //               [--section name=file] [--memory-pages N] [--max-pages N] [--no-opt] [-r ref.dll] [--watch]
+//               [-a generators.dll] [--property Name=value]
+// -a: source generators run over the program first (with the build properties --property gives them)
 // --watch: builds, then builds again whenever a .cs file of the inputs changes (the library stays loaded: a rebuild
 // skips its parsing and setup)
 
@@ -12,6 +14,8 @@ var inputs = new List<string>();
 string? output = null, boundary = null, map = null;
 var sections = new List<(string, byte[])>();
 var refs = new List<MetadataReference>();
+var analyzers = new List<string>();
+var properties = new Dictionary<string, string>();
 int pages = 256, maxPages = 16384;
 bool optimize = true, watch = false;
 for (int i = 0; i < args.Length; i++)
@@ -32,6 +36,13 @@ for (int i = 0; i < args.Length; i++)
         case "--no-opt": optimize = false; break;
         case "--watch": watch = true; break;
         case "-r": refs.Add(MetadataReference.CreateFromFile(args[++i])); break;
+        case "-a": analyzers.Add(args[++i]); break;
+        case "--property":
+            {
+                var kv = args[++i].Split('=', 2);
+                properties[kv[0]] = kv.Length > 1 ? kv[1] : "";
+                break;
+            }
         case "-h": case "--help":
             Console.WriteLine("usage: cs2wasm <file.cs|dir>... -o out.wasm [--boundary table.json] [--map out.map] [--section name=file] [--memory-pages N] [--no-opt] [-r ref.dll] [--watch]");
             return 0;
@@ -53,6 +64,11 @@ int Build()
         // (directories are listed again on every build: a file added while watching is compiled)
         files = inputs.SelectMany<string, string>(p => Directory.Exists(p) ? Directory.GetFiles(p, "*.cs", SearchOption.AllDirectories).Order(StringComparer.Ordinal) : [p]).ToList();
         var compilation = Frontend.CreateCompilation(Path.GetFileNameWithoutExtension(output), files.Select(f => (Path.GetFullPath(f), File.ReadAllText(f))), refs);
+        if (analyzers.Count > 0)
+        {
+            compilation = Frontend.RunGenerators(compilation, analyzers, properties, out var gdiags);
+            foreach (var d in gdiags.Where(d => d.Severity >= DiagnosticSeverity.Warning)) Console.Error.WriteLine(d.ToString());
+        }
         var options = new CompileOptions
         {
             Boundary = boundary != null ? BoundaryTable.FromJson(File.ReadAllText(boundary)) : new BoundaryTable(),

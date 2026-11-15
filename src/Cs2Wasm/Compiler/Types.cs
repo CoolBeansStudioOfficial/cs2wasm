@@ -557,7 +557,10 @@ internal sealed class Types
             if (target is IArrayTypeSymbol ta)
                 return ca.Rank == ta.Rank && (Key(ca.ElementType) == Key(ta.ElementType) || (IsRef(ca.ElementType) && IsRef(ta.ElementType) && IsSubtype(ca.ElementType, ta.ElementType)));
             var fn = FullName(target);
-            if (fn is "System.Array" or "System.Collections.IEnumerable" or "System.Collections.ICollection" or "System.Collections.IList" or "System.ICloneable") return true;
+            // System.Array and what it implements (IList, ICollection, IEnumerable, ICloneable, IStructuralComparable,
+            // IStructuralEquatable)
+            if (fn == "System.Array") return true;
+            if (target is INamedTypeSymbol { IsGenericType: false } && _d.LibType("System.Array") is { } arrayT && SupertypeKeys(arrayT).Contains(tk)) return true;
             if (ca.Rank == 1 && target is INamedTypeSymbol nt && nt.Arity == 1 && nt.TypeKind == TypeKind.Interface &&
                 (fn.StartsWith("System.Collections.Generic.I") || fn.StartsWith("System.Collections.Generic.IReadOnly")))
             {

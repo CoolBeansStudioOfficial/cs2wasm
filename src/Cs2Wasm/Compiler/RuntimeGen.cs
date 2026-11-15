@@ -1479,7 +1479,8 @@ internal sealed partial class Driver
         {
             if (!seen.Add(f)) return;
             work.Push(f);
-            if (inTable.Contains(f)) { foreach (var c in indirect) Mark(c); indirect.Clear(); }
+            // (the callers through the table, once: taken out first, as marking them can reach this again)
+            if (inTable.Contains(f) && indirect.Count > 0) { var cs = indirect.ToList(); indirect.Clear(); foreach (var c in cs) Mark(c); }
         }
         foreach (var t in targets) Mark(t);
         if (targets.Count == 0) foreach (var f in fns) seen.Add(f);

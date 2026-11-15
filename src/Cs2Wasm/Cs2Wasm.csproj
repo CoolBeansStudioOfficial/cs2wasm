@@ -8,6 +8,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Remove="Upstream/**" />
+    <Compile Remove="Godot/**" />
+    <EmbeddedResource Include="Godot/*.cs" LogicalName="godot/%(Filename)%(Extension)" />
     <EmbeddedResource Include="Upstream/**/*.cs;Upstream/**/manifest.txt" LogicalName="upstream/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

@@ -1110,7 +1110,13 @@ sealed partial class FunctionCompiler
                 BeginTemps();
                 if (!enumIsStruct)
                 {
-                    Recv(); E.If();
+                    // an enumerator not known to be IDisposable (IEnumerator's) is disposed only if it is one at run
+                    // time (C#: `if (e is IDisposable d) d.Dispose()`; ArrayEnumerator is not)
+                    bool known = Types.FullName(enumType) == "System.IDisposable" || enumType.AllInterfaces.Any(i => Types.FullName(i) == "System.IDisposable")
+                        || dispose.ContainingType.TypeKind != TypeKind.Interface;
+                    Recv();
+                    if (!known) E.Call(Rt.IsInst(T.Canonical(dispose.ContainingType)));
+                    E.If();
                     EmitCallResolved(SubstMethod(dispose), Recv, [], IsVirtualDispatch(dispose) || dispose.ContainingType.TypeKind == TypeKind.Interface);
                     E.End();
                 }

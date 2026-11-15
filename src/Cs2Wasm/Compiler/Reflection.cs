@@ -91,7 +91,8 @@ internal sealed partial class Driver
             {
                 // (the library's reflection too: System.Linq.Expressions asks delegate types for Invoke)
                 bool input = IsInput(r.SyntaxTree);
-                if (!input && !r.GetSyntax().DescendantTokens().Any(t => t.ValueText is "GetMethod" or "GetProperty" or "GetField" or "GetMember" or "GetConstructor" or "GetConstructors" or "GetMethodInfo" or "Method" or "CreateInstance")) continue;
+                if (!input && !r.GetSyntax().DescendantTokens().Any(t => t.ValueText is "GetMethod" or "GetProperty" or "GetField" or "GetMember" or "GetConstructor" or "GetConstructors" or "GetMethodInfo" or "Method" or "CreateInstance"
+                    or "GetCustomAttributes" or "GetCustomAttribute" or "IsDefined")) continue;
                 var body = ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax());
                 if (body == null) continue;
                 foreach (var op in body.DescendantsAndSelf().OfType<IInvocationOperation>())
@@ -198,6 +199,10 @@ internal sealed partial class Driver
     }
 
     bool _assemblyTypes;
+    /// <summary>Set when code reads an assembly's custom attributes: the program assembly's are kept (and the types its
+    /// attributes name with typeof keep theirs: GodotSharp finds scripts by [assembly: AssemblyHasScripts] and
+    /// [ScriptPath]).</summary>
+    bool _assemblyAttributes;
     readonly List<(Location loc, string what, string? name, bool ctors)> _unknownReflection = [];
 
     void Visit(IInvocationOperation op, TypeMap map, ReflectionKeep keep, bool input = true)
@@ -221,6 +226,21 @@ internal sealed partial class Driver
             return;
         }
         if (owner is "Assembly" or "RuntimeAssembly" or "Module" or "RuntimeModule" && m.Name is "GetTypes" or "GetExportedTypes" or "GetType" && input) _assemblyTypes = true;
+        if ((owner is "Assembly" or "RuntimeAssembly" || owner == "CustomAttributeExtensions" && m.Parameters.FirstOrDefault()?.Type.Name == "Assembly")
+            && m.Name is "GetCustomAttributes" or "GetCustomAttribute" or "IsDefined" && !_assemblyAttributes)
+        {
+            _assemblyAttributes = true;
+            // (the types the attributes name are found at run time, like [DynamicallyAccessedMembers] ones: all of
+            // their members kept, and made (Godot makes a script's object through its constructor's record))
+            foreach (var a in KeptAttributes(Inputs[0].Assembly))
+                foreach (var arg in a.ConstructorArguments.Concat(a.NamedArguments.Select(n => n.Value)))
+                    foreach (var v in arg.Kind == TypedConstantKind.Array ? arg.Values : [arg])
+                        if (v.Kind == TypedConstantKind.Type && v.Value is INamedTypeSymbol named)
+                        {
+                            keep.Keep(named, "<type>"); keep.Keep(named, null); keep.Keep(named, null, ctors: true);
+                            if (named is { TypeKind: TypeKind.Class, IsAbstract: false, IsStatic: false, IsGenericType: false }) MarkConstructed(Types.Canonical(named));
+                        }
+        }
         // Delegate.CreateDelegate(type, target, "Name", ...): the named method, on every type the program names
         if (owner == "Delegate" && m.Name == "CreateDelegate" && op.Arguments.FirstOrDefault(a => a.Parameter?.Type.SpecialType == SpecialType.System_String)?.Value.ConstantValue is { HasValue: true, Value: string dn })
         {
@@ -422,6 +442,7 @@ internal sealed partial class Driver
     /// <summary>Attribute factories must exist before the last compile round: requested with the members.</summary>
     internal void RequestAttributeFactories()
     {
+        if (_assemblyAttributes) foreach (var a in KeptAttributes(Inputs[0].Assembly)) AttributeFactory(a);
         if (_reflect == null) return;
         foreach (var (t, all, names, ctors) in _reflect.Types.Values)
         {
@@ -544,7 +565,9 @@ internal sealed partial class Driver
         if (_assemblyNames == null) return;
         if (_assemblies.Count == 0) AssemblyIndex(Inputs[0].Assembly);
         var e = new Emitter(_assemblyNames);
-        e.I32Addr(Ints([_assemblies.Count, .. _assemblies.Select(a => Str(AssemblyFullName(a)))]));
+        // the names, then per assembly its custom attributes (count, list: the program's, when code reads them)
+        var attrs = _assemblies.Select((a, i) => i == 0 && _assemblyAttributes ? Attrs(a) : (0, 0)).ToList();
+        e.I32Addr(Ints([_assemblies.Count, .. _assemblies.Select(a => Str(AssemblyFullName(a))), .. attrs.SelectMany(x => new[] { x.Item1, x.Item2 })]));
     }
 
     /// <summary>A parameter in a record: its type's id, with the by-ref bit for ref/out/in (Meta.ByRef) and the
@@ -879,7 +902,15 @@ sealed partial class FunctionCompiler
                         }
                         else
                         {
-                            E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
+                            // a target: the constructor runs on that object (ConstructorInfo.Invoke(obj, args) on an
+                            // uninitialized one: Godot makes script instances so), returned with a count of its own
+                            E.Get(0);
+                            E.If(ValType.I32);
+                            E.Get(0); E.Call(Rt.Retain);
+                            E.Else();
+                            E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject);
+                            E.End();
+                            E.Set(obj);
                             CallWith(ctor, false, () => E.Get(obj), () => { for (int i = 0; i < ctor.Parameters.Length; i++) PushParam(ctor.Parameters[i], i, back); }, null, null);
                         }
                         CopyBack(back);
@@ -989,7 +1020,25 @@ sealed partial class FunctionCompiler
             int tl = TempRef(D.ObjectType); E.Tee(tl);
             return;
         }
-        if (c.Kind == TypedConstantKind.Array || c.IsNull) { E.I32(0); return; }
+        if (c.IsNull) { E.I32(0); return; }
+        if (c.Kind == TypedConstantKind.Array)
+        {
+            // an array argument (`new Type[] { typeof(A) }`): a new array of its elements, held by a temporary
+            var at = target as IArrayTypeSymbol ?? (IArrayTypeSymbol)T.Canonical(c.Type!);
+            var et = T.Canonical(at.ElementType);
+            int size = T.StorageOf(et).size;
+            E.I32(c.Values.Length); E.I32(size); E.Tid(D.MarkConstructed(at)); E.Call(Rt.AllocArray);
+            int arr = TempRef(at); E.Set(arr);
+            for (int i = 0; i < c.Values.Length; i++)
+            {
+                PushTypedConstant(c.Values[i], et);
+                int v = E.AddLocal(Types.WasmType(et) ?? ValType.I32); E.Set(v);
+                StoreToAddressFromStack(() => E.Get(arr), Types.ArrayDataOffset(1) + i * size, et, Types.IsRef(et) ? EmitGetOwn(v) : EmitGetPlain(v),
+                    pub: Publish.Container, pubContainer: () => E.Get(arr));
+            }
+            E.Get(arr);
+            return;
+        }
         var ct = c.Type != null ? T.Canonical(c.Type) : target;
         var o = EmitConstant(c.Value, ct is INamedTypeSymbol { TypeKind: TypeKind.Enum } en ? T.Canonical(en.EnumUnderlyingType!) : ct);
         var from = ct is INamedTypeSymbol { TypeKind: TypeKind.Enum } en2 ? T.Canonical(en2.EnumUnderlyingType!) : ct;

@@ -1,0 +1,201 @@
+using System.Text;
+using System.Xml.Linq;
+
+// CoreLibManifest godot <godot-root> <upstream-dir>: the manifest for stock GodotSharp (the Godot C# API, SPEC section
+// 10 proofs 3 and 4), from godotengine/godot's GodotSharp.csproj at the version below. Its files are relative to the
+// Godot sources (`root godot-<version>`): the project's Compile items, and the generated glue its
+// Generated/GeneratedIncludes.props lists (the stock editor writes it: `--headless --generate-mono-glue
+// <root>/modules/mono/glue`). The project's internal source generator (NativeFuncs' table of engine callbacks) is
+// not run: cs2wasm's NativeFuncs bodies are the boundary's imports (Upstream/GodotSharp/NativeFuncs.cs2wasm.cs).
+static class GodotLibrary
+{
+    public const string Version = "4.7.2";
+    public const string Commit = "ed1daf0bf001b61586d9930840f2f1394092c079";
+    const string Project = "modules/mono/glue/GodotSharp/GodotSharp";
+
+    public static int Run(string godotRoot, string upstream)
+    {
+        var projDir = Path.Combine(godotRoot, Project);
+        var doc = XDocument.Load(Path.Combine(projDir, "GodotSharp.csproj"));
+        var files = Items(doc).ToList();
+        var props = Path.Combine(projDir, "Generated", "GeneratedIncludes.props");
+        if (!File.Exists(props)) { Console.Error.WriteLine($"no generated glue at {props} (the stock editor writes it: --headless --generate-mono-glue)"); return 1; }
+        files.AddRange(Items(XDocument.Load(props)));
+        var defines = new List<string> { "GODOT", "NET", "NETCOREAPP", "NET8_0", "RELEASE" };
+        defines.AddRange(Enumerable.Range(5, 4).Select(v => $"NET{v}_0_OR_GREATER"));
+        var rel = files.Select(f => Project + "/" + f.Replace('\\', '/')).Distinct().Order(StringComparer.Ordinal).ToList();
+        var outDir = Path.Combine(upstream, "GodotSharp");
+        Directory.CreateDirectory(outDir);
+        var sb = new StringBuilder();
+        sb.AppendLine($"# GodotSharp for cs2wasm, from godotengine/godot's project ({Version}, {Commit}) and the stock editor's glue, by tools/CoreLibManifest godot.");
+        sb.AppendLine("# root <dir> (the sources' root under the cache) | define <symbol> | file <path>");
+        sb.AppendLine($"root godot-{Version}");
+        // (System.Diagnostics.Trace: GodotSharp sends it to the engine's output)
+        sb.AppendLine("reference System.Diagnostics.TraceSource");
+        foreach (var d in defines.Distinct()) sb.AppendLine("define " + d);
+        foreach (var f in rel) sb.AppendLine("file " + f);
+        File.WriteAllText(Path.Combine(outDir, "manifest.txt"), sb.ToString());
+        Console.WriteLine($"GodotSharp: {rel.Count} files");
+        return 0;
+    }
+
+    static IEnumerable<string> Items(XDocument d) =>
+        d.Descendants().Where(e => e.Name.LocalName == "Compile").Select(c => (string?)c.Attribute("Include")).OfType<string>().Where(s => s.EndsWith(".cs"));
+}
+
+// CoreLibManifest godot-funcs <godot-root> <upstream-dir>: cs2wasm's NativeFuncs bodies. Stock GodotSharp calls the engine
+// through a table of function pointers the engine fills in (an internal source generator writes NativeFuncs' bodies over
+// it); cs2wasm's call imports instead, one per function (module "godot", the function's name), so the engine supplies
+// them as it supplies the boundary's. A struct argument or result goes by address (the engine reads and writes linear
+// memory); `in`/`ref`/`out` arguments are addresses already; a function pointer is an index into the module's table.
+static class GodotNativeFuncs
+{
+    public static int Run(string godotRoot, string upstream)
+    {
+        var manifest = File.ReadAllLines(Path.Combine(upstream, "GodotSharp", "manifest.txt"));
+        var defines = manifest.Where(l => l.StartsWith("define ")).Select(l => l[7..]).ToArray();
+        var po = new Microsoft.CodeAnalysis.CSharp.CSharpParseOptions(Microsoft.CodeAnalysis.CSharp.LanguageVersion.Preview, preprocessorSymbols: defines);
+        var trees = manifest.Where(l => l.StartsWith("file ")).Select(l => l[5..]).AsParallel()
+            .Select(f => Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(godotRoot, f)), po, path: f)).ToList();
+        var refDir = Directory.GetDirectories(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "packs", "Microsoft.NETCore.App.Ref")).Order().Last();
+        var refs = Directory.GetFiles(Path.Combine(refDir, "ref"), "*.dll", SearchOption.AllDirectories).Select(f => Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(f));
+        var comp = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create("GodotSharp", trees, refs,
+            new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true));
+        var nf = comp.GetTypeByMetadataName("Godot.NativeInterop.NativeFuncs")!;
+        var sb = new StringBuilder();
+        sb.AppendLine("// <auto-generated> by tools/CoreLibManifest godot-funcs from stock GodotSharp's NativeFuncs (Godot " + GodotLibrary.Version + "): each");
+        sb.AppendLine("// engine function an import of module \"godot\" (SPEC 6.2), in place of the table the engine fills in. </auto-generated>");
+        sb.AppendLine("#pragma warning disable CS0169, CS0649, CA1707, IDE1006");
+        sb.AppendLine("using System;");
+        sb.AppendLine();
+        sb.AppendLine("namespace Godot.SourceGenerators.Internal");
+        sb.AppendLine("{");
+        sb.AppendLine("    internal class GenerateUnmanagedCallbacksAttribute : Attribute");
+        sb.AppendLine("    {");
+        sb.AppendLine("        public Type FuncStructType { get; }");
+        sb.AppendLine("        public GenerateUnmanagedCallbacksAttribute(Type funcStructType) { FuncStructType = funcStructType; }");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+        sb.AppendLine();
+        sb.AppendLine("namespace Godot.NativeInterop");
+        sb.AppendLine("{");
+        sb.AppendLine("    public static unsafe partial class NativeFuncs");
+        sb.AppendLine("    {");
+        sb.AppendLine("        // (NativeFuncs.Initialize copies the engine's table here; under cs2wasm nothing reads it)");
+        sb.AppendLine("        private static UnmanagedCallbacks _unmanagedCallbacks;");
+        sb.AppendLine();
+        var imports = new StringBuilder();
+        int n = 0;
+        foreach (var m in nf.GetMembers().OfType<Microsoft.CodeAnalysis.IMethodSymbol>().Where(m => m.IsPartialDefinition && m.PartialImplementationPart == null).OrderBy(m => m.Locations[0].SourceSpan.Start))
+        {
+            var decl = (Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax)m.DeclaringSyntaxReferences[0].GetSyntax();
+            var head = string.Join(" ", decl.Modifiers.Select(t => t.Text)) + " " + decl.ReturnType + " " + decl.Identifier.Text + decl.ParameterList;
+            head = System.Text.RegularExpressions.Regex.Replace(head, @"\s+", " ");
+            var ext = new List<string>();
+            var args = new List<string>();
+            foreach (var p in m.Parameters)
+            {
+                var t = p.Type.ToDisplayString();
+                if (p.RefKind != Microsoft.CodeAnalysis.RefKind.None)
+                {
+                    var kind = p.RefKind switch { Microsoft.CodeAnalysis.RefKind.Out => "out ", Microsoft.CodeAnalysis.RefKind.Ref => "ref ", _ => "in " };
+                    ext.Add(kind + t + " " + Id(p.Name)); args.Add(kind + Id(p.Name));
+                }
+                else if (ByAddress(p.Type)) { ext.Add(t + "* " + Id(p.Name)); args.Add("&" + Id(p.Name)); }
+                else if (p.Type is Microsoft.CodeAnalysis.IFunctionPointerTypeSymbol) { ext.Add("IntPtr " + Id(p.Name)); args.Add("(IntPtr)" + Id(p.Name)); }
+                else { ext.Add(t + " " + Id(p.Name)); args.Add(Id(p.Name)); }
+            }
+            var rt = m.ReturnType;
+            string body;
+            if (m.ReturnsVoid) body = $"__Godot.{m.Name}({string.Join(", ", args)});";
+            else if (ByAddress(rt))
+            {
+                ext.Add(rt.ToDisplayString() + "* r_ret");
+                body = $"{rt.ToDisplayString()} r_ret; __Godot.{m.Name}({string.Join(", ", args.Append("&r_ret"))}); return r_ret;";
+            }
+            else if (rt is Microsoft.CodeAnalysis.IFunctionPointerTypeSymbol)
+                body = $"return ({rt.ToDisplayString()})__Godot.{m.Name}({string.Join(", ", args)});";
+            else body = $"return __Godot.{m.Name}({string.Join(", ", args)});";
+            string extRet = m.ReturnsVoid || ByAddress(rt) ? "void" : rt is Microsoft.CodeAnalysis.IFunctionPointerTypeSymbol ? "IntPtr" : rt.ToDisplayString();
+            sb.AppendLine($"        {head}");
+            sb.AppendLine($"        {{ {body} }}");
+            sb.AppendLine();
+            imports.AppendLine($"            [Cs2Wasm.Runtime.Import(\"godot\", \"{m.Name}\")] internal static extern {extRet} {m.Name}({string.Join(", ", ext)});");
+            n++;
+        }
+        sb.AppendLine("        private static class __Godot");
+        sb.AppendLine("        {");
+        sb.Append(imports);
+        sb.AppendLine("        }");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+        File.WriteAllText(Path.Combine(upstream, "GodotSharp", "NativeFuncs.cs2wasm.cs"), sb.ToString());
+        Console.WriteLine($"NativeFuncs: {n} imports");
+        WritePlugins(comp, Path.Combine(Path.GetDirectoryName(upstream)!, "Godot", "GodotPlugins.cs"));
+        return 0;
+    }
+
+    // cs2wasm's GodotPlugins (the assembly stock Godot loads to start managed code): an export per entry of stock
+    // GodotSharp's ManagedCallbacks, calling through the table ManagedCallbacks.Create fills, so the engine calls the
+    // script side by name (SPEC 6.1: exports are named); the start, and an allocator the engine's strings use.
+    static void WritePlugins(Microsoft.CodeAnalysis.CSharp.CSharpCompilation comp, string output)
+    {
+        var mc = comp.GetTypeByMetadataName("Godot.Bridge.ManagedCallbacks")!;
+        var sb = new StringBuilder();
+        sb.AppendLine("// <auto-generated> by tools/CoreLibManifest godot-funcs from stock GodotSharp's ManagedCallbacks (Godot " + GodotLibrary.Version + "). </auto-generated>");
+        sb.AppendLine("// cs2wasm's GodotPlugins: added to a program that references GodotSharp. Stock Godot starts managed code through its");
+        sb.AppendLine("// GodotPlugins assembly (NativeFuncs.Initialize, ManagedCallbacks.Create, then ScriptManagerBridge.LookupScriptsInAssembly");
+        sb.AppendLine("// on the game's assembly) and calls the script side through the ManagedCallbacks table. A module has named exports");
+        sb.AppendLine("// only (SPEC 6.1), so each entry of the table is an export of the same name, calling through the table; NativeFuncs");
+        sb.AppendLine("// needs no start (its functions are imports).");
+        sb.AppendLine("#pragma warning disable CA1707, IDE1006");
+        sb.AppendLine("using System;");
+        sb.AppendLine("using System.Runtime.InteropServices;");
+        sb.AppendLine("using Godot.Bridge;");
+        sb.AppendLine("using Godot.NativeInterop;");
+        sb.AppendLine();
+        sb.AppendLine("namespace Cs2Wasm.Plugins");
+        sb.AppendLine("{");
+        sb.AppendLine("    internal static unsafe class GodotPlugins");
+        sb.AppendLine("    {");
+        sb.AppendLine("        private static ManagedCallbacks s_callbacks;");
+        sb.AppendLine();
+        sb.AppendLine("        /// <summary>Stock GodotPlugins' InitializeFromEngine and LoadProjectAssembly: the callback table, and the game's scripts.</summary>");
+        sb.AppendLine("        [UnmanagedCallersOnly(EntryPoint = \"godot_initialize\")]");
+        sb.AppendLine("        private static godot_bool Initialize()");
+        sb.AppendLine("        {");
+        sb.AppendLine("            s_callbacks = ManagedCallbacks.Create();");
+        sb.AppendLine("            ScriptManagerBridge.LookupScriptsInAssembly(typeof(GodotPlugins).Assembly);");
+        sb.AppendLine("            return godot_bool.True;");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        [UnmanagedCallersOnly(EntryPoint = \"godot_alloc\")]");
+        sb.AppendLine("        private static IntPtr Alloc(int size) => (IntPtr)NativeMemory.Alloc((nuint)size);");
+        sb.AppendLine();
+        sb.AppendLine("        [UnmanagedCallersOnly(EntryPoint = \"godot_free\")]");
+        sb.AppendLine("        private static void Free(IntPtr p) => NativeMemory.Free((void*)p);");
+        foreach (var f in mc.GetMembers().OfType<Microsoft.CodeAnalysis.IFieldSymbol>().Where(f => !f.IsStatic))
+        {
+            if (f.Type is not Microsoft.CodeAnalysis.IFunctionPointerTypeSymbol fp) continue;
+            var sig = fp.Signature;
+            string T(Microsoft.CodeAnalysis.ITypeSymbol t) => t is Microsoft.CodeAnalysis.IFunctionPointerTypeSymbol ? "IntPtr" : t.ToDisplayString();
+            var ps = sig.Parameters.Select((p, i) => T(p.Type) + " a" + i).ToList();
+            var args = sig.Parameters.Select((p, i) => p.Type is Microsoft.CodeAnalysis.IFunctionPointerTypeSymbol ? "(" + p.Type.ToDisplayString() + ")a" + i : "a" + i);
+            sb.AppendLine();
+            sb.AppendLine($"        [UnmanagedCallersOnly(EntryPoint = \"{f.Name}\")]");
+            sb.AppendLine($"        private static {T(sig.ReturnType)} {f.Name}({string.Join(", ", ps)}) => s_callbacks.{f.Name}({string.Join(", ", args)});");
+        }
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        File.WriteAllText(output, sb.ToString());
+        Console.WriteLine("GodotPlugins: " + mc.GetMembers().OfType<Microsoft.CodeAnalysis.IFieldSymbol>().Count(f => !f.IsStatic) + " callbacks");
+    }
+
+    static string Id(string n) => Microsoft.CodeAnalysis.CSharp.SyntaxFacts.GetKeywordKind(n) != Microsoft.CodeAnalysis.CSharp.SyntaxKind.None ? "@" + n : n;
+
+    // a struct (not an enum, not a primitive the WASM signature carries) goes by address
+    static bool ByAddress(Microsoft.CodeAnalysis.ITypeSymbol t) =>
+        t.TypeKind == Microsoft.CodeAnalysis.TypeKind.Struct && t.SpecialType == Microsoft.CodeAnalysis.SpecialType.None
+        && t.ToDisplayString() is not ("System.IntPtr" or "System.UIntPtr" or "nint" or "nuint");
+}

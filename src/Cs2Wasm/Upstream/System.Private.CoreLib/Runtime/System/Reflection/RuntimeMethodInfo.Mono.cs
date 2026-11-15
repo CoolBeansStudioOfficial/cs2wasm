@@ -894,11 +894,12 @@ namespace System.Reflection
                 internal object InternalInvoke(object? obj, IntPtr *args, out Exception? exc)
         {
             exc = null;
-            if (obj != null) throw Cs2Wasm.Runtime.TypeInfo.NotYet("running a constructor on an existing object");
+            // (an object: the constructor runs on it, as on one RuntimeHelpers.GetUninitializedObject made)
+            if (obj != null && DeclaringType.IsValueType) throw Cs2Wasm.Runtime.TypeInfo.NotYet("running a struct constructor on an existing box");
             int thunk = Cs2Wasm.Runtime.Meta.I((int)mhandle - 1, 1);
             if (thunk == 0) throw Cs2Wasm.Runtime.TypeInfo.NotYet("invoking a constructor of " + DeclaringType + " (the compiler kept no call for it)");
             var a = Cs2Wasm.Runtime.Meta.ArgsFrom(args, ArgumentTypes);
-            var r = Cs2Wasm.Runtime.TypeInfo.Invoke(thunk, null, a)!;
+            var r = Cs2Wasm.Runtime.TypeInfo.Invoke(thunk, obj, a)!;
             Cs2Wasm.Runtime.Meta.CopyBack(args, ArgumentTypes, a);
             return r;
         }

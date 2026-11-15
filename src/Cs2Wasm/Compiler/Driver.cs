@@ -135,9 +135,21 @@ internal sealed partial class Driver
     public readonly Dictionary<string, (string module, string name)> BoundaryByDocId = [];
     public readonly List<string> NonDeterminismNotes = [];
 
+    /// <summary>A program that references GodotSharp (a Godot game) gets cs2wasm's GodotPlugins: the exports through
+    /// which the engine starts it and calls its scripts (Godot/GodotPlugins.cs).</summary>
+    static CSharpCompilation AddGodotPlugins(CSharpCompilation main)
+    {
+        if (!main.ReferencedAssemblyNames.Any(a => a.Name == "GodotSharp") || main.GetTypeByMetadataName("Cs2Wasm.Plugins.GodotPlugins") != null) return main;
+        using var s = typeof(Driver).Assembly.GetManifestResourceStream("godot/GodotPlugins.cs")!;
+        var text = new StreamReader(s).ReadToEnd();
+        var po = (CSharpParseOptions)main.SyntaxTrees.First().Options;
+        return main.AddSyntaxTrees(CSharpSyntaxTree.ParseText(text, po, path: "cs2wasm/godot/GodotPlugins.cs"));
+    }
+
     public Driver(CSharpCompilation main, CompileOptions options)
     {
         // dynamic operations: call sites in a generated class of the program (DynamicLowering.cs)
+        main = AddGodotPlugins(main);
         try { main = DynamicLowering.Rewrite(main, out Dynamic); }
         catch (CompileException ex) { Dynamic = new DynamicLowering(); _dynamicError = ex; }
         Main = main;
@@ -783,9 +795,12 @@ internal sealed partial class Driver
     {
         c = Types.Canonical(c);
         var slotKey = Types.MethodKey(CanonicalMethod(slot));
+        // a non-generic interface of an array (IList, ICollection, IEnumerable, ICloneable...) is System.Array's
+        // implementation (IList.Add throws NotSupportedException, as in the CLR)
+        if (c is IArrayTypeSymbol && slot.ContainingType is { TypeKind: TypeKind.Interface, IsGenericType: false }) c = LibType("System.Array");
         if (c is IArrayTypeSymbol arrT && slot.ContainingType.TypeKind == TypeKind.Interface)
         {
-            // arrays implement the collection interfaces through SZArrayHelper (as in the CLR)
+            // arrays implement the generic collection interfaces through SZArrayHelper (as in the CLR)
             var helper = LibType("System.SZArrayHelper");
             var hm = helper.GetMembers(slot.Name).OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == slot.Parameters.Length + 1);
             return hm?.Construct(Types.Canonical(arrT.ElementType));

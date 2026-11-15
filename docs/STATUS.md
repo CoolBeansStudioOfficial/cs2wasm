@@ -5,15 +5,22 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 65 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 67 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
   and concurrent collections, `typeof` and seeded `Random`, records, reference cycles, weak references and
   finalizers, reflection, decimal, date and time, enum formatting, spans and `stackalloc`, `ref struct`, ref returns,
   C# 14 extension members, value-type equality, expression trees and `Expression.Compile`, array ranges, reflection over generic methods,
-  by-ref parameters and assemblies, `dynamic` on the C# runtime binder, `DynamicMethod` on the IL interpreter) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
+  by-ref parameters and assemblies, assembly-level attributes, arrays through the non-generic collection interfaces, `dynamic` on the C# runtime binder, `DynamicMethod` on the IL interpreter) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
   GodotSharp math proof (proof 2).
+- **Godot (proof 3, met on stock Godot 4.7.2 with .NET):** a Node2D script (`tests/Godot/proof3_node2d`), compiled with
+  stock GodotSharp (the C# API from Godot's sources and the stock editor's generated glue) and Godot's own source
+  generators, makes the same 31 engine calls, with the same arguments and results, as under stock Godot: the oracle's
+  log comes from stock Godot running the project with a logger that wraps stock GodotSharp's engine-callback table;
+  the module's from the stub engine (`host/godot.mjs`). Logged from the scene on (stock Godot's start-up calls come
+  before the oracle's logger is installed). The module is 6.8 MB raw: every engine callback is exported, which keeps
+  most of GodotSharp (Variant marshalling, reflection over scripts); not yet trimmed.
 - **API checks:** 18 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
   custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
   passes (scheduling dependence too), source map, cycles bounded in a fixed 16 MB memory, no arena code without cycle-capable types).
@@ -377,10 +384,19 @@ exported beside the stack pointer.
   and the delegate's function maps to its method's record; delegates CreateDelegate made report the method they were
   made from. `delegate + delegate` and `-` combine and remove. Missing: `Delegate.Method` of a lambda or local
   function (.NET reports the C# compiler's generated names), `Array.CreateInstance` of array types the compiler cannot see. Build time: see Results (the library's models and bound bodies are kept between builds in one process).
-- 7.5–7.6: GodotSharp's math types compile and match (proof 2); the generated wrappers (Node2D) and the boundary
-  table are Bazoodle's (7.5) and do not exist yet, so proofs 3 and 4 wait on them. No browser build (the browser
-  .NET runtime's workload is not installed here); budgets: module size and desktop build time measured (Results),
-  call cost and run-time speed against NativeAOT unmeasured.
+- 7.5–7.6: GodotSharp's math types compile and match (proof 2). Stock GodotSharp (proof 3) is an optional library
+  (`Upstream/GodotSharp`, `tools/CoreLibManifest godot`): Godot's sources at 4.7.2 (fetched on first use) and the
+  generated glue the stock editor writes (`--generate-mono-glue`, run on first use: `CS2WASM_GODOT_EDITOR`), built for
+  programs that reference GodotSharp, with the upstream libraries it uses (System.Diagnostics.TraceSource and what it
+  needs; libraries now build against what their manifests reference, so a Godot program does not build Roslyn's).
+  Stock GodotSharp calls the engine through a table of function pointers the engine fills in; cs2wasm's NativeFuncs
+  bodies (`tools/CoreLibManifest godot-funcs`) are instead 237 imports of module `godot`, one per function (structs
+  by address). A Godot program gets cs2wasm's GodotPlugins (`src/Cs2Wasm/Godot`): `godot_initialize` (stock
+  GodotPlugins' start: the callback table, the game's scripts) and an export per entry of GodotSharp's
+  ManagedCallbacks, by name. Source generators run in the frontend (`Frontend.RunGenerators`, `cs2wasmc -a gen.dll
+  --property Name=value`). Bazoodle's patched wrappers and boundary table (7.5) are not needed for the proofs. No
+  browser build (the browser .NET runtime's workload is not installed here); budgets: module size and desktop build
+  time measured (Results), call cost and run-time speed against NativeAOT unmeasured.
 
 ### 8. Sandbox — partial
 Files, sockets, processes, environment and registry members, and platform invoke, are build errors naming the
@@ -472,8 +488,9 @@ prints what .NET does (`tests/out/roslyn/parse.cs`). Binding (compilations, sema
 then the compiler itself, then the browser host. The compiler has not been run on the browser .NET runtime.
 
 ### 10. Testing — started
-Proof 1 is partially met (the programs listed above). Proofs 2–5 are not started (they need GodotSharp sources,
-the Node2D wrapper generator, `hello2d`, and self-hosting).
+Proof 1 is partially met (the programs listed above). Proof 2 is met (GodotSharp's math types). Proof 3 is met on
+stock Godot 4.7.2 with .NET (`godot_proof3_node2d`: the module's engine calls equal stock Godot's). Proof 4 (a game
+played in the engine) and proof 5 (self-hosting) are not met.
 
 ## Known divergences from .NET
 

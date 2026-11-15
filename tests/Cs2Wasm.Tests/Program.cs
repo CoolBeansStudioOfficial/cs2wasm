@@ -81,6 +81,13 @@ foreach (var (name, sources, symbols) in programs.Where(p => filter == null || p
     if (actual == expected && code == 0) Pass(name, $"{result.Module!.Length} bytes, build {buildMs} ms");
     else Fail(name, $"output differs (exit {code})\n{Diff(expected, actual)}{(stderr.Length > 0 ? "\nstderr: " + stderr : "")}");
 }
+if (filter == null || "godot".Contains(filter) || filter.StartsWith("godot_"))
+    foreach (var (n, failure, skip) in GodotChecks.Run(root, outDir))
+    {
+        if (filter != null && !n.Contains(filter) && filter != "godot") continue;
+        if (skip != null) { var l = $"SKIP {n} ({skip})"; Console.WriteLine(l); report.AppendLine(l); }
+        else if (failure == null) Pass(n, "engine calls equal stock Godot's"); else Fail(n, failure);
+    }
 if (filter == null || filter == "api")
     foreach (var (n, failure) in ApiChecks.Run(root, outDir))
         if (failure == null) Pass("api: " + n, "ok"); else Fail("api: " + n, failure);

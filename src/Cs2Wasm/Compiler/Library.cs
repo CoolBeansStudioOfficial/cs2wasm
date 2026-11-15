@@ -81,20 +81,50 @@ internal sealed class Library
     };
 
     static readonly object s_lock = new();
-    static readonly List<CSharpCompilation> s_built = [];
+    static readonly Dictionary<string, CSharpCompilation> s_built = [];
     static List<(string Name, string Text)>? s_own;
 
-    /// <summary>The first `count` libraries, compiled once per process and extended as programs need more (the
-    /// optional ones, built for the programs that use them).</summary>
-    static IReadOnlyList<CSharpCompilation> Upstream(int count)
+    /// <summary>The libraries a program needs, with what they are compiled against (in library order), each compiled
+    /// once per process when a program first needs it (see <see cref="References"/>).</summary>
+    static IReadOnlyList<CSharpCompilation> Upstream(IReadOnlyList<string> needed)
     {
         lock (s_lock)
         {
             s_own ??= Resources("upstream/").ToList();
-            while (s_built.Count < count) s_built.Add(BuildOne(UpstreamSources.Libraries[s_built.Count], s_own, s_built));
-            return s_built.Take(count).ToList();
+            var all = new HashSet<string>();
+            CSharpCompilation Build(string lib)
+            {
+                all.Add(lib);
+                if (s_built.TryGetValue(lib, out var c)) { foreach (var r in References(lib)) all.Add(r); return c; }
+                var refs = References(lib).Select(Build).ToList();
+                return s_built[lib] = BuildOne(lib, s_own, refs);
+            }
+            foreach (var lib in needed) Build(lib);
+            return UpstreamSources.Libraries.Where(all.Contains).Select(l => s_built[l]).ToList();
         }
     }
+
+    /// <summary>What a library is compiled against: those before it in library order, or for a standalone one the
+    /// core libraries and what its manifest references (with what they reference).</summary>
+    static List<string> References(string lib)
+    {
+        var libs = UpstreamSources.Libraries;
+        if (!UpstreamSources.Standalone.Contains(lib))
+            return libs.Take(Array.IndexOf(libs, lib)).Where(l => !UpstreamSources.Standalone.Contains(l)).ToList();
+        var set = new HashSet<string>(libs.Take(UpstreamSources.CoreCount));
+        var work = new Stack<string>(ManifestReferences(lib));
+        while (work.Count > 0)
+        {
+            var r = work.Pop();
+            if (!set.Add(r)) continue;
+            if (UpstreamSources.Standalone.Contains(r)) foreach (var x in ManifestReferences(r)) work.Push(x);
+        }
+        return libs.Where(set.Contains).ToList();
+    }
+
+    static IEnumerable<string> ManifestReferences(string lib) =>
+        (s_own!.FirstOrDefault(r => r.Name == "upstream/" + lib + "/manifest.txt").Text ?? "").Split((char)10)
+            .Select(l => l.Trim(' ', (char)13)).Where(l => l.StartsWith("reference ")).Select(l => l[10..].Trim());
 
     static CSharpCompilation BuildOne(string lib, List<(string Name, string Text)> own, List<CSharpCompilation> built)
     {
@@ -114,7 +144,7 @@ internal sealed class Library
             var files = lines.Where(l => l.StartsWith("file ")).Select(l => l[5..]).ToList();
             // `root <dir>`: another source tree of the cache (Roslyn's), fetched like the runtime's
             var srcRoot = lines.FirstOrDefault(l => l.StartsWith("root ")) is { } rl ? UpstreamSources.OtherRoot(rl[5..].Trim()) : UpstreamSources.Root;
-            if (srcRoot == UpstreamSources.Root) UpstreamSources.Ensure(files); else UpstreamSources.EnsureRoslyn(srcRoot, files);
+            if (srcRoot == UpstreamSources.Root) UpstreamSources.Ensure(files); else UpstreamSources.EnsureOther(srcRoot, files);
             var root = srcRoot;
             bool nullable = lines.Contains("nullable enable");
             // edit<TAB>file<TAB>text<TAB>replacement: an exact change to one upstream file (each must still apply)
@@ -131,7 +161,7 @@ internal sealed class Library
                         if (!text.Contains(from)) throw new CompileException($"library edit no longer applies: {f}: '{from}'");
                         text = text.Replace(from, to);
                     }
-                return CSharpSyntaxTree.ParseText(text, po, path: (root == UpstreamSources.Root ? "dotnet/runtime/" : "dotnet/roslyn/") + f);
+                return CSharpSyntaxTree.ParseText(text, po, path: UpstreamSources.DisplayPrefix(root) + f);
             }).ToList();
             trees.AddRange(own.Where(r => r.Name.StartsWith(prefix) && r.Name.EndsWith(".cs"))
                 .AsParallel().AsOrdered().Select(r => CSharpSyntaxTree.ParseText(r.Text, po, path: "cs2wasm/" + r.Name)));
@@ -217,7 +247,14 @@ internal static class UpstreamSources
         "System.Private.Uri", "System.Net.Primitives", "System.Runtime.Serialization.Primitives", "System.Private.Xml", "System.Xml.XPath",
         "System.Private.Xml.Linq", "System.Xml.XPath.XDocument", "System.Security.Cryptography", "System.Text.Encoding.CodePages",
         "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
+        "System.ComponentModel", "System.ComponentModel.Primitives", "System.Collections.Specialized", "System.Diagnostics.TraceSource",
+        "GodotSharp",
     ];
+
+    /// <summary>Libraries compiled against the core ones and what their manifests reference, so that needing one
+    /// brings in only those: GodotSharp (stock Godot's C# API, for Godot scripts: section 10's proofs 3 and 4) and the
+    /// upstream libraries it uses (System.Diagnostics.Trace, which GodotSharp sends to the engine's output).</summary>
+    public static readonly HashSet<string> Standalone = ["System.ComponentModel", "System.ComponentModel.Primitives", "System.Collections.Specialized", "System.Diagnostics.TraceSource", "GodotSharp"];
 
     public const int CoreCount = 15;
 
@@ -232,12 +269,15 @@ internal static class UpstreamSources
         ("System.Private.Xml", [], ["System.Xml"]),
         ("System.Security.Cryptography", [], ["System.Security.Cryptography"]),
         ("Microsoft.CodeAnalysis.CSharp", ["Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp"], []),
+        ("GodotSharp", ["GodotSharp"], []),
     ];
 
-    /// <summary>How many of <see cref="Libraries"/> the program needs.</summary>
-    public static int Needed(CSharpCompilation program)
+    /// <summary>The libraries the program needs, in library order: the core ones, an optional one with every one
+    /// before it (which it may reference), and the standalone ones it uses.</summary>
+    public static IReadOnlyList<string> Needed(CSharpCompilation program)
     {
         int count = CoreCount;
+        var standalone = new HashSet<string>();
         var names = program.ReferencedAssemblyNames.Select(a => a.Name).ToHashSet();
         string? text = null;
         foreach (var (lib, asms, nss) in Optional)
@@ -250,9 +290,11 @@ internal static class UpstreamSources
                 text ??= string.Join("\n", program.SyntaxTrees.Select(t => t.GetText().ToString()));
                 need = nss.Any(n => text.Contains(n, StringComparison.Ordinal));
             }
-            if (need) count = i + 1;
+            if (need && Standalone.Contains(lib)) standalone.Add(lib);
+            else if (need) count = i + 1;
         }
-        return count;
+        // (a standalone library's references come with it: Library.Upstream builds them)
+        return Libraries.Where((l, i) => i < count && !Standalone.Contains(l) || standalone.Contains(l)).ToList();
     }
 
     public const string Repository = "https://github.com/dotnet/runtime.git";
@@ -265,32 +307,74 @@ internal static class UpstreamSources
     /// <summary>Another source tree beside the runtime's in the cache (`root` in a manifest).</summary>
     public static string OtherRoot(string name) => Path.Combine(Path.GetDirectoryName(Root.TrimEnd('/', '\\'))!, name);
 
-    /// <summary>As <see cref="Ensure"/>, for Roslyn's tree: a sparse, blobless fetch of the commit.</summary>
-    public static void EnsureRoslyn(string root, IEnumerable<string> files)
+    /// <summary>Stock Godot's sources (GodotSharp, the Godot C# API: section 10's proofs 3 and 4), at the version the
+    /// proofs compare with.</summary>
+    public const string GodotRepository = "https://github.com/godotengine/godot.git";
+    public const string GodotCommit = "ed1daf0bf001b61586d9930840f2f1394092c079";
+    const string GodotGlue = "modules/mono/glue/GodotSharp/GodotSharp/Generated/";
+
+    /// <summary>The other source trees (`root` in a manifest): repository, commit, and how the build names their files.</summary>
+    static (string repo, string commit, string label, string prefix) Tree(string root) => Path.GetFileName(root.TrimEnd('/', '\\')) switch
+    {
+        var n when n.StartsWith("roslyn-") => (RoslynRepository, RoslynCommit, "Roslyn's compiler sources", "dotnet/roslyn/"),
+        var n when n.StartsWith("godot-") => (GodotRepository, GodotCommit, "Godot's C# API sources", "godotengine/godot/"),
+        var n => throw new CompileException("unknown library source tree: " + n),
+    };
+
+    public static string DisplayPrefix(string root) => root == Root ? "dotnet/runtime/" : Tree(root).prefix;
+
+    /// <summary>As <see cref="Ensure"/>, for another tree: a sparse, blobless fetch of its commit. Godot's generated
+    /// glue (the C# classes of the engine's API) is not in the repository: the stock editor writes it
+    /// (CS2WASM_GODOT_EDITOR, else a standard install).</summary>
+    public static void EnsureOther(string root, IEnumerable<string> files)
     {
         var missing = files.Distinct().Where(f => !File.Exists(Path.Combine(root, f))).ToList();
         if (missing.Count == 0) return;
-        using var mutex = new Mutex(false, "cs2wasm-roslyn-sources");
+        var (repo, commit, label, _) = Tree(root);
+        using var mutex = new Mutex(false, "cs2wasm-sources-" + Path.GetFileName(root.TrimEnd('/', '\\')));
         try { mutex.WaitOne(); } catch (AbandonedMutexException) { }
         try
         {
             missing = missing.Where(f => !File.Exists(Path.Combine(root, f))).ToList();
             if (missing.Count == 0) return;
-            var patterns = string.Join("\n", missing.Select(f => "/" + f.Replace('\\', '/'))) + "\n";
-            if (!Directory.Exists(Path.Combine(root, ".git")))
+            var fromGit = missing.Where(f => !f.StartsWith(GodotGlue, StringComparison.Ordinal)).ToList();
+            if (fromGit.Count > 0)
             {
-                Directory.CreateDirectory(root);
-                Console.Error.WriteLine($"cs2wasm: fetching Roslyn's compiler sources into {root} (once)");
-                Git(root, "init", "-q");
-                Git(root, "config", "core.longpaths", "true");
-                Git(root, "remote", "add", "origin", RoslynRepository);
-                Git(root, "sparse-checkout", "set", "--no-cone", "--stdin", patterns);
-                Git(root, "fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", RoslynCommit);
-                Git(root, "checkout", "-q", "FETCH_HEAD");
+                var patterns = string.Join("\n", fromGit.Select(f => "/" + f.Replace('\\', '/'))) + "\n";
+                if (!Directory.Exists(Path.Combine(root, ".git")))
+                {
+                    Directory.CreateDirectory(root);
+                    Console.Error.WriteLine($"cs2wasm: fetching {label} into {root} (once)");
+                    Git(root, "init", "-q");
+                    Git(root, "config", "core.longpaths", "true");
+                    Git(root, "remote", "add", "origin", repo);
+                    Git(root, "sparse-checkout", "set", "--no-cone", "--stdin", patterns);
+                    Git(root, "fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", commit);
+                    Git(root, "checkout", "-q", "FETCH_HEAD");
+                }
+                else Git(root, "sparse-checkout", "add", "--stdin", patterns);
             }
-            else Git(root, "sparse-checkout", "add", "--stdin", patterns);
+            if (missing.Any(f => f.StartsWith(GodotGlue, StringComparison.Ordinal))) GenerateGodotGlue(root);
         }
         finally { mutex.ReleaseMutex(); }
+    }
+
+    static void GenerateGodotGlue(string root)
+    {
+        const string install = @"C:\Program Files\Godot";
+        var editor = Environment.GetEnvironmentVariable("CS2WASM_GODOT_EDITOR") is { Length: > 0 } e ? e
+            : Directory.Exists(install) ? Directory.EnumerateFiles(install, "Godot_v*_mono_*_console.exe", SearchOption.AllDirectories).FirstOrDefault() : null;
+        if (editor == null || !File.Exists(editor))
+            throw new CompileException($"Godot's generated C# API is not in {root}; set CS2WASM_GODOT_EDITOR to a stock Godot .NET editor (it writes it: --headless --generate-mono-glue)");
+        Console.Error.WriteLine($"cs2wasm: generating Godot's C# API with {editor} (once)");
+        var psi = new System.Diagnostics.ProcessStartInfo(editor) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var a in new[] { "--headless", "--generate-mono-glue", Path.Combine(root, "modules", "mono", "glue") }) psi.ArgumentList.Add(a);
+        using var p = System.Diagnostics.Process.Start(psi)!;
+        var o = p.StandardOutput.ReadToEndAsync();
+        var er = p.StandardError.ReadToEndAsync();
+        p.WaitForExit();
+        if (!File.Exists(Path.Combine(root, GodotGlue, "GeneratedIncludes.props")))
+            throw new CompileException("the Godot editor did not write the C# API: " + er.Result + o.Result);
     }
 
     static string? Override => Environment.GetEnvironmentVariable("CS2WASM_RUNTIME_SOURCES") is { Length: > 0 } r ? r : null;

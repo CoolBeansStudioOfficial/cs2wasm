@@ -360,14 +360,34 @@ namespace System
         internal int GetElementSize() => Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(this);
 #pragma warning restore
 
+        // cs2wasm: from the array's type (the module's type tables), as Mono reads its class: an enum is its underlying
+        // type, the primitives their own element types, any other value type or reference VALUETYPE or CLASS
         private static CorElementType GetCorElementTypeOfElementTypeInternal(ObjectHandleOnStack arr)
         {
-            throw new NotSupportedException("cs2wasm: the element type of an Array is not known at run time yet");
+            Type t = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(arr).GetType().GetElementType()!;
+            if (t.IsEnum) t = Enum.GetUnderlyingType(t);
+            if (t == typeof(bool)) return CorElementType.ELEMENT_TYPE_BOOLEAN;
+            if (t == typeof(char)) return CorElementType.ELEMENT_TYPE_CHAR;
+            if (t == typeof(sbyte)) return CorElementType.ELEMENT_TYPE_I1;
+            if (t == typeof(byte)) return CorElementType.ELEMENT_TYPE_U1;
+            if (t == typeof(short)) return CorElementType.ELEMENT_TYPE_I2;
+            if (t == typeof(ushort)) return CorElementType.ELEMENT_TYPE_U2;
+            if (t == typeof(int)) return CorElementType.ELEMENT_TYPE_I4;
+            if (t == typeof(uint)) return CorElementType.ELEMENT_TYPE_U4;
+            if (t == typeof(long)) return CorElementType.ELEMENT_TYPE_I8;
+            if (t == typeof(ulong)) return CorElementType.ELEMENT_TYPE_U8;
+            if (t == typeof(float)) return CorElementType.ELEMENT_TYPE_R4;
+            if (t == typeof(double)) return CorElementType.ELEMENT_TYPE_R8;
+            if (t == typeof(nint)) return CorElementType.ELEMENT_TYPE_I;
+            if (t == typeof(nuint)) return CorElementType.ELEMENT_TYPE_U;
+            return t.IsValueType ? CorElementType.ELEMENT_TYPE_VALUETYPE : CorElementType.ELEMENT_TYPE_CLASS;
         }
 
+        // (Mono: the value's class is the element class)
         private static bool IsValueOfElementTypeInternal(ObjectHandleOnStack arr, ObjectHandleOnStack obj)
         {
-            throw new NotSupportedException("cs2wasm: the element type of an Array is not known at run time yet");
+            object? value = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<object>(obj);
+            return value != null && value.GetType() == Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(arr).GetType().GetElementType();
         }
 
         private static bool CanChangePrimitive(ObjectHandleOnStack srcType, ObjectHandleOnStack dstType, bool reliable)

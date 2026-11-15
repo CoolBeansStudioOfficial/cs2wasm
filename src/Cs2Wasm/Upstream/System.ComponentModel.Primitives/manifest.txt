@@ -1,0 +1,60 @@
+# System.ComponentModel.Primitives for cs2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.
+# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: cs2wasm supplies its own)
+# | replaced <path> (an upstream file cs2wasm replaces with its own)
+# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for cs2wasm's features)
+#   (a value =>Type.Method: the body calls that boundary method) | edit<TAB><path><TAB><text><TAB><replacement> (an exact change to an upstream file)
+define NET
+define NETCOREAPP
+define NET11_0
+define RELEASE
+define NET5_0_OR_GREATER
+define NET6_0_OR_GREATER
+define NET7_0_OR_GREATER
+define NET8_0_OR_GREATER
+define NET9_0_OR_GREATER
+define NET10_0_OR_GREATER
+define NET11_0_OR_GREATER
+define NETCOREAPP1_0_OR_GREATER
+define NETCOREAPP1_1_OR_GREATER
+define NETCOREAPP2_0_OR_GREATER
+define NETCOREAPP2_1_OR_GREATER
+define NETCOREAPP2_2_OR_GREATER
+define NETCOREAPP3_0_OR_GREATER
+define NETCOREAPP3_1_OR_GREATER
+reference System.Collections.NonGeneric
+reference System.ComponentModel
+reference System.Memory
+reference System.ObjectModel
+reference System.Threading
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/ISynchronizeInvoke.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/BrowsableAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/CategoryAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/Component.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/ComponentCollection.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/DescriptionAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/DesignerAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/DesignerCategoryAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/DesignerSerializationVisibility.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/DesignerSerializationVisibilityAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/DesignOnlyAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/Design/Serialization/DesignerSerializerAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/DisplayNameAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/EditorAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/EventHandlerList.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/IComponent.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/IContainer.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/ImmutableObjectAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/InitializationEventAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/InvalidAsynchronousStateException.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/InvalidEnumArgumentException.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/ISite.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/ISupportInitialize.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/LocalizableAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/MergablePropertyAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/NotifyParentPropertyAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/ParenthesizePropertyNameAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/ReadOnlyAttribute.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/RefreshProperties.cs
+file src/libraries/System.ComponentModel.Primitives/src/System/ComponentModel/RefreshPropertiesAttribute.cs
+file src/libraries/Common/src/System/Obsoletions.cs
+file src/libraries/Common/src/System/SR.cs

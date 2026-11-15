@@ -51,7 +51,7 @@ namespace System.Reflection
             if ((obj is Type))
                 return true;
 
-            // cs2wasm: the runtime's own providers (assemblies are not reflected over)
+            // cs2wasm: the runtime's own providers
             return obj is not (RuntimeMethodInfo or RuntimeConstructorInfo or RuntimeFieldInfo or RuntimePropertyInfo or RuntimeEventInfo or RuntimeParameterInfo or RuntimeAssembly or RuntimeModule);
         }
 
@@ -75,6 +75,12 @@ namespace System.Reflection
                 case RuntimeConstructorInfo c: return (Cs2Wasm.Runtime.Meta.I((int)c.mhandle - 1, 5), Cs2Wasm.Runtime.Meta.I((int)c.mhandle - 1, 6));
                 case RuntimeFieldInfo f: return (Cs2Wasm.Runtime.Meta.I((int)f.FieldHandle.Value, 5), Cs2Wasm.Runtime.Meta.I((int)f.FieldHandle.Value, 6));
                 case RuntimePropertyInfo p: return (Cs2Wasm.Runtime.Meta.I((int)p.prop, 6), Cs2Wasm.Runtime.Meta.I((int)p.prop, 7));
+                case RuntimeAssembly asm:
+                    {
+                        // the assembly table: count, the names, then (attribute count, list) per assembly
+                        int table = Cs2Wasm.Runtime.TypeInfo.AssemblyNames(), n = Cs2Wasm.Runtime.Meta.I(table, 0);
+                        return (Cs2Wasm.Runtime.Meta.I(table, 1 + n + 2 * asm.Index), Cs2Wasm.Runtime.Meta.I(table, 2 + n + 2 * asm.Index));
+                    }
                 default: return (0, 0);
             }
         }

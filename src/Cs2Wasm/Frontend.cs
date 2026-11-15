@@ -45,4 +45,50 @@ public static class Frontend
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, deterministic: true,
                 nullableContextOptions: NullableContextOptions.Enable));
     }
+
+    /// <summary>Runs the source generators of analyzer assemblies over a compilation (as the C# build does), with the
+    /// build properties they read (`build_property.Name`); returns the compilation with their output, and their
+    /// diagnostics.</summary>
+    public static CSharpCompilation RunGenerators(CSharpCompilation compilation, IEnumerable<string> analyzerPaths,
+        IReadOnlyDictionary<string, string> buildProperties, out IReadOnlyList<Diagnostic> diagnostics)
+    {
+        var generators = analyzerPaths.SelectMany(p => new Microsoft.CodeAnalysis.Diagnostics.AnalyzerFileReference(Path.GetFullPath(p), s_loader)
+            .GetGenerators(LanguageNames.CSharp)).ToList();
+        var driver = CSharpGeneratorDriver.Create(generators, parseOptions: (CSharpParseOptions?)compilation.SyntaxTrees.FirstOrDefault()?.Options,
+            optionsProvider: new BuildProperties(buildProperties));
+        driver = (CSharpGeneratorDriver)driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diags);
+        diagnostics = diags;
+        // CS2WASM_GENERATED=<dir>: the generators' output, written out to read
+        if (Environment.GetEnvironmentVariable("CS2WASM_GENERATED") is { Length: > 0 } dir)
+            foreach (var r in driver.GetRunResult().Results)
+                foreach (var g in r.GeneratedSources)
+                {
+                    var path = Path.Combine(dir, r.Generator.GetGeneratorType().Name, g.HintName);
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                    File.WriteAllText(path, g.SourceText.ToString());
+                }
+        return (CSharpCompilation)output;
+    }
+
+    static readonly AnalyzerLoader s_loader = new();
+
+    sealed class AnalyzerLoader : Microsoft.CodeAnalysis.IAnalyzerAssemblyLoader
+    {
+        public void AddDependencyLocation(string fullPath) { }
+        public System.Reflection.Assembly LoadFromPath(string fullPath) => System.Reflection.Assembly.LoadFrom(fullPath);
+    }
+
+    sealed class BuildProperties(IReadOnlyDictionary<string, string> props) : Microsoft.CodeAnalysis.Diagnostics.AnalyzerConfigOptionsProvider
+    {
+        readonly Options _global = new(props.ToDictionary(kv => "build_property." + kv.Key, kv => kv.Value));
+        static readonly Options s_empty = new(new Dictionary<string, string>());
+        public override Microsoft.CodeAnalysis.Diagnostics.AnalyzerConfigOptions GlobalOptions => _global;
+        public override Microsoft.CodeAnalysis.Diagnostics.AnalyzerConfigOptions GetOptions(SyntaxTree tree) => s_empty;
+        public override Microsoft.CodeAnalysis.Diagnostics.AnalyzerConfigOptions GetOptions(AdditionalText textFile) => s_empty;
+
+        sealed class Options(Dictionary<string, string> values) : Microsoft.CodeAnalysis.Diagnostics.AnalyzerConfigOptions
+        {
+            public override bool TryGetValue(string key, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? value) => values.TryGetValue(key, out value);
+        }
+    }
 }

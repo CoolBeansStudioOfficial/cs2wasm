@@ -18,6 +18,8 @@ using System.Xml.Linq;
 
 if (args.Length >= 3 && args[0] == "intrinsics") return Intrinsics.Run(args[1], args[2]);
 if (args.Length >= 6 && args[0] == "stubs") return Stubs.Run(args[1], Path.GetFullPath(args[2]), args[3], args[4], args[5], args[6..]);
+if (args.Length >= 3 && args[0] == "godot-funcs") return GodotNativeFuncs.Run(Path.GetFullPath(args[1]), Path.GetFullPath(args[2]));
+if (args.Length >= 3 && args[0] == "godot") return GodotLibrary.Run(Path.GetFullPath(args[1]), Path.GetFullPath(args[2]));
 if (args.Length >= 3 && args[0] == "roslyn") return RoslynLibraries.Run(Path.GetFullPath(args[1]), Path.GetFullPath(args[2]));
 if (args.Length >= 3 && args[0] == "check") return Check.Run(args[1], args[2], args.Length > 3 ? args[3] : null);
 if (args.Length < 2) { Console.Error.WriteLine("usage: CoreLibManifest <runtime-root> <upstream-dir> | check <runtime-root> <upstream-dir> [library]"); return 2; }
@@ -34,6 +36,7 @@ static class Libraries
         "System.Collections.Immutable", "System.IO.MemoryMappedFiles", "System.IO.Compression", "System.Reflection.Metadata",
         "System.Private.Uri", "System.Net.Primitives", "System.Runtime.Serialization.Primitives", "System.Private.Xml", "System.Xml.XPath", "System.Private.Xml.Linq", "System.Xml.XPath.XDocument", "System.Security.Cryptography", "System.Text.Encoding.CodePages",
         "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
+        "System.ComponentModel", "System.ComponentModel.Primitives", "System.Collections.Specialized", "System.Diagnostics.TraceSource",
     ];
 
     /// <summary>Libraries cs2wasm writes by hand (members the others name, for capabilities the sandbox lacks): compiled,
