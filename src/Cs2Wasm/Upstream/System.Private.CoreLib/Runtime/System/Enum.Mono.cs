@@ -131,7 +131,8 @@ namespace System
                     }
                 }
 
-                bool hasFlagsAttribute = enumType.IsDefined(typeof(FlagsAttribute), inherit: false);
+                // cs2wasm: [Flags] is in the compiler's table of the enum (no attribute reflection)
+                bool hasFlagsAttribute = Cs2Wasm.Runtime.Mem.LoadI32(Cs2Wasm.Runtime.TypeInfo.EnumInfo(enumType.TypeId) + 4) != 0;
                 entry = new EnumInfo<TStorage>(hasFlagsAttribute, values, names);
                 enumType.Cache.EnumInfo = entry;
             }

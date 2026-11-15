@@ -350,6 +350,8 @@ sealed partial class FunctionCompiler
         if (_closure != null) return LoadCapturedThis();
         if (_thisLocal < 0) throw new CompileException("'this' in static context");
         E.Get(_thisLocal);
+        // a primitive's own methods get its address: `this` as a value is what is stored there
+        if (T.Resolve(M.ContainingType, Map) is var ct && Types.PrimOf(ct) != Prim.None && ct.TypeKind != TypeKind.Enum) E.Load(Types.LoadOp(ct));
         return M.ContainingType.IsValueType ? Own.None : Own.Stable;
     }
 
@@ -2201,6 +2203,8 @@ sealed partial class FunctionCompiler
                     var cv = cp.Value;
                     if (cv.ConstantValue.HasValue && cv.ConstantValue.Value == null)
                     {
+                        // a non-nullable value type (an instantiation's T) is never null
+                        if (vt.IsValueType && !IsNullable(vt)) { E.I32(0); return; }
                         E.Get(v);
                         if (IsNullable(vt)) NullableHas(vt);
                         E.Op(Op.I32Eqz); return;
