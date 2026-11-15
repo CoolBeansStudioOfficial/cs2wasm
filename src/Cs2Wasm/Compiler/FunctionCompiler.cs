@@ -1497,6 +1497,7 @@ sealed partial class FunctionCompiler
             if (init == null) continue;
             var op = D.ModelFor(init.SyntaxTree).GetOperation(init);
             E.CurrentPos = D.Position(init);
+            if (op != null) PreScan(op); // `out var` in an initializer declares a variable whose address is taken
             BeginTemps();
             switch (op)
             {

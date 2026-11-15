@@ -61,6 +61,84 @@ internal static partial class Interop
             return buffer;
         }
 
+        // ---------------- native memory (NativeMemory, Marshal.AllocHGlobal): blocks of the module's heap ----------------
+        // header before the block: [-8] bytes taken from the heap, [-4] offset of the block from what was taken
+        static void* Take(nuint size, nuint alignment)
+        {
+            if (alignment < 8) alignment = 8;
+            long total = (long)size + (long)alignment + 8;
+            if (total > 0x7FFF0000L) throw new OutOfMemoryException();
+            int b = Rt.Alloc((int)total);
+            int p = (b + 8 + (int)alignment - 1) & ~((int)alignment - 1);
+            Mem.StoreI32(p - 8, (int)total);
+            Mem.StoreI32(p - 4, p - b);
+            return (void*)p;
+        }
+
+        static nuint Usable(void* ptr) => (nuint)(Mem.LoadI32((int)ptr - 8) - Mem.LoadI32((int)ptr - 4));
+
+        internal static partial void* Malloc(nuint size) => Take(size, 8);
+
+        internal static partial void* Calloc(nuint num, nuint size)
+        {
+            nuint n = num * size;
+            void* p = Take(n, 8);
+            Mem.Fill((int)p, 0, (int)n);
+            return p;
+        }
+
+        internal static partial void Free(void* ptr)
+        {
+            if (ptr == null) return;
+            int p = (int)ptr;
+            Rt.Free(p - Mem.LoadI32(p - 4), Mem.LoadI32(p - 8));
+        }
+
+        internal static partial void* Realloc(void* ptr, nuint new_size) => AlignedRealloc(ptr, 8, new_size);
+
+        internal static partial void* AlignedAlloc(nuint alignment, nuint size) => Take(size, alignment);
+
+        internal static partial void AlignedFree(void* ptr) => Free(ptr);
+
+        internal static partial void* AlignedRealloc(void* ptr, nuint alignment, nuint new_size)
+        {
+            void* q = Take(new_size, alignment);
+            if (ptr != null)
+            {
+                nuint keep = Usable(ptr);
+                Mem.Copy((int)q, (int)ptr, (int)(keep < new_size ? keep : new_size));
+                Free(ptr);
+            }
+            return q;
+        }
+
+        // ---------------- descriptors: only standard input, output and error exist (opening files is a build error) ----------------
+        internal static partial int Close(IntPtr fd) => 0;
+
+        internal static partial int FLock(IntPtr fd, LockOperations operation) => 0;
+
+        internal static partial int FLock(Microsoft.Win32.SafeHandles.SafeFileHandle fd, LockOperations operation) => 0;
+
+        /// <summary>No file system: no file can be hidden.</summary>
+        private static partial int LChflagsCanSetHiddenFlag() => 0;
+
+        private static partial int CanGetHiddenFlag() => 0;
+
+        /// <summary>No file exists to remove (ENOENT).</summary>
+        internal static partial int Unlink(string pathname) => -1;
+
+        internal static unsafe partial int Write(System.Runtime.InteropServices.SafeHandle fd, byte* buffer, int bufferSize) => Write(fd.DangerousGetHandle(), buffer, bufferSize);
+
+        /// <summary>Standard output and error go to the engine's log import (SPEC 7.4), as UTF-16.</summary>
+        internal static unsafe partial int Write(IntPtr fd, byte* buffer, int bufferSize)
+        {
+            if (bufferSize <= 0) return 0;
+            char[] text = new char[bufferSize];
+            int n = System.Text.Encoding.UTF8.GetChars(buffer, bufferSize, (char*)Rt.ArrayData(text), bufferSize);
+            Engine.Write(Rt.ArrayData(text), n);
+            return bufferSize;
+        }
+
         // ---------------- the low-level monitor: [0] lock (0 free, 1 held), [4] signal sequence ----------------
         internal static partial IntPtr LowLevelMonitor_Create()
         {

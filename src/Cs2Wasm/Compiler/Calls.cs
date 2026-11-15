@@ -46,7 +46,7 @@ sealed partial class FunctionCompiler
         {
             var concrete = T.Resolve(ctt, Map);
             var slot = SubstMethod(target);
-            var impl = D.Implementation(concrete, slot) ?? slot; // primitives: generic math, lowered in EmitCallInstr
+            var impl = ImplementationOf(concrete, slot) ?? slot; // primitives: generic math, lowered in EmitCallInstr
             return EmitCallOps(impl, null, inv.Arguments, false, inv.Syntax, alreadyResolved: true);
         }
         return EmitCall(target, inv.Instance, inv.Arguments.Cast<IOperation>().ToList(), inv.IsVirtual, inv.Syntax);
@@ -110,6 +110,12 @@ sealed partial class FunctionCompiler
             // implicit `this`-less instance call (e.g. base ctor initializer resolved elsewhere)
             pushThis = () => EmitThis(null!);
         }
+        if (args.Any(HasHandlerPlaceholders))
+        {
+            var spilled = EmitSpilledCall(m, virt, pushThis, args, syntax);
+            E.CurrentPos = save;
+            return spilled;
+        }
         var r = CallWith(m, virt, pushThis, () => PushArgs(m, args), null, syntax);
         E.CurrentPos = save;
         return r;
@@ -136,7 +142,7 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Pushes arguments in parameter order.</summary>
-    void PushArgs(IMethodSymbol m, IReadOnlyList<IOperation> args)
+    void PushArgs(IMethodSymbol m, IReadOnlyList<IOperation> args, Action<int>? afterEach = null)
     {
         var byParam = new IOperation?[m.Parameters.Length];
         var convs = new IMethodSymbol?[m.Parameters.Length];
@@ -156,6 +162,7 @@ sealed partial class FunctionCompiler
         {
             if (convs[i] is { } cm && byParam[i] is { } v) PushConvertedArg(m.Parameters[i], v, cm);
             else PushArg(m.Parameters[i], byParam[i]);
+            afterEach?.Invoke(i);
         }
     }
 
@@ -401,6 +408,7 @@ sealed partial class FunctionCompiler
             case "System.Runtime.CompilerServices.Unsafe.Unbox":
                 E.I32(BoxDataOffset(T, Arg(0))); E.Op(Op.I32Add); return Own.None;
             case "System.SpanHelpers.memmove": E.Op(Op.MemoryCopy); return Own.None; // memory.copy allows overlap
+            case "System.SpanHelpers.memset": E.Op(Op.MemoryFill); return Own.None;
             case "System.Threading.Interlocked.MemoryBarrier":
             case "System.Threading.Volatile.ReadBarrier":
             case "System.Threading.Volatile.WriteBarrier":

@@ -27,13 +27,17 @@ sealed partial class FunctionCompiler
                     var l = Fold(b.LeftOperand);
                     if (l == false) return false;
                     var r = Fold(b.RightOperand);
-                    return l == true ? r : null;
+                    if (l == true) return r;
+                    // `x && false` with an x that has no effect: false (`_cached == 0 && !GlobalizationMode.Invariant`)
+                    return r == false && IsPure(b.LeftOperand) ? false : null;
                 }
             case IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } b:
                 {
                     var l = Fold(b.LeftOperand);
                     if (l == true) return true;
-                    return l == false ? Fold(b.RightOperand) : null;
+                    var r = Fold(b.RightOperand);
+                    if (l == false) return r;
+                    return r == true && IsPure(b.LeftOperand) ? true : null;
                 }
             case IBinaryOperation { OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals } b:
                 {
@@ -77,6 +81,20 @@ sealed partial class FunctionCompiler
         }
         return null;
     }
+
+    /// <summary>Evaluating it has no effect (and cannot throw): constants, variables, fields of such, and the
+    /// built-in operators on them.</summary>
+    static bool IsPure(IOperation op) => op switch
+    {
+        { ConstantValue.HasValue: true } => true,
+        ILocalReferenceOperation or IParameterReferenceOperation or IInstanceReferenceOperation => true,
+        IFieldReferenceOperation f => f.Instance == null || f.Instance is IInstanceReferenceOperation || (f.Instance.Type?.IsValueType == true && IsPure(f.Instance)),
+        IConversionOperation { OperatorMethod: null, IsChecked: false } c => IsPure(c.Operand),
+        IParenthesizedOperation p => IsPure(p.Operand),
+        IUnaryOperation { OperatorMethod: null, IsChecked: false } u => IsPure(u.Operand),
+        IBinaryOperation { OperatorMethod: null, IsChecked: false } b when b.OperatorKind is not (BinaryOperatorKind.Divide or BinaryOperatorKind.Remainder) => IsPure(b.LeftOperand) && IsPure(b.RightOperand),
+        _ => false,
+    };
 
     /// <summary>An integer known at compile time: a constant, or a size an instantiation fixes.</summary>
     long? FoldInt(IOperation op)

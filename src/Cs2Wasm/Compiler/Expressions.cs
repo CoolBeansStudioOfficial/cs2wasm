@@ -98,6 +98,8 @@ sealed partial class FunctionCompiler
             case ISwitchExpressionOperation se: return EmitSwitchExpression(se);
             case IInterpolatedStringOperation iso: return EmitInterpolatedString(iso);
             case IImplicitIndexerReferenceOperation ii: return EmitImplicitIndexer(ii, false);
+            case IInterpolatedStringHandlerCreationOperation hc: return EmitHandlerCreation(hc);
+            case IInterpolatedStringHandlerArgumentPlaceholderOperation ph: return EmitHandlerPlaceholder(ph);
             case IInlineArrayAccessOperation ia when TypeOf(ia.Argument) is INamedTypeSymbol { Name: "Range" }:
                 {
                     // buffer[a..b]: a span over the inline array, sliced
@@ -329,6 +331,7 @@ sealed partial class FunctionCompiler
     {
         switch (ir.ReferenceKind)
         {
+            case InstanceReferenceKind.InterpolatedStringHandler: return EmitHandlerReference();
             case InstanceReferenceKind.ImplicitReceiver:
                 {
                     var (local, type) = _implicitReceivers[^1];
@@ -362,12 +365,13 @@ sealed partial class FunctionCompiler
             IParameterReferenceOperation p => IsPrimaryParamHere(p.Parameter) || IsCaptured(p.Parameter) || _vars[p.Parameter].InMemory,
             IFieldReferenceOperation f => f.Field.IsStatic || f.Instance == null || !TypeOf(f.Instance).IsValueType || IsAddressable(f.Instance),
             IArrayElementReferenceOperation => true,
-            IInstanceReferenceOperation => M.ContainingType?.IsValueType == true || _closure != null,
+            IInstanceReferenceOperation iro => iro.ReferenceKind == InstanceReferenceKind.InterpolatedStringHandler ? Types.IsStruct(TypeOf(iro)) : M.ContainingType?.IsValueType == true || _closure != null,
             IPropertyReferenceOperation pr => pr.Property.ReturnsByRef || pr.Property.ReturnsByRefReadonly,
             IImplicitIndexerReferenceOperation { IndexerSymbol: IPropertySymbol ip } => ip.ReturnsByRef || ip.ReturnsByRefReadonly,
             IInlineArrayAccessOperation => true,
             IInvocationOperation inv => inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly,
             IDeclarationExpressionOperation => true,
+            IInterpolatedStringHandlerArgumentPlaceholderOperation { PlaceholderKind: InterpolatedStringArgumentPlaceholderKind.TrailingValidityArgument } => true,
             _ => op.Kind == OperationKind.None,
         };
     }
@@ -402,6 +406,8 @@ sealed partial class FunctionCompiler
         switch (op)
         {
             case IDeclarationExpressionOperation de: return EmitAddressBase(de.Expression);
+            case IInterpolatedStringHandlerArgumentPlaceholderOperation { PlaceholderKind: InterpolatedStringArgumentPlaceholderKind.TrailingValidityArgument }:
+                E.Get(_fb); return _handlers[^1].successOffset;
             case IEventReferenceOperation evr when Driver.IsFieldLikeEvent(evr.Event):
                 return EventStorage(evr.Event, () => { var o = EmitValue(evr.Instance!); ToTransient(o, TypeOf(evr.Instance!)); if (!IsKnownNonNull(evr.Instance!)) NullCheckKeep(); });
             case IDiscardOperation dis:
@@ -427,6 +433,7 @@ sealed partial class FunctionCompiler
                 }
             case IInstanceReferenceOperation ir:
                 if (ir.ReferenceKind == InstanceReferenceKind.ImplicitReceiver) { E.Get(_implicitReceivers[^1].local); return 0; }
+                if (ir.ReferenceKind == InstanceReferenceKind.InterpolatedStringHandler) { E.Get(_handlers[^1].addrLocal); return 0; }
                 if (ir.ReferenceKind == InstanceReferenceKind.PatternInput) { E.Get(_patternInputs[^1].local); return 0; }
                 if (_closure != null) { LoadCapturedThis(); return 0; }
                 E.Get(_thisLocal); return 0;
@@ -871,6 +878,14 @@ sealed partial class FunctionCompiler
         }
         if (IsValueTuple(from) && IsValueTuple(to)) { ConvertTuple(from, to); return; }
         if (Types.Key(from.OriginalDefinition) == Types.Key(to.OriginalDefinition)) return;
+        // a user-defined conversion the operation tree left implicit (UInt128's from ulong, at a return)
+        if ((FindConversion(to, from, to) ?? FindConversion(from, from, to)) is { } udc)
+        {
+            var wt = Types.WasmType(from) ?? ValType.I32;
+            int uv = E.AddLocal(wt); E.Set(uv);
+            o = CallWith(udc, false, null, () => E.Get(uv), null, null);
+            return;
+        }
         throw new CompileException($"unsupported conversion from {from} to {to}");
     }
 

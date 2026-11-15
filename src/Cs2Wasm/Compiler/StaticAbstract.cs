@@ -35,10 +35,30 @@ sealed partial class FunctionCompiler
         var target = ConstrainedTarget(m);
         if (target == null) return false;
         var p = Types.PrimOf(target);
-        if (p != Prim.None && m.ContainingType.ContainingNamespace?.ToDisplayString() == "System.Numerics") return EmitGenericMathPrim(m, target, p, out result);
-        var impl = D.Implementation(target, m);
-        if (impl != null) m = impl;
+        if (p != Prim.None && m.ContainingType.ContainingNamespace?.ToDisplayString() == "System.Numerics")
+        {
+            try { return EmitGenericMathPrim(m, target, p, out result); }
+            catch (CompileException) when (ImplementationOf(target, m) is { } primImpl) { m = primImpl; return false; }
+        }
+        if (ImplementationOf(target, m) is { } impl) m = impl;
         return false;
+    }
+
+    /// <summary>The target type's implementation of a static interface member (constructed with the member's own type
+    /// arguments). The upstream library's primitives implement the generic math interfaces themselves.</summary>
+    IMethodSymbol? ImplementationOf(ITypeSymbol target, IMethodSymbol m)
+    {
+        var impl = D.Implementation(target, m);
+        if (impl == null) return null;
+        // a default implementation in the interface: the member of the target's own instance of that interface
+        // (INumberBase<char>.CreateTruncating, not INumberBase<TSelf>'s)
+        if (impl.ContainingType.TypeKind == TypeKind.Interface && impl.ContainingType.IsGenericType
+            && target.AllInterfaces.FirstOrDefault(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, impl.ContainingType.OriginalDefinition)) is { } own
+            && own.GetMembers(impl.Name).OfType<IMethodSymbol>().FirstOrDefault(x => SymbolEqualityComparer.Default.Equals(x.OriginalDefinition, impl.OriginalDefinition)) is { } ownMember)
+            impl = ownMember;
+        if (impl.IsGenericMethod && SymbolEqualityComparer.Default.Equals(impl, impl.ConstructedFrom) && m.TypeArguments.Length == impl.Arity)
+            impl = impl.Construct(m.TypeArguments.Select(T.Canonical).ToArray());
+        return impl;
     }
 
     bool EmitGenericMathPrim(IMethodSymbol m, ITypeSymbol t, Prim p, out Own result)

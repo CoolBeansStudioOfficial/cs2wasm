@@ -656,17 +656,9 @@ namespace System.Reflection
             return res;
         }
 
-        public extern override bool IsGenericMethodDefinition
-        {
-            [MethodImplAttribute(MethodImplOptions.InternalCall)]
-            get;
-        }
+        public override bool IsGenericMethodDefinition => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's IsGenericMethodDefinition): cs2wasm's reflection reads the compiler's metadata");
 
-        public extern override bool IsGenericMethod
-        {
-            [MethodImplAttribute(MethodImplOptions.InternalCall)]
-            get;
-        }
+        public override bool IsGenericMethod => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's IsGenericMethod): cs2wasm's reflection reads the compiler's metadata");
 
         public override bool ContainsGenericParameters
         {

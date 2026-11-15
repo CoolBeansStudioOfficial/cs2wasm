@@ -16,13 +16,8 @@ namespace System
     {
         public static int CurrentManagedThreadId => Thread.CurrentThread.ManagedThreadId;
 
-        public static extern int ExitCode
-        {
-            [MethodImplAttribute(MethodImplOptions.InternalCall)]
-            get;
-            [MethodImplAttribute(MethodImplOptions.InternalCall)]
-            set;
-        }
+        // cs2wasm: kept for the engine to read; there is no process to exit
+        public static int ExitCode { get; set; }
 
                 internal static int GetProcessorCount() => Cs2Wasm.Runtime.Engine.ProcessorCount();
 
