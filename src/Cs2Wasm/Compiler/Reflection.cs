@@ -51,6 +51,8 @@ internal sealed partial class Driver
     internal void AnalyzeReflection()
     {
         var keep = new ReflectionKeep();
+        bool wantsDelegateMethod = false;
+        var delegateRefs = new List<IMethodSymbol>();
         foreach (var mi in AllMethods.ToList())
         {
             if (!mi.Compiled || mi.Impl != MethodImpl.Body) continue;
@@ -64,8 +66,24 @@ internal sealed partial class Driver
                 var body = ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax());
                 if (body == null) continue;
                 foreach (var op in body.DescendantsAndSelf().OfType<IInvocationOperation>()) Visit(op, map, keep, input);
+                if (!input) continue;
+                foreach (var op in body.DescendantsAndSelf())
+                {
+                    if (op is IPropertyReferenceOperation { Property: { Name: "Method", ContainingType: { Name: "Delegate", ContainingNamespace.Name: "System" } } }
+                        or IInvocationOperation { TargetMethod: { Name: "GetMethodInfo", ContainingType.Name: "RuntimeReflectionExtensions" } })
+                        wantsDelegateMethod = true;
+                    if (op is IMethodReferenceOperation { Parent: IDelegateCreationOperation } mr && mr.Method.MethodKind != MethodKind.LocalFunction)
+                    {
+                        var rm = mr.Method;
+                        if (rm.ContainingType.TypeArguments.Any(a => a is ITypeParameterSymbol) || rm.TypeArguments.Any(a => a is ITypeParameterSymbol)) continue;
+                        delegateRefs.Add(rm);
+                    }
+                }
             }
         }
+        if (wantsDelegateMethod)
+            foreach (var rm in delegateRefs)
+                if (rm.IsGenericMethod) keep.KeepInstance(rm.ContainingType, rm); else keep.Keep(rm.ContainingType, rm.Name);
         // types marked [DynamicallyAccessedMembers] keep everything
         foreach (var comp in Inputs)
             foreach (var t in AllTypes(comp.Assembly.GlobalNamespace))
@@ -415,6 +433,7 @@ internal sealed partial class Driver
         var methodsBlob = (DataAddr)Ints(methods);
         int mBase = methodsBlob.Address;
         int EntryAt(int j) => mBase + 4 * 11 * j;
+        for (int i = 0; i < methodSyms.Count; i++) NoteMethodEntry(t, methodSyms[i], EntryAt(i));
         for (int i = 0; i < methodSyms.Count; i++)
         {
             var ms = methodSyms[i];

@@ -156,6 +156,8 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern object? DynamicInvokeRaw(System.Delegate d, object?[]? args);
         /// <summary>The delegate type's parameter count; -1 when the program has no DynamicInvoke for it.</summary>
         [Intrinsic] public static extern int DelegateArity(System.Delegate d);
+        /// <summary>The reflection record entry of the method a method-group delegate's function calls; 0 if none.</summary>
+        [Intrinsic] public static extern int DelegateMethodEntry(int fn);
         [Intrinsic] public static extern int TlsBase();
         [Intrinsic] public static extern int TlsSize();
         [Intrinsic] public static extern void RuntimeLock();

@@ -765,6 +765,7 @@ sealed partial class RuntimeGen
         AssignTypeIds();
         _emitScc?.Invoke();
         D.EmitReflectionTables();
+        D.EmitDelegateMethod();
         D.EmitSharing(D.UsesThreads, Enumerable.Range(0, D.TypeById.Count).Where(id => D.Constructed.Contains(id)).Select(id => (id, D.TypeById[id])));
         EmitDestroyDispatch();
         EmitStubs();

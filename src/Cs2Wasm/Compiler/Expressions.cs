@@ -1239,6 +1239,14 @@ sealed partial class FunctionCompiler
             E.Op(kind == BinaryOperatorKind.Equals ? Op.I32Eq : Op.I32Ne);
             return Own.None;
         }
+        // delegate + delegate, delegate - delegate: Delegate.Combine / Delegate.Remove
+        if (kind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract && TypeOf(b).TypeKind == TypeKind.Delegate)
+        {
+            var o1 = EmitValue(b.LeftOperand); ToCallSafe(o1, lt);
+            var o2 = EmitValue(b.RightOperand); ToCallSafe(o2, rt);
+            E.Call(D.LibMethod("System.Delegate", kind == BinaryOperatorKind.Add ? "Combine" : "Remove", 2).Fn);
+            return Own.Owned;
+        }
         // pointer arithmetic
         if (lt.TypeKind == TypeKind.Pointer && kind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract && rt.TypeKind != TypeKind.Pointer)
         {

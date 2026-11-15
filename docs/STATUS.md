@@ -319,7 +319,11 @@ exported beside the stack pointer.
   dropped, constructed types pruned to live code, invariant globalization folded. Reflection over members reads the
   compiler's reflection records through Mono's icalls (`Boundary/Meta.cs`). `Delegate.DynamicInvoke` (a thunk per
   delegate type the program constructs) and `Delegate.CreateDelegate`/`MethodInfo.CreateDelegate` from a
-  `MethodInfo` (closed, open instance, static) or a method name work (`049`, `050`). Missing: `Delegate.Method`, `Array.CreateInstance` of array types the program never makes. Build time: see Results (the library's models and bound bodies are kept between builds in one process).
+  `MethodInfo` (closed, open instance, static) or a method name work (`049`, `050`). `Delegate.Method` and `Target`
+  (`052`): when the program asks for `Method`, the methods its method-group delegates name keep reflection records,
+  and the delegate's function maps to its method's record; delegates CreateDelegate made report the method they were
+  made from. `delegate + delegate` and `-` combine and remove. Missing: `Delegate.Method` of a lambda or local
+  function (.NET reports the C# compiler's generated names), `Array.CreateInstance` of array types the program never makes. Build time: see Results (the library's models and bound bodies are kept between builds in one process).
 - 7.5–7.6: GodotSharp's math types compile and match (proof 2); the generated wrappers (Node2D) and the boundary
   table are Bazoodle's (7.5) and do not exist yet, so proofs 3 and 4 wait on them. No browser build (the browser
   .NET runtime's workload is not installed here); budgets: module size and desktop build time measured (Results),

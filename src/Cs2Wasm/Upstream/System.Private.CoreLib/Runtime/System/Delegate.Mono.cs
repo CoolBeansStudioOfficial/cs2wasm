@@ -30,7 +30,7 @@ namespace System
 
         public object? Target => GetTarget();
 
-        internal virtual object? GetTarget() => _list == null ? _target : _list[^1]._target;
+        internal virtual object? GetTarget() => _list == null ? (Binding is { } b ? b.Target : _target) : _list[^1].GetTarget();
 
         public partial bool HasSingleTarget => _list == null;
 
@@ -115,21 +115,46 @@ namespace System
                 throw new ArgumentException(SR.Arg_MustBeDelegate, nameof(type));
             int n = rt.GetMethod("Invoke")!.GetParameters().Length;
             int k = method.GetParameters().Length;
-            Func<object?[], object?>? h = null;
+            int mode = -1;
             if (!method.IsStatic)
             {
-                if (k == n) h = args => Call(method, firstArgument, args);
-                else if (k == n - 1 && firstArgument == null) h = args => Call(method, args[0], args[1..]); // open instance
+                if (k == n) mode = DelegateBinding.Closed;
+                else if (k == n - 1 && firstArgument == null) mode = DelegateBinding.OpenInstance;
             }
-            else if (k == n && firstArgument == null) h = args => Call(method, null, args);
-            else if (k == n + 1 && closedAllowed) h = args => { var all = new object?[args.Length + 1]; all[0] = firstArgument; Array.Copy(args, 0, all, 1, args.Length); return Call(method, null, all); };
-            if (h == null)
+            else if (k == n && firstArgument == null) mode = DelegateBinding.Static;
+            else if (k == n + 1 && closedAllowed) mode = DelegateBinding.ClosedStatic;
+            if (mode < 0)
             {
                 if (throwOnBindFailure) throw new ArgumentException(SR.Arg_DlgtTargMeth);
                 return null!;
             }
-            return Internal.Runtime.Augments.DynamicDelegateAugments.CreateObjectArrayDelegate(type, h);
+            return Internal.Runtime.Augments.DynamicDelegateAugments.CreateObjectArrayDelegate(type, new DelegateBinding(method, firstArgument, mode).Invoke);
         }
+
+        /// <summary>cs2wasm: what a delegate CreateDelegate made calls (its Method and Target).</summary>
+        internal sealed class DelegateBinding(MethodInfo method, object? first, int mode)
+        {
+            public const int Closed = 0, OpenInstance = 1, Static = 2, ClosedStatic = 3;
+            public readonly MethodInfo Method = method;
+            public object? Target => mode is Closed or ClosedStatic ? first : null;
+
+            public object? Invoke(object?[] args)
+            {
+                switch (mode)
+                {
+                    case Closed: return Call(Method, first, args);
+                    case OpenInstance: return Call(Method, args[0], args[1..]);
+                    case Static: return Call(Method, null, args);
+                    default:
+                        var all = new object?[args.Length + 1];
+                        all[0] = first;
+                        Array.Copy(args, 0, all, 1, args.Length);
+                        return Call(Method, null, all);
+                }
+            }
+        }
+
+        DelegateBinding? Binding => _target is Delegate { _target: DelegateBinding b } ? b : null;
 
         static object? Call(MethodInfo m, object? target, object?[] args) => m.Invoke(target, BindingFlags.DoNotWrapExceptions, null, args, null);
 
@@ -197,7 +222,16 @@ namespace System
 
         public override int GetHashCode() => _fn ^ (_target == null ? 0 : RuntimeHelpers.GetHashCode(_target));
 
-        protected virtual MethodInfo GetMethodImpl() => throw TypeInfo.NotYet("Delegate.Method");
+        // cs2wasm: the method's reflection record entry, found from the delegate's function (the compiler keeps the
+        // methods of the program's method-group delegates when the program asks for Delegate.Method)
+        protected virtual MethodInfo GetMethodImpl()
+        {
+            if (_list != null) return _list[^1].Method;
+            if (Binding is { } b) return b.Method;
+            int e = Rt.DelegateMethodEntry(_fn);
+            if (e == 0) throw TypeInfo.NotYet("Delegate.Method of a lambda or local function");
+            return new RuntimeMethodInfo(e, Meta.S(Meta.I(e, 0)), RuntimeType.FromId(Meta.I(e, 9)));
+        }
 
         internal static bool InternalEqualTypes(object source, object value) => Rt.TypeId(source) == Rt.TypeId(value);
     }

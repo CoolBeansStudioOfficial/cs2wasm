@@ -666,6 +666,7 @@ sealed partial class FunctionCompiler
             case "Rt.ObjectArrayDelegate": E.Call(D.ObjectArrayDelegateFn); return Own.Owned;
             case "Rt.DynamicInvokeRaw": E.Call(D.DynamicInvokeFn); return Own.Owned;
             case "Rt.DelegateArity": E.Call(D.DelegateArityFn); return Own.None;
+            case "Rt.DelegateMethodEntry": E.Call(D.DelegateMethodFn); return Own.None;
             case "Rt.ArenaClearObject": E.Call(Rt.ArenaClearFn); return Own.None;
             case "Rt.ArenaFreeObject": E.Call(Rt.ArenaFreeFn); return Own.None;
             case "Rt.ArenaVisitObject": E.Call(Rt.ArenaVisitFn); return Own.None;
@@ -1175,7 +1176,9 @@ sealed partial class FunctionCompiler
         if (m.IsStatic && !(m.IsExtensionMethod && mr.Instance != null))
         {
             E.I32(0);
-            NewDelegate(dt, D.StaticThunk(m));
+            var sfn = D.StaticThunk(m);
+            D.DelegateFnMethods.TryAdd(sfn, m);
+            NewDelegate(dt, sfn);
             return Own.Owned;
         }
         var inst = mr.Instance ?? throw new CompileException("method group without instance");
@@ -1185,13 +1188,16 @@ sealed partial class FunctionCompiler
             var o = EmitValue(inst);
             EmitBox(it, o);
             var impl = Types.Key(T.Canonical(m.ContainingType)) == Types.Key(T.Canonical(it)) ? m : D.Implementation(it, m) ?? m;
-            NewDelegate(dt, Types.Key(T.Canonical(impl.ContainingType)) == Types.Key(T.Canonical(it)) ? D.BoxThunk(impl, it) : D.Stub(m));
+            var bfn = Types.Key(T.Canonical(impl.ContainingType)) == Types.Key(T.Canonical(it)) ? D.BoxThunk(impl, it) : D.Stub(m);
+            D.DelegateFnMethods.TryAdd(bfn, impl);
+            NewDelegate(dt, bfn);
             return Own.Owned;
         }
         var ov = EmitValue(inst);
         ToOwned(ov);
         if (!IsKnownNonNull(inst)) NullCheckKeep();
         WasmFunction fn = mr.IsVirtual && IsVirtualDispatch(m) ? D.Stub(m) : D.Method(m).Fn;
+        D.DelegateFnMethods.TryAdd(fn, m);
         NewDelegate(dt, fn);
         return Own.Owned;
     }

@@ -187,6 +187,33 @@ internal sealed partial class Driver
         }
     }
 
+    // Delegate.Method: the method each method-group delegate's function calls (by function), and the reflection
+    // record entries of methods (by method key); rt.delegate_method maps a delegate's function to its method's entry
+    public readonly Dictionary<WasmFunction, IMethodSymbol> DelegateFnMethods = [];
+    readonly Dictionary<string, int> _methodEntries = [];
+    WasmFunction? _delegateMethod;
+    public WasmFunction DelegateMethodFn => _delegateMethod ??= Module.AddFunction("rt.delegate_method", new FuncType([ValType.I32], [ValType.I32]));
+
+    public void NoteMethodEntry(INamedTypeSymbol record, IMethodSymbol ms, int entry)
+    {
+        var k = Compiler.Types.MethodKey(CanonicalMethod(ms));
+        if (Compiler.Types.Key(record) == Compiler.Types.Key(ms.ContainingType)) _methodEntries[k] = entry;
+        else _methodEntries.TryAdd(k, entry);
+    }
+
+    public void EmitDelegateMethod()
+    {
+        if (_delegateMethod == null) return;
+        var e = new Emitter(_delegateMethod);
+        foreach (var (fn, m) in DelegateFnMethods)
+            if (_methodEntries.TryGetValue(Compiler.Types.MethodKey(CanonicalMethod(m)), out var a))
+            {
+                e.Get(0); e.I32Fn(Module, fn); e.Op(Op.I32Eq);
+                e.If(); e.I32(a); e.Op(Op.Return); e.End();
+            }
+        e.I32(0);
+    }
+
     /// <summary>A thunk for each closed delegate type the program names (while compiling: new types keep coming).</summary>
     public bool ExpandObjectArrayThunks()
     {
