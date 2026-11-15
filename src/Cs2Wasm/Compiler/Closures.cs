@@ -303,14 +303,23 @@ sealed partial class FunctionCompiler
     // ---------------------------------------------------------------------
     // compiling a lambda or local function
     // ---------------------------------------------------------------------
-    public static void CompileNested(Driver d, MethodInst mi, IMethodSymbol sym, IOperation body, ClosureInfo ci)
+    public static void CompileNested(Driver d, MethodInst mi, IMethodSymbol sym, IOperation? body, ClosureInfo ci)
     {
         var fc = new FunctionCompiler(d, mi.Fn, sym, mi, ci);
         fc.CompileNestedBody(body);
     }
 
-    void CompileNestedBody(IOperation body)
+    void CompileNestedBody(IOperation? body)
     {
+        // an extern local function with [UnsafeAccessor]: a call to the member it names
+        if (body == null && M.IsExtern && M.GetAttributes().Any(a => a.AttributeClass?.Name == "UnsafeAccessorAttribute"))
+        {
+            SetupParams();
+            using (BodyScope()) EmitUnsafeAccessorBody();
+            Finish();
+            return;
+        }
+        if (body == null) throw new CompileException("local function without a body: " + M.ToDisplayString(), M.Locations.FirstOrDefault());
         if (IsStateMachine(M)) { CompileKickoff(body); return; }
         SetupParams();
         E.CurrentPos = D.Position(body.Syntax);

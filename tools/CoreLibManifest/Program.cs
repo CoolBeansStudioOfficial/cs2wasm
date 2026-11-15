@@ -28,7 +28,7 @@ static class Libraries
     [
         "System.Private.CoreLib", "System.Collections", "System.Collections.NonGeneric", "System.ObjectModel", "System.Memory",
         "System.Threading", "System.Collections.Concurrent", "System.Linq", "System.Console", "System.Runtime.Numerics",
-        "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions",
+        "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions", "System.Linq.Expressions", "Microsoft.CSharp",
     ];
 
     public static string Project(string root, string lib) => lib == "System.Private.CoreLib"
@@ -143,6 +143,9 @@ sealed class Manifest
             sb.AppendLine("substitute	method	System.ConsolePal	System.IO.Stream OpenStandardOutput()	=>System.Cs2WasmConsole.OpenStandardOutput");
             sb.AppendLine("substitute	method	System.ConsolePal	System.IO.Stream OpenStandardError()	=>System.Cs2WasmConsole.OpenStandardError");
         }
+        // expression trees run on the interpreter: no IL is emitted for object[] thunks either (as on NativeAOT)
+        if (lib == "System.Linq.Expressions")
+            sb.AppendLine("substitute	method	System.Dynamic.Utils.DelegateHelpers	System.Boolean get_CanEmitObjectArrayDelegate()	false");
         // feature switches without a trimmer substitution that cs2wasm fixes: no code is generated at run time
         if (lib == "System.Private.CoreLib")
         {

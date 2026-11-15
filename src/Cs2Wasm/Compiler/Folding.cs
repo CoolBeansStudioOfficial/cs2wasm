@@ -201,8 +201,38 @@ sealed partial class FunctionCompiler
             MethodDeclarationSyntax { Body.Statements: [ReturnStatementSyntax { Expression: { } r }] } => r,
             _ => null,
         };
-        if (expr is not LiteralExpressionSyntax) return null;
-        return D.ModelFor(expr.SyntaxTree).GetConstantValue(expr) is { HasValue: true, Value: bool v } ? v : null;
+        if (expr == null) return null;
+        if (expr is LiteralExpressionSyntax)
+            return D.ModelFor(expr.SyntaxTree).GetConstantValue(expr) is { HasValue: true, Value: bool v } ? v : null;
+        // a getter whose body is itself known (`CanCompileToIL => RuntimeFeature.IsDynamicCodeSupported`)
+        if (_knownDepth > 4 || D.ModelFor(expr.SyntaxTree).GetOperation(expr) is not { } eop) return null;
+        _knownDepth++;
+        try { return KnownExpr(eop); }
+        finally { _knownDepth--; }
+    }
+
+    int _knownDepth;
+
+    bool? KnownExpr(IOperation op)
+    {
+        while (op is IConversionOperation { OperatorMethod: null } c) op = c.Operand;
+        switch (op)
+        {
+            case { ConstantValue: { HasValue: true, Value: bool cv } }: return cv;
+            case IPropertyReferenceOperation { Instance: null } pr: return KnownBool(pr.Property);
+            case IInvocationOperation { Instance: null, Arguments.Length: 0 } inv: return KnownBool(inv.TargetMethod);
+            case IUnaryOperation { OperatorKind: UnaryOperatorKind.Not, OperatorMethod: null } u: return KnownExpr(u.Operand) is bool x ? !x : null;
+            case IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd or BinaryOperatorKind.ConditionalOr, OperatorMethod: null } bo:
+                {
+                    bool and = bo.OperatorKind == BinaryOperatorKind.ConditionalAnd;
+                    var l = KnownExpr(bo.LeftOperand);
+                    if (l == !and) return !and;
+                    var r = KnownExpr(bo.RightOperand);
+                    if (r == !and) return !and;
+                    return l is bool && r is bool ? and : null;
+                }
+        }
+        return null;
     }
 }
 

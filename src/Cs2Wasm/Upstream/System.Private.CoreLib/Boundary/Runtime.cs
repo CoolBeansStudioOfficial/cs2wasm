@@ -147,6 +147,9 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int ThreadId();
         /// <summary>No other thread can ever run: the program starts none (known when the whole program is compiled).</summary>
         [Intrinsic] public static extern bool SingleThreaded();
+        /// <summary>A delegate of the type (by id) that passes its arguments to the handler as an object[]; null when the
+        /// program names no such delegate type (Compiler/DynamicDelegates.cs).</summary>
+        [Intrinsic] public static extern System.Delegate? ObjectArrayDelegate(int delegateTypeId, System.Func<object?[], object?> handler);
         [Intrinsic] public static extern int TlsBase();
         [Intrinsic] public static extern int TlsSize();
         [Intrinsic] public static extern void RuntimeLock();

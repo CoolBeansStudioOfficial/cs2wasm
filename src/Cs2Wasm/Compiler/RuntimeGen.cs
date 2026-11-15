@@ -358,7 +358,7 @@ sealed partial class RuntimeGen
     /// <summary>Generates destroy functions for newly constructed types and resolves virtual calls; true if new work appeared.</summary>
     public bool Expand()
     {
-        bool any = false;
+        bool any = D.ExpandObjectArrayThunks();
         foreach (var id in D.Constructed.ToList())
         {
             if (_destroyFns.ContainsKey(id)) continue;
@@ -726,6 +726,7 @@ sealed partial class RuntimeGen
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
         D.Rt.EmitArrayDispatch();
         D.Module.UsesThreads = D.UsesThreads;
+        D.EmitObjectArrayDelegate();
         // single-threaded: what only another thread could make run goes (before pruning, so what it reached does)
         if (D.Rt.SingleThreadedIfMade is { } st)
         {
@@ -1110,7 +1111,7 @@ internal sealed partial class Driver
         var op = (ILocalFunctionOperation)ModelFor(syntax.SyntaxTree).GetOperation(syntax)!;
         var ci = owner.MakeClosureInfo(map, env, Types.Resolve(def.ReturnType, map));
         ci.OuterKey = owner.OuterKey ?? owner.InstanceKey;
-        mi.Compile = () => FunctionCompiler.CompileNested(this, mi, def, op.Body ?? op.IgnoredBody!, ci);
+        mi.Compile = () => FunctionCompiler.CompileNested(this, mi, def, op.Body ?? op.IgnoredBody, ci);
         _methods[key] = mi;
         _work.Enqueue(mi);
         return mi;

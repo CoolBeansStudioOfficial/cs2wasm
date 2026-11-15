@@ -146,6 +146,24 @@ sealed partial class FunctionCompiler
 
     Own EmitLiftedBinary(IBinaryOperation b)
     {
+        // x == null, x != null: whether it has a value (no operator runs, user-defined or not)
+        if (b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && b.OperatorMethod == null)
+        {
+            static bool NullLit(IOperation o)
+            {
+                while (o is IConversionOperation c) o = c.Operand;
+                return o.ConstantValue is { HasValue: true, Value: null } || o is IDefaultValueOperation;
+            }
+            var side = NullLit(b.RightOperand) ? b.LeftOperand : NullLit(b.LeftOperand) ? b.RightOperand : null;
+            if (side != null && side.Type != null && IsNullable(TypeOf(side)))
+            {
+                var st = TypeOf(side);
+                int sa = LiftedOperand(side, st);
+                E.Get(sa); NullableHas(st);
+                if (b.OperatorKind == BinaryOperatorKind.Equals) E.Op(Op.I32Eqz);
+                return Own.None;
+            }
+        }
         var lt = b.LeftOperand.Type != null ? TypeOf(b.LeftOperand) : null;
         var rt = b.RightOperand.Type != null ? TypeOf(b.RightOperand) : null;
         var nt = lt != null && IsNullable(lt) ? lt : rt!;

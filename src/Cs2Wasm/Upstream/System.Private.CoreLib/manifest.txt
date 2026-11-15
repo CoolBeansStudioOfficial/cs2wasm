@@ -35,13 +35,13 @@ substitute	method	System.Exception	System.String GetStackTrace()	=>Cs2Wasm.Runti
 substitute	method	System.Diagnostics.StackTrace	System.String ToString(System.Diagnostics.StackTrace/TraceFormat)	=>Cs2Wasm.Runtime.Rt.EmptyTrace
 substitute	method	System.Enum	System.Boolean AreSorted(TStorage[])	true
 edit	src/libraries/System.Private.CoreLib/src/System/Enum.cs	#define RARE_ENUMS	#undef RARE_ENUMS
+substitute	method	System.Environment	System.String GetEnvironmentVariable(System.String)	
 substitute	method	System.Gen2GcCallback	System.Void Register(System.Func`2,System.Object)	
 substitute	method	System.Gen2GcCallback	System.Void Register(System.Func`1)	
 edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	_allTlsBuckets.Add(tlsBuckets, null);	
-edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	_allTlsBuckets = new ConditionalWeakTable<SharedArrayPoolThreadLocalArray[], object?>();	_allTlsBuckets = null!;
 edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	Gen2GcCallback.Register(s => ((SharedArrayPool<T>)s).Trim(), this);	
+edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	_allTlsBuckets = new ConditionalWeakTable<SharedArrayPoolThreadLocalArray[], object?>();	_allTlsBuckets = null!;
 substitute	method	System.SR	System.Boolean UsingResourceKeys()	false
-substitute	method	System.Environment	System.String GetEnvironmentVariable(System.String)	
 substitute	method	System.Environment	System.String GetEnvironmentVariableCore(System.String)	
 substitute	method	System.Environment	System.String GetEnvironmentVariableCore_NoArrayPool(System.String)	
 substitute	method	System.Threading.Thread	System.Int32 GetCurrentProcessorId()	=>Cs2Wasm.Runtime.Rt.CurrentProcessorId

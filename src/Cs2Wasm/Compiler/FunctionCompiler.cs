@@ -1656,6 +1656,8 @@ sealed partial class FunctionCompiler
     {
         var def = M.OriginalDefinition;
         if (_valueEqualsType != null) { EmitValueEquals(); return; }
+        if (_objectArrayThunkHandler != null) { EmitObjectArrayThunk(); return; }
+        if (def.IsExtern && def.GetAttributes().Any(a => a.AttributeClass?.Name == "UnsafeAccessorAttribute")) { EmitUnsafeAccessorBody(); return; }
         if (_anonType != null || def.ContainingType.IsAnonymousType) { EmitAnonymousMember(); return; }
         if (def.ContainingType.IsRecord && def.IsImplicitlyDeclared && !(def.AssociatedSymbol is IPropertySymbol ap && Driver.AutoPropertyField(ap) != null) || def.ContainingType.IsRecord && def.MethodKind == MethodKind.Constructor && !Driver.HasBody(def)) { EmitRecordMember(); return; }
         if (def.MethodKind == MethodKind.Constructor)

@@ -595,6 +595,7 @@ sealed partial class FunctionCompiler
             case "Rt.Release": E.Call(Rt.Release); return Own.None;
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
             case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
+            case "Rt.ObjectArrayDelegate": E.Call(D.ObjectArrayDelegateFn); return Own.Owned;
             case "Rt.ArenaClearObject": E.Call(Rt.ArenaClearFn); return Own.None;
             case "Rt.ArenaFreeObject": E.Call(Rt.ArenaFreeFn); return Own.None;
             case "Rt.ArenaVisitObject": E.Call(Rt.ArenaVisitFn); return Own.None;
@@ -1058,6 +1059,7 @@ sealed partial class FunctionCompiler
     // delegates
     // =====================================================================
     const int DelegateTarget = 12, DelegateFn = 16;
+    internal const int DelegateTargetOffset = DelegateTarget, DelegateFnOffset = DelegateFn;
 
     Own EmitDelegateCreation(IDelegateCreationOperation dc)
     {

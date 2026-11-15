@@ -46,14 +46,15 @@ internal sealed partial class Driver
         {
             if (!mi.Compiled || mi.Impl != MethodImpl.Body) continue;
             var def = mi.Sym.OriginalDefinition;
-            if (!def.DeclaringSyntaxReferences.Any(r => IsInput(r.SyntaxTree))) continue;
             var map = TypeMap.For(mi.Sym);
             foreach (var r in def.DeclaringSyntaxReferences)
             {
-                if (!IsInput(r.SyntaxTree)) continue;
+                // (the library's reflection too: System.Linq.Expressions asks delegate types for Invoke)
+                bool input = IsInput(r.SyntaxTree);
+                if (!input && !r.GetSyntax().DescendantTokens().Any(t => t.ValueText is "GetMethod" or "GetProperty" or "GetField" or "GetMember" or "GetConstructor" or "GetConstructors")) continue;
                 var body = ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax());
                 if (body == null) continue;
-                foreach (var op in body.DescendantsAndSelf().OfType<IInvocationOperation>()) Visit(op, map, keep);
+                foreach (var op in body.DescendantsAndSelf().OfType<IInvocationOperation>()) Visit(op, map, keep, input);
             }
         }
         // types marked [DynamicallyAccessedMembers] keep everything
@@ -67,7 +68,7 @@ internal sealed partial class Driver
             foreach (var m in KeptMembers(t, all, names, ctors)) ThunkFor(m);
     }
 
-    void Visit(IInvocationOperation op, TypeMap map, ReflectionKeep keep)
+    void Visit(IInvocationOperation op, TypeMap map, ReflectionKeep keep, bool input = true)
     {
         var m = op.TargetMethod;
         var owner = m.ContainingType?.Name;
@@ -81,9 +82,19 @@ internal sealed partial class Driver
         if (owner is not ("Type" or "TypeInfo" or "MemberInfo" or "CustomAttributeExtensions" or "Attribute") || !s_reflectNames.Contains(m.Name)) return;
         if (owner is "MemberInfo" or "CustomAttributeExtensions" or "Attribute") return; // attributes of kept members are kept with them
         var t = op.Instance != null ? ReceiverType(op.Instance, map) : null;
-        if (t == null) { Report(Diags.ReflectionUnknown, op.Syntax.GetLocation(), "Type." + m.Name); return; }
         string? name = null;
         if (m.Name is "GetMethod" or "GetProperty" or "GetField" or "GetMember" && op.Arguments.Length > 0 && op.Arguments[0].Value.ConstantValue is { HasValue: true, Value: string s }) name = s;
+        if (t == null && name != null)
+        {
+            // a member named by a constant on a type the compiler cannot see: that member of every type the program
+            // names (delegate types' Invoke)
+            for (int id = 0; id < TypeById.Count; id++)
+                if (TypeById[id] is INamedTypeSymbol nt && !nt.IsUnboundGenericType && !nt.TypeArguments.Any(a => a is ITypeParameterSymbol) && !SyntheticById.ContainsKey(id) && !DisplayById.ContainsKey(id)
+                    && nt.GetMembers(name).Any())
+                    keep.Keep(nt, name);
+            if (!input) return;
+        }
+        if (t == null) { if (input) Report(Diags.ReflectionUnknown, op.Syntax.GetLocation(), "Type." + m.Name); return; }
         if (m.Name is "GetConstructor" or "GetConstructors") keep.Keep(t, null, ctors: true);
         else if (m.Name is "GetCustomAttributes" or "GetCustomAttribute" or "IsDefined" or "GetInterfaces") keep.Keep(t, "<type>");
         else keep.Keep(t, name);
@@ -130,7 +141,7 @@ internal sealed partial class Driver
                 if (!want) continue;
                 switch (mem)
                 {
-                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => p.RefKind == RefKind.None) && !ms.IsExtern:
+                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => p.RefKind == RefKind.None) && !ms.IsExtern:
                         yield return ms; break;
                     case IMethodSymbol { MethodKind: MethodKind.Constructor } cs when SymbolEqualityComparer.Default.Equals(x, t) && cs.Parameters.All(p => p.RefKind == RefKind.None) && !t.IsAbstract:
                         yield return cs; break;

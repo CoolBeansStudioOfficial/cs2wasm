@@ -2050,7 +2050,9 @@ sealed partial class FunctionCompiler
                 { var v = _vars[p.Parameter]; if (!v.InMemory) return new VarLV(this, v); }
                 break;
             case IPropertyReferenceOperation pr:
-                if (IsDirectAutoProperty(pr.Property, pr.Instance))
+                // (a get-only auto-property, virtual or an override too, is assigned in its constructors: its field)
+                if (IsDirectAutoProperty(pr.Property, pr.Instance)
+                    || pr.Property.SetMethod == null && pr.Property.Parameters.Length == 0 && Driver.AutoPropertyField(pr.Property.OriginalDefinition) != null)
                 {
                     var bf = Driver.AutoPropertyField(pr.Property.OriginalDefinition)!;
                     var ft = T.Resolve(pr.Property.Type, Map);
