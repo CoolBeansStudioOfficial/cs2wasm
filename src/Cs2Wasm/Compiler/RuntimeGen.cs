@@ -1236,6 +1236,9 @@ internal sealed partial class Driver
         fn.ProgramCode = owner.FnProgramCode;
         mi = new MethodInst { Sym = sym, Fn = fn, Key = key, Impl = MethodImpl.Body };
         var ci = owner.MakeClosureInfo(map, env, ret);
+        // (a local function called from the lambda is the outer method's: keyed by it, not by the lambda, or local
+        // functions that call each other through lambdas would make new instances without end)
+        ci.OuterKey = owner.OuterKey ?? owner.InstanceKey;
         mi.Compile = () => FunctionCompiler.CompileNested(this, mi, sym, af.Body, ci);
         _methods[key] = mi;
         _work.Enqueue(mi);

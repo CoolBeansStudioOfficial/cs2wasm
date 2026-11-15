@@ -922,7 +922,7 @@ internal sealed partial class Driver
     public void Mark(string phase)
     {
         if (!_times) return;
-        Console.Error.WriteLine($"  {_clock.ElapsedMilliseconds,6} ms  {phase}  (binding so far {BindTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms)");
+        Console.Error.WriteLine($"  {_clock.ElapsedMilliseconds,6} ms  {GC.GetTotalMemory(false) >> 20,6} MB  {phase}  (binding so far {BindTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms)");
         _clock.Restart();
     }
 
