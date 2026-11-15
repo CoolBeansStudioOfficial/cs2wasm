@@ -27,12 +27,8 @@ namespace System.Runtime.Loader
         [DynamicDependency(nameof(_nativeAssemblyLoadContext))]
         private IntPtr InitializeAssemblyLoadContext(IntPtr thisHandlePtr, bool representsTPALoadContext, bool isCollectible)
         {
-            if (isCollectible)
-                KeepLoaderAllocator();
-            using (SafeStringMarshal handle = new SafeStringMarshal(Name))
-            {
-                return InternalInitializeNativeALC(thisHandlePtr, handle.Value, representsTPALoadContext, isCollectible);
-            }
+            // cs2wasm: no native context (nothing is loaded at run time; GetLoadContext answers Default)
+            return IntPtr.Zero;
         }
 
         // Keep the type alive since instances are created by the runtime
@@ -41,7 +37,8 @@ namespace System.Runtime.Loader
         {
         }
 
-                [Cs2Wasm.Runtime.MissingCapability("loading assemblies at run time")]        private static extern void PrepareForAssemblyLoadContextRelease(IntPtr nativeAssemblyLoadContext, IntPtr assemblyLoadContextStrong);
+        // cs2wasm: no native context to release (InitializeAssemblyLoadContext makes none)
+        private static void PrepareForAssemblyLoadContextRelease(IntPtr nativeAssemblyLoadContext, IntPtr assemblyLoadContextStrong) { }
 
         [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
         [System.Security.DynamicSecurityMethod] // Methods containing StackCrawlMark local var has to be marked DynamicSecurityMethod
@@ -78,20 +75,8 @@ namespace System.Runtime.Loader
         {
             ArgumentNullException.ThrowIfNull(assembly);
 
-            AssemblyLoadContext? loadContextForAssembly = null;
-
-            RuntimeAssembly? rtAsm = assembly as RuntimeAssembly;
-
-            // We only support looking up load context for runtime assemblies.
-            if (rtAsm != null)
-            {
-                var _ = Default;  // ensure the default ALC is initialized.
-                RuntimeAssembly runtimeAssembly = rtAsm;
-                IntPtr ptrAssemblyLoadContext = GetLoadContextForAssembly(runtimeAssembly);
-                loadContextForAssembly = GetAssemblyLoadContext(ptrAssemblyLoadContext);
-            }
-
-            return loadContextForAssembly;
+            // cs2wasm: every assembly is the module's, in the default context (nothing is loaded at run time)
+            return assembly is RuntimeAssembly ? Default : null;
         }
 
         public void SetProfileOptimizationRoot(string directoryPath)

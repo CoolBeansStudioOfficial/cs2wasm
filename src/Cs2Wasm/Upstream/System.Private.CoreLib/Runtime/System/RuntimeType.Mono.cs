@@ -2048,7 +2048,14 @@ namespace System
             return null;
         }
 
-                private static void make_array_type(QCallTypeHandle type, int rank, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.MakeArrayType");
+        // cs2wasm: the module's one-dimensional array type of the element (rank 0: a vector), when the program has it
+        private static void make_array_type(QCallTypeHandle type, int rank, ObjectHandleOnStack res)
+        {
+            int id = Cs2Wasm.Runtime.TypeInfo.Id(type);
+            int a = rank == 0 ? Cs2Wasm.Runtime.TypeInfo.ArrayOf(id) : -1;
+            if (a < 0) throw new PlatformNotSupportedException("cs2wasm: " + FromId(id) + (rank == 0 ? "[]" : "[" + new string(',', rank - 1) + "]") + " is not an array type the program makes (no code exists for it)");
+            Cs2Wasm.Runtime.TypeInfo.Set(res, FromId(a));
+        }
 
         public override Type MakeArrayType()
         {
@@ -2137,10 +2144,12 @@ namespace System
             if (!IsGenericParameter)
                 throw new InvalidOperationException(SR.Arg_NotGenericParameter);
 
-            var paramInfo = new Mono.RuntimeGenericParamInfoHandle(RuntimeTypeHandle.GetGenericParameterInfo(this));
-            Type[] constraints = paramInfo.Constraints;
-
-            return constraints ?? Type.EmptyTypes;
+            // cs2wasm: the compiler's table (Compiler/TypeInfo.cs)
+            RuntimeType[] c = Cs2Wasm.Runtime.TypeInfo.Types(Cs2Wasm.Runtime.TypeInfo.GenericConstraints(TypeId));
+            if (c.Length == 0) return Type.EmptyTypes;
+            var r = new Type[c.Length];
+            for (int i = 0; i < c.Length; i++) r[i] = c[i];
+            return r;
         }
 
         internal static object CreateInstanceForAnotherGenericParameter(
@@ -2289,7 +2298,11 @@ namespace System
             return Cs2Wasm.Runtime.Rt.Take<object>(box);
         }
 
-                private static void GetDeclaringMethod(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, null);
+                private static void GetDeclaringMethod(QCallTypeHandle type, ObjectHandleOnStack res)
+        {
+            int e = Cs2Wasm.Runtime.TypeInfo.GenericParamMethod(Cs2Wasm.Runtime.TypeInfo.Id(type));
+            Cs2Wasm.Runtime.TypeInfo.Set(res, e == 0 ? null : new System.Reflection.RuntimeMethodInfo(e, Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(e, 0)), FromId(Cs2Wasm.Runtime.Meta.I(e, 9))));
+        }
 
         public override MethodBase? DeclaringMethod
         {
@@ -2382,10 +2395,10 @@ namespace System
 
         private GenericParameterAttributes GetGenericParameterAttributes()
         {
-            return (new Mono.RuntimeGenericParamInfoHandle(RuntimeTypeHandle.GetGenericParameterInfo(this))).Attributes;
+            return (GenericParameterAttributes)(Cs2Wasm.Runtime.TypeInfo.GenericParam(TypeId) >> 16);
         }
 
-                private static int GetGenericParameterPosition(QCallTypeHandle type) => -1;
+                private static int GetGenericParameterPosition(QCallTypeHandle type) => Cs2Wasm.Runtime.TypeInfo.GenericParam(Cs2Wasm.Runtime.TypeInfo.Id(type)) is int g && g < 0 ? -1 : g & 0xFFFF;
 
                 private static IntPtr GetEvents_native(QCallTypeHandle type, IntPtr name, MemberListType listType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection over events (outside the compiler's metadata)");
 

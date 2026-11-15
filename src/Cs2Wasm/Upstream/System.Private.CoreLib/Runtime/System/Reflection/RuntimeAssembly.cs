@@ -82,6 +82,10 @@ namespace System.Reflection
 
         internal int Index => (int)_mono_assembly;
 
+        // the assembly's one module (as a single-file application's: no file name)
+        RuntimeModule? _module;
+        internal RuntimeModule Module => _module ??= new RuntimeModule { assembly = this, name = "<Unknown>", fqname = "<Unknown>", scopename = GetSimpleName() + ".dll", token = 0x00000001 };
+
         internal static RuntimeAssembly OfIndex(int index)
         {
             var t = s_all;
@@ -145,10 +149,7 @@ namespace System.Reflection
         {
             get
             {
-                var this_assembly = this;
-                Module? res = null;
-                GetManifestModuleInternal(new QCallAssembly(ref this_assembly), ObjectHandleOnStack.Create(ref res));
-                return res!;
+                return Module;
             }
         }
 
@@ -504,7 +505,7 @@ namespace System.Reflection
 
                 private static IntPtr /* byte* */ GetManifestResourceInternal(QCallAssembly assembly, string name, out int size, ObjectHandleOnStack module) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetManifestResourceInternal): cs2wasm's reflection reads the compiler's metadata");
 
-                private static void GetManifestModuleInternal(QCallAssembly assembly, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetManifestModuleInternal): cs2wasm's reflection reads the compiler's metadata");
+                private static void GetManifestModuleInternal(QCallAssembly assembly, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("GetManifestModuleInternal (ManifestModule is the assembly's Module)");
 
                 private static void GetModulesInternal(QCallAssembly assembly, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetModulesInternal): cs2wasm's reflection reads the compiler's metadata");
 

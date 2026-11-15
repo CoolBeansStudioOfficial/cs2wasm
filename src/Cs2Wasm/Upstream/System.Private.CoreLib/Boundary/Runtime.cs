@@ -1068,6 +1068,8 @@ namespace Cs2Wasm.Runtime
         public static void InvalidCast(object o, string target) =>
             throw new InvalidCastException("Unable to cast object of type '" + Rt.TypeName(o) + "' to type '" + target + "'.");
         public static void ArgumentOutOfRange(string name) => throw new ArgumentOutOfRangeException(name);
+        /// <summary>An [UnsafeAccessor] over a type the program does not have (as when .NET cannot load it).</summary>
+        public static void TypeLoad(string typeName) => throw new TypeLoadException(SR.Format(SR.TypeLoad_ResolveType, typeName));
         public static void ArgumentNull(string name) => throw new ArgumentNullException(name);
         public static void InvalidOperation(string msg) => throw new InvalidOperationException(msg);
         public static void NotSupported() => throw new NotSupportedException();

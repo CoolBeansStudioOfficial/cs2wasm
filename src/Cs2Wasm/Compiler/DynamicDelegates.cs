@@ -51,13 +51,21 @@ sealed partial class FunctionCompiler
         var attr = def.GetAttributes().First(a => a.AttributeClass?.Name == "UnsafeAccessorAttribute");
         int kind = attr.ConstructorArguments[0].Value is int k ? k : -1;
         string name = attr.NamedArguments.FirstOrDefault(a => a.Key == "Name").Value.Value as string ?? def.Name;
+        // a type named by [UnsafeAccessorType] that the library lacks (BinaryFormatter): calling the accessor throws
+        string? missing = null;
+        foreach (var at in def.GetReturnTypeAttributes().Concat(def.Parameters.SelectMany(p => p.GetAttributes())))
+            if (at.AttributeClass?.Name == "UnsafeAccessorTypeAttribute" && at.ConstructorArguments is [{ Value: string an }] && D.Lib.TypeByMetadataName(an.Split(',')[0].Trim()) == null)
+                missing ??= an;
+        if (missing != null)
+        {
+            E.I32Addr(D.StringLiteral(missing)); E.Call(D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "TypeLoad", 1).Fn);
+            E.Op(Op.Unreachable);
+            return;
+        }
         ITypeSymbol TypeOfParam(IParameterSymbol p)
         {
             if (p.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "UnsafeAccessorTypeAttribute") is { ConstructorArguments: [{ Value: string tn }] })
-            {
-                var meta = tn.Split(',')[0].Trim();
-                return D.Lib.TypeByMetadataName(meta) ?? throw new CompileException("[UnsafeAccessorType] names a type the library lacks: " + meta, def.Locations.FirstOrDefault());
-            }
+                return D.Lib.TypeByMetadataName(tn.Split(',')[0].Trim())!;
             return T.Resolve(p.Type, Map) is IPointerTypeSymbol or { IsReferenceType: true } or { IsValueType: true } ? T.Resolve(p.Type, Map) : p.Type;
         }
         // 0 constructor, 1 method, 2 static method (field kinds give a reference to the field: not yet)
@@ -200,6 +208,8 @@ internal sealed partial class Driver
         if (Compiler.Types.Key(record) == Compiler.Types.Key(ms.ContainingType)) _methodEntries[k] = entry;
         else _methodEntries.TryAdd(k, entry);
     }
+
+    public int MethodEntryOf(IMethodSymbol m) => _methodEntries.TryGetValue(Compiler.Types.MethodKey(CanonicalMethod(m)), out var e) ? e : 0;
 
     public void EmitDelegateMethod()
     {

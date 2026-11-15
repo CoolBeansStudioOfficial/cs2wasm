@@ -1163,7 +1163,21 @@ sealed partial class FunctionCompiler
         // goto case / goto default: sections inside a dispatch loop; a state of -1 means "test the clauses"
         var clauseLabels = new Dictionary<ILabelSymbol, int>(SymbolEqualityComparer.Default);
         for (int i = 0; i < sw.Cases.Length; i++) foreach (var cl in sw.Cases[i].Clauses) if (cl.Label != null) clauseLabels[cl.Label] = i;
-        bool gotoCase = sw.Cases.Any(cs => cs.Body.Any(b => b.DescendantsAndSelf().OfType<IBranchOperation>().Any(br => clauseLabels.ContainsKey(br.Target))));
+        // a section's statements split at its labels into segments (goto into the middle of a section, from
+        // another: `goto convOperatorName;`); segments are numbered across sections, a section's first is its own
+        var segStart = new List<(int sec, int from)>();
+        var secFirst = new int[sw.Cases.Length];
+        var innerLabels = new List<(ILabelSymbol lbl, int seg)>();
+        for (int i = 0; i < sw.Cases.Length; i++)
+        {
+            secFirst[i] = segStart.Count;
+            segStart.Add((i, 0));
+            var body = sw.Cases[i].Body;
+            for (int j = 1; j < body.Length; j++)
+                if (body[j] is ILabeledOperation lo) { innerLabels.Add((lo.Label, segStart.Count)); segStart.Add((i, j)); }
+            if (body.Length > 0 && body[0] is ILabeledOperation lo0) innerLabels.Add((lo0.Label, secFirst[i]));
+        }
+        bool gotoCase = innerLabels.Count > 0 || sw.Cases.Any(cs => cs.Body.Any(b => b.DescendantsAndSelf().OfType<IBranchOperation>().Any(br => clauseLabels.ContainsKey(br.Target))));
         int sect = -1;
         if (gotoCase)
         {
@@ -1171,10 +1185,11 @@ sealed partial class FunctionCompiler
             E.I32(-1); E.Set(sect);
             c.Continue = E.Loop();
             c.GotoState = sect;
-            foreach (var (lbl, i) in clauseLabels) { _labels[lbl] = (c, true); _gotoIndex[lbl] = i; }
+            foreach (var (lbl, i) in clauseLabels) { _labels[lbl] = (c, true); _gotoIndex[lbl] = secFirst[i]; }
+            foreach (var (lbl, k) in innerLabels) { _labels[lbl] = (c, true); _gotoIndex[lbl] = k; }
         }
-        var labels = new Label[sw.Cases.Length];
-        for (int i = sw.Cases.Length - 1; i >= 0; i--) labels[i] = E.Block();
+        var labels = new Label[segStart.Count];
+        for (int i = segStart.Count - 1; i >= 0; i--) labels[i] = E.Block();
         if (gotoCase)
         {
             E.Get(sect); E.I32(0); E.Op(Op.I32GeS);
@@ -1189,25 +1204,31 @@ sealed partial class FunctionCompiler
                 {
                     case IDefaultCaseClauseOperation: defaultIdx = i; break;
                     case ISingleValueCaseClauseOperation sv:
-                        BeginTemps(); EmitEqualsConst(val, vt, sv.Value); EndTemps(ValType.I32); E.BrIf(labels[i]); break;
+                        BeginTemps(); EmitEqualsConst(val, vt, sv.Value); EndTemps(ValType.I32); E.BrIf(labels[secFirst[i]]); break;
                     case IPatternCaseClauseOperation pc:
                         BeginTemps();
                         EmitPattern(pc.Pattern, val, vt);
                         if (pc.Guard != null) { E.If(ValType.I32); EmitCondition(pc.Guard); E.Else(); E.I32(0); E.End(); }
                         EndTemps(ValType.I32);
-                        E.BrIf(labels[i]); break;
+                        E.BrIf(labels[secFirst[i]]); break;
                     case IRelationalCaseClauseOperation rc:
-                        BeginTemps(); E.Get(val); EmitValue(rc.Value); EmitCompare(rc.Relation, vt); EndTemps(ValType.I32); E.BrIf(labels[i]); break;
+                        BeginTemps(); E.Get(val); EmitValue(rc.Value); EmitCompare(rc.Relation, vt); EndTemps(ValType.I32); E.BrIf(labels[secFirst[i]]); break;
                     default: throw new CompileException("unsupported case clause", clause.Syntax.GetLocation());
                 }
             }
         }
-        if (defaultIdx >= 0) E.Br(labels[defaultIdx]); else E.Br(end);
-        for (int i = 0; i < sw.Cases.Length; i++)
+        if (defaultIdx >= 0) E.Br(labels[secFirst[defaultIdx]]); else E.Br(end);
+        for (int k = 0; k < segStart.Count; k++)
         {
-            E.End(); // close block labels[i]
-            PushScope();
-            foreach (var s in sw.Cases[i].Body) EmitStatement(s);
+            E.End(); // close block labels[k]
+            var (sec, from) = segStart[k];
+            var body = sw.Cases[sec].Body;
+            bool last = k + 1 == segStart.Count || segStart[k + 1].sec != sec;
+            int to = last ? body.Length : segStart[k + 1].from;
+            if (from == 0) PushScope();
+            if (body.Length > 0 && body[from] is ILabeledOperation inner) _gotoOwned[inner.Label] = _scopes[^1].Owned.Count;
+            EmitStatementsPlain(body, from, to);
+            if (!last) continue; // falls into the section's next segment
             PopScope();
             // C# sections cannot fall through; fall-off means unreachable (or break emitted already)
             E.Br(end);

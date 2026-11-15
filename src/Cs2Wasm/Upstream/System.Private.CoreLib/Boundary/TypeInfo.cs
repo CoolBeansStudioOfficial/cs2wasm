@@ -18,6 +18,12 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int ElementId(int id);
         /// <summary>The index of the type's assembly (0: the program's).</summary>
         [Intrinsic] public static extern int AssemblyOf(int id);
+        /// <summary>A generic parameter's position, its GenericParameterAttributes above bit 16; -1 for other types.</summary>
+        [Intrinsic] public static extern int GenericParam(int id);
+        /// <summary>A generic parameter's constraint types (an id list).</summary>
+        [Intrinsic] public static extern int GenericConstraints(int id);
+        /// <summary>A method's generic parameter: its method's reflection record entry (0 when not reflected).</summary>
+        [Intrinsic] public static extern int GenericParamMethod(int id);
         /// <summary>The assembly table: [count, full name...] (string addresses).</summary>
         [Intrinsic] public static extern int AssemblyNames();
         [Intrinsic] public static extern int DeclaringId(int id);

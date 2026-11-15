@@ -84,7 +84,10 @@ internal sealed class Types
             case IArrayTypeSymbol a: return Key(a.ElementType) + "[" + new string(',', a.Rank - 1) + "]";
             case IPointerTypeSymbol p: return Key(p.PointedAtType) + "*";
             case IFunctionPointerTypeSymbol: return "fnptr";
-            case ITypeParameterSymbol tp: return "!" + tp.Name;
+            // a type parameter is its declaring type's or method's (TSelf of INumber is not TSelf of IParsable)
+            case ITypeParameterSymbol tp:
+                return "!" + tp.Name + "@" + (tp.DeclaringMethod is { } dm ? TypeSig(dm.ContainingType.OriginalDefinition) + "." + dm.MetadataName + "`" + dm.Arity + "(" + dm.Parameters.Length + ")"
+                    : tp.DeclaringType is { } dt ? TypeSig(dt.OriginalDefinition) : "");
             case INamedTypeSymbol n:
                 {
                     if (n.IsTupleType && n.TupleUnderlyingType is { } u && !SymbolEqualityComparer.Default.Equals(u, n)) return Key(u);
@@ -526,7 +529,11 @@ internal sealed class Types
             if (fn is "System.Array" or "System.Collections.IEnumerable" or "System.Collections.ICollection" or "System.Collections.IList" or "System.ICloneable") return true;
             if (ca.Rank == 1 && target is INamedTypeSymbol nt && nt.Arity == 1 && nt.TypeKind == TypeKind.Interface &&
                 (fn.StartsWith("System.Collections.Generic.I") || fn.StartsWith("System.Collections.Generic.IReadOnly")))
-                return Key(Canonical(nt.TypeArguments[0])) == Key(Canonical(ca.ElementType));
+            {
+                // T[] is an IList<U> for each U a reference T converts to (array covariance, as in the CLR)
+                var u = nt.TypeArguments[0];
+                return Key(Canonical(u)) == Key(Canonical(ca.ElementType)) || (IsRef(ca.ElementType) && IsRef(u) && IsSubtype(ca.ElementType, u));
+            }
             return false;
         }
         if (c.TypeKind == TypeKind.Delegate && (FullName(target) is "System.Delegate" or "System.MulticastDelegate")) return true;

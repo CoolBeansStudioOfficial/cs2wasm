@@ -47,25 +47,69 @@ internal sealed partial class Driver
     static readonly HashSet<string> s_reflectNames = ["GetMethod", "GetMethods", "GetProperty", "GetProperties", "GetField", "GetFields", "GetEvent", "GetEvents",
         "GetConstructor", "GetConstructors", "GetMember", "GetMembers", "GetCustomAttributes", "GetCustomAttribute", "IsDefined", "GetInterfaces"];
 
+    static readonly string[] s_binderExpressionMembers = ["Add", "AddChecked", "And", "AndAlso", "ArrayIndex", "Assign", "Call", "Field", "Constant",
+        "Convert", "ConvertChecked", "Divide", "Equal", "ExclusiveOr", "Property", "GreaterThan", "GreaterThanOrEqual", "Invoke", "Lambda", "LeftShift",
+        "LessThan", "LessThanOrEqual", "Modulo", "Multiply", "MultiplyChecked", "Negate", "NegateChecked", "New", "NewArrayInit", "Not", "NotEqual", "Or",
+        "OrElse", "Parameter", "UnaryPlus", "Quote", "RightShift", "Subtract", "SubtractChecked"];
+
     /// <summary>Finds the reflection the program does (FinishExports, before the last compile round).</summary>
     internal void AnalyzeReflection()
     {
         var keep = new ReflectionKeep();
         bool wantsDelegateMethod = false;
         var delegateRefs = new List<IMethodSymbol>();
+        // a type's field and property initializers (static: its static initializer, compiled apart; instance: its
+        // constructors')
+        IEnumerable<SyntaxReference> Initializers(INamedTypeSymbol t, bool statics) =>
+            t.GetMembers().Where(x => x.IsStatic == statics && x is IFieldSymbol or IPropertySymbol)
+                .SelectMany(x => x.DeclaringSyntaxReferences)
+                .Select(x => x.GetSyntax() switch
+                {
+                    Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax { Initializer: { } vi } => vi.SyntaxTree.GetReference(vi),
+                    Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax { Initializer: { } pi } => pi.SyntaxTree.GetReference(pi),
+                    _ => null,
+                }).OfType<SyntaxReference>();
+        var work = new List<(IEnumerable<SyntaxReference> refs, TypeMap map)>();
         foreach (var mi in AllMethods.ToList())
         {
             if (!mi.Compiled || mi.Impl != MethodImpl.Body) continue;
             var def = mi.Sym.OriginalDefinition;
-            var map = TypeMap.For(mi.Sym);
-            foreach (var r in def.DeclaringSyntaxReferences)
+            var refs = def.DeclaringSyntaxReferences.AsEnumerable();
+            if (def.MethodKind == MethodKind.Constructor) refs = refs.Concat(Initializers(def.ContainingType, false));
+            work.Add((refs, TypeMap.For(mi.Sym)));
+        }
+        foreach (var (ct, _, _, _) in _compiledCctors.ToList())
+        {
+            var d = new Dictionary<ITypeParameterSymbol, ITypeSymbol>(SymbolEqualityComparer.Default);
+            for (var x = ct; x != null; x = x.ContainingType)
+                for (int i = 0; i < x.TypeArguments.Length; i++) d[x.OriginalDefinition.TypeParameters[i]] = x.TypeArguments[i];
+            work.Add((Initializers(ct.OriginalDefinition, true), new TypeMap(d)));
+        }
+        foreach (var (refs, map) in work)
+        {
+            foreach (var r in refs)
             {
                 // (the library's reflection too: System.Linq.Expressions asks delegate types for Invoke)
                 bool input = IsInput(r.SyntaxTree);
-                if (!input && !r.GetSyntax().DescendantTokens().Any(t => t.ValueText is "GetMethod" or "GetProperty" or "GetField" or "GetMember" or "GetConstructor" or "GetConstructors")) continue;
+                if (!input && !r.GetSyntax().DescendantTokens().Any(t => t.ValueText is "GetMethod" or "GetProperty" or "GetField" or "GetMember" or "GetConstructor" or "GetConstructors" or "GetMethodInfo")) continue;
                 var body = ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax());
                 if (body == null) continue;
-                foreach (var op in body.DescendantsAndSelf().OfType<IInvocationOperation>()) Visit(op, map, keep, input);
+                foreach (var op in body.DescendantsAndSelf().OfType<IInvocationOperation>())
+                {
+                    Visit(op, map, keep, input);
+                    // ((Delegate)M<T>).GetMethodInfo(): that method (System.Linq.Expressions' CallSiteOpsReflectionCache)
+                    if (op is { TargetMethod: { Name: "GetMethodInfo", ContainingType.Name: "RuntimeReflectionExtensions" }, Arguments: [{ Value: var dv }] })
+                    {
+                        while (dv is IConversionOperation dc) dv = dc.Operand;
+                        if (dv is IDelegateCreationOperation { Target: IMethodReferenceOperation { Method: var gm } } && gm.MethodKind != MethodKind.LocalFunction
+                            && !gm.ContainingType.TypeArguments.Any(a => a is ITypeParameterSymbol))
+                        {
+                            if (!gm.IsGenericMethod) keep.Keep(gm.ContainingType, gm.Name);
+                            else if (gm.TypeArguments.Select(a => Types.Resolve(a, map)).ToArray() is var targs && !targs.Any(a => a is ITypeParameterSymbol))
+                                keep.KeepInstance(gm.ContainingType, gm.OriginalDefinition.Construct([.. targs.Select(Types.Canonical)]));
+                        }
+                    }
+                }
                 if (!input) continue;
                 foreach (var op in body.DescendantsAndSelf())
                 {
@@ -80,6 +124,18 @@ internal sealed partial class Driver
                     }
                 }
             }
+        }
+        // the C# runtime binder (dynamic) finds its predefined members through reflection (Microsoft.CSharp's
+        // PredefinedMembers table: the Expression factories it builds trees with, and the operators of string,
+        // decimal and Delegate it binds to)
+        if (AllMethods.Any(m => m.Compiled && m.Sym.ContainingType?.ToDisplayString() == "Microsoft.CSharp.RuntimeBinder.SymbolTable"))
+        {
+            foreach (var n in s_binderExpressionMembers) keep.Keep(LibType("System.Linq.Expressions.Expression"), n);
+            foreach (var n in new[] { "Concat", "op_Equality", "op_Inequality" }) keep.Keep(LibType("System.String"), n);
+            foreach (var n in new[] { "Combine", "Remove", "op_Equality", "op_Inequality" }) keep.Keep(LibType("System.Delegate"), n);
+            var dec = LibType("System.Decimal");
+            foreach (var n in dec.GetMembers().OfType<IMethodSymbol>().Where(m => m.MethodKind is MethodKind.UserDefinedOperator or MethodKind.Conversion).Select(m => m.Name).Distinct())
+                keep.Keep(dec, n);
         }
         if (wantsDelegateMethod)
             foreach (var rm in delegateRefs)
@@ -382,6 +438,8 @@ internal sealed partial class Driver
                     case IMethodSymbol ms:
                         if (!ms.ReturnsVoid) yield return ms.ReturnType;
                         foreach (var p in ms.Parameters) yield return p.Type;
+                        // a generic method's parameters (a definition) or arguments (an instance)
+                        foreach (var a in ms.TypeArguments) yield return a;
                         if (ms.AssociatedSymbol is IPropertySymbol prop) yield return prop.Type;
                         break;
                 }
@@ -569,6 +627,12 @@ sealed partial class FunctionCompiler
     void PushTargetAs(ITypeSymbol owner)
     {
         owner = T.Canonical(owner);
+        // a value type's method runs on the box's data, in place (as .NET's Invoke on a boxed value)
+        if (owner.IsValueType && owner.TypeKind != TypeKind.Interface)
+        {
+            E.Get(0); E.I32(FunctionCompilerHelpers.BoxDataOffset(T, owner)); E.Op(Op.I32Add);
+            return;
+        }
         E.Get(0);
         var o = Own.Unstable;
         ConvertValue(D.ObjectType, owner, false, ref o, explicitConv: true, null);

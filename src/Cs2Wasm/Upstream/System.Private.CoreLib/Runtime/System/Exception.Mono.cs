@@ -60,7 +60,17 @@ namespace System
             }
         }
 
+        // cs2wasm: traces are text (Boundary/Runtime.cs): ExceptionDispatchInfo keeps the trace so far, and a
+        // throw of the captured exception shows it before its own, as .NET's does
+        internal string? _capturedTrace;
+
         internal DispatchState CaptureDispatchState()
+        {
+            _capturedTrace = StackTrace;
+            return default;
+        }
+
+        internal DispatchState CaptureDispatchStateMono()
         {
             MonoStackFrame[]? stackFrames;
 
@@ -98,8 +108,10 @@ namespace System
 
         internal void RestoreDispatchState(in DispatchState state)
         {
-            foreignExceptionsFrames = state.StackFrames;
+            if (_capturedTrace is { Length: > 0 } t)
+                _remoteStackTraceString = t + Environment.NewLineConst + SR.Exception_EndStackTraceFromPreviousThrow + Environment.NewLineConst;
             _stackTraceString = null;
+            _fullTrace = null;
         }
 
         // Returns true if setting the _remoteStackTraceString field is legal, false if not (immutable exception).

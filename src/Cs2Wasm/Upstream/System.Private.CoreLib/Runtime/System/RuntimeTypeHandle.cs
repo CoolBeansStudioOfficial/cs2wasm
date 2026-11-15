@@ -232,7 +232,7 @@ namespace System
 
                 internal static void GetElementType(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.TypeInfo.TypeOrNull(Cs2Wasm.Runtime.TypeInfo.ElementId(Cs2Wasm.Runtime.TypeInfo.Id(type))));
 
-                internal static void GetModule(QCallTypeHandle type, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.Module");
+                internal static void GetModule(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, System.Reflection.RuntimeAssembly.OfIndex(Cs2Wasm.Runtime.TypeInfo.AssemblyOf(Cs2Wasm.Runtime.TypeInfo.Id(type))).Module);
 
                 private static IntPtr GetMonoClass(QCallTypeHandle type) => (IntPtr)Cs2Wasm.Runtime.TypeInfo.Id(type);
 

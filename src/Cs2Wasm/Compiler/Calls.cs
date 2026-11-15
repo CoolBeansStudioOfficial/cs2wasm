@@ -360,6 +360,8 @@ sealed partial class FunctionCompiler
     {
         var m = inv.TargetMethod.OriginalDefinition;
         if (!m.ReturnsVoid) return false;
+        // a partial method without an implementation: its calls are omitted, arguments included (C# 15.6.9)
+        if (m.IsPartialDefinition && m.PartialImplementationPart == null) return true;
         var symbols = m.GetAttributes().Where(a => a.AttributeClass?.Name == "ConditionalAttribute" && a.ConstructorArguments.Length == 1)
             .Select(a => a.ConstructorArguments[0].Value as string).ToList();
         if (symbols.Count == 0) return false;
@@ -754,6 +756,9 @@ sealed partial class FunctionCompiler
             case "TypeInfo.Interfaces": E.Call(Rt.TypeInfo("interfaces")); return Own.None;
             case "TypeInfo.Nested": E.Call(Rt.TypeInfo("nested")); return Own.None;
             case "TypeInfo.AssemblyOf": E.Call(Rt.TypeInfo("assembly")); return Own.None;
+            case "TypeInfo.GenericParam": E.Call(Rt.TypeInfo("gp")); return Own.None;
+            case "TypeInfo.GenericParamMethod": E.Call(Rt.TypeInfo("gp_method")); return Own.None;
+            case "TypeInfo.GenericConstraints": E.Call(Rt.TypeInfo("gp_constraints")); return Own.None;
             case "TypeInfo.AssemblyNames": E.Call(D.AssemblyNamesFn); return Own.None;
             case "TypeInfo.DeclaringId": E.Call(Rt.TypeInfo("declaring")); return Own.None;
             case "TypeInfo.Size": E.Call(Rt.TypeInfo("size")); return Own.None;

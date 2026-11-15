@@ -132,6 +132,12 @@ sealed partial class RuntimeGen
                 // the id of the type's one-dimensional array type, when the program has one (Array.CreateInstance)
                 "array_of" => i => (null, Real(i) && D.ExistingTypeId(D.Types.LibCompilationArray(D.TypeById[i])) is int ai ? D.ExtId(ai) : -1),
                 "box_offset" => i => (null, Real(i) && D.TypeById[i].IsValueType ? FunctionCompilerHelpers.BoxDataOffset(D.Types, D.TypeById[i]) : 0),
+                // a generic parameter: its position, with its GenericParameterAttributes above bit 16; -1 otherwise
+                "gp" => i => (null, Real(i) && D.TypeById[i] is ITypeParameterSymbol tp ? tp.Ordinal | (GenericParameterAttributes(tp) << 16) : -1),
+                // its constraint types (those the module numbers: a struct constraint is System.ValueType)
+                "gp_constraints" => i => (Ids(Real(i) && D.TypeById[i] is ITypeParameterSymbol cp ? ConstraintsOf(cp) : []), 0),
+                // a method's generic parameter: the reflection record entry of its method (0 when not reflected)
+                "gp_method" => i => (null, Real(i) && D.TypeById[i] is ITypeParameterSymbol { DeclaringMethod: { } dm } ? D.MethodEntryOf(dm) : 0),
                 // the index of the type's assembly in the assembly table (the program's is 0)
                 "assembly" => i => (null, Real(i) && AssemblyOf(D.TypeById[i]) is { } asm ? D.AssemblyIndex(asm) : 0),
                 _ => throw new CompileException("type info " + kind),
@@ -149,6 +155,21 @@ sealed partial class RuntimeGen
             EmitIdTable(fn, n, entry, byRef);
         }
         D.EmitAssemblyNames();
+    }
+
+    static int GenericParameterAttributes(ITypeParameterSymbol tp) =>
+        (tp.Variance == VarianceKind.Out ? 1 : tp.Variance == VarianceKind.In ? 2 : 0)
+        | (tp.HasReferenceTypeConstraint ? 4 : 0)
+        | (tp.HasValueTypeConstraint || tp.HasUnmanagedTypeConstraint ? 8 | 16 : 0)
+        | (tp.HasConstructorConstraint ? 16 : 0)
+        | (tp.AllowsRefLikeType ? 0x20 : 0);
+
+    IEnumerable<ITypeSymbol> ConstraintsOf(ITypeParameterSymbol tp)
+    {
+        var l = new List<ITypeSymbol>();
+        if (tp.HasValueTypeConstraint || tp.HasUnmanagedTypeConstraint) l.Add(D.LibType("System.ValueType"));
+        l.AddRange(tp.ConstraintTypes);
+        return l.Where(c => D.ExistingTypeId(D.Types.Canonical(c)) != null);
     }
 
     static IAssemblySymbol? AssemblyOf(ITypeSymbol t) => t switch
