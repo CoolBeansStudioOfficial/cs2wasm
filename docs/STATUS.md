@@ -21,10 +21,13 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
   LZ-packed data and frame names about 6 KB); NetWasm's build of the same program is 28,383 bytes. The conformance
   programs are 30–300 KB raw (`tests/Cs2Wasm.Tests` prints each size). The Rust 2D game bar in the spec (24 KB
   compressed) is for a game with GodotSharp, which is not built yet.
-- **Build time (desktop .NET, measured):** a fresh process takes 3.5–4 s to parse the library first; after that a
-  conformance program builds in 0.4–2.1 s (1.35 s on average over the suite), the library's semantic models and
-  bound bodies being kept between builds (section 7.6 allows caching the library's analysis). `CS2WASM_TIMES=1`
-  prints the phases. Not measured in the browser.
+- **Build time (desktop .NET, measured):** a fresh process takes about 2.5 s to parse the library first;
+  `Console.WriteLine(42)` builds in 4.2 s from a cold start. After that the library's semantic models and bound
+  bodies are kept between builds (section 7.6 allows caching the library's analysis): with `cs2wasmc --watch` a
+  rebuild of `Console.WriteLine(42)` takes 0.1–0.2 s and of the async conformance program (644 KB) about 1 s, the
+  heap after collection staying the same from build to build. The suite's 83 builds take 85 s in one process.
+  Roslyn as a program (the binder test) builds in about 2 minutes with a 4.2 GB peak. `CS2WASM_TIMES=1` prints the
+  phases and the managed heap. Not measured in the browser.
 - **Run-time speed vs NativeAOT:** unmeasured.
 - **Reference-count operations removed at compile time (static, `CS2WASM_STATS=1`):** a scheme without ownership
   analysis pays an increment and a decrement for every reference transfer (assignment, initializer, argument,

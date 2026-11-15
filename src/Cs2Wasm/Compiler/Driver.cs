@@ -690,12 +690,15 @@ internal sealed partial class Driver
         m.MethodKind == MethodKind.Constructor && !m.ContainingType.IsRecord &&
         m.OriginalDefinition.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax { ParameterList: not null });
 
-    static readonly System.Collections.Concurrent.ConcurrentDictionary<IParameterSymbol, bool> s_captured = new(SymbolEqualityComparer.Default);
+    // (weak: a long-lived compiler process (--watch) must not keep earlier builds' compilations alive)
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IParameterSymbol, object> s_captured = new();
 
     /// <summary>Whether a primary-constructor parameter is used beyond the initializers and the base list (by name,
     /// conservatively: a lambda in an initializer counts), so the object keeps it. One only initializing fields has
     /// no storage, as C# gives it none (Utf16Char(char ch) is two bytes).</summary>
-    public static bool IsCapturedPrimaryParam(IParameterSymbol p) => s_captured.GetOrAdd((IParameterSymbol)p.OriginalDefinition, static p =>
+    public static bool IsCapturedPrimaryParam(IParameterSymbol p) => (bool)s_captured.GetValue((IParameterSymbol)p.OriginalDefinition, static p => CapturedPrimaryParam(p));
+
+    static bool CapturedPrimaryParam(IParameterSymbol p)
     {
         foreach (var r in p.ContainingType.DeclaringSyntaxReferences)
         {
@@ -715,7 +718,7 @@ internal sealed partial class Driver
             }
         }
         return false;
-    });
+    }
 
     public static bool IsFieldLikeEvent(IEventSymbol e) =>
         e.OriginalDefinition.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax);

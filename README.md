@@ -35,6 +35,13 @@ src/Cs2Wasm.Cli/bin/Debug/net11.0/cs2wasmc game.cs -o game.wasm --map game.wasm.
 node host/run.mjs game.wasm main
 ```
 
+While developing, `--watch` keeps the compiler running and rebuilds whenever a `.cs` file of the inputs changes (a
+directory input picks up new files too). The library stays loaded, so only the first build pays for parsing it:
+
+```bash
+src/Cs2Wasm.Cli/bin/Debug/net11.0/cs2wasmc src -o game.wasm --watch
+```
+
 An export is a static method marked `[UnmanagedCallersOnly(EntryPoint = "name")]`. The engine creates the shared
 memory (`env.memory`), supplies the `cs2wasm.*` imports (see `host/engine.mjs`) and the boundary-table imports, calls
 `init` once, then calls exports. Engine methods are `extern` C# methods listed in a boundary table:
