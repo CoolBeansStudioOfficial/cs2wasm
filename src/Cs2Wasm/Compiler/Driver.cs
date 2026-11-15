@@ -917,8 +917,22 @@ internal sealed partial class Driver
     readonly Queue<(INamedTypeSymbol, WasmFunction, IAddress, IMethodSymbol?)> _pendingCctors = new();
     readonly List<(INamedTypeSymbol, WasmFunction, IAddress, IMethodSymbol?)> _compiledCctors = [];
 
-    /// <summary>Static fields some compiled code reads (or takes the address of), by owner and name.</summary>
-    public readonly HashSet<string> StaticReads = [];
+    /// <summary>Static fields some compiled code reads (or takes the address of), by owner and name, with the functions
+    /// that read them (a static initializer compiled again forgets its reads first).</summary>
+    public readonly StaticReadSet StaticReads = new();
+
+    internal sealed class StaticReadSet
+    {
+        readonly Dictionary<string, HashSet<WasmFunction?>> _by = [];
+        public Driver? Owner;
+        public void Add(string key)
+        {
+            if (!_by.TryGetValue(key, out var s)) _by[key] = s = [];
+            s.Add(Owner?.CurrentFn);
+        }
+        public bool Contains(string key) => _by.TryGetValue(key, out var s) && s.Count > 0;
+        public void Forget(WasmFunction fn) { foreach (var s in _by.Values) s.Remove(fn); }
+    }
     public static string StaticKey(ITypeSymbol owner, ISymbol storage) => Types.Key(owner) + "::" + storage.Name;
     /// <summary>The second compilation of the static initializers: initializers of unread fields that have no effect are left out.</summary>
     public bool SkipUnreadInits;
@@ -968,18 +982,29 @@ internal sealed partial class Driver
         // static fields nothing reads: the whole program is known now, so their initializers that have no effect go
         // (and with them what only they reached, which the encoder no longer finds live)
         SkipUnreadInits = true;
-        var recompiled = _compiledCctors.Where(c => FunctionCompiler.AnyUnreadPureInit(this, c.Item1)).Select(c => c.Item2).ToHashSet();
-        foreach (var by in ConstructedBy.Values) by.RemoveWhere(f => f != null && recompiled.Contains(f));
-        foreach (var (t, fn, flag, cctor) in _compiledCctors.ToList())
+        // in rounds: an initializer left out reads nothing any more, so what only it read may go next (a method bind
+        // read only by its method, the name only that bind's initializer read)
+        StaticReads.Owner = this;
+        var dropped = new Dictionary<WasmFunction, int>();
+        while (true)
         {
-            // (only the ones that lose an initializer: the others stay as they were compiled)
-            if (!FunctionCompiler.AnyUnreadPureInit(this, t)) continue;
-            fn.Body.Clear(); fn.Locals.Clear();
-            CurrentFn = fn;
-            try { FunctionCompiler.CompileStaticInit(this, t, fn, flag, cctor); }
-            catch (CompileException ex) { Report(Diags.Unsupported, ex.Location ?? t.Locations.FirstOrDefault(), ex.Message); }
+            var redo = _compiledCctors.Where(c => FunctionCompiler.UnreadPureInits(this, c.Item1) > dropped.GetValueOrDefault(c.Item2)).ToList();
+            if (redo.Count == 0) break;
+            var recompiled = redo.Select(c => c.Item2).ToHashSet();
+            foreach (var by in ConstructedBy.Values) by.RemoveWhere(f => f != null && recompiled.Contains(f));
+            foreach (var (t, fn, flag, cctor) in redo)
+            {
+                // (only the ones that lose an initializer: the others stay as they were compiled)
+                dropped[fn] = FunctionCompiler.UnreadPureInits(this, t);
+                StaticReads.Forget(fn);
+                fn.Body.Clear(); fn.Locals.Clear();
+                CurrentFn = fn;
+                try { FunctionCompiler.CompileStaticInit(this, t, fn, flag, cctor); }
+                catch (CompileException ex) { Report(Diags.Unsupported, ex.Location ?? t.Locations.FirstOrDefault(), ex.Message); }
+            }
+            CurrentFn = null;
+            Drain(rt);
         }
-        Drain(rt);
         // cycles (section 4.3): the type graph is complete only now; arena runtime is compiled only if some site needs it
         Arenas.Analyze();
         if (Arenas.Enabled) { Arenas.RequestRuntime(); Drain(rt); }

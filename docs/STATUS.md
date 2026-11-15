@@ -19,12 +19,15 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
   generators, makes the same 31 engine calls, with the same arguments and results, as under stock Godot: the oracle's
   log comes from stock Godot running the project with a logger that wraps stock GodotSharp's engine-callback table;
   the module's from the stub engine (`host/godot.mjs`). Logged from the scene on (stock Godot's start-up calls come
-  before the oracle's logger is installed). The module is 6.8 MB raw: every engine callback is exported, which keeps
-  most of GodotSharp (Variant marshalling, reflection over scripts); not yet trimmed.
+  before the oracle's logger is installed). The module is 3.8 MB raw (6.8 MB before unread static
+  initializers of GodotSharp's lookups were left out: a library's manifest declares such lookups `pure-init`, and
+  initializers are left out in rounds, as what only a dropped one read becomes unread). Every engine callback is
+  exported, and every engine class's wrapper can be made (GodotSharp makes the exact class of any object the engine
+  hands over), which keeps the rest.
 - **API checks:** 18 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
   custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
   passes (scheduling dependence too), source map, cycles bounded in a fixed 16 MB memory, no arena code without cycle-capable types).
-- **Module size (raw, measured):** `Console.WriteLine(42)` is 27,103 bytes on upstream's library (code 20.5 KB,
+- **Module size (raw, measured):** `Console.WriteLine(42)` is 26,839 bytes on upstream's library (code 20.5 KB,
   LZ-packed data and frame names about 6 KB); NetWasm's build of the same program is 28,383 bytes. The conformance
   programs are 30–300 KB raw (`tests/Cs2Wasm.Tests` prints each size). The Rust 2D game bar in the spec (24 KB
   compressed) is for a game with GodotSharp, which is not built yet.

@@ -57,6 +57,11 @@ internal sealed class Library
     /// method, or "type|name" of a field, to its value ("" for an empty stub).</summary>
     static readonly Dictionary<string, string> s_substitutions = [];
 
+    /// <summary>Methods a library's manifest declares pure for initializers (`pure-init Namespace.Type.Method`): their
+    /// result is their only effect, so an unread static field they initialize is left out (FunctionCompiler.PureInit).</summary>
+    public static readonly HashSet<string> PureInitMethods = [];
+    public static string PureInitKey(IMethodSymbol m) => Types.FullName(m.ContainingType.OriginalDefinition) + "." + m.Name;
+
     /// <summary>The substituted value of a library method (null: not substituted; "": an empty stub).</summary>
     public static string? Substitution(IMethodSymbol m)
     {
@@ -140,6 +145,7 @@ internal sealed class Library
                 if (parts.Length >= 5) s_substitutions[parts[2] + "|" + parts[3]] = parts[4];
             }
             var defines = lines.Where(l => l.StartsWith("define ")).Select(l => l[7..]).ToArray();
+            foreach (var l in lines.Where(l => l.StartsWith("pure-init "))) PureInitMethods.Add(l[10..].Trim());
             var po = new CSharpParseOptions(LanguageVersion.Preview, preprocessorSymbols: defines);
             var files = lines.Where(l => l.StartsWith("file ")).Select(l => l[5..]).ToList();
             // `root <dir>`: another source tree of the cache (Roslyn's), fetched like the runtime's

@@ -1649,22 +1649,81 @@ sealed partial class FunctionCompiler
         if (value == null || !fields.Any()) return false;
         var owner = T.Canonical(t);
         if (fields.Any(f => D.StaticReads.Contains(Driver.StaticKey(owner, f)))) return false;
-        return PureInit(value);
+        s_pureDriver = D;
+        return PureInit(value, t);
     }
 
-    static bool PureInit(IOperation v)
+    /// <summary>Whether an initializer's value has no effect but making the value (so an unread field's goes): constants,
+    /// defaults, lambdas, constant-size arrays of such; calls and conversions a library's manifest declares
+    /// (`pure-init`: lookups whose result is their only effect, as GodotSharp's method binds and names) on such
+    /// arguments; a static readonly field of a type whose static initialization is itself such.</summary>
+    static bool PureInit(IOperation v, INamedTypeSymbol? self = null) => PureInit(v, self == null ? [] : [self.OriginalDefinition]);
+
+    static bool PureInit(IOperation v, HashSet<INamedTypeSymbol> seen)
     {
         while (v is IConversionOperation { OperatorMethod: null } c) v = c.Operand;
         return v switch
         {
             { ConstantValue.HasValue: true } => true,
+            ITypeOfOperation => true,
+            IConversionOperation { OperatorMethod: { } om } cv => Library.PureInitMethods.Contains(Library.PureInitKey(om)) && PureInit(cv.Operand, seen),
+            IInvocationOperation { Instance: null } inv => Library.PureInitMethods.Contains(Library.PureInitKey(inv.TargetMethod)) && inv.Arguments.All(a => PureInit(a.Value, seen)),
+            IFieldReferenceOperation { Instance: null, Field: { IsReadOnly: true } f } => PureType(f.ContainingType, seen),
             IDefaultValueOperation => true,
             IDelegateCreationOperation { Target: IAnonymousFunctionOperation or IMethodReferenceOperation { Instance: null } } => true,
             IAnonymousFunctionOperation => true,
             IArrayCreationOperation { DimensionSizes: var ds, Initializer: var init } =>
-                ds.All(d => d.ConstantValue.HasValue) && (init == null || init.ElementValues.All(PureInit)),
+                ds.All(d => d.ConstantValue.HasValue) && (init == null || init.ElementValues.All(e => PureInit(e, seen))),
             _ => false,
         };
+    }
+
+    /// <summary>A type whose static initialization makes values only: no static constructor, pure initializers.</summary>
+    static bool PureType(INamedTypeSymbol t, HashSet<INamedTypeSymbol> seen)
+    {
+        if (!seen.Add(t.OriginalDefinition)) return true;
+        if (t.StaticConstructors.Any(c => !c.IsImplicitlyDeclared)) return false;
+        foreach (var m in t.GetMembers())
+        {
+            if (!m.IsStatic) continue;
+            var init = m switch
+            {
+                IFieldSymbol f when !f.IsConst && !f.IsImplicitlyDeclared => Driver.FieldInitializer(f),
+                IPropertySymbol p => Driver.PropertyInitializer(p),
+                _ => null,
+            };
+            if (init == null) continue;
+            if (s_pureDriver?.ModelFor(init.SyntaxTree).GetOperation(init) is not ISymbolInitializerOperation op || !PureInit(op.Value, seen)) return false;
+        }
+        return true;
+    }
+    [ThreadStatic] static Driver? s_pureDriver;
+
+    /// <summary>How many of the type's static initializers the next compilation leaves out (unread, pure).</summary>
+    internal static int UnreadPureInits(Driver d, INamedTypeSymbol t)
+    {
+        s_pureDriver = d;
+        var owner = d.Types.Canonical(t);
+        int n = 0;
+        foreach (var m in t.GetMembers())
+        {
+            if (!m.IsStatic) continue;
+            var init = m switch
+            {
+                IFieldSymbol f when !f.IsConst && !f.IsImplicitlyDeclared => Driver.FieldInitializer(f),
+                IPropertySymbol p => Driver.PropertyInitializer(p),
+                _ => null,
+            };
+            if (init == null || d.ModelFor(init.SyntaxTree).GetOperation(init) is not ISymbolInitializerOperation op) continue;
+            IEnumerable<ISymbol> fields = op switch
+            {
+                IFieldInitializerOperation fi => fi.InitializedFields,
+                IPropertyInitializerOperation pi => pi.InitializedProperties.Select(p => (ISymbol?)Driver.AutoPropertyField(p)).Where(f => f != null)!,
+                _ => [],
+            };
+            if (fields.Any() && !fields.Any(f => d.StaticReads.Contains(Driver.StaticKey(owner, f))) && PureInit(op.Value, t)) n++;
+        }
+        return n;
     }
 
     /// <summary>Whether the second compilation would leave out any of the type's static initializers (else its
