@@ -60,6 +60,7 @@ sealed partial class FunctionCompiler
         if (op.ConstantValue.HasValue && op is not IAssignmentOperation)
             return EmitConstant(op.ConstantValue.Value, op.Type != null ? TypeOf(op) : null);
         if (op.Type is { SpecialType: SpecialType.System_Boolean } && Fold(op) is bool known) { E.I32(known ? 1 : 0); return Own.None; }
+        if (op is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add } ub && Utf8Concat(ub) is { } u8bytes) return EmitUtf8Span(u8bytes, TypeOf(ub));
         switch (op)
         {
             case IConversionOperation c: return EmitConversion(c);
@@ -96,6 +97,7 @@ sealed partial class FunctionCompiler
             case IIsPatternOperation ip: return EmitIsPattern(ip);
             case ISwitchExpressionOperation se: return EmitSwitchExpression(se);
             case IInterpolatedStringOperation iso: return EmitInterpolatedString(iso);
+            case IUtf8StringOperation u8: return EmitUtf8Span(System.Text.Encoding.UTF8.GetBytes(u8.Value), TypeOf(u8));
             case IDefaultValueOperation dv: return EmitDefault(TypeOf(dv));
             case IConditionalAccessOperation ca2: return EmitConditionalAccess(ca2);
             case IConditionalAccessInstanceOperation: return EmitConditionalInstance();
@@ -401,29 +403,14 @@ sealed partial class FunctionCompiler
                 if (ir.ReferenceKind == InstanceReferenceKind.PatternInput) { E.Get(_patternInputs[^1].local); return 0; }
                 if (_closure != null) { LoadCapturedThis(); return 0; }
                 E.Get(_thisLocal); return 0;
-            case IFieldReferenceOperation f:
+            case IFieldReferenceOperation { Field.RefKind: not RefKind.None } rf:
                 {
-                    var field = f.Field;
-                    var storage = StorageField(field);
-                    if (field.IsStatic)
-                    {
-                        EmitStaticInitGuardForField(Owner(field));
-                        if (IsThreadStatic(storage)) { E.GGet(D.TlsBase); return D.ThreadStaticOffset(Owner(field), storage, T.Resolve(field.Type, Map)); }
-                        E.I32Addr(D.StaticField(Owner(field), storage, T.Resolve(field.Type, Map)));
-                        return 0;
-                    }
-                    var slot = T.FieldIn(Owner(field), storage);
-                    var it = TypeOf(f.Instance!);
-                    if (it.IsValueType && Types.PrimOf(it) == Prim.None)
-                    {
-                        if (IsAddressable(f.Instance!)) return EmitAddressBase(f.Instance!) + slot.Offset;
-                        EmitValue(f.Instance!); return slot.Offset; // rvalue struct: its temp
-                    }
-                    var o = EmitValue(f.Instance!);
-                    ToTransient(o, it);
-                    if (!IsKnownNonNull(f.Instance!)) NullCheckKeep();
-                    return slot.Offset;
+                    // a ref field holds the address of what it refers to (Types: a pointer slot)
+                    int so = EmitFieldSlotBase(rf);
+                    E.Load(Op.I32Load, so);
+                    return 0;
                 }
+            case IFieldReferenceOperation f: return EmitFieldSlotBase(f);
             case IArrayElementReferenceOperation ae: return EmitArrayElementAddress(ae);
             case IInvocationOperation inv when inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly:
                 { var save = _wantRefReturnAddress; _wantRefReturnAddress = true; try { EmitInvocation(inv); } finally { _wantRefReturnAddress = save; } return 0; }
@@ -444,6 +431,31 @@ sealed partial class FunctionCompiler
         FreeScratch(Types.WasmType(t)!.Value, sv);
         E.Get(_fb);
         return tmp;
+    }
+
+    /// <summary>The base address and offset of a field's own slot (for a ref field: the slot holding the address).</summary>
+    int EmitFieldSlotBase(IFieldReferenceOperation f)
+    {
+        var field = f.Field;
+        var storage = StorageField(field);
+        if (field.IsStatic)
+        {
+            EmitStaticInitGuardForField(Owner(field));
+            if (IsThreadStatic(storage)) { E.GGet(D.TlsBase); return D.ThreadStaticOffset(Owner(field), storage, T.Resolve(field.Type, Map)); }
+            E.I32Addr(D.StaticField(Owner(field), storage, T.Resolve(field.Type, Map)));
+            return 0;
+        }
+        var slot = T.FieldIn(Owner(field), storage);
+        var it = TypeOf(f.Instance!);
+        if (it.IsValueType && Types.PrimOf(it) == Prim.None)
+        {
+            if (IsAddressable(f.Instance!)) return EmitAddressBase(f.Instance!) + slot.Offset;
+            EmitValue(f.Instance!); return slot.Offset; // rvalue struct: its temp
+        }
+        var o = EmitValue(f.Instance!);
+        ToTransient(o, it);
+        if (!IsKnownNonNull(f.Instance!)) NullCheckKeep();
+        return slot.Offset;
     }
 
     /// <summary>A frame slot holding a temporary non-struct value (for `in` arguments of rvalues).</summary>
@@ -1394,6 +1406,29 @@ sealed partial class FunctionCompiler
         return ConcatParts(parts);
     }
 
+    /// <summary>`"..."u8`: a ReadOnlySpan&lt;byte&gt; over the bytes (null-terminated, as C# emits them) in the data section.</summary>
+    Own EmitUtf8Span(byte[] bytes, ITypeSymbol spanType)
+    {
+        var addr = D.DataBlob([.. bytes, 0], 1);
+        var l = T.LayoutOf(spanType);
+        int off = TempStruct(spanType);
+        var refSlot = l.Fields.First(f => f.Symbol.Name == "_reference");
+        var lenSlot = l.Fields.First(f => f.Symbol.Name == "_length");
+        E.Get(_fb); E.I32Addr(addr); E.Store(Op.I32Store, off + refSlot.Offset);
+        E.Get(_fb); E.I32(bytes.Length); E.Store(Op.I32Store, off + lenSlot.Offset);
+        E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+        return Own.None;
+    }
+
+    /// <summary>`"a"u8 + "b"u8`: concatenated at compile time.</summary>
+    static byte[]? Utf8Concat(IOperation op) => op switch
+    {
+        IUtf8StringOperation u => System.Text.Encoding.UTF8.GetBytes(u.Value),
+        IBinaryOperation { OperatorKind: BinaryOperatorKind.Add } b when Utf8Concat(b.LeftOperand) is { } l && Utf8Concat(b.RightOperand) is { } r => [.. l, .. r],
+        IParenthesizedOperation p => Utf8Concat(p.Operand),
+        _ => null,
+    };
+
     // =====================================================================
     // assignment
     // =====================================================================
@@ -1406,6 +1441,24 @@ sealed partial class FunctionCompiler
             {
                 var v = LocalVar(rl.Local);
                 EmitAddress(sa.Value); E.Set(v.AddrLocal);
+                if (needResult) throw new CompileException("ref assignment as value is not supported");
+                return Own.None;
+            }
+            if (sa.Target is IParameterReferenceOperation { Parameter.RefKind: not RefKind.None } rp && !IsCaptured(rp.Parameter))
+            {
+                // ref parameter = ref expr
+                var v = _vars[rp.Parameter];
+                EmitAddress(sa.Value); E.Set(v.AddrLocal);
+                if (needResult) throw new CompileException("ref assignment as value is not supported");
+                return Own.None;
+            }
+            if (sa.Target is IFieldReferenceOperation { Field.RefKind: not RefKind.None } rf)
+            {
+                // ref field = ref expr: the slot takes the address
+                int so = EmitFieldSlotBase(rf);
+                if (so != 0) { E.I32(so); E.Op(Op.I32Add); }
+                EmitAddress(sa.Value);
+                E.Store(Op.I32Store, 0);
                 if (needResult) throw new CompileException("ref assignment as value is not supported");
                 return Own.None;
             }

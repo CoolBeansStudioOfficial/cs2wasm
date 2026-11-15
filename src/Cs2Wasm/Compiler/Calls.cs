@@ -285,7 +285,16 @@ sealed partial class FunctionCompiler
     {
         if (IsStaticInterfaceMember(m) && TryStaticInterfaceMember(ref m, out var sim)) return sim;
         var rt = T.Canonical(m.ReturnType);
-        if (D.IsIntrinsic(m)) return EmitIntrinsic(m);
+        if (D.IsIntrinsic(m))
+        {
+            var io = Driver.IsUpstreamIntrinsic(m) ? EmitUpstreamIntrinsic(m) : EmitIntrinsic(m);
+            if (!m.ReturnsByRef && !m.ReturnsByRefReadonly) return io;
+            // a ref-returning intrinsic leaves the address: callers that want the value load through it
+            if (_wantRefReturnAddress) { _wantRefReturnAddress = false; return Own.None; }
+            if (Types.IsStruct(rt)) return Own.None;
+            E.Load(Types.LoadOp(rt));
+            return Types.IsRef(rt) ? Own.Unstable : Own.None;
+        }
         if (virt) E.Call(D.Stub(m));
         else
         {
@@ -329,6 +338,69 @@ sealed partial class FunctionCompiler
         {
             for (int i = 0; i < m.Parameters.Length; i++) PushArg(m.Parameters[i], i < args.Count ? args[i] : null);
         }, intoAddr, null);
+    }
+
+    /// <summary>Upstream [Intrinsic] members (Driver.IsUpstreamIntrinsic), with their arguments on the stack: refs and
+    /// pointers are addresses, nint/nuint are i32.</summary>
+    Own EmitUpstreamIntrinsic(IMethodSymbol m)
+    {
+        ITypeSymbol Arg(int i) => T.Canonical(m.TypeArguments[i]);
+        int Size(ITypeSymbol t) => T.StorageOf(t).size;
+        void NoCounted(ITypeSymbol t)
+        {
+            if (T.NeedsRc(t)) throw new CompileException($"{Driver.Display(m)} on {t}, which holds counted references, is not supported");
+        }
+        switch (Types.FullName(m.ContainingType) + "." + m.Name)
+        {
+            case "System.Runtime.CompilerServices.Unsafe.AsPointer":
+            case "System.Runtime.CompilerServices.Unsafe.AsRef":
+                return Own.None;
+            case "System.Runtime.CompilerServices.Unsafe.As":
+                // As<T>(object): the same object; As<TFrom, TTo>(ref TFrom): the same address
+                return m.Parameters[0].RefKind == RefKind.None ? Own.Unstable : Own.None;
+            case "System.Runtime.CompilerServices.Unsafe.AreSame": E.Op(Op.I32Eq); return Own.None;
+            case "System.Runtime.CompilerServices.Unsafe.IsAddressGreaterThan": E.Op(Op.I32GtU); return Own.None;
+            case "System.Runtime.CompilerServices.Unsafe.IsAddressLessThan": E.Op(Op.I32LtU); return Own.None;
+            case "System.Runtime.CompilerServices.Unsafe.AddByteOffset": E.Op(Op.I32Add); return Own.None;
+            case "System.Runtime.CompilerServices.Unsafe.SubtractByteOffset": E.Op(Op.I32Sub); return Own.None;
+            case "System.Runtime.CompilerServices.Unsafe.ByteOffset":
+                {
+                    // (origin, target) -> target - origin
+                    int t2 = Scratch(ValType.I32); E.Set(t2);
+                    int t1 = Scratch(ValType.I32); E.Set(t1);
+                    E.Get(t2); E.Get(t1); E.Op(Op.I32Sub);
+                    FreeScratch(ValType.I32, t1); FreeScratch(ValType.I32, t2);
+                    return Own.None;
+                }
+            case "System.Runtime.CompilerServices.Unsafe.Copy":
+                {
+                    var t = Arg(0); NoCounted(t);
+                    E.I32(Size(t)); E.Op(Op.MemoryCopy);
+                    return Own.None;
+                }
+            case "System.Runtime.CompilerServices.Unsafe.CopyBlock":
+            case "System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned":
+                E.Op(Op.MemoryCopy); return Own.None;
+            case "System.Runtime.CompilerServices.Unsafe.InitBlock":
+            case "System.Runtime.CompilerServices.Unsafe.InitBlockUnaligned":
+                E.Op(Op.MemoryFill); return Own.None;
+            case "System.Runtime.CompilerServices.Unsafe.SkipInit": E.Op(Op.Drop); return Own.None;
+            case "System.Runtime.CompilerServices.Unsafe.Unbox":
+                E.I32(BoxDataOffset(T, Arg(0))); E.Op(Op.I32Add); return Own.None;
+            case "System.Threading.Interlocked.MemoryBarrier":
+            case "System.Threading.Volatile.ReadBarrier":
+            case "System.Threading.Volatile.WriteBarrier":
+                E.Emit(Op.AtomicFence); return Own.None;
+            case "System.Object.GetType":
+                {
+                    // the RuntimeType of the object's type id
+                    E.Load(Op.I32Load, 4);
+                    var fromId = D.LibType("System.Type").GetMembers("FromId").OfType<IMethodSymbol>().First();
+                    E.Call(D.Method(fromId).Fn);
+                    return Own.Owned;
+                }
+        }
+        throw new CompileException("intrinsic not supported: " + Driver.Display(m));
     }
 
     // =====================================================================

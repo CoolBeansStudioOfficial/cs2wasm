@@ -271,7 +271,8 @@ sealed partial class FunctionCompiler
         {
             var v = _vars[p];
             var pt = v.Type;
-            if (p.RefKind == RefKind.None && !v.InMemory && _addrTaken.Contains(p))
+            // (the body refers to the definition's parameters: a generic method's instantiation has others)
+            if (p.RefKind == RefKind.None && !v.InMemory && (_addrTaken.Contains(p) || _addrTaken.Contains(p.OriginalDefinition)))
             {
                 // move the parameter into the frame
                 int off = AllocFrame(pt);
@@ -280,7 +281,7 @@ sealed partial class FunctionCompiler
                 E.Fn.Body = save;
                 v.Local = -1; v.AddrLocal = _fb; v.Offset = off;
             }
-            if (p.RefKind == RefKind.None && Types.IsRef(pt) && _assignedParams.Contains(p))
+            if (p.RefKind == RefKind.None && Types.IsRef(pt) && (_assignedParams.Contains(p) || _assignedParams.Contains(p.OriginalDefinition)))
             {
                 var save = E.Fn.Body; E.Fn.Body = _entryCode;
                 if (v.InMemory) { E.Get(v.AddrLocal); E.Load(Op.I32Load, v.Offset); E.Call(Rt.Retain); E.Op(Op.Drop); }
@@ -617,8 +618,22 @@ sealed partial class FunctionCompiler
             }
             if (i == start && ops[i] is ILabeledOperation lo) { if (lo.Operation != null) EmitStatement(lo.Operation); continue; }
             EmitStatement(ops[i]);
+            // what follows a statement that never completes is unreachable: not compiled, so what only it calls
+            // is not either (`if (GlobalizationMode.Invariant) return ...;` guards the rest of a method)
+            if (NeverCompletes(ops[i])) return;
         }
     }
+
+    bool NeverCompletes(IOperation op) => op switch
+    {
+        IReturnOperation or IThrowOperation => true,
+        IExpressionStatementOperation { Operation: IThrowOperation } => true,
+        IBranchOperation { BranchKind: BranchKind.Break or BranchKind.Continue or BranchKind.GoTo } => true,
+        IBlockOperation { Operations: [.., var last] } bl => !bl.Operations.Any(o => o is ILabeledOperation) && NeverCompletes(last),
+        IConditionalOperation c when Fold(c.Condition) is bool known => known ? NeverCompletes(c.WhenTrue) : c.WhenFalse != null && NeverCompletes(c.WhenFalse),
+        IConditionalOperation { WhenFalse: { } wf } c => NeverCompletes(c.WhenTrue) && NeverCompletes(wf),
+        _ => false,
+    };
 
     /// <summary>fixed: nothing moves without a collector, so pinning is holding the object for the statement and
     /// taking the address of its data (arrays and strings: null or empty gives a null pointer, as in C#).</summary>

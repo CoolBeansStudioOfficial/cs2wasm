@@ -16,6 +16,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
+if (args.Length >= 3 && args[0] == "intrinsics") return Intrinsics.Run(args[1], args[2]);
 if (args.Length >= 3 && args[0] == "check") return Check.Run(args[1], args[2], args.Length > 3 ? args[3] : null);
 if (args.Length < 2) { Console.Error.WriteLine("usage: CoreLibManifest <runtime-root> <upstream-dir> | check <runtime-root> <upstream-dir> [library]"); return 2; }
 return Libraries.Run(Path.GetFullPath(args[0]), Path.GetFullPath(args[1]));

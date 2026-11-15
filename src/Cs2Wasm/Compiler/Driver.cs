@@ -285,7 +285,24 @@ internal sealed partial class Driver
     static bool HasAttr(ISymbol s, string fullName) =>
         s.GetAttributes().Any(a => a.AttributeClass != null && Types.FullName(a.AttributeClass) == fullName);
 
-    public bool IsIntrinsic(IMethodSymbol m) => IsLibrary(m) && HasAttr(m.OriginalDefinition, "Cs2Wasm.Runtime.IntrinsicAttribute");
+    public bool IsIntrinsic(IMethodSymbol m) => IsLibrary(m) && (HasAttr(m.OriginalDefinition, "Cs2Wasm.Runtime.IntrinsicAttribute") || IsUpstreamIntrinsic(m));
+
+    /// <summary>The upstream library's [Intrinsic] members whose C# body is a placeholder (the JIT supplies the code):
+    /// the compiler emits them (tools/CoreLibManifest intrinsics lists them all).</summary>
+    public static bool IsUpstreamIntrinsic(IMethodSymbol m)
+    {
+        var owner = Types.FullName(m.ContainingType);
+        return owner switch
+        {
+            "System.Runtime.CompilerServices.Unsafe" => m.Name is "AsPointer" or "As" or "AreSame" or "Copy" or "CopyBlock" or "CopyBlockUnaligned"
+                or "IsAddressGreaterThan" or "IsAddressLessThan" or "InitBlock" or "InitBlockUnaligned" or "AddByteOffset" or "AsRef"
+                or "ByteOffset" or "SkipInit" or "SubtractByteOffset" or "Unbox",
+            "System.Threading.Interlocked" => m.Name == "MemoryBarrier",
+            "System.Threading.Volatile" => m.Name is "ReadBarrier" or "WriteBarrier",
+            "System.Object" => m.Name == "GetType" && Library.UseUpstream,
+            _ => false,
+        };
+    }
 
     (string, string) ImportName(IMethodSymbol m)
     {

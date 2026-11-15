@@ -398,7 +398,8 @@ internal sealed class Types
         {
             if (!IsInstanceStorage(m)) continue;
             var f = (IFieldSymbol)m;
-            var ft = Canonical(f.Type);
+            // a ref field (in a ref struct) is the address of what it refers to: not counted
+            var ft = f.RefKind != RefKind.None ? _d.LibCompilation.CreatePointerTypeSymbol(Canonical(f.Type)) : Canonical(f.Type);
             var (size, align) = StorageOf(ft);
             if (f.IsFixedSizeBuffer) size *= Math.Max(1, f.FixedSize);
             offset = (offset + align - 1) / align * align;
