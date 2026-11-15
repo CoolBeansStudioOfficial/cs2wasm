@@ -465,7 +465,8 @@ internal sealed partial class Driver
                 or "ByteOffset" or "SkipInit" or "SubtractByteOffset" or "Unbox",
             "System.Threading.Interlocked" => m.Name == "MemoryBarrier"
                 || (m.Name is "Exchange" or "CompareExchange" && m.Parameters.Length > 0 && Types.PrimSize(Types.PrimOf(m.Parameters[0].Type)) < 4 && Types.PrimOf(m.Parameters[0].Type) != Prim.None),
-            "System.SpanHelpers" => m.Name is "memmove" or "memset",
+            // (Memmove and ClearWithoutReferences are what memory.copy and memory.fill do)
+            "System.SpanHelpers" => m.Name is "memmove" or "memset" || m.Name is "Memmove" or "ClearWithoutReferences" && !m.IsGenericMethod && Library.UseUpstream,
             "System.Double" or "System.Single" => m.Name == "ConvertToIntegerNative" && m.TypeArguments.Length == 1 && Types.PrimOf(m.TypeArguments[0]) is not (Prim.None or Prim.F32 or Prim.F64 or Prim.Bool),
             "System.Runtime.CompilerServices.RuntimeHelpers" => m.Name is "GetRawData" or "IsBitwiseEquatable" or "IsReferenceOrContainsReferences" or "ObjectHasComponentSize",
             "System.Threading.Volatile" => m.Name is "ReadBarrier" or "WriteBarrier",

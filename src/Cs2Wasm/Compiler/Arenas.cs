@@ -93,14 +93,91 @@ internal sealed class Arenas
     {
         bool ro = slot.Symbol switch
         {
-            IFieldSymbol f => f.IsReadOnly,
+            IFieldSymbol f => f.IsReadOnly || f.DeclaredAccessibility == Accessibility.Private && WrittenOnlyByConstructors(f),
             IPropertySymbol p => p.SetMethod == null,
             _ => false,
         };
         if (!ro) return false;
         for (var t = owner as INamedTypeSymbol; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
-            if (!KeepsThis(t)) return false;
+            if (!KeepsThis(t)) { if (Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1") Console.Error.WriteLine($"edge {slot.Symbol}: {t} lets this out"); return false; }
         return true;
+    }
+
+    readonly Dictionary<string, bool> _ctorOnly = [];
+    HashSet<IMethodSymbol>? _compiledCtors;
+
+    /// <summary>A non-virtual property whose accessors use `this` only to reach its fields (HResult).</summary>
+    bool FieldOnlyProperty(IPropertySymbol p)
+    {
+        p = p.OriginalDefinition;
+        if (p.IsVirtual || p.IsOverride || p.IsAbstract || p.IsStatic) return false;
+        foreach (var acc in new[] { p.GetMethod, p.SetMethod })
+        {
+            if (acc == null) continue;
+            foreach (var sr in acc.DeclaringSyntaxReferences)
+            {
+                if (D.ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) return false;
+                foreach (var op in body.DescendantsAndSelf())
+                    if (op is Microsoft.CodeAnalysis.Operations.IInstanceReferenceOperation ir && ir.Parent is not Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation) return false;
+            }
+            if (acc.DeclaringSyntaxReferences.Length == 0) return false;
+        }
+        return true;
+    }
+
+    /// <summary>A private field that only its type's instance constructors write, on the object being made (so in
+    /// effect readonly: the inner exception of Mono's Exception, declared without `readonly`).</summary>
+    bool WrittenOnlyByConstructors(IFieldSymbol f)
+    {
+        f = f.OriginalDefinition;
+        var key = Types.Key(f.ContainingType) + "::" + f.Name;
+        if (_ctorOnly.TryGetValue(key, out var r)) return r;
+        r = true;
+        var types = new Stack<INamedTypeSymbol>();
+        types.Push(f.ContainingType);
+        while (types.Count > 0 && r)
+        {
+            var t = types.Pop();
+            foreach (var m in t.GetMembers())
+            {
+                if (m is INamedTypeSymbol nt) { types.Push(nt); continue; }
+                foreach (var sr in m.DeclaringSyntaxReferences)
+                {
+                    if (D.ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) continue;
+                    foreach (var op in body.DescendantsAndSelf())
+                    {
+                        if (op is not Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation fr || !SymbolEqualityComparer.Default.Equals(fr.Field.OriginalDefinition, f)) continue;
+                        if (!IsWrite(fr)) continue;
+                        bool inCtor = m is IMethodSymbol { MethodKind: MethodKind.Constructor } ctor && SymbolEqualityComparer.Default.Equals(ctor.ContainingType, f.ContainingType)
+                            && fr.Instance is Microsoft.CodeAnalysis.Operations.IInstanceReferenceOperation
+                            && !Ancestors(fr).Any(x => x is Microsoft.CodeAnalysis.Operations.IAnonymousFunctionOperation or Microsoft.CodeAnalysis.Operations.ILocalFunctionOperation);
+                        if (!inCtor) { if (Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1") Console.Error.WriteLine($"field {f} written in {m}: {fr.Syntax}"); r = false; break; }
+                    }
+                    if (!r) break;
+                }
+                if (!r) break;
+            }
+        }
+        _ctorOnly[key] = r;
+        return r;
+
+        static IEnumerable<IOperation> Ancestors(IOperation o) { for (var p = o.Parent; p != null; p = p.Parent) yield return p; }
+        static bool IsWrite(IOperation o)
+        {
+            var p = o.Parent;
+            while (p is Microsoft.CodeAnalysis.Operations.IConversionOperation or Microsoft.CodeAnalysis.Operations.IParenthesizedOperation) { o = p; p = p.Parent; }
+            return p switch
+            {
+                Microsoft.CodeAnalysis.Operations.IAssignmentOperation a => a.Target == o,
+                Microsoft.CodeAnalysis.Operations.IIncrementOrDecrementOperation => true,
+                Microsoft.CodeAnalysis.Operations.IAddressOfOperation => true,
+                Microsoft.CodeAnalysis.Operations.IArgumentOperation { Parameter.RefKind: not RefKind.None and not RefKind.In and not RefKind.RefReadOnlyParameter } => true,
+                Microsoft.CodeAnalysis.Operations.IVariableInitializerOperation { Parent: Microsoft.CodeAnalysis.Operations.IVariableDeclaratorOperation { Symbol.IsRef: true } } => true,
+                Microsoft.CodeAnalysis.Operations.IReturnOperation when o.Type != null && false => true,
+                Microsoft.CodeAnalysis.Operations.ITupleOperation => true,
+                _ => p is Microsoft.CodeAnalysis.Operations.IInvocationOperation { Instance: var inst, TargetMethod.IsReadOnly: false } && inst == o && o.Type?.IsValueType == true,
+            };
+        }
     }
 
     bool KeepsThis(INamedTypeSymbol t)
@@ -108,7 +185,9 @@ internal sealed class Arenas
         var k = Types.Key(t.OriginalDefinition);
         if (_keepsThis.TryGetValue(k, out var r)) return r;
         r = true;
-        foreach (var c in t.OriginalDefinition.InstanceConstructors)
+        // (only constructors the program can run: the compiled ones)
+        _compiledCtors ??= D.AllMethods.Where(m => m.Compiled && m.Sym.MethodKind == MethodKind.Constructor).Select(m => m.Sym.OriginalDefinition).ToHashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        foreach (var c in t.OriginalDefinition.InstanceConstructors.Where(c => _compiledCtors.Contains(c)))
             foreach (var sr in c.DeclaringSyntaxReferences)
             {
                 var model = D.ModelFor(sr.SyntaxTree);
@@ -118,8 +197,9 @@ internal sealed class Arenas
                     if (op is not Microsoft.CodeAnalysis.Operations.IInstanceReferenceOperation ir) continue;
                     // `this` used only to reach its own fields and auto-properties stays in
                     if (ir.Parent is Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation) continue;
-                    if (ir.Parent is Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation pr && Driver.AutoPropertyField(pr.Property.OriginalDefinition) != null) continue;
+                    if (ir.Parent is Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation pr && (Driver.AutoPropertyField(pr.Property.OriginalDefinition) != null || FieldOnlyProperty(pr.Property))) continue;
                     if (ir.Parent is Microsoft.CodeAnalysis.Operations.IInvocationOperation { TargetMethod.MethodKind: MethodKind.Constructor }) continue; // : base(...) / : this(...)
+                    if (Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1") Console.Error.WriteLine($"{t}: ctor {c} lets this out: {ir.Parent?.Syntax}");
                     r = false;
                 }
             }

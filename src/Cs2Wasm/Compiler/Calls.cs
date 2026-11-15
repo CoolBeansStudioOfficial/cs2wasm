@@ -466,6 +466,14 @@ sealed partial class FunctionCompiler
                 E.I32(BoxDataOffset(T, Arg(0))); E.Op(Op.I32Add); return Own.None;
             case "System.SpanHelpers.memmove": E.Op(Op.MemoryCopy); return Own.None; // memory.copy allows overlap
             case "System.SpanHelpers.memset": E.Op(Op.MemoryFill); return Own.None;
+            case "System.SpanHelpers.Memmove": E.Op(Op.MemoryCopy); return Own.None;
+            case "System.SpanHelpers.ClearWithoutReferences":
+                {
+                    int n = Scratch(ValType.I32);
+                    E.Set(n); E.I32(0); E.Get(n); E.Op(Op.MemoryFill);
+                    FreeScratch(ValType.I32, n);
+                    return Own.None;
+                }
             case "System.Double.ConvertToIntegerNative":
             case "System.Single.ConvertToIntegerNative":
                 {
