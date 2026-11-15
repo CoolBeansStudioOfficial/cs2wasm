@@ -97,8 +97,11 @@ filters pay nothing.
 Not done yet (a program using them gets a `CW0101` error naming the construct):
 - `Reflection.Emit` (section 8); in `dynamic` code, `&&`/`||` with a static left operand, `ref`/`out` arguments of
   dynamic calls and the value of a dynamic member's postfix `++`/`--`;
-- expression trees with captured variables, generic method calls, user-defined operators or statement bodies (a
-  build error names the construct); `Expression.Compile` runs on upstream's interpreter (`046_expressions`);
+- in expression trees, the closure's type name in a tree's text (`value(<>c__DisplayClass).x`: Roslyn numbers its
+  closure classes, cs2wasm's are unnamed) and lifted (nullable) user-defined operators; captured variables (a field of
+  the closure, read when the tree runs), `this`, generic method calls and user-defined operators and conversions work
+  (`056_expression_trees_captures`, with `AsQueryable()` over upstream's System.Linq.Queryable), and
+  `Expression.Compile` runs on upstream's interpreter (`046_expressions`);
 - filters inside iterators and async methods run in one pass (when the exception reaches their catch, after the
   `finally` blocks inside the try; an exception thrown by such a filter makes it false, as in .NET); the first pass of a throw
   does not see an iterator's or async method's own catch regions, so a filter further out can run for an exception

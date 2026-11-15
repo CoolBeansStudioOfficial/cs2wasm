@@ -91,7 +91,7 @@ internal sealed partial class Driver
             {
                 // (the library's reflection too: System.Linq.Expressions asks delegate types for Invoke)
                 bool input = IsInput(r.SyntaxTree);
-                if (!input && !r.GetSyntax().DescendantTokens().Any(t => t.ValueText is "GetMethod" or "GetProperty" or "GetField" or "GetMember" or "GetConstructor" or "GetConstructors" or "GetMethodInfo")) continue;
+                if (!input && !r.GetSyntax().DescendantTokens().Any(t => t.ValueText is "GetMethod" or "GetProperty" or "GetField" or "GetMember" or "GetConstructor" or "GetConstructors" or "GetMethodInfo" or "Method" or "CreateInstance")) continue;
                 var body = ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax());
                 if (body == null) continue;
                 foreach (var op in body.DescendantsAndSelf().OfType<IInvocationOperation>())
@@ -99,6 +99,14 @@ internal sealed partial class Driver
                     Visit(op, map, keep, input);
                     // ((Delegate)M<T>).GetMethodInfo(): that method (System.Linq.Expressions' CallSiteOpsReflectionCache)
                     if (op is { TargetMethod: { Name: "GetMethodInfo", ContainingType.Name: "RuntimeReflectionExtensions" }, Arguments: [{ Value: var dv }] })
+                        KeepDelegateTarget(dv);
+                }
+                // new Func<...>(M<T>).Method: that method (System.Linq.Queryable's operators)
+                foreach (var pr in body.DescendantsAndSelf().OfType<IPropertyReferenceOperation>())
+                    if (pr is { Property: { Name: "Method", ContainingType: { Name: "Delegate", ContainingNamespace.Name: "System" } }, Instance: { } di })
+                        KeepDelegateTarget(di);
+                void KeepDelegateTarget(IOperation dv)
+                {
                     {
                         while (dv is IConversionOperation dc) dv = dc.Operand;
                         if (dv is IDelegateCreationOperation { Target: IMethodReferenceOperation { Method: var gm } } && gm.MethodKind != MethodKind.LocalFunction
@@ -161,6 +169,14 @@ internal sealed partial class Driver
             foreach (var t in AllTypes(comp.Assembly.GlobalNamespace))
                 if (t.GetAttributes().Any(a => a.AttributeClass?.Name == "DynamicallyAccessedMembersAttribute")) { keep.Keep(t, null); keep.Keep(t, null, ctors: true); }
         foreach (var (t, name, ctors) in _keepFromTrees) keep.Keep(t, name, ctors);
+        foreach (var (t, inst) in _keepInstancesFromTrees) keep.KeepInstance(t, inst);
+        // EnumerableQuery runs a Queryable operator as the Enumerable one of its name, made with the same type
+        // arguments (System.Linq.Queryable's EnumerableRewriter)
+        if (Lib.TypeByMetadataName("System.Linq.Queryable") is { } qt && keep.GenericInstances.TryGetValue(Compiler.Types.Key(qt), out var qinsts) && Lib.TypeByMetadataName("System.Linq.Enumerable") is { } en)
+            foreach (var qi in qinsts.ToList())
+                foreach (var em in en.GetMembers(qi.Name).OfType<IMethodSymbol>())
+                    if (em.IsGenericMethod && em.Arity == qi.Arity)
+                        try { keep.KeepInstance(en, em.Construct([.. qi.TypeArguments])); } catch (ArgumentException) { }
         if (keep.Types.Count == 0) return;
         _reflect = keep;
         // thunks for the kept members (compiled in the next round)
@@ -178,6 +194,15 @@ internal sealed partial class Driver
         {
             if (m.IsGenericMethod && Types.Resolve(m.TypeArguments[0], map) is INamedTypeSymbol gt) { keep.Keep(gt, null, ctors: true); return; }
             if (op.Arguments.Length > 0 && ReceiverType(op.Arguments[0].Value, map) is { } ct) { keep.Keep(ct, null, ctors: true); return; }
+            // typeof(G<>).MakeGenericType(x): the constructors of the instances of G the program makes
+            if (op.Arguments.Length > 0 && GenericDefinitionMade(op.Arguments[0].Value, map) is { } gd)
+            {
+                for (int id = 0; id < TypeById.Count; id++)
+                    if (TypeById[id] is INamedTypeSymbol { IsGenericType: true } inst && SymbolEqualityComparer.Default.Equals(inst.OriginalDefinition, gd.OriginalDefinition)
+                        && !inst.TypeArguments.Any(a => a is ITypeParameterSymbol) && Constructed.Contains(id))
+                        keep.Keep(inst, null, ctors: true);
+                return;
+            }
             Report(Diags.ReflectionUnknown, op.Syntax.GetLocation(), "Activator.CreateInstance");
             return;
         }
@@ -251,6 +276,18 @@ internal sealed partial class Driver
     }
 
     /// <summary>The type a Type-valued operation names, when the compiler can see it.</summary>
+    /// <summary>`typeof(G<>).MakeGenericType(...)` (through a local assigned once): G's definition.</summary>
+    INamedTypeSymbol? GenericDefinitionMade(IOperation op, TypeMap map)
+    {
+        while (op is IConversionOperation c) op = c.Operand;
+        if (op is ILocalReferenceOperation lr && lr.Local.DeclaringSyntaxReferences.FirstOrDefault() is { } decl
+            && ModelFor(decl.SyntaxTree).GetOperation(decl.GetSyntax()) is IVariableDeclaratorOperation { Initializer.Value: { } init })
+            return GenericDefinitionMade(init, map);
+        if (op is IInvocationOperation { TargetMethod.Name: "MakeGenericType", Instance: ITypeOfOperation to } && to.TypeOperand is INamedTypeSymbol { IsGenericType: true } g)
+            return g.OriginalDefinition;
+        return null;
+    }
+
     INamedTypeSymbol? ReceiverType(IOperation op, TypeMap map)
     {
         while (op is IConversionOperation { IsImplicit: true } c) op = c.Operand;
@@ -381,6 +418,7 @@ internal sealed partial class Driver
     // ---------------- the tables (Finish, before memory layout) ----------------
     internal void EmitReflectionTables()
     {
+        PatchDisplayFields();
         if (_metaOf == null) return;
         var e = new Emitter(_metaOf);
         if (_reflect == null) { e.I32(0); return; }
@@ -671,6 +709,45 @@ sealed partial class FunctionCompiler
     {
         var fc = new FunctionCompiler(d, fn, ctx.Sym, ctx);
         fc.EmitThunk(member);
+    }
+
+    public static void CompileDisplayFieldThunk(Driver d, WasmFunction fn, int offset, ITypeSymbol type, MethodInst ctx)
+    {
+        var fc = new FunctionCompiler(d, fn, ctx.Sym, ctx);
+        fc.EmitDisplayFieldThunk(offset, type);
+    }
+
+    /// <summary>A closure field's reflection thunk: args null reads it (boxed); else writes args[0].</summary>
+    void EmitDisplayFieldThunk(int off, ITypeSymbol type)
+    {
+        using (BodyScope())
+        {
+            _retLocal = E.AddLocal(ValType.I32);
+            BeginTemps();
+            var ft = T.Canonical(type);
+            E.Get(1); E.Op(Op.I32Eqz);
+            E.If(ValType.I32);
+            {
+                E.Get(0);
+                Own o;
+                if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } o = Own.None; }
+                else { E.Load(Types.LoadOp(ft), off); o = Types.IsRef(ft) ? Own.Unstable : Own.None; }
+                BoxResult(ft, o);
+            }
+            E.Else();
+            {
+                E.Get(1); E.Load(Op.I32Load, Types.ArrayData);
+                var vo = Own.Unstable;
+                ConvertValue(D.ObjectType, ft, false, ref vo, explicitConv: true, null);
+                StoreToAddressFromStack(() => E.Get(0), off, ft, vo, pub: Publish.Container, pubContainer: () => E.Get(0));
+                E.I32(0);
+            }
+            E.End();
+            E.Set(_retLocal);
+            EndTemps();
+            EmitReturnSequence(true);
+        }
+        Finish();
     }
 
     public static void CompileAttributeFactory(Driver d, WasmFunction fn, AttributeData a, MethodInst ctx)

@@ -38,6 +38,19 @@ sealed partial class FunctionCompiler
         var r = CallWith(invoke, false, () => E.Get(_thisLocal), () => E.Get(arr), null, null);
         var rt = T.Resolve(M.ReturnType, Map);
         if (M.ReturnsVoid) { Drop(r, objT); EmitReturnSequence(false); return; }
+        if (Types.IsStruct(rt))
+        {
+            // a struct result: the box's data copied into the caller's destination, then the box released
+            ToOwned(r);
+            int box = E.AddLocal(ValType.I32); E.Set(box);
+            E.Get(box); var bo = Own.Stable;
+            ConvertValue(objT, rt, false, ref bo, true, null);
+            int src = E.AddLocal(ValType.I32); E.Set(src);
+            E.Get(_structRetLocal); E.Get(src); CopyStructInit(rt);
+            E.Get(box); E.Call(Rt.Release);
+            EmitReturnSequence(false);
+            return;
+        }
         ConvertValue(objT, rt, false, ref r, true, null);
         if (Types.IsRef(rt)) ToOwned(r);
         _retLocal = E.AddLocal(Types.WasmType(rt) ?? ValType.I32);

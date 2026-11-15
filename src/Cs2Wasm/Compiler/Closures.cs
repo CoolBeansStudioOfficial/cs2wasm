@@ -80,6 +80,14 @@ sealed partial class FunctionCompiler
         throw new CompileException("captured variable not found: " + s.Name);
     }
 
+    Display CapturedDisplay(ISymbol s)
+    {
+        if (_capturedHere.TryGetValue(s, out var d)) return d;
+        if (TryMachineCapture(s, out var md)) return md.D;
+        for (var x = _closure?.Env; x != null; x = x.Parent) if (x.Slots.ContainsKey(s)) return x;
+        throw new CompileException("captured variable not found: " + s.Name);
+    }
+
     ITypeSymbol CapturedType(ISymbol s)
     {
         if (_capturedHere.TryGetValue(s, out var d)) return d.Slots[s].type;

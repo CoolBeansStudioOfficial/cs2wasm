@@ -19,6 +19,21 @@ namespace Cs2Wasm.Runtime
         public const int FieldSize = 8, CtorSize = 10, MethodSize = 13, PropSize = 9;
 
         /// <summary>A parameter's default value from a defaults blob (Compiler/Reflection.cs: Defaults); DBNull when none.</summary>
+        /// <summary>A field of a record entry (a closure's captured variable, for expression trees).</summary>
+        public static System.Reflection.FieldInfo FieldFromEntry(int entry) => new System.Reflection.RuntimeFieldInfo(entry, TypeAt(I(entry, 4)));
+
+        /// <summary>The `index`th generic method of the name and parameter count, made with the type arguments.</summary>
+        public static System.Reflection.MethodInfo GenericMethod(Type owner, string name, int parameters, int index, Type[] typeArgs)
+        {
+            int i = 0;
+            foreach (var m in owner.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly))
+            {
+                if (m.Name != name || !m.IsGenericMethodDefinition || m.GetGenericArguments().Length != typeArgs.Length || m.GetParameters().Length != parameters) continue;
+                if (i++ == index) return m.MakeGenericMethod(typeArgs);
+            }
+            throw new MissingMethodException(owner.FullName, name);
+        }
+
         public static object? DefaultValue(int defs, int i, Type parameterType)
         {
             int k = defs == 0 ? 0 : I(defs, 3 * i);

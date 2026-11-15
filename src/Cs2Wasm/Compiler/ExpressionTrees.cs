@@ -124,20 +124,56 @@ sealed partial class FunctionCompiler
             case IConversionOperation c when c.Conversion.IsIdentity && !c.IsImplicit == false: return ExprNode(c.Operand);
             case IConversionOperation c:
                 {
-                    if (c.OperatorMethod != null) throw new CompileException("expression tree: user-defined conversions are not supported yet", c.Syntax.GetLocation());
                     if (c.Conversion.IsIdentity) return ExprNode(c.Operand);
                     int inner = ExprNode(c.Operand);
                     int tt = TypeObjectTemp(ty!);
+                    if (c.OperatorMethod != null)
+                    {
+                        int cm = MethodInfoTemp(c.OperatorMethod);
+                        return CallToTemp(ExprFactory(c.IsChecked ? "ConvertChecked" : "Convert", "System.Linq.Expressions.Expression", "System.Type", "System.Reflection.MethodInfo?"), () => { E.Get(inner); E.Get(tt); E.Get(cm); });
+                    }
                     return CallToTemp(ExprFactory(c.IsChecked ? "ConvertChecked" : "Convert", "System.Linq.Expressions.Expression", "System.Type"), () => { E.Get(inner); E.Get(tt); });
                 }
             case IParameterReferenceOperation pr when _exprParams != null && _exprParams.TryGetValue(pr.Parameter, out int pl):
                 return pl;
-            case IParameterReferenceOperation or ILocalReferenceOperation or IInstanceReferenceOperation:
-                throw new CompileException("expression tree: captured variables are not supported yet", op.Syntax.GetLocation());
+            // `this`: a constant, as Roslyn writes it
+            case IInstanceReferenceOperation ir:
+                {
+                    var tt0 = T.Resolve(ir.Type!, Map);
+                    var o = EmitValue(ir); ToOwned(o);
+                    int v = TempRef(D.ObjectType); E.Set(v);
+                    int tt = TypeObjectTemp(tt0);
+                    return CallToTemp(ExprFactory("Constant", "object?", "System.Type"), () => { E.Get(v); E.Get(tt); });
+                }
+            // a captured variable: its field of the closure, read when the tree runs (Field(Constant(closure), field))
+            case IParameterReferenceOperation or ILocalReferenceOperation:
+                {
+                    ISymbol sym = op is IParameterReferenceOperation pr2 ? pr2.Parameter : ((ILocalReferenceOperation)op).Local;
+                    if (!IsCaptured(sym))
+                    {
+                        // (read by the tree only: its value)
+                        var vt = T.Resolve(op.Type!, Map);
+                        var o = EmitValue(op);
+                        ConvertTop(vt, D.ObjectType, ref o); ToOwned(o);
+                        int v0 = TempRef(D.ObjectType); E.Set(v0);
+                        int t0 = TypeObjectTemp(vt);
+                        return CallToTemp(ExprFactory("Constant", "object?", "System.Type"), () => { E.Get(v0); E.Get(t0); });
+                    }
+                    var disp = CapturedDisplay(sym);
+                    CapturedAddress(sym); E.Call(Rt.Retain);
+                    int dobj = TempRef(D.ObjectType); E.Set(dobj);
+                    E.Tid(disp.TypeId);
+                    E.Call(D.Method(D.LibType("System.Type").GetMembers("FromId").OfType<IMethodSymbol>().First()).Fn);
+                    int dt = TempRef(D.LibType("System.Type")); E.Set(dt);
+                    int c = CallToTemp(ExprFactory("Constant", "object?", "System.Type"), () => { E.Get(dobj); E.Get(dt); });
+                    var entry = D.DisplayFieldEntry(disp, sym, CapturedType(sym));
+                    E.I32Addr(entry);
+                    E.Call(D.LibMethod("Cs2Wasm.Runtime.Meta", "FieldFromEntry", 1).Fn);
+                    int fi = TempRef(D.LibType("System.Reflection.FieldInfo")); E.Set(fi);
+                    return CallToTemp(ExprFactory("Field", "System.Linq.Expressions.Expression?", "System.Reflection.FieldInfo"), () => { E.Get(c); E.Get(fi); });
+                }
             case IBinaryOperation bo:
                 {
-                    if (bo.OperatorMethod != null && !(bo.OperatorKind == BinaryOperatorKind.Add && bo.OperatorMethod.ContainingType.SpecialType == SpecialType.System_String))
-                        throw new CompileException("expression tree: user-defined operators are not supported yet", bo.Syntax.GetLocation());
                     string name = bo.OperatorKind switch
                     {
                         BinaryOperatorKind.Add => bo.IsChecked ? "AddChecked" : "Add",
@@ -162,7 +198,7 @@ sealed partial class FunctionCompiler
                     };
                     int l = ExprNode(bo.LeftOperand), r = ExprNode(bo.RightOperand);
                     // string concatenation: Add with String.Concat for the operand types, as Roslyn writes it
-                    var concat = bo.OperatorMethod;
+                    var concat = bo.OperatorMethod is { ContainingType.SpecialType: SpecialType.System_String } ? bo.OperatorMethod : null;
                     if (concat == null && bo.OperatorKind == BinaryOperatorKind.Add && ty?.SpecialType == SpecialType.System_String)
                     {
                         bool both = bo.LeftOperand.Type?.SpecialType == SpecialType.System_String && bo.RightOperand.Type?.SpecialType == SpecialType.System_String;
@@ -174,6 +210,12 @@ sealed partial class FunctionCompiler
                         int mi = MethodInfoTemp(concat);
                         return CallToTemp(ExprFactory(name, "System.Linq.Expressions.Expression", "System.Linq.Expressions.Expression", "System.Reflection.MethodInfo?"), () => { E.Get(l); E.Get(r); E.Get(mi); });
                     }
+                    if (bo.OperatorMethod != null && name is "Equal" or "NotEqual" or "LessThan" or "LessThanOrEqual" or "GreaterThan" or "GreaterThanOrEqual")
+                    {
+                        // comparisons: (left, right, liftToNull: false, method)
+                        int cmi = MethodInfoTemp(bo.OperatorMethod);
+                        return CallToTemp(ExprFactory(name, "System.Linq.Expressions.Expression", "System.Linq.Expressions.Expression", "bool", "System.Reflection.MethodInfo?"), () => { E.Get(l); E.Get(r); E.I32(0); E.Get(cmi); });
+                    }
                     if (bo.OperatorMethod != null)
                     {
                         // string + string: Expression.Add(l, r, string.Concat(object, object)) as Roslyn writes it
@@ -184,7 +226,6 @@ sealed partial class FunctionCompiler
                 }
             case IUnaryOperation u:
                 {
-                    if (u.OperatorMethod != null) throw new CompileException("expression tree: user-defined operators are not supported yet", u.Syntax.GetLocation());
                     string name = u.OperatorKind switch
                     {
                         UnaryOperatorKind.Minus => u.IsChecked ? "NegateChecked" : "Negate",
@@ -193,6 +234,11 @@ sealed partial class FunctionCompiler
                         _ => throw new CompileException("expression tree: operator " + u.OperatorKind, u.Syntax.GetLocation()),
                     };
                     int x = ExprNode(u.Operand);
+                    if (u.OperatorMethod != null)
+                    {
+                        int um = MethodInfoTemp(u.OperatorMethod);
+                        return CallToTemp(ExprFactory(name, "System.Linq.Expressions.Expression", "System.Reflection.MethodInfo?"), () => { E.Get(x); E.Get(um); });
+                    }
                     return CallToTemp(ExprFactory(name, "System.Linq.Expressions.Expression"), () => E.Get(x));
                 }
             case IConditionalOperation { WhenFalse: { } wf } co:
@@ -219,7 +265,6 @@ sealed partial class FunctionCompiler
                 }
             case IInvocationOperation inv:
                 {
-                    if (inv.TargetMethod.IsGenericMethod) throw new CompileException("expression tree: generic methods are not supported yet", inv.Syntax.GetLocation());
                     int inst = inv.Instance != null ? ExprNode(inv.Instance) : -1;
                     int mi = MethodInfoTemp(inv.TargetMethod);
                     var args = inv.Arguments.OrderBy(a => a.Parameter!.Ordinal).Select(a => ExprNode(a.Value)).ToList();
@@ -258,6 +303,22 @@ sealed partial class FunctionCompiler
 
     int MethodInfoTemp(IMethodSymbol m)
     {
+        if (m.ReducedFrom != null) m = m.ReducedFrom.Construct([.. m.TypeArguments]);
+        if (m.IsGenericMethod)
+        {
+            // the definition by name, parameter count and order among such, made with the arguments
+            var targs = m.TypeArguments.Select(a => T.Canonical(T.Resolve(a, Map))).ToArray();
+            var gt = (INamedTypeSymbol)T.Canonical(T.Resolve(m.ContainingType, Map));
+            D.KeepReflectedInstance(gt, m.OriginalDefinition.Construct(targs));
+            int got = TypeObjectTemp(gt);
+            int ta = ArrayTemp(D.LibType("System.Type"), targs.Select(a => TypeObjectTemp(a)).ToList());
+            var gm = D.LibMethod("Cs2Wasm.Runtime.Meta", "GenericMethod", 5);
+            int idx = GenericOverloadIndex(m);
+            var go = CallWith(gm.Sym, false, null, () => { E.Get(got); E.I32Addr(D.StringLiteral(m.Name)); E.I32(m.Parameters.Length); E.I32(idx); E.Get(ta); }, null, null);
+            ToOwned(go);
+            int gl = TempRef(D.LibType("System.Reflection.MethodInfo")); E.Set(gl);
+            return gl;
+        }
         var ot = (INamedTypeSymbol)T.Canonical(T.Resolve(m.ContainingType, Map));
         D.KeepReflected(ot, m.Name);
         int tt = TypeObjectTemp(ot);
@@ -268,6 +329,20 @@ sealed partial class FunctionCompiler
         ToOwned(o);
         int l = TempRef(T.Canonical(g.ReturnType)); E.Set(l);
         return l;
+    }
+
+    /// <summary>Which of the type's generic methods of this name, arity and parameter count (in member order) it is.</summary>
+    static int GenericOverloadIndex(IMethodSymbol m)
+    {
+        var def = m.OriginalDefinition;
+        int i = 0;
+        foreach (var x in def.ContainingType.GetMembers(def.Name).OfType<IMethodSymbol>())
+        {
+            if (!x.IsGenericMethod || x.Arity != def.Arity || x.Parameters.Length != def.Parameters.Length) continue;
+            if (SymbolEqualityComparer.Default.Equals(x, def)) return i;
+            i++;
+        }
+        return 0;
     }
 
     int ConstructorInfoTemp(IMethodSymbol c)
@@ -291,4 +366,37 @@ internal sealed partial class Driver
 
     /// <summary>A member the compiler's own code looks up by reflection (expression trees).</summary>
     public void KeepReflected(INamedTypeSymbol t, string? name, bool ctors = false) => _keepFromTrees.Add((t, name, ctors));
+    readonly List<(INamedTypeSymbol type, IMethodSymbol inst)> _keepInstancesFromTrees = [];
+    public void KeepReflectedInstance(INamedTypeSymbol t, IMethodSymbol inst) => _keepInstancesFromTrees.Add((t, inst));
+
+    // a captured variable's field, as reflection sees it (expression trees): an entry of a field record whose
+    // type, declaring type (the closure) and thunk are written at Finish, when ids and slots exist
+    readonly List<(DataAddr entry, Display d, ITypeSymbol type, WasmFunction thunk)> _displayFields = [];
+    readonly Dictionary<(Display, string), DataAddr> _displayFieldEntries = [];
+
+    public DataAddr DisplayFieldEntry(Display d, ISymbol v, ITypeSymbol type)
+    {
+        if (_displayFieldEntries.TryGetValue((d, v.Name), out var e)) return e;
+        int off = d.Slots[v].offset;
+        var fn = Module.AddFunction("reflect closure field " + v.Name, ThunkType);
+        fn.TableRoot = true;
+        var mi = new MethodInst { Sym = LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1).Sym, Fn = fn, Key = "closure field " + d.TypeId + " " + v.Name, Impl = MethodImpl.Body };
+        mi.Compile = () => FunctionCompiler.CompileDisplayFieldThunk(this, fn, off, type, mi);
+        EnqueueExtra(mi);
+        // [name, type, flags (public instance), thunk, declaring type, 0, 0, token]
+        e = (DataAddr)Ints([StringLiteral(v.Name).Address, 0, 2, 0, 0, 0, 0, 0x04000000 | (0xFFFFFF - _displayFields.Count)]);
+        _displayFieldEntries[(d, v.Name)] = e;
+        _displayFields.Add((e, d, type, fn));
+        return e;
+    }
+
+    internal void PatchDisplayFields()
+    {
+        foreach (var (e, d, type, fn) in _displayFields)
+        {
+            PatchData(e, 4, ExtId(TypeId(Types.Canonical(type))));
+            PatchData(e, 12, Module.TableSlot(fn) + 1);
+            PatchData(e, 16, ExtId(d.TypeId));
+        }
+    }
 }
