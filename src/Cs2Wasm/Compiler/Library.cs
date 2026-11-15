@@ -1,39 +1,88 @@
-using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
 namespace Cs2Wasm.Compiler;
 
 /// <summary>
-/// cs2wasm's library sources: C# declaring the .NET types the program uses, under their real names, so that a
-/// symbol from a reference assembly maps onto a library symbol with the same documentation id.
+/// The library the program is compiled with: C# declaring the .NET types the program uses, under their real names, so
+/// that a symbol from a reference assembly maps onto a library symbol with the same documentation id.
+/// <para>Upstream (section 7.4): dotnet/runtime's System.Private.CoreLib and the libraries above it, each its own
+/// compilation (as the assemblies are), from the files the manifests in Upstream/&lt;Library&gt; list plus cs2wasm's own
+/// files there (the runtime half, the boundary, the generated SR and unavailable platform invokes). The sources are
+/// read from <see cref="UpstreamSources.Root"/>.</para>
+/// <para>Otherwise (until the migration is done): the hand-written library in Lib/.</para>
 /// </summary>
 internal sealed class Library
 {
+    /// <summary>The corlib: inside it, `string` and `object` are its own types.</summary>
     public readonly CSharpCompilation Compilation;
+    /// <summary>Every library compilation, the corlib first, each after those it references.</summary>
+    public readonly IReadOnlyList<CSharpCompilation> All;
     readonly Dictionary<string, INamedTypeSymbol> _types = [];
+    readonly HashSet<SyntaxTree> _trees = [];
 
-    static readonly Lazy<SyntaxTree[]> s_trees = new(() =>
+    public static bool UseUpstream => Environment.GetEnvironmentVariable("CS2WASM_UPSTREAM") == "1";
+
+    static readonly CSharpCompilationOptions s_options = new(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true,
+        nullableContextOptions: NullableContextOptions.Disable,
+        specificDiagnosticOptions: new Dictionary<string, ReportDiagnostic> { ["CS0436"] = ReportDiagnostic.Suppress, ["CS0626"] = ReportDiagnostic.Suppress, ["CS8826"] = ReportDiagnostic.Suppress });
+
+    static readonly Lazy<SyntaxTree[]> s_handWritten = new(() =>
     {
-        var asm = typeof(Library).Assembly;
         var opts = new CSharpParseOptions(LanguageVersion.CSharp15);
-        return asm.GetManifestResourceNames().Where(n => n.StartsWith("lib/")).Order(StringComparer.Ordinal)
-            .Select(n =>
-            {
-                using var s = asm.GetManifestResourceStream(n)!;
-                using var r = new StreamReader(s);
-                return CSharpSyntaxTree.ParseText(r.ReadToEnd(), opts, path: "cs2wasm/" + n);
-            }).ToArray();
+        return Resources("lib/").Select(r => CSharpSyntaxTree.ParseText(r.Text, opts, path: "cs2wasm/" + r.Name)).ToArray();
     });
+
+    static readonly Lazy<IReadOnlyList<CSharpCompilation>> s_upstream = new(BuildUpstream);
 
     public Library(IEnumerable<MetadataReference> references)
     {
-        // The library is its own corlib (no references): inside it, `string` and `object` are its own types.
-        Compilation = CSharpCompilation.Create("System.Private.CoreLib", s_trees.Value, [],
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true,
-                nullableContextOptions: NullableContextOptions.Disable,
-                specificDiagnosticOptions: new Dictionary<string, ReportDiagnostic> { ["CS0436"] = ReportDiagnostic.Suppress, ["CS0626"] = ReportDiagnostic.Suppress }));
-        Index(Compilation.Assembly.GlobalNamespace);
+        if (UseUpstream) All = s_upstream.Value;
+        else All = [CSharpCompilation.Create("System.Private.CoreLib", s_handWritten.Value, [], s_options)];
+        Compilation = All[0];
+        foreach (var c in All)
+        {
+            foreach (var t in c.SyntaxTrees) _trees.Add(t);
+            Index(c.Assembly.GlobalNamespace);
+        }
+    }
+
+    static IEnumerable<(string Name, string Text)> Resources(string prefix)
+    {
+        var asm = typeof(Library).Assembly;
+        foreach (var n in asm.GetManifestResourceNames().Where(n => n.Replace('\\', '/').StartsWith(prefix)).Order(StringComparer.Ordinal))
+        {
+            using var s = asm.GetManifestResourceStream(n)!;
+            using var r = new StreamReader(s);
+            yield return (n.Replace('\\', '/'), r.ReadToEnd());
+        }
+    }
+
+    static IReadOnlyList<CSharpCompilation> BuildUpstream()
+    {
+        var root = UpstreamSources.Root;
+        var own = Resources("upstream/").ToList();
+        var built = new List<CSharpCompilation>();
+        foreach (var lib in UpstreamSources.Libraries)
+        {
+            var prefix = "upstream/" + lib + "/";
+            var manifest = own.FirstOrDefault(r => r.Name == prefix + "manifest.txt").Text
+                ?? throw new CompileException("library manifest missing: " + lib);
+            var lines = manifest.Split('\n').Select(l => l.Trim()).ToList();
+            var defines = lines.Where(l => l.StartsWith("define ")).Select(l => l[7..]).ToArray();
+            var po = new CSharpParseOptions(LanguageVersion.Preview, preprocessorSymbols: defines);
+            var files = lines.Where(l => l.StartsWith("file ")).Select(l => l[5..]).ToList();
+            var trees = files.AsParallel().AsOrdered().Select(f =>
+            {
+                var path = Path.Combine(root, f);
+                if (!File.Exists(path)) throw new CompileException($"library source missing: {path} (dotnet/runtime {UpstreamSources.Tag})");
+                return CSharpSyntaxTree.ParseText(File.ReadAllText(path), po, path: "dotnet/runtime/" + f);
+            }).ToList();
+            trees.AddRange(own.Where(r => r.Name.StartsWith(prefix) && r.Name.EndsWith(".cs"))
+                .AsParallel().AsOrdered().Select(r => CSharpSyntaxTree.ParseText(r.Text, po, path: "cs2wasm/" + r.Name)));
+            built.Add(CSharpCompilation.Create(lib, trees, built.Select(b => (MetadataReference)b.ToMetadataReference()), s_options));
+        }
+        return built;
     }
 
     void Index(INamespaceOrTypeSymbol ns)
@@ -42,14 +91,57 @@ internal sealed class Library
         {
             if (m is INamedTypeSymbol t)
             {
-                if (t.Locations.Any(l => l.IsInSource)) _types[Types.DocId(t)] = t;
+                // a public type wins over an internal one with the same name in another library
+                if (t.Locations.Any(l => l.IsInSource))
+                {
+                    var id = Types.DocId(t);
+                    if (!_types.TryGetValue(id, out var prev) || (!IsVisible(prev) && IsVisible(t))) _types[id] = t;
+                }
                 Index(t);
             }
             else if (m is INamespaceSymbol n) Index(n);
         }
     }
 
+    static bool IsVisible(INamedTypeSymbol t)
+    {
+        for (var x = t; x != null; x = x.ContainingType)
+            if (x.DeclaredAccessibility is not (Accessibility.Public or Accessibility.Protected or Accessibility.ProtectedOrInternal)) return false;
+        return true;
+    }
+
     public INamedTypeSymbol? FindType(INamedTypeSymbol def) => _types.GetValueOrDefault(Types.DocId(def));
 
-    public IEnumerable<Diagnostic> Errors => Compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error);
+    /// <summary>A library type by metadata name, the corlib's first.</summary>
+    public INamedTypeSymbol? TypeByMetadataName(string name)
+    {
+        foreach (var c in All) if (c.Assembly.GetTypeByMetadataName(name) is { } t) return t;
+        return null;
+    }
+
+    public bool Contains(SyntaxTree tree) => _trees.Contains(tree);
+    public CSharpCompilation? CompilationOf(SyntaxTree tree) => _trees.Contains(tree) ? All.First(c => c.ContainsSyntaxTree(tree)) : null;
+
+    /// <summary>Errors of the hand-written library (the upstream libraries are checked when they are generated, and
+    /// binding all of them on every build would cost seconds).</summary>
+    public IEnumerable<Diagnostic> Errors => UseUpstream ? [] : Compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error);
+}
+
+/// <summary>Where the dotnet/runtime sources the library is built from are.</summary>
+internal static class UpstreamSources
+{
+    public const string Tag = "v11.0.0";
+
+    /// <summary>The libraries, each after those it references (as tools/CoreLibManifest lists them).</summary>
+    public static readonly string[] Libraries =
+    [
+        "System.Private.CoreLib", "System.Collections", "System.Collections.NonGeneric", "System.ObjectModel", "System.Memory",
+        "System.Threading", "System.Collections.Concurrent", "System.Linq", "System.Console", "System.Runtime.Numerics",
+        "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions",
+    ];
+
+    /// <summary>CS2WASM_RUNTIME_SOURCES, else the cache (%LOCALAPPDATA%/cs2wasm/runtime-v11.0.0).</summary>
+    public static string Root =>
+        Environment.GetEnvironmentVariable("CS2WASM_RUNTIME_SOURCES") is { Length: > 0 } r ? r
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "cs2wasm", "runtime-" + Tag);
 }

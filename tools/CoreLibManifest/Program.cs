@@ -84,11 +84,16 @@ sealed class Manifest
         props["Is64Bit"] = "false";
         props["FeaturePerfTracing"] = "false";
         props["FeatureWasmManagedThreads"] = "false";
+        // cs2wasm has threads (section 4.5): workers on the shared memory, not the browser runtime's JS ones
+        props["FeatureMultithreading"] = "true";
         props["RuntimeFlavor"] = "Mono";
         props["DefineConstants"] = "";
         foreach (var k in props.Keys) pinned.Add(k);
         pinned.Remove("DefineConstants");
         Project(Libraries.Project(root, lib));
+        // cs2wasm's workers are not the browser runtime's: they have no JS event loop to yield to
+        foreach (var drop in new[] { "src/libraries/System.Private.CoreLib/src/System/Threading/ThreadPool.Browser.Threads.cs" })
+            files.Remove(Path.GetFullPath(Path.Combine(root, drop)));
         // what the libraries' build adds to a project with resources (CoreLib has its own SR.cs)
         if (lib != "System.Private.CoreLib" && File.Exists(Libraries.Resx(root, lib)))
             files.Add(Path.Combine(root, "src", "libraries", "Common", "src", "System", "SR.cs"));

@@ -1,65 +1,30 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's runtime half of Thread, over cs2wasm's threads (section 4.5): a thread is a worker instance of the
+// module on the shared memory, started by the engine's thread_spawn import (Cs2Wasm.Runtime.Threads). Mono's internal
+// calls are implemented here; the members the shared Thread.cs uses are Mono's.
+
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using Cs2Wasm.Runtime;
 
 namespace System.Threading
 {
-    //
-    // Under netcore, there is only one thread object per thread
-    //
-    [StructLayout(LayoutKind.Sequential)]
     public partial class Thread
     {
-#pragma warning disable 169, 414, 649
-        #region Sync with metadata/object-internals.h
-        private int lock_thread_id;
-        // stores a thread handle
-        private IntPtr handle;
-        private IntPtr native_handle; // used only on Win32
-        /* accessed only from unmanaged code */
-        private IntPtr name;
-        private int name_free; // bool
-        private int name_length;
-        private ThreadState state;
-        private object? abort_exc;
-        private int abort_state_handle;
-        internal long thread_id;
-        private IntPtr debugger_thread; // FIXME switch to bool as soon as CI testing with corlib version bump works
-        private UIntPtr static_data; /* GC-tracked */
-        private IntPtr runtime_thread_info;
-        private int interruption_requested;
-        private IntPtr longlived;
-        internal bool threadpool_thread;
-        internal bool external_eventloop; // browser-wasm: thread will return to the JS eventloop
-        /* These are used from managed code */
-        internal byte apartment_state;
+        // cs2wasm's state: the worker's stack and thread-local block, its id, and _run (0 unstarted, 1 running,
+        // 2 finished) that joiners wait on.
+        internal int _stack, _tls, _run;
         internal int managed_id;
-        private int small_id;
-        private IntPtr manage_callback;
-        private IntPtr flags;
-        private IntPtr thread_pinning_ref;
-        private int priority;
-        private IntPtr owned_mutex;
-        private IntPtr suspended_event;
-        private int self_suspended;
-        private IntPtr thread_state;
-
-        private Thread self = null!;
-        private object? pending_exception;
-
-        /* This is used only to check that we are in sync between the representation
-         * of MonoInternalThread in native and InternalThread in managed
-         *
-         * DO NOT RENAME! DO NOT ADD FIELDS AFTER! */
-        private IntPtr last;
-        #endregion
-#pragma warning restore 169, 414, 649
+        private ThreadState _threadState;
+        private int priority = (int)ThreadPriority.Normal;
+        internal bool threadpool_thread;
+        internal bool external_eventloop;
 
         private string? _name;
         private StartHelper? _startHelper;
@@ -69,19 +34,11 @@ namespace System.Threading
         internal WaitSubsystem.ThreadWaitInfo? _waitInfo;
 #endif
 
-        // This is used for a quick check on thread pool threads after running a work item to determine if the name, background
-        // state, or priority were changed by the work item, and if so to reset it. Other threads may also change some of those,
-        // but those types of changes may race with the reset anyway, so this field doesn't need to be synchronized.
         private bool _mayNeedResetForThreadPool;
 
         private Thread()
         {
             Initialize();
-        }
-
-        ~Thread()
-        {
-            FreeInternal();
         }
 
         public bool IsAlive
@@ -130,14 +87,8 @@ namespace System.Threading
 
         public int ManagedThreadId => managed_id;
 
-        internal static int OptimalMaxSpinWaitsPerSpinIteration
-        {
-            get
-            {
-                // Default from coreclr (src/utilcode/yieldprocessornormalized.cpp)
-                return 7;
-            }
-        }
+        internal static int OptimalMaxSpinWaitsPerSpinIteration => 7;
+
 #if TARGET_UNIX || TARGET_BROWSER || TARGET_WASI
         internal WaitSubsystem.ThreadWaitInfo WaitInfo
         {
@@ -163,8 +114,7 @@ namespace System.Threading
             }
             set
             {
-                // TODO: arguments check
-                SetPriority(this, (int)value);
+                priority = (int)value;
                 if (value != ThreadPriority.Normal)
                 {
                     _mayNeedResetForThreadPool = true;
@@ -186,7 +136,6 @@ namespace System.Threading
 #if TARGET_UNIX || TARGET_BROWSER || TARGET_WASI // TODO: https://github.com/dotnet/runtime/issues/49521
             WaitSubsystem.Interrupt(this);
 #endif
-            InterruptInternal(this);
         }
 
         public bool Join(int millisecondsTimeout)
@@ -195,24 +144,17 @@ namespace System.Threading
             return JoinInternal(this, millisecondsTimeout);
         }
 
-#if TARGET_UNIX || TARGET_BROWSER || TARGET_WASI
-        [DynamicDependency(nameof(OnThreadExiting))]
-#endif
         private void Initialize()
         {
-            InitInternal(this);
+            managed_id = Threads.NewId();
+            _threadState = ThreadState.Unstarted;
         }
 
         public static void SpinWait(int iterations)
         {
-            if (iterations < 0)
-                return;
-
-            while (iterations-- > 0)
-                SpinWait_nop();
         }
 
-        // Called from the runtime
+        // Called from the worker (Cs2Wasm.Runtime.Threads.Run)
         internal void StartCallback()
         {
             StartHelper? startHelper = _startHelper;
@@ -222,28 +164,23 @@ namespace System.Threading
             startHelper.Run();
         }
 
-        // Called from the runtime
         internal static void ThrowThreadStartException(Exception ex) => throw new ThreadStartException(ex);
 
         private void StartCore()
         {
-            StartInternal(this, _startHelper?._maxStackSize ?? 0);
+            if (Atomic.CompareExchange32(ref _run, 0, 1) != 0) throw new ThreadStateException(SR.ThreadState_AlreadyStarted);
+            ClrState(this, ThreadState.Unstarted);
+            Threads.SpawnCore(this);
         }
-
-        [DynamicDependency(nameof(StartCallback))]
-        [DynamicDependency(nameof(ThrowThreadStartException))]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void StartInternal(Thread runtimeThread, int stackSize);
 
         private void ThreadNameChanged(string? value)
         {
-            // TODO: Should only raise the events
-            SetName(this, value);
         }
 
         public static bool Yield()
         {
-            return YieldInternal();
+            Threads.SafePoint();
+            return true;
         }
 
         private static bool SetApartmentStateUnchecked(ApartmentState state, bool throwOnError)
@@ -271,98 +208,87 @@ namespace System.Threading
 
         internal void SetWaitSleepJoinState()
         {
-            Debug.Assert(this == CurrentThread);
-            Debug.Assert((GetState(this) & ThreadState.WaitSleepJoin) == 0);
-
             SetState(this, ThreadState.WaitSleepJoin);
         }
 
         internal void ClearWaitSleepJoinState()
         {
-            Debug.Assert(this == CurrentThread);
-            Debug.Assert((GetState(this) & ThreadState.WaitSleepJoin) != 0);
-
             ClrState(this, ThreadState.WaitSleepJoin);
         }
 
-        private static void OnThreadExiting(Thread thread)
+        /// <summary>The worker finished: what Mono's runtime does when a thread exits.</summary>
+        internal static void OnThreadExiting(Thread thread)
         {
 #if TARGET_UNIX || TARGET_BROWSER || TARGET_WASI
-            thread.WaitInfo.OnThreadExiting();
+            thread._waitInfo?.OnThreadExiting();
 #endif
+            SetState(thread, ThreadState.Stopped);
+            Atomic.Store32(ref thread._run, 2);
+            Atomic.Notify(ref thread._run, -1);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern ulong GetCurrentOSThreadId();
+        private static ulong GetCurrentOSThreadId() => (ulong)Rt.ThreadId();
 
-        [MemberNotNull(nameof(self))]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void InitInternal(Thread thread);
-
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern Thread GetCurrentThread();
+        /// <summary>The thread object of a thread that was not started by Thread.Start (the engine's, at first use).</summary>
+        private Thread(int id)
+        {
+            managed_id = id;
+            _run = 1;
+            _threadState = ThreadState.Running;
+        }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static Thread InitializeCurrentThread()
         {
-            var current = GetCurrentThread();
-            t_currentThread = current;
+            t_currentThread = new Thread(Rt.ThreadId());
             return t_currentThread;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern void FreeInternal();
+        /// <summary>The worker side: the thread becomes current there (Cs2Wasm.Runtime.Threads.Run).</summary>
+        internal static void SetCurrent(Thread? t) => t_currentThread = t;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern ThreadState GetState(Thread thread);
+        private static ThreadState GetState(Thread thread) => (ThreadState)Atomic.Load32(ref Unsafe.As<ThreadState, int>(ref thread._threadState));
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void SetState(Thread thread, ThreadState set);
-
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void ClrState(Thread thread, ThreadState clr);
-
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern string GetName(Thread thread);
-
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern unsafe void SetName_icall(Thread thread, char* name, int nameLength);
-
-        private static unsafe void SetName(Thread thread, string? name)
+        private static void SetState(Thread thread, ThreadState set)
         {
-            fixed (char* fixed_name = name)
-                SetName_icall(thread, fixed_name, name?.Length ?? 0);
+            ref int s = ref Unsafe.As<ThreadState, int>(ref thread._threadState);
+            int old;
+            do old = Atomic.Load32(ref s); while (Atomic.CompareExchange32(ref s, old, old | (int)set) != old);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern bool YieldInternal();
-
-        [Intrinsic]
-        private static void SpinWait_nop()
+        private static void ClrState(Thread thread, ThreadState clr)
         {
+            ref int s = ref Unsafe.As<ThreadState, int>(ref thread._threadState);
+            int old;
+            do old = Atomic.Load32(ref s); while (Atomic.CompareExchange32(ref s, old, old & ~(int)clr) != old);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern bool JoinInternal(Thread thread, int millisecondsTimeout);
+        private static string? GetName(Thread thread) => thread._name;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void InterruptInternal(Thread thread);
+        private static void SetName(Thread thread, string? name) => thread._name = name;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void SetPriority(Thread thread, int priority);
+        private static bool JoinInternal(Thread thread, int millisecondsTimeout)
+        {
+            if (Atomic.Load32(ref thread._run) == 0) throw new ThreadStateException(SR.ThreadState_NotStarted);
+            long end = millisecondsTimeout < 0 ? long.MaxValue : Engine.MonotonicNs() + (long)millisecondsTimeout * 1000000;
+            while (Atomic.Load32(ref thread._run) != 2)
+            {
+                long left = end - Engine.MonotonicNs();
+                if (left <= 0) return false;
+                // the engine thread never blocks: it spins
+                if (Rt.ThreadId() == 1) continue;
+                Threads.SafePoint();
+                Atomic.Wait32(ref thread._run, 1, left > 1000000 ? 1000000 : left);
+            }
+            return true;
+        }
 
-        internal int GetSmallId() => small_id;
+        internal int GetSmallId() => managed_id;
 
         internal bool HasExternalEventLoop
         {
-            get
-            {
-                return external_eventloop;
-            }
-            set
-            {
-                external_eventloop = value;
-            }
+            get => external_eventloop;
+            set => external_eventloop = value;
         }
 
 #if TARGET_WINDOWS

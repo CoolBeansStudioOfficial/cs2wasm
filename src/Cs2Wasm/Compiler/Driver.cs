@@ -280,7 +280,7 @@ internal sealed partial class Driver
         return s;
     }
 
-    public bool IsLibrary(ISymbol s) => s.Locations.Any(l => l.IsInSource && l.SourceTree != null && LibCompilation.ContainsSyntaxTree(l.SourceTree));
+    public bool IsLibrary(ISymbol s) => s.Locations.Any(l => l.IsInSource && l.SourceTree != null && Lib.Contains(l.SourceTree));
 
     static bool HasAttr(ISymbol s, string fullName) =>
         s.GetAttributes().Any(a => a.AttributeClass != null && Types.FullName(a.AttributeClass) == fullName);
@@ -363,7 +363,7 @@ internal sealed partial class Driver
         {
             if (_models.TryGetValue(tree, out var m)) return m;
             Compilation? comp = Inputs.FirstOrDefault(c => c.ContainsSyntaxTree(tree));
-            if (comp == null && LibCompilation.ContainsSyntaxTree(tree)) comp = LibCompilation;
+            comp ??= Lib.CompilationOf(tree);
             if (comp == null) throw new CompileException("no compilation contains " + tree.FilePath);
             m = comp.GetSemanticModel(tree);
             _models[tree] = m;
@@ -374,7 +374,7 @@ internal sealed partial class Driver
 
     // ---------------- lib helpers ----------------
     public INamedTypeSymbol LibType(string metadataName) =>
-        LibCompilation.Assembly.GetTypeByMetadataName(metadataName) ?? throw new CompileException("library type missing: " + metadataName);
+        Lib.TypeByMetadataName(metadataName) ?? throw new CompileException("library type missing: " + metadataName);
 
     public MethodInst LibMethod(string type, string name, int arity = -1)
     {
@@ -566,6 +566,14 @@ internal sealed partial class Driver
                     catch (CompileException ex)
                     {
                         Report(Diags.Unsupported, ex.Location ?? mi.Sym.Locations.FirstOrDefault(), ex.Message);
+                        mi.Fn.Body.Clear(); mi.Fn.Locals.Clear();
+                        mi.Fn.Body.Add(new Instr { Op = Op.Unreachable, Pos = -1 });
+                    }
+                    catch (Exception ex) when (Library.UseUpstream)
+                    {
+                        // while the upstream library is brought up: every method the compiler cannot handle yet, in one run
+                        var frame = new System.Diagnostics.StackTrace(ex, true).GetFrames().FirstOrDefault(f => f.GetFileName() != null);
+                        Report(Diags.Unsupported, mi.Sym.Locations.FirstOrDefault(), $"internal error compiling {Display(mi.Sym)}: {ex.GetType().Name}: {ex.Message} at {Path.GetFileName(frame?.GetFileName())}:{frame?.GetFileLineNumber()}");
                         mi.Fn.Body.Clear(); mi.Fn.Locals.Clear();
                         mi.Fn.Body.Add(new Instr { Op = Op.Unreachable, Pos = -1 });
                     }

@@ -29,26 +29,23 @@ namespace System
             }
         }
 
-        #region Keep in sync with MonoException in object-internals.h
-        private string? _unused1;
+        // cs2wasm: the fields the shared Exception.cs uses, and the stack trace as text. The trace is captured when the
+        // exception is thrown (_fullTrace, from the throwing frame outward, and the stack depth there) and cut at the
+        // catching frame (_stackTraceString), as .NET reports it (Cs2Wasm.Runtime.Rt.OnThrow/OnCatch).
         internal string? _message;
         private IDictionary? _data;
-        private Exception? _innerException;
+        private readonly Exception? _innerException;
         private string? _helpURL;
         private object? _traceIPs;
-        private string? _stackTraceString;
+        internal string? _stackTraceString;
         private string? _remoteStackTraceString;
-        private int _unused4;
-        private object[]? _dynamicMethods; // Dynamic methods referenced by the stack trace
         private int _HResult;
         private string? _source;
-        private object? _unused6;
         internal MonoStackFrame[]? foreignExceptionsFrames;
-        private IntPtr[]? native_trace_ips;
-        private int caught_in_unmanaged;
-        #endregion
+        internal string? _fullTrace;
+        internal int _throwDepth;
 
-        private bool HasBeenThrown => _traceIPs != null;
+        private bool HasBeenThrown => _fullTrace != null || _stackTraceString != null;
 
         public MethodBase? TargetSite
         {
