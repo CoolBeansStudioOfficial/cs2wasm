@@ -1,6 +1,7 @@
 using System.Text;
 using Cs2Wasm.Wasm;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Operations;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -25,6 +26,11 @@ internal sealed class MethodInst
     public IReadOnlyDictionary<int, ConstArg>? Consts;
     /// <summary>Set for lambdas and local functions: compiles the body with its closure information.</summary>
     public Action? Compile;
+    /// <summary>A method that returns `this` (section 4.1, specialization by ownership): its body, compiled to return
+    /// `this` borrowed, for direct calls; this one (Fn) is then the owned-return wrapper indirect calls use.</summary>
+    public MethodInst? BorrowedReturn;
+    /// <summary>Set on that body: `return this` does not count.</summary>
+    public bool ReturnsBorrowed;
 }
 
 sealed class StaticSlot(Driver d, int offset) : IAddress
@@ -424,8 +430,61 @@ internal sealed partial class Driver
         fn.FrameName = IsHiddenFrame(m) ? null : FrameName(m);
         fn.ProgramCode = !IsLibrary(m);
         _methods[key] = mi;
-        if (impl is MethodImpl.Body or MethodImpl.Synthesized or MethodImpl.Missing) _work.Enqueue(mi);
+        if (impl == MethodImpl.Body && ReturnsThis(m))
+        {
+            // the body returns `this` borrowed; the method's own function retains it for indirect callers
+            var bfn = Module.AddFunction(Display(m) + " [returns this]", Signature(m, Types));
+            bfn.FrameName = fn.FrameName; bfn.ProgramCode = fn.ProgramCode;
+            var mb = new MethodInst { Sym = m, Fn = bfn, Key = key + "|returns-this", Impl = MethodImpl.Body, ReachedFrom = Compiling, ReturnsBorrowed = true };
+            _methods[mb.Key] = mb;
+            _work.Enqueue(mb);
+            mi.BorrowedReturn = mb;
+            mi.Impl = MethodImpl.Synthesized;
+            fn.FrameName = null; // (a forwarder: the body's frame is the one traces show)
+            var wfn = fn;
+            mi.Compile = () =>
+            {
+                var e = new Emitter(wfn);
+                for (int i = 0; i < wfn.Type.Params.Length; i++) e.Get(i);
+                e.Call(bfn);
+                e.Call(Rt.Retain);
+            };
+        }
+        if (mi.Impl is MethodImpl.Body or MethodImpl.Synthesized or MethodImpl.Missing) _work.Enqueue(mi);
         return mi;
+    }
+
+    readonly Dictionary<string, bool> _returnsThis = [];
+
+    /// <summary>An instance method of a class whose every return is `this` (StringBuilder.Append and friends).</summary>
+    bool ReturnsThis(IMethodSymbol m)
+    {
+        var def = m.OriginalDefinition;
+        if (def.IsStatic || def.MethodKind != MethodKind.Ordinary || def.IsAsync || def.ReturnsVoid || def.ReturnsByRef || def.ReturnsByRefReadonly) return false;
+        if (def.ContainingType is not { TypeKind: TypeKind.Class } || !def.ReturnType.IsReferenceType) return false;
+        var key = Types.MethodKey(def);
+        if (_returnsThis.TryGetValue(key, out var r)) return r;
+        _returnsThis[key] = false; // (while deciding: a recursive call does not count)
+        r = false;
+        foreach (var sr in def.DeclaringSyntaxReferences)
+        {
+            if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) { r = false; break; }
+            var nested = body.Descendants().Where(o => o is IAnonymousFunctionOperation or ILocalFunctionOperation).SelectMany(o => o.DescendantsAndSelf()).ToHashSet();
+            var returns = body.DescendantsAndSelf().Where(o => !nested.Contains(o)).ToList();
+            if (returns.Any(o => o.Kind is OperationKind.YieldReturn or OperationKind.YieldBreak)) { r = false; break; }
+            var rets = returns.OfType<IReturnOperation>().ToList();
+            r = rets.Count > 0 && rets.All(x =>
+            {
+                var v = x.ReturnedValue;
+                while (v is IConversionOperation { OperatorMethod: null } c) v = c.Operand;
+                if (v is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }) return true;
+                // `return Append(x)`: a call on this of a method that returns this (not virtual: that one is the one run)
+                return v is IInvocationOperation { Instance: IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }, IsVirtual: false } inv
+                    && ReturnsThis(inv.TargetMethod);
+            });
+        }
+        _returnsThis[key] = r;
+        return r;
     }
 
     public bool TryGetMethod(string key, out MethodInst mi) => _methods.TryGetValue(key, out mi!);

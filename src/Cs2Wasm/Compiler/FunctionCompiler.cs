@@ -815,7 +815,8 @@ sealed partial class FunctionCompiler
                 else
                 {
                     var o = EmitValueAs(value, rt);
-                    if (Types.IsRef(rt)) ToOwned(o);
+                    // (a body that returns `this` borrowed: Driver.ReturnsThis)
+                    if (Types.IsRef(rt) && !(Inst?.ReturnsBorrowed == true && _closure == null)) ToOwned(o);
                     var vt = Types.WasmType(rt)!.Value;
                     _retLocal = _retLocal >= 0 ? _retLocal : E.AddLocal(vt);
                     E.Set(_retLocal);

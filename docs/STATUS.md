@@ -23,7 +23,11 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 - **Build time:** 150–800 ms per test program on the .NET runtime (desktop), after the first compile. Not measured
   in the browser.
 - **Run-time speed vs NativeAOT:** unmeasured.
-- **Reference-count operations removed at compile time:** unmeasured (no counter yet).
+- **Reference-count operations removed at compile time (static, `CS2WASM_STATS=1`):** a scheme without ownership
+  analysis pays an increment and a decrement for every reference transfer (assignment, initializer, argument,
+  return); the module keeps 49% of that for `Console.WriteLine(42)`, 53% for the LINQ program, 46% for the game
+  simulation (so 51–54% removed). Lobster reports about 95%: most of what remains is fields read into locals
+  (retained, released at scope end) and owned call results.
 
 ## Section by section
 
@@ -169,7 +173,8 @@ with the key. `GC.SuppressFinalize`/`ReRegisterForFinalize` are marks too; `GC.C
 are freed when their count reaches zero). Programs without marks pay nothing.
 
 Not done:
-- ownership specialization of functions, retroactive owners, the counting-elision statistics (4.1);
+- ownership specialization beyond methods that return `this` (StringBuilder.Append: their body returns it
+  borrowed to direct callers, an owned-return wrapper serves indirect ones), retroactive owners (4.1);
 
 ### 4.5 Threads — partial
 Done: `System.Threading.Thread` runs on a real worker: each thread is a new instance of the module on the shared

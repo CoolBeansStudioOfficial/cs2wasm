@@ -1139,6 +1139,7 @@ internal sealed partial class Driver
         Module.CustomSections.Add(new CustomSection("cs2wasm.version", ver.ToArray()));
         foreach (var (n, data) in Options.CustomSections) Module.CustomSections.Add(new CustomSection(n, data));
         var enc = Module.Encode(Options.Optimize);
+        if (Environment.GetEnvironmentVariable("CS2WASM_STATS") is "1" or "2") PrintCountStats(enc);
         // frames: which functions are .NET frames (a bit per function index), and the frame names of the library's
         // (the program's are in the name section), each as type, method and parameters over one string table
         var fr = new Writer();
@@ -1217,6 +1218,39 @@ internal sealed partial class Driver
         else { fsec.Byte(0); fsec.Bytes(frRaw); }
         withLines.Byte(0); withLines.U32(fsec.Length); withLines.Bytes(fsec.ToArray());
         return (withLines.ToArray(), SourceMap(enc));
+    }
+
+    /// <summary>
+    /// The reference-count operations removed at compile time (section 4.1, static counts): a counting scheme without
+    /// ownership analysis pays an increment and a decrement for every reference transfer (an assignment, an
+    /// initializer, an argument, a return of a reference) in the code compiled; the module has the retains and releases
+    /// (and arena links) left after ownership and the final pass.
+    /// </summary>
+    void PrintCountStats(WasmModule.Encoded enc)
+    {
+        long transfers = 0;
+        foreach (var mi in AllMethods.Where(m => m.Compiled && m.Impl == MethodImpl.Body))
+            foreach (var r in mi.Sym.OriginalDefinition.DeclaringSyntaxReferences)
+            {
+                if (ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax()) is not { } body) continue;
+                foreach (var op in body.DescendantsAndSelf())
+                {
+                    bool Ref(ITypeSymbol? t) => t != null && (t.IsReferenceType || t.TypeKind == TypeKind.TypeParameter && !t.IsValueType);
+                    switch (op)
+                    {
+                        case ISimpleAssignmentOperation sa when Ref(sa.Target.Type): transfers++; break;
+                        case IVariableInitializerOperation vi when Ref(vi.Value.Type): transfers++; break;
+                        case IArgumentOperation ar when ar.Parameter != null && Ref(ar.Parameter.Type): transfers++; break;
+                        case IReturnOperation { ReturnedValue: { } rv } when Ref(rv.Type): transfers++; break;
+                    }
+                }
+            }
+        long emitted = 0;
+        foreach (var f in enc.FunctionOrder)
+            foreach (var ins in f.Body)
+                if (ins.Op == Op.Call && ins.Ref is WasmFunction g && (g.Name is "rt.retain" or "rt.release" || g.Name.StartsWith("Cs2Wasm.Runtime.Rt.Arena"))) emitted++;
+        long naive = 2 * transfers;
+        Console.Error.WriteLine($"  reference counting: {emitted} count operations in the module, against {naive} for counting every transfer ({transfers} transfers): {(naive == 0 ? 0 : 100.0 * (naive - emitted) / naive):F1}% removed (static)");
     }
 
     static string NormalizePath(string p) => p.Replace('\\', '/');

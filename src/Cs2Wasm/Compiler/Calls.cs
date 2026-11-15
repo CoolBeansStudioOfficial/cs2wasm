@@ -378,6 +378,14 @@ sealed partial class FunctionCompiler
             }
             mi.FirstUse ??= syntax?.GetLocation();
             if (mi.Impl == MethodImpl.Missing && m.IsAbstract) throw new CompileException("call to abstract method " + m.ToDisplayString());
+            if (mi.BorrowedReturn is { } mb && _clone == null)
+            {
+                // returns its receiver: borrowed from what the caller already holds (the receiver lives to the end
+                // of the statement, in a temp if it was not a variable)
+                E.Call(mb.Fn);
+                Inst?.Callees.Add(mb);
+                return Own.Stable;
+            }
             E.Call(mi.Fn);
             Inst?.Callees.Add(mi);
         }
