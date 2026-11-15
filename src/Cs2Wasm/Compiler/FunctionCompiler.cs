@@ -52,6 +52,7 @@ sealed class Ctl
 
 sealed partial class FunctionCompiler
 {
+    static readonly bool s_expNoThrow = Environment.GetEnvironmentVariable("CS2WASM_EXP_NOTHROW") == "1";
     readonly Driver D;
     readonly Types T;
     readonly Emitter E;
@@ -334,6 +335,7 @@ sealed partial class FunctionCompiler
 
     RuntimeFns Rt => D.Rt;
     public string FnName => E.Fn.Name;
+    public bool FnProgramCode => E.Fn.ProgramCode;
     public string? OuterKey => _closure?.OuterKey;
     /// <summary>The method a lambda or local function is lexically inside (for frame names).</summary>
     public IMethodSymbol OuterMethod => _closure?.OuterMethod ?? M;
@@ -1344,6 +1346,7 @@ sealed partial class FunctionCompiler
 
     void EmitThrow(IOperation? exception)
     {
+        if (s_expNoThrow && D.IsLibrary(M)) { E.Op(Op.Unreachable); return; } // EXPERIMENT: measurement only
         if (exception == null)
         {
             // rethrow: the innermost catch's exception

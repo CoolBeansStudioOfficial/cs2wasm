@@ -242,7 +242,10 @@ local packing, data segment packing.
 `init` export, exports from `[UnmanagedCallersOnly(EntryPoint)]` wrapped so no exception crosses them (reported
 through `cs2wasm.report_exception`, export returns 0), boundary-table imports (one typed import per allowed method;
 unlisted bodiless methods are `CW0002`), custom sections copied as given, `cs2wasm.version` (compiler and ABI
-version), `name` section, `cs2wasm.lines` (code offset → file and line), `cs2wasm.frames` (.NET frame names), a v3
+version), `name` section (the program's functions, by .NET frame name), `cs2wasm.lines` (code offset → file and
+line for the program's own files, delta-encoded; the library's frames have none, as .NET's framework frames show
+none), `cs2wasm.frames` (a bit per function index for .NET frames, and the library's frame names as type, method and
+parameters over one string table), a v3
 source map. The stack pointer global is exported (`__stack_pointer`, section 7.2); the other mutable state is in memory.
 Stack traces: `Exception.StackTrace` and `ToString()` give C# frames with file and line in .NET's format
 (`   at Program.Depth(Int32 n) in C:\...\x.cs:line 25`), captured through the engine at `throw` only (no cost on

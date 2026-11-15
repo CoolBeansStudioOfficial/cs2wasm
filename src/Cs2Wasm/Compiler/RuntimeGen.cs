@@ -998,6 +998,7 @@ internal sealed partial class Driver
         var ret = Types.Resolve(sym.ReturnType, map);
         var fn = Module.AddFunction("lambda in " + owner.FnName, NestedSignature(sym, map));
         fn.FrameName = NestedFrameName(owner, sym, "b__0");
+        fn.ProgramCode = owner.FnProgramCode;
         mi = new MethodInst { Sym = sym, Fn = fn, Key = key, Impl = MethodImpl.Body };
         var ci = owner.MakeClosureInfo(map, env, ret);
         mi.Compile = () => FunctionCompiler.CompileNested(this, mi, sym, af.Body, ci);
@@ -1014,6 +1015,7 @@ internal sealed partial class Driver
         if (_methods.TryGetValue(key, out var mi)) return mi;
         var fn = Module.AddFunction("local " + def.Name + " in " + owner.FnName, NestedSignature(def, map));
         fn.FrameName = NestedFrameName(owner, def, "g__" + def.Name + "|0_0");
+        fn.ProgramCode = owner.FnProgramCode;
         mi = new MethodInst { Sym = def, Fn = fn, Key = key, Impl = MethodImpl.Body };
         var syntax = def.DeclaringSyntaxReferences.First().GetSyntax();
         var op = (ILocalFunctionOperation)ModelFor(syntax.SyntaxTree).GetOperation(syntax)!;
@@ -1047,15 +1049,70 @@ internal sealed partial class Driver
         Module.CustomSections.Add(new CustomSection("cs2wasm.version", ver.ToArray()));
         foreach (var (n, data) in Options.CustomSections) Module.CustomSections.Add(new CustomSection(n, data));
         var enc = Module.Encode(Options.Optimize);
-        // line table custom section: (offset, file, line) triples, files first
-        // frame names: for each function index, a flag (1 = visible) and the .NET frame name
+        // frames: which functions are .NET frames (a bit per function index), and the frame names of the library's
+        // (the program's are in the name section), each as type, method and parameters over one string table
         var fr = new Writer();
-        fr.U32(enc.FunctionOrder.Count);
-        foreach (var f in enc.FunctionOrder) { fr.Byte((byte)(f.FrameName != null ? 1 : 0)); fr.Name(f.FrameName ?? ""); }
+        // (by function index: imports come first)
+        int nfn = enc.FunctionOrder.Count == 0 ? 0 : enc.FunctionOrder.Max(f => f.Index) + 1;
+        fr.U32(nfn);
+        var bits = new byte[(nfn + 7) / 8];
+        foreach (var f in enc.FunctionOrder) if (f.FrameName != null) bits[f.Index >> 3] |= (byte)(1 << (f.Index & 7));
+        fr.Bytes(bits);
+        var strings = new List<string>();
+        var stringIndex = new Dictionary<string, int>();
+        int Str(string s) { if (!stringIndex.TryGetValue(s, out int i)) { i = strings.Count; strings.Add(s); stringIndex[s] = i; } return i; }
+        var framesW = new Writer();
+        var libFrames = enc.FunctionOrder.Select(f => (f, i: f.Index)).Where(x => x.f.FrameName != null && !x.f.ProgramCode).ToList();
+        framesW.U32(libFrames.Count);
+        foreach (var (f, i) in libFrames)
+        {
+            framesW.U32(i);
+            var name = f.FrameName!;
+            int paren = name.IndexOf('(');
+            int gen = name.IndexOf('[');
+            int head = paren < 0 ? -1 : name.LastIndexOf('.', gen >= 0 && gen < paren ? gen : paren - 1);
+            if (paren < 0 || head < 0 || !name.EndsWith(')')) { framesW.U32(0); framesW.U32(Str(name)); continue; }
+            var ps = name[(paren + 1)..^1];
+            var parts = ps.Length == 0 ? [] : ps.Split(", ");
+            if (parts.Any(p => p.LastIndexOf(' ') <= 0)) { framesW.U32(0); framesW.U32(Str(name)); continue; }
+            framesW.U32(parts.Length + 1);
+            framesW.U32(Str(name[..head])); framesW.U32(Str(name[(head + 1)..paren]));
+            foreach (var p in parts) { int sp = p.LastIndexOf(' '); framesW.U32(Str(p[..sp])); framesW.U32(Str(p[(sp + 1)..])); }
+        }
+        fr.U32(strings.Count); foreach (var s in strings) fr.Name(s);
+        fr.Bytes(framesW.ToArray());
+        // lines: code offset -> file and line, for the program's own files (.NET shows no file and line for the
+        // library's frames). Files first, then entries in offset order: offset delta, (line delta << 1 | file
+        // changes), and the new file's index when it changes.
+        var inputFiles = Inputs.SelectMany(c => c.SyntaxTrees).Select(t => t.FilePath).ToHashSet();
+        var own = new Dictionary<int, int>();
+        var ownFiles = new List<string>();
+        var entries = new List<(int off, int file, int line)>();
+        foreach (var l in enc.Lines.OrderBy(l => l.Offset))
+        {
+            var p = PositionAt(l.Pos);
+            if (!inputFiles.Contains(Files[p.File]))
+            {
+                // the library's code: no location from here on (file index -1, encoded as the file count)
+                if (entries.Count > 0 && entries[^1].file != -1) entries.Add((l.Offset, -1, 0));
+                continue;
+            }
+            if (!own.TryGetValue(p.File, out int fi)) { fi = ownFiles.Count; ownFiles.Add(Files[p.File]); own[p.File] = fi; }
+            if (entries.Count > 0 && entries[^1].file == fi && entries[^1].line == p.Line) continue;
+            entries.Add((l.Offset, fi, p.Line));
+        }
         var lt = new Writer();
-        lt.U32(Files.Count); foreach (var f in Files) lt.Name(f);
-        lt.U32(enc.Lines.Count);
-        foreach (var l in enc.Lines) { var p = PositionAt(l.Pos); lt.U32(l.Offset); lt.U32(p.File); lt.U32(p.Line); }
+        lt.U32(ownFiles.Count); foreach (var f in ownFiles) lt.Name(f);
+        lt.U32(entries.Count);
+        int lastOff = 0, lastFile = -1, lastLine = 0;
+        foreach (var (off, file, line) in entries)
+        {
+            lt.U32(off - lastOff);
+            bool fileChanges = file != lastFile;
+            lt.S32(((line - lastLine) << 1) | (fileChanges ? 1 : 0));
+            if (fileChanges) lt.U32(file < 0 ? ownFiles.Count : file);
+            lastOff = off; lastFile = file; lastLine = line;
+        }
         var bytes = enc.Bytes;
         var withLines = new Writer();
         withLines.Bytes(bytes);

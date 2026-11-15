@@ -213,8 +213,10 @@ internal sealed class WasmModule
         names.Name("name");
         var fnNames = new Writer();
         var all = imports.Concat(defined).ToList();
-        fnNames.U32(all.Count);
-        foreach (var f in all) { fnNames.U32(f.Index); fnNames.Name(f.Name); }
+        // the program's own functions, by their .NET frame names (the library's frame names are in cs2wasm.frames)
+        var named = all.Where(f => f.ProgramCode).ToList();
+        fnNames.U32(named.Count);
+        foreach (var f in named) { fnNames.U32(f.Index); fnNames.Name(f.FrameName ?? f.Name); }
         names.Byte(1); names.U32(fnNames.Length); names.Bytes(fnNames.ToArray());
         if (globals.Count > 0)
         {

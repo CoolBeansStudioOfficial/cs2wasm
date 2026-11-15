@@ -118,6 +118,8 @@ internal sealed class WasmFunction
     public WasmFunction? ForwardTo;
     /// <summary>The frame as .NET's StackTrace prints it; null for compiler-internal functions (hidden from traces).</summary>
     public string? FrameName;
+    /// <summary>Compiled from the program's own code (named in the name section; the library's frames are named in cs2wasm.frames).</summary>
+    public bool ProgramCode;
     public WasmFunction(string name, FuncType type) { Name = name; Type = type; }
     public override string ToString() => Name;
 }

@@ -202,6 +202,9 @@ internal sealed partial class Driver
     }
 
     // ---------------- literals ----------------
+    int _literalBytes;
+    readonly Dictionary<string, int>? _blobs = Environment.GetEnvironmentVariable("CS2WASM_STATS") != null ? [] : null;
+
     public IAddress StringLiteral(string s)
     {
         if (_literals.TryGetValue(s, out var a)) return a;
@@ -213,6 +216,7 @@ internal sealed partial class Driver
         Data.Bytes.Add(0); Data.Bytes.Add(0);
         a = new DataAddr(this, off);
         _literals[s] = a;
+        _literalBytes += Data.Bytes.Count - off;
         return a;
     }
 
@@ -221,6 +225,7 @@ internal sealed partial class Driver
         Align(align);
         int off = Data.Bytes.Count;
         Data.Bytes.AddRange(bytes);
+        if (_blobs != null) { var k = Compiling != null ? Display(Compiling.Sym) : "(tables)"; _blobs.TryGetValue(k, out int n); _blobs[k] = n + bytes.Length; }
         return new DataAddr(this, off);
     }
 
@@ -296,6 +301,7 @@ internal sealed partial class Driver
         else fn = Module.AddFunction(Display(m), Signature(m, Types));
         mi = new MethodInst { Sym = m, Fn = fn, Key = key, Impl = impl, ReachedFrom = Compiling };
         fn.FrameName = IsHiddenFrame(m) ? null : FrameName(m);
+        fn.ProgramCode = !IsLibrary(m);
         _methods[key] = mi;
         if (impl is MethodImpl.Body or MethodImpl.Synthesized or MethodImpl.Missing) _work.Enqueue(mi);
         return mi;
@@ -661,6 +667,8 @@ internal sealed partial class Driver
         string Ns(MethodInst m) => m.Sym.ContainingType?.ContainingNamespace?.ToDisplayString() ?? "?";
         string Ty(MethodInst m) => m.Sym.ContainingType is { } t ? Types.FullName(t.OriginalDefinition) : "?";
         Console.Error.WriteLine($"{compiled.Count} methods, {compiled.Sum(m => m.Fn.Body.Count)} instructions");
+        Console.Error.WriteLine($"  data {Data.Bytes.Count} bytes: string literals {_literalBytes} ({_literals.Count}), blobs {_blobs!.Values.Sum()}");
+        foreach (var (k, n) in _blobs.OrderByDescending(x => x.Value).Take(12)) Console.Error.WriteLine($"    {n,7} {k}");
         var spec = compiled.Where(m => m.Consts != null).ToList();
         Console.Error.WriteLine($"  {spec.Count} constant-argument copies, {spec.Sum(m => m.Fn.Body.Count)} instructions");
         if (Environment.GetEnvironmentVariable("CS2WASM_STATS") == "2")
