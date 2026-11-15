@@ -16,6 +16,15 @@ namespace Cs2Wasm.Compiler;
 sealed class ReflectionKeep
 {
     public readonly Dictionary<string, (INamedTypeSymbol type, bool all, HashSet<string> names, bool ctors)> Types = [];
+    /// <summary>Generic method instances MakeGenericMethod asks for (typeof arguments the compiler sees), by type.</summary>
+    public readonly Dictionary<string, List<IMethodSymbol>> GenericInstances = [];
+    public void KeepInstance(INamedTypeSymbol t, IMethodSymbol m)
+    {
+        Keep(t, m.Name);
+        var k = Compiler.Types.Key(t);
+        if (!GenericInstances.TryGetValue(k, out var l)) GenericInstances[k] = l = [];
+        if (!l.Any(x => SymbolEqualityComparer.Default.Equals(x, m))) l.Add(m);
+    }
     public void Keep(INamedTypeSymbol t, string? name, bool ctors = false)
     {
         var k = Compiler.Types.Key(t);
@@ -66,7 +75,8 @@ internal sealed partial class Driver
         _reflect = keep;
         // thunks for the kept members (compiled in the next round)
         foreach (var (t, all, names, ctors) in keep.Types.Values.ToList())
-            foreach (var m in KeptMembers(t, all, names, ctors)) ThunkFor(m);
+            foreach (var m in KeptMembers(t, all, names, ctors))
+                if (m is not IMethodSymbol { IsGenericMethod: true } gd || !IsMethodDefinition(gd)) ThunkFor(m);
     }
 
     void Visit(IInvocationOperation op, TypeMap map, ReflectionKeep keep, bool input = true)
@@ -89,6 +99,13 @@ internal sealed partial class Driver
                     keep.Keep(nt, dn);
             return;
         }
+        if (owner is "MethodInfo" or "RuntimeMethodInfo" && m.Name == "MakeGenericMethod" && MethodOf(op.Instance, map) is var (mt, mname) && TypeArgsOf(op, map) is { } targs)
+        {
+            foreach (var gm in mt.GetMembers(mname).OfType<IMethodSymbol>())
+                if (gm.IsGenericMethod && gm.TypeParameters.Length == targs.Count)
+                    keep.KeepInstance(mt, gm.OriginalDefinition.Construct([.. targs]));
+            return;
+        }
         if (owner is not ("Type" or "TypeInfo" or "MemberInfo" or "CustomAttributeExtensions" or "Attribute") || !s_reflectNames.Contains(m.Name)) return;
         if (owner is "MemberInfo" or "CustomAttributeExtensions" or "Attribute") return; // attributes of kept members are kept with them
         var t = op.Instance != null ? ReceiverType(op.Instance, map) : null;
@@ -108,6 +125,38 @@ internal sealed partial class Driver
         if (m.Name is "GetConstructor" or "GetConstructors") keep.Keep(t, null, ctors: true);
         else if (m.Name is "GetCustomAttributes" or "GetCustomAttribute" or "IsDefined" or "GetInterfaces") keep.Keep(t, "<type>");
         else keep.Keep(t, name);
+    }
+
+    /// <summary>`typeof(X).GetMethod("M")` (through a local assigned once): X and M.</summary>
+    (INamedTypeSymbol, string)? MethodOf(IOperation? op, TypeMap map)
+    {
+        while (op is IConversionOperation c) op = c.Operand;
+        if (op is ILocalReferenceOperation lr && lr.Local.DeclaringSyntaxReferences.FirstOrDefault() is { } decl
+            && ModelFor(decl.SyntaxTree).GetOperation(decl.GetSyntax()) is IVariableDeclaratorOperation { Initializer.Value: { } init })
+            return MethodOf(init, map);
+        if (op is IInvocationOperation { TargetMethod.Name: "GetMethod", Instance: { } ti, Arguments: [var a0, ..] }
+            && a0.Value.ConstantValue is { HasValue: true, Value: string name } && ReceiverType(ti, map) is { } t)
+            return (t, name);
+        return null;
+    }
+
+    /// <summary>The type arguments of MakeGenericMethod(typeof(A), ...), when all are typeof constants.</summary>
+    List<ITypeSymbol>? TypeArgsOf(IInvocationOperation op, TypeMap map)
+    {
+        if (op.Arguments is not [{ Value: var v }]) return null;
+        while (v is IConversionOperation c) v = c.Operand;
+        if (v is not IArrayCreationOperation { Initializer: { } init }) return null;
+        var r = new List<ITypeSymbol>();
+        foreach (var e in init.ElementValues)
+        {
+            var x = e;
+            while (x is IConversionOperation c2) x = c2.Operand;
+            if (x is not ITypeOfOperation to) return null;
+            var at = Types.Resolve(to.TypeOperand, map);
+            if (at is ITypeParameterSymbol) return null;
+            r.Add(Types.Canonical(at));
+        }
+        return r;
     }
 
     /// <summary>The type a Type-valued operation names, when the compiler can see it.</summary>
@@ -154,6 +203,12 @@ internal sealed partial class Driver
                     case IEventSymbol ev:
                         if (ev.AddMethod is { } ea) yield return ea;
                         if (ev.RemoveMethod is { } er) yield return er;
+                        break;
+                    case IMethodSymbol { MethodKind: MethodKind.Ordinary, IsGenericMethod: true, IsAbstract: false } gm when gm.Parameters.All(p => p.RefKind == RefKind.None && !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !gm.ReturnType.IsRefLikeType && !gm.IsExtern:
+                        // a generic method definition (invoked only through its instances)
+                        yield return gm;
+                        if (_reflect != null && _reflect.GenericInstances.TryGetValue(Compiler.Types.Key(t), out var insts))
+                            foreach (var inst in insts) if (SymbolEqualityComparer.Default.Equals(inst.OriginalDefinition, gm.OriginalDefinition)) yield return inst;
                         break;
                     case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke or MethodKind.EventAdd or MethodKind.EventRemove } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => p.RefKind == RefKind.None && !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !ms.ReturnType.IsRefLikeType && !ms.IsExtern:
                         yield return ms; break;
@@ -274,6 +329,8 @@ internal sealed partial class Driver
         }
     }
 
+    static bool IsMethodDefinition(IMethodSymbol m) => m.TypeArguments.Zip(m.TypeParameters).All(x => x.First is ITypeParameterSymbol tp && tp.Name == x.Second.Name && tp.TypeParameterKind == TypeParameterKind.Method);
+
     int Thunk(ISymbol m) => _reflThunks.TryGetValue(ThunkKey(m), out var f) && f.Body.Count > 0 ? RootSlot(f) + 1 : 0;
     int RootSlot(WasmFunction f) { f.TableRoot = true; return Module.TableSlot(f); }
     int TypeIdOrVoid(ITypeSymbol t) => ExtTypeId(t);
@@ -310,6 +367,7 @@ internal sealed partial class Driver
         var fields = new List<int>(); int nf = 0;
         var props = new List<int>(); int np = 0;
         var methods = new List<int>(); int nm = 0;
+        var methodSyms = new List<IMethodSymbol>();
         var ctors = new List<int>(); int nc = 0;
         var seenProps = new HashSet<string>();
         foreach (var m in members)
@@ -337,7 +395,8 @@ internal sealed partial class Driver
                         int flags = (ms.IsStatic ? FStatic : 0) | Access(ms) | (ms.IsVirtual || ms.IsOverride || ms.IsAbstract ? FVirtual : 0) | (ms.IsAbstract ? FAbstract : 0)
                             | (ms.MethodKind is MethodKind.EventAdd or MethodKind.EventRemove ? FEventAccessor : 0);
                         methods.AddRange([Str(ms.Name), ms.ReturnsVoid ? -1 : ExtTypeId(ms.ReturnType), flags, Thunk(ms), ms.Parameters.Length,
-                            Ints(ms.Parameters.Select(p => ExtTypeId(p.Type))).Address, Ints(ms.Parameters.Select(p => Str(p.Name))).Address, na, aa, ExtTypeId(ms.ContainingType)]);
+                            Ints(ms.Parameters.Select(p => ExtTypeId(p.Type))).Address, Ints(ms.Parameters.Select(p => Str(p.Name))).Address, na, aa, ExtTypeId(ms.ContainingType), 0]);
+                        methodSyms.Add(ms);
                         nm++;
                         if (ms.AssociatedSymbol is IPropertySymbol p && seenProps.Add(Types.Key(p.ContainingType) + "." + p.Name))
                         {
@@ -351,8 +410,32 @@ internal sealed partial class Driver
                     }
             }
         }
+        // generic methods: a definition lists its parameters and its instances (their entries' addresses), an
+        // instance its arguments and its definition's entry; written into the entries once the array has its place
+        var methodsBlob = (DataAddr)Ints(methods);
+        int mBase = methodsBlob.Address;
+        int EntryAt(int j) => mBase + 4 * 11 * j;
+        for (int i = 0; i < methodSyms.Count; i++)
+        {
+            var ms = methodSyms[i];
+            if (!ms.IsGenericMethod) continue;
+            List<int> g;
+            if (IsMethodDefinition(ms))
+            {
+                g = [1, ms.TypeParameters.Length, .. ms.TypeParameters.Select(p => ExtTypeId(p))];
+                var inst = Enumerable.Range(0, methodSyms.Count).Where(j => methodSyms[j].IsGenericMethod && !IsMethodDefinition(methodSyms[j]) && SymbolEqualityComparer.Default.Equals(methodSyms[j].OriginalDefinition, ms.OriginalDefinition)).ToList();
+                g.Add(inst.Count);
+                foreach (var j in inst) g.Add(EntryAt(j));
+            }
+            else
+            {
+                int def = Enumerable.Range(0, methodSyms.Count).FirstOrDefault(j => IsMethodDefinition(methodSyms[j]) && SymbolEqualityComparer.Default.Equals(methodSyms[j].OriginalDefinition, ms.OriginalDefinition), -1);
+                g = [2, ms.TypeArguments.Length, .. ms.TypeArguments.Select(a => ExtTypeId(a)), def < 0 ? 0 : EntryAt(def)];
+            }
+            PatchData(methodsBlob, (i * 11 + 10) * 4, Ints(g).Address);
+        }
         var (ta, tb) = Attrs(t);
-        var rec = new[] { nf, Ints(fields).Address, np, Ints(props).Address, nm, Ints(methods).Address, nc, Ints(ctors).Address, ta, tb,
+        var rec = new[] { nf, Ints(fields).Address, np, Ints(props).Address, nm, mBase, nc, Ints(ctors).Address, ta, tb,
             t.BaseType != null ? ExtTypeId(t.BaseType) + 1 : 0, t.Interfaces.Length, Ints(t.AllInterfaces.Select(i => ExtTypeId(i))).Address };
         return Ints(rec);
     }

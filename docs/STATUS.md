@@ -346,7 +346,10 @@ program makes); `GetNestedTypes`/`GetNestedType`; events (`GetEvents`/`GetEvent`
 `RemoveEventHandler`: an event is its kept accessor pair); reflection in the library's own code, such as
 System.Linq.Expressions asking a delegate type for `Invoke` (a member named by a constant on a type the compiler
 cannot see is kept on every type the program names that has it). `Expression.Compile` runs on upstream's
-interpreter. Not done: generic methods (`MakeGenericMethod`) and `ref` parameters through reflection, the
+interpreter. Generic methods (`051`): a generic definition's record lists its parameters and its instances,
+`MakeGenericMethod` with `typeof` arguments keeps that instance (its code exists), `IsGenericMethod(Definition)`,
+`GetGenericArguments`, `GetGenericMethodDefinition`; member objects of the same member and reflected type are equal
+(CoreCLR caches them). Not done: `MakeGenericMethod` with arguments the compiler cannot see, `ref` parameters through reflection, the
 `FullName` of a generic instance (.NET qualifies its arguments with their assemblies), `Reflection.Emit` and
 `dynamic`.
 

@@ -96,6 +96,11 @@ namespace System.Reflection
             reftype = reflected;
         }
 
+        // cs2wasm: member objects are made per lookup (CoreCLR caches one per member and reflected type), so two of
+        // the same entry and reflected type are equal
+        public override bool Equals(object? obj) => ReferenceEquals(this, obj) || obj is RuntimePropertyInfo p && p.prop == prop && ReferenceEquals(p.reftype, reftype);
+        public override int GetHashCode() => (int)prop;
+
         static MethodInfo? Accessor(RuntimePropertyInfo prop, string name, Type declaring)
         {
             int rec = Cs2Wasm.Runtime.Meta.Record((RuntimeType)(prop.reftype ?? declaring));

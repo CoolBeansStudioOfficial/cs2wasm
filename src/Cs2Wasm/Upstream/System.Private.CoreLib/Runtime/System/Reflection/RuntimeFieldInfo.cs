@@ -68,6 +68,11 @@ namespace System.Reflection
 
         int Entry => (int)fhandle.Value;
 
+        // cs2wasm: member objects are made per lookup (CoreCLR caches one per member and reflected type), so two of
+        // the same entry and reflected type are equal
+        public override bool Equals(object? obj) => ReferenceEquals(this, obj) || obj is RuntimeFieldInfo f && f.Entry == Entry && ReferenceEquals(f.reftype, reftype);
+        public override int GetHashCode() => Entry;
+
         public override Module Module
         {
             get

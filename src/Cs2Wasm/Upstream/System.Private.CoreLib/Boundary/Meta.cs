@@ -16,7 +16,7 @@ namespace Cs2Wasm.Runtime
     /// </summary>
     internal static class Meta
     {
-        public const int FieldSize = 7, CtorSize = 8, MethodSize = 10, PropSize = 8;
+        public const int FieldSize = 7, CtorSize = 8, MethodSize = 11, PropSize = 8;
         public const int FStatic = 1, FPublic = 2, FVirtual = 4, FAbstract = 8, FReadOnly = 16, FPrivate = 32, FFamily = 64, FAssembly = 128;
 
         public static int I(int addr, int index) => Mem.LoadI32(addr + 4 * index);

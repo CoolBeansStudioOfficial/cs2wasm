@@ -279,6 +279,13 @@ internal sealed partial class Driver
         return addr;
     }
 
+    /// <summary>Writes a value into a blob made earlier (its bytes are still in the data being built).</summary>
+    public void PatchData(DataAddr blob, int byteOffset, int value)
+    {
+        var bytes = BitConverter.GetBytes(value);
+        for (int i = 0; i < 4; i++) Data.Bytes[blob.Chunk.Offset + byteOffset + i] = bytes[i];
+    }
+
     /// <summary>A blob with addresses in it: each (byte offset, target) is written when the layout is final.</summary>
     public IAddress DataBlob(byte[] bytes, int align, List<(int at, IAddress target)> relocs)
     {

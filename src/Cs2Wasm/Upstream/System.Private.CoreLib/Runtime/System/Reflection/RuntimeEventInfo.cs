@@ -61,6 +61,11 @@ namespace System.Reflection
 
         internal RuntimeEventInfo() { }
 
+        // cs2wasm: member objects are made per lookup (CoreCLR caches one per member and reflected type), so two of
+        // the same entry and reflected type are equal
+        public override bool Equals(object? obj) => ReferenceEquals(this, obj) || obj is RuntimeEventInfo e && e._name == _name && ReferenceEquals(e._declaring, _declaring) && ReferenceEquals(e._reflected, _reflected);
+        public override int GetHashCode() => _name?.GetHashCode() ?? 0;
+
         private static void get_event_info(RuntimeEventInfo ev, out MonoEventInfo info)
         {
             info = default;

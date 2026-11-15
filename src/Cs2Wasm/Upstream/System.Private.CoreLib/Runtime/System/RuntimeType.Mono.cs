@@ -2178,6 +2178,8 @@ namespace System
             for (int i = 0; i < n; i++)
             {
                 int e = a + 4 * Cs2Wasm.Runtime.Meta.MethodSize * i;
+                // (a generic method's instances are reached through MakeGenericMethod, not listed)
+                if (Cs2Wasm.Runtime.Meta.I(e, 10) is int gb && gb != 0 && Cs2Wasm.Runtime.Meta.I(gb, 0) == 2) continue;
                 if (!seen.Add(Cs2Wasm.Runtime.Meta.SigKey(e))) continue;
                 string mn = Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(e, 0));
                 if (!Cs2Wasm.Runtime.Meta.Binds(bindingAttr, Cs2Wasm.Runtime.Meta.I(e, 2), Cs2Wasm.Runtime.Meta.I(e, 9) != id) || !Cs2Wasm.Runtime.Meta.NameMatches(name, listType, mn)) continue;

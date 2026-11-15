@@ -316,6 +316,11 @@ namespace System.Reflection
             reftype = reflected;
         }
 
+        // cs2wasm: member objects are made per lookup (CoreCLR caches one per member and reflected type), so two of
+        // the same entry and reflected type are equal
+        public override bool Equals(object? obj) => ReferenceEquals(this, obj) || obj is RuntimeMethodInfo m && m.mhandle == mhandle && ReferenceEquals(m.reftype, reftype);
+        public override int GetHashCode() => (int)mhandle;
+
                 internal static string get_name(MethodBase method) => method is RuntimeConstructorInfo c ? ((Cs2Wasm.Runtime.Meta.I((int)c.mhandle - 1, 0) & Cs2Wasm.Runtime.Meta.FStatic) != 0 ? ".cctor" : ".ctor") : Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I((int)((RuntimeMethodInfo)method).mhandle, 0));
 
                 // cs2wasm: the records do not link overrides to the methods they override
@@ -693,11 +698,41 @@ namespace System.Reflection
             return ret;
         }
 
-                private MethodInfo MakeGenericMethod_impl(Type[] types) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's MakeGenericMethod_impl): cs2wasm's reflection reads the compiler's metadata");
+        // cs2wasm: a method entry's generic blob (Compiler/Reflection.cs): 0, a definition [1, n, parameters...,
+        // count, instance entries...], or an instance [2, n, arguments..., definition entry]
+        int GenericBlob => Cs2Wasm.Runtime.Meta.I((int)mhandle, 10);
 
-                public override Type[] GetGenericArguments() => Type.EmptyTypes;
+        private MethodInfo MakeGenericMethod_impl(Type[] types)
+        {
+            int g = GenericBlob, n = Cs2Wasm.Runtime.Meta.I(g, 1), count = Cs2Wasm.Runtime.Meta.I(g, 2 + n);
+            for (int k = 0; k < count; k++)
+            {
+                int e = Cs2Wasm.Runtime.Meta.I(g, 3 + n + k), gi = Cs2Wasm.Runtime.Meta.I(e, 10);
+                bool same = Cs2Wasm.Runtime.Meta.I(gi, 1) == types.Length;
+                for (int a = 0; a < types.Length && same; a++) same = types[a] is RuntimeType rt && Cs2Wasm.Runtime.Meta.I(gi, 2 + a) == rt.TypeId;
+                if (same) return new RuntimeMethodInfo(e, name!, reftype!);
+            }
+            throw new PlatformNotSupportedException("cs2wasm: " + this + " with these type arguments is not a method the program makes (no code exists for it)");
+        }
 
-                private MethodInfo GetGenericMethodDefinition_impl() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetGenericMethodDefinition_impl): cs2wasm's reflection reads the compiler's metadata");
+        public override Type[] GetGenericArguments()
+        {
+            int g = GenericBlob;
+            if (g == 0) return Type.EmptyTypes;
+            int n = Cs2Wasm.Runtime.Meta.I(g, 1);
+            var r = new Type[n];
+            for (int i = 0; i < n; i++) r[i] = RuntimeType.FromId(Cs2Wasm.Runtime.Meta.I(g, 2 + i));
+            return r;
+        }
+
+        private MethodInfo GetGenericMethodDefinition_impl()
+        {
+            int g = GenericBlob;
+            if (g == 0) return null!;
+            if (Cs2Wasm.Runtime.Meta.I(g, 0) == 1) return this;
+            int de = Cs2Wasm.Runtime.Meta.I(g, 2 + Cs2Wasm.Runtime.Meta.I(g, 1));
+            return de == 0 ? null! : new RuntimeMethodInfo(de, name!, reftype!);
+        }
 
         public override MethodInfo GetGenericMethodDefinition()
         {
@@ -708,9 +743,9 @@ namespace System.Reflection
             return res;
         }
 
-        public override bool IsGenericMethodDefinition => false;
+        public override bool IsGenericMethodDefinition => GenericBlob is int g && g != 0 && Cs2Wasm.Runtime.Meta.I(g, 0) == 1;
 
-        public override bool IsGenericMethod => false;
+        public override bool IsGenericMethod => GenericBlob != 0;
 
         public override bool ContainsGenericParameters
         {
@@ -860,6 +895,11 @@ namespace System.Reflection
             mhandle = (IntPtr)handle;
             reftype = reflected;
         }
+
+        // cs2wasm: member objects are made per lookup (CoreCLR caches one per member and reflected type), so two of
+        // the same entry and reflected type are equal
+        public override bool Equals(object? obj) => ReferenceEquals(this, obj) || obj is RuntimeConstructorInfo m && m.mhandle == mhandle && ReferenceEquals(m.reftype, reftype);
+        public override int GetHashCode() => (int)mhandle;
 
         public override RuntimeMethodHandle MethodHandle
         {
