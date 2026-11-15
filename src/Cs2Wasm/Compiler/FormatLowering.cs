@@ -17,7 +17,7 @@ sealed partial class FunctionCompiler
 {
     Own? TryLowerStringFormat(IMethodSymbol m, IReadOnlyList<IOperation> args)
     {
-        if (!Library.UseUpstream || m.Name != "Format" || !m.IsStatic || m.ContainingType.SpecialType != SpecialType.System_String) return null;
+        if (m.Name != "Format" || !m.IsStatic || m.ContainingType.SpecialType != SpecialType.System_String) return null;
         var ps = m.Parameters;
         int fi = ps.Length > 0 && ps[0].Name == "format" ? 0 : ps.Length > 1 && ps[1].Name == "format" && ps[0].Type.Name == "IFormatProvider" ? 1 : -1;
         if (fi < 0 || ps[fi].Type.SpecialType != SpecialType.System_String) return null;

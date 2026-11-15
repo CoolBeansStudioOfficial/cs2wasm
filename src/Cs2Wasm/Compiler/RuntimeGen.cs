@@ -599,15 +599,10 @@ sealed partial class RuntimeGen
         D.RequestAttributeFactories();
         // AsyncLocal in the program: async kickoffs keep the caller's context
         // (upstream: the boundary's AsyncSupport, as AsyncMethodBuilderCore.Start does it)
-        if (Library.UseUpstream && D.Rt.EcSaveIfMade != null && D.AllMethods.Any(m => m.Sym.MethodKind == MethodKind.Constructor && m.Sym.ContainingType?.Name == "AsyncLocal" && m.Compiled))
+        if (D.Rt.EcSaveIfMade != null && D.AllMethods.Any(m => m.Sym.MethodKind == MethodKind.Constructor && m.Sym.ContainingType?.Name == "AsyncLocal" && m.Compiled))
         {
             D.LibMethod("Cs2Wasm.Runtime.AsyncSupport", "SaveContext", 0);
             D.LibMethod("Cs2Wasm.Runtime.AsyncSupport", "RestoreContext", 1);
-        }
-        if (!Library.UseUpstream && D.AllMethods.Any(m => m.Sym.MethodKind == MethodKind.Constructor && m.Sym.ContainingType?.Name == "AsyncLocal" && m.Compiled))
-        {
-            D.LibMethod("System.Threading.ExecutionContext", "SaveContext", 0);
-            D.LibMethod("System.Threading.ExecutionContext", "RestoreContext", 1);
         }
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
@@ -622,8 +617,7 @@ sealed partial class RuntimeGen
             D.LibMethod("Cs2Wasm.Runtime.Sharing", "Share", 1);
             D.LibMethod("Cs2Wasm.Runtime.Sharing", "MarkPush", 1);
             D.LibMethod("Cs2Wasm.Runtime.Sharing", "RevisitIfShared", 1);
-            // deferred destruction of shared objects (upstream)
-            if (Library.UseUpstream)
+            // deferred destruction of shared objects
             {
                 D.LibMethod("Cs2Wasm.Runtime.Limbo", "Add", 1);
                 D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportEnter", 0);
@@ -659,7 +653,7 @@ sealed partial class RuntimeGen
             var e = new Emitter(w);
             var res = mi.Fn.Type.Results;
             // threads (upstream): the engine thread holds nothing uncounted outside exports (Limbo)
-            var limbo = D.UsesThreads && Library.UseUpstream;
+            var limbo = D.UsesThreads;
             if (limbo) e.Call(D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportEnter", 0).Fn);
             var blk = e.Block(ValType.I32);
             var tti = e.TryTable(null, (0, D.ExceptionTag, blk));
@@ -726,7 +720,7 @@ sealed partial class RuntimeGen
         if (D.Arenas.Enabled) EmitArenaSupport();
         EmitOnDestroy();
         D.Rt.EmitCctorSupport(D.UsesThreads);
-        var ecOwner = Library.UseUpstream ? "AsyncSupport" : "ExecutionContext";
+        var ecOwner = "AsyncSupport";
         D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled),
                            D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled));
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
@@ -988,7 +982,7 @@ sealed partial class RuntimeGen
 static class FunctionCompilerHelpers
 {
     /// <summary>Where a box keeps its value. The upstream library reads it right after the header (RuntimeHelpers.GetRawData).</summary>
-    public static int BoxDataOffset(Types t, ITypeSymbol vt) => !Library.UseUpstream && t.StorageOf(vt).align >= 8 ? 16 : Types.ObjectHeader;
+    public static int BoxDataOffset(Types t, ITypeSymbol vt) => Types.ObjectHeader;
 }
 
 internal sealed partial class Driver

@@ -39,9 +39,8 @@ internal sealed partial class RuntimeFns
         // retain(p): plain for objects one thread owns; a shared object's count (bit 30 set) is a CAS loop;
         // immortal (-1) and dead (0) stay; arena members go through the runtime lock
         const int S = SharedBit;
-        // upstream: a shared object's last release puts it in limbo (Boundary/Runtime.cs, Limbo); the hand-written
-        // library destroys it at once
-        var limboAdd = Library.UseUpstream ? D.LibMethod("Cs2Wasm.Runtime.Limbo", "Add", 1).Fn : null;
+        // a shared object's last release puts it in limbo (Boundary/Runtime.cs, Limbo)
+        WasmFunction? limboAdd = D.LibMethod("Cs2Wasm.Runtime.Limbo", "Add", 1).Fn;
         {
             var f = Retain; f.Body.Clear(); f.Locals.Clear();
             var e = new Emitter(f);

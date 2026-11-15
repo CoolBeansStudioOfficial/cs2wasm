@@ -239,6 +239,17 @@ sealed partial class FunctionCompiler
         if (StructRet) _structRetLocal = idx++;
         if (_closure != null) { _closure.ParamLocal = idx++; }
         else if (!M.IsStatic) _thisLocal = idx++;
+        // an extension member (C# 14 `extension(T x)` block): the receiver comes as `this` (its address when it is a
+        // value or passed by reference), and the block's parameter names it
+        if (_closure == null && !M.IsStatic && M.ContainingType is { IsExtension: true, ExtensionParameter: { } xp })
+        {
+            var xt = T.Resolve(xp.Type, Map);
+            var xv = new Var { Type = xt };
+            if (xp.RefKind != RefKind.None || xt.IsValueType) { xv.AddrLocal = _thisLocal; xv.Offset = 0; }
+            else xv.Local = _thisLocal;
+            _vars[xp] = xv;
+            _vars[xp.OriginalDefinition] = xv;
+        }
         foreach (var p in M.Parameters)
         {
             var pt = T.Resolve(p.Type, Map);

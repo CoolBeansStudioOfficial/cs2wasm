@@ -42,7 +42,7 @@ sealed partial class FunctionCompiler
         foreach (var init in ac.Initializers)
         {
             if (init is not ISimpleAssignmentOperation { Target: IPropertyReferenceOperation pr } sa) throw new CompileException("anonymous type member", init.Syntax.GetLocation());
-            var fs = T.LayoutOf(at).Fields.First(f => SymbolEqualityComparer.Default.Equals(f.Symbol, pr.Property) || f.Symbol.Name == pr.Property.Name);
+            var fs = T.LayoutOf(at).Fields.FirstOrDefault(f => SymbolEqualityComparer.Default.Equals(f.Symbol, pr.Property) || f.Symbol.Name == pr.Property.Name) ?? throw new CompileException($"anonymous member {pr.Property.Name} of {at} ({at.IsAnonymousType}, {at.GetType().Name}): fields [{string.Join(",", T.LayoutOf(at).Fields.Select(f => f.Symbol.Name))}] members [{string.Join(",", at.GetMembers().Select(m => m.Kind + ":" + m.Name))}]", init.Syntax.GetLocation());
             BeginTemps();
             var o = EmitValueAs(sa.Value, fs.Type);
             StoreToAddressFromStack(() => E.Get(obj), fs.Offset, fs.Type, o, pub: Publish.None);

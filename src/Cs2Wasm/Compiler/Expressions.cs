@@ -63,6 +63,8 @@ sealed partial class FunctionCompiler
         if (op is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add } ub && Utf8Concat(ub) is { } u8bytes) return EmitUtf8Span(u8bytes, TypeOf(ub));
         switch (op)
         {
+            // query syntax: Roslyn's translation (Where/Select/GroupBy... calls)
+            case ITranslatedQueryOperation tq: return EmitValue(tq.Operation);
             case IConversionOperation cspan when TryEmitConstantSpan(cspan) is { } cso: return cso;
             case IConversionOperation c: return EmitConversion(c);
             case ILocalReferenceOperation l:
@@ -2638,22 +2640,7 @@ sealed partial class FunctionCompiler
             else E.I32(elems.Count);
         }
         var spanPtrCtor = span ? ((INamedTypeSymbol)T.Canonical(t)).InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 2 && c.Parameters[0].Type is IPointerTypeSymbol) : null;
-        if (span && spanPtrCtor == null)
-        {
-            // the hand-written library's spans are over arrays
-            var arrT = D.LibCompilation.CreateArrayTypeSymbol(et);
-            int tid = D.MarkConstructed(arrT);
-            PushCount(); E.I32(size); E.Tid(tid); E.Call(Rt.AllocArray);
-            int arr = E.AddLocal(ValType.I32); E.Set(arr);
-            var slot = new Slot { Local = arr, Type = arrT };
-            RegisterTemp(slot);
-            for (int i = 0; i < elems.Count; i++) StoreElement(arr, i, et, elems[i]);
-            var actor = ((INamedTypeSymbol)T.Canonical(t)).InstanceConstructors.First(c => c.Parameters.Length == 1);
-            int aoff = TempStruct(t);
-            CallWith(actor, false, () => { E.Get(_fb); E.I32(aoff); E.Op(Op.I32Add); }, () => E.Get(arr), null, op.Syntax);
-            E.Get(_fb); E.I32(aoff); E.Op(Op.I32Add);
-            return Own.None;
-        }
+        if (span && spanPtrCtor == null) throw new CompileException("stackalloc into " + t + ": no (pointer, length) constructor", op.Syntax.GetLocation());
         // carve zeroed memory off the shadow stack; the function's exit restores the stack pointer (a span over it
         // cannot outlive the method: C#'s ref safety rules)
         _usesFrame = true;

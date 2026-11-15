@@ -5,17 +5,21 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 17 C# programs (arithmetic and math, classes and virtual/interface dispatch,
-  structs and enums, strings and formatting, exceptions with stack traces, collections, LINQ and closures,
-  generics and pattern matching, nullable value types, tuples, iterators, async/await on one thread, `typeof` and
-  seeded `Random`, records, reference cycles) produce output identical to .NET 11's, byte for byte.
-- **API checks:** 13 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
+- **Conformance (proof 1, partial):** 44 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+  structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
+  query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
+  types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
+  and concurrent collections, `typeof` and seeded `Random`, records, reference cycles, weak references and
+  finalizers, reflection, decimal, date and time, enum formatting, spans and `stackalloc`, `ref struct`, ref returns,
+  C# 14 extension members) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
+  GodotSharp math proof (proof 2).
+- **API checks:** 16 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
   custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
   passes, source map, cycles bounded in a fixed 16 MB memory, no arena code without cycle-capable types).
-- **Module size (gzip -9, measured):** "hello" 5.0 KB (12.7 KB raw); the LINQ/closures test 43 KB (156 KB raw);
-  the async test 20 KB (71 KB raw). The Rust 2D game bar in the spec is 24 KB; no size work has been done beyond
-  reachability and the final cleanup pass, and the library's number formatting and exception machinery is in
-  every module.
+- **Module size (raw, measured):** `Console.WriteLine(42)` is 26,738 bytes on upstream's library (code 20.5 KB,
+  LZ-packed data and frame names about 6 KB); NetWasm's build of the same program is 28,383 bytes. The conformance
+  programs are 30–300 KB raw (`tests/Cs2Wasm.Tests` prints each size). The Rust 2D game bar in the spec (24 KB
+  compressed) is for a game with GodotSharp, which is not built yet.
 - **Build time:** 150–800 ms per test program on the .NET runtime (desktop), after the first compile. Not measured
   in the browser.
 - **Run-time speed vs NativeAOT:** unmeasured.
@@ -122,7 +126,7 @@ calls to placeholder functions and resolved once the graph is known (`Arenas.Res
 nothing, and a program with no cyclic site gets no arena runtime at all. A slot whose address is taken (`ref`/`out`,
 `ref` returns, spans over the array) is written outside the protocol, so its site is kept plain.
 
-**Arenas at run time** (`Lib/Runtime/Runtime.cs`, `Arena*`). Objects start as plain counted objects. A store at a
+**Arenas at run time** (`Upstream/System.Private.CoreLib/Boundary/Runtime.cs`, `Arena*`). Objects start as plain counted objects. A store at a
 cyclic site, when the value and the container belong to the same group, puts both into one arena: a plain object
 joins the container's arena (or a new one), two arenas merge (the smaller one's members move, so merging is
 O(n log n) overall). The stored reference is then not counted. A member's header holds `-arena` in the count word
@@ -228,14 +232,18 @@ static initializer becomes `TypeInitializationException`, thrown again at every 
 Not done: a contended `lock` on the engine thread is not reported; freeing a finished thread's stack and thread-local block,
 and the scheduling-dependence marks for the plugin (7.3).
 
-### 5. Optimization — minimal
+### 5. Optimization — partial
 Done: reachability from exports (only reached methods are emitted), devirtualization when a virtual call has one
-implementation or the receiver type is sealed, a final pass over the WASM (identical-body merging, `local.set`/`get`
-→ `local.tee`, dead code after unconditional branches, call targets ordered by use for short indices), and inlining
-of leaf functions (no calls, no throws: getters, setters, accessors, thunks) where the copy is about as small as the
-call, or the function has a single call site; stack traces are unchanged because inlined code cannot throw.
-Not done: inlining of functions that call or throw, escape analysis (stack allocation of non-escaping objects), constant folding beyond Roslyn's,
-local packing, data segment packing.
+implementation or the receiver type is sealed, constant-argument specialization (null/empty/string/bool/`typeof`
+arguments that decide a branch get their own copy of the callee), folding of what the target fixes, and the final
+pass over the WASM (Wasm/): inlining of leaf functions, identical-body merging, a liveness-based local optimizer
+(dead stores, single-use values kept on the stack, constant and copy propagation, unused locals removed and grouped
+by type), count traffic with no effect removed (releases of locals that are still zero, retain/release pairs of one
+local, borrows released before anything could drop the owner's reference, stores into a fresh object skip the old
+value, cleanup handlers no exception can reach), branches on constants known only for the whole program folded
+(`Rt.SingleThreaded`), dense type ids with per-type tables as narrow data arrays, the data segment and frame-name
+section LZ-packed, call targets ordered by use. Not done: inlining of functions that call or throw, escape analysis
+(stack allocation of non-escaping objects).
 
 ### 6. The module — done
 32-bit core module, imported shared memory (`env.memory`, size from options), passive data segment initialized by the
@@ -278,47 +286,25 @@ exported beside the stack pointer.
   sequence (checked). Not done: `Unsafe.As`-style bit reads, scheduling-dependence marking.
   Transcendental functions are not guaranteed to round like .NET's (UCRT/glibc) in every case; the tested inputs
   match.
-- 7.4 the library — **moving to upstream, in progress.** The upstream library is built and used when
-  `CS2WASM_UPSTREAM=1`: dotnet/runtime v11.0.0's System.Private.CoreLib (Mono's project, for a 32-bit browser
-  target with multithreading and without event tracing) and eleven libraries above it (Collections, Linq,
-  Console, Numerics, Concurrent, Parallel, RegularExpressions, ...), each its own compilation, from the files
-  tools/CoreLibManifest evaluates from their projects (`src/Cs2Wasm/Upstream/<Library>/manifest.txt`; sources from
-  the cache `%LOCALAPPDATA%/cs2wasm/runtime-v11.0.0` or `CS2WASM_RUNTIME_SOURCES`). Hand-written code is only the
+- 7.4 the library — **upstream, done.** The library is dotnet/runtime v11.0.0's System.Private.CoreLib (Mono's
+  project, for a 32-bit browser target with multithreading and without event tracing) and eleven libraries above it
+  (Collections, Linq, Console, Numerics, Concurrent, Parallel, RegularExpressions, ...), each its own compilation,
+  from the files tools/CoreLibManifest evaluates from their projects (`src/Cs2Wasm/Upstream/<Library>/manifest.txt`;
+  sources fetched on first use into `%LOCALAPPDATA%/cs2wasm/runtime-v11.0.0`, or `CS2WASM_RUNTIME_SOURCES`). There is
+  no other library: the hand-written corlib the project started with is deleted. Hand-written code is only the
   runtime boundary: Mono's runtime half (`Runtime/`, its internal calls implemented over cs2wasm's runtime),
-  `Boundary/` (memory, counting, exceptions, threads, engine imports, the System.Native calls that are the
-  engine's: clock, seeded randomness, low-level monitor, console output), generated SR strings, and the
-  platform invokes the sandbox lacks (build errors when reached). Upstream files replaced: the tz database
-  reader (no database; the engine's offset) and the browser pool's JS-loop yield. The compiler folds what the
-  target fixes (`IsHardwareAccelerated`/`IsSupported` false, no event tracing, invariant globalization) and
-  compiles only the side of a branch taken. The conformance suite passes on it (59 of 59). Reflection over members reads the compiler's reflection records through Mono's icalls
-  (`Boundary/Meta.cs`): methods, constructors, fields, properties, invocation, attributes. Upstream's own types make
-  every program carry the arena runtime (exception chains, `object[]` holding `object`, StringBuilder chunks, and
-  encoders with their fallback buffers, which do form cycles); the program's own types pay only if they can form
-  cycles (`CompileResult.CycleCapableTypes` lists the cycle-capable types). Not yet: module size
-  (123 KB for `Console.WriteLine(42)`, from 844 KB; the goal is below NetWasm's 28,383 B). Done for size, besides
-  the earlier items: the console writes UTF-16 to the engine directly (`System.Console/Boundary/EngineConsole.cs`);
-  no gen-2 GC callbacks and no pool trimming tables (no GC); no environment variables and no processor numbers in
-  the sandbox; resource keys off (`SR.UsingResourceKeys()` false); unread static fields lose initializers without
-  effect (a second compilation of the static initializers once the program is known); function-table entries and
-  data chunks are kept only when live code refers to them; types count as constructed only where live code
-  constructs them (a fixpoint before the dispatch stubs, destructors and type tests are emitted)). Done for size: constant-argument
-  specialization of `[AggressiveInlining]` methods and short forwarders (Specialization.cs); `string.Format` with a
-  constant format lowered to concatenation (FormatLowering.cs; resource strings are constants); interface calls on
-  values of known primitive or readonly-struct type call the type's method instead of boxing and dispatching; enum
-  formatting reads the compiler's enum tables (`Boundary/EnumFormat.cs`, upstream's algorithm over one value
-  instead of a copy per storage type); no environment variables in the sandbox, so the runtime's configuration
-  reads fold (a local set once from a known null is null). What remains large: number formatting (still reached
-  through `string.Format` with item formats such as `{0:X4}` and with a provider), `AppContext` configuration
-  parsing, dictionary and encoding code that Console really uses and build time (about
-  10 s against 2 s), `Delegate.CreateDelegate`/`DynamicInvoke`,
-  reflection on generic instantiations, `Array.CreateInstance` of array types the program never makes.
-  Until the suite passes on it, the default is still **cs2wasm's own library** (a deviation from the spec). It is a
-  self-contained corlib written for this project (about 6 500 lines: object model, strings, number formatting and
-  parsing with .NET's exact rounding rules, math, exceptions, collections whose enumeration order matches .NET's,
-  LINQ with deferred execution, StringBuilder). Moving to upstream sources is open work. Invariant globalization
-  semantics are followed (culture comparisons are ordinal, as in .NET's invariant mode). Case mapping covers
-  ASCII, Latin-1, Greek and Cyrillic only. Present since: `Task` and friends, `Random`, `Stopwatch`,
-  `BitConverter`, `Type`, spans over arrays, `SortedDictionary`/`SortedList`/`SortedSet`, `PriorityQueue` (.NET's quaternary heap, so ties come out in the same order), `LinkedList`, `BigInteger`, `Chunk`, `Join`/`GroupJoin`/`ToLookup`, `Enum`'s static API (`GetValues`, `GetNames`, `Parse`/`TryParse` with flags, `IsDefined`, `GetName`, format strings, `HasFlag`, `CompareTo`). Static abstract interface members resolve to the type argument's implementation; for the primitive types the generic math interfaces (`INumber<T>`: `Zero`, `One`, operators, comparisons, `Abs`/`Max`/...) lower to primitive code. `decimal` has .NET's representation and arithmetic (scale kept on addition, summed on multiplication, half-even rounding when a result does not fit, 28-29 digit quotients, conversions from double to 15 digits), formatting, parsing, `Math`/LINQ overloads (checked against .NET). Missing: `TimeZoneInfo`, `DateTimeOffset`, date parsing, `GodotSharp`. `DateTime` and `TimeSpan` follow .NET's tick arithmetic and the invariant culture's standard and custom formats; the clock and the local offset come from the engine.
+  `Boundary/` (memory, counting, exceptions, threads, engine imports, the System.Native calls that are the engine's:
+  clock, seeded randomness, low-level monitor, console output), generated SR strings, and the platform invokes the
+  sandbox lacks (build errors when reached). Upstream files replaced: the tz database reader (no database; the
+  engine's offset) and the browser pool's JS-loop yield. Cuts for a garbage-collector-free, single-module target are
+  compiler rules and manifest substitutions/edits, not a fork: no gen-2 GC callbacks or pool trimming, no
+  environment variables or processor numbers in the sandbox, resource keys off, static initializers of unread fields
+  dropped, constructed types pruned to live code, invariant globalization folded. Reflection over members reads the
+  compiler's reflection records through Mono's icalls (`Boundary/Meta.cs`). Missing: `Delegate.CreateDelegate`/
+  `DynamicInvoke`, reflection on generic instantiations, `Array.CreateInstance` of array types the program never
+  makes. Build time is about 4 s for `Console.WriteLine(42)` and up to 9 s for the larger conformance programs
+  (desktop .NET), against the spec's "a few seconds" in the browser: unmeasured in the browser, and the library's
+  analysis is not cached yet.
 - 7.5–7.6: no GodotSharp, no browser build, budgets unmeasured.
 
 ### 8. Sandbox — partial
@@ -353,5 +339,4 @@ the Node2D wrapper generator, `hello2d`, and self-hosting).
 
 - `Environment.NewLine` is `\n` (as .NET on Linux and in browsers); the test runner normalizes .NET-on-Windows output.
 - `IntPtr.Size` is 4 (32-bit WASM).
-- Exceptions thrown inside the library show the library's own frames in stack traces, not CoreLib's.
 - `ValueType.Equals`/`GetHashCode` for structs that do not override them compare addresses / return 0.

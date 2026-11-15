@@ -81,6 +81,34 @@ internal sealed class WasmModule
         public List<WasmFunction> FunctionOrder = [];
     }
 
+    /// <summary>The functions an exception can leave: those that throw (or rethrow), call indirectly, are imports
+    /// (the host may throw), or call one that can.</summary>
+    HashSet<WasmFunction> ComputeMayThrow()
+    {
+        var may = new HashSet<WasmFunction>();
+        var callers = new Dictionary<WasmFunction, List<WasmFunction>>();
+        var work = new Stack<WasmFunction>();
+        foreach (var f in Functions)
+        {
+            bool t = f.IsImport;
+            foreach (var ins in f.Body)
+            {
+                if (ins.Op is Op.Throw or Op.ThrowRef or Op.CallIndirect) t = true;
+                else if (ins.Op == Op.Call && ins.Ref is WasmFunction g)
+                {
+                    if (!callers.TryGetValue(g, out var l)) callers[g] = l = [];
+                    l.Add(f);
+                }
+            }
+            if (f.ForwardTo != null) { if (!callers.TryGetValue(f.ForwardTo, out var l)) callers[f.ForwardTo] = l = []; l.Add(f); }
+            if (t && may.Add(f)) work.Push(f);
+        }
+        while (work.Count > 0)
+            if (callers.TryGetValue(work.Pop(), out var cs))
+                foreach (var c in cs) if (may.Add(c)) work.Push(c);
+        return may;
+    }
+
     public Encoded Encode(bool optimize)
     {
         foreach (var f in Functions) ResolveForwards(f);
@@ -91,7 +119,13 @@ internal sealed class WasmModule
             Inliner.Run(Functions);
             foreach (var f in Functions) if (!f.IsImport) Peephole.Run(f);
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_LOCALS") != "1")
-                foreach (var f in Functions) if (!f.IsImport) Locals.Run(f);
+            {
+                Locals.MayThrow = ComputeMayThrow();
+                try { foreach (var f in Functions) if (!f.IsImport) Locals.Run(f); }
+                finally { Locals.MayThrow = null; }
+                if (Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH") != "1")
+                    Fresh.Run(Functions, Functions.FirstOrDefault(f => f.Name.StartsWith("Cs2Wasm.Runtime.Rt.AllocObject(")));
+            }
             MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
             if (validate) Validate("after optimization");

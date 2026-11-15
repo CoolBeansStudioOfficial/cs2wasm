@@ -158,7 +158,7 @@ sealed partial class FunctionCompiler
     /// <summary>The constant arguments of a call (by parameter), when the callee is a library method.</summary>
     IReadOnlyDictionary<int, ConstArg>? ConstArgsFor(IMethodSymbol m, IReadOnlyList<IOperation> args)
     {
-        if (!Library.UseUpstream || !D.IsLibrary(m)) return null;
+        if (!D.IsLibrary(m)) return null;
         Dictionary<int, ConstArg>? r = null;
         var given = new bool[m.Parameters.Length];
         int k = 0;

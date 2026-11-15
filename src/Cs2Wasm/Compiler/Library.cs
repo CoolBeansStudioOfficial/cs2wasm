@@ -10,7 +10,6 @@ namespace Cs2Wasm.Compiler;
 /// compilation (as the assemblies are), from the files the manifests in Upstream/&lt;Library&gt; list plus cs2wasm's own
 /// files there (the runtime half, the boundary, the generated SR and unavailable platform invokes). The sources are
 /// read from <see cref="UpstreamSources.Root"/>.</para>
-/// <para>Otherwise (until the migration is done): the hand-written library in Lib/.</para>
 /// </summary>
 internal sealed class Library
 {
@@ -21,24 +20,16 @@ internal sealed class Library
     readonly Dictionary<string, INamedTypeSymbol> _types = [];
     readonly HashSet<SyntaxTree> _trees = [];
 
-    public static bool UseUpstream => Environment.GetEnvironmentVariable("CS2WASM_UPSTREAM") == "1";
 
     static readonly CSharpCompilationOptions s_options = new(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true,
         nullableContextOptions: NullableContextOptions.Disable,
         specificDiagnosticOptions: new Dictionary<string, ReportDiagnostic> { ["CS0436"] = ReportDiagnostic.Suppress, ["CS0626"] = ReportDiagnostic.Suppress, ["CS8826"] = ReportDiagnostic.Suppress });
 
-    static readonly Lazy<SyntaxTree[]> s_handWritten = new(() =>
-    {
-        var opts = new CSharpParseOptions(LanguageVersion.CSharp15);
-        return Resources("lib/").Select(r => CSharpSyntaxTree.ParseText(r.Text, opts, path: "cs2wasm/" + r.Name)).ToArray();
-    });
-
     static readonly Lazy<IReadOnlyList<CSharpCompilation>> s_upstream = new(BuildUpstream);
 
     public Library(IEnumerable<MetadataReference> references)
     {
-        if (UseUpstream) All = s_upstream.Value;
-        else All = [CSharpCompilation.Create("System.Private.CoreLib", s_handWritten.Value, [], s_options)];
+        All = s_upstream.Value;
         Compilation = All[0];
         foreach (var c in All)
         {
@@ -65,7 +56,7 @@ internal sealed class Library
     /// <summary>The substituted value of a library method (null: not substituted; "": an empty stub).</summary>
     public static string? Substitution(IMethodSymbol m)
     {
-        if (!UseUpstream || s_substitutions.Count == 0) return null;
+        if (s_substitutions.Count == 0) return null;
         var def = m.OriginalDefinition;
         if (def.ContainingType == null) return null;
         var sig = (def.ReturnsVoid ? "System.Void" : IlName(def.ReturnType)) + " " + def.MetadataName + "(" + string.Join(",", def.Parameters.Select(p => IlName(p.Type) + (p.RefKind != RefKind.None ? "&" : ""))) + ")";
@@ -73,7 +64,7 @@ internal sealed class Library
     }
 
     public static string? FieldSubstitution(IFieldSymbol f) =>
-        UseUpstream && f.OriginalDefinition.ContainingType is { } ct ? s_substitutions.GetValueOrDefault(IlName(ct) + "|" + f.Name) : null;
+        f.OriginalDefinition.ContainingType is { } ct ? s_substitutions.GetValueOrDefault(IlName(ct) + "|" + f.Name) : null;
 
     /// <summary>A type's name as the trimmer's files write it (Outer/Inner, System.Int32).</summary>
     static string IlName(ITypeSymbol t) => t switch
@@ -175,11 +166,10 @@ internal sealed class Library
     public bool Contains(SyntaxTree tree) => _trees.Contains(tree);
     public CSharpCompilation? CompilationOf(SyntaxTree tree) => _trees.Contains(tree) ? All.First(c => c.ContainsSyntaxTree(tree)) : null;
 
-    /// <summary>Errors of the hand-written library (the upstream libraries are checked when they are generated, and
-    /// binding all of them on every build would cost seconds).</summary>
-    public IEnumerable<Diagnostic> Errors => UseUpstream
-        ? Environment.GetEnvironmentVariable("CS2WASM_LIB_ERRORS") == "1" ? All.SelectMany(c => c.GetDiagnostics()).Where(d => d.Severity == DiagnosticSeverity.Error) : []
-        : Compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error);
+    /// <summary>The library's own errors, with CS2WASM_LIB_ERRORS=1 (the libraries are checked when they are generated,
+    /// and binding all of them on every build would cost seconds).</summary>
+    public IEnumerable<Diagnostic> Errors =>
+        Environment.GetEnvironmentVariable("CS2WASM_LIB_ERRORS") == "1" ? All.SelectMany(c => c.GetDiagnostics()).Where(d => d.Severity == DiagnosticSeverity.Error) : [];
 }
 
 /// <summary>Where the dotnet/runtime sources the library is built from are.</summary>

@@ -355,18 +355,12 @@ sealed partial class FunctionCompiler
 
     /// <summary>Async iterator: the pending MoveNextAsync completes with `value`.</summary>
     /// <summary>What a state machine calls on its task: the upstream library's Cs2Wasm.Runtime.AsyncSupport (Task and
-    /// Task&lt;T&gt; are not partial there), or the hand-written library's own members of Task.</summary>
+    /// Task&lt;T&gt; are not partial there).</summary>
     IMethodSymbol AsyncMember(string name, ITypeSymbol? taskType)
     {
-        if (Library.UseUpstream)
-        {
-            var m = D.LibType("Cs2Wasm.Runtime.AsyncSupport").GetMembers(name).OfType<IMethodSymbol>().First();
-            if (m.IsGenericMethod) m = m.Construct(((INamedTypeSymbol)T.Canonical(taskType!)).TypeArguments[0]);
-            return D.CanonicalMethod(m);
-        }
-        if (name is "Wrap" or "WrapDispose") return D.LibMethod("Cs2Wasm.Runtime.AsyncIter", name, 1).Sym;
-        if (taskType != null) return ((INamedTypeSymbol)taskType).GetMembers(name).OfType<IMethodSymbol>().First();
-        return D.LibMethod("System.Threading.Tasks.Task", name, name == "TrySetExceptionCore" ? 1 : 0).Sym;
+        var m = D.LibType("Cs2Wasm.Runtime.AsyncSupport").GetMembers(name).OfType<IMethodSymbol>().First();
+        if (m.IsGenericMethod) m = m.Construct(((INamedTypeSymbol)T.Canonical(taskType!)).TypeArguments[0]);
+        return D.CanonicalMethod(m);
     }
 
     void CompletePromise(bool value)
@@ -1118,7 +1112,7 @@ sealed partial class FunctionCompiler
     IMethodSymbol? FindOnCompleted(ITypeSymbol awT)
     {
         // (upstream: OnCompleted flows the ExecutionContext to the continuation, as the async builder does)
-        foreach (var name in Library.UseUpstream ? new[] { "OnCompleted", "UnsafeOnCompleted" } : new[] { "UnsafeOnCompleted", "OnCompleted" })
+        foreach (var name in new[] { "OnCompleted", "UnsafeOnCompleted" })
             for (var t = awT as INamedTypeSymbol; t != null; t = t.BaseType is { } bt ? (INamedTypeSymbol)T.Canonical(bt) : null)
             {
                 var m = t.GetMembers(name).OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 1 && !x.IsStatic && x.DeclaredAccessibility == Accessibility.Public);

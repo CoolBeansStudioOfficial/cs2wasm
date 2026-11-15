@@ -83,6 +83,12 @@ public static class Cs2WasmCompiler
         {
             d.Report(Diags.Unsupported, ex.Location, ex.Message);
         }
+        catch (Exception ex)
+        {
+            // a compiler bug: a diagnostic for the embedder, never an exception through its build
+            var frame = new System.Diagnostics.StackTrace(ex, true).GetFrames().FirstOrDefault(f => f.GetFileName() != null);
+            d.Report(Diags.Unsupported, null, $"internal error: {ex.GetType().Name}: {ex.Message} at {Path.GetFileName(frame?.GetFileName())}:{frame?.GetFileLineNumber()}");
+        }
         if (d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error)) bytes = null;
         return new CompileResult
         {

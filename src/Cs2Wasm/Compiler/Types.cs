@@ -75,11 +75,14 @@ internal sealed class Types
             case INamedTypeSymbol n:
                 {
                     if (n.IsTupleType && n.TupleUnderlyingType is { } u && !SymbolEqualityComparer.Default.Equals(u, n)) return Key(u);
+                    // anonymous types are told apart by their members (the same members in the same order are one type)
+                    if (n.IsAnonymousType)
+                        return "<>anon{" + string.Join(",", n.GetMembers().OfType<IPropertySymbol>().Select(p => p.Name + ":" + Key(p.Type))) + "}";
                     string baseName = n.ContainingType != null ? Key(n.ContainingType) + "+" : Ns(n.ContainingNamespace);
                     baseName += n.MetadataName;
                     // an internal type of an upstream library other than CoreLib may share its name with one of
                     // CoreLib's (System.Number, System.SR): its own assembly tells them apart
-                    if (n.ContainingType == null && n.DeclaredAccessibility != Accessibility.Public && Library.UseUpstream && n.Name != "Interop"
+                    if (n.ContainingType == null && n.DeclaredAccessibility != Accessibility.Public && n.Name != "Interop"
                         && n.ContainingAssembly?.Name is { } asm && asm != "System.Private.CoreLib" && asm.StartsWith("System.", StringComparison.Ordinal))
                         baseName += "@" + asm;
                     if (n.TypeArguments.Length > 0) baseName += "<" + string.Join(",", n.TypeArguments.Select(Key)) + ">";

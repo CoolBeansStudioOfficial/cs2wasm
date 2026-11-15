@@ -466,13 +466,13 @@ internal sealed partial class Driver
             "System.Threading.Interlocked" => m.Name == "MemoryBarrier"
                 || (m.Name is "Exchange" or "CompareExchange" && m.Parameters.Length > 0 && Types.PrimSize(Types.PrimOf(m.Parameters[0].Type)) < 4 && Types.PrimOf(m.Parameters[0].Type) != Prim.None),
             // (Memmove and ClearWithoutReferences are what memory.copy and memory.fill do)
-            "System.SpanHelpers" => m.Name is "memmove" or "memset" || m.Name is "Memmove" or "ClearWithoutReferences" && !m.IsGenericMethod && Library.UseUpstream,
+            "System.SpanHelpers" => m.Name is "memmove" or "memset" || m.Name is "Memmove" or "ClearWithoutReferences" && !m.IsGenericMethod,
             "System.Double" or "System.Single" => m.Name == "ConvertToIntegerNative" && m.TypeArguments.Length == 1 && Types.PrimOf(m.TypeArguments[0]) is not (Prim.None or Prim.F32 or Prim.F64 or Prim.Bool),
             "System.Runtime.CompilerServices.RuntimeHelpers" => m.Name is "GetRawData" or "IsBitwiseEquatable" or "IsReferenceOrContainsReferences" or "ObjectHasComponentSize",
             "System.Threading.Volatile" => m.Name is "ReadBarrier" or "WriteBarrier",
-            "System.Object" => m.Name == "GetType" && Library.UseUpstream,
+            "System.Object" => m.Name == "GetType",
             // new T() for a T known at compile time (LazyInitializer and friends call it directly)
-            "System.Activator" => m.Name == "CreateInstance" && m.IsGenericMethod && m.Parameters.Length == 0 && Library.UseUpstream,
+            "System.Activator" => m.Name == "CreateInstance" && m.IsGenericMethod && m.Parameters.Length == 0,
             _ => false,
         };
     }
@@ -680,9 +680,10 @@ internal sealed partial class Driver
             {
                 var mm = m.IsGenericMethod ? m.Construct([.. slot.TypeArguments]) : m;
                 if (Types.MethodKey(CanonicalMethod(mm)) == slotKey) return mm.IsAbstract ? null : CanonicalMethod(mm);
-                for (var o = mm.OverriddenMethod; o != null; o = o.OverriddenMethod)
+                // (a constructed generic method has no overridden method: walk the definition's, constructed alike)
+                for (var o = m.IsGenericMethod ? m.OverriddenMethod : mm.OverriddenMethod; o != null; o = o.OverriddenMethod)
                 {
-                    var oo = o.IsGenericMethod && o.TypeArguments.Any(a => a is ITypeParameterSymbol) ? o.OriginalDefinition.Construct([.. slot.TypeArguments]) : o;
+                    var oo = o.IsGenericMethod ? o.OriginalDefinition.Construct([.. slot.TypeArguments]) : o;
                     if (Types.MethodKey(CanonicalMethod(oo)) == slotKey) return mm.IsAbstract ? null : CanonicalMethod(mm);
                 }
             }
@@ -908,9 +909,9 @@ internal sealed partial class Driver
                         mi.Fn.Body.Clear(); mi.Fn.Locals.Clear();
                         mi.Fn.Body.Add(new Instr { Op = Op.Unreachable, Pos = -1 });
                     }
-                    catch (Exception ex) when (Library.UseUpstream)
+                    catch (Exception ex)
                     {
-                        // while the upstream library is brought up: every method the compiler cannot handle yet, in one run
+                        // an internal error: reported against the method, and the rest of the program still compiles
                         var frame = new System.Diagnostics.StackTrace(ex, true).GetFrames().FirstOrDefault(f => f.GetFileName() != null);
                         Report(Diags.Unsupported, mi.Sym.Locations.FirstOrDefault(), $"internal error compiling {Display(mi.Sym)}: {ex.GetType().Name}: {ex.Message} at {Path.GetFileName(frame?.GetFileName())}:{frame?.GetFileLineNumber()}");
                         mi.Fn.Body.Clear(); mi.Fn.Locals.Clear();

@@ -8,13 +8,14 @@ namespace Cs2Wasm.Wasm;
 ///   on the stack, stays on the stack instead (`local.set x … local.get x` → `…`);
 /// - locals nothing uses any more are removed, the rest grouped by type (fewer local declarations).
 /// </summary>
-static class Locals
+static partial class Locals
 {
     public static void Run(WasmFunction f)
     {
         if (f.IsImport || f.Body.Count == 0) return;
         for (int round = 0; round < 3; round++)
             if (!Round(f)) break;
+        if (Counts(f)) for (int round = 0; round < 2; round++) if (!Round(f)) break;
         Renumber(f);
     }
 
@@ -28,7 +29,12 @@ static class Locals
         public ulong[][] LiveIn = [], LiveOut = [];
     }
 
+    /// <summary>The functions an exception can come out of (WasmModule.Encode sets it before this pass); null: any call.</summary>
+    [ThreadStatic] public static HashSet<WasmFunction>? MayThrow;
+
     static bool IsThrowing(Op op) => op is Op.Call or Op.CallIndirect or Op.Throw or Op.ThrowRef;
+    static bool IsThrowing(in Instr ins) => ins.Op is Op.CallIndirect or Op.Throw or Op.ThrowRef
+        || ins.Op == Op.Call && (MayThrow == null || ins.Ref is not WasmFunction g || MayThrow.Contains(g));
 
     static Flow Analyze(WasmFunction f)
     {
@@ -83,7 +89,7 @@ static class Locals
                 case Op.Else: s.Add(fl.Match[i]); break;
                 default: s.Add(i + 1); break;
             }
-            if (IsThrowing(ins.Op))
+            if (IsThrowing(ins))
                 for (int k = ctl.Count - 1; k >= 0; k--)
                     if (b[ctl[k]].Op == Op.TryTable)
                         foreach (var c in ((TryTableInfo)b[ctl[k]].Ref!).Catches) exc.Add(Target(c.Label, k));
@@ -125,6 +131,8 @@ static class Locals
     static void Set(ulong[] a, int x) => a[x >> 6] |= 1UL << (x & 63);
     static void Clear(ulong[] a, int x) => a[x >> 6] &= ~(1UL << (x & 63));
     static bool Has(ulong[] a, int x) => (a[x >> 6] & (1UL << (x & 63))) != 0;
+
+    internal static (int pop, int push)? PlainEffect(in Instr ins) => Effect(ins);
 
     /// <summary>(values popped, values pushed) of a plain instruction; null for control flow and what this pass does not model.</summary>
     static (int pop, int push)? Effect(in Instr ins)
@@ -211,7 +219,7 @@ static class Locals
                 }
                 if (Effect(y) is not { } e) break;
                 if (h < e.pop) break;
-                if (IsThrowing(y.Op) && ExcReads(j, x)) break;
+                if (IsThrowing(y) && ExcReads(j, x)) break;
                 h += e.push - e.pop;
             }
         }
@@ -253,7 +261,7 @@ static class Locals
             if (y.Op is Op.LocalSet or Op.LocalTee && ((int)y.Imm == x || (int)y.Imm == a)) { killed = (int)y.Imm == x; break; }
             if (y.Op == Op.LocalGet && (int)y.Imm == x) { b[s] = src with { Pos = y.Pos }; replaced = true; continue; }
             if (Effect(y) is null) break;
-            if (IsThrowing(y.Op) && excReads(s, x)) excRead = true;
+            if (IsThrowing(y) && excReads(s, x)) excRead = true;
         }
         // (a write to a stops the reads that could be replaced; x's later reads then still need the store)
         bool deadAfter = s >= n ? true : killed || !Has(fl.LiveIn[s], x);
