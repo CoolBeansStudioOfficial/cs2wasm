@@ -469,7 +469,8 @@ internal sealed partial class Driver
                     if (member == null) continue;
                     if (b.FindImplementationForInterfaceMember(member) is IMethodSymbol impl)
                     {
-                        if (impl.IsGenericMethod || impl.Arity > 0) impl = impl.OriginalDefinition.Construct([.. slot.TypeArguments]);
+                        // (on the implementing type's own instantiation: ConstructedFrom keeps its type arguments)
+                        if (impl.IsGenericMethod || impl.Arity > 0) impl = impl.ConstructedFrom.Construct([.. slot.TypeArguments]);
                         // a virtual implementation may be overridden further down
                         if ((impl.IsVirtual || impl.IsAbstract || impl.IsOverride) && impl.ContainingType.TypeKind != TypeKind.Interface)
                             return Implementation(c, impl);

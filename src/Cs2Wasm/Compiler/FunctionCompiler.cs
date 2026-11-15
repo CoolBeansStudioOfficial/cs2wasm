@@ -1026,6 +1026,17 @@ sealed partial class FunctionCompiler
             EnterDisplay(fe);
             var getter = info.CurrentProperty!.GetMethod!;
             var elemType = T.Resolve(getter.ReturnType, Map);
+            if (fe.LoopControlVariable is IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None } refDecl && (getter.ReturnsByRef || getter.ReturnsByRefReadonly))
+            {
+                // foreach (ref T x in span): x refers to the element Current returns a reference to
+                BeginTemps();
+                var save = _wantRefReturnAddress; _wantRefReturnAddress = true;
+                try { EmitCallResolved(SubstMethod(getter), Recv, [], false); }
+                finally { _wantRefReturnAddress = save; }
+                E.Set(LocalVar(refDecl.Symbol).AddrLocal);
+                EndTemps();
+            }
+            else
             AssignLoopVariable(fe, elemType, () => EmitCallResolved(SubstMethod(getter), Recv, [], !enumIsStruct && IsVirtualDispatch(getter)), conversion: fe.LoopControlVariable);
             EmitStatement(fe.Body);
             ExitDisplay(fe);

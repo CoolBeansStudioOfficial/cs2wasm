@@ -944,6 +944,45 @@ sealed partial class FunctionCompiler
             E.Get(obj); E.I32(0); E.Set(obj);
             return Own.Owned;
         }
+        if (t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } it && ce.Elements.All(e => e is not ISpreadOperation)
+            && Types.FullName(it) is "System.Collections.Generic.IEnumerable`1" or "System.Collections.Generic.IReadOnlyCollection`1" or "System.Collections.Generic.IReadOnlyList`1")
+        {
+            // a read-only interface target: an array of the elements (an empty one: Array.Empty<T>())
+            var et = T.Canonical(it.TypeArguments[0]);
+            if (ce.Elements.Length == 0)
+            {
+                var empty = D.LibType("System.Array").GetMembers("Empty").OfType<IMethodSymbol>().First(m => m.IsGenericMethod).Construct(et);
+                return CallWith(D.CanonicalMethod(empty), false, null, () => { }, null, ce.Syntax);
+            }
+            var arrT = D.LibCompilation.CreateArrayTypeSymbol(et);
+            int tid = D.MarkConstructed(arrT);
+            E.I32(ce.Elements.Length); E.I32(T.StorageOf(et).size); E.I32(tid); E.Call(Rt.AllocArray);
+            int arr = E.AddLocal(ValType.I32); E.Set(arr);
+            var slot = new Slot { Local = arr, Type = arrT };
+            RegisterTemp(slot);
+            for (int i = 0; i < ce.Elements.Length; i++) StoreElement(arr, i, et, ce.Elements[i]);
+            _temps[^1].Remove(slot);
+            E.Get(arr); E.I32(0); E.Set(arr);
+            return Own.Owned;
+        }
+        if (t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } lt && Types.FullName(lt) is "System.Collections.Generic.ICollection`1" or "System.Collections.Generic.IList`1")
+        {
+            // a mutable interface target: a List<T>
+            var listT = (INamedTypeSymbol)T.Canonical(D.LibType("System.Collections.Generic.List`1").Construct(T.Canonical(lt.TypeArguments[0])));
+            var list = NewObject(listT, ce.Syntax);
+            int obj = E.AddLocal(ValType.I32); E.Set(obj);
+            var slot = new Slot { Local = obj, Type = listT };
+            RegisterTemp(slot);
+            var add = listT.GetMembers("Add").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 1);
+            foreach (var e in ce.Elements)
+            {
+                if (e is ISpreadOperation) throw new CompileException("spread elements are not supported yet", e.Syntax.GetLocation());
+                CallWith(D.CanonicalMethod(add), false, () => E.Get(obj), () => PushArg(add.Parameters[0], e), null, e.Syntax);
+            }
+            _temps[^1].Remove(slot);
+            E.Get(obj); E.I32(0); E.Set(obj);
+            return Own.Owned;
+        }
         throw new CompileException("this collection expression is not supported yet", ce.Syntax.GetLocation());
     }
 
