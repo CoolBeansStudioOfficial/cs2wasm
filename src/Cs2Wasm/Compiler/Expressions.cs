@@ -99,6 +99,8 @@ sealed partial class FunctionCompiler
             case ISwitchExpressionOperation se: return EmitSwitchExpression(se);
             case IInterpolatedStringOperation iso: return EmitInterpolatedString(iso);
             case IImplicitIndexerReferenceOperation ii: return EmitImplicitIndexer(ii, false);
+            case IFunctionPointerInvocationOperation fpi: return EmitFunctionPointerInvocation(fpi);
+            case IAddressOfOperation { Reference: IMethodReferenceOperation } mao: return TryEmitMethodAddress(mao)!.Value;
             case IInterpolatedStringHandlerCreationOperation hc: return EmitHandlerCreation(hc);
             case IInterpolatedStringHandlerArgumentPlaceholderOperation ph: return EmitHandlerPlaceholder(ph);
             case IInlineArrayAccessOperation ia when TypeOf(ia.Argument) is INamedTypeSymbol { Name: "Range" }:
