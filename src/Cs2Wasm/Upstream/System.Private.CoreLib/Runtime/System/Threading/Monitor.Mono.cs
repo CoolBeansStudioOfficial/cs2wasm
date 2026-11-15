@@ -87,6 +87,8 @@ namespace System.Threading
         /// <summary>Waits until the lock is taken, or the timeout (ms, -1 forever) passes.</summary>
         static bool Take(object obj, int millisecondsTimeout)
         {
+            // (with no other thread the lock is free or ours)
+            if (Rt.SingleThreaded()) return TryTake(obj);
             long end = millisecondsTimeout < 0 ? long.MaxValue : Engine.MonotonicNs() + (long)millisecondsTimeout * 1000000;
             while (true)
             {
@@ -126,7 +128,7 @@ namespace System.Threading
             Mem.StoreI32(e + 8, depth);
             if (depth == 0) Mem.StoreI32(e + 4, 0);
             Rt.RuntimeUnlock();
-            if (depth == 0) Threads.WakeAll();
+            if (depth == 0 && !Rt.SingleThreaded()) Threads.WakeAll();
         }
 
         public static bool TryEnter(object obj)

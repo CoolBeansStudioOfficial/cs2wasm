@@ -191,6 +191,7 @@ static class Locals
                 any = true;
                 continue;
             }
+            if (i > 0 && Propagate(b, fl, i, ExcReads)) { any = true; continue; }
             if (ins.Op != Op.LocalSet) continue;
             // the next access to x, within straight-line code that leaves the value where it is on the stack
             int h = 0;
@@ -228,6 +229,40 @@ static class Locals
         }
         f.Body = outl;
         Peephole.Run(f);
+        return true;
+    }
+
+    /// <summary>
+    /// A local set from a constant or from another local (`i32.const c; local.set x`, `local.get a; local.tee x`):
+    /// its reads in the straight-line code after it read the constant (or `a`, while `a` is unchanged) instead, and
+    /// when no read of this value is left the store goes.
+    /// </summary>
+    static bool Propagate(List<Instr> b, Flow fl, int i, Func<int, int, bool> excReads)
+    {
+        var src = b[i - 1];
+        int x = (int)b[i].Imm;
+        bool isConst = src.Op is Op.I32Const or Op.I64Const or Op.F32Const or Op.F64Const;
+        bool isCopy = src.Op == Op.LocalGet && (int)src.Imm != x;
+        if (!isConst && !isCopy) return false;
+        int a = isCopy ? (int)src.Imm : -1;
+        int n = b.Count, s = i + 1;
+        bool replaced = false, excRead = false, killed = false;
+        for (; s < n; s++)
+        {
+            var y = b[s];
+            if (y.Op is Op.LocalSet or Op.LocalTee && ((int)y.Imm == x || (int)y.Imm == a)) { killed = (int)y.Imm == x; break; }
+            if (y.Op == Op.LocalGet && (int)y.Imm == x) { b[s] = src with { Pos = y.Pos }; replaced = true; continue; }
+            if (Effect(y) is null) break;
+            if (IsThrowing(y.Op) && excReads(s, x)) excRead = true;
+        }
+        // (a write to a stops the reads that could be replaced; x's later reads then still need the store)
+        bool deadAfter = s >= n ? true : killed || !Has(fl.LiveIn[s], x);
+        if (!deadAfter || excRead)
+            return replaced;
+        // the value is read nowhere else: no store
+        var nop = new Instr { Op = Op.Nop, Pos = -1 };
+        if (b[i].Op == Op.LocalSet) { b[i - 1] = nop with { Pos = b[i - 1].Pos }; b[i] = nop with { Pos = b[i].Pos }; }
+        else b[i] = nop with { Pos = b[i].Pos };
         return true;
     }
 

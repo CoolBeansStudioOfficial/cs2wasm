@@ -593,6 +593,7 @@ sealed partial class FunctionCompiler
             case "Rt.Retain": E.Call(Rt.Retain); E.Op(Op.Drop); return Own.None;
             case "Rt.Release": E.Call(Rt.Release); return Own.None;
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
+            case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
             case "Rt.ArenaClearObject": E.Call(Rt.ArenaClearFn); return Own.None;
             case "Rt.ArenaFreeObject": E.Call(Rt.ArenaFreeFn); return Own.None;
             case "Rt.ArenaVisitObject": E.Call(Rt.ArenaVisitFn); return Own.None;

@@ -22,6 +22,22 @@ function readS32(bytes, pos) {
   if (shift < 32 && (b & 0x40)) r |= -1 << shift;
   return r | 0;
 }
+// a packed custom section: format byte 0 (plain) or 1 (LZ: plain length, then runs of
+// (literal count, literals, match length - 4, distance), every number LEB128)
+function unpackSection(b) {
+  if (b[0] === 0) return b.subarray(1);
+  const p = { i: 1 }, n = readU32(b, p), out = new Uint8Array(n);
+  let o = 0;
+  for (;;) {
+    const l = readU32(b, p);
+    out.set(b.subarray(p.i, p.i + l), o); p.i += l; o += l;
+    if (o >= n) break;
+    let m = readU32(b, p) + 4;
+    const d = readU32(b, p);
+    while (m--) { out[o] = out[o - d]; o++; }
+  }
+  return out;
+}
 function readName(bytes, pos) {
   const n = readU32(bytes, pos);
   const s = new TextDecoder().decode(bytes.subarray(pos.i, pos.i + n));
@@ -44,7 +60,7 @@ export function debugInfo(module) {
   // frames: a bit per function index, set for .NET frames
   const frames = [];
   for (const sec of WebAssembly.Module.customSections(module, 'cs2wasm.frames')) {
-    const b = new Uint8Array(sec), p = { i: 0 };
+    const b = unpackSection(new Uint8Array(sec)), p = { i: 0 };
     const n = readU32(b, p);
     const visible = [];
     for (let k = 0; k < n; k++) visible.push((b[p.i + (k >> 3)] >> (k & 7)) & 1);

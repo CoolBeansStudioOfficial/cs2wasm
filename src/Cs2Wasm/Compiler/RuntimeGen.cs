@@ -73,6 +73,13 @@ internal sealed partial class RuntimeFns
         return f;
     }
 
+    /// <summary>(p) → p, throwing NullReferenceException when p is null: one call at each check (the frame is hidden,
+    /// so traces show the caller, at the check).</summary>
+    public WasmFunction NonNull => Cached("rt.nonnull", FT([I], [I]), e =>
+    {
+        e.Get(0); e.Op(Op.I32Eqz); e.If(); e.Call(ThrowNullRef); e.End(); e.Get(0);
+    });
+
     /// <summary>(obj) → throws InvalidCastException naming both types.</summary>
     public WasmFunction ThrowInvalidCast(ITypeSymbol target)
     {
@@ -724,6 +731,19 @@ sealed partial class RuntimeGen
                            D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled));
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
         D.Rt.EmitArrayDispatch();
+        // single-threaded: what only another thread could make run goes (before pruning, so what it reached does)
+        if (D.Rt.SingleThreadedIfMade is { } st)
+        {
+            bool single = !D.UsesThreads;
+            st.Body.Clear(); new Emitter(st).I32(single ? 1 : 0);
+            foreach (var fn in D.Module.Functions)
+            {
+                bool hit = false;
+                for (int i = 0; i < fn.Body.Count; i++)
+                    if (fn.Body[i].Op == Op.Call && fn.Body[i].Ref == st) { fn.Body[i] = new Instr { Op = Op.I32Const, Imm = single ? 1 : 0, Pos = fn.Body[i].Pos }; hit = true; }
+                if (hit) ConstBranches.Run(fn);
+            }
+        }
         // (every function but the dispatch tables below exists now)
         PruneConstructed();
         AssignTypeIds();
@@ -1192,7 +1212,12 @@ internal sealed partial class Driver
         withLines.Bytes(bytes);
         var sec = new Writer(); sec.Name("cs2wasm.lines"); sec.Bytes(lt.ToArray());
         withLines.Byte(0); withLines.U32(sec.Length); withLines.Bytes(sec.ToArray());
-        var fsec = new Writer(); fsec.Name("cs2wasm.frames"); fsec.Bytes(fr.ToArray());
+        // (packed as the data segment is: a format byte, 0 plain, 1 LZ with the plain length first)
+        var frRaw = fr.ToArray();
+        var frPacked = DataCompression.Compress(frRaw);
+        var fsec = new Writer(); fsec.Name("cs2wasm.frames");
+        if (frPacked.Length + 8 < frRaw.Length) { fsec.Byte(1); fsec.U32(frRaw.Length); fsec.Bytes(frPacked); }
+        else { fsec.Byte(0); fsec.Bytes(frRaw); }
         withLines.Byte(0); withLines.U32(fsec.Length); withLines.Bytes(fsec.ToArray());
         return (withLines.ToArray(), SourceMap(enc));
     }

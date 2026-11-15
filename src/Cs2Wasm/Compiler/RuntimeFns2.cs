@@ -211,6 +211,10 @@ internal sealed partial class RuntimeFns
     public WasmFunction ArenaFreeFn => _arenaFree ??= M.AddFunction("rt.arena_free", FT([I], []));
     public WasmFunction ArenaVisitFn => _arenaVisit ??= M.AddFunction("rt.arena_visit", FT([I], []));
     public WasmFunction SccOfFn => _sccOf ??= M.AddFunction("rt.scc_of", FT([I], [I]));
+    WasmFunction? _singleThreaded;
+    /// <summary>() → 1 when no other thread can ever run (the program starts none); written at the end (RuntimeGen.Finish).</summary>
+    public WasmFunction SingleThreadedFn => _singleThreaded ??= M.AddFunction("rt.single_threaded", FT([], [I]));
+    public WasmFunction? SingleThreadedIfMade => _singleThreaded;
     public WasmFunction? ArenaClearFnIfMade => _arenaClear;
     public WasmFunction? ArenaFreeFnIfMade => _arenaFree;
     public WasmFunction? ArenaVisitFnIfMade => _arenaVisit;

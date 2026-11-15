@@ -561,16 +561,11 @@ sealed partial class FunctionCompiler
 
     void NullCheck()
     {
-        E.Op(Op.I32Eqz); E.If(); E.Call(Rt.ThrowNullRef); E.End();
+        E.Call(Rt.NonNull); E.Op(Op.Drop);
     }
 
     /// <summary>Null-check the value on top of the stack, leaving it there.</summary>
-    void NullCheckKeep()
-    {
-        int t = Scratch(ValType.I32);
-        E.Tee(t); NullCheck(); E.Get(t);
-        FreeScratch(ValType.I32, t);
-    }
+    void NullCheckKeep() => E.Call(Rt.NonNull);
 
     // =====================================================================
     // fields, properties, arrays

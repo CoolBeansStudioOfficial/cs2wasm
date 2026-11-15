@@ -145,6 +145,8 @@ namespace Cs2Wasm.Runtime
         }
 
         [Intrinsic] public static extern int ThreadId();
+        /// <summary>No other thread can ever run: the program starts none (known when the whole program is compiled).</summary>
+        [Intrinsic] public static extern bool SingleThreaded();
         [Intrinsic] public static extern int TlsBase();
         [Intrinsic] public static extern int TlsSize();
         [Intrinsic] public static extern void RuntimeLock();
