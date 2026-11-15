@@ -18,6 +18,8 @@ sealed partial class FunctionCompiler
     {
         if (l.IsRef || IsCaptured(l) || WrittenLocals().Contains(l) || _closure != null || _machine != null) return null;
         while (init is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit)) init = c.Operand;
+        // a copy of a reference that stays put for the whole method: the object outlives the local ("": always)
+        if (IsStableBase(init)) return "";
         if (init is not IFieldReferenceOperation { Field.IsStatic: false, Instance: { } inst } fr) return null;
         if (!Types.IsRef(T.Resolve(fr.Field.Type, Map)) || fr.Field.ContainingType.TypeKind != TypeKind.Class) return null;
         switch (inst)
@@ -118,7 +120,7 @@ internal sealed partial class Driver
             var b = fn.Body;
             foreach (var (_, local, field, marker) in list)
             {
-                bool ok = !threads && summary != null && !summary[fn].Contains(field) && !FieldsAddressTaken.Contains(field) && !reflected.Contains(field);
+                bool ok = field == "" || !threads && summary != null && !summary[fn].Contains(field) && !FieldsAddressTaken.Contains(field) && !reflected.Contains(field);
                 // the local's other writes are the releases at scope exit (get; release; 0; set): nothing moves its value
                 if (ok)
                     for (int i = 0; i < b.Count && ok; i++)

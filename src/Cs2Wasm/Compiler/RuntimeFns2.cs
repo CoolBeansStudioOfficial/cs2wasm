@@ -214,6 +214,18 @@ internal sealed partial class RuntimeFns
     /// <summary>() → 1 when no other thread can ever run (the program starts none); written at the end (RuntimeGen.Finish).</summary>
     public WasmFunction SingleThreadedFn => _singleThreaded ??= M.AddFunction("rt.single_threaded", FT([], [I]));
     public WasmFunction? SingleThreadedIfMade => _singleThreaded;
+    WasmFunction? _genericInstances;
+    /// <summary>() → [count, (definition id, instance id, n, argument ids...)...] (MakeGenericType); body at the end.</summary>
+    public WasmFunction GenericInstancesFn => _genericInstances ??= M.AddFunction("rt.generic_instances", FT([], [I]));
+    public WasmFunction? GenericInstancesIfMade => _genericInstances;
+    WasmFunction? _typeNameTable;
+    /// <summary>() → [count, (full name, type id)...] of the program's and CoreLib's types (Type.GetType); body at the end.</summary>
+    public WasmFunction TypeNameTableFn => _typeNameTable ??= M.AddFunction("rt.type_name_table", FT([], [I]));
+    public WasmFunction? TypeNameTableIfMade => _typeNameTable;
+    WasmFunction? _releaseThreadStatics;
+    /// <summary>() → releases the current thread's thread-static references (a thread ends); body at the end.</summary>
+    public WasmFunction ReleaseThreadStaticsFn => _releaseThreadStatics ??= M.AddFunction("rt.release_thread_statics", FT([], []));
+    public WasmFunction? ReleaseThreadStaticsIfMade => _releaseThreadStatics;
     public WasmFunction? ArenaClearFnIfMade => _arenaClear;
     public WasmFunction? ArenaFreeFnIfMade => _arenaFree;
     public WasmFunction? ArenaVisitFnIfMade => _arenaVisit;

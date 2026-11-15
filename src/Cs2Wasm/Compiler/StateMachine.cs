@@ -804,6 +804,19 @@ sealed partial class FunctionCompiler
         foreach (var seg in _segments)
         {
             var b = _cfg!.Blocks[seg.block];
+            // an exception while a filter runs makes the filter false (as .NET: it is swallowed); the caught
+            // exception goes on to the catches after it
+            // (the exception being filtered, thrown again when no catch of this try takes it, goes on outward)
+            if (EnclosingOf(b.EnclosingRegion, ControlFlowRegionKind.Filter) is { } filterRegion)
+            {
+                E.Get(_curLocal); E.I32(seg.id); E.Op(Op.I32Eq);
+                E.Get(0); E.Load(Op.I32Load, CaughtSlot(filterRegion.EnclosingRegion!)); E.Get(ex); E.Op(Op.I32Ne);
+                E.Op(Op.I32And);
+                E.If();
+                E.Get(ex); E.Call(Rt.Release);
+                EmitFilterEnd(filterRegion, null);
+                E.End();
+            }
             var chain = HandlerChain(b.EnclosingRegion);
             if (chain.Count == 0) continue;
             E.Get(_curLocal); E.I32(seg.id); E.Op(Op.I32Eq);

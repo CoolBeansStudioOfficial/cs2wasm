@@ -5,7 +5,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 46 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 48 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
@@ -13,7 +13,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
   finalizers, reflection, decimal, date and time, enum formatting, spans and `stackalloc`, `ref struct`, ref returns,
   C# 14 extension members, value-type equality, expression trees and `Expression.Compile`) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
   GodotSharp math proof (proof 2).
-- **API checks:** 16 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
+- **API checks:** 17 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
   custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
   passes, source map, cycles bounded in a fixed 16 MB memory, no arena code without cycle-capable types).
 - **Module size (raw, measured):** `Console.WriteLine(42)` is 26,738 bytes on upstream's library (code 20.5 KB,
@@ -97,7 +97,7 @@ Not done yet (a program using them gets a `CW0101` error naming the construct):
 - expression trees with captured variables, generic method calls, user-defined operators or statement bodies (a
   build error names the construct); `Expression.Compile` runs on upstream's interpreter (`046_expressions`);
 - filters inside iterators and async methods run in one pass (when the exception reaches their catch, after the
-  `finally` blocks inside the try); an exception thrown by such a filter is not swallowed; the first pass of a throw
+  `finally` blocks inside the try; an exception thrown by such a filter makes it false, as in .NET); the first pass of a throw
   does not see an iterator's or async method's own catch regions, so a filter further out can run for an exception
   such a body then catches; and an export called back from the engine does not hide outer frames' filters.
 
@@ -239,8 +239,11 @@ threads) is build notice `CW0200` naming it (`Task.Wait`, `.Result`, `GetResult`
 `Sleep`, `SemaphoreSlim`/`ManualResetEventSlim`/`CountdownEvent` waits, `Monitor.Wait`; checked). An exception from a
 static initializer becomes `TypeInitializationException`, thrown again at every later access, as in .NET.
 
-Not done: a contended `lock` on the engine thread is not reported; freeing a finished thread's stack and thread-local block,
-and the scheduling-dependence marks for the plugin (7.3).
+A `lock` on the engine thread whose object worker code also locks (a field locked in a delegate handed to `Thread`,
+`Task.Run`, the thread pool or `Parallel`, or in what it calls) is notice `CW0200` too. A finished thread's stack and
+thread-local block are reused by the next thread (`__thread_entry` marks them free when it is done), and its
+`[ThreadStatic]` references are released at its end: 200 threads run one after another in a fixed 16 MB memory
+(checked). Not done: the scheduling-dependence marks for the plugin (7.3).
 
 ### 5. Optimization — partial
 Done: reachability from exports (only reached methods are emitted), devirtualization when a virtual call has one
@@ -331,9 +334,17 @@ GetConstructor/GetMembers` with `BindingFlags` (inherited members, overrides, `D
 (`TargetInvocationException`, `TargetParameterCountException`), `PropertyInfo`/`FieldInfo` `GetValue`/`SetValue`,
 `ConstructorInfo.Invoke`, `Activator.CreateInstance` (also with arguments and `<T>`), custom attributes with
 constructor and named arguments (`GetCustomAttribute<T>`, `IsDefined`), `BaseType`, `GetInterfaces`,
-`IsAssignableFrom`, and .NET's `ToString` forms and member order (checked against .NET). Not done: generic methods
-and `ref` parameters through reflection, `MakeGenericType`, `Type.GetType(string)`, events and nested types, the
-interpreter (`Reflection.Emit`, `Expression.Compile`) and `dynamic`.
+`IsAssignableFrom`, and .NET's `ToString` forms and member order (checked against .NET). Also (`048_reflection_types`):
+`Type.GetType(name)` over a table of the program's and CoreLib's types the module numbers (as .NET looks in the
+calling assembly and CoreLib); generic type definitions (`typeof(List<>)`: `IsGenericTypeDefinition`, its parameters
+as `GetGenericArguments()`), `GetGenericTypeDefinition`, and `MakeGenericType` (folded at compile time when the
+definition and the arguments are `typeof` constants, so the instance's code exists; otherwise the instances the
+program makes); `GetNestedTypes`/`GetNestedType`; reflection in the library's own code, such as
+System.Linq.Expressions asking a delegate type for `Invoke` (a member named by a constant on a type the compiler
+cannot see is kept on every type the program names that has it). `Expression.Compile` runs on upstream's
+interpreter. Not done: generic methods (`MakeGenericMethod`) and `ref` parameters through reflection, events,
+`FullName` of a generic instance (.NET qualifies its arguments with their assemblies), `Reflection.Emit` and
+`dynamic`.
 
 Also: a readonly field (or get-only auto-property) set only in constructors that keep `this` in is not an edge of
 the cycle analysis (section 4.3), so an exception's inner exception no longer brings the arena runtime into every

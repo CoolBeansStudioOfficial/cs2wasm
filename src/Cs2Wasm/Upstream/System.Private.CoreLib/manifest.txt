@@ -34,6 +34,7 @@ substitute	method	System.Runtime.CompilerServices.RuntimeFeature	System.Boolean 
 substitute	method	System.Exception	System.String GetStackTrace()	=>Cs2Wasm.Runtime.Rt.StackTraceOf
 substitute	method	System.Diagnostics.StackTrace	System.String ToString(System.Diagnostics.StackTrace/TraceFormat)	=>Cs2Wasm.Runtime.Rt.EmptyTrace
 substitute	method	System.Enum	System.Boolean AreSorted(TStorage[])	true
+substitute	method	System.RuntimeTypeHandle	System.RuntimeType GetTypeByName(System.String,System.Boolean,System.Boolean,System.Threading.StackCrawlMark&)	=>Cs2Wasm.Runtime.TypeInfo.GetTypeByName
 edit	src/libraries/System.Private.CoreLib/src/System/Enum.cs	#define RARE_ENUMS	#undef RARE_ENUMS
 substitute	method	System.Environment	System.String GetEnvironmentVariable(System.String)	
 substitute	method	System.Gen2GcCallback	System.Void Register(System.Func`2,System.Object)	

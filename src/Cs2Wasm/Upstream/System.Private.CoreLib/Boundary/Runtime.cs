@@ -147,6 +147,8 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int ThreadId();
         /// <summary>No other thread can ever run: the program starts none (known when the whole program is compiled).</summary>
         [Intrinsic] public static extern bool SingleThreaded();
+        /// <summary>Releases the current thread's thread-static references (its end).</summary>
+        [Intrinsic] public static extern void ReleaseThreadStatics();
         /// <summary>A delegate of the type (by id) that passes its arguments to the handler as an object[]; null when the
         /// program names no such delegate type (Compiler/DynamicDelegates.cs).</summary>
         [Intrinsic] public static extern System.Delegate? ObjectArrayDelegate(int delegateTypeId, System.Func<object?[], object?> handler);
@@ -753,10 +755,48 @@ namespace Cs2Wasm.Runtime
 
         internal static int NewId() => Atomic.Add32(ref s_nextId, 1) + 1;
 
+        // finished threads' stacks and thread-local blocks, for reuse: a list through the blocks' trailer
+        // ([0] finished, set by __thread_entry when it is done with both; [4] next; [8] the stack)
+        static int s_finished;
+
+        /// <summary>A stack and a zeroed thread-local block: a finished thread's when one is free.</summary>
+        static unsafe void TakeBlocks(out int stack, out int tls)
+        {
+            int size = Rt.TlsSize();
+            Rt.RuntimeLock();
+            int prev = 0, cur = s_finished;
+            while (cur != 0 && Atomic.Load32(ref *(int*)(cur + size)) == 0) { prev = cur; cur = Mem.LoadI32(cur + size + 4); }
+            if (cur != 0)
+            {
+                int next = Mem.LoadI32(cur + size + 4);
+                if (prev == 0) s_finished = next; else Mem.StoreI32(prev + size + 4, next);
+            }
+            Rt.RuntimeUnlock();
+            if (cur != 0)
+            {
+                stack = Mem.LoadI32(cur + size + 8);
+                tls = cur;
+                Mem.Fill(tls, 0, size + 16);
+                return;
+            }
+            stack = Rt.Alloc(StackSize);
+            tls = Rt.Alloc(size + 16);
+        }
+
+        /// <summary>A thread ending (on its own stack): its blocks go to the list, reused once __thread_entry marks them.</summary>
+        static void GiveBlocks(int stack, int tls)
+        {
+            int size = Rt.TlsSize();
+            Mem.StoreI32(tls + size + 8, stack);
+            Rt.RuntimeLock();
+            Mem.StoreI32(tls + size + 4, s_finished);
+            s_finished = tls;
+            Rt.RuntimeUnlock();
+        }
+
         internal static void SpawnCore(System.Threading.Thread t)
         {
-            int stack = Rt.Alloc(StackSize);
-            int tls = Rt.Alloc(Rt.TlsSize() + 16);
+            TakeBlocks(out int stack, out int tls);
             t._stack = stack;
             t._tls = tls;
             Rt.Share(t); // the worker reaches it, and through it the delegate and what it captured
@@ -782,7 +822,10 @@ namespace Cs2Wasm.Runtime
                 Atomic.Add32(ref s_live, -1);
                 System.Threading.Thread.OnThreadExiting(t);
                 System.Threading.Thread.SetCurrent(null);
+                // the thread's statics die with it (as .NET's become unreachable)
+                Rt.ReleaseThreadStatics();
                 Limbo.Quiescent();
+                GiveBlocks(t._stack, t._tls);
                 WakeAll();
             }
         }

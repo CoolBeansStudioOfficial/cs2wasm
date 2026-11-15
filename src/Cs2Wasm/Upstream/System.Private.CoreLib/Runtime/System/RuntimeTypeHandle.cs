@@ -137,7 +137,7 @@ namespace System
             return GetMetadataToken(new QCallTypeHandle(ref type));
         }
 
-                private static void GetGenericTypeDefinition_impl(QCallTypeHandle type, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.GetGenericTypeDefinition");
+                private static void GetGenericTypeDefinition_impl(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.GenericDefinition(Cs2Wasm.Runtime.TypeInfo.Id(type), res);
 
         internal static Type GetGenericTypeDefinition(RuntimeType type)
         {
@@ -280,7 +280,7 @@ namespace System
 
                 private static bool type_is_assignable_from(QCallTypeHandle a, QCallTypeHandle b) => Cs2Wasm.Runtime.TypeInfo.IsAssignable(Cs2Wasm.Runtime.TypeInfo.Id(a), Cs2Wasm.Runtime.TypeInfo.Id(b));
 
-                internal static bool IsGenericTypeDefinition(QCallTypeHandle type) => false;
+                internal static bool IsGenericTypeDefinition(QCallTypeHandle type) => Cs2Wasm.Runtime.TypeInfo.IsGenericTypeDefinition(Cs2Wasm.Runtime.TypeInfo.Id(type));
 
                 internal static IntPtr GetGenericParameterInfo(QCallTypeHandle type) => IntPtr.Zero;
 

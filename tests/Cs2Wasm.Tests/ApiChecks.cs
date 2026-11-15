@@ -285,6 +285,23 @@ static class ApiChecks
             }
             """, "8 4\n"));
 
+        Check("threads: 200 threads one after another run in a fixed 16 MB memory (stacks and thread-local blocks reused)", () => Bounded("api_thread_reuse", """
+            using System.Threading;
+            static class P {
+                [ThreadStatic] static List<int>? s_mine;
+                [UnmanagedCallersOnly(EntryPoint = "main")]
+                static void M() {
+                    long total = 0;
+                    for (int i = 0; i < 200; i++) {
+                        int k = i;
+                        var t = new Thread(() => { s_mine = new List<int> { k, k }; Interlocked.Add(ref total, s_mine[0] + s_mine[1]); });
+                        t.Start(); t.Join();
+                    }
+                    Console.WriteLine(total);
+                }
+            }
+            """, "39800\n"));
+
         Check("cycles: types that cannot form cycles never pay for arenas", () =>
         {
             var src = Header + """

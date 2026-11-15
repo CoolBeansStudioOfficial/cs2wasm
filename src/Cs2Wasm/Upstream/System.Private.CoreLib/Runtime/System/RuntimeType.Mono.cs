@@ -2162,7 +2162,7 @@ namespace System
             return ctor.Invoker.InvokeWithNoArgs(obj: null, invokeAttr: default)!;
         }
 
-                private static void MakeGenericType(Type gt, Type[] types, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.MakeGenericType");
+                private static void MakeGenericType(Type gt, Type[] types, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.MakeGeneric(gt, types, res);
 
                 internal static IntPtr GetMethodsByName_native(QCallTypeHandle type, IntPtr namePtr, BindingFlags bindingAttr, MemberListType listType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection over methods (outside the compiler's metadata)");
 
@@ -2300,7 +2300,15 @@ namespace System
             }
         }
 
-                internal static void getFullName(QCallTypeHandle type, ObjectHandleOnStack res, bool full_name, bool assembly_qualified) => Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.TypeInfo.FullName(Cs2Wasm.Runtime.TypeInfo.Id(type))); // (with the namespace either way: Mono's full_name qualifies generic arguments)
+                internal static void getFullName(QCallTypeHandle type, ObjectHandleOnStack res, bool full_name, bool assembly_qualified)
+        {
+            // (with the namespace either way: Mono's full_name qualifies generic arguments; a generic definition's
+            // FullName has no argument list, its ToString names the parameters)
+            int id = Cs2Wasm.Runtime.TypeInfo.Id(type);
+            string name = Cs2Wasm.Runtime.TypeInfo.FullName(id);
+            if (full_name && Cs2Wasm.Runtime.TypeInfo.IsGenericTypeDefinition(id) && name.IndexOf('[') is int b && b > 0) name = name.Substring(0, b);
+            Cs2Wasm.Runtime.TypeInfo.Set(res, name);
+        }
 
                 private static void GetGenericArgumentsInternal(QCallTypeHandle type, ObjectHandleOnStack res, bool runtimeArray)
         {
@@ -2388,22 +2396,24 @@ namespace System
 
         private RuntimeType[] GetNestedTypes_internal(string? displayName, BindingFlags bindingAttr, MemberListType listType)
         {
-            string? internalName = null;
-            if (displayName != null)
-                internalName = displayName;
-            var this_type = this;
-            using (var namePtr = new Mono.SafeStringMarshal(internalName))
-            using (var h = new Mono.SafeGPtrArrayHandle(GetNestedTypes_native(new QCallTypeHandle(ref this_type), namePtr.Value, bindingAttr, listType)))
+            // cs2wasm: the compiler's table of nested types (declaration order), filtered as Mono's icall does
+            int blob = Cs2Wasm.Runtime.TypeInfo.Nested(TypeId);
+            int n = Cs2Wasm.Runtime.Mem.LoadI32(blob);
+            var list = new List<RuntimeType>();
+            for (int i = 0; i < n; i++)
             {
-                int n = h.Length;
-                var a = new RuntimeType[n];
-                for (int i = 0; i < n; i++)
+                var t = RuntimeType.FromId(Cs2Wasm.Runtime.Mem.LoadI32(blob + 4 + 4 * i));
+                var vis = t.Attributes & TypeAttributes.VisibilityMask;
+                bool pub = vis == TypeAttributes.NestedPublic;
+                if (pub ? (bindingAttr & BindingFlags.Public) == 0 : (bindingAttr & BindingFlags.NonPublic) == 0) continue;
+                if (displayName != null)
                 {
-                    var th = new RuntimeTypeHandle(h[i]);
-                    a[i] = (RuntimeType)GetTypeFromHandle(th)!;
+                    bool ic = (bindingAttr & BindingFlags.IgnoreCase) != 0 || listType == MemberListType.CaseInsensitive;
+                    if (!string.Equals(t.Name, displayName, ic ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) continue;
                 }
-                return a;
+                list.Add(t);
             }
+            return list.ToArray();
         }
 
         public override string? AssemblyQualifiedName

@@ -105,6 +105,8 @@ internal sealed partial class Driver
     /// <summary>Per instance (thread): its managed thread id (1 = the engine thread) and thread-local block.</summary>
     public readonly WasmGlobal ThreadId, TlsBase;
     int _tlsSize;
+    /// <summary>The thread statics' offsets and types (released when a thread ends).</summary>
+    public readonly List<(int off, ITypeSymbol type)> _tlsTypes = [];
     public int TlsSize => (_tlsSize + 15) / 16 * 16;
     readonly Dictionary<string, int> _tls = [];
     /// <summary>Offset of a [ThreadStatic] field in the thread-local block.</summary>
@@ -116,6 +118,7 @@ internal sealed partial class Driver
         _tlsSize = (_tlsSize + align - 1) / align * align;
         off = _tlsSize; _tlsSize += size;
         _tls[key] = off;
+        _tlsTypes.Add((off, Types.Canonical(type)));
         return off;
     }
     /// <summary>True once the program can start a thread: counts become atomic and the runtime lock is real.</summary>
@@ -825,8 +828,19 @@ internal sealed partial class Driver
     public bool BeforeFieldInit(INamedTypeSymbol t) => !t.StaticConstructors.Any(c => !c.IsImplicitlyDeclared);
 
     // ---------------- driving ----------------
+    readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    readonly bool _times = Environment.GetEnvironmentVariable("CS2WASM_TIMES") == "1";
+    /// <summary>CS2WASM_TIMES=1: milliseconds since the last mark, per phase.</summary>
+    public void Mark(string phase)
+    {
+        if (!_times) return;
+        Console.Error.WriteLine($"  {_clock.ElapsedMilliseconds,6} ms  {phase}");
+        _clock.Restart();
+    }
+
     public void Run()
     {
+        Mark("start (library ready)");
         foreach (var e in Main.GetDiagnostics())
             if (e.Severity == DiagnosticSeverity.Error) { Diagnostics.Add(e); }
         if (Diagnostics.Count > 0) return;
@@ -837,16 +851,22 @@ internal sealed partial class Driver
         var rt = new RuntimeGen(this);
         rt.Prepare();
         FindRoots(rt);
+        Mark("program diagnostics, roots");
         Drain(rt);
+        Mark("compile (first drain)");
         RunPlugins(rt);
         rt.FinishExports();
         Drain(rt);
+        Mark("exports, reflection (second drain)");
         // static fields nothing reads: the whole program is known now, so their initializers that have no effect go
         // (and with them what only they reached, which the encoder no longer finds live)
         SkipUnreadInits = true;
-        foreach (var by in ConstructedBy.Values) by.RemoveWhere(f => _compiledCctors.Any(c => c.Item2 == f));
+        var recompiled = _compiledCctors.Where(c => FunctionCompiler.AnyUnreadPureInit(this, c.Item1)).Select(c => c.Item2).ToHashSet();
+        foreach (var by in ConstructedBy.Values) by.RemoveWhere(f => f != null && recompiled.Contains(f));
         foreach (var (t, fn, flag, cctor) in _compiledCctors.ToList())
         {
+            // (only the ones that lose an initializer: the others stay as they were compiled)
+            if (!FunctionCompiler.AnyUnreadPureInit(this, t)) continue;
             fn.Body.Clear(); fn.Locals.Clear();
             CurrentFn = fn;
             try { FunctionCompiler.CompileStaticInit(this, t, fn, flag, cctor); }
@@ -857,8 +877,10 @@ internal sealed partial class Driver
         Arenas.Analyze();
         if (Arenas.Enabled) { Arenas.RequestRuntime(); Drain(rt); }
         Arenas.Resolve();
+        Mark("static initializers again, arenas");
         ReportEngineThreadBlocking(rt.UserExports);
         rt.Finish();
+        Mark("finish (tables, dispatch)");
         if (Environment.GetEnvironmentVariable("CS2WASM_STATS") is "1" or "2") PrintStats();
     }
 

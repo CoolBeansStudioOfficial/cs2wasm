@@ -38,6 +38,67 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern object? Invoke(int thunk, object? target, object?[]? args);
         /// <summary>[count, ids...]: all the interfaces the type implements.</summary>
         [Intrinsic] public static extern int Interfaces(int id);
+        /// <summary>[count, (full name, type id)...]: the program's and CoreLib's named types (Type.GetType).</summary>
+        [Intrinsic] public static extern int NameTable();
+        /// <summary>[count, ids...]: the type's nested types (not generic ones), in declaration order.</summary>
+        [Intrinsic] public static extern int Nested(int id);
+        /// <summary>[count, (definition id, instance id, n, argument ids...)...]: the generic instances the program makes.</summary>
+        [Intrinsic] public static extern int Instances();
+
+        public static bool IsGenericTypeDefinition(int id) => (Flags2(id) & 64) != 0;
+
+        /// <summary>MakeGenericType: the instance the program makes of the definition with these arguments (there is no
+        /// code for an instance it does not make).</summary>
+        public static void MakeGeneric(Type gt, Type[] types, ObjectHandleOnStack res)
+        {
+            int defId = ((RuntimeType)gt).TypeId;
+            int t = Instances(), n = Mem.LoadI32(t), p = t + 4;
+            for (int i = 0; i < n; i++)
+            {
+                int def = Mem.LoadI32(p), inst = Mem.LoadI32(p + 4), c = Mem.LoadI32(p + 8);
+                if (def == defId && c == types.Length)
+                {
+                    bool same = true;
+                    for (int k = 0; k < c && same; k++) same = types[k] is RuntimeType rk && Mem.LoadI32(p + 12 + 4 * k) == rk.TypeId;
+                    if (same) { Set(res, Type(inst)); return; }
+                }
+                p += 12 + 4 * c;
+            }
+            throw new PlatformNotSupportedException("cs2wasm: " + gt + " with these type arguments is not a type the program makes (no code exists for it)");
+        }
+
+        /// <summary>GetGenericTypeDefinition: the definition of an instance.</summary>
+        public static void GenericDefinition(int id, ObjectHandleOnStack res)
+        {
+            if (IsGenericTypeDefinition(id)) { Set(res, Type(id)); return; }
+            int t = Instances(), n = Mem.LoadI32(t), p = t + 4;
+            for (int i = 0; i < n; i++)
+            {
+                int c = Mem.LoadI32(p + 8);
+                if (Mem.LoadI32(p + 4) == id) { Set(res, Type(Mem.LoadI32(p))); return; }
+                p += 12 + 4 * c;
+            }
+            throw new InvalidOperationException(SR.InvalidOperation_NotGenericType);
+        }
+
+        /// <summary>RuntimeTypeHandle.GetTypeByName (manifest substitution): the type of that name among the program's
+        /// and CoreLib's, as Type.GetType looks (an assembly-qualified name: its type part).</summary>
+        public static RuntimeType? GetTypeByName(string typeName, bool throwOnError, bool ignoreCase, ref System.Threading.StackCrawlMark stackMark)
+        {
+            ArgumentNullException.ThrowIfNull(typeName);
+            string name = typeName.Trim();
+            int comma = name.IndexOf(',');
+            if (comma >= 0 && name.IndexOf('[') < 0) name = name.Substring(0, comma).Trim();
+            int t = NameTable(), n = Mem.LoadI32(t);
+            for (int i = 0; i < n; i++)
+            {
+                string s = Rt.Take<string>(Mem.LoadI32(t + 4 + 8 * i));
+                if (string.Equals(s, name, ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                    return RuntimeType.FromId(Mem.LoadI32(t + 8 + 8 * i));
+            }
+            if (throwOnError) throw new TypeLoadException("Could not load type '" + name + "'.");
+            return null;
+        }
 
         /// <summary>The type id a QCall handle carries (its handle: the RuntimeType's handle value).</summary>
         public static int Id(QCallTypeHandle h) => (int)Unsafe.Add(ref Unsafe.As<QCallTypeHandle, IntPtr>(ref h), 1);

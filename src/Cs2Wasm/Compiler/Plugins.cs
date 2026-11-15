@@ -589,6 +589,75 @@ internal sealed partial class Driver
     static readonly HashSet<string> s_blocking = ["Task.Wait", "Task.WaitAll", "Task.WaitAny", "Task.get_Result", "TaskAwaiter.GetResult",
         "ValueTaskAwaiter.GetResult", "Thread.Join", "Thread.Sleep", "SemaphoreSlim.Wait", "ManualResetEventSlim.Wait", "CountdownEvent.Wait", "Monitor.Wait"];
 
+    static readonly HashSet<string> s_threadStarters = ["Thread..ctor", "Task.Run", "ThreadPool.QueueUserWorkItem", "ThreadPool.UnsafeQueueUserWorkItem",
+        "Parallel.For", "Parallel.ForEach", "Parallel.Invoke", "TaskFactory.StartNew", "Task.Factory.StartNew"];
+
+    /// <summary>Section 4.5: a `lock` on the engine thread whose object worker threads lock too (a field, static or
+    /// not, also locked in a delegate handed to Thread, Task.Run, the thread pool or Parallel, or in what such a
+    /// delegate calls) may wait for a worker: a build notice at the engine side's lock.</summary>
+    void ReportContendedLocks(IEnumerable<MethodInst> exports)
+    {
+        static ISymbol? Target(ILockOperation l)
+        {
+            var v = l.LockedValue;
+            while (v is IConversionOperation c) v = c.Operand;
+            return v switch { IFieldReferenceOperation f => f.Field.OriginalDefinition, _ => null };
+        }
+        // worker code: the delegates handed to thread starters, and the methods they call directly
+        var workerLocks = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        var workerMethods = new HashSet<IMethodSymbol>(SymbolEqualityComparer.Default);
+        void LocksIn(IOperation body)
+        {
+            foreach (var op in body.DescendantsAndSelf())
+            {
+                if (op is ILockOperation lk && Target(lk) is { } t) workerLocks.Add(t);
+                if (op is IInvocationOperation inv && inv.TargetMethod.Locations.FirstOrDefault()?.SourceTree is { } st && IsInput(st)) workerMethods.Add(inv.TargetMethod.OriginalDefinition);
+            }
+        }
+        foreach (var comp in Inputs)
+            foreach (var tree in comp.SyntaxTrees)
+            {
+                var model = ModelFor(tree);
+                foreach (var node in tree.GetRoot().DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>())
+                {
+                    if (model.GetOperation(node) is not IAnonymousFunctionOperation af) continue;
+                    var p = af.Parent;
+                    while (p is IDelegateCreationOperation or IConversionOperation) p = p.Parent;
+                    if (p is IArgumentOperation { Parent: var call }
+                        && (call is IInvocationOperation { TargetMethod: var tm } && s_threadStarters.Contains(tm.ContainingType.Name + "." + tm.Name)
+                            || call is IObjectCreationOperation { Constructor: { } ctor } && s_threadStarters.Contains(ctor.ContainingType.Name + "..ctor")))
+                        LocksIn(af.Body);
+                }
+            }
+        foreach (var m in workerMethods.ToList())
+            foreach (var r in m.DeclaringSyntaxReferences)
+                if (ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax()) is { } body)
+                    foreach (var lk in body.DescendantsAndSelf().OfType<ILockOperation>())
+                        if (Target(lk) is { } t) workerLocks.Add(t);
+        if (workerLocks.Count == 0) return;
+        // the engine side: what the exports reach, not the delegates they hand out
+        var seen = new HashSet<MethodInst>();
+        var work = new Queue<MethodInst>(exports);
+        var reported = new HashSet<(string, int)>();
+        while (work.Count > 0)
+        {
+            var mi = work.Dequeue();
+            if (!seen.Add(mi) || mi.Sym.MethodKind == MethodKind.AnonymousFunction || mi.Key.EndsWith(" MoveNext")) continue;
+            foreach (var c in mi.Callees) work.Enqueue(c);
+            foreach (var r in mi.Sym.OriginalDefinition.DeclaringSyntaxReferences)
+            {
+                if (!IsInput(r.SyntaxTree) || ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax()) is not { } body) continue;
+                var nested = body.Descendants().Where(o => o is IAnonymousFunctionOperation or ILocalFunctionOperation).SelectMany(o => o.DescendantsAndSelf()).ToHashSet();
+                foreach (var lk in body.DescendantsAndSelf().OfType<ILockOperation>())
+                {
+                    if (nested.Contains(lk) || Target(lk) is not { } t || !workerLocks.Contains(t)) continue;
+                    if (!reported.Add((lk.Syntax.SyntaxTree.FilePath, lk.Syntax.SpanStart))) continue;
+                    Report(Diags.BlockingWait, lk.Syntax.GetLocation(), "lock (" + t.Name + ")");
+                }
+            }
+        }
+    }
+
     static string? BlockingName(IMethodSymbol m)
     {
         var name = m.ContainingType?.Name + "." + m.Name;
@@ -599,6 +668,7 @@ internal sealed partial class Driver
     /// lambdas handed to other threads) is a build notice naming it.</summary>
     void ReportEngineThreadBlocking(IEnumerable<MethodInst> exports)
     {
+        ReportContendedLocks(exports);
         var seen = new HashSet<MethodInst>();
         var work = new Queue<MethodInst>(exports);
         var reported = new HashSet<(string, int)>();

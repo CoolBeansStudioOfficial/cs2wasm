@@ -43,6 +43,16 @@ sealed partial class FunctionCompiler
         if (target.Name is "New" or "NewOfNullableArg" && Types.FullName(target.ContainingType) == "Cs2Wasm.Runtime.Generics" && D.IsLibrary(target))
             return EmitGenericsNew(inv);
         if (target.MethodKind == MethodKind.LocalFunction) return EmitLocalFunctionCall(inv);
+        // typeof(G<>).MakeGenericType(typeof(A), ...): the instance, known now (so its code is made, as NativeAOT's
+        // analysis sees such calls)
+        if (target.Name == "MakeGenericType" && target.ContainingType?.ToDisplayString() is "System.Type" && FoldMakeGenericType(inv) is { } folded)
+        {
+            if (folded.TypeKind == TypeKind.Enum) D.MarkConstructed(folded);
+            E.Tid(D.TypeId(folded));
+            var fromId = D.LibType("System.Type").GetMembers("FromId").OfType<IMethodSymbol>().First();
+            E.Call(D.Method(fromId).Fn);
+            return Own.Owned;
+        }
         // static abstract / virtual interface members through a constrained type parameter
         if (target.IsStatic && target.ContainingType.TypeKind == TypeKind.Interface && inv.ConstrainedToType is { } ctt)
         {
@@ -52,6 +62,36 @@ sealed partial class FunctionCompiler
             return EmitCallOps(impl, null, inv.Arguments, false, inv.Syntax, alreadyResolved: true);
         }
         return EmitCall(target, inv.Instance, inv.Arguments.Cast<IOperation>().ToList(), inv.IsVirtual, inv.Syntax);
+    }
+
+    INamedTypeSymbol? FoldMakeGenericType(IInvocationOperation inv)
+    {
+        var recv = inv.Instance;
+        while (recv is IConversionOperation c) recv = c.Operand;
+        if (recv is not ITypeOfOperation { TypeOperand: INamedTypeSymbol { IsGenericType: true } open }) return null;
+        if (inv.Arguments is not [{ Value: var av }]) return null;
+        while (av is IConversionOperation c2) av = c2.Operand;
+        if (av is not IArrayCreationOperation { Initializer: { } init }) return null;
+        var args = new List<ITypeSymbol>();
+        foreach (var e in init.ElementValues)
+        {
+            var x = e;
+            while (x is IConversionOperation c3) x = c3.Operand;
+            if (x is not ITypeOfOperation to) return null;
+            var at = T.Resolve(to.TypeOperand, Map);
+            if (at is ITypeParameterSymbol || at is INamedTypeSymbol { IsUnboundGenericType: true }) return null;
+            args.Add(at);
+        }
+        var def = open.OriginalDefinition;
+        if (def.TypeParameters.Length != args.Count) return null;
+        // (the constraints are C#'s to check at run time: only arguments that satisfy them fold)
+        for (int i = 0; i < args.Count; i++)
+        {
+            var tp = def.TypeParameters[i];
+            if (tp.HasValueTypeConstraint && !args[i].IsValueType || tp.HasReferenceTypeConstraint && !args[i].IsReferenceType || tp.HasUnmanagedTypeConstraint && !args[i].IsUnmanagedType) return null;
+            if (tp.ConstraintTypes.Length > 0) return null;
+        }
+        return (INamedTypeSymbol)T.Canonical(def.Construct([.. args]));
     }
 
     Own EmitCall(IMethodSymbol target, IOperation? instance, IReadOnlyList<IOperation> args, bool isVirtual, SyntaxNode syntax)
@@ -622,6 +662,7 @@ sealed partial class FunctionCompiler
             case "Rt.Release": E.Call(Rt.Release); return Own.None;
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
             case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
+            case "Rt.ReleaseThreadStatics": E.Call(Rt.ReleaseThreadStaticsFn); return Own.None;
             case "Rt.ObjectArrayDelegate": E.Call(D.ObjectArrayDelegateFn); return Own.Owned;
             case "Rt.ArenaClearObject": E.Call(Rt.ArenaClearFn); return Own.None;
             case "Rt.ArenaFreeObject": E.Call(Rt.ArenaFreeFn); return Own.None;
@@ -687,6 +728,8 @@ sealed partial class FunctionCompiler
             case "Type.FullNameOf": E.Call(Rt.TypeNameById); return Own.Stable;
             // Cs2Wasm.Runtime.TypeInfo (TypeInfo.cs): tables by type id
             case "TypeInfo.FullName": E.Call(Rt.TypeNameById); return Own.Stable;
+            case "TypeInfo.NameTable": E.Call(Rt.TypeNameTableFn); return Own.None;
+            case "TypeInfo.Instances": E.Call(Rt.GenericInstancesFn); return Own.None;
             case "TypeInfo.Name": E.Call(Rt.TypeShortNameById); return Own.Stable;
             case "TypeInfo.Flags": E.Call(Rt.TypeFlagsById); return Own.None;
             case "TypeInfo.Namespace": E.Call(Rt.TypeInfo("namespace")); return Own.Stable;
@@ -698,6 +741,7 @@ sealed partial class FunctionCompiler
             case "TypeInfo.Flags2": E.Call(Rt.TypeInfo("flags2")); return Own.None;
             case "TypeInfo.GenericArgs": E.Call(Rt.TypeInfo("generic_args")); return Own.None;
             case "TypeInfo.Interfaces": E.Call(Rt.TypeInfo("interfaces")); return Own.None;
+            case "TypeInfo.Nested": E.Call(Rt.TypeInfo("nested")); return Own.None;
             case "TypeInfo.DeclaringId": E.Call(Rt.TypeInfo("declaring")); return Own.None;
             case "TypeInfo.Size": E.Call(Rt.TypeInfo("size")); return Own.None;
             case "TypeInfo.BoxOffset": E.Call(Rt.TypeInfo("box_offset")); return Own.None;

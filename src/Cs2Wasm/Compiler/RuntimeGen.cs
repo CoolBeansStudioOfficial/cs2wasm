@@ -639,11 +639,14 @@ sealed partial class RuntimeGen
             var blk = e.Block(ValType.I32);
             e.TryTable(null, (0, D.ExceptionTag, blk));
             e.Get(3); e.Call(run.Fn);
+            // (the thread's stack and thread-local block are not used any more: Threads can reuse them)
+            e.Get(1); e.I32Addr(new LateAddr(() => D.TlsSize)); e.Op(Op.I32Add); e.I32(1); e.Emit(Op.I32AtomicStore, 0, 2);
             e.Op(Op.Return);
             e.End();
             e.Op(Op.Unreachable);
             e.End();
             e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1).Fn);
+            e.Get(1); e.I32Addr(new LateAddr(() => D.TlsSize)); e.Op(Op.I32Add); e.I32(1); e.Emit(Op.I32AtomicStore, 0, 2);
         }
         // export wrappers
         foreach (var (name, mi) in _exports)
@@ -727,6 +730,22 @@ sealed partial class RuntimeGen
         D.Rt.EmitArrayDispatch();
         D.Module.UsesThreads = D.UsesThreads;
         D.EmitObjectArrayDelegate();
+        if (D.Rt.ReleaseThreadStaticsIfMade is { } rts)
+        {
+            var e = new Emitter(rts);
+            foreach (var (off, type) in D._tlsTypes)
+            {
+                if (Types.IsRef(type))
+                {
+                    e.GGet(D.TlsBase); e.Load(Op.I32Load, off); e.Call(D.Rt.Release);
+                    e.GGet(D.TlsBase); e.I32(0); e.Store(Op.I32Store, off);
+                }
+                else if (Types.IsStruct(type) && D.Types.LayoutOf(type).HasRefs)
+                {
+                    e.GGet(D.TlsBase); e.I32(off); e.Op(Op.I32Add); e.Call(D.Rt.ReleaseStruct(type));
+                }
+            }
+        }
         // single-threaded: what only another thread could make run goes (before pruning, so what it reached does)
         if (D.Rt.SingleThreadedIfMade is { } st)
         {
@@ -902,6 +921,52 @@ sealed partial class RuntimeGen
         EmitIdTable(D.Rt.TypeNameById, n, i => (D.StringLiteral(Full(i)), 0));
         EmitIdTable(D.Rt.TypeShortNameById, n, i => (D.StringLiteral(Short(i)), 0));
         EmitIdTable(D.Rt.TypeFlagsById, n, i => (null, i == 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) ? 0 : Flags(D.TypeById[i])));
+        if (D.Rt.TypeNameTableIfMade is { } tnt)
+        {
+            // Type.GetType(name) looks in the calling assembly and CoreLib: their named types the module numbers
+            var corlib = D.LibCompilation.Assembly;
+            var programs = D.Inputs.Select(c => c.Assembly).ToHashSet<IAssemblySymbol>(SymbolEqualityComparer.Default);
+            var blob = new List<byte>();
+            var relocs = new List<(int, IAddress)>();
+            int count = 0;
+            blob.AddRange(new byte[4]);
+            for (int ext = 0; ext < n; ext++)
+            {
+                int i = D.IntId(ext);
+                if (i <= 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i)) continue;
+                if (D.TypeById[i] is not INamedTypeSymbol nt || nt.IsUnboundGenericType || nt.TypeArguments.Length > 0 && nt.TypeArguments.Any(a => a is ITypeParameterSymbol)) continue;
+                var asm = nt.ContainingAssembly;
+                if (asm == null || !SymbolEqualityComparer.Default.Equals(asm, corlib) && !programs.Contains(asm)) continue;
+                relocs.Add((blob.Count, D.StringLiteral(Driver.ClrName(nt))));
+                blob.AddRange(new byte[4]);
+                blob.AddRange(BitConverter.GetBytes(ext));
+                count++;
+            }
+            BitConverter.GetBytes(count).CopyTo(blob.ToArray(), 0);
+            var bytes = blob.ToArray();
+            BitConverter.GetBytes(count).CopyTo(bytes, 0);
+            var addr = D.DataBlob(bytes, 4, relocs);
+            new Emitter(tnt).I32Addr(addr);
+        }
+        if (D.Rt.GenericInstancesIfMade is { } gif)
+        {
+            var blob = new List<int> { 0 };
+            int count = 0;
+            for (int ext = 0; ext < n; ext++)
+            {
+                int i = D.IntId(ext);
+                if (i <= 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i)) continue;
+                if (D.TypeById[i] is not INamedTypeSymbol { IsGenericType: true } gi || Types.IsGenericDefinition(gi)) continue;
+                if (D.ExistingTypeId(D.Types.Canonical(gi.OriginalDefinition)) is not int di || D.ExtId(di) < 0) continue;
+                var args = gi.TypeArguments.Select(a => D.ExistingTypeId(D.Types.Canonical(a)) is int ai ? D.ExtId(ai) : -1).ToList();
+                if (args.Any(a => a < 0)) continue;
+                blob.Add(D.ExtId(di)); blob.Add(ext); blob.Add(args.Count); blob.AddRange(args);
+                count++;
+            }
+            blob[0] = count;
+            var bytes = blob.SelectMany(BitConverter.GetBytes).ToArray();
+            new Emitter(gif).I32Addr(D.DataBlob(bytes, 4));
+        }
         EmitTypeInfo();
     }
 
@@ -1140,7 +1205,9 @@ internal sealed partial class Driver
         ver.Name(Cs2WasmCompiler.CompilerVersion); ver.U32(Options.AbiVersion);
         Module.CustomSections.Add(new CustomSection("cs2wasm.version", ver.ToArray()));
         foreach (var (n, data) in Options.CustomSections) Module.CustomSections.Add(new CustomSection(n, data));
+        Mark("emit start");
         var enc = Module.Encode(Options.Optimize);
+        Mark("encode (final pass)");
         if (Environment.GetEnvironmentVariable("CS2WASM_STATS") is "1" or "2") PrintCountStats(enc);
         // frames: which functions are .NET frames (a bit per function index), and the frame names of the library's
         // (the program's are in the name section), each as type, method and parameters over one string table

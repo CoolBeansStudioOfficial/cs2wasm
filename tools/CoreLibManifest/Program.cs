@@ -155,6 +155,8 @@ sealed class Manifest
             sb.AppendLine("substitute	method	System.Diagnostics.StackTrace	System.String ToString(System.Diagnostics.StackTrace/TraceFormat)	=>Cs2Wasm.Runtime.Rt.EmptyTrace");
             // the compiler's enum tables are sorted by unsigned value already (Enum.Mono.cs): no sorting code
             sb.AppendLine("substitute	method	System.Enum	System.Boolean AreSorted(TStorage[])	true");
+            // Type.GetType(name): the program is whole, its types' names are a table (Boundary/TypeInfo.cs)
+            sb.AppendLine("substitute	method	System.RuntimeTypeHandle	System.RuntimeType GetTypeByName(System.String,System.Boolean,System.Boolean,System.Threading.StackCrawlMark&)	=>Cs2Wasm.Runtime.TypeInfo.GetTypeByName");
             // C# declares no enums over float, double, char or nint (as for NativeAOT): no code for them
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Enum.cs	#define RARE_ENUMS	#undef RARE_ENUMS");
             // the sandbox has no environment variables (section 8): the runtime's configuration reads fold

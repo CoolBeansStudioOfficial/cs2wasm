@@ -1604,6 +1604,32 @@ sealed partial class FunctionCompiler
         };
     }
 
+    /// <summary>Whether the second compilation would leave out any of the type's static initializers (else its
+    /// first compilation stands).</summary>
+    internal static bool AnyUnreadPureInit(Driver d, INamedTypeSymbol t)
+    {
+        var owner = d.Types.Canonical(t);
+        foreach (var m in t.GetMembers())
+        {
+            if (!m.IsStatic) continue;
+            var init = m switch
+            {
+                IFieldSymbol f when !f.IsConst && !f.IsImplicitlyDeclared => Driver.FieldInitializer(f),
+                IPropertySymbol p => Driver.PropertyInitializer(p),
+                _ => null,
+            };
+            if (init == null || d.ModelFor(init.SyntaxTree).GetOperation(init) is not ISymbolInitializerOperation op) continue;
+            IEnumerable<ISymbol> fields = op switch
+            {
+                IFieldInitializerOperation fi => fi.InitializedFields,
+                IPropertyInitializerOperation pi => pi.InitializedProperties.Select(p => (ISymbol?)Driver.AutoPropertyField(p)).Where(f => f != null)!,
+                _ => [],
+            };
+            if (fields.Any() && !fields.Any(f => d.StaticReads.Contains(Driver.StaticKey(owner, f))) && PureInit(op.Value)) return true;
+        }
+        return false;
+    }
+
     void CompileStaticInitBody(INamedTypeSymbol t, IAddress flag, IMethodSymbol? cctor)
     {
         PushScope();

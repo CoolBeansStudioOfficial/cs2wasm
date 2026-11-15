@@ -39,12 +39,16 @@ sealed partial class RuntimeGen
             foreach (var ins in f.Body)
                 if (ins.Ref is TypeIdRef tr) Add(tr.Id);
         foreach (var t in D.ReflectedTypes()) Add(D.TypeId(t));
+        // MakeGenericType / GetGenericTypeDefinition: the definitions of the generic instances are types too
+        bool defs = D.Rt.GenericInstancesIfMade != null;
         foreach (var id in q.ToList()) work.Push(id);
         while (work.Count > 0)
         {
             int id = work.Pop();
             if (id <= 0 || id >= D.TypeById.Count || D.SyntheticById.ContainsKey(id) || D.DisplayById.ContainsKey(id)) continue;
             foreach (var r in Related(D.TypeById[id], kinds)) Add(D.TypeId(r));
+            if (defs && D.TypeById[id] is INamedTypeSymbol { IsGenericType: true } gi && !Types.IsGenericDefinition(gi))
+                Add(D.TypeId(D.Types.Canonical(gi.OriginalDefinition)));
             if (kinds.Contains("array_of") && D.ExistingTypeId(D.Types.LibCompilationArray(D.TypeById[id])) is int ai && D.Constructed.Contains(ai)) Add(ai);
         }
         D.SetTypeNumbers(q.Order().ToList());
@@ -67,11 +71,19 @@ sealed partial class RuntimeGen
         if (kinds.Contains("base") && BaseOf(t) is { } b) yield return b;
         if (kinds.Contains("element") && ElementOf(t) is { } e) yield return e;
         if (kinds.Contains("generic_args") && t is INamedTypeSymbol { IsGenericType: true } g)
-            foreach (var a in g.TypeArguments) if (a is not ITypeParameterSymbol) yield return D.Types.Canonical(a);
+            foreach (var a in g.TypeArguments)
+                // (a generic type definition's arguments are its parameters: typeof(List<>).GetGenericArguments())
+                if (a is not ITypeParameterSymbol || Types.IsGenericDefinition(g)) yield return D.Types.Canonical(a);
         if (kinds.Contains("declaring") && t.ContainingType is { } ct) yield return D.Types.Canonical(ct);
         if (kinds.Contains("interfaces"))
             foreach (var i in t.AllInterfaces) yield return D.Types.Canonical(i);
+        if (kinds.Contains("nested") && t is INamedTypeSymbol nt && !nt.IsGenericType)
+            foreach (var n in NestedOf(nt)) yield return n;
     }
+
+    /// <summary>A type's nested types that are not generic (a generic one would be its definition: not yet).</summary>
+    IEnumerable<ITypeSymbol> NestedOf(INamedTypeSymbol t) =>
+        t.GetTypeMembers().Where(n => !n.IsGenericType && !n.IsImplicitlyDeclared && n.CanBeReferencedByName).Select(n => D.Types.Canonical(n));
 
     ITypeSymbol? BaseOf(ITypeSymbol t) => t switch
     {
@@ -112,6 +124,8 @@ sealed partial class RuntimeGen
                 "flags2" => i => (null, Real(i) ? Flags2(D.TypeById[i]) : 0),
                 "generic_args" => i => (Real(i) && D.TypeById[i] is INamedTypeSymbol { IsGenericType: true } g ? Ids(g.TypeArguments) : Ids([]), 0),
                 "interfaces" => i => (Ids(Real(i) ? D.TypeById[i].AllInterfaces : []), 0),
+                // nested types, in declaration order (GetNestedTypes)
+                "nested" => i => (Ids(Real(i) && D.TypeById[i] is INamedTypeSymbol nn && !nn.IsGenericType ? NestedOf(nn) : []), 0),
                 "declaring" => i => (null, Real(i) && D.TypeById[i].ContainingType is { } ct ? D.ExtId(D.TypeId(D.Types.Canonical(ct))) : -1),
                 // a value type's size (the data of its box), an object's instance size
                 "size" => i => (null, Real(i) && D.TypeById[i] is INamedTypeSymbol nt and not { TypeKind: TypeKind.Interface } ? (nt.IsValueType ? D.Types.StorageOf(nt).size : D.Types.LayoutOf(nt).Size) : 0),
@@ -154,6 +168,8 @@ sealed partial class RuntimeGen
     {
         if (t is IArrayTypeSymbol a) return a.Rank == 1 ? 0x1D : 0x14;
         if (t is IPointerTypeSymbol) return 0x0F;
+        // a generic parameter: of a type (VAR) or of a method (MVAR)
+        if (t is ITypeParameterSymbol tp) return tp.TypeParameterKind == TypeParameterKind.Method ? 0x1E : 0x13;
         if (Types.IsString(t)) return 0x0E;
         if (Types.IsObject(t)) return 0x1C;
         if (t.TypeKind != TypeKind.Enum)
@@ -184,6 +200,8 @@ sealed partial class RuntimeGen
         if (t.ContainingType != null) f |= 8;
         if (t.TypeKind == TypeKind.Delegate) f |= 16;
         if (t is IPointerTypeSymbol) f |= 32;
+        // a generic type definition: the open type over its own parameters (typeof(List<>))
+        if (t is INamedTypeSymbol { IsGenericType: true } g && Types.IsGenericDefinition(g)) f |= 64;
         return f;
     }
 }

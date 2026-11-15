@@ -64,6 +64,17 @@ internal sealed class Types
     public Types(Driver d) { _d = d; }
 
     // ---------------- keys ----------------
+    /// <summary>A generic type definition: the open type over its own type parameters (typeof(List&lt;&gt;)).</summary>
+    public static bool IsGenericDefinition(INamedTypeSymbol g)
+    {
+        if (!g.IsGenericType) return false;
+        if (g.IsUnboundGenericType) return true;
+        // its own parameters, in order (symbols of another compilation's view of the type count too)
+        for (int i = 0; i < g.TypeArguments.Length; i++)
+            if (g.TypeArguments[i] is not ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Type } tp || tp.Ordinal != i || tp.Name != g.TypeParameters[i].Name) return false;
+        return true;
+    }
+
     public static string Key(ITypeSymbol t)
     {
         switch (t)
@@ -229,6 +240,8 @@ internal sealed class Types
         if (t is IArrayTypeSymbol a) return _d.LibCompilation.CreateArrayTypeSymbol(Canonical(a.ElementType), a.Rank);
         if (t is IPointerTypeSymbol p) return _d.LibCompilation.CreatePointerTypeSymbol(Canonical(p.PointedAtType));
         if (t is not INamedTypeSymbol n) return t;
+        // typeof(List<>): the generic type definition
+        if (n.IsUnboundGenericType) n = n.OriginalDefinition;
         if (n.IsTupleType && n.TupleUnderlyingType is { } tu && !SymbolEqualityComparer.Default.Equals(tu, n)) n = tu;
         var key = Key(n);
         lock (_canon)
