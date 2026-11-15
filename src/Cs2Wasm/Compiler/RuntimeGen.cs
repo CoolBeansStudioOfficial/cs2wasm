@@ -591,7 +591,8 @@ sealed class RuntimeGen
         D.AnalyzeReflection();
         D.RequestAttributeFactories();
         // AsyncLocal in the program: async kickoffs keep the caller's context
-        if (D.AllMethods.Any(m => m.Sym.MethodKind == MethodKind.Constructor && m.Sym.ContainingType?.Name == "AsyncLocal" && m.Compiled))
+        // (the hand-written library's helpers; upstream's ExecutionContext flows itself)
+        if (!Library.UseUpstream && D.AllMethods.Any(m => m.Sym.MethodKind == MethodKind.Constructor && m.Sym.ContainingType?.Name == "AsyncLocal" && m.Compiled))
         {
             D.LibMethod("System.Threading.ExecutionContext", "SaveContext", 0);
             D.LibMethod("System.Threading.ExecutionContext", "RestoreContext", 1);

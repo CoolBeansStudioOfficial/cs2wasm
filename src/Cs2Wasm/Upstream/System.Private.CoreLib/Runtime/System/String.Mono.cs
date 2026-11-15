@@ -21,8 +21,8 @@ namespace System
             return InternalIsInterned(str);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern string FastAllocateString(int length);
+        // cs2wasm: a new string of `length` chars, zeroed, with its terminator
+        internal static string FastAllocateString(int length) => Cs2Wasm.Runtime.Rt.Take<string>(Cs2Wasm.Runtime.Rt.AllocString(length));
 
         [MethodImplAttribute(MethodImplOptions.InternalCall)]
         private static extern string InternalIsInterned(string str);

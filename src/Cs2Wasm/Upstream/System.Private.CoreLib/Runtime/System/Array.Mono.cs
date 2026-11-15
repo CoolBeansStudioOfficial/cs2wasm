@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's arrays (header, length at 12, elements from 16;
+// other ranks: the lengths from 16, elements after them, 8-aligned).
+
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -286,8 +289,10 @@ namespace System
             return array!;
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern unsafe void InternalCreate(ref Array? result, IntPtr elementType, int rank, int* lengths, int* lowerBounds);
+        private static unsafe void InternalCreate(ref Array? result, IntPtr elementType, int rank, int* lengths, int* lowerBounds)
+        {
+            throw new NotSupportedException("cs2wasm: Array.CreateInstance is not supported yet");
+        }
 
         private static unsafe Array InternalCreateFromArrayType(Type arrayType, int rank, int* pLengths, int* pLowerBounds)
         {
@@ -396,38 +401,62 @@ namespace System
 
         [Intrinsic]
 #pragma warning disable CA1822 // Mark members as static
-        internal int GetElementSize() => GetElementSize();
+        internal int GetElementSize() => Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(this);
 #pragma warning restore
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern CorElementType GetCorElementTypeOfElementTypeInternal(ObjectHandleOnStack arr);
+        private static CorElementType GetCorElementTypeOfElementTypeInternal(ObjectHandleOnStack arr)
+        {
+            throw new NotSupportedException("cs2wasm: the element type of an Array is not known at run time yet");
+        }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern bool IsValueOfElementTypeInternal(ObjectHandleOnStack arr, ObjectHandleOnStack obj);
+        private static bool IsValueOfElementTypeInternal(ObjectHandleOnStack arr, ObjectHandleOnStack obj)
+        {
+            throw new NotSupportedException("cs2wasm: the element type of an Array is not known at run time yet");
+        }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern bool CanChangePrimitive(ObjectHandleOnStack srcType, ObjectHandleOnStack dstType, bool reliable);
+        private static bool CanChangePrimitive(ObjectHandleOnStack srcType, ObjectHandleOnStack dstType, bool reliable)
+        => false;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern bool FastCopy(ObjectHandleOnStack source, int source_idx, ObjectHandleOnStack dest, int dest_idx, int length);
+        internal static bool FastCopy(ObjectHandleOnStack source, int source_idx, ObjectHandleOnStack dest, int dest_idx, int length)
+        {
+            // cs2wasm: arrays of one type, or both of counted references (covariance is not checked yet)
+            Array src = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(source), dst = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(dest);
+            int size = Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(src);
+            bool same = Cs2Wasm.Runtime.Rt.TypeId(src) == Cs2Wasm.Runtime.Rt.TypeId(dst)
+                || (Cs2Wasm.Runtime.Cs2WasmArrays.HasCountedElements(src) && Cs2Wasm.Runtime.Cs2WasmArrays.HasCountedElements(dst) && size == Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(dst) && size == 4);
+            if (!same) return false;
+            Cs2Wasm.Runtime.Cs2WasmArrays.CopyElements(src, source_idx, dst, dest_idx, length, size);
+            return true;
+        }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int GetLengthInternal(ObjectHandleOnStack arr, int dimension);
+        private static int GetLengthInternal(ObjectHandleOnStack arr, int dimension)
+        {
+            Array a = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(arr);
+            return Cs2Wasm.Runtime.Cs2WasmArrays.RankOf(a) == 1 ? a.Length : Cs2Wasm.Runtime.Mem.LoadI32(Cs2Wasm.Runtime.Rt.AddressOf(a) + 16 + 4 * dimension);
+        }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int GetLowerBoundInternal(ObjectHandleOnStack arr, int dimension);
+        private static int GetLowerBoundInternal(ObjectHandleOnStack arr, int dimension)
+        => 0;
 
         // CAUTION! No bounds checking!
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetGenericValue_icall<T>(ObjectHandleOnStack self, int pos, out T value);
+        private static unsafe void GetGenericValue_icall<T>(ObjectHandleOnStack self, int pos, out T value)
+        {
+            Array a = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(self);
+            value = Unsafe.AsRef<T>((void*)(Cs2Wasm.Runtime.Cs2WasmArrays.Data(a) + pos * Unsafe.SizeOf<T>()));
+        }
 
         // CAUTION! No bounds checking!
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetValueImpl(ObjectHandleOnStack arr, ObjectHandleOnStack res, int pos);
+        private static void GetValueImpl(ObjectHandleOnStack arr, ObjectHandleOnStack res, int pos)
+        {
+            throw new NotSupportedException("cs2wasm: boxing an Array element by index is not supported yet");
+        }
 
         // CAUTION! No bounds checking!
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void SetGenericValue_icall<T>(ObjectHandleOnStack arr, int pos, ref T value);
+        private static unsafe void SetGenericValue_icall<T>(ObjectHandleOnStack arr, int pos, ref T value)
+        {
+            Array a = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(arr);
+            Unsafe.AsRef<T>((void*)(Cs2Wasm.Runtime.Cs2WasmArrays.Data(a) + pos * Unsafe.SizeOf<T>())) = value;
+        }
 
         [Intrinsic]
         private void GetGenericValueImpl<T>(int pos, out T value)
@@ -444,15 +473,20 @@ namespace System
         }
 
         // CAUTION! No bounds checking!
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void SetValueImpl(ObjectHandleOnStack arr, ObjectHandleOnStack value, int pos);
+        private static void SetValueImpl(ObjectHandleOnStack arr, ObjectHandleOnStack value, int pos)
+        {
+            throw new NotSupportedException("cs2wasm: storing a boxed Array element by index is not supported yet");
+        }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern void InitializeInternal(ObjectHandleOnStack arr);
+        private static void InitializeInternal(ObjectHandleOnStack arr)
+        {
+        }
 
         // CAUTION! No bounds checking!
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void SetValueRelaxedImpl(ObjectHandleOnStack arr, ObjectHandleOnStack value, int pos);
+        private static void SetValueRelaxedImpl(ObjectHandleOnStack arr, ObjectHandleOnStack value, int pos)
+        {
+            throw new NotSupportedException("cs2wasm: storing a boxed Array element by index is not supported yet");
+        }
 
 #pragma warning disable CA1822
         /*

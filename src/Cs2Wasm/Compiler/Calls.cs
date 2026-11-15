@@ -387,6 +387,7 @@ sealed partial class FunctionCompiler
             case "System.Runtime.CompilerServices.Unsafe.SkipInit": E.Op(Op.Drop); return Own.None;
             case "System.Runtime.CompilerServices.Unsafe.Unbox":
                 E.I32(BoxDataOffset(T, Arg(0))); E.Op(Op.I32Add); return Own.None;
+            case "System.SpanHelpers.memmove": E.Op(Op.MemoryCopy); return Own.None; // memory.copy allows overlap
             case "System.Threading.Interlocked.MemoryBarrier":
             case "System.Threading.Volatile.ReadBarrier":
             case "System.Threading.Volatile.WriteBarrier":
@@ -496,11 +497,11 @@ sealed partial class FunctionCompiler
             case "Generic.Equals": E.Call(Rt.GenericEquals(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Generic.Hash": E.Call(Rt.GenericHash(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Generic.Compare": E.Call(Rt.GenericCompare(T.Canonical(m.TypeArguments[0]))); return Own.None;
-            case "Array.ElementSize": E.Call(Rt.ArrayElemSize); return Own.None;
-            case "Array.RankOf": E.Call(Rt.ArrayRank); return Own.None;
-            case "Array.HasCountedElements": E.Call(Rt.ArrayCounted); return Own.None;
-            case "ArrayHelpers.CopyElements": E.Call(Rt.ArrayCopy); return Own.None;
-            case "ArrayHelpers.ClearElements": E.Call(Rt.ArrayClear); return Own.None;
+            case "Array.ElementSize": case "Cs2WasmArrays.ElementSize": E.Call(Rt.ArrayElemSize); return Own.None;
+            case "Array.RankOf": case "Cs2WasmArrays.RankOf": E.Call(Rt.ArrayRank); return Own.None;
+            case "Array.HasCountedElements": case "Cs2WasmArrays.HasCountedElements": E.Call(Rt.ArrayCounted); return Own.None;
+            case "ArrayHelpers.CopyElements": case "Cs2WasmArrays.CopyElements": E.Call(Rt.ArrayCopy); return Own.None;
+            case "ArrayHelpers.ClearElements": case "Cs2WasmArrays.ClearElements": E.Call(Rt.ArrayClear); return Own.None;
             case "EnumFormat.Info": E.Call(Rt.EnumInfo); return Own.None;
             case "EnumFormat.InfoOfId": E.Call(Rt.EnumInfoId); return Own.None;
             case "Type.FullNameOf": E.Call(Rt.TypeNameById); return Own.Stable;

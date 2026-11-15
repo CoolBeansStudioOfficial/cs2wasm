@@ -27,35 +27,35 @@ namespace System
 
     public static partial class GC
     {
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int GetCollectionCount(int generation);
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        private static int GetCollectionCount(int generation) => 0;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int GetMaxGeneration();
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        private static int GetMaxGeneration() => 0;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void InternalCollect(int generation);
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        private static void InternalCollect(int generation) { }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void AddPressure(ulong bytesAllocated);
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        private static void AddPressure(ulong bytesAllocated) { }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void RemovePressure(ulong bytesRemoved);
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        private static void RemovePressure(ulong bytesRemoved) { }
 
         // TODO: Move following to ConditionalWeakTable
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern void register_ephemeron_array(Ephemeron[] array);
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        internal static void register_ephemeron_array(Ephemeron[] array) { }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern object get_ephemeron_tombstone();
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        private static object get_ephemeron_tombstone() => new object();
 
         internal static readonly object EPHEMERON_TOMBSTONE = get_ephemeron_tombstone();
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern long GetAllocatedBytesForCurrentThread();
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        public static long GetAllocatedBytesForCurrentThread() => Cs2Wasm.Runtime.Rt.HeapUsed();
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern long GetTotalAllocatedBytes(bool precise = false);
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        public static long GetTotalAllocatedBytes(bool precise = false) => Cs2Wasm.Runtime.Rt.HeapUsed();
 
         public static void AddMemoryPressure(long bytesAllocated)
         {
@@ -77,8 +77,8 @@ namespace System
             RemovePressure((ulong)bytesAllocated);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern int GetGeneration(object obj);
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        public static int GetGeneration(object obj) => 0;
 
         public static void Collect(int generation)
         {
@@ -129,11 +129,11 @@ namespace System
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern void WaitForPendingFinalizers();
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        public static void WaitForPendingFinalizers() { }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void _SuppressFinalize(object o);
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        private static void _SuppressFinalize(object o) { }
 
         public static void SuppressFinalize(object obj)
         {
@@ -141,8 +141,8 @@ namespace System
             _SuppressFinalize(obj);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void _ReRegisterForFinalize(object o);
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        private static void _ReRegisterForFinalize(object o) { }
 
         public static void ReRegisterForFinalize(object obj)
         {
@@ -164,8 +164,8 @@ namespace System
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern long GetTotalMemory(bool forceFullCollection);
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        public static long GetTotalMemory(bool forceFullCollection) => Cs2Wasm.Runtime.Rt.HeapUsed();
 
         private static bool _RegisterForFullGCNotification(int maxGenerationPercentage, int largeObjectHeapPercentage)
         {
@@ -253,13 +253,16 @@ namespace System
             return 1024 * 1024 * 16;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void _GetGCMemoryInfo(out long highMemoryLoadThresholdBytes,
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        private static void _GetGCMemoryInfo(out long highMemoryLoadThresholdBytes,
                                         out long memoryLoadBytes,
                                         out long totalAvailableMemoryBytes,
                                         out long totalCommittedBytes,
                                         out long heapSizeBytes,
-                                        out long fragmentedBytes);
+                                        out long fragmentedBytes) {
+            highMemoryLoadThresholdBytes = memoryLoadBytes = totalAvailableMemoryBytes = fragmentedBytes = 0;
+            totalCommittedBytes = heapSizeBytes = Cs2Wasm.Runtime.Rt.HeapUsed();
+        }
 
         public static GCMemoryInfo GetGCMemoryInfo()
         {
@@ -280,8 +283,8 @@ namespace System
             throw new PlatformNotSupportedException();
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern Array AllocPinnedArray(Type t, int length);
+        // cs2wasm: no collector; counting frees objects as they become unreachable
+        private static Array AllocPinnedArray(Type t, int length) => throw new NotSupportedException("cs2wasm: pinned arrays are not supported yet");
 
         public static T[] AllocateUninitializedArray<T>(int length, bool pinned = false)
         {

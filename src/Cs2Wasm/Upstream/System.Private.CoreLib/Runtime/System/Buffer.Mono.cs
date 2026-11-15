@@ -7,9 +7,6 @@ namespace System
 {
     public partial class Buffer
     {
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern void BulkMoveWithWriteBarrier(ref byte dmem, ref byte smem, nuint len, IntPtr type_handle);
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static unsafe void Memmove<T>(ref T destination, ref T source, nuint elementCount)
         {
@@ -23,12 +20,12 @@ namespace System
             }
             else if (elementCount > 0)
             {
-                // Non-blittable memmove
-                BulkMoveWithWriteBarrier(
-                    ref Unsafe.As<T, byte>(ref destination),
-                    ref Unsafe.As<T, byte>(ref source),
-                    elementCount,
-                    typeof(T).TypeHandle.Value);
+                // Non-blittable memmove. cs2wasm: the copies count; the overwritten references are released (all
+                // relative to the values before the move, so overlapping ranges count right)
+                int dst = (int)Unsafe.AsPointer(ref destination), src = (int)Unsafe.AsPointer(ref source);
+                Cs2Wasm.Runtime.Rt.RetainElements<T>(src, (int)elementCount);
+                Cs2Wasm.Runtime.Rt.ReleaseElements<T>(dst, (int)elementCount);
+                SpanHelpers.Memmove(ref Unsafe.As<T, byte>(ref destination), ref Unsafe.As<T, byte>(ref source), elementCount * (nuint)sizeof(T));
             }
         }
     }

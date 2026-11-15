@@ -298,6 +298,7 @@ internal sealed partial class Driver
                 or "IsAddressGreaterThan" or "IsAddressLessThan" or "InitBlock" or "InitBlockUnaligned" or "AddByteOffset" or "AsRef"
                 or "ByteOffset" or "SkipInit" or "SubtractByteOffset" or "Unbox",
             "System.Threading.Interlocked" => m.Name == "MemoryBarrier",
+            "System.SpanHelpers" => m.Name == "memmove",
             "System.Threading.Volatile" => m.Name is "ReadBarrier" or "WriteBarrier",
             "System.Object" => m.Name == "GetType" && Library.UseUpstream,
             _ => false,

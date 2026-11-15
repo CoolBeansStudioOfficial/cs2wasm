@@ -97,6 +97,7 @@ sealed partial class FunctionCompiler
             case IIsPatternOperation ip: return EmitIsPattern(ip);
             case ISwitchExpressionOperation se: return EmitSwitchExpression(se);
             case IInterpolatedStringOperation iso: return EmitInterpolatedString(iso);
+            case IImplicitIndexerReferenceOperation ii: return EmitImplicitIndexer(ii, false);
             case IUtf8StringOperation u8: return EmitUtf8Span(System.Text.Encoding.UTF8.GetBytes(u8.Value), TypeOf(u8));
             case IDefaultValueOperation dv: return EmitDefault(TypeOf(dv));
             case IConditionalAccessOperation ca2: return EmitConditionalAccess(ca2);
@@ -339,6 +340,7 @@ sealed partial class FunctionCompiler
             IArrayElementReferenceOperation => true,
             IInstanceReferenceOperation => M.ContainingType?.IsValueType == true || _closure != null,
             IPropertyReferenceOperation pr => pr.Property.ReturnsByRef || pr.Property.ReturnsByRefReadonly,
+            IImplicitIndexerReferenceOperation { IndexerSymbol: IPropertySymbol ip } => ip.ReturnsByRef || ip.ReturnsByRefReadonly,
             IInvocationOperation inv => inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly,
             IDeclarationExpressionOperation => true,
             _ => op.Kind == OperationKind.None,
@@ -414,6 +416,8 @@ sealed partial class FunctionCompiler
             case IArrayElementReferenceOperation ae: return EmitArrayElementAddress(ae);
             case IInvocationOperation inv when inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly:
                 { var save = _wantRefReturnAddress; _wantRefReturnAddress = true; try { EmitInvocation(inv); } finally { _wantRefReturnAddress = save; } return 0; }
+            case IImplicitIndexerReferenceOperation ii when ii.IndexerSymbol is IPropertySymbol { ReturnsByRef: true } or IPropertySymbol { ReturnsByRefReadonly: true }:
+                EmitImplicitIndexer(ii, true); return 0;
             case IPropertyReferenceOperation pr when pr.Property.ReturnsByRef || pr.Property.ReturnsByRefReadonly:
                 { var save = _wantRefReturnAddress; _wantRefReturnAddress = true; try { EmitPropertyGetCall(pr); } finally { _wantRefReturnAddress = save; } return 0; }
             case IConversionOperation cv when cv.Operand is IAnonymousFunctionOperation == false && IsAddressable(cv.Operand) && T.StorageOf(TypeOf(cv)).size == T.StorageOf(TypeOf(cv.Operand)).size:
@@ -2493,6 +2497,9 @@ sealed partial class FunctionCompiler
         switch (syn)
         {
             case PrefixUnaryExpressionSyntax pu when pu.IsKind(SyntaxKind.PointerIndirectionExpression):
+                EmitValue(children[0]); return 0;
+            // p->f: the field's instance is the implicit *p, whose syntax is p
+            case ExpressionSyntax e when e.Parent is MemberAccessExpressionSyntax ma && ma.IsKind(SyntaxKind.PointerMemberAccessExpression) && ma.Expression == e && children.Count == 1:
                 EmitValue(children[0]); return 0;
             case ElementAccessExpressionSyntax when children.Count == 2 && children[0].Type is IPointerTypeSymbol pt:
                 {

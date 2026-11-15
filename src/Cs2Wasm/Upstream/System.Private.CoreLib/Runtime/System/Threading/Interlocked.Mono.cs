@@ -1,94 +1,60 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls of Interlocked, as the threads proposal's atomic instructions (Cs2Wasm.Runtime.Atomic).
+// A reference location holds a counted reference: an exchange moves the slot's count to the result.
+
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using Cs2Wasm.Runtime;
 
 namespace System.Threading
 {
     public static partial class Interlocked
     {
-        [Intrinsic]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern int CompareExchange(ref int location1, int value, int comparand);
+        public static int CompareExchange(ref int location1, int value, int comparand) => Atomic.CompareExchange32(ref location1, comparand, value);
 
-        [Intrinsic]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void CompareExchange(ref object? location1, ref object? value, ref object? comparand, [NotNullIfNotNull(nameof(location1))] ref object? result);
-
-        [Intrinsic]
         [return: NotNullIfNotNull(nameof(location1))]
         public static object? CompareExchange(ref object? location1, object? value, object? comparand)
         {
-            // This avoids coop handles, esp. on the output which would be particularly inefficient.
-            // Passing everything by ref is equivalent to coop handles -- ref to locals at least.
-            //
-            // location1's treatment is unclear. But note that passing it by handle would be incorrect,
-            // as it would use a local alias, which the coop marshaling does, to avoid the unclarity here,
-            // that of a ref being to a managed frame vs. a native frame. Perhaps that could be revisited.
-            //
-            // So there a hole here, that of calling this function with location1 being in a native frame.
-            // Usually it will be to a field, static or not, and not even to managed stack.
-            //
-            // This is usually intrinsified. Ideally it is always intrinisified.
-            //
-            object? result = null;
-            CompareExchange(ref location1, ref value, ref comparand, ref result);
-            return result;
+            ref int slot = ref Unsafe.As<object?, int>(ref location1);
+            int v = Rt.AddressOf(value!), c = Rt.AddressOf(comparand!);
+            if (v != 0) { Rt.Share(value!); Rt.Retain(value!); } // the count the slot takes if the exchange happens
+            int old = Atomic.CompareExchange32(ref slot, c, v);
+            if (old == c) return Rt.Take<object>(old); // the slot's count of the old value passes to the result
+            if (v != 0) Rt.Release(value!);
+            return Rt.Borrow<object>(old);
         }
 
-        [Intrinsic]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern int Decrement(ref int location);
+        public static int Decrement(ref int location) => Atomic.Add32(ref location, -1) - 1;
 
-        [Intrinsic]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern long Decrement(ref long location);
+        public static long Decrement(ref long location) => Atomic.Add64(ref location, -1) - 1;
 
-        [Intrinsic]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern int Increment(ref int location);
+        public static int Increment(ref int location) => Atomic.Add32(ref location, 1) + 1;
 
-        [Intrinsic]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern long Increment(ref long location);
+        public static long Increment(ref long location) => Atomic.Add64(ref location, 1) + 1;
 
-        [Intrinsic]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern int Exchange(ref int location1, int value);
-
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void Exchange([NotNullIfNotNull(nameof(value))] ref object? location1, ref object? value, [NotNullIfNotNull(nameof(location1))] ref object? result);
+        public static int Exchange(ref int location1, int value) => Atomic.Exchange32(ref location1, value);
 
         [return: NotNullIfNotNull(nameof(location1))]
         public static object? Exchange([NotNullIfNotNull(nameof(value))] ref object? location1, object? value)
         {
-            // See CompareExchange(object) for comments.
-            object? result = null;
-            Exchange(ref location1, ref value, ref result);
-            return result;
+            ref int slot = ref Unsafe.As<object?, int>(ref location1);
+            int v = Rt.AddressOf(value!);
+            if (v != 0) { Rt.Share(value!); Rt.Retain(value!); }
+            return Rt.Take<object>(Atomic.Exchange32(ref slot, v));
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern long CompareExchange(ref long location1, long value, long comparand);
+        public static long CompareExchange(ref long location1, long value, long comparand) => Atomic.CompareExchange64(ref location1, comparand, value);
 
-        [Intrinsic]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern long Exchange(ref long location1, long value);
+        public static long Exchange(ref long location1, long value) => Atomic.Exchange64(ref location1, value);
 
-        [Intrinsic]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern long Read(ref long location);
+        public static long Read(ref long location) => Atomic.Load64(ref location);
 
-        [Intrinsic]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern int Add(ref int location1, int value);
+        public static int Add(ref int location1, int value) => Atomic.Add32(ref location1, value) + value;
 
-        [Intrinsic]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern long Add(ref long location1, long value);
+        public static long Add(ref long location1, long value) => Atomic.Add64(ref location1, value) + value;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern void MemoryBarrierProcessWide();
+        public static void MemoryBarrierProcessWide() => Atomic.Fence();
     }
 }
