@@ -5,7 +5,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 61 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 63 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
@@ -98,8 +98,8 @@ filters pay nothing.
 Not done yet (a program using them gets a `CW0101` error naming the construct):
 - `TypeBuilder`/`AssemblyBuilder` (types defined at run time; `DynamicMethod` works, section 8); in `dynamic` code,
   `&&`/`||` whose static left operand is not a `bool` (a user type with `operator true`/`false`);
-- in expression trees, the closure's type name in a tree's text (`value(<>c__DisplayClass).x`: Roslyn numbers its
-  closure classes, cs2wasm's are unnamed) and lifted (nullable) user-defined operators; captured variables (a field of
+- (expression trees: lifted user-defined operators work, `063_expression_lifted`: the expression library lifts a
+  struct to the `Nullable` instance the program makes, where upstream without dynamic code lifts primitives only); captured variables (a field of
   the closure, read when the tree runs), `this`, generic method calls and user-defined operators and conversions work
   (`056_expression_trees_captures`, with `AsQueryable()` over upstream's System.Linq.Queryable), and
   `Expression.Compile` runs on upstream's interpreter (`046_expressions`);
@@ -307,8 +307,13 @@ byte, 0 plain, 1 LZ77 with LEB128 lengths and distances, as the data segment, wh
 source map. The stack pointer global is exported (`__stack_pointer`, section 7.2); the other mutable state is in memory.
 Stack traces: `Exception.StackTrace` and `ToString()` give C# frames with file and line in .NET's format
 (`   at Program.Depth(Int32 n) in C:\...\x.cs:line 25`), captured through the engine at `throw` only (no cost on
-paths that do not throw) and cut at the catching frame as in .NET. Lambda and local-function frame names
-approximate Roslyn's generated names. Per-thread start export: `__thread_entry` (section 4.5), with `__tls_base`
+paths that do not throw) and cut at the catching frame as in .NET. Lambda and local-function frames, and closure
+classes, have the C# compiler's names (`062_lambda_names`): `Program.<>c.<Main>b__9_0()` for a lambda that captures
+nothing, `Program.<>c__DisplayClass3_0.<Captured>b__0()` for one that does (the class of the innermost scope it
+captures from), `Program.<Local>g__Div|5_0(Int32 a, <>c__DisplayClass5_0&)` for a local function with its captures
+by reference; the numbers are the method's position among its type's members, the lambda's among the method's lambdas
+and local functions, the scope's among its scopes with captured variables. A closure object's type has that name too
+(`value(Program+<>c__DisplayClass10_0).cap` in an expression tree's text). Delegate `Invoke` is no frame, as in .NET. Per-thread start export: `__thread_entry` (section 4.5), with `__tls_base`
 exported beside the stack pointer.
 
 ### 7. What Bazoodle needs — partial

@@ -28,6 +28,7 @@ reference System.Memory
 reference System.ObjectModel
 reference System.Threading
 substitute	method	System.Dynamic.Utils.DelegateHelpers	System.Boolean get_CanEmitObjectArrayDelegate()	false
+edit	src/libraries/System.Linq.Expressions/src/System/Dynamic/Utils/TypeUtils.cs	                    throw new NotSupportedException(Strings.LiftingInExpressionRequiresDynamicCode(type));	                    return GetNullableType(type); // cs2wasm: the Nullable instances the program makes exist (MakeGenericType)
 file src/libraries/Common/src/System/Obsoletions.cs
 file src/libraries/Common/src/System/Collections/Generic/ArrayBuilder.cs
 file src/libraries/System.Linq.Expressions/src/System/Dynamic/Utils/CacheDict.cs

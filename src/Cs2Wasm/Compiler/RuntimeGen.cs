@@ -377,7 +377,16 @@ sealed partial class RuntimeGen
                         stub.Cases["synthetic#" + id] = (D.ObjectType, new MethodInst { Sym = stub.Slot, Fn = sfn, Key = "synthetic " + id + " " + slotKey }, false);
                     continue;
                 }
-                if (D.DisplayById.ContainsKey(id)) continue;
+                if (D.DisplayById.ContainsKey(id))
+                {
+                    // a closure object has object's members (its ToString in an expression tree's text)
+                    if (Types.IsObject(stub.Slot.ContainingType) && D.Implementation((INamedTypeSymbol)D.ObjectType, stub.Slot) is { } oimpl)
+                    {
+                        stub.Cases["synthetic#" + id] = (D.ObjectType, D.Method(oimpl, stub.Consts), false);
+                        any = true;
+                    }
+                    continue;
+                }
                 var t = D.TypeById[id];
                 var slotOwner = stub.Slot.ContainingType;
                 if (!D.Types.IsSubtype(t, slotOwner)) continue;
@@ -956,12 +965,12 @@ sealed partial class RuntimeGen
     {
         { var e = new Emitter(D.Rt.TypeNameFn); e.Get(0); e.Load(Op.I32Load, 4); e.Call(D.Rt.TypeNameById); }
         int n = D.TypeCount;
-        string Full(int i) => i == 0 ? "?" : D.SyntheticById.TryGetValue(i, out var syn) ? syn.Name : D.DisplayById.ContainsKey(i) ? "<>c__DisplayClass" : Driver.ClrName(D.TypeById[i]);
+        string Full(int i) => i == 0 ? "?" : D.SyntheticById.TryGetValue(i, out var syn) ? syn.Name : D.DisplayById.TryGetValue(i, out var dd) ? D.RoslynDisplayName(dd, true) ?? "<>c__DisplayClass" : Driver.ClrName(D.TypeById[i]);
         string Short(int i)
         {
             if (i == 0) return "?";
             if (D.SyntheticById.TryGetValue(i, out var syn)) return syn.Name;
-            if (D.DisplayById.ContainsKey(i)) return "<>c__DisplayClass";
+            if (D.DisplayById.TryGetValue(i, out var sd)) return D.RoslynDisplayName(sd, false) ?? "<>c__DisplayClass";
             return ShortName(D.TypeById[i]);
         }
         EmitIdTable(D.Rt.TypeNameById, n, i => (D.StringLiteral(Full(i)), 0));
@@ -1211,7 +1220,7 @@ internal sealed partial class Driver
         var sym = af.Symbol;
         var ret = Types.Resolve(sym.ReturnType, map);
         var fn = Module.AddFunction("lambda in " + owner.FnName, NestedSignature(sym, map));
-        fn.FrameName = NestedFrameName(owner, sym, "b__0");
+        fn.FrameName = RoslynNestedFrameName(owner, af.Syntax, sym, localFunction: false);
         fn.ProgramCode = owner.FnProgramCode;
         mi = new MethodInst { Sym = sym, Fn = fn, Key = key, Impl = MethodImpl.Body };
         var ci = owner.MakeClosureInfo(map, env, ret);
@@ -1228,7 +1237,7 @@ internal sealed partial class Driver
                   (m.TypeArguments.Length > 0 ? "<" + string.Join(",", m.TypeArguments.Select(a => Types.Key(Types.Resolve(a, map)))) + ">" : "");
         if (_methods.TryGetValue(key, out var mi)) return mi;
         var fn = Module.AddFunction("local " + def.Name + " in " + owner.FnName, NestedSignature(def, map));
-        fn.FrameName = NestedFrameName(owner, def, "g__" + def.Name + "|0_0");
+        fn.FrameName = RoslynNestedFrameName(owner, def.DeclaringSyntaxReferences.First().GetSyntax(), def, localFunction: true);
         fn.ProgramCode = owner.FnProgramCode;
         mi = new MethodInst { Sym = def, Fn = fn, Key = key, Impl = MethodImpl.Body };
         var syntax = def.DeclaringSyntaxReferences.First().GetSyntax();

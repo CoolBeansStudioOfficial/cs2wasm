@@ -8,6 +8,8 @@ internal sealed partial class Driver
 {
     static bool IsHiddenFrame(IMethodSymbol m)
     {
+        // (a delegate's Invoke is no frame in .NET's traces: the call goes straight to the target)
+        if (m.MethodKind == MethodKind.DelegateInvoke) return true;
         var ns = m.ContainingNamespace?.ToDisplayString() ?? "";
         return ns.StartsWith("Cs2Wasm.Runtime", StringComparison.Ordinal);
     }

@@ -19,7 +19,7 @@ using System.Xml.Linq;
 if (args.Length >= 3 && args[0] == "intrinsics") return Intrinsics.Run(args[1], args[2]);
 if (args.Length >= 3 && args[0] == "check") return Check.Run(args[1], args[2], args.Length > 3 ? args[3] : null);
 if (args.Length < 2) { Console.Error.WriteLine("usage: CoreLibManifest <runtime-root> <upstream-dir> | check <runtime-root> <upstream-dir> [library]"); return 2; }
-return Libraries.Run(Path.GetFullPath(args[0]), Path.GetFullPath(args[1]));
+return Libraries.Run(Path.GetFullPath(args[0]), Path.GetFullPath(args[1]), args.Length > 2 ? args[2..] : null);
 
 static class Libraries
 {
@@ -29,6 +29,7 @@ static class Libraries
         "System.Private.CoreLib", "System.Collections", "System.Collections.NonGeneric", "System.ObjectModel", "System.Memory",
         "System.Threading", "System.Collections.Concurrent", "System.Linq", "System.Console", "System.Runtime.Numerics",
         "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions", "System.Linq.Expressions", "Microsoft.CSharp", "System.Linq.Queryable",
+        "System.Collections.Immutable", "System.Reflection.Metadata",
     ];
 
     public static string Project(string root, string lib) => lib == "System.Private.CoreLib"
@@ -39,10 +40,11 @@ static class Libraries
         ? Path.Combine(root, "src", "libraries", "System.Private.CoreLib", "src", "Resources", "Strings.resx")
         : Path.Combine(root, "src", "libraries", lib, "src", "Resources", "Strings.resx");
 
-    public static int Run(string root, string upstream)
+    public static int Run(string root, string upstream, string[]? only = null)
     {
         foreach (var lib in All)
         {
+            if (only != null && !only.Contains(lib)) continue;
             var dir = Path.Combine(upstream, lib);
             Directory.CreateDirectory(dir);
             new Manifest(root, lib).Write(Path.Combine(dir, "manifest.txt"));
@@ -51,7 +53,7 @@ static class Libraries
         }
         // the externs need each library compiled, with those it references
         var built = new Dictionary<string, Microsoft.CodeAnalysis.CSharp.CSharpCompilation>();
-        foreach (var lib in All) built[lib] = Externs.Run(root, upstream, lib, built);
+        foreach (var lib in All) built[lib] = only == null || only.Contains(lib) ? Externs.Run(root, upstream, lib, built) : Check.Compile(root, upstream, lib, built);
         return 0;
     }
 }
@@ -145,11 +147,18 @@ sealed class Manifest
         }
         // expression trees run on the interpreter: no IL is emitted for object[] thunks either (as on NativeAOT)
         if (lib == "System.Linq.Expressions")
+        {
             sb.AppendLine("substitute	method	System.Dynamic.Utils.DelegateHelpers	System.Boolean get_CanEmitObjectArrayDelegate()	false");
+            // lifting a struct: the Nullable instances the program makes exist (MakeGenericType)
+            sb.AppendLine("edit	src/libraries/System.Linq.Expressions/src/System/Dynamic/Utils/TypeUtils.cs	                    throw new NotSupportedException(Strings.LiftingInExpressionRequiresDynamicCode(type));	                    return GetNullableType(type); // cs2wasm: the Nullable instances the program makes exist (MakeGenericType)");
+        }
         // feature switches without a trimmer substitution that cs2wasm fixes: no code is generated at run time
         if (lib == "System.Private.CoreLib")
         {
             sb.AppendLine("substitute	method	System.Runtime.CompilerServices.RuntimeFeature	System.Boolean get_IsDynamicCodeSupported()	false");
+            // DynamicMethod runs on the IL interpreter (Reflection/Emit/DynamicMethod.Interpreter.cs): no dynamic assembly
+            sb.AppendLine("substitute	method	System.Reflection.Emit.AssemblyBuilder	System.Void EnsureDynamicCodeSupported()	");
+            sb.AppendLine("substitute	method	System.Reflection.Emit.DynamicMethod	System.Reflection.Module GetDynamicMethodsModule()	=>Cs2Wasm.Runtime.Rt.DynamicMethodsModule");
             // cs2wasm's stack traces are text captured at the throw (Boundary/Runtime.cs): no frames to format
             sb.AppendLine("substitute	method	System.Exception	System.String GetStackTrace()	=>Cs2Wasm.Runtime.Rt.StackTraceOf");
             sb.AppendLine("substitute	method	System.Diagnostics.StackTrace	System.String ToString(System.Diagnostics.StackTrace/TraceFormat)	=>Cs2Wasm.Runtime.Rt.EmptyTrace");
