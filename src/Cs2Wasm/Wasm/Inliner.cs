@@ -1,17 +1,19 @@
 namespace Cs2Wasm.Wasm;
 
 /// <summary>
-/// Inlining (section 5) of small leaf functions: property getters and setters, field accessors, small arithmetic
-/// helpers, compiler-made thunks. A callee is inlined only if it calls nothing and cannot throw, so stack traces
-/// (which come from real frames) are unchanged. Its parameters and locals become fresh locals of the caller (locals
+/// Inlining (section 5) of small functions: property getters and setters, field accessors, small arithmetic
+/// helpers, compiler-made thunks, wrappers. A callee is inlined only if no exception can leave it (it throws nothing
+/// and calls only functions that cannot throw), so it is never on the stack at a throw and stack traces (which come
+/// from real frames) are unchanged. Its parameters and locals become fresh locals of the caller (locals
 /// re-zeroed on each entry, as a call would), its body goes into a block, and `return` becomes a branch to that block.
 /// </summary>
 static class Inliner
 {
     const int SmallBody = 7;      // instructions of the inlined copy; inlined at every call site
     const int SingleCallerBody = 120; // a function with one call site and no other use is inlined up to this size
+    const int SingleCallerCalling = 100; // the same for one that calls functions
 
-    public static void Run(List<WasmFunction> functions)
+    public static void Run(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow)
     {
         var callers = new Dictionary<WasmFunction, int>();
         foreach (var f in functions)
@@ -23,12 +25,14 @@ static class Inliner
         var candidates = new HashSet<WasmFunction>();
         foreach (var g in functions)
         {
-            if (!Inlinable(g)) continue;
+            if (mayThrow.Contains(g) || !Inlinable(g, mayThrow)) continue;
             int n = g.Body.Count;
             bool single = callers.GetValueOrDefault(g) == 1 && g.Exports.Count == 0 && !g.InTable;
             // at many sites only when the copy is about as small as the call (parameter moves, block, local resets)
             int copy = n + g.Type.Params.Length + 2 * g.Locals.Count + 2;
-            if (copy <= SmallBody || single && n <= SingleCallerBody) candidates.Add(g);
+            // (a function that calls others, inlined into its one caller up to a smaller size: measured on the module)
+            bool leaf = !g.Body.Any(x => x.Op == Op.Call);
+            if (copy <= SmallBody || single && n <= (leaf ? SingleCallerBody : SingleCallerCalling)) candidates.Add(g);
         }
         if (candidates.Count == 0) return;
         foreach (var f in functions)
@@ -47,14 +51,17 @@ static class Inliner
         }
     }
 
-    /// <summary>No calls, no throws, no exception handling, no frame (stack pointer), no imports.</summary>
-    static bool Inlinable(WasmFunction g)
+    /// <summary>No calls of functions that can throw, no throws, no exception handling, no frame (stack pointer), no
+    /// imports.</summary>
+    static bool Inlinable(WasmFunction g, HashSet<WasmFunction> mayThrow)
     {
         if (g.IsImport || g.ForwardTo != null || g.Body.Count == 0) return false;
         foreach (var ins in g.Body)
         {
             switch (ins.Op)
             {
+                case Op.Call when ins.Ref is WasmFunction h && !h.IsImport && !mayThrow.Contains(h) && h != g:
+                    break;
                 case Op.Call or Op.CallIndirect or Op.Throw or Op.ThrowRef or Op.TryTable:
                     return false;
                 case Op.GlobalGet or Op.GlobalSet when ins.Ref is WasmGlobal { Export: "__stack_pointer" }:

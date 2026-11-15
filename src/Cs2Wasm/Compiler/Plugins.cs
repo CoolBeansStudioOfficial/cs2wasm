@@ -101,7 +101,7 @@ internal sealed partial class Driver
 }
 
 /// <summary>What a plugin sees and changes; analyses are computed on first use.</summary>
-internal sealed class PluginHost
+internal sealed partial class PluginHost
 {
     readonly Driver D;
     readonly RuntimeGen _rt;

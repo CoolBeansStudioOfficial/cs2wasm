@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using Cs2Wasm;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Operations;
 
 /// <summary>Checks of the compiler's API and module shape that have no .NET oracle (sections 6, 7.3, 8).</summary>
 static class ApiChecks
@@ -171,6 +172,45 @@ static class ApiChecks
             using var pr = Process.Start(psi)!;
             var qo = pr.StandardOutput.ReadToEnd(); var qe = pr.StandardError.ReadToEnd(); pr.WaitForExit();
             return qo == "frame\n" ? null : "clone output: " + qo + qe;
+        });
+
+        Check("plugin v3: values that depend on thread scheduling are marked; order-independent parallel work is not (section 7.3)", () =>
+        {
+            var src = Header + """
+                using System.Threading;
+                using System.Threading.Tasks;
+                using System.Collections.Concurrent;
+                namespace Sim {
+                static class World {
+                    public static double Energy;
+                    public static int Count, Hits, Last, Score, Plain;
+                    public static int[] Cells = new int[8];
+                    public static string Winner = "";
+                    public static readonly ConcurrentQueue<int> Queue = new();
+                    static readonly object Gate = new();
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        Parallel.For(0, 8, i => {
+                            lock (Gate) { Energy += i * 0.1; Hits++; }
+                            Interlocked.Increment(ref Count);
+                            Last = i;
+                            Cells[i] = i * i;
+                            Queue.Enqueue(i);
+                        });
+                        var t1 = Task.Run(() => 1); var t2 = Task.Run(() => 2);
+                        var first = Task.WhenAny(t1, t2).Result;
+                        Winner = first == t1 ? "a" : "b";
+                        Score = Last * 2;
+                        Plain = 5;
+                        Console.WriteLine(Count + " " + Hits + " " + Cells[3] + " " + Plain);
+                    }
+                }
+                }
+                """;
+            var plugin = new SchedulingPlugin();
+            var r = Compile(src, new CompileOptions { Plugins = [plugin] });
+            if (!r.Success) return Errors(r);
+            return plugin.Problem;
         });
 
         Check("threads park at safe points on the engine's request and resume (section 7.2); the engine pump is exported", () =>
@@ -366,6 +406,36 @@ static class ApiChecks
             var frame = script.GetMembers("Frame").OfType<IMethodSymbol>().Single();
             var draw = c.Compilation.GetTypeByMetadataName("Game.Engine")!.GetMembers("Draw").OfType<IMethodSymbol>().Single();
             c.CloneWithSuppressedImports(frame, [draw], "frame_quiet");
+        }
+    }
+
+    sealed class SchedulingPlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public int InterfaceVersion => 3;
+        public string Name => "scheduling";
+        public void Run(PluginContext c)
+        {
+            var world = c.Compilation.GetTypeByMetadataName("Sim.World")!;
+            var info = c.Scheduling;
+            var marked = info.Members.Select(m => m.Name).ToHashSet();
+            var want = new[] { "Energy", "Last", "Queue", "Winner", "Score" };
+            var not = new[] { "Count", "Hits", "Cells", "Plain" };
+            var missing = want.Where(w => !marked.Contains(w)).ToList();
+            var extra = not.Where(n => marked.Contains(n)).ToList();
+            if (missing.Count > 0 || extra.Count > 0)
+            {
+                Problem = "marked: " + string.Join(",", marked) + "; missing " + string.Join(",", missing) + "; extra " + string.Join(",", extra)
+                    + " | " + string.Join(" | ", info.Marks.Select(m => (m.Symbol?.Name ?? "-") + ": " + m.Reason + " at " + m.Operation.Syntax));
+                return;
+            }
+            if (!info.Marks.Any(m => m.Symbol == null && m.Reason.Contains("WhenAny"))) { Problem = "WhenAny not a race result"; return; }
+            if (!info.Marks.Any(m => m.Symbol?.Name == "Energy" && m.Reason.Contains("floating-point"))) { Problem = "Energy not a float accumulation"; return; }
+            var main = world.GetMembers("Main").OfType<IMethodSymbol>().Single();
+            var winnerWrite = c.AccessesOf(world.GetMembers("Winner").Single()).First(a => a.Kind == AccessKind.Write);
+            if (winnerWrite.Operation.Parent is not IAssignmentOperation wa || !info.IsSchedulingDependent(wa.Value)) { Problem = "Winner's value not dependent"; return; }
+            var plainWrite = c.AccessesOf(world.GetMembers("Plain").Single()).First(a => a.Kind == AccessKind.Write);
+            if (plainWrite.Operation.Parent is IAssignmentOperation pa && info.IsSchedulingDependent(pa.Value)) Problem = "Plain's value dependent";
         }
     }
 

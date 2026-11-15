@@ -14,10 +14,10 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
   C# 14 extension members, value-type equality, expression trees and `Expression.Compile`, array ranges, reflection over generic methods,
   by-ref parameters and assemblies, `dynamic` on the C# runtime binder, `DynamicMethod` on the IL interpreter) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
   GodotSharp math proof (proof 2).
-- **API checks:** 17 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
+- **API checks:** 18 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
   custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
-  passes, source map, cycles bounded in a fixed 16 MB memory, no arena code without cycle-capable types).
-- **Module size (raw, measured):** `Console.WriteLine(42)` is 27,292 bytes on upstream's library (code 20.5 KB,
+  passes (scheduling dependence too), source map, cycles bounded in a fixed 16 MB memory, no arena code without cycle-capable types).
+- **Module size (raw, measured):** `Console.WriteLine(42)` is 27,124 bytes on upstream's library (code 20.5 KB,
   LZ-packed data and frame names about 6 KB); NetWasm's build of the same program is 28,383 bytes. The conformance
   programs are 30–300 KB raw (`tests/Cs2Wasm.Tests` prints each size). The Rust 2D game bar in the spec (24 KB
   compressed) is for a game with GodotSharp, which is not built yet.
@@ -272,7 +272,11 @@ member initializers) whose uses are all such calls, field and property accesses,
 reassigned, captured or passed by reference, gets its object in the frame: no allocation or free, counts left alone
 (an immortal header, its hash code still the next one), its fields released when the local's scope ends (also on
 `break`, `return` and exceptions). A type that turns out cycle-capable (known only at the end) keeps the heap.
-`CS2WASM_ESCAPE=1` prints each candidate and the reason. Not done: inlining of functions that call or throw.
+`CS2WASM_ESCAPE=1` prints each candidate and the reason. Inlining takes functions that call others when no exception
+can leave them (they throw nothing and call nothing that can), so they are never on the stack at a throw and traces
+stay .NET's; identical bodies are merged first, so a merged function's call sites count as its callers (inlining
+into one caller up to 100 instructions for such a function). Not done: inlining of functions that can throw (a
+trace would lose their frame).
 
 ### 6. The module — done
 32-bit core module, imported shared memory (`env.memory`, size from options), passive data segment initialized by the
@@ -292,7 +296,7 @@ approximate Roslyn's generated names. Per-thread start export: `__thread_entry` 
 exported beside the stack pointer.
 
 ### 7. What Bazoodle needs — partial
-- 7.1 plugin passes: `ICompilerPlugin` (interface version 2; version 1 plugins still run) runs after lowering and
+- 7.1 plugin passes: `ICompilerPlugin` (interface version 3, with scheduling dependence (7.3); versions 1 and 2 still run) runs after lowering and
   the whole-program analyses, before optimization. It sees the reachable method instances and the call graph; every
   read and write of fields, properties and events with the branch conditions it runs under; per method, the
   control-flow graph (Roslyn's lowering), reaching-definition def-use chains, and update rules with closed forms
@@ -314,7 +318,17 @@ exported beside the stack pointer.
   where bits are read (`Unsafe.As<float or double, T>`, so `BitConverter` and `BitCast`: to .NET's `NaN` bits,
   0xFFF8000000000000 and 0xFFC00000; a NaN with another payload is the one place output differs from .NET, as
   section 7.3 asks), `Random()`'s seed from the engine and `Random(seed)` giving .NET's
-  sequence (checked). Not done: scheduling-dependence marking.
+  sequence (checked). Scheduling dependence (plugin interface version 3, `PluginContext.Scheduling`,
+  `Compiler/Scheduling.cs`, checked): the work handed to other threads (`Task.Run`, `StartNew`, `ContinueWith`,
+  `new Thread`, the pool's queueing, `Parallel.For`/`ForEach`/`Invoke`, `Timer`) and what it calls is concurrent code;
+  marked are the members and captured variables it writes that others see (a race; a floating-point accumulation even
+  under a lock), shared collections it changes (their order), results that name a race's winner (`WhenAny`/`WaitAny`,
+  the concurrent collections' takes, used `Interlocked` results, thread ids, `IsCompleted`/`Status`,
+  `Monitor.TryEnter`), and to a fixed point what is assigned values computed from them; `IsSchedulingDependent(op)`
+  answers for any expression. Not marked: integer `+=`/`++` under a lock, `Interlocked` adds whose result is unused,
+  `Parallel.For` writing elements by its own index, tasks joined in program order. The analysis is over source bodies
+  and syntactic (a write through an alias of a shared object made outside the concurrent code is attributed to the
+  variable it was read from).
   Transcendental functions are not guaranteed to round like .NET's (UCRT/glibc) in every case; the tested inputs
   match.
 - 7.4 the library — **upstream, done.** The library is dotnet/runtime v11.0.0's System.Private.CoreLib (Mono's

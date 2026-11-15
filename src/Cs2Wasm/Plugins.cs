@@ -5,7 +5,8 @@ namespace Cs2Wasm;
 
 /// <summary>
 /// A whole-program pass run by the compiler (section 7.1), after lowering and the whole-program analyses and before
-/// optimization. Interface version 2 (version 1 plugins still run): reachability and the call graph; member reads and
+/// optimization. Interface version 3 (versions 1 and 2 still run): the values that depend on thread scheduling
+/// (section 7.3); reachability and the call graph; member reads and
 /// writes with the conditions they run under; control-flow graphs, def-use chains and closed forms of loop-carried
 /// and per-call updates per method; field targets and aliasing; instrumentation of writes, reads and statements;
 /// generated C# added to the program (and exported); clones of a method with chosen imports suppressed; custom
@@ -14,7 +15,7 @@ namespace Cs2Wasm;
 /// </summary>
 public interface ICompilerPlugin
 {
-    /// <summary>The plugin interface version the plugin was written against (1 or 2).</summary>
+    /// <summary>The plugin interface version the plugin was written against (1 to 3).</summary>
     int InterfaceVersion { get; }
     string Name { get; }
     void Run(PluginContext context);
@@ -62,9 +63,33 @@ public sealed record UpdateRule(ISymbol Target, IMethodSymbol Method, IOperation
 
 public enum InstrumentPoint { Before, After }
 
+/// <summary>Where a value that depends on thread scheduling comes from (section 7.3): a member (or captured variable)
+/// and the write that makes it so, or an operation whose result names the winner of a race (Symbol null).</summary>
+public sealed record SchedulingMark(ISymbol? Symbol, IOperation Operation, string Reason)
+{
+    public Location Location => Operation.Syntax.GetLocation();
+}
+
+/// <summary>The values that can depend on how threads interleave (section 7.3): a networking plugin treats a write of
+/// such a value as one the server computes and sends. Order-independent parallel work is not marked.</summary>
+public sealed class SchedulingInfo
+{
+    readonly Func<IOperation, bool> _dependent;
+    internal SchedulingInfo(IReadOnlyList<SchedulingMark> marks, IReadOnlyCollection<ISymbol> members, Func<IOperation, bool> dependent)
+    {
+        Marks = marks; Members = members; _dependent = dependent;
+    }
+    /// <summary>Every place scheduling enters a value: racy writes, accumulations, changed shared collections, race results.</summary>
+    public IReadOnlyList<SchedulingMark> Marks { get; }
+    /// <summary>The fields, properties and captured variables (definitions) whose values can depend on scheduling.</summary>
+    public IReadOnlyCollection<ISymbol> Members { get; }
+    /// <summary>Whether the value of an operation (of a reachable source method's body) can depend on scheduling.</summary>
+    public bool IsSchedulingDependent(IOperation operation) => _dependent(operation);
+}
+
 public sealed class PluginContext
 {
-    public const int InterfaceVersion = 2;
+    public const int InterfaceVersion = 3;
     readonly List<(string, byte[])> _sections = [];
     readonly List<Diagnostic> _diagnostics = [];
     readonly Compiler.PluginHost _host;
@@ -93,6 +118,8 @@ public sealed class PluginContext
     public IReadOnlyCollection<ITypeSymbol> PointsTo(IFieldSymbol field) => _host.PointsTo(field);
     /// <summary>Whether two reference-typed operations can name the same object (false only when it is certain).</summary>
     public bool MayAlias(IOperation a, IOperation b) => _host.MayAlias(a, b);
+    /// <summary>(Version 3.) The values that can depend on thread scheduling: marks, members, and a query.</summary>
+    public SchedulingInfo Scheduling => _host.Scheduling;
 
     // ---------------- changing the program ----------------
     /// <summary>Adds generated C# to the program, compiled against it; its `[UnmanagedCallersOnly(EntryPoint)]`

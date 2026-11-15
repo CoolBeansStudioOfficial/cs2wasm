@@ -118,7 +118,10 @@ internal sealed class WasmModule
         if (validate) Validate("before optimization");
         if (optimize)
         {
-            Inliner.Run(Functions);
+            // (identical bodies first: a merged function's call sites count as its callers)
+            MergeIdenticalBodies();
+            foreach (var f in Functions) ResolveForwards(f);
+            Inliner.Run(Functions, ComputeMayThrow());
             foreach (var f in Functions) if (!f.IsImport) Peephole.Run(f);
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_LOCALS") != "1")
             {
