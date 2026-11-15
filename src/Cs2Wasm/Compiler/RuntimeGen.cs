@@ -967,6 +967,14 @@ sealed partial class RuntimeGen
         EmitIdTable(D.Rt.TypeNameById, n, i => (D.StringLiteral(Full(i)), 0));
         EmitIdTable(D.Rt.TypeShortNameById, n, i => (D.StringLiteral(Short(i)), 0));
         EmitIdTable(D.Rt.TypeFlagsById, n, i => (null, i == 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) ? 0 : Flags(D.TypeById[i])));
+        if (D.Rt.ProgramTypesIfMade is { } ptf)
+        {
+            var ids = D.ProgramTypes().Select(t => D.ExtId(D.TypeId(t))).Where(x => x >= 0).ToList();
+            var bytes = new byte[4 + 4 * ids.Count];
+            BitConverter.GetBytes(ids.Count).CopyTo(bytes, 0);
+            for (int k = 0; k < ids.Count; k++) BitConverter.GetBytes(ids[k]).CopyTo(bytes, 4 + 4 * k);
+            new Emitter(ptf).I32Addr(D.DataBlob(bytes, 4, []));
+        }
         if (D.Rt.TypeNameTableIfMade is { } tnt)
         {
             // Type.GetType(name) looks in the calling assembly and CoreLib: their named types the module numbers

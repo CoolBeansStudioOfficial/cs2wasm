@@ -50,6 +50,8 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int Interfaces(int id);
         /// <summary>[count, (full name, type id)...]: the program's and CoreLib's named types (Type.GetType).</summary>
         [Intrinsic] public static extern int NameTable();
+        /// <summary>[count, ids...]: the program's own types, in the order the C# compiler writes them (Assembly.GetTypes).</summary>
+        [Intrinsic] public static extern int ProgramTypes();
         /// <summary>[count, ids...]: the type's nested types (not generic ones), in declaration order.</summary>
         [Intrinsic] public static extern int Nested(int id);
         /// <summary>[count, (definition id, instance id, n, argument ids...)...]: the generic instances the program makes.</summary>

@@ -222,6 +222,10 @@ internal sealed partial class RuntimeFns
     /// <summary>() → [count, (definition id, instance id, n, argument ids...)...] (MakeGenericType); body at the end.</summary>
     public WasmFunction GenericInstancesFn => _genericInstances ??= M.AddFunction("rt.generic_instances", FT([], [I]));
     public WasmFunction? GenericInstancesIfMade => _genericInstances;
+    WasmFunction? _programTypes;
+    /// <summary>() → [count, ids...]: the program's own types (Assembly.GetTypes).</summary>
+    public WasmFunction ProgramTypesFn => _programTypes ??= M.AddFunction("rt.program_types", FT([], [I]));
+    public WasmFunction? ProgramTypesIfMade => _programTypes;
     WasmFunction? _typeNameTable;
     /// <summary>() → [count, (full name, type id)...] of the program's and CoreLib's types (Type.GetType); body at the end.</summary>
     public WasmFunction TypeNameTableFn => _typeNameTable ??= M.AddFunction("rt.type_name_table", FT([], [I]));

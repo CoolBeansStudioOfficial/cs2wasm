@@ -51,7 +51,8 @@ namespace System.Reflection
             return GetCallingAssembly(ref stackMark);
         }
 
-                internal static RuntimeAssembly GetCallingAssembly(ref StackCrawlMark stackMark) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetCallingAssembly): cs2wasm's reflection reads the compiler's metadata");
+        // cs2wasm: no stack walk over assemblies: the program's (callers in a library calling back are not told apart)
+        internal static RuntimeAssembly GetCallingAssembly(ref StackCrawlMark stackMark) => RuntimeAssembly.OfIndex(0);
 
                 internal static Assembly GetEntryAssemblyNative() => RuntimeAssembly.OfIndex(0);
 
@@ -97,6 +98,14 @@ namespace System.Reflection
 
                 internal static Assembly InternalLoad(string assemblyName, ref StackCrawlMark stackMark, IntPtr ptrLoadContextBinder) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalLoad): cs2wasm's reflection reads the compiler's metadata");
 
-                internal Type InternalGetType(Module? module, string name, bool throwOnError, bool ignoreCase) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalGetType): cs2wasm's reflection reads the compiler's metadata");
+        // cs2wasm: a type of the assembly by its full name (nested types with '+')
+        internal Type InternalGetType(Module? module, string name, bool throwOnError, bool ignoreCase)
+        {
+            var cmp = ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            foreach (var t in ((RuntimeAssembly)this).TypesOf())
+                if (string.Equals(t.FullName, name, cmp)) return t;
+            if (throwOnError) throw new TypeLoadException("Could not load type '" + name + "' from assembly '" + FullName + "'.");
+            return null!;
+        }
     }
 }

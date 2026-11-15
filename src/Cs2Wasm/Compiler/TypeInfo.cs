@@ -39,6 +39,7 @@ sealed partial class RuntimeGen
             foreach (var ins in f.Body)
                 if (ins.Ref is TypeIdRef tr) Add(tr.Id);
         foreach (var t in D.ReflectedTypes()) Add(D.TypeId(t));
+        if (D.Rt.ProgramTypesIfMade != null) foreach (var t in D.ProgramTypes()) Add(D.TypeId(t));
         // MakeGenericType / GetGenericTypeDefinition: the definitions of the generic instances are types too
         bool defs = D.Rt.GenericInstancesIfMade != null;
         foreach (var id in q.ToList()) work.Push(id);

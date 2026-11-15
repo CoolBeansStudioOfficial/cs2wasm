@@ -43,6 +43,12 @@ sealed partial class FunctionCompiler
         if (target.Name is "New" or "NewOfNullableArg" && Types.FullName(target.ContainingType) == "Cs2Wasm.Runtime.Generics" && D.IsLibrary(target))
             return EmitGenericsNew(inv);
         if (target.MethodKind == MethodKind.LocalFunction) return EmitLocalFunctionCall(inv);
+        // Array.CreateInstance(typeof(T), n), typeof(T).MakeArrayType(): T[] is a type the program makes
+        if (target.ContainingType?.SpecialType == SpecialType.System_Array && target.Name == "CreateInstance" && inv.Arguments.Length == 2
+            && StripConversions(inv.Arguments[0].Value) is ITypeOfOperation cto)
+            MarkArrayOf(cto.TypeOperand);
+        if (target.Name == "MakeArrayType" && target.Parameters.Length == 0 && target.ContainingType?.ToDisplayString() == "System.Type" && inv.Instance is ITypeOfOperation mto)
+            MarkArrayOf(mto.TypeOperand);
         // typeof(G<>).MakeGenericType(typeof(A), ...): the instance, known now (so its code is made, as NativeAOT's
         // analysis sees such calls)
         if (target.Name == "MakeGenericType" && target.ContainingType?.ToDisplayString() is "System.Type" && FoldMakeGenericType(inv) is { } folded)
@@ -328,6 +334,15 @@ sealed partial class FunctionCompiler
             else pushThis = () => { var o = EmitValue(inv.Instance); ToCallSafe(o, rt); if (!IsKnownNonNull(inv.Instance)) NullCheckKeep(); };
         }
         CallWith(m, virt, pushThis, () => PushArgs(m, inv.Arguments.Cast<IOperation>().ToList()), pushDst, inv.Syntax);
+    }
+
+    static IOperation StripConversions(IOperation o) { while (o is IConversionOperation c) o = c.Operand; return o; }
+
+    void MarkArrayOf(ITypeSymbol element)
+    {
+        var e = T.Resolve(element, Map);
+        if (e is ITypeParameterSymbol || e.IsRefLikeType || e.SpecialType == SpecialType.System_Void || e is IPointerTypeSymbol || e is INamedTypeSymbol { IsUnboundGenericType: true } || e.IsStatic) return;
+        D.MarkConstructed(T.Canonical(D.Main.CreateArrayTypeSymbol(e)));
     }
 
     /// <summary>Cs2Wasm.Runtime.Generics.New&lt;T&gt;("Open`1"): `new Open&lt;T&gt;()`, the type closed now.</summary>
@@ -743,6 +758,7 @@ sealed partial class FunctionCompiler
             // Cs2Wasm.Runtime.TypeInfo (TypeInfo.cs): tables by type id
             case "TypeInfo.FullName": E.Call(Rt.TypeNameById); return Own.Stable;
             case "TypeInfo.NameTable": E.Call(Rt.TypeNameTableFn); return Own.None;
+            case "TypeInfo.ProgramTypes": E.Call(Rt.ProgramTypesFn); return Own.None;
             case "TypeInfo.Instances": E.Call(Rt.GenericInstancesFn); return Own.None;
             case "TypeInfo.Name": E.Call(Rt.TypeShortNameById); return Own.Stable;
             case "TypeInfo.Flags": E.Call(Rt.TypeFlagsById); return Own.None;

@@ -209,6 +209,31 @@ internal sealed partial class Driver
 
     /// <summary>The function being compiled (types it constructs are live only if it is), or null.</summary>
     public WasmFunction? CurrentFn;
+    List<ITypeSymbol>? _programTypes;
+    /// <summary>The program's own types in the order the C# compiler writes its type definitions: each namespace's
+    /// types in declaration order, namespaces taken from a stack (the global one first, then its namespaces last to
+    /// first), then nested types after the types that contain them.</summary>
+    public IReadOnlyList<ITypeSymbol> ProgramTypes()
+    {
+        if (_programTypes != null) return _programTypes;
+        var r = new List<INamedTypeSymbol>();
+        foreach (var c in Inputs)
+        {
+            var stack = new Stack<INamespaceSymbol>();
+            stack.Push(c.Assembly.GlobalNamespace);
+            while (stack.Count > 0)
+                foreach (var m in stack.Pop().GetMembers())
+                {
+                    if (m is INamespaceSymbol ns) stack.Push(ns);
+                    else if (m is INamedTypeSymbol t && t.DeclaringSyntaxReferences.Any(sr => IsInput(sr.SyntaxTree))) r.Add(t);
+                }
+        }
+        for (int i = 0; i < r.Count; i++)
+            foreach (var n in r[i].GetTypeMembers())
+                if (n.DeclaringSyntaxReferences.Any(sr => IsInput(sr.SyntaxTree))) r.Add(n);
+        return _programTypes = r.Select(t => Types.Canonical(t.OriginalDefinition)).ToList();
+    }
+
     /// <summary>The types the program's code names with typeof, and the function that names each.</summary>
     public readonly List<(ITypeSymbol type, WasmFunction? fn)> TypeOfTargets = [];
     int _interpreterTypes;

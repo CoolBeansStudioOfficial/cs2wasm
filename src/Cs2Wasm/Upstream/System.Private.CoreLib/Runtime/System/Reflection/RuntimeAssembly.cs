@@ -180,10 +180,32 @@ namespace System.Reflection
         [RequiresUnreferencedCode("Types might be removed")]
         public override Type[] GetExportedTypes()
         {
-            var this_assembly = this;
-            Type[]? res = null;
-            GetExportedTypes(new QCallAssembly(ref this_assembly), ObjectHandleOnStack.Create(ref res));
-            return res!;
+            // cs2wasm: the types visible outside the assembly, in GetTypes' order
+            var all = TypesOf();
+            var r = new List<Type>(all.Length);
+            foreach (var t in all) if (t.IsVisible) r.Add(t);
+            return r.ToArray();
+        }
+
+        /// <summary>cs2wasm: the assembly's types: the program's as the C# compiler lists them; a library's, those the
+        /// module numbers.</summary>
+        internal Type[] TypesOf()
+        {
+            if (Index == 0)
+            {
+                int t = Cs2Wasm.Runtime.TypeInfo.ProgramTypes(), n = Cs2Wasm.Runtime.Mem.LoadI32(t);
+                var r = new Type[n];
+                for (int i = 0; i < n; i++) r[i] = RuntimeType.FromId(Cs2Wasm.Runtime.Mem.LoadI32(t + 4 + 4 * i));
+                return r;
+            }
+            var list = new List<Type>();
+            int nt = Cs2Wasm.Runtime.TypeInfo.NameTable(), c = Cs2Wasm.Runtime.Mem.LoadI32(nt);
+            for (int i = 0; i < c; i++)
+            {
+                int id = Cs2Wasm.Runtime.Mem.LoadI32(nt + 8 + 8 * i);
+                if (Cs2Wasm.Runtime.TypeInfo.AssemblyOf(id) == Index) list.Add(RuntimeType.FromId(id));
+            }
+            return list.ToArray();
         }
 
                 private static void GetTopLevelForwardedTypes(QCallAssembly assembly_h, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetTopLevelForwardedTypes): cs2wasm's reflection reads the compiler's metadata");
@@ -329,10 +351,8 @@ namespace System.Reflection
 
         public override Module[] GetModules(bool getResourceModules)
         {
-            var this_assembly = this;
-            Module[]? tmp = null;
-            GetModulesInternal(new QCallAssembly(ref this_assembly), ObjectHandleOnStack.Create(ref tmp));
-            Module[] modules = tmp!;
+            // cs2wasm: the assembly's one module
+            Module[] modules = [Module];
 
             if (!getResourceModules)
             {

@@ -5,7 +5,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 59 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 61 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
@@ -351,7 +351,7 @@ exported beside the stack pointer.
   (`052`): when the program asks for `Method`, the methods its method-group delegates name keep reflection records,
   and the delegate's function maps to its method's record; delegates CreateDelegate made report the method they were
   made from. `delegate + delegate` and `-` combine and remove. Missing: `Delegate.Method` of a lambda or local
-  function (.NET reports the C# compiler's generated names), `Array.CreateInstance` of array types the program never makes. Build time: see Results (the library's models and bound bodies are kept between builds in one process).
+  function (.NET reports the C# compiler's generated names), `Array.CreateInstance` of array types the compiler cannot see. Build time: see Results (the library's models and bound bodies are kept between builds in one process).
 - 7.5–7.6: GodotSharp's math types compile and match (proof 2); the generated wrappers (Node2D) and the boundary
   table are Bazoodle's (7.5) and do not exist yet, so proofs 3 and 4 wait on them. No browser build (the browser
   .NET runtime's workload is not installed here); budgets: module size and desktop build time measured (Results),
@@ -388,8 +388,16 @@ place) or a frame slot copied back for a reference; a null argument for a value 
 `GetExecutingAssembly` (the calling code's, known where it is compiled), `GetEntryAssembly`, from a table of the
 assemblies' names (a library's version and key token are the running .NET's, the program's as the C# compiler
 emits it); `FullName`/`AssemblyQualifiedName` qualify generic arguments with their assemblies, and nested types of
-generic types carry the outer arguments as .NET's do. Not done: `MakeGenericMethod` with arguments the compiler cannot
-see, `Assembly.GetTypes`/`GetType(name)`/`GetCallingAssembly` and types defined at run time (`TypeBuilder`).
+generic types carry the outer arguments as .NET's do. `Assembly.GetTypes`/`GetExportedTypes`/`GetType(name)`, `GetModules`
+and `Module.GetTypes` (`060_assembly_types`): the program's types in the order the C# compiler writes them (the global
+namespace's, then namespaces as Roslyn's stack visits them, nested types after), a library's the ones the module
+numbers; a program that lists its types keeps, on all of them, the members its reflection on unknown types asks for
+(`Activator.CreateInstance(t)`: their constructors). The types the C# compiler generates (closures, state machines,
+`<PrivateImplementationDetails>`) are not listed. `GetCallingAssembly` is the program's. `MakeGenericMethod` with arguments the compiler cannot see
+(`061_reflection_dynamic_args`) gives the instances the program makes (no code exists for others, as with
+`MakeGenericType`); `Array.CreateInstance(typeof(T), n)` and `typeof(T).MakeArrayType()` make `T[]` a type the
+program makes, and an array type's constructor takes its length (`Activator.CreateInstance(arrayType, n)`). Not done:
+types defined at run time (`TypeBuilder`).
 Abstract members (an interface's, an abstract class's) are kept on the type that declares them and invoked virtually.
 
 `DynamicMethod` (`057_reflection_emit`) runs on an IL interpreter (`Reflection/Emit/DynamicMethod.Interpreter.cs`),

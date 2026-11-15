@@ -129,7 +129,7 @@ static string Diff(string expected, string actual)
     var a = expected.Split('\n'); var b = actual.Split('\n');
     var sb = new StringBuilder();
     int shown = 0;
-    for (int i = 0; i < Math.Max(a.Length, b.Length) && shown < 12; i++)
+    for (int i = 0; i < Math.Max(a.Length, b.Length) && shown < 40; i++)
     {
         var x = i < a.Length ? a[i] : "<missing>"; var y = i < b.Length ? b[i] : "<missing>";
         if (x != y) { sb.AppendLine($"line {i + 1}: expected «{x}»\n           actual   «{y}»"); shown++; }

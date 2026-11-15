@@ -168,6 +168,17 @@ internal sealed partial class Driver
         foreach (var comp in Inputs)
             foreach (var t in AllTypes(comp.Assembly.GlobalNamespace))
                 if (t.GetAttributes().Any(a => a.AttributeClass?.Name == "DynamicallyAccessedMembersAttribute")) { keep.Keep(t, null); keep.Keep(t, null, ctors: true); }
+        // reflection on types the compiler cannot see: when the program lists its own types (Assembly.GetTypes), they
+        // are the program's, and each such use keeps its kind of member on all of them; otherwise a warning
+        foreach (var (loc, what, kname, kctors) in _unknownReflection)
+        {
+            if (!_assemblyTypes) { Report(Diags.ReflectionUnknown, loc, what); continue; }
+            foreach (var pt in ProgramTypes().OfType<INamedTypeSymbol>())
+            {
+                if (kctors) { if (pt.TypeKind is TypeKind.Class or TypeKind.Struct && !pt.IsAbstract && !pt.IsStatic && !pt.IsGenericType) keep.Keep(pt, null, ctors: true); }
+                else if (kname == null || pt.GetMembers(kname).Any()) keep.Keep(pt, kname);
+            }
+        }
         foreach (var (t, name, ctors) in _keepFromTrees) keep.Keep(t, name, ctors);
         foreach (var (t, inst) in _keepInstancesFromTrees) keep.KeepInstance(t, inst);
         // EnumerableQuery runs a Queryable operator as the Enumerable one of its name, made with the same type
@@ -186,6 +197,9 @@ internal sealed partial class Driver
                 if ((m is not IMethodSymbol { IsGenericMethod: true } gd || !IsMethodDefinition(gd)) && !OfOpenType(m)) ThunkFor(m);
     }
 
+    bool _assemblyTypes;
+    readonly List<(Location loc, string what, string? name, bool ctors)> _unknownReflection = [];
+
     void Visit(IInvocationOperation op, TypeMap map, ReflectionKeep keep, bool input = true)
     {
         var m = op.TargetMethod;
@@ -203,9 +217,10 @@ internal sealed partial class Driver
                         keep.Keep(inst, null, ctors: true);
                 return;
             }
-            Report(Diags.ReflectionUnknown, op.Syntax.GetLocation(), "Activator.CreateInstance");
+            if (input) _unknownReflection.Add((op.Syntax.GetLocation(), "Activator.CreateInstance", null, true));
             return;
         }
+        if (owner is "Assembly" or "RuntimeAssembly" or "Module" or "RuntimeModule" && m.Name is "GetTypes" or "GetExportedTypes" or "GetType" && input) _assemblyTypes = true;
         // Delegate.CreateDelegate(type, target, "Name", ...): the named method, on every type the program names
         if (owner == "Delegate" && m.Name == "CreateDelegate" && op.Arguments.FirstOrDefault(a => a.Parameter?.Type.SpecialType == SpecialType.System_String)?.Value.ConstantValue is { HasValue: true, Value: string dn })
         {
@@ -215,11 +230,18 @@ internal sealed partial class Driver
                     keep.Keep(nt, dn);
             return;
         }
-        if (owner is "MethodInfo" or "RuntimeMethodInfo" && m.Name == "MakeGenericMethod" && MethodOf(op.Instance, map) is var (mt, mname) && TypeArgsOf(op, map) is { } targs)
+        if (owner is "MethodInfo" or "RuntimeMethodInfo" && m.Name == "MakeGenericMethod" && MethodOf(op.Instance, map) is var (mt, mname))
         {
+            var targs = TypeArgsOf(op, map);
             foreach (var gm in mt.GetMembers(mname).OfType<IMethodSymbol>())
-                if (gm.IsGenericMethod && gm.TypeParameters.Length == targs.Count)
-                    keep.KeepInstance(mt, gm.OriginalDefinition.Construct([.. targs]));
+            {
+                if (!gm.IsGenericMethod) continue;
+                if (targs != null) { if (gm.TypeParameters.Length == targs.Count) keep.KeepInstance(mt, gm.OriginalDefinition.Construct([.. targs])); continue; }
+                // arguments the compiler cannot see: the instances the program makes (no code exists for others)
+                foreach (var inst in AllMethods.Select(x => x.Sym).Where(x => x.IsGenericMethod && SymbolEqualityComparer.Default.Equals(x.OriginalDefinition, CanonicalMethod(gm).OriginalDefinition)
+                             && !x.TypeArguments.Any(a => a is ITypeParameterSymbol)).ToList())
+                    keep.KeepInstance(mt, inst);
+            }
             return;
         }
         if (owner is not ("Type" or "TypeInfo" or "MemberInfo" or "CustomAttributeExtensions" or "Attribute") || !s_reflectNames.Contains(m.Name)) return;
@@ -237,7 +259,11 @@ internal sealed partial class Driver
                     keep.Keep(nt, name);
             if (!input) return;
         }
-        if (t == null) { if (input) Report(Diags.ReflectionUnknown, op.Syntax.GetLocation(), "Type." + m.Name); return; }
+        if (t == null)
+        {
+            if (input) _unknownReflection.Add((op.Syntax.GetLocation(), "Type." + m.Name, name, m.Name is "GetConstructor" or "GetConstructors"));
+            return;
+        }
         if (m.Name is "GetConstructor" or "GetConstructors") keep.Keep(t, null, ctors: true);
         else if (m.Name is "GetCustomAttributes" or "GetCustomAttribute" or "IsDefined" or "GetInterfaces") keep.Keep(t, "<type>");
         else keep.Keep(t, name);

@@ -337,7 +337,8 @@ namespace System.Reflection
         public override
         Type[] GetTypes()
         {
-            return InternalGetTypes(_impl);
+            // cs2wasm: the module's assembly's types
+            return ((RuntimeAssembly)assembly).TypesOf();
         }
 
         public override IList<CustomAttributeData> GetCustomAttributesData()

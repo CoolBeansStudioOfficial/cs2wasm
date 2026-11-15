@@ -1538,6 +1538,9 @@ namespace System
                     // so a call to GetMemberCons would fail
                     bool publicOnly = (bindingAttr & BindingFlags.NonPublic) == 0;
                     bool wrapExceptions = (bindingAttr & BindingFlags.DoNotWrapExceptions) == 0;
+                    // cs2wasm: an array type's constructor takes its lengths (as the runtime's array constructors do)
+                    if (IsSZArray && argCnt == 1 && args[0] is int length && (bindingAttr & BindingFlags.Instance) != 0)
+                        return Array.CreateInstance(GetElementType()!, length);
                     if (argCnt == 0 && (bindingAttr & BindingFlags.Public) != 0 && (bindingAttr & BindingFlags.Instance) != 0
                         && (IsValueType))
                     {
