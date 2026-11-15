@@ -741,6 +741,7 @@ sealed partial class RuntimeGen
         D.Module.UsesThreads = D.UsesThreads;
         D.EmitObjectArrayDelegate();
         D.EmitDynamicInvoke();
+        D.Mark("  finish: D.EmitDynamicInvoke");
         if (D.Rt.ReleaseThreadStaticsIfMade is { } rts)
         {
             var e = new Emitter(rts);
@@ -772,20 +773,30 @@ sealed partial class RuntimeGen
         }
         // (every function but the dispatch tables below exists now)
         PruneConstructed();
+        D.Mark("  finish: PruneConstructed");
         AssignTypeIds();
+        D.Mark("  finish: AssignTypeIds");
         _emitScc?.Invoke();
         D.EmitReflectionTables();
+        D.Mark("  finish: D.EmitReflectionTables");
         D.EmitDelegateMethod();
         D.EmitSharing(D.UsesThreads, Enumerable.Range(0, D.TypeById.Count).Where(id => D.Constructed.Contains(id)).Select(id => (id, D.TypeById[id])));
+        D.Mark("  finish: D.EmitSharing");
         EmitDestroyDispatch();
+        D.Mark("  finish: EmitDestroyDispatch");
         EmitRetainContents();
         EmitStubs();
+        D.Mark("  finish: EmitStubs");
         EmitTypeTests();
+        D.Mark("  finish: EmitTypeTests");
         D.Rt.EmitEnumInfo();
         EmitTypeNames();
+        D.Mark("  finish: EmitTypeNames");
         // (every function exists: what each can store is known)
         D.ResolveFieldBorrows();
+        D.Mark("  finish: D.ResolveFieldBorrows");
         D.LayoutMemory();
+        D.Mark("  finish: D.LayoutMemory");
         EmitInit();
     }
 
@@ -1219,7 +1230,8 @@ internal sealed partial class Driver
         if (_methods.TryGetValue(key, out var mi)) return mi;
         var sym = af.Symbol;
         var ret = Types.Resolve(sym.ReturnType, map);
-        var fn = Module.AddFunction("lambda in " + owner.FnName, NestedSignature(sym, map));
+        // (named by the outer method and position: a chain of the owners' names grows with every nesting)
+        var fn = Module.AddFunction("lambda in " + Display(owner.OuterMethod) + "@" + af.Syntax.SpanStart, NestedSignature(sym, map));
         fn.FrameName = RoslynNestedFrameName(owner, af.Syntax, sym, localFunction: false);
         fn.ProgramCode = owner.FnProgramCode;
         mi = new MethodInst { Sym = sym, Fn = fn, Key = key, Impl = MethodImpl.Body };
@@ -1236,7 +1248,7 @@ internal sealed partial class Driver
         var key = (owner.OuterKey ?? owner.InstanceKey) + " local " + def.Name + "@" + def.Locations.FirstOrDefault()?.SourceSpan.Start +
                   (m.TypeArguments.Length > 0 ? "<" + string.Join(",", m.TypeArguments.Select(a => Types.Key(Types.Resolve(a, map)))) + ">" : "");
         if (_methods.TryGetValue(key, out var mi)) return mi;
-        var fn = Module.AddFunction("local " + def.Name + " in " + owner.FnName, NestedSignature(def, map));
+        var fn = Module.AddFunction("local " + def.Name + " in " + Display(owner.OuterMethod), NestedSignature(def, map));
         fn.FrameName = RoslynNestedFrameName(owner, def.DeclaringSyntaxReferences.First().GetSyntax(), def, localFunction: true);
         fn.ProgramCode = owner.FnProgramCode;
         mi = new MethodInst { Sym = def, Fn = fn, Key = key, Impl = MethodImpl.Body };

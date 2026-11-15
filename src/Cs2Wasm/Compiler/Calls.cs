@@ -18,7 +18,7 @@ sealed partial class FunctionCompiler
         if (!SymbolEqualityComparer.Default.Equals(ct, m.ContainingType))
         {
             var defId = Types.DocId(m.OriginalDefinition);
-            r = ct.GetMembers(m.Name).OfType<IMethodSymbol>().FirstOrDefault(x => Types.DocId(x.OriginalDefinition) == defId) ?? m;
+            r = ct.GetMembers(m.Name).OfType<IMethodSymbol>().FirstOrDefault(x => x.Arity == m.Arity && Types.DocId(x.OriginalDefinition) == defId) ?? m;
             if (ReferenceEquals(r, m) && Environment.GetEnvironmentVariable("CS2WASM_DEBUG") != null)
                 Console.Error.WriteLine($"subst fail {defId} in {Types.Key(ct)} asm={ct.ContainingAssembly?.Name} members=[{string.Join(";", ct.GetMembers(m.Name).Select(x => Types.DocId(x.OriginalDefinition)))}]");
         }
@@ -1205,11 +1205,12 @@ sealed partial class FunctionCompiler
             var slot = new Slot { Local = obj, Type = t };
             RegisterTemp(slot);
             CallWith(ctorR, false, () => E.Get(obj), () => { for (int i = 0; i < ctorR.Parameters.Length; i++) PushArg(ctorR.Parameters[i], null); }, null, ce.Syntax);
-            var add = nt.GetMembers("Add").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 1);
+            var add = AddMethodOf(nt);
+            if (add == null && ce.Elements.Length > 0) throw new CompileException("collection expression: no Add method on " + nt, ce.Syntax.GetLocation());
             foreach (var e in ce.Elements)
             {
-                if (e is ISpreadOperation sp) { EmitSpreadInto(obj, add.Parameters[0].Type, sp); continue; }
-                CallWith(D.CanonicalMethod(add), false, () => E.Get(obj), () => PushArg(add.Parameters[0], e), null, e.Syntax);
+                if (e is ISpreadOperation sp) { EmitSpreadInto(obj, add!.Parameters[0].Type, sp); continue; }
+                CallWith(D.CanonicalMethod(add!), false, () => E.Get(obj), () => PushArg(add!.Parameters[0], e), null, e.Syntax);
             }
             _temps[^1].Remove(slot);
             E.Get(obj); E.I32(0); E.Set(obj);
@@ -1254,7 +1255,61 @@ sealed partial class FunctionCompiler
             E.Get(obj); E.I32(0); E.Set(obj);
             return Own.Owned;
         }
+        // [CollectionBuilder(typeof(B), "Create")] (ImmutableArray<T> and friends): B.Create(ReadOnlySpan<T>) over the elements
+        if (ce.ConstructMethod is { IsStatic: true, Parameters.Length: 1 } bm && T.Resolve(bm.Parameters[0].Type, Map) is INamedTypeSymbol { Arity: 1 } ros
+            && Types.FullName(ros) == "System.ReadOnlySpan`1")
+        {
+            var et = T.Canonical(ros.TypeArguments[0]);
+            var arrT = D.LibCompilation.CreateArrayTypeSymbol(et);
+            EmitElementsArray(ce, et);
+            int arr = E.AddLocal(ValType.I32); E.Set(arr);
+            // (the builder copies what the span holds: the array goes at the end of the statement)
+            RegisterTemp(new Slot { Local = arr, Type = arrT });
+            var sctor = ((INamedTypeSymbol)T.Canonical(ros)).InstanceConstructors.First(c => c.Parameters.Length == 1 && c.Parameters[0].Type is IArrayTypeSymbol);
+            int off = TempStruct(ros);
+            CallWith(sctor, false, () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); }, () => E.Get(arr), null, ce.Syntax);
+            var builder = SubstMethod(bm);
+            return CallWith(builder, false, null, () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); }, null, ce.Syntax);
+        }
         throw new CompileException("this collection expression is not supported yet", ce.Syntax.GetLocation());
+    }
+
+    /// <summary>A collection type's Add(T) (its own or a base type's), as a collection initializer calls it.</summary>
+    static IMethodSymbol? AddMethodOf(INamedTypeSymbol t)
+    {
+        for (var b = t; b != null; b = b.BaseType)
+            if (b.GetMembers("Add").OfType<IMethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 1 && !m.IsStatic) is { } add) return add;
+        return null;
+    }
+
+    /// <summary>The elements of a collection expression as a new T[] (owned, on the stack); spreads through a List&lt;T&gt;.</summary>
+    void EmitElementsArray(ICollectionExpressionOperation ce, ITypeSymbol et)
+    {
+        if (ce.Elements.All(e => e is not ISpreadOperation))
+        {
+            var at = D.LibCompilation.CreateArrayTypeSymbol(et);
+            int tid = D.MarkConstructed(at);
+            E.I32(ce.Elements.Length); E.I32(T.StorageOf(et).size); E.Tid(tid); E.Call(Rt.AllocArray);
+            int arr = E.AddLocal(ValType.I32); E.Set(arr);
+            var slot = new Slot { Local = arr, Type = at };
+            RegisterTemp(slot);
+            for (int i = 0; i < ce.Elements.Length; i++) StoreElement(arr, i, et, ce.Elements[i]);
+            _temps[^1].Remove(slot);
+            E.Get(arr); E.I32(0); E.Set(arr);
+            return;
+        }
+        var listT = (INamedTypeSymbol)T.Canonical(D.LibType("System.Collections.Generic.List`1").Construct(et));
+        NewObject(listT, ce.Syntax);
+        int lst = E.AddLocal(ValType.I32); E.Set(lst);
+        RegisterTemp(new Slot { Local = lst, Type = listT });
+        var ladd = listT.GetMembers("Add").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 1);
+        foreach (var e in ce.Elements)
+        {
+            if (e is ISpreadOperation sp) EmitSpreadInto(lst, et, sp);
+            else CallWith(D.CanonicalMethod(ladd), false, () => E.Get(lst), () => PushArg(ladd.Parameters[0], e), null, e.Syntax);
+        }
+        var toArray = listT.GetMembers("ToArray").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 0);
+        CallWith(D.CanonicalMethod(toArray), false, () => E.Get(lst), () => { }, null, ce.Syntax);
     }
 
     // =====================================================================

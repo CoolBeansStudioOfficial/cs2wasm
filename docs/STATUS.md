@@ -5,7 +5,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 64 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 65 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
@@ -454,9 +454,19 @@ Also: a readonly field (or get-only auto-property) set only in constructors that
 the cycle analysis (section 4.3), so an exception's inner exception no longer brings the arena runtime into every
 program.
 
-### 9. Hosting and self-hosting — not started
-The compiler runs on .NET. It has not been run on the browser .NET runtime, and it does not compile itself
-(it uses LINQ, iterators, generics over Roslyn's API — all of Roslyn would have to compile first).
+### 9. Hosting and self-hosting — started
+Roslyn compiles to WASM. Its compiler libraries (Microsoft.CodeAnalysis and Microsoft.CodeAnalysis.CSharp, 2,200
+files at the commit of the 5.12.0 package cs2wasm is built with, fetched from dotnet/roslyn on first use) are optional
+libraries of cs2wasm's, with the libraries they need: System.Collections.Immutable and System.Reflection.Metadata from
+dotnet/runtime, managed hashing (SHA-1, SHA-2, MD5, `IncrementalHash`; `065_hashes`), and generated declarations of
+what the sandbox lacks (XML, the rest of cryptography, URIs, networking types, memory-mapped files, compression: every
+member a `[MissingCapability]`, a build error only where reached; `tools/CoreLibManifest stubs` writes them from the
+.NET reference assemblies). Optional libraries are compiled only for programs that use them (a reference to Roslyn's
+assemblies, or the namespace in the source), so other programs build as before. Roslyn's resource classes and the
+outputs of the source generators it relies on (`[GeneratedRegex]`, CoreLib's product version) are written down:
+cs2wasm runs no generators. A program that parses C# with Roslyn and walks the syntax tree builds (66 s; 2.6 MB) and
+prints what .NET does (`tests/out/roslyn/parse.cs`). Binding (compilations, semantic models, operations) is next,
+then the compiler itself, then the browser host. The compiler has not been run on the browser .NET runtime.
 
 ### 10. Testing — started
 Proof 1 is partially met (the programs listed above). Proofs 2–5 are not started (they need GodotSharp sources,

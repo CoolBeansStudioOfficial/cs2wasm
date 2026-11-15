@@ -2032,6 +2032,17 @@ sealed partial class FunctionCompiler
                 _args.Add((l, at));
             }
         }
+        /// <summary>On a struct receiver (a type parameter instantiated with a struct, say), the struct's own
+        /// implementation of an interface's accessor.</summary>
+        IMethodSymbol Accessor(IMethodSymbol acc)
+        {
+            if (!_recvIsStruct || acc.IsStatic) return acc;
+            var rt = F.T.Canonical(F.TypeOf(pr.Instance!));
+            if (Types.Key(F.T.Canonical(acc.ContainingType)) == Types.Key(rt)) return acc;
+            if (F.D.Implementation(rt, acc) is { } impl && Types.Key(F.T.Canonical(impl.ContainingType)) == Types.Key(rt)) return impl;
+            return acc;
+        }
+
         void PushRecvAndArgs()
         {
             if (_recv >= 0) F.E.Get(_recv);
@@ -2040,7 +2051,7 @@ sealed partial class FunctionCompiler
         public override Own Load()
         {
             var g = pr.Property.GetMethod ?? throw new CompileException("property has no getter");
-            var gm = F.SubstMethod(g);
+            var gm = Accessor(F.SubstMethod(g));
             return F.CallWith(gm, !_recvIsStruct && F.IsVirtualCall(pr.Instance, g), _recv >= 0 ? () => F.E.Get(_recv) : null, () => { foreach (var (l, _) in _args) F.E.Get(l); }, null, pr.Syntax);
         }
         public override Own Store(Own o, bool needResult)
@@ -2054,7 +2065,7 @@ sealed partial class FunctionCompiler
                 v = F.Scratch(ValType.I32); F.E.Set(v);
             }
             else { v = F.Scratch(Types.WasmType(vt)!.Value); F.E.Set(v); }
-            var sm = F.SubstMethod(s);
+            var sm = Accessor(F.SubstMethod(s));
             F.CallWith(sm, !_recvIsStruct && F.IsVirtualCall(pr.Instance, s), _recv >= 0 ? () => F.E.Get(_recv) : null, () => { foreach (var (l, _) in _args) F.E.Get(l); F.E.Get(v); }, null, pr.Syntax);
             if (needResult) { F.E.Get(v); F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v); return Types.IsRef(vt) ? Own.Stable : Own.None; }
             F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v);

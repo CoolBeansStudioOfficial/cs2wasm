@@ -93,48 +93,13 @@ internal sealed partial class Driver
         var byFn = FieldBorrows.GroupBy(b => b.fn).ToDictionary(g => g.Key, g => g.ToList());
         bool threads = UsesThreads;
         // what each function may store, with everything it can call (an indirect call: any function in the table)
-        Dictionary<WasmFunction, HashSet<string>>? summary = null;
+        StoreSummary? summary = null;
         if (!threads)
         {
-            var tableFns = new HashSet<WasmFunction>();
-            foreach (var f in Module.Functions)
-                foreach (var ins in f.Body)
-                    if (ins.Op == Op.I32Const && ins.Ref is WasmFunction t) tableFns.Add(t);
-            foreach (var f in Module.Functions) if (f.InTable || f.TableRoot) tableFns.Add(f);
-            summary = [];
-            var callees = new Dictionary<WasmFunction, List<WasmFunction>>();
-            foreach (var f in Module.Functions)
-            {
-                var cs = new List<WasmFunction>();
-                bool indirect = false;
-                foreach (var ins in f.Body)
-                {
-                    if (ins.Op == Op.Call && ins.Ref is WasmFunction g) cs.Add(g);
-                    else if (ins.Op == Op.CallIndirect) indirect = true;
-                }
-                if (f.ForwardTo != null) cs.Add(f.ForwardTo);
-                if (indirect) cs.AddRange(tableFns);
-                callees[f] = cs;
-                summary[f] = FieldWrites.TryGetValue(f, out var w) ? [.. w] : [];
-            }
-            // what writes only memory no program code can reach: the runtime's throw helpers (bounds, null and cast
-            // checks: the exception they make), the allocator (fresh or freed blocks), the arenas' and the marks'
-            // own tables (a finalizer a release runs still counts: it is compiled code the destroy path calls)
-            string[] internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks."];
-            var throwers = Module.Functions.Where(f => internals.Any(p => f.Name.StartsWith(p, StringComparison.Ordinal))).ToHashSet();
-            // (to a fixpoint: summaries only grow)
-            bool changed = true;
-            while (changed)
-            {
-                changed = false;
-                foreach (var f in Module.Functions)
-                {
-                    var s = summary[f];
-                    int before = s.Count;
-                    foreach (var g in callees[f]) if (g != f && !throwers.Contains(g) && summary.TryGetValue(g, out var gs)) s.UnionWith(gs);
-                    if (s.Count != before) changed = true;
-                }
-            }
+            var queried = new HashSet<string>();
+            foreach (var b in FieldBorrows) foreach (var k in b.field.Split('\n')) if (k != "") queried.Add(k);
+            foreach (var b in _tempBorrows) queried.Add(b.field);
+            summary = new StoreSummary(this, queried);
         }
         var reflected = ReflectedFieldKeys();
         foreach (var (fn, list) in byFn)
@@ -142,10 +107,10 @@ internal sealed partial class Driver
             var b = fn.Body;
             foreach (var (_, local, field, marker) in list)
             {
-                bool ok = field == "" || !threads && summary != null && field.Split('\n').All(k => !summary[fn].Contains(k) && !FieldsAddressTaken.Contains(k) && !reflected.Contains(k));
+                bool ok = field == "" || !threads && summary != null && field.Split('\n').All(k => !summary.Has(fn, k) && !FieldsAddressTaken.Contains(k) && !reflected.Contains(k));
                 if (s_borrowDebug) Console.Error.WriteLine($"borrow {fn.Name} local {local} {field.Replace('\n', '|')}: {ok}"
                     + (summary != null ? " own=" + (FieldWrites.TryGetValue(fn, out var ow) && ow.Contains(field) ? "y" : "n") + " via "
-                        + string.Join(",", Module.Functions.Where(g => fn.Body.Any(x => x.Op == Op.Call && x.Ref == g) && summary.TryGetValue(g, out var gs) && gs.Contains(field)).Select(g => g.Name).Take(5)) : ""));
+                        + string.Join(",", fn.Body.Where(x => x.Op == Op.Call && x.Ref is WasmFunction g && summary.Has(g, field)).Select(x => ((WasmFunction)x.Ref!).Name).Distinct().Take(5)) : ""));
                 // the local's other writes are the releases at scope exit (get; release; 0; set): nothing moves its value
                 if (ok)
                     for (int i = 0; i < b.Count && ok; i++)
@@ -178,13 +143,13 @@ internal sealed partial class Driver
                 var b = fn.Body;
                 int r = b.FindIndex(x => x.Op == Op.Call && x.Ref == retain);
                 int e = r < 0 ? -1 : b.FindIndex(r + 1, x => x.Op == Op.Call && x.Ref == release);
-                if (r < 0 || e < 0) ok = !summary![fn].Contains(field);
+                if (r < 0 || e < 0) ok = !summary!.Has(fn, field);
                 else
                     for (int k = r + 1; k < e && ok; k++)
                     {
                         var ins = b[k];
-                        if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != retain && summary!.TryGetValue(g, out var gs) && gs.Contains(field)) ok = false;
-                        else if (ins.Op == Op.CallIndirect && summary![fn].Contains(field)) ok = false;
+                        if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != retain && summary!.Has(g, field)) ok = false;
+                        else if (ins.Op == Op.CallIndirect && summary!.Has(fn, field)) ok = false;
                     }
             }
             markers[retain] = ok ? null : Rt.Retain;
@@ -205,8 +170,88 @@ internal sealed partial class Driver
                     }
                 if (any) b.RemoveAll(x => x.Op == Op.Nop && x.Ref == null && x.Pos < 0);
             }
-        foreach (var m in markers.Keys) Module.Functions.Remove(m);
-        foreach (var (_, _, _, marker) in FieldBorrows) Module.Functions.Remove(marker);
+        var dead = markers.Keys.Concat(FieldBorrows.Select(b => b.marker)).ToHashSet();
+        Module.Functions.RemoveAll(dead.Contains);
+    }
+
+    /// <summary>What each function may store, with everything it can call: bits over the fields some borrow asks about,
+    /// unioned over the call graph's strongly connected components (callees first); an indirect call reaches every
+    /// function in the table (one node stands for them).</summary>
+    sealed class StoreSummary
+    {
+        readonly Dictionary<string, int> _key = [];
+        readonly Dictionary<WasmFunction, int> _node = [];
+        readonly ulong[][] _bits;
+
+        public StoreSummary(Driver d, HashSet<string> queried)
+        {
+            foreach (var k in queried) _key[k] = _key.Count;
+            int words = Math.Max(1, (_key.Count + 63) / 64);
+            var fns = d.Module.Functions;
+            for (int i = 0; i < fns.Count; i++) _node[fns[i]] = i;
+            int table = fns.Count, n = fns.Count + 1;
+            // what writes only memory no program code can reach: the runtime's throw helpers (bounds, null and cast
+            // checks: the exception they make), the allocator (fresh or freed blocks), the arenas' and the marks'
+            // own tables (a finalizer a release runs still counts: it is compiled code the destroy path calls)
+            string[] internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks."];
+            var skip = new bool[n];
+            for (int i = 0; i < fns.Count; i++) skip[i] = internals.Any(p => fns[i].Name.StartsWith(p, StringComparison.Ordinal));
+            var edges = new List<int>[n];
+            for (int i = 0; i < n; i++) edges[i] = [];
+            _bits = new ulong[n][];
+            for (int i = 0; i < n; i++) _bits[i] = new ulong[words];
+            for (int i = 0; i < fns.Count; i++)
+            {
+                var f = fns[i];
+                foreach (var ins in f.Body)
+                {
+                    if (ins.Op == Op.Call && ins.Ref is WasmFunction g && _node.TryGetValue(g, out int gi) && !skip[gi] && gi != i) edges[i].Add(gi);
+                    else if (ins.Op == Op.CallIndirect) edges[i].Add(table);
+                    else if (ins.Op == Op.I32Const && ins.Ref is WasmFunction t && _node.TryGetValue(t, out int ti)) edges[table].Add(ti);
+                }
+                if (f.InTable || f.TableRoot) edges[table].Add(i);
+                if (f.ForwardTo != null && _node.TryGetValue(f.ForwardTo, out int fi)) edges[i].Add(fi);
+                if (d.FieldWrites.TryGetValue(f, out var w))
+                    foreach (var k in w) if (_key.TryGetValue(k, out int ki)) _bits[i][ki >> 6] |= 1UL << (ki & 63);
+            }
+            // Tarjan, iterative: components come out callees first
+            var index = new int[n]; var low = new int[n]; var on = new bool[n];
+            Array.Fill(index, -1);
+            var stack = new Stack<int>(); int next = 0;
+            var call = new Stack<(int v, int e)>();
+            for (int s0 = 0; s0 < n; s0++)
+            {
+                if (index[s0] >= 0) continue;
+                call.Push((s0, 0)); index[s0] = low[s0] = next++; stack.Push(s0); on[s0] = true;
+                while (call.Count > 0)
+                {
+                    var (v, e) = call.Pop();
+                    if (e < edges[v].Count)
+                    {
+                        call.Push((v, e + 1));
+                        int w2 = edges[v][e];
+                        if (index[w2] < 0) { index[w2] = low[w2] = next++; stack.Push(w2); on[w2] = true; call.Push((w2, 0)); }
+                        else if (on[w2]) low[v] = Math.Min(low[v], index[w2]);
+                        continue;
+                    }
+                    if (call.Count > 0) { var (p, _) = call.Peek(); low[p] = Math.Min(low[p], low[v]); }
+                    if (low[v] != index[v]) continue;
+                    var comp = new List<int>();
+                    int x;
+                    do { x = stack.Pop(); on[x] = false; comp.Add(x); } while (x != v);
+                    var acc = new ulong[words];
+                    foreach (var c in comp)
+                    {
+                        for (int k = 0; k < words; k++) acc[k] |= _bits[c][k];
+                        foreach (var t in edges[c]) if (!on[t]) for (int k = 0; k < words; k++) acc[k] |= _bits[t][k];
+                    }
+                    foreach (var c in comp) _bits[c] = acc;
+                }
+            }
+        }
+
+        public bool Has(WasmFunction f, string key) =>
+            _key.TryGetValue(key, out int k) && _node.TryGetValue(f, out int i) && (_bits[i][k >> 6] & (1UL << (k & 63))) != 0;
     }
 
     /// <summary>Fields reflection can set (kept for the program's reflection: FieldInfo.SetValue writes them).</summary>

@@ -828,6 +828,7 @@ internal sealed partial class Driver
         {
             foreach (var m in b.GetMembers(slot.Name).OfType<IMethodSymbol>())
             {
+                if (m.Arity != slot.Arity) continue;
                 var mm = m.IsGenericMethod ? m.Construct([.. slot.TypeArguments]) : m;
                 if (Types.MethodKey(CanonicalMethod(mm)) == slotKey) return mm.IsAbstract ? null : CanonicalMethod(mm);
                 // (a constructed generic method has no overridden method: walk the definition's, constructed alike)

@@ -124,6 +124,8 @@ internal sealed class Types
         {
             case IMethodSymbol m:
                 sb.Append("M:").Append(TypeSig(m.ContainingType)).Append('.').Append(m.MetadataName);
+                // (a generic method's arity, as documentation ids write it: AddRange(B) and AddRange<U>(B<U>) differ)
+                if (m.Arity > 0) sb.Append("``").Append(m.Arity);
                 sb.Append('(');
                 for (int i = 0; i < m.Parameters.Length; i++)
                 {

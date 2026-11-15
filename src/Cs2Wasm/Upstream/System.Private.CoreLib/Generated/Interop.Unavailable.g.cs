@@ -183,8 +183,6 @@ unsafe partial class Sys {
     internal static partial int GetOSArchitecture() => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetProcessPath)")]
     internal static partial string GetProcessPath() => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetCryptographicallySecureRandomBytes)")]
-    internal static unsafe partial int GetCryptographicallySecureRandomBytes(byte* @buffer, int @length) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetUnixVersion)")]
     private static partial int GetUnixVersion(byte[] @version, ref int @capacity) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetUnixRelease)")]

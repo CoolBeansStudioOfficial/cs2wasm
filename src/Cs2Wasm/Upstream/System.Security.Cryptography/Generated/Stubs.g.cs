@@ -74,57 +74,6 @@ namespace System.Security.Cryptography
         [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Threading.Tasks.ValueTask<bool> VerifyHmacAsync(global::System.Security.Cryptography.HashAlgorithmName hashAlgorithm, global::System.ReadOnlyMemory<byte> key, global::System.IO.Stream source, global::System.ReadOnlyMemory<byte> hash, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
         [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static void ZeroMemory(global::System.Span<byte> buffer) => throw null!;
     }
-    public abstract unsafe partial class HashAlgorithm : global::System.IDisposable, global::System.Security.Cryptography.ICryptoTransform
-    {
-        protected int HashSizeValue = default!;
-        protected internal byte[]? HashValue = default!;
-        protected int State = default!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] protected HashAlgorithm() { throw null!; }
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public void Clear() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public byte[] ComputeHash(byte[] buffer) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public byte[] ComputeHash(byte[] buffer, int offset, int count) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public byte[] ComputeHash(global::System.IO.Stream inputStream) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public global::System.Threading.Tasks.Task<byte[]> ComputeHashAsync(global::System.IO.Stream inputStream, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.HashAlgorithm Create() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.HashAlgorithm? Create(string hashName) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public void Dispose() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] protected virtual void Dispose(bool disposing) => throw null!;
-        protected abstract void HashCore(byte[] array, int ibStart, int cbSize);
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] protected virtual void HashCore(global::System.ReadOnlySpan<byte> source) => throw null!;
-        protected abstract byte[] HashFinal();
-        public abstract void Initialize();
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public int TransformBlock(byte[] inputBuffer, int inputOffset, int inputCount, byte[]? outputBuffer, int outputOffset) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public byte[] TransformFinalBlock(byte[] inputBuffer, int inputOffset, int inputCount) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public bool TryComputeHash(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] protected virtual bool TryHashFinal(global::System.Span<byte> destination, out int bytesWritten) => throw null!;
-        public virtual bool CanReuseTransform { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public virtual bool CanTransformMultipleBlocks { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public virtual byte[]? Hash { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public virtual int HashSize { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public virtual int InputBlockSize { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public virtual int OutputBlockSize { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-    }
-    public unsafe readonly partial struct HashAlgorithmName : global::System.IEquatable<global::System.Security.Cryptography.HashAlgorithmName>
-    {
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public HashAlgorithmName(string? name) { throw null!; }
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public override bool Equals(object? obj) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public bool Equals(global::System.Security.Cryptography.HashAlgorithmName other) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.HashAlgorithmName FromOid(string oidValue) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public override int GetHashCode() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static bool operator ==(global::System.Security.Cryptography.HashAlgorithmName left, global::System.Security.Cryptography.HashAlgorithmName right) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static bool operator !=(global::System.Security.Cryptography.HashAlgorithmName left, global::System.Security.Cryptography.HashAlgorithmName right) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public override string ToString() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static bool TryFromOid(string oidValue, out global::System.Security.Cryptography.HashAlgorithmName value) => throw null!;
-        public static global::System.Security.Cryptography.HashAlgorithmName MD5 { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public string? Name { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public static global::System.Security.Cryptography.HashAlgorithmName SHA1 { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public static global::System.Security.Cryptography.HashAlgorithmName SHA256 { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public static global::System.Security.Cryptography.HashAlgorithmName SHA384 { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public static global::System.Security.Cryptography.HashAlgorithmName SHA3_256 { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public static global::System.Security.Cryptography.HashAlgorithmName SHA3_384 { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public static global::System.Security.Cryptography.HashAlgorithmName SHA3_512 { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public static global::System.Security.Cryptography.HashAlgorithmName SHA512 { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-    }
     public unsafe partial interface ICryptoTransform : global::System.IDisposable
     {
         int TransformBlock(byte[] inputBuffer, int inputOffset, int inputCount, byte[] outputBuffer, int outputOffset);
@@ -134,30 +83,6 @@ namespace System.Security.Cryptography
         int InputBlockSize { get; }
         int OutputBlockSize { get; }
     }
-    public sealed unsafe partial class IncrementalHash : global::System.IDisposable
-    {
-        internal IncrementalHash() { }
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public void AppendData(byte[] data) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public void AppendData(byte[] data, int offset, int count) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public void AppendData(global::System.ReadOnlySpan<byte> data) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public global::System.Security.Cryptography.IncrementalHash Clone() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.IncrementalHash CreateHash(global::System.Security.Cryptography.HashAlgorithmName hashAlgorithm) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.IncrementalHash CreateHMAC(global::System.Security.Cryptography.HashAlgorithmName hashAlgorithm, byte[] key) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.IncrementalHash CreateHMAC(global::System.Security.Cryptography.HashAlgorithmName hashAlgorithm, global::System.ReadOnlySpan<byte> key) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public void Dispose() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public byte[] GetCurrentHash() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public int GetCurrentHash(global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public byte[] GetHashAndReset() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public int GetHashAndReset(global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public bool TryGetCurrentHash(global::System.Span<byte> destination, out int bytesWritten) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public bool TryGetHashAndReset(global::System.Span<byte> destination, out int bytesWritten) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public bool VerifyCurrentHash(byte[] hash) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public bool VerifyCurrentHash(global::System.ReadOnlySpan<byte> hash) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public bool VerifyHashAndReset(byte[] hash) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public bool VerifyHashAndReset(global::System.ReadOnlySpan<byte> hash) => throw null!;
-        public global::System.Security.Cryptography.HashAlgorithmName AlgorithmName { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-        public int HashLengthInBytes { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-    }
     public sealed unsafe partial class KeySizes
     {
         internal KeySizes() { }
@@ -165,22 +90,6 @@ namespace System.Security.Cryptography
         public int MaxSize { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
         public int MinSize { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
         public int SkipSize { [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] get => throw null!; }
-    }
-    public abstract unsafe partial class MD5 : global::System.Security.Cryptography.HashAlgorithm
-    {
-        public const int HashSizeInBits = unchecked((int)128);
-        public const int HashSizeInBytes = unchecked((int)16);
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] protected MD5() { throw null!; }
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.MD5 Create() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.MD5? Create(string algName) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(byte[] source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(global::System.IO.Stream source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static int HashData(global::System.IO.Stream source, global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(global::System.ReadOnlySpan<byte> source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static int HashData(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Threading.Tasks.ValueTask<int> HashDataAsync(global::System.IO.Stream source, global::System.Memory<byte> destination, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Threading.Tasks.ValueTask<byte[]> HashDataAsync(global::System.IO.Stream source, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static bool TryHashData(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten) => throw null!;
     }
     public enum PbeEncryptionAlgorithm : int
     {
@@ -317,69 +226,5 @@ namespace System.Security.Cryptography
     {
         Pkcs1 = unchecked((int)0),
         Pss = unchecked((int)1),
-    }
-    public abstract unsafe partial class SHA1 : global::System.Security.Cryptography.HashAlgorithm
-    {
-        public const int HashSizeInBits = unchecked((int)160);
-        public const int HashSizeInBytes = unchecked((int)20);
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] protected SHA1() { throw null!; }
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.SHA1 Create() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.SHA1? Create(string hashName) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(byte[] source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(global::System.IO.Stream source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static int HashData(global::System.IO.Stream source, global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(global::System.ReadOnlySpan<byte> source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static int HashData(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Threading.Tasks.ValueTask<int> HashDataAsync(global::System.IO.Stream source, global::System.Memory<byte> destination, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Threading.Tasks.ValueTask<byte[]> HashDataAsync(global::System.IO.Stream source, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static bool TryHashData(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten) => throw null!;
-    }
-    public abstract unsafe partial class SHA256 : global::System.Security.Cryptography.HashAlgorithm
-    {
-        public const int HashSizeInBits = unchecked((int)256);
-        public const int HashSizeInBytes = unchecked((int)32);
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] protected SHA256() { throw null!; }
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.SHA256 Create() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.SHA256? Create(string hashName) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(byte[] source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(global::System.IO.Stream source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static int HashData(global::System.IO.Stream source, global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(global::System.ReadOnlySpan<byte> source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static int HashData(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Threading.Tasks.ValueTask<int> HashDataAsync(global::System.IO.Stream source, global::System.Memory<byte> destination, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Threading.Tasks.ValueTask<byte[]> HashDataAsync(global::System.IO.Stream source, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static bool TryHashData(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten) => throw null!;
-    }
-    public abstract unsafe partial class SHA384 : global::System.Security.Cryptography.HashAlgorithm
-    {
-        public const int HashSizeInBits = unchecked((int)384);
-        public const int HashSizeInBytes = unchecked((int)48);
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] protected SHA384() { throw null!; }
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.SHA384 Create() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.SHA384? Create(string hashName) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(byte[] source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(global::System.IO.Stream source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static int HashData(global::System.IO.Stream source, global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(global::System.ReadOnlySpan<byte> source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static int HashData(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Threading.Tasks.ValueTask<int> HashDataAsync(global::System.IO.Stream source, global::System.Memory<byte> destination, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Threading.Tasks.ValueTask<byte[]> HashDataAsync(global::System.IO.Stream source, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static bool TryHashData(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten) => throw null!;
-    }
-    public abstract unsafe partial class SHA512 : global::System.Security.Cryptography.HashAlgorithm
-    {
-        public const int HashSizeInBits = unchecked((int)512);
-        public const int HashSizeInBytes = unchecked((int)64);
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] protected SHA512() { throw null!; }
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.SHA512 Create() => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Security.Cryptography.SHA512? Create(string hashName) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(byte[] source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(global::System.IO.Stream source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static int HashData(global::System.IO.Stream source, global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static byte[] HashData(global::System.ReadOnlySpan<byte> source) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static int HashData(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Threading.Tasks.ValueTask<int> HashDataAsync(global::System.IO.Stream source, global::System.Memory<byte> destination, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static global::System.Threading.Tasks.ValueTask<byte[]> HashDataAsync(global::System.IO.Stream source, global::System.Threading.CancellationToken cancellationToken = default!) => throw null!;
-        [global::Cs2Wasm.Runtime.MissingCapability("cryptography (not built yet)")] public static bool TryHashData(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten) => throw null!;
     }
 }

@@ -98,7 +98,11 @@ sealed partial class FunctionCompiler
     {
         var target = da.Target is IDeclarationExpressionOperation de ? de.Expression : da.Target;
         if (target is not ITupleOperation tt) throw new CompileException("unsupported deconstruction target", da.Syntax.GetLocation());
-        var info = D.ModelFor(da.Syntax.SyntaxTree).GetDeconstructionInfo((AssignmentExpressionSyntax)da.Syntax);
+        // (a foreach's deconstruction, as the control-flow graph of an iterator presents it, has the variables' syntax)
+        var model = D.ModelFor(da.Syntax.SyntaxTree);
+        var info = da.Syntax is AssignmentExpressionSyntax asx ? model.GetDeconstructionInfo(asx)
+            : da.Syntax.FirstAncestorOrSelf<ForEachVariableStatementSyntax>() is { } fvs ? model.GetDeconstructionInfo(fvs)
+            : throw new CompileException("unsupported deconstruction", da.Syntax.GetLocation());
         var vt = TypeOf(da.Value);
         BeginTemps();
         // evaluate the right side completely first

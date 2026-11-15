@@ -22,6 +22,14 @@ internal static partial class Interop
 
         /// <summary>System.Random's seeds and the like: from the engine's seeded import (it makes them match across
         /// peers), stretched with splitmix64.</summary>
+        /// <summary>Guid.NewGuid, RandomNumberGenerator and the like: the sandbox's randomness is the engine's (section
+        /// 7.4), as secure as the engine's seed makes it.</summary>
+        internal static unsafe partial int GetCryptographicallySecureRandomBytes(byte* buffer, int length)
+        {
+            GetNonCryptographicallySecureRandomBytes(buffer, length);
+            return 0;
+        }
+
         internal static unsafe partial void GetNonCryptographicallySecureRandomBytes(byte* buffer, int length)
         {
             while (Atomic.CompareExchange32(ref s_randomLock, 0, 1) != 0) { }
