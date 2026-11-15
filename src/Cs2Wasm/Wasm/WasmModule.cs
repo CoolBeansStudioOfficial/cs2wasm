@@ -338,7 +338,7 @@ internal sealed class WasmModule
             case Op.GlobalGet: case Op.GlobalSet: b.U32(((WasmGlobal)ins.Ref!).Index); break;
             case >= Op.I32Load and <= Op.I64Store32: b.U32((int)ins.Imm2); b.U32((int)ins.Imm); break;
             case Op.AtomicFence: b.Byte(0); break;
-            case >= Op.MemoryAtomicNotify and <= Op.I64AtomicRmwCmpxchg: b.U32((int)ins.Imm2); b.U32((int)ins.Imm); break;
+            case >= Op.MemoryAtomicNotify and <= Op.I32AtomicRmw16CmpxchgU: b.U32((int)ins.Imm2); b.U32((int)ins.Imm); break;
             case Op.MemorySize: case Op.MemoryGrow: b.Byte(0); break;
             case Op.I32Const:
                 b.S32(ins.Ref is IAddress a ? a.Address + (int)ins.Imm : (int)ins.Imm); break;

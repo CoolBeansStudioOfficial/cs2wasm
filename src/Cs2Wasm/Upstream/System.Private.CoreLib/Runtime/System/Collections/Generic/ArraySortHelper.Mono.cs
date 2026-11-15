@@ -23,9 +23,10 @@ namespace System.Collections.Generic
         {
             IArraySortHelper<T> defaultArraySortHelper;
 
-            if (typeof(IComparable<T>).IsAssignableFrom(typeof(T)))
+            // cs2wasm: chosen when T is known
+            if (Cs2Wasm.Runtime.Generics.Implements<T>("System.IComparable`1"))
             {
-                defaultArraySortHelper = (IArraySortHelper<T>)RuntimeType.CreateInstanceForAnotherGenericParameter((RuntimeType)typeof(GenericArraySortHelper<>), (RuntimeType)typeof(T));
+                defaultArraySortHelper = (IArraySortHelper<T>)Cs2Wasm.Runtime.Generics.New<T>("System.Collections.Generic.GenericArraySortHelper`1");
             }
             else
             {
@@ -56,9 +57,9 @@ namespace System.Collections.Generic
         {
             IArraySortHelper<TKey, TValue> defaultArraySortHelper;
 
-            if (typeof(IComparable<TKey>).IsAssignableFrom(typeof(TKey)))
+            if (Cs2Wasm.Runtime.Generics.Implements<TKey>("System.IComparable`1"))
             {
-                defaultArraySortHelper = (IArraySortHelper<TKey, TValue>)RuntimeType.CreateInstanceForAnotherGenericParameter((RuntimeType)typeof(GenericArraySortHelper<,>), (RuntimeType)typeof(TKey), (RuntimeType)typeof(TValue));
+                defaultArraySortHelper = (IArraySortHelper<TKey, TValue>)Cs2Wasm.Runtime.Generics.New<TKey, TValue>("System.Collections.Generic.GenericArraySortHelper`2");
             }
             else
             {

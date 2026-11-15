@@ -25,24 +25,15 @@ namespace System.Collections.Generic
             }
         }
 
+        // cs2wasm: the comparer type is chosen when T is known (each instantiation is compiled on its own)
         private static Comparer<T> CreateComparer()
         {
-            RuntimeType t = (RuntimeType)typeof(T);
-
-            if (typeof(IComparable<T>).IsAssignableFrom(t))
-                return (Comparer<T>)RuntimeType.CreateInstanceForAnotherGenericParameter(typeof(GenericComparer<>), t);
-
-            // If T is a Nullable<U> return a NullableComparer<U>
-            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(Nullable<>))
-            {
-                RuntimeType u = (RuntimeType)t.GetGenericArguments()[0];
-                return (Comparer<T>)RuntimeType.CreateInstanceForAnotherGenericParameter(typeof(NullableComparer<>), u);
-            }
-
-            if (t.IsEnum)
-                return (Comparer<T>)RuntimeType.CreateInstanceForAnotherGenericParameter(typeof(EnumComparer<>), t);
-
-            // Otherwise return an ObjectComparer<T>
+            if (Cs2Wasm.Runtime.Generics.Implements<T>("System.IComparable`1"))
+                return (Comparer<T>)Cs2Wasm.Runtime.Generics.New<T>("System.Collections.Generic.GenericComparer`1");
+            if (Cs2Wasm.Runtime.Generics.IsNullable<T>())
+                return (Comparer<T>)Cs2Wasm.Runtime.Generics.NewOfNullableArg<T>("System.Collections.Generic.NullableComparer`1");
+            if (Cs2Wasm.Runtime.Generics.IsEnum<T>())
+                return (Comparer<T>)Cs2Wasm.Runtime.Generics.New<T>("System.Collections.Generic.EnumComparer`1");
             return new ObjectComparer<T>();
         }
     }

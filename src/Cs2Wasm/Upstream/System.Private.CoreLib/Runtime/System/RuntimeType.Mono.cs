@@ -2291,7 +2291,7 @@ namespace System
             }
         }
 
-                internal static void getFullName(QCallTypeHandle type, ObjectHandleOnStack res, bool full_name, bool assembly_qualified) => Cs2Wasm.Runtime.TypeInfo.Set(res, full_name ? Cs2Wasm.Runtime.TypeInfo.FullName(Cs2Wasm.Runtime.TypeInfo.Id(type)) : Cs2Wasm.Runtime.TypeInfo.Name(Cs2Wasm.Runtime.TypeInfo.Id(type)));
+                internal static void getFullName(QCallTypeHandle type, ObjectHandleOnStack res, bool full_name, bool assembly_qualified) => Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.TypeInfo.FullName(Cs2Wasm.Runtime.TypeInfo.Id(type))); // (with the namespace either way: Mono's full_name qualifies generic arguments)
 
                 private static void GetGenericArgumentsInternal(QCallTypeHandle type, ObjectHandleOnStack res, bool runtimeArray)
         {

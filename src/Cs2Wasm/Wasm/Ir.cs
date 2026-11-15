@@ -50,7 +50,8 @@ internal enum Op : ushort
     MemoryAtomicNotify = 0xFE00, MemoryAtomicWait32 = 0xFE01, MemoryAtomicWait64 = 0xFE02, AtomicFence = 0xFE03,
     I32AtomicLoad = 0xFE10, I64AtomicLoad = 0xFE11, I32AtomicStore = 0xFE17, I64AtomicStore = 0xFE18,
     I32AtomicRmwAdd = 0xFE1E, I64AtomicRmwAdd = 0xFE1F, I32AtomicRmwSub = 0xFE25, I64AtomicRmwSub = 0xFE26,
-    I32AtomicRmwXchg = 0xFE41, I64AtomicRmwXchg = 0xFE42, I32AtomicRmwCmpxchg = 0xFE48, I64AtomicRmwCmpxchg = 0xFE49,
+    I32AtomicRmwXchg = 0xFE41, I64AtomicRmwXchg = 0xFE42, I32AtomicRmw8XchgU = 0xFE43, I32AtomicRmw16XchgU = 0xFE44,
+    I32AtomicRmwCmpxchg = 0xFE48, I64AtomicRmwCmpxchg = 0xFE49, I32AtomicRmw8CmpxchgU = 0xFE4A, I32AtomicRmw16CmpxchgU = 0xFE4B,
 }
 
 internal sealed class FuncType : IEquatable<FuncType>

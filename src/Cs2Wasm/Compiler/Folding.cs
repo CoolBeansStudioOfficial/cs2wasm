@@ -61,10 +61,23 @@ sealed partial class FunctionCompiler
             case IPropertyReferenceOperation { Instance: null } pr: return KnownBool(pr.Property);
             case IPropertyReferenceOperation { Instance: ITypeOfOperation to, Property.Name: "IsValueType" }:
                 return T.Resolve(to.TypeOperand, Map).IsValueType;
+            case IInvocationOperation { Instance: null, Arguments.Length: 1, TargetMethod: { Name: "Implements", TypeArguments.Length: 1 } im } impl
+                when Types.FullName(im.ContainingType) == "Cs2Wasm.Runtime.Generics" && impl.Arguments[0].Value.ConstantValue.Value is string ifaceName:
+                {
+                    var t = T.Resolve(im.TypeArguments[0], Map);
+                    if (t is ITypeParameterSymbol) return null;
+                    return t.AllInterfaces.Any(i => Types.FullName(i.OriginalDefinition) == ifaceName && i.TypeArguments.Length == 1 && Types.Key(T.Canonical(i.TypeArguments[0])) == Types.Key(t));
+                }
             case IInvocationOperation { Instance: null, Arguments.Length: 0 } inv:
                 {
                     var m = inv.TargetMethod;
                     var owner = Types.FullName(m.ContainingType);
+                    if (owner == "Cs2Wasm.Runtime.Generics" && m.TypeArguments.Length == 1 && T.Resolve(m.TypeArguments[0], Map) is var gt && gt is not ITypeParameterSymbol)
+                        switch (m.Name)
+                        {
+                            case "IsNullable": return gt is INamedTypeSymbol { Arity: 1 } nn && Types.FullName(nn) == "System.Nullable`1";
+                            case "IsEnum": return gt.TypeKind == TypeKind.Enum;
+                        }
                     if (owner == "System.Runtime.CompilerServices.RuntimeHelpers" && m.TypeArguments.Length == 1)
                     {
                         var t = T.Resolve(m.TypeArguments[0], Map);

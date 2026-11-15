@@ -40,6 +40,8 @@ sealed partial class FunctionCompiler
         var target = inv.TargetMethod;
         // [Conditional("X")] with X not defined where the call is: the call, arguments included, is omitted (C# 22.5.3)
         if (IsOmittedConditionalCall(inv)) return Own.None;
+        if (target.Name is "New" or "NewOfNullableArg" && Types.FullName(target.ContainingType) == "Cs2Wasm.Runtime.Generics" && D.IsLibrary(target))
+            return EmitGenericsNew(inv);
         if (target.MethodKind == MethodKind.LocalFunction) return EmitLocalFunctionCall(inv);
         // static abstract / virtual interface members through a constrained type parameter
         if (target.IsStatic && target.ContainingType.TypeKind == TypeKind.Interface && inv.ConstrainedToType is { } ctt)
@@ -268,6 +270,32 @@ sealed partial class FunctionCompiler
         CallWith(m, virt, pushThis, () => PushArgs(m, inv.Arguments.Cast<IOperation>().ToList()), pushDst, inv.Syntax);
     }
 
+    /// <summary>Cs2Wasm.Runtime.Generics.New&lt;T&gt;("Open`1"): `new Open&lt;T&gt;()`, the type closed now.</summary>
+    Own EmitGenericsNew(IInvocationOperation inv)
+    {
+        var name = inv.Arguments[0].Value.ConstantValue.Value as string ?? throw new CompileException("Generics.New needs a constant type name", inv.Syntax.GetLocation());
+        var open = D.Lib.TypeByMetadataName(name) ?? throw new CompileException("library type missing: " + name, inv.Syntax.GetLocation());
+        var args = inv.TargetMethod.TypeArguments.Select(a => T.Resolve(a, Map)).ToArray();
+        if (inv.TargetMethod.Name == "NewOfNullableArg") args = [((INamedTypeSymbol)args[0]).TypeArguments[0]];
+        return NewObject((INamedTypeSymbol)T.Canonical(open.Construct(args)), inv.Syntax);
+    }
+
+    /// <summary>`new C()` for a class symbol: allocation, then the parameterless constructor. Owned.</summary>
+    Own NewObject(INamedTypeSymbol t, SyntaxNode? syntax)
+    {
+        int tid = D.MarkConstructed(t);
+        int obj = E.AddLocal(ValType.I32);
+        E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+        var ctor = t.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 0)
+            ?? throw new CompileException(t + " has no parameterless constructor", syntax?.GetLocation());
+        var slot = new Slot { Local = obj, Type = t };
+        RegisterTemp(slot);
+        CallWith(D.CanonicalMethod(ctor), false, () => E.Get(obj), () => { }, null, syntax);
+        _temps[^1].Remove(slot);
+        E.Get(obj);
+        return Own.Owned;
+    }
+
     static bool IsOmittedConditionalCall(IInvocationOperation inv)
     {
         var m = inv.TargetMethod.OriginalDefinition;
@@ -423,6 +451,29 @@ sealed partial class FunctionCompiler
                     E.Get(tid); E.Call(Rt.TypeFlagsById); E.I32(4); E.Op(Op.I32And); E.I32(0); E.Op(Op.I32Ne);
                     E.Op(Op.I32Or);
                     FreeScratch(ValType.I32, tid);
+                    return Own.None;
+                }
+            case "System.Threading.Interlocked.Exchange":
+                {
+                    // 1- and 2-byte locations: the narrow atomic exchange (zero-extended; signed types sign-extend after)
+                    var pt = Types.PrimOf(m.Parameters[0].Type);
+                    bool one = Types.PrimSize(pt) == 1;
+                    E.Emit(one ? Op.I32AtomicRmw8XchgU : Op.I32AtomicRmw16XchgU, 0, one ? 0 : 1);
+                    if (pt == Prim.I8) E.Op(Op.I32Extend8S); else if (pt == Prim.I16) E.Op(Op.I32Extend16S);
+                    return Own.None;
+                }
+            case "System.Threading.Interlocked.CompareExchange":
+                {
+                    // (location, value, comparand) -> wasm's (location, expected, replacement)
+                    var pt = Types.PrimOf(m.Parameters[0].Type);
+                    bool one = Types.PrimSize(pt) == 1;
+                    int cmp = Scratch(ValType.I32); E.Set(cmp);
+                    int val = Scratch(ValType.I32); E.Set(val);
+                    E.Get(cmp); if (!one) { E.I32(0xFFFF); E.Op(Op.I32And); } else { E.I32(0xFF); E.Op(Op.I32And); }
+                    E.Get(val);
+                    E.Emit(one ? Op.I32AtomicRmw8CmpxchgU : Op.I32AtomicRmw16CmpxchgU, 0, one ? 0 : 1);
+                    FreeScratch(ValType.I32, val); FreeScratch(ValType.I32, cmp);
+                    if (pt == Prim.I8) E.Op(Op.I32Extend8S); else if (pt == Prim.I16) E.Op(Op.I32Extend16S);
                     return Own.None;
                 }
             case "System.Threading.Interlocked.MemoryBarrier":
@@ -619,7 +670,16 @@ sealed partial class FunctionCompiler
         }
         if (Types.IsStruct(t) || Types.PrimOf(t) != Prim.None)
         {
-            if (Types.PrimOf(t) != Prim.None) { EmitDefault(t); return Own.None; }
+            if (Types.PrimOf(t) != Prim.None)
+            {
+                // new int(): 0; a primitive's own constructor (new IntPtr(x)) runs on a frame slot
+                if (oc.Constructor is not { Parameters.Length: > 0 } pc0 || D.CanonicalMethod(pc0) is not { } pctor || !Driver.HasBody(pctor.OriginalDefinition)) { EmitDefault(t); return Own.None; }
+                int pslot = TempValue(t);
+                E.Get(_fb); E.I32(0); E.Store(Types.StoreOp(t), pslot);
+                CallWith(pctor, false, () => { E.Get(_fb); E.I32(pslot); E.Op(Op.I32Add); }, () => PushArgs(pctor, oc.Arguments.Cast<IOperation>().ToList()), null, oc.Syntax);
+                E.Get(_fb); E.Load(Types.LoadOp(t), pslot);
+                return Own.None;
+            }
             int off = TempStruct(t);
             EmitStructCtor(oc, t, () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); });
             E.Get(_fb); E.I32(off); E.Op(Op.I32Add);

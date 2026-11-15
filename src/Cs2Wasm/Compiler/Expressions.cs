@@ -728,7 +728,14 @@ sealed partial class FunctionCompiler
         if (keepArray >= 0) { E.Tee(keepArray); }
         if (!IsKnownNonNull(ae.ArrayReference)) NullCheck(); else E.Op(Op.Drop);
         int idx = Scratch(ValType.I32);
-        EmitIndex(ae.Indices[0]);
+        if (TypeOf(ae.Indices[0]) is INamedTypeSymbol { Name: "Index" } && Types.PrimOf(TypeOf(ae.Indices[0])) == Prim.None)
+        {
+            // a[^i]: the offset from the end, against the array's length
+            int alen = E.AddLocal(ValType.I32);
+            E.Get(arr); E.Load(Op.I32Load, 12); E.Set(alen);
+            EmitIndexOffset(ae.Indices[0], alen, fromStartDefault: true);
+        }
+        else EmitIndex(ae.Indices[0]);
         E.Set(idx);
         E.Get(idx); E.Get(arr); E.Load(Op.I32Load, 12); E.Op(Op.I32GeU);
         E.If(); E.Call(Rt.ThrowIndex); E.End();
@@ -1300,6 +1307,16 @@ sealed partial class FunctionCompiler
     {
         if (u.IsLifted) return EmitLiftedUnary(u);
         if (u.OperatorMethod != null) return EmitCall(u.OperatorMethod, null, [u.Operand], false, u.Syntax);
+        if (u.OperatorKind == UnaryOperatorKind.Hat)
+        {
+            // ^n: new Index(n, fromEnd: true)
+            var idxT = (INamedTypeSymbol)TypeOf(u);
+            var ctor = idxT.InstanceConstructors.First(c => c.Parameters.Length == 2 && Types.PrimOf(c.Parameters[1].Type) == Prim.Bool);
+            int off = TempStruct(idxT);
+            CallWith(D.CanonicalMethod(ctor), false, () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); }, () => { EmitValueAs(u.Operand, D.LibType("System.Int32")); E.I32(1); }, null, u.Syntax);
+            E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+            return Own.None;
+        }
         if (IsDecimal(TypeOf(u.Operand)) && u.OperatorKind is UnaryOperatorKind.Minus or UnaryOperatorKind.Plus)
             return EmitCall(DecimalOp(u.OperatorKind == UnaryOperatorKind.Minus ? "op_UnaryNegation" : "op_UnaryPlus", 1), null, [u.Operand], false, u.Syntax);
         var t = TypeOf(u.Operand);
@@ -1524,6 +1541,15 @@ sealed partial class FunctionCompiler
     // =====================================================================
     // assignment
     // =====================================================================
+    /// <summary>The value of `r = ref x` used as an expression: what r now refers to.</summary>
+    Own RefAssignResult(int addrLocal, ITypeSymbol t)
+    {
+        E.Get(addrLocal);
+        if (Types.IsStruct(t)) return Own.None;
+        E.Load(Types.LoadOp(t));
+        return Types.IsRef(t) ? Own.Unstable : Own.None;
+    }
+
     Own EmitAssign(ISimpleAssignmentOperation sa, bool needResult)
     {
         if (sa.IsRef)
@@ -1533,26 +1559,24 @@ sealed partial class FunctionCompiler
             {
                 var v = LocalVar(rl.Local);
                 EmitAddress(sa.Value); E.Set(v.AddrLocal);
-                if (needResult) throw new CompileException("ref assignment as value is not supported");
-                return Own.None;
+                return needResult ? RefAssignResult(v.AddrLocal, TypeOf(sa)) : Own.None;
             }
             if (sa.Target is IParameterReferenceOperation { Parameter.RefKind: not RefKind.None } rp && !IsCaptured(rp.Parameter))
             {
                 // ref parameter = ref expr
                 var v = _vars[rp.Parameter];
                 EmitAddress(sa.Value); E.Set(v.AddrLocal);
-                if (needResult) throw new CompileException("ref assignment as value is not supported");
-                return Own.None;
+                return needResult ? RefAssignResult(v.AddrLocal, TypeOf(sa)) : Own.None;
             }
             if (sa.Target is IFieldReferenceOperation { Field.RefKind: not RefKind.None } rf)
             {
                 // ref field = ref expr: the slot takes the address
                 int so = EmitFieldSlotBase(rf);
                 if (so != 0) { E.I32(so); E.Op(Op.I32Add); }
-                EmitAddress(sa.Value);
+                int ra = E.AddLocal(ValType.I32);
+                EmitAddress(sa.Value); E.Tee(ra);
                 E.Store(Op.I32Store, 0);
-                if (needResult) throw new CompileException("ref assignment as value is not supported");
-                return Own.None;
+                return needResult ? RefAssignResult(ra, TypeOf(sa)) : Own.None;
             }
             throw new CompileException("ref assignment target not supported", sa.Syntax.GetLocation());
         }

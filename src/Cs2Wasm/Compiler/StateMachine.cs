@@ -476,6 +476,12 @@ sealed partial class FunctionCompiler
         if (info.Cfg != null) _cfg = info.Cfg;
         else if (info.Body is IMethodBodyOperation mb) _cfg = ControlFlowGraph.Create(mb);
         else throw new CompileException("state machine body");
+        // the graph's own locals (a lock's lockTaken) can have their address taken too
+        foreach (var blk in _cfg.Blocks)
+        {
+            foreach (var op in blk.Operations) MarkAddressTaken(op);
+            if (blk.BranchValue != null) MarkAddressTaken(blk.BranchValue);
+        }
         // params live in the machine: no wasm params besides the machine pointer
         _closure!.ParamLocal = 0;
         foreach (var p in M.Parameters) _vars.Remove(p);

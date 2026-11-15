@@ -26,36 +26,17 @@ namespace System.Collections.Generic
             }
         }
 
+        // cs2wasm: the comparer type is chosen when T is known (each instantiation is compiled on its own)
         private static EqualityComparer<T> CreateComparer()
         {
-            RuntimeType t = (RuntimeType)typeof(T);
-
-            /////////////////////////////////////////////////
-            // KEEP THIS IN SYNC WITH THE DEVIRT CODE
-            // IN mini_handle_call_res_devirt
-            /////////////////////////////////////////////////
-
-            if (t == typeof(string))
-            {
+            if (typeof(T) == typeof(string))
                 return (EqualityComparer<T>)(object)new StringEqualityComparer();
-            }
-
-            if (typeof(IEquatable<T>).IsAssignableFrom(t))
-            {
-                return (EqualityComparer<T>)RuntimeType.CreateInstanceForAnotherGenericParameter(typeof(GenericEqualityComparer<>), t);
-            }
-
-            if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(Nullable<>))
-            {
-                RuntimeType u = (RuntimeType)t.GetGenericArguments()[0];
-                return (EqualityComparer<T>)RuntimeType.CreateInstanceForAnotherGenericParameter(typeof(NullableEqualityComparer<>), u);
-            }
-
-            if (t.IsEnum)
-            {
-                return (EqualityComparer<T>)RuntimeType.CreateInstanceForAnotherGenericParameter(typeof(EnumEqualityComparer<>), t);
-            }
-
+            if (Cs2Wasm.Runtime.Generics.Implements<T>("System.IEquatable`1"))
+                return (EqualityComparer<T>)Cs2Wasm.Runtime.Generics.New<T>("System.Collections.Generic.GenericEqualityComparer`1");
+            if (Cs2Wasm.Runtime.Generics.IsNullable<T>())
+                return (EqualityComparer<T>)Cs2Wasm.Runtime.Generics.NewOfNullableArg<T>("System.Collections.Generic.NullableEqualityComparer`1");
+            if (Cs2Wasm.Runtime.Generics.IsEnum<T>())
+                return (EqualityComparer<T>)Cs2Wasm.Runtime.Generics.New<T>("System.Collections.Generic.EnumEqualityComparer`1");
             return new ObjectEqualityComparer<T>();
         }
     }

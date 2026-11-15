@@ -249,6 +249,18 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Find variables whose address is taken and parameters that are assigned.</summary>
+    /// <summary>Locals whose address is taken in an operation tree (for one a control-flow graph synthesizes).</summary>
+    void MarkAddressTaken(IOperation tree)
+    {
+        foreach (var op in tree.DescendantsAndSelf())
+            switch (op)
+            {
+                case IArgumentOperation { Parameter.RefKind: not RefKind.None } a: MarkAddr(a.Value); break;
+                case IAddressOfOperation ao: MarkAddr(ao.Reference); break;
+                case ISimpleAssignmentOperation { IsRef: true } sa: MarkAddr(sa.Value); break;
+            }
+    }
+
     void PreScan(IOperation body)
     {
         foreach (var op in body.DescendantsAndSelf())

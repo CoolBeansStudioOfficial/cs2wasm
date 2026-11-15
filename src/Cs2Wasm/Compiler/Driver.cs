@@ -313,7 +313,8 @@ internal sealed partial class Driver
             "System.Runtime.CompilerServices.Unsafe" => m.Name is "AsPointer" or "As" or "AreSame" or "Copy" or "CopyBlock" or "CopyBlockUnaligned"
                 or "IsAddressGreaterThan" or "IsAddressLessThan" or "InitBlock" or "InitBlockUnaligned" or "AddByteOffset" or "AsRef"
                 or "ByteOffset" or "SkipInit" or "SubtractByteOffset" or "Unbox",
-            "System.Threading.Interlocked" => m.Name == "MemoryBarrier",
+            "System.Threading.Interlocked" => m.Name == "MemoryBarrier"
+                || (m.Name is "Exchange" or "CompareExchange" && m.Parameters.Length > 0 && Types.PrimSize(Types.PrimOf(m.Parameters[0].Type)) < 4 && Types.PrimOf(m.Parameters[0].Type) != Prim.None),
             "System.SpanHelpers" => m.Name is "memmove" or "memset",
             "System.Runtime.CompilerServices.RuntimeHelpers" => m.Name is "GetRawData" or "IsBitwiseEquatable" or "IsReferenceOrContainsReferences" or "ObjectHasComponentSize",
             "System.Threading.Volatile" => m.Name is "ReadBarrier" or "WriteBarrier",

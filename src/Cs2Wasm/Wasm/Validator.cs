@@ -221,7 +221,8 @@ internal static class Validator
                     case Op.I64AtomicStore: Pop(ValType.I64); Pop(ValType.I32); break;
                     case Op.I32AtomicRmwAdd or Op.I32AtomicRmwSub or Op.I32AtomicRmwXchg: Binop(ValType.I32, ValType.I32); break;
                     case Op.I64AtomicRmwAdd or Op.I64AtomicRmwSub or Op.I64AtomicRmwXchg: Pop(ValType.I64); Pop(ValType.I32); Push(ValType.I64); break;
-                    case Op.I32AtomicRmwCmpxchg: Pop(ValType.I32); Pop(ValType.I32); Pop(ValType.I32); Push(ValType.I32); break;
+                    case Op.I32AtomicRmwCmpxchg or Op.I32AtomicRmw8CmpxchgU or Op.I32AtomicRmw16CmpxchgU: Pop(ValType.I32); Pop(ValType.I32); Pop(ValType.I32); Push(ValType.I32); break;
+                    case Op.I32AtomicRmw8XchgU or Op.I32AtomicRmw16XchgU: Binop(ValType.I32, ValType.I32); break;
                     case Op.I64AtomicRmwCmpxchg: Pop(ValType.I64); Pop(ValType.I64); Pop(ValType.I32); Push(ValType.I64); break;
                     default: throw new InvalidOperationException("unknown instruction");
                 }
