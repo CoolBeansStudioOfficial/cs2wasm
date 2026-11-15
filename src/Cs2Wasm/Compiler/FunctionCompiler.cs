@@ -34,6 +34,8 @@ sealed class Slot
     public int Local = -1;      // owned reference in a wasm local
     public int FrameOffset = -1; // owned struct contents in the frame
     public ITypeSymbol Type = null!;
+    /// <summary>A field borrow's temp (FieldBorrows.cs): released through this placeholder (a release, or a drop).</summary>
+    public WasmFunction? ReleaseMarker;
 }
 
 sealed class Scope { public List<Slot> Owned = []; }
@@ -389,7 +391,7 @@ sealed partial class FunctionCompiler
     {
         if (s.Local >= 0)
         {
-            E.Get(s.Local); E.Call(Rt.Release);
+            E.Get(s.Local); E.Call(s.ReleaseMarker ?? Rt.Release);
             E.I32(0); E.Set(s.Local);
         }
         else
@@ -493,9 +495,22 @@ sealed partial class FunctionCompiler
     Own ToCallSafe(Own o, ITypeSymbol t)
     {
         if (o == Own.Owned) { E.Tee(TempRef(t)); return Own.Stable; }
+        if (o == Own.Unstable && _lastFieldLoad is var (at, key) && at == E.Fn.Body.Count)
+        {
+            // a field of a stable object: the count may not be needed (FieldBorrows.cs decides at the end)
+            var (retain, release) = D.NewFieldBorrow(E.Fn, key);
+            E.Call(retain);
+            int l = _refPool.Count > 0 ? _refPool.Pop() : E.AddLocal(ValType.I32);
+            RegisterTemp(new Slot { Local = l, Type = t, ReleaseMarker = release });
+            E.Tee(l);
+            return Own.Stable;
+        }
         if (o == Own.Unstable) { E.Call(Rt.Retain); E.Tee(TempRef(t)); return Own.Stable; }
         return o;
     }
+
+    /// <summary>Where the last load of a reference field of a stable object ended (body length), and its key.</summary>
+    (int at, string key)? _lastFieldLoad;
 
     void Drop(Own o, ITypeSymbol? t)
     {
@@ -782,6 +797,7 @@ sealed partial class FunctionCompiler
             {
                 EmitStructInto(init, () => { E.Get(v.AddrLocal); if (v.Offset != 0) { E.I32(v.Offset); E.Op(Op.I32Add); } });
             }
+            else if (!v.InMemory && Types.IsRef(v.Type) && FieldBorrowCandidate(d.Symbol, init) is { } fkey) EmitFieldBorrow(v, init, fkey);
             else EmitStoreToVar(d.Symbol, init);
             EndTemps();
         }

@@ -413,6 +413,7 @@ sealed partial class FunctionCompiler
         switch (op)
         {
             case IFieldReferenceOperation { Field.IsStatic: false } f when f.Instance != null && !TypeOf(f.Instance).IsValueType && Types.IsRef(TypeOf(f)):
+                D.FieldsAddressTaken.Add(Driver.FieldKey(Owner(f.Field), StorageField(f.Field)));
                 if (D.Arenas.FieldSite(Owner(f.Field), T.FieldIn(Owner(f.Field), StorageField(f.Field))) is { } s) s.AddressTaken = true;
                 break;
             case IArrayElementReferenceOperation ae when TypeOf(ae.ArrayReference) is IArrayTypeSymbol at:
@@ -593,7 +594,24 @@ sealed partial class FunctionCompiler
         int off = EmitAddressBase(f);
         if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
         E.Load(Types.LoadOp(ft), off);
+        if (Types.IsRef(ft) && !f.Field.IsStatic && f.Instance != null && IsStableBase(f.Instance) && f.Field.ContainingType.TypeKind == TypeKind.Class)
+            _lastFieldLoad = (E.Fn.Body.Count, Driver.FieldKey(Owner(f.Field), StorageField(f.Field)));
         return Types.IsRef(ft) ? Own.Unstable : Own.None;
+    }
+
+    /// <summary>An object reference that stays the same, and alive, for the whole method: this, a parameter never
+    /// assigned, a local never assigned after its declaration (none captured).</summary>
+    bool IsStableBase(IOperation op)
+    {
+        while (op is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } c) op = c.Operand;
+        if (_closure != null || _machine != null) return false;
+        return op switch
+        {
+            IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } => M.ContainingType.TypeKind == TypeKind.Class,
+            IParameterReferenceOperation { Parameter: { RefKind: RefKind.None } p } => !IsCaptured(p) && !_assignedParams.Contains(p) && !_assignedParams.Contains(p.OriginalDefinition) && !TypeOf(op).IsValueType,
+            ILocalReferenceOperation { Local: { IsRef: false } l } => !IsCaptured(l) && !WrittenLocals().Contains(l) && !TypeOf(op).IsValueType,
+            _ => false,
+        };
     }
 
     void EmitStoreField(IFieldSymbol f, Action? recv, IOperation value)
@@ -614,6 +632,7 @@ sealed partial class FunctionCompiler
 
     void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce)
     {
+        if (!f.IsStatic) D.NoteFieldWrite(E.Fn, Driver.FieldKey(Owner(f), f));
         var ft = T.Resolve(f.Type, Map);
         int a = E.AddLocal(ValType.I32);
         int off;
@@ -2061,6 +2080,7 @@ sealed partial class FunctionCompiler
                     var bf = Driver.AutoPropertyField(pr.Property.OriginalDefinition)!;
                     var ft = T.Resolve(pr.Property.Type, Map);
                     var owner = Owner(pr.Property);
+                    if (!bf.IsStatic) D.NoteFieldWrite(E.Fn, Driver.FieldKey(owner, bf));
                     Arenas.Site? psite = null; WasmFunction? ppin = null;
                     if (Types.IsRef(ft))
                     {
@@ -2079,6 +2099,7 @@ sealed partial class FunctionCompiler
             case IFieldReferenceOperation fr when Types.IsRef(t):
                 {
                     var field = fr.Field;
+                    if (!field.IsStatic) D.NoteFieldWrite(E.Fn, Driver.FieldKey(Owner(field), StorageField(field)));
                     if (field.IsStatic) return new MemLV(this, t, () => EmitAddressBase(target), pin: D.Arenas.Pin(t), pub: IsThreadStatic(StorageField(field)) ? Publish.None : Publish.Always);
                     if (fr.Instance != null && !TypeOf(fr.Instance).IsValueType)
                     {

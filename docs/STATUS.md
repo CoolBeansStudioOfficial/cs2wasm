@@ -25,9 +25,13 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 - **Run-time speed vs NativeAOT:** unmeasured.
 - **Reference-count operations removed at compile time (static, `CS2WASM_STATS=1`):** a scheme without ownership
   analysis pays an increment and a decrement for every reference transfer (assignment, initializer, argument,
-  return); the module keeps 49% of that for `Console.WriteLine(42)`, 53% for the LINQ program, 46% for the game
-  simulation (so 51–54% removed). Lobster reports about 95%: most of what remains is fields read into locals
-  (retained, released at scope end) and owned call results.
+  return); 53% are removed for `Console.WriteLine(42)`, 55% for the LINQ program, 57% for the game simulation, 54%
+  for the text and generics program. Lobster reports about 95%. What remains: owned call results the caller
+  releases, values from elements, properties and parameters held in locals (retained, released at scope end), and
+  stores' old values. Fields of objects that stay put (`this`, a parameter or local never reassigned) are borrowed,
+  for a local never reassigned or a call's receiver or argument, when nothing that can run meanwhile stores the
+  field (a whole-program summary of the fields each function can store, with what it calls; programs without
+  threads).
 
 ## Section by section
 

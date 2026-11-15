@@ -751,6 +751,8 @@ sealed partial class RuntimeGen
         EmitTypeTests();
         D.Rt.EmitEnumInfo();
         EmitTypeNames();
+        // (every function exists: what each can store is known)
+        D.ResolveFieldBorrows();
         D.LayoutMemory();
         EmitInit();
     }
