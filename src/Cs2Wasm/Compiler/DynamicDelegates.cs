@@ -13,7 +13,6 @@ namespace Cs2Wasm.Compiler;
 sealed partial class FunctionCompiler
 {
     ITypeSymbol? _objectArrayThunkHandler;
-    bool _unsafeAccessor;
 
     void EmitObjectArrayThunk()
     {
@@ -118,6 +117,26 @@ internal sealed partial class Driver
     /// <summary>(type id, handler) → delegate or null: Rt.ObjectArrayDelegate (body at the end).</summary>
     public WasmFunction ObjectArrayDelegateFn => _objectArrayDelegate ??= Module.AddFunction("rt.object_array_delegate", new FuncType([ValType.I32, ValType.I32], [ValType.I32]));
 
+    readonly HashSet<int> _attrArraysDone = [];
+
+    /// <summary>GetCustomAttributes(type) returns an array of the attribute type asked for (Array.CreateInstance):
+    /// once the program can ask, arrays of the attribute types it names are made.</summary>
+    public bool ExpandAttributeArrays()
+    {
+        if (!AllMethods.Any(m => m.Compiled && m.Sym.Name == "GetCustomAttributes" && m.Sym.ContainingType?.Name == "CustomAttribute")) return false;
+        bool any = false;
+        var attr = LibType("System.Attribute");
+        for (int id = 0; id < TypeById.Count; id++)
+        {
+            if (!_attrArraysDone.Add(id) || SyntheticById.ContainsKey(id) || DisplayById.ContainsKey(id)) continue;
+            if (TypeById[id] is not INamedTypeSymbol { TypeKind: TypeKind.Class } at || !Types.IsSubtype(at, attr)) continue;
+            int before = Constructed.Count;
+            MarkConstructed(Types.LibCompilationArray(at));
+            any |= Constructed.Count != before;
+        }
+        return any;
+    }
+
     /// <summary>A thunk for each closed delegate type the program names (while compiling: new types keep coming).</summary>
     public bool ExpandObjectArrayThunks()
     {
@@ -131,6 +150,8 @@ internal sealed partial class Driver
             if (dt.IsUnboundGenericType || dt.TypeArguments.Any(a => a is ITypeParameterSymbol) || dt.DelegateInvokeMethod.Parameters.Any(p => p.RefKind != RefKind.None) || dt.DelegateInvokeMethod.ReturnsByRef) continue;
             if (dt.DelegateInvokeMethod.Parameters.Any(p => p.Type.IsRefLikeType || p.Type is IPointerTypeSymbol) || dt.DelegateInvokeMethod.ReturnType.IsRefLikeType) continue;
             _objectArrayThunks[id] = FunctionCompiler.ObjectArrayThunk(this, dt, handler);
+            // (made by the dispatch at run time: its destructor and dispatch cases are needed)
+            MarkConstructed(dt);
             any = true;
         }
         return any;
@@ -143,7 +164,6 @@ internal sealed partial class Driver
         var e = new Emitter(_objectArrayDelegate);
         foreach (var (id, th) in _objectArrayThunks)
         {
-            if (!Constructed.Contains(id)) Constructed.Add(id);
             var dt = TypeById[id];
             e.Get(0); e.Tid(id); e.Op(Op.I32Eq);
             e.If();

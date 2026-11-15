@@ -61,6 +61,7 @@ internal sealed partial class Driver
         foreach (var comp in Inputs)
             foreach (var t in AllTypes(comp.Assembly.GlobalNamespace))
                 if (t.GetAttributes().Any(a => a.AttributeClass?.Name == "DynamicallyAccessedMembersAttribute")) { keep.Keep(t, null); keep.Keep(t, null, ctors: true); }
+        foreach (var (t, name, ctors) in _keepFromTrees) keep.Keep(t, name, ctors);
         if (keep.Types.Count == 0) return;
         _reflect = keep;
         // thunks for the kept members (compiled in the next round)
@@ -141,9 +142,9 @@ internal sealed partial class Driver
                 if (!want) continue;
                 switch (mem)
                 {
-                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => p.RefKind == RefKind.None) && !ms.IsExtern:
+                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => p.RefKind == RefKind.None && !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !ms.ReturnType.IsRefLikeType && !ms.IsExtern:
                         yield return ms; break;
-                    case IMethodSymbol { MethodKind: MethodKind.Constructor } cs when SymbolEqualityComparer.Default.Equals(x, t) && cs.Parameters.All(p => p.RefKind == RefKind.None) && !t.IsAbstract:
+                    case IMethodSymbol { MethodKind: MethodKind.Constructor } cs when SymbolEqualityComparer.Default.Equals(x, t) && cs.Parameters.All(p => p.RefKind == RefKind.None && !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !t.IsAbstract && !t.IsRefLikeType:
                         yield return cs; break;
                     case IPropertySymbol ps when !ps.IsIndexer:
                         if (AutoPropertyField(ps.OriginalDefinition) is { } bf) yield return bf;

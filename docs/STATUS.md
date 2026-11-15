@@ -5,13 +5,13 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 45 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 46 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
   and concurrent collections, `typeof` and seeded `Random`, records, reference cycles, weak references and
   finalizers, reflection, decimal, date and time, enum formatting, spans and `stackalloc`, `ref struct`, ref returns,
-  C# 14 extension members, value-type equality) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
+  C# 14 extension members, value-type equality, expression trees and `Expression.Compile`) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
   GodotSharp math proof (proof 2).
 - **API checks:** 16 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
   custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
@@ -85,8 +85,9 @@ exception, before unwinding runs any `finally`. An exception thrown inside a fil
 filters pay nothing.
 
 Not done yet (a program using them gets a `CW0101` error naming the construct):
-- spans over stack or native memory (`stackalloc` into a span allocates an array);
-- reflection beyond `Type` names, `dynamic`, the interpreter for runtime code generation (section 8);
+- `dynamic` (Microsoft.CSharp is built, its binder not yet run) and `Reflection.Emit` (section 8);
+- expression trees with captured variables, generic method calls, user-defined operators or statement bodies (a
+  build error names the construct); `Expression.Compile` runs on upstream's interpreter (`046_expressions`);
 - filters inside iterators and async methods run in one pass (when the exception reaches their catch, after the
   `finally` blocks inside the try); an exception thrown by such a filter is not swallowed; the first pass of a throw
   does not see an iterator's or async method's own catch regions, so a filter further out can run for an exception
@@ -282,8 +283,10 @@ exported beside the stack pointer.
   returns) and wait until resumed; the engine snapshots once the parked count equals the live count (checked).
 - 7.3 determinism: no relaxed SIMD (no SIMD at all), fixed-seed string hashing, allocation-order object hash codes,
   math computed in WASM (fdlibm ports, `Exp` in double-double), reproducible output (checked), NaN canonicalized
-  where bits are read (`BitConverter`), `Random()`'s seed from the engine and `Random(seed)` giving .NET's
-  sequence (checked). Not done: `Unsafe.As`-style bit reads, scheduling-dependence marking.
+  where bits are read (`Unsafe.As<float or double, T>`, so `BitConverter` and `BitCast`: to .NET's `NaN` bits,
+  0xFFF8000000000000 and 0xFFC00000; a NaN with another payload is the one place output differs from .NET, as
+  section 7.3 asks), `Random()`'s seed from the engine and `Random(seed)` giving .NET's
+  sequence (checked). Not done: scheduling-dependence marking.
   Transcendental functions are not guaranteed to round like .NET's (UCRT/glibc) in every case; the tested inputs
   match.
 - 7.4 the library — **upstream, done.** The library is dotnet/runtime v11.0.0's System.Private.CoreLib (Mono's

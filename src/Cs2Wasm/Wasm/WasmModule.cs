@@ -252,6 +252,7 @@ internal sealed class WasmModule
 
         // Code section: encode bodies, remembering source positions.
         var result = new Encoded { FunctionOrder = imports.Concat(defined).ToList() };
+        if (Environment.GetEnvironmentVariable("CS2WASM_INDEX") is { Length: > 0 } wantIdx) foreach (var x in wantIdx.Split(",")) if (int.TryParse(x, out int ix) && ix < result.FunctionOrder.Count) Console.Error.WriteLine($"function {ix}: {result.FunctionOrder.First(f => f.Index == ix || result.FunctionOrder.IndexOf(f) == ix).Name}");
         var code = new Writer();
         var relLines = new List<LineEntry>();
         code.U32(defined.Count);

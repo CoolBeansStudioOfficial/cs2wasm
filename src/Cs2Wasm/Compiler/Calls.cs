@@ -421,8 +421,27 @@ sealed partial class FunctionCompiler
             case "System.Runtime.CompilerServices.Unsafe.AsRef":
                 return Own.None;
             case "System.Runtime.CompilerServices.Unsafe.As":
-                // As<T>(object): the same object; As<TFrom, TTo>(ref TFrom): the same address
-                return m.Parameters[0].RefKind == RefKind.None ? Own.Unstable : Own.None;
+                {
+                    // As<T>(object): the same object; As<TFrom, TTo>(ref TFrom): the same address
+                    if (m.Parameters[0].RefKind == RefKind.None) return Own.Unstable;
+                    // a float's bits read as something else (BitConverter, BitCast): a NaN becomes the canonical NaN
+                    // first, so its payload never shows (section 7.3)
+                    if (m.TypeArguments.Length == 2 && Types.PrimOf(Arg(0)) is Prim.F32 or Prim.F64 && Types.PrimOf(Arg(1)) is not (Prim.F32 or Prim.F64))
+                    {
+                        bool d = Types.PrimOf(Arg(0)) == Prim.F64;
+                        int a = Scratch(ValType.I32);
+                        E.Tee(a);
+                        E.Load(d ? Op.F64Load : Op.F32Load); E.Get(a); E.Load(d ? Op.F64Load : Op.F32Load); E.Op(d ? Op.F64Ne : Op.F32Ne);
+                        E.If();
+                        E.Get(a);
+                        // (.NET's double.NaN and float.NaN: what programs that print the bits of a NaN see there too)
+                        if (d) { E.I64(unchecked((long)0xFFF8000000000000)); E.Store(Op.I64Store); } else { E.I32(unchecked((int)0xFFC00000)); E.Store(Op.I32Store); }
+                        E.End();
+                        E.Get(a);
+                        FreeScratch(ValType.I32, a);
+                    }
+                    return Own.None;
+                }
             case "System.Runtime.CompilerServices.Unsafe.AreSame": E.Op(Op.I32Eq); return Own.None;
             case "System.Runtime.CompilerServices.Unsafe.IsAddressGreaterThan": E.Op(Op.I32GtU); return Own.None;
             case "System.Runtime.CompilerServices.Unsafe.IsAddressLessThan": E.Op(Op.I32LtU); return Own.None;
@@ -1064,6 +1083,8 @@ sealed partial class FunctionCompiler
     Own EmitDelegateCreation(IDelegateCreationOperation dc)
     {
         var dt = TypeOf(dc);
+        // a lambda converted to Expression<T>: the tree, not a delegate (ExpressionTrees.cs)
+        if (IsExpressionTree(dt) && dc.Target is IAnonymousFunctionOperation eaf) return EmitExpressionLambda(eaf, (INamedTypeSymbol)dt);
         return dc.Target switch
         {
             IAnonymousFunctionOperation af => EmitLambdaDelegate(af, dt),

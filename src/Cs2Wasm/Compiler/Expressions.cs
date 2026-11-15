@@ -65,6 +65,10 @@ sealed partial class FunctionCompiler
         {
             // query syntax: Roslyn's translation (Where/Select/GroupBy... calls)
             case ITranslatedQueryOperation tq: return EmitValue(tq.Operation);
+            // a lambda converted to Expression<T> (ExpressionTrees.cs)
+            case IConversionOperation { Operand: var eop } ec when ec.Type != null && IsExpressionTree(TypeOf(ec))
+                && (eop is IAnonymousFunctionOperation || eop is IDelegateCreationOperation { Target: IAnonymousFunctionOperation }):
+                return EmitExpressionLambda(eop as IAnonymousFunctionOperation ?? (IAnonymousFunctionOperation)((IDelegateCreationOperation)eop).Target, (INamedTypeSymbol)TypeOf(ec));
             case IConversionOperation cspan when TryEmitConstantSpan(cspan) is { } cso: return cso;
             case IConversionOperation c: return EmitConversion(c);
             case ILocalReferenceOperation l:

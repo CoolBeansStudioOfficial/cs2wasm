@@ -358,7 +358,7 @@ sealed partial class RuntimeGen
     /// <summary>Generates destroy functions for newly constructed types and resolves virtual calls; true if new work appeared.</summary>
     public bool Expand()
     {
-        bool any = D.ExpandObjectArrayThunks();
+        bool any = D.ExpandObjectArrayThunks() | D.ExpandAttributeArrays();
         foreach (var id in D.Constructed.ToList())
         {
             if (_destroyFns.ContainsKey(id)) continue;
