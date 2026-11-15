@@ -72,7 +72,15 @@ sealed partial class FunctionCompiler
                 if (IsPrimaryParamHere(p.Parameter)) { var ps = PrimarySlot(p.Parameter); PushPrimaryThis(); if (Types.IsStruct(ps.Type)) { E.I32(ps.Offset); E.Op(Op.I32Add); return Own.None; } E.Load(Types.LoadOp(ps.Type), ps.Offset); return Types.IsRef(ps.Type) ? Own.Unstable : Own.None; }
                 if (IsCaptured(p.Parameter)) return LoadCaptured(p.Parameter);
                 return LoadVar(_vars[p.Parameter]);
-            case IInstanceReferenceOperation ir: return EmitThis(ir);
+            case IInstanceReferenceOperation ir:
+                {
+                    var to = EmitThis(ir);
+                    // a primitive's own methods get its address: `this` as a value is what is stored there
+                    if (ir.ReferenceKind == InstanceReferenceKind.ContainingTypeInstance && _closure == null && M.ContainingType != null
+                        && T.Resolve(M.ContainingType, Map) is var pct && Types.PrimOf(pct) != Prim.None && pct.TypeKind != TypeKind.Enum)
+                        E.Load(Types.LoadOp(pct));
+                    return to;
+                }
             case IFieldReferenceOperation f: return TryInstrumentedRead(f, () => EmitFieldLoad(f), out var r1) ? r1 : EmitFieldLoad(f);
             case IPropertyReferenceOperation pr: return TryInstrumentedRead(pr, () => EmitPropertyGet(pr), out var r2) ? r2 : EmitPropertyGet(pr);
             case IEventReferenceOperation evr when Driver.IsFieldLikeEvent(evr.Event):
@@ -352,8 +360,6 @@ sealed partial class FunctionCompiler
         if (_closure != null) return LoadCapturedThis();
         if (_thisLocal < 0) throw new CompileException("'this' in static context");
         E.Get(_thisLocal);
-        // a primitive's own methods get its address: `this` as a value is what is stored there
-        if (T.Resolve(M.ContainingType, Map) is var ct && Types.PrimOf(ct) != Prim.None && ct.TypeKind != TypeKind.Enum) E.Load(Types.LoadOp(ct));
         return M.ContainingType.IsValueType ? Own.None : Own.Stable;
     }
 
@@ -512,7 +518,7 @@ sealed partial class FunctionCompiler
         }
         var slot = T.FieldIn(Owner(field), storage);
         var it = TypeOf(f.Instance!);
-        if (it.IsValueType && Types.PrimOf(it) == Prim.None)
+        if (it.IsValueType && (Types.PrimOf(it) == Prim.None || IsAddressable(f.Instance!)))
         {
             if (IsAddressable(f.Instance!)) return EmitAddressBase(f.Instance!) + slot.Offset;
             EmitValue(f.Instance!); return slot.Offset; // rvalue struct: its temp

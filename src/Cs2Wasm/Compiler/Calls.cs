@@ -437,6 +437,34 @@ sealed partial class FunctionCompiler
                 E.I32(BoxDataOffset(T, Arg(0))); E.Op(Op.I32Add); return Own.None;
             case "System.SpanHelpers.memmove": E.Op(Op.MemoryCopy); return Own.None; // memory.copy allows overlap
             case "System.SpanHelpers.memset": E.Op(Op.MemoryFill); return Own.None;
+            case "System.Double.ConvertToIntegerNative":
+            case "System.Single.ConvertToIntegerNative":
+                {
+                    // "native" is the platform's; cs2wasm's is saturating, NaN to 0 (as on Arm), the same on every machine
+                    bool f32 = Types.FullName(m.ContainingType) == "System.Single";
+                    var tp = Types.PrimOf(Arg(0));
+                    if (Types.Is64(tp))
+                        E.Op(tp == Prim.U64 ? (f32 ? Op.I64TruncSatF32U : Op.I64TruncSatF64U) : (f32 ? Op.I64TruncSatF32S : Op.I64TruncSatF64S));
+                    else
+                    {
+                        bool unsigned = !Types.IsSigned(tp);
+                        E.Op(unsigned ? (f32 ? Op.I32TruncSatF32U : Op.I32TruncSatF64U) : (f32 ? Op.I32TruncSatF32S : Op.I32TruncSatF64S));
+                        if (Types.PrimSize(tp) < 4)
+                        {
+                            // saturate to the narrow type's range
+                            long lo = tp switch { Prim.I8 => sbyte.MinValue, Prim.I16 => short.MinValue, _ => 0 };
+                            long hi = tp switch { Prim.I8 => sbyte.MaxValue, Prim.U8 => byte.MaxValue, Prim.I16 => short.MaxValue, _ => ushort.MaxValue };
+                            int t = Scratch(ValType.I32);
+                            E.Tee(t); E.I32((int)lo); E.Op(unsigned ? Op.I32LtU : Op.I32LtS);
+                            E.If(ValType.I32); E.I32((int)lo); E.Else();
+                            E.Get(t); E.I32((int)hi); E.Op(unsigned ? Op.I32GtU : Op.I32GtS);
+                            E.If(ValType.I32); E.I32((int)hi); E.Else(); E.Get(t); E.End();
+                            E.End();
+                            FreeScratch(ValType.I32, t);
+                        }
+                    }
+                    return Own.None;
+                }
             // an object's data right after its header (a box's value)
             case "System.Runtime.CompilerServices.RuntimeHelpers.GetRawData": E.I32(Types.ObjectHeader); E.Op(Op.I32Add); return Own.None;
             case "System.Runtime.CompilerServices.RuntimeHelpers.IsBitwiseEquatable":

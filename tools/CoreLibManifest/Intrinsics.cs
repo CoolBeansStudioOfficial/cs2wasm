@@ -31,7 +31,7 @@ static class Intrinsics
                 if (body == null) continue;
                 bool throwsPnse = body.DescendantNodes().OfType<ObjectCreationExpressionSyntax>().Any(o => o.Type.ToString().Contains("PlatformNotSupportedException"))
                     || body.DescendantNodes().OfType<ThrowExpressionSyntax>().Any() && body.ToString().Contains("PlatformNotSupported");
-                bool recursive = body.DescendantNodes().OfType<IdentifierNameSyntax>().Any(id =>
+                bool recursive = body.DescendantNodes().OfType<SimpleNameSyntax>().Any(id =>
                     model.GetSymbolInfo(id).Symbol is { } s && (SymbolEqualityComparer.Default.Equals(s.OriginalDefinition, sym.OriginalDefinition)
                         || s is IMethodSymbol { AssociatedSymbol: { } a } && SymbolEqualityComparer.Default.Equals(a.OriginalDefinition, sym.OriginalDefinition)));
                 if (!throwsPnse && !recursive) continue;
