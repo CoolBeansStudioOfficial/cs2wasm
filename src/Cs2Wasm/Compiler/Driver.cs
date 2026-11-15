@@ -419,6 +419,10 @@ internal sealed partial class Driver
     public INamedTypeSymbol LibType(string metadataName) =>
         Lib.TypeByMetadataName(metadataName) ?? throw new CompileException("library type missing: " + metadataName);
 
+    /// <summary>string.Equals(string, string): what `==` on strings is.</summary>
+    public MethodInst StringEquals => Method(LibType("System.String").GetMembers("Equals").OfType<IMethodSymbol>()
+        .First(x => x.IsStatic && x.Parameters.Length == 2 && x.Parameters.All(p => Types.IsString(p.Type))));
+
     public MethodInst LibMethod(string type, string name, int arity = -1)
     {
         var t = LibType(type);

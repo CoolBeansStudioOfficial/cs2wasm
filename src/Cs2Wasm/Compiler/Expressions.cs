@@ -544,6 +544,13 @@ sealed partial class FunctionCompiler
     {
         var ft = T.Resolve(f.Field.Type, Map);
         if (f.Field.IsConst) return EmitConstant(f.Field.ConstantValue, ft);
+        // a primitive's own field (int.m_value) is the value itself
+        if (!f.Field.IsStatic && f.Instance != null && Types.PrimOf(TypeOf(f.Instance)) is not Prim.None && Types.PrimOf(ft) == Types.PrimOf(TypeOf(f.Instance)))
+        {
+            // (in the primitive's own methods `this` is its address)
+            if (f.Instance is IInstanceReferenceOperation) { int po = EmitAddressBase(f.Instance); E.Load(Types.LoadOp(ft), po); return Own.None; }
+            return EmitValue(f.Instance);
+        }
         if (f.Field.IsFixedSizeBuffer) { EmitAddress(f); return Own.None; }
         int off = EmitAddressBase(f);
         if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
@@ -1143,7 +1150,7 @@ sealed partial class FunctionCompiler
             // string == string is value equality (the predefined operator), not reference equality
             var o1 = EmitValue(b.LeftOperand); ToCallSafe(o1, lt);
             var o2 = EmitValue(b.RightOperand); ToCallSafe(o2, rt);
-            E.Call(D.LibMethod("System.String", "Equals", 2).Fn);
+            E.Call(D.StringEquals.Fn);
             if (kind == BinaryOperatorKind.NotEquals) E.Op(Op.I32Eqz);
             return Own.None;
         }
@@ -2157,13 +2164,13 @@ sealed partial class FunctionCompiler
                     }
                     if (Types.IsString(vt))
                     {
-                        E.Get(v); EmitValue(cv); E.Call(D.LibMethod("System.String", "Equals", 2).Fn); return;
+                        E.Get(v); EmitValue(cv); E.Call(D.StringEquals.Fn); return;
                     }
                     if (!vt.IsValueType)
                     {
                         // object o is 5 / is "x"
                         var ct = TypeOf(cv);
-                        if (Types.IsString(ct)) { E.Get(v); E.Call(Rt.IsInst(ct)); E.If(ValType.I32); E.Get(v); EmitValue(cv); E.Call(D.LibMethod("System.String", "Equals", 2).Fn); E.Else(); E.I32(0); E.End(); return; }
+                        if (Types.IsString(ct)) { E.Get(v); E.Call(Rt.IsInst(ct)); E.If(ValType.I32); E.Get(v); EmitValue(cv); E.Call(D.StringEquals.Fn); E.Else(); E.I32(0); E.End(); return; }
                         E.Get(v); EmitTypeTest(ct);
                         E.If(ValType.I32);
                         E.Get(v); E.Load(Types.LoadOp(ct), BoxDataOffset(T, ct));

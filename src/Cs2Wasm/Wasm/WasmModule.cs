@@ -37,6 +37,18 @@ internal sealed class WasmModule
     /// <summary>One emitted instruction that has a source position: absolute byte offset in the module.</summary>
     public readonly record struct LineEntry(int Offset, int Pos);
 
+    /// <summary>CS2WASM_VALIDATE=1: every function type-checked (Validator), problems to stderr.</summary>
+    void Validate(string when)
+    {
+        int n = 0;
+        foreach (var f in Functions)
+        {
+            if (f.IsImport || f.ForwardTo != null) continue;
+            if (Validator.Check(f, Globals) is { } problem && n++ < 60) Console.Error.WriteLine($"invalid ({when}): {problem}");
+        }
+        if (n > 0) Console.Error.WriteLine($"{n} invalid functions ({when})");
+    }
+
     public sealed class Encoded
     {
         public byte[] Bytes = [];
@@ -47,12 +59,15 @@ internal sealed class WasmModule
     public Encoded Encode(bool optimize)
     {
         foreach (var f in Functions) ResolveForwards(f);
+        bool validate = Environment.GetEnvironmentVariable("CS2WASM_VALIDATE") == "1";
+        if (validate) Validate("before optimization");
         if (optimize)
         {
             Inliner.Run(Functions);
             foreach (var f in Functions) if (!f.IsImport) Peephole.Run(f);
             MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
+            if (validate) Validate("after optimization");
         }
 
         // Which functions are live: exported, in the table, or called from a live function.

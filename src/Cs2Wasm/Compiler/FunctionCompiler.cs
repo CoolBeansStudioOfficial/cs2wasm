@@ -1141,7 +1141,7 @@ sealed partial class FunctionCompiler
         if (Types.IsString(vt))
         {
             E.Get(val); EmitValue(constant);
-            E.Call(D.LibMethod("System.String", "Equals", 2).Fn);
+            E.Call(D.StringEquals.Fn);
             return;
         }
         E.Get(val); var ct = constant.Type != null ? T.Resolve(constant.Type, Map) : vt;

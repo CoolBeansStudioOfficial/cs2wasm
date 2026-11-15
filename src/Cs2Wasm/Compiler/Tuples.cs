@@ -82,7 +82,7 @@ sealed partial class FunctionCompiler
             Push(la, ls);
             Push(ra, rs);
             if (Types.Key(rs.Type) != Types.Key(et)) { var o = Own.None; ConvertTop(rs.Type, et, ref o); }
-            if (Types.IsString(et)) E.Call(D.LibMethod("System.String", "Equals", 2).Fn);
+            if (Types.IsString(et)) E.Call(D.StringEquals.Fn);
             else if (Types.PrimOf(et) != Prim.None) EmitCompare(Microsoft.CodeAnalysis.Operations.BinaryOperatorKind.Equals, et);
             else E.Call(Rt.GenericEquals(et));
             E.Op(Op.I32Eqz);
