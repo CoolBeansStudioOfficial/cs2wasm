@@ -283,6 +283,16 @@ sealed partial class FunctionCompiler
             return;
         }
         var o = EmitValueAs(value, pt);
+        // a fresh value for a parameter the callee consumes: its count goes to the callee (OwnedParams.cs); the temp
+        // holds it until the call, for an exception while the later arguments are computed
+        if (Types.IsRef(pt) && o == Own.Owned && _consume is { } cc && (cc.Mask & (1 << p.Ordinal)) != 0 && SymbolEqualityComparer.Default.Equals(p.ContainingSymbol, cc.M))
+        {
+            int tl = TempRef(pt);
+            E.Tee(tl);
+            cc.Temps.Add(tl);
+            cc.Moved |= 1 << p.Ordinal;
+            return;
+        }
         if (Types.IsRef(pt)) ToCallSafe(o, pt);
     }
 
@@ -397,10 +407,24 @@ sealed partial class FunctionCompiler
             if (intoAddr != null) intoAddr();
             else { sretOff = TempStruct(T.Canonical(m.ReturnType)); E.Get(_fb); E.I32(sretOff); E.Op(Op.I32Add); }
         }
-        pushThis?.Invoke();
-        pushArgs();
+        // a direct call of a method that consumes parameters (OwnedParams.cs): fresh arguments are handed over
+        bool dispatch = virt && IsVirtualDispatch(m);
+        CallConsume? cc = null;
+        if (consts == null && _clone == null && !dispatch && m.Parameters.Length > 0 && !D.IsIntrinsic(m) && !IsStaticInterfaceMember(m)
+            && D.ConsumingOf(m).Mask is var cmask && cmask != 0 && D.CanSpecializeOwnership(m))
+            cc = new CallConsume(m, cmask);
+        var savedConsume = _consume;
+        _consume = cc;
+        try
+        {
+            pushThis?.Invoke();
+            pushArgs();
+        }
+        finally { _consume = savedConsume; }
+        // (the callee owns them now)
+        if (cc != null) foreach (var tl in cc.Temps) { E.I32(0); E.Set(tl); }
         _wantRefReturnAddress = wantAddress;
-        return EmitCallInstr(m, virt && IsVirtualDispatch(m), syntax, sretOff, consts);
+        return EmitCallInstr(m, dispatch, syntax, sretOff, consts, cc?.Moved ?? 0);
     }
 
     /// <summary>Arguments are already on the stack (not for struct-returning methods unless the destination was pushed first).</summary>
@@ -410,13 +434,17 @@ sealed partial class FunctionCompiler
         return EmitCallInstr(m, virt && IsVirtualDispatch(m), null, -1);
     }
 
-    Own EmitCallInstr(IMethodSymbol m, bool virt, SyntaxNode? syntax, int sretOff, IReadOnlyDictionary<int, ConstArg>? consts = null)
+    Own EmitCallInstr(IMethodSymbol m, bool virt, SyntaxNode? syntax, int sretOff, IReadOnlyDictionary<int, ConstArg>? consts = null, int owned = 0)
     {
         if (IsStaticInterfaceMember(m) && TryStaticInterfaceMember(ref m, out var sim)) return sim;
         var rt = T.Canonical(m.ReturnType);
         if (D.IsIntrinsic(m))
         {
+            int before = E.Fn.Body.Count;
             var io = Driver.IsUpstreamIntrinsic(m) ? EmitUpstreamIntrinsic(m) : EmitIntrinsic(m);
+            // an intrinsic that writes memory may overwrite an element someone borrows (FieldBorrows.cs)
+            for (int k = before; k < E.Fn.Body.Count; k++)
+                if (Driver.WritesMemory(E.Fn.Body[k].Op)) { D.NoteFieldWrite(E.Fn, Driver.ElementsKey); break; }
             if (!m.ReturnsByRef && !m.ReturnsByRefReadonly) return io;
             // a ref-returning intrinsic leaves the address: callers that want the value load through it
             if (_wantRefReturnAddress) { _wantRefReturnAddress = false; return Own.None; }
@@ -429,6 +457,7 @@ sealed partial class FunctionCompiler
         else
         {
             var mi = D.Method(m, consts);
+            if (owned != 0) mi = D.OwnedVariant(mi, owned);
             if (_clone != null)
             {
                 // a clone (section 7.1): suppressed imports do nothing; other bodies are cloned too

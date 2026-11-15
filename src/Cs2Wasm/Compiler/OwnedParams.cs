@@ -1,0 +1,184 @@
+using Cs2Wasm.Wasm;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Operations;
+
+namespace Cs2Wasm.Compiler;
+
+/// <summary>Specialization by ownership (section 4.1: "a function is specialized for the ownership its callers
+/// need"). A parameter whose every use is a store (into a field or an element, or passed on to another such
+/// parameter), the uses on exclusive paths and outside loops, is consumed: a copy of the method takes that argument
+/// owned and moves it into its place (no count taken; the parameter is cleared, and released at the end on the paths
+/// that did not store it). A direct call that passes a fresh value there (a new object, a call's result, a
+/// concatenation) hands its count over instead of releasing it after the call: `new Node(name + "!")`,
+/// `list.Add(new Item())`, `obj.Name = Make()` cost no count operation for the argument.</summary>
+internal sealed partial class Driver
+{
+    internal sealed record Consuming(int Mask, HashSet<SyntaxNode> Moves);
+    static readonly Consuming s_noConsuming = new(0, []);
+    readonly Dictionary<string, Consuming> _consuming = [];
+
+    /// <summary>The parameters (a bit per ordinal) m consumes, and the uses that move them.</summary>
+    static readonly bool s_noOwned = Environment.GetEnvironmentVariable("CS2WASM_NO_OWNED") == "1";
+    static readonly int s_ownedLimit = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_OWNED_LIMIT"), out var ol) ? ol : 10;
+
+    internal Consuming ConsumingOf(IMethodSymbol m)
+    {
+        if (s_noOwned) return s_noConsuming;
+        var def = MethodTarget(m).OriginalDefinition;
+        var key = Types.MethodKey(def);
+        if (_consuming.TryGetValue(key, out var c)) return c;
+        _consuming[key] = s_noConsuming; // (a recursive use, while deciding: not consumed)
+        c = ComputeConsuming(def);
+        _consuming[key] = c;
+        return c;
+    }
+
+    /// <summary>Whether a direct call of m can go to an owned-argument copy (its body is compiled from source).</summary>
+    internal bool CanSpecializeOwnership(IMethodSymbol m)
+    {
+        var t = MethodTarget(m);
+        if (_methods.TryGetValue(Types.MethodKey(t), out var mi) && (mi.Impl != MethodImpl.Body || mi.Compile != null || mi.BorrowedReturn != null)) return false;
+        return Classify(t) == MethodImpl.Body;
+    }
+
+    Consuming ComputeConsuming(IMethodSymbol def)
+    {
+        if (def.IsAbstract || def.IsExtern || def.IsAsync || def.IsIterator || def.Parameters.Length == 0 || def.Parameters.Length > 30) return s_noConsuming;
+        if (def.MethodKind is not (MethodKind.Ordinary or MethodKind.Constructor or MethodKind.PropertySet or MethodKind.ExplicitInterfaceImplementation)) return s_noConsuming;
+        if (Library.Substitution(def) != null || ReturnsThis(def)) return s_noConsuming;
+        var body = BodyOperation(this, def);
+        if (body == null) return s_noConsuming;
+        // large functions keep one shared, borrow-first version (section 4.1); 10 operations is where the copies stop
+        // paying for themselves in module size (measured)
+        if (body.Descendants().Count() > s_ownedLimit) return s_noConsuming;
+        if (body.DescendantsAndSelf().Any(o => o is ILabeledOperation || o is IBranchOperation { BranchKind: BranchKind.GoTo } || o.Kind is OperationKind.YieldReturn or OperationKind.YieldBreak))
+            return s_noConsuming;
+        var nested = body.Descendants().Where(o => o is IAnonymousFunctionOperation or ILocalFunctionOperation).SelectMany(o => o.DescendantsAndSelf()).ToHashSet();
+        var refs = body.Descendants().OfType<IParameterReferenceOperation>().Where(r => !InNameOf(r)).ToLookup(r => r.Parameter.OriginalDefinition.Ordinal);
+        int mask = 0;
+        var moves = new HashSet<SyntaxNode>();
+        for (int i = 0; i < def.Parameters.Length; i++)
+        {
+            var p = def.Parameters[i];
+            if (p.RefKind != RefKind.None || p.Type.IsValueType || p.Type.IsRefLikeType || p.IsParams) continue;
+            var rs = refs[i].Where(r => SymbolEqualityComparer.Default.Equals(r.Parameter.ContainingSymbol.OriginalDefinition, def)).ToList();
+            if (rs.Count == 0 || rs.Count > 4) continue;
+            if (rs.Any(r => nested.Contains(r) || InLoop(r) || !IsMovePoint(r))) continue;
+            bool exclusive = true;
+            for (int a = 0; a < rs.Count && exclusive; a++)
+                for (int b = a + 1; b < rs.Count && exclusive; b++)
+                    exclusive = Exclusive(rs[a], rs[b]);
+            if (!exclusive) continue;
+            mask |= 1 << i;
+            foreach (var r in rs) moves.Add(r.Syntax);
+        }
+        return mask == 0 ? s_noConsuming : new Consuming(mask, moves);
+    }
+
+    static bool InLoop(IOperation op)
+    {
+        for (var p = op.Parent; p != null; p = p.Parent) if (p is ILoopOperation) return true;
+        return false;
+    }
+
+    /// <summary>A use that can take the parameter's count: the value of a store into a field or an element (as a
+    /// statement), or an argument for a parameter the callee consumes.</summary>
+    bool IsMovePoint(IParameterReferenceOperation r)
+    {
+        IOperation v = r;
+        while (v.Parent is IConversionOperation c && c.OperatorMethod == null && (c.Conversion.IsIdentity || c.Conversion.IsImplicit && c.Conversion.IsReference)) v = c;
+        switch (v.Parent)
+        {
+            case ISimpleAssignmentOperation { IsRef: false } sa when sa.Value == v && sa.Parent is IExpressionStatementOperation:
+                return sa.Target is IFieldReferenceOperation { Field.IsConst: false } f && !f.Field.Type.IsRefLikeType && !f.Field.Type.IsValueType
+                    || sa.Target is IArrayElementReferenceOperation;
+            case IArgumentOperation { ArgumentKind: ArgumentKind.Explicit, Parameter: { RefKind: RefKind.None } ap } arg when arg.Value == v:
+                {
+                    IMethodSymbol? callee = arg.Parent switch
+                    {
+                        IInvocationOperation { IsVirtual: false } i => i.TargetMethod,
+                        IInvocationOperation i when i.TargetMethod is { IsVirtual: false, IsAbstract: false, IsOverride: false } => i.TargetMethod,
+                        IObjectCreationOperation oc => oc.Constructor,
+                        _ => null,
+                    };
+                    return callee != null && !callee.IsGenericMethod && (ConsumingOf(callee).Mask & (1 << ap.Ordinal)) != 0;
+                }
+        }
+        return false;
+    }
+
+    /// <summary>Whether two operations are on paths that exclude each other (the branches of one `if` or `?:`, or
+    /// different sections of one switch).</summary>
+    static bool Exclusive(IOperation a, IOperation b)
+    {
+        var up = new List<IOperation>();
+        for (var x = a; x != null; x = x.Parent) up.Add(x);
+        IOperation? prevB = b;
+        for (var y = b.Parent; y != null; prevB = y, y = y.Parent)
+        {
+            int k = up.IndexOf(y);
+            if (k < 1) continue;
+            var prevA = up[k - 1];
+            return y switch
+            {
+                IConditionalOperation c => prevA != prevB && (prevA == c.WhenTrue || prevA == c.WhenFalse) && (prevB == c.WhenTrue || prevB == c.WhenFalse),
+                ISwitchOperation => prevA != prevB && prevA is ISwitchCaseOperation && prevB is ISwitchCaseOperation,
+                _ => false,
+            };
+        }
+        return false;
+    }
+
+    /// <summary>The copy of a method that takes the arguments in `mask` owned.</summary>
+    internal MethodInst OwnedVariant(MethodInst baseMi, int mask)
+    {
+        var key = baseMi.Key + "|own" + mask;
+        if (_methods.TryGetValue(key, out var vi)) return vi;
+        if (Environment.GetEnvironmentVariable("CS2WASM_OWNED") == "1") Console.Error.WriteLine("owned variant: " + Display(baseMi.Sym) + " " + mask);
+        var fn = Module.AddFunction(Display(baseMi.Sym) + " [own " + mask + "]", baseMi.Fn.Type);
+        fn.FrameName = baseMi.Fn.FrameName;
+        vi = new MethodInst { Sym = baseMi.Sym, Fn = fn, Key = key, Impl = MethodImpl.Body, ReachedFrom = Compiling, OwnedParams = mask };
+        _methods[key] = vi;
+        _work.Enqueue(vi);
+        return vi;
+    }
+}
+
+sealed partial class FunctionCompiler
+{
+    /// <summary>The call whose arguments are being pushed, the parameters its callee can consume, and the fresh
+    /// arguments handed over (their temps, cleared before the call).</summary>
+    sealed class CallConsume(IMethodSymbol m, int mask)
+    {
+        public readonly IMethodSymbol M = m;
+        public readonly int Mask = mask;
+        public int Moved;
+        public readonly List<int> Temps = [];
+    }
+
+    CallConsume? _consume;
+    HashSet<SyntaxNode>? _moves;
+
+    /// <summary>An owned-argument copy: the consumed parameters own their values (released at the end where they
+    /// were not moved).</summary>
+    void SetupOwnedParams()
+    {
+        int mask = Inst?.OwnedParams ?? 0;
+        if (mask == 0) return;
+        _moves = D.ConsumingOf(M).Moves;
+        for (int i = 0; i < M.Parameters.Length; i++)
+        {
+            if ((mask & (1 << i)) == 0) continue;
+            var p = M.Parameters[i];
+            var v = _vars[p];
+            if (!Types.IsRef(v.Type) || v.InMemory) continue;
+            var slot = new Slot { Local = v.Local, Type = v.Type };
+            _paramSlots.Add(slot);
+            _allSlots.Add(slot);
+        }
+    }
+
+    bool IsMovedParamUse(IParameterReferenceOperation p) =>
+        _moves != null && _moves.Contains(p.Syntax) && Inst is { OwnedParams: var om } && (om & (1 << p.Parameter.Ordinal)) != 0
+        && _vars.TryGetValue(p.Parameter, out var v) && !v.InMemory && Types.IsRef(v.Type);
+}

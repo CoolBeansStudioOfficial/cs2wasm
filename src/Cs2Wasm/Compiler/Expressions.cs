@@ -86,6 +86,13 @@ sealed partial class FunctionCompiler
             case IParameterReferenceOperation p:
                 if (IsPrimaryParamHere(p.Parameter)) { var ps = PrimarySlot(p.Parameter); PushPrimaryThis(); if (Types.IsStruct(ps.Type)) { E.I32(ps.Offset); E.Op(Op.I32Add); return Own.None; } E.Load(Types.LoadOp(ps.Type), ps.Offset); return Types.IsRef(ps.Type) ? Own.Unstable : Own.None; }
                 if (IsCaptured(p.Parameter)) return LoadCaptured(p.Parameter);
+                if (IsMovedParamUse(p))
+                {
+                    // an owned parameter's use that takes its count: the parameter is cleared (OwnedParams.cs)
+                    var mv = _vars[p.Parameter];
+                    E.Get(mv.Local); E.I32(0); E.Set(mv.Local);
+                    return Own.Owned;
+                }
                 return LoadVar(_vars[p.Parameter]);
             case IInstanceReferenceOperation ir:
                 {
@@ -286,6 +293,7 @@ sealed partial class FunctionCompiler
             else E.Set(v.Local);
             return;
         }
+        if (v.AddrLocal != _fb && T.NeedsRc(t)) D.NoteFieldWrite(E.Fn, Driver.ElementsKey);
         StoreToAddressFromStack(() => E.Get(v.AddrLocal), v.Offset, t, o);
     }
 
@@ -1969,7 +1977,7 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false) : LValue(f, t)
     {
         int _addr = -1, _off;
         public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
@@ -1984,6 +1992,8 @@ sealed partial class FunctionCompiler
         public override Own Store(Own o, bool needResult)
         {
             if (site != null && !_noted) site.AddValue(Type);
+            // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
+            if (elements && F.T.NeedsRc(Type)) F.D.NoteFieldWrite(F.E.Fn, Driver.ElementsKey);
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
                 pub, () => F.E.Get(container >= 0 ? container : _addr));
             return needResult ? Load() : Own.None;
@@ -2136,10 +2146,10 @@ sealed partial class FunctionCompiler
             case IArrayElementReferenceOperation ae when Types.IsRef(t) && TypeOf(ae.ArrayReference) is IArrayTypeSymbol at:
                 {
                     int keep = E.AddLocal(ValType.I32);
-                    return new MemLV(this, t, () => EmitArrayElementAddress(ae, keep), D.Arenas.ArraySite(at), keep, pub: Publish.Container);
+                    return new MemLV(this, t, () => EmitArrayElementAddress(ae, keep), D.Arenas.ArraySite(at), keep, pub: Publish.Container, elements: true);
                 }
         }
-        return new MemLV(this, t, () => EmitAddressBase(target));
+        return new MemLV(this, t, () => EmitAddressBase(target), elements: true);
     }
 
     // =====================================================================

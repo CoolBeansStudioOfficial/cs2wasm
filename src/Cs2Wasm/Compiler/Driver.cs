@@ -31,6 +31,8 @@ internal sealed class MethodInst
     public MethodInst? BorrowedReturn;
     /// <summary>Set on that body: `return this` does not count.</summary>
     public bool ReturnsBorrowed;
+    /// <summary>A copy that takes these arguments (a bit per parameter ordinal) owned (OwnedParams.cs).</summary>
+    public int OwnedParams;
 }
 
 sealed class StaticSlot(Driver d, int offset) : IAddress

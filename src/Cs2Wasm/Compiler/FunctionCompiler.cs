@@ -130,6 +130,7 @@ sealed partial class FunctionCompiler
         Driver.BindTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
         E.CurrentPos = D.Position(syntax);
         PreScan(body);
+        SetupOwnedParams();
         FindFrameObjects(body);
         using (BodyScope())
         {
@@ -994,7 +995,8 @@ sealed partial class FunctionCompiler
             var o = EmitValue(coll);
             int arr = E.AddLocal(ValType.I32);
             if (o == Own.Owned) { E.Set(arr); AddOwned(new Slot { Local = arr, Type = collType }); }
-            else { if (o == Own.Unstable) { E.Call(Rt.Retain); E.Set(arr); AddOwned(new Slot { Local = arr, Type = collType }); } else E.Set(arr); }
+            // (a variable the body may reassign does not keep the array alive: the loop holds it)
+            else { if (o == Own.Unstable || o == Own.Stable && !IsStableBase(coll)) { E.Call(Rt.Retain); E.Set(arr); AddOwned(new Slot { Local = arr, Type = collType }); } else E.Set(arr); }
             EndTemps();
             E.Get(arr); NullCheck();
             int i = E.AddLocal(ValType.I32);
@@ -1007,7 +1009,7 @@ sealed partial class FunctionCompiler
             PushScope();
             EnterDisplay(fe);
             var elemType = T.Canonical(at.ElementType);
-            AssignLoopVariable(fe, elemType, () =>
+            AssignLoopVariable(fe, elemType, borrowElement: true, produce: () =>
             {
                 E.Get(arr); E.Get(i); var sz = T.StorageOf(elemType).size;
                 if (sz != 1) { E.I32(sz); E.Op(Op.I32Mul); }
@@ -1129,7 +1131,7 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Declares and assigns the foreach iteration variable from the value produced by <paramref name="produce"/>.</summary>
-    void AssignLoopVariable(IForEachLoopOperation fe, ITypeSymbol valueType, Func<Own> produce, IOperation? conversion = null)
+    void AssignLoopVariable(IForEachLoopOperation fe, ITypeSymbol valueType, Func<Own> produce, IOperation? conversion = null, bool borrowElement = false)
     {
         if (fe.LoopControlVariable is not IVariableDeclaratorOperation decl)
         {
@@ -1159,7 +1161,16 @@ sealed partial class FunctionCompiler
             var v = LocalVar(sym);
             var o = produce();
             ConvertTop(valueType, v.Type, ref o);
-            StoreVar(v, o);
+            // an array's element borrows from the array unless something that can run in the loop stores elements
+            // (section 4.1: a foreach element borrows from its source; FieldBorrows.cs decides at the end)
+            if (borrowElement && o is Own.Unstable or Own.Stable && Types.IsRef(v.Type) && !v.InMemory && !_addrTaken.Contains(sym) && _closure == null && _machine == null)
+            {
+                var marker = D.Module.AddFunction("borrow? []", new FuncType([ValType.I32], [ValType.I32]));
+                E.Call(marker);
+                E.Set(v.Local);
+                D.FieldBorrows.Add((E.Fn, v.Local, Driver.ElementsKey, marker));
+            }
+            else StoreVar(v, o);
         }
         EndTemps();
     }

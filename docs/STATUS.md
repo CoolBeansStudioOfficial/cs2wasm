@@ -17,7 +17,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 - **API checks:** 18 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
   custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
   passes (scheduling dependence too), source map, cycles bounded in a fixed 16 MB memory, no arena code without cycle-capable types).
-- **Module size (raw, measured):** `Console.WriteLine(42)` is 27,124 bytes on upstream's library (code 20.5 KB,
+- **Module size (raw, measured):** `Console.WriteLine(42)` is 27,103 bytes on upstream's library (code 20.5 KB,
   LZ-packed data and frame names about 6 KB); NetWasm's build of the same program is 28,383 bytes. The conformance
   programs are 30–300 KB raw (`tests/Cs2Wasm.Tests` prints each size). The Rust 2D game bar in the spec (24 KB
   compressed) is for a game with GodotSharp, which is not built yet.
@@ -183,9 +183,25 @@ when its count reaches zero its handles are cleared before its finalizer runs; a
 with the key. `GC.SuppressFinalize`/`ReRegisterForFinalize` are marks too; `GC.Collect` has nothing to do (objects
 are freed when their count reaches zero). Programs without marks pay nothing.
 
+Specialization by ownership (4.1): methods that return `this` (StringBuilder.Append) return it borrowed to direct
+callers (an owned-return wrapper serves indirect ones); and a small method (up to 10 operations; larger ones keep one
+shared, borrow-first version) whose parameter's every use is a store into a field or an element, or a pass to another
+such parameter, on exclusive paths and outside loops, gets a copy that takes the argument owned and moves it (the
+parameter is cleared, and released at the end where it was not stored): a direct call that passes a fresh value (a
+new object, a call's result, a concatenation) hands its count over instead of releasing it after the call
+(`new Person(Make(i))`, `list.Add(new Item())`, exception constructors). Measured on the module, it removes count
+operations and bytes on every program tried. `CS2WASM_NO_OWNED=1` turns it
+off. Retroactive owners (4.1) are compile-time, as in Lobster: a local that reads a field borrows it unless something
+that can run during the local's life stores the field (then it owns). The same holds for elements: a `foreach`
+element over an array, and a local initialized from an element of an array that stays put (`var e = a[i]`,
+`this.items[i]`), borrow unless the function, with what it can call, can store a reference element (any array's:
+the element stores, stores through addresses, ref locals and parameters, and the memory-writing intrinsics count;
+the allocator, the throw helpers and the arenas' and marks' own tables, which write only memory no program code
+reaches, do not). `CS2WASM_BORROW=1` prints each decision. Fixed on the way: `foreach` over an array held by a
+variable the loop reassigns did not keep the array alive.
+
 Not done:
-- ownership specialization beyond methods that return `this` (StringBuilder.Append: their body returns it
-  borrowed to direct callers, an owned-return wrapper serves indirect ones), retroactive owners (4.1);
+- borrowing from properties (a getter's result is owned);
 
 ### 4.5 Threads — partial
 Done: `System.Threading.Thread` runs on a real worker: each thread is a new instance of the module on the shared

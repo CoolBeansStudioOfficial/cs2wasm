@@ -20,6 +20,17 @@ sealed partial class FunctionCompiler
         while (init is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit)) init = c.Operand;
         // a copy of a reference that stays put for the whole method: the object outlives the local ("": always)
         if (IsStableBase(init)) return "";
+        // an element of an array that stays put (a stable reference, or a field of one): no element store may run
+        if (init is IArrayElementReferenceOperation { Indices.Length: 1 } ae && Types.IsRef(T.Resolve(ae.Type!, Map)))
+        {
+            var ar = ae.ArrayReference;
+            while (ar is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } ac) ar = ac.Operand;
+            if (IsStableBase(ar)) return Driver.ElementsKey;
+            if (ar is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ai } afr && IsStableBase(ai) && afr.Field.ContainingType.TypeKind == TypeKind.Class
+                && !(ai is IParameterReferenceOperation && TypeOf(ai).IsValueType))
+                return Driver.FieldKey(Owner(afr.Field), StorageField(afr.Field)) + "\n" + Driver.ElementsKey;
+            return null;
+        }
         if (init is not IFieldReferenceOperation { Field.IsStatic: false, Instance: { } inst } fr) return null;
         if (!Types.IsRef(T.Resolve(fr.Field.Type, Map)) || fr.Field.ContainingType.TypeKind != TypeKind.Class) return null;
         switch (inst)
@@ -47,6 +58,12 @@ sealed partial class FunctionCompiler
 internal sealed partial class Driver
 {
     public static string FieldKey(ITypeSymbol owner, ISymbol storage) => Types.Key(owner) + "::" + storage.Name;
+    /// <summary>The pseudo-field of every reference element (and of memory written through an address).</summary>
+    public const string ElementsKey = "[]";
+    static readonly bool s_borrowDebug = Environment.GetEnvironmentVariable("CS2WASM_BORROW") == "1";
+
+    public static bool WritesMemory(Op op) => op is Op.I32Store or Op.I32Store8 or Op.I32Store16 or Op.I64Store or Op.I64Store8 or Op.I64Store16 or Op.I64Store32
+        or Op.MemoryCopy or Op.MemoryFill || (int)op >= 0xFE00 && op is not (Op.I32AtomicLoad or Op.I64AtomicLoad);
     /// <summary>The instance fields each function stores to (by key).</summary>
     public readonly Dictionary<WasmFunction, HashSet<string>> FieldWrites = [];
     /// <summary>Fields whose address code takes (ref, out, Interlocked): written by whoever holds the address.</summary>
@@ -100,6 +117,11 @@ internal sealed partial class Driver
                 callees[f] = cs;
                 summary[f] = FieldWrites.TryGetValue(f, out var w) ? [.. w] : [];
             }
+            // what writes only memory no program code can reach: the runtime's throw helpers (bounds, null and cast
+            // checks: the exception they make), the allocator (fresh or freed blocks), the arenas' and the marks'
+            // own tables (a finalizer a release runs still counts: it is compiled code the destroy path calls)
+            string[] internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks."];
+            var throwers = Module.Functions.Where(f => internals.Any(p => f.Name.StartsWith(p, StringComparison.Ordinal))).ToHashSet();
             // (to a fixpoint: summaries only grow)
             bool changed = true;
             while (changed)
@@ -109,7 +131,7 @@ internal sealed partial class Driver
                 {
                     var s = summary[f];
                     int before = s.Count;
-                    foreach (var g in callees[f]) if (g != f && summary.TryGetValue(g, out var gs)) s.UnionWith(gs);
+                    foreach (var g in callees[f]) if (g != f && !throwers.Contains(g) && summary.TryGetValue(g, out var gs)) s.UnionWith(gs);
                     if (s.Count != before) changed = true;
                 }
             }
@@ -120,7 +142,10 @@ internal sealed partial class Driver
             var b = fn.Body;
             foreach (var (_, local, field, marker) in list)
             {
-                bool ok = field == "" || !threads && summary != null && !summary[fn].Contains(field) && !FieldsAddressTaken.Contains(field) && !reflected.Contains(field);
+                bool ok = field == "" || !threads && summary != null && field.Split('\n').All(k => !summary[fn].Contains(k) && !FieldsAddressTaken.Contains(k) && !reflected.Contains(k));
+                if (s_borrowDebug) Console.Error.WriteLine($"borrow {fn.Name} local {local} {field.Replace('\n', '|')}: {ok}"
+                    + (summary != null ? " own=" + (FieldWrites.TryGetValue(fn, out var ow) && ow.Contains(field) ? "y" : "n") + " via "
+                        + string.Join(",", Module.Functions.Where(g => fn.Body.Any(x => x.Op == Op.Call && x.Ref == g) && summary.TryGetValue(g, out var gs) && gs.Contains(field)).Select(g => g.Name).Take(5)) : ""));
                 // the local's other writes are the releases at scope exit (get; release; 0; set): nothing moves its value
                 if (ok)
                     for (int i = 0; i < b.Count && ok; i++)

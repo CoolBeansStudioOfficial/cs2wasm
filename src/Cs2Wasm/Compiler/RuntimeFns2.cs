@@ -244,6 +244,7 @@ internal sealed partial class RuntimeFns
     WasmFunction MakeArrayCopy()
     {
         var f = M.AddFunction("rt.array_copy", FT([I, I, I, I, I, I], []));
+        D.NoteFieldWrite(f, Driver.ElementsKey);
         var e = new Emitter(f);
         int s = e.AddLocal(I), d = e.AddLocal(I);
         e.Get(0); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(1); e.Get(5); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(s);
@@ -257,6 +258,7 @@ internal sealed partial class RuntimeFns
     WasmFunction MakeArrayClear()
     {
         var f = M.AddFunction("rt.array_clear", FT([I, I, I, I], []));
+        D.NoteFieldWrite(f, Driver.ElementsKey);
         var e = new Emitter(f);
         int a = e.AddLocal(I);
         e.Get(0); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(1); e.Get(3); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(a);
