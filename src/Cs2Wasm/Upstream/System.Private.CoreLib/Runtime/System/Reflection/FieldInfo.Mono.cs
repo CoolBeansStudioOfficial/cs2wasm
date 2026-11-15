@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -8,8 +11,7 @@ namespace System.Reflection
 {
     public partial class FieldInfo
     {
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern FieldInfo internal_from_handle_type(IntPtr field_handle, IntPtr type_handle);
+                private static FieldInfo internal_from_handle_type(IntPtr field_handle, IntPtr type_handle) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's internal_from_handle_type): cs2wasm's reflection reads the compiler's metadata");
 
         public static FieldInfo GetFieldFromHandle(RuntimeFieldHandle handle)
         {
@@ -33,8 +35,7 @@ namespace System.Reflection
             throw NotImplemented.ByDesign;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern MarshalAsAttribute get_marshal_info();
+                private MarshalAsAttribute get_marshal_info() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_marshal_info): cs2wasm's reflection reads the compiler's metadata");
 
         internal object[]? GetPseudoCustomAttributes()
         {

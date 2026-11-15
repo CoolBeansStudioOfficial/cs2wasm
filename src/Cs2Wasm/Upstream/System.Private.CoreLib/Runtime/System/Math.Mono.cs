@@ -1,85 +1,63 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: computed in WASM (SPEC 7.3): what WASM defines exactly is an instruction, the rest is portable code (CMath).
+
 using System.Runtime.CompilerServices;
 
 namespace System
 {
     public partial class Math
     {
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Acos(double d);
+                public static double Acos(double d) => CMath.Acos(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Acosh(double d);
+                public static double Acosh(double d) => CMath.Acosh(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Asin(double d);
+                public static double Asin(double d) => CMath.Asin(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Asinh(double d);
+                public static double Asinh(double d) => CMath.Asinh(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Atan(double d);
+                public static double Atan(double d) => CMath.Atan(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Atan2(double y, double x);
+                public static double Atan2(double y, double x) => CMath.Atan2(y, x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Atanh(double d);
+                public static double Atanh(double d) => CMath.Atanh(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Cbrt(double d);
+                public static double Cbrt(double d) => CMath.Cbrt(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Ceiling(double a);
+                public static double Ceiling(double a) => Cs2Wasm.Runtime.Rt.Ceiling(a);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Cos(double d);
+                public static double Cos(double d) => CMath.Cos(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Cosh(double value);
+                public static double Cosh(double value) => CMath.Cosh(value);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Exp(double d);
+                public static double Exp(double d) => CMath.Exp(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Floor(double d);
+                public static double Floor(double d) => Cs2Wasm.Runtime.Rt.Floor(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Log(double d);
+                public static double Log(double d) => CMath.Log(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Log10(double d);
+                public static double Log10(double d) => CMath.Log10(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Pow(double x, double y);
+                public static double Pow(double x, double y) => CMath.Pow(x, y);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Sin(double a);
+                public static double Sin(double a) => CMath.Sin(a);
 
         public static (double Sin, double Cos) SinCos(double x) => (Sin(x), Cos(x));
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Sinh(double value);
+                public static double Sinh(double value) => CMath.Sinh(value);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Sqrt(double d);
+                public static double Sqrt(double d) => Cs2Wasm.Runtime.Rt.Sqrt(d);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Tan(double a);
+                public static double Tan(double a) => CMath.Tan(a);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Tanh(double value);
+                public static double Tanh(double value) => CMath.Tanh(value);
 
         [Intrinsic]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double FusedMultiplyAdd(double x, double y, double z);
+                public static double FusedMultiplyAdd(double x, double y, double z) => CMath.Fma(x, y, z);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern double Log2(double x);
+                public static double Log2(double x) => CMath.Log2(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern unsafe double ModF(double x, double* intptr);
+                private static unsafe double ModF(double x, double* intptr) { double t = Cs2Wasm.Runtime.Rt.Truncate(x); *intptr = t; return double.IsInfinity(x) ? CopySign(0.0, x) : x - t; }
     }
 }

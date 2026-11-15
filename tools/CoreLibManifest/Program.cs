@@ -61,6 +61,13 @@ sealed class Manifest
     readonly Dictionary<string, string> props = new(StringComparer.OrdinalIgnoreCase);
     readonly List<string> files = [];
     readonly List<string> references = [];
+    readonly List<(string Path, string Why)> replaced = [];
+
+    static readonly (string Path, string Why)[] Replaced =
+    [
+        ("src/libraries/System.Private.CoreLib/src/System/Threading/ThreadPool.Browser.Threads.cs", "cs2wasm's workers have no JS event loop to yield to"),
+        ("src/libraries/System.Private.CoreLib/src/System/TimeZoneInfo.Unix.NonAndroid.cs", "no time zone database: the local zone has the engine clock's offset (Boundary/TimeZoneInfo.Cs2Wasm.cs)"),
+    ];
     readonly SortedSet<string> unknown = [];
     // cs2wasm's choices: the projects may not override them
     readonly HashSet<string> pinned = new(StringComparer.OrdinalIgnoreCase);
@@ -92,9 +99,9 @@ sealed class Manifest
         foreach (var k in props.Keys) pinned.Add(k);
         pinned.Remove("DefineConstants");
         Project(Libraries.Project(root, lib));
-        // cs2wasm's workers are not the browser runtime's: they have no JS event loop to yield to
-        foreach (var drop in new[] { "src/libraries/System.Private.CoreLib/src/System/Threading/ThreadPool.Browser.Threads.cs" })
-            files.Remove(Path.GetFullPath(Path.Combine(root, drop)));
+        // files cs2wasm replaces with its own (under <Library>/Boundary), listed as `replaced`
+        foreach (var (drop, why) in Replaced)
+            if (files.Remove(Path.GetFullPath(Path.Combine(root, drop)))) replaced.Add((drop, why));
         // what the libraries' build adds to a project with resources (CoreLib has its own SR.cs)
         if (lib != "System.Private.CoreLib" && File.Exists(Libraries.Resx(root, lib)))
             files.Add(Path.Combine(root, "src", "libraries", "Common", "src", "System", "SR.cs"));
@@ -110,8 +117,10 @@ sealed class Manifest
         var sb = new StringBuilder();
         sb.AppendLine($"# {lib} for cs2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.");
         sb.AppendLine("# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: cs2wasm supplies its own)");
+        sb.AppendLine("# | replaced <path> (an upstream file cs2wasm replaces with its own)");
         foreach (var d in defines) sb.AppendLine("define " + d);
         foreach (var r in references.Distinct()) sb.AppendLine("reference " + r);
+        foreach (var (path, why) in replaced) sb.AppendLine($"replaced {path}  # {why}");
         int missing = 0, runtime = 0, n = 0;
         foreach (var f in files.Distinct())
         {

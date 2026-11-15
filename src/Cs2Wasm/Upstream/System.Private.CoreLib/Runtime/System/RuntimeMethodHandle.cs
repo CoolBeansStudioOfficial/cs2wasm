@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.ComponentModel;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -27,16 +30,14 @@ namespace System
             throw new PlatformNotSupportedException();
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern IntPtr GetFunctionPointer(IntPtr m);
+                private static IntPtr GetFunctionPointer(IntPtr m) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetFunctionPointer): cs2wasm's reflection reads the compiler's metadata");
 
         public IntPtr GetFunctionPointer()
         {
             return GetFunctionPointer(value);
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern IntPtr GetNativeCode(IntPtr m);
+                private static IntPtr GetNativeCode(IntPtr m) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetNativeCode): cs2wasm's reflection reads the compiler's metadata");
 
         internal static IntPtr GetNativeCodeInternal(IntPtr methodHandleValue)
         {
@@ -95,11 +96,9 @@ namespace System
             return value == IntPtr.Zero;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void ReboxFromNullable(object? src, ObjectHandleOnStack res);
+                private static void ReboxFromNullable(object? src, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's ReboxFromNullable): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void ReboxToNullable(object? src, QCallTypeHandle destNullableType, ObjectHandleOnStack res);
+                private static void ReboxToNullable(object? src, QCallTypeHandle destNullableType, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's ReboxToNullable): cs2wasm's reflection reads the compiler's metadata");
 
         internal static object ReboxFromNullable(object? src)
         {

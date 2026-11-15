@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Diagnostics.Tracing;
 using System.IO;
 using System.Runtime.CompilerServices;
@@ -39,8 +42,7 @@ namespace System.Reflection
             return GetExecutingAssembly(ref stackMark);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern RuntimeAssembly GetExecutingAssembly(ref StackCrawlMark stackMark);
+                internal static RuntimeAssembly GetExecutingAssembly(ref StackCrawlMark stackMark) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetExecutingAssembly): cs2wasm's reflection reads the compiler's metadata");
 
         [System.Security.DynamicSecurityMethod] // Methods doing stack walks has to be marked DynamicSecurityMethod
         public static Assembly GetCallingAssembly()
@@ -49,11 +51,9 @@ namespace System.Reflection
             return GetCallingAssembly(ref stackMark);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern RuntimeAssembly GetCallingAssembly(ref StackCrawlMark stackMark);
+                internal static RuntimeAssembly GetCallingAssembly(ref StackCrawlMark stackMark) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetCallingAssembly): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern Assembly GetEntryAssemblyNative();
+                internal static Assembly GetEntryAssemblyNative() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetEntryAssemblyNative): cs2wasm's reflection reads the compiler's metadata");
 
         private static Assembly? GetEntryAssemblyInternal()
         {
@@ -95,10 +95,8 @@ namespace System.Reflection
             return (uint)EventPipeInternal.GetRuntimeCounterValue(EventPipeInternal.RuntimeCounters.ASSEMBLY_COUNT);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern Assembly InternalLoad(string assemblyName, ref StackCrawlMark stackMark, IntPtr ptrLoadContextBinder);
+                internal static Assembly InternalLoad(string assemblyName, ref StackCrawlMark stackMark, IntPtr ptrLoadContextBinder) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalLoad): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal extern Type InternalGetType(Module? module, string name, bool throwOnError, bool ignoreCase);
+                internal Type InternalGetType(Module? module, string name, bool throwOnError, bool ignoreCase) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalGetType): cs2wasm's reflection reads the compiler's metadata");
     }
 }

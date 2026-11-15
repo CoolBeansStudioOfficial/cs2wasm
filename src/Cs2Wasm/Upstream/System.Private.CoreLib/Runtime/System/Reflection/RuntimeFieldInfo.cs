@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // Copyright (C) 2004 Novell, Inc (http://www.novell.com)
 //
@@ -71,8 +74,7 @@ namespace System.Reflection
 
         public override bool IsCollectible => false;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal extern override object UnsafeGetValue(object obj);
+                internal override object UnsafeGetValue(object obj) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's UnsafeGetValue): cs2wasm's reflection reads the compiler's metadata");
 
         internal override void CheckConsistency(object target)
         {
@@ -146,13 +148,11 @@ namespace System.Reflection
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern Type ResolveType();
+                private Type ResolveType() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's ResolveType): cs2wasm's reflection reads the compiler's metadata");
 
         public override Type FieldType => type ??= ResolveType();
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern Type GetParentType(bool declaring);
+                private Type GetParentType(bool declaring) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetParentType): cs2wasm's reflection reads the compiler's metadata");
 
         public override Type ReflectedType
         {
@@ -192,11 +192,9 @@ namespace System.Reflection
             return CustomAttribute.GetCustomAttributes(this, attributeType, inherit);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal extern override int GetFieldOffset();
+                internal override int GetFieldOffset() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetFieldOffset): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern object? GetValueInternal(object? obj);
+                private object? GetValueInternal(object? obj) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetValueInternal): cs2wasm's reflection reads the compiler's metadata");
 
         public override object? GetValue(object? obj)
         {
@@ -219,8 +217,7 @@ namespace System.Reflection
             return $"{FieldType.FormatTypeName()} {name}";
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void SetValueInternal(FieldInfo fi, object? obj, object? value);
+                private static void SetValueInternal(FieldInfo fi, object? obj, object? value) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's SetValueInternal): cs2wasm's reflection reads the compiler's metadata");
 
         public override void SetValue(object? obj, object? val, BindingFlags invokeAttr, Binder? binder, CultureInfo? culture)
         {
@@ -260,8 +257,7 @@ namespace System.Reflection
             return field;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public extern override object GetRawConstantValue();
+                public override object GetRawConstantValue() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetRawConstantValue): cs2wasm's reflection reads the compiler's metadata");
 
         public override IList<CustomAttributeData> GetCustomAttributesData()
         {
@@ -285,11 +281,9 @@ namespace System.Reflection
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern int get_metadata_token(RuntimeFieldInfo monoField);
+                internal static int get_metadata_token(RuntimeFieldInfo monoField) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_metadata_token): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern Type[] GetTypeModifiers(bool optional, int genericArgumentPosition = -1);
+                private Type[] GetTypeModifiers(bool optional, int genericArgumentPosition = -1) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetTypeModifiers): cs2wasm's reflection reads the compiler's metadata");
 
         public override Type[] GetOptionalCustomModifiers() => GetCustomModifiers(true);
 

@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -17,8 +20,7 @@ namespace System
         private int num_args;
 #pragma warning restore 169, 414
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private extern void Setup(IntPtr argsp, IntPtr start);
+                private void Setup(IntPtr argsp, IntPtr start) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("__arglist");
 
         public ArgIterator(RuntimeArgumentHandle arglist)
         {
@@ -69,8 +71,7 @@ namespace System
             return result;
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private extern unsafe void IntGetNextArg(void* res);
+                private unsafe void IntGetNextArg(void* res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("__arglist");
 
         [CLSCompliant(false)]
         public TypedReference GetNextArg(RuntimeTypeHandle rth)
@@ -85,8 +86,7 @@ namespace System
             return result;
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private extern unsafe void IntGetNextArgWithType(void* res, IntPtr rth);
+                private unsafe void IntGetNextArgWithType(void* res, IntPtr rth) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("__arglist");
 
         public RuntimeTypeHandle GetNextArgType()
         {
@@ -95,8 +95,7 @@ namespace System
             return new RuntimeTypeHandle(IntGetNextArgType());
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private extern IntPtr IntGetNextArgType();
+                private IntPtr IntGetNextArgType() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("__arglist");
 
         public int GetRemainingCount()
         {

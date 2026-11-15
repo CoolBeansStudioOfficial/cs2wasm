@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Runtime.CompilerServices;
 
 namespace System.Diagnostics
@@ -9,8 +12,7 @@ namespace System.Diagnostics
     {
         public static bool IsAttached => IsAttached_internal();
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern bool IsAttached_internal();
+                private static bool IsAttached_internal() => false;
 
         [Intrinsic]
         public static void Break()
@@ -18,16 +20,14 @@ namespace System.Diagnostics
             // The JIT inserts a breakpoint on the caller.
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern bool IsLogging();
+                public static bool IsLogging() => false;
 
         public static bool Launch()
         {
             throw new NotImplementedException();
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void Log_icall(int level, ref string category, ref string message);
+                private static void Log_icall(int level, ref string category, ref string message) { }
 
         public static void Log(int level, string? category, string? message)
         {

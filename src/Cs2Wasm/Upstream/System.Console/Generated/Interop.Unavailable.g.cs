@@ -3,10 +3,6 @@
 #pragma warning disable CS8826 // partial declarations' parameter names differ
 unsafe partial class Interop {
 unsafe partial class Sys {
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Write)")]
-    internal static unsafe partial int Write(global::System.Runtime.InteropServices.SafeHandle @fd, byte* @buffer, int @bufferSize) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Write)")]
-    internal static unsafe partial int Write(nint @fd, byte* @buffer, int @bufferSize) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_WriteToNonblocking)")]
     internal static unsafe partial int WriteToNonblocking(global::System.Runtime.InteropServices.SafeHandle @fd, byte* @buffer, int @bufferSize) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ConvertErrorPlatformToPal)")]

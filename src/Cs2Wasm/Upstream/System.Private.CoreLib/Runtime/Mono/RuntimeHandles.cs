@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -58,8 +61,7 @@ namespace Mono
             return !(left == right);
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        internal static extern unsafe IntPtr GetTypeFromClass(RuntimeStructs.MonoClass* klass);
+                internal static unsafe IntPtr GetTypeFromClass(RuntimeStructs.MonoClass* klass) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetTypeFromClass): cs2wasm's reflection reads the compiler's metadata");
 
         internal RuntimeTypeHandle GetTypeHandle() => new RuntimeTypeHandle(GetTypeFromClass(value));
     }
@@ -233,8 +235,7 @@ namespace Mono
                 throw new IndexOutOfRangeException();
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern void GPtrArrayFree(RuntimeStructs.GPtrArray* value);
+                private static void GPtrArrayFree(RuntimeStructs.GPtrArray* value) { }
 
         internal static void DestroyAndFree(ref RuntimeGPtrArrayHandle h)
         {

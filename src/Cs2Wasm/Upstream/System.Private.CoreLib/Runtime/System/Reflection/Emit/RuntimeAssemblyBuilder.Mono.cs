@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // System.Reflection.Emit/AssemblyBuilder.cs
 //
@@ -219,12 +222,10 @@ namespace System.Reflection.Emit
         private RuntimeModuleBuilder manifest_module;
         private bool manifest_module_used;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        [DynamicDependency("RuntimeResolve", typeof(RuntimeModuleBuilder))]
-        private static extern void basic_init(RuntimeAssemblyBuilder ab);
+                [DynamicDependency("RuntimeResolve", typeof(RuntimeModuleBuilder))]
+        [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        private static extern void basic_init(RuntimeAssemblyBuilder ab);
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void UpdateNativeCustomAttributes(RuntimeAssemblyBuilder ab);
+                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        private static extern void UpdateNativeCustomAttributes(RuntimeAssemblyBuilder ab);
 
         [DynamicDependency(nameof(access))] // Automatically keeps all previous fields too due to StructLayout
         internal RuntimeAssemblyBuilder(AssemblyName n, AssemblyBuilderAccess access)

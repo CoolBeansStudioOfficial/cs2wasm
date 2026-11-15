@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Runtime.CompilerServices;
 
 namespace System
@@ -24,11 +27,9 @@ namespace System
         // cs2wasm: a new string of `length` chars, zeroed, with its terminator
         internal static string FastAllocateString(int length) => Cs2Wasm.Runtime.Rt.Take<string>(Cs2Wasm.Runtime.Rt.AllocString(length));
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern string InternalIsInterned(string str);
+                private static string InternalIsInterned(string str) => str;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern string InternalIntern(string str);
+                private static string InternalIntern(string str) => str;
 
 #if TARGET_64BIT
         internal const int OFFSET_TO_STRING = 20;

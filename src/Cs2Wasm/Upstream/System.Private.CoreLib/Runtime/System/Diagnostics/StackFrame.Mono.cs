@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -57,9 +60,8 @@ namespace System.Diagnostics
         private static bool AppendStackFrameWithoutMethodBase(StringBuilder sb) => false;
 #pragma warning restore IDE0060
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern bool GetFrameInfo(int skipFrames, bool needFileInfo,
+                private static bool GetFrameInfo(int skipFrames, bool needFileInfo,
                                                 ObjectHandleOnStack out_method, ObjectHandleOnStack out_file,
-                                                out int ilOffset, out int nativeOffset, out int line, out int column);
+                                                out int ilOffset, out int nativeOffset, out int line, out int column) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("StackFrame (the stack trace is text)");
     }
 }

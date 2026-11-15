@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
@@ -61,13 +64,10 @@ namespace System.Reflection.Metadata
             return ApplyUpdateEnabled(justComponentCheck: 1) != 0 ? caps : string.Empty;
         }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern int ApplyUpdateEnabled(int justComponentCheck);
+                private static int ApplyUpdateEnabled(int justComponentCheck) => 0;
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern string GetApplyUpdateCapabilities();
+                private static string GetApplyUpdateCapabilities() => "";
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern unsafe void ApplyUpdate_internal(IntPtr base_assm, byte* dmeta_bytes, int dmeta_length, byte* dil_bytes, int dil_length, byte* dpdb_bytes, int dpdb_length);
+                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        private static extern unsafe void ApplyUpdate_internal(IntPtr base_assm, byte* dmeta_bytes, int dmeta_length, byte* dil_bytes, int dil_length, byte* dpdb_bytes, int dpdb_length);
     }
 }

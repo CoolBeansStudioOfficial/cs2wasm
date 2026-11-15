@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // Safe wrapper for a string and its UTF8 encoding
 //
@@ -20,16 +23,14 @@ namespace Mono
         private readonly string? str;
         private IntPtr marshaled_string;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern IntPtr StringToUtf8_icall(ref string str);
+                private static IntPtr StringToUtf8_icall(ref string str) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("StringToUtf8_icall");
 
         public static IntPtr StringToUtf8(string str)
         {
             return StringToUtf8_icall(ref str);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern void GFree(IntPtr ptr);
+                public static void GFree(IntPtr ptr) { }
 
         public SafeStringMarshal(string? str)
         {

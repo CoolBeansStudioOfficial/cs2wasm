@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
@@ -33,8 +36,7 @@ namespace System.Diagnostics
 
     public partial class StackTrace
     {
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern void GetTrace(ObjectHandleOnStack ex, ObjectHandleOnStack res, int skipFrames, bool needFileInfo);
+                internal static void GetTrace(ObjectHandleOnStack ex, ObjectHandleOnStack res, int skipFrames, bool needFileInfo) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("StackTrace frames (the stack trace is text)");
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
             Justification = "StackFrame.GetMethod is getting compared to null but nothing else on it is touched.")]

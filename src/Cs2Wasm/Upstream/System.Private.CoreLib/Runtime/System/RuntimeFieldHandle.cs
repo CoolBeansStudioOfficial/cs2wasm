@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Reflection;
@@ -70,25 +73,21 @@ namespace System
             return !left.Equals(right);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void SetValueInternal(FieldInfo fi, object? obj, object? value);
+                private static void SetValueInternal(FieldInfo fi, object? obj, object? value) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's SetValueInternal): cs2wasm's reflection reads the compiler's metadata");
 
         internal static void SetValue(RuntimeFieldInfo field, object? obj, object? value, RuntimeType? _, FieldAttributes _1, RuntimeType? _2, ref bool _3)
         {
             SetValueInternal(field, obj, value);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern unsafe object GetValueDirect(RuntimeFieldInfo field, RuntimeType fieldType, void* pTypedRef, RuntimeType? contextType);
+                internal static unsafe object GetValueDirect(RuntimeFieldInfo field, RuntimeType fieldType, void* pTypedRef, RuntimeType? contextType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetValueDirect): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern unsafe void SetValueDirect(RuntimeFieldInfo field, RuntimeType fieldType, void* pTypedRef, object value, RuntimeType? contextType);
+                internal static unsafe void SetValueDirect(RuntimeFieldInfo field, RuntimeType fieldType, void* pTypedRef, object value, RuntimeType? contextType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's SetValueDirect): cs2wasm's reflection reads the compiler's metadata");
 
         internal static ref byte GetFieldDataReference(object target, RuntimeFieldInfo field)
             => ref GetFieldDataReferenceInternal(target, field.FieldHandle.Value);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern ref byte GetFieldDataReferenceInternal(object target, IntPtr field);
+                private static ref byte GetFieldDataReferenceInternal(object target, IntPtr field) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetFieldDataReferenceInternal): cs2wasm's reflection reads the compiler's metadata");
 
         internal static ref byte GetFieldDataReference(ref byte target, RuntimeFieldInfo field)
         {

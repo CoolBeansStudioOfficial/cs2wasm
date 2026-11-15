@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // (C) 2001 Ximian, Inc.  http://www.ximian.com
 // Copyright (C) 2004-2005 Novell, Inc (http://www.novell.com)
@@ -72,15 +75,12 @@ namespace System.Reflection
         private GetterAdapter? cached_getter;
 #pragma warning restore 649
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern void get_property_info(RuntimePropertyInfo prop, ref MonoPropertyInfo info,
-                                   PInfo req_info);
+                internal static void get_property_info(RuntimePropertyInfo prop, ref MonoPropertyInfo info,
+                                   PInfo req_info) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_property_info): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern Type[] GetTypeModifiers(RuntimePropertyInfo prop, bool optional, int genericArgumentPosition = -1);
+                internal static Type[] GetTypeModifiers(RuntimePropertyInfo prop, bool optional, int genericArgumentPosition = -1) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetTypeModifiers): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern object get_default_value(RuntimePropertyInfo prop);
+                internal static object get_default_value(RuntimePropertyInfo prop) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_default_value): cs2wasm's reflection reads the compiler's metadata");
 
 
         internal BindingFlags BindingFlags
@@ -493,11 +493,9 @@ namespace System.Reflection
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern int get_metadata_token(RuntimePropertyInfo monoProperty);
+                internal static int get_metadata_token(RuntimePropertyInfo monoProperty) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_metadata_token): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern PropertyInfo internal_from_handle_type(IntPtr event_handle, IntPtr type_handle);
+                private static PropertyInfo internal_from_handle_type(IntPtr event_handle, IntPtr type_handle) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's internal_from_handle_type): cs2wasm's reflection reads the compiler's metadata");
 
         internal static PropertyInfo GetPropertyFromHandle(RuntimePropertyHandle handle, RuntimeTypeHandle reflectedType)
         {

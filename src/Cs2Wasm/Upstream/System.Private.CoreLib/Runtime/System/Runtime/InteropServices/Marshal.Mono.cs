@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
@@ -12,6 +15,8 @@ namespace System.Runtime.InteropServices
 {
     public partial class Marshal
     {
+        [ThreadStatic] private static int t_lastPInvokeError;
+
         /// <summary>
         /// Get the last platform invoke error on the current thread
         /// </summary>
@@ -20,29 +25,24 @@ namespace System.Runtime.InteropServices
         /// The last platform invoke error corresponds to the error set by either the most recent platform
         /// invoke that was configured to set the last error or a call to <see cref="SetLastPInvokeError(int)" />.
         /// </remarks>
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern int GetLastPInvokeError();
+                public static int GetLastPInvokeError() => t_lastPInvokeError;
 
         /// <summary>
         /// Set the last platform invoke error on the current thread
         /// </summary>
         /// <param name="error">Error to set</param>
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public static extern void SetLastPInvokeError(int error);
+                public static void SetLastPInvokeError(int error) { t_lastPInvokeError = error; }
 
         [RequiresDynamicCode("Marshalling code for the object might not be available. Use the DestroyStructure<T> overload instead.")]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        [EditorBrowsable(EditorBrowsableState.Never)]
-        public static extern void DestroyStructure(IntPtr ptr, Type structuretype);
+                [EditorBrowsable(EditorBrowsableState.Never)]
+        [Cs2Wasm.Runtime.MissingCapability("platform invoke")]        public static extern void DestroyStructure(IntPtr ptr, Type structuretype);
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        [EditorBrowsable(EditorBrowsableState.Never)]
-        public static extern IntPtr OffsetOf(Type t, string fieldName);
+                [EditorBrowsable(EditorBrowsableState.Never)]
+        [Cs2Wasm.Runtime.MissingCapability("platform invoke")]        public static extern IntPtr OffsetOf(Type t, string fieldName);
 
         [RequiresDynamicCode("Marshalling code for the object might not be available. Use the StructureToPtr<T> overload instead.")]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        [EditorBrowsable(EditorBrowsableState.Never)]
-        public static extern void StructureToPtr(object structure, IntPtr ptr, bool fDeleteOld);
+                [EditorBrowsable(EditorBrowsableState.Never)]
+        [Cs2Wasm.Runtime.MissingCapability("platform invoke")]        public static extern void StructureToPtr(object structure, IntPtr ptr, bool fDeleteOld);
 
         internal static bool IsPinnable(object? obj)
         {
@@ -62,14 +62,11 @@ namespace System.Runtime.InteropServices
             PrelinkInternal(m);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void PtrToStructureHelper(IntPtr ptr, object structure, bool allowValueClasses);
+                [Cs2Wasm.Runtime.MissingCapability("platform invoke")]        private static extern void PtrToStructureHelper(IntPtr ptr, object structure, bool allowValueClasses);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern void GetDelegateForFunctionPointerInternal(QCallTypeHandle t, IntPtr ptr, ObjectHandleOnStack res);
+                [Cs2Wasm.Runtime.MissingCapability("platform invoke")]        private static extern void GetDelegateForFunctionPointerInternal(QCallTypeHandle t, IntPtr ptr, ObjectHandleOnStack res);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern IntPtr GetFunctionPointerForDelegateInternal(Delegate d);
+                [Cs2Wasm.Runtime.MissingCapability("platform invoke")]        private static extern IntPtr GetFunctionPointerForDelegateInternal(Delegate d);
 
         private static Delegate GetDelegateForFunctionPointerInternal(IntPtr ptr, RuntimeType t)
         {
@@ -78,11 +75,9 @@ namespace System.Runtime.InteropServices
             return res!;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void PrelinkInternal(MethodInfo m);
+                [Cs2Wasm.Runtime.MissingCapability("platform invoke")]        private static extern void PrelinkInternal(MethodInfo m);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern int SizeOfHelper(QCallTypeHandle t, bool throwIfNotMarshalable);
+                [Cs2Wasm.Runtime.MissingCapability("platform invoke")]        private static extern int SizeOfHelper(QCallTypeHandle t, bool throwIfNotMarshalable);
 
         private static int SizeOfHelper(RuntimeType rttype, bool throwIfNotMarshalable)
         {

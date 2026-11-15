@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Reflection;
@@ -38,8 +41,7 @@ namespace System.Runtime.Loader
         {
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void PrepareForAssemblyLoadContextRelease(IntPtr nativeAssemblyLoadContext, IntPtr assemblyLoadContextStrong);
+                [Cs2Wasm.Runtime.MissingCapability("loading assemblies at run time")]        private static extern void PrepareForAssemblyLoadContextRelease(IntPtr nativeAssemblyLoadContext, IntPtr assemblyLoadContextStrong);
 
         [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
         [System.Security.DynamicSecurityMethod] // Methods containing StackCrawlMark local var has to be marked DynamicSecurityMethod
@@ -69,8 +71,7 @@ namespace System.Runtime.Loader
             return InternalGetLoadedAssemblies();
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern IntPtr GetLoadContextForAssembly(RuntimeAssembly rtAsm);
+                [Cs2Wasm.Runtime.MissingCapability("loading assemblies at run time")]        private static extern IntPtr GetLoadContextForAssembly(RuntimeAssembly rtAsm);
 
         // Returns the load context in which the specified assembly has been loaded
         public static AssemblyLoadContext? GetLoadContext(Assembly assembly)
@@ -102,18 +103,14 @@ namespace System.Runtime.Loader
         }
 
         [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern Assembly InternalLoadFile(IntPtr nativeAssemblyLoadContext, string? assemblyFile, ref StackCrawlMark stackMark);
+                [Cs2Wasm.Runtime.MissingCapability("loading assemblies at run time")]        private static extern Assembly InternalLoadFile(IntPtr nativeAssemblyLoadContext, string? assemblyFile, ref StackCrawlMark stackMark);
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern IntPtr InternalInitializeNativeALC(IntPtr thisHandlePtr, IntPtr name, bool representsTPALoadContext, bool isCollectible);
+                [Cs2Wasm.Runtime.MissingCapability("loading assemblies at run time")]        private static extern IntPtr InternalInitializeNativeALC(IntPtr thisHandlePtr, IntPtr name, bool representsTPALoadContext, bool isCollectible);
 
         [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern Assembly InternalLoadFromStream(IntPtr nativeAssemblyLoadContext, IntPtr assm, int assmLength, IntPtr symbols, int symbolsLength);
+                [Cs2Wasm.Runtime.MissingCapability("loading assemblies at run time")]        private static extern Assembly InternalLoadFromStream(IntPtr nativeAssemblyLoadContext, IntPtr assm, int assmLength, IntPtr symbols, int symbolsLength);
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern Assembly[] InternalGetLoadedAssemblies();
+                private static Assembly[] InternalGetLoadedAssemblies() => System.Array.Empty<System.Reflection.Assembly>();
 
         // Invoked by Mono to resolve using the load method.
         private static RuntimeAssembly? MonoResolveUsingLoad(IntPtr gchALC, string assemblyName)

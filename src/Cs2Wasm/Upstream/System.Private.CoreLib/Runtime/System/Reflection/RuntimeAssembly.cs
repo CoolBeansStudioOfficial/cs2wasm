@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // Copyright (C) 2010 Novell, Inc (http://www.novell.com)
 //
@@ -75,8 +78,7 @@ namespace System.Reflection
 
         private ResolveEventHolder? resolve_event_holder;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetEntryPoint(QCallAssembly assembly, ObjectHandleOnStack res);
+                private static void GetEntryPoint(QCallAssembly assembly, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetEntryPoint): cs2wasm's reflection reads the compiler's metadata");
 
         public override MethodInfo? EntryPoint
         {
@@ -136,8 +138,7 @@ namespace System.Reflection
         // TODO: consider a dedicated icall instead
         public override bool IsCollectible => AssemblyLoadContext.GetLoadContext((Assembly)this)!.IsCollectible;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetManifestResourceNames(QCallAssembly assembly_h, ObjectHandleOnStack res);
+                private static void GetManifestResourceNames(QCallAssembly assembly_h, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetManifestResourceNames): cs2wasm's reflection reads the compiler's metadata");
 
         public override string[] GetManifestResourceNames()
         {
@@ -147,8 +148,7 @@ namespace System.Reflection
             return res!;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetExportedTypes(QCallAssembly assembly_h, ObjectHandleOnStack res);
+                private static void GetExportedTypes(QCallAssembly assembly_h, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetExportedTypes): cs2wasm's reflection reads the compiler's metadata");
 
         [RequiresUnreferencedCode("Types might be removed")]
         public override Type[] GetExportedTypes()
@@ -159,8 +159,7 @@ namespace System.Reflection
             return res!;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetTopLevelForwardedTypes(QCallAssembly assembly_h, ObjectHandleOnStack res);
+                private static void GetTopLevelForwardedTypes(QCallAssembly assembly_h, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetTopLevelForwardedTypes): cs2wasm's reflection reads the compiler's metadata");
 
         [RequiresUnreferencedCode("Types might be removed")]
         public override Type[] GetForwardedTypes()
@@ -463,8 +462,7 @@ namespace System.Reflection
             return assembly;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetInfo(QCallAssembly assembly, ObjectHandleOnStack res, AssemblyInfoKind kind);
+                private static void GetInfo(QCallAssembly assembly, ObjectHandleOnStack res, AssemblyInfoKind kind) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetInfo): cs2wasm's reflection reads the compiler's metadata");
 
         private string? GetInfo(AssemblyInfoKind kind)
         {
@@ -480,23 +478,17 @@ namespace System.Reflection
             return InternalTryGetRawMetadata(new QCallAssembly(ref this_assembly), out blob, out length);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern bool GetManifestResourceInfoInternal(QCallAssembly assembly, string name, ManifestResourceInfo info);
+                private static bool GetManifestResourceInfoInternal(QCallAssembly assembly, string name, ManifestResourceInfo info) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetManifestResourceInfoInternal): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern IntPtr /* byte* */ GetManifestResourceInternal(QCallAssembly assembly, string name, out int size, ObjectHandleOnStack module);
+                private static IntPtr /* byte* */ GetManifestResourceInternal(QCallAssembly assembly, string name, out int size, ObjectHandleOnStack module) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetManifestResourceInternal): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetManifestModuleInternal(QCallAssembly assembly, ObjectHandleOnStack res);
+                private static void GetManifestModuleInternal(QCallAssembly assembly, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetManifestModuleInternal): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetModulesInternal(QCallAssembly assembly, ObjectHandleOnStack res);
+                private static void GetModulesInternal(QCallAssembly assembly, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetModulesInternal): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern IntPtr InternalGetReferencedAssemblies(Assembly assembly);
+                private static IntPtr InternalGetReferencedAssemblies(Assembly assembly) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalGetReferencedAssemblies): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern unsafe bool InternalTryGetRawMetadata(QCallAssembly assembly, out byte* blob, out int length);
+                private static unsafe bool InternalTryGetRawMetadata(QCallAssembly assembly, out byte* blob, out int length) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalTryGetRawMetadata): cs2wasm's reflection reads the compiler's metadata");
 
         internal string? GetSimpleName()
         {

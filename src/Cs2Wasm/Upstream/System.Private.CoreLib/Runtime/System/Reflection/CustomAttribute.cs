@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // (c) 2002,2003 Ximian, Inc. (http://www.ximian.com)
 // Copyright (C) 2004 Novell, Inc (http://www.novell.com)
@@ -52,8 +55,7 @@ namespace System.Reflection
             return obj.GetType().Assembly != corlib;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern Attribute[] GetCustomAttributesInternal(ICustomAttributeProvider obj, Type attributeType, bool pseudoAttrs);
+                internal static Attribute[] GetCustomAttributesInternal(ICustomAttributeProvider obj, Type attributeType, bool pseudoAttrs) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetCustomAttributesInternal): cs2wasm's reflection reads the compiler's metadata");
 
         internal static object[]? GetPseudoCustomAttributes(ICustomAttributeProvider obj, Type attributeType)
         {
@@ -311,11 +313,10 @@ namespace System.Reflection
             return GetCustomAttributes(obj, typeof(CustomAttribute), inherit);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        [DynamicDependency("#ctor(System.Reflection.ConstructorInfo,System.Reflection.Assembly,System.IntPtr,System.UInt32)", typeof(RuntimeCustomAttributeData))]
+                [DynamicDependency("#ctor(System.Reflection.ConstructorInfo,System.Reflection.Assembly,System.IntPtr,System.UInt32)", typeof(RuntimeCustomAttributeData))]
         [DynamicDependency("#ctor(System.Reflection.MemberInfo,System.Object)", typeof(CustomAttributeNamedArgument))]
         [DynamicDependency("#ctor(System.Type,System.Object)", typeof(CustomAttributeTypedArgument))]
-        private static extern CustomAttributeData[] GetCustomAttributesDataInternal(ICustomAttributeProvider obj);
+        private static CustomAttributeData[] GetCustomAttributesDataInternal(ICustomAttributeProvider obj) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetCustomAttributesDataInternal): cs2wasm's reflection reads the compiler's metadata");
 
         internal static IList<CustomAttributeData> GetCustomAttributesData(ICustomAttributeProvider obj, bool inherit = false)
         {
@@ -593,8 +594,7 @@ namespace System.Reflection
             return false;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern bool IsDefinedInternal(ICustomAttributeProvider obj, Type AttributeType);
+                private static bool IsDefinedInternal(ICustomAttributeProvider obj, Type AttributeType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's IsDefinedInternal): cs2wasm's reflection reads the compiler's metadata");
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2075:UnrecognizedReflectionPattern",
             Justification = "Linker analyzes base properties and marks them")]

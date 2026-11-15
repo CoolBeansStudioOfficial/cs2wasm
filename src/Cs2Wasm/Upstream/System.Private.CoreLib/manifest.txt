@@ -1,5 +1,6 @@
 # System.Private.CoreLib for cs2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.
 # define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: cs2wasm supplies its own)
+# | replaced <path> (an upstream file cs2wasm replaces with its own)
 define NET
 define NETCOREAPP
 define NET11_0
@@ -25,6 +26,8 @@ define MONO_FEATURE_SRE
 define TARGET_32BIT
 define TARGET_BROWSER
 define FEATURE_MULTITHREADING
+replaced src/libraries/System.Private.CoreLib/src/System/Threading/ThreadPool.Browser.Threads.cs  # cs2wasm's workers have no JS event loop to yield to
+replaced src/libraries/System.Private.CoreLib/src/System/TimeZoneInfo.Unix.NonAndroid.cs  # no time zone database: the local zone has the engine clock's offset (Boundary/TimeZoneInfo.Cs2Wasm.cs)
 runtime src/mono/System.Private.CoreLib/src/Mono/RuntimeHandles.cs
 runtime src/mono/System.Private.CoreLib/src/System/ArgIterator.cs
 runtime src/mono/System.Private.CoreLib/src/System/Array.Mono.cs
@@ -1692,7 +1695,6 @@ file src/libraries/System.Private.CoreLib/src/System/Threading/LowLevelMonitor.U
 file src/libraries/System.Private.CoreLib/src/System/Threading/Thread.Unix.cs
 file src/libraries/System.Private.CoreLib/src/System/Threading/TimerQueue.Unix.cs
 file src/libraries/System.Private.CoreLib/src/System/TimeZoneInfo.Unix.cs
-file src/libraries/System.Private.CoreLib/src/System/TimeZoneInfo.Unix.NonAndroid.cs
 file src/libraries/System.Private.CoreLib/src/System/IO/FileStatus.SetTimes.OtherUnix.cs
 file src/libraries/System.Private.CoreLib/src/System/AppContext.Browser.cs
 file src/libraries/System.Private.CoreLib/src/System/Environment.Browser.cs

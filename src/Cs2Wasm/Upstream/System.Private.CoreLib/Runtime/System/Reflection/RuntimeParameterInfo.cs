@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Collections.Generic;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
@@ -300,8 +303,7 @@ namespace System.Reflection
             return RuntimeCustomAttributeData.GetCustomAttributesInternal(this);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal extern int GetMetadataToken();
+                internal int GetMetadataToken() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetMetadataToken): cs2wasm's reflection reads the compiler's metadata");
 
         public override Type[] GetOptionalCustomModifiers() =>
             MemberImpl is DynamicMethod ? Type.EmptyTypes : GetCustomModifiers(true);
@@ -393,8 +395,7 @@ namespace System.Reflection
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern Type[] GetTypeModifiers(Type type, MemberInfo member, int position, bool optional, int genericArgumentPosition = -1);
+                internal static Type[] GetTypeModifiers(Type type, MemberInfo member, int position, bool optional, int genericArgumentPosition = -1) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetTypeModifiers): cs2wasm's reflection reads the compiler's metadata");
 
         internal static ParameterInfo New(ParameterInfo pinfo, Type? type, MemberInfo member, int position)
         {

@@ -1633,10 +1633,11 @@ sealed partial class FunctionCompiler
     void ReportMissing(IMethodSymbol m, Location? loc)
     {
         loc ??= m.Locations.FirstOrDefault(l => l.IsInSource);
-        var name = m.ToDisplayString();
+        var name = m.ToDisplayString() + D.WhyReached(D.Compiling);
         if (Environment.GetEnvironmentVariable("CS2WASM_DEBUG") != null)
             Console.Error.WriteLine($"missing {name} asm={m.ContainingAssembly?.Name} type-asm={m.ContainingType?.ContainingAssembly?.Name} key={Types.MethodKey(m)} {Environment.StackTrace}");
         var def = m.OriginalDefinition;
+        if (Driver.MissingCapability(def) is { } needed && !needed.StartsWith("platform invoke")) { D.Report(Diags.SandboxCapability, loc, name, needed); return; }
         if (def.GetDllImportData() != null || def.GetAttributes().Any(a => a.AttributeClass?.Name is "DllImportAttribute" or "LibraryImportAttribute"))
         { D.Report(Diags.PlatformInvoke, loc, name); return; }
         if (!D.IsLibrary(m) && def.Locations.Any(l => l.IsInSource))

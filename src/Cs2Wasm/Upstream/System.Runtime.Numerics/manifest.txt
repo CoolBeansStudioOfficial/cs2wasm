@@ -1,5 +1,6 @@
 # System.Runtime.Numerics for cs2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.
 # define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: cs2wasm supplies its own)
+# | replaced <path> (an upstream file cs2wasm replaces with its own)
 define NET
 define NETCOREAPP
 define NET11_0

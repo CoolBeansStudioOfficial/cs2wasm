@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // System.Reflection.Emit.TypeBuilder.cs
 //
@@ -643,8 +646,7 @@ namespace System.Reflection.Emit
             "The parent and created fields have DynamicallyAccessedMembersAttribute requirements, but creating the runtime class is safe " +
             "because the annotations fully preserve the parent type, and the type created via Reflection.Emit is not subject to trimming.")]
         [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.All)]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern TypeInfo create_runtime_class();
+                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        private extern TypeInfo create_runtime_class();
 
         private bool is_nested_in(Type? t)
         {

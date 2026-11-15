@@ -133,12 +133,6 @@ unsafe partial class Normaliz {
 }
 unsafe partial class Interop {
 unsafe partial class Sys {
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ConvertErrorPlatformToPal)")]
-    internal static partial global::Interop.Error ConvertErrorPlatformToPal(int @platformErrno) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ConvertErrorPalToPlatform)")]
-    internal static partial int ConvertErrorPalToPlatform(global::Interop.Error @error) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_StrErrorR)")]
-    private static unsafe partial byte* StrErrorR(int @platformErrno, byte* @buffer, int @bufferSize) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Access)")]
     internal static partial int Access(string @path, global::Interop.Sys.AccessMode @mode) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ChDir)")]
@@ -185,8 +179,6 @@ unsafe partial class Sys {
     private static unsafe partial byte* GetCwd(byte* @buffer, int @bufferLength) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetTimeZoneData)")]
     internal static partial nint GetTimeZoneData(string @fileName, scoped out int @length) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetEnv)")]
-    internal static unsafe partial byte* GetEnv(string @name) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetEnviron)")]
     internal static unsafe partial byte** GetEnviron() => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FreeEnviron)")]
@@ -197,16 +189,8 @@ unsafe partial class Sys {
     internal static partial int GetOSArchitecture() => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetProcessPath)")]
     internal static partial string GetProcessPath() => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetNonCryptographicallySecureRandomBytes)")]
-    internal static unsafe partial void GetNonCryptographicallySecureRandomBytes(byte* @buffer, int @length) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetCryptographicallySecureRandomBytes)")]
     internal static unsafe partial int GetCryptographicallySecureRandomBytes(byte* @buffer, int @length) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetSystemTimeAsTicks)")]
-    internal static partial long GetSystemTimeAsTicks() => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetLowResolutionTimestamp)")]
-    internal static partial long GetLowResolutionTimestamp() => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetTimestamp)")]
-    internal static partial long GetTimestamp() => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetUnixVersion)")]
     private static partial int GetUnixVersion(byte[] @version, ref int @capacity) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetUnixRelease)")]
@@ -227,20 +211,6 @@ unsafe partial class Sys {
     internal static unsafe partial void Log(byte* @buffer, int @count) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LogError)")]
     internal static unsafe partial void LogError(byte* @buffer, int @count) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LowLevelMonitor_Create)")]
-    internal static partial nint LowLevelMonitor_Create() => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LowLevelMonitor_Destroy)")]
-    internal static partial void LowLevelMonitor_Destroy(nint @monitor) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LowLevelMonitor_Acquire)")]
-    internal static partial void LowLevelMonitor_Acquire(nint @monitor) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LowLevelMonitor_Release)")]
-    internal static partial void LowLevelMonitor_Release(nint @monitor) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LowLevelMonitor_Wait)")]
-    internal static partial void LowLevelMonitor_Wait(nint @monitor) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LowLevelMonitor_TimedWait)")]
-    internal static partial bool LowLevelMonitor_TimedWait(nint @monitor, int @timeoutMilliseconds) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LowLevelMonitor_Signal_Release)")]
-    internal static partial void LowLevelMonitor_Signal_Release(nint @monitor) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LSeek)")]
     internal static partial long LSeek(global::Microsoft.Win32.SafeHandles.SafeFileHandle @fd, long @offset, global::Interop.Sys.SeekWhence @whence) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_AlignedAlloc)")]
@@ -307,8 +277,6 @@ unsafe partial class Sys {
     internal static partial int Rename(global::System.ReadOnlySpan<char> @oldPath, global::System.ReadOnlySpan<char> @newPath) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_RmDir)")]
     internal static partial int RmDir(string @path) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_SchedGetCpu)")]
-    internal static partial int SchedGetCpu() => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FStat)")]
     internal static partial int FStat(global::System.Runtime.InteropServices.SafeHandle @fd, scoped out global::Interop.Sys.FileStatus @output) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Stat)")]

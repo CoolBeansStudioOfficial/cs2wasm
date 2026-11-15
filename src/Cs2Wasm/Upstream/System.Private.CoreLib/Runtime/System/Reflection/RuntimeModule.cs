@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // Copyright (C) 2010 Novell, Inc (http://www.novell.com)
 //
@@ -397,41 +400,29 @@ namespace System.Reflection
         private protected override ModuleHandle GetModuleHandleImpl() => new ModuleHandle(_impl);
 
         // This calls ves_icall_reflection_get_token, so needs a Module argument
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern int get_MetadataToken(Module module);
+                internal static int get_MetadataToken(Module module) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_MetadataToken): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern int GetMDStreamVersion(IntPtr module);
+                internal static int GetMDStreamVersion(IntPtr module) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetMDStreamVersion): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern Type[] InternalGetTypes(IntPtr module);
+                internal static Type[] InternalGetTypes(IntPtr module) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalGetTypes): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetGuidInternal(IntPtr module, byte[] guid);
+                private static void GetGuidInternal(IntPtr module, byte[] guid) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetGuidInternal): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern Type GetGlobalType(IntPtr module);
+                internal static Type GetGlobalType(IntPtr module) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetGlobalType): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern IntPtr ResolveTypeToken(IntPtr module, int token, IntPtr[]? type_args, IntPtr[]? method_args, out ResolveTokenError error);
+                internal static IntPtr ResolveTypeToken(IntPtr module, int token, IntPtr[]? type_args, IntPtr[]? method_args, out ResolveTokenError error) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's ResolveTypeToken): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern IntPtr ResolveMethodToken(IntPtr module, int token, IntPtr[]? type_args, IntPtr[]? method_args, out ResolveTokenError error);
+                internal static IntPtr ResolveMethodToken(IntPtr module, int token, IntPtr[]? type_args, IntPtr[]? method_args, out ResolveTokenError error) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's ResolveMethodToken): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern IntPtr ResolveFieldToken(IntPtr module, int token, IntPtr[]? type_args, IntPtr[]? method_args, out ResolveTokenError error);
+                internal static IntPtr ResolveFieldToken(IntPtr module, int token, IntPtr[]? type_args, IntPtr[]? method_args, out ResolveTokenError error) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's ResolveFieldToken): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern string ResolveStringToken(IntPtr module, int token, out ResolveTokenError error);
+                internal static string ResolveStringToken(IntPtr module, int token, out ResolveTokenError error) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's ResolveStringToken): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern MemberInfo ResolveMemberToken(IntPtr module, int token, IntPtr[]? type_args, IntPtr[]? method_args, out ResolveTokenError error);
+                internal static MemberInfo ResolveMemberToken(IntPtr module, int token, IntPtr[]? type_args, IntPtr[]? method_args, out ResolveTokenError error) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's ResolveMemberToken): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern byte[] ResolveSignature(IntPtr module, int metadataToken, out ResolveTokenError error);
+                internal static byte[] ResolveSignature(IntPtr module, int metadataToken, out ResolveTokenError error) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's ResolveSignature): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern void GetPEKind(IntPtr module, out PortableExecutableKinds peKind, out ImageFileMachine machine);
+                internal static void GetPEKind(IntPtr module, out PortableExecutableKinds peKind, out ImageFileMachine machine) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetPEKind): cs2wasm's reflection reads the compiler's metadata");
     }
 
     internal enum ResolveTokenError

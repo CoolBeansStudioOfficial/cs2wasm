@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // (C) 2001 Ximian, Inc.  http://www.ximian.com
 // Copyright (C) 2004-2005 Novell, Inc (http://www.novell.com)
@@ -83,11 +86,9 @@ namespace System.Reflection
         private CallingConventions callconv;
 #pragma warning restore 649
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void get_method_info(IntPtr handle, out MonoMethodInfo info);
+                private static void get_method_info(IntPtr handle, out MonoMethodInfo info) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_method_info): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int get_method_attributes(IntPtr handle);
+                private static int get_method_attributes(IntPtr handle) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_method_attributes): cs2wasm's reflection reads the compiler's metadata");
 
         internal static MonoMethodInfo GetMethodInfo(IntPtr handle)
         {
@@ -121,16 +122,14 @@ namespace System.Reflection
             return GetMethodInfo(handle).iattrs;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern ParameterInfo[] get_parameter_info(IntPtr handle, MemberInfo member);
+                private static ParameterInfo[] get_parameter_info(IntPtr handle, MemberInfo member) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_parameter_info): cs2wasm's reflection reads the compiler's metadata");
 
         internal static ParameterInfo[] GetParametersInfo(IntPtr handle, MemberInfo member)
         {
             return get_parameter_info(handle, member);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern MarshalAsAttribute get_retval_marshal(IntPtr handle);
+                private static MarshalAsAttribute get_retval_marshal(IntPtr handle) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_retval_marshal): cs2wasm's reflection reads the compiler's metadata");
 
         internal static ParameterInfo GetReturnParameterInfo(RuntimeMethodInfo method)
         {
@@ -247,9 +246,8 @@ namespace System.Reflection
             return GetMethodFromHandleInternalType_native(handle.Value, reflectedType.Value, false);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        [DynamicDependency("#ctor(System.Reflection.ExceptionHandlingClause[],System.Reflection.LocalVariableInfo[],System.Byte[],System.Boolean,System.Int32,System.Int32)", typeof(RuntimeMethodBody))]
-        internal static extern MethodBody GetMethodBodyInternal(IntPtr handle);
+                [DynamicDependency("#ctor(System.Reflection.ExceptionHandlingClause[],System.Reflection.LocalVariableInfo[],System.Byte[],System.Boolean,System.Int32,System.Int32)", typeof(RuntimeMethodBody))]
+        internal static MethodBody GetMethodBodyInternal(IntPtr handle) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetMethodBodyInternal): cs2wasm's reflection reads the compiler's metadata");
 
         [RequiresUnreferencedCode("Trimming may change method bodies. For example it can change some instructions, remove branches or local variables.")]
         internal static MethodBody GetMethodBody(IntPtr handle)
@@ -262,8 +260,7 @@ namespace System.Reflection
             return GetMethodFromHandleInternalType_native(method_handle, type_handle, true);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern MethodBase GetMethodFromHandleInternalType_native(IntPtr method_handle, IntPtr type_handle, bool genericCheck);
+                private static MethodBase GetMethodFromHandleInternalType_native(IntPtr method_handle, IntPtr type_handle, bool genericCheck) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetMethodFromHandleInternalType_native): cs2wasm's reflection reads the compiler's metadata");
 
         internal RuntimeMethodInfo()
         {
@@ -274,14 +271,11 @@ namespace System.Reflection
             this.mhandle = mhandle.Value;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern string get_name(MethodBase method);
+                internal static string get_name(MethodBase method) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_name): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern RuntimeMethodInfo get_base_method(RuntimeMethodInfo method, bool definition);
+                internal static RuntimeMethodInfo get_base_method(RuntimeMethodInfo method, bool definition) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_base_method): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern int get_metadata_token(RuntimeMethodInfo method);
+                internal static int get_metadata_token(RuntimeMethodInfo method) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_metadata_token): cs2wasm's reflection reads the compiler's metadata");
 
         public override MethodInfo GetBaseDefinition()
         {
@@ -379,8 +373,7 @@ namespace System.Reflection
          * The exc argument is used to capture exceptions thrown by the icall.
          * Exceptions thrown by the called method propagate normally.
          */
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal extern object? InternalInvoke(object? obj, IntPtr *args, out Exception? exc);
+                internal object? InternalInvoke(object? obj, IntPtr *args, out Exception? exc) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalInvoke): cs2wasm's reflection reads the compiler's metadata");
 
         public override RuntimeMethodHandle MethodHandle
         {
@@ -444,8 +437,7 @@ namespace System.Reflection
             return CustomAttribute.GetCustomAttributes(this, attributeType, inherit);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal extern void GetPInvoke(out PInvokeAttributes flags, out string entryPoint, out string dllName);
+                internal void GetPInvoke(out PInvokeAttributes flags, out string entryPoint, out string dllName) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetPInvoke): cs2wasm's reflection reads the compiler's metadata");
 
         internal object[]? GetPseudoCustomAttributes()
         {
@@ -649,14 +641,11 @@ namespace System.Reflection
             return ret;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern MethodInfo MakeGenericMethod_impl(Type[] types);
+                private MethodInfo MakeGenericMethod_impl(Type[] types) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's MakeGenericMethod_impl): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        public extern override Type[] GetGenericArguments();
+                public override Type[] GetGenericArguments() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetGenericArguments): cs2wasm's reflection reads the compiler's metadata");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern MethodInfo GetGenericMethodDefinition_impl();
+                private MethodInfo GetGenericMethodDefinition_impl() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetGenericMethodDefinition_impl): cs2wasm's reflection reads the compiler's metadata");
 
         public override MethodInfo GetGenericMethodDefinition()
         {
@@ -800,8 +789,7 @@ namespace System.Reflection
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern void InvokeClassConstructor(QCallTypeHandle type);
+                internal static void InvokeClassConstructor(QCallTypeHandle type) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InvokeClassConstructor): cs2wasm's reflection reads the compiler's metadata");
 
         private void InvokeClassConstructor()
         {
@@ -813,8 +801,7 @@ namespace System.Reflection
          * InternalInvoke() receives the parameters correctly converted by the binder
          * to match the types of the method signature.
          */
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal extern object InternalInvoke(object? obj, IntPtr *args, out Exception? exc);
+                internal object InternalInvoke(object? obj, IntPtr *args, out Exception? exc) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalInvoke): cs2wasm's reflection reads the compiler's metadata");
 
         public override RuntimeMethodHandle MethodHandle
         {
@@ -930,7 +917,6 @@ namespace System.Reflection
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern int get_metadata_token(RuntimeConstructorInfo method);
+                internal static int get_metadata_token(RuntimeConstructorInfo method) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's get_metadata_token): cs2wasm's reflection reads the compiler's metadata");
     }
 }

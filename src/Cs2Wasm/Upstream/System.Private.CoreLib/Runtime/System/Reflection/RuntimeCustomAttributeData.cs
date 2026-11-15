@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // Author:
 //   Zoltan Varga (vargaz@gmail.com)
@@ -70,8 +73,7 @@ namespace System.Reflection
             this.namedArgs = namedArgs;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void ResolveArgumentsInternal(ConstructorInfo ctor, Assembly assembly, IntPtr data, uint data_length, out object[] ctorArgs, out object[] namedArgs);
+                private static void ResolveArgumentsInternal(ConstructorInfo ctor, Assembly assembly, IntPtr data, uint data_length, out object[] ctorArgs, out object[] namedArgs) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's ResolveArgumentsInternal): cs2wasm's reflection reads the compiler's metadata");
 
         private void ResolveArguments()
         {

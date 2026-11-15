@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // Copyright (C) 2004 Novell, Inc (http://www.novell.com)
 //
@@ -207,8 +210,7 @@ namespace System.Reflection.Emit
             Justification = "For instance members with MethodImplOptions.InternalCall, the linker preserves all fields of the declaring type. " +
             "The _tb field has DynamicallyAccessedMembersAttribute requirements, but the field access is safe because " +
             "Reflection.Emit is not subject to trimming.")]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern void setup_enum_type(Type t);
+                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        private extern void setup_enum_type(Type t);
 
         protected override FieldBuilder DefineLiteralCore(string literalName, object? literalValue)
         {

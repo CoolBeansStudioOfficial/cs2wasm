@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Tracing;
@@ -34,8 +37,7 @@ namespace System.Runtime.CompilerServices
         [Obsolete("OffsetToStringData has been deprecated. Use string.GetPinnableReference() instead.")]
         public static int OffsetToStringData => string.OFFSET_TO_STRING;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int InternalGetHashCode(object? o);
+                private static int InternalGetHashCode(object? o) => o == null ? 0 : Cs2Wasm.Runtime.Rt.HashOf(o);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static int GetHashCode(object? o)
@@ -77,9 +79,8 @@ namespace System.Runtime.CompilerServices
             return false;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        [return: NotNullIfNotNull(nameof(obj))]
-        public static extern object? GetObjectValue(object? obj);
+                [return: NotNullIfNotNull(nameof(obj))]
+        public static object? GetObjectValue(object? obj) => obj;
 
         [RequiresUnreferencedCode("Trimmer can't guarantee existence of class constructor")]
         public static void RunClassConstructor(RuntimeTypeHandle type)
@@ -224,32 +225,24 @@ namespace System.Runtime.CompilerServices
         }
 
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern unsafe void PrepareMethod(IntPtr method, IntPtr* instantiations, int ninst);
+                private static unsafe void PrepareMethod(IntPtr method, IntPtr* instantiations, int ninst) { }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern object GetUninitializedObjectInternal(IntPtr type);
+                private static object GetUninitializedObjectInternal(IntPtr type) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("GetUninitializedObjectInternal");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void InitializeArray(Array array, IntPtr fldHandle);
+                private static void InitializeArray(Array array, IntPtr fldHandle) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("InitializeArray");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern unsafe ref byte GetSpanDataFrom(
+                private static unsafe ref byte GetSpanDataFrom(
             IntPtr fldHandle,
             IntPtr targetTypeHandle,
-            IntPtr count);
+            IntPtr count) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("GetSpanDataFrom");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void RunClassConstructor(IntPtr type);
+                private static void RunClassConstructor(IntPtr type) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("RunClassConstructor");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void RunModuleConstructor(IntPtr module);
+                private static void RunModuleConstructor(IntPtr module) { }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern bool SufficientExecutionStack();
+                private static bool SufficientExecutionStack() => true;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern object InternalBox(QCallTypeHandle type, ref byte target);
+                private static object InternalBox(QCallTypeHandle type, ref byte target) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("InternalBox");
 
         /// <summary>
         /// Create a boxed object of the specified type from the data located at the target reference.
@@ -294,8 +287,7 @@ namespace System.Runtime.CompilerServices
             return result;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int SizeOf(QCallTypeHandle handle);
+                private static int SizeOf(QCallTypeHandle handle) => Cs2Wasm.Runtime.TypeInfo.Size(Cs2Wasm.Runtime.TypeInfo.Id(handle));
 
         /// <summary>
         /// Get the size of an object of the given type.

@@ -19,6 +19,8 @@ internal sealed class MethodInst
     public CloneSpec? Clone;
     public List<MethodInst> Callees = [];
     public Location? FirstUse;
+    /// <summary>The method whose compilation first asked for this one (for CS2WASM_WHY's reachability chains).</summary>
+    public MethodInst? ReachedFrom;
     /// <summary>Set for lambdas and local functions: compiles the body with its closure information.</summary>
     public Action? Compile;
 }
@@ -234,9 +236,23 @@ internal sealed partial class Driver
     }
 
     /// <summary>Returns the function for a concrete method instance, scheduling its compilation.</summary>
+    /// <summary>The method being compiled.</summary>
+    public MethodInst? Compiling;
+
+    /// <summary>CS2WASM_WHY=1: how the program reaches a method (the chain of first callers).</summary>
+    public string WhyReached(MethodInst? mi)
+    {
+        if (Environment.GetEnvironmentVariable("CS2WASM_WHY") != "1" || mi == null) return "";
+        var chain = new List<string>();
+        for (var x = mi; x != null && chain.Count < 30; x = x.ReachedFrom) chain.Add(Display(x.Sym));
+        return " [reached: " + string.Join(" <- ", chain) + "]";
+    }
+
     public MethodInst Method(IMethodSymbol m)
     {
         m = CanonicalMethod(m);
+        // a partial method is compiled from its implementing part (the boundary's bodies of LibraryImport partials)
+        if (m.PartialImplementationPart is { } pi && !m.IsGenericMethod && m.ContainingType is { IsGenericType: false }) m = pi;
         if (m.IsGenericMethod && m.TypeArguments.Any(a => a is not INamedTypeSymbol and not IArrayTypeSymbol and not IPointerTypeSymbol))
         {
             // leave as-is; callers substitute first
@@ -253,7 +269,7 @@ internal sealed partial class Driver
             fn = Module.AddImport(mod, name, Display(m), Signature(m, Types));
         }
         else fn = Module.AddFunction(Display(m), Signature(m, Types));
-        mi = new MethodInst { Sym = m, Fn = fn, Key = key, Impl = impl };
+        mi = new MethodInst { Sym = m, Fn = fn, Key = key, Impl = impl, ReachedFrom = Compiling };
         fn.FrameName = IsHiddenFrame(m) ? null : FrameName(m);
         _methods[key] = mi;
         if (impl is MethodImpl.Body or MethodImpl.Synthesized or MethodImpl.Missing) _work.Enqueue(mi);
@@ -320,9 +336,18 @@ internal sealed partial class Driver
         if (!IsLibrary(m) && (BoundaryByDocId.ContainsKey(Types.CommentId(m)) ||
             (Options.Boundary.MarkerAttribute is { } ma && HasAttr(def, ma))))
             return BoundaryByDocId.ContainsKey(Types.CommentId(m)) ? MethodImpl.Import : MethodImpl.Missing;
+        if (MissingCapability(def) != null) return MethodImpl.Missing;
         if (HasBody(def)) return MethodImpl.Body;
         if (IsSynthesizable(m)) return MethodImpl.Synthesized;
         return MethodImpl.Missing;
+    }
+
+    /// <summary>The capability a library member marked [MissingCapability] needs (SPEC section 8): reaching it is a build error.</summary>
+    public static string? MissingCapability(IMethodSymbol def)
+    {
+        foreach (var m in new[] { def, def.PartialImplementationPart, def.PartialDefinitionPart })
+            if (m?.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "MissingCapabilityAttribute") is { ConstructorArguments: [{ Value: string cap }] }) return cap;
+        return null;
     }
 
     public static bool HasBody(IMethodSymbol def)
@@ -580,6 +605,7 @@ internal sealed partial class Driver
                     var mi = _work.Dequeue();
                     if (mi.Compiled) continue;
                     mi.Compiled = true;
+                    Compiling = mi;
                     try { if (mi.Compile != null) mi.Compile(); else FunctionCompiler.Compile(this, mi); }
                     catch (CompileException ex)
                     {
@@ -603,6 +629,7 @@ internal sealed partial class Driver
                     catch (CompileException ex) { Report(Diags.Unsupported, ex.Location ?? t.Locations.FirstOrDefault(), ex.Message); }
                 }
             }
+            Compiling = null; // what virtual dispatch adds is reached by no one method
             if (rt.Expand()) progress = true;
         }
     }

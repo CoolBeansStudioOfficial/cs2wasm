@@ -1,6 +1,9 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
+// NotSupportedException, and those the sandbox lacks are build errors (MissingCapability).
+
 //
 // Copyright (C) 2004 Novell, Inc (http://www.novell.com)
 //
@@ -80,11 +83,9 @@ namespace System.Reflection.Emit
         private Dictionary<string, int> us_string_cache;
         private ModuleBuilderTokenGenerator? token_gen;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void basic_init(RuntimeModuleBuilder ab);
+                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        private static extern void basic_init(RuntimeModuleBuilder ab);
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void set_wrappers_type(RuntimeModuleBuilder mb, Type? ab);
+                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        private static extern void set_wrappers_type(RuntimeModuleBuilder mb, Type? ab);
 
         [DynamicDependency(nameof(table_indexes))]  // Automatically keeps all previous fields too due to StructLayout
         internal RuntimeModuleBuilder(RuntimeAssemblyBuilder assb, string name)
@@ -539,14 +540,11 @@ namespace System.Reflection.Emit
             return GetTypeMetadataToken(GetType(name)!);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int getUSIndex(RuntimeModuleBuilder mb, string str);
+                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        private static extern int getUSIndex(RuntimeModuleBuilder mb, string str);
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int getToken(RuntimeModuleBuilder mb, object obj, bool create_open_instance);
+                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        private static extern int getToken(RuntimeModuleBuilder mb, object obj, bool create_open_instance);
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int getMethodToken(RuntimeModuleBuilder mb, MethodBase method,
+                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        private static extern int getMethodToken(RuntimeModuleBuilder mb, MethodBase method,
                               Type[] opt_param_types);
 
         internal int GetToken(string str)
@@ -690,14 +688,12 @@ namespace System.Reflection.Emit
          * Register the token->obj mapping with the runtime so the Module.Resolve...
          * methods will work for obj.
          */
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal extern void RegisterToken(object obj, int token);
+                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        internal extern void RegisterToken(object obj, int token);
 
         /*
          * Returns MemberInfo registered with the given token.
          */
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal extern object GetRegisteredToken(int token);
+                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        internal extern object GetRegisteredToken(int token);
 
         internal ITokenGenerator GetTokenGenerator() => token_gen ??= new ModuleBuilderTokenGenerator(this);
 

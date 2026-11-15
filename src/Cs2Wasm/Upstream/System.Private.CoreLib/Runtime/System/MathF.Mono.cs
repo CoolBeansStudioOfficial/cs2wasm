@@ -1,85 +1,63 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: computed in WASM (SPEC 7.3): what WASM defines exactly is an instruction, the rest is portable code (CMath).
+
 using System.Runtime.CompilerServices;
 
 namespace System
 {
     public partial class MathF
     {
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Acos(float x);
+                public static float Acos(float x) => (float)CMath.Acos(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Acosh(float x);
+                public static float Acosh(float x) => (float)CMath.Acosh(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Asin(float x);
+                public static float Asin(float x) => (float)CMath.Asin(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Asinh(float x);
+                public static float Asinh(float x) => (float)CMath.Asinh(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Atan(float x);
+                public static float Atan(float x) => (float)CMath.Atan(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Atan2(float y, float x);
+                public static float Atan2(float y, float x) => (float)CMath.Atan2(y, x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Atanh(float x);
+                public static float Atanh(float x) => (float)CMath.Atanh(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Cbrt(float x);
+                public static float Cbrt(float x) => (float)CMath.Cbrt(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Ceiling(float x);
+                public static float Ceiling(float x) => Cs2Wasm.Runtime.Rt.CeilingF(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Cos(float x);
+                public static float Cos(float x) => (float)CMath.Cos(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Cosh(float x);
+                public static float Cosh(float x) => (float)CMath.Cosh(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Exp(float x);
+                public static float Exp(float x) => (float)CMath.Exp(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Floor(float x);
+                public static float Floor(float x) => Cs2Wasm.Runtime.Rt.FloorF(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Log(float x);
+                public static float Log(float x) => (float)CMath.Log(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Log10(float x);
+                public static float Log10(float x) => (float)CMath.Log10(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Pow(float x, float y);
+                public static float Pow(float x, float y) => (float)CMath.Pow(x, y);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Sin(float x);
+                public static float Sin(float x) => (float)CMath.Sin(x);
 
         public static (float Sin, float Cos) SinCos(float x) => (Sin(x), Cos(x));
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Sinh(float x);
+                public static float Sinh(float x) => (float)CMath.Sinh(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Sqrt(float x);
+                public static float Sqrt(float x) => Cs2Wasm.Runtime.Rt.SqrtF(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Tan(float x);
+                public static float Tan(float x) => (float)CMath.Tan(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Tanh(float x);
+                public static float Tanh(float x) => (float)CMath.Tanh(x);
 
         [Intrinsic]
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float FusedMultiplyAdd(float x, float y, float z);
+                public static float FusedMultiplyAdd(float x, float y, float z) => (float)CMath.Fma(x, y, z);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        public static extern float Log2(float x);
+                public static float Log2(float x) => (float)CMath.Log2(x);
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern unsafe float ModF(float x, float* intptr);
+                private static unsafe float ModF(float x, float* intptr) { float t = Cs2Wasm.Runtime.Rt.TruncateF(x); *intptr = t; return float.IsInfinity(x) ? CopySign(0.0f, x) : x - t; }
     }
 }
