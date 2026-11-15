@@ -77,7 +77,12 @@ internal sealed class Types
         return true;
     }
 
-    public static string Key(ITypeSymbol t)
+    /// <summary>Key, remembered per symbol (it is asked for the same symbols again and again).</summary>
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ITypeSymbol, string> s_keys = new();
+
+    public static string Key(ITypeSymbol t) => s_keys.TryGetValue(t, out var k) ? k : s_keys.GetValue(t, KeyOf);
+
+    static string KeyOf(ITypeSymbol t)
     {
         switch (t)
         {
@@ -241,10 +246,23 @@ internal sealed class Types
     /// <summary>Maps library types that came from reference assemblies onto cs2wasm's library sources.</summary>
     public IArrayTypeSymbol LibCompilationArray(ITypeSymbol element) => _d.LibCompilation.CreateArrayTypeSymbol(Canonical(element), 1);
 
-    public ITypeSymbol Canonical(ITypeSymbol t)
+    /// <summary>Canonical, remembered per symbol (and arrays per key: Roslyn makes a new array symbol each time).</summary>
+    readonly System.Runtime.CompilerServices.ConditionalWeakTable<ITypeSymbol, ITypeSymbol> _canonOf = new();
+
+    public ITypeSymbol Canonical(ITypeSymbol t) => _canonOf.TryGetValue(t, out var c) ? c : _canonOf.GetValue(t, CanonicalOf);
+
+    ITypeSymbol CanonicalOf(ITypeSymbol t)
     {
         if (t is IDynamicTypeSymbol) return _d.ObjectType;
-        if (t is IArrayTypeSymbol a) return _d.LibCompilation.CreateArrayTypeSymbol(Canonical(a.ElementType), a.Rank);
+        if (t is IArrayTypeSymbol a)
+        {
+            var el = Canonical(a.ElementType);
+            var akey = Key(el) + "[" + new string(',', a.Rank - 1) + "]";
+            lock (_canon)
+                if (_canon.TryGetValue(akey, out var ca)) return ca;
+            var arr = _d.LibCompilation.CreateArrayTypeSymbol(el, a.Rank);
+            lock (_canon) return _canon.TryAdd(akey, arr) ? arr : _canon[akey];
+        }
         if (t is IPointerTypeSymbol p) return _d.LibCompilation.CreatePointerTypeSymbol(Canonical(p.PointedAtType));
         if (t is not INamedTypeSymbol n) return t;
         // typeof(List<>): the generic type definition
@@ -518,6 +536,17 @@ internal sealed class Types
         for (var b = t as INamedTypeSymbol; b != null; b = b.BaseType) yield return b;
     }
 
+    readonly System.Runtime.CompilerServices.ConditionalWeakTable<ITypeSymbol, HashSet<string>> _supers = new();
+
+    /// <summary>The keys of a type's base types and interfaces (canonical), remembered per symbol.</summary>
+    public HashSet<string> SupertypeKeys(ITypeSymbol c) => _supers.TryGetValue(c, out var s) ? s : _supers.GetValue(c, t =>
+    {
+        var keys = new HashSet<string>();
+        foreach (var b in BaseChain(t)) keys.Add(Key(Canonical(b)));
+        foreach (var i in t.AllInterfaces) keys.Add(Key(Canonical(i)));
+        return keys;
+    });
+
     public bool IsSubtype(ITypeSymbol c, ITypeSymbol target)
     {
         if (IsObject(target)) return true;
@@ -541,8 +570,7 @@ internal sealed class Types
         if (c.TypeKind == TypeKind.Delegate && (FullName(target) is "System.Delegate" or "System.MulticastDelegate")) return true;
         if (c.TypeKind == TypeKind.Enum && FullName(target) is "System.Enum" or "System.ValueType") return true;
         if (c.IsValueType && FullName(target) == "System.ValueType") return true;
-        foreach (var b in BaseChain(c)) if (Key(Canonical(b)) == tk) return true;
-        foreach (var i in c.AllInterfaces) if (Key(Canonical(i)) == tk) return true;
+        if (SupertypeKeys(c).Contains(tk)) return true;
         // variance (out/in type parameters of interfaces and delegates)
         if (target is INamedTypeSymbol { IsGenericType: true } tn && tn.TypeKind is TypeKind.Interface or TypeKind.Delegate)
         {
