@@ -356,7 +356,7 @@ sealed partial class FunctionCompiler
         return Own.Owned;
     }
 
-    static bool IsOmittedConditionalCall(IInvocationOperation inv)
+    internal static bool IsOmittedConditionalCall(IInvocationOperation inv)
     {
         var m = inv.TargetMethod.OriginalDefinition;
         if (!m.ReturnsVoid) return false;
@@ -860,9 +860,19 @@ sealed partial class FunctionCompiler
         int tid = D.MarkConstructed(t);
         var layout = T.LayoutOf(t);
         int obj = E.AddLocal(ValType.I32);
-        E.I32(Math.Max(layout.Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject);
+        WasmFunction? frameDrop = null;
+        if (_frameCreations?.Contains(oc) == true)
+        {
+            // an object that never escapes (EscapeAnalysis.cs): in the frame
+            var (alloc, drop) = D.FrameObjectFns((INamedTypeSymbol)t);
+            int off = AllocFrameBytes(Math.Max(layout.Size, Types.ObjectHeader), 8);
+            E.Get(_fb); if (off != 0) { E.I32(off); E.Op(Op.I32Add); }
+            E.Call(alloc);
+            frameDrop = drop;
+        }
+        else { E.I32(Math.Max(layout.Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); }
         E.Set(obj);
-        var slot = new Slot { Local = obj, Type = t };
+        var slot = new Slot { Local = obj, Type = t, ReleaseMarker = frameDrop };
         RegisterTemp(slot); // released if the constructor throws; ownership is handed out below
         if (oc.Constructor != null)
         {

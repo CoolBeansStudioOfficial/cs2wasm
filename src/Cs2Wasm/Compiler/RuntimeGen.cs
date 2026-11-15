@@ -721,6 +721,7 @@ sealed partial class RuntimeGen
     {
         CloseTypeInfo();
         if (D.Arenas.Enabled) EmitArenaSupport();
+        EmitFrameObjects();
         EmitOnDestroy();
         D.Rt.EmitCctorSupport(D.UsesThreads);
         var ecOwner = "AsyncSupport";

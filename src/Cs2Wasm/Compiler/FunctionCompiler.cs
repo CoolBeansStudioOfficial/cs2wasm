@@ -130,6 +130,7 @@ sealed partial class FunctionCompiler
         Driver.BindTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
         E.CurrentPos = D.Position(syntax);
         PreScan(body);
+        FindFrameObjects(body);
         using (BodyScope())
         {
             EnterDisplay(s_fnKey);
@@ -386,6 +387,8 @@ sealed partial class FunctionCompiler
         if (l.RefKind == RefKind.None && T.NeedsRc(t))
         {
             var slot = v.InMemory ? new Slot { FrameOffset = v.Offset, Type = t } : new Slot { Local = v.Local, Type = t };
+            // a local that owns a frame object (EscapeAnalysis.cs): its scope's end drops the object
+            if (!v.InMemory && _frameLocals != null && _frameLocals.TryGetValue(l, out var ft)) slot.ReleaseMarker = D.FrameObjectFns(ft).drop;
             AddOwned(slot);
         }
         return v;

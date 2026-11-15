@@ -261,6 +261,17 @@ namespace Cs2Wasm.Runtime
             return a;
         }
 
+        /// <summary>An object in a frame (one that never escapes its local, Compiler/EscapeAnalysis.cs): zeroed, its
+        /// count immortal (retains and releases leave it), its hash code the next one as for any object.</summary>
+        public static int InitFrameObject(int a, int size, int typeId)
+        {
+            Mem.Fill(a, 0, size);
+            Mem.StoreI32(a, -1);
+            Mem.StoreI32(a + 4, typeId);
+            Mem.StoreI32(a + 8, Atomic.Add32(ref s_hash, 1) + 1);
+            return a;
+        }
+
         public static int AllocArray(int length, int elemSize, int typeId)
         {
             if (length < 0) ThrowHelpers.Overflow();

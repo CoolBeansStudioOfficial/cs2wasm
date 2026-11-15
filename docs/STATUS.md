@@ -5,7 +5,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 58 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 59 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
@@ -262,8 +262,17 @@ by type), count traffic with no effect removed (releases of locals that are stil
 local, borrows released before anything could drop the owner's reference, stores into a fresh object skip the old
 value, cleanup handlers no exception can reach), branches on constants known only for the whole program folded
 (`Rt.SingleThreaded`), dense type ids with per-type tables as narrow data arrays, the data segment and frame-name
-section LZ-packed, call targets ordered by use. Not done: inlining of functions that call or throw, escape analysis
-(stack allocation of non-escaping objects).
+section LZ-packed, call targets ordered by use. Escape analysis (`Compiler/EscapeAnalysis.cs`, `059_escape_analysis`): a summary per
+method parameter and receiver says whether a value passed there can outlive the call (stored, captured, thrown,
+handed to code without a body, or returned: then the caller checks what it does with the result, so
+`sb.Append(x).Append(y)` keeps `sb` local); summaries cover the program's and the library's bodies, resolve virtual
+calls on an object whose exact type is known, follow locals that take the value inside callees, skip calls the
+compiler omits (`[Conditional]`), and assume a recursive use escapes. A local initialized by `new C(...)` (or with
+member initializers) whose uses are all such calls, field and property accesses, comparisons and type tests, never
+reassigned, captured or passed by reference, gets its object in the frame: no allocation or free, counts left alone
+(an immortal header, its hash code still the next one), its fields released when the local's scope ends (also on
+`break`, `return` and exceptions). A type that turns out cycle-capable (known only at the end) keeps the heap.
+`CS2WASM_ESCAPE=1` prints each candidate and the reason. Not done: inlining of functions that call or throw.
 
 ### 6. The module — done
 32-bit core module, imported shared memory (`env.memory`, size from options), passive data segment initialized by the
