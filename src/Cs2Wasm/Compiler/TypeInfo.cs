@@ -122,7 +122,7 @@ sealed partial class RuntimeGen
                 "attrs" => i => (null, Real(i) ? AttributesOf(D.TypeById[i]) : 0),
                 "cor" => i => (null, Real(i) ? CorElementType(D.TypeById[i]) : 0x1C),
                 "flags2" => i => (null, Real(i) ? Flags2(D.TypeById[i]) : 0),
-                "generic_args" => i => (Real(i) && D.TypeById[i] is INamedTypeSymbol { IsGenericType: true } g ? Ids(g.TypeArguments) : Ids([]), 0),
+                "generic_args" => i => (Real(i) && D.TypeById[i] is INamedTypeSymbol { IsGenericType: true } g ? Ids(Driver.AllTypeArgs(g)) : Ids([]), 0),
                 "interfaces" => i => (Ids(Real(i) ? D.TypeById[i].AllInterfaces : []), 0),
                 // nested types, in declaration order (GetNestedTypes)
                 "nested" => i => (Ids(Real(i) && D.TypeById[i] is INamedTypeSymbol nn && !nn.IsGenericType ? NestedOf(nn) : []), 0),
@@ -132,6 +132,8 @@ sealed partial class RuntimeGen
                 // the id of the type's one-dimensional array type, when the program has one (Array.CreateInstance)
                 "array_of" => i => (null, Real(i) && D.ExistingTypeId(D.Types.LibCompilationArray(D.TypeById[i])) is int ai ? D.ExtId(ai) : -1),
                 "box_offset" => i => (null, Real(i) && D.TypeById[i].IsValueType ? FunctionCompilerHelpers.BoxDataOffset(D.Types, D.TypeById[i]) : 0),
+                // the index of the type's assembly in the assembly table (the program's is 0)
+                "assembly" => i => (null, Real(i) && AssemblyOf(D.TypeById[i]) is { } asm ? D.AssemblyIndex(asm) : 0),
                 _ => throw new CompileException("type info " + kind),
             };
             Action<Emitter>? byRef = kind switch
@@ -141,11 +143,21 @@ sealed partial class RuntimeGen
                 "namespace" => e => { e.Get(0); e.I32(0x3FFFFFFF); e.Op(Op.I32And); e.Call(fn); },
                 "attrs" or "flags2" or "rank" or "size" or "box_offset" => e => e.I32(0),
                 "base" or "declaring" or "array_of" => e => e.I32(-1),
+                "assembly" => e => { e.Get(0); e.I32(0x3FFFFFFF); e.Op(Op.I32And); e.Call(fn); },
                 _ => null,
             };
             EmitIdTable(fn, n, entry, byRef);
         }
+        D.EmitAssemblyNames();
     }
+
+    static IAssemblySymbol? AssemblyOf(ITypeSymbol t) => t switch
+    {
+        IArrayTypeSymbol a => AssemblyOf(a.ElementType),
+        IPointerTypeSymbol p => AssemblyOf(p.PointedAtType),
+        INamedTypeSymbol n => n.OriginalDefinition.ContainingAssembly,
+        _ => t.ContainingAssembly,
+    };
 
     static string NamespaceOf(ITypeSymbol t)
     {

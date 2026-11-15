@@ -53,7 +53,7 @@ namespace System.Reflection
 
                 internal static RuntimeAssembly GetCallingAssembly(ref StackCrawlMark stackMark) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetCallingAssembly): cs2wasm's reflection reads the compiler's metadata");
 
-                internal static Assembly GetEntryAssemblyNative() => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetEntryAssemblyNative): cs2wasm's reflection reads the compiler's metadata");
+                internal static Assembly GetEntryAssemblyNative() => RuntimeAssembly.OfIndex(0);
 
         private static Assembly? GetEntryAssemblyInternal()
         {

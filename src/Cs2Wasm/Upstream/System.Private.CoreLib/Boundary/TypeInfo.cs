@@ -16,6 +16,10 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int Flags2(int id);
         [Intrinsic] public static extern int BaseId(int id);
         [Intrinsic] public static extern int ElementId(int id);
+        /// <summary>The index of the type's assembly (0: the program's).</summary>
+        [Intrinsic] public static extern int AssemblyOf(int id);
+        /// <summary>The assembly table: [count, full name...] (string addresses).</summary>
+        [Intrinsic] public static extern int AssemblyNames();
         [Intrinsic] public static extern int DeclaringId(int id);
         [Intrinsic] public static extern int Rank(int id);
         /// <summary>System.Reflection.TypeAttributes.</summary>

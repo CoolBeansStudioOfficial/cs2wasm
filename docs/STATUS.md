@@ -356,8 +356,12 @@ interpreter. Generic methods (`051`): a generic definition's record lists its pa
 (CoreCLR caches them). `ref`/`out`/`in` parameters (`053`): by-ref types (`MakeByRefType`, `IsByRef`, `Int32&`,
 `IsOut`/`IsIn`) are their element's id with a bit; the thunk passes a value's box data (the invoker's copy, written in
 place) or a frame slot copied back for a reference; a null argument for a value gets a default box
-(`RuntimeHelpers.GetUninitializedObject`/`Box`). Not done: `MakeGenericMethod` with arguments the compiler cannot see, the
-`FullName` of a generic instance (.NET qualifies its arguments with their assemblies), `Reflection.Emit` and
+(`RuntimeHelpers.GetUninitializedObject`/`Box`). Assemblies (`054`): `Type.Assembly`, `Assembly.FullName`/`GetName`,
+`GetExecutingAssembly` (the calling code's, known where it is compiled), `GetEntryAssembly`, from a table of the
+assemblies' names (a library's version and key token are the running .NET's, the program's as the C# compiler
+emits it); `FullName`/`AssemblyQualifiedName` qualify generic arguments with their assemblies, and nested types of
+generic types carry the outer arguments as .NET's do. Not done: `MakeGenericMethod` with arguments the compiler cannot
+see, `Assembly.GetTypes`/`GetType(name)`/`GetCallingAssembly`, `Reflection.Emit` and
 `dynamic`.
 
 Also: a readonly field (or get-only auto-property) set only in constructors that keep `this` in is not an edge of

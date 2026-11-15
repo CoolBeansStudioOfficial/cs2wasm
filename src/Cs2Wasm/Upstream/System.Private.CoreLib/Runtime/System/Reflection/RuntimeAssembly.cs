@@ -76,6 +76,32 @@ namespace System.Reflection
 
         internal IntPtr GetUnderlyingNativeHandle() { return _mono_assembly; }
 
+        // cs2wasm: an assembly is its index in the compiler's assembly table (Compiler/Reflection.cs): one object each
+        static RuntimeAssembly?[] s_all = [];
+        static int s_lock;
+
+        internal int Index => (int)_mono_assembly;
+
+        internal static RuntimeAssembly OfIndex(int index)
+        {
+            var t = s_all;
+            if ((uint)index < (uint)t.Length && t[index] is { } a) return a;
+            while (Cs2Wasm.Runtime.Atomic.CompareExchange32(ref s_lock, 0, 1) != 0) { }
+            try
+            {
+                t = s_all;
+                if ((uint)index >= (uint)t.Length)
+                {
+                    int n = Cs2Wasm.Runtime.Meta.I(Cs2Wasm.Runtime.TypeInfo.AssemblyNames(), 0);
+                    var bigger = new RuntimeAssembly?[Math.Max(n, index + 1)];
+                    for (int i = 0; i < t.Length; i++) bigger[i] = t[i];
+                    s_all = t = bigger;
+                }
+                return t[index] ??= new RuntimeAssembly { _mono_assembly = (IntPtr)index };
+            }
+            finally { Cs2Wasm.Runtime.Atomic.Store32(ref s_lock, 0); }
+        }
+
         private ResolveEventHolder? resolve_event_holder;
 
                 private static void GetEntryPoint(QCallAssembly assembly, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetEntryPoint): cs2wasm's reflection reads the compiler's metadata");
@@ -256,10 +282,7 @@ namespace System.Reflection
             return GetManifestResourceStream(resourceName);
         }
 
-        public override AssemblyName GetName(bool copiedName)
-        {
-            return AssemblyName.Create(_mono_assembly, GetInfo(AssemblyInfoKind.CodeBase));
-        }
+        public override AssemblyName GetName(bool copiedName) => new AssemblyName(FullName!);
 
         [RequiresUnreferencedCode("Types might be removed by trimming. If the type name is a string literal, consider using Type.GetType instead.")]
         public override Type GetType(string name, bool throwOnError, bool ignoreCase)
@@ -464,13 +487,12 @@ namespace System.Reflection
 
                 private static void GetInfo(QCallAssembly assembly, ObjectHandleOnStack res, AssemblyInfoKind kind) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetInfo): cs2wasm's reflection reads the compiler's metadata");
 
-        private string? GetInfo(AssemblyInfoKind kind)
+        private string? GetInfo(AssemblyInfoKind kind) => kind switch
         {
-            var this_assembly = this;
-            string? res = null;
-            GetInfo(new QCallAssembly(ref this_assembly), ObjectHandleOnStack.Create(ref res), kind);
-            return res;
-        }
+            AssemblyInfoKind.FullName => Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(Cs2Wasm.Runtime.TypeInfo.AssemblyNames(), 1 + Index)),
+            AssemblyInfoKind.ImageRuntimeVersion => "v4.0.30319",
+            _ => "", // no files: as a single-file application's
+        };
 
         internal unsafe bool TryGetRawMetadata(out byte* blob, out int length)
         {

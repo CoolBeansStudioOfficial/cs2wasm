@@ -2307,15 +2307,54 @@ namespace System
             // (with the namespace either way: Mono's full_name qualifies generic arguments; a generic definition's
             // FullName has no argument list, its ToString names the parameters)
             int id = Cs2Wasm.Runtime.TypeInfo.Id(type);
-            if ((id & Cs2Wasm.Runtime.Meta.ByRef) != 0)
-            {
-                var et = FromId(id & ~Cs2Wasm.Runtime.Meta.ByRef);
-                Cs2Wasm.Runtime.TypeInfo.Set(res, et.getFullName(full_name, assembly_qualified) + "&");
-                return;
-            }
-            string name = Cs2Wasm.Runtime.TypeInfo.FullName(id);
-            if (full_name && Cs2Wasm.Runtime.TypeInfo.IsGenericTypeDefinition(id) && name.IndexOf('[') is int b && b > 0) name = name.Substring(0, b);
+            string name = full_name ? QualifiedName(id) : SimpleFullName(id);
+            if (assembly_qualified) name += ", " + FromId(id).Assembly.FullName;
             Cs2Wasm.Runtime.TypeInfo.Set(res, name);
+        }
+
+        // cs2wasm: the name ToString shows (generic arguments by their names)
+        static string SimpleFullName(int id) =>
+            (id & Cs2Wasm.Runtime.Meta.ByRef) != 0 ? SimpleFullName(id & ~Cs2Wasm.Runtime.Meta.ByRef) + "&" : Cs2Wasm.Runtime.TypeInfo.FullName(id);
+
+        // FullName: a generic instance's arguments assembly-qualified ("List`1[[System.Int32, System.Private.CoreLib, ...]]"),
+        // a definition without its parameters; an array, pointer or by-ref type the element's with its suffix
+        static string QualifiedName(int id)
+        {
+            if ((id & Cs2Wasm.Runtime.Meta.ByRef) != 0) return QualifiedName(id & ~Cs2Wasm.Runtime.Meta.ByRef) + "&";
+            string name = Cs2Wasm.Runtime.TypeInfo.FullName(id);
+            int e = Cs2Wasm.Runtime.TypeInfo.ElementId(id);
+            if (e >= 0)
+            {
+                string en = Cs2Wasm.Runtime.TypeInfo.FullName(e);
+                return name.StartsWith(en, StringComparison.Ordinal) ? QualifiedName(e) + name.Substring(en.Length) : name;
+            }
+            int b = name.IndexOf('[');
+            if (b <= 0 || (Cs2Wasm.Runtime.TypeInfo.Flags2(id) & 4) == 0) return name;
+            if (Cs2Wasm.Runtime.TypeInfo.IsGenericTypeDefinition(id)) return name.Substring(0, b);
+            var args = Cs2Wasm.Runtime.TypeInfo.Types(Cs2Wasm.Runtime.TypeInfo.GenericArgs(id));
+            var sb = new System.Text.StringBuilder(name, 0, b, name.Length * 3);
+            sb.Append('[');
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.Append('[').Append(QualifiedName(args[i].TypeId)).Append(", ").Append(args[i].Assembly.FullName).Append(']');
+            }
+            sb.Append(']');
+            // a nested type of a generic type: the arguments come last, the rest of the name stays
+            int close = MatchingBracket(name, b);
+            if (close + 1 < name.Length) sb.Append(name, close + 1, name.Length - close - 1);
+            return sb.ToString();
+        }
+
+        static int MatchingBracket(string s, int open)
+        {
+            int depth = 0;
+            for (int i = open; i < s.Length; i++)
+            {
+                if (s[i] == '[') depth++;
+                else if (s[i] == ']' && --depth == 0) return i;
+            }
+            return s.Length - 1;
         }
 
                 private static void GetGenericArgumentsInternal(QCallTypeHandle type, ObjectHandleOnStack res, bool runtimeArray)

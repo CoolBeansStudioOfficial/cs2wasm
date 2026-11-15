@@ -53,6 +53,14 @@ sealed partial class FunctionCompiler
             E.Call(D.Method(fromId).Fn);
             return Own.Owned;
         }
+        // Assembly.GetExecutingAssembly(): the assembly of the calling code
+        if (target.Name == "GetExecutingAssembly" && target.Parameters.Length == 0 && target.ContainingType?.ToDisplayString() is "System.Reflection.Assembly")
+        {
+            E.I32(D.AssemblyIndex(M.ContainingAssembly));
+            var of = D.LibType("System.Reflection.RuntimeAssembly").GetMembers("OfIndex").OfType<IMethodSymbol>().First();
+            E.Call(D.Method(of).Fn);
+            return Own.Owned;
+        }
         // static abstract / virtual interface members through a constrained type parameter
         if (target.IsStatic && target.ContainingType.TypeKind == TypeKind.Interface && inv.ConstrainedToType is { } ctt)
         {
@@ -745,6 +753,8 @@ sealed partial class FunctionCompiler
             case "TypeInfo.GenericArgs": E.Call(Rt.TypeInfo("generic_args")); return Own.None;
             case "TypeInfo.Interfaces": E.Call(Rt.TypeInfo("interfaces")); return Own.None;
             case "TypeInfo.Nested": E.Call(Rt.TypeInfo("nested")); return Own.None;
+            case "TypeInfo.AssemblyOf": E.Call(Rt.TypeInfo("assembly")); return Own.None;
+            case "TypeInfo.AssemblyNames": E.Call(D.AssemblyNamesFn); return Own.None;
             case "TypeInfo.DeclaringId": E.Call(Rt.TypeInfo("declaring")); return Own.None;
             case "TypeInfo.Size": E.Call(Rt.TypeInfo("size")); return Own.None;
             case "TypeInfo.BoxOffset": E.Call(Rt.TypeInfo("box_offset")); return Own.None;

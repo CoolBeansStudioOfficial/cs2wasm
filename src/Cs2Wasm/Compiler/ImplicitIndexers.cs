@@ -58,7 +58,6 @@ sealed partial class FunctionCompiler
                     var prop = range.GetMembers(name).OfType<IPropertySymbol>().First();
                     int ia = TempStruct(indexT);
                     CallWith(prop.GetMethod!, false, () => E.Get(ra), () => { }, () => { E.Get(_fb); E.I32(ia); E.Op(Op.I32Add); }, ii.Syntax);
-                    E.Op(Op.Drop);
                     CallWith(getOffset, false, () => { E.Get(_fb); E.I32(ia); E.Op(Op.I32Add); }, () => E.Get(len), null, ii.Syntax);
                     E.Set(dst);
                 }

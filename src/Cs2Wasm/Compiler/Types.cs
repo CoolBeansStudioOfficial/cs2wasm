@@ -69,6 +69,8 @@ internal sealed class Types
     {
         if (!g.IsGenericType) return false;
         if (g.IsUnboundGenericType) return true;
+        // a nested type of a generic instance is an instance (X<int>.In), of a definition a definition
+        if (g.ContainingType is { IsGenericType: true } ct && !IsGenericDefinition(ct)) return false;
         // its own parameters, in order (symbols of another compilation's view of the type count too)
         for (int i = 0; i < g.TypeArguments.Length; i++)
             if (g.TypeArguments[i] is not ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Type } tp || tp.Ordinal != i || tp.Name != g.TypeParameters[i].Name) return false;

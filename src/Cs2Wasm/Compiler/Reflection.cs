@@ -320,6 +320,38 @@ internal sealed partial class Driver
 
     int ExtTypeId(ITypeSymbol t) => ExtId(TypeId(t));
 
+    // ---------------- assemblies: a table of full names (the program's first), by index ----------------
+    readonly List<IAssemblySymbol> _assemblies = [];
+    WasmFunction? _assemblyNames;
+    public WasmFunction AssemblyNamesFn => _assemblyNames ??= Module.AddFunction("rt.assembly_names", new FuncType([], [ValType.I32]));
+
+    public int AssemblyIndex(IAssemblySymbol a)
+    {
+        if (_assemblies.Count == 0) _assemblies.Add(Inputs[0].Assembly);
+        for (int i = 0; i < _assemblies.Count; i++) if (SymbolEqualityComparer.Default.Equals(_assemblies[i], a)) return i;
+        _assemblies.Add(a);
+        return _assemblies.Count - 1;
+    }
+
+    /// <summary>An assembly's display name: a library's is the running .NET's (its version and key token), the
+    /// program's from its identity (as the C# compiler emits it).</summary>
+    string AssemblyFullName(IAssemblySymbol a)
+    {
+        if (!Inputs.Any(c => SymbolEqualityComparer.Default.Equals(c.Assembly, a)))
+            try { if (System.Reflection.Assembly.Load(a.Identity.Name).FullName is { } fn) return fn; } catch { }
+        var id = a.Identity;
+        var token = id.PublicKeyToken.IsDefaultOrEmpty ? "null" : string.Concat(id.PublicKeyToken.Select(b => b.ToString("x2")));
+        return $"{id.Name}, Version={id.Version}, Culture={(string.IsNullOrEmpty(id.CultureName) ? "neutral" : id.CultureName)}, PublicKeyToken={token}";
+    }
+
+    internal void EmitAssemblyNames()
+    {
+        if (_assemblyNames == null) return;
+        if (_assemblies.Count == 0) AssemblyIndex(Inputs[0].Assembly);
+        var e = new Emitter(_assemblyNames);
+        e.I32Addr(Ints([_assemblies.Count, .. _assemblies.Select(a => Str(AssemblyFullName(a)))]));
+    }
+
     /// <summary>A parameter in a record: its type's id, with the by-ref bit for ref/out/in (Meta.ByRef) and the
     /// out (Meta.ParamOut) or in (Meta.ParamIn) bit.</summary>
     int ParamWord(IParameterSymbol p) => ExtTypeId(p.Type) | p.RefKind switch

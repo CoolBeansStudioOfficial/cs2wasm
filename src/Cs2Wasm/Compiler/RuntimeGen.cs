@@ -1100,7 +1100,7 @@ internal sealed partial class Driver
         }
     }
 
-    static List<ITypeSymbol> AllTypeArgs(INamedTypeSymbol n)
+    internal static List<ITypeSymbol> AllTypeArgs(INamedTypeSymbol n)
     {
         var l = new List<ITypeSymbol>();
         if (n.ContainingType != null) l.AddRange(AllTypeArgs(n.ContainingType));
