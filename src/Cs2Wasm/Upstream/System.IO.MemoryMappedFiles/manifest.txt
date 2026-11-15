@@ -1,0 +1,5 @@
+# System.IO.MemoryMappedFiles for cs2wasm: written by hand, not evaluated from dotnet/runtime. There are no files in the
+# WASM sandbox (section 8): the members other libraries name exist, and reaching one is a build error naming the
+# capability.
+define NET
+define NETCOREAPP

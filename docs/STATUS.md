@@ -5,7 +5,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 63 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 64 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
@@ -53,7 +53,8 @@ saturating float→int as .NET 9+), exceptions (`try`/`catch`/`finally`/`when`, 
 pattern matching (type, constant, relational, `and`/`or`/`not`, property patterns, `var`), switch statements and
 expressions, string interpolation (alignment and formats), nullable value types (lifted operators, `??`, boxing,
 patterns), tuples (literals, names, conversions, equality, deconstruction incl. `foreach`), collection expressions for
-arrays and lists, `ref`/`out`/`in` parameters, ref locals, pointers (`*p`, `p[i]`, pointer arithmetic).
+arrays, spans, lists and the collection interfaces, spreads (`[0, .. a, .. Gen()]`, `064_collection_spreads`: each
+spread enumerated and added in order; an array, span or read-only interface target made through a `List<T>`), `ref`/`out`/`in` parameters, ref locals, pointers (`*p`, `p[i]`, pointer arithmetic).
 
 Also done: iterators (`yield return`/`yield break`, inside `try/finally` and `foreach`, `IEnumerable<T>` and
 `IEnumerator<T>`), `async`/`await` (`Task`, `Task<T>`, `ValueTask`, custom awaiters through the awaiter pattern

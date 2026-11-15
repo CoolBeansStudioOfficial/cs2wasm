@@ -563,7 +563,13 @@ sealed partial class FunctionCompiler
                     var t = Arg(0);
                     if (t.IsValueType) return EmitDefault(t);
                     if (t is not INamedTypeSymbol { IsAbstract: false } nt || nt.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 0) is not { } ctor)
-                        throw new CompileException($"Activator.CreateInstance<{t}>(): {t} has no parameterless constructor", null);
+                    {
+                        // (as .NET: a MissingMethodException when it runs)
+                        E.I32Addr(D.StringLiteral(Driver.ClrName(t)));
+                        E.Call(D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "NoDefaultConstructor", 1).Fn);
+                        E.I32(0);
+                        return Own.Owned;
+                    }
                     int tid = D.MarkConstructed(t);
                     int obj = E.AddLocal(ValType.I32);
                     E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
@@ -1104,9 +1110,57 @@ sealed partial class FunctionCompiler
         }
     }
 
+    /// <summary>A spread element: its elements added to the collection in `obj` (an ICollection&lt;T&gt;).</summary>
+    void EmitSpreadInto(int obj, ITypeSymbol elemType, ISpreadOperation sp)
+    {
+        if (sp.ElementConversion is var ec && ec.Exists && !ec.IsIdentity && !(ec.IsImplicit && ec.IsReference))
+            throw new CompileException("a spread element with an element conversion is not supported yet", sp.Syntax.GetLocation());
+        var et = T.Canonical(sp.ElementType ?? elemType);
+        var operandT = T.Resolve(sp.Operand.Type!, Map);
+        string helper = operandT is INamedTypeSymbol { Arity: 1 } st && Types.FullName(st) is "System.ReadOnlySpan`1" ? "AddSpan"
+            : operandT is INamedTypeSymbol { Arity: 1 } st2 && Types.FullName(st2) is "System.Span`1" ? "AddSpanMutable" : "AddRange";
+        var hm = D.LibType("Cs2Wasm.Runtime.CollectionExpressions").GetMembers(helper).OfType<IMethodSymbol>().First().Construct(T.Canonical(elemType));
+        hm = D.CanonicalMethod(hm);
+        CallWith(hm, false, null, () => { E.Get(obj); PushArg(hm.Parameters[1], sp.Operand); }, null, sp.Syntax);
+    }
+
     Own EmitCollectionExpression(ICollectionExpressionOperation ce)
     {
         var t = TypeOf(ce);
+        // with spreads, an array, a span or a read-only interface is made as a List<T>, then copied (C#: the elements
+        // in order, the spreads enumerated)
+        if (ce.Elements.Any(e => e is ISpreadOperation)
+            && (t is IArrayTypeSymbol { Rank: 1 } || t is INamedTypeSymbol { Arity: 1 } sx && Types.FullName(sx) is "System.Span`1" or "System.ReadOnlySpan`1"
+                || t is INamedTypeSymbol { TypeKind: TypeKind.Interface, Arity: 1 } ix && Types.FullName(ix) is "System.Collections.Generic.IEnumerable`1" or "System.Collections.Generic.IReadOnlyCollection`1" or "System.Collections.Generic.IReadOnlyList`1"))
+        {
+            var et = T.Canonical(t is IArrayTypeSymbol a0 ? a0.ElementType : ((INamedTypeSymbol)t).TypeArguments[0]);
+            var listT = (INamedTypeSymbol)T.Canonical(D.LibType("System.Collections.Generic.List`1").Construct(et));
+            NewObject(listT, ce.Syntax);
+            int lst = E.AddLocal(ValType.I32); E.Set(lst);
+            var lslot = new Slot { Local = lst, Type = listT };
+            RegisterTemp(lslot);
+            var ladd = listT.GetMembers("Add").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 1);
+            foreach (var e in ce.Elements)
+            {
+                if (e is ISpreadOperation sp) EmitSpreadInto(lst, et, sp);
+                else CallWith(D.CanonicalMethod(ladd), false, () => E.Get(lst), () => PushArg(ladd.Parameters[0], e), null, e.Syntax);
+            }
+            var toArray = listT.GetMembers("ToArray").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 0);
+            CallWith(D.CanonicalMethod(toArray), false, () => E.Get(lst), () => { }, null, ce.Syntax);
+            int arr = E.AddLocal(ValType.I32); E.Set(arr);
+            if (t is INamedTypeSymbol { TypeKind: TypeKind.Struct } spanT)
+            {
+                // the span over the array: the array lives as long as the scope (the span may be held there)
+                AddOwned(new Slot { Local = arr, Type = D.LibCompilation.CreateArrayTypeSymbol(et) });
+                var sctor = ((INamedTypeSymbol)T.Canonical(spanT)).InstanceConstructors.First(c => c.Parameters.Length == 1);
+                int off = TempStruct(spanT);
+                CallWith(sctor, false, () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); }, () => E.Get(arr), null, ce.Syntax);
+                E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+                return Own.None;
+            }
+            E.Get(arr);
+            return Own.Owned;
+        }
         if (t is IArrayTypeSymbol { Rank: 1 } at && ce.Elements.All(e => e is not ISpreadOperation))
         {
             var et = T.Canonical(at.ElementType);
@@ -1131,6 +1185,9 @@ sealed partial class FunctionCompiler
             var slot = new Slot { Local = arr, Type = arrT };
             RegisterTemp(slot);
             for (int i = 0; i < ce.Elements.Length; i++) StoreElement(arr, i, et, ce.Elements[i]);
+            // (the array lives as long as the scope: the span may be held there)
+            _temps[^1].Remove(slot);
+            AddOwned(slot);
             var ctor = ((INamedTypeSymbol)T.Canonical(span)).InstanceConstructors.First(c => c.Parameters.Length == 1);
             int off = TempStruct(span);
             CallWith(ctor, false, () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); }, () => E.Get(arr), null, ce.Syntax);
@@ -1151,7 +1208,7 @@ sealed partial class FunctionCompiler
             var add = nt.GetMembers("Add").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 1);
             foreach (var e in ce.Elements)
             {
-                if (e is ISpreadOperation) throw new CompileException("spread elements are not supported yet", e.Syntax.GetLocation());
+                if (e is ISpreadOperation sp) { EmitSpreadInto(obj, add.Parameters[0].Type, sp); continue; }
                 CallWith(D.CanonicalMethod(add), false, () => E.Get(obj), () => PushArg(add.Parameters[0], e), null, e.Syntax);
             }
             _temps[^1].Remove(slot);
@@ -1190,7 +1247,7 @@ sealed partial class FunctionCompiler
             var add = listT.GetMembers("Add").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 1);
             foreach (var e in ce.Elements)
             {
-                if (e is ISpreadOperation) throw new CompileException("spread elements are not supported yet", e.Syntax.GetLocation());
+                if (e is ISpreadOperation sp) { EmitSpreadInto(obj, add.Parameters[0].Type, sp); continue; }
                 CallWith(D.CanonicalMethod(add), false, () => E.Get(obj), () => PushArg(add.Parameters[0], e), null, e.Syntax);
             }
             _temps[^1].Remove(slot);

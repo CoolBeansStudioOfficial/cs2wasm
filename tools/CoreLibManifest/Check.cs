@@ -13,16 +13,30 @@ static class Check
         var dir = Path.Combine(upstream, lib);
         var lines = File.ReadAllLines(Path.Combine(dir, "manifest.txt"));
         var defines = lines.Where(l => l.StartsWith("define ")).Select(l => l[7..].Trim()).ToArray();
-        var files = lines.Where(l => l.StartsWith("file ")).Select(l => Path.Combine(root, l[5..].Trim())).ToList();
+        // `root <dir>`: the files are under another source tree of the cache (Roslyn's), beside the runtime's
+        var baseDir = lines.FirstOrDefault(l => l.StartsWith("root ")) is { } rl ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar))!, rl[5..].Trim()) : root;
+        var files = lines.Where(l => l.StartsWith("file ")).Select(l => Path.Combine(baseDir, l[5..].Trim())).ToList();
         files.AddRange(Directory.GetFiles(dir, "*.cs", SearchOption.AllDirectories).Order(StringComparer.Ordinal)
             .Where(f => exclude == null || !string.Equals(Path.GetFullPath(f), Path.GetFullPath(exclude), StringComparison.OrdinalIgnoreCase)));
         var po = new CSharpParseOptions(LanguageVersion.Preview, preprocessorSymbols: defines);
         var trees = files.AsParallel().AsOrdered().Select(f => CSharpSyntaxTree.ParseText(File.ReadAllText(f), po, f)).ToList();
         var refs = Libraries.All.TakeWhile(l => l != lib).Where(built.ContainsKey).Select(l => (MetadataReference)built[l].ToMetadataReference()).ToList();
         return CSharpCompilation.Create(lib, trees, refs,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: NullableContextOptions.Disable,
-                specificDiagnosticOptions: new Dictionary<string, ReportDiagnostic> { ["CS8826"] = ReportDiagnostic.Suppress }));
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true,
+                nullableContextOptions: lines.Contains("nullable enable") ? NullableContextOptions.Enable : NullableContextOptions.Disable,
+                specificDiagnosticOptions: Suppressed));
     }
+
+    /// <summary>Diagnostics the libraries' own builds do not report as errors.</summary>
+    public static readonly Dictionary<string, ReportDiagnostic> Suppressed = new()
+    {
+        ["CS8826"] = ReportDiagnostic.Suppress,
+        // (Roslyn's experimental APIs, used inside Roslyn)
+        ["RSEXPERIMENTAL001"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL002"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL003"] = ReportDiagnostic.Suppress,
+        ["RSEXPERIMENTAL004"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL005"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL006"] = ReportDiagnostic.Suppress,
+        ["RSEXPERIMENTAL007"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL008"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL009"] = ReportDiagnostic.Suppress,
+    };
+
 
     public static int Run(string root, string upstream, string? only)
     {

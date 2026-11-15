@@ -1,0 +1,5 @@
+# System.IO.Compression for cs2wasm: written by hand, not evaluated from dotnet/runtime. .NET's deflate is the native
+# zlib library, which the WASM module does not have (section 8): the members other libraries name exist, and reaching
+# one is a build error naming the capability.
+define NET
+define NETCOREAPP

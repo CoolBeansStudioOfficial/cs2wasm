@@ -143,7 +143,7 @@ internal sealed partial class Driver
         Main = main;
         Options = options;
         _inputs = [main, .. options.AdditionalCompilations];
-        Lib = new Library(main.References);
+        Lib = new Library(main);
         Types = new Types(this);
         StackPointer = new WasmGlobal("__stack_pointer", ValType.I32, true, 0) { Export = "__stack_pointer" };
         Module.Globals.Add(StackPointer);

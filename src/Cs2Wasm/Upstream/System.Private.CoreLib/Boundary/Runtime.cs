@@ -1071,8 +1071,19 @@ namespace Cs2Wasm.Runtime
         }
     }
 
+    /// <summary>Collection expressions' spread elements (`[.. xs]`): each element of the spread added in order, as C#
+    /// defines it.</summary>
+    public static class CollectionExpressions
+    {
+        public static void AddRange<T>(System.Collections.Generic.ICollection<T> c, System.Collections.Generic.IEnumerable<T> items) { foreach (var x in items) c.Add(x); }
+        public static void AddSpan<T>(System.Collections.Generic.ICollection<T> c, System.ReadOnlySpan<T> items) { foreach (var x in items) c.Add(x); }
+        public static void AddSpanMutable<T>(System.Collections.Generic.ICollection<T> c, System.Span<T> items) { foreach (var x in items) c.Add(x); }
+    }
+
     public static class ThrowHelpers
     {
+        /// <summary>Activator.CreateInstance&lt;T&gt;() of a T without a parameterless constructor.</summary>
+        public static void NoDefaultConstructor(string typeName) => throw new System.MissingMethodException(SR.Format(SR.Activator_CannotCreateInstance, typeName, SR.Arg_NoDefCTorWithoutTypeName));
         /// <summary>The exception a failed static initializer leaves: thrown now and at every later access.</summary>
         public static object TypeInitFailed(string typeName, object inner) =>
             new System.TypeInitializationException(typeName, inner as System.Exception);

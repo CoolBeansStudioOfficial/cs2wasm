@@ -17,6 +17,8 @@ using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 if (args.Length >= 3 && args[0] == "intrinsics") return Intrinsics.Run(args[1], args[2]);
+if (args.Length >= 6 && args[0] == "stubs") return Stubs.Run(args[1], Path.GetFullPath(args[2]), args[3], args[4], args[5], args[6..]);
+if (args.Length >= 3 && args[0] == "roslyn") return RoslynLibraries.Run(Path.GetFullPath(args[1]), Path.GetFullPath(args[2]));
 if (args.Length >= 3 && args[0] == "check") return Check.Run(args[1], args[2], args.Length > 3 ? args[3] : null);
 if (args.Length < 2) { Console.Error.WriteLine("usage: CoreLibManifest <runtime-root> <upstream-dir> | check <runtime-root> <upstream-dir> [library]"); return 2; }
 return Libraries.Run(Path.GetFullPath(args[0]), Path.GetFullPath(args[1]), args.Length > 2 ? args[2..] : null);
@@ -29,8 +31,15 @@ static class Libraries
         "System.Private.CoreLib", "System.Collections", "System.Collections.NonGeneric", "System.ObjectModel", "System.Memory",
         "System.Threading", "System.Collections.Concurrent", "System.Linq", "System.Console", "System.Runtime.Numerics",
         "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions", "System.Linq.Expressions", "Microsoft.CSharp", "System.Linq.Queryable",
-        "System.Collections.Immutable", "System.Reflection.Metadata",
+        "System.Collections.Immutable", "System.IO.MemoryMappedFiles", "System.IO.Compression", "System.Reflection.Metadata",
+        "System.Private.Uri", "System.Net.Primitives", "System.Runtime.Serialization.Primitives", "System.Private.Xml", "System.Xml.XPath", "System.Private.Xml.Linq", "System.Xml.XPath.XDocument", "System.Security.Cryptography", "System.Text.Encoding.CodePages",
+        "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
     ];
+
+    /// <summary>Libraries cs2wasm writes by hand (members the others name, for capabilities the sandbox lacks): compiled,
+    /// never evaluated from dotnet/runtime.</summary>
+    public static readonly HashSet<string> HandWritten = ["System.IO.MemoryMappedFiles", "System.IO.Compression", "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
+        "System.Private.Uri", "System.Net.Primitives", "System.Runtime.Serialization.Primitives", "System.Private.Xml", "System.Xml.XPath", "System.Private.Xml.Linq", "System.Xml.XPath.XDocument", "System.Security.Cryptography", "System.Text.Encoding.CodePages"];
 
     public static string Project(string root, string lib) => lib == "System.Private.CoreLib"
         ? Path.Combine(root, "src", "mono", "System.Private.CoreLib", "System.Private.CoreLib.csproj")
@@ -44,7 +53,7 @@ static class Libraries
     {
         foreach (var lib in All)
         {
-            if (only != null && !only.Contains(lib)) continue;
+            if (only != null && !only.Contains(lib) || HandWritten.Contains(lib)) continue;
             var dir = Path.Combine(upstream, lib);
             Directory.CreateDirectory(dir);
             new Manifest(root, lib).Write(Path.Combine(dir, "manifest.txt"));
@@ -53,7 +62,7 @@ static class Libraries
         }
         // the externs need each library compiled, with those it references
         var built = new Dictionary<string, Microsoft.CodeAnalysis.CSharp.CSharpCompilation>();
-        foreach (var lib in All) built[lib] = only == null || only.Contains(lib) ? Externs.Run(root, upstream, lib, built) : Check.Compile(root, upstream, lib, built);
+        foreach (var lib in All) built[lib] = (only == null || only.Contains(lib)) && !HandWritten.Contains(lib) ? Externs.Run(root, upstream, lib, built) : Check.Compile(root, upstream, lib, built);
         return 0;
     }
 }
@@ -110,6 +119,7 @@ sealed class Manifest
         // cs2wasm has threads (section 4.5): workers on the shared memory, not the browser runtime's JS ones
         props["FeatureMultithreading"] = "true";
         props["RuntimeFlavor"] = "Mono";
+        props["TargetFrameworkIdentifier"] = ".NETCoreApp";
         props["DefineConstants"] = "";
         foreach (var k in props.Keys) pinned.Add(k);
         pinned.Remove("DefineConstants");
@@ -232,7 +242,11 @@ sealed class Manifest
     // comparisons of quoted strings, and/or/!, parentheses
     bool Eval(string raw)
     {
-        var s = Expand(raw);
+        var s = raw;
+        // the property functions the projects use: a net11.0 target is .NETCoreApp and compatible with earlier ones
+        s = Regex.Replace(s, @"\$\(\[MSBuild\]::GetTargetFrameworkIdentifier\('[^']*'\)\)", ".NETCoreApp");
+        s = Regex.Replace(s, @"\$\(\[MSBuild\]::IsTargetFrameworkCompatible\('[^']*',\s*'net(\d+)\.\d+'\)\)", m => int.Parse(m.Groups[1].Value) <= 11 ? "true" : "false");
+        s = Expand(s);
         s = Regex.Replace(s, @"!?\s*Exists\('([^']*)'\)", m => (File.Exists(m.Groups[1].Value) || Directory.Exists(m.Groups[1].Value)) != m.Value.StartsWith('!') ? "'true' == 'true'" : "'true' == 'false'");
         var toks = Regex.Matches(s, @"'[^']*'|==|!=|\(|\)|!|[^\s()!=']+").Select(m => m.Value).ToList();
         int pos = 0;
@@ -250,7 +264,7 @@ sealed class Manifest
                 bool eq = string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
                 return op == "==" ? eq : !eq;
             }
-            unknown.Add(raw);
+            if (!a.Equals("true", StringComparison.OrdinalIgnoreCase) && !a.Equals("false", StringComparison.OrdinalIgnoreCase)) unknown.Add(raw);
             return a.Equals("true", StringComparison.OrdinalIgnoreCase);
         }
         try { return Or(); } catch { unknown.Add(raw); return false; }
