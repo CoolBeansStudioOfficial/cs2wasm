@@ -945,7 +945,19 @@ sealed partial class RuntimeGen
         if (D.Data.Bytes.Count > 0)
         {
             D.Module.Data.Add(D.Data);
-            e.I32(D.DataBase); e.I32(0); e.I32(D.Data.Bytes.Count); e.Emit(Op.MemoryInit, 0, 0, D.Data);
+            var raw = D.Data.Bytes.ToArray();
+            var packed = Environment.GetEnvironmentVariable("CS2WASM_NO_PACK") == "1" ? raw : DataCompression.Compress(raw);
+            // (the packed bytes land at the heap's start, are expanded into place, and the heap is zero again)
+            if (packed.Length + 160 < raw.Length && (long)D.HeapBase + packed.Length <= (long)D.Module.MemoryMinPages * 65536)
+            {
+                D.Data.Bytes.Clear(); D.Data.Bytes.AddRange(packed);
+                var dec = D.Module.AddFunction("rt.unpack_data", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
+                DataCompression.EmitDecoder(new Emitter(dec));
+                e.I32(D.HeapBase); e.I32(0); e.I32(packed.Length); e.Emit(Op.MemoryInit, 0, 0, D.Data);
+                e.I32(D.HeapBase); e.I32(D.DataBase); e.I32(D.DataBase + raw.Length); e.Call(dec);
+                e.I32(D.HeapBase); e.I32(0); e.I32(packed.Length); e.Emit(Op.MemoryFill);
+            }
+            else { e.I32(D.DataBase); e.I32(0); e.I32(D.Data.Bytes.Count); e.Emit(Op.MemoryInit, 0, 0, D.Data); }
         }
         e.I32(D.StackTop); e.GSet(D.StackPointer);
         e.I32(D.StackTop); e.GSet(D.StackHi!); e.I32(D.StackTop - D.Options.StackSize); e.GSet(D.StackLo!);

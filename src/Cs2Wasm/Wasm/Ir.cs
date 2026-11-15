@@ -72,7 +72,7 @@ internal sealed class FuncType : IEquatable<FuncType>
 }
 
 /// <summary>A value whose address is fixed only when the module is laid out (statics, literals, tables).</summary>
-internal interface IAddress { int Address { get; } }
+internal interface IAddress { int Address { get; } bool Immortal => false; }
 
 /// <summary>An i32.const that is a type id: the compiler numbers the types the module needs only at the end
 /// (Driver.AssignTypeIds), and the encoder writes that number.</summary>

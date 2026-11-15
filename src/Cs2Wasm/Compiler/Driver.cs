@@ -38,6 +38,7 @@ sealed class StaticSlot(Driver d, int offset) : IAddress
 sealed class DataChunk
 {
     public int Offset, Length, Align;
+    public string? Owner;
     public int Final = -1;
     public List<(int at, IAddress target)>? Relocs;
 }
@@ -46,6 +47,8 @@ sealed class DataAddr(Driver d, DataChunk chunk) : IAddress
 {
     public DataChunk Chunk => chunk;
     public int Address => d.ChunkAddress(chunk);
+    /// <summary>A string literal: an immortal object (its count is -1; retain and release leave it as it is).</summary>
+    public bool Immortal { get; init; }
 }
 
 sealed class LateAddr(Func<int> f) : IAddress { public int Address => f(); }
@@ -248,7 +251,7 @@ internal sealed partial class Driver
         AddI32(-1); AddI32(1); AddI32(0); AddI32(s.Length);
         foreach (var c in s) { Data.Bytes.Add((byte)c); Data.Bytes.Add((byte)(c >> 8)); }
         Data.Bytes.Add(0); Data.Bytes.Add(0);
-        a = new DataAddr(this, NewChunk(off, 8));
+        a = new DataAddr(this, NewChunk(off, 8)) { Immortal = true };
         _literals[s] = a;
         _literalBytes += Data.Bytes.Count - off;
         return a;
@@ -260,7 +263,9 @@ internal sealed partial class Driver
         int off = Data.Bytes.Count;
         Data.Bytes.AddRange(bytes);
         if (_blobs != null) { var k = Compiling != null ? Display(Compiling.Sym) : "(tables)"; _blobs.TryGetValue(k, out int n); _blobs[k] = n + bytes.Length; }
-        return new DataAddr(this, NewChunk(off, align));
+        var addr = new DataAddr(this, NewChunk(off, align));
+        if (_blobs != null) addr.Chunk.Owner = Compiling != null ? Display(Compiling.Sym) : "(tables)";
+        return addr;
     }
 
     /// <summary>A blob with addresses in it: each (byte offset, target) is written when the layout is final.</summary>
@@ -310,6 +315,12 @@ internal sealed partial class Driver
         }
         if (Environment.GetEnvironmentVariable("CS2WASM_STATS") != null)
             Console.Error.WriteLine($"  data chunks: {live.Count}/{_chunks.Count} live, {live.Sum(c => c.Length)} of {_chunks.Sum(c => c.Length)} bytes; functions live {liveFns.Count}/{Module.Functions.Count}");
+        if (Environment.GetEnvironmentVariable("CS2WASM_STATS") != null)
+        {
+            Console.Error.WriteLine($"  live string literals {live.Where(c => c.Owner == null).Sum(c => c.Length)} bytes ({live.Count(c => c.Owner == null)}); live blobs:");
+            foreach (var g in live.Where(c => c.Owner != null).GroupBy(c => c.Owner).OrderByDescending(g => g.Sum(c => c.Length)).Take(15))
+                Console.Error.WriteLine($"    {g.Sum(c => c.Length),7} {g.Key}");
+        }
         var old = Data.Bytes.ToArray();
         if (!_dataPinned)
         {
