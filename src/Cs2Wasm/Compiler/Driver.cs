@@ -320,6 +320,8 @@ internal sealed partial class Driver
             "System.Runtime.CompilerServices.RuntimeHelpers" => m.Name is "GetRawData" or "IsBitwiseEquatable" or "IsReferenceOrContainsReferences" or "ObjectHasComponentSize",
             "System.Threading.Volatile" => m.Name is "ReadBarrier" or "WriteBarrier",
             "System.Object" => m.Name == "GetType" && Library.UseUpstream,
+            // new T() for a T known at compile time (LazyInitializer and friends call it directly)
+            "System.Activator" => m.Name == "CreateInstance" && m.IsGenericMethod && m.Parameters.Length == 0 && Library.UseUpstream,
             _ => false,
         };
     }
@@ -395,6 +397,33 @@ internal sealed partial class Driver
     public static bool IsPrimaryCtor(IMethodSymbol m) =>
         m.MethodKind == MethodKind.Constructor && !m.ContainingType.IsRecord &&
         m.OriginalDefinition.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax { ParameterList: not null });
+
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<IParameterSymbol, bool> s_captured = new(SymbolEqualityComparer.Default);
+
+    /// <summary>Whether a primary-constructor parameter is used beyond the initializers and the base list (by name,
+    /// conservatively: a lambda in an initializer counts), so the object keeps it. One only initializing fields has
+    /// no storage, as C# gives it none (Utf16Char(char ch) is two bytes).</summary>
+    public static bool IsCapturedPrimaryParam(IParameterSymbol p) => s_captured.GetOrAdd((IParameterSymbol)p.OriginalDefinition, static p =>
+    {
+        foreach (var r in p.ContainingType.DeclaringSyntaxReferences)
+        {
+            if (r.GetSyntax() is not Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax decl) continue;
+            foreach (var id in decl.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>())
+            {
+                if (id.Identifier.ValueText != p.Name) continue;
+                bool initOnly = false;
+                for (var n = id.Parent; n != null && n != decl; n = n.Parent)
+                {
+                    if (n is Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousFunctionExpressionSyntax or Microsoft.CodeAnalysis.CSharp.Syntax.LocalFunctionStatementSyntax) break;
+                    if (n is Microsoft.CodeAnalysis.CSharp.Syntax.PrimaryConstructorBaseTypeSyntax or Microsoft.CodeAnalysis.CSharp.Syntax.ParameterListSyntax
+                        || n is Microsoft.CodeAnalysis.CSharp.Syntax.EqualsValueClauseSyntax { Parent: Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax or Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax })
+                    { initOnly = true; break; }
+                }
+                if (!initOnly) return true;
+            }
+        }
+        return false;
+    });
 
     public static bool IsFieldLikeEvent(IEventSymbol e) =>
         e.OriginalDefinition.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax);

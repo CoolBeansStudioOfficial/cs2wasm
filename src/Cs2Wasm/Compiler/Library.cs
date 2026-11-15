@@ -142,7 +142,15 @@ internal sealed class Library
         return true;
     }
 
-    public INamedTypeSymbol? FindType(INamedTypeSymbol def) => _types.GetValueOrDefault(Types.DocId(def));
+    /// <summary>The library's type for one seen through a reference; a library's own type is itself (CoreLib's
+    /// System.Number is not System.Runtime.Numerics' System.Number). Interop is the exception: every library's
+    /// Interop.Sys is CoreLib's, whose bodies are the boundary's.</summary>
+    public INamedTypeSymbol? FindType(INamedTypeSymbol def)
+    {
+        if (def.Name != "Interop" || !def.ContainingNamespace.IsGlobalNamespace)
+            foreach (var c in All) if (SymbolEqualityComparer.Default.Equals(c.Assembly, def.ContainingAssembly)) return def;
+        return _types.GetValueOrDefault(Types.DocId(def));
+    }
 
     /// <summary>A library type by metadata name, the corlib's first.</summary>
     public INamedTypeSymbol? TypeByMetadataName(string name)

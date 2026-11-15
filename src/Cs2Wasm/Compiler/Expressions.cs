@@ -92,6 +92,9 @@ sealed partial class FunctionCompiler
             case IArrayElementReferenceOperation ae: return EmitArrayElementLoad(ae);
             case IBinaryOperation b: return EmitBinary(b);
             case IUnaryOperation u: return EmitUnary(u);
+            case IRangeOperation { Method: { IsStatic: true } factory } ro:
+                return EmitCall(factory, null, new[] { ro.LeftOperand, ro.RightOperand }.Where(o => o != null).ToArray()!, false, ro.Syntax);
+            case IRangeOperation ro: return EmitRange(ro);
             case ISimpleAssignmentOperation sa: return TryInstrumentedWrite(sa, () => EmitAssign(sa, needResult: true), out var w1) ? w1 : EmitAssign(sa, needResult: true);
             case ICompoundAssignmentOperation ca: return TryInstrumentedWrite(ca, () => EmitCompound(ca, needResult: true), out var w2) ? w2 : EmitCompound(ca, needResult: true);
             case IIncrementOrDecrementOperation inc: return TryInstrumentedWrite(inc, () => EmitIncDec(inc, needResult: true), out var w3) ? w3 : EmitIncDec(inc, needResult: true);
@@ -324,7 +327,7 @@ sealed partial class FunctionCompiler
 
     /// <summary>A primary-constructor parameter used outside that constructor lives in the object.</summary>
     bool IsPrimaryParamHere(IParameterSymbol p) =>
-        p.ContainingSymbol is IMethodSymbol c && Driver.IsPrimaryCtor(c) &&
+        p.ContainingSymbol is IMethodSymbol c && Driver.IsPrimaryCtor(c) && Driver.IsCapturedPrimaryParam(p) &&
         !(SymbolEqualityComparer.Default.Equals(c.OriginalDefinition, M.OriginalDefinition) && _closure == null && _machine == null);
 
     FieldSlot PrimarySlot(IParameterSymbol p)
@@ -1313,6 +1316,34 @@ sealed partial class FunctionCompiler
             _ => throw new CompileException("bad comparison " + kind),
         };
         E.Op(op);
+    }
+
+    /// <summary>`a..b` as a value: new Range(a, b), an omitted end being Index.Start or Index.End.</summary>
+    Own EmitRange(IRangeOperation ro)
+    {
+        var rangeT = (INamedTypeSymbol)TypeOf(ro);
+        var ctor = rangeT.InstanceConstructors.First(c => c.Parameters.Length == 2);
+        var idxT = (INamedTypeSymbol)ctor.Parameters[0].Type;
+        var idxCtor = idxT.InstanceConstructors.First(c => c.Parameters.Length == 2 && Types.PrimOf(c.Parameters[1].Type) == Prim.Bool);
+        int Index(IOperation? op, bool fromEnd)
+        {
+            int at = TempStruct(idxT);
+            if (op == null)
+                CallWith(D.CanonicalMethod(idxCtor), false, () => { E.Get(_fb); E.I32(at); E.Op(Op.I32Add); }, () => { E.I32(0); E.I32(fromEnd ? 1 : 0); }, null, ro.Syntax);
+            else
+            {
+                E.Get(_fb); E.I32(at); E.Op(Op.I32Add);
+                EmitValueAs(op, idxT);
+                E.I32(T.StorageOf(idxT).size); E.Op(Op.MemoryCopy);
+            }
+            return at;
+        }
+        int a = Index(ro.LeftOperand, false), b = Index(ro.RightOperand, true);
+        int off = TempStruct(rangeT);
+        CallWith(D.CanonicalMethod(ctor), false, () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); },
+            () => { E.Get(_fb); E.I32(a); E.Op(Op.I32Add); E.Get(_fb); E.I32(b); E.Op(Op.I32Add); }, null, ro.Syntax);
+        E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+        return Own.None;
     }
 
     Own EmitUnary(IUnaryOperation u)

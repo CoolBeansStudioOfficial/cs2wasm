@@ -420,6 +420,14 @@ namespace System
             int size = Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(src);
             bool same = Cs2Wasm.Runtime.Rt.TypeId(src) == Cs2Wasm.Runtime.Rt.TypeId(dst)
                 || (Cs2Wasm.Runtime.Cs2WasmArrays.HasCountedElements(src) && Cs2Wasm.Runtime.Cs2WasmArrays.HasCountedElements(dst) && size == Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(dst) && size == 4);
+            if (!same && !Cs2Wasm.Runtime.Cs2WasmArrays.HasCountedElements(src) && !Cs2Wasm.Runtime.Cs2WasmArrays.HasCountedElements(dst)
+                && size == Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(dst) && Cs2Wasm.Runtime.Cs2WasmArrays.RankOf(src) == Cs2Wasm.Runtime.Cs2WasmArrays.RankOf(dst))
+            {
+                // an enum and its underlying type (or two enums over it) share their elements' bits
+                int se = Cs2Wasm.Runtime.TypeInfo.ElementId(Cs2Wasm.Runtime.Rt.TypeId(src)), de = Cs2Wasm.Runtime.TypeInfo.ElementId(Cs2Wasm.Runtime.Rt.TypeId(dst));
+                int sk = Cs2Wasm.Runtime.Cs2WasmArrays.PrimitiveKind(se);
+                same = sk != 0 && sk == Cs2Wasm.Runtime.Cs2WasmArrays.PrimitiveKind(de);
+            }
             if (!same) return false;
             Cs2Wasm.Runtime.Cs2WasmArrays.CopyElements(src, source_idx, dst, dest_idx, length, size);
             return true;
@@ -444,7 +452,8 @@ namespace System
         // CAUTION! No bounds checking!
         private static void GetValueImpl(ObjectHandleOnStack arr, ObjectHandleOnStack res, int pos)
         {
-            throw new NotSupportedException("cs2wasm: boxing an Array element by index is not supported yet");
+            Array a = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(arr);
+            Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.Cs2WasmArrays.GetBoxed(a, pos));
         }
 
         // CAUTION! No bounds checking!
@@ -471,7 +480,8 @@ namespace System
         // CAUTION! No bounds checking!
         private static void SetValueImpl(ObjectHandleOnStack arr, ObjectHandleOnStack value, int pos)
         {
-            throw new NotSupportedException("cs2wasm: storing a boxed Array element by index is not supported yet");
+            Array a = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(arr);
+            Cs2Wasm.Runtime.Cs2WasmArrays.SetBoxed(a, pos, Cs2Wasm.Runtime.Cs2WasmArrays.Handle<object>(value));
         }
 
         private static void InitializeInternal(ObjectHandleOnStack arr)
@@ -481,7 +491,8 @@ namespace System
         // CAUTION! No bounds checking!
         private static void SetValueRelaxedImpl(ObjectHandleOnStack arr, ObjectHandleOnStack value, int pos)
         {
-            throw new NotSupportedException("cs2wasm: storing a boxed Array element by index is not supported yet");
+            Array a = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(arr);
+            Cs2Wasm.Runtime.Cs2WasmArrays.SetBoxed(a, pos, Cs2Wasm.Runtime.Cs2WasmArrays.Handle<object>(value));
         }
 
 #pragma warning disable CA1822

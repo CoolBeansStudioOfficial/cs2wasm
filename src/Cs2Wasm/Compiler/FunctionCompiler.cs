@@ -1603,7 +1603,7 @@ sealed partial class FunctionCompiler
             if (Driver.IsPrimaryCtor(def))
             {
                 // capture the parameters, run the initializers, then the base constructor from the base list
-                foreach (var pp in M.Parameters)
+                foreach (var pp in M.Parameters.Where(Driver.IsCapturedPrimaryParam))
                 {
                     var slot = PrimarySlot(pp);
                     var v = _vars[pp];
@@ -1703,6 +1703,24 @@ sealed partial class FunctionCompiler
     // =====================================================================
     static readonly HashSet<string> s_sandboxNamespaces = ["System.IO", "System.Net", "System.Net.Sockets", "System.Net.Http", "Microsoft.Win32", "System.Runtime.InteropServices.ComTypes"];
 
+    static readonly HashSet<string> s_fileEntries = ["Open", "FStat", "Stat", "LStat", "Read", "Write", "PRead", "PWrite", "LSeek", "FSync", "FTruncate",
+        "Unlink", "MkDir", "RmDir", "OpenDir", "ReadDir", "ReadDirR", "CloseDir", "Access", "RealPath", "Rename", "CopyFile", "FLock", "PosixFAdvise",
+        "FAllocate", "GetCwd", "ChDir", "ChMod", "FChMod", "UTimensat", "FUTimens", "Link", "SymLink", "ReadLink", "GetFileSystemType", "Dup",
+        "MksTemps", "MMap", "ShmOpen", "ShmUnlink", "LChflags", "FChflags", "GetDefaultTimeZone", "INotifyInit"];
+
+    /// <summary>"platform invoke (lib!SystemNative_X)": the sandbox capability X stands for, or null.</summary>
+    static string? NativeCapability(string pinvoke)
+    {
+        int bang = pinvoke.IndexOf('!');
+        if (bang < 0) return null;
+        var entry = pinvoke[(bang + 1)..].TrimEnd(')');
+        if (entry.StartsWith("SystemNative_", StringComparison.Ordinal)) entry = entry["SystemNative_".Length..];
+        if (s_fileEntries.Contains(entry)) return "the file system";
+        if (entry.Contains("Socket") || entry.StartsWith("Get") && entry.Contains("Host") || entry is "Connect" or "Bind" or "Listen" or "Accept" or "Send" or "Receive" or "SendMessage" or "ReceiveMessage") return "network sockets";
+        if (entry is "ForkAndExecProcess" or "Kill" or "WaitPidExitedNoHang" or "WaitIdAnyExitedNoHangNoWait") return "processes";
+        return null;
+    }
+
     void ReportMissing(IMethodSymbol m, Location? loc)
     {
         loc ??= m.Locations.FirstOrDefault(l => l.IsInSource);
@@ -1711,6 +1729,8 @@ sealed partial class FunctionCompiler
             Console.Error.WriteLine($"missing {name} asm={m.ContainingAssembly?.Name} type-asm={m.ContainingType?.ContainingAssembly?.Name} key={Types.MethodKey(m)} {Environment.StackTrace}");
         var def = m.OriginalDefinition;
         if (Driver.MissingCapability(def) is { } needed && !needed.StartsWith("platform invoke")) { D.Report(Diags.SandboxCapability, loc, name, needed); return; }
+        // an upstream library's native call (System.Native's): the capability it stands for, when one is known
+        if (D.IsLibrary(m) && Driver.MissingCapability(def) is { } pinv && NativeCapability(pinv) is { } nc) { D.Report(Diags.SandboxCapability, loc, name, nc); return; }
         if (def.GetDllImportData() != null || def.GetAttributes().Any(a => a.AttributeClass?.Name is "DllImportAttribute" or "LibraryImportAttribute"))
         { D.Report(Diags.PlatformInvoke, loc, name); return; }
         if (!D.IsLibrary(m) && def.Locations.Any(l => l.IsInSource))

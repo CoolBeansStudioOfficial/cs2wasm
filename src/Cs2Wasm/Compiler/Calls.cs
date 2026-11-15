@@ -420,6 +420,19 @@ sealed partial class FunctionCompiler
                     FreeScratch(ValType.I32, t1); FreeScratch(ValType.I32, t2);
                     return Own.None;
                 }
+            case "System.Activator.CreateInstance":
+                {
+                    var t = Arg(0);
+                    if (t.IsValueType) return EmitDefault(t);
+                    if (t is not INamedTypeSymbol { IsAbstract: false } nt || nt.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 0) is not { } ctor)
+                        throw new CompileException($"Activator.CreateInstance<{t}>(): {t} has no parameterless constructor", null);
+                    int tid = D.MarkConstructed(t);
+                    int obj = E.AddLocal(ValType.I32);
+                    E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.I32(tid); E.Call(Rt.AllocObject); E.Set(obj);
+                    CallWith(D.CanonicalMethod(ctor), false, () => E.Get(obj), () => { }, null, null);
+                    E.Get(obj);
+                    return Own.Owned;
+                }
             case "System.Runtime.CompilerServices.Unsafe.Copy":
                 {
                     var t = Arg(0); NoCounted(t);

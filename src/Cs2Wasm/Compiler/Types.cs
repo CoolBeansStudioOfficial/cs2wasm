@@ -77,6 +77,11 @@ internal sealed class Types
                     if (n.IsTupleType && n.TupleUnderlyingType is { } u && !SymbolEqualityComparer.Default.Equals(u, n)) return Key(u);
                     string baseName = n.ContainingType != null ? Key(n.ContainingType) + "+" : Ns(n.ContainingNamespace);
                     baseName += n.MetadataName;
+                    // an internal type of an upstream library other than CoreLib may share its name with one of
+                    // CoreLib's (System.Number, System.SR): its own assembly tells them apart
+                    if (n.ContainingType == null && n.DeclaredAccessibility != Accessibility.Public && Library.UseUpstream && n.Name != "Interop"
+                        && n.ContainingAssembly?.Name is { } asm && asm != "System.Private.CoreLib" && asm.StartsWith("System.", StringComparison.Ordinal))
+                        baseName += "@" + asm;
                     if (n.TypeArguments.Length > 0) baseName += "<" + string.Join(",", n.TypeArguments.Select(Key)) + ">";
                     return baseName;
                 }
@@ -441,7 +446,7 @@ internal sealed class Types
             offset = Math.Max(offset, dataStart + minSize);
         // primary constructor parameters (C# 12 classes and structs): captured state
         foreach (var pc in t.InstanceConstructors.Where(Driver.IsPrimaryCtor))
-            foreach (var pp in pc.Parameters)
+            foreach (var pp in pc.Parameters.Where(Driver.IsCapturedPrimaryParam))
             {
                 var pt = Canonical(pp.Type);
                 var (psize, palign) = StorageOf(pt);
