@@ -80,6 +80,15 @@ internal sealed partial class Driver
             Report(Diags.ReflectionUnknown, op.Syntax.GetLocation(), "Activator.CreateInstance");
             return;
         }
+        // Delegate.CreateDelegate(type, target, "Name", ...): the named method, on every type the program names
+        if (owner == "Delegate" && m.Name == "CreateDelegate" && op.Arguments.FirstOrDefault(a => a.Parameter?.Type.SpecialType == SpecialType.System_String)?.Value.ConstantValue is { HasValue: true, Value: string dn })
+        {
+            for (int id = 0; id < TypeById.Count; id++)
+                if (TypeById[id] is INamedTypeSymbol nt && !nt.IsUnboundGenericType && !nt.TypeArguments.Any(a => a is ITypeParameterSymbol) && !SyntheticById.ContainsKey(id) && !DisplayById.ContainsKey(id)
+                    && nt.GetMembers(dn).Any())
+                    keep.Keep(nt, dn);
+            return;
+        }
         if (owner is not ("Type" or "TypeInfo" or "MemberInfo" or "CustomAttributeExtensions" or "Attribute") || !s_reflectNames.Contains(m.Name)) return;
         if (owner is "MemberInfo" or "CustomAttributeExtensions" or "Attribute") return; // attributes of kept members are kept with them
         var t = op.Instance != null ? ReceiverType(op.Instance, map) : null;

@@ -152,6 +152,10 @@ namespace Cs2Wasm.Runtime
         /// <summary>A delegate of the type (by id) that passes its arguments to the handler as an object[]; null when the
         /// program names no such delegate type (Compiler/DynamicDelegates.cs).</summary>
         [Intrinsic] public static extern System.Delegate? ObjectArrayDelegate(int delegateTypeId, System.Func<object?[], object?> handler);
+        /// <summary>Invokes the delegate with the arguments unboxed from the array, the result boxed (DynamicInvoke).</summary>
+        [Intrinsic] public static extern object? DynamicInvokeRaw(System.Delegate d, object?[]? args);
+        /// <summary>The delegate type's parameter count; -1 when the program has no DynamicInvoke for it.</summary>
+        [Intrinsic] public static extern int DelegateArity(System.Delegate d);
         [Intrinsic] public static extern int TlsBase();
         [Intrinsic] public static extern int TlsSize();
         [Intrinsic] public static extern void RuntimeLock();

@@ -664,6 +664,8 @@ sealed partial class FunctionCompiler
             case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
             case "Rt.ReleaseThreadStatics": E.Call(Rt.ReleaseThreadStaticsFn); return Own.None;
             case "Rt.ObjectArrayDelegate": E.Call(D.ObjectArrayDelegateFn); return Own.Owned;
+            case "Rt.DynamicInvokeRaw": E.Call(D.DynamicInvokeFn); return Own.Owned;
+            case "Rt.DelegateArity": E.Call(D.DelegateArityFn); return Own.None;
             case "Rt.ArenaClearObject": E.Call(Rt.ArenaClearFn); return Own.None;
             case "Rt.ArenaFreeObject": E.Call(Rt.ArenaFreeFn); return Own.None;
             case "Rt.ArenaVisitObject": E.Call(Rt.ArenaVisitFn); return Own.None;

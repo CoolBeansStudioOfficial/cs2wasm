@@ -5,13 +5,13 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 48 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 50 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
   and concurrent collections, `typeof` and seeded `Random`, records, reference cycles, weak references and
   finalizers, reflection, decimal, date and time, enum formatting, spans and `stackalloc`, `ref struct`, ref returns,
-  C# 14 extension members, value-type equality, expression trees and `Expression.Compile`) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
+  C# 14 extension members, value-type equality, expression trees and `Expression.Compile`, array ranges) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
   GodotSharp math proof (proof 2).
 - **API checks:** 17 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
   custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
@@ -317,9 +317,9 @@ exported beside the stack pointer.
   compiler rules and manifest substitutions/edits, not a fork: no gen-2 GC callbacks or pool trimming, no
   environment variables or processor numbers in the sandbox, resource keys off, static initializers of unread fields
   dropped, constructed types pruned to live code, invariant globalization folded. Reflection over members reads the
-  compiler's reflection records through Mono's icalls (`Boundary/Meta.cs`). Missing: `Delegate.CreateDelegate`/
-  `DynamicInvoke`, reflection on generic instantiations, `Array.CreateInstance` of array types the program never
-  makes. Build time: see Results (the library's models and bound bodies are kept between builds in one process).
+  compiler's reflection records through Mono's icalls (`Boundary/Meta.cs`). `Delegate.DynamicInvoke` (a thunk per
+  delegate type the program constructs) and `Delegate.CreateDelegate`/`MethodInfo.CreateDelegate` from a
+  `MethodInfo` (closed, open instance, static) or a method name work (`049`, `050`). Missing: `Delegate.Method`, `Array.CreateInstance` of array types the program never makes. Build time: see Results (the library's models and bound bodies are kept between builds in one process).
 - 7.5–7.6: GodotSharp's math types compile and match (proof 2); the generated wrappers (Node2D) and the boundary
   table are Bazoodle's (7.5) and do not exist yet, so proofs 3 and 4 wait on them. No browser build (the browser
   .NET runtime's workload is not installed here); budgets: module size and desktop build time measured (Results),

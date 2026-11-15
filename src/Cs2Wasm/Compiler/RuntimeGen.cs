@@ -358,7 +358,7 @@ sealed partial class RuntimeGen
     /// <summary>Generates destroy functions for newly constructed types and resolves virtual calls; true if new work appeared.</summary>
     public bool Expand()
     {
-        bool any = D.ExpandObjectArrayThunks() | D.ExpandAttributeArrays();
+        bool any = D.ExpandObjectArrayThunks() | D.ExpandAttributeArrays() | D.ExpandDynamicInvokeThunks();
         foreach (var id in D.Constructed.ToList())
         {
             if (_destroyFns.ContainsKey(id)) continue;
@@ -730,6 +730,7 @@ sealed partial class RuntimeGen
         D.Rt.EmitArrayDispatch();
         D.Module.UsesThreads = D.UsesThreads;
         D.EmitObjectArrayDelegate();
+        D.EmitDynamicInvoke();
         if (D.Rt.ReleaseThreadStaticsIfMade is { } rts)
         {
             var e = new Emitter(rts);

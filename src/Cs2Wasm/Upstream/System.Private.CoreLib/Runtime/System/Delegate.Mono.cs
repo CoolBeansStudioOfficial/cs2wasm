@@ -101,12 +101,90 @@ namespace System
         internal Delegate? TryGetAt(int index) =>
             _list == null ? (index == 0 ? this : null) : (uint)index < (uint)_list.Length ? _list[index] : null;
 
-        public static Delegate CreateDelegate(Type type, object? firstArgument, MethodInfo method, bool throwOnBindFailure) => throw TypeInfo.NotYet("Delegate.CreateDelegate");
-        public static Delegate? CreateDelegate(Type type, MethodInfo method, bool throwOnBindFailure) => throw TypeInfo.NotYet("Delegate.CreateDelegate");
-        public static Delegate? CreateDelegate(Type type, object target, string method, bool ignoreCase, bool throwOnBindFailure) => throw TypeInfo.NotYet("Delegate.CreateDelegate");
-        public static Delegate? CreateDelegate(Type type, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.AllMethods)] Type target, string method, bool ignoreCase, bool throwOnBindFailure) => throw TypeInfo.NotYet("Delegate.CreateDelegate");
+        // cs2wasm: a delegate of the type over the method's reflection thunk (the compiler makes such delegates for the
+        // delegate types the program names: Internal.Runtime.Augments.DynamicDelegateAugments); the method is called as
+        // a delegate call would, without wrapping its exceptions
+        public static Delegate CreateDelegate(Type type, object? firstArgument, MethodInfo method, bool throwOnBindFailure)
+            => Bind(type, firstArgument, method, throwOnBindFailure, closedAllowed: true);
 
-        protected virtual object? DynamicInvokeImpl(object?[]? args) => throw TypeInfo.NotYet("Delegate.DynamicInvoke");
+        static Delegate Bind(Type type, object? firstArgument, MethodInfo method, bool throwOnBindFailure, bool closedAllowed)
+        {
+            ArgumentNullException.ThrowIfNull(type);
+            ArgumentNullException.ThrowIfNull(method);
+            if (type is not RuntimeType rt || !rt.IsSubclassOf(typeof(MulticastDelegate)))
+                throw new ArgumentException(SR.Arg_MustBeDelegate, nameof(type));
+            int n = rt.GetMethod("Invoke")!.GetParameters().Length;
+            int k = method.GetParameters().Length;
+            Func<object?[], object?>? h = null;
+            if (!method.IsStatic)
+            {
+                if (k == n) h = args => Call(method, firstArgument, args);
+                else if (k == n - 1 && firstArgument == null) h = args => Call(method, args[0], args[1..]); // open instance
+            }
+            else if (k == n && firstArgument == null) h = args => Call(method, null, args);
+            else if (k == n + 1 && closedAllowed) h = args => { var all = new object?[args.Length + 1]; all[0] = firstArgument; Array.Copy(args, 0, all, 1, args.Length); return Call(method, null, all); };
+            if (h == null)
+            {
+                if (throwOnBindFailure) throw new ArgumentException(SR.Arg_DlgtTargMeth);
+                return null!;
+            }
+            return Internal.Runtime.Augments.DynamicDelegateAugments.CreateObjectArrayDelegate(type, h);
+        }
+
+        static object? Call(MethodInfo m, object? target, object?[] args) => m.Invoke(target, BindingFlags.DoNotWrapExceptions, null, args, null);
+
+        // (static, or open instance: nothing is bound first)
+        public static Delegate? CreateDelegate(Type type, MethodInfo method, bool throwOnBindFailure) => Bind(type, null, method, throwOnBindFailure, closedAllowed: false);
+        public static Delegate? CreateDelegate(Type type, object target, string method, bool ignoreCase, bool throwOnBindFailure)
+        {
+            ArgumentNullException.ThrowIfNull(type);
+            ArgumentNullException.ThrowIfNull(target);
+            ArgumentNullException.ThrowIfNull(method);
+            var m = FindForDelegate(type, target.GetType(), method, ignoreCase, BindingFlags.Instance);
+            if (m == null) { if (throwOnBindFailure) throw new ArgumentException(SR.Arg_DlgtTargMeth); return null; }
+            return Bind(type, target, m, throwOnBindFailure, closedAllowed: true);
+        }
+
+        public static Delegate? CreateDelegate(Type type, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.AllMethods)] Type target, string method, bool ignoreCase, bool throwOnBindFailure)
+        {
+            ArgumentNullException.ThrowIfNull(type);
+            ArgumentNullException.ThrowIfNull(target);
+            ArgumentNullException.ThrowIfNull(method);
+            if (target.ContainsGenericParameters) throw new ArgumentException(SR.Arg_UnboundGenParam, nameof(target));
+            var m = FindForDelegate(type, target, method, ignoreCase, BindingFlags.Static);
+            if (m == null) { if (throwOnBindFailure) throw new ArgumentException(SR.Arg_DlgtTargMeth); return null; }
+            return Bind(type, null, m, throwOnBindFailure, closedAllowed: false);
+        }
+
+        /// <summary>The method of that name whose parameters match the delegate's Invoke (by count and type).</summary>
+        static MethodInfo? FindForDelegate(Type type, Type target, string name, bool ignoreCase, BindingFlags kind)
+        {
+            if (type is not RuntimeType rt || !rt.IsSubclassOf(typeof(MulticastDelegate)))
+                throw new ArgumentException(SR.Arg_MustBeDelegate, nameof(type));
+            var invoke = rt.GetMethod("Invoke")!;
+            var want = invoke.GetParameters();
+            var flags = kind | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.FlattenHierarchy | (ignoreCase ? BindingFlags.IgnoreCase : 0);
+            foreach (var m in target.GetMethods(flags))
+            {
+                if (!string.Equals(m.Name, name, ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) continue;
+                var ps = m.GetParameters();
+                if (ps.Length != want.Length || !invoke.ReturnType.IsAssignableFrom(m.ReturnType)) continue;
+                bool ok = true;
+                for (int i = 0; i < ps.Length && ok; i++) ok = ps[i].ParameterType.IsAssignableFrom(want[i].ParameterType);
+                if (ok) return m;
+            }
+            return null;
+        }
+
+        // cs2wasm: through the compiler's thunk for the delegate type's Invoke (Compiler/DynamicDelegates.cs)
+        protected virtual object? DynamicInvokeImpl(object?[]? args)
+        {
+            int n = Cs2Wasm.Runtime.Rt.DelegateArity(this);
+            if (n < 0) throw new PlatformNotSupportedException("cs2wasm: DynamicInvoke of " + GetType() + " (a delegate with ref or span parameters)");
+            if ((args?.Length ?? 0) != n) throw new System.Reflection.TargetParameterCountException(SR.Arg_ParmCnt);
+            try { return Cs2Wasm.Runtime.Rt.DynamicInvokeRaw(this, args); }
+            catch (Exception e) { throw new System.Reflection.TargetInvocationException(e); }
+        }
 
         public override bool Equals([NotNullWhen(true)] object? obj)
         {

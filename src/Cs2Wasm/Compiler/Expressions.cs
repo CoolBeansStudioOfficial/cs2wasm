@@ -95,6 +95,13 @@ sealed partial class FunctionCompiler
                     E.Load(Op.I32Load, off);
                     return Own.Unstable;
                 }
+            // a[range]: a new array of the slice, as C# defines it (RuntimeHelpers.GetSubArray)
+            case IArrayElementReferenceOperation { Indices: [var rix] } ae when rix.Type is { Name: "Range" } rt && rt.ContainingNamespace?.ToDisplayString() == "System":
+                {
+                    var et = ((IArrayTypeSymbol)TypeOf(ae.ArrayReference)).ElementType;
+                    var gsa = D.LibType("System.Runtime.CompilerServices.RuntimeHelpers").GetMembers("GetSubArray").OfType<IMethodSymbol>().First();
+                    return EmitCallResolved(D.CanonicalMethod(gsa.Construct(T.Canonical(et))), null, [ae.ArrayReference, rix], false);
+                }
             case IArrayElementReferenceOperation ae: return EmitArrayElementLoad(ae);
             case IBinaryOperation b: return EmitBinary(b);
             case IUnaryOperation u: return EmitUnary(u);

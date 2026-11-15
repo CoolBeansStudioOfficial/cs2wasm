@@ -137,6 +137,56 @@ internal sealed partial class Driver
         return any;
     }
 
+    // Delegate.DynamicInvoke: per delegate type the program constructs, the reflection thunk of its Invoke (target:
+    // the delegate; the arguments unboxed from the object[]; the result boxed), and its parameter count
+    WasmFunction? _dynamicInvoke, _delegateArity;
+    readonly Dictionary<int, WasmFunction> _dynamicThunks = [];
+    public WasmFunction DynamicInvokeFn => _dynamicInvoke ??= Module.AddFunction("rt.dynamic_invoke", new FuncType([ValType.I32, ValType.I32], [ValType.I32]));
+    public WasmFunction DelegateArityFn => _delegateArity ??= Module.AddFunction("rt.delegate_arity", new FuncType([ValType.I32], [ValType.I32]));
+
+    public bool ExpandDynamicInvokeThunks()
+    {
+        if (_dynamicInvoke == null && _delegateArity == null) return false;
+        bool any = false;
+        foreach (var id in Constructed.ToList())
+        {
+            if (_dynamicThunks.ContainsKey(id) || SyntheticById.ContainsKey(id) || DisplayById.ContainsKey(id)) continue;
+            if (TypeById[id] is not INamedTypeSymbol { TypeKind: TypeKind.Delegate, DelegateInvokeMethod: { } inv }) continue;
+            if (inv.Parameters.Any(p => p.RefKind != RefKind.None || p.Type.IsRefLikeType || p.Type is IPointerTypeSymbol) || inv.ReturnType.IsRefLikeType || inv.ReturnsByRef) continue;
+            _dynamicThunks[id] = ThunkFor(CanonicalMethod(inv));
+            any = true;
+        }
+        return any;
+    }
+
+    public void EmitDynamicInvoke()
+    {
+        if (_dynamicInvoke != null)
+        {
+            var e = new Emitter(_dynamicInvoke);
+            int tid = e.AddLocal(ValType.I32);
+            e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
+            foreach (var (id, th) in _dynamicThunks)
+            {
+                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
+                e.If(); e.Get(0); e.Get(1); e.Call(th); e.Op(Op.Return); e.End();
+            }
+            e.Op(Op.Unreachable);
+        }
+        if (_delegateArity != null)
+        {
+            var e = new Emitter(_delegateArity);
+            int tid = e.AddLocal(ValType.I32);
+            e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
+            foreach (var (id, _) in _dynamicThunks)
+            {
+                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
+                e.If(); e.I32(((INamedTypeSymbol)TypeById[id]).DelegateInvokeMethod!.Parameters.Length); e.Op(Op.Return); e.End();
+            }
+            e.I32(-1);
+        }
+    }
+
     /// <summary>A thunk for each closed delegate type the program names (while compiling: new types keep coming).</summary>
     public bool ExpandObjectArrayThunks()
     {
