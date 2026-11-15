@@ -227,7 +227,17 @@ namespace System.Runtime.CompilerServices
 
                 private static unsafe void PrepareMethod(IntPtr method, IntPtr* instantiations, int ninst) { }
 
-                private static object GetUninitializedObjectInternal(IntPtr type) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("GetUninitializedObjectInternal");
+        // cs2wasm: a zeroed object (a value type's box) of the type's size; the type must be one the program
+        // constructs (its destroy function exists): reflection marks the value types of by-ref parameters it keeps
+        private static unsafe object GetUninitializedObjectInternal(IntPtr type)
+        {
+            int id = (int)type;
+            int size = Cs2Wasm.Runtime.TypeInfo.Size(id);
+            int total = RuntimeType.FromId(id).IsValueType ? Cs2Wasm.Runtime.TypeInfo.BoxOffset(id) + size : Math.Max(size, 12);
+            int a = Cs2Wasm.Runtime.Rt.AllocObject(total, id);
+            new Span<byte>((void*)(a + 12), total - 12).Clear();
+            return Cs2Wasm.Runtime.Rt.Take<object>(a);
+        }
 
                 private static void InitializeArray(Array array, IntPtr fldHandle) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("InitializeArray");
 
@@ -242,7 +252,19 @@ namespace System.Runtime.CompilerServices
 
                 private static bool SufficientExecutionStack() => true;
 
-                private static object InternalBox(QCallTypeHandle type, ref byte target) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("InternalBox");
+        // cs2wasm: a box of the value at target (as Array.GetValue boxes an element: Boundary/Arrays.cs)
+        private static unsafe object InternalBox(QCallTypeHandle type, ref byte target)
+        {
+            int id = Cs2Wasm.Runtime.TypeInfo.Id(type);
+            int addr = (int)Unsafe.AsPointer(ref target);
+            if ((Cs2Wasm.Runtime.TypeInfo.Flags(id) & 1) == 0) return Cs2Wasm.Runtime.Rt.Borrow<object>(Cs2Wasm.Runtime.Mem.LoadI32(addr));
+            if ((Cs2Wasm.Runtime.TypeInfo.Flags2(id) & 1) != 0 || (Cs2Wasm.Runtime.TypeInfo.Flags2(id) & 4) != 0 && Cs2Wasm.Runtime.TypeInfo.Name(id) == "Nullable`1")
+                throw Cs2Wasm.Runtime.TypeInfo.NotYet("RuntimeHelpers.Box of a struct with references or of a Nullable");
+            int size = Cs2Wasm.Runtime.TypeInfo.Size(id), off = Cs2Wasm.Runtime.TypeInfo.BoxOffset(id);
+            int box = Cs2Wasm.Runtime.Rt.AllocObject(off + size, id);
+            Cs2Wasm.Runtime.Mem.Copy(box + off, addr, size);
+            return Cs2Wasm.Runtime.Rt.Take<object>(box);
+        }
 
         /// <summary>
         /// Create a boxed object of the specified type from the data located at the target reference.

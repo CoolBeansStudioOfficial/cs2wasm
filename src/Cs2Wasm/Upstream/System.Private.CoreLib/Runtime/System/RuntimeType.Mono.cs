@@ -2069,7 +2069,7 @@ namespace System
             return type!;
         }
 
-                private static void make_byref_type(QCallTypeHandle type, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.MakeByRefType");
+                private static void make_byref_type(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, ByRefOf(Cs2Wasm.Runtime.TypeInfo.Id(type)));
 
         public override Type MakeByRefType()
         {
@@ -2307,6 +2307,12 @@ namespace System
             // (with the namespace either way: Mono's full_name qualifies generic arguments; a generic definition's
             // FullName has no argument list, its ToString names the parameters)
             int id = Cs2Wasm.Runtime.TypeInfo.Id(type);
+            if ((id & Cs2Wasm.Runtime.Meta.ByRef) != 0)
+            {
+                var et = FromId(id & ~Cs2Wasm.Runtime.Meta.ByRef);
+                Cs2Wasm.Runtime.TypeInfo.Set(res, et.getFullName(full_name, assembly_qualified) + "&");
+                return;
+            }
             string name = Cs2Wasm.Runtime.TypeInfo.FullName(id);
             if (full_name && Cs2Wasm.Runtime.TypeInfo.IsGenericTypeDefinition(id) && name.IndexOf('[') is int b && b > 0) name = name.Substring(0, b);
             Cs2Wasm.Runtime.TypeInfo.Set(res, name);
@@ -2438,7 +2444,11 @@ namespace System
             }
         }
 
-                private static void GetName(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.TypeInfo.Name(Cs2Wasm.Runtime.TypeInfo.Id(type)));
+                private static void GetName(QCallTypeHandle type, ObjectHandleOnStack res)
+        {
+            int id = Cs2Wasm.Runtime.TypeInfo.Id(type);
+            Cs2Wasm.Runtime.TypeInfo.Set(res, (id & Cs2Wasm.Runtime.Meta.ByRef) != 0 ? Cs2Wasm.Runtime.TypeInfo.Name(id & ~Cs2Wasm.Runtime.Meta.ByRef) + "&" : Cs2Wasm.Runtime.TypeInfo.Name(id));
+        }
 
         public override string Name
         {

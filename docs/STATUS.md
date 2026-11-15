@@ -353,7 +353,10 @@ cannot see is kept on every type the program names that has it). `Expression.Com
 interpreter. Generic methods (`051`): a generic definition's record lists its parameters and its instances,
 `MakeGenericMethod` with `typeof` arguments keeps that instance (its code exists), `IsGenericMethod(Definition)`,
 `GetGenericArguments`, `GetGenericMethodDefinition`; member objects of the same member and reflected type are equal
-(CoreCLR caches them). Not done: `MakeGenericMethod` with arguments the compiler cannot see, `ref` parameters through reflection, the
+(CoreCLR caches them). `ref`/`out`/`in` parameters (`053`): by-ref types (`MakeByRefType`, `IsByRef`, `Int32&`,
+`IsOut`/`IsIn`) are their element's id with a bit; the thunk passes a value's box data (the invoker's copy, written in
+place) or a frame slot copied back for a reference; a null argument for a value gets a default box
+(`RuntimeHelpers.GetUninitializedObject`/`Box`). Not done: `MakeGenericMethod` with arguments the compiler cannot see, the
 `FullName` of a generic instance (.NET qualifies its arguments with their assemblies), `Reflection.Emit` and
 `dynamic`.
 

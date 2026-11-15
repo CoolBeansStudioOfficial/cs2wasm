@@ -17,6 +17,8 @@ namespace Cs2Wasm.Runtime
     internal static class Meta
     {
         public const int FieldSize = 7, CtorSize = 8, MethodSize = 11, PropSize = 8;
+        /// <summary>A by-ref type's id: its element's with this bit; a parameter word's out and in bits.</summary>
+        public const int ByRef = 0x40000000, ParamOut = 0x20000000, ParamIn = 0x10000000;
         public const int FStatic = 1, FPublic = 2, FVirtual = 4, FAbstract = 8, FReadOnly = 16, FPrivate = 32, FFamily = 64, FAssembly = 128;
 
         public static int I(int addr, int index) => Mem.LoadI32(addr + 4 * index);
@@ -93,9 +95,20 @@ namespace Cs2Wasm.Runtime
             for (int i = 0; i < types.Length; i++)
             {
                 int p = (int)args[i];
-                r[i] = types[i].IsValueType ? Rt.Borrow<object>(p - Rt.BoxDataOffset<int>()) : Rt.Borrow<object>(Mem.LoadI32(p));
+                var t = (types[i].TypeId & ByRef) != 0 ? TypeInfo.Type(types[i].TypeId & ~ByRef) : types[i];
+                r[i] = t.IsValueType ? Rt.Borrow<object>(p - Rt.BoxDataOffset<int>()) : Rt.Borrow<object>(Mem.LoadI32(p));
             }
             return r;
+        }
+
+        /// <summary>After a call: a by-ref reference argument the thunk wrote into the array goes back to the invoker's
+        /// variable (a by-ref value's box was written in place).</summary>
+        public static unsafe void CopyBack(IntPtr* args, RuntimeType[] types, object?[]? r)
+        {
+            if (r == null) return;
+            for (int i = 0; i < types.Length; i++)
+                if ((types[i].TypeId & ByRef) != 0 && !TypeInfo.Type(types[i].TypeId & ~ByRef).IsValueType)
+                    System.Runtime.CompilerServices.Unsafe.AsRef<object?>((void*)args[i]) = r[i];
         }
 
         /// <summary>The attributes of an attribute list that are a `filter` (all when null).</summary>

@@ -150,7 +150,11 @@ namespace System.Reflection
             int n = Cs2Wasm.Runtime.Meta.I(e, at), types = Cs2Wasm.Runtime.Meta.I(e, at + 1), names = Cs2Wasm.Runtime.Meta.I(e, at + 2);
             var r = new ParameterInfo[n];
             for (int i = 0; i < n; i++)
-                r[i] = new RuntimeParameterInfo(Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(names, i)), Cs2Wasm.Runtime.Meta.TypeAt(Cs2Wasm.Runtime.Meta.I(types, i)), i, 0, DBNull.Value, member, null!);
+            {
+                int w = Cs2Wasm.Runtime.Meta.I(types, i);
+                int attrs = ((w & Cs2Wasm.Runtime.Meta.ParamOut) != 0 ? (int)ParameterAttributes.Out : 0) | ((w & Cs2Wasm.Runtime.Meta.ParamIn) != 0 ? (int)ParameterAttributes.In : 0);
+                r[i] = new RuntimeParameterInfo(Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Meta.I(names, i)), Cs2Wasm.Runtime.Meta.TypeAt(w & ~(Cs2Wasm.Runtime.Meta.ParamOut | Cs2Wasm.Runtime.Meta.ParamIn)), i, attrs, DBNull.Value, member, null!);
+            }
             return r;
         }
 
@@ -429,7 +433,10 @@ namespace System.Reflection
             exc = null;
             int thunk = Cs2Wasm.Runtime.Meta.I((int)mhandle, 3);
             if (thunk == 0) throw Cs2Wasm.Runtime.TypeInfo.NotYet("invoking " + Name + " (the compiler kept no call for it)");
-            return Cs2Wasm.Runtime.TypeInfo.Invoke(thunk, obj, Cs2Wasm.Runtime.Meta.ArgsFrom(args, ArgumentTypes));
+            var a = Cs2Wasm.Runtime.Meta.ArgsFrom(args, ArgumentTypes);
+            var r = Cs2Wasm.Runtime.TypeInfo.Invoke(thunk, obj, a);
+            Cs2Wasm.Runtime.Meta.CopyBack(args, ArgumentTypes, a);
+            return r;
         }
 
         public override RuntimeMethodHandle MethodHandle
@@ -886,7 +893,10 @@ namespace System.Reflection
             if (obj != null) throw Cs2Wasm.Runtime.TypeInfo.NotYet("running a constructor on an existing object");
             int thunk = Cs2Wasm.Runtime.Meta.I((int)mhandle - 1, 1);
             if (thunk == 0) throw Cs2Wasm.Runtime.TypeInfo.NotYet("invoking a constructor of " + DeclaringType + " (the compiler kept no call for it)");
-            return Cs2Wasm.Runtime.TypeInfo.Invoke(thunk, null, Cs2Wasm.Runtime.Meta.ArgsFrom(args, ArgumentTypes))!;
+            var a = Cs2Wasm.Runtime.Meta.ArgsFrom(args, ArgumentTypes);
+            var r = Cs2Wasm.Runtime.TypeInfo.Invoke(thunk, null, a)!;
+            Cs2Wasm.Runtime.Meta.CopyBack(args, ArgumentTypes, a);
+            return r;
         }
 
         /// <summary>cs2wasm: a constructor of the compiler's reflection record (its entry's address + 1).</summary>

@@ -14,12 +14,33 @@ namespace System
         static RuntimeType?[] s_byId = new RuntimeType?[64];
         static int s_lock;
 
+        internal static RuntimeType ByRefOf(int element)
+        {
+            while (Atomic.CompareExchange32(ref s_lock, 0, 1) != 0) { }
+            try
+            {
+                var table = s_byRef;
+                if ((uint)element >= (uint)table.Length)
+                {
+                    var bigger = new RuntimeType?[Math.Max(table.Length * 2, element + 1)];
+                    for (int i = 0; i < table.Length; i++) bigger[i] = table[i];
+                    s_byRef = table = bigger;
+                }
+                return table[element] ??= new RuntimeType(element | Cs2Wasm.Runtime.Meta.ByRef);
+            }
+            finally { Atomic.Store32(ref s_lock, 0); }
+        }
+
         private RuntimeType(int id) => _impl = new RuntimeTypeHandle((IntPtr)id);
 
         internal int TypeId => (int)_impl.Value;
 
+        // by-ref types (Meta.ByRef), by element id
+        static RuntimeType?[] s_byRef = [];
+
         internal static RuntimeType FromId(int id)
         {
+            if ((id & Cs2Wasm.Runtime.Meta.ByRef) != 0) return ByRefOf(id & ~Cs2Wasm.Runtime.Meta.ByRef);
             var table = s_byId;
             if ((uint)id < (uint)table.Length && table[id] is { } t) return t;
             while (Atomic.CompareExchange32(ref s_lock, 0, 1) != 0) { }

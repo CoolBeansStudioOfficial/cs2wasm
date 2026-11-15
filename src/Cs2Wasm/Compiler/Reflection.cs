@@ -222,15 +222,15 @@ internal sealed partial class Driver
                         if (ev.AddMethod is { } ea) yield return ea;
                         if (ev.RemoveMethod is { } er) yield return er;
                         break;
-                    case IMethodSymbol { MethodKind: MethodKind.Ordinary, IsGenericMethod: true, IsAbstract: false } gm when gm.Parameters.All(p => p.RefKind == RefKind.None && !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !gm.ReturnType.IsRefLikeType && !gm.IsExtern:
+                    case IMethodSymbol { MethodKind: MethodKind.Ordinary, IsGenericMethod: true, IsAbstract: false } gm when gm.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !gm.ReturnType.IsRefLikeType && !gm.ReturnsByRef && !gm.ReturnsByRefReadonly && !gm.IsExtern:
                         // a generic method definition (invoked only through its instances)
                         yield return gm;
                         if (_reflect != null && _reflect.GenericInstances.TryGetValue(Compiler.Types.Key(t), out var insts))
                             foreach (var inst in insts) if (SymbolEqualityComparer.Default.Equals(inst.OriginalDefinition, gm.OriginalDefinition)) yield return inst;
                         break;
-                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke or MethodKind.EventAdd or MethodKind.EventRemove } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => p.RefKind == RefKind.None && !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !ms.ReturnType.IsRefLikeType && !ms.IsExtern:
+                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke or MethodKind.EventAdd or MethodKind.EventRemove } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !ms.ReturnType.IsRefLikeType && !ms.ReturnsByRef && !ms.ReturnsByRefReadonly && !ms.IsExtern:
                         yield return ms; break;
-                    case IMethodSymbol { MethodKind: MethodKind.Constructor } cs when SymbolEqualityComparer.Default.Equals(x, t) && cs.Parameters.All(p => p.RefKind == RefKind.None && !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !t.IsAbstract && !t.IsRefLikeType:
+                    case IMethodSymbol { MethodKind: MethodKind.Constructor } cs when SymbolEqualityComparer.Default.Equals(x, t) && cs.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !t.IsAbstract && !t.IsRefLikeType:
                         yield return cs; break;
                     case IPropertySymbol ps when !ps.IsIndexer:
                         if (AutoPropertyField(ps.OriginalDefinition) is { } bf) yield return bf;
@@ -320,6 +320,16 @@ internal sealed partial class Driver
 
     int ExtTypeId(ITypeSymbol t) => ExtId(TypeId(t));
 
+    /// <summary>A parameter in a record: its type's id, with the by-ref bit for ref/out/in (Meta.ByRef) and the
+    /// out (Meta.ParamOut) or in (Meta.ParamIn) bit.</summary>
+    int ParamWord(IParameterSymbol p) => ExtTypeId(p.Type) | p.RefKind switch
+    {
+        RefKind.None => 0,
+        RefKind.Out => 0x40000000 | 0x20000000,
+        RefKind.In or RefKind.RefReadOnlyParameter => 0x40000000 | 0x10000000,
+        _ => 0x40000000,
+    };
+
     /// <summary>The types the reflection records name (numbered for the module: RuntimeGen.AssignTypeIds).</summary>
     internal IEnumerable<ITypeSymbol> ReflectedTypes()
     {
@@ -402,7 +412,7 @@ internal sealed partial class Driver
                 case IMethodSymbol { MethodKind: MethodKind.Constructor } c:
                     {
                         var (na, aa) = Attrs(c);
-                        ctors.AddRange([(c.IsStatic ? FStatic : 0) | Access(c), Thunk(c), c.Parameters.Length, Ints(c.Parameters.Select(p => ExtTypeId(p.Type))).Address, Ints(c.Parameters.Select(p => Str(p.Name))).Address, na, aa]);
+                        ctors.AddRange([(c.IsStatic ? FStatic : 0) | Access(c), Thunk(c), c.Parameters.Length, Ints(c.Parameters.Select(ParamWord)).Address, Ints(c.Parameters.Select(p => Str(p.Name))).Address, na, aa]);
                         ctors.Add(ExtTypeId(c.ContainingType));
                         nc++;
                         break;
@@ -413,7 +423,7 @@ internal sealed partial class Driver
                         int flags = (ms.IsStatic ? FStatic : 0) | Access(ms) | (ms.IsVirtual || ms.IsOverride || ms.IsAbstract ? FVirtual : 0) | (ms.IsAbstract ? FAbstract : 0)
                             | (ms.MethodKind is MethodKind.EventAdd or MethodKind.EventRemove ? FEventAccessor : 0);
                         methods.AddRange([Str(ms.Name), ms.ReturnsVoid ? -1 : ExtTypeId(ms.ReturnType), flags, Thunk(ms), ms.Parameters.Length,
-                            Ints(ms.Parameters.Select(p => ExtTypeId(p.Type))).Address, Ints(ms.Parameters.Select(p => Str(p.Name))).Address, na, aa, ExtTypeId(ms.ContainingType), 0]);
+                            Ints(ms.Parameters.Select(ParamWord)).Address, Ints(ms.Parameters.Select(p => Str(p.Name))).Address, na, aa, ExtTypeId(ms.ContainingType), 0]);
                         methodSyms.Add(ms);
                         nm++;
                         if (ms.AssociatedSymbol is IPropertySymbol p && seenProps.Add(Types.Key(p.ContainingType) + "." + p.Name))
@@ -489,6 +499,41 @@ sealed partial class FunctionCompiler
         }
     }
 
+    // a ref/out/in argument: a value type's variable is the data of its box in the array (the invoker's copy, which
+    // the callee writes); a reference's is a frame slot, copied back into the array after the call
+    void PushParam(IParameterSymbol p, int i, List<(int i, int off)> back)
+    {
+        if (p.RefKind == RefKind.None) { PushArgAs(i, p.Type); return; }
+        var pt = T.Canonical(T.Resolve(p.Type, Map));
+        if (pt.IsValueType)
+        {
+            D.MarkConstructed(pt); // the invoker boxes a default for a null argument (RuntimeHelpers.GetUninitializedObject)
+            E.Get(1); E.Load(Op.I32Load, Types.ArrayData + 4 * i);
+            E.I32(FunctionCompilerHelpers.BoxDataOffset(T, pt)); E.Op(Op.I32Add);
+            return;
+        }
+        int off = TempStruct(pt);
+        E.Get(_fb);
+        E.Get(1); E.Load(Op.I32Load, Types.ArrayData + 4 * i);
+        var o = Own.Unstable;
+        ConvertValue(D.ObjectType, pt, false, ref o, explicitConv: true, null);
+        E.Call(Rt.Retain);
+        E.Store(Op.I32Store, off);
+        E.Get(_fb); if (off != 0) { E.I32(off); E.Op(Op.I32Add); }
+        back.Add((i, off));
+    }
+
+    void CopyBack(List<(int i, int off)> back)
+    {
+        foreach (var (i, off) in back)
+        {
+            int old = E.AddLocal(ValType.I32);
+            E.Get(1); E.Load(Op.I32Load, Types.ArrayData + 4 * i); E.Set(old);
+            E.Get(1); E.Get(_fb); E.Load(Op.I32Load, off); E.Call(Rt.Retain); E.Store(Op.I32Store, Types.ArrayData + 4 * i);
+            E.Get(old); E.Call(Rt.Release);
+        }
+    }
+
     void PushTargetAs(ITypeSymbol owner)
     {
         owner = T.Canonical(owner);
@@ -510,6 +555,7 @@ sealed partial class FunctionCompiler
         {
             _retLocal = E.AddLocal(ValType.I32);
             BeginTemps();
+            var back = new List<(int i, int off)>();
             switch (member)
             {
                 case IMethodSymbol { MethodKind: MethodKind.Constructor } c:
@@ -523,13 +569,14 @@ sealed partial class FunctionCompiler
                             int dataOff = FunctionCompilerHelpers.BoxDataOffset(T, t);
                             E.I32(dataOff + T.StorageOf(t).size); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
                             if (!ctor.IsImplicitlyDeclared)
-                                CallWith(ctor, false, () => { E.Get(obj); E.I32(dataOff); E.Op(Op.I32Add); }, () => { for (int i = 0; i < ctor.Parameters.Length; i++) PushArgAs(i, ctor.Parameters[i].Type); }, null, null);
+                                CallWith(ctor, false, () => { E.Get(obj); E.I32(dataOff); E.Op(Op.I32Add); }, () => { for (int i = 0; i < ctor.Parameters.Length; i++) PushParam(ctor.Parameters[i], i, back); }, null, null);
                         }
                         else
                         {
                             E.I32(Math.Max(T.LayoutOf(t).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
-                            CallWith(ctor, false, () => E.Get(obj), () => { for (int i = 0; i < ctor.Parameters.Length; i++) PushArgAs(i, ctor.Parameters[i].Type); }, null, null);
+                            CallWith(ctor, false, () => E.Get(obj), () => { for (int i = 0; i < ctor.Parameters.Length; i++) PushParam(ctor.Parameters[i], i, back); }, null, null);
                         }
+                        CopyBack(back);
                         E.Get(obj);
                         break;
                     }
@@ -538,8 +585,9 @@ sealed partial class FunctionCompiler
                         var m = D.CanonicalMethod(ms);
                         bool virt = !m.IsStatic && (m.IsVirtual || m.IsOverride || m.IsAbstract || m.ContainingType.TypeKind == TypeKind.Interface);
                         var own = CallWith(m, virt, m.IsStatic ? null : () => PushTargetAs(m.ContainingType),
-                            () => { for (int i = 0; i < m.Parameters.Length; i++) PushArgAs(i, m.Parameters[i].Type); }, null, null);
+                            () => { for (int i = 0; i < m.Parameters.Length; i++) PushParam(m.Parameters[i], i, back); }, null, null);
                         if (m.ReturnsVoid) E.I32(0); else BoxResult(m.ReturnType, own);
+                        if (back.Count > 0) { int r = E.AddLocal(ValType.I32); E.Set(r); CopyBack(back); E.Get(r); }
                         break;
                     }
                 case IFieldSymbol f:

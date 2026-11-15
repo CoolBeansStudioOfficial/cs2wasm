@@ -991,7 +991,7 @@ sealed partial class RuntimeGen
         return f;
     }
 
-    void EmitIdTable(WasmFunction fn, int nInternal, Func<int, (IAddress? addr, int value)> entryOfInternal)
+    void EmitIdTable(WasmFunction fn, int nInternal, Func<int, (IAddress? addr, int value)> entryOfInternal, Action<Emitter>? byRef = null)
     {
         int n = D.TypeCount;
         (IAddress?, int) entry(int ext) => entryOfInternal(D.IntId(ext));
@@ -1021,7 +1021,10 @@ sealed partial class RuntimeGen
         e.Load(load);
         e.Else();
         var (a0, v0) = vals[0];
+        // a by-ref type (Meta.ByRef: its element's id with bit 30)
+        if (byRef != null) { e.Get(0); e.I32(0x40000000); e.Op(Op.I32And); e.If(ValType.I32); byRef(e); e.Else(); }
         if (a0 != null) e.I32Addr(a0); else e.I32(v0);
+        if (byRef != null) e.End();
         e.End();
     }
 

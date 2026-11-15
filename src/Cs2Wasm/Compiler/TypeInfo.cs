@@ -134,7 +134,16 @@ sealed partial class RuntimeGen
                 "box_offset" => i => (null, Real(i) && D.TypeById[i].IsValueType ? FunctionCompilerHelpers.BoxDataOffset(D.Types, D.TypeById[i]) : 0),
                 _ => throw new CompileException("type info " + kind),
             };
-            EmitIdTable(fn, n, entry);
+            Action<Emitter>? byRef = kind switch
+            {
+                "cor" => e => e.I32(0x10),
+                "element" => e => { e.Get(0); e.I32(0x3FFFFFFF); e.Op(Op.I32And); },
+                "namespace" => e => { e.Get(0); e.I32(0x3FFFFFFF); e.Op(Op.I32And); e.Call(fn); },
+                "attrs" or "flags2" or "rank" or "size" or "box_offset" => e => e.I32(0),
+                "base" or "declaring" or "array_of" => e => e.I32(-1),
+                _ => null,
+            };
+            EmitIdTable(fn, n, entry, byRef);
         }
     }
 
