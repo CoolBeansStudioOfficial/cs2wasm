@@ -106,6 +106,8 @@ sealed partial class FunctionCompiler
     void CompileMethod()
     {
         var def = M.OriginalDefinition;
+        // a body the trimmer's substitutions replace (with cs2wasm's features): a stub returning the value
+        if (Inst?.Impl == MethodImpl.Body && Library.Substitution(M) is { } sub) { EmitSubstitutedBody(sub); return; }
         switch (Inst!.Impl)
         {
             case MethodImpl.Missing:
@@ -521,6 +523,12 @@ sealed partial class FunctionCompiler
             case IReturnOperation r:
                 if (r.Kind != OperationKind.Return) throw new CompileException("iterators (yield) are not supported yet", op.Syntax.GetLocation());
                 EmitReturn(r.ReturnedValue);
+                break;
+            case IConditionalOperation c when Fold(c.Condition) is null && FoldAfterEffect(c.Condition) is (IOperation effect, bool fixedValue):
+                // `x && false` (`TryTake() && log.IsEnabled()`): x for its effects, then only the side taken
+                BeginTemps(); EmitDiscard(effect); EndTemps();
+                if (fixedValue) { PushScope(); EmitStatement(c.WhenTrue); PopScope(); }
+                else if (c.WhenFalse != null) { PushScope(); EmitStatement(c.WhenFalse); PopScope(); }
                 break;
             case IConditionalOperation c when Fold(c.Condition) is bool known:
                 // only the side taken is compiled (Folding)
@@ -1560,6 +1568,18 @@ sealed partial class FunctionCompiler
             else if (body is IMethodBodyOperation mb) EmitStatement((IOperation?)mb.BlockBody ?? mb.ExpressionBody!);
         }
         Finish();
+    }
+
+    void EmitSubstitutedBody(string value)
+    {
+        if (M.ReturnsVoid) return;
+        var rt = T.Resolve(M.ReturnType, Map);
+        if (Types.PrimOf(rt) == Prim.Bool) E.I32(value == "true" ? 1 : 0);
+        else if (Types.WasmType(rt) is ValType.I64) E.I64(long.TryParse(value, out var l) ? l : 0);
+        else if (Types.WasmType(rt) is ValType.F32) E.F32(0);
+        else if (Types.WasmType(rt) is ValType.F64) E.F64(0);
+        else E.I32(int.TryParse(value, out var iv) ? iv : 0);
+        E.Op(Op.Return);
     }
 
     void Synthesize()

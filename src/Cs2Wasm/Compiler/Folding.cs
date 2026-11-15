@@ -59,6 +59,11 @@ sealed partial class FunctionCompiler
                     };
                 }
             case IPropertyReferenceOperation { Instance: null } pr: return KnownBool(pr.Property);
+            // an instance member the trimmer's substitutions fix (EventSource.IsEnabled() with tracing off), on a
+            // receiver whose evaluation has no effect
+            case IPropertyReferenceOperation { Instance: { } pi, Property.GetMethod: { } pg } when IsPure(pi) && SubstitutedBool(pg) is bool spv: return spv;
+            case IInvocationOperation { Instance: { } ii } sinv when IsPure(ii) && SubstitutedBool(sinv.TargetMethod) is bool siv: return siv;
+            case IFieldReferenceOperation { Instance: null, Field.IsReadOnly: true } fr when Library.FieldSubstitution(fr.Field) is "true" or "false": return Library.FieldSubstitution(fr.Field) == "true";
             case IPropertyReferenceOperation { Instance: ITypeOfOperation to, Property.Name: "IsValueType" }:
                 return T.Resolve(to.TypeOperand, Map).IsValueType;
             case IInvocationOperation { Instance: null, Arguments.Length: 1, TargetMethod: { Name: "Implements", TypeArguments.Length: 1 } im } impl
@@ -109,6 +114,15 @@ sealed partial class FunctionCompiler
         _ => false,
     };
 
+    /// <summary>`x &amp;&amp; c` or `x || c` where c is known and has no effect: the value is fixed once x is evaluated
+    /// (false, or true), so the condition is x for its effects, then that value.</summary>
+    (IOperation, bool)? FoldAfterEffect(IOperation op) => op switch
+    {
+        IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } b when Fold(b.RightOperand) == false => (b.LeftOperand, false),
+        IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } b when Fold(b.RightOperand) == true => (b.LeftOperand, true),
+        _ => null,
+    };
+
     /// <summary>An integer known at compile time: a constant, or a size an instantiation fixes.</summary>
     long? FoldInt(IOperation op)
     {
@@ -132,10 +146,13 @@ sealed partial class FunctionCompiler
         return null;
     }
 
+    static bool? SubstitutedBool(IMethodSymbol m) => Library.Substitution(m) switch { "true" => true, "false" => false, _ => null };
+
     /// <summary>The value of a parameterless static bool member that the target fixes, or whose library body is a constant.</summary>
     bool? KnownBool(ISymbol member)
     {
         var def = member.OriginalDefinition;
+        if ((def is IPropertySymbol { GetMethod: { } sg } ? SubstitutedBool(sg) : def is IMethodSymbol sm ? SubstitutedBool(sm) : null) is bool sub) return sub;
         var type = def.ContainingType;
         if (type == null) return null;
         var outer = type;

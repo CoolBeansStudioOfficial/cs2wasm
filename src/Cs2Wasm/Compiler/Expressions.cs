@@ -63,6 +63,7 @@ sealed partial class FunctionCompiler
         if (op is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add } ub && Utf8Concat(ub) is { } u8bytes) return EmitUtf8Span(u8bytes, TypeOf(ub));
         switch (op)
         {
+            case IConversionOperation cspan when TryEmitConstantSpan(cspan) is { } cso: return cso;
             case IConversionOperation c: return EmitConversion(c);
             case ILocalReferenceOperation l:
                 if (IsCaptured(l.Local)) return LoadCaptured(l.Local);
@@ -155,6 +156,7 @@ sealed partial class FunctionCompiler
                     E.Call(D.Method(fromId).Fn);
                     return Own.Owned;
                 }
+            case ICollectionExpressionOperation cspan2 when TryEmitConstantSpan(cspan2) is { } cso2: return cso2;
             case ICollectionExpressionOperation ce: return EmitCollectionExpression(ce);
             case IWithOperation wo: return EmitWith(wo);
         }

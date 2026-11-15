@@ -1,6 +1,7 @@
 # System.Private.CoreLib for cs2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.
 # define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: cs2wasm supplies its own)
 # | replaced <path> (an upstream file cs2wasm replaces with its own)
+# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for cs2wasm's features)
 define NET
 define NETCOREAPP
 define NET11_0
@@ -28,6 +29,146 @@ define TARGET_BROWSER
 define FEATURE_MULTITHREADING
 replaced src/libraries/System.Private.CoreLib/src/System/Threading/ThreadPool.Browser.Threads.cs  # cs2wasm's workers have no JS event loop to yield to
 replaced src/libraries/System.Private.CoreLib/src/System/TimeZoneInfo.Unix.NonAndroid.cs  # no time zone database: the local zone has the engine clock's offset (Boundary/TimeZoneInfo.Cs2Wasm.cs)
+substitute	method	System.Runtime.CompilerServices.RuntimeFeature	System.Boolean get_IsDynamicCodeCompiled()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx2	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx2/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512BW	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512BW/VL	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512BW/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512CD	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512CD/VL	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512CD/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512DQ	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512DQ/VL	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512DQ/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx10v1	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx10v1/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx10v1/V512	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx10v1/V512/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512F	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512F/VL	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512F/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512Vbmi	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512Vbmi/VL	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512Vbmi/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.AvxVnni	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.AvxVnni/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Fma	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Fma/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Gfni	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Gfni/V256	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Gfni/V512	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Gfni/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Pclmulqdq/V256	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Pclmulqdq/V512	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.X86Serialize	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.X86Serialize/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Vector256	System.Boolean get_IsHardwareAccelerated()	false
+substitute	method	System.Runtime.Intrinsics.Vector512	System.Boolean get_IsHardwareAccelerated()	false
+substitute	method	System.Diagnostics.Tracing.EventSource	System.Void Finalize()	
+substitute	method	System.Diagnostics.Tracing.EventSource	System.Boolean IsEnabled()	false
+substitute	method	System.Diagnostics.Tracing.EventSource	System.Boolean IsEnabled(System.Diagnostics.Tracing.EventLevel,System.Diagnostics.Tracing.EventKeywords)	false
+substitute	method	System.Diagnostics.Tracing.EventSource	System.Boolean IsEnabled(System.Diagnostics.Tracing.EventLevel,System.Diagnostics.Tracing.EventKeywords,System.Diagnostics.Tracing.EventChannel)	false
+substitute	method	System.Globalization.GlobalizationMode	System.Boolean get_Invariant()	true
+substitute	method	System.Globalization.GlobalizationMode	System.Boolean get_InvariantNoLoad()	true
+substitute	method	System.Globalization.GlobalizationMode	System.Boolean get_PredefinedCulturesOnly()	true
+substitute	field	System.Threading.Tasks.Task	s_asyncDebuggingEnabled	false
+substitute	field	System.BitConverter	IsLittleEndian	true
+substitute	method	System.IntPtr	System.Int32 get_Size()	4
+substitute	method	System.UIntPtr	System.Int32 get_Size()	4
+substitute	method	System.Runtime.Intrinsics.Vector64	System.Boolean get_IsHardwareAccelerated()	false
+substitute	method	System.Runtime.Intrinsics.Arm.AdvSimd	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.AdvSimd/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Aes	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Aes/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.ArmBase	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.ArmBase/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Crc32	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Crc32/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Dp	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Dp/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Rdm	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Rdm/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sha1	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sha1/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sha256	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sha256/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sve	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sve/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sve2	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sve2/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sha3	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sha3/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sm4	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.Sm4/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.SveSha3	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.SveSha3/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.SveSm4	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Arm.SveSm4/Arm64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.Vector256	System.Boolean get_IsHardwareAccelerated()	false
+substitute	method	System.Runtime.Intrinsics.Vector512	System.Boolean get_IsHardwareAccelerated()	false
+substitute	method	System.Runtime.Intrinsics.X86.Aes	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Aes/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx2	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx2/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx10v1	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx10v1/V512	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx10v1/V512/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512BW	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512BW/VL	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512BW/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512CD	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512CD/VL	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512CD/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512DQ	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512DQ/VL	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512DQ/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512F	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512F/VL	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512F/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512Vbmi	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512Vbmi/VL	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Avx512Vbmi/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.AvxVnni	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.AvxVnni/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Bmi1	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Bmi1/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Bmi2	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Bmi2/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Fma	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Fma/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Gfni	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Gfni/V256	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Gfni/V512	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Gfni/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Lzcnt	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Lzcnt/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Pclmulqdq	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Pclmulqdq/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Pclmulqdq/V256	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Pclmulqdq/V512	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Popcnt	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Popcnt/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Sse	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Sse/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Sse2	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Sse2/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Sse3	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Sse3/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Sse41	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Sse41/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Sse42	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Sse42/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Ssse3	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.Ssse3/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.X86Base	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.X86Base/X64	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.X86Serialize	System.Boolean get_IsSupported()	false
+substitute	method	System.Runtime.Intrinsics.X86.X86Serialize/X64	System.Boolean get_IsSupported()	false
 runtime src/mono/System.Private.CoreLib/src/Mono/RuntimeHandles.cs
 runtime src/mono/System.Private.CoreLib/src/System/ArgIterator.cs
 runtime src/mono/System.Private.CoreLib/src/System/Array.Mono.cs

@@ -789,6 +789,14 @@ sealed partial class FunctionCompiler
         if (ac.Initializer == null) return Own.Owned;
         int arr = E.AddLocal(ValType.I32);
         E.Set(arr);
+        if (ConstantInitializerBytes(ac, out _) is { } cbytes)
+        {
+            // constant elements: copied from the data segment, as C# does
+            var data = D.DataBlob(cbytes, Math.Max(1, size));
+            E.Get(arr); E.I32(Types.ArrayData); E.Op(Op.I32Add); E.I32Addr(data); E.I32(cbytes.Length); E.Op(Op.MemoryCopy);
+            E.Get(arr);
+            return Own.Owned;
+        }
         var slot = new Slot { Local = arr, Type = at };
         RegisterTemp(slot);
         int i = 0;

@@ -607,6 +607,15 @@ internal sealed partial class Driver
         Console.Error.WriteLine($"{compiled.Count} methods, {compiled.Sum(m => m.Fn.Body.Count)} instructions");
         foreach (var g in compiled.GroupBy(Ns).OrderByDescending(g => g.Sum(m => m.Fn.Body.Count)).Take(25))
             Console.Error.WriteLine($"  {g.Sum(m => m.Fn.Body.Count),8} {g.Count(),5}  {g.Key}");
+        // CS2WASM_WHY_TYPE=Name: how the program reaches that type's first method
+        if (Environment.GetEnvironmentVariable("CS2WASM_WHY_TYPE") is { Length: > 0 } why)
+            foreach (var name in why.Split(','))
+                if (compiled.FirstOrDefault(m => Ty(m).EndsWith(name)) is { } first)
+                {
+                    var chain = new List<string>();
+                    for (var x = first; x != null && chain.Count < 40; x = x.ReachedFrom) chain.Add(Display(x.Sym));
+                    Console.Error.WriteLine($"why {name}: " + string.Join(" <- ", chain));
+                }
         Console.Error.WriteLine("types:");
         foreach (var g in compiled.GroupBy(Ty).OrderByDescending(g => g.Sum(m => m.Fn.Body.Count)).Take(40))
             Console.Error.WriteLine($"  {g.Sum(m => m.Fn.Body.Count),8} {g.Count(),5}  {g.Key}");

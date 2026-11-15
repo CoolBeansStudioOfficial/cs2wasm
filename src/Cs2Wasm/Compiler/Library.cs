@@ -58,6 +58,33 @@ internal sealed class Library
         }
     }
 
+    /// <summary>The trimmer's substitutions for cs2wasm's features (manifest `substitute` lines): "type|signature" of a
+    /// method, or "type|name" of a field, to its value ("" for an empty stub).</summary>
+    static readonly Dictionary<string, string> s_substitutions = [];
+
+    /// <summary>The substituted value of a library method (null: not substituted; "": an empty stub).</summary>
+    public static string? Substitution(IMethodSymbol m)
+    {
+        if (!UseUpstream || s_substitutions.Count == 0) return null;
+        var def = m.OriginalDefinition;
+        if (def.ContainingType == null) return null;
+        var sig = (def.ReturnsVoid ? "System.Void" : IlName(def.ReturnType)) + " " + def.MetadataName + "(" + string.Join(",", def.Parameters.Select(p => IlName(p.Type) + (p.RefKind != RefKind.None ? "&" : ""))) + ")";
+        return s_substitutions.GetValueOrDefault(IlName(def.ContainingType) + "|" + sig);
+    }
+
+    public static string? FieldSubstitution(IFieldSymbol f) =>
+        UseUpstream && f.OriginalDefinition.ContainingType is { } ct ? s_substitutions.GetValueOrDefault(IlName(ct) + "|" + f.Name) : null;
+
+    /// <summary>A type's name as the trimmer's files write it (Outer/Inner, System.Int32).</summary>
+    static string IlName(ITypeSymbol t) => t switch
+    {
+        IArrayTypeSymbol a => IlName(a.ElementType) + "[" + new string(',', a.Rank - 1) + "]",
+        IPointerTypeSymbol p => IlName(p.PointedAtType) + "*",
+        INamedTypeSymbol { ContainingType: { } outer } n => IlName(outer) + "/" + n.MetadataName,
+        INamedTypeSymbol n => (n.ContainingNamespace is { IsGlobalNamespace: false } ns ? ns.ToDisplayString() + "." : "") + n.MetadataName,
+        _ => t.Name,
+    };
+
     static IReadOnlyList<CSharpCompilation> BuildUpstream()
     {
         var root = UpstreamSources.Root;
@@ -69,6 +96,11 @@ internal sealed class Library
             var manifest = own.FirstOrDefault(r => r.Name == prefix + "manifest.txt").Text
                 ?? throw new CompileException("library manifest missing: " + lib);
             var lines = manifest.Split('\n').Select(l => l.Trim()).ToList();
+            foreach (var l in lines.Where(l => l.StartsWith("substitute\t")))
+            {
+                var parts = l.Split('\t');
+                if (parts.Length >= 5) s_substitutions[parts[2] + "|" + parts[3]] = parts[4];
+            }
             var defines = lines.Where(l => l.StartsWith("define ")).Select(l => l[7..]).ToArray();
             var po = new CSharpParseOptions(LanguageVersion.Preview, preprocessorSymbols: defines);
             var files = lines.Where(l => l.StartsWith("file ")).Select(l => l[5..]).ToList();

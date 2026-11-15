@@ -62,6 +62,17 @@ sealed class Manifest
     readonly List<string> files = [];
     readonly List<string> references = [];
     readonly List<(string Path, string Why)> replaced = [];
+    readonly List<string> substitutionFiles = [];
+
+    /// <summary>The feature switches cs2wasm fixes (the trimmer's substitutions for them are applied, section 7.4).</summary>
+    static readonly Dictionary<string, string> Features = new()
+    {
+        ["System.Diagnostics.Tracing.EventSource.IsSupported"] = "false",
+        ["System.Globalization.Invariant"] = "true",
+        ["System.Globalization.PredefinedCulturesOnly"] = "true",
+        ["System.Globalization.Hybrid"] = "false",
+        ["System.Diagnostics.Debugger.IsSupported"] = "false",
+    };
 
     static readonly (string Path, string Why)[] Replaced =
     [
@@ -81,6 +92,8 @@ sealed class Manifest
         props["CommonPath"] = Path.Combine(root, "src", "libraries", "Common", "src") + sep;
         props["LibrariesProjectRoot"] = Path.Combine(root, "src", "libraries") + sep;
         props["BclSourcesRoot"] = Path.Combine(monoDir, "src");
+        props["ILLinkSharedDirectory"] = Path.Combine(root, "src", "libraries", "System.Private.CoreLib", "src", "ILLink") + sep;
+        props["ILLinkDirectory"] = Path.Combine(monoDir, "src", "ILLink") + sep;
         props["CoreLibSharedDir"] = Path.Combine(root, "src", "libraries", "System.Private.CoreLib", "src") + sep;
         props["CoreLibProject"] = Libraries.Project(root, "System.Private.CoreLib");
         props["Platform"] = "wasm";
@@ -118,9 +131,28 @@ sealed class Manifest
         sb.AppendLine($"# {lib} for cs2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.");
         sb.AppendLine("# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: cs2wasm supplies its own)");
         sb.AppendLine("# | replaced <path> (an upstream file cs2wasm replaces with its own)");
+        sb.AppendLine("# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for cs2wasm's features)");
         foreach (var d in defines) sb.AppendLine("define " + d);
         foreach (var r in references.Distinct()) sb.AppendLine("reference " + r);
         foreach (var (path, why) in replaced) sb.AppendLine($"replaced {path}  # {why}");
+        // the trimmer's substitutions that apply with cs2wasm's features: method bodies the compiler replaces
+        // (`stub`: an empty body, or the value), fields with a fixed value
+        foreach (var x in substitutionFiles.Distinct().Where(File.Exists))
+            foreach (var t in XDocument.Load(x).Descendants("type"))
+            {
+                bool Applies(XElement e)
+                {
+                    var f = (string?)e.Attribute("feature");
+                    if (f == null) return true;
+                    return Features.TryGetValue(f, out var v) && string.Equals(v, (string?)e.Attribute("featurevalue"), StringComparison.OrdinalIgnoreCase);
+                }
+                if (!Applies(t)) continue;
+                var tn = (string?)t.Attribute("fullname");
+                foreach (var m in t.Elements("method").Where(Applies))
+                    sb.AppendLine($"substitute	method	{tn}	{(string?)m.Attribute("signature")}	{(string?)m.Attribute("value") ?? ""}");
+                foreach (var f in t.Elements("field").Where(Applies))
+                    sb.AppendLine($"substitute	field	{tn}	{(string?)f.Attribute("name")}	{(string?)f.Attribute("value") ?? ""}");
+            }
         int missing = 0, runtime = 0, n = 0;
         foreach (var f in files.Distinct())
         {
@@ -147,6 +179,7 @@ sealed class Manifest
     bool Eval(string raw)
     {
         var s = Expand(raw);
+        s = Regex.Replace(s, @"!?\s*Exists\('([^']*)'\)", m => (File.Exists(m.Groups[1].Value) || Directory.Exists(m.Groups[1].Value)) != m.Value.StartsWith('!') ? "'true' == 'true'" : "'true' == 'false'");
         var toks = Regex.Matches(s, @"'[^']*'|==|!=|\(|\)|!|[^\s()!=']+").Select(m => m.Value).ToList();
         int pos = 0;
         string Val(string t) => t.StartsWith('\'') ? t.Trim('\'') : t;
@@ -208,6 +241,9 @@ sealed class Manifest
                                     }
                                 if ((string?)it.Attribute("Remove") is { } rem)
                                     foreach (var f in rem.Split(';', StringSplitOptions.RemoveEmptyEntries)) files.Remove(Full(f));
+                                break;
+                            case "ILLinkSubstitutionsXmls" when inc != null:
+                                substitutionFiles.Add(Full(inc));
                                 break;
                             case "ProjectReference" when inc != null:
                                 {
