@@ -1,6 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over the compiler's type tables (Cs2Wasm.Runtime.TypeInfo, by type id).
+
 //
 // Authors:
 //   Miguel de Icaza (miguel@ximian.com)
@@ -111,8 +113,7 @@ namespace System
             return (left == null) || !(left is RuntimeTypeHandle) || !((RuntimeTypeHandle)left).Equals(right);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern TypeAttributes GetAttributes(QCallTypeHandle type);
+                internal static TypeAttributes GetAttributes(QCallTypeHandle type) => (TypeAttributes)Cs2Wasm.Runtime.TypeInfo.Attributes(Cs2Wasm.Runtime.TypeInfo.Id(type));
 
         internal static TypeAttributes GetAttributes(RuntimeType type)
         {
@@ -129,16 +130,14 @@ namespace System
             return Type.GetTypeFromHandle(this)!.Module.ModuleHandle;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int GetMetadataToken(QCallTypeHandle type);
+                private static int GetMetadataToken(QCallTypeHandle type) => 0x02000000 | Cs2Wasm.Runtime.TypeInfo.Id(type);
 
         internal static int GetToken(RuntimeType type)
         {
             return GetMetadataToken(new QCallTypeHandle(ref type));
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetGenericTypeDefinition_impl(QCallTypeHandle type, ObjectHandleOnStack res);
+                private static void GetGenericTypeDefinition_impl(QCallTypeHandle type, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.GetGenericTypeDefinition");
 
         internal static Type GetGenericTypeDefinition(RuntimeType type)
         {
@@ -199,22 +198,18 @@ namespace System
                    || (corElemType == CorElementType.ELEMENT_TYPE_BYREF));                                      // IsByRef
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern CorElementType GetCorElementType(QCallTypeHandle type);
+                internal static CorElementType GetCorElementType(QCallTypeHandle type) => (CorElementType)Cs2Wasm.Runtime.TypeInfo.CorElementType(Cs2Wasm.Runtime.TypeInfo.Id(type));
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern bool HasInstantiation(QCallTypeHandle type);
+                internal static bool HasInstantiation(QCallTypeHandle type) => (Cs2Wasm.Runtime.TypeInfo.Flags2(Cs2Wasm.Runtime.TypeInfo.Id(type)) & 4) != 0;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern bool IsInstanceOfType(QCallTypeHandle type, [NotNullWhen(true)] object? o);
+                internal static bool IsInstanceOfType(QCallTypeHandle type, [NotNullWhen(true)] object? o) => o != null && Cs2Wasm.Runtime.TypeInfo.IsAssignable(Cs2Wasm.Runtime.TypeInfo.Id(type), Cs2Wasm.Runtime.Rt.TypeId(o));
 
         internal static bool IsInstanceOfType(RuntimeType type, [NotNullWhen(true)] object? o)
         {
             return IsInstanceOfType(new QCallTypeHandle(ref type), o);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern bool HasReferences(QCallTypeHandle type);
+                internal static bool HasReferences(QCallTypeHandle type) => (Cs2Wasm.Runtime.TypeInfo.Flags2(Cs2Wasm.Runtime.TypeInfo.Id(type)) & 1) != 0;
 
         internal static bool HasReferences(RuntimeType type)
         {
@@ -231,20 +226,15 @@ namespace System
             return HasInstantiation(new QCallTypeHandle(ref type));
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern int GetArrayRank(QCallTypeHandle type);
+                internal static int GetArrayRank(QCallTypeHandle type) => Cs2Wasm.Runtime.TypeInfo.Rank(Cs2Wasm.Runtime.TypeInfo.Id(type));
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern void GetAssembly(QCallTypeHandle type, ObjectHandleOnStack res);
+                internal static void GetAssembly(QCallTypeHandle type, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.Assembly");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern void GetElementType(QCallTypeHandle type, ObjectHandleOnStack res);
+                internal static void GetElementType(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.TypeInfo.TypeOrNull(Cs2Wasm.Runtime.TypeInfo.ElementId(Cs2Wasm.Runtime.TypeInfo.Id(type))));
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern void GetModule(QCallTypeHandle type, ObjectHandleOnStack res);
+                internal static void GetModule(QCallTypeHandle type, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.Module");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern IntPtr GetMonoClass(QCallTypeHandle type);
+                private static IntPtr GetMonoClass(QCallTypeHandle type) => (IntPtr)Cs2Wasm.Runtime.TypeInfo.Id(type);
 
         internal static int GetArrayRank(RuntimeType type)
         {
@@ -288,14 +278,11 @@ namespace System
             return corElemType == CorElementType.ELEMENT_TYPE_VAR || corElemType == CorElementType.ELEMENT_TYPE_MVAR;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern bool type_is_assignable_from(QCallTypeHandle a, QCallTypeHandle b);
+                private static bool type_is_assignable_from(QCallTypeHandle a, QCallTypeHandle b) => Cs2Wasm.Runtime.TypeInfo.IsAssignable(Cs2Wasm.Runtime.TypeInfo.Id(a), Cs2Wasm.Runtime.TypeInfo.Id(b));
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern bool IsGenericTypeDefinition(QCallTypeHandle type);
+                internal static bool IsGenericTypeDefinition(QCallTypeHandle type) => false;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern IntPtr GetGenericParameterInfo(QCallTypeHandle type);
+                internal static IntPtr GetGenericParameterInfo(QCallTypeHandle type) => IntPtr.Zero;
 
         internal static bool IsGenericTypeDefinition(RuntimeType type)
         {
@@ -312,12 +299,10 @@ namespace System
             return is_subclass_of(new QCallTypeHandle(ref childType), new QCallTypeHandle(ref baseType));
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern bool is_subclass_of(QCallTypeHandle childType, QCallTypeHandle baseType);
+                internal static bool is_subclass_of(QCallTypeHandle childType, QCallTypeHandle baseType) => Cs2Wasm.Runtime.TypeInfo.Id(childType) != Cs2Wasm.Runtime.TypeInfo.Id(baseType) && (Cs2Wasm.Runtime.TypeInfo.Flags(Cs2Wasm.Runtime.TypeInfo.Id(baseType)) & 8) == 0 && Cs2Wasm.Runtime.TypeInfo.IsAssignable(Cs2Wasm.Runtime.TypeInfo.Id(baseType), Cs2Wasm.Runtime.TypeInfo.Id(childType));
 
         [DynamicDependency("#ctor()", typeof(IsByRefLikeAttribute))]
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern bool IsByRefLike(QCallTypeHandle type);
+                internal static bool IsByRefLike(QCallTypeHandle type) => (Cs2Wasm.Runtime.TypeInfo.Flags2(Cs2Wasm.Runtime.TypeInfo.Id(type)) & 2) != 0;
 
         internal static bool IsByRefLike(RuntimeType type)
         {
@@ -342,8 +327,7 @@ namespace System
             return true;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void internal_from_name(IntPtr name, ref StackCrawlMark stackMark, ObjectHandleOnStack res, bool throwOnError, bool ignoreCase);
+                private static void internal_from_name(IntPtr name, ref StackCrawlMark stackMark, ObjectHandleOnStack res, bool throwOnError, bool ignoreCase) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.GetType(string)");
 
         [RequiresUnreferencedCode("Types might be removed")]
         internal static RuntimeType? GetTypeByName(string typeName, bool throwOnError, bool ignoreCase, ref StackCrawlMark stackMark)

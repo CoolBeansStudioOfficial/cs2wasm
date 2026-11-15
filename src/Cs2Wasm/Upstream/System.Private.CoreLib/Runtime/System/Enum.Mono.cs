@@ -1,6 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over the compiler's type tables (Cs2Wasm.Runtime.TypeInfo, by type id).
+
 using System.Diagnostics;
 using System.Numerics;
 using System.Reflection;
@@ -10,14 +12,45 @@ namespace System
 {
     public partial class Enum
     {
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern void GetEnumValuesAndNames(QCallTypeHandle enumType, out ulong[] values, out string[] names);
+                private static void GetEnumValuesAndNames(QCallTypeHandle enumType, out ulong[] values, out string[] names)
+        {
+            // the compiler's table of the enum: [count, flags, size, unsigned], then (value: i64, name) per member, by unsigned value
+            int t = Cs2Wasm.Runtime.TypeInfo.EnumInfo(Cs2Wasm.Runtime.TypeInfo.Id(enumType));
+            int n = Cs2Wasm.Runtime.Mem.LoadI32(t);
+            values = new ulong[n];
+            names = new string[n];
+            for (int i = 0; i < n; i++)
+            {
+                values[i] = (ulong)Cs2Wasm.Runtime.Mem.LoadI64(t + 16 + i * 16);
+                names[i] = Cs2Wasm.Runtime.Rt.Borrow<string>(Cs2Wasm.Runtime.Mem.LoadI32(t + 16 + i * 16 + 8));
+            }
+        }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern CorElementType InternalGetCorElementType(QCallTypeHandle enumType);
+                private static CorElementType InternalGetCorElementType(QCallTypeHandle enumType)
+        {
+            int t = Cs2Wasm.Runtime.TypeInfo.EnumInfo(Cs2Wasm.Runtime.TypeInfo.Id(enumType));
+            int size = Cs2Wasm.Runtime.Mem.LoadI32(t + 8);
+            bool unsigned = Cs2Wasm.Runtime.Mem.LoadI32(t + 12) != 0;
+            return size switch
+            {
+                1 => unsigned ? CorElementType.ELEMENT_TYPE_U1 : CorElementType.ELEMENT_TYPE_I1,
+                2 => unsigned ? CorElementType.ELEMENT_TYPE_U2 : CorElementType.ELEMENT_TYPE_I2,
+                8 => unsigned ? CorElementType.ELEMENT_TYPE_U8 : CorElementType.ELEMENT_TYPE_I8,
+                _ => unsigned ? CorElementType.ELEMENT_TYPE_U4 : CorElementType.ELEMENT_TYPE_I4,
+            };
+        }
 
-        [MethodImpl(MethodImplOptions.InternalCall)]
-        private static extern void InternalGetUnderlyingType(QCallTypeHandle enumType, ObjectHandleOnStack res);
+                private static void InternalGetUnderlyingType(QCallTypeHandle enumType, ObjectHandleOnStack res)
+        {
+            Type u = InternalGetCorElementType(enumType) switch
+            {
+                CorElementType.ELEMENT_TYPE_U1 => typeof(byte), CorElementType.ELEMENT_TYPE_I1 => typeof(sbyte),
+                CorElementType.ELEMENT_TYPE_U2 => typeof(ushort), CorElementType.ELEMENT_TYPE_I2 => typeof(short),
+                CorElementType.ELEMENT_TYPE_U8 => typeof(ulong), CorElementType.ELEMENT_TYPE_I8 => typeof(long),
+                CorElementType.ELEMENT_TYPE_U4 => typeof(uint), _ => typeof(int),
+            };
+            Cs2Wasm.Runtime.TypeInfo.Set(res, u);
+        }
 
         private static unsafe CorElementType InternalGetCorElementType(RuntimeType rt)
         {

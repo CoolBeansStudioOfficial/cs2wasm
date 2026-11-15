@@ -38,6 +38,8 @@ sealed partial class FunctionCompiler
     Own EmitInvocation(IInvocationOperation inv)
     {
         var target = inv.TargetMethod;
+        // [Conditional("X")] with X not defined where the call is: the call, arguments included, is omitted (C# 22.5.3)
+        if (IsOmittedConditionalCall(inv)) return Own.None;
         if (target.MethodKind == MethodKind.LocalFunction) return EmitLocalFunctionCall(inv);
         // static abstract / virtual interface members through a constrained type parameter
         if (target.IsStatic && target.ContainingType.TypeKind == TypeKind.Interface && inv.ConstrainedToType is { } ctt)
@@ -257,6 +259,17 @@ sealed partial class FunctionCompiler
             else pushThis = () => { var o = EmitValue(inv.Instance); ToCallSafe(o, rt); if (!IsKnownNonNull(inv.Instance)) NullCheckKeep(); };
         }
         CallWith(m, virt, pushThis, () => PushArgs(m, inv.Arguments.Cast<IOperation>().ToList()), pushDst, inv.Syntax);
+    }
+
+    static bool IsOmittedConditionalCall(IInvocationOperation inv)
+    {
+        var m = inv.TargetMethod.OriginalDefinition;
+        if (!m.ReturnsVoid) return false;
+        var symbols = m.GetAttributes().Where(a => a.AttributeClass?.Name == "ConditionalAttribute" && a.ConstructorArguments.Length == 1)
+            .Select(a => a.ConstructorArguments[0].Value as string).ToList();
+        if (symbols.Count == 0) return false;
+        var defined = inv.Syntax.SyntaxTree.Options.PreprocessorSymbolNames;
+        return !symbols.Any(s => s != null && defined.Contains(s));
     }
 
     /// <summary>Calls a resolved method. Pushes the struct-return destination, then receiver, then arguments.</summary>
@@ -503,8 +516,24 @@ sealed partial class FunctionCompiler
             case "ArrayHelpers.CopyElements": case "Cs2WasmArrays.CopyElements": E.Call(Rt.ArrayCopy); return Own.None;
             case "ArrayHelpers.ClearElements": case "Cs2WasmArrays.ClearElements": E.Call(Rt.ArrayClear); return Own.None;
             case "EnumFormat.Info": E.Call(Rt.EnumInfo); return Own.None;
-            case "EnumFormat.InfoOfId": E.Call(Rt.EnumInfoId); return Own.None;
+            case "EnumFormat.InfoOfId": case "TypeInfo.EnumInfo": E.Call(Rt.EnumInfoId); return Own.None;
             case "Type.FullNameOf": E.Call(Rt.TypeNameById); return Own.Stable;
+            // Cs2Wasm.Runtime.TypeInfo (TypeInfo.cs): tables by type id
+            case "TypeInfo.FullName": E.Call(Rt.TypeNameById); return Own.Stable;
+            case "TypeInfo.Name": E.Call(Rt.TypeShortNameById); return Own.Stable;
+            case "TypeInfo.Flags": E.Call(Rt.TypeFlagsById); return Own.None;
+            case "TypeInfo.Namespace": E.Call(Rt.TypeInfo("namespace")); return Own.Stable;
+            case "TypeInfo.BaseId": E.Call(Rt.TypeInfo("base")); return Own.None;
+            case "TypeInfo.ElementId": E.Call(Rt.TypeInfo("element")); return Own.None;
+            case "TypeInfo.Rank": E.Call(Rt.TypeInfo("rank")); return Own.None;
+            case "TypeInfo.Attributes": E.Call(Rt.TypeInfo("attrs")); return Own.None;
+            case "TypeInfo.CorElementType": E.Call(Rt.TypeInfo("cor")); return Own.None;
+            case "TypeInfo.Flags2": E.Call(Rt.TypeInfo("flags2")); return Own.None;
+            case "TypeInfo.GenericArgs": E.Call(Rt.TypeInfo("generic_args")); return Own.None;
+            case "TypeInfo.Interfaces": E.Call(Rt.TypeInfo("interfaces")); return Own.None;
+            case "TypeInfo.DeclaringId": E.Call(Rt.TypeInfo("declaring")); return Own.None;
+            case "TypeInfo.Size": E.Call(Rt.TypeInfo("size")); return Own.None;
+            case "TypeInfo.BoxOffset": E.Call(Rt.TypeInfo("box_offset")); return Own.None;
             case "Type.ShortNameOf": E.Call(Rt.TypeShortNameById); return Own.Stable;
             case "Type.FlagsOf": E.Call(Rt.TypeFlagsById); return Own.None;
             case "Type.MetaOf": E.Call(D.MetaOf); return Own.None;

@@ -349,6 +349,10 @@ internal sealed class Types
         }
     }
 
+    /// <summary>The length of an [InlineArray(n)] struct.</summary>
+    public static int? InlineArrayLength(ITypeSymbol t) =>
+        t.TypeKind == TypeKind.Struct && t.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "InlineArrayAttribute") is { ConstructorArguments: [{ Value: int n }] } ? n : null;
+
     public static bool IsInstanceStorage(ISymbol m) => m is IFieldSymbol f && !f.IsStatic && !f.IsConst;
 
     Layout Compute(INamedTypeSymbol t)
@@ -365,6 +369,17 @@ internal sealed class Types
         if (t.TypeKind == TypeKind.Enum)
         {
             l.Size = l.Align = PrimSize(PrimOf(t));
+            return l;
+        }
+        if (InlineArrayLength(t) is int n && t.GetMembers().Where(IsInstanceStorage).OfType<IFieldSymbol>().FirstOrDefault() is { } elem)
+        {
+            // [InlineArray(n)]: the one field repeated n times (a slot per element, so counting sees them all)
+            var et = Canonical(elem.Type);
+            var (esize, ealign) = StorageOf(et);
+            for (int i = 0; i < n; i++) l.Fields.Add(new FieldSlot { Symbol = elem, Type = et, Offset = i * esize });
+            l.Size = Math.Max(1, esize * n);
+            l.Align = ealign;
+            l.HasRefs = NeedsRc(et);
             return l;
         }
         int offset = 0;

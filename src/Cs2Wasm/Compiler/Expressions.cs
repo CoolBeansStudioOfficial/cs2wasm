@@ -98,6 +98,30 @@ sealed partial class FunctionCompiler
             case ISwitchExpressionOperation se: return EmitSwitchExpression(se);
             case IInterpolatedStringOperation iso: return EmitInterpolatedString(iso);
             case IImplicitIndexerReferenceOperation ii: return EmitImplicitIndexer(ii, false);
+            case IInlineArrayAccessOperation ia when TypeOf(ia.Argument) is INamedTypeSymbol { Name: "Range" }:
+                {
+                    // buffer[a..b]: a span over the inline array, sliced
+                    var spanT = TypeOf(ia);
+                    var own = Own.None;
+                    EmitAddress(ia.Instance);
+                    ConvertValue(TypeOf(ia.Instance), spanT, false, ref own, false, null);
+                    int sp = E.AddLocal(ValType.I32); E.Set(sp);
+                    int len = E.AddLocal(ValType.I32); E.I32(Types.InlineArrayLength(TypeOf(ia.Instance))!.Value); E.Set(len);
+                    int start = E.AddLocal(ValType.I32), end = E.AddLocal(ValType.I32);
+                    if (ia.Argument is not IRangeOperation ro) throw new CompileException("inline array range", ia.Syntax.GetLocation());
+                    EmitIndexOffset(ro.LeftOperand, len, true); E.Set(start);
+                    EmitIndexOffset(ro.RightOperand, len, false); E.Set(end);
+                    var slice = ((INamedTypeSymbol)T.Canonical(spanT)).GetMembers("Slice").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 2);
+                    return CallWith(slice, false, () => E.Get(sp), () => { E.Get(start); E.Get(end); E.Get(start); E.Op(Op.I32Sub); }, null, ia.Syntax);
+                }
+            case IInlineArrayAccessOperation ia2:
+                {
+                    var et = TypeOf(ia2);
+                    int off = EmitAddressBase(ia2);
+                    if (Types.IsStruct(et)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
+                    E.Load(Types.LoadOp(et), off);
+                    return Types.IsRef(et) ? Own.Unstable : Own.None;
+                }
             case IUtf8StringOperation u8: return EmitUtf8Span(System.Text.Encoding.UTF8.GetBytes(u8.Value), TypeOf(u8));
             case IDefaultValueOperation dv: return EmitDefault(TypeOf(dv));
             case IConditionalAccessOperation ca2: return EmitConditionalAccess(ca2);
@@ -341,6 +365,7 @@ sealed partial class FunctionCompiler
             IInstanceReferenceOperation => M.ContainingType?.IsValueType == true || _closure != null,
             IPropertyReferenceOperation pr => pr.Property.ReturnsByRef || pr.Property.ReturnsByRefReadonly,
             IImplicitIndexerReferenceOperation { IndexerSymbol: IPropertySymbol ip } => ip.ReturnsByRef || ip.ReturnsByRefReadonly,
+            IInlineArrayAccessOperation => true,
             IInvocationOperation inv => inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly,
             IDeclarationExpressionOperation => true,
             _ => op.Kind == OperationKind.None,
@@ -416,6 +441,20 @@ sealed partial class FunctionCompiler
             case IArrayElementReferenceOperation ae: return EmitArrayElementAddress(ae);
             case IInvocationOperation inv when inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly:
                 { var save = _wantRefReturnAddress; _wantRefReturnAddress = true; try { EmitInvocation(inv); } finally { _wantRefReturnAddress = save; } return 0; }
+            case IInlineArrayAccessOperation ia when TypeOf(ia.Argument) is not INamedTypeSymbol { Name: "Range" }:
+                {
+                    // element i of an inline array: bounds-checked, at i * size
+                    int n = Types.InlineArrayLength(TypeOf(ia.Instance))!.Value;
+                    var et = T.Canonical(TypeOf(ia));
+                    int size = T.StorageOf(et).size;
+                    int idx = E.AddLocal(ValType.I32);
+                    int len = E.AddLocal(ValType.I32); E.I32(n); E.Set(len);
+                    EmitIndexOffset(ia.Argument, len, true); E.Set(idx);
+                    E.Get(idx); E.I32(n); E.Op(Op.I32GeU); E.If(); E.Call(Rt.ThrowIndex); E.End();
+                    EmitAddress(ia.Instance);
+                    E.Get(idx); if (size != 1) { E.I32(size); E.Op(Op.I32Mul); } E.Op(Op.I32Add);
+                    return 0;
+                }
             case IImplicitIndexerReferenceOperation ii when ii.IndexerSymbol is IPropertySymbol { ReturnsByRef: true } or IPropertySymbol { ReturnsByRefReadonly: true }:
                 EmitImplicitIndexer(ii, true); return 0;
             case IPropertyReferenceOperation pr when pr.Property.ReturnsByRef || pr.Property.ReturnsByRefReadonly:
@@ -765,6 +804,15 @@ sealed partial class FunctionCompiler
         if (ConvertNullable(from, to, isChecked, ref o)) return;
         if (IsSpanType(to) && !IsSpanType(from) || IsSpanType(to) && IsSpanType(from) && Types.Key(from.OriginalDefinition) != Types.Key(to.OriginalDefinition))
         {
+            if (Types.InlineArrayLength(from) is int ilen && to is INamedTypeSymbol { Arity: 1 } spanT)
+            {
+                // an inline array as a span over its elements: MemoryMarshal.Create(ReadOnly)Span(ref element 0, n)
+                var mm = D.LibType("System.Runtime.InteropServices.MemoryMarshal");
+                var create = mm.GetMembers(spanT.Name == "Span" ? "CreateSpan" : "CreateReadOnlySpan").OfType<IMethodSymbol>().First().Construct(T.Canonical(spanT.TypeArguments[0]));
+                int ia = E.AddLocal(ValType.I32); E.Set(ia);
+                o = CallWith(create, false, null, () => { E.Get(ia); E.I32(ilen); }, null, null);
+                return;
+            }
             // first-class span conversions (C# 14): array/string/Span -> (ReadOnly)Span, through the library's operators
             var op = FindImplicit(to, from, to) ?? FindImplicit(from, from, to);
             // array covariance: a Task<int>[] read as ReadOnlySpan<Task> (same references)

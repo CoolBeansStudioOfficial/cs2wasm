@@ -1,6 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over the compiler's type tables (Cs2Wasm.Runtime.TypeInfo, by type id).
+
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -121,7 +123,6 @@ namespace System
             throw new InvalidOperationException(SR.InvalidOperation_NotGenericType);
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern Type internal_from_handle(IntPtr handle);
+                private static Type internal_from_handle(IntPtr handle) => RuntimeType.FromId((int)handle);
     }
 }

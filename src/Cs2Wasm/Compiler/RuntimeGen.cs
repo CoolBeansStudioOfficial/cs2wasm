@@ -319,7 +319,7 @@ internal sealed partial class RuntimeFns
 }
 
 /// <summary>Generates whole-program runtime pieces and finishes the module.</summary>
-sealed class RuntimeGen
+sealed partial class RuntimeGen
 {
     readonly Driver D;
     readonly Dictionary<int, WasmFunction> _destroyFns = [];
@@ -656,6 +656,7 @@ sealed class RuntimeGen
 
     public void Finish()
     {
+        CloseTypeInfo();
         if (D.Arenas.Enabled) EmitArenaSupport();
         D.EmitReflectionTables();
         EmitOnDestroy();
@@ -817,6 +818,7 @@ sealed class RuntimeGen
         EmitIdTable(D.Rt.TypeNameById, n, i => (D.StringLiteral(Full(i)), 0));
         EmitIdTable(D.Rt.TypeShortNameById, n, i => (D.StringLiteral(Short(i)), 0));
         EmitIdTable(D.Rt.TypeFlagsById, n, i => (null, i == 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) ? 0 : Flags(D.TypeById[i])));
+        EmitTypeInfo();
     }
 
     static string ShortName(ITypeSymbol t) => t switch

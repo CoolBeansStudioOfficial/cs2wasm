@@ -1,6 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+// cs2wasm: Mono's internal calls are implemented over the compiler's type tables (Cs2Wasm.Runtime.TypeInfo, by type id).
+
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -154,8 +156,7 @@ namespace System
             return res;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetParentType(QCallTypeHandle type, ObjectHandleOnStack res);
+                private static void GetParentType(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.TypeInfo.TypeOrNull(Cs2Wasm.Runtime.TypeInfo.BaseId(Cs2Wasm.Runtime.TypeInfo.Id(type))));
 
         [RequiresUnreferencedCode("Types might be removed")]
         internal static RuntimeType? GetType(string typeName, bool throwOnError, bool ignoreCase,
@@ -1772,8 +1773,7 @@ namespace System
             return ctor;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern MemberInfo GetCorrespondingInflatedMethod(QCallTypeHandle type, MemberInfo generic);
+                private static MemberInfo GetCorrespondingInflatedMethod(QCallTypeHandle type, MemberInfo generic) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection on generic instantiations");
 
         internal override MethodInfo GetMethod(MethodInfo fromNoninstanciated)
         {
@@ -2048,8 +2048,7 @@ namespace System
             return null;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void make_array_type(QCallTypeHandle type, int rank, ObjectHandleOnStack res);
+                private static void make_array_type(QCallTypeHandle type, int rank, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.MakeArrayType");
 
         public override Type MakeArrayType()
         {
@@ -2070,8 +2069,7 @@ namespace System
             return type!;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void make_byref_type(QCallTypeHandle type, ObjectHandleOnStack res);
+                private static void make_byref_type(QCallTypeHandle type, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.MakeByRefType");
 
         public override Type MakeByRefType()
         {
@@ -2083,8 +2081,7 @@ namespace System
             return type!;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void make_pointer_type(QCallTypeHandle type, ObjectHandleOnStack res);
+                private static void make_pointer_type(QCallTypeHandle type, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.MakePointerType");
 
         public override Type MakePointerType()
         {
@@ -2165,11 +2162,9 @@ namespace System
             return ctor.Invoker.InvokeWithNoArgs(obj: null, invokeAttr: default)!;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void MakeGenericType(Type gt, Type[] types, ObjectHandleOnStack res);
+                private static void MakeGenericType(Type gt, Type[] types, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.MakeGenericType");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern IntPtr GetMethodsByName_native(QCallTypeHandle type, IntPtr namePtr, BindingFlags bindingAttr, MemberListType listType);
+                internal static IntPtr GetMethodsByName_native(QCallTypeHandle type, IntPtr namePtr, BindingFlags bindingAttr, MemberListType listType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection over methods (outside the compiler's metadata)");
 
         internal RuntimeMethodInfo[] GetMethodsByName(string? name, BindingFlags bindingAttr, MemberListType listType, RuntimeType reflectedType)
         {
@@ -2189,11 +2184,9 @@ namespace System
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern IntPtr GetPropertiesByName_native(QCallTypeHandle type, IntPtr name, BindingFlags bindingAttr, MemberListType listType);
+                private static IntPtr GetPropertiesByName_native(QCallTypeHandle type, IntPtr name, BindingFlags bindingAttr, MemberListType listType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection over properties (outside the compiler's metadata)");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern IntPtr GetConstructors_native(QCallTypeHandle type, BindingFlags bindingAttr);
+                private static IntPtr GetConstructors_native(QCallTypeHandle type, BindingFlags bindingAttr) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection over constructors (outside the compiler's metadata)");
 
         private RuntimeConstructorInfo[] GetConstructors_internal(BindingFlags bindingAttr, RuntimeType reflectedType)
         {
@@ -2257,8 +2250,7 @@ namespace System
             return res;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetInterfaceMapData(QCallTypeHandle t, QCallTypeHandle iface, out MethodInfo[] targets, out MethodInfo[] methods);
+                private static void GetInterfaceMapData(QCallTypeHandle t, QCallTypeHandle iface, out MethodInfo[] targets, out MethodInfo[] methods) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Type.GetInterfaceMap");
 
         public override Guid GUID
         {
@@ -2271,8 +2263,7 @@ namespace System
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetPacking(QCallTypeHandle type, out int packing, out int size);
+                private static void GetPacking(QCallTypeHandle type, out int packing, out int size) { packing = 8; size = 0; }
 
         internal void GetPacking(out int packing, out int size)
         {
@@ -2285,11 +2276,9 @@ namespace System
             return getFullName(false, false)!;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern object CreateInstanceInternal(QCallTypeHandle type);
+                private static object CreateInstanceInternal(QCallTypeHandle type) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("Activator.CreateInstance");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetDeclaringMethod(QCallTypeHandle type, ObjectHandleOnStack res);
+                private static void GetDeclaringMethod(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, null);
 
         public override MethodBase? DeclaringMethod
         {
@@ -2302,11 +2291,14 @@ namespace System
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern void getFullName(QCallTypeHandle type, ObjectHandleOnStack res, bool full_name, bool assembly_qualified);
+                internal static void getFullName(QCallTypeHandle type, ObjectHandleOnStack res, bool full_name, bool assembly_qualified) => Cs2Wasm.Runtime.TypeInfo.Set(res, full_name ? Cs2Wasm.Runtime.TypeInfo.FullName(Cs2Wasm.Runtime.TypeInfo.Id(type)) : Cs2Wasm.Runtime.TypeInfo.Name(Cs2Wasm.Runtime.TypeInfo.Id(type)));
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetGenericArgumentsInternal(QCallTypeHandle type, ObjectHandleOnStack res, bool runtimeArray);
+                private static void GetGenericArgumentsInternal(QCallTypeHandle type, ObjectHandleOnStack res, bool runtimeArray)
+        {
+            RuntimeType[] args = Cs2Wasm.Runtime.TypeInfo.Types(Cs2Wasm.Runtime.TypeInfo.GenericArgs(Cs2Wasm.Runtime.TypeInfo.Id(type)));
+            if (runtimeArray) Cs2Wasm.Runtime.TypeInfo.Set(res, args);
+            else { var t = new Type[args.Length]; Array.Copy(args, t, args.Length); Cs2Wasm.Runtime.TypeInfo.Set(res, t); }
+        }
 
         internal string? getFullName(bool full_name, bool assembly_qualified)
         {
@@ -2329,14 +2321,11 @@ namespace System
             return (new Mono.RuntimeGenericParamInfoHandle(RuntimeTypeHandle.GetGenericParameterInfo(this))).Attributes;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern int GetGenericParameterPosition(QCallTypeHandle type);
+                private static int GetGenericParameterPosition(QCallTypeHandle type) => -1;
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern IntPtr GetEvents_native(QCallTypeHandle type, IntPtr name, MemberListType listType);
+                private static IntPtr GetEvents_native(QCallTypeHandle type, IntPtr name, MemberListType listType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection over events (outside the compiler's metadata)");
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern IntPtr GetFields_native(QCallTypeHandle type, IntPtr name, BindingFlags bindingAttr, MemberListType listType);
+                private static IntPtr GetFields_native(QCallTypeHandle type, IntPtr name, BindingFlags bindingAttr, MemberListType listType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection over fields (outside the compiler's metadata)");
 
         private RuntimeFieldInfo[] GetFields_internal(string? name, BindingFlags bindingAttr, MemberListType listType, RuntimeType reflectedType)
         {
@@ -2374,8 +2363,11 @@ namespace System
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetInterfaces(QCallTypeHandle type, ObjectHandleOnStack res);
+                private static void GetInterfaces(QCallTypeHandle type, ObjectHandleOnStack res)
+        {
+            RuntimeType[] ifaces = Cs2Wasm.Runtime.TypeInfo.Types(Cs2Wasm.Runtime.TypeInfo.Interfaces(Cs2Wasm.Runtime.TypeInfo.Id(type)));
+            var t = new Type[ifaces.Length]; Array.Copy(ifaces, t, ifaces.Length); Cs2Wasm.Runtime.TypeInfo.Set(res, t);
+        }
 
         [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)]
         public override Type[] GetInterfaces()
@@ -2386,8 +2378,7 @@ namespace System
             return res!;
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern IntPtr GetNestedTypes_native(QCallTypeHandle type, IntPtr name, BindingFlags bindingAttr, MemberListType listType);
+                private static IntPtr GetNestedTypes_native(QCallTypeHandle type, IntPtr name, BindingFlags bindingAttr, MemberListType listType) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection over nested types");
 
         private RuntimeType[] GetNestedTypes_internal(string? displayName, BindingFlags bindingAttr, MemberListType listType)
         {
@@ -2417,8 +2408,7 @@ namespace System
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetDeclaringType(QCallTypeHandle type, ObjectHandleOnStack res);
+                private static void GetDeclaringType(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.TypeInfo.TypeOrNull(Cs2Wasm.Runtime.TypeInfo.DeclaringId(Cs2Wasm.Runtime.TypeInfo.Id(type))));
 
         public override Type? DeclaringType
         {
@@ -2431,8 +2421,7 @@ namespace System
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetName(QCallTypeHandle type, ObjectHandleOnStack res);
+                private static void GetName(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.TypeInfo.Name(Cs2Wasm.Runtime.TypeInfo.Id(type)));
 
         public override string Name
         {
@@ -2445,8 +2434,7 @@ namespace System
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private static extern void GetNamespace(QCallTypeHandle type, ObjectHandleOnStack res);
+                private static void GetNamespace(QCallTypeHandle type, ObjectHandleOnStack res) => Cs2Wasm.Runtime.TypeInfo.Set(res, Cs2Wasm.Runtime.TypeInfo.Namespace(Cs2Wasm.Runtime.TypeInfo.Id(type)));
 
         public override string? Namespace
         {
@@ -2490,8 +2478,7 @@ namespace System
 
         public override bool IsFunctionPointer => RuntimeTypeHandle.IsFunctionPointer(this);
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern bool IsUnmanagedFunctionPointerInternal(QCallTypeHandle type);
+                internal static bool IsUnmanagedFunctionPointerInternal(QCallTypeHandle type) => false;
         internal static bool IsUnmanagedFunctionPointerInternal(RuntimeType type)
         {
             return IsUnmanagedFunctionPointerInternal(new QCallTypeHandle(ref type));
@@ -2510,8 +2497,7 @@ namespace System
             return FunctionPointerReturnAndParameterTypes(this, true)[0];
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern IntPtr FunctionPointerReturnAndParameterTypes(QCallTypeHandle type);
+                internal static IntPtr FunctionPointerReturnAndParameterTypes(QCallTypeHandle type) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("function pointer types");
         internal static Type[] FunctionPointerReturnAndParameterTypes(RuntimeType type, bool returnType)
         {
             if (!RuntimeTypeHandle.IsFunctionPointer(type))
@@ -2541,15 +2527,13 @@ namespace System
             }
         }
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern Type[] GetFunctionPointerTypeModifiers(QCallTypeHandle type, int position, bool optional);
+                internal static Type[] GetFunctionPointerTypeModifiers(QCallTypeHandle type, int position, bool optional) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("function pointer types");
 
         internal static Type[] GetFunctionPointerTypeModifiers(RuntimeType type, int position, bool optional) => GetFunctionPointerTypeModifiers(new QCallTypeHandle(ref type), position, optional) ?? Type.EmptyTypes;
 
         public Type[] GetCustomModifiersFromFunctionPointer(int position, bool optional) => GetFunctionPointerTypeModifiers(this, position, optional);
 
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        internal static extern byte GetCallingConventionFromFunctionPointerInternal(QCallTypeHandle type);
+                internal static byte GetCallingConventionFromFunctionPointerInternal(QCallTypeHandle type) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("function pointer types");
 
         internal static byte GetCallingConventionFromFunctionPointerInternal(RuntimeType type) => GetCallingConventionFromFunctionPointerInternal(new QCallTypeHandle(ref type));
 
