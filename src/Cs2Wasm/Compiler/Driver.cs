@@ -663,6 +663,10 @@ internal sealed partial class Driver
                     for (var x = first; x != null && chain.Count < 40; x = x.ReachedFrom) chain.Add(Display(x.Sym));
                     Console.Error.WriteLine($"why {name}: " + string.Join(" <- ", chain));
                 }
+        // CS2WASM_WHY_METHODS=Text: how the program reaches each compiled method whose name contains it (the 15 largest)
+        if (Environment.GetEnvironmentVariable("CS2WASM_WHY_METHODS") is { Length: > 0 } whyM)
+            foreach (var m in compiled.Where(m => Display(m.Sym).Contains(whyM)).OrderByDescending(m => m.Fn.Body.Count).Take(15))
+                Console.Error.WriteLine($"why {m.Fn.Body.Count} {Display(m.Sym)}{WhyReachedAlways(m)}");
         Console.Error.WriteLine("types:");
         foreach (var g in compiled.GroupBy(Ty).OrderByDescending(g => g.Sum(m => m.Fn.Body.Count)).Take(40))
             Console.Error.WriteLine($"  {g.Sum(m => m.Fn.Body.Count),8} {g.Count(),5}  {g.Key}");

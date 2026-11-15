@@ -106,11 +106,21 @@ internal sealed class Library
             var defines = lines.Where(l => l.StartsWith("define ")).Select(l => l[7..]).ToArray();
             var po = new CSharpParseOptions(LanguageVersion.Preview, preprocessorSymbols: defines);
             var files = lines.Where(l => l.StartsWith("file ")).Select(l => l[5..]).ToList();
+            // edit<TAB>file<TAB>text<TAB>replacement: an exact change to one upstream file (each must still apply)
+            var edits = lines.Where(l => l.StartsWith("edit\t")).Select(l => l.Split('\t')).Where(p => p.Length >= 4)
+                .GroupBy(p => p[1]).ToDictionary(g => g.Key, g => g.Select(p => (p[2], p[3])).ToList());
             var trees = files.AsParallel().AsOrdered().Select(f =>
             {
                 var path = Path.Combine(root, f);
                 if (!File.Exists(path)) throw new CompileException($"library source missing: {path} (dotnet/runtime {UpstreamSources.Tag})");
-                return CSharpSyntaxTree.ParseText(File.ReadAllText(path), po, path: "dotnet/runtime/" + f);
+                var text = File.ReadAllText(path);
+                if (edits.TryGetValue(f, out var es))
+                    foreach (var (from, to) in es)
+                    {
+                        if (!text.Contains(from)) throw new CompileException($"library edit no longer applies: {f}: '{from}'");
+                        text = text.Replace(from, to);
+                    }
+                return CSharpSyntaxTree.ParseText(text, po, path: "dotnet/runtime/" + f);
             }).ToList();
             trees.AddRange(own.Where(r => r.Name.StartsWith(prefix) && r.Name.EndsWith(".cs"))
                 .AsParallel().AsOrdered().Select(r => CSharpSyntaxTree.ParseText(r.Text, po, path: "cs2wasm/" + r.Name)));

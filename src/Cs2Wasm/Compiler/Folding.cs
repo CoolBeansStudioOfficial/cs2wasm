@@ -63,9 +63,17 @@ sealed partial class FunctionCompiler
             // receiver whose evaluation has no effect
             case IPropertyReferenceOperation { Instance: { } pi, Property.GetMethod: { } pg } when IsPure(pi) && SubstitutedBool(pg) is bool spv: return spv;
             case IInvocationOperation { Instance: { } ii } sinv when IsPure(ii) && SubstitutedBool(sinv.TargetMethod) is bool siv: return siv;
+            case IInvocationOperation { Instance: null } stinv when SubstitutedBool(stinv.TargetMethod) is bool stv && stinv.Arguments.All(a => IsPure(a.Value)): return stv;
             case IFieldReferenceOperation { Instance: null, Field.IsReadOnly: true } fr when Library.FieldSubstitution(fr.Field) is "true" or "false": return Library.FieldSubstitution(fr.Field) == "true";
-            case IPropertyReferenceOperation { Instance: ITypeOfOperation to, Property.Name: "IsValueType" }:
-                return T.Resolve(to.TypeOperand, Map).IsValueType;
+            case IPropertyReferenceOperation { Instance: ITypeOfOperation to, Property.Name: "IsValueType" or "IsEnum" or "IsPrimitive" or "IsInterface" } tp
+                when T.Resolve(to.TypeOperand, Map) is var tt && tt is not ITypeParameterSymbol:
+                return tp.Property.Name switch
+                {
+                    "IsValueType" => tt.IsValueType,
+                    "IsEnum" => tt.TypeKind == TypeKind.Enum,
+                    "IsInterface" => tt.TypeKind == TypeKind.Interface,
+                    _ => tt.TypeKind != TypeKind.Enum && tt is not (IPointerTypeSymbol or IFunctionPointerTypeSymbol) && Types.PrimOf(tt) is not Prim.None,
+                };
             case IInvocationOperation { Instance: null, Arguments.Length: 1, TargetMethod: { Name: "Implements", TypeArguments.Length: 1 } im } impl
                 when Types.FullName(im.ContainingType) == "Cs2Wasm.Runtime.Generics" && impl.Arguments[0].Value.ConstantValue.Value is string ifaceName:
                 {

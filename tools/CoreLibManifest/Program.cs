@@ -132,6 +132,7 @@ sealed class Manifest
         sb.AppendLine("# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: cs2wasm supplies its own)");
         sb.AppendLine("# | replaced <path> (an upstream file cs2wasm replaces with its own)");
         sb.AppendLine("# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for cs2wasm's features)");
+        sb.AppendLine("#   (a value =>Type.Method: the body calls that boundary method) | edit<TAB><path><TAB><text><TAB><replacement> (an exact change to an upstream file)");
         foreach (var d in defines) sb.AppendLine("define " + d);
         foreach (var r in references.Distinct()) sb.AppendLine("reference " + r);
         foreach (var (path, why) in replaced) sb.AppendLine($"replaced {path}  # {why}");
@@ -144,6 +145,8 @@ sealed class Manifest
             sb.AppendLine("substitute	method	System.Diagnostics.StackTrace	System.String ToString(System.Diagnostics.StackTrace/TraceFormat)	=>Cs2Wasm.Runtime.Rt.EmptyTrace");
             // the compiler's enum tables are sorted by unsigned value already (Enum.Mono.cs): no sorting code
             sb.AppendLine("substitute	method	System.Enum	System.Boolean AreSorted(TStorage[])	true");
+            // C# declares no enums over float, double, char or nint (as for NativeAOT): no code for them
+            sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Enum.cs	#define RARE_ENUMS	#undef RARE_ENUMS");
             // the end of a work item is a safe point for deferred destruction (Boundary/Runtime.cs, Limbo)
             sb.AppendLine("substitute\tmethod\tSystem.Threading.ThreadPool\tSystem.Boolean NotifyWorkItemComplete(System.Threading.ThreadInt64PersistentCounter/ThreadLocalNode,System.Int32)\t=>Cs2Wasm.Runtime.Limbo.NotifyWorkItemComplete");
         }
