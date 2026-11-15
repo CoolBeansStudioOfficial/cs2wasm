@@ -133,7 +133,7 @@ namespace System
         public static void WaitForPendingFinalizers() { }
 
         // cs2wasm: no collector; counting frees objects as they become unreachable
-        private static void _SuppressFinalize(object o) { }
+        private static void _SuppressFinalize(object o) => Cs2Wasm.Runtime.ObjectMarks.Set(o, Cs2Wasm.Runtime.ObjectMarks.FinalizerSuppressed);
 
         public static void SuppressFinalize(object obj)
         {
@@ -142,7 +142,7 @@ namespace System
         }
 
         // cs2wasm: no collector; counting frees objects as they become unreachable
-        private static void _ReRegisterForFinalize(object o) { }
+        private static void _ReRegisterForFinalize(object o) => Cs2Wasm.Runtime.ObjectMarks.Clear(o, Cs2Wasm.Runtime.ObjectMarks.FinalizerSuppressed);
 
         public static void ReRegisterForFinalize(object obj)
         {
