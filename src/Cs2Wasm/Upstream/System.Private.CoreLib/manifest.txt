@@ -31,6 +31,8 @@ define FEATURE_MULTITHREADING
 replaced src/libraries/System.Private.CoreLib/src/System/Threading/ThreadPool.Browser.Threads.cs  # cs2wasm's workers have no JS event loop to yield to
 replaced src/libraries/System.Private.CoreLib/src/System/TimeZoneInfo.Unix.NonAndroid.cs  # no time zone database: the local zone has the engine clock's offset (Boundary/TimeZoneInfo.Cs2Wasm.cs)
 substitute	method	System.Runtime.CompilerServices.RuntimeFeature	System.Boolean get_IsDynamicCodeSupported()	false
+substitute	method	System.Reflection.Emit.AssemblyBuilder	System.Void EnsureDynamicCodeSupported()	
+substitute	method	System.Reflection.Emit.DynamicMethod	System.Reflection.Module GetDynamicMethodsModule()	=>Cs2Wasm.Runtime.Rt.DynamicMethodsModule
 substitute	method	System.Exception	System.String GetStackTrace()	=>Cs2Wasm.Runtime.Rt.StackTraceOf
 substitute	method	System.Diagnostics.StackTrace	System.String ToString(System.Diagnostics.StackTrace/TraceFormat)	=>Cs2Wasm.Runtime.Rt.EmptyTrace
 substitute	method	System.Enum	System.Boolean AreSorted(TStorage[])	true

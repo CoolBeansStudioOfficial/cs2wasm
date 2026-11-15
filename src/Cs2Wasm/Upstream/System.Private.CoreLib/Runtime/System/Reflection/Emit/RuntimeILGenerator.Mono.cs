@@ -890,6 +890,11 @@ namespace System.Reflection.Emit
 
         internal ITokenGenerator TokenGenerator => token_gen;
 
+        // cs2wasm: what the interpreter runs (DynamicMethod.Interpreter.cs)
+        internal byte[] Code => code;
+        internal RuntimeLocalBuilder[]? LocalBuilders => locals;
+        internal ILExceptionInfo[]? ExceptionInfos => ex_handlers;
+
         public override int ILOffset => code_len;
     }
 

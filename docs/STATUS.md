@@ -5,18 +5,19 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 50 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 57 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
   and concurrent collections, `typeof` and seeded `Random`, records, reference cycles, weak references and
   finalizers, reflection, decimal, date and time, enum formatting, spans and `stackalloc`, `ref struct`, ref returns,
-  C# 14 extension members, value-type equality, expression trees and `Expression.Compile`, array ranges) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
+  C# 14 extension members, value-type equality, expression trees and `Expression.Compile`, array ranges, reflection over generic methods,
+  by-ref parameters and assemblies, `dynamic` on the C# runtime binder, `DynamicMethod` on the IL interpreter) produce output identical to .NET 11's, byte for byte, on upstream's library; so does the
   GodotSharp math proof (proof 2).
 - **API checks:** 17 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
   custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
   passes, source map, cycles bounded in a fixed 16 MB memory, no arena code without cycle-capable types).
-- **Module size (raw, measured):** `Console.WriteLine(42)` is 26,738 bytes on upstream's library (code 20.5 KB,
+- **Module size (raw, measured):** `Console.WriteLine(42)` is 27,292 bytes on upstream's library (code 20.5 KB,
   LZ-packed data and frame names about 6 KB); NetWasm's build of the same program is 28,383 bytes. The conformance
   programs are 30–300 KB raw (`tests/Cs2Wasm.Tests` prints each size). The Rust 2D game bar in the spec (24 KB
   compressed) is for a game with GodotSharp, which is not built yet.
@@ -95,7 +96,7 @@ exception, before unwinding runs any `finally`. An exception thrown inside a fil
 filters pay nothing.
 
 Not done yet (a program using them gets a `CW0101` error naming the construct):
-- `Reflection.Emit` (section 8); in `dynamic` code, `&&`/`||` with a static left operand, `ref`/`out` arguments of
+- `TypeBuilder`/`AssemblyBuilder` (types defined at run time; `DynamicMethod` works, section 8); in `dynamic` code, `&&`/`||` with a static left operand, `ref`/`out` arguments of
   dynamic calls and the value of a dynamic member's postfix `++`/`--`;
 - in expression trees, the closure's type name in a tree's text (`value(<>c__DisplayClass).x`: Roslyn numbers its
   closure classes, cs2wasm's are unnamed) and lifted (nullable) user-defined operators; captured variables (a field of
@@ -365,7 +366,21 @@ place) or a frame slot copied back for a reference; a null argument for a value 
 assemblies' names (a library's version and key token are the running .NET's, the program's as the C# compiler
 emits it); `FullName`/`AssemblyQualifiedName` qualify generic arguments with their assemblies, and nested types of
 generic types carry the outer arguments as .NET's do. Not done: `MakeGenericMethod` with arguments the compiler cannot
-see, `Assembly.GetTypes`/`GetType(name)`/`GetCallingAssembly` and `Reflection.Emit`.
+see, `Assembly.GetTypes`/`GetType(name)`/`GetCallingAssembly` and types defined at run time (`TypeBuilder`).
+Abstract members (an interface's, an abstract class's) are kept on the type that declares them and invoked virtually.
+
+`DynamicMethod` (`057_reflection_emit`) runs on an IL interpreter (`Reflection/Emit/DynamicMethod.Interpreter.cs`),
+linked in only when the program creates one: Mono's `ILGenerator` writes the IL as usual, and creating the method
+hands its bytes, locals, exception clauses and tokens to the interpreter; `CreateDelegate` (open, or closed over a
+first argument) and `Invoke` (`TargetInvocationException`, by-ref arguments written back) run it. It executes the
+whole instruction set a verifiable method uses: arithmetic with C#'s overflow and conversion rules, branches and
+`switch`, locals and arguments (by reference too), objects, fields, arrays, value types through managed pointers
+(`ldloca`, `ldflda`, `ldelema`, `unbox`: changes write back), boxing, casts, `ldtoken`, `ldftn` delegates, calls to
+compiled methods and other dynamic methods (through reflection, virtually for `callvirt`, `constrained.`), and
+`try`/`catch`/`filter`/`finally`/`fault` with .NET's two-pass order and `rethrow`. The types the program names with
+`typeof` can be boxed and made arrays of at run time in such a program (the IL decides). Not interpreted: unmanaged
+pointers (`localloc`, `cpblk`, `initblk`), `arglist`, `jmp`, typed references. `MemberwiseClone` now copies objects
+with references (a count for each, by the object's type).
 
 `dynamic` (`055_dynamic`, matching .NET's output and binder errors) runs on upstream's C# runtime binder
 (Microsoft.CSharp) as Roslyn lowers it: each dynamic operation is a `CallSite<D>` made once from `Binder.InvokeMember`,

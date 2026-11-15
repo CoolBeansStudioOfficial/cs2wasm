@@ -186,6 +186,7 @@ sealed partial class FunctionCompiler
                 {
                     var tt = T.Resolve(to.TypeOperand, Map);
                     if (tt.TypeKind == TypeKind.Enum) D.MarkConstructed(tt); // Enum's API reads its table
+                    D.TypeOfTargets.Add((tt, D.CurrentFn));
                     E.Tid(D.TypeId(tt));
                     var fromId = D.LibType("System.Type").GetMembers("FromId").OfType<IMethodSymbol>().First();
                     E.Call(D.Method(fromId).Fn);

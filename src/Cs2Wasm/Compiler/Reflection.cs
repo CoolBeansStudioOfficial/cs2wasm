@@ -338,14 +338,16 @@ internal sealed partial class Driver
                         if (_reflect != null && _reflect.GenericInstances.TryGetValue(Compiler.Types.Key(t), out var insts))
                             foreach (var inst in insts) if (SymbolEqualityComparer.Default.Equals(inst.OriginalDefinition, gm.OriginalDefinition)) yield return inst;
                         break;
-                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke or MethodKind.EventAdd or MethodKind.EventRemove or MethodKind.UserDefinedOperator or MethodKind.Conversion } ms when !ms.IsGenericMethod && !ms.IsAbstract && ms.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !ms.ReturnType.IsRefLikeType && !ms.ReturnsByRef && !ms.ReturnsByRefReadonly && !ms.IsExtern:
+                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke or MethodKind.EventAdd or MethodKind.EventRemove or MethodKind.UserDefinedOperator or MethodKind.Conversion } ms when !ms.IsGenericMethod && (!ms.IsAbstract || !ms.IsStatic && SymbolEqualityComparer.Default.Equals(x, t)) && ms.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !ms.ReturnType.IsRefLikeType && !ms.ReturnsByRef && !ms.ReturnsByRefReadonly && !ms.IsExtern:
                         yield return ms; break;
                     case IMethodSymbol { MethodKind: MethodKind.Constructor } cs when SymbolEqualityComparer.Default.Equals(x, t) && cs.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !t.IsAbstract && !t.IsRefLikeType:
                         yield return cs; break;
                     case IPropertySymbol ps:
                         if (AutoPropertyField(ps.OriginalDefinition) is { } bf) yield return bf;
-                        if (ps.GetMethod is { } g && !g.IsAbstract) yield return g;
-                        if (ps.SetMethod is { } s2 && !s2.IsAbstract) yield return s2;
+                        // (an abstract accessor: on the reflected type itself, called virtually)
+                        bool callable(IMethodSymbol a) => !a.IsAbstract || !a.IsStatic && SymbolEqualityComparer.Default.Equals(x, t);
+                        if (ps.GetMethod is { } g && callable(g)) yield return g;
+                        if (ps.SetMethod is { } s2 && callable(s2)) yield return s2;
                         break;
                     case IFieldSymbol fs when !fs.IsConst && !fs.IsImplicitlyDeclared:
                         yield return fs; break;

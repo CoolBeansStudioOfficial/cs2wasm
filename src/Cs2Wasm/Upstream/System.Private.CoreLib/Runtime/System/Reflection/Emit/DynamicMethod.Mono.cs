@@ -74,15 +74,36 @@ namespace System.Reflection.Emit
             if ((CallingConvention & CallingConventions.VarArgs) == CallingConventions.VarArgs)
                 throw new NotSupportedException(SR.NotSupported_CallToVarArg);
 
-            try
+            CreateDynMethod();
+            // cs2wasm: the arguments checked and converted as for any method, then the interpreter
+            var ps = GetParametersAsSpan();
+            int n = parameters?.Length ?? 0;
+            if (n != ps.Length) throw new TargetParameterCountException(SR.Arg_ParmCnt);
+            var args = n == 0 ? Array.Empty<object?>() : new object?[n];
+            for (int i = 0; i < n; i++)
             {
-                CreateDynMethod();
-                return GetRuntimeMethodInfo().Invoke(obj, invokeAttr, binder, parameters, culture);
+                var pt = (RuntimeType)(ps[i].ParameterType.IsByRef ? ps[i].ParameterType.GetElementType()! : ps[i].ParameterType);
+                object? v = parameters![i];
+                if (v == Type.Missing) v = ps[i].HasDefaultValue ? ps[i].DefaultValue : throw new ArgumentException(SR.Arg_VarMissNull, nameof(parameters));
+                if (v == null) { if (pt.IsValueType && Nullable.GetUnderlyingType(pt) == null) v = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(pt); }
+                else if (!pt.IsInstanceOfType(v))
+                {
+                    if (binder != null && (invokeAttr & BindingFlags.ExactBinding) == 0) v = binder.ChangeType(v, pt, culture);
+                    else throw new ArgumentException(SR.Format(SR.Arg_ObjObjEx, v.GetType(), pt));
+                }
+                args[i] = v;
             }
-            catch (MethodAccessException mae)
+            object? r;
+            if ((invokeAttr & BindingFlags.DoNotWrapExceptions) != 0) r = _interpreter!.Run(args);
+            else
             {
-                throw new TargetInvocationException(SR.TargetInvocation_MethodCannotBeInvoked, mae);
+                try { r = _interpreter!.Run(args); }
+                catch (Exception e) { throw new TargetInvocationException(e); }
             }
+            if (parameters != null)
+                for (int i = 0; i < n; i++)
+                    if (ps[i].ParameterType.IsByRef) parameters[i] = args[i];
+            return r;
         }
 
         internal RuntimeMethodInfo GetRuntimeMethodInfo()
@@ -91,14 +112,18 @@ namespace System.Reflection.Emit
             return _method;
         }
 
-                [Cs2Wasm.Runtime.MissingCapability("code generation at run time")]        private static extern void create_dynamic_method(DynamicMethod m, string name, MethodAttributes attributes, CallingConventions callingConvention);
+        // cs2wasm: the method's IL runs on the interpreter (DynamicMethod.Interpreter.cs)
+        private static void create_dynamic_method(DynamicMethod m, string name, MethodAttributes attributes, CallingConventions callingConvention)
+        {
+            m._interpreter = new IlInterpreter(m, m._ilGenerator!, m._refs, m._parameterTypes, m._returnType ?? typeof(void));
+        }
 
         private void CreateDynMethod()
         {
             // Clearing of ilgen in create_dynamic_method is not yet synchronized for multiple threads
             lock (this)
             {
-                if (_mhandle.Value == IntPtr.Zero)
+                if (_interpreter == null)
                 {
                     if (_ilGenerator == null || _ilGenerator.ILOffset == 0)
                         throw new InvalidOperationException(SR.Format(SR.InvalidOperation_BadEmptyMethodBody, Name));

@@ -209,6 +209,43 @@ internal sealed partial class Driver
 
     /// <summary>The function being compiled (types it constructs are live only if it is), or null.</summary>
     public WasmFunction? CurrentFn;
+    /// <summary>The types the program's code names with typeof, and the function that names each.</summary>
+    public readonly List<(ITypeSymbol type, WasmFunction? fn)> TypeOfTargets = [];
+    int _interpreterTypes;
+    bool _interpreterLinked;
+
+    /// <summary>With the IL interpreter linked in (a DynamicMethod runs), the types the program names can be boxed
+    /// and made arrays of at run time (box, newarr, a local's default value), as the IL the program emits asks.</summary>
+    public bool ExpandInterpreterTypes()
+    {
+        if (!_interpreterLinked)
+        {
+            if (!AllMethods.Any(m => m.Sym.ContainingType is { Name: "IlInterpreter" } ct && ct.ContainingNamespace?.ToDisplayString() == "System.Reflection.Emit")) return false;
+            _interpreterLinked = true;
+        }
+        bool any = false;
+        var saved = CurrentFn;
+        for (; _interpreterTypes < TypeOfTargets.Count; _interpreterTypes++)
+        {
+            var (t, fn) = TypeOfTargets[_interpreterTypes];
+            if (t is ITypeParameterSymbol || t.IsStatic || t.IsRefLikeType || t.SpecialType == SpecialType.System_Void || t is IPointerTypeSymbol or IFunctionPointerTypeSymbol
+                || t is INamedTypeSymbol { IsUnboundGenericType: true } || HasTypeParameter(t)) continue;
+            CurrentFn = fn;
+            if (t.IsValueType) MarkConstructed(Types.Canonical(t));
+            MarkConstructed(Types.Canonical(Main.CreateArrayTypeSymbol(t)));
+            any = true;
+        }
+        CurrentFn = saved;
+        return any;
+    }
+
+    static bool HasTypeParameter(ITypeSymbol t) => t switch
+    {
+        ITypeParameterSymbol => true,
+        IArrayTypeSymbol a => HasTypeParameter(a.ElementType),
+        INamedTypeSymbol n => n.TypeArguments.Any(HasTypeParameter) || n.ContainingType is { } o && HasTypeParameter(o),
+        _ => false,
+    };
     /// <summary>For each constructed type: the functions that construct it; null in the set: made outside any.</summary>
     public readonly Dictionary<int, HashSet<WasmFunction?>> ConstructedBy = [];
     /// <summary>Field-wise ValueType.Equals per struct (ValueEquality.cs).</summary>

@@ -358,7 +358,7 @@ sealed partial class RuntimeGen
     /// <summary>Generates destroy functions for newly constructed types and resolves virtual calls; true if new work appeared.</summary>
     public bool Expand()
     {
-        bool any = D.ExpandObjectArrayThunks() | D.ExpandAttributeArrays() | D.ExpandDynamicInvokeThunks();
+        bool any = D.ExpandObjectArrayThunks() | D.ExpandAttributeArrays() | D.ExpandDynamicInvokeThunks() | D.ExpandInterpreterTypes();
         foreach (var id in D.Constructed.ToList())
         {
             if (_destroyFns.ContainsKey(id)) continue;
@@ -768,6 +768,7 @@ sealed partial class RuntimeGen
         D.EmitDelegateMethod();
         D.EmitSharing(D.UsesThreads, Enumerable.Range(0, D.TypeById.Count).Where(id => D.Constructed.Contains(id)).Select(id => (id, D.TypeById[id])));
         EmitDestroyDispatch();
+        EmitRetainContents();
         EmitStubs();
         EmitTypeTests();
         D.Rt.EmitEnumInfo();
@@ -819,6 +820,48 @@ sealed partial class RuntimeGen
         }
         e.End();
         e.Op(Op.Unreachable);
+    }
+
+    /// <summary>rt.retain_contents(obj): per constructed type with counted contents, a count for each reference.</summary>
+    void EmitRetainContents()
+    {
+        if (D.Rt.RetainContentsIfMade is not { } f) return;
+        var e = new Emitter(f);
+        var rt = D.Rt;
+        int tid = e.AddLocal(ValType.I32);
+        e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
+        foreach (var id in D.Constructed)
+        {
+            if (D.DisplayById.ContainsKey(id) || D.SyntheticById.ContainsKey(id) || id <= 1 || id >= D.TypeById.Count) continue;
+            var type = D.TypeById[id];
+            var body = new Emitter(new WasmFunction("tmp", f.Type));
+            if (type is IArrayTypeSymbol at)
+            {
+                var et = D.Types.Canonical(at.ElementType);
+                if (!D.Types.NeedsRc(et)) continue;
+                body.Get(0); body.I32(Types.ArrayDataOffset(at.Rank)); body.Op(Op.I32Add); body.Get(0); body.Load(Op.I32Load, 12); body.Call(rt.RetainRange(et));
+            }
+            else if (type.IsValueType)
+            {
+                if (!Types.IsStruct(type) || !D.Types.LayoutOf(type).HasRefs) continue;
+                body.Get(0); body.I32(FunctionCompilerHelpers.BoxDataOffset(D.Types, type)); body.Op(Op.I32Add); body.Call(rt.RetainStruct(type));
+            }
+            else
+            {
+                bool any = false;
+                foreach (var fs in D.Types.LayoutOf(type).Fields)
+                {
+                    if (Types.IsRef(fs.Type)) { body.Get(0); body.Load(Op.I32Load, fs.Offset); body.Call(rt.Retain); body.Op(Op.Drop); any = true; }
+                    else if (Types.IsStruct(fs.Type) && D.Types.LayoutOf(fs.Type).HasRefs) { body.Get(0); body.I32(fs.Offset); body.Op(Op.I32Add); body.Call(rt.RetainStruct(fs.Type)); any = true; }
+                }
+                if (!any) continue;
+            }
+            e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
+            e.If();
+            e.Fn.Body.AddRange(body.Fn.Body);
+            e.Op(Op.Return);
+            e.End();
+        }
     }
 
     void EmitStubs()

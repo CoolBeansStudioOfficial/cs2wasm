@@ -169,6 +169,10 @@ internal sealed partial class RuntimeFns
         }
     }
 
+    WasmFunction? _retainContents;
+    /// <summary>(obj): retains the references the object holds, by its type id (MemberwiseClone; made when used).</summary>
+    public WasmFunction RetainContents => _retainContents ??= M.AddFunction("rt.retain_contents", FT([I], []));
+    public WasmFunction? RetainContentsIfMade => _retainContents;
     WasmFunction? _onDestroy;
     public WasmFunction OnDestroy => _onDestroy ??= M.AddFunction("rt.on_destroy", FT([I], [I]));
     public WasmFunction? OnDestroyIfMade => _onDestroy;

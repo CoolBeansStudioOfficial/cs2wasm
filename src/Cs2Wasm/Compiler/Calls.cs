@@ -665,6 +665,7 @@ sealed partial class FunctionCompiler
             case "Rt.Take": return Own.Owned;
             case "Rt.Borrow": return Own.Unstable;
             case "Rt.TypeId": E.Load(Op.I32Load, 4); return Own.None;
+            case "Rt.RetainContents": E.Call(D.Rt.RetainContents); return Own.None;
             case "Rt.TypeIdOf": E.Tid(D.TypeId(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Rt.MarkConstructed": E.Tid(D.MarkConstructed(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Rt.HeapBase": E.I32Addr(new LateAddr(() => D.HeapBase)); return Own.None;

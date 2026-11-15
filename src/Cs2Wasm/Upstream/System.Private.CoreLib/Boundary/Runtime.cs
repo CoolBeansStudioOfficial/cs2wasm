@@ -158,6 +158,12 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int DelegateArity(System.Delegate d);
         /// <summary>The reflection record entry of the method a method-group delegate's function calls; 0 if none.</summary>
         [Intrinsic] public static extern int DelegateMethodEntry(int fn);
+        /// <summary>Takes a count of every reference an object holds (its fields, its box's value, its elements): after
+        /// its bytes were copied into a new object (MemberwiseClone).</summary>
+        [Intrinsic] public static extern void RetainContents(object o);
+        /// <summary>The module anonymously hosted DynamicMethods report (manifest substitution: they run on the IL
+        /// interpreter, without a dynamic assembly).</summary>
+        public static System.Reflection.Module DynamicMethodsModule() => System.Reflection.RuntimeAssembly.OfIndex(0).ManifestModule;
         [Intrinsic] public static extern int TlsBase();
         [Intrinsic] public static extern int TlsSize();
         [Intrinsic] public static extern void RuntimeLock();
