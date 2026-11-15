@@ -60,6 +60,7 @@ sealed partial class FunctionCompiler
     Own EmitCallOps(IMethodSymbol m, IOperation? instance, IReadOnlyList<IOperation> args, bool isVirtual, SyntaxNode syntax, bool alreadyResolved)
     {
         if (!alreadyResolved) m = SubstMethod(m);
+        if (m.IsStatic && TryLowerStringFormat(m, args) is { } lowered) return lowered;
         int save = E.CurrentPos;
         Action? pushThis = null;
         ITypeSymbol? recvType = null;
@@ -118,7 +119,7 @@ sealed partial class FunctionCompiler
             E.CurrentPos = save;
             return spilled;
         }
-        var r = CallWith(m, virt, pushThis, () => PushArgs(m, args), null, syntax);
+        var r = CallWith(m, virt, pushThis, () => PushArgs(m, args), null, syntax, ConstArgsFor(m, args));
         E.CurrentPos = save;
         return r;
     }
@@ -308,7 +309,7 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Calls a resolved method. Pushes the struct-return destination, then receiver, then arguments.</summary>
-    Own CallWith(IMethodSymbol m, bool virt, Action? pushThis, Action pushArgs, Action? intoAddr, SyntaxNode? syntax)
+    Own CallWith(IMethodSymbol m, bool virt, Action? pushThis, Action pushArgs, Action? intoAddr, SyntaxNode? syntax, IReadOnlyDictionary<int, ConstArg>? consts = null)
     {
         bool sret = ReturnsStruct(m);
         int sretOff = -1;
@@ -323,7 +324,7 @@ sealed partial class FunctionCompiler
         pushThis?.Invoke();
         pushArgs();
         _wantRefReturnAddress = wantAddress;
-        return EmitCallInstr(m, virt && IsVirtualDispatch(m), syntax, sretOff);
+        return EmitCallInstr(m, virt && IsVirtualDispatch(m), syntax, sretOff, consts);
     }
 
     /// <summary>Arguments are already on the stack (not for struct-returning methods unless the destination was pushed first).</summary>
@@ -333,7 +334,7 @@ sealed partial class FunctionCompiler
         return EmitCallInstr(m, virt && IsVirtualDispatch(m), null, -1);
     }
 
-    Own EmitCallInstr(IMethodSymbol m, bool virt, SyntaxNode? syntax, int sretOff)
+    Own EmitCallInstr(IMethodSymbol m, bool virt, SyntaxNode? syntax, int sretOff, IReadOnlyDictionary<int, ConstArg>? consts = null)
     {
         if (IsStaticInterfaceMember(m) && TryStaticInterfaceMember(ref m, out var sim)) return sim;
         var rt = T.Canonical(m.ReturnType);
@@ -347,10 +348,11 @@ sealed partial class FunctionCompiler
             E.Load(Types.LoadOp(rt));
             return Types.IsRef(rt) ? Own.Unstable : Own.None;
         }
-        if (virt) E.Call(D.Stub(m));
+        if (_clone != null) consts = null;
+        if (virt) E.Call(D.Stub(m, consts));
         else
         {
-            var mi = D.Method(m);
+            var mi = D.Method(m, consts);
             if (_clone != null)
             {
                 // a clone (section 7.1): suppressed imports do nothing; other bodies are cloned too

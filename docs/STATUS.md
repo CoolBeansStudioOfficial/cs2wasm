@@ -289,7 +289,10 @@ exported beside the stack pointer.
   every program carry the arena runtime (exception chains, `object[]` holding `object`, StringBuilder chunks, and
   encoders with their fallback buffers, which do form cycles); the program's own types pay only if they can form
   cycles (`CompileResult.CycleCapableTypes` lists the cycle-capable types). Not yet: module size
-  (0.93 MB for hello world, against 13 KB with cs2wasm's own library) and build time (about
+  (0.92 MB for hello world, against 13 KB with cs2wasm's own library; constant-argument specialization of
+  `[AggressiveInlining]` methods and short forwarders, and `string.Format` with a constant format lowered to
+  concatenation, Specialization.cs and FormatLowering.cs, take about 1%: the general formatting paths stay reachable
+  through interface calls on boxed numbers, item formats such as `{0:X4}` in resource strings, and enum formatting) and build time (about
   10 s against 2 s), `Delegate.CreateDelegate`/`DynamicInvoke`,
   reflection on generic instantiations, `Array.CreateInstance` of array types the program never makes.
   Until the suite passes on it, the default is still **cs2wasm's own library** (a deviation from the spec). It is a

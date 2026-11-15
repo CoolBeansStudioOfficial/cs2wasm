@@ -377,7 +377,7 @@ sealed partial class RuntimeGen
                 var impl = D.Implementation(t, stub.Slot);
                 if (impl == null) continue;
                 bool boxed = t.IsValueType && Types.Key(D.Types.Canonical(impl.ContainingType)) == Types.Key(D.Types.Canonical(t));
-                var mi = D.Method(impl);
+                var mi = D.Method(impl, stub.Consts);
                 stub.Cases[Types.Key(t) + "#" + id] = (t, mi, boxed);
                 any = true;
             }

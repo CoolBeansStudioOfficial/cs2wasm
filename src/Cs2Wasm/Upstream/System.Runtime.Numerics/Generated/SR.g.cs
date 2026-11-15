@@ -5,24 +5,24 @@ namespace System
     {
         private static global::System.Resources.ResourceManager s_resourceManager;
         internal static global::System.Resources.ResourceManager ResourceManager => s_resourceManager ?? (s_resourceManager = new global::System.Resources.ResourceManager(typeof(SR)));
-        internal static string @Arg_HexStyleNotSupported => @"The number style AllowHexSpecifier is not supported on floating point data types.";
-        internal static string @Argument_BadFormatSpecifier => @"Format specifier was invalid.";
-        internal static string @Argument_InvalidNumberStyles => @"An undefined NumberStyles value is being used.";
-        internal static string @Argument_InvalidHexBinaryStyle => @"With the AllowHexSpecifier or AllowBinarySpecifier bit set in the enum bit field, the only other valid bits that can be combined into the enum value must be AllowLeadingWhite and AllowTrailingWhite.";
-        internal static string @Argument_MinMaxValue => @"'{0}' cannot be greater than {1}.";
-        internal static string @Argument_MustBeBigInt => @"The parameter must be a BigInteger.";
-        internal static string @ArgumentOutOfRange_NeedNonNegNum => @"Non-negative number required.";
-        internal static string @Format_TooLarge => @"The value is too large to be represented by this format specifier.";
-        internal static string @Overflow_BigIntInfinity => @"BigInteger cannot represent infinity.";
-        internal static string @Overflow_NotANumber => @"The value is not a number.";
-        internal static string @Overflow_ParseBigInteger => @"The value could not be parsed.";
-        internal static string @Overflow_Int32 => @"Value was either too large or too small for an Int32.";
-        internal static string @Overflow_Int64 => @"Value was either too large or too small for an Int64.";
-        internal static string @Overflow_Int128 => @"Value was either too large or too small for an Int128.";
-        internal static string @Overflow_UInt32 => @"Value was either too large or too small for a UInt32.";
-        internal static string @Overflow_UInt64 => @"Value was either too large or too small for a UInt64.";
-        internal static string @Overflow_UInt128 => @"Value was either too large or too small for a UInt128.";
-        internal static string @Overflow_Decimal => @"Value was either too large or too small for a Decimal.";
-        internal static string @Overflow_Negative_Unsigned => @"Negative values do not have an unsigned representation.";
+        internal const string @Arg_HexStyleNotSupported = @"The number style AllowHexSpecifier is not supported on floating point data types.";
+        internal const string @Argument_BadFormatSpecifier = @"Format specifier was invalid.";
+        internal const string @Argument_InvalidNumberStyles = @"An undefined NumberStyles value is being used.";
+        internal const string @Argument_InvalidHexBinaryStyle = @"With the AllowHexSpecifier or AllowBinarySpecifier bit set in the enum bit field, the only other valid bits that can be combined into the enum value must be AllowLeadingWhite and AllowTrailingWhite.";
+        internal const string @Argument_MinMaxValue = @"'{0}' cannot be greater than {1}.";
+        internal const string @Argument_MustBeBigInt = @"The parameter must be a BigInteger.";
+        internal const string @ArgumentOutOfRange_NeedNonNegNum = @"Non-negative number required.";
+        internal const string @Format_TooLarge = @"The value is too large to be represented by this format specifier.";
+        internal const string @Overflow_BigIntInfinity = @"BigInteger cannot represent infinity.";
+        internal const string @Overflow_NotANumber = @"The value is not a number.";
+        internal const string @Overflow_ParseBigInteger = @"The value could not be parsed.";
+        internal const string @Overflow_Int32 = @"Value was either too large or too small for an Int32.";
+        internal const string @Overflow_Int64 = @"Value was either too large or too small for an Int64.";
+        internal const string @Overflow_Int128 = @"Value was either too large or too small for an Int128.";
+        internal const string @Overflow_UInt32 = @"Value was either too large or too small for a UInt32.";
+        internal const string @Overflow_UInt64 = @"Value was either too large or too small for a UInt64.";
+        internal const string @Overflow_UInt128 = @"Value was either too large or too small for a UInt128.";
+        internal const string @Overflow_Decimal = @"Value was either too large or too small for a Decimal.";
+        internal const string @Overflow_Negative_Unsigned = @"Negative values do not have an unsigned representation.";
     }
 }

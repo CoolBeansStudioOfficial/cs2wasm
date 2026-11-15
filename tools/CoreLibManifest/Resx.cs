@@ -23,7 +23,8 @@ static class Resx
             var name = (string?)d.Attribute("name");
             var value = (string?)d.Element("value") ?? "";
             if (name == null || d.Attribute("type") != null) continue;
-            sb.AppendLine($"        internal static string @{name} => @\"{value.Replace("\"", "\"\"")}\";");
+            // constants, so a format string's holes are known where it is used (the compiler lowers string.Format)
+            sb.AppendLine($"        internal const string @{name} = @\"{value.Replace("\"", "\"\"")}\";");
             n++;
         }
         sb.AppendLine("    }");

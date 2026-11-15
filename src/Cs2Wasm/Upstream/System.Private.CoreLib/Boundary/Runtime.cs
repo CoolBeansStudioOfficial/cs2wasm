@@ -627,6 +627,9 @@ namespace Cs2Wasm.Runtime
             e._stackTraceString = keep <= 0 ? null : pos < 0 ? full : full.Substring(0, pos - 1);
         }
 
+        /// <summary>An item of a string.Format the compiler lowered (FormatLowering.cs): as string.Format formats it without a provider.</summary>
+        public static string FormatItem(object? arg) => arg is IFormattable f ? f.ToString(null, null) : arg?.ToString() ?? "";
+
         /// <summary>Exception.GetStackTrace (manifest substitution): the trace captured when it was thrown.</summary>
         public static string StackTraceOf(Exception e) => e._stackTraceString ?? e._fullTrace ?? "";
 

@@ -5,11 +5,11 @@ namespace System
     {
         private static global::System.Resources.ResourceManager s_resourceManager;
         internal static global::System.Resources.ResourceManager ResourceManager => s_resourceManager ?? (s_resourceManager = new global::System.Resources.ResourceManager(typeof(SR)));
-        internal static string @Arg_HTCapacityOverflow => @"Hashtable's capacity overflowed and went negative. Check load factor, capacity and the current size of the table.";
-        internal static string @EmptyEnumerable => @"Enumeration yielded no results";
-        internal static string @MoreThanOneElement => @"Sequence contains more than one element";
-        internal static string @MoreThanOneMatch => @"Sequence contains more than one matching element";
-        internal static string @NoElements => @"Sequence contains no elements";
-        internal static string @NoMatch => @"Sequence contains no matching element";
+        internal const string @Arg_HTCapacityOverflow = @"Hashtable's capacity overflowed and went negative. Check load factor, capacity and the current size of the table.";
+        internal const string @EmptyEnumerable = @"Enumeration yielded no results";
+        internal const string @MoreThanOneElement = @"Sequence contains more than one element";
+        internal const string @MoreThanOneMatch = @"Sequence contains more than one matching element";
+        internal const string @NoElements = @"Sequence contains no elements";
+        internal const string @NoMatch = @"Sequence contains no matching element";
     }
 }

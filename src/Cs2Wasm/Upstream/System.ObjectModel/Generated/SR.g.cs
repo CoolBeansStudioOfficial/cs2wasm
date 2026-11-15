@@ -5,19 +5,19 @@ namespace System
     {
         private static global::System.Resources.ResourceManager s_resourceManager;
         internal static global::System.Resources.ResourceManager ResourceManager => s_resourceManager ?? (s_resourceManager = new global::System.Resources.ResourceManager(typeof(SR)));
-        internal static string @ArgumentOutOfRange_InvalidThreshold => @"The specified threshold for creating dictionary is out of range.";
-        internal static string @Argument_ItemNotExist => @"The specified item does not exist in this KeyedCollection.";
-        internal static string @Argument_AddingDuplicate => @"An item with the same key has already been added. Key: {0}";
-        internal static string @Arg_NonZeroLowerBound => @"The lower bound of target array must be zero.";
-        internal static string @Arg_ArrayPlusOffTooSmall => @"Destination array is not long enough to copy all the items in the collection. Check array index and length.";
-        internal static string @NotSupported_ReadOnlyCollection => @"Collection is read-only.";
-        internal static string @ObservableCollectionReentrancyNotAllowed => @"Cannot change ObservableCollection during a CollectionChanged event.";
-        internal static string @WrongActionForCtor => @"Constructor supports only the '{0}' action.";
-        internal static string @MustBeResetAddOrRemoveActionForCtor => @"Constructor only supports either a Reset, Add, or Remove action.";
-        internal static string @ResetActionRequiresNullItem => @"Reset action must be initialized with no changed items.";
-        internal static string @ResetActionRequiresIndexMinus1 => @"Reset action must be initialized with index -1.";
-        internal static string @Arg_RankMultiDimNotSupported => @"Only single dimensional arrays are supported for the requested action.";
-        internal static string @Argument_IncompatibleArrayType => @"Target array type is not compatible with the type of items in the collection.";
-        internal static string @Arg_KeyNotFoundWithKey => @"The given key '{0}' was not present in the dictionary.";
+        internal const string @ArgumentOutOfRange_InvalidThreshold = @"The specified threshold for creating dictionary is out of range.";
+        internal const string @Argument_ItemNotExist = @"The specified item does not exist in this KeyedCollection.";
+        internal const string @Argument_AddingDuplicate = @"An item with the same key has already been added. Key: {0}";
+        internal const string @Arg_NonZeroLowerBound = @"The lower bound of target array must be zero.";
+        internal const string @Arg_ArrayPlusOffTooSmall = @"Destination array is not long enough to copy all the items in the collection. Check array index and length.";
+        internal const string @NotSupported_ReadOnlyCollection = @"Collection is read-only.";
+        internal const string @ObservableCollectionReentrancyNotAllowed = @"Cannot change ObservableCollection during a CollectionChanged event.";
+        internal const string @WrongActionForCtor = @"Constructor supports only the '{0}' action.";
+        internal const string @MustBeResetAddOrRemoveActionForCtor = @"Constructor only supports either a Reset, Add, or Remove action.";
+        internal const string @ResetActionRequiresNullItem = @"Reset action must be initialized with no changed items.";
+        internal const string @ResetActionRequiresIndexMinus1 = @"Reset action must be initialized with index -1.";
+        internal const string @Arg_RankMultiDimNotSupported = @"Only single dimensional arrays are supported for the requested action.";
+        internal const string @Argument_IncompatibleArrayType = @"Target array type is not compatible with the type of items in the collection.";
+        internal const string @Arg_KeyNotFoundWithKey = @"The given key '{0}' was not present in the dictionary.";
     }
 }

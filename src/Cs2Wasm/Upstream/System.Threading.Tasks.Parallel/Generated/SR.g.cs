@@ -5,13 +5,13 @@ namespace System
     {
         private static global::System.Resources.ResourceManager s_resourceManager;
         internal static global::System.Resources.ResourceManager ResourceManager => s_resourceManager ?? (s_resourceManager = new global::System.Resources.ResourceManager(typeof(SR)));
-        internal static string @Parallel_Invoke_ActionNull => @"One of the actions was null.";
-        internal static string @Parallel_ForEach_OrderedPartitionerKeysNotNormalized => @"This method requires the use of an OrderedPartitioner with the KeysNormalized property set to true.";
-        internal static string @Parallel_ForEach_PartitionerNotDynamic => @"The Partitioner must support dynamic partitioning.";
-        internal static string @Parallel_ForEach_PartitionerReturnedNull => @"The Partitioner returned a null partitioner source.";
-        internal static string @Parallel_ForEach_NullEnumerator => @"The source returned a null enumerator.";
-        internal static string @ParallelState_Break_InvalidOperationException_BreakAfterStop => @"Break was called after Stop was called.";
-        internal static string @ParallelState_Stop_InvalidOperationException_StopAfterBreak => @"Stop was called after Break was called.";
-        internal static string @ParallelState_NotSupportedException_UnsupportedMethod => @"This method is not supported.";
+        internal const string @Parallel_Invoke_ActionNull = @"One of the actions was null.";
+        internal const string @Parallel_ForEach_OrderedPartitionerKeysNotNormalized = @"This method requires the use of an OrderedPartitioner with the KeysNormalized property set to true.";
+        internal const string @Parallel_ForEach_PartitionerNotDynamic = @"The Partitioner must support dynamic partitioning.";
+        internal const string @Parallel_ForEach_PartitionerReturnedNull = @"The Partitioner returned a null partitioner source.";
+        internal const string @Parallel_ForEach_NullEnumerator = @"The source returned a null enumerator.";
+        internal const string @ParallelState_Break_InvalidOperationException_BreakAfterStop = @"Break was called after Stop was called.";
+        internal const string @ParallelState_Stop_InvalidOperationException_StopAfterBreak = @"Stop was called after Break was called.";
+        internal const string @ParallelState_NotSupportedException_UnsupportedMethod = @"This method is not supported.";
     }
 }

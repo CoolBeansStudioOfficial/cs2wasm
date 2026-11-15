@@ -5,17 +5,17 @@ namespace System
     {
         private static global::System.Resources.ResourceManager s_resourceManager;
         internal static global::System.Resources.ResourceManager ResourceManager => s_resourceManager ?? (s_resourceManager = new global::System.Resources.ResourceManager(typeof(SR)));
-        internal static string @NotSupported_CannotCallEqualsOnSpan => @"Equals() on Span and ReadOnlySpan is not supported. Use operator== instead.";
-        internal static string @NotSupported_CannotCallGetHashCodeOnSpan => @"GetHashCode() on Span and ReadOnlySpan is not supported.";
-        internal static string @Argument_TypeContainsReferences => @"The type '{0}' is not supported because it contains references.";
-        internal static string @Argument_DestinationTooShort => @"Destination is too short.";
-        internal static string @OutstandingReferences => @"Release all references before disposing this instance.";
-        internal static string @Argument_BadFormatSpecifier => @"Format specifier was invalid.";
-        internal static string @Argument_OverlapAlignmentMismatch => @"Overlapping spans have mismatching alignment.";
-        internal static string @EndPositionNotReached => @"End position was not reached during enumeration.";
-        internal static string @BufferWriterAdvancedTooFar => @"Cannot advance past the end of the buffer, which has a size of {0}.";
-        internal static string @BufferMaximumSizeExceeded => @"Cannot allocate a buffer of size {0}.";
-        internal static string @NotSupported_UnseekableStream => @"Stream does not support seeking.";
-        internal static string @NotSupported_UnwritableStream => @"Stream does not support writing.";
+        internal const string @NotSupported_CannotCallEqualsOnSpan = @"Equals() on Span and ReadOnlySpan is not supported. Use operator== instead.";
+        internal const string @NotSupported_CannotCallGetHashCodeOnSpan = @"GetHashCode() on Span and ReadOnlySpan is not supported.";
+        internal const string @Argument_TypeContainsReferences = @"The type '{0}' is not supported because it contains references.";
+        internal const string @Argument_DestinationTooShort = @"Destination is too short.";
+        internal const string @OutstandingReferences = @"Release all references before disposing this instance.";
+        internal const string @Argument_BadFormatSpecifier = @"Format specifier was invalid.";
+        internal const string @Argument_OverlapAlignmentMismatch = @"Overlapping spans have mismatching alignment.";
+        internal const string @EndPositionNotReached = @"End position was not reached during enumeration.";
+        internal const string @BufferWriterAdvancedTooFar = @"Cannot advance past the end of the buffer, which has a size of {0}.";
+        internal const string @BufferMaximumSizeExceeded = @"Cannot allocate a buffer of size {0}.";
+        internal const string @NotSupported_UnseekableStream = @"Stream does not support seeking.";
+        internal const string @NotSupported_UnwritableStream = @"Stream does not support writing.";
     }
 }

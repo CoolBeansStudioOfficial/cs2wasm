@@ -16,6 +16,7 @@ sealed partial class FunctionCompiler
     /// <summary>The value of a condition when it is known at compile time and evaluating it has no effect.</summary>
     bool? Fold(IOperation op)
     {
+        if (Inst?.Consts != null && FoldBound(op) is bool fb) return fb;
         switch (op)
         {
             case { ConstantValue: { HasValue: true, Value: bool b } }: return b;
@@ -134,6 +135,7 @@ sealed partial class FunctionCompiler
     /// <summary>An integer known at compile time: a constant, or a size an instantiation fixes.</summary>
     long? FoldInt(IOperation op)
     {
+        if (Inst?.Consts != null && FoldIntBound(op) is long fi) return fi;
         switch (op)
         {
             case { ConstantValue: { HasValue: true, Value: var v } } when v is int or long or short or byte or sbyte or ushort or uint or char:

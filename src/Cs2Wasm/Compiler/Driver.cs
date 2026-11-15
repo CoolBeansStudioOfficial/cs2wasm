@@ -21,6 +21,8 @@ internal sealed class MethodInst
     public Location? FirstUse;
     /// <summary>The method whose compilation first asked for this one (for CS2WASM_WHY's reachability chains).</summary>
     public MethodInst? ReachedFrom;
+    /// <summary>A copy specialized for constant arguments (Specialization.cs): parameter ordinal to its constant.</summary>
+    public IReadOnlyDictionary<int, ConstArg>? Consts;
     /// <summary>Set for lambdas and local functions: compiles the body with its closure information.</summary>
     public Action? Compile;
 }
@@ -44,6 +46,8 @@ sealed class VirtualStub
     public required WasmFunction Fn;
     public bool IsInterface;
     public Dictionary<string, (ITypeSymbol type, MethodInst? impl, bool boxed)> Cases = [];
+    /// <summary>Constant arguments every call through this stub passes (each implementation's specialized copy is called).</summary>
+    public IReadOnlyDictionary<int, ConstArg>? Consts;
 }
 
 internal sealed partial class Driver
@@ -264,15 +268,18 @@ internal sealed partial class Driver
 
     public readonly HashSet<string> ReportedCapabilities = [];
 
-    public MethodInst Method(IMethodSymbol m)
+    /// <summary>The symbol a call to m compiles (canonical; a partial method's implementing part).</summary>
+    internal IMethodSymbol MethodTarget(IMethodSymbol m)
     {
         m = CanonicalMethod(m);
         // a partial method is compiled from its implementing part (the boundary's bodies of LibraryImport partials)
         if (m.PartialImplementationPart is { } pi && !m.IsGenericMethod && m.ContainingType is { IsGenericType: false }) m = pi;
-        if (m.IsGenericMethod && m.TypeArguments.Any(a => a is not INamedTypeSymbol and not IArrayTypeSymbol and not IPointerTypeSymbol))
-        {
-            // leave as-is; callers substitute first
-        }
+        return m;
+    }
+
+    public MethodInst Method(IMethodSymbol m)
+    {
+        m = MethodTarget(m);
         var key = Types.MethodKey(m);
         if (_methods.TryGetValue(key, out var mi)) return mi;
         var impl = Classify(m);
@@ -642,7 +649,7 @@ internal sealed partial class Driver
         Arenas.Resolve();
         ReportEngineThreadBlocking(rt.UserExports);
         rt.Finish();
-        if (Environment.GetEnvironmentVariable("CS2WASM_STATS") == "1") PrintStats();
+        if (Environment.GetEnvironmentVariable("CS2WASM_STATS") is "1" or "2") PrintStats();
     }
 
     /// <summary>CS2WASM_STATS=1: what the program reaches, by namespace and by type (instructions), largest first.</summary>
@@ -652,6 +659,10 @@ internal sealed partial class Driver
         string Ns(MethodInst m) => m.Sym.ContainingType?.ContainingNamespace?.ToDisplayString() ?? "?";
         string Ty(MethodInst m) => m.Sym.ContainingType is { } t ? Types.FullName(t.OriginalDefinition) : "?";
         Console.Error.WriteLine($"{compiled.Count} methods, {compiled.Sum(m => m.Fn.Body.Count)} instructions");
+        var spec = compiled.Where(m => m.Consts != null).ToList();
+        Console.Error.WriteLine($"  {spec.Count} constant-argument copies, {spec.Sum(m => m.Fn.Body.Count)} instructions");
+        if (Environment.GetEnvironmentVariable("CS2WASM_STATS") == "2")
+            foreach (var m in spec.OrderByDescending(m => m.Fn.Body.Count).Take(40)) Console.Error.WriteLine($"    {m.Fn.Body.Count,6} {m.Fn.Name}");
         foreach (var g in compiled.GroupBy(Ns).OrderByDescending(g => g.Sum(m => m.Fn.Body.Count)).Take(25))
             Console.Error.WriteLine($"  {g.Sum(m => m.Fn.Body.Count),8} {g.Count(),5}  {g.Key}");
         // CS2WASM_WHY_TYPE=Name: how the program reaches that type's first method
