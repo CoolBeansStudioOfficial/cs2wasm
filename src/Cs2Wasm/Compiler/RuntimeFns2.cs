@@ -97,6 +97,7 @@ internal sealed partial class RuntimeFns
     WasmFunction? _ecSave, _ecRestore;
     /// <summary>Around an async method's first MoveNext: the caller's AsyncLocal context is put back afterwards.</summary>
     public WasmFunction EcSave => _ecSave ??= M.AddFunction("rt.ec_save", FT([], [I]));
+    public WasmFunction? EcSaveIfMade => _ecSave;
     public WasmFunction EcRestore => _ecRestore ??= M.AddFunction("rt.ec_restore", FT([I], []));
     public void EmitEcSupport(MethodInst? save, MethodInst? restore)
     {

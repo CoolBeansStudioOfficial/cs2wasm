@@ -591,7 +591,12 @@ sealed partial class RuntimeGen
         D.AnalyzeReflection();
         D.RequestAttributeFactories();
         // AsyncLocal in the program: async kickoffs keep the caller's context
-        // (the hand-written library's helpers; upstream's ExecutionContext flows itself)
+        // (upstream: the boundary's AsyncSupport, as AsyncMethodBuilderCore.Start does it)
+        if (Library.UseUpstream && D.Rt.EcSaveIfMade != null && D.AllMethods.Any(m => m.Sym.MethodKind == MethodKind.Constructor && m.Sym.ContainingType?.Name == "AsyncLocal" && m.Compiled))
+        {
+            D.LibMethod("Cs2Wasm.Runtime.AsyncSupport", "SaveContext", 0);
+            D.LibMethod("Cs2Wasm.Runtime.AsyncSupport", "RestoreContext", 1);
+        }
         if (!Library.UseUpstream && D.AllMethods.Any(m => m.Sym.MethodKind == MethodKind.Constructor && m.Sym.ContainingType?.Name == "AsyncLocal" && m.Compiled))
         {
             D.LibMethod("System.Threading.ExecutionContext", "SaveContext", 0);
@@ -661,8 +666,9 @@ sealed partial class RuntimeGen
         D.EmitReflectionTables();
         EmitOnDestroy();
         D.Rt.EmitCctorSupport(D.UsesThreads);
-        D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == "ExecutionContext" && m.Compiled),
-                           D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == "ExecutionContext" && m.Compiled));
+        var ecOwner = Library.UseUpstream ? "AsyncSupport" : "ExecutionContext";
+        D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled),
+                           D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled));
         D.EmitSharing(D.UsesThreads, Enumerable.Range(0, D.TypeById.Count).Where(id => D.Constructed.Contains(id)).Select(id => (id, D.TypeById[id])));
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
         EmitDestroyDispatch();

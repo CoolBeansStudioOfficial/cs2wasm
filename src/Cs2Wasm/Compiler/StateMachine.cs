@@ -1117,7 +1117,8 @@ sealed partial class FunctionCompiler
 
     IMethodSymbol? FindOnCompleted(ITypeSymbol awT)
     {
-        foreach (var name in new[] { "UnsafeOnCompleted", "OnCompleted" })
+        // (upstream: OnCompleted flows the ExecutionContext to the continuation, as the async builder does)
+        foreach (var name in Library.UseUpstream ? new[] { "OnCompleted", "UnsafeOnCompleted" } : new[] { "UnsafeOnCompleted", "OnCompleted" })
             for (var t = awT as INamedTypeSymbol; t != null; t = t.BaseType is { } bt ? (INamedTypeSymbol)T.Canonical(bt) : null)
             {
                 var m = t.GetMembers(name).OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 1 && !x.IsStatic && x.DeclaredAccessibility == Accessibility.Public);
