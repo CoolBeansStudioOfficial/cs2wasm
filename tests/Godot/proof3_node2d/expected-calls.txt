@@ -1,0 +1,31 @@
+Node2D.set_position((10, 20))
+Node2D.set_rotation_degrees(15)
+Node2D.set_scale((2, 2))
+Node2D.get_position() -> (10, 20)
+print ready at (10, 20)
+Node2D.get_position() -> (10, 20)
+Node2D.set_position((30, 20))
+Node2D.get_rotation() -> 0.2617993950843811
+Node2D.set_rotation(0.3617993891239166)
+Node2D.get_position() -> (30, 20)
+Node2D.set_position((50, 20))
+Node2D.get_rotation() -> 0.3617993891239166
+Node2D.set_rotation(0.46179938316345215)
+Node2D.get_position() -> (50, 20)
+Node2D.set_position((70, 20))
+Node2D.get_rotation() -> 0.46179938316345215
+Node2D.set_rotation(0.5617994070053101)
+Node2D.get_position() -> (70, 20)
+Node2D.set_position((90, 20))
+Node2D.get_rotation() -> 0.5617994070053101
+Node2D.set_rotation(0.661799430847168)
+Node2D.get_position() -> (90, 20)
+Node2D.set_position((110, 20))
+Node2D.get_rotation() -> 0.661799430847168
+Node2D.set_rotation(0.7617994546890259)
+Node2D.get_position() -> (110, 20)
+Node2D.get_rotation() -> 0.7617994546890259
+print done (110, 20) 0.76179945
+Node.get_tree() -> <SceneTree>
+SceneTree.quit(0)
+OS.is_stdout_verbose() -> false

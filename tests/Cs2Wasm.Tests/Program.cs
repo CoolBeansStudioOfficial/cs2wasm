@@ -27,6 +27,8 @@ if (Directory.Exists(godotDir))
     foreach (var d in Directory.GetDirectories(godotDir).Order(StringComparer.Ordinal))
     {
         var name = "godot_" + Path.GetFileName(d);
+        // (a Godot project whose engine calls are compared with stock Godot's: expected-calls.txt, its own check)
+        if (File.Exists(Path.Combine(d, "expected-calls.txt"))) continue;
         var list = Path.Combine(d, "godot-sources.txt");
         var srcs = Directory.GetFiles(d, "*.cs").Order(StringComparer.Ordinal).Select(f => (f, File.ReadAllText(f))).ToList();
         if (File.Exists(list))
