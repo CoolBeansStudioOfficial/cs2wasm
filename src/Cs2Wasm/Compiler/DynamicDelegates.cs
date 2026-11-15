@@ -36,6 +36,24 @@ sealed partial class FunctionCompiler
         }
         var invoke = D.CanonicalMethod(handlerT.DelegateInvokeMethod!);
         var r = CallWith(invoke, false, () => E.Get(_thisLocal), () => E.Get(arr), null, null);
+        // by-ref parameters: the values the handler left in the array are written back (as NativeAOT's thunks do)
+        if (M.Parameters.Any(p => p.RefKind is RefKind.Ref or RefKind.Out))
+        {
+            int res = E.AddLocal(ValType.I32); E.Set(res);
+            for (int i = 0; i < n; i++)
+            {
+                var p = M.Parameters[i];
+                if (p.RefKind is not (RefKind.Ref or RefKind.Out)) continue;
+                var v = _vars[p];
+                BeginTemps();
+                E.Get(arr); E.Load(Op.I32Load, Types.ArrayDataOffset(1) + 4 * i);
+                var o = Own.Unstable;
+                ConvertValue(objT, v.Type, false, ref o, true, null);
+                StoreVar(v, o);
+                EndTemps();
+            }
+            E.Get(res);
+        }
         var rt = T.Resolve(M.ReturnType, Map);
         if (M.ReturnsVoid) { Drop(r, objT); EmitReturnSequence(false); return; }
         if (Types.IsStruct(rt))
@@ -247,7 +265,7 @@ internal sealed partial class Driver
         {
             if (_objectArrayThunks.ContainsKey(id) || SyntheticById.ContainsKey(id) || DisplayById.ContainsKey(id)) continue;
             if (TypeById[id] is not INamedTypeSymbol { TypeKind: TypeKind.Delegate } dt || dt.DelegateInvokeMethod == null) continue;
-            if (dt.IsUnboundGenericType || dt.TypeArguments.Any(a => a is ITypeParameterSymbol) || dt.DelegateInvokeMethod.Parameters.Any(p => p.RefKind != RefKind.None) || dt.DelegateInvokeMethod.ReturnsByRef) continue;
+            if (dt.IsUnboundGenericType || dt.TypeArguments.Any(a => a is ITypeParameterSymbol) || dt.DelegateInvokeMethod.Parameters.Any(p => p.RefKind is RefKind.In or RefKind.RefReadOnlyParameter) || dt.DelegateInvokeMethod.ReturnsByRef) continue;
             if (dt.DelegateInvokeMethod.Parameters.Any(p => p.Type.IsRefLikeType || p.Type is IPointerTypeSymbol) || dt.DelegateInvokeMethod.ReturnType.IsRefLikeType) continue;
             _objectArrayThunks[id] = FunctionCompiler.ObjectArrayThunk(this, dt, handler);
             // (made by the dispatch at run time: its destructor and dispatch cases are needed)

@@ -275,8 +275,23 @@ sealed partial class FunctionCompiler
             {
                 case IArgumentOperation { Parameter.RefKind: not RefKind.None } a: MarkAddr(a.Value); break;
                 case IAddressOfOperation ao: MarkAddr(ao.Reference); break;
+                case IDynamicInvocationOperation or IDynamicIndexerAccessOperation or IDynamicObjectCreationOperation: MarkDynamicRefArgs(op); break;
                 case ISimpleAssignmentOperation { IsRef: true } sa: MarkAddr(sa.Value); break;
             }
+    }
+
+    /// <summary>The ref and out arguments of a dynamic operation (passed by reference to its call site).</summary>
+    void MarkDynamicRefArgs(IOperation op)
+    {
+        var (args, kind) = op switch
+        {
+            IDynamicInvocationOperation d => (d.Arguments, (Func<int, RefKind?>)d.GetArgumentRefKind),
+            IDynamicIndexerAccessOperation d => (d.Arguments, d.GetArgumentRefKind),
+            IDynamicObjectCreationOperation d => (d.Arguments, d.GetArgumentRefKind),
+            _ => throw new InvalidOperationException(),
+        };
+        for (int i = 0; i < args.Length; i++)
+            if (kind(i) is RefKind.Ref or RefKind.Out) MarkAddr(args[i]);
     }
 
     void PreScan(IOperation body)
@@ -287,6 +302,7 @@ sealed partial class FunctionCompiler
             {
                 case IArgumentOperation { Parameter.RefKind: not RefKind.None } a: MarkAddr(a.Value); break;
                 case IAddressOfOperation ao: MarkAddr(ao.Reference); break;
+                case IDynamicInvocationOperation or IDynamicIndexerAccessOperation or IDynamicObjectCreationOperation: MarkDynamicRefArgs(op); break;
                 case IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None, Initializer: { } init }: MarkAddr(init.Value); break;
                 case ISimpleAssignmentOperation { IsRef: true } sa: MarkAddr(sa.Value); break;
                 case IReturnOperation { ReturnedValue: { } rv } when M.ReturnsByRef || M.ReturnsByRefReadonly: MarkAddr(rv); break;

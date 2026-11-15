@@ -5,7 +5,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 57 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 58 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
@@ -96,8 +96,8 @@ exception, before unwinding runs any `finally`. An exception thrown inside a fil
 filters pay nothing.
 
 Not done yet (a program using them gets a `CW0101` error naming the construct):
-- `TypeBuilder`/`AssemblyBuilder` (types defined at run time; `DynamicMethod` works, section 8); in `dynamic` code, `&&`/`||` with a static left operand, `ref`/`out` arguments of
-  dynamic calls and the value of a dynamic member's postfix `++`/`--`;
+- `TypeBuilder`/`AssemblyBuilder` (types defined at run time; `DynamicMethod` works, section 8); in `dynamic` code,
+  `&&`/`||` whose static left operand is not a `bool` (a user type with `operator true`/`false`);
 - in expression trees, the closure's type name in a tree's text (`value(<>c__DisplayClass).x`: Roslyn numbers its
   closure classes, cs2wasm's are unnamed) and lifted (nullable) user-defined operators; captured variables (a field of
   the closure, read when the tree runs), `this`, generic method calls and user-defined operators and conversions work
@@ -385,9 +385,11 @@ with references (a count for each, by the object's type).
 `dynamic` (`055_dynamic`, matching .NET's output and binder errors) runs on upstream's C# runtime binder
 (Microsoft.CSharp) as Roslyn lowers it: each dynamic operation is a `CallSite<D>` made once from `Binder.InvokeMember`,
 `GetMember`/`SetMember`, `GetIndex`/`SetIndex`, `Invoke`, `InvokeConstructor`, `BinaryOperation`, `UnaryOperation`
-or `Convert` with Roslyn's flags (`&&`/`||` as an `IsFalse`/`IsTrue` test, then the logical operator), argument infos and delegate type, written as C# in a generated class of the program
+or `Convert` with Roslyn's flags (`&&`/`||` as an `IsFalse`/`IsTrue` test, then the logical operator; a static `bool`
+left operand tested where it is), argument infos and delegate type (one of the site's own for `ref`/`out` arguments,
+which the site writes back), written as C# in a generated class of the program
 (`Compiler/DynamicLowering.cs`) and called where the operation is; compound assignments and `++`/`--` on members get,
-operate and set. The binder binds against reflection: the member names the sites use are kept on every type the
+operate and set (a postfix one has the value from before; `058_dynamic_more`). The binder binds against reflection: the member names the sites use are kept on every type the
 program names (and on generic definitions, which the binder reads), with what the binder asks of metadata now kept
 too: operators and conversions (`SpecialName`, `Final`, `NewSlot` attributes), indexers (`[DefaultMember]` as C#
 emits it), optional parameters' default values, `init` and `in` modifiers, one metadata token per definition (shared by

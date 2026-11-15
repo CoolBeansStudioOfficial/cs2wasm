@@ -99,7 +99,7 @@ internal sealed class DynamicLowering
     static bool IsAssignTarget(IOperation op) => op.Parent is IAssignmentOperation a && a.Target == op || op.Parent is IIncrementOrDecrementOperation i && i.Target == op;
 
     // ---------------- argument infos ----------------
-    sealed record Arg(string? ParamType, int Flags, string? Name, string? Value);
+    sealed record Arg(string? ParamType, int Flags, string? Name, string? Value, string Ref = "");
 
     // CSharpArgumentInfoFlags
     const int UseCompileTimeType = 1, Constant = 2, NamedArgument = 4, IsRef = 8, IsOut = 16, IsStaticType = 32;
@@ -109,13 +109,19 @@ internal sealed class DynamicLowering
     /// <summary>A value argument: its static type when it can be named (as the delegate's parameter), else object.</summary>
     Arg ValueArg(IOperation a, string? name = null, RefKind rk = RefKind.None)
     {
-        if (rk != RefKind.None) throw new CompileException("dynamic call with a ref or out argument is not supported yet", a.Syntax.GetLocation());
         int f = name != null ? NamedArgument : 0;
         var t = a.Type;
         string pt = "object";
         if (t == null) f |= UseCompileTimeType; // the null literal
         else if (!IsDyn(t) && TypeName(t) is { } n) { pt = n; f |= UseCompileTimeType; }
         if (a.ConstantValue.HasValue) f |= Constant;
+        // a ref or out argument: the variable passed by reference through the site's delegate (its own type then)
+        if (rk != RefKind.None)
+        {
+            if (t != null && !IsDyn(t) && pt == "object") throw new CompileException("dynamic call with a ref or out argument of a type that cannot be named here", a.Syntax.GetLocation());
+            f |= rk == RefKind.Out ? IsOut : IsRef;
+            return new Arg(pt, f, name, null, rk == RefKind.Out ? "out " : "ref ");
+        }
         return new Arg(pt, f, name, null);
     }
 
@@ -195,15 +201,22 @@ internal sealed class DynamicLowering
     {
         int n = _n++;
         var types = string.Join("", args.Select(a => ", " + (a.ParamType ?? "global::System.Type")));
-        if (args.Count + (ret != null ? 2 : 1) > 17) throw new CompileException("dynamic operation with too many arguments", op.Syntax.GetLocation());
-        var dt = ret == null ? (args.Count == 0 ? "global::System.Action<" + CallSiteT + ">" : "global::System.Action<" + CallSiteT + types + ">") : "global::System.Func<" + CallSiteT + types + ", " + ret + ">";
+        string dt;
+        if (args.Any(a => a.Ref.Length > 0) || args.Count + (ret != null ? 2 : 1) > 17)
+        {
+            // by-ref parameters (or too many for Func/Action): a delegate type of the site's own, as Roslyn makes
+            dt = "D" + n;
+            _sb.Append("        public delegate ").Append(ret ?? "void").Append(' ').Append(dt).Append('(').Append(CallSiteT).Append(" site")
+                .Append(string.Concat(args.Select((a, i) => ", " + a.Ref + (a.ParamType ?? "global::System.Type") + " p" + i))).Append(");\n");
+        }
+        else dt = ret == null ? (args.Count == 0 ? "global::System.Action<" + CallSiteT + ">" : "global::System.Action<" + CallSiteT + types + ">") : "global::System.Func<" + CallSiteT + types + ", " + ret + ">";
         var ps = new List<string>();
         var vs = new List<string>();
         for (int i = 0; i < args.Count; i++)
         {
             if (args[i].ParamType == null) { vs.Add(args[i].Value!); continue; }
-            ps.Add(args[i].ParamType + " a" + i);
-            vs.Add("a" + i);
+            ps.Add(args[i].Ref + args[i].ParamType + " a" + i);
+            vs.Add(args[i].Ref + "a" + i);
         }
         var infos = string.Join(", ", args.Select(a => Ns + "CSharpArgumentInfo.Create((" + Ns + "CSharpArgumentInfoFlags)" + a.Flags + ", " + (a.Name != null ? Lit(a.Name) : "null") + ")"));
         binder = binder.Replace("$INFOS", "new " + Ns + "CSharpArgumentInfo[] { " + infos + " }");
@@ -355,8 +368,19 @@ internal sealed class DynamicLowering
         if (b.OperatorKind is BinaryOperatorKind.ConditionalAnd or BinaryOperatorKind.ConditionalOr)
         {
             // x && y: IsFalse(x) ? x : x & y (x || y: IsTrue(x) ? x : x | y), the operator a logical one (C# 12.12.8)
-            if (!IsDyn(b.LeftOperand.Type)) throw new CompileException("dynamic && or || with a static left operand is not supported yet", b.Syntax.GetLocation());
             bool and = b.OperatorKind == BinaryOperatorKind.ConditionalAnd;
+            if (!IsDyn(b.LeftOperand.Type))
+            {
+                // a static left operand: the test is the static one (a bool here), the result when it decides is x as dynamic
+                if (b.LeftOperand.Type?.SpecialType != SpecialType.System_Boolean)
+                    throw new CompileException("dynamic && or || with a static left operand of a type other than bool is not supported yet", b.Syntax.GetLocation());
+                MemberNames.Add(and ? "op_BitwiseAnd" : "op_BitwiseOr");
+                int bn = _n++;
+                _sb.Append("        public static object Site").Append(bn).Append("(bool v) => v;\n");
+                _sites[Key(b, "box")] = new Site("Site" + bn, false);
+                Emit(b, "op", Ns + "Binder.BinaryOperation(" + Flags(b, 8) + ", global::System.Linq.Expressions.ExpressionType." + (and ? "And" : "Or") + ", typeof(" + Context(b.Syntax) + "), $INFOS)", [ValueArg(b.LeftOperand), ValueArg(b.RightOperand)], "object");
+                return;
+            }
             MemberNames.Add(and ? "op_False" : "op_True"); MemberNames.Add(and ? "op_BitwiseAnd" : "op_BitwiseOr");
             Emit(b, "test", Ns + "Binder.UnaryOperation(" + Flags(b) + ", global::System.Linq.Expressions.ExpressionType." + (and ? "IsFalse" : "IsTrue") + ", typeof(" + Context(b.Syntax) + "), $INFOS)", [ValueArg(b.LeftOperand)], "bool");
             Emit(b, "op", Ns + "Binder.BinaryOperation(" + Flags(b, 8) + ", global::System.Linq.Expressions.ExpressionType." + (and ? "And" : "Or") + ", typeof(" + Context(b.Syntax) + "), $INFOS)", [ValueArg(b.LeftOperand), ValueArg(b.RightOperand)], "object");
@@ -410,15 +434,14 @@ internal sealed class DynamicLowering
         var binder = Ns + "Binder.UnaryOperation(" + Flags(inc) + ", global::System.Linq.Expressions.ExpressionType." + (isInc ? "Increment" : "Decrement") + ", typeof(" + Context(inc.Syntax) + "), $INFOS)";
         if (inc.Target is IDynamicMemberReferenceOperation or IDynamicIndexerAccessOperation)
         {
-            if (inc.IsPostfix && !Discarded(inc)) throw new CompileException("the value of a dynamic member's postfix ++/-- is not supported yet", inc.Syntax.GetLocation());
-            CompoundOnMember(inc, inc.Target, null, binder, Discarded(inc));
+            CompoundOnMember(inc, inc.Target, null, binder, Discarded(inc), postfix: inc.IsPostfix);
             return;
         }
         Emit(inc, "op", binder, [ValueArg(inc.Target)], "object");
     }
 
     /// <summary>One method: get the member (or element), apply the operator's site, set it; returns the new value.</summary>
-    void CompoundOnMember(IOperation op, IOperation target, IOperation? value, string opBinder, bool discard)
+    void CompoundOnMember(IOperation op, IOperation target, IOperation? value, string opBinder, bool discard, bool postfix = false)
     {
         int n = _n++;
         string ctx = Context(op.Syntax);
@@ -440,6 +463,7 @@ internal sealed class DynamicLowering
             getB = Ns + "Binder.GetIndex(" + Flags(op) + ", typeof(" + ctx + "), $INFOS)";
             setB = Ns + "Binder.SetIndex(" + Flags(op, ValueFromCompoundAssignment | (discard ? ResultDiscarded : 0)) + ", typeof(" + ctx + "), $INFOS)";
             name = "Item";
+            MemberNames.Add("get_Item"); MemberNames.Add("set_Item");
         }
         MemberNames.Add(name);
         var valueArg = value != null ? ValueArg(value) : null;
@@ -466,7 +490,10 @@ internal sealed class DynamicLowering
         _sb.Append($"            if (t{n} == null) t{n} = {CallSiteT}<{setT}>.Create({setB.Replace("$INFOS", Infos(setArgs))});\n");
         _sb.Append($"            object cur = g{n}.Target(g{n}{string.Join("", vs.Select(v => ", " + v))});\n");
         _sb.Append($"            object nv = o{n}.Target(o{n}, cur{(valueArg != null ? ", v" : "")});\n");
-        _sb.Append($"            {(discard ? "" : "return ")}t{n}.Target(t{n}{string.Join("", vs.Select(v => ", " + v))}, nv);\n        }}\n");
+        // (a postfix ++/-- has the value from before)
+        _sb.Append($"            {(discard || postfix ? "" : "return ")}t{n}.Target(t{n}{string.Join("", vs.Select(v => ", " + v))}, nv);\n");
+        if (postfix && !discard) _sb.Append("            return cur;\n");
+        _sb.Append("        }\n");
         _sites[Key(op, "op")] = new Site("Site" + n, discard);
     }
 

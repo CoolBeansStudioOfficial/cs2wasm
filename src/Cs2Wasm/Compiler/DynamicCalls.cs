@@ -19,6 +19,8 @@ sealed partial class FunctionCompiler
                 or IBinaryOperation or IUnaryOperation:
                 if (op is IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd or BinaryOperatorKind.ConditionalOr } lb && D.Dynamic.Find(op, "test") is { } ts)
                     return EmitDynamicLogical(lb, ts, D.Dynamic.Find(op, "op")!);
+                if (op is IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd or BinaryOperatorKind.ConditionalOr } sb && D.Dynamic.Find(op, "box") is { } bs)
+                    return EmitStaticLogical(sb, bs, D.Dynamic.Find(op, "op")!);
                 return D.Dynamic.Find(op, "op") is { } s ? EmitDynamicSite(op, s) : null;
             case IConversionOperation c:
                 return D.Dynamic.Find(c, "conv") is { } cs ? EmitDynamicSite(c, cs) : null;
@@ -49,6 +51,27 @@ sealed partial class FunctionCompiler
         var r = CallWith(om, false, null, () => { E.Get(x); var ro = EmitValueAs(b.RightOperand, pt); if (Types.IsRef(pt)) ToCallSafe(ro, pt); }, null, b.Syntax);
         ToOwned(r);
         E.Get(x); E.Call(Rt.Release);
+        E.End();
+        return Own.Owned;
+    }
+
+    /// <summary>b && y on a static bool b: when b decides (false for &&, true for ||), b as dynamic; else the
+    /// operator's site on b and y.</summary>
+    Own EmitStaticLogical(IBinaryOperation b, DynamicLowering.Site box, DynamicLowering.Site op)
+    {
+        var bm = SiteMethod(box); var om = SiteMethod(op);
+        bool and = b.OperatorKind == BinaryOperatorKind.ConditionalAnd;
+        int x = E.AddLocal(ValType.I32);
+        EmitValueAs(b.LeftOperand, bm.Parameters[0].Type);
+        E.Set(x);
+        E.Get(x); if (and) E.Op(Op.I32Eqz);
+        E.If(ValType.I32);
+        var r1 = CallWith(bm, false, null, () => E.Get(x), null, b.Syntax);
+        ToOwned(r1);
+        E.Else();
+        var pt = T.Canonical(om.Parameters[1].Type);
+        var r2 = CallWith(om, false, null, () => { E.Get(x); var ro = EmitValueAs(b.RightOperand, pt); if (Types.IsRef(pt)) ToCallSafe(ro, pt); }, null, b.Syntax);
+        ToOwned(r2);
         E.End();
         return Own.Owned;
     }
