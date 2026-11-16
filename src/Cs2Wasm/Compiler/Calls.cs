@@ -772,7 +772,8 @@ sealed partial class FunctionCompiler
             case "Rt.Abs": E.Op(Op.F64Abs); return Own.None;
             case "Rt.Min": E.Op(Op.F64Min); return Own.None;
             case "Rt.Max": E.Op(Op.F64Max); return Own.None;
-            case "Rt.CopySign": E.Op(Op.F64Copysign); return Own.None;
+            // (the sign of a NaN differs between machines: .NET's NaN's, section 7.3)
+            case "Rt.CopySign": E.Call(Rt.CanonF64); E.Op(Op.F64Copysign); return Own.None;
             case "Rt.SqrtF": E.Op(Op.F32Sqrt); return Own.None;
             case "Rt.FloorF": E.Op(Op.F32Floor); return Own.None;
             case "Rt.CeilingF": E.Op(Op.F32Ceil); return Own.None;

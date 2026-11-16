@@ -35,6 +35,23 @@ internal sealed partial class RuntimeFns
     /// <summary>(object): marks and queues what the object refers to (one level; Sharing.Share drains the queue).</summary>
     public WasmFunction ShareVisit => _shareVisit ??= M.AddFunction("rt.share_visit", FT([I], []));
 
+    WasmFunction? _canon64, _canon32;
+    /// <summary>(x) -> x, or .NET's NaN when x is a NaN (section 7.3: a NaN's payload and sign, which differ between
+    /// machines, never reach memory or anything that reads a float's bits).</summary>
+    public WasmFunction CanonF64 => _canon64 ??= MakeCanon(true);
+    public WasmFunction CanonF32 => _canon32 ??= MakeCanon(false);
+    WasmFunction MakeCanon(bool d)
+    {
+        var t = d ? ValType.F64 : ValType.F32;
+        var f = M.AddFunction(d ? "rt.canon_f64" : "rt.canon_f32", FT([t], [t]));
+        var e = new Emitter(f);
+        e.Get(0);
+        if (d) e.Emit(Op.F64Const, unchecked((long)0xFFF8000000000000)); else e.Emit(Op.F32Const, unchecked((int)0xFFC00000));
+        e.Get(0); e.Get(0); e.Op(d ? Op.F64Eq : Op.F32Eq);
+        e.Op(Op.Select);
+        return f;
+    }
+
     WasmFunction? _finHold, _finUnhold;
     /// <summary>Around a finalizer's call in a destroy function: with threads, the thread keeps its epoch meanwhile
     /// (Limbo.Hold); without, nothing.</summary>
