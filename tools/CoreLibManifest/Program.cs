@@ -223,6 +223,10 @@ sealed class Manifest
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	_allTlsBuckets.Add(tlsBuckets, null);	");
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	Gen2GcCallback.Register(s => ((SharedArrayPool<T>)s).Trim(), this);	");
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	_allTlsBuckets = new ConditionalWeakTable<SharedArrayPoolThreadLocalArray[], object?>();	_allTlsBuckets = null!;");
+            // a spin lock spins while its thread holds references it borrowed: its pauses are no safe points (Threads.SpinPause)
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(1);\tCs2Wasm.Runtime.Threads.SpinPause(1);");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(0);\tCs2Wasm.Runtime.Threads.SpinPause(0);");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Yield();\tCs2Wasm.Runtime.Threads.SpinPause(0);");
             // resource keys are not used for messages (System.Resources.UseSystemResourceKeys is off, as by default)
             sb.AppendLine("substitute	method	System.SR	System.Boolean UsingResourceKeys()	false");
             // a WASM worker has no processor number: the thread's id stands for it (a hint, as in .NET)

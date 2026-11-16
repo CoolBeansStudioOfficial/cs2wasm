@@ -184,6 +184,10 @@ namespace Cs2Wasm.Runtime
 
         /// <summary>No other thread can ever run: the program starts none (known when the whole program is compiled).</summary>
         [Intrinsic] public static extern bool SingleThreaded();
+        /// <summary>Threads: until ReleaseEpoch the thread passes no safe point, whatever it waits for (Limbo.Hold), so
+        /// the code around keeps what it borrowed; nothing without threads.</summary>
+        [Intrinsic] public static extern void HoldEpoch();
+        [Intrinsic] public static extern void ReleaseEpoch();
         /// <summary>Releases the current thread's thread-static references (its end).</summary>
         [Intrinsic] public static extern void ReleaseThreadStatics();
         /// <summary>A delegate of the type (by id) that passes its arguments to the handler as an object[]; null when the
@@ -1043,6 +1047,42 @@ namespace Cs2Wasm.Runtime
             Block(ref s_generation, g, 1000000);
         }
 
+        /// <summary>Waiting for a lock is no safe point: code takes locks while it holds references it borrowed (the
+        /// compiler lets a borrow last until the thread's next safe point, FieldBorrows.cs), so the thread keeps its
+        /// epoch while it waits. It still parks when the engine asks (a waiting thread touches no memory).</summary>
+        internal static void WaitGenerationHolding(int g)
+        {
+            ParkPoint();
+            BlockHolding(ref s_generation, g, 1000000);
+        }
+
+        internal static void ParkPoint()
+        {
+            if (Atomic.Load32(ref s_parkRequested) == 0 || Rt.ThreadId() == 1) return;
+            Atomic.Add32(ref s_parked, 1);
+            while (Atomic.Load32(ref s_parkRequested) != 0) Atomic.Wait32(ref s_parkRequested, 1, -1);
+            Atomic.Add32(ref s_parked, -1);
+        }
+
+        static int s_spin;
+        /// <summary>A spin lock's pause (SpinWait: its Yield, Sleep(0) and Sleep(1)): no safe point, as a lock's wait.</summary>
+        internal static void SpinPause(int ms)
+        {
+            ParkPoint();
+            if (ms > 0) BlockHolding(ref s_spin, 0, ms * 1000000L);
+        }
+
+        /// <summary>Block without becoming quiescent (a lock's wait).</summary>
+        internal static void BlockHolding(ref int word, int expected, long ns)
+        {
+            if (MayBlock()) Atomic.Wait32(ref word, expected, ns);
+            else
+            {
+                long end = ns < 0 ? long.MaxValue : Engine.MonotonicNs() + ns;
+                while (Atomic.Load32(ref word) == expected && Engine.MonotonicNs() < end) { }
+            }
+        }
+
         static int s_mainBlocks = -1;
 
         /// <summary>Whether this thread may block in a wait: a worker always; the main thread when its host says so.</summary>
@@ -1090,6 +1130,8 @@ namespace Cs2Wasm.Runtime
         // would be lost: the thread would look quiescent); old tables are never freed (such a write may still land).
         static void SetEpoch(int value)
         {
+            // (inside a finalizer the thread keeps its epoch: a release that runs one is no safe point for its caller)
+            if (t_hold != 0) return;
             int id = Rt.ThreadId();
             while (true)
             {
@@ -1113,6 +1155,12 @@ namespace Cs2Wasm.Runtime
                 if (Atomic.Load32(ref s_table) == table) return;
             }
         }
+
+        [System.ThreadStatic] static int t_hold;
+        /// <summary>Around a finalizer the destroy path runs (rt.fin_hold, rt.fin_unhold): whatever it waits for, the
+        /// thread passes no safe point, so the code that released the object keeps what it borrowed.</summary>
+        public static void Hold() => t_hold++;
+        public static void Unhold() => t_hold--;
 
         /// <summary>The thread runs program code: what it reads from now on is protected.</summary>
         public static void Active() => SetEpoch(Atomic.Load32(ref s_epoch));
@@ -1300,23 +1348,87 @@ namespace Cs2Wasm.Runtime
     public static class ThrowHelpers
     {
         /// <summary>Activator.CreateInstance&lt;T&gt;() of a T without a parameterless constructor.</summary>
-        public static void NoDefaultConstructor(string typeName) => throw new System.MissingMethodException(SR.Format(SR.Activator_CannotCreateInstance, typeName, SR.Arg_NoDefCTorWithoutTypeName));
+        public static void NoDefaultConstructor(string typeName)
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new System.MissingMethodException(SR.Format(SR.Activator_CannotCreateInstance, typeName, SR.Arg_NoDefCTorWithoutTypeName)); Rt.ReleaseEpoch();
+            throw e;
+        }
         /// <summary>The exception a failed static initializer leaves: thrown now and at every later access.</summary>
         public static object TypeInitFailed(string typeName, object inner) =>
             new System.TypeInitializationException(typeName, inner as System.Exception);
-        public static void NullReference() => throw new NullReferenceException();
-        public static void IndexOutOfRange() => throw new IndexOutOfRangeException();
-        public static void Overflow() => throw new OverflowException();
-        public static void DivideByZero() => throw new DivideByZeroException();
-        public static void OutOfMemory() => throw new OutOfMemoryException();
-        public static void SwitchExpression() => throw new System.Runtime.CompilerServices.SwitchExpressionException();
-        public static void InvalidCast(object o, string target) =>
-            throw new InvalidCastException("Unable to cast object of type '" + Rt.TypeName(o) + "' to type '" + target + "'.");
-        public static void ArgumentOutOfRange(string name) => throw new ArgumentOutOfRangeException(name);
+        public static void NullReference()
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new NullReferenceException(); Rt.ReleaseEpoch();
+            throw e;
+        }
+        public static void IndexOutOfRange()
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new IndexOutOfRangeException(); Rt.ReleaseEpoch();
+            throw e;
+        }
+        public static void Overflow()
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new OverflowException(); Rt.ReleaseEpoch();
+            throw e;
+        }
+        public static void DivideByZero()
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new DivideByZeroException(); Rt.ReleaseEpoch();
+            throw e;
+        }
+        public static void OutOfMemory()
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new OutOfMemoryException(); Rt.ReleaseEpoch();
+            throw e;
+        }
+        public static void SwitchExpression()
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new System.Runtime.CompilerServices.SwitchExpressionException(); Rt.ReleaseEpoch();
+            throw e;
+        }
+        public static void InvalidCast(object o, string target)
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new InvalidCastException("Unable to cast object of type '" + Rt.TypeName(o) + "' to type '" + target + "'."); Rt.ReleaseEpoch();
+            throw e;
+        }
+        public static void ArgumentOutOfRange(string name)
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new ArgumentOutOfRangeException(name); Rt.ReleaseEpoch();
+            throw e;
+        }
         /// <summary>An [UnsafeAccessor] over a type the program does not have (as when .NET cannot load it).</summary>
-        public static void TypeLoad(string typeName) => throw new TypeLoadException(SR.Format(SR.TypeLoad_ResolveType, typeName));
-        public static void ArgumentNull(string name) => throw new ArgumentNullException(name);
-        public static void InvalidOperation(string msg) => throw new InvalidOperationException(msg);
-        public static void NotSupported() => throw new NotSupportedException();
+        public static void TypeLoad(string typeName)
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new TypeLoadException(SR.Format(SR.TypeLoad_ResolveType, typeName)); Rt.ReleaseEpoch();
+            throw e;
+        }
+        public static void ArgumentNull(string name)
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new ArgumentNullException(name); Rt.ReleaseEpoch();
+            throw e;
+        }
+        public static void InvalidOperation(string msg)
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new InvalidOperationException(msg); Rt.ReleaseEpoch();
+            throw e;
+        }
+        public static void NotSupported()
+        {
+            // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
+            Rt.HoldEpoch(); var e = new NotSupportedException(); Rt.ReleaseEpoch();
+            throw e;
+        }
     }
 }

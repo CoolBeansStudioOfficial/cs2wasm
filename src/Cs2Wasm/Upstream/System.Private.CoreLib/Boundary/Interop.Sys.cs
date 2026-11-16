@@ -147,8 +147,8 @@ internal static partial class Interop
             ref int l = ref Mem.RefI32((int)monitor);
             while (Atomic.CompareExchange32(ref l, 0, 1) != 0)
             {
-                // (an engine's thread never blocks, section 4.5: it spins)
-                Threads.Block(ref l, 1, 1000000);
+                // (an engine's thread never blocks, section 4.5: it spins; a lock's wait is no safe point)
+                Threads.BlockHolding(ref l, 1, 1000000);
             }
         }
 

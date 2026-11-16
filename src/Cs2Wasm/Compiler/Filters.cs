@@ -61,7 +61,7 @@ internal sealed partial class RuntimeFns
         var brk = e.Block(); var top = e.Loop();
         e.Get(rec); e.Op(Op.I32Eqz); e.BrIf(brk);
         e.Get(rec); e.Load(Op.I32Load, 8); e.Get(0); e.Get(rec); e.Load(Op.I32Load, 4);
-        e.Emit(Op.CallIndirect, 0, 0, Driver.FilterTestType);
+        e.Emit(Op.CallIndirect, 0, D.IndirectBucket(Driver.FilterBucket), Driver.FilterTestType);
         e.Tee(r);
         e.If(); e.Get(rec); e.GSet(D.EhRecord); e.Get(r); e.GSet(D.EhClause); e.Op(Op.Return); e.End();
         e.Get(rec); e.Load(Op.I32Load); e.Set(rec);
@@ -92,6 +92,7 @@ sealed partial class FunctionCompiler
         E.GGet(D.EhChain); E.Set(saved);
         E.Get(_fb); E.Get(saved); E.Store(Op.I32Store, rec);
         E.Get(_fb); E.I32Fn(D.Module, test); E.Store(Op.I32Store, rec + 4);
+        D.NoteIndirectTarget(Driver.FilterBucket, test);
         E.Get(_fb); PushDisplayPtr(CurrentEnv(), retain: false); E.Store(Op.I32Store, rec + 8);
         E.Get(_fb); E.I32(rec); E.Op(Op.I32Add); E.GSet(D.EhChain);
         return (rec, saved);
@@ -148,6 +149,7 @@ sealed partial class FunctionCompiler
             E.GGet(D.EhChain); E.Set(saved);
             E.Get(_fb); E.Get(saved); E.Store(Op.I32Store, brec);
             E.Get(_fb); E.I32Fn(D.Module, Rt.EhBoundary); E.Store(Op.I32Store, brec + 4);
+            D.NoteIndirectTarget(Driver.FilterBucket, Rt.EhBoundary);
             E.Get(_fb); E.I32(0); E.Store(Op.I32Store, brec + 8);
             E.Get(_fb); E.I32(brec); E.Op(Op.I32Add); E.GSet(D.EhChain);
             var done = E.Block();

@@ -95,7 +95,7 @@ namespace System.Threading
                 int g = Atomic.Load32(ref Threads.s_generation);
                 if (TryTake(obj)) return true;
                 if (millisecondsTimeout == 0 || Engine.MonotonicNs() >= end) return false;
-                Threads.WaitGeneration(g);
+                Threads.WaitGenerationHolding(g);
             }
         }
 

@@ -942,7 +942,11 @@ internal sealed partial class Driver
                 var done = e.Block();
                 var caught = e.Block(ValType.I32);
                 e.TryTable(null, (0, ExceptionTag, caught));
+                // (threads: the initializer passes no safe point, so code that touches a type for the first time
+                // keeps what it borrowed: FieldBorrows.cs)
+                e.Call(Rt.FinHold);
                 e.Call(body);
+                e.Call(Rt.FinUnhold);
                 e.End();
                 e.I32Addr(flag); e.Call(Rt.CctorExit);
                 e.Br(done);
@@ -950,6 +954,7 @@ internal sealed partial class Driver
                 // inner exception on the stack (owned): wrap it
                 int inner = e.AddLocal(ValType.I32);
                 e.Set(inner);
+                e.Call(Rt.FinUnhold);
                 e.I32Addr(saved); e.I32Addr(StringLiteral(t.ContainingType != null ? t.MetadataName : ClrName(t))); e.Get(inner);
                 e.Call(LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "TypeInitFailed", 2).Fn);
                 e.Store(Op.I32Store);

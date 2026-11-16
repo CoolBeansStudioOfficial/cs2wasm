@@ -20,10 +20,13 @@ internal sealed partial class Driver
     static readonly bool s_noInitOnly = Environment.GetEnvironmentVariable("CS2WASM_NO_INIT_ONLY") == "1";
 
     /// <summary>The field a borrow key names (FieldKey), for InitOnly.</summary>
-    internal void NoteBorrowField(string key, ISymbol storage)
+    internal void NoteBorrowField(string key, ISymbol storage, ITypeSymbol? type = null)
     {
         if (storage is IFieldSymbol f) _borrowFields.TryAdd(key, f);
+        if (type != null) _borrowFieldTypes.TryAdd(key, type);
     }
+    /// <summary>The type of the field a borrow key names, in the instance the key is of.</summary>
+    readonly Dictionary<string, ITypeSymbol> _borrowFieldTypes = [];
 
     /// <summary>Whether the field a key names is init-only (asked once the whole program is compiled: a field that is
     /// not `readonly` qualifies when only its own type's constructors write it).</summary>

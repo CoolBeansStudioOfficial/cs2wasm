@@ -41,7 +41,7 @@ sealed partial class FunctionCompiler
                 && !(ai is IParameterReferenceOperation && TypeOf(ai).IsValueType))
             {
                 var ak = Driver.FieldKey(Owner(afr.Field), StorageField(afr.Field));
-                D.NoteBorrowField(ak, StorageField(afr.Field));
+                D.NoteBorrowField(ak, StorageField(afr.Field), T.Resolve(afr.Field.Type, Map));
                 return ak + "\n" + Driver.ElementsKey;
             }
             return null;
@@ -55,7 +55,7 @@ sealed partial class FunctionCompiler
             default: return null;
         }
         var key = Driver.FieldKey(Owner(fr.Field), StorageField(fr.Field));
-        D.NoteBorrowField(key, StorageField(fr.Field));
+        D.NoteBorrowField(key, StorageField(fr.Field), T.Resolve(fr.Field.Type, Map));
         return key;
     }
 
@@ -77,6 +77,8 @@ internal sealed partial class Driver
     public static string FieldKey(ITypeSymbol owner, ISymbol storage) => Types.Key(owner) + "::" + storage.Name;
     /// <summary>The pseudo-field of every reference element (and of memory written through an address).</summary>
     public const string ElementsKey = "[]";
+    /// <summary>The pseudo-field a thread's safe point stores (threads: ResolveFieldBorrows).</summary>
+    const string SafePointKey = "<safe point>";
     static readonly bool s_borrowDebug = Environment.GetEnvironmentVariable("CS2WASM_BORROW") == "1";
     internal static bool BorrowDebug => s_borrowDebug;
 
@@ -126,7 +128,64 @@ internal sealed partial class Driver
     void StripWriteMarks()
     {
         foreach (var f in Module.Functions)
-            if (!f.IsImport) f.Body.RemoveAll(x => x.Op == Op.Nop && x.Ref is WriteMark);
+        {
+            if (f.IsImport) continue;
+            f.Body.RemoveAll(x => x.Op == Op.Nop && x.Ref is WriteMark);
+            // (and the indirect calls' buckets: bodies that differ only there are the same code)
+            var b = f.Body;
+            for (int i = 0; i < b.Count; i++) if (b[i].Op == Op.CallIndirect && b[i].Imm2 != 0) b[i] = b[i] with { Imm2 = 0 };
+        }
+    }
+
+    // ---- what an indirect call can reach ----
+    // An indirect call is a delegate's Invoke (the functions delegates of that type were made with), a reflection
+    // thunk's call, an exception filter's test, or a function pointer's call (any function in the table). The call
+    // carries its bucket (Imm2, taken out again with the marks); buckets list their functions.
+    internal const string ThunkBucket = "thunk", FilterBucket = "filter";
+    /// <summary>Delegates convert between instances of one generic delegate (variance): a bucket per definition.</summary>
+    internal static string DelegateBucket(ITypeSymbol dt) => "d:" + Types.Key(dt.OriginalDefinition);
+    readonly Dictionary<string, int> _bucketIds = [];
+    readonly List<HashSet<WasmFunction>> _bucketFns = [[]];
+    readonly List<string> _bucketKeys = [""];
+
+    internal int IndirectBucket(string key)
+    {
+        lock (_bucketIds)
+        {
+            if (!_bucketIds.TryGetValue(key, out int id)) { _bucketIds[key] = id = _bucketFns.Count; _bucketFns.Add([]); _bucketKeys.Add(key); }
+            return id;
+        }
+    }
+
+    internal void NoteIndirectTarget(string key, WasmFunction f)
+    {
+        int id = IndirectBucket(key);
+        lock (_bucketIds) _bucketFns[id].Add(f);
+    }
+
+    List<WasmFunction>? _tableFns;
+    /// <summary>Every function some code can put in the table (an unbucketed indirect call reaches them all).</summary>
+    List<WasmFunction> TableFns()
+    {
+        if (_tableFns != null) return _tableFns;
+        var set = new HashSet<WasmFunction>();
+        foreach (var t in Module.Functions)
+        {
+            if (t.InTable || t.TableRoot) set.Add(t);
+            foreach (var i2 in t.Body) if (i2.Op == Op.I32Const && i2.Ref is WasmFunction tf) set.Add(tf);
+        }
+        return _tableFns = [.. set.OrderBy(f => f.Order)];
+    }
+
+    /// <summary>The functions an indirect call can reach. Functions the reflection tables refer to (TableRoot) can
+    /// be any delegate's (Delegate.CreateDelegate) and are what a thunk call reaches.</summary>
+    internal IEnumerable<WasmFunction> IndirectTargets(in Instr call)
+    {
+        int b = (int)call.Imm2;
+        if (b <= 0 || b >= _bucketFns.Count) return TableFns();
+        var key = _bucketKeys[b];
+        if (key == FilterBucket) return _bucketFns[b];
+        return _bucketFns[b].Concat(TableFns().Where(f => f.TableRoot)).Concat(_objectArrayThunks.Values.Select(t => t.Fn));
     }
 
     /// <summary>Whether a store of one of the keys may run while the local is in scope (section 4.1: a variable
@@ -136,18 +195,19 @@ internal sealed partial class Driver
     /// Stores: the function's own (marks), and those of what it calls in the range.</summary>
     bool StoredWhileInScope(WasmFunction fn, int local, int def, string[] keys, StoreSummary summary)
     {
-        if (_unplacedWrites.TryGetValue(fn, out var u) && keys.Any(u.Contains)) return true;
+        bool Why(string what, string k) { if (s_borrowDebug) Console.Error.WriteLine($"  refused {fn.Name} local {local}: {k} stored by {what}"); return true; }
+        if (_unplacedWrites.TryGetValue(fn, out var u) && keys.Any(u.Contains)) return Why("the function (unplaced)", "");
         var b = fn.Body;
         for (int i = def; i < b.Count; i++)
         {
             var ins = b[i];
             if (ins.Op == Op.Nop)
             {
-                if (ins.Ref is WriteMark wm) { if (Array.IndexOf(keys, wm.Key) >= 0) return true; }
+                if (ins.Ref is WriteMark wm) { if (Array.IndexOf(keys, wm.Key) >= 0) return Why("the function itself", wm.Key); }
                 else if (ReferenceEquals(ins.Ref, ScopeEnd) && ins.Imm == local) return false;
             }
-            else if (ins.Op == Op.Call && ins.Ref is WasmFunction g) { foreach (var k in keys) if (summary.Has(g, k)) return true; }
-            else if (ins.Op == Op.CallIndirect) { foreach (var k in keys) if (summary.HasIndirect(k)) return true; }
+            else if (ins.Op == Op.Call && ins.Ref is WasmFunction g) { foreach (var k in keys) if (summary.Has(g, k)) return Why("a call of " + g.Name, k); }
+            else if (ins.Op == Op.CallIndirect) { foreach (var k in keys) if (summary.HasIndirect(k, ins)) return Why("an indirect call", k); }
         }
         return false;
     }
@@ -158,17 +218,70 @@ internal sealed partial class Driver
     /// <summary>Resolves the placeholders (RuntimeGen.Finish, when every function exists).</summary>
     public void ResolveFieldBorrows()
     {
+        PrintReachWhy();
         if (FieldBorrows.Count == 0 && _tempBorrows.Count == 0) { StripWriteMarks(); return; }
         var byFn = FieldBorrows.GroupBy(b => b.fn).ToDictionary(g => g.Key, g => g.ToList());
-        bool threads = UsesThreads;
+        bool threads = UsesThreads, safePoints = false;
         // what each function may store, with everything it can call (an indirect call: any function in the table)
         StoreSummary? summary = null;
-        if (!threads)
         {
             var queried = new HashSet<string>();
             foreach (var b in FieldBorrows) foreach (var k in b.field.Split('\n')) if (k != "") queried.Add(k);
             foreach (var b in _tempBorrows) queried.Add(b.field);
             summary = new StoreSummary(this, queried);
+            // (threads: the safe point is a pseudo-field the function that moves a thread's epoch stores)
+            if (threads && AllMethods.FirstOrDefault(m => m.Compiled && m.Sym.Name == "SetEpoch" && m.Sym.ContainingType?.Name == "Limbo") is { } setEpoch)
+            {
+                safePoints = true;
+                var (fns, buckets, table) = ReachesSafePoint(setEpoch.Fn);
+                summary.Safe = fns; summary.SafeBuckets = buckets; summary.SafeTable = table;
+            }
+        }
+        // Threads (section 4.5), decided at compile time: the code a worker thread can run is what its start export
+        // reaches. A field that only code no worker can run stores is never changed by another thread, so code no
+        // worker can run borrows from it exactly as in a program without threads. Everything else keeps its counts.
+        HashSet<WasmFunction>? worker = threads ? WorkerReachable() : null;
+        var confined = new Dictionary<string, bool>();
+        bool Confined(WasmFunction fn, string k)
+        {
+            if (worker == null) return true;
+            if (worker.Contains(fn)) return false;
+            if (!confined.TryGetValue(k, out var c))
+            {
+                c = true;
+                foreach (var (w, keys) in FieldWrites) if (keys.Contains(k) && worker.Contains(w)) { c = false; break; }
+                confined[k] = c;
+            }
+            return c;
+        }
+        if (s_borrowDebug && worker != null) Console.Error.WriteLine($"threads: {worker.Count} of {Module.Functions.Count} functions can run on a worker");
+        // Any other code, and any other field: another thread may store the field while it is borrowed, and release the
+        // object it held. Such an object is shared (what a shared object refers to is shared), so its last release
+        // puts it in limbo, and it is destroyed only after every thread has passed a safe point (Limbo, section 4.5).
+        // So the borrow holds while the borrowing thread passes no safe point: with the stores this thread itself
+        // may run, no safe point may be reachable in the borrow's range. Decided here, at compile time. Not for an
+        // object that may be an arena's member (its arena frees it at once).
+        var arenaMember = new Dictionary<string, bool>();
+        bool MayBeArenaMember(string k)
+        {
+            if (!Arenas.Enabled) return false;
+            if (!arenaMember.TryGetValue(k, out var r))
+            {
+                r = !_borrowFieldTypes.TryGetValue(k, out var ft) || Arenas.CycleTypes.Any(id => Types.IsSubtype(TypeById[id], ft));
+                arenaMember[k] = r;
+            }
+            return r;
+        }
+        // null: no borrow; else the keys no store may reach in the range (the safe point's among them when it matters)
+        string[]? ThreadKeys(WasmFunction fn, string[] keys)
+        {
+            if (worker == null || keys.All(k => Confined(fn, k))) return keys;
+            if (!safePoints || keys.Any(MayBeArenaMember))
+            {
+                if (s_borrowDebug) Console.Error.WriteLine($"  refused {fn.Name}: threads, " + (safePoints ? "may be an arena member: " + string.Join(",", keys.Where(MayBeArenaMember)) : "no safe points"));
+                return null;
+            }
+            return [.. keys, SafePointKey];
         }
         var reflected = ReflectedFieldKeys();
         foreach (var (fn, list) in byFn)
@@ -178,12 +291,12 @@ internal sealed partial class Driver
             {
                 // (an init-only field never changes once its object is constructed: no code, on no thread, writes it)
                 bool ok = field == "" || field.Split('\n').All(k => !FieldsAddressTaken.Contains(k) && !reflected.Contains(k)
-                    && (InitOnlyKey(k) || !threads && summary != null));
+                    );
                 if (ok && field != "" && summary != null)
                 {
-                    var keys = field.Split('\n').Where(k => !InitOnlyKey(k)).ToArray();
+                    var keys = ThreadKeys(fn, field.Split('\n').Where(k => !InitOnlyKey(k)).ToArray());
                     int def = b.FindIndex(x => x.Op == Op.Call && x.Ref == marker);
-                    if (keys.Length > 0 && (def < 0 || StoredWhileInScope(fn, local, def, keys, summary))) ok = false;
+                    if (keys == null || keys.Length > 0 && (def < 0 || StoredWhileInScope(fn, local, def, keys, summary))) ok = false;
                 }
                 if (s_borrowDebug) Console.Error.WriteLine($"borrow {fn.Name} local {local} {field.Replace('\n', '|')}: {ok}"
                     + (summary != null ? " own=" + (FieldWrites.TryGetValue(fn, out var ow) && ow.Contains(field) ? "y" : "n") + " via "
@@ -212,7 +325,9 @@ internal sealed partial class Driver
         foreach (var (fn, field, retain, release) in _tempBorrows)
         {
             bool initOnly = InitOnlyKey(field) && !FieldsAddressTaken.Contains(field) && !reflected.Contains(field);
-            bool ok = initOnly || !threads && summary != null && !FieldsAddressTaken.Contains(field) && !reflected.Contains(field);
+            var tkeys = initOnly ? null : ThreadKeys(fn, [field]);
+            bool ok = initOnly || tkeys != null && !FieldsAddressTaken.Contains(field) && !reflected.Contains(field);
+            bool safe = tkeys is { Length: > 1 };
             // the borrow lasts from the retain to the statement's release: only what runs in between may not store the
             // field (the function's own stores anywhere: the whole function's summary decides)
             if (ok && !initOnly && FieldWrites.TryGetValue(fn, out var own) && own.Contains(field)) ok = false;
@@ -221,13 +336,13 @@ internal sealed partial class Driver
                 var b = fn.Body;
                 int r = b.FindIndex(x => x.Op == Op.Call && x.Ref == retain);
                 int e = r < 0 ? -1 : b.FindIndex(r + 1, x => x.Op == Op.Call && x.Ref == release);
-                if (r < 0 || e < 0) ok = !summary!.Has(fn, field);
+                if (r < 0 || e < 0) ok = !summary!.Has(fn, field) && !(safe && summary.Has(fn, SafePointKey));
                 else
                     for (int k = r + 1; k < e && ok; k++)
                     {
                         var ins = b[k];
-                        if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != retain && summary!.Has(g, field)) ok = false;
-                        else if (ins.Op == Op.CallIndirect && summary!.Has(fn, field)) ok = false;
+                        if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != retain && (summary!.Has(g, field) || safe && summary.Has(g, SafePointKey))) ok = false;
+                        else if (ins.Op == Op.CallIndirect && (summary!.HasIndirect(field, ins) || safe && summary.HasIndirect(SafePointKey, ins))) ok = false;
                     }
             }
             markers[retain] = ok ? null : Rt.Retain;
@@ -253,6 +368,144 @@ internal sealed partial class Driver
         StripWriteMarks();
     }
 
+    /// <summary>Threads: the functions from which a call chain reaches the function that moves a thread's epoch (a
+    /// safe point), not counting a finalizer's call from a destroy function (between rt.fin_hold and rt.fin_unhold the
+    /// thread keeps its epoch: Limbo.Hold). With the buckets of indirect calls that can, and whether one without a
+    /// bucket can.</summary>
+    (HashSet<WasmFunction> fns, HashSet<int> buckets, bool table) ReachesSafePoint(WasmFunction setEpoch)
+    {
+        var hold = Rt.FinHoldIfMade;
+        var callers = new Dictionary<WasmFunction, List<WasmFunction>>();
+        var bucketCallers = new Dictionary<int, List<WasmFunction>>();
+        var tableCallers = new List<WasmFunction>();
+        void Edge(WasmFunction from, WasmFunction to)
+        {
+            if (!callers.TryGetValue(to, out var l)) callers[to] = l = [];
+            l.Add(from);
+        }
+        foreach (var f in Module.Functions)
+        {
+            if (f.ForwardTo != null) Edge(f, f.ForwardTo);
+            bool held = false;
+            foreach (var ins in f.Body)
+            {
+                if (ins.Op == Op.Call && ins.Ref is WasmFunction g)
+                {
+                    if (g == hold) held = true;
+                    else if (held) held = g != Rt.FinUnhold; // (the finalizer's call, then the unhold)
+                    else Edge(f, g);
+                }
+                else if (ins.Op == Op.CallIndirect && !held)
+                {
+                    if (ins.Imm2 > 0 && ins.Imm2 < _bucketFns.Count) { if (!bucketCallers.TryGetValue((int)ins.Imm2, out var l)) bucketCallers[(int)ins.Imm2] = l = []; l.Add(f); }
+                    else tableCallers.Add(f);
+                }
+            }
+        }
+        var bucketsOf = new Dictionary<WasmFunction, List<int>>();
+        for (int bk = 1; bk < _bucketFns.Count; bk++)
+            foreach (var t in IndirectTargets(new Instr { Op = Op.CallIndirect, Imm2 = bk }))
+            {
+                if (!bucketsOf.TryGetValue(t, out var l)) bucketsOf[t] = l = [];
+                l.Add(bk);
+            }
+        var inTable = TableFns().ToHashSet();
+        var seen = new HashSet<WasmFunction> { setEpoch };
+        var buckets = new HashSet<int>();
+        bool table = false;
+        var work = new Stack<WasmFunction>(); work.Push(setEpoch);
+        void Add(WasmFunction f) { if (seen.Add(f)) work.Push(f); }
+        while (work.Count > 0)
+        {
+            var f = work.Pop();
+            if (callers.TryGetValue(f, out var cs)) foreach (var c in cs) Add(c);
+            if (bucketsOf.TryGetValue(f, out var bs))
+                foreach (var bk in bs)
+                    if (buckets.Add(bk) && bucketCallers.TryGetValue(bk, out var bc)) foreach (var c in bc) Add(c);
+            if (!table && inTable.Contains(f)) { table = true; foreach (var c in tableCallers) Add(c); }
+        }
+        if (s_borrowDebug) Console.Error.WriteLine($"threads: {seen.Count} of {Module.Functions.Count} functions can reach a safe point");
+        return (seen, buckets, table);
+    }
+
+    /// <summary>CS2WASM_REACH_WHY="from>>to" (diagnosis): the shortest chain of calls from a function whose name
+    /// contains `from` to one whose name contains `to`.</summary>
+    void PrintReachWhy()
+    {
+        if (Environment.GetEnvironmentVariable("CS2WASM_REACH_WHY") is not { } spec || !spec.Contains(">>")) return;
+        var parts = spec.Split(">>");
+        var root = Module.Functions.FirstOrDefault(f => f.Name.Contains(parts[0]));
+        if (root == null) { Console.Error.WriteLine("reach: no function " + parts[0]); return; }
+        var parent = new Dictionary<WasmFunction, WasmFunction?> { [root] = null };
+        var work = new Queue<WasmFunction>(); work.Enqueue(root);
+        while (work.Count > 0)
+        {
+            var f = work.Dequeue();
+            if (f != root && f.Name.Contains(parts[1]))
+            {
+                var chain = new List<string>();
+                for (WasmFunction? x = f; x != null; x = parent[x]) chain.Add(x.Name);
+                chain.Reverse();
+                Console.Error.WriteLine("reach: " + string.Join("\n   -> ", chain));
+                return;
+            }
+            void Add(WasmFunction g) { if (parent.TryAdd(g, f)) work.Enqueue(g); }
+            if (f.ForwardTo != null) Add(f.ForwardTo);
+            bool held = false; // (a finalizer's call from a destroy function is left out, as ReachesSafePoint does)
+            foreach (var ins in f.Body)
+            {
+                if (ins.Op == Op.Call && ins.Ref is WasmFunction g)
+                {
+                    if (g == Rt.FinHoldIfMade) held = true;
+                    else if (held) held = g != Rt.FinUnhold;
+                    else Add(g);
+                }
+                else if (ins.Op == Op.CallIndirect && !held) foreach (var t in IndirectTargets(ins)) Add(t);
+            }
+        }
+        Console.Error.WriteLine($"reach: {parts[0]} does not reach {parts[1]}");
+    }
+
+    /// <summary>The functions a worker thread can run: what its start export (__thread_entry: the only export a worker
+    /// instance is entered through) reaches by calls; an indirect call reaches every function in the table.</summary>
+    HashSet<WasmFunction> WorkerReachable()
+    {
+        var seen = new HashSet<WasmFunction>();
+        var root = Module.Functions.FirstOrDefault(f => f.Exports.Contains("__thread_entry"));
+        if (root == null) return seen;
+        var buckets = new HashSet<int>();
+        bool tableDone = false;
+        // (CS2WASM_WORKER_WHY=name: the chain of calls by which a worker reaches the function)
+        var why = Environment.GetEnvironmentVariable("CS2WASM_WORKER_WHY");
+        var parent = why != null ? new Dictionary<WasmFunction, WasmFunction>() : null;
+        var work = new Queue<WasmFunction>();
+        WasmFunction cur = root;
+        void Add(WasmFunction f) { if (seen.Add(f)) { work.Enqueue(f); parent?.TryAdd(f, cur); } }
+        Add(root);
+        while (work.Count > 0)
+        {
+            var f = cur = work.Dequeue();
+            if (parent != null && f.Name.Contains(why!))
+            {
+                var chain = new List<string>();
+                for (var x = f; x != root && chain.Count < 40; x = parent[x]) chain.Add(x.Name);
+                Console.Error.WriteLine("worker reaches: " + string.Join("\n   <- ", chain));
+            }
+            if (f.ForwardTo != null) Add(f.ForwardTo);
+            foreach (var ins in f.Body)
+            {
+                if (ins.Op == Op.Call && ins.Ref is WasmFunction g) Add(g);
+                else if (ins.Op == Op.CallIndirect)
+                {
+                    if (ins.Imm2 == 0) { if (tableDone) continue; tableDone = true; }
+                    else if (!buckets.Add((int)ins.Imm2)) continue;
+                    foreach (var t in IndirectTargets(ins)) Add(t);
+                }
+            }
+        }
+        return seen;
+    }
+
     /// <summary>What each function may store, with everything it can call: bits over the fields some borrow asks about,
     /// unioned over the call graph's strongly connected components (callees first); an indirect call reaches every
     /// function in the table (one node stands for them).</summary>
@@ -268,7 +521,8 @@ internal sealed partial class Driver
             int words = Math.Max(1, (_key.Count + 63) / 64);
             var fns = d.Module.Functions;
             for (int i = 0; i < fns.Count; i++) _node[fns[i]] = i;
-            int table = fns.Count, n = fns.Count + 1;
+            int table = fns.Count, n = fns.Count + 1 + d._bucketFns.Count;
+            _table = table;
             // what writes only memory no program code can reach: the runtime's throw helpers (bounds, null and cast
             // checks: the exception they make), the allocator (fresh or freed blocks), the arenas' and the marks'
             // own tables (a finalizer a release runs still counts: it is compiled code the destroy path calls)
@@ -285,7 +539,7 @@ internal sealed partial class Driver
                 foreach (var ins in f.Body)
                 {
                     if (ins.Op == Op.Call && ins.Ref is WasmFunction g && _node.TryGetValue(g, out int gi) && !skip[gi] && gi != i) edges[i].Add(gi);
-                    else if (ins.Op == Op.CallIndirect) edges[i].Add(table);
+                    else if (ins.Op == Op.CallIndirect) edges[i].Add(ins.Imm2 > 0 && ins.Imm2 < d._bucketFns.Count ? table + (int)ins.Imm2 : table);
                     else if (ins.Op == Op.I32Const && ins.Ref is WasmFunction t && _node.TryGetValue(t, out int ti)) edges[table].Add(ti);
                 }
                 if (f.InTable || f.TableRoot) edges[table].Add(i);
@@ -293,6 +547,9 @@ internal sealed partial class Driver
                 if (d.FieldWrites.TryGetValue(f, out var w))
                     foreach (var k in w) if (_key.TryGetValue(k, out int ki)) _bits[i][ki >> 6] |= 1UL << (ki & 63);
             }
+            for (int bk = 1; bk < d._bucketFns.Count; bk++)
+                foreach (var t in d.IndirectTargets(new Instr { Op = Op.CallIndirect, Imm2 = bk }))
+                    if (_node.TryGetValue(t, out int ti)) edges[table + bk].Add(ti);
             // Tarjan, iterative: components come out callees first
             var index = new int[n]; var low = new int[n]; var on = new bool[n];
             Array.Fill(index, -1);
@@ -330,9 +587,21 @@ internal sealed partial class Driver
         }
 
         /// <summary>Whether some function an indirect call can reach stores the field.</summary>
-        public bool HasIndirect(string key) => _key.TryGetValue(key, out int k) && (_bits[^1][k >> 6] & (1UL << (k & 63))) != 0;
+        /// <summary>Threads: the functions that can reach a safe point, the indirect-call buckets that can, and whether
+        /// an indirect call without a bucket can (ReachesSafePoint); asked through SafePointKey.</summary>
+        public HashSet<WasmFunction>? Safe;
+        public HashSet<int>? SafeBuckets;
+        public bool SafeTable;
 
-        public bool Has(WasmFunction f, string key) =>
+        public bool HasIndirect(string key, in Instr call)
+        {
+            if (key == SafePointKey) return call.Imm2 > 0 ? SafeBuckets?.Contains((int)call.Imm2) == true : SafeTable;
+            int node = call.Imm2 > 0 && _table + (int)call.Imm2 < _bits.Length ? _table + (int)call.Imm2 : _table;
+            return _key.TryGetValue(key, out int k) && (_bits[node][k >> 6] & (1UL << (k & 63))) != 0;
+        }
+        readonly int _table;
+
+        public bool Has(WasmFunction f, string key) => key == SafePointKey ? Safe?.Contains(f) == true :
             _key.TryGetValue(key, out int k) && _node.TryGetValue(f, out int i) && (_bits[i][k >> 6] & (1UL << (k & 63))) != 0;
     }
 

@@ -664,7 +664,7 @@ sealed partial class FunctionCompiler
         if (Types.IsRef(ft) && !f.Field.IsStatic && f.Instance != null && IsStableBase(f.Instance) && f.Field.ContainingType.TypeKind == TypeKind.Class)
         {
             var lk = Driver.FieldKey(Owner(f.Field), StorageField(f.Field));
-            D.NoteBorrowField(lk, StorageField(f.Field));
+            D.NoteBorrowField(lk, StorageField(f.Field), ft);
             _lastFieldLoad = (E.Fn.Body.Count, lk);
         }
         // a static readonly field keeps its value from its static constructor on (section 4.1: Stable, no count to

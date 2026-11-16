@@ -532,7 +532,7 @@ sealed partial class RuntimeGen
                 e.If();
                 // the finalizer may resurrect nothing observable here; it runs with a temporary count
                 e.Get(0); e.I32(1); e.Store(Op.I32Store);
-                e.Get(0); e.Call(D.Method(fin).Fn);
+                e.Call(rt.FinHold); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
                 e.Get(0); e.I32(0); e.Store(Op.I32Store);
                 e.End();
             }
@@ -703,6 +703,8 @@ sealed partial class RuntimeGen
             D.LibMethod("Cs2Wasm.Runtime.Sharing", "Share", 1);
             D.LibMethod("Cs2Wasm.Runtime.Sharing", "MarkPush", 1);
             D.LibMethod("Cs2Wasm.Runtime.Sharing", "RevisitIfShared", 1);
+            D.LibMethod("Cs2Wasm.Runtime.Limbo", "Hold", 0);
+            D.LibMethod("Cs2Wasm.Runtime.Limbo", "Unhold", 0);
             // deferred destruction of shared objects
             {
                 D.LibMethod("Cs2Wasm.Runtime.Limbo", "Add", 1);
@@ -875,6 +877,7 @@ sealed partial class RuntimeGen
         var ecOwner = "AsyncSupport";
         D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled),
                            D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled));
+        D.Rt.EmitFinalizerHold(D.UsesThreads);
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
         if (Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1") EmitCountRc();
         D.Module.UsesThreads = D.UsesThreads;

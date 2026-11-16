@@ -35,6 +35,19 @@ internal sealed partial class RuntimeFns
     /// <summary>(object): marks and queues what the object refers to (one level; Sharing.Share drains the queue).</summary>
     public WasmFunction ShareVisit => _shareVisit ??= M.AddFunction("rt.share_visit", FT([I], []));
 
+    WasmFunction? _finHold, _finUnhold;
+    /// <summary>Around a finalizer's call in a destroy function: with threads, the thread keeps its epoch meanwhile
+    /// (Limbo.Hold); without, nothing.</summary>
+    public WasmFunction FinHold => _finHold ??= M.AddFunction("rt.fin_hold", FT([], []));
+    public WasmFunction FinUnhold => _finUnhold ??= M.AddFunction("rt.fin_unhold", FT([], []));
+    public WasmFunction? FinHoldIfMade => _finHold;
+    public void EmitFinalizerHold(bool threads)
+    {
+        if (!threads) return;
+        if (_finHold != null) new Emitter(_finHold).Call(D.LibMethod("Cs2Wasm.Runtime.Limbo", "Hold", 0).Fn);
+        if (_finUnhold != null) new Emitter(_finUnhold).Call(D.LibMethod("Cs2Wasm.Runtime.Limbo", "Unhold", 0).Fn);
+    }
+
     readonly List<(WasmFunction fn, ITypeSymbol type)> _structCopies = [];
     internal void NoteStructCopy(WasmFunction f, ITypeSymbol t) => _structCopies.Add((f, t));
 }
