@@ -31,6 +31,8 @@ internal sealed class Arenas
         public bool AddressTaken;
         public bool Cyclic;
         public required WasmFunction Link, Unlink;
+        /// <summary>The same for a store into an object only the storing code knows (FreshStores.cs).</summary>
+        public WasmFunction LinkFresh = null!, UnlinkFresh = null!;
 
         public void AddValue(ITypeSymbol? t)
         {
@@ -39,7 +41,7 @@ internal sealed class Arenas
         }
     }
 
-    enum Kind { Link, Unlink, Pin }
+    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh }
 
     readonly Dictionary<string, Site> _sites = [];
     readonly Dictionary<WasmFunction, (Kind kind, Site? site, ITypeSymbol? pinType)> _placeholders = [];
@@ -70,6 +72,8 @@ internal sealed class Arenas
         };
         s.Link = Placeholder("arena.link " + key, new FuncType([I, I], [I]), Kind.Link, s);
         s.Unlink = Placeholder("arena.unlink " + key, new FuncType([I, I], []), Kind.Unlink, s);
+        s.LinkFresh = Placeholder("arena.link fresh " + key, new FuncType([I, I], [I]), Kind.LinkFresh, s);
+        s.UnlinkFresh = Placeholder("arena.unlink fresh " + key, new FuncType([I, I], []), Kind.UnlinkFresh, s);
         _sites[key] = s;
         return s;
     }
@@ -345,7 +349,7 @@ internal sealed class Arenas
 
     static readonly (string name, int arity)[] RuntimeMethods =
         [("ArenaLink", 2), ("ArenaUnlink", 2), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
-         ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1)];
+         ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 2), ("ArenaUnlinkFresh", 2)];
 
     /// <summary>Queues the library's arena runtime for compilation (only when some site is cyclic).</summary>
     public void RequestRuntime()
@@ -358,11 +362,13 @@ internal sealed class Arenas
     /// <summary>Replaces placeholder calls in every function: arena calls at cyclic sites, plain counting elsewhere.</summary>
     public void Resolve()
     {
-        WasmFunction? link = null, unlink = null, pin = null;
+        WasmFunction? link = null, unlink = null, pin = null, linkFresh = null, unlinkFresh = null;
         if (Enabled)
         {
             link = RuntimeFn("ArenaLink", 2);
             unlink = RuntimeFn("ArenaUnlink", 2);
+            linkFresh = RuntimeFn("ArenaLinkFresh", 2);
+            unlinkFresh = RuntimeFn("ArenaUnlinkFresh", 2);
             pin = RuntimeFn("ArenaPin", 1);
         }
         foreach (var f in D.Module.Functions)
@@ -375,14 +381,14 @@ internal sealed class Arenas
                 var x = ins;
                 switch (ph.kind)
                 {
-                    case Kind.Link:
+                    case Kind.Link or Kind.LinkFresh:
                         // (value, container) -> value
-                        if (Enabled && ph.site!.Cyclic) { x.Ref = link; body.Add(x); }
+                        if (Enabled && ph.site!.Cyclic) { x.Ref = ph.kind == Kind.Link ? link : linkFresh; body.Add(x); }
                         else { x.Op = Op.Drop; x.Ref = null; body.Add(x); }
                         break;
-                    case Kind.Unlink:
+                    case Kind.Unlink or Kind.UnlinkFresh:
                         // (old, container) -> ()
-                        if (Enabled && ph.site!.Cyclic) { x.Ref = unlink; body.Add(x); }
+                        if (Enabled && ph.site!.Cyclic) { x.Ref = ph.kind == Kind.Unlink ? unlink : unlinkFresh; body.Add(x); }
                         else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); x.Ref = D.Rt.Release; body.Add(x); }
                         break;
                     case Kind.Pin:

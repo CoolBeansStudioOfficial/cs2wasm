@@ -1027,7 +1027,39 @@ sealed partial class RuntimeGen
 
     void EmitDestroyDispatch()
     {
-        var e = new Emitter(D.Rt.Destroy);
+        // An object's destruction releases what it refers to, which may destroy that, and so on: a long chain (a
+        // linked list let go at its head) would nest as deep as it is long. Past a depth, an object is put on a list
+        // instead (by its count word: it is dead), and the outermost destruction, when it is done, takes them from the
+        // list one by one: the same order of events as far as a program can tell (finalizers run when the count is
+        // gone, in some order), and no stack to run out of.
+        const int MaxNesting = 48;
+        var now = D.Module.AddFunction("rt.destroy_now", new FuncType([ValType.I32], []));
+        {
+            var w = new Emitter(D.Rt.Destroy);
+            int q = w.AddLocal(ValType.I32);
+            w.GGet(D.DestroyDepth); w.I32(MaxNesting); w.Op(Op.I32GeU);
+            w.If();
+            w.Get(0); w.GGet(D.DestroyPending); w.Store(Op.I32Store);
+            w.Get(0); w.GSet(D.DestroyPending);
+            w.Op(Op.Return);
+            w.End();
+            w.GGet(D.DestroyDepth); w.I32(1); w.Op(Op.I32Add); w.GSet(D.DestroyDepth);
+            w.Get(0); w.Call(now);
+            w.GGet(D.DestroyDepth); w.I32(1); w.Op(Op.I32Sub); w.GSet(D.DestroyDepth);
+            w.GGet(D.DestroyDepth); w.Op(Op.I32Eqz);
+            w.If();
+            var exit = w.Block(); var top = w.Loop();
+            w.GGet(D.DestroyPending); w.Tee(q); w.Op(Op.I32Eqz); w.BrIf(exit);
+            w.Get(q); w.Load(Op.I32Load); w.GSet(D.DestroyPending);
+            w.Get(q); w.I32(0); w.Store(Op.I32Store);
+            w.I32(1); w.GSet(D.DestroyDepth);
+            w.Get(q); w.Call(now);
+            w.I32(0); w.GSet(D.DestroyDepth);
+            w.Br(top);
+            w.End(); w.End();
+            w.End();
+        }
+        var e = new Emitter(now);
         int n = D.TypeCount;
         var targets = new Label[n];
         var dflt = e.Block();

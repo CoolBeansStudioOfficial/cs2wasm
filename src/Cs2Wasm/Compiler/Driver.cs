@@ -172,6 +172,8 @@ internal sealed partial class Driver
         Module.Globals.Add(TlsBase);
         StackLo = new WasmGlobal("__stack_lo", ValType.I32, true, 0); Module.Globals.Add(StackLo);
         StackHi = new WasmGlobal("__stack_hi", ValType.I32, true, 0); Module.Globals.Add(StackHi);
+        DestroyDepth = new WasmGlobal("__destroy_depth", ValType.I32, true, 0); Module.Globals.Add(DestroyDepth);
+        DestroyPending = new WasmGlobal("__destroy_pending", ValType.I32, true, 0); Module.Globals.Add(DestroyPending);
         ExceptionTag = new WasmTag("cs_exception", new FuncType([ValType.I32], []));
         Module.Tags.Add(ExceptionTag);
         Module.MemoryMinPages = options.MemoryInitialPages;

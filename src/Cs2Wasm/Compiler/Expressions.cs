@@ -320,7 +320,7 @@ sealed partial class FunctionCompiler
 
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
     void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null,
-                                 Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false)
+                                 Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false, bool fresh = false)
     {
         if (Types.IsStruct(t))
         {
@@ -341,7 +341,7 @@ sealed partial class FunctionCompiler
         if (Types.IsRef(t))
         {
             // section 4.3: a site that can close a cycle links the value into the container's arena (resolved later)
-            if (site != null) { E.Get(val); pushContainer!(); E.Call(site.Link); E.Set(val); }
+            if (site != null) { E.Get(val); pushContainer!(); E.Call(fresh ? site.LinkFresh : site.Link); E.Set(val); }
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
             EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
             int a = Scratch(ValType.I32);
@@ -361,7 +361,7 @@ sealed partial class FunctionCompiler
             }
             E.Get(old);
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
-            if (site != null) { pushContainer!(); E.Call(site.Unlink); } else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.Release);
+            if (site != null) { pushContainer!(); E.Call(fresh ? site.UnlinkFresh : site.Unlink); } else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.Release);
             FreeScratch(ValType.I32, old); FreeScratch(ValType.I32, a);
         }
         else { pushAddr(); E.Get(val); E.Store(Types.StoreOp(t), offset); }
@@ -918,6 +918,16 @@ sealed partial class FunctionCompiler
             return o;
         }
         var from = TypeOf(c.Operand);
+        // (T)(object)x where x is a T: generic code picks a type's branch with `typeof(T) == typeof(int)` and converts
+        // through object, which costs nothing under .NET. No box to make and take apart: the value itself.
+        if (!c.IsTryCast && to.IsValueType && !from.IsValueType && to.OriginalDefinition.SpecialType != SpecialType.System_Nullable_T)
+        {
+            var inner = c.Operand;
+            while (inner is IParenthesizedOperation po) inner = po.Operand;
+            if (inner is IConversionOperation { OperatorMethod: null, IsTryCast: false, Operand.Type: not null } bc
+                && TypeOf(bc.Operand) is { IsValueType: true } vt && Types.Key(vt) == Types.Key(to))
+                return EmitValue(bc.Operand);
+        }
         if (c.IsTryCast)
         {
             var o = EmitValue(c.Operand);
@@ -2035,7 +2045,7 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false) : LValue(f, t)
     {
         int _addr = -1, _off;
         public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
@@ -2052,7 +2062,7 @@ sealed partial class FunctionCompiler
             if (site != null && !_noted) site.AddValue(Type);
             // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
-                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey);
+                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh);
             if (elements && F.T.NeedsRc(Type)) F.D.NoteFieldWrite(F.E, Driver.ElementsKey);
             return needResult ? Load() : Own.None;
         }
@@ -2256,7 +2266,8 @@ sealed partial class FunctionCompiler
                     {
                         var site = D.Arenas.FieldSite(Owner(field), T.FieldIn(Owner(field), StorageField(field)));
                         return new MemLV(this, t, () => EmitAddressBase(target), site, pub: Publish.Container,
-                            initKey: StorageField(field) is IFieldSymbol sf ? InitStoreKey(sf, Owner(field), fr.Instance) : null);
+                            initKey: StorageField(field) is IFieldSymbol sf ? InitStoreKey(sf, Owner(field), fr.Instance) : null,
+                            fresh: site != null && target.Parent != null && StoresIntoFresh(fr.Instance, target.Parent));
                     }
                     break;
                 }

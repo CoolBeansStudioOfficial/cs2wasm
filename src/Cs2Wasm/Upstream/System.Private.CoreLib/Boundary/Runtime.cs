@@ -140,13 +140,13 @@ namespace Cs2Wasm.Runtime
         // ------------------------------------------------------------------
         const int MaxSmall = 2048;
         const int Classes = MaxSmall / 8 + 1;
-        static int s_top, s_end, s_table, s_large, s_hash;
+        static int s_top, s_end, s_table, s_hash;
 
         static void InitHeap()
         {
             int b = (HeapBase() + 15) & ~15;
             s_table = b;
-            s_top = b + Classes * 4;
+            s_top = b + Classes * 4 + LargeBins * 4;
             s_top = (s_top + 15) & ~15;
             s_end = Mem.Size() * 65536;
         }
@@ -342,6 +342,25 @@ namespace Cs2Wasm.Runtime
             ThrowHelpers.ReserveOutOfMemory();
         }
 
+        // Blocks above MaxSmall: their sizes are rounded up to one of eight steps per power of two (an eighth more at
+        // most), and each such size has its own list of freed blocks, so allocating and freeing one is a push or a pop
+        // whatever is free. [0] next.
+        const int LargeBins = 20 * 8;
+
+        /// <summary>The list of a large size that is one of the steps (or the last list a smaller size fits: the floor).</summary>
+        static int LargeBin(int size)
+        {
+            int k = 31 - I32Clz(size);
+            return (k - 11) * 8 + ((size >> (k - 3)) & 7);
+        }
+
+        /// <summary>A large size rounded up to a step.</summary>
+        static int RoundLarge(int size)
+        {
+            int step = 1 << (28 - I32Clz(size));
+            return (size + step - 1) & ~(step - 1);
+        }
+
         static int AllocCore(int size)
         {
             if (s_top == 0) InitHeap();
@@ -357,29 +376,59 @@ namespace Cs2Wasm.Runtime
                     Zero(head, size);
                     return head;
                 }
+                // (the region cut from a freed large block, below)
+                if (s_carve + size <= s_carveEnd) { int c = s_carve; s_carve = c + size; return c; }
             }
-            else
+            else if (size < 0x40000000)
             {
-                // first fit among freed large blocks: [next, size]
-                int prev = 0, cur = s_large;
-                while (cur != 0)
+                size = RoundLarge(size);
+                int bins = s_table + Classes * 4;
+                int bin = LargeBin(size);
+                int head = Mem.LoadI32(bins + bin * 4);
+                if (head != 0)
                 {
-                    int csize = Mem.LoadI32(cur + 4);
-                    if (csize >= size && csize <= size + size / 4)
-                    {
-                        int next = Mem.LoadI32(cur);
-                        if (prev == 0) s_large = next; else Mem.StoreI32(prev, next);
-                        Mem.Fill(cur, 0, csize);
-                        return cur;
-                    }
-                    prev = cur; cur = Mem.LoadI32(cur);
+                    Mem.StoreI32(bins + bin * 4, Mem.LoadI32(head));
+                    Mem.Fill(head, 0, size);
+                    return head;
+                }
+                // a freed block of a larger size nearby (up to four times): split, the rest freed again
+                int last = bin + 16 < LargeBins ? bin + 16 : LargeBins - 1;
+                for (int i = bin + 1; i <= last; i++)
+                {
+                    int blk = Mem.LoadI32(bins + i * 4);
+                    if (blk == 0) continue;
+                    Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk));
+                    int csize = LargeSize(i);
+                    Mem.Fill(blk, 0, size);
+                    FreeChunk(blk + size, csize - size);
+                    return blk;
                 }
             }
             if (s_top + size > s_end || s_top + size < s_top)
             {
-                // (freed space first, section 4.6: a larger freed block is split before the memory grows)
-                int blk = TakeLarge(size);
-                if (blk != 0) return blk;
+                // Freed space first (section 4.6), before the memory grows. For a small block, a whole freed large
+                // block becomes the region small blocks are cut from, one after the other (cutting one small block
+                // off a large one at a time would look for a block at every allocation).
+                if (size <= MaxSmall)
+                {
+                    int bins = s_table + Classes * 4;
+                    for (int i = 0; i < LargeBins; i++)
+                    {
+                        int blk = Mem.LoadI32(bins + i * 4);
+                        if (blk == 0) continue;
+                        Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk));
+                        int csize = LargeSize(i);
+                        if (s_carveEnd - s_carve >= 16) FreeCore(s_carve, (s_carveEnd - s_carve) & ~7);
+                        Mem.Fill(blk, 0, csize);
+                        s_carve = blk + size; s_carveEnd = blk + csize;
+                        return blk;
+                    }
+                }
+                else
+                {
+                    int blk = TakeLarge(size);
+                    if (blk != 0) return blk;
+                }
                 int need = s_top + size - s_end;
                 GrowFor(need);
                 s_end = Mem.Size() * 65536;
@@ -389,23 +438,44 @@ namespace Cs2Wasm.Runtime
             return a;
         }
 
-        /// <summary>The first freed large block that holds size bytes (a multiple of 8), zeroed; what is left of it is
-        /// freed again (to its size's list). 0 if there is none.</summary>
+        // (a freed large block that small blocks are being cut from: where the next one starts, and its end)
+        static int s_carve, s_carveEnd;
+
+        /// <summary>The size of the blocks on a large list.</summary>
+        static int LargeSize(int bin) => (8 + (bin & 7)) << ((bin >> 3) + 8);
+
+        /// <summary>A piece of free memory of any size (a multiple of 8): onto the lists, in blocks of their sizes.</summary>
+        static void FreeChunk(int addr, int size)
+        {
+            int bins = s_table + Classes * 4;
+            while (size > MaxSmall)
+            {
+                if (addr + size == s_top) { Mem.Fill(addr, 0, size); s_top = addr; return; }
+                int bin = LargeBin(size);
+                int csize = LargeSize(bin);
+                Mem.StoreI32(addr, Mem.LoadI32(bins + bin * 4));
+                Mem.StoreI32(bins + bin * 4, addr);
+                addr += csize; size -= csize;
+            }
+            if (size >= 16) FreeCore(addr, size);
+        }
+
+        /// <summary>A freed large block that holds size bytes (a multiple of 8), zeroed; what is left of it is freed
+        /// again. 0 if there is none.</summary>
         static int TakeLarge(int size)
         {
-            int prev = 0, cur = s_large;
-            while (cur != 0)
+            int bins = s_table + Classes * 4;
+            int first = size <= MaxSmall ? 0 : LargeBin(RoundLarge(size));
+            for (int i = first; i < LargeBins; i++)
             {
-                int csize = Mem.LoadI32(cur + 4);
-                if (csize >= size)
-                {
-                    int next = Mem.LoadI32(cur);
-                    if (prev == 0) s_large = next; else Mem.StoreI32(prev, next);
-                    Mem.Fill(cur, 0, size);
-                    if (csize - size >= 16) FreeCore(cur + size, csize - size);
-                    return cur;
-                }
-                prev = cur; cur = Mem.LoadI32(cur);
+                int blk = Mem.LoadI32(bins + i * 4);
+                if (blk == 0) continue;
+                int csize = LargeSize(i);
+                if (csize < size) continue;
+                Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk));
+                Mem.Fill(blk, 0, size);
+                if (csize - size >= 16) FreeChunk(blk + size, csize - size);
+                return blk;
             }
             return 0;
         }
@@ -434,10 +504,8 @@ namespace Cs2Wasm.Runtime
                 Mem.StoreI32(slot, addr);
                 return;
             }
-            if (addr + size == s_top) { Mem.Fill(addr, 0, size); s_top = addr; return; } // bump allocation expects zeroed memory
-            Mem.StoreI32(addr, s_large);
-            Mem.StoreI32(addr + 4, size);
-            s_large = addr;
+            // (a large block has its size's step: as it was allocated)
+            FreeChunk(addr, size < 0x40000000 ? RoundLarge(size) : size);
         }
 
         /// <summary>New object: count 1, type id, hash code from a per-instance counter in allocation order (section 7.3).</summary>
@@ -531,14 +599,18 @@ namespace Cs2Wasm.Runtime
         // Arenas (section 4.3). Compiled into a module only when the compiler found a store that can close a cycle.
         //
         // An object of a cycle-capable type is allocated with 16 bytes before its header (AllocObjectArena):
-        //   [-16] its arena (0: none yet), [-12] next member, [-8] previous member,
+        //   [-16] its arena's record (0: none yet), [-12] next member, [-8] previous member (a ring),
         //   [-4] inside count: the references to it from slots of members of its arena.
         // It starts as a plain counted object. A store that can close a cycle puts the container and the value in one
         // arena (ArenaLink); the stored reference is then an inside one: counted in the value's inside count, not
         // in its count. A member's count word is -(outside count + 2): below -1, so retain and release take the
         // arena's path, where the outside references (locals, statics, other objects and arenas) count on the
         // member and on the arena's total.
-        // Arena record (16 bytes): [0] total outside count, [4] first member, [8] members, [12] flags.
+        // Arena record (24 bytes): [0] total outside count, [4] a member (the ring), [8] members, [12] flags,
+        //   [16] the arena this one was merged into (0: none), [20] the members and merged records that point here.
+        // Two arenas merge in a few steps whatever their sizes: the smaller's record points to the larger's, and its
+        // ring is joined to the other's. A member's record word may so be a merged record: ArenaOf follows it to the
+        // arena and makes the member point there; a merged record goes when nothing points to it any more.
         //
         // Nothing is scanned and nothing waits. A member no reference of either kind refers to is destroyed at once,
         // and the members only it referred to with it (a subtree taken out of a tree). An arena whose total reaches
@@ -554,7 +626,7 @@ namespace Cs2Wasm.Runtime
         // arena's are under the runtime lock); cycles among them are not collected.
         const int ArenaBusy = 1, ArenaShared = 4;
         const int SharedCount = 0x40000000;
-        const int ArenaPrefix = 16, ArenaRecord = 16;
+        const int ArenaPrefix = 16, ArenaRecord = 24;
 
         [Intrinsic] static extern int SccOf(int typeId);
         [Intrinsic] static extern void ArenaClearObject(int addr);
@@ -577,13 +649,39 @@ namespace Cs2Wasm.Runtime
         /// <summary>Frees such an object (the destroy functions of cycle-capable types).</summary>
         public static void FreeObjectArena(int addr, int size) => Free(addr - ArenaPrefix, size + ArenaPrefix);
 
-        /// <summary>The arena of an object whose count word says it is a member.</summary>
-        internal static int ArenaOf(int obj) => Mem.LoadI32(obj - 16);
+        /// <summary>The arena of a member (its count word says it is one).</summary>
+        internal static int ArenaOf(int obj)
+        {
+            int ar = Mem.LoadI32(obj - 16);
+            int f = Mem.LoadI32(ar + 16);
+            if (f == 0) return ar;
+            // (merged since: to the arena it is part of now, and straight there from here on)
+            int root = f;
+            while (true) { int g = Mem.LoadI32(root + 16); if (g == 0) break; root = g; }
+            Mem.StoreI32(obj - 16, root);
+            Mem.StoreI32(root + 20, Mem.LoadI32(root + 20) + 1);
+            ArenaDeref(ar);
+            return root;
+        }
+
+        /// <summary>One pointer to a record is gone: a merged record nothing points to goes (and its pointer on).</summary>
+        static void ArenaDeref(int ar)
+        {
+            while (true)
+            {
+                int n = Mem.LoadI32(ar + 20) - 1;
+                Mem.StoreI32(ar + 20, n);
+                int f = Mem.LoadI32(ar + 16);
+                if (n != 0 || f == 0) return;
+                Free(ar, ArenaRecord);
+                ar = f;
+            }
+        }
 
         static int NewArena()
         {
             int ar = Alloc(ArenaRecord);
-            Mem.StoreI64(ar, 0); Mem.StoreI64(ar + 8, 0);
+            Mem.StoreI64(ar, 0); Mem.StoreI64(ar + 8, 0); Mem.StoreI64(ar + 16, 0);
             return ar;
         }
 
@@ -592,34 +690,80 @@ namespace Cs2Wasm.Runtime
         {
             int c = Mem.LoadI32(obj);
             Mem.StoreI32(obj, -(c + 2));
-            int head = Mem.LoadI32(ar + 4);
             Mem.StoreI32(obj - 16, ar);
-            Mem.StoreI32(obj - 12, head);
-            Mem.StoreI32(obj - 8, 0);
             Mem.StoreI32(obj - 4, 0);
-            if (head != 0) Mem.StoreI32(head - 8, obj);
-            Mem.StoreI32(ar + 4, obj);
+            int head = Mem.LoadI32(ar + 4);
+            if (head == 0)
+            {
+                Mem.StoreI32(obj - 12, obj);
+                Mem.StoreI32(obj - 8, obj);
+                Mem.StoreI32(ar + 4, obj);
+            }
+            else
+            {
+                int tail = Mem.LoadI32(head - 8);
+                Mem.StoreI32(obj - 12, head);
+                Mem.StoreI32(obj - 8, tail);
+                Mem.StoreI32(tail - 12, obj);
+                Mem.StoreI32(head - 8, obj);
+            }
             Mem.StoreI32(ar + 8, Mem.LoadI32(ar + 8) + 1);
             Mem.StoreI32(ar, Mem.LoadI32(ar) + c);
+            Mem.StoreI32(ar + 20, Mem.LoadI32(ar + 20) + 1);
+            // what its slots hold already (stored while only the storing code knew it: ArenaLinkFresh) is linked next
+            if (s_linkN == s_linkCap)
+            {
+                int cap = s_linkCap == 0 ? 64 : s_linkCap * 2;
+                int nq = Alloc(cap * 4);
+                if (s_linkQ != 0) { Mem.Copy(nq, s_linkQ, s_linkN * 4); Free(s_linkQ, s_linkCap * 4); }
+                s_linkQ = nq; s_linkCap = cap;
+            }
+            Mem.StoreI32(s_linkQ + 4 * s_linkN, obj);
+            s_linkN++;
         }
 
-        /// <summary>The smaller arena's members become the larger's; returns the survivor.</summary>
+        // (the objects that joined an arena and whose slots are still to be linked)
+        static int s_linkQ, s_linkN, s_linkCap;
+
+        /// <summary>Links what the objects that just joined an arena hold in their slots, and what those hold, in turn
+        /// (a list, not a nest: a long chain joins without a deep stack).</summary>
+        static void ArenaLinkJoined()
+        {
+            while (s_linkN > 0)
+            {
+                s_linkN--;
+                int o = Mem.LoadI32(s_linkQ + 4 * s_linkN);
+                // (still a member: nothing ran in between)
+                int sa = s_visitArena, sm = s_visitMode;
+                s_visitArena = o; s_visitMode = 4;
+                ArenaVisitObject(o);
+                s_visitArena = sa; s_visitMode = sm;
+            }
+        }
+
+        /// <summary>The smaller arena becomes part of the larger; returns the survivor.</summary>
         static int ArenaMerge(int a, int b)
         {
             if (Mem.LoadI32(a + 8) < Mem.LoadI32(b + 8)) { int t = a; a = b; b = t; }
-            int first = Mem.LoadI32(b + 4), last = 0;
-            for (int m = first; m != 0; m = Mem.LoadI32(m - 12)) { Mem.StoreI32(m - 16, a); last = m; }
-            if (last != 0)
+            int ha = Mem.LoadI32(a + 4), hb = Mem.LoadI32(b + 4);
+            if (hb != 0)
             {
-                int head = Mem.LoadI32(a + 4);
-                Mem.StoreI32(last - 12, head);
-                if (head != 0) Mem.StoreI32(head - 8, last);
-                Mem.StoreI32(a + 4, first);
+                if (ha == 0) Mem.StoreI32(a + 4, hb);
+                else
+                {
+                    // the two rings become one
+                    int ta = Mem.LoadI32(ha - 8), tb = Mem.LoadI32(hb - 8);
+                    Mem.StoreI32(ta - 12, hb); Mem.StoreI32(hb - 8, ta);
+                    Mem.StoreI32(tb - 12, ha); Mem.StoreI32(ha - 8, tb);
+                }
             }
             Mem.StoreI32(a, Mem.LoadI32(a) + Mem.LoadI32(b));
             Mem.StoreI32(a + 8, Mem.LoadI32(a + 8) + Mem.LoadI32(b + 8));
             Mem.StoreI32(a + 12, Mem.LoadI32(a + 12) | Mem.LoadI32(b + 12));
-            Free(b, ArenaRecord);
+            // (b's members still point to b: b points to a, for as long as one of them does)
+            Mem.StoreI32(b, 0); Mem.StoreI32(b + 4, 0); Mem.StoreI32(b + 8, 0);
+            if (Mem.LoadI32(b + 20) == 0) Free(b, ArenaRecord);
+            else { Mem.StoreI32(b + 16, a); Mem.StoreI32(a + 20, Mem.LoadI32(a + 20) + 1); }
             return a;
         }
 
@@ -627,7 +771,7 @@ namespace Cs2Wasm.Runtime
         public static void ArenaRetain(int p)
         {
             Mem.StoreI32(p, Mem.LoadI32(p) - 1);
-            int ar = Mem.LoadI32(p - 16);
+            int ar = ArenaOf(p);
             Mem.StoreI32(ar, Mem.LoadI32(ar) + 1);
         }
 
@@ -636,7 +780,7 @@ namespace Cs2Wasm.Runtime
         {
             int w = Mem.LoadI32(p) + 1;
             Mem.StoreI32(p, w);
-            int ar = Mem.LoadI32(p - 16);
+            int ar = ArenaOf(p);
             int total = Mem.LoadI32(ar) - 1;
             Mem.StoreI32(ar, total);
             if (total == 0) { ArenaFree(ar); return; }
@@ -657,8 +801,25 @@ namespace Cs2Wasm.Runtime
             if (val == 0 || container == 0) return val;
             RuntimeLock();
             int r = ArenaLinkCore(val, container);
+            ArenaLinkJoined();
             RuntimeUnlock();
             return r;
+        }
+
+        /// <summary>ArenaLink where the compiler saw that only the storing code knows the container (a new object, not
+        /// let out yet: FreshStores.cs): nothing can reach it, so the store closes no cycle and is a plain counted one.
+        /// Unless the container is an arena's member already (it was linked while it was being made): then as any store.</summary>
+        public static int ArenaLinkFresh(int val, int container)
+        {
+            if (container == 0 || Mem.LoadI32(container) > 0) return val;
+            return ArenaLink(val, container);
+        }
+
+        /// <summary>The old value of a slot stored by ArenaLinkFresh: a plain object's slots hold counted references.</summary>
+        public static void ArenaUnlinkFresh(int old, int container)
+        {
+            if (container == 0 || Mem.LoadI32(container) > 0) { Release(Borrow<object>(old)); return; }
+            ArenaUnlink(old, container);
         }
 
         static int ArenaLinkCore(int val, int container)
@@ -670,7 +831,7 @@ namespace Cs2Wasm.Runtime
             if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return val;
             if (ca > 0 && Mem.LoadI32(container + 8) < 0) return val; // pinned
             if (cv > 0 && Mem.LoadI32(val + 8) < 0) return val;
-            int ra = ca < -1 ? Mem.LoadI32(container - 16) : 0, rv = cv < -1 ? Mem.LoadI32(val - 16) : 0;
+            int ra = ca < -1 ? ArenaOf(container) : 0, rv = cv < -1 ? ArenaOf(val) : 0;
             if (ra != 0 && (Mem.LoadI32(ra + 12) & ArenaBusy) != 0) return val;
             if (rv != 0 && (Mem.LoadI32(rv + 12) & ArenaBusy) != 0) return val;
             // (a shared arena takes no more members; two of its members still link)
@@ -683,7 +844,11 @@ namespace Cs2Wasm.Runtime
             if (ar == 0) { ar = rv != 0 ? rv : NewArena(); ArenaJoin(ar, container); }
             cv = Mem.LoadI32(val); // val may be the container itself
             if (cv > 0) ArenaJoin(ar, val);
-            else if (Mem.LoadI32(val - 16) != ar) ar = ArenaMerge(ar, Mem.LoadI32(val - 16));
+            else
+            {
+                int now = ArenaOf(val);
+                if (now != ar) ar = ArenaMerge(ar, now);
+            }
             // the stored reference is inside the arena now: the count the store took becomes an inside count
             Mem.StoreI32(val, Mem.LoadI32(val) + 1);
             Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
@@ -697,11 +862,15 @@ namespace Cs2Wasm.Runtime
             if (old == 0) return;
             RuntimeLock();
             int co = Mem.LoadI32(old), cc = Mem.LoadI32(container);
-            // an inside reference: both are members of one arena (they were linked when it was stored), and the
-            // arena is not being destroyed (its members' inside references are cut first)
-            // (and counted as one: ArenaVisit says when a slot's reference to a member is not)
-            bool inside = co < -1 && cc < -1 && Mem.LoadI32(old - 16) == Mem.LoadI32(container - 16)
-                && (Mem.LoadI32(Mem.LoadI32(old - 16) + 12) & ArenaBusy) == 0 && Mem.LoadI32(old - 4) != 0;
+            // an inside reference: both are members of one arena (they were linked when it was stored), the arena is
+            // not being destroyed (its members' inside references are cut first), and it was counted as one
+            // (ArenaVisit says when a slot's reference to a member is not)
+            bool inside = co < -1 && cc < -1 && Mem.LoadI32(old - 4) != 0;
+            if (inside)
+            {
+                int ar = ArenaOf(old);
+                inside = ar == ArenaOf(container) && (Mem.LoadI32(ar + 12) & ArenaBusy) == 0;
+            }
             if (inside)
             {
                 int n = Mem.LoadI32(old - 4) - 1;
@@ -726,7 +895,12 @@ namespace Cs2Wasm.Runtime
             if ((flags & ArenaShared) == 0)
             {
                 Mem.StoreI32(ar + 12, flags | ArenaShared);
-                for (int m = Mem.LoadI32(ar + 4); m != 0; m = Mem.LoadI32(m - 12)) Sharing.PushMember(m);
+                int first = Mem.LoadI32(ar + 4);
+                if (first != 0)
+                {
+                    int m = first;
+                    do { Sharing.PushMember(m); m = Mem.LoadI32(m - 12); } while (m != first);
+                }
             }
             RuntimeUnlock();
         }
@@ -740,7 +914,8 @@ namespace Cs2Wasm.Runtime
 
         // The generated visitor calls ArenaVisit for each slot of a member that can hold an inside reference; what that
         // does is the mode: 0 a dying member's references (taken out; a member that loses its last dies too),
-        // 1 the same when all of them die anyway (taken out only), 2 a split's count (ArenaSplit), 3 its undoing.
+        // 1 the same when all of them die anyway (taken out only), 2 a split's count (ArenaSplit), 3 its undoing,
+        // 4 a copied object's slots (ArenaLinkContents).
         static int s_visitArena, s_visitMode, s_visitDead;
         const int SplitMax = 4096, PendingMax = 32;
         static int s_split, s_splitN, s_splitRoot, s_splitOver, s_pending, s_pendingN;
@@ -748,9 +923,9 @@ namespace Cs2Wasm.Runtime
         public static void ArenaVisit(int slot)
         {
             int child = Mem.LoadI32(slot);
-            // (4: a copied object's slots, ArenaLinkContents: each reference, counted by the copy, as a store of it)
+            // (4: each reference, counted by the copy, as a store of it)
             if (s_visitMode == 4) { if (child != 0) ArenaLinkCore(child, s_visitArena); return; }
-            if (child == 0 || Mem.LoadI32(child) >= -1 || Mem.LoadI32(child - 16) != s_visitArena) return;
+            if (child == 0 || Mem.LoadI32(child) >= -1 || ArenaOf(child) != s_visitArena) return;
             switch (s_visitMode)
             {
                 case 1: Mem.StoreI32(slot, 0); return;
@@ -768,10 +943,10 @@ namespace Cs2Wasm.Runtime
                         return;
                     }
             }
-            // A slot filled by something other than a store the compiler links (a copy of the whole object, say) holds a
-            // counted, outside reference even to a member of the same arena. The member's inside count is then lower
-            // than its inside referrers; a reference found with that count at zero is such an outside one, and stays
-            // in the slot for the release every other reference of the dying object gets.
+            // A slot filled by something other than a store the compiler links holds a counted, outside reference even
+            // to a member of the same arena. The member's inside count is then lower than its inside referrers; a
+            // reference found with that count at zero is such an outside one, and stays in the slot for the release
+            // every other reference of the dying object gets.
             if (Mem.LoadI32(child - 4) == 0) return;
             Mem.StoreI32(slot, 0);
             int left = Mem.LoadI32(child - 4) - 1;
@@ -805,16 +980,24 @@ namespace Cs2Wasm.Runtime
             s_visitArena = obj; s_visitMode = 4;
             ArenaVisitObject(obj);
             s_visitArena = sa; s_visitMode = sm;
+            ArenaLinkJoined();
             RuntimeUnlock();
         }
 
-        /// <summary>Takes a member off its arena's list.</summary>
+        /// <summary>Takes a member off its arena's ring (ar: its arena, which its record word points to: ArenaOf).</summary>
         static void ArenaTakeOut(int ar, int m)
         {
-            int next = Mem.LoadI32(m - 12), prev = Mem.LoadI32(m - 8);
-            if (prev != 0) Mem.StoreI32(prev - 12, next); else Mem.StoreI32(ar + 4, next);
-            if (next != 0) Mem.StoreI32(next - 8, prev);
+            int next = Mem.LoadI32(m - 12);
+            if (next == m) Mem.StoreI32(ar + 4, 0);
+            else
+            {
+                int prev = Mem.LoadI32(m - 8);
+                Mem.StoreI32(prev - 12, next);
+                Mem.StoreI32(next - 8, prev);
+                if (Mem.LoadI32(ar + 4) == m) Mem.StoreI32(ar + 4, next);
+            }
             Mem.StoreI32(ar + 8, Mem.LoadI32(ar + 8) - 1);
+            Mem.StoreI32(ar + 20, Mem.LoadI32(ar + 20) - 1);
         }
 
         /// <summary>The arena's record goes with its last member.</summary>
@@ -827,7 +1010,7 @@ namespace Cs2Wasm.Runtime
         /// with it, one after the other (no recursion: a long chain is a long list).</summary>
         static void ArenaDestroyFrom(int p)
         {
-            int ar = Mem.LoadI32(p - 16);
+            int ar = ArenaOf(p);
             ArenaTakeOut(ar, p);
             Mem.StoreI32(p - 12, 0);
             int dead = p;
@@ -872,7 +1055,7 @@ namespace Cs2Wasm.Runtime
         /// </summary>
         static void ArenaSplit(int x)
         {
-            int ar = Mem.LoadI32(x - 16);
+            int ar = ArenaOf(x);
             if ((Mem.LoadI32(ar + 12) & (ArenaBusy | ArenaShared)) != 0) return;
             if (s_split == 0) s_split = Alloc(SplitMax * 4);
             int buf = s_split;
@@ -890,7 +1073,7 @@ namespace Cs2Wasm.Runtime
                 s_visitArena = sa; s_visitMode = sm;
                 return;
             }
-            // the part goes: off the arena's list (a list of its own, by the next word), its inside references taken
+            // the part goes: off the arena's ring (a list of its own, by the next word), its inside references taken
             // out (counted off already), then each member as any object
             int dead = 0;
             for (int i = 0; i < n; i++)
@@ -922,16 +1105,25 @@ namespace Cs2Wasm.Runtime
             if ((flags & ArenaBusy) != 0) return;
             Mem.StoreI32(ar + 12, flags | ArenaBusy);
             int first = Mem.LoadI32(ar + 4);
-            int sa = s_visitArena, sm = s_visitMode;
-            s_visitArena = ar; s_visitMode = 1;
-            for (int m = first; m != 0; m = Mem.LoadI32(m - 12)) ArenaVisitObject(m);
-            s_visitArena = sa; s_visitMode = sm;
-            for (int m = first; m != 0; m = Mem.LoadI32(m - 12)) ArenaClearObject(m);
-            for (int m = first; m != 0;)
+            if (first != 0)
             {
-                int next = Mem.LoadI32(m - 12);
-                ArenaFreeObject(m);
-                m = next;
+                // (every member's record word straight at the arena: the merged records they pointed to go now)
+                int m = first;
+                do { ArenaOf(m); m = Mem.LoadI32(m - 12); } while (m != first);
+                int sa = s_visitArena, sm = s_visitMode;
+                s_visitArena = ar; s_visitMode = 1;
+                m = first;
+                do { ArenaVisitObject(m); m = Mem.LoadI32(m - 12); } while (m != first);
+                s_visitArena = sa; s_visitMode = sm;
+                m = first;
+                do { ArenaClearObject(m); m = Mem.LoadI32(m - 12); } while (m != first);
+                m = first;
+                do
+                {
+                    int next = Mem.LoadI32(m - 12);
+                    ArenaFreeObject(m);
+                    m = next;
+                } while (m != first);
             }
             Free(ar, ArenaRecord);
         }

@@ -72,6 +72,9 @@ internal sealed partial class RuntimeFns
 internal sealed partial class Driver
 {
     public WasmGlobal? StackLo, StackHi;
+    /// <summary>How deep the destroy functions are nested on this thread, and the objects whose destruction waits for
+    /// the outermost one to finish (RuntimeGen.EmitDestroyDispatch).</summary>
+    public WasmGlobal DestroyDepth = null!, DestroyPending = null!;
     bool? _mayUseThreads;
     /// <summary>Publication code is emitted for every program: any code may start threads, the program's or a
     /// library's (Roslyn's Parallel.For); it is removed again at the end if no thread is actually reachable.</summary>
