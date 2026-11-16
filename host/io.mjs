@@ -50,7 +50,7 @@ const handlers = {
     const rest = all.slice(1 + 2 * hn); const on = Number(rest[0]);
     const init = { headers: names.map((n, i) => [n, values[i]]), signal: ctr.abort.signal };
     for (let i = 0; i < on; i++) init[rest[1 + i]] = rest[1 + on + i];
-    if (bodyLen >= 0 && body) init.body = u8().slice(body, body + bodyLen);
+    if (bodyLen >= 0 && body) init.body = u8().slice(body >>> 0, (body >>> 0) + bodyLen);
     fetch(str(uri, ulen), init).then((r) => { ctr.response = r; complete(op, 0); }, (e) => fail(op, e));
     return 0;
   },
@@ -73,13 +73,13 @@ const handlers = {
   },
   [IO.body]: (h, buf, size) => {
     const b = controllers.get(h)?.body; if (!b) return 0;
-    const n = Math.min(size, b.length); u8().set(b.subarray(0, n), buf); return n;
+    const n = Math.min(size, b.length); u8().set(b.subarray(0, n), buf >>> 0); return n;
   },
   [IO.stream_read]: (h, op, buf, size) => {
     const ctr = controllers.get(h);
     const give = () => {
       const n = Math.min(size, ctr.chunk.length);
-      u8().set(ctr.chunk.subarray(0, n), buf);
+      u8().set(ctr.chunk.subarray(0, n), buf >>> 0);
       ctr.chunk = ctr.chunk.subarray(n);
       complete(op, n);
     };

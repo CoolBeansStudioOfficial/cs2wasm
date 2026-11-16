@@ -107,8 +107,9 @@ export function cs2wasmImports(module, getMemory, out) {
   // (the frame names and lines, read when a stack trace is first wanted: every thread's instance would pay for them)
   let infoCache = null;
   const info = { get frames() { return (infoCache ??= debugInfo(module)).frames; }, lineAt: (o) => (infoCache ??= debugInfo(module)).lineAt(o) };
+  // (an address comes as a signed 32-bit number: above 2 GB it is negative, hence `>>> 0` wherever one is used)
   const str = (ptr, len) => {
-    const u16 = new Uint16Array(getMemory().buffer, ptr, len);
+    const u16 = new Uint16Array(getMemory().buffer, ptr >>> 0, len);
     let s = '';
     for (let i = 0; i < len; i += 4096) s += String.fromCharCode.apply(null, u16.subarray(i, Math.min(len, i + 4096)));
     return s;
@@ -136,14 +137,14 @@ export function cs2wasmImports(module, getMemory, out) {
     // process's: shared with the workers through globalThis.__cs2wasmArgs
     env_block: (buf, size) => {
       const bytes = new TextEncoder().encode(Object.entries(process.env).map(([k, v]) => `${k}=${v}\0`).join(''));
-      if (buf && size >= bytes.length) new Uint8Array(getMemory().buffer).set(bytes, buf);
+      if (buf && size >= bytes.length) new Uint8Array(getMemory().buffer).set(bytes, buf >>> 0);
       return bytes.length;
     },
     args_block: (buf, size) => {
       const args = globalThis.__cs2wasmArgs ?? [''];
       const chars = [args.length];
       for (const a of args) { chars.push(a.length); for (let i = 0; i < a.length; i++) chars.push(a.charCodeAt(i)); }
-      if (buf && size >= chars.length) new Uint16Array(getMemory().buffer, buf, chars.length).set(chars);
+      if (buf && size >= chars.length) new Uint16Array(getMemory().buffer, buf >>> 0, chars.length).set(chars);
       return chars.length;
     },
     report_exception: (tp, tl, mp, ml, sp, sl) => out.error(str(tp, tl), str(mp, ml), str(sp, sl)),
@@ -156,7 +157,7 @@ export function cs2wasmImports(module, getMemory, out) {
     capture_stack: (ptr, cap) => {
       const text = visibleFrames().map(f => `   at ${f.name}` + (f.loc ? ` in ${f.loc.file}:line ${f.loc.line}` : '')).join('\n');
       const n = Math.min(text.length, cap);
-      const u16 = new Uint16Array(getMemory().buffer, ptr, n);
+      const u16 = new Uint16Array(getMemory().buffer, ptr >>> 0, n);
       for (let i = 0; i < n; i++) u16[i] = text.charCodeAt(i);
       return n;
     },

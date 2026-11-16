@@ -7,17 +7,27 @@ namespace Cs2Wasm;
 // cs2wasm command-line wrapper (for tests; embedders call Cs2WasmCompiler.Compile in process).
 // usage: cs2wasm <file.cs | dir>... -o out.wasm [--boundary table.json] [--map out.wasm.map]
 //               [--section name=file] [--memory-pages N] [--max-pages N] [--no-opt] [-r ref.dll] [--watch]
-//               [-a generators.dll] [--property Name=value]
+//               [-a generators.dll] [--property Name=value] [--plugin Type]...
+// --plugin: a plugin pass (SPEC section 7.1) runs over the program, by its type's name. The .NET build takes an
+// assembly's path too (Program.cs loads it); the self-hosted compiler has its plugins compiled in (tools/selfhost.mjs)
 // -a: source generators run over the program first (with the build properties --property gives them)
 // --watch: builds, then builds again whenever a .cs file of the inputs changes (the library stays loaded: a rebuild
 // skips its parsing and setup)
 // (Cli.Run is the whole of it, so the self-hosted compiler runs the same code: src/Cs2Wasm.Wasm)
 public static class Cli
 {
+    /// <summary>The plugin passes this command line knows, chosen with --plugin by type name: those of the assemblies
+    /// the .NET build was given, or those compiled into the self-hosted compiler.</summary>
+    public static readonly List<ICompilerPlugin> KnownPlugins = [];
+
+    /// <summary>@file: more arguments, one per line (a response file).</summary>
+    public static string[] Expand(string[] args) =>
+        args.SelectMany(a => a.StartsWith('@') && File.Exists(a[1..]) ? File.ReadAllLines(a[1..]).Where(l => l.Length > 0) : [a]).ToArray();
+
     public static int Run(string[] args)
     {
-        // @file: more arguments, one per line (a response file)
-        args = args.SelectMany(a => a.StartsWith('@') && File.Exists(a[1..]) ? File.ReadAllLines(a[1..]).Where(l => l.Length > 0) : [a]).ToArray();
+        args = Expand(args);
+        var plugins = new List<ICompilerPlugin>();
         var inputs = new List<string>();
         var pathMap = new List<(string From, string To)>();
         string? output = null, boundary = null, map = null;
@@ -48,6 +58,18 @@ public static class Cli
                         resources.Add((kv[0], File.ReadAllBytes(kv[1])));
                         break;
                     }
+                case "--plugin":
+                    {
+                        var name = args[++i];
+                        var p = KnownPlugins.FirstOrDefault(x => x.GetType().FullName == name) ?? KnownPlugins.FirstOrDefault(x => x.GetType().Name == name);
+                        if (p == null)
+                        {
+                            Console.Error.WriteLine($"cs2wasm: no plugin '{name}'" + (KnownPlugins.Count > 0 ? " (known: " + string.Join(", ", KnownPlugins.Select(x => x.GetType().FullName)) + ")" : ""));
+                            return 2;
+                        }
+                        if (!plugins.Contains(p)) plugins.Add(p);
+                        break;
+                    }
                 case "--memory-pages": pages = int.Parse(args[++i]); break;
                 case "--max-pages": maxPages = int.Parse(args[++i]); break;
                 case "--pathmap":
@@ -69,7 +91,7 @@ public static class Cli
                         break;
                     }
                 case "-h": case "--help":
-                    Console.WriteLine("usage: cs2wasm <file.cs|dir>... -o out.wasm [--boundary table.json] [--map out.map] [--section name=file] [--resource name=file] [--pathmap from=to] [--memory-pages N] [--no-opt] [-r ref.dll] [--watch]");
+                    Console.WriteLine("usage: cs2wasm <file.cs|dir>... -o out.wasm [--boundary table.json] [--map out.map] [--section name=file] [--resource name=file] [--pathmap from=to] [--memory-pages N] [--max-pages N] [--no-opt] [-r ref.dll] [-a generators.dll] [--property Name=value] [--plugin Type|plugin.dll] [--watch]");
                     return 0;
                 default: inputs.Add(args[i]); break;
             }
@@ -102,6 +124,7 @@ public static class Cli
                     MemoryInitialPages = pages,
                     MemoryMaximumPages = maxPages,
                     Optimize = optimize,
+                    Plugins = plugins,
                 };
                 var result = Cs2WasmCompiler.Compile(compilation, options);
                 foreach (var d in result.Diagnostics.Where(d => d.Severity >= DiagnosticSeverity.Warning || d.Id.StartsWith("CW")))

@@ -77,8 +77,8 @@ export function httpImports(getMemory) {
         if (r !== w) {
           const e = IO.RING + 3 * (r % IO.RING_SIZE);
           const dv = new DataView(getMemory().buffer);
-          dv.setInt32(resultPtr, c[e + 1], true);
-          dv.setInt32(lenPtr, c[e + 2], true);
+          dv.setInt32(resultPtr >>> 0, c[e + 1], true);
+          dv.setInt32(lenPtr >>> 0, c[e + 2], true);
           const op = c[e];
           Atomics.store(c, 2, r + 1);
           return op;

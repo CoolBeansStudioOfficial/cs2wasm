@@ -3,8 +3,16 @@
 using System;
 using System.Runtime.InteropServices;
 
-static class Entry
+static partial class Entry
 {
+    /// <summary>The plugin passes compiled into this toolchain (SPEC section 7.1): tools/selfhost.mjs writes the other
+    /// part of this class when it is given plugin sources; without it there are none.</summary>
+    static partial void AddPlugins();
+
     [UnmanagedCallersOnly(EntryPoint = "main")]
-    static int Main() => Cs2Wasm.Cli.Run(Environment.GetCommandLineArgs()[1..]);
+    static int Main()
+    {
+        AddPlugins();
+        return Cs2Wasm.Cli.Run(Environment.GetCommandLineArgs()[1..]);
+    }
 }

@@ -211,7 +211,7 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern void RuntimeUnlock();
 
         /// <summary>Bytes from the heap's start to its top (freed blocks included).</summary>
-        public static long HeapUsed() => s_top == 0 ? 0 : s_top - HeapBase();
+        public static long HeapUsed() => s_top == 0 ? 0 : (long)(uint)s_top - HeapBase();
 
         public static int Alloc(int size)
         {
@@ -275,7 +275,7 @@ namespace Cs2Wasm.Runtime
             {
                 int bytes = want * size;
                 int start = 0;
-                if (s_top + bytes > s_end || s_top + bytes < s_top)
+                if ((uint)(s_end - s_top) < (uint)bytes)
                 {
                     start = TakeLarge(bytes);
                     if (start == 0)
@@ -377,7 +377,8 @@ namespace Cs2Wasm.Runtime
                     return head;
                 }
                 // (the region cut from a freed large block, below)
-                if (s_carve + size <= s_carveEnd) { int c = s_carve; s_carve = c + size; return c; }
+                // (addresses compare as unsigned numbers: memory goes on past 2 GB)
+                if ((uint)(s_carveEnd - s_carve) >= (uint)size) { int c = s_carve; s_carve = c + size; return c; }
             }
             else if (size < 0x40000000)
             {
@@ -404,7 +405,7 @@ namespace Cs2Wasm.Runtime
                     return blk;
                 }
             }
-            if (s_top + size > s_end || s_top + size < s_top)
+            if ((uint)(s_end - s_top) < (uint)size)
             {
                 // Freed space first (section 4.6), before the memory grows. For a small block, a whole freed large
                 // block becomes the region small blocks are cut from, one after the other (cutting one small block
@@ -525,7 +526,7 @@ namespace Cs2Wasm.Runtime
         static void Zero(int addr, int size)
         {
             if (size > 256) { Mem.Fill(addr, 0, size); return; }
-            for (int e = addr + size; addr < e; addr += 8) Mem.StoreI64(addr, 0);
+            for (int e = addr + size; addr != e; addr += 8) Mem.StoreI64(addr, 0);
         }
 
         public static int AllocObject(int size, int typeId)
@@ -544,7 +545,7 @@ namespace Cs2Wasm.Runtime
                         Mem.StoreI32(slot, Mem.LoadI32(head + 8));
                         Mem.StoreI32(head, 1);
                         Mem.StoreI32(head + 4, typeId);
-                        for (int p = head + 8, e = head + s; p < e; p += 8) Mem.StoreI64(p, 0);
+                        for (int p = head + 8, e = head + s; p != e; p += 8) Mem.StoreI64(p, 0);
                         return head;
                     }
                 }
@@ -1255,7 +1256,7 @@ namespace Cs2Wasm.Runtime
             RuntimeLock();
             bool ok = true;
             if (s_top == 0) InitHeap();
-            if (s_top + bytes > s_end || s_top + bytes < s_top)
+            if ((uint)(s_end - s_top) < (uint)bytes)
             {
                 int pages = (s_top + bytes - s_end + 65535) / 65536;
                 ok = Mem.Grow(pages) >= 0;

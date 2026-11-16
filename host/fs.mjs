@@ -26,7 +26,8 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
   const dv = () => new DataView(mem());
   const getCwd = () => cwdLen[0] === 0 ? '/' : Buffer.from(cwdBytes.slice(0, cwdLen[0])).toString('utf8');
   const setCwd = (v) => { const b = Buffer.from(v, 'utf8'); cwdBytes.set(b.subarray(0, 4096)); cwdLen[0] = Math.min(b.length, 4096); };
-  const str = (p, len) => { let s = ''; const m = dv(); for (let i = 0; i < len; i++) s += String.fromCharCode(m.getUint16(p + 2 * i, true)); return s; };
+  // (an address above 2 GB arrives negative: `>>> 0` where one is used)
+  const str = (p, len) => { p >>>= 0; let s = ''; const m = dv(); for (let i = 0; i < len; i++) s += String.fromCharCode(m.getUint16(p + 2 * i, true)); return s; };
   // a module path ("/a/b", or relative to its working directory) as a path of this machine, inside the root
   const real = (p, len) => {
     const v = path.posix.resolve(getCwd(), str(p, len));
@@ -34,11 +35,12 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
   };
   const virt = (r) => '/' + path.relative(root, r).split(path.sep).filter(Boolean).join('/');
   // reads and writes through a copy (the module's memory may be shared, which the file system does not take)
-  const readInto = (fd, p, n, pos) => { const b = Buffer.alloc(n); const r = fs.readSync(fd, b, 0, n, pos); u8().set(b.subarray(0, r), p); return r; };
-  const writeFrom = (fd, p, n, pos) => fs.writeSync(fd, Buffer.from(u8().slice(p, p + n)), 0, n, pos);
-  const utf8Into = (s, p, size) => { const b = Buffer.from(s, 'utf8'); u8().set(b.subarray(0, Math.min(size, b.length)), p); return b.length; };
+  const readInto = (fd, p, n, pos) => { const b = Buffer.alloc(n); const r = fs.readSync(fd, b, 0, n, pos); u8().set(b.subarray(0, r), p >>> 0); return r; };
+  const writeFrom = (fd, p, n, pos) => fs.writeSync(fd, Buffer.from(u8().slice(p >>> 0, (p >>> 0) + n)), 0, n, pos);
+  const utf8Into = (s, p, size) => { const b = Buffer.from(s, 'utf8'); u8().set(b.subarray(0, Math.min(size, b.length)), p >>> 0); return b.length; };
   const statInto = (st, out) => {
     const m = dv();
+    out >>>= 0;
     const ns = (v) => v % 1000000000n, sec = (v) => v / 1000000000n;
     const vals = [BigInt(st.mode), st.size, BigInt(st.uid), BigInt(st.gid), sec(st.atimeNs), ns(st.atimeNs), sec(st.mtimeNs), ns(st.mtimeNs),
       sec(st.ctimeNs), ns(st.ctimeNs), sec(st.birthtimeNs), ns(st.birthtimeNs), BigInt(st.dev), BigInt(st.rdev), BigInt(st.ino), BigInt(st.nlink)];
@@ -55,7 +57,7 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
     if (f & 0x200 && c.O_NOFOLLOW) r |= c.O_NOFOLLOW;
     return r;
   };
-  const timesOf = (p) => { if (p === 0) { const n = Date.now() / 1000; return [n, n]; } const m = dv(); return [Number(m.getBigInt64(p, true)) + Number(m.getBigInt64(p + 8, true)) / 1e9, Number(m.getBigInt64(p + 16, true)) + Number(m.getBigInt64(p + 24, true)) / 1e9]; };
+  const timesOf = (p) => { if (p === 0) { const n = Date.now() / 1000; return [n, n]; } p >>>= 0; const m = dv(); return [Number(m.getBigInt64(p, true)) + Number(m.getBigInt64(p + 8, true)) / 1e9, Number(m.getBigInt64(p + 16, true)) + Number(m.getBigInt64(p + 24, true)) / 1e9]; };
   const dirs = new Map(); let nextDir = 1;
   // each descriptor's file position (Node keeps none it reports), as the kernel keeps it, for every thread
   const pos = { set: (fd, v) => { posArr[fd & 4095] = BigInt(v); }, delete: (fd) => { posArr[fd & 4095] = 0n; } };
@@ -105,8 +107,8 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
       const name = Buffer.from(e.name, 'utf8');
       if (name.length > size) { pending.set(h, e); return name.length; }
       pending.delete(h);
-      u8().set(name, buf);
-      dv().setInt32(typeOut, NT(e), true);
+      u8().set(name, buf >>> 0);
+      dv().setInt32(typeOut >>> 0, NT(e), true);
       return name.length;
     }),
     fs_closedir: (h) => tryDo(() => { dirs.get(h)?.closeSync(); dirs.delete(h); pending.delete(h); return 0; }),
