@@ -22,7 +22,7 @@ output.
 | Output | One 32-bit **core** WASM module with imported memory. Not a component (browsers do not run the component model), not WasmGC |
 | Pipeline | Roslyn, then the compiler. No intermediate language, no second compiler (no Rust, no LLVM, no C) |
 | Correctness | **The same observable output as the program under .NET.** Observable output is the sequence of calls the module makes to its imports, and their arguments. How the compiler gets there is free |
-| Input scope | **Every program .NET accepts compiles.** Where the compiler cannot prove something cheap, it pays a run-time cost; it never rejects a program for being hard to analyse. What the sandbox does not offer (section 8) is the only refusal |
+| Input scope | **Every program .NET accepts compiles.** Where the compiler cannot prove something cheap, it pays a run-time cost; it never rejects a program for being hard to analyse. No program or use case is treated specially: every module gets the same platform (section 8), and platform invoke into native libraries, which cannot exist in WASM, is the only refusal |
 | Memory | No garbage collector, no background collector, no whole-heap scan. Compile-time reference counting copied from Lobster (section 4) |
 | Speed | Speed and module size are the priorities, reached by real translations of C# concepts, not by imitating the .NET runtime |
 | Against NativeAOT | **Anything cs2wasm compiles is faster, smaller and uses less memory than the same program under .NET NativeAOT.** Run time, binary size and peak memory are each measured against NativeAOT on real programs; Roslyn, compiled by cs2wasm and compiling programs, is the main measure (section 10, proof 5) |
@@ -200,8 +200,9 @@ heap compact (reuse freed space) because a snapshot's cost is proportional to th
 - 32-bit core WASM, **shared memory imported** from the engine (the engine creates it, with the maximum it allows;
   shared because threads need it; start with a large initial size, because growing memory is slow in Chrome: about
   2.1 s to build a 256 MB heap). The module has its own memory, separate from the engine's.
-- **Imports: the engine's functions and nothing else.** There is no WASI layer. Console output, time and randomness
-  come from engine imports that the library calls (section 7.4).
+- **Imports: the host's functions and nothing else.** There is no WASI layer. Console output, time, randomness, files,
+  HTTP and environment variables come from host imports that the library calls (sections 7.4 and 8), the same for every
+  module.
 - **Roots.** A game has no `Main`. The roots of reachability are the exported entry points (section 6.2). Objects live
   between calls; the engine holds some of them through handles.
 - **Initialization.** An exported `init` runs once before any other export (memory layout, statics that are not lazy,
@@ -360,18 +361,16 @@ results on every machine**. The compiler must not introduce variation:
 
 ---
 
-## 8. Sandbox: what does not exist
+## 8. Sandbox: the platform every module gets
 
-The module runs in the browser's WASM sandbox with only the engine's imports. These do not exist, and using them is a
-**build error naming the missing capability**, never a silent stub:
-
-- files, sockets, processes, environment, registry;
-- platform invoke (`DllImport`, `LibraryImport`), COM.
-
-The one exception is **files for the toolchain**: a module built with the file capability (an option of the build, for
-the self-hosted toolchain of section 9: Roslyn reads key files and documentation includes) gets `System.IO` over a
-virtual file system that its host serves through imports (sources, references, the files the build names). Games are
-never built with it, so for them files stay a build error.
+The module runs in the browser's WASM sandbox with only its host's imports. **Every module gets the platform .NET's own
+browser target gets, through host imports, the same for every program**: files over the host's file system, HTTP
+through the host's fetch, environment variables, console, time and randomness. What .NET's browser target does not
+support (processes, raw sockets, the registry) behaves as it does there: it fails at run time with .NET's exception.
+**Platform invoke into native libraries** (`DllImport`, `LibraryImport`, COM), which cannot exist in WASM, is the only
+build error, naming what was called. The compiler never cuts functionality for a kind of program: an embedder that
+wants a module to have less (Bazoodle's games: no files, no network) does it in its host, by what its imports do, or in
+its own code.
 
 What does exist, though .NET programs might expect it not to here (owner):
 
