@@ -530,12 +530,29 @@ namespace Cs2Wasm.Runtime
 
         public static int AllocObject(int size, int typeId)
         {
+            // The usual case in one piece, without a call: a freed block of the size is taken off its list, cleared
+            // and given its header. (An object's identity hash is made when it is first asked for: HashOf.)
+            if (SingleThreaded())
+            {
+                int s = (size + 7) & ~7;
+                if (s <= MaxSmall && s_table != 0)
+                {
+                    int slot = s_table + (s >> 3) * 4;
+                    int head = Mem.LoadI32(slot);
+                    if (head != 0)
+                    {
+                        Mem.StoreI32(slot, Mem.LoadI32(head + 8));
+                        Mem.StoreI32(head, 1);
+                        Mem.StoreI32(head + 4, typeId);
+                        for (int p = head + 8, e = head + s; p < e; p += 8) Mem.StoreI64(p, 0);
+                        return head;
+                    }
+                }
+            }
             int a = Alloc(size);
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
-            int h = NextHash();
-            if (ShareCheck()) h = (h & 0xFFFFFF) | ((ThreadId() & 0x3F) << 24);
-            Mem.StoreI32(a + 8, h);
+            if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x3F) << 24);
             return a;
         }
 
@@ -546,7 +563,6 @@ namespace Cs2Wasm.Runtime
             Mem.Fill(a, 0, size);
             Mem.StoreI32(a, -1);
             Mem.StoreI32(a + 4, typeId);
-            Mem.StoreI32(a + 8, NextHash());
             return a;
         }
 
@@ -587,12 +603,28 @@ namespace Cs2Wasm.Runtime
             return a;
         }
 
+        /// <summary>An object's identity hash: made the first time it is asked for (most objects are never asked), and
+        /// kept in the header from then on.</summary>
         public static int HashOf(object o)
         {
             int a = AddressOf(o);
-            int c = Mem.LoadI32(a);
-            // (bits 31 and 30 of the word are flags: pinned by a static, marked: ObjectMarks)
-            return Mem.LoadI32(a + 8) & 0x3FFFFFFF;
+            // (bits 31 and 30 of the word are flags: pinned by a static, marked: ObjectMarks; with the share check,
+            // bits 24 to 29 are the thread that made the object)
+            int mask = ShareCheck() ? 0xFFFFFF : 0x3FFFFFFF;
+            int v = Mem.LoadI32(a + 8);
+            if ((v & mask) == 0)
+            {
+                int h = NextHash() & mask;
+                if (h == 0) h = 1;
+                ref int w = ref Mem.RefI32(a + 8);
+                while (true)
+                {
+                    v = Atomic.Load32(ref w);
+                    if ((v & mask) != 0) break;
+                    if (Atomic.CompareExchange32(ref w, v, v | h) == v) { v |= h; break; }
+                }
+            }
+            return v & 0x3FFFFFFF;
         }
 
         // ------------------------------------------------------------------
@@ -640,9 +672,7 @@ namespace Cs2Wasm.Runtime
             int a = Alloc(size + ArenaPrefix) + ArenaPrefix;
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
-            int h = NextHash();
-            if (ShareCheck()) h = (h & 0xFFFFFF) | ((ThreadId() & 0x3F) << 24);
-            Mem.StoreI32(a + 8, h);
+            if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x3F) << 24);
             return a;
         }
 
