@@ -374,10 +374,13 @@ sealed partial class FunctionCompiler
     {
         var (size, align) = T.StorageOf(t);
         align = Math.Max(align, 1);
+        // (no variable at the frame base: the base itself, when it goes somewhere, is the whole frame: FrameSlots.cs)
+        if (_frameSize == 0) _frameSize = 8;
         _frameSize = (_frameSize + align - 1) / align * align;
         int off = _frameSize;
         _frameSize += size;
         _usesFrame = true;
+        (E.Fn.FrameSlots ??= []).Add((off, size));
         return off;
     }
 
@@ -566,9 +569,34 @@ sealed partial class FunctionCompiler
     {
         int save = E.CurrentPos;
         if (op.Syntax is not BlockSyntax) E.CurrentPos = D.Position(op.Syntax) is var p && p >= 0 ? p : save;
+        _stmts.Add((op, _temps.Count));
         try { EmitStatementHooks(op); EmitStatementCore(op); }
         catch (CompileException ex) when (ex.Location == null) { throw new CompileException(ex.Message, op.Syntax.GetLocation()); }
+        _stmts.RemoveAt(_stmts.Count - 1);
         E.CurrentPos = save;
+    }
+
+    /// <summary>The statements being compiled, outermost first, each with how many lists of temporaries were open when
+    /// it began: a temporary made now is let go before the innermost statement that began with fewer lists open ends.</summary>
+    readonly List<(IOperation op, int temps)> _stmts = [];
+
+    /// <summary>A local that is assigned again, but not while a temporary made now is held: its object stays the
+    /// same, and alive, that long (the local owns it, or borrows it for its own scope). A field of it read into such a
+    /// temporary can borrow as from a reference that stays put (FieldBorrows.cs looks for stores of the field).</summary>
+    bool QuietLocalBase(IOperation op)
+    {
+        while (op is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } c) op = c.Operand;
+        if (_closure != null || _machine != null || _temps.Count == 0) return false;
+        if (op is not ILocalReferenceOperation { Local: { IsRef: false } l } || IsCaptured(l) || _addrTaken.Contains(l) || TypeOf(op).IsValueType) return false;
+        IOperation? x = null;
+        for (int i = _stmts.Count - 1; i >= 0; i--) if (_stmts[i].temps < _temps.Count) { x = _stmts[i].op; break; }
+        if (x == null) return false;
+        // (declared inside: a loop there gives it a new value each time round)
+        var decl = l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
+        if (decl == null || x.Syntax.SyntaxTree != decl.SyntaxTree || x.Syntax.Span.Contains(decl.Span)) return false;
+        foreach (var o in x.DescendantsAndSelf())
+            if (o is ILocalReferenceOperation lr && SymbolEqualityComparer.Default.Equals(lr.Local, l) && IsLocalWrite(lr)) return false;
+        return true;
     }
 
     void EmitStatementCore(IOperation op)

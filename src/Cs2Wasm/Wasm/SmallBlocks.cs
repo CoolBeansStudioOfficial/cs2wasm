@@ -10,12 +10,13 @@ static class SmallBlocks
 {
     const int MaxCopy = 64, MaxFill = 128;
 
-    public static void Run(WasmFunction f)
+    /// <summary>Returns whether the function changed.</summary>
+    public static bool Run(WasmFunction f)
     {
         var b = f.Body;
         bool any = false;
         for (int i = 1; i < b.Count && !any; i++) any = b[i].Op is Op.MemoryCopy or Op.MemoryFill && b[i - 1].Op == Op.I32Const;
-        if (!any) return;
+        if (!any) return false;
         int np = f.Type.Params.Length;
         int Local(ValType t) { f.Locals.Add(t); return np + f.Locals.Count - 1; }
         int a = -1, s = -1, tail = -1;
@@ -58,6 +59,8 @@ static class SmallBlocks
             }
             o.Add(ins);
         }
+        bool changed = o.Count != b.Count;
         f.Body = o;
+        return changed;
     }
 }

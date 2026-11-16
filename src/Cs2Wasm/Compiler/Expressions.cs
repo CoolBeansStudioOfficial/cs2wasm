@@ -661,7 +661,7 @@ sealed partial class FunctionCompiler
         int off = EmitAddressBase(f);
         if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
         E.Load(Types.LoadOp(ft), off);
-        if (Types.IsRef(ft) && !f.Field.IsStatic && f.Instance != null && IsStableBase(f.Instance) && f.Field.ContainingType.TypeKind == TypeKind.Class)
+        if (Types.IsRef(ft) && !f.Field.IsStatic && f.Instance != null && f.Field.ContainingType.TypeKind == TypeKind.Class && (IsStableBase(f.Instance) || QuietLocalBase(f.Instance)))
         {
             var lk = Driver.FieldKey(Owner(f.Field), StorageField(f.Field));
             D.NoteBorrowField(lk, StorageField(f.Field), ft);

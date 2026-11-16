@@ -76,10 +76,12 @@ sealed partial class FunctionCompiler
 {
     int AllocFrameBytes(int size, int align)
     {
+        if (_frameSize == 0) _frameSize = 8; // (no variable at the frame base: FrameSlots.cs)
         _frameSize = (_frameSize + align - 1) / align * align;
         int off = _frameSize;
         _frameSize += size;
         _usesFrame = true;
+        (E.Fn.FrameSlots ??= []).Add((off, size));
         return off;
     }
 

@@ -136,6 +136,10 @@ internal sealed class WasmFunction
     public string? FrameName;
     /// <summary>Compiled from the program's own code (named in the name section; the library's frames are named in cs2wasm.frames).</summary>
     public bool ProgramCode;
+    /// <summary>The variables in the function's frame on the shadow stack (offset from the frame's base, size), for
+    /// FrameSlots.cs; null: no frame, or one that pass must leave alone.</summary>
+    public List<(int off, int size)>? FrameSlots;
+    public bool NoFramePromotion;
     public WasmFunction(string name, FuncType type) { Name = name; Type = type; }
     public override string ToString() => Name;
 }

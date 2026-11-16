@@ -12,6 +12,52 @@ namespace Cs2Wasm.Wasm;
 static partial class Locals
 {
     static bool IsRt(in Instr i, string name) => i.Op == Op.Call && i.Ref is WasmFunction g && g.Name == name;
+    static readonly bool s_transfers = Environment.GetEnvironmentVariable("CS2WASM_NO_TRANSFERS") != "1";
+
+    /// <summary>`p = n; ...; n = something else` (a list walked with the node before it kept, a rotation of variables):
+    /// p's new count and the release of n's old one cancel, n's count becomes p's. From `local.get n; call rt.retain;
+    /// [local.get p; call rt.release;] local.set p` to `local.get n; call rt.release; [i32.const 0;] local.set n`, with
+    /// nothing in between that reads n, writes p or releases p's value (p holds the object all the way, so it is
+    /// destroyed no earlier than before), nothing that can throw (the handler would release n), and no branch.</summary>
+    static bool Transfers(List<Instr> b)
+    {
+        bool any = false;
+        for (int i = 0; i + 2 < b.Count; i++)
+        {
+            if (b[i].Op != Op.LocalGet || !IsRt(b[i + 1], "rt.retain")) continue;
+            long n = b[i].Imm;
+            int k = i + 2;
+            if (k + 2 < b.Count && b[k].Op == Op.LocalGet && IsRt(b[k + 1], "rt.release") && b[k + 2].Op == Op.LocalSet && b[k + 2].Imm == b[k].Imm) k += 2;
+            if (b[k].Op != Op.LocalSet || b[k].Imm == n) continue;
+            long p = b[k].Imm;
+            int j = -1;
+            for (int q = k + 1; q + 1 < b.Count; q++)
+            {
+                var x = b[q];
+                if (x.Op == Op.LocalGet)
+                {
+                    bool rel = IsRt(b[q + 1], "rt.release");
+                    if (x.Imm == n)
+                    {
+                        if (rel && q + 2 < b.Count && (b[q + 2].Op == Op.LocalSet && b[q + 2].Imm == n
+                            || q + 3 < b.Count && b[q + 2].Op == Op.I32Const && b[q + 2].Imm == 0 && b[q + 2].Ref == null && b[q + 3].Op == Op.LocalSet && b[q + 3].Imm == n)) j = q;
+                        break;
+                    }
+                    if (x.Imm == p && rel) break;
+                    continue;
+                }
+                if (x.Op is Op.LocalSet or Op.LocalTee) { if (x.Imm == n || x.Imm == p) break; continue; }
+                if (x.Op == Op.Call) { if (IsRt(x, "rt.retain") || IsRt(x, "rt.release")) continue; break; }
+                if (x.Op is Op.CallIndirect or Op.Block or Op.Loop or Op.If or Op.Else or Op.End or Op.Br or Op.BrIf or Op.BrTable or Op.Return
+                    or Op.Throw or Op.ThrowRef or Op.Unreachable or Op.TryTable) break;
+            }
+            if (j < 0) continue;
+            b.RemoveRange(j, 2);
+            b.RemoveAt(i + 1);
+            any = true;
+        }
+        return any;
+    }
 
     static bool Counts(WasmFunction f)
     {
@@ -23,6 +69,7 @@ static partial class Locals
                 b.RemoveRange(i + 1, 3);
                 any = true;
             }
+        if (s_transfers) any |= Transfers(b);
         var fl = Analyze(f);
         int n = b.Count, w = fl.Words, np = f.Type.Params.Length;
         // may-be-non-zero locals before each instruction (null: not reached)

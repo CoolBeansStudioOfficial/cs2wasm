@@ -962,38 +962,12 @@ sealed partial class RuntimeGen
         D.ResolveFieldBorrows();
         D.ResolveInitStores();
         D.Mark("  finish: D.ResolveFieldBorrows");
-        CanonicalizeFloatStores();
+        // (the floats stored to memory get the NaN of .NET on the final bodies: FloatStores.cs)
+        D.Module.Canon = d => d ? D.Rt.CanonF64 : D.Rt.CanonF32;
+        D.Module.StackPointer = D.StackPointer;
         D.LayoutMemory();
         D.Mark("  finish: D.LayoutMemory");
         EmitInit();
-    }
-
-    /// <summary>Section 7.3: every float stored to memory is stored with .NET's NaN when it is a NaN, so no payload a
-    /// machine's arithmetic chose is ever in memory: not for code that reads the bits another way (a pointer cast, a
-    /// struct with overlapping fields, a span of bytes), and not for the engine, which copies and compares an
-    /// instance's memory (section 7.2). A constant and a value just loaded from memory are stored as they are.</summary>
-    void CanonicalizeFloatStores()
-    {
-        // (CS2WASM_NO_CANON=1, measurement only: what the stores cost)
-        if (Environment.GetEnvironmentVariable("CS2WASM_NO_CANON") == "1") return;
-        foreach (var f in D.Module.Functions.ToList())
-        {
-            if (f.IsImport || f.Name.StartsWith("rt.canon_", StringComparison.Ordinal)) continue;
-            var b = f.Body;
-            List<Instr>? nb = null;
-            for (int i = 0; i < b.Count; i++)
-            {
-                var op = b[i].Op;
-                if (op is Op.F64Store or Op.F32Store && !(i > 0 && b[i - 1].Op is Op.F64Const or Op.F32Const or Op.F64Load or Op.F32Load))
-                {
-                    nb ??= new List<Instr>(b.Count + 8) { Capacity = b.Count + 8 };
-                    if (nb.Count == 0) for (int k = 0; k < i; k++) nb.Add(b[k]);
-                    nb.Add(new Instr { Op = Op.Call, Ref = op == Op.F64Store ? D.Rt.CanonF64 : D.Rt.CanonF32, Pos = b[i].Pos });
-                }
-                nb?.Add(b[i]);
-            }
-            if (nb != null) f.Body = nb;
-        }
     }
 
     /// <summary>rt.on_destroy(p): 1 if p's finalizer runs. Without marks in the program it is `1`, and the calls whose

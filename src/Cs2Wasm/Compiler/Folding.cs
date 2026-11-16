@@ -303,17 +303,21 @@ sealed partial class FunctionCompiler
             if (D.ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax()) is not { } body) continue;
             foreach (var o in body.DescendantsAndSelf())
             {
-                if (o is not ILocalReferenceOperation lr) continue;
-                var p = o.Parent;
-                if (p is ISimpleAssignmentOperation a && (a.Target == o || a.IsRef) || p is ICompoundAssignmentOperation ca && ca.Target == o
-                    || p is ICoalesceAssignmentOperation qa && qa.Target == o
-                    || p is IVariableInitializerOperation { Parent: IVariableDeclaratorOperation { Symbol.IsRef: true } }
-                    || p is IIncrementOrDecrementOperation || p is IAddressOfOperation || p is IDeconstructionAssignmentOperation
-                    || p is IArgumentOperation { Parameter.RefKind: not RefKind.None } || p is ITupleOperation
-                    || lr.IsDeclaration && p is not IVariableDeclaratorOperation)
-                    _writtenLocals.Add(lr.Local);
+                if (o is ILocalReferenceOperation lr && IsLocalWrite(lr)) _writtenLocals.Add(lr.Local);
             }
         }
         return _writtenLocals;
+    }
+
+    /// <summary>The reference is one through which the local can get another value.</summary>
+    static bool IsLocalWrite(ILocalReferenceOperation o)
+    {
+        var p = o.Parent;
+        return p is ISimpleAssignmentOperation a && (a.Target == o || a.IsRef) || p is ICompoundAssignmentOperation ca && ca.Target == o
+            || p is ICoalesceAssignmentOperation qa && qa.Target == o
+            || p is IVariableInitializerOperation { Parent: IVariableDeclaratorOperation { Symbol.IsRef: true } }
+            || p is IIncrementOrDecrementOperation || p is IAddressOfOperation || p is IDeconstructionAssignmentOperation
+            || p is IArgumentOperation { Parameter.RefKind: not RefKind.None } || p is ITupleOperation
+            || o.IsDeclaration && p is not IVariableDeclaratorOperation;
     }
 }

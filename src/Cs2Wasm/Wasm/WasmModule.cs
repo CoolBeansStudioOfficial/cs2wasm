@@ -113,6 +113,9 @@ internal sealed class WasmModule
 
     /// <summary>Runs on the optimized bodies before they are encoded (measurement: CS2WASM_COUNT_RC's site counters).</summary>
     public Action<IEnumerable<WasmFunction>>? AfterOptimize;
+    /// <summary>The helper that gives a float NaN the bits .NET gives it (double: true), for FloatStores.cs.</summary>
+    public Func<bool, WasmFunction>? Canon;
+    public WasmGlobal? StackPointer;
     /// <summary>CS2WASM_NO_MERGE=1: identical bodies stay apart (measurement: each site keeps its own name).</summary>
     static readonly bool s_noMerge = Environment.GetEnvironmentVariable("CS2WASM_NO_MERGE") == "1";
 
@@ -127,8 +130,6 @@ internal sealed class WasmModule
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
             Inliner.Run(Functions, ComputeMayThrow());
-            if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
-                foreach (var f in Functions) if (!f.IsImport) SmallBlocks.Run(f);
             foreach (var f in Functions) if (!f.IsImport) Peephole.Run(f);
             if (Functions.FirstOrDefault(f => f.Name == "rt.nonnull") is { } nonNull && Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_CHECKS") != "1")
                 foreach (var f in Functions) if (!f.IsImport) NullChecks.Run(f, nonNull);
@@ -136,7 +137,16 @@ internal sealed class WasmModule
             {
                 Locals.MayThrow = ComputeMayThrow();
                 Locals.Threads = UsesThreads;
-                try { foreach (var f in Functions) if (!f.IsImport) Locals.Run(f); }
+                Locals.StackPointer = StackPointer;
+                try
+                {
+                    foreach (var f in Functions)
+                    {
+                        if (f.IsImport) continue;
+                        if (Locals.PromoteFrame(f)) Peephole.Run(f);
+                        Locals.Run(f);
+                    }
+                }
                 finally { Locals.MayThrow = null; }
                 if (Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH") != "1")
                     Fresh.Run(Functions, Functions.FirstOrDefault(f => f.Name.StartsWith("Cs2Wasm.Runtime.Rt.AllocObject(")));
@@ -144,15 +154,18 @@ internal sealed class WasmModule
                 // small enough to inline only then. The functions it went into are cleaned again.
                 var mayThrow = ComputeMayThrow();
                 var again = Inliner.Run(Functions, mayThrow, tiny: true);
-                if (again.Count > 0)
                 {
                     var nn = Functions.FirstOrDefault(f => f.Name == "rt.nonnull");
                     Locals.MayThrow = mayThrow;
                     try
                     {
+                        // (and the frames once more: a function whose own frame went in the first round can go into
+                        // its callers now, and their struct values stay in locals in turn)
                         foreach (var f in Functions)
                         {
-                            if (!again.Contains(f)) continue;
+                            if (f.IsImport) continue;
+                            bool promoted = Locals.PromoteFrame(f);
+                            if (!promoted && !again.Contains(f)) continue;
                             Peephole.Run(f);
                             if (nn != null) NullChecks.Run(f, nn);
                             Locals.Run(f);
@@ -160,13 +173,24 @@ internal sealed class WasmModule
                     }
                     finally { Locals.MayThrow = null; }
                 }
+                // the copies and fills of constant size that are left become loads and stores
+                if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
+                {
+                    Locals.MayThrow = mayThrow;
+                    try { foreach (var f in Functions) if (!f.IsImport && SmallBlocks.Run(f)) { Peephole.Run(f); Locals.Run(f); } }
+                    finally { Locals.MayThrow = null; }
+                }
             }
+            else if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
+                foreach (var f in Functions) if (!f.IsImport && SmallBlocks.Run(f)) Peephole.Run(f);
+            if (Canon != null) FloatStores.Run(Functions, Canon);
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_NORETURN") != "1") NoReturn.Run(Functions);
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
             AfterOptimize?.Invoke(Functions.Where(f => !f.IsImport));
             if (validate) Validate("after optimization");
         }
+        else if (Canon != null) FloatStores.Run(Functions, Canon);
 
         // Which functions are live: exported, in the table, or called from a live function.
         var live = new HashSet<WasmFunction>();

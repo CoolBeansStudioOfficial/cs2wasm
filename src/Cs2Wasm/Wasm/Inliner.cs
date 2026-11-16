@@ -93,7 +93,7 @@ static class Inliner
 
     /// <summary>No calls of functions that can throw, no throws, no exception handling, no frame (stack pointer), no
     /// imports.</summary>
-    static bool Inlinable(WasmFunction g, HashSet<WasmFunction> mayThrow)
+    internal static bool Inlinable(WasmFunction g, HashSet<WasmFunction> mayThrow)
     {
         if (g.IsImport || g.ForwardTo != null || g.Body.Count == 0) return false;
         foreach (var ins in g.Body)
@@ -134,7 +134,7 @@ static class Inliner
         return depth == 0;
     }
 
-    static void Expand(WasmFunction f, WasmFunction g, List<Instr> outBody, int pos)
+    internal static void Expand(WasmFunction f, WasmFunction g, List<Instr> outBody, int pos)
     {
         int np = g.Type.Params.Length;
         int baseF = f.Type.Params.Length;

@@ -537,6 +537,7 @@ sealed partial class FunctionCompiler
         var prologue = new List<Instr>();
         void P(Op op, long imm = 0, object? r = null) => prologue.Add(new Instr { Op = op, Imm = imm, Ref = r, Pos = -1 });
         _frameSize = (_frameSize + 15) / 16 * 16;
+        E.Fn.NoFramePromotion = true;
         P(Op.GlobalGet, 0, D.StackPointer); P(Op.LocalTee, _spEntry);
         P(Op.I32Const, _frameSize); P(Op.I32Sub); P(Op.LocalTee, _fb); P(Op.GlobalSet, 0, D.StackPointer);
         P(Op.LocalGet, _fb); P(Op.I32Const, 0); P(Op.I32Const, _frameSize); P(Op.MemoryFill);
