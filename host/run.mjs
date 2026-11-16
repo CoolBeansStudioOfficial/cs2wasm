@@ -1,5 +1,6 @@
 // Minimal engine for tests: creates the shared memory, supplies cs2wasm's engine imports, logs boundary calls.
-// usage: node host/run.mjs module.wasm [export=main] [--pages N] [--max-pages N]
+// usage: node host/run.mjs module.wasm [export=main] [--pages N] [--max-pages N] [-- program arguments...]
+// (the program's command line is the module's file name, then the arguments after --)
 import { readFileSync, writeSync } from 'node:fs';
 import { cs2wasmImports, threadImports } from './engine.mjs';
 import { startIo } from './http.mjs';
@@ -7,7 +8,9 @@ import { startIo } from './http.mjs';
 const args = process.argv.slice(2);
 const file = args[0];
 let entry = 'main', pages = 256, maxPages = 16384;
+globalThis.__cs2wasmArgs = [file];
 for (let i = 1; i < args.length; i++) {
+  if (args[i] === '--') { globalThis.__cs2wasmArgs.push(...args.slice(i + 1)); break; }
   if (args[i] === '--pages') pages = +args[++i];
   else if (args[i] === '--max-pages') maxPages = +args[++i];
   else entry = args[i];

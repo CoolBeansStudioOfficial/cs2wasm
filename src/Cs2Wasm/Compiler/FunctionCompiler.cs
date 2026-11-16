@@ -278,6 +278,7 @@ sealed partial class FunctionCompiler
                 case IArgumentOperation { Parameter.RefKind: not RefKind.None } a: MarkAddr(a.Value); break;
                 case IAddressOfOperation ao: MarkAddr(ao.Reference); break;
                 case IDynamicInvocationOperation or IDynamicIndexerAccessOperation or IDynamicObjectCreationOperation: MarkDynamicRefArgs(op); break;
+                case IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None, Initializer: { } init }: MarkAddr(init.Value); break;
                 case ISimpleAssignmentOperation { IsRef: true } sa: MarkAddr(sa.Value); break;
             }
     }
@@ -356,6 +357,8 @@ sealed partial class FunctionCompiler
         {
             case ILocalReferenceOperation l: _addrTaken.Add(l.Local); break;
             case IParameterReferenceOperation p: _addrTaken.Add(p.Parameter); break;
+            // `ref c ? ref a : ref b`: either may be the reference
+            case IConditionalOperation { IsRef: true } rc: MarkAddr(rc.WhenTrue); if (rc.WhenFalse != null) MarkAddr(rc.WhenFalse); break;
         }
     }
 
@@ -1199,7 +1202,17 @@ sealed partial class FunctionCompiler
             val = E.AddLocal(ValType.I32);
             ToOwned(o); E.Set(val); AddOwned(new Slot { Local = val, Type = vt });
         }
-        else { val = E.AddLocal(Types.WasmType(vt) ?? ValType.I32); E.Set(val); if (Types.IsStruct(vt)) { /* address */ } }
+        else if (Types.IsStruct(vt))
+        {
+            // a struct value is copied into a slot of the switch's own: its temporary goes back to the pool at once,
+            // and the clauses' tests use temporaries too (`switch (this, other)`)
+            int off = AllocFrame(vt);
+            int src = E.AddLocal(ValType.I32); E.Set(src);
+            E.Get(_fb); E.I32(off); E.Op(Op.I32Add); E.Get(src); CopyStructInit(vt);
+            if (T.NeedsRc(vt)) AddOwned(new Slot { FrameOffset = off, Type = vt });
+            val = E.AddLocal(ValType.I32); E.Get(_fb); E.I32(off); E.Op(Op.I32Add); E.Set(val);
+        }
+        else { val = E.AddLocal(Types.WasmType(vt) ?? ValType.I32); E.Set(val); }
         EndTemps();
         var end = E.Block();
         var c = new Ctl { Kind = CtlKind.Switch, Break = end, ScopeDepth = _scopes.Count, TempDepth = _temps.Count };

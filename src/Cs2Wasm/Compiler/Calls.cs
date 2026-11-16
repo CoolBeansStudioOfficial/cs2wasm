@@ -1220,7 +1220,9 @@ sealed partial class FunctionCompiler
             foreach (var e in ce.Elements)
             {
                 if (e is ISpreadOperation sp) { EmitSpreadInto(obj, add!.Parameters[0].Type, sp); continue; }
-                CallWith(D.CanonicalMethod(add!), false, () => E.Get(obj), () => PushArg(add!.Parameters[0], e), null, e.Syntax);
+                var ao = CallWith(D.CanonicalMethod(add!), false, () => E.Get(obj), () => PushArg(add!.Parameters[0], e), null, e.Syntax);
+                // (HashSet<T>.Add's bool: an initializer drops what Add returns)
+                if (!add!.ReturnsVoid) Drop(ao, T.Resolve(add.ReturnType, Map));
             }
             _temps[^1].Remove(slot);
             E.Get(obj); E.I32(0); E.Set(obj);

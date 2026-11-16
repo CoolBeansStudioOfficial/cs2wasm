@@ -160,6 +160,18 @@ namespace Cs2Wasm.Runtime
         public static unsafe void ShareViolation(int a)
         {
             if (Atomic.Add32(ref s_violations, 1) > 5) return;
+            if (a > 0 && (Mem.LoadI32(a) >> 16) == 0x0EAD)
+            {
+                string uaf = "share check: use after free: an object freed on thread " + (Mem.LoadI32(a) & 0xFFFF).ToString() + ", used on thread " + ThreadId().ToString() + " (type id " + Mem.LoadI32(a + 4).ToString() + ")\n";
+                fixed (char* p = uaf) Engine.Write((int)p, uaf.Length);
+                Mem.StoreI32(-4, 0);
+            }
+            if (a < 0)
+            {
+                string bad = "share check: an object of " + TypeInfo.Type(Mem.LoadI32(-a + 4)).ToString() + " has a field the sharing visitor reads as a reference, which is none\n";
+                fixed (char* p = bad) Engine.Write((int)p, bad.Length);
+                Mem.StoreI32(-4, 0);
+            }
             string text = "share violation: " + TypeInfo.Type(Mem.LoadI32(a + 4)).ToString() + " allocated on thread " + ((Mem.LoadI32(a + 8) >> 24) & 0x7F).ToString()
                 + ", count " + Mem.LoadI32(a).ToString() + ", on thread " + ThreadId().ToString() + "\n";
             fixed (char* p = text) Engine.Write((int)p, text.Length);
@@ -249,6 +261,8 @@ namespace Cs2Wasm.Runtime
 
         public static void Free(int addr, int size)
         {
+            // CS2WASM_SHARE_CHECK: freed memory is poisoned (0x0EAD, the freeing thread) and never reused
+            if (ShareCheck() && size >= 8) { Mem.StoreI32(addr, 0x0EAD0000 | (ThreadId() & 0xFFFF)); return; }
             RuntimeLock();
             FreeCore(addr, size);
             RuntimeUnlock();
@@ -930,25 +944,33 @@ namespace Cs2Wasm.Runtime
         [System.ThreadStatic] static int t_depth;
         [Intrinsic] static extern void DestroyObject(int p);
 
+        // The per-thread epochs. The table grows under the runtime lock while other threads write their entries without
+        // it, so a write re-checks that the table it wrote is still the table (a write into an old one, after its copy,
+        // would be lost: the thread would look quiescent); old tables are never freed (such a write may still land).
         static void SetEpoch(int value)
         {
             int id = Rt.ThreadId();
-            if (id >= Atomic.Load32(ref s_cap))
+            while (true)
             {
-                Rt.RuntimeLock();
-                if (id >= s_cap)
+                if (id >= Atomic.Load32(ref s_cap))
                 {
-                    int cap = Math.Max(16, Math.Max(s_cap * 2, id + 1));
-                    int t = Rt.Alloc(cap * 4);
-                    if (s_table != 0) { Mem.Copy(t, s_table, s_cap * 4); Rt.Free(s_table, s_cap * 4); }
-                    s_table = t;
-                    Atomic.Store32(ref s_cap, cap);
+                    Rt.RuntimeLock();
+                    if (id >= s_cap)
+                    {
+                        int cap = Math.Max(64, Math.Max(s_cap * 2, id + 1));
+                        int t = Rt.Alloc(cap * 4);
+                        Mem.Fill(t, 0, cap * 4);
+                        if (s_table != 0)
+                            for (int i = 0; i < s_cap; i++) Mem.StoreI32(t + 4 * i, Atomic.Load32(ref Mem.RefI32(s_table + 4 * i)));
+                        Atomic.Store32(ref s_table, t);
+                        Atomic.Store32(ref s_cap, cap);
+                    }
+                    Rt.RuntimeUnlock();
                 }
-                Atomic.Store32(ref Mem.RefI32(s_table + 4 * id), value);
-                Rt.RuntimeUnlock();
-                return;
+                int table = Atomic.Load32(ref s_table);
+                Atomic.Store32(ref Mem.RefI32(table + 4 * id), value);
+                if (Atomic.Load32(ref s_table) == table) return;
             }
-            Atomic.Store32(ref Mem.RefI32(s_table + 4 * id), value);
         }
 
         /// <summary>The thread runs program code: what it reads from now on is protected.</summary>
@@ -1044,14 +1066,21 @@ namespace Cs2Wasm.Runtime
         [System.ThreadStatic] static int t_buf, t_cap, t_len;
         [Intrinsic] static extern void Visit(int obj);
 
+        [System.ThreadStatic] static int t_visiting;
+
         static bool Mark(int x)
         {
             if (x == 0) return false;
-            int w = Mem.LoadI32(x);
-            if (w < -1) { Rt.ShareArena(-w); return false; } // an arena member: the arena is shared, its members queued
-            if (w <= 0 || (w & S) != 0) return false;
-            Atomic.Store32(ref Mem.RefI32(x), w | S);
-            return true;
+            if (Rt.ShareCheck() && (x & 3) != 0) Rt.ShareViolation(t_visiting == 0 ? x : -t_visiting);
+            // (a compare-and-swap: another thread may mark the object first and then count it atomically; a plain
+            // store of the word read before would lose that count)
+            while (true)
+            {
+                int w = Atomic.Load32(ref Mem.RefI32(x));
+                if (w < -1) { Rt.ShareArena(-w); return false; } // an arena member: the arena is shared, its members queued
+                if (w <= 0 || (w & S) != 0) return false;
+                if (Atomic.CompareExchange32(ref Mem.RefI32(x), w, w | S) == w) return true;
+            }
         }
 
         static void Push(int x)
@@ -1069,7 +1098,7 @@ namespace Cs2Wasm.Runtime
 
         static void Drain()
         {
-            while (t_len > 0) { t_len--; Visit(Mem.LoadI32(t_buf + t_len * 4)); }
+            while (t_len > 0) { t_len--; int o = Mem.LoadI32(t_buf + t_len * 4); if (Rt.ShareCheck()) t_visiting = o; Visit(o); }
         }
 
         public static void Share(int p) { if (Mark(p)) Push(p); Drain(); }

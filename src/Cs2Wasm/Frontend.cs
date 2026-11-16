@@ -13,7 +13,7 @@ public static class Frontend
 
     static readonly Lazy<IReadOnlyList<MetadataReference>> s_refs = new(() =>
     {
-        var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+        var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location) ?? "";
         // .../dotnet/shared/Microsoft.NETCore.App/<ver>  ->  .../dotnet/packs/Microsoft.NETCore.App.Ref/<ver>/ref/net11.0
         var dotnetRoot = Path.GetFullPath(Path.Combine(runtimeDir, "..", "..", ".."));
         var packs = Path.Combine(dotnetRoot, "packs", "Microsoft.NETCore.App.Ref");
@@ -21,7 +21,8 @@ public static class Frontend
         if (Directory.Exists(packs))
             refDir = Directory.GetDirectories(packs).OrderByDescending(d => d, StringComparer.Ordinal)
                 .Select(d => Path.Combine(d, "ref", "net11.0")).FirstOrDefault(Directory.Exists);
-        var dir = refDir ?? runtimeDir;
+        // CS2WASM_REFERENCE_DIR: the reference assemblies' directory (the self-hosted compiler has no runtime directory)
+        var dir = Environment.GetEnvironmentVariable("CS2WASM_REFERENCE_DIR") is { Length: > 0 } rd ? rd : refDir ?? runtimeDir;
         var list = new List<MetadataReference>();
         foreach (var f in Directory.GetFiles(dir, "*.dll").Order(StringComparer.Ordinal))
         {

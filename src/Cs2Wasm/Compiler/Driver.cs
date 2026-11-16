@@ -854,7 +854,8 @@ internal sealed partial class Driver
                 // (a constructed generic method has no overridden method: walk the definition's, constructed alike)
                 for (var o = m.IsGenericMethod ? m.OverriddenMethod : mm.OverriddenMethod; o != null; o = o.OverriddenMethod)
                 {
-                    var oo = o.IsGenericMethod ? o.OriginalDefinition.Construct([.. slot.TypeArguments]) : o;
+                    // (on the base type's own instantiation: ConstructedFrom keeps its type arguments, B<int, int>.W<TK>)
+                    var oo = o.IsGenericMethod ? o.ConstructedFrom.Construct([.. slot.TypeArguments]) : o;
                     if (Types.MethodKey(CanonicalMethod(oo)) == slotKey) return mm.IsAbstract ? null : CanonicalMethod(mm);
                 }
             }
@@ -1131,6 +1132,7 @@ internal sealed partial class Driver
                     catch (Exception ex)
                     {
                         // an internal error: reported against the method, and the rest of the program still compiles
+                        if (Environment.GetEnvironmentVariable("CS2WASM_DEBUG") != null) Console.Error.WriteLine(ex.ToString());
                         var frame = new System.Diagnostics.StackTrace(ex, true).GetFrames().FirstOrDefault(f => f.GetFileName() != null);
                         Report(Diags.Unsupported, mi.Sym.Locations.FirstOrDefault(), $"internal error compiling {Display(mi.Sym)}: {ex.GetType().Name}: {ex.Message} at {Path.GetFileName(frame?.GetFileName())}:{frame?.GetFileLineNumber()}");
                         mi.Fn.Body.Clear(); mi.Fn.Locals.Clear();

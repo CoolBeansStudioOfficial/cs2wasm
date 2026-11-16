@@ -14,26 +14,26 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class GatewayIPAddressInformation
     {
-        protected GatewayIPAddressInformation() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected GatewayIPAddressInformation() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract global::System.Net.IPAddress Address { get; }
     }
     public unsafe partial class GatewayIPAddressInformationCollection : global::System.Collections.Generic.ICollection<global::System.Net.NetworkInformation.GatewayIPAddressInformation>, global::System.Collections.Generic.IEnumerable<global::System.Net.NetworkInformation.GatewayIPAddressInformation>, global::System.Collections.IEnumerable
     {
-        protected internal GatewayIPAddressInformationCollection() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual void Add(global::System.Net.NetworkInformation.GatewayIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual void Clear() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual bool Contains(global::System.Net.NetworkInformation.GatewayIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual void CopyTo(global::System.Net.NetworkInformation.GatewayIPAddressInformation[] array, int offset) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual global::System.Collections.Generic.IEnumerator<global::System.Net.NetworkInformation.GatewayIPAddressInformation> GetEnumerator() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual bool Remove(global::System.Net.NetworkInformation.GatewayIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        global::System.Collections.IEnumerator global::System.Collections.IEnumerable.GetEnumerator() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual int Count { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual bool IsReadOnly { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual global::System.Net.NetworkInformation.GatewayIPAddressInformation this[int index] { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected internal GatewayIPAddressInformationCollection() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual void Add(global::System.Net.NetworkInformation.GatewayIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual void Clear() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual bool Contains(global::System.Net.NetworkInformation.GatewayIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual void CopyTo(global::System.Net.NetworkInformation.GatewayIPAddressInformation[] array, int offset) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual global::System.Collections.Generic.IEnumerator<global::System.Net.NetworkInformation.GatewayIPAddressInformation> GetEnumerator() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual bool Remove(global::System.Net.NetworkInformation.GatewayIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        global::System.Collections.IEnumerator global::System.Collections.IEnumerable.GetEnumerator() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual int Count { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual bool IsReadOnly { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual global::System.Net.NetworkInformation.GatewayIPAddressInformation this[int index] { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
     }
     public abstract unsafe partial class IPAddressInformation
     {
-        protected IPAddressInformation() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected IPAddressInformation() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract global::System.Net.IPAddress Address { get; }
         public abstract bool IsDnsEligible { get; }
         public abstract bool IsTransient { get; }
@@ -41,36 +41,36 @@ namespace System.Net.NetworkInformation
     public unsafe partial class IPAddressInformationCollection : global::System.Collections.Generic.ICollection<global::System.Net.NetworkInformation.IPAddressInformation>, global::System.Collections.Generic.IEnumerable<global::System.Net.NetworkInformation.IPAddressInformation>, global::System.Collections.IEnumerable
     {
         internal IPAddressInformationCollection() { }
-        public virtual void Add(global::System.Net.NetworkInformation.IPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual void Clear() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual bool Contains(global::System.Net.NetworkInformation.IPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual void CopyTo(global::System.Net.NetworkInformation.IPAddressInformation[] array, int offset) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual global::System.Collections.Generic.IEnumerator<global::System.Net.NetworkInformation.IPAddressInformation> GetEnumerator() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual bool Remove(global::System.Net.NetworkInformation.IPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        global::System.Collections.IEnumerator global::System.Collections.IEnumerable.GetEnumerator() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual int Count { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual bool IsReadOnly { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual global::System.Net.NetworkInformation.IPAddressInformation this[int index] { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual void Add(global::System.Net.NetworkInformation.IPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual void Clear() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual bool Contains(global::System.Net.NetworkInformation.IPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual void CopyTo(global::System.Net.NetworkInformation.IPAddressInformation[] array, int offset) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual global::System.Collections.Generic.IEnumerator<global::System.Net.NetworkInformation.IPAddressInformation> GetEnumerator() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual bool Remove(global::System.Net.NetworkInformation.IPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        global::System.Collections.IEnumerator global::System.Collections.IEnumerable.GetEnumerator() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual int Count { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual bool IsReadOnly { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual global::System.Net.NetworkInformation.IPAddressInformation this[int index] { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
     }
     public abstract unsafe partial class IPGlobalProperties
     {
-        protected IPGlobalProperties() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual global::System.IAsyncResult BeginGetUnicastAddresses(global::System.AsyncCallback? callback, object? state) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual global::System.Net.NetworkInformation.UnicastIPAddressInformationCollection EndGetUnicastAddresses(global::System.IAsyncResult asyncResult) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
+        protected IPGlobalProperties() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual global::System.IAsyncResult BeginGetUnicastAddresses(global::System.AsyncCallback? callback, object? state) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual global::System.Net.NetworkInformation.UnicastIPAddressInformationCollection EndGetUnicastAddresses(global::System.IAsyncResult asyncResult) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
         public abstract global::System.Net.NetworkInformation.TcpConnectionInformation[] GetActiveTcpConnections();
         public abstract global::System.Net.IPEndPoint[] GetActiveTcpListeners();
         public abstract global::System.Net.IPEndPoint[] GetActiveUdpListeners();
         public abstract global::System.Net.NetworkInformation.IcmpV4Statistics GetIcmpV4Statistics();
         public abstract global::System.Net.NetworkInformation.IcmpV6Statistics GetIcmpV6Statistics();
-        public static global::System.Net.NetworkInformation.IPGlobalProperties GetIPGlobalProperties() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public static global::System.Net.NetworkInformation.IPGlobalProperties GetIPGlobalProperties() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
         public abstract global::System.Net.NetworkInformation.IPGlobalStatistics GetIPv4GlobalStatistics();
         public abstract global::System.Net.NetworkInformation.IPGlobalStatistics GetIPv6GlobalStatistics();
         public abstract global::System.Net.NetworkInformation.TcpStatistics GetTcpIPv4Statistics();
         public abstract global::System.Net.NetworkInformation.TcpStatistics GetTcpIPv6Statistics();
         public abstract global::System.Net.NetworkInformation.UdpStatistics GetUdpIPv4Statistics();
         public abstract global::System.Net.NetworkInformation.UdpStatistics GetUdpIPv6Statistics();
-        public virtual global::System.Net.NetworkInformation.UnicastIPAddressInformationCollection GetUnicastAddresses() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual global::System.Threading.Tasks.Task<global::System.Net.NetworkInformation.UnicastIPAddressInformationCollection> GetUnicastAddressesAsync() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual global::System.Net.NetworkInformation.UnicastIPAddressInformationCollection GetUnicastAddresses() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual global::System.Threading.Tasks.Task<global::System.Net.NetworkInformation.UnicastIPAddressInformationCollection> GetUnicastAddressesAsync() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
         public abstract string DhcpScopeName { get; }
         public abstract string DomainName { get; }
         public abstract string HostName { get; }
@@ -79,7 +79,7 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class IPGlobalStatistics
     {
-        protected IPGlobalStatistics() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected IPGlobalStatistics() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract int DefaultTtl { get; }
         public abstract bool ForwardingEnabled { get; }
         public abstract int NumberOfInterfaces { get; }
@@ -105,7 +105,7 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class IPInterfaceProperties
     {
-        protected IPInterfaceProperties() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected IPInterfaceProperties() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract global::System.Net.NetworkInformation.IPv4InterfaceProperties GetIPv4Properties();
         public abstract global::System.Net.NetworkInformation.IPv6InterfaceProperties GetIPv6Properties();
         public abstract global::System.Net.NetworkInformation.IPAddressInformationCollection AnycastAddresses { get; }
@@ -121,7 +121,7 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class IPInterfaceStatistics
     {
-        protected IPInterfaceStatistics() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected IPInterfaceStatistics() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract long BytesReceived { get; }
         public abstract long BytesSent { get; }
         public abstract long IncomingPacketsDiscarded { get; }
@@ -137,7 +137,7 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class IPv4InterfaceProperties
     {
-        protected IPv4InterfaceProperties() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected IPv4InterfaceProperties() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract int Index { get; }
         public abstract bool IsAutomaticPrivateAddressingActive { get; }
         public abstract bool IsAutomaticPrivateAddressingEnabled { get; }
@@ -148,7 +148,7 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class IPv4InterfaceStatistics
     {
-        protected IPv4InterfaceStatistics() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected IPv4InterfaceStatistics() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract long BytesReceived { get; }
         public abstract long BytesSent { get; }
         public abstract long IncomingPacketsDiscarded { get; }
@@ -164,14 +164,14 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class IPv6InterfaceProperties
     {
-        protected IPv6InterfaceProperties() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual long GetScopeId(global::System.Net.NetworkInformation.ScopeLevel scopeLevel) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
+        protected IPv6InterfaceProperties() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual long GetScopeId(global::System.Net.NetworkInformation.ScopeLevel scopeLevel) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
         public abstract int Index { get; }
         public abstract int Mtu { get; }
     }
     public abstract unsafe partial class IcmpV4Statistics
     {
-        protected IcmpV4Statistics() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected IcmpV4Statistics() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract long AddressMaskRepliesReceived { get; }
         public abstract long AddressMaskRepliesSent { get; }
         public abstract long AddressMaskRequestsReceived { get; }
@@ -201,7 +201,7 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class IcmpV6Statistics
     {
-        protected IcmpV6Statistics() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected IcmpV6Statistics() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract long DestinationUnreachableMessagesReceived { get; }
         public abstract long DestinationUnreachableMessagesSent { get; }
         public abstract long EchoRepliesReceived { get; }
@@ -237,7 +237,7 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class MulticastIPAddressInformation : global::System.Net.NetworkInformation.IPAddressInformation
     {
-        protected MulticastIPAddressInformation() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected MulticastIPAddressInformation() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract long AddressPreferredLifetime { get; }
         public abstract long AddressValidLifetime { get; }
         public abstract long DhcpLeaseLifetime { get; }
@@ -247,17 +247,17 @@ namespace System.Net.NetworkInformation
     }
     public unsafe partial class MulticastIPAddressInformationCollection : global::System.Collections.Generic.ICollection<global::System.Net.NetworkInformation.MulticastIPAddressInformation>, global::System.Collections.Generic.IEnumerable<global::System.Net.NetworkInformation.MulticastIPAddressInformation>, global::System.Collections.IEnumerable
     {
-        protected internal MulticastIPAddressInformationCollection() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual void Add(global::System.Net.NetworkInformation.MulticastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual void Clear() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual bool Contains(global::System.Net.NetworkInformation.MulticastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual void CopyTo(global::System.Net.NetworkInformation.MulticastIPAddressInformation[] array, int offset) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual global::System.Collections.Generic.IEnumerator<global::System.Net.NetworkInformation.MulticastIPAddressInformation> GetEnumerator() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual bool Remove(global::System.Net.NetworkInformation.MulticastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        global::System.Collections.IEnumerator global::System.Collections.IEnumerable.GetEnumerator() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual int Count { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual bool IsReadOnly { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual global::System.Net.NetworkInformation.MulticastIPAddressInformation this[int index] { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected internal MulticastIPAddressInformationCollection() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual void Add(global::System.Net.NetworkInformation.MulticastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual void Clear() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual bool Contains(global::System.Net.NetworkInformation.MulticastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual void CopyTo(global::System.Net.NetworkInformation.MulticastIPAddressInformation[] array, int offset) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual global::System.Collections.Generic.IEnumerator<global::System.Net.NetworkInformation.MulticastIPAddressInformation> GetEnumerator() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual bool Remove(global::System.Net.NetworkInformation.MulticastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        global::System.Collections.IEnumerator global::System.Collections.IEnumerable.GetEnumerator() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual int Count { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual bool IsReadOnly { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual global::System.Net.NetworkInformation.MulticastIPAddressInformation this[int index] { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
     }
     public enum NetBiosNodeType : int
     {
@@ -272,43 +272,43 @@ namespace System.Net.NetworkInformation
     public unsafe partial class NetworkAvailabilityEventArgs : global::System.EventArgs
     {
         internal NetworkAvailabilityEventArgs() { }
-        public bool IsAvailable { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public bool IsAvailable { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
     }
     public unsafe partial class NetworkChange
     {
-        public NetworkChange() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public static void RegisterNetworkChange(global::System.Net.NetworkInformation.NetworkChange nc) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public static bool IsSupported { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public static event global::System.Net.NetworkInformation.NetworkAddressChangedEventHandler? NetworkAddressChanged { add { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); } remove { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); } }
-        public static event global::System.Net.NetworkInformation.NetworkAvailabilityChangedEventHandler? NetworkAvailabilityChanged { add { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); } remove { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); } }
+        public NetworkChange() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public static void RegisterNetworkChange(global::System.Net.NetworkInformation.NetworkChange nc) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public static bool IsSupported { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public static event global::System.Net.NetworkInformation.NetworkAddressChangedEventHandler? NetworkAddressChanged { add { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); } remove { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); } }
+        public static event global::System.Net.NetworkInformation.NetworkAvailabilityChangedEventHandler? NetworkAvailabilityChanged { add { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); } remove { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); } }
     }
     public unsafe partial class NetworkInformationException : global::System.ComponentModel.Win32Exception
     {
-        public NetworkInformationException() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public NetworkInformationException(int errorCode) { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        protected NetworkInformationException(global::System.Runtime.Serialization.SerializationInfo serializationInfo, global::System.Runtime.Serialization.StreamingContext streamingContext) { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public override int ErrorCode { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public NetworkInformationException() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public NetworkInformationException(int errorCode) { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected NetworkInformationException(global::System.Runtime.Serialization.SerializationInfo serializationInfo, global::System.Runtime.Serialization.StreamingContext streamingContext) { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public override int ErrorCode { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
     }
     public abstract unsafe partial class NetworkInterface
     {
-        protected NetworkInterface() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public static global::System.Net.NetworkInformation.NetworkInterface[] GetAllNetworkInterfaces() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual global::System.Net.NetworkInformation.IPInterfaceProperties GetIPProperties() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual global::System.Net.NetworkInformation.IPInterfaceStatistics GetIPStatistics() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual global::System.Net.NetworkInformation.IPv4InterfaceStatistics GetIPv4Statistics() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public static bool GetIsNetworkAvailable() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual global::System.Net.NetworkInformation.PhysicalAddress GetPhysicalAddress() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual bool Supports(global::System.Net.NetworkInformation.NetworkInterfaceComponent networkInterfaceComponent) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual string Description { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual string Id { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public static int IPv6LoopbackInterfaceIndex { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual bool IsReceiveOnly { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public static int LoopbackInterfaceIndex { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual string Name { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual global::System.Net.NetworkInformation.NetworkInterfaceType NetworkInterfaceType { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual global::System.Net.NetworkInformation.OperationalStatus OperationalStatus { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual long Speed { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual bool SupportsMulticast { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected NetworkInterface() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public static global::System.Net.NetworkInformation.NetworkInterface[] GetAllNetworkInterfaces() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual global::System.Net.NetworkInformation.IPInterfaceProperties GetIPProperties() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual global::System.Net.NetworkInformation.IPInterfaceStatistics GetIPStatistics() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual global::System.Net.NetworkInformation.IPv4InterfaceStatistics GetIPv4Statistics() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public static bool GetIsNetworkAvailable() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual global::System.Net.NetworkInformation.PhysicalAddress GetPhysicalAddress() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual bool Supports(global::System.Net.NetworkInformation.NetworkInterfaceComponent networkInterfaceComponent) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual string Description { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual string Id { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public static int IPv6LoopbackInterfaceIndex { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual bool IsReceiveOnly { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public static int LoopbackInterfaceIndex { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual string Name { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual global::System.Net.NetworkInformation.NetworkInterfaceType NetworkInterfaceType { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual global::System.Net.NetworkInformation.OperationalStatus OperationalStatus { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual long Speed { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual bool SupportsMulticast { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
     }
     public enum NetworkInterfaceComponent : int
     {
@@ -360,15 +360,15 @@ namespace System.Net.NetworkInformation
     {
         internal PhysicalAddress() { }
         public static readonly global::System.Net.NetworkInformation.PhysicalAddress None = default!;
-        public PhysicalAddress(byte[] address) { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public override bool Equals(object? comparand) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public byte[] GetAddressBytes() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public override int GetHashCode() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public static global::System.Net.NetworkInformation.PhysicalAddress Parse(global::System.ReadOnlySpan<char> address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public static global::System.Net.NetworkInformation.PhysicalAddress Parse(string? address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public override string ToString() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public static bool TryParse(global::System.ReadOnlySpan<char> address, out global::System.Net.NetworkInformation.PhysicalAddress? value) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public static bool TryParse(string? address, out global::System.Net.NetworkInformation.PhysicalAddress? value) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public PhysicalAddress(byte[] address) { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public override bool Equals(object? comparand) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public byte[] GetAddressBytes() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public override int GetHashCode() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public static global::System.Net.NetworkInformation.PhysicalAddress Parse(global::System.ReadOnlySpan<char> address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public static global::System.Net.NetworkInformation.PhysicalAddress Parse(string? address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public override string ToString() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public static bool TryParse(global::System.ReadOnlySpan<char> address, out global::System.Net.NetworkInformation.PhysicalAddress? value) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public static bool TryParse(string? address, out global::System.Net.NetworkInformation.PhysicalAddress? value) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
     }
     public enum PrefixOrigin : int
     {
@@ -400,7 +400,7 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class TcpConnectionInformation
     {
-        protected TcpConnectionInformation() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected TcpConnectionInformation() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract global::System.Net.IPEndPoint LocalEndPoint { get; }
         public abstract global::System.Net.IPEndPoint RemoteEndPoint { get; }
         public abstract global::System.Net.NetworkInformation.TcpState State { get; }
@@ -423,7 +423,7 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class TcpStatistics
     {
-        protected TcpStatistics() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected TcpStatistics() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract long ConnectionsAccepted { get; }
         public abstract long ConnectionsInitiated { get; }
         public abstract long CumulativeConnections { get; }
@@ -441,7 +441,7 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class UdpStatistics
     {
-        protected UdpStatistics() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected UdpStatistics() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract long DatagramsReceived { get; }
         public abstract long DatagramsSent { get; }
         public abstract long IncomingDatagramsDiscarded { get; }
@@ -450,28 +450,28 @@ namespace System.Net.NetworkInformation
     }
     public abstract unsafe partial class UnicastIPAddressInformation : global::System.Net.NetworkInformation.IPAddressInformation
     {
-        protected UnicastIPAddressInformation() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected UnicastIPAddressInformation() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract long AddressPreferredLifetime { get; }
         public abstract long AddressValidLifetime { get; }
         public abstract long DhcpLeaseLifetime { get; }
         public abstract global::System.Net.NetworkInformation.DuplicateAddressDetectionState DuplicateAddressDetectionState { get; }
         public abstract global::System.Net.IPAddress IPv4Mask { get; }
-        public virtual int PrefixLength { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual int PrefixLength { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
         public abstract global::System.Net.NetworkInformation.PrefixOrigin PrefixOrigin { get; }
         public abstract global::System.Net.NetworkInformation.SuffixOrigin SuffixOrigin { get; }
     }
     public unsafe partial class UnicastIPAddressInformationCollection : global::System.Collections.Generic.ICollection<global::System.Net.NetworkInformation.UnicastIPAddressInformation>, global::System.Collections.Generic.IEnumerable<global::System.Net.NetworkInformation.UnicastIPAddressInformation>, global::System.Collections.IEnumerable
     {
-        protected internal UnicastIPAddressInformationCollection() { throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual void Add(global::System.Net.NetworkInformation.UnicastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual void Clear() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual bool Contains(global::System.Net.NetworkInformation.UnicastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual void CopyTo(global::System.Net.NetworkInformation.UnicastIPAddressInformation[] array, int offset) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual global::System.Collections.Generic.IEnumerator<global::System.Net.NetworkInformation.UnicastIPAddressInformation> GetEnumerator() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual bool Remove(global::System.Net.NetworkInformation.UnicastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        global::System.Collections.IEnumerator global::System.Collections.IEnumerable.GetEnumerator() => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported);
-        public virtual int Count { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual bool IsReadOnly { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
-        public virtual global::System.Net.NetworkInformation.UnicastIPAddressInformation this[int index] { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        protected internal UnicastIPAddressInformationCollection() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual void Add(global::System.Net.NetworkInformation.UnicastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual void Clear() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual bool Contains(global::System.Net.NetworkInformation.UnicastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual void CopyTo(global::System.Net.NetworkInformation.UnicastIPAddressInformation[] array, int offset) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual global::System.Collections.Generic.IEnumerator<global::System.Net.NetworkInformation.UnicastIPAddressInformation> GetEnumerator() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual bool Remove(global::System.Net.NetworkInformation.UnicastIPAddressInformation address) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        global::System.Collections.IEnumerator global::System.Collections.IEnumerable.GetEnumerator() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported);
+        public virtual int Count { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual bool IsReadOnly { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
+        public virtual global::System.Net.NetworkInformation.UnicastIPAddressInformation this[int index] { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetNetworkInformation_PlatformNotSupported); }
     }
 }

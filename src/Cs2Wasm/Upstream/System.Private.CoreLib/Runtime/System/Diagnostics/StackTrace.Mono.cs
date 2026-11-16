@@ -36,7 +36,31 @@ namespace System.Diagnostics
 
     public partial class StackTrace
     {
-                internal static void GetTrace(ObjectHandleOnStack ex, ObjectHandleOnStack res, int skipFrames, bool needFileInfo) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("StackTrace frames (the stack trace is text)");
+        // cs2wasm: an exception's frames, from its trace's text ("   at M in file:line N"): the file and line, and the
+        // method's name as text (no MethodBase: reflection metadata is kept only for what the program reflects on)
+        internal static void GetTrace(ObjectHandleOnStack ex, ObjectHandleOnStack res, int skipFrames, bool needFileInfo)
+        {
+            var e = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Exception>(ex);
+            var lines = (e.StackTrace ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            var frames = new List<MonoStackFrame>();
+            foreach (var raw in lines)
+            {
+                var l = raw.Trim();
+                if (!l.StartsWith("at ", StringComparison.Ordinal)) continue;
+                if (skipFrames > 0) { skipFrames--; continue; }
+                var f = new MonoStackFrame { ilOffset = -1, nativeOffset = -1 };
+                int i = l.LastIndexOf(" in ", StringComparison.Ordinal), ln = l.LastIndexOf(":line ", StringComparison.Ordinal);
+                if (i > 0 && ln > i)
+                {
+                    f.internalMethodName = l.Substring(3, i - 3);
+                    f.fileName = l.Substring(i + 4, ln - i - 4);
+                    int.TryParse(l.AsSpan(ln + 6), out f.lineNumber);
+                }
+                else f.internalMethodName = l.Substring(3);
+                frames.Add(f);
+            }
+            Cs2Wasm.Runtime.TypeInfo.Set(res, frames.ToArray());
+        }
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
             Justification = "StackFrame.GetMethod is getting compared to null but nothing else on it is touched.")]

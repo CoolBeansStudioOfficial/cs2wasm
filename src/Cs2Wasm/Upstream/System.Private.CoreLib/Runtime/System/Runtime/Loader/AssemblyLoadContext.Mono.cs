@@ -68,7 +68,7 @@ namespace System.Runtime.Loader
             return InternalGetLoadedAssemblies();
         }
 
-                [Cs2Wasm.Runtime.MissingCapability("loading assemblies at run time")]        private static extern IntPtr GetLoadContextForAssembly(RuntimeAssembly rtAsm);
+                private static IntPtr GetLoadContextForAssembly(RuntimeAssembly rtAsm) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("loading assemblies at run time (IL on the bundled interpreter)");
 
         // Returns the load context in which the specified assembly has been loaded
         public static AssemblyLoadContext? GetLoadContext(Assembly assembly)
@@ -88,12 +88,12 @@ namespace System.Runtime.Loader
         }
 
         [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
-                [Cs2Wasm.Runtime.MissingCapability("loading assemblies at run time")]        private static extern Assembly InternalLoadFile(IntPtr nativeAssemblyLoadContext, string? assemblyFile, ref StackCrawlMark stackMark);
+                private static Assembly InternalLoadFile(IntPtr nativeAssemblyLoadContext, string? assemblyFile, ref StackCrawlMark stackMark) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("loading assemblies at run time (IL on the bundled interpreter)");
 
-                [Cs2Wasm.Runtime.MissingCapability("loading assemblies at run time")]        private static extern IntPtr InternalInitializeNativeALC(IntPtr thisHandlePtr, IntPtr name, bool representsTPALoadContext, bool isCollectible);
+                private static IntPtr InternalInitializeNativeALC(IntPtr thisHandlePtr, IntPtr name, bool representsTPALoadContext, bool isCollectible) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("loading assemblies at run time (IL on the bundled interpreter)");
 
         [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
-                [Cs2Wasm.Runtime.MissingCapability("loading assemblies at run time")]        private static extern Assembly InternalLoadFromStream(IntPtr nativeAssemblyLoadContext, IntPtr assm, int assmLength, IntPtr symbols, int symbolsLength);
+                private static Assembly InternalLoadFromStream(IntPtr nativeAssemblyLoadContext, IntPtr assm, int assmLength, IntPtr symbols, int symbolsLength) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("loading assemblies at run time (IL on the bundled interpreter)");
 
                 private static Assembly[] InternalGetLoadedAssemblies() => System.Array.Empty<System.Reflection.Assembly>();
 

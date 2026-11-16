@@ -33,13 +33,13 @@ static class Libraries
         "System.Private.CoreLib", "System.Collections", "System.Collections.NonGeneric", "System.ObjectModel",
         "System.Memory", "System.Threading", "System.Collections.Concurrent", "System.Linq", "System.Console",
         "System.Runtime.Numerics", "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions",
-        "System.Linq.Expressions", "Microsoft.CSharp", "System.Linq.Queryable",
+        "System.Linq.Expressions", "Microsoft.CSharp", "System.Linq.Queryable", "System.Linq.Parallel", "System.Resources.Writer",
         "System.ComponentModel", "System.ComponentModel.Primitives", "System.Collections.Specialized",
         "System.Diagnostics.TraceSource", "System.Collections.Immutable", "System.IO.MemoryMappedFiles",
         "System.IO.Compression", "System.IO.Compression.Brotli", "System.Reflection.Metadata", "System.Private.Uri",
         "System.Diagnostics.DiagnosticSource", "System.Formats.Asn1", "System.Security.Claims",
-        "System.Diagnostics.StackTrace", "System.Threading.Channels", "System.Net.Primitives",
-        "System.Security.Cryptography", "System.Net.NameResolution", "System.Net.Sockets", "System.Net.Security",
+        "System.Diagnostics.StackTrace", "System.Threading.Channels", "System.Diagnostics.FileVersionInfo", "System.Diagnostics.Process", "System.IO.FileSystem.Watcher", "System.Net.Primitives",
+        "System.Security.Cryptography", "System.Text.Encodings.Web", "System.IO.Pipelines", "System.Text.Json", "System.Net.NameResolution", "System.Net.Sockets", "System.Net.Security",
         "System.Net.Quic", "System.Net.NetworkInformation", "System.Net.Http",
         "System.Runtime.Serialization.Primitives", "System.Private.Xml", "System.Xml.XPath",
         "System.Private.Xml.Linq", "System.Xml.XPath.XDocument", "System.Text.Encoding.CodePages",
@@ -48,7 +48,7 @@ static class Libraries
 
     /// <summary>Libraries cs2wasm writes by hand (members the others name, for capabilities the sandbox lacks): compiled,
     /// never evaluated from dotnet/runtime.</summary>
-    public static readonly HashSet<string> HandWritten = ["System.IO.MemoryMappedFiles", "System.IO.Compression", "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
+    public static readonly HashSet<string> HandWritten = ["System.IO.Compression", "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
         "System.Runtime.Serialization.Primitives", "System.Text.Encoding.CodePages"];
 
     public static string Project(string root, string lib) => lib == "System.Private.CoreLib"
@@ -214,8 +214,9 @@ sealed class Manifest
             sb.AppendLine("substitute	method	System.RuntimeTypeHandle	System.RuntimeType GetTypeByName(System.String,System.Boolean,System.Boolean,System.Threading.StackCrawlMark&)	=>Cs2Wasm.Runtime.TypeInfo.GetTypeByName");
             // C# declares no enums over float, double, char or nint (as for NativeAOT): no code for them
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Enum.cs	#define RARE_ENUMS	#undef RARE_ENUMS");
-            // the sandbox has no environment variables (section 8): the runtime's configuration reads fold
-            sb.AppendLine("substitute	method	System.Environment	System.String GetEnvironmentVariable(System.String)	");
+            // environment variables are the host's (section 8): the block is read once, on the first read, from the host
+            // (Boundary/Interop.Env.cs), as getenv would give it
+            sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Environment.Variables.Unix.cs	return Utf8StringMarshaller.ConvertToManaged(Interop.Sys.GetEnv(variable));	EnsureEnvironmentCached();");
             // no garbage collector: a gen-2 collection callback never fires (array pools are not trimmed)
             sb.AppendLine("substitute	method	System.Gen2GcCallback	System.Void Register(System.Func`2,System.Object)	");
             sb.AppendLine("substitute	method	System.Gen2GcCallback	System.Void Register(System.Func`1)	");
@@ -225,8 +226,6 @@ sealed class Manifest
             // resource keys are not used for messages (System.Resources.UseSystemResourceKeys is off, as by default)
             sb.AppendLine("substitute	method	System.SR	System.Boolean UsingResourceKeys()	false");
             // a WASM worker has no processor number: the thread's id stands for it (a hint, as in .NET)
-            sb.AppendLine("substitute	method	System.Environment	System.String GetEnvironmentVariableCore(System.String)	");
-            sb.AppendLine("substitute	method	System.Environment	System.String GetEnvironmentVariableCore_NoArrayPool(System.String)	");
             sb.AppendLine("substitute	method	System.Threading.Thread	System.Int32 GetCurrentProcessorId()	=>Cs2Wasm.Runtime.Rt.CurrentProcessorId");
             // enum formatting over the compiler's enum tables (Boundary/EnumFormat.cs), not a copy per storage type
             sb.AppendLine("substitute	method	System.Enum	System.String ToString()	=>Cs2Wasm.Runtime.EnumFormat.ToString");

@@ -155,10 +155,6 @@ unsafe partial class Sys {
     internal static unsafe partial int Pipe(int* @pipefd, global::Interop.Sys.PipeFlags @flags) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetTimeZoneData)")]
     internal static partial nint GetTimeZoneData(string @fileName, scoped out int @length) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetEnviron)")]
-    internal static unsafe partial byte** GetEnviron() => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FreeEnviron)")]
-    internal static unsafe partial void FreeEnviron(byte** @environ) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetHostName)")]
     private static unsafe partial int GetHostName(byte* @name, int @nameLength) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetOSArchitecture)")]
@@ -179,18 +175,10 @@ unsafe partial class Sys {
     internal static unsafe partial byte* MkdTemp(byte* @template) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_MksTemps)")]
     internal static unsafe partial nint MksTemps(byte* @template, int @suffixlen) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_MMap)")]
-    internal static partial nint MMap(nint @addr, ulong @len, global::Interop.Sys.MemoryMappedProtections @prot, global::Interop.Sys.MemoryMappedFlags @flags, global::Microsoft.Win32.SafeHandles.SafeFileHandle @fd, long @offset) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_MMap)")]
-    internal static partial nint MMap(nint @addr, ulong @len, global::Interop.Sys.MemoryMappedProtections @prot, global::Interop.Sys.MemoryMappedFlags @flags, nint @fd, long @offset) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_MUnmap)")]
-    internal static partial int MUnmap(nint @addr, ulong @len) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetAllMountPoints)")]
     private static unsafe partial int GetAllMountPoints(delegate* unmanaged<void*, byte*, void> @onFound, void* @context) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_PathConf)")]
     private static partial int PathConf(string @path, global::Interop.Sys.PathConfName @name) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_SysConf)")]
-    internal static partial long SysConf(global::Interop.Sys.SysConfName @name) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_SysLog)")]
     internal static partial void SysLog(global::Interop.Sys.SysLogPriority @priority, string @message, string @arg1) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_CreateThread)")]

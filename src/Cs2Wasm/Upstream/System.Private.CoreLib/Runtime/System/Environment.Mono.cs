@@ -24,7 +24,8 @@ namespace System
                 [DoesNotReturn]
         [Cs2Wasm.Runtime.MissingCapability("processes")]        public static extern void Exit(int exitCode);
 
-                public static string[] GetCommandLineArgs() => new string[] { "" };
+                // cs2wasm: the host's (Boundary/Interop.Env.cs)
+                public static string[] GetCommandLineArgs() => Cs2Wasm.Runtime.CommandLine.Args();
 
         [DoesNotReturn]
         public static void FailFast(string? message)

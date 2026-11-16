@@ -6,59 +6,59 @@ namespace System.IO.Compression
 {
     public sealed unsafe partial class BrotliCompressionOptions
     {
-        public BrotliCompressionOptions() { throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public int Quality { get => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public int WindowLog2 { get => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
+        public BrotliCompressionOptions() { throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public int Quality { get => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public int WindowLog2 { get => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
     }
     public unsafe partial struct BrotliDecoder : global::System.IDisposable
     {
-        public global::System.Buffers.OperationStatus Decompress(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesConsumed, out int bytesWritten) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public void Dispose() => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public static bool TryDecompress(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
+        public global::System.Buffers.OperationStatus Decompress(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesConsumed, out int bytesWritten) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public void Dispose() => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public static bool TryDecompress(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
     }
     public unsafe partial struct BrotliEncoder : global::System.IDisposable
     {
-        public BrotliEncoder(int quality, int window) { throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public global::System.Buffers.OperationStatus Compress(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesConsumed, out int bytesWritten, bool isFinalBlock) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public void Dispose() => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public global::System.Buffers.OperationStatus Flush(global::System.Span<byte> destination, out int bytesWritten) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public static int GetMaxCompressedLength(int inputSize) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public static bool TryCompress(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public static bool TryCompress(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten, int quality, int window) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
+        public BrotliEncoder(int quality, int window) { throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public global::System.Buffers.OperationStatus Compress(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesConsumed, out int bytesWritten, bool isFinalBlock) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public void Dispose() => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public global::System.Buffers.OperationStatus Flush(global::System.Span<byte> destination, out int bytesWritten) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public static int GetMaxCompressedLength(int inputSize) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public static bool TryCompress(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public static bool TryCompress(global::System.ReadOnlySpan<byte> source, global::System.Span<byte> destination, out int bytesWritten, int quality, int window) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
     }
     public sealed unsafe partial class BrotliStream : global::System.IO.Stream
     {
         internal BrotliStream() { }
-        public BrotliStream(global::System.IO.Stream stream, global::System.IO.Compression.BrotliCompressionOptions compressionOptions, bool leaveOpen = default!) { throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public BrotliStream(global::System.IO.Stream stream, global::System.IO.Compression.CompressionLevel compressionLevel) { throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public BrotliStream(global::System.IO.Stream stream, global::System.IO.Compression.CompressionLevel compressionLevel, bool leaveOpen) { throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public BrotliStream(global::System.IO.Stream stream, global::System.IO.Compression.CompressionMode mode) { throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public BrotliStream(global::System.IO.Stream stream, global::System.IO.Compression.CompressionMode mode, bool leaveOpen) { throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public override global::System.IAsyncResult BeginRead(byte[] buffer, int offset, int count, global::System.AsyncCallback? asyncCallback, object? asyncState) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override global::System.IAsyncResult BeginWrite(byte[] buffer, int offset, int count, global::System.AsyncCallback? asyncCallback, object? asyncState) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        protected override void Dispose(bool disposing) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override global::System.Threading.Tasks.ValueTask DisposeAsync() => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override int EndRead(global::System.IAsyncResult asyncResult) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override void EndWrite(global::System.IAsyncResult asyncResult) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override void Flush() => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override global::System.Threading.Tasks.Task FlushAsync(global::System.Threading.CancellationToken cancellationToken) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override int Read(byte[] buffer, int offset, int count) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override int Read(global::System.Span<byte> buffer) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override global::System.Threading.Tasks.Task<int> ReadAsync(byte[] buffer, int offset, int count, global::System.Threading.CancellationToken cancellationToken) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override global::System.Threading.Tasks.ValueTask<int> ReadAsync(global::System.Memory<byte> buffer, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override int ReadByte() => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override long Seek(long offset, global::System.IO.SeekOrigin origin) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override void SetLength(long value) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override void Write(byte[] buffer, int offset, int count) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override void Write(global::System.ReadOnlySpan<byte> buffer) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override global::System.Threading.Tasks.Task WriteAsync(byte[] buffer, int offset, int count, global::System.Threading.CancellationToken cancellationToken) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override global::System.Threading.Tasks.ValueTask WriteAsync(global::System.ReadOnlyMemory<byte> buffer, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public override void WriteByte(byte value) => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported);
-        public global::System.IO.Stream BaseStream { get => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public override bool CanRead { get => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public override bool CanSeek { get => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public override bool CanWrite { get => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public override long Length { get => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
-        public override long Position { get => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.IOCompressionBrotli_PlatformNotSupported); }
+        public BrotliStream(global::System.IO.Stream stream, global::System.IO.Compression.BrotliCompressionOptions compressionOptions, bool leaveOpen = default!) { throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public BrotliStream(global::System.IO.Stream stream, global::System.IO.Compression.CompressionLevel compressionLevel) { throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public BrotliStream(global::System.IO.Stream stream, global::System.IO.Compression.CompressionLevel compressionLevel, bool leaveOpen) { throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public BrotliStream(global::System.IO.Stream stream, global::System.IO.Compression.CompressionMode mode) { throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public BrotliStream(global::System.IO.Stream stream, global::System.IO.Compression.CompressionMode mode, bool leaveOpen) { throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public override global::System.IAsyncResult BeginRead(byte[] buffer, int offset, int count, global::System.AsyncCallback? asyncCallback, object? asyncState) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override global::System.IAsyncResult BeginWrite(byte[] buffer, int offset, int count, global::System.AsyncCallback? asyncCallback, object? asyncState) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        protected override void Dispose(bool disposing) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override global::System.Threading.Tasks.ValueTask DisposeAsync() => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override int EndRead(global::System.IAsyncResult asyncResult) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override void EndWrite(global::System.IAsyncResult asyncResult) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override void Flush() => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override global::System.Threading.Tasks.Task FlushAsync(global::System.Threading.CancellationToken cancellationToken) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override int Read(byte[] buffer, int offset, int count) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override int Read(global::System.Span<byte> buffer) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override global::System.Threading.Tasks.Task<int> ReadAsync(byte[] buffer, int offset, int count, global::System.Threading.CancellationToken cancellationToken) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override global::System.Threading.Tasks.ValueTask<int> ReadAsync(global::System.Memory<byte> buffer, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override int ReadByte() => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override long Seek(long offset, global::System.IO.SeekOrigin origin) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override void SetLength(long value) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override void Write(byte[] buffer, int offset, int count) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override void Write(global::System.ReadOnlySpan<byte> buffer) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override global::System.Threading.Tasks.Task WriteAsync(byte[] buffer, int offset, int count, global::System.Threading.CancellationToken cancellationToken) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override global::System.Threading.Tasks.ValueTask WriteAsync(global::System.ReadOnlyMemory<byte> buffer, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public override void WriteByte(byte value) => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported);
+        public global::System.IO.Stream BaseStream { get => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public override bool CanRead { get => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public override bool CanSeek { get => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public override bool CanWrite { get => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public override long Length { get => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
+        public override long Position { get => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.IOCompressionBrotli_PlatformNotSupported); }
     }
 }

@@ -48,6 +48,17 @@ static class Program
         yield return 2;
     }
 
+    // a ref conditional over parameters (they live in memory, not registers)
+    static string PickParam(bool first, string? a, string? b)
+    {
+        ref string? r = ref first ? ref a : ref b;
+        r ??= "filled";
+        return a + "/" + b;
+    }
+
+    // collection expressions into a HashSet<T> (Add returns bool), in a conditional
+    static HashSet<string> MakeSet(string? s) => s == null ? [] : [s, s, s + "x"];
+
     static async Task RefInAsync()
     {
         await Task.Yield();
@@ -78,6 +89,8 @@ static class Program
         foreach (var _ in RefInIterator(true)) { }
         foreach (var _ in RefInIterator(false)) { }
         Console.WriteLine(s_vals[0] + " " + s_vals[1] + " " + s_d[1]);
+        Console.WriteLine(PickParam(true, null, "b") + " " + PickParam(false, "a", null));
+        Console.WriteLine(MakeSet(null).Count + " " + MakeSet("a").Count);
         RefInAsync().Wait();
         Console.WriteLine(s_vals[1]);
 

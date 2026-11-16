@@ -6,6 +6,7 @@ import { cs2wasmImports, threadImports } from './engine.mjs';
 const { module, memory, args } = workerData;
 globalThis.__cs2wasmFs = workerData.fs; // (the process's file system state: fs.mjs)
 globalThis.__cs2wasmIo = workerData.io; // (and its I/O worker's: http.mjs)
+globalThis.__cs2wasmArgs = workerData.argv; // (and its command line)
 const out = {
   write: (s) => writeSync(1, s),
   error: (type, message, stack) => parentPort.postMessage({ unhandled: `Unhandled exception. ${type}: ${message}${stack ? '\n' + stack : ''}\n` }),

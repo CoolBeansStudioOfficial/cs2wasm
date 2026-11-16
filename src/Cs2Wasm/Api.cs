@@ -89,8 +89,11 @@ public static class Cs2WasmCompiler
         catch (Exception ex)
         {
             // a compiler bug: a diagnostic for the embedder, never an exception through its build
-            var frame = new System.Diagnostics.StackTrace(ex, true).GetFrames().FirstOrDefault(f => f.GetFileName() != null);
-            d.Report(Diags.Unsupported, null, $"internal error: {ex.GetType().Name}: {ex.Message} at {Path.GetFileName(frame?.GetFileName())}:{frame?.GetFileLineNumber()}");
+            // (the first frame with a file, from the trace's text: "   at M in path:line N")
+            var at = (ex.StackTrace ?? "").Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Contains(" in ") && l.Contains(":line "));
+            var where = at == null ? "" : Path.GetFileName(at[(at.LastIndexOf(" in ", StringComparison.Ordinal) + 4)..at.LastIndexOf(":line ", StringComparison.Ordinal)]) + ":" + at[(at.LastIndexOf(":line ", StringComparison.Ordinal) + 6)..];
+            d.Report(Diags.Unsupported, null, $"internal error: {ex.GetType().Name}: {ex.Message} at {where}");
+            if (Environment.GetEnvironmentVariable("CS2WASM_DEBUG") != null) Console.Error.WriteLine(ex.ToString());
         }
         if (d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error)) bytes = null;
         return new CompileResult

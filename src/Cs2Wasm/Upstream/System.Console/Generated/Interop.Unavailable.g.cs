@@ -5,11 +5,5 @@ unsafe partial class Interop {
 unsafe partial class Sys {
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_WriteToNonblocking)")]
     internal static unsafe partial int WriteToNonblocking(global::System.Runtime.InteropServices.SafeHandle @fd, byte* @buffer, int @bufferSize) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ConvertErrorPlatformToPal)")]
-    internal static partial global::Interop.Error ConvertErrorPlatformToPal(int @platformErrno) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ConvertErrorPalToPlatform)")]
-    internal static partial int ConvertErrorPalToPlatform(global::Interop.Error @error) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_StrErrorR)")]
-    private static unsafe partial byte* StrErrorR(int @platformErrno, byte* @buffer, int @bufferSize) => throw new global::System.PlatformNotSupportedException();
 }
 }

@@ -119,6 +119,8 @@ sealed partial class FunctionCompiler
     {
         var key = _closure!.ThisKey ?? throw new CompileException("'this' is not captured");
         int off = CapturedAddress(key);
+        // a struct's `this` (an iterator or async method of a struct) is a copy held in the machine: its address
+        if (key is INamedTypeSymbol { IsValueType: true }) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
         E.Load(Op.I32Load, off);
         return Own.Stable;
     }

@@ -3,12 +3,6 @@
 #pragma warning disable CS8826 // partial declarations' parameter names differ
 unsafe partial class Interop {
 unsafe partial class Sys {
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ConvertErrorPlatformToPal)")]
-    internal static partial global::Interop.Error ConvertErrorPlatformToPal(int @platformErrno) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ConvertErrorPalToPlatform)")]
-    internal static partial int ConvertErrorPalToPlatform(global::Interop.Error @error) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_StrErrorR)")]
-    private static unsafe partial byte* StrErrorR(int @platformErrno, byte* @buffer, int @bufferSize) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetSocketAddressSizes)")]
     internal static unsafe partial global::Interop.Error GetSocketAddressSizes(int* @ipv4SocketAddressSize, int* @ipv6SocketAddressSize, int* @udsSocketAddressSize, int* @maxSocketAddressSize) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetAddressFamily)")]

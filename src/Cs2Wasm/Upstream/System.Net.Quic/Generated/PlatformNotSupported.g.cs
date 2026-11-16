@@ -13,40 +13,40 @@ namespace System.Net.Quic
     }
     public sealed unsafe partial class QuicClientConnectionOptions : global::System.Net.Quic.QuicConnectionOptions
     {
-        public QuicClientConnectionOptions() { throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Net.Security.SslClientAuthenticationOptions ClientAuthenticationOptions { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Net.IPEndPoint? LocalEndPoint { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Net.EndPoint RemoteEndPoint { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
+        public QuicClientConnectionOptions() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Net.Security.SslClientAuthenticationOptions ClientAuthenticationOptions { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Net.IPEndPoint? LocalEndPoint { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Net.EndPoint RemoteEndPoint { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
     }
     public sealed unsafe partial class QuicConnection : global::System.IAsyncDisposable
     {
         internal QuicConnection() { }
-        public global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicStream> AcceptInboundStreamAsync(global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public global::System.Threading.Tasks.ValueTask CloseAsync(long errorCode, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public static global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicConnection> ConnectAsync(global::System.Net.Quic.QuicClientConnectionOptions options, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public global::System.Threading.Tasks.ValueTask DisposeAsync() => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicStream> OpenOutboundStreamAsync(global::System.Net.Quic.QuicStreamType type, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override string ToString() => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public global::System.Net.IPEndPoint LocalEndPoint { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Net.Security.SslApplicationProtocol NegotiatedApplicationProtocol { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Net.Security.TlsCipherSuite NegotiatedCipherSuite { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Security.Authentication.SslProtocols SslProtocol { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Security.Cryptography.X509Certificates.X509Certificate? RemoteCertificate { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Net.IPEndPoint RemoteEndPoint { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public string TargetHostName { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicStream> AcceptInboundStreamAsync(global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public global::System.Threading.Tasks.ValueTask CloseAsync(long errorCode, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public static global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicConnection> ConnectAsync(global::System.Net.Quic.QuicClientConnectionOptions options, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public global::System.Threading.Tasks.ValueTask DisposeAsync() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicStream> OpenOutboundStreamAsync(global::System.Net.Quic.QuicStreamType type, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override string ToString() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public global::System.Net.IPEndPoint LocalEndPoint { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Net.Security.SslApplicationProtocol NegotiatedApplicationProtocol { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Net.Security.TlsCipherSuite NegotiatedCipherSuite { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Security.Authentication.SslProtocols SslProtocol { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Security.Cryptography.X509Certificates.X509Certificate? RemoteCertificate { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Net.IPEndPoint RemoteEndPoint { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public string TargetHostName { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
     }
     public abstract unsafe partial class QuicConnectionOptions
     {
         internal QuicConnectionOptions() { }
-        public long DefaultCloseErrorCode { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public long DefaultStreamErrorCode { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.TimeSpan HandshakeTimeout { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.TimeSpan IdleTimeout { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Net.Quic.QuicReceiveWindowSizes InitialReceiveWindowSizes { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.TimeSpan KeepAliveInterval { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public int MaxInboundBidirectionalStreams { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public int MaxInboundUnidirectionalStreams { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Action<global::System.Net.Quic.QuicConnection, global::System.Net.Quic.QuicStreamCapacityChangedArgs>? StreamCapacityCallback { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
+        public long DefaultCloseErrorCode { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public long DefaultStreamErrorCode { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.TimeSpan HandshakeTimeout { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.TimeSpan IdleTimeout { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Net.Quic.QuicReceiveWindowSizes InitialReceiveWindowSizes { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.TimeSpan KeepAliveInterval { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public int MaxInboundBidirectionalStreams { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public int MaxInboundUnidirectionalStreams { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Action<global::System.Net.Quic.QuicConnection, global::System.Net.Quic.QuicStreamCapacityChangedArgs>? StreamCapacityCallback { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
     }
     public enum QuicError : int
     {
@@ -66,87 +66,87 @@ namespace System.Net.Quic
     public sealed unsafe partial class QuicException : global::System.IO.IOException
     {
         internal QuicException() { }
-        public QuicException(global::System.Net.Quic.QuicError error, long? applicationErrorCode, string message) { throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public long? ApplicationErrorCode { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Net.Quic.QuicError QuicError { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public long? TransportErrorCode { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
+        public QuicException(global::System.Net.Quic.QuicError error, long? applicationErrorCode, string message) { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public long? ApplicationErrorCode { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Net.Quic.QuicError QuicError { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public long? TransportErrorCode { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
     }
     public sealed unsafe partial class QuicListener : global::System.IAsyncDisposable
     {
         internal QuicListener() { }
-        public global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicConnection> AcceptConnectionAsync(global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public global::System.Threading.Tasks.ValueTask DisposeAsync() => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public static global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicListener> ListenAsync(global::System.Net.Quic.QuicListenerOptions options, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override string ToString() => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public global::System.Net.IPEndPoint LocalEndPoint { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicConnection> AcceptConnectionAsync(global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public global::System.Threading.Tasks.ValueTask DisposeAsync() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public static global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicListener> ListenAsync(global::System.Net.Quic.QuicListenerOptions options, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override string ToString() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public global::System.Net.IPEndPoint LocalEndPoint { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
     }
     public sealed unsafe partial class QuicListenerOptions
     {
-        public QuicListenerOptions() { throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Collections.Generic.List<global::System.Net.Security.SslApplicationProtocol> ApplicationProtocols { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Func<global::System.Net.Quic.QuicConnection, global::System.Net.Security.SslClientHelloInfo, global::System.Threading.CancellationToken, global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicServerConnectionOptions>> ConnectionOptionsCallback { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public int ListenBacklog { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Net.IPEndPoint ListenEndPoint { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
+        public QuicListenerOptions() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Collections.Generic.List<global::System.Net.Security.SslApplicationProtocol> ApplicationProtocols { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Func<global::System.Net.Quic.QuicConnection, global::System.Net.Security.SslClientHelloInfo, global::System.Threading.CancellationToken, global::System.Threading.Tasks.ValueTask<global::System.Net.Quic.QuicServerConnectionOptions>> ConnectionOptionsCallback { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public int ListenBacklog { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Net.IPEndPoint ListenEndPoint { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
     }
     public sealed unsafe partial class QuicReceiveWindowSizes
     {
-        public QuicReceiveWindowSizes() { throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public int Connection { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public int LocallyInitiatedBidirectionalStream { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public int RemotelyInitiatedBidirectionalStream { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public int UnidirectionalStream { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
+        public QuicReceiveWindowSizes() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public int Connection { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public int LocallyInitiatedBidirectionalStream { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public int RemotelyInitiatedBidirectionalStream { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public int UnidirectionalStream { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
     }
     public sealed unsafe partial class QuicServerConnectionOptions : global::System.Net.Quic.QuicConnectionOptions
     {
-        public QuicServerConnectionOptions() { throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Net.Security.SslServerAuthenticationOptions ServerAuthenticationOptions { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
+        public QuicServerConnectionOptions() { throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Net.Security.SslServerAuthenticationOptions ServerAuthenticationOptions { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
     }
     public sealed unsafe partial class QuicStream : global::System.IO.Stream
     {
         internal QuicStream() { }
         public const byte DefaultPriority = unchecked((byte)127);
-        public void Abort(global::System.Net.Quic.QuicAbortDirection abortDirection, long errorCode) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override global::System.IAsyncResult BeginRead(byte[] buffer, int offset, int count, global::System.AsyncCallback? callback, object? state) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override global::System.IAsyncResult BeginWrite(byte[] buffer, int offset, int count, global::System.AsyncCallback? callback, object? state) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public void CompleteWrites() => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        protected override void Dispose(bool disposing) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override global::System.Threading.Tasks.ValueTask DisposeAsync() => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override int EndRead(global::System.IAsyncResult asyncResult) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override void EndWrite(global::System.IAsyncResult asyncResult) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override void Flush() => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override global::System.Threading.Tasks.Task FlushAsync(global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override int Read(byte[] buffer, int offset, int count) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override int Read(global::System.Span<byte> buffer) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override global::System.Threading.Tasks.Task<int> ReadAsync(byte[] buffer, int offset, int count, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override global::System.Threading.Tasks.ValueTask<int> ReadAsync(global::System.Memory<byte> buffer, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override int ReadByte() => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override long Seek(long offset, global::System.IO.SeekOrigin origin) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override void SetLength(long value) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override string ToString() => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override void Write(byte[] buffer, int offset, int count) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override void Write(global::System.ReadOnlySpan<byte> buffer) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override global::System.Threading.Tasks.Task WriteAsync(byte[] buffer, int offset, int count, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public global::System.Threading.Tasks.ValueTask WriteAsync(global::System.ReadOnlyMemory<byte> buffer, bool completeWrites, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override global::System.Threading.Tasks.ValueTask WriteAsync(global::System.ReadOnlyMemory<byte> buffer, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override void WriteByte(byte value) => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported);
-        public override bool CanRead { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public override bool CanSeek { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public override bool CanTimeout { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public override bool CanWrite { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public long Id { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public override long Length { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public override long Position { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public byte Priority { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Threading.Tasks.Task ReadsClosed { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public override int ReadTimeout { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Net.Quic.QuicStreamType Type { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public global::System.Threading.Tasks.Task WritesClosed { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public override int WriteTimeout { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
+        public void Abort(global::System.Net.Quic.QuicAbortDirection abortDirection, long errorCode) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override global::System.IAsyncResult BeginRead(byte[] buffer, int offset, int count, global::System.AsyncCallback? callback, object? state) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override global::System.IAsyncResult BeginWrite(byte[] buffer, int offset, int count, global::System.AsyncCallback? callback, object? state) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public void CompleteWrites() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        protected override void Dispose(bool disposing) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override global::System.Threading.Tasks.ValueTask DisposeAsync() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override int EndRead(global::System.IAsyncResult asyncResult) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override void EndWrite(global::System.IAsyncResult asyncResult) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override void Flush() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override global::System.Threading.Tasks.Task FlushAsync(global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override int Read(byte[] buffer, int offset, int count) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override int Read(global::System.Span<byte> buffer) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override global::System.Threading.Tasks.Task<int> ReadAsync(byte[] buffer, int offset, int count, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override global::System.Threading.Tasks.ValueTask<int> ReadAsync(global::System.Memory<byte> buffer, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override int ReadByte() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override long Seek(long offset, global::System.IO.SeekOrigin origin) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override void SetLength(long value) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override string ToString() => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override void Write(byte[] buffer, int offset, int count) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override void Write(global::System.ReadOnlySpan<byte> buffer) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override global::System.Threading.Tasks.Task WriteAsync(byte[] buffer, int offset, int count, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public global::System.Threading.Tasks.ValueTask WriteAsync(global::System.ReadOnlyMemory<byte> buffer, bool completeWrites, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override global::System.Threading.Tasks.ValueTask WriteAsync(global::System.ReadOnlyMemory<byte> buffer, global::System.Threading.CancellationToken cancellationToken = default!) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override void WriteByte(byte value) => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported);
+        public override bool CanRead { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public override bool CanSeek { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public override bool CanTimeout { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public override bool CanWrite { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public long Id { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public override long Length { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public override long Position { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public byte Priority { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Threading.Tasks.Task ReadsClosed { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public override int ReadTimeout { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Net.Quic.QuicStreamType Type { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public global::System.Threading.Tasks.Task WritesClosed { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public override int WriteTimeout { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); set => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
     }
     public unsafe readonly partial struct QuicStreamCapacityChangedArgs
     {
-        public int BidirectionalIncrement { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); init => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
-        public int UnidirectionalIncrement { get => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); init => throw new global::System.PlatformNotSupportedException(SR.SystemNetQuic_PlatformNotSupported); }
+        public int BidirectionalIncrement { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); init => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
+        public int UnidirectionalIncrement { get => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); init => throw new global::System.PlatformNotSupportedException(global::System.SR.SystemNetQuic_PlatformNotSupported); }
     }
     public enum QuicStreamType : int
     {

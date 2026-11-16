@@ -248,7 +248,9 @@ sealed partial class FunctionCompiler
     {
         if (Types.IsStruct(t))
         {
+            // (a pooled temporary may hold an earlier struct's bytes: in a loop, the last iteration's)
             int off = TempStruct(t);
+            E.Get(_fb); E.I32(off); E.Op(Op.I32Add); E.I32(0); E.I32(T.StorageOf(t).size); E.Op(Op.MemoryFill);
             E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
             return Own.None;
         }
@@ -2527,7 +2529,8 @@ sealed partial class FunctionCompiler
         for (int i = 0; i < pats.Length; i++) if (pats[i] is ISlicePatternOperation) slice = i;
         int fixedCount = pats.Length - (slice >= 0 ? 1 : 0);
         var arr = vt as IArrayTypeSymbol;
-        var et = arr != null ? T.Canonical(arr.ElementType) : T.Canonical(((IPropertySymbol)lp.IndexerSymbol!).Type);
+        // (the indexer's type in a generic method or type is the type parameter's: resolved through the map)
+        var et = arr != null ? T.Canonical(arr.ElementType) : T.Canonical(T.Resolve(((IPropertySymbol)lp.IndexerSymbol!).Type, Map));
         // null input never matches
         if (!vt.IsValueType) { E.Get(v); E.Op(Op.I32Eqz); E.If(ValType.I32); E.I32(0); E.Else(); }
         int len = E.AddLocal(ValType.I32);

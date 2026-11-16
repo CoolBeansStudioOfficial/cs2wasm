@@ -8,7 +8,7 @@ static class Check
 {
     /// <summary>A library's compilation: the manifest's files, then cs2wasm's own (everything under
     /// upstream-dir/Library), with the libraries before it as references (CoreLib is the corlib).</summary>
-    public static CSharpCompilation Compile(string root, string upstream, string lib, IReadOnlyDictionary<string, CSharpCompilation> built, string? exclude = null)
+    public static CSharpCompilation Compile(string root, string upstream, string lib, IReadOnlyDictionary<string, CSharpCompilation> built, string? exclude = null, string? excludeAlso = null)
     {
         var dir = Path.Combine(upstream, lib);
         var lines = File.ReadAllLines(Path.Combine(dir, "manifest.txt"));
@@ -17,7 +17,8 @@ static class Check
         var baseDir = lines.FirstOrDefault(l => l.StartsWith("root ")) is { } rl ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar))!, rl[5..].Trim()) : root;
         var files = lines.Where(l => l.StartsWith("file ")).Select(l => Path.Combine(baseDir, l[5..].Trim())).ToList();
         files.AddRange(Directory.GetFiles(dir, "*.cs", SearchOption.AllDirectories).Order(StringComparer.Ordinal)
-            .Where(f => exclude == null || !string.Equals(Path.GetFullPath(f), Path.GetFullPath(exclude), StringComparison.OrdinalIgnoreCase)));
+            .Where(f => (exclude == null || !string.Equals(Path.GetFullPath(f), Path.GetFullPath(exclude), StringComparison.OrdinalIgnoreCase))
+                && (excludeAlso == null || !string.Equals(Path.GetFullPath(f), Path.GetFullPath(excludeAlso), StringComparison.OrdinalIgnoreCase))));
         var po = new CSharpParseOptions(LanguageVersion.Preview, preprocessorSymbols: defines);
         var trees = files.AsParallel().AsOrdered().Select(f => CSharpSyntaxTree.ParseText(File.ReadAllText(f), po, f)).ToList();
         var refs = Libraries.All.TakeWhile(l => l != lib).Where(built.ContainsKey).Select(l => (MetadataReference)built[l].ToMetadataReference()).ToList();

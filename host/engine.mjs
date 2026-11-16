@@ -130,6 +130,20 @@ export function cs2wasmImports(module, getMemory, out) {
     ...fsImports(getMemory),
     ...httpImports(getMemory),
     write: (ptr, len) => out.write(str(ptr, len)),
+    // the environment (name=value, each ended by a zero byte, UTF-8) and the command line (a string block), the
+    // process's: shared with the workers through globalThis.__cs2wasmArgs
+    env_block: (buf, size) => {
+      const bytes = new TextEncoder().encode(Object.entries(process.env).map(([k, v]) => `${k}=${v}\0`).join(''));
+      if (buf && size >= bytes.length) new Uint8Array(getMemory().buffer).set(bytes, buf);
+      return bytes.length;
+    },
+    args_block: (buf, size) => {
+      const args = globalThis.__cs2wasmArgs ?? [''];
+      const chars = [args.length];
+      for (const a of args) { chars.push(a.length); for (let i = 0; i < a.length; i++) chars.push(a.charCodeAt(i)); }
+      if (buf && size >= chars.length) new Uint16Array(getMemory().buffer, buf, chars.length).set(chars);
+      return chars.length;
+    },
     report_exception: (tp, tl, mp, ml, sp, sl) => out.error(str(tp, tl), str(mp, ml), str(sp, sl)),
     now_ms: () => Date.now(),
     monotonic_ns: () => process.hrtime.bigint(),
@@ -149,12 +163,13 @@ export function cs2wasmImports(module, getMemory, out) {
 /** thread_spawn for Node: a worker_threads Worker per thread, sharing the module and memory. */
 export function threadImports(module, memory, out, onSpawn) {
   return {
-    processor_count: () => availableParallelism(),
+    // (CS2WASM_PROCESSORS: the cores the module is told it has)
+    processor_count: () => +(process.env.CS2WASM_PROCESSORS || availableParallelism()),
     thread_spawn: (sp, tls, id, arg, background) => {
       if (process.env.CS2WASM_TRACE_THREADS) process.stderr.write(`[thread_spawn id=${id} background=${background}]
 `);
       onSpawn?.();
-      const w = new Worker(new URL('./worker.mjs', import.meta.url), { workerData: { module, memory, args: [sp, tls, id, arg], fs: fsShared(), io: ioShared() } });
+      const w = new Worker(new URL('./worker.mjs', import.meta.url), { workerData: { module, memory, args: [sp, tls, id, arg], fs: fsShared(), io: ioShared(), argv: globalThis.__cs2wasmArgs } });
       w.on('message', (m) => { if (m.unhandled) { process.stderr.write(m.unhandled); process.exit(3); } });
       w.on('error', (e) => { process.stderr.write(String(e && e.stack || e) + '\n'); process.exit(4); });
       if (background) w.unref(); // background threads do not keep the process alive, as in .NET

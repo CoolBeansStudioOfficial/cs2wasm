@@ -61,7 +61,7 @@ static class Stubs
     /// <summary>The project's ApiExclusionListPath: types and members (documentation ids) its own sources implement.</summary>
     static HashSet<string> s_exclude = [];
     static HashSet<string> s_declared = [];
-    static string Throw => s_pnse == null ? "throw null!" : $"throw new global::System.PlatformNotSupportedException({s_pnse})";
+    static string Throw => s_pnse == null ? "throw null!" : $"throw new global::System.PlatformNotSupportedException({(s_pnse.StartsWith("SR.") ? "global::System." + s_pnse : s_pnse)})";
 
     /// <summary>A library .NET builds for the browser as a platform-not-supported assembly (GenAPI with
     /// GeneratePlatformNotSupportedAssemblyMessage): its reference assembly's public API, every member throwing
