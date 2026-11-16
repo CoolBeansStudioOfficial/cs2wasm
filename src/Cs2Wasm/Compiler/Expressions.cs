@@ -633,7 +633,11 @@ sealed partial class FunctionCompiler
         if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
         E.Load(Types.LoadOp(ft), off);
         if (Types.IsRef(ft) && !f.Field.IsStatic && f.Instance != null && IsStableBase(f.Instance) && f.Field.ContainingType.TypeKind == TypeKind.Class)
-            _lastFieldLoad = (E.Fn.Body.Count, Driver.FieldKey(Owner(f.Field), StorageField(f.Field)));
+        {
+            var lk = Driver.FieldKey(Owner(f.Field), StorageField(f.Field));
+            D.NoteBorrowField(lk, StorageField(f.Field));
+            _lastFieldLoad = (E.Fn.Body.Count, lk);
+        }
         // a static readonly field keeps its value from its static constructor on (section 4.1: Stable, no count to
         // borrow it); in a static constructor it may still change
         if (Types.IsRef(ft) && f.Field is { IsStatic: true, IsReadOnly: true } && M.MethodKind != MethodKind.StaticConstructor && !s_noStableStatics

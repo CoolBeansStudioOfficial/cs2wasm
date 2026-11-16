@@ -55,6 +55,19 @@ struct Wrap
     public Wrap(Pair p, int k) { K = k; P = p; }
 }
 
+sealed class Fixed
+{
+    readonly Node _a = new Node(100);
+    readonly Node _b;
+    readonly Node _c;
+    public Fixed(int v) { _b = new Node(v); _c = new Node(v + 1); }
+    public Fixed() : this(7) { }
+    public int Total() { var a = _a; var b = _b; Touch(); return a.V + b.V + Use(_c); }
+    static void Touch() { var f = new Fixed(1); f.Total2(); }
+    int Total2() => _b.V;
+    static int Use(Node n) { new Fixed(2).Total2(); return n.V; }
+}
+
 sealed class Holder { public Pair P; public Pair[] Ps = new Pair[2]; }
 
 sealed class Box
@@ -145,6 +158,10 @@ static class Program
         var w3 = new Wrap(h.P, 3);
         Console.WriteLine(w1.P.Sum + " " + w2.P.Sum + " " + pl.Sum + " " + (w2.P.A == pl.A) + " " + w3.P.Sum + " " + (w3.P.B == h.P.B));
         try { var w4 = new Wrap(MakePair(1), Throws()); Console.WriteLine(w4.K); } catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+        var fx = new Fixed();
+        var t = new System.Threading.Thread(() => Console.WriteLine("thread " + new Fixed(3).Total()));
+        t.Start(); t.Join();
+        Console.WriteLine(fx.Total());
         var f = MakePair(20).First; var g = h.P.First;
         h.P = MakePair(30);
         Console.WriteLine(f.V + " " + g.V + " " + h.P.First.V + " " + Swap(h.P).First.V);

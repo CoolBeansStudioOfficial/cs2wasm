@@ -39,7 +39,11 @@ sealed partial class FunctionCompiler
             if (IsStableBase(ar)) return Driver.ElementsKey;
             if (ar is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ai } afr && IsStableBase(ai) && afr.Field.ContainingType.TypeKind == TypeKind.Class
                 && !(ai is IParameterReferenceOperation && TypeOf(ai).IsValueType))
-                return Driver.FieldKey(Owner(afr.Field), StorageField(afr.Field)) + "\n" + Driver.ElementsKey;
+            {
+                var ak = Driver.FieldKey(Owner(afr.Field), StorageField(afr.Field));
+                D.NoteBorrowField(ak, StorageField(afr.Field));
+                return ak + "\n" + Driver.ElementsKey;
+            }
             return null;
         }
         if (init is not IFieldReferenceOperation { Field.IsStatic: false, Instance: { } inst } fr) return null;
@@ -50,7 +54,9 @@ sealed partial class FunctionCompiler
             case IParameterReferenceOperation { Parameter: { RefKind: RefKind.None } p } when !IsCaptured(p) && !_assignedParams.Contains(p) && !_assignedParams.Contains(p.OriginalDefinition) && !TypeOf(inst).IsValueType: break;
             default: return null;
         }
-        return Driver.FieldKey(Owner(fr.Field), StorageField(fr.Field));
+        var key = Driver.FieldKey(Owner(fr.Field), StorageField(fr.Field));
+        D.NoteBorrowField(key, StorageField(fr.Field));
+        return key;
     }
 
     /// <summary>The declaration of a borrowing candidate: the field's value goes to the local through the placeholder.</summary>
@@ -119,7 +125,9 @@ internal sealed partial class Driver
             var b = fn.Body;
             foreach (var (_, local, field, marker) in list)
             {
-                bool ok = field == "" || !threads && summary != null && field.Split('\n').All(k => !summary.Has(fn, k) && !FieldsAddressTaken.Contains(k) && !reflected.Contains(k));
+                // (an init-only field never changes once its object is constructed: no code, on no thread, writes it)
+                bool ok = field == "" || field.Split('\n').All(k => !FieldsAddressTaken.Contains(k) && !reflected.Contains(k)
+                    && (InitOnlyKey(k) || !threads && summary != null && !summary.Has(fn, k)));
                 if (s_borrowDebug) Console.Error.WriteLine($"borrow {fn.Name} local {local} {field.Replace('\n', '|')}: {ok}"
                     + (summary != null ? " own=" + (FieldWrites.TryGetValue(fn, out var ow) && ow.Contains(field) ? "y" : "n") + " via "
                         + string.Join(",", fn.Body.Where(x => x.Op == Op.Call && x.Ref is WasmFunction g && summary.Has(g, field)).Select(x => ((WasmFunction)x.Ref!).Name).Distinct().Take(5)) : ""));
@@ -146,11 +154,12 @@ internal sealed partial class Driver
         var markers = new Dictionary<WasmFunction, WasmFunction?>();
         foreach (var (fn, field, retain, release) in _tempBorrows)
         {
-            bool ok = !threads && summary != null && !FieldsAddressTaken.Contains(field) && !reflected.Contains(field);
+            bool initOnly = InitOnlyKey(field) && !FieldsAddressTaken.Contains(field) && !reflected.Contains(field);
+            bool ok = initOnly || !threads && summary != null && !FieldsAddressTaken.Contains(field) && !reflected.Contains(field);
             // the borrow lasts from the retain to the statement's release: only what runs in between may not store the
             // field (the function's own stores anywhere: the whole function's summary decides)
-            if (ok && FieldWrites.TryGetValue(fn, out var own) && own.Contains(field)) ok = false;
-            if (ok)
+            if (ok && !initOnly && FieldWrites.TryGetValue(fn, out var own) && own.Contains(field)) ok = false;
+            if (ok && !initOnly)
             {
                 var b = fn.Body;
                 int r = b.FindIndex(x => x.Op == Op.Call && x.Ref == retain);
