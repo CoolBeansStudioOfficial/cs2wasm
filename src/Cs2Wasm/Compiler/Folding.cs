@@ -305,7 +305,9 @@ sealed partial class FunctionCompiler
             {
                 if (o is not ILocalReferenceOperation lr) continue;
                 var p = o.Parent;
-                if (p is ISimpleAssignmentOperation a && a.Target == o || p is ICompoundAssignmentOperation ca && ca.Target == o
+                if (p is ISimpleAssignmentOperation a && (a.Target == o || a.IsRef) || p is ICompoundAssignmentOperation ca && ca.Target == o
+                    || p is ICoalesceAssignmentOperation qa && qa.Target == o
+                    || p is IVariableInitializerOperation { Parent: IVariableDeclaratorOperation { Symbol.IsRef: true } }
                     || p is IIncrementOrDecrementOperation || p is IAddressOfOperation || p is IDeconstructionAssignmentOperation
                     || p is IArgumentOperation { Parameter.RefKind: not RefKind.None } || p is ITupleOperation
                     || lr.IsDeclaration && p is not IVariableDeclaratorOperation)

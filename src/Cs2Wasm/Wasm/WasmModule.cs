@@ -184,6 +184,9 @@ internal sealed class WasmModule
         var gUse = new Dictionary<WasmGlobal, int>();
         foreach (var f in defined) foreach (var ins in f.Body)
             if (ins.Ref is WasmGlobal g) gUse[g] = gUse.GetValueOrDefault(g) + 1;
+        // (section 7.2: an instance's state is its memory and its mutable globals, so every mutable global the module
+        // uses is exported, for the engine to save and restore)
+        foreach (var g in Globals) if (g.Mutable && g.Export == null && gUse.ContainsKey(g)) g.Export = g.Name;
         var globals = Globals.Where(g => gUse.ContainsKey(g) || g.Export != null)
             .OrderByDescending(g => gUse.GetValueOrDefault(g)).ThenBy(g => Globals.IndexOf(g)).ToList();
         for (int i = 0; i < globals.Count; i++) globals[i].Index = i;

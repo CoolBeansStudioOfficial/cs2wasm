@@ -1126,8 +1126,11 @@ sealed partial class FunctionCompiler
 
     IMethodSymbol? FindOnCompleted(ITypeSymbol awT)
     {
-        // (upstream: OnCompleted flows the ExecutionContext to the continuation, as the async builder does)
-        foreach (var name in new[] { "OnCompleted", "UnsafeOnCompleted" })
+        // (upstream: OnCompleted flows the ExecutionContext to the continuation, as the async builder does. A program's
+        // own awaiter that is an ICriticalNotifyCompletion gets UnsafeOnCompleted, the call .NET's builder makes)
+        var critical = D.Main.GetTypeByMetadataName("System.Runtime.CompilerServices.ICriticalNotifyCompletion");
+        bool unsafeFirst = critical != null && !D.IsLibrary(awT) && awT.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, critical));
+        foreach (var name in unsafeFirst ? new[] { "UnsafeOnCompleted", "OnCompleted" } : new[] { "OnCompleted", "UnsafeOnCompleted" })
             for (var t = awT as INamedTypeSymbol; t != null; t = t.BaseType is { } bt ? (INamedTypeSymbol)T.Canonical(bt) : null)
             {
                 var m = t.GetMembers(name).OfType<IMethodSymbol>().FirstOrDefault(x => x.Parameters.Length == 1 && !x.IsStatic && x.DeclaredAccessibility == Accessibility.Public);
