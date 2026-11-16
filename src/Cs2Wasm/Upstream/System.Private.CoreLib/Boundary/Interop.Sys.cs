@@ -120,9 +120,7 @@ internal static partial class Interop
             return q;
         }
 
-        // ---------------- descriptors: only standard input, output and error exist (opening files is a build error) ----------------
-        internal static partial int Close(IntPtr fd) => 0;
-
+        // ---------------- descriptors (files: Interop.Files.cs, over the host's file system) ----------------
         internal static partial int FLock(IntPtr fd, LockOperations operation) => 0;
 
         internal static partial int FLock(Microsoft.Win32.SafeHandles.SafeFileHandle fd, LockOperations operation) => 0;
@@ -132,20 +130,6 @@ internal static partial class Interop
 
         private static partial int CanGetHiddenFlag() => 0;
 
-        /// <summary>No file exists to remove (ENOENT).</summary>
-        internal static partial int Unlink(string pathname) => -1;
-
-        internal static unsafe partial int Write(System.Runtime.InteropServices.SafeHandle fd, byte* buffer, int bufferSize) => Write(fd.DangerousGetHandle(), buffer, bufferSize);
-
-        /// <summary>Standard output and error go to the engine's log import (SPEC 7.4), as UTF-16.</summary>
-        internal static unsafe partial int Write(IntPtr fd, byte* buffer, int bufferSize)
-        {
-            if (bufferSize <= 0) return 0;
-            char[] text = new char[bufferSize];
-            int n = System.Text.Encoding.UTF8.GetChars(buffer, bufferSize, (char*)Rt.ArrayData(text), bufferSize);
-            Engine.Write(Rt.ArrayData(text), n);
-            return bufferSize;
-        }
 
         // ---------------- the low-level monitor: [0] lock (0 free, 1 held), [4] signal sequence ----------------
         internal static partial IntPtr LowLevelMonitor_Create()

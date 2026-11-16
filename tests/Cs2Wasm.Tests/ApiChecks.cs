@@ -56,11 +56,13 @@ static class ApiChecks
             return !r.Success && r.Diagnostics.Any(d => d.Id == "CW0002" && d.GetMessage().Contains("M:E.Nope")) ? null : "expected CW0002, got " + Errors(r);
         });
 
-        Check("files are not in the sandbox: build error naming the capability", () =>
+        Check("files are the host's: every module gets them through the cs2wasm.fs_* imports (section 8)", () =>
         {
             var src = Header + "static class E { [UnmanagedCallersOnly(EntryPoint = \"main\")] static void M() => Console.WriteLine(System.IO.File.ReadAllText(\"x\")); }";
             var r = Compile(src, new CompileOptions());
-            return !r.Success && r.Diagnostics.Any(d => d.Id == "CW0003" && d.GetMessage().Contains("file system")) ? null : "expected CW0003, got " + Errors(r);
+            if (!r.Success) return Errors(r);
+            var imports = new Wasm(r.Module!).Imports;
+            return new[] { "fs_open", "fs_read", "fs_close" }.All(n => imports.Any(i => i.StartsWith("cs2wasm." + n + ":"))) ? null : "missing file imports: " + string.Join(", ", imports);
         });
 
         Check("platform invoke is a build error", () =>

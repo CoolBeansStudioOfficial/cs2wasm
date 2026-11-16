@@ -37,9 +37,6 @@ public sealed class CompileOptions
     /// <summary>Other compilations of the program (GodotSharp, the embedder's namespaces); the main one may reference them.</summary>
     public IReadOnlyList<Compilation> AdditionalCompilations { get; init; } = [];
     public BoundaryTable Boundary { get; init; } = new();
-    /// <summary>The file capability (SPEC section 8): System.IO over a virtual file system the host serves through the
-    /// `cs2wasm.fs_*` imports. For the self-hosted toolchain; games are built without it (files are a build error).</summary>
-    public bool FileSystem { get; init; }
     /// <summary>Custom sections written into the module as given.</summary>
     public IReadOnlyList<(string Name, byte[] Data)> CustomSections { get; init; } = [];
     public IReadOnlyList<ICompilerPlugin> Plugins { get; init; } = [];

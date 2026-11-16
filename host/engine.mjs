@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { availableParallelism } from 'node:os';
+import { fsImports, fsShared } from './fs.mjs';
 // Reference implementation of the engine imports cs2wasm's library calls (module "cs2wasm").
 // An embedder (Bazoodle's engine) supplies the same functions; this one is used by the tests.
 //
@@ -125,6 +126,7 @@ export function cs2wasmImports(module, getMemory, out) {
     return result;
   };
   return {
+    ...fsImports(getMemory),
     write: (ptr, len) => out.write(str(ptr, len)),
     report_exception: (tp, tl, mp, ml, sp, sl) => out.error(str(tp, tl), str(mp, ml), str(sp, sl)),
     now_ms: () => Date.now(),
@@ -150,7 +152,7 @@ export function threadImports(module, memory, out, onSpawn) {
       if (process.env.CS2WASM_TRACE_THREADS) process.stderr.write(`[thread_spawn id=${id} background=${background}]
 `);
       onSpawn?.();
-      const w = new Worker(new URL('./worker.mjs', import.meta.url), { workerData: { module, memory, args: [sp, tls, id, arg] } });
+      const w = new Worker(new URL('./worker.mjs', import.meta.url), { workerData: { module, memory, args: [sp, tls, id, arg], fs: fsShared() } });
       w.on('message', (m) => { if (m.unhandled) { process.stderr.write(m.unhandled); process.exit(3); } });
       w.on('error', (e) => { process.stderr.write(String(e && e.stack || e) + '\n'); process.exit(4); });
       if (background) w.unref(); // background threads do not keep the process alive, as in .NET

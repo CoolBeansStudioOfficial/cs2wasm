@@ -5,7 +5,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 
 ## Results
 
-- **Conformance (proof 1, partial):** 69 C# programs (arithmetic and math, classes and virtual/interface dispatch,
+- **Conformance (proof 1, partial):** 70 C# programs (arithmetic and math, classes and virtual/interface dispatch,
   structs and enums, strings and formatting, exceptions with stack traces and filters, collections, LINQ (methods and
   query syntax) and closures, generics (generic virtual methods) and pattern matching (list patterns), nullable value
   types, tuples, iterators, async/await (on one thread, async streams, captures, filters), threads, the thread pool
@@ -404,8 +404,15 @@ exported beside the stack pointer.
   time measured (Results), call cost and run-time speed against NativeAOT unmeasured.
 
 ### 8. Sandbox — partial
-Files, sockets, processes, environment and registry members, and platform invoke, are build errors naming the
-capability (`CW0003`, `CW0004`). `unsafe` code and pointers compile. Reflection metadata is kept for what the
+Every module gets the platform .NET's browser target gets, through host imports (section 8). Files: System.Native's
+file functions (`Boundary/Interop.Files.cs`) call the `cs2wasm.fs_*` imports with POSIX meaning (open, read and write
+plain, positioned and vectored, seek, stat, truncate, directories, links, rename, copy, chmod and times; errors as
+.NET's PAL codes); the Node host (`host/fs.mjs`) shows a directory of the machine (`CS2WASM_FS_ROOT`, else the
+current directory) as `/`, the working directory starting at `/` as in .NET's browser target, with descriptor
+positions and the working directory shared by all threads (`070_files` matches .NET). Not yet: HTTP through the
+host's fetch (System.Net.Http is a stub library: reaching it is still a build error), environment variables, and the
+rest of System.Native as the browser target has it (temporary files, sysconf, library loading, mmap, pipes, logging);
+platform invoke into native libraries is the one build error (`CW0004`). `unsafe` code and pointers compile. Reflection metadata is kept for what the
 program's reflection can be proven to reach (a trimming analysis): `typeof(X).GetMethod("M")` keeps X.M,
 `GetMethods()`/`GetProperties()`/`GetFields()` keep that kind of X's members, `GetConstructors`/`Activator` keep
 constructors, a type marked `[DynamicallyAccessedMembers]` keeps everything, and reflection on a Type the compiler

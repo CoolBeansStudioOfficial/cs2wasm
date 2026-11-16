@@ -5,8 +5,7 @@ using Microsoft.CodeAnalysis;
 // cs2wasm command-line wrapper (for tests; embedders call Cs2WasmCompiler.Compile in process).
 // usage: cs2wasm <file.cs | dir>... -o out.wasm [--boundary table.json] [--map out.wasm.map]
 //               [--section name=file] [--memory-pages N] [--max-pages N] [--no-opt] [-r ref.dll] [--watch]
-//               [-a generators.dll] [--property Name=value] [--files]
-// --files: the file capability (System.IO over the host's virtual file system: the toolchain's; never for games)
+//               [-a generators.dll] [--property Name=value]
 // -a: source generators run over the program first (with the build properties --property gives them)
 // --watch: builds, then builds again whenever a .cs file of the inputs changes (the library stays loaded: a rebuild
 // skips its parsing and setup)
@@ -18,7 +17,7 @@ var refs = new List<MetadataReference>();
 var analyzers = new List<string>();
 var properties = new Dictionary<string, string>();
 int pages = 256, maxPages = 16384;
-bool optimize = true, watch = false, files = false;
+bool optimize = true, watch = false;
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -36,7 +35,6 @@ for (int i = 0; i < args.Length; i++)
         case "--max-pages": maxPages = int.Parse(args[++i]); break;
         case "--no-opt": optimize = false; break;
         case "--watch": watch = true; break;
-        case "--files": files = true; break;
         case "-r": refs.Add(MetadataReference.CreateFromFile(args[++i])); break;
         case "-a": analyzers.Add(args[++i]); break;
         case "--property":
@@ -78,7 +76,6 @@ int Build()
             MemoryInitialPages = pages,
             MemoryMaximumPages = maxPages,
             Optimize = optimize,
-            FileSystem = files,
         };
         var result = Cs2WasmCompiler.Compile(compilation, options);
         foreach (var d in result.Diagnostics.Where(d => d.Severity >= DiagnosticSeverity.Warning || d.Id.StartsWith("CW")))

@@ -133,16 +133,6 @@ unsafe partial class Normaliz {
 }
 unsafe partial class Interop {
 unsafe partial class Sys {
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Access)")]
-    internal static partial int Access(string @path, global::Interop.Sys.AccessMode @mode) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ChDir)")]
-    internal static partial int ChDir(string @path) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ChMod)")]
-    internal static partial int ChMod(string @path, int @mode) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FChMod)")]
-    internal static partial int FChMod(global::Microsoft.Win32.SafeHandles.SafeFileHandle @fd, int @mode) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_CopyFile)")]
-    internal static partial int CopyFile(global::Microsoft.Win32.SafeHandles.SafeFileHandle @source, global::Microsoft.Win32.SafeHandles.SafeFileHandle @destination, long @sourceLength) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LoadLibrary)")]
     internal static partial nint LoadLibrary(string @filename) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetLoadLibraryError)")]
@@ -159,18 +149,10 @@ unsafe partial class Sys {
     internal static partial int GetErrNo() => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_SetErrNo)")]
     internal static partial void SetErrNo(int @errorCode) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FileSystemSupportsLocking)")]
-    internal static partial bool FileSystemSupportsLocking(global::Microsoft.Win32.SafeHandles.SafeFileHandle @fd, global::Interop.Sys.LockOperations @lockOperation, bool @accessWrite) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FSync)")]
-    internal static partial int FSync(global::Microsoft.Win32.SafeHandles.SafeFileHandle @fd) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FTruncate)")]
-    internal static partial int FTruncate(global::Microsoft.Win32.SafeHandles.SafeFileHandle @fd, long @length) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetCpuUtilization)")]
     internal static partial double GetCpuUtilization(ref global::Interop.Sys.ProcessCpuInformation @previousCpuInfo) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Pipe)")]
     internal static unsafe partial int Pipe(int* @pipefd, global::Interop.Sys.PipeFlags @flags) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetCwd)")]
-    private static unsafe partial byte* GetCwd(byte* @buffer, int @bufferLength) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetTimeZoneData)")]
     internal static partial nint GetTimeZoneData(string @fileName, scoped out int @length) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetEnviron)")]
@@ -187,22 +169,12 @@ unsafe partial class Sys {
     private static partial int GetUnixVersion(byte[] @version, ref int @capacity) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetUnixRelease)")]
     public static partial string GetUnixRelease() => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LChflags)")]
-    internal static partial int LChflags(string @path, uint @flags) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FChflags)")]
-    internal static partial int FChflags(global::System.Runtime.InteropServices.SafeHandle @fd, uint @flags) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Link)")]
-    internal static partial int Link(string @source, string @link) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LockFileRegion)")]
     internal static partial int LockFileRegion(global::System.Runtime.InteropServices.SafeHandle @fd, long @offset, long @length, global::Interop.Sys.LockType @lockType) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Log)")]
     internal static unsafe partial void Log(byte* @buffer, int @count) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LogError)")]
     internal static unsafe partial void LogError(byte* @buffer, int @count) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LSeek)")]
-    internal static partial long LSeek(global::Microsoft.Win32.SafeHandles.SafeFileHandle @fd, long @offset, global::Interop.Sys.SeekWhence @whence) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_MkDir)")]
-    internal static partial int MkDir(global::System.ReadOnlySpan<char> @path, int @mode) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_MkdTemp)")]
     internal static unsafe partial byte* MkdTemp(byte* @template) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_MksTemps)")]
@@ -215,54 +187,8 @@ unsafe partial class Sys {
     internal static partial int MUnmap(nint @addr, ulong @len) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetAllMountPoints)")]
     private static unsafe partial int GetAllMountPoints(delegate* unmanaged<void*, byte*, void> @onFound, void* @context) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Open)")]
-    internal static partial global::Microsoft.Win32.SafeHandles.SafeFileHandle Open(string @filename, global::Interop.Sys.OpenFlags @flags, int @mode) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_PathConf)")]
     private static partial int PathConf(string @path, global::Interop.Sys.PathConfName @name) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_PosixFAdvise)")]
-    internal static partial int PosixFAdvise(global::Microsoft.Win32.SafeHandles.SafeFileHandle @fd, long @offset, long @length, global::Interop.Sys.FileAdvice @advice) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FAllocate)")]
-    internal static partial int FAllocate(global::Microsoft.Win32.SafeHandles.SafeFileHandle @fd, long @offset, long @length) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_PRead)")]
-    internal static unsafe partial int PRead(global::System.Runtime.InteropServices.SafeHandle @fd, byte* @buffer, int @bufferSize, long @fileOffset) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ReadV)")]
-    internal static unsafe partial long ReadV(global::System.Runtime.InteropServices.SafeHandle @fd, global::Interop.Sys.IOVector* @vectors, int @vectorCount) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_PReadV)")]
-    internal static unsafe partial long PReadV(global::System.Runtime.InteropServices.SafeHandle @fd, global::Interop.Sys.IOVector* @vectors, int @vectorCount, long @fileOffset) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_PWrite)")]
-    internal static unsafe partial int PWrite(global::System.Runtime.InteropServices.SafeHandle @fd, byte* @buffer, int @bufferSize, long @fileOffset) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_PWriteV)")]
-    internal static unsafe partial long PWriteV(global::System.Runtime.InteropServices.SafeHandle @fd, global::Interop.Sys.IOVector* @vectors, int @vectorCount, long @fileOffset) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Read)")]
-    internal static unsafe partial int Read(global::System.Runtime.InteropServices.SafeHandle @fd, byte* @buffer, int @count) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ReadFromNonblocking)")]
-    internal static unsafe partial int ReadFromNonblocking(global::System.Runtime.InteropServices.SafeHandle @fd, byte* @buffer, int @count) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_WriteV)")]
-    internal static unsafe partial long WriteV(global::System.Runtime.InteropServices.SafeHandle @fd, global::Interop.Sys.IOVector* @vectors, int @vectorCount) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_OpenDir)")]
-    internal static partial nint OpenDir(string @path) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ReadDir)")]
-    internal static unsafe partial int ReadDir(nint @dir, global::Interop.Sys.DirectoryEntry* @outputEntry) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_CloseDir)")]
-    internal static partial int CloseDir(nint @dir) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_ReadLink)")]
-    private static partial int ReadLink(global::System.ReadOnlySpan<char> @path, ref byte @buffer, int @bufferSize) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Rename)")]
-    internal static partial int Rename(global::System.ReadOnlySpan<char> @oldPath, global::System.ReadOnlySpan<char> @newPath) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_RmDir)")]
-    internal static partial int RmDir(string @path) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FStat)")]
-    internal static partial int FStat(global::System.Runtime.InteropServices.SafeHandle @fd, scoped out global::Interop.Sys.FileStatus @output) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Stat)")]
-    internal static partial int Stat(string @path, scoped out global::Interop.Sys.FileStatus @output) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Stat)")]
-    internal static partial int Stat(global::System.ReadOnlySpan<char> @path, scoped out global::Interop.Sys.FileStatus @output) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LStat)")]
-    internal static partial int LStat(string @path, scoped out global::Interop.Sys.FileStatus @output) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_LStat)")]
-    internal static partial int LStat(global::System.ReadOnlySpan<char> @path, scoped out global::Interop.Sys.FileStatus @output) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_SymLink)")]
-    internal static partial int SymLink(string @target, string @linkPath) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_SysConf)")]
     internal static partial long SysConf(global::Interop.Sys.SysConfName @name) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_SysLog)")]
@@ -271,12 +197,6 @@ unsafe partial class Sys {
     internal static unsafe partial bool CreateThread(nint @stackSize, delegate* unmanaged<nint, nint> @startAddress, nint @parameter) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_TryGetUInt32OSThreadId)")]
     internal static unsafe partial uint TryGetUInt32OSThreadId() => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_UTimensat)")]
-    internal static unsafe partial int UTimensat(string @path, global::Interop.Sys.TimeSpec* @times) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FUTimens)")]
-    internal static unsafe partial int FUTimens(global::System.Runtime.InteropServices.SafeHandle @fd, global::Interop.Sys.TimeSpec* @times) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_WriteToNonblocking)")]
-    internal static unsafe partial int WriteToNonblocking(global::System.Runtime.InteropServices.SafeHandle @fd, byte* @buffer, int @bufferSize) => throw new global::System.PlatformNotSupportedException();
 }
 }
 unsafe partial class Interop {
@@ -286,12 +206,6 @@ unsafe partial class Fcntl {
     internal static partial int DangerousSetIsNonBlocking(nint @fd, int @isNonBlocking) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FcntlSetIsNonBlocking)")]
     internal static partial int SetIsNonBlocking(global::System.Runtime.InteropServices.SafeHandle @fd, int @isNonBlocking) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FcntlGetIsNonBlocking)")]
-    internal static partial int GetIsNonBlocking(global::System.Runtime.InteropServices.SafeHandle @fd, scoped out bool @isNonBlocking) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FcntlSetFD)")]
-    internal static partial int SetFD(global::System.Runtime.InteropServices.SafeHandle @fd, int @flags) => throw new global::System.PlatformNotSupportedException();
-    [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FcntlGetFD)")]
-    internal static partial int GetFD(global::System.Runtime.InteropServices.SafeHandle @fd) => throw new global::System.PlatformNotSupportedException();
     [global::Cs2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_FcntlGetFD)")]
     internal static partial int GetFD(nint @fd) => throw new global::System.PlatformNotSupportedException();
 }
