@@ -34,6 +34,10 @@ internal sealed class MethodInst
     /// <summary>A borrowed return's kind for its callers: Stable (the receiver: `return this`) or Unstable (a field's
     /// value, as the caller's own load of that field would be).</summary>
     public Own BorrowedKind = Own.Stable;
+    /// <summary>A field's value returned borrowed: the fields it came through (FieldBorrows keys, a line each), when
+    /// they are all instance fields of classes from `this` on; a caller that keeps its receiver holds the value across
+    /// calls without a count while none of them is stored (FieldBorrows.cs). Null: not known.</summary>
+    public string? BorrowKeys;
     /// <summary>A copy that takes these arguments (a bit per parameter ordinal) owned (OwnedParams.cs).</summary>
     public int OwnedParams;
 }
@@ -532,7 +536,7 @@ internal sealed partial class Driver
             var bfn = Module.AddFunction(Display(m) + (returnsThis ? " [returns this]" : " [returns a field]"), Signature(m, Types));
             bfn.FrameName = fn.FrameName; bfn.ProgramCode = fn.ProgramCode;
             var mb = new MethodInst { Sym = m, Fn = bfn, Key = key + (returnsThis ? "|returns-this" : "|returns-field"), Impl = MethodImpl.Body, ReachedFrom = Compiling, ReturnsBorrowed = true,
-                BorrowedKind = returnsThis ? Own.Stable : Own.Unstable };
+                BorrowedKind = returnsThis ? Own.Stable : Own.Unstable, BorrowKeys = returnsThis ? null : ReturnPathKeys(m) };
             _methods[mb.Key] = mb;
             _work.Enqueue(mb);
             mi.BorrowedReturn = mb;
@@ -595,6 +599,38 @@ internal sealed partial class Driver
             _ => false,
         };
         return Path(v);
+    }
+
+    /// <summary>The fields the value a ReturnsField method returns came through, as FieldBorrows keys (a line each; the
+    /// elements' key for an array's element): only when the path starts at `this` of a class and every field on it is an
+    /// instance field of a class. Null otherwise (a static field, a struct on the way: the caller counts as before).</summary>
+    string? ReturnPathKeys(IMethodSymbol m)
+    {
+        var def = m.OriginalDefinition;
+        if (def.IsStatic || def.ContainingType.TypeKind != TypeKind.Class) return null;
+        var sr = def.DeclaringSyntaxReferences[0];
+        if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) return null;
+        var block = body switch { IMethodBodyOperation mb => mb.BlockBody ?? mb.ExpressionBody, IBlockOperation b => b, _ => null };
+        if (block is not { Operations: [IReturnOperation { ReturnedValue: { } v }] }) return null;
+        while (v is IConversionOperation { OperatorMethod: null } c) v = c.Operand;
+        // (a lazy getter stores the field itself, before the caller's borrow starts)
+        if (v is ICoalesceAssignmentOperation { Target: var lazy }) v = lazy;
+        var map = TypeMap.For(m);
+        var keys = new List<string>();
+        while (true)
+        {
+            while (v is IConversionOperation { OperatorMethod: null } c2) v = c2.Operand;
+            if (v is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }) break;
+            if (v is IArrayElementReferenceOperation ae) { keys.Add(ElementsKey); v = ae.ArrayReference; continue; }
+            if (v is not IFieldReferenceOperation { Field: { IsStatic: false } f, Instance: { } inst } || f.ContainingType.TypeKind != TypeKind.Class) return null;
+            var storage = f.CorrespondingTupleField ?? f;
+            var owner = Types.Resolve(f.ContainingType, map);
+            var k = FieldKey(owner, storage);
+            NoteBorrowField(k, storage, Types.Resolve(f.Type, map));
+            keys.Add(k);
+            v = inst;
+        }
+        return keys.Count == 0 ? null : string.Join("\n", keys);
     }
 
     /// <summary>An instance method of a class whose every return is `this` (StringBuilder.Append and friends).</summary>

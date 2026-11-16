@@ -184,7 +184,7 @@ sealed partial class FunctionCompiler
             E.CurrentPos = save;
             return spilled;
         }
-        var r = CallWith(m, virt, pushThis, () => PushArgs(m, args), null, syntax, ConstArgsFor(m, args));
+        var r = CallWith(m, virt, pushThis, () => PushArgs(m, args), null, syntax, ConstArgsFor(m, args), stableRecv: instance != null && IsStableBase(instance));
         E.CurrentPos = save;
         return r;
     }
@@ -416,7 +416,7 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Calls a resolved method. Pushes the struct-return destination, then receiver, then arguments.</summary>
-    Own CallWith(IMethodSymbol m, bool virt, Action? pushThis, Action pushArgs, Action? intoAddr, SyntaxNode? syntax, IReadOnlyDictionary<int, ConstArg>? consts = null)
+    Own CallWith(IMethodSymbol m, bool virt, Action? pushThis, Action pushArgs, Action? intoAddr, SyntaxNode? syntax, IReadOnlyDictionary<int, ConstArg>? consts = null, bool stableRecv = false)
     {
         bool sret = ReturnsStruct(m);
         int sretOff = -1;
@@ -445,7 +445,7 @@ sealed partial class FunctionCompiler
         // (the callee owns them now)
         if (cc != null) foreach (var tl in cc.Temps) { E.I32(0); E.Set(tl); }
         _wantRefReturnAddress = wantAddress;
-        return EmitCallInstr(m, dispatch, syntax, sretOff, consts, cc?.Moved ?? 0);
+        return EmitCallInstr(m, dispatch, syntax, sretOff, consts, cc?.Moved ?? 0, stableRecv);
     }
 
     /// <summary>Arguments are already on the stack (not for struct-returning methods unless the destination was pushed first).</summary>
@@ -455,7 +455,7 @@ sealed partial class FunctionCompiler
         return EmitCallInstr(m, virt && IsVirtualDispatch(m), null, -1);
     }
 
-    Own EmitCallInstr(IMethodSymbol m, bool virt, SyntaxNode? syntax, int sretOff, IReadOnlyDictionary<int, ConstArg>? consts = null, int owned = 0)
+    Own EmitCallInstr(IMethodSymbol m, bool virt, SyntaxNode? syntax, int sretOff, IReadOnlyDictionary<int, ConstArg>? consts = null, int owned = 0, bool stableRecv = false)
     {
         if (IsStaticInterfaceMember(m) && TryStaticInterfaceMember(ref m, out var sim)) return sim;
         var rt = T.Canonical(m.ReturnType);
@@ -499,6 +499,9 @@ sealed partial class FunctionCompiler
                 // of the statement, in a temp if it was not a variable)
                 E.Call(mb.Fn);
                 Inst?.Callees.Add(mb);
+                // a field's value from a receiver that stays put: held across calls like the field's own load
+                // (ToCallSafe: no count while nothing stores the fields it came through)
+                if (stableRecv && mb.BorrowKeys != null && mb.BorrowedKind == Own.Unstable) _lastFieldLoad = (E.Fn.Body.Count, mb.BorrowKeys);
                 return mb.BorrowedKind;
             }
             E.Call(mi.Fn);

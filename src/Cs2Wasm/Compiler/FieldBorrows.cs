@@ -227,7 +227,7 @@ internal sealed partial class Driver
         {
             var queried = new HashSet<string>();
             foreach (var b in FieldBorrows) foreach (var k in b.field.Split('\n')) if (k != "") queried.Add(k);
-            foreach (var b in _tempBorrows) queried.Add(b.field);
+            foreach (var b in _tempBorrows) foreach (var k in b.field.Split('\n')) queried.Add(k);
             summary = new StoreSummary(this, queried);
             // (threads: the safe point is a pseudo-field the function that moves a thread's epoch stores)
             if (threads && AllMethods.FirstOrDefault(m => m.Compiled && m.Sym.Name == "SetEpoch" && m.Sym.ContainingType?.Name == "Limbo") is { } setEpoch)
@@ -324,25 +324,28 @@ internal sealed partial class Driver
         var markers = new Dictionary<WasmFunction, WasmFunction?>();
         foreach (var (fn, field, retain, release) in _tempBorrows)
         {
-            bool initOnly = InitOnlyKey(field) && !FieldsAddressTaken.Contains(field) && !reflected.Contains(field);
-            var tkeys = initOnly ? null : ThreadKeys(fn, [field]);
-            bool ok = initOnly || tkeys != null && !FieldsAddressTaken.Contains(field) && !reflected.Contains(field);
-            bool safe = tkeys is { Length: > 1 };
+            // (several fields: the value came through each of them, a getter's path: Driver.ReturnPathKeys)
+            var all = field.Split('\n');
+            bool addr = all.Any(k => FieldsAddressTaken.Contains(k) || reflected.Contains(k));
+            // (an init-only field never changes: nothing to look for)
+            var live = all.Where(k => !InitOnlyKey(k)).ToArray();
+            var tkeys = addr ? null : live.Length == 0 ? live : ThreadKeys(fn, live);
+            bool ok = tkeys != null;
             // the borrow lasts from the retain to the statement's release: only what runs in between may not store the
-            // field (the function's own stores anywhere: the whole function's summary decides)
-            if (ok && !initOnly && FieldWrites.TryGetValue(fn, out var own) && own.Contains(field)) ok = false;
-            if (ok && !initOnly)
+            // fields (the function's own stores anywhere: the whole function's summary decides)
+            if (ok && live.Length > 0 && FieldWrites.TryGetValue(fn, out var own) && live.Any(own.Contains)) ok = false;
+            if (ok && tkeys!.Length > 0)
             {
                 var b = fn.Body;
                 int r = b.FindIndex(x => x.Op == Op.Call && x.Ref == retain);
                 int e = r < 0 ? -1 : b.FindIndex(r + 1, x => x.Op == Op.Call && x.Ref == release);
-                if (r < 0 || e < 0) ok = !summary!.Has(fn, field) && !(safe && summary.Has(fn, SafePointKey));
+                if (r < 0 || e < 0) ok = !tkeys.Any(k => summary!.Has(fn, k));
                 else
                     for (int k = r + 1; k < e && ok; k++)
                     {
                         var ins = b[k];
-                        if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != retain && (summary!.Has(g, field) || safe && summary.Has(g, SafePointKey))) ok = false;
-                        else if (ins.Op == Op.CallIndirect && (summary!.HasIndirect(field, ins) || safe && summary.HasIndirect(SafePointKey, ins))) ok = false;
+                        if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != retain) { foreach (var key in tkeys) if (summary!.Has(g, key)) { ok = false; break; } }
+                        else if (ins.Op == Op.CallIndirect) { foreach (var key in tkeys) if (summary!.HasIndirect(key, ins)) { ok = false; break; } }
                     }
             }
             markers[retain] = ok ? null : Rt.Retain;
