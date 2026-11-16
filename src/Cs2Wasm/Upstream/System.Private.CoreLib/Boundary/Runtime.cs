@@ -188,6 +188,27 @@ namespace Cs2Wasm.Runtime
         /// for an exchange written by hand (Interlocked); 0 and nothing without threads.</summary>
         [Intrinsic] public static extern int RefLock(ref int place);
         [Intrinsic] public static extern void RefUnlock(int held);
+        /// <summary>Threads: between the two no reference anywhere is stored over (every place's lock is held), so a
+        /// range of them can be read and counted as it is. Nothing of the program may run in between.</summary>
+        [Intrinsic] public static extern void BulkEnter();
+        [Intrinsic] public static extern void BulkExit();
+
+        /// <summary>Threads: counts the object at the address if it is still alive (a weak reference's target: its
+        /// last release may be under way on another thread). Called with the runtime lock held, which the clearing
+        /// of weak references takes.</summary>
+        public static bool TryRetain(int a)
+        {
+            ref int w = ref Mem.RefI32(a);
+            while (true)
+            {
+                int v = Atomic.Load32(ref w);
+                if (v == -1) return true;
+                // (an arena's member: its arena frees it under the lock held here, clearing the weak reference with it)
+                if (v < -1) { Retain(Borrow<object>(a)); return true; }
+                if (v == 0) return false;
+                if (Atomic.CompareExchange32(ref w, v, v + 1) == v) return true;
+            }
+        }
         /// <summary>Threads: until ReleaseEpoch the thread passes no safe point, whatever it waits for (Limbo.Hold), so
         /// the code around keeps what it borrowed; nothing without threads.</summary>
         [Intrinsic] public static extern void HoldEpoch();

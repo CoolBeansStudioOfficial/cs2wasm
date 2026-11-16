@@ -30,9 +30,12 @@ namespace System
             }
             int bytes = (Cs2Wasm.Runtime.TypeInfo.Flags(id) & 1) != 0 ? Cs2Wasm.Runtime.TypeInfo.BoxOffset(id) + Cs2Wasm.Runtime.TypeInfo.Size(id) : Cs2Wasm.Runtime.TypeInfo.Size(id);
             int o = Cs2Wasm.Runtime.Rt.AllocObject(bytes, id);
+            // (threads: the fields are copied and counted with no store able to come in between)
+            Cs2Wasm.Runtime.Rt.BulkEnter();
             Cs2Wasm.Runtime.Mem.Copy(o + 12, Cs2Wasm.Runtime.Rt.AddressOf(this) + 12, bytes - 12);
             var r = Cs2Wasm.Runtime.Rt.Take<object>(o);
             if ((Cs2Wasm.Runtime.TypeInfo.Flags2(id) & 1) != 0) Cs2Wasm.Runtime.Rt.RetainContents(r);
+            Cs2Wasm.Runtime.Rt.BulkExit();
             return r;
         }
 

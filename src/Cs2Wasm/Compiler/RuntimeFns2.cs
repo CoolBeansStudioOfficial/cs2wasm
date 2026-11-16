@@ -68,7 +68,12 @@ internal sealed partial class RuntimeFns
         }
     }
 
-    WasmFunction? _loadRetain, _refLock, _refUnlock;
+    WasmFunction? _loadRetain, _refLock, _refUnlock, _bulkEnter, _bulkExit;
+    /// <summary>Threads: every place's lock, with the runtime lock (taken first, as everywhere): while they are
+    /// held no reference anywhere is stored over, so a range of them can be read and counted, or taken out, as it is.
+    /// Nothing of the program runs inside. Empty without threads.</summary>
+    public WasmFunction BulkEnter => _bulkEnter ??= M.AddFunction("rt.bulk_enter", FT([], []));
+    public WasmFunction BulkExit => _bulkExit ??= M.AddFunction("rt.bulk_exit", FT([], []));
     /// <summary>(address) -> the reference there, counted: read and counted in one step with respect to rt.store_ref
     /// (Driver.ThreadMode). Without threads: the read, then the count.</summary>
     public WasmFunction LoadRetain => _loadRetain ??= M.AddFunction("rt.load_retain", FT([I], [I]));
@@ -97,6 +102,32 @@ internal sealed partial class RuntimeFns
             if (threads) { int s = e.AddLocal(I); EmitRefLock(e, 0, s); e.Get(s); } else e.I32(0);
         }
         if (_refUnlock != null && threads) { var e = new Emitter(_refUnlock); EmitRefUnlock(e, 0); }
+        if (_bulkEnter != null && threads)
+        {
+            var e = new Emitter(_bulkEnter);
+            int p = e.AddLocal(I), end = e.AddLocal(I);
+            var table = D.StaticAddress("rt.ref.locks", 256, 4);
+            e.Call(LockEnter);
+            e.I32Addr(table); e.Tee(p); e.I32(256); e.Op(Op.I32Add); e.Set(end);
+            var done = e.Block(); var next = e.Loop();
+            e.Get(p); e.Get(end); e.Op(Op.I32GeU); e.BrIf(done);
+            { var got = e.Block(); var spin = e.Loop(); e.Get(p); e.I32(0); e.I32(1); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Op(Op.I32Eqz); e.BrIf(got); e.Br(spin); e.End(); e.End(); }
+            e.Get(p); e.I32(4); e.Op(Op.I32Add); e.Set(p);
+            e.Br(next); e.End(); e.End();
+        }
+        if (_bulkExit != null && threads)
+        {
+            var e = new Emitter(_bulkExit);
+            int p = e.AddLocal(I), end = e.AddLocal(I);
+            var table = D.StaticAddress("rt.ref.locks", 256, 4);
+            e.I32Addr(table); e.Tee(p); e.I32(256); e.Op(Op.I32Add); e.Set(end);
+            var done = e.Block(); var next = e.Loop();
+            e.Get(p); e.Get(end); e.Op(Op.I32GeU); e.BrIf(done);
+            e.Get(p); e.I32(0); e.Emit(Op.I32AtomicStore, 0, 2);
+            e.Get(p); e.I32(4); e.Op(Op.I32Add); e.Set(p);
+            e.Br(next); e.End(); e.End();
+            e.Call(LockExit);
+        }
         if (_loadRetain == null) return;
         {
             var e = new Emitter(_loadRetain);
@@ -278,6 +309,22 @@ internal sealed partial class RuntimeFns
         int s = e.AddLocal(I), d = e.AddLocal(I);
         e.Get(0); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(1); e.Get(5); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(s);
         e.Get(2); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(3); e.Get(5); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(d);
+        if (D.ThreadMode)
+        {
+            // Threads: the source's elements are counted and the destination's old ones taken out with no store able
+            // to come in between (rt.bulk_enter: every place's lock); the old ones, set aside, are released after.
+            int bytes = e.AddLocal(I), tmp = e.AddLocal(I);
+            e.Get(4); e.Get(5); e.Op(Op.I32Mul); e.Tee(bytes); e.Op(Op.I32Eqz); e.If(); e.Op(Op.Return); e.End();
+            e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Alloc", 1).Fn); e.Set(tmp);
+            e.Call(BulkEnter);
+            e.Get(0); e.Get(s); e.Get(4); e.Call(ArrayRetainRange);
+            e.Get(tmp); e.Get(d); e.Get(bytes); e.Op(Op.MemoryCopy);
+            e.Get(d); e.Get(s); e.Get(bytes); e.Op(Op.MemoryCopy);
+            e.Call(BulkExit);
+            e.Get(2); e.Get(tmp); e.Get(4); e.Call(ArrayReleaseRange);
+            e.Get(tmp); e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn);
+            return f;
+        }
         e.Get(0); e.Get(s); e.Get(4); e.Call(ArrayRetainRange);
         e.Get(2); e.Get(d); e.Get(4); e.Call(ArrayReleaseRange);
         e.Get(d); e.Get(s); e.Get(4); e.Get(5); e.Op(Op.I32Mul); e.Op(Op.MemoryCopy);
@@ -291,6 +338,19 @@ internal sealed partial class RuntimeFns
         var e = new Emitter(f);
         int a = e.AddLocal(I);
         e.Get(0); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(1); e.Get(3); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(a);
+        if (D.ThreadMode)
+        {
+            int bytes = e.AddLocal(I), tmp = e.AddLocal(I);
+            e.Get(2); e.Get(3); e.Op(Op.I32Mul); e.Tee(bytes); e.Op(Op.I32Eqz); e.If(); e.Op(Op.Return); e.End();
+            e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Alloc", 1).Fn); e.Set(tmp);
+            e.Call(BulkEnter);
+            e.Get(tmp); e.Get(a); e.Get(bytes); e.Op(Op.MemoryCopy);
+            e.Get(a); e.I32(0); e.Get(bytes); e.Op(Op.MemoryFill);
+            e.Call(BulkExit);
+            e.Get(0); e.Get(tmp); e.Get(2); e.Call(ArrayReleaseRange);
+            e.Get(tmp); e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn);
+            return f;
+        }
         e.Get(0); e.Get(a); e.Get(2); e.Call(ArrayReleaseRange);
         e.Get(a); e.I32(0); e.Get(2); e.Get(3); e.Op(Op.I32Mul); e.Op(Op.MemoryFill);
         return f;

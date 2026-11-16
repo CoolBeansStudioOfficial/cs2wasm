@@ -173,6 +173,33 @@ internal sealed partial class RuntimeFns
         }
     }
 
+    /// <summary>Threads (Driver.ThreadMode): a struct copied from memory another thread may write, field by field. A
+    /// reference is read with its count in one step (rt.load_retain) and put in place as the destination needs: plainly
+    /// into memory nobody else has yet (init), exchanged under the place's lock into memory others may see (shared),
+    /// or over a value of this thread's own (neither); the old reference is released. Everything else is copied as
+    /// bytes. `move`: the source is this thread's own and gives its counts up (it is cleared by the caller).</summary>
+    void EmitCopyFieldsThreads(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, bool init, bool shared, bool move, int tmp)
+    {
+        foreach (var f in D.Types.LayoutOf(t).Fields)
+        {
+            int o = baseOff + f.Offset;
+            void Addr(int l) { e.Get(l); if (o != 0) { e.I32(o); e.Op(Op.I32Add); } }
+            if (Types.IsRef(f.Type))
+            {
+                void Value() { if (move) { e.Get(src); e.Load(Op.I32Load, o); } else { Addr(src); e.Call(LoadRetain); } }
+                if (init) { e.Get(dst); Value(); e.Store(Op.I32Store, o); }
+                else if (shared) { Addr(dst); Value(); e.Call(StoreRef); e.Call(Release); }
+                else { Value(); e.Set(tmp); e.Get(dst); e.Load(Op.I32Load, o); e.Get(dst); e.Get(tmp); e.Store(Op.I32Store, o); e.Call(Release); }
+            }
+            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitCopyFieldsThreads(e, dst, src, o, f.Type, init, shared, move, tmp);
+            else
+            {
+                int size = D.Types.StorageOf(f.Type).size;
+                if (size > 0) { Addr(dst); Addr(src); e.I32(size); e.Op(Op.MemoryCopy); }
+            }
+        }
+    }
+
     public WasmFunction RetainStruct(ITypeSymbol t)
     {
         t = D.Types.Canonical(t);
@@ -185,6 +212,7 @@ internal sealed partial class RuntimeFns
         t = D.Types.Canonical(t);
         return Cached("rt.copy_init " + Types.Key(t), FT([I, I], []), e =>
         {
+            if (D.ThreadMode && D.Types.LayoutOf(t).HasRefs) { EmitCopyFieldsThreads(e, 0, 1, 0, t, init: true, shared: false, move: false, e.AddLocal(I)); return; }
             e.Get(1); e.Call(RetainStruct(t));
             e.Get(0); e.Get(1); e.I32(D.Types.StorageOf(t).size); e.Op(Op.MemoryCopy);
             if (D.Types.LayoutOf(t).HasRefs) NoteStructCopy(e.Fn, t);
@@ -214,6 +242,12 @@ internal sealed partial class RuntimeFns
         return Cached((shared ? "rt.move_assign " : "rt.move_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
         {
             int size = D.Types.StorageOf(t).size;
+            if (D.ThreadMode && shared && D.Types.LayoutOf(t).HasRefs)
+            {
+                EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared: true, move: true, e.AddLocal(I));
+                e.Get(1); e.I32(0); e.I32(size); e.Op(Op.MemoryFill);
+                return;
+            }
             if (shared) EmitExchangeFields(e, 0, 1, 0, t);
             else { e.Get(0); e.Call(ReleaseStruct(t)); }
             e.Get(0); e.Get(1); e.I32(size); e.Op(Op.MemoryCopy);
@@ -229,6 +263,7 @@ internal sealed partial class RuntimeFns
         t = D.Types.Canonical(t);
         return Cached((shared ? "rt.copy_assign " : "rt.copy_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
         {
+            if (D.ThreadMode && D.Types.LayoutOf(t).HasRefs) { EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared, move: false, e.AddLocal(I)); return; }
             e.Get(1); e.Call(RetainStruct(t));
             if (shared) EmitExchangeFields(e, 0, 1, 0, t);
             else { e.Get(0); e.Call(ReleaseStruct(t)); }

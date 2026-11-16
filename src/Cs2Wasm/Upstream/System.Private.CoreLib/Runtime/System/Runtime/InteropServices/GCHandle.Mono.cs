@@ -49,8 +49,19 @@ namespace System.Runtime.InteropServices
 
         internal static object? InternalGet(IntPtr handle)
         {
-            int v = Cs2Wasm.Runtime.Mem.LoadI32((int)handle & ~1);
-            return v == 0 ? null : Cs2Wasm.Runtime.Rt.Borrow<object>(v);
+            int slot = (int)handle & ~1;
+            if (Cs2Wasm.Runtime.Rt.SingleThreaded())
+            {
+                int v = Cs2Wasm.Runtime.Mem.LoadI32(slot);
+                return v == 0 ? null : Cs2Wasm.Runtime.Rt.Borrow<object>(v);
+            }
+            // threads: the target may be on its way out on another thread (a weak handle holds no count); it is
+            // counted here only if it is still alive, under the lock the clearing of weak handles takes
+            Cs2Wasm.Runtime.Rt.RuntimeLock();
+            int a = Cs2Wasm.Runtime.Mem.LoadI32(slot);
+            bool alive = a != 0 && Cs2Wasm.Runtime.Rt.TryRetain(a);
+            Cs2Wasm.Runtime.Rt.RuntimeUnlock();
+            return alive ? Cs2Wasm.Runtime.Rt.Take<object>(a) : null;
         }
 
         internal static void InternalSet(IntPtr handle, object? value)

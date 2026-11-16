@@ -768,6 +768,8 @@ sealed partial class FunctionCompiler
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
             case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;
+            case "Rt.BulkEnter": E.Call(Rt.BulkEnter); return Own.None;
+            case "Rt.BulkExit": E.Call(Rt.BulkExit); return Own.None;
             case "Rt.RefUnlock": E.Call(Rt.RefUnlock); return Own.None;
             case "Rt.HoldEpoch": E.Call(Rt.FinHold); return Own.None;
             case "Rt.ReleaseEpoch": E.Call(Rt.FinUnhold); return Own.None;

@@ -78,7 +78,7 @@ sealed partial class FunctionCompiler
     Own CountedLoad(Own o)
     {
         var b = E.Fn.Body;
-        if (o != Own.Unstable || b.Count == 0 || _plainLoadAt == b.Count) return o;
+        if (o != Own.Unstable || b.Count == 0 || _plainLoadAt == b.Count || s_noCountedLoads) return o;
         var last = b[^1];
         if (last.Op != Op.I32Load || last.Ref != null) return o;
         b.RemoveAt(b.Count - 1);
@@ -88,6 +88,8 @@ sealed partial class FunctionCompiler
     }
     /// <summary>Where (body length) a load ended whose place does not change: CountedLoad leaves it.</summary>
     int _plainLoadAt = -1;
+    /// <summary>CS2WASM_NO_COUNTED_LOADS=1 (to see tests/Conformance/081 fail: reads that count are what it tests).</summary>
+    static readonly bool s_noCountedLoads = Environment.GetEnvironmentVariable("CS2WASM_NO_COUNTED_LOADS") == "1";
 
     /// <summary>The baseline of the count measurement (CS2WASM_COUNT_RC): a reference value an expression produces from a
     /// variable, a field, an element, a property, a call or an allocation, which a scheme without ownership analysis
