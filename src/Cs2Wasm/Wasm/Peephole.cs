@@ -34,6 +34,13 @@ static class Peephole
                 {
                     prev.Op = Op.LocalSet; dst[^1] = prev; continue;
                 }
+                // i32.const 0 ; i32.ne ; i32.eqz  =>  i32.eqz   (`while (x != null)`: leave when x is null)
+                if (ins.Op == Op.I32Eqz && prev.Op == Op.I32Ne && dst.Count > 1 && dst[^2].Op == Op.I32Const && dst[^2].Imm == 0 && dst[^2].Ref == null)
+                {
+                    dst.RemoveAt(dst.Count - 1);
+                    dst[^1] = ins;
+                    continue;
+                }
                 // i32.eqz ; i32.eqz ; br_if  =>  br_if   (only when followed by a branch/if: value used as condition)
             }
             dst.Add(ins);

@@ -130,6 +130,8 @@ internal sealed class WasmModule
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
                 foreach (var f in Functions) if (!f.IsImport) SmallBlocks.Run(f);
             foreach (var f in Functions) if (!f.IsImport) Peephole.Run(f);
+            if (Functions.FirstOrDefault(f => f.Name == "rt.nonnull") is { } nonNull && Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_CHECKS") != "1")
+                foreach (var f in Functions) if (!f.IsImport) NullChecks.Run(f, nonNull);
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_LOCALS") != "1")
             {
                 Locals.MayThrow = ComputeMayThrow();
