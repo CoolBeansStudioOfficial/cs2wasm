@@ -340,7 +340,15 @@ sealed partial class FunctionCompiler
         if (!m.IsStatic && inv.Instance != null)
         {
             var rt = TypeOf(inv.Instance);
-            if (rt.IsValueType) { pushThis = () => PushValueTypeReceiver(inv.Instance, rt); virt = false; }
+            if (rt.IsValueType)
+            {
+                // an interface method on a struct (through a type parameter's constraint): the struct's own
+                // implementation, as EmitCallOps resolves it
+                if (Types.Key(T.Canonical(m.ContainingType)) != Types.Key(T.Canonical(rt)) && D.Implementation(rt, m) is { } impl
+                    && Types.Key(T.Canonical(impl.ContainingType)) == Types.Key(T.Canonical(rt)))
+                    m = impl;
+                pushThis = () => PushValueTypeReceiver(inv.Instance, rt); virt = false;
+            }
             else pushThis = () => { var o = EmitValue(inv.Instance); ToCallSafe(o, rt); if (!IsKnownNonNull(inv.Instance)) NullCheckKeep(); };
         }
         CallWith(m, virt, pushThis, () => PushArgs(m, inv.Arguments.Cast<IOperation>().ToList()), pushDst, inv.Syntax);

@@ -1048,7 +1048,10 @@ sealed partial class FunctionCompiler
             int off = AllocFrame(enumType);
             if (T.NeedsRc(enumType)) AddOwned(new Slot { FrameOffset = off, Type = enumType });
             ev = new Var { Type = enumType, AddrLocal = _fb, Offset = off };
-            EmitCallResolved(SubstMethod(getEnum), () => ReceiverFromLocal(collLocal, collType, coll), [], false, intoAddr: () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); });
+            // (a struct enumerator from an abstract, virtual or interface GetEnumerator of a class or interface: the
+            // call dispatches, as for a class enumerator; Roslyn's Rope, AbstractLookupSymbolsInfo.IArityEnumerable)
+            bool dispatch = !collType.IsValueType && (getEnum.IsVirtual || getEnum.IsAbstract || getEnum.IsOverride || getEnum.ContainingType.TypeKind == TypeKind.Interface);
+            EmitCallResolved(SubstMethod(getEnum), () => ReceiverFromLocal(collLocal, collType, coll), [], dispatch, intoAddr: () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); });
             enumLocal = -1;
         }
         else
