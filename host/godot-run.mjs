@@ -18,5 +18,7 @@ const instance = new WebAssembly.Instance(module, imports);
 engine.attach(instance, memory);
 instance.exports.init();
 engine.run(scriptPath, nodeClass);
+// GODOT_BINDS=<file>: the method binds looked up, in order (class.method)
+if (process.env.GODOT_BINDS) writeFileSync(process.env.GODOT_BINDS, engine.binds.slice(1).map(b => b.cls + '.' + b.name).join('\n') + '\n');
 const text = lines.join('\n') + '\n';
 if (logFile) writeFileSync(logFile, text); else process.stdout.write(text);

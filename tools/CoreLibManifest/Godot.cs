@@ -34,11 +34,13 @@ static class GodotLibrary
         sb.AppendLine("reference System.Diagnostics.TraceSource");
         sb.AppendLine("# pure-init: lookups whose result is their only effect (an unread static field they initialize is left out; on an");
         sb.AppendLine("# engine that lacks the method, stock GodotSharp would fail in the class initializer instead)");
-        sb.AppendLine("pure-init Godot.GodotObject.ClassDB_get_method_with_compatibility");
-        sb.AppendLine("pure-init Godot.GodotObject.ClassDB_get_method");
-        sb.AppendLine("pure-init Godot.GodotObject.ClassDB_get_constructor");
+        sb.AppendLine("pure-init-checked Godot.GodotObject.ClassDB_get_method_with_compatibility");
+        sb.AppendLine("pure-init-checked Godot.GodotObject.ClassDB_get_method");
+        sb.AppendLine("pure-init-checked Godot.GodotObject.ClassDB_get_constructor");
         sb.AppendLine("pure-init Godot.StringName.op_Implicit");
         sb.AppendLine("pure-init Godot.NodePath.op_Implicit");
+        sb.AppendLine("# pure-init-batch: a lookup's form over tables of names and hashes (Cs2WasmLookups.cs)");
+        sb.AppendLine("pure-init-batch Godot.GodotObject.ClassDB_get_method_with_compatibility ClassDB_check_methods_with_compatibility");
         foreach (var d in defines.Distinct()) sb.AppendLine("define " + d);
         foreach (var f in rel) sb.AppendLine("file " + f);
         File.WriteAllText(Path.Combine(outDir, "manifest.txt"), sb.ToString());

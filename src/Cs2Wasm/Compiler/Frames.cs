@@ -10,6 +10,10 @@ internal sealed partial class Driver
     {
         // (a delegate's Invoke is no frame in .NET's traces: the call goes straight to the target)
         if (m.MethodKind == MethodKind.DelegateInvoke) return true;
+        // [StackTraceHidden] on the method or a type around it: .NET leaves such frames out of traces
+        if (m.GetAttributes().Any(a => a.AttributeClass?.Name == "StackTraceHiddenAttribute")) return true;
+        for (var t = m.ContainingType; t != null; t = t.ContainingType)
+            if (t.GetAttributes().Any(a => a.AttributeClass?.Name == "StackTraceHiddenAttribute")) return true;
         var ns = m.ContainingNamespace?.ToDisplayString() ?? "";
         return ns.StartsWith("Cs2Wasm.Runtime", StringComparison.Ordinal);
     }

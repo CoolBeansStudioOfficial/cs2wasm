@@ -1678,6 +1678,108 @@ sealed partial class FunctionCompiler
         };
     }
 
+    /// <summary>The left-out lookups so far, in order: a run of the same lookup on (a field of the class, a name, a
+    /// constant) is one call of its batch form over tables (`pure-init-batch`), the others one call each.</summary>
+    void FlushLookups(INamedTypeSymbol t, List<(IInvocationOperation inv, SyntaxNode at)> pending)
+    {
+        int i = 0;
+        while (i < pending.Count)
+        {
+            int j = i;
+            var first = pending[i].inv;
+            if (Library.BatchInitMethods.TryGetValue(Library.PureInitKey(first.TargetMethod), out var batchName) && BatchShape(t, first) is { } f0)
+                while (j + 1 < pending.Count && SymbolEqualityComparer.Default.Equals(pending[j + 1].inv.TargetMethod, first.TargetMethod)
+                    && BatchShape(t, pending[j + 1].inv) is { } fj && SymbolEqualityComparer.Default.Equals(fj, f0)) j++;
+            else batchName = null;
+            E.CurrentPos = D.Position(pending[i].at);
+            BeginTemps();
+            if (batchName != null && j > i) EmitLookupBatch(first, pending.Skip(i).Take(j - i + 1).Select(p => p.inv).ToList(), batchName);
+            else { j = i; EmitCheckedLookup(first); }
+            EndTemps();
+            i = j + 1;
+        }
+        pending.Clear();
+    }
+
+    /// <summary>For a lookup (type field of the class, name, constant): the type field.</summary>
+    IFieldSymbol? BatchShape(INamedTypeSymbol t, IInvocationOperation inv)
+    {
+        if (inv.Arguments.Length != 3) return null;
+        var a0 = Strip(inv.Arguments[0].Value);
+        if (a0 is not IFieldReferenceOperation { Instance: null, Field: var f } || !SymbolEqualityComparer.Default.Equals(f.ContainingType.OriginalDefinition, t.OriginalDefinition)) return null;
+        if (NameOf(inv.Arguments[1].Value) == null || !inv.Arguments[2].Value.ConstantValue.HasValue) return null;
+        return f;
+    }
+
+    static IOperation Strip(IOperation v) { while (v is IConversionOperation { OperatorMethod: null } c) v = c.Operand; return v; }
+
+    /// <summary>A name argument as text: a string made a StringName, directly or through another type's pure field.</summary>
+    string? NameOf(IOperation v)
+    {
+        v = Strip(v);
+        if (v is IFieldReferenceOperation { Instance: null, Field: { IsReadOnly: true } f } && Driver.FieldInitializer(f) is { } fi
+            && D.ModelFor(fi.SyntaxTree).GetOperation(fi) is IFieldInitializerOperation { Value: var fv }) v = Strip(fv);
+        return v is IConversionOperation { OperatorMethod: { } om, Operand.ConstantValue: { HasValue: true, Value: string s } }
+            && Library.PureInitMethods.Contains(Library.PureInitKey(om)) ? s : null;
+    }
+
+    /// <summary>A run of lookups as one call of the batch form: (type, names as UTF-16, their lengths, constants, count).</summary>
+    void EmitLookupBatch(IInvocationOperation first, List<IInvocationOperation> run, string batchName)
+    {
+        var owner = first.TargetMethod.ContainingType;
+        var helper = owner.GetMembers(batchName).OfType<IMethodSymbol>().First();
+        var names = new List<byte>(); var lengths = new List<byte>(); var consts = new List<byte>();
+        foreach (var inv in run)
+        {
+            var n = NameOf(inv.Arguments[1].Value)!;
+            names.AddRange(System.Text.Encoding.Unicode.GetBytes(n));
+            lengths.AddRange(BitConverter.GetBytes(n.Length));
+            consts.AddRange(BitConverter.GetBytes(Convert.ToUInt64(inv.Arguments[2].Value.ConstantValue.Value)));
+        }
+        var nameBlob = D.DataBlob(names.Count == 0 ? new byte[2] : [.. names], 2);
+        var lenBlob = D.DataBlob([.. lengths], 4);
+        var constBlob = D.DataBlob([.. consts], 8);
+        var h = SubstMethod(helper);
+        CallWith(h, false, null, () =>
+        {
+            PushArg(h.Parameters[0], first.Arguments[0].Value);
+            E.I32Addr(nameBlob); E.I32Addr(lenBlob); E.I32Addr(constBlob); E.I32(run.Count);
+        }, null, first.Syntax);
+    }
+
+    /// <summary>The call of an initializer's value, if it is a lookup that can fail (`pure-init-checked`).</summary>
+    static IInvocationOperation? CheckedLookup(IOperation v)
+    {
+        while (v is IConversionOperation { OperatorMethod: null } c) v = c.Operand;
+        return v is IInvocationOperation { Instance: null } inv && Library.CheckedInitMethods.Contains(Library.PureInitKey(inv.TargetMethod)) ? inv : null;
+    }
+
+    /// <summary>A failing lookup of a left-out initializer: called, its result dropped; an argument read from another
+    /// pure static field is that field's initializer instead (so the field can go too: GodotSharp's MethodName.X).</summary>
+    void EmitCheckedLookup(IInvocationOperation inv)
+    {
+        var m = SubstMethod(inv.TargetMethod);
+        var own = CallWith(m, false, null, () =>
+        {
+            foreach (var a in inv.Arguments)
+            {
+                var v = a.Value;
+                var inner = v;
+                while (inner is IConversionOperation { OperatorMethod: null } c) inner = c.Operand;
+                if (inner is IFieldReferenceOperation { Instance: null, Field: { IsReadOnly: true } f } && !SymbolEqualityComparer.Default.Equals(f.ContainingType.OriginalDefinition, _staticInitType?.OriginalDefinition)
+                    && Driver.FieldInitializer(f) is { } fi
+                    && D.ModelFor(fi.SyntaxTree).GetOperation(fi) is IFieldInitializerOperation { Value: var fv } && PureInit(fv, f.ContainingType))
+                    v = fv;
+                PushArg(a.Parameter!, v);
+            }
+        }, null, inv.Syntax);
+        if (!m.ReturnsVoid)
+        {
+            if (Types.IsRef(T.Resolve(m.ReturnType, Map)) && own == Own.Owned) E.Call(Rt.Release);
+            else E.Op(Op.Drop);
+        }
+    }
+
     /// <summary>A type whose static initialization makes values only: no static constructor, pure initializers.</summary>
     static bool PureType(INamedTypeSymbol t, HashSet<INamedTypeSymbol> seen)
     {
@@ -1752,8 +1854,13 @@ sealed partial class FunctionCompiler
         return false;
     }
 
+    /// <summary>The type whose static initializer is being compiled.</summary>
+    INamedTypeSymbol? _staticInitType;
+
     void CompileStaticInitBody(INamedTypeSymbol t, IAddress flag, IMethodSymbol? cctor)
     {
+        var pendingLookups = new List<(IInvocationOperation inv, SyntaxNode at)>();
+        _staticInitType = t;
         PushScope();
         // base type's initializer first is not required by C#; static field initializers in textual order
         foreach (var m in t.GetMembers())
@@ -1767,7 +1874,14 @@ sealed partial class FunctionCompiler
             };
             if (init == null) continue;
             var op = D.ModelFor(init.SyntaxTree).GetOperation(init);
-            if (D.SkipUnreadInits && op != null && UnreadAndPure(t, op)) continue;
+            if (D.SkipUnreadInits && op != null && UnreadAndPure(t, op))
+            {
+                // a lookup that can fail still runs where it was, its result dropped (the same failure, at the same
+                // point of the initializer)
+                if (op is ISymbolInitializerOperation { Value: var lv } && CheckedLookup(lv) is { } inv) pendingLookups.Add((inv, init));
+                continue;
+            }
+            FlushLookups(t, pendingLookups);
             E.CurrentPos = D.Position(init);
             if (op != null) PreScan(op); // `out var` in an initializer declares a variable whose address is taken
             BeginTemps();
@@ -1783,6 +1897,7 @@ sealed partial class FunctionCompiler
             }
             EndTemps();
         }
+        FlushLookups(t, pendingLookups);
         if (cctor != null && Driver.HasBody(cctor))
         {
             var (body, syntax) = GetBody(cctor);

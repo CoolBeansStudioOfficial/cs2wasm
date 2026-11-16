@@ -60,6 +60,12 @@ internal sealed class Library
     /// <summary>Methods a library's manifest declares pure for initializers (`pure-init Namespace.Type.Method`): their
     /// result is their only effect, so an unread static field they initialize is left out (FunctionCompiler.PureInit).</summary>
     public static readonly HashSet<string> PureInitMethods = [];
+    /// <summary>Lookups that can fail (`pure-init-checked`): pure for initializers, but a left-out initializer's call
+    /// still runs (its failure is the program's), only its result is dropped.</summary>
+    public static readonly HashSet<string> CheckedInitMethods = [];
+    /// <summary>A lookup's batch form (`pure-init-batch Namespace.Type.Method BatchMethod`): a run of left-out lookups
+    /// of (a type field, a name, a constant) is one call of it over tables (FunctionCompiler.FlushLookups).</summary>
+    public static readonly Dictionary<string, string> BatchInitMethods = [];
     public static string PureInitKey(IMethodSymbol m) => Types.FullName(m.ContainingType.OriginalDefinition) + "." + m.Name;
 
     /// <summary>The substituted value of a library method (null: not substituted; "": an empty stub).</summary>
@@ -146,6 +152,12 @@ internal sealed class Library
             }
             var defines = lines.Where(l => l.StartsWith("define ")).Select(l => l[7..]).ToArray();
             foreach (var l in lines.Where(l => l.StartsWith("pure-init "))) PureInitMethods.Add(l[10..].Trim());
+            foreach (var l in lines.Where(l => l.StartsWith("pure-init-checked "))) { PureInitMethods.Add(l[18..].Trim()); CheckedInitMethods.Add(l[18..].Trim()); }
+            foreach (var l in lines.Where(l => l.StartsWith("pure-init-batch ")))
+            {
+                var parts = l[16..].Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 2) BatchInitMethods[parts[0]] = parts[1];
+            }
             var po = new CSharpParseOptions(LanguageVersion.Preview, preprocessorSymbols: defines);
             var files = lines.Where(l => l.StartsWith("file ")).Select(l => l[5..]).ToList();
             // `root <dir>`: another source tree of the cache (Roslyn's), fetched like the runtime's

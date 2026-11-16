@@ -2,13 +2,15 @@
 # root <dir> (the sources' root under the cache) | define <symbol> | file <path>
 root godot-4.7.2
 reference System.Diagnostics.TraceSource
-# pure-init: lookups whose result is their only effect (an unread static field they initialize is left out; on an
-# engine that lacks the method, stock GodotSharp would fail in the class initializer instead)
-pure-init Godot.GodotObject.ClassDB_get_method_with_compatibility
-pure-init Godot.GodotObject.ClassDB_get_method
-pure-init Godot.GodotObject.ClassDB_get_constructor
+# pure-init: calls whose result is their only effect (an unread static field they initialize is left out);
+# pure-init-checked: lookups that can fail (a left-out initializer still calls them, its result dropped)
+pure-init-checked Godot.GodotObject.ClassDB_get_method_with_compatibility
+pure-init-checked Godot.GodotObject.ClassDB_get_method
+pure-init-checked Godot.GodotObject.ClassDB_get_constructor
 pure-init Godot.StringName.op_Implicit
 pure-init Godot.NodePath.op_Implicit
+# pure-init-batch: a lookup's form over tables of names and hashes (Cs2WasmLookups.cs)
+pure-init-batch Godot.GodotObject.ClassDB_get_method_with_compatibility ClassDB_check_methods_with_compatibility
 define GODOT
 define NET
 define NETCOREAPP
