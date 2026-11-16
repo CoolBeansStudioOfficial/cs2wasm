@@ -349,6 +349,16 @@ internal static class UpstreamSources
         ("GodotSharp", ["GodotSharp"], []),
     ];
 
+    /// <summary>Reference assemblies whose types a library of another name implements.</summary>
+    static readonly Dictionary<string, string> s_referenceLibrary = new()
+    {
+        ["System.Xml.XDocument"] = "System.Private.Xml.Linq", ["System.Xml.Linq"] = "System.Private.Xml.Linq",
+        ["System.Xml.ReaderWriter"] = "System.Private.Xml", ["System.Xml.XmlDocument"] = "System.Private.Xml",
+        ["System.Xml.XmlSerializer"] = "System.Private.Xml", ["System.Xml"] = "System.Private.Xml",
+        ["System.Runtime.Serialization.Xml"] = "System.Runtime.Serialization.Primitives",
+        ["System.IO.Compression.ZipFile"] = "System.IO.Compression",
+    };
+
     /// <summary>The libraries the program needs, in library order: the core ones, an optional one with every one
     /// before it (which it may reference), and the standalone ones it uses.</summary>
     public static IReadOnlyList<string> Needed(CSharpCompilation program)
@@ -369,6 +379,16 @@ internal static class UpstreamSources
             }
             if (need && Standalone.Contains(lib)) standalone.Add(lib);
             else if (need) count = i + 1;
+        }
+        // and the libraries whose reference assemblies the program's code uses, whatever its text says (a type
+        // named in full: `new System.Net.Sockets.Socket(...)`); a reference assembly is its library's, or one of these
+        foreach (var r in program.GetUsedAssemblyReferences())
+        {
+            var asm = Path.GetFileNameWithoutExtension(r.Display ?? "");
+            if (s_referenceLibrary.TryGetValue(asm, out var mapped)) asm = mapped;
+            int i = Array.IndexOf(Libraries, asm);
+            if (i < count) continue;
+            if (Standalone.Contains(asm)) standalone.Add(asm); else count = i + 1;
         }
         // (a standalone library's references come with it: Library.Upstream builds them)
         return Libraries.Where((l, i) => i < count && !Standalone.Contains(l) || standalone.Contains(l)).ToList();

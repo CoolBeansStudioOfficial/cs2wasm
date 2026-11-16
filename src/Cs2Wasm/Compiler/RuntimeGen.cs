@@ -500,6 +500,7 @@ sealed partial class RuntimeGen
         if (id == 1)
         {
             // string: header + length + chars + terminator
+            if (clear) { e.Get(0); e.Call(rt.OnDestroy); e.Op(Op.Drop); }
             if (free) { e.Get(0); e.Get(0); e.Load(Op.I32Load, 12); e.I32(1); e.Op(Op.I32Shl); e.I32(Types.ArrayData + 2); e.Op(Op.I32Add); e.Call(rt.Free); }
             return;
         }
@@ -508,6 +509,7 @@ sealed partial class RuntimeGen
             var et = D.Types.Canonical(at.ElementType);
             int size = D.Types.StorageOf(et).size;
             int data = Types.ArrayDataOffset(at.Rank);
+            if (clear) { e.Get(0); e.Call(rt.OnDestroy); e.Op(Op.Drop); }
             if (clear && D.Types.NeedsRc(et)) { e.Get(0); e.I32(data); e.Op(Op.I32Add); e.Get(0); e.Load(Op.I32Load, 12); e.Call(rt.ReleaseRange(et)); }
             if (free) { e.Get(0); e.Get(0); e.Load(Op.I32Load, 12); e.I32(size); e.Op(Op.I32Mul); e.I32(data); e.Op(Op.I32Add); e.Call(rt.Free); }
             return;
@@ -694,7 +696,10 @@ sealed partial class RuntimeGen
         }
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
+        {
             D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
+            D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "Grace", 1);
+        }
         // host operations (the host's fetch: section 8): the host finishes them through this export
         // a worker instance starts here: its own stack, thread-local block and id, then the thread's delegate
         if (D.UsesThreads)
@@ -997,6 +1002,12 @@ sealed partial class RuntimeGen
     void EmitDestroyDispatch()
     {
         var e = new Emitter(D.Rt.Destroy);
+        // (a program with marks: an object with a weak reference lives on until a collection, ObjectMarks.Grace)
+        if (D.AllMethods.FirstOrDefault(m => m.Sym.Name == "Grace" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled) is { } grace)
+        {
+            e.Get(0); e.Call(grace.Fn);
+            e.If(); e.Op(Op.Return); e.End();
+        }
         int n = D.TypeCount;
         var targets = new Label[n];
         var dflt = e.Block();

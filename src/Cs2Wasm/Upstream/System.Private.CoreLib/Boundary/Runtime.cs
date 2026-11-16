@@ -332,8 +332,10 @@ namespace Cs2Wasm.Runtime
         {
             int pages = (need + 65535) / 65536;
             int more = Math.Max(pages, Math.Max(Mem.Size() / 8, 256));
-            if (Mem.Grow(more) >= 0) return;
-            if (Mem.Grow(pages) < 0) ThrowHelpers.OutOfMemory();
+            if (Mem.Grow(more) < 0 && Mem.Grow(pages) < 0) ThrowHelpers.OutOfMemory();
+            // (with room again: the exception a later failure throws is made now, while it can be)
+            s_end = Mem.Size() * 65536;
+            ThrowHelpers.ReserveOutOfMemory();
         }
 
         static int AllocCore(int size)
@@ -809,6 +811,8 @@ namespace Cs2Wasm.Runtime
         public static void OnThrow(object ex)
         {
             if (ex is not Exception e) return;
+            // (no memory: none for the trace either, and asking would fail the same way, without end)
+            if (ex is OutOfMemoryException) { e._fullTrace = null; e._stackTraceString = null; e._throwDepth = Engine.StackDepth(); return; }
             var buf = new char[16384];
             int n = Engine.CaptureStack(ArrayData(buf), buf.Length);
             e._fullTrace = n > 0 ? StringOf(buf, n) : null;
@@ -1008,6 +1012,7 @@ namespace Cs2Wasm.Runtime
                 Atomic.Add32(ref s_live, -1);
                 System.Threading.Thread.OnThreadExiting(t);
                 System.Threading.Thread.SetCurrent(null);
+                ObjectMarks.Drain();
                 // the thread's statics die with it (as .NET's become unreachable)
                 Rt.ReleaseThreadStatics();
                 Rt.FlushThreadCache();
@@ -1381,10 +1386,37 @@ namespace Cs2Wasm.Runtime
             Rt.HoldEpoch(); var e = new DivideByZeroException(); Rt.ReleaseEpoch();
             throw e;
         }
+        // The exception for a failed allocation cannot always be allocated then: one is made when the memory first
+        // grows (as .NET keeps one ready), and thrown when making another fails. A program whose memory never grew
+        // and has no room for it at all ends, as the process does under .NET.
+        static OutOfMemoryException? s_oom;
+        static int s_oomBusy;
+
+        internal static void ReserveOutOfMemory()
+        {
+            if (s_oom != null || s_oomBusy != 0) return;
+            s_oomBusy = 1;
+            s_oom = new OutOfMemoryException();
+            s_oomBusy = 0;
+        }
+
         public static void OutOfMemory()
         {
+            if (s_oomBusy != 0)
+            {
+                // (no room for the exception itself)
+                if (s_oom == null) Rt.Unreachable();
+                // (this is the call inside the one below, which made no exception)
+                s_oomBusy = 0;
+                Rt.ReleaseEpoch();
+                throw s_oom!;
+            }
             // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)
-            Rt.HoldEpoch(); var e = new OutOfMemoryException(); Rt.ReleaseEpoch();
+            Rt.HoldEpoch();
+            s_oomBusy = 1;
+            var e = new OutOfMemoryException();
+            s_oomBusy = 0;
+            Rt.ReleaseEpoch();
             throw e;
         }
         public static void SwitchExpression()
