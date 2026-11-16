@@ -242,8 +242,6 @@ sealed class Manifest
             sb.AppendLine("substitute	method	System.Enum	System.String ToString()	=>Cs2Wasm.Runtime.EnumFormat.ToString");
             sb.AppendLine("substitute	method	System.Enum	System.String ToString(System.String)	=>Cs2Wasm.Runtime.EnumFormat.ToString");
             sb.AppendLine("substitute	method	System.Enum	System.Boolean System.ISpanFormattable.TryFormat(System.Span`1,System.Int32&,System.ReadOnlySpan`1,System.IFormatProvider)	=>Cs2Wasm.Runtime.EnumFormat.TryFormat");
-            // the end of a work item is a safe point for deferred destruction (Boundary/Runtime.cs, Limbo)
-            sb.AppendLine("substitute\tmethod\tSystem.Threading.ThreadPool\tSystem.Boolean NotifyWorkItemComplete(System.Threading.ThreadInt64PersistentCounter/ThreadLocalNode,System.Int32)\t=>Cs2Wasm.Runtime.Limbo.NotifyWorkItemComplete");
         }
         // the trimmer's substitutions that apply with cs2wasm's features: method bodies the compiler replaces
         // (`stub`: an empty body, or the value), fields with a fixed value

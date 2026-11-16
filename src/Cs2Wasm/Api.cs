@@ -79,6 +79,12 @@ public static class Cs2WasmCompiler
         try
         {
             d.Run();
+            // a program that starts threads is compiled as one (Driver.ThreadMode): known only now
+            if (d.UsesThreads && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
+            {
+                d = new Driver(cs, options) { ThreadMode = true };
+                d.Run();
+            }
             if (!d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
                 (bytes, map) = d.Emit();
         }

@@ -61,8 +61,7 @@ internal sealed partial class RuntimeFns
     public void EmitFinalizerHold(bool threads)
     {
         if (!threads) return;
-        if (_finHold != null) new Emitter(_finHold).Call(D.LibMethod("Cs2Wasm.Runtime.Limbo", "Hold", 0).Fn);
-        if (_finUnhold != null) new Emitter(_finUnhold).Call(D.LibMethod("Cs2Wasm.Runtime.Limbo", "Unhold", 0).Fn);
+        // (nothing to hold: an object is destroyed when its count reaches zero, on every thread)
     }
 
     readonly List<(WasmFunction fn, ITypeSymbol type)> _structCopies = [];
@@ -88,10 +87,15 @@ internal sealed partial class Driver
         if (rt.StoreRefIfMade is { } sr)
         {
             var e = new Emitter(sr);
-            if (threads) { e.Get(0); e.Get(1); e.Emit(Op.I32AtomicRmwXchg, 0, 2); }
-            else { e.Get(0); e.Load(Op.I32Load); e.Get(0); e.Get(1); e.Store(Op.I32Store); }
+            // (threads: under the place's lock, so that a read that counts, rt.load_retain, sees the old value still
+            // counted or the new one)
+            int s = threads ? e.AddLocal(ValType.I32) : -1, old = e.AddLocal(ValType.I32);
+            if (threads) rt.EmitRefLock(e, 0, s);
+            e.Get(0); e.Load(Op.I32Load); e.Set(old); e.Get(0); e.Get(1); e.Store(Op.I32Store);
+            if (threads) rt.EmitRefUnlock(e, s);
+            e.Get(old);
         }
-        if (!threads)
+        // (no object is marked shared: counts are atomic in a program with threads, plain in one without)
         {
             foreach (var fn in Module.Functions)
             {
@@ -108,96 +112,6 @@ internal sealed partial class Driver
             if (rt.PublishAtIfMade is { } f2) { var e = new Emitter(f2); e.Get(0); }
             if (rt.PublishAlwaysIfMade is { } f3) { var e = new Emitter(f3); e.Get(0); }
             return;
-        }
-        var share = LibMethod("Cs2Wasm.Runtime.Sharing", "Share", 1).Fn;
-        var markPush = LibMethod("Cs2Wasm.Runtime.Sharing", "MarkPush", 1).Fn;
-        { var e = new Emitter(rt.Share); e.Get(0); e.Call(share); }
-        {
-            var e = new Emitter(rt.PublishAlways);
-            e.Get(0); e.Call(share); e.Get(0);
-        }
-        {
-            var e = new Emitter(rt.PublishInto);
-            e.Get(1);
-            e.If(); e.Get(1); e.Load(Op.I32Load); e.I32(RuntimeFns.SharedBit); e.Op(Op.I32And); e.If(); e.Get(0); e.Call(share); e.End(); e.End();
-            e.Get(0);
-        }
-        {
-            var e = new Emitter(rt.PublishAt);
-            e.Get(1); e.GGet(StackLo!); e.Op(Op.I32GeU); e.Get(1); e.GGet(StackHi!); e.Op(Op.I32LtU); e.Op(Op.I32And);
-            e.If(); e.Get(0); e.Op(Op.Return); e.End();
-            e.Get(0); e.Call(share); e.Get(0);
-        }
-        // the visitor: one level of references per type
-        {
-            var e = new Emitter(rt.ShareVisit);
-            void Refs(int baseLocal, int off, ITypeSymbol t)
-            {
-                if (Types.IsRef(t)) { e.Get(baseLocal); e.Load(Op.I32Load, off); e.Call(markPush); return; }
-                if (!Types.IsStruct(t) || !Types.LayoutOf(t).HasRefs) return;
-                foreach (var f in Types.LayoutOf(t).Fields) Refs(baseLocal, off + f.Offset, f.Type);
-            }
-            int tid = e.AddLocal(ValType.I32);
-            e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-            // one case per type, reached through a br_table on the type id (a chain of comparisons would cost every
-            // visit a walk over the types)
-            var cases = types.Select(x => (ext: ExtId(x.id), x.id, x.type)).Where(x => x.ext >= 0).GroupBy(x => x.ext).Select(g => g.First()).OrderBy(x => x.ext).ToList();
-            var dflt = e.Block();
-            var labels = new Label[cases.Count];
-            for (int i = cases.Count - 1; i >= 0; i--) labels[i] = e.Block();
-            var targets = new Label[TypeCount];
-            for (int i = 0; i < targets.Length; i++) targets[i] = dflt;
-            for (int i = 0; i < cases.Count; i++) if (cases[i].ext < targets.Length) targets[cases[i].ext] = labels[i];
-            e.Get(tid); e.BrTable(targets, dflt);
-            foreach (var (_, id, type) in cases)
-            {
-                e.End();
-                if (DisplayById.TryGetValue(id, out var disp))
-                {
-                    e.Get(0); e.Load(Op.I32Load, 12); e.Call(markPush);
-                    foreach (var (off, t) in disp.Vars.Select(v => disp.Slots[v]).Concat(disp.ExtraSlots.Values)) Refs(0, off, t);
-                }
-                else if (type is IArrayTypeSymbol at)
-                {
-                    var et = Types.Canonical(at.ElementType);
-                    if (Types.NeedsRc(et))
-                    {
-                        int size = Types.StorageOf(et).size, p = e.AddLocal(ValType.I32), end = e.AddLocal(ValType.I32);
-                        e.Get(0); e.I32(Types.ArrayDataOffset(at.Rank)); e.Op(Op.I32Add); e.Set(p);
-                        e.Get(p); e.Get(0); e.Load(Op.I32Load, 12); e.I32(size); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(end);
-                        var brk = e.Block(); var top = e.Loop();
-                        e.Get(p); e.Get(end); e.Op(Op.I32GeU); e.BrIf(brk);
-                        Refs(p, 0, et);
-                        e.Get(p); e.I32(size); e.Op(Op.I32Add); e.Set(p);
-                        e.Br(top); e.End(); e.End();
-                    }
-                }
-                else if (id != 1 && type is INamedTypeSymbol nt)
-                {
-                    if (nt.IsValueType) Refs(0, FunctionCompilerHelpers.BoxDataOffset(Types, nt), nt);
-                    else foreach (var f in Types.LayoutOf(nt).Fields) Refs(0, f.Offset, f.Type);
-                }
-                e.Op(Op.Return);
-            }
-            e.End();
-        }
-        // struct copies into memory the compiler cannot place: share what they bring
-        foreach (var (fn, t) in rt.StructCopies)
-        {
-            var e = new Emitter(fn);
-            void Pub(int off, ITypeSymbol ft)
-            {
-                if (Types.IsRef(ft)) { e.Get(0); e.Load(Op.I32Load, off); e.Get(0); e.Call(rt.PublishAt); e.Op(Op.Drop); return; }
-                if (!Types.IsStruct(ft) || !Types.LayoutOf(ft).HasRefs) return;
-                foreach (var f in Types.LayoutOf(ft).Fields) Pub(off + f.Offset, f.Type);
-            }
-            foreach (var f in Types.LayoutOf(t).Fields) Pub(f.Offset, f.Type);
-        }
-        // Array.Copy into a shared array: its new elements become shared
-        if (rt.ArrayCopyIfMade is { } copy)
-        {
-            var e = new Emitter(copy);
-            e.Get(2); e.Call(LibMethod("Cs2Wasm.Runtime.Sharing", "RevisitIfShared", 1).Fn);
         }
     }
 }

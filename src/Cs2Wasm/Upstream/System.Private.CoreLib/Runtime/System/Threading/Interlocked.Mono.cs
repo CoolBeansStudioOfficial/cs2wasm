@@ -19,11 +19,16 @@ namespace System.Threading
         {
             ref int slot = ref Unsafe.As<object?, int>(ref location1);
             int v = Rt.AddressOf(value!), c = Rt.AddressOf(comparand!);
-            if (v != 0) { Rt.Share(value!); Rt.Retain(value!); } // the count the slot takes if the exchange happens
-            int old = Atomic.CompareExchange32(ref slot, c, v);
-            if (old == c) return Rt.Take<object>(old); // the slot's count of the old value passes to the result
-            if (v != 0) Rt.Release(value!);
-            return Rt.Borrow<object>(old);
+            if (v != 0) Rt.Retain(value!); // the count the slot takes if the exchange happens
+            // under the place's lock: a read that counts (rt.load_retain) sees the old value still counted, or the new
+            int held = Rt.RefLock(ref slot);
+            int old = slot;
+            bool swapped = old == c;
+            if (swapped) slot = v;
+            else if (old != 0) Rt.Retain(Rt.Borrow<object>(old)); // the result's count, while the slot holds the object
+            Rt.RefUnlock(held);
+            if (!swapped && v != 0) Rt.Release(value!);
+            return Rt.Take<object>(old); // (exchanged: the slot's count of the old value passes to the result)
         }
 
         public static int Decrement(ref int location) => Atomic.Add32(ref location, -1) - 1;
@@ -41,8 +46,12 @@ namespace System.Threading
         {
             ref int slot = ref Unsafe.As<object?, int>(ref location1);
             int v = Rt.AddressOf(value!);
-            if (v != 0) { Rt.Share(value!); Rt.Retain(value!); }
-            return Rt.Take<object>(Atomic.Exchange32(ref slot, v));
+            if (v != 0) Rt.Retain(value!);
+            int held = Rt.RefLock(ref slot);
+            int old = slot;
+            slot = v;
+            Rt.RefUnlock(held);
+            return Rt.Take<object>(old);
         }
 
         public static long CompareExchange(ref long location1, long value, long comparand) => Atomic.CompareExchange64(ref location1, comparand, value);

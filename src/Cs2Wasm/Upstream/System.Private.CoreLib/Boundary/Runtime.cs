@@ -184,6 +184,10 @@ namespace Cs2Wasm.Runtime
 
         /// <summary>No other thread can ever run: the program starts none (known when the whole program is compiled).</summary>
         [Intrinsic] public static extern bool SingleThreaded();
+        /// <summary>Threads: the lock of a place that holds a reference (the one a read that counts and a store take),
+        /// for an exchange written by hand (Interlocked); 0 and nothing without threads.</summary>
+        [Intrinsic] public static extern int RefLock(ref int place);
+        [Intrinsic] public static extern void RefUnlock(int held);
         /// <summary>Threads: until ReleaseEpoch the thread passes no safe point, whatever it waits for (Limbo.Hold), so
         /// the code around keeps what it borrowed; nothing without threads.</summary>
         [Intrinsic] public static extern void HoldEpoch();
@@ -917,25 +921,6 @@ namespace Cs2Wasm.Runtime
             if (!inside) Release(Borrow<object>(old));
         }
 
-        /// <summary>Sharing reached a member of the arena: the arena becomes shared, and every member is queued so
-        /// that what the members reach is shared too.</summary>
-        internal static void ShareArena(int ar)
-        {
-            RuntimeLock();
-            int flags = Mem.LoadI32(ar + 12);
-            if ((flags & ArenaShared) == 0)
-            {
-                Mem.StoreI32(ar + 12, flags | ArenaShared);
-                int first = Mem.LoadI32(ar + 4);
-                if (first != 0)
-                {
-                    int m = first;
-                    do { Sharing.PushMember(m); m = Mem.LoadI32(m - 12); } while (m != first);
-                }
-            }
-            RuntimeUnlock();
-        }
-
         /// <summary>A store into a static field: the object stays out of arenas (statics never end).</summary>
         public static int ArenaPin(int val)
         {
@@ -1457,7 +1442,6 @@ namespace Cs2Wasm.Runtime
         /// <summary>The worker side: runs the delegate, then marks the thread finished and wakes joiners.</summary>
         public static void Run(int threadAddr)
         {
-            Limbo.Active();
             var t = Rt.Take<System.Threading.Thread>(threadAddr);
             System.Threading.Thread.SetCurrent(t);
             try { t.StartCallback(); }
@@ -1469,7 +1453,6 @@ namespace Cs2Wasm.Runtime
                 // the thread's statics die with it (as .NET's become unreachable)
                 Rt.ReleaseThreadStatics();
                 Rt.FlushThreadCache();
-                Limbo.Quiescent();
                 GiveBlocks(t._stack, t._tls);
                 WakeAll();
             }
@@ -1491,7 +1474,6 @@ namespace Cs2Wasm.Runtime
 
         internal static void SafePoint()
         {
-            Limbo.Checkpoint();
             if (Atomic.Load32(ref s_parkRequested) == 0 || Rt.ThreadId() == 1) return;
             Atomic.Add32(ref s_parked, 1);
             while (Atomic.Load32(ref s_parkRequested) != 0) Atomic.Wait32(ref s_parkRequested, 1, -1);
@@ -1556,230 +1538,12 @@ namespace Cs2Wasm.Runtime
         /// may not block spins.</summary>
         internal static void Block(ref int word, int expected, long ns)
         {
-            Limbo.Quiescent();
             if (MayBlock()) Atomic.Wait32(ref word, expected, ns);
             else
             {
                 long end = ns < 0 ? long.MaxValue : Engine.MonotonicNs() + ns;
                 while (Atomic.Load32(ref word) == expected && Engine.MonotonicNs() < end) { }
             }
-            Limbo.Active();
-        }
-    }
-
-    /// <summary>
-    /// Section 4.5: a shared object whose count reaches zero is not destroyed at once. Another thread may have read a
-    /// reference to it from shared memory just before the store that dropped it, and not counted it yet, as .NET's
-    /// racing reads allow. It waits in limbo (count word: shared, in limbo, count 0) until every thread that runs
-    /// program code has passed a safe point since: a wait, the end of a work item, the start or end of a thread or of
-    /// an export, where a thread holds only counted references. A count taken meanwhile keeps it alive (the count
-    /// rises from 0 again). Epoch-based reclamation: per-thread epochs (0: quiescent), a global epoch, and entries
-    /// [object, epoch when it entered].
-    /// </summary>
-    public static class Limbo
-    {
-        const int S = 0x40000000, L = 0x20000000;
-        static int s_epoch = 1, s_table, s_cap, s_list, s_listCap, s_count, s_since, s_oldest = int.MaxValue;
-        [System.ThreadStatic] static int t_depth;
-        [Intrinsic] static extern void DestroyObject(int p);
-
-        // The per-thread epochs. The table grows under the runtime lock while other threads write their entries without
-        // it, so a write re-checks that the table it wrote is still the table (a write into an old one, after its copy,
-        // would be lost: the thread would look quiescent); old tables are never freed (such a write may still land).
-        static void SetEpoch(int value)
-        {
-            // (inside a finalizer the thread keeps its epoch: a release that runs one is no safe point for its caller)
-            if (t_hold != 0) return;
-            int id = Rt.ThreadId();
-            while (true)
-            {
-                if (id >= Atomic.Load32(ref s_cap))
-                {
-                    Rt.RuntimeLock();
-                    if (id >= s_cap)
-                    {
-                        int cap = Math.Max(64, Math.Max(s_cap * 2, id + 1));
-                        int t = Rt.Alloc(cap * 4);
-                        Mem.Fill(t, 0, cap * 4);
-                        if (s_table != 0)
-                            for (int i = 0; i < s_cap; i++) Mem.StoreI32(t + 4 * i, Atomic.Load32(ref Mem.RefI32(s_table + 4 * i)));
-                        Atomic.Store32(ref s_table, t);
-                        Atomic.Store32(ref s_cap, cap);
-                    }
-                    Rt.RuntimeUnlock();
-                }
-                int table = Atomic.Load32(ref s_table);
-                Atomic.Store32(ref Mem.RefI32(table + 4 * id), value);
-                if (Atomic.Load32(ref s_table) == table) return;
-            }
-        }
-
-        [System.ThreadStatic] static int t_hold;
-        /// <summary>Around a finalizer the destroy path runs (rt.fin_hold, rt.fin_unhold): whatever it waits for, the
-        /// thread passes no safe point, so the code that released the object keeps what it borrowed.</summary>
-        public static void Hold() => t_hold++;
-        public static void Unhold() => t_hold--;
-
-        /// <summary>The thread runs program code: what it reads from now on is protected.</summary>
-        public static void Active() => SetEpoch(Atomic.Load32(ref s_epoch));
-        /// <summary>The thread holds no references that are not counted, and runs no program code until Active.</summary>
-        public static void Quiescent() { Flush(); SetEpoch(0); }
-        /// <summary>A safe point: the thread holds only counted references.</summary>
-        // (a collection scans the list: only once it has grown by half since the last, so the cost stays linear)
-        public static void Checkpoint() { Active(); if (Atomic.Load32(ref s_count) != 0 && s_since >= Math.Max(64, s_count >> 1)) Collect(); }
-        public static void ExportEnter() { if (t_depth++ == 0) Active(); }
-        public static void ExportExit() { if (--t_depth == 0) { Quiescent(); if (Atomic.Load32(ref s_count) != 0) Collect(); } }
-
-        /// <summary>The count of shared object p fell to zero (its count word is already S | L).</summary>
-        // (entries wait in a buffer of the thread's, BufferCap of them, and go to the shared list in one step under the
-        // runtime lock: when the buffer is full, and when the thread waits or ends; an entry's epoch is the one when it
-        // came, so a later move only delays its destruction)
-        const int BufferCap = 256;
-        [System.ThreadStatic] static int t_buffer, t_buffered;
-
-        public static void Add(int p)
-        {
-            int b = t_buffer;
-            if (b == 0) t_buffer = b = Rt.Alloc(BufferCap * 8);
-            int n = t_buffered;
-            Mem.StoreI32(b + 8 * n, p);
-            Mem.StoreI32(b + 8 * n + 4, Atomic.Load32(ref s_epoch));
-            t_buffered = n + 1;
-            if (n + 1 == BufferCap) Flush();
-        }
-
-        /// <summary>Moves the thread's buffered entries to the shared list (a collection follows when it has grown by half
-        /// since the last, so the cost stays linear).</summary>
-        static void Flush()
-        {
-            int n = t_buffered;
-            if (n == 0) return;
-            int b = t_buffer;
-            Rt.RuntimeLock();
-            if (s_count + n > s_listCap)
-            {
-                int cap = Math.Max(Math.Max(64, s_listCap * 2), s_count + n);
-                int l = Rt.Alloc(cap * 8);
-                if (s_list != 0) { Mem.Copy(l, s_list, s_count * 8); Rt.Free(s_list, s_listCap * 8); }
-                s_list = l; s_listCap = cap;
-            }
-            Mem.Copy(s_list + 8 * s_count, b, n * 8);
-            for (int i = 0; i < n; i++) { int ep = Mem.LoadI32(b + 8 * i + 4); if (ep < s_oldest) s_oldest = ep; }
-            Atomic.Store32(ref s_count, s_count + n);
-            s_since += n;
-            bool go = s_since >= Math.Max(64, s_count >> 1);
-            Rt.RuntimeUnlock();
-            t_buffered = 0;
-            if (go) Collect();
-        }
-
-        /// <summary>Destroys the entries every thread has passed a safe point since; advances the epoch.</summary>
-        public static void Collect()
-        {
-            Flush();
-            Rt.RuntimeLock();
-            int min = int.MaxValue;
-            for (int i = 0; i < s_cap; i++)
-            {
-                int e = Atomic.Load32(ref Mem.RefI32(s_table + 4 * i));
-                if (e != 0 && e < min) min = e;
-            }
-            // nothing can be ready while some thread has not passed a safe point since the oldest entry came in
-            if (min <= s_oldest)
-            {
-                s_since = 0;
-                Atomic.Add32(ref s_epoch, 1);
-                Rt.RuntimeUnlock();
-                return;
-            }
-            int ready = 0, keep = 0, n = s_count, oldest = int.MaxValue;
-            int list = n == 0 ? 0 : Rt.Alloc(n * 4);
-            for (int i = 0; i < n; i++)
-            {
-                int p = Mem.LoadI32(s_list + 8 * i), e = Mem.LoadI32(s_list + 8 * i + 4);
-                if (e < min) { Mem.StoreI32(list + 4 * ready, p); ready++; }
-                else { Mem.StoreI32(s_list + 8 * keep, p); Mem.StoreI32(s_list + 8 * keep + 4, e); keep++; if (e < oldest) oldest = e; }
-            }
-            s_oldest = keep == 0 ? int.MaxValue : oldest;
-            Atomic.Store32(ref s_count, keep);
-            s_since = 0;
-            Atomic.Add32(ref s_epoch, 1);
-            Rt.RuntimeUnlock();
-            for (int i = 0; i < ready; i++) Finish(Mem.LoadI32(list + 4 * i));
-            if (list != 0) Rt.Free(list, n * 4);
-        }
-
-        /// <summary>Destroys p unless a count was taken while it waited.</summary>
-        static void Finish(int p)
-        {
-            ref int w = ref Mem.RefI32(p);
-            while (true)
-            {
-                int v = Atomic.Load32(ref w);
-                if ((v & ~(S | L)) == 0) { if (Atomic.CompareExchange32(ref w, v, 0) == v) { DestroyObject(p); return; } }
-                else if (Atomic.CompareExchange32(ref w, v, v & ~L) == v) return;
-            }
-        }
-
-        /// <summary>ThreadPool.NotifyWorkItemComplete (manifest substitution): the end of a work item is a safe point.</summary>
-        internal static bool NotifyWorkItemComplete(System.Threading.ThreadInt64PersistentCounter.ThreadLocalNode node, int currentTimeMs)
-        {
-            Checkpoint();
-            return System.Threading.PortableThreadPool.ThreadPoolInstance.NotifyWorkItemComplete(node, currentTimeMs);
-        }
-    }
-
-    /// <summary>Section 4.5: marking objects shared (bit 30 of the count word), iteratively, with a per-thread worklist.</summary>
-    public static class Sharing
-    {
-        const int S = 0x40000000;
-        [System.ThreadStatic] static int t_buf, t_cap, t_len;
-        [Intrinsic] static extern void Visit(int obj);
-
-        [System.ThreadStatic] static int t_visiting;
-
-        static bool Mark(int x)
-        {
-            if (x == 0) return false;
-            if (Rt.ShareCheck() && (x & 3) != 0) Rt.ShareViolation(t_visiting == 0 ? x : -t_visiting);
-            // (a compare-and-swap: another thread may mark the object first and then count it atomically; a plain
-            // store of the word read before would lose that count)
-            while (true)
-            {
-                int w = Atomic.Load32(ref Mem.RefI32(x));
-                if (w < -1) { Rt.ShareArena(Rt.ArenaOf(x)); return false; } // an arena member: the arena is shared, its members queued
-                if (w <= 0 || (w & S) != 0) return false;
-                if (Atomic.CompareExchange32(ref Mem.RefI32(x), w, w | S) == w) return true;
-            }
-        }
-
-        static void Push(int x)
-        {
-            if (t_len == t_cap)
-            {
-                int cap = t_cap == 0 ? 64 : t_cap * 2;
-                int nb = Rt.Alloc(cap * 4);
-                if (t_buf != 0) { Mem.Copy(nb, t_buf, t_len * 4); Rt.Free(t_buf, t_cap * 4); }
-                t_buf = nb; t_cap = cap;
-            }
-            Mem.StoreI32(t_buf + t_len * 4, x);
-            t_len++;
-        }
-
-        static void Drain()
-        {
-            while (t_len > 0) { t_len--; int o = Mem.LoadI32(t_buf + t_len * 4); if (Rt.ShareCheck()) t_visiting = o; Visit(o); }
-        }
-
-        public static void Share(int p) { if (Mark(p)) Push(p); Drain(); }
-
-        internal static void PushMember(int member) => Push(member);
-        public static void MarkPush(int x) { if (Mark(x)) Push(x); }
-        public static void RevisitIfShared(int arr)
-        {
-            if (arr == 0) return;
-            int w = Mem.LoadI32(arr);
-            if (w > 0 && (w & S) != 0) { Visit(arr); Drain(); }
         }
     }
 

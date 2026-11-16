@@ -31,6 +31,8 @@ sealed partial class FunctionCompiler
         while (init is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit)) init = c.Operand;
         // a copy of a reference that stays put for the whole method: the object outlives the local ("": always)
         if (IsStableBase(init)) return "";
+        // (threads: nothing borrows from memory another thread may write)
+        if (D.ThreadMode) return null;
         // an element of an array that stays put (a stable reference, or a field of one): no element store may run
         if (init is IArrayElementReferenceOperation { Indices.Length: 1 } ae && Types.IsRef(T.Resolve(ae.Type!, Map)))
         {
@@ -280,12 +282,8 @@ internal sealed partial class Driver
         string[]? ThreadKeys(WasmFunction fn, string[] keys)
         {
             if (worker == null || keys.All(k => Confined(fn, k))) return keys;
-            if (!safePoints || keys.Any(MayBeArenaMember))
-            {
-                if (s_borrowDebug) Console.Error.WriteLine($"  refused {fn.Name}: threads, " + (safePoints ? "may be an arena member: " + string.Join(",", keys.Where(MayBeArenaMember)) : "no safe points"));
-                return null;
-            }
-            return [.. keys, SafePointKey];
+            if (s_borrowDebug) Console.Error.WriteLine($"  refused {fn.Name}: threads");
+            return null;
         }
         var reflected = ReflectedFieldKeys();
         foreach (var (fn, list) in byFn)

@@ -525,12 +525,14 @@ sealed partial class FunctionCompiler
     /// <summary>Value on stack becomes owned (+1).</summary>
     void ToOwned(Own o)
     {
+        if (D.ThreadMode && CountedLoad(o) == Own.Owned) return;
         if (o is Own.Stable or Own.Unstable) E.Call(Rt.Retain);
     }
 
     /// <summary>Value on stack stays valid for the rest of the statement.</summary>
     Own ToTransient(Own o, ITypeSymbol t)
     {
+        if (D.ThreadMode) o = CountedLoad(o);
         if (o == Own.Owned) { E.Tee(TempRef(t)); return Own.Unstable; }
         return o;
     }
@@ -538,6 +540,7 @@ sealed partial class FunctionCompiler
     /// <summary>Value on stack stays valid across a call that may overwrite the memory it was read from.</summary>
     Own ToCallSafe(Own o, ITypeSymbol t)
     {
+        if (D.ThreadMode) o = CountedLoad(o);
         if (o == Own.Owned) { E.Tee(TempRef(t)); return Own.Stable; }
         if (o == Own.Unstable && _lastFieldLoad is var (at, key) && at == E.Fn.Body.Count)
         {

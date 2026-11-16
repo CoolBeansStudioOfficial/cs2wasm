@@ -98,7 +98,7 @@ sealed partial class FunctionCompiler
             case IInstanceReferenceOperation or IParameterReferenceOperation:
                 return IsStableBase(e);
             case IFieldReferenceOperation { Field: { IsStatic: false, IsVolatile: false } f, Instance: { } inst } fr
-                when f.ContainingType.TypeKind == TypeKind.Class && Types.IsRef(T.Resolve(f.Type, Map)):
+                when !D.ThreadMode && f.ContainingType.TypeKind == TypeKind.Class && Types.IsRef(T.Resolve(f.Type, Map)):
                 {
                     while (inst is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } ic) inst = ic.Operand;
                     // the object the field is read from: the local's own value, `this`, a parameter

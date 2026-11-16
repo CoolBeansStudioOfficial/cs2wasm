@@ -52,7 +52,6 @@ substitute	method	System.Threading.Thread	System.Int32 GetCurrentProcessorId()	=
 substitute	method	System.Enum	System.String ToString()	=>Cs2Wasm.Runtime.EnumFormat.ToString
 substitute	method	System.Enum	System.String ToString(System.String)	=>Cs2Wasm.Runtime.EnumFormat.ToString
 substitute	method	System.Enum	System.Boolean System.ISpanFormattable.TryFormat(System.Span`1,System.Int32&,System.ReadOnlySpan`1,System.IFormatProvider)	=>Cs2Wasm.Runtime.EnumFormat.TryFormat
-substitute	method	System.Threading.ThreadPool	System.Boolean NotifyWorkItemComplete(System.Threading.ThreadInt64PersistentCounter/ThreadLocalNode,System.Int32)	=>Cs2Wasm.Runtime.Limbo.NotifyWorkItemComplete
 substitute	method	System.Runtime.CompilerServices.RuntimeFeature	System.Boolean get_IsDynamicCodeCompiled()	false
 substitute	method	System.Runtime.Intrinsics.X86.Avx	System.Boolean get_IsSupported()	false
 substitute	method	System.Runtime.Intrinsics.X86.Avx/X64	System.Boolean get_IsSupported()	false

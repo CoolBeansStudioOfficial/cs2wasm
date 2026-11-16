@@ -134,6 +134,12 @@ internal sealed partial class Driver
     }
     /// <summary>True once the program can start a thread: counts become atomic and the runtime lock is real.</summary>
     public bool UsesThreads => AllMethods.Any(m => m.Sym.Name == "SpawnCore" && m.Sym.ContainingType?.Name == "Threads" && m.Compiled);
+    /// <summary>Section 4.5, decided when compiling: the program is compiled as one that starts threads. Then a
+    /// reference read from memory another thread may write is read and counted in one step (rt.load_retain), counts
+    /// are atomic, and nothing borrows from such memory; an object is destroyed when its count reaches zero, as
+    /// without threads. Whether a program starts threads is known when it has been compiled once
+    /// (Cs2WasmCompiler.Compile compiles it again in this mode if it does).</summary>
+    public bool ThreadMode { get; init; }
     public readonly WasmTag ExceptionTag;
     readonly List<SourcePos> _positions = [];
     readonly Dictionary<SourcePos, int> _posIndex = [];
@@ -532,7 +538,7 @@ internal sealed partial class Driver
         fn.InlineHint = impl == MethodImpl.Body && IsInlineHint(m.OriginalDefinition);
         _methods[key] = mi;
         bool returnsThis = impl == MethodImpl.Body && ReturnsThis(m);
-        if (returnsThis || impl == MethodImpl.Body && ReturnsField(m))
+        if (returnsThis || impl == MethodImpl.Body && !ThreadMode && ReturnsField(m))
         {
             // the body returns `this`, or a field's value, borrowed; the method's own function retains it for indirect
             // callers (section 4.1: a getter costs what the field's load costs)

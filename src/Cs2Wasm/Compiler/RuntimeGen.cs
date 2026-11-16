@@ -722,19 +722,6 @@ sealed partial class RuntimeGen
         // a worker instance starts here: its own stack, thread-local block and id, then the thread's delegate
         if (D.UsesThreads)
         {
-            // shared counts (section 4.5): the marking runtime, filled in at Finish
-            D.LibMethod("Cs2Wasm.Runtime.Sharing", "Share", 1);
-            D.LibMethod("Cs2Wasm.Runtime.Sharing", "MarkPush", 1);
-            D.LibMethod("Cs2Wasm.Runtime.Sharing", "RevisitIfShared", 1);
-            D.LibMethod("Cs2Wasm.Runtime.Limbo", "Hold", 0);
-            D.LibMethod("Cs2Wasm.Runtime.Limbo", "Unhold", 0);
-            // deferred destruction of shared objects
-            {
-                D.LibMethod("Cs2Wasm.Runtime.Limbo", "Add", 1);
-                if (RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareViolation", 1);
-                D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportEnter", 0);
-                D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportExit", 0);
-            }
             // parking for snapshots (section 7.2)
             Export("cs2wasm_park", D.LibMethod("Cs2Wasm.Runtime.Threads", "ParkAll", 0));
             Export("cs2wasm_resume", D.LibMethod("Cs2Wasm.Runtime.Threads", "ResumeAll", 0));
@@ -768,8 +755,7 @@ sealed partial class RuntimeGen
             var e = new Emitter(w);
             var res = mi.Fn.Type.Results;
             // threads (upstream): the engine thread holds nothing uncounted outside exports (Limbo)
-            var limbo = D.UsesThreads;
-            if (limbo) e.Call(D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportEnter", 0).Fn);
+            const bool limbo = false;
             var blk = e.Block(ValType.I32);
             var tti = e.TryTable(null, (0, D.ExceptionTag, blk));
             for (int i = 0; i < mi.Fn.Type.Params.Length; i++) e.Get(i);

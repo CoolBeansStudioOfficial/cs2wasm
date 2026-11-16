@@ -59,12 +59,35 @@ sealed partial class FunctionCompiler
         int save = E.CurrentPos;
         if (s_countRc && IsCountedPush(op)) E.PendingProbes++;
         // (a value of an immortal type is never counted: Types.IsImmortalType)
-        try { var o = EmitValueCore(op); return o != Own.None && op.Type != null && Types.IsImmortalType(op.Type) ? Own.None : o; }
+        try
+        {
+            var o = EmitValueCore(op);
+            if (o != Own.None && op.Type != null && Types.IsImmortalType(op.Type)) return Own.None;
+            return o == Own.Unstable && D.ThreadMode ? CountedLoad(o) : o;
+        }
         catch (CompileException ex) when (ex.Location == null) { throw new CompileException(ex.Message, op.Syntax.GetLocation()); }
         finally { E.CurrentPos = save; }
     }
 
     static readonly bool s_countRc = Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1";
+
+    /// <summary>Threads (Driver.ThreadMode): a reference just read from memory, not counted. Another thread may store
+    /// over the place and release the object before this one counts or uses it, so the read becomes a read that
+    /// counts in one step (rt.load_retain: under the lock the store takes too), and the value is this code's own.
+    /// Not for a place that never changes once others can see it (_plainLoadAt: a readonly field).</summary>
+    Own CountedLoad(Own o)
+    {
+        var b = E.Fn.Body;
+        if (o != Own.Unstable || b.Count == 0 || _plainLoadAt == b.Count) return o;
+        var last = b[^1];
+        if (last.Op != Op.I32Load || last.Ref != null) return o;
+        b.RemoveAt(b.Count - 1);
+        if (last.Imm != 0) { E.I32((int)last.Imm); E.Op(Op.I32Add); }
+        E.Call(Rt.LoadRetain);
+        return Own.Owned;
+    }
+    /// <summary>Where (body length) a load ended whose place does not change: CountedLoad leaves it.</summary>
+    int _plainLoadAt = -1;
 
     /// <summary>The baseline of the count measurement (CS2WASM_COUNT_RC): a reference value an expression produces from a
     /// variable, a field, an element, a property, a call or an allocation, which a scheme without ownership analysis
@@ -661,7 +684,9 @@ sealed partial class FunctionCompiler
         int off = EmitAddressBase(f);
         if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
         E.Load(Types.LoadOp(ft), off);
-        if (Types.IsRef(ft) && !f.Field.IsStatic && f.Instance != null && f.Field.ContainingType.TypeKind == TypeKind.Class && (IsStableBase(f.Instance) || QuietLocalBase(f.Instance)))
+        // (a readonly field is written by its object's constructors only, before the object is anyone else's)
+        if (D.ThreadMode && f.Field.IsReadOnly && !f.Field.IsStatic && M.MethodKind != MethodKind.Constructor) _plainLoadAt = E.Fn.Body.Count;
+        if (!D.ThreadMode && Types.IsRef(ft) && !f.Field.IsStatic && f.Instance != null && f.Field.ContainingType.TypeKind == TypeKind.Class && (IsStableBase(f.Instance) || QuietLocalBase(f.Instance)))
         {
             var lk = Driver.FieldKey(Owner(f.Field), StorageField(f.Field));
             D.NoteBorrowField(lk, StorageField(f.Field), ft);
@@ -814,7 +839,7 @@ sealed partial class FunctionCompiler
         if (!Types.IsRef(et)) return Own.None;
         // an element of an array that stays put (a stable reference, or a field of one): held for a call, it needs no
         // count unless an element store can run meanwhile (FieldBorrows.cs decides at the end)
-        if (ae.Indices.Length == 1)
+        if (ae.Indices.Length == 1 && !D.ThreadMode)
         {
             var ar = ae.ArrayReference;
             while (ar is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } ac) ar = ac.Operand;
