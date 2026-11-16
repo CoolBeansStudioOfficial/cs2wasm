@@ -25,7 +25,7 @@ output.
 | Input scope | **Every program .NET accepts compiles.** Where the compiler cannot prove something cheap, it pays a run-time cost; it never rejects a program for being hard to analyse. No program or use case is treated specially: every module gets the same platform (section 8), and platform invoke into native libraries, which cannot exist in WASM, is the only refusal |
 | Memory | No garbage collector, no background collector, no whole-heap scan. Compile-time reference counting copied from Lobster (section 4) |
 | Speed | Speed and module size are the priorities, reached by real translations of C# concepts, not by imitating the .NET runtime |
-| Against NativeAOT | **Anything cs2wasm compiles is faster, smaller and uses less memory than the same program under .NET NativeAOT.** Run time, binary size and peak memory are each measured against NativeAOT on real programs; Roslyn, compiled by cs2wasm and compiling programs, is the main measure (section 10, proof 5) |
+| Against NativeAOT | **Anything cs2wasm compiles is faster, smaller and uses less memory than the same program under .NET NativeAOT.** Run time, binary size and peak memory are each measured against NativeAOT on real programs; Roslyn, compiled by cs2wasm and compiling programs, is the main measure (section 10, proof 4) |
 | Self-hosting | The compiler is written in C# and compiles itself to WASM (section 9) |
 | Whole program | All source is present at the final build. Whole-program analysis is allowed and expected |
 | Threads | Real threads for game code (owner): they are how the engine gets the most out of a device (section 4.5) |
@@ -421,9 +421,9 @@ What does exist, though .NET programs might expect it not to here (owner):
      .NET. Needs no engine.
   3. One wrapper: `Node2D` from Bazoodle's patched generator, a 20-line script, upstream's source generators, and a stub
      boundary that logs calls; the log equals the one from stock Godot with .NET.
-  4. One game: Bazoodle's `hello2d` in C#, built in the browser, played in the engine.
-  5. The compiler compiles itself, Roslyn included, and the self-hosted toolchain is faster, smaller and uses less
+  4. The compiler compiles itself, Roslyn included, and the self-hosted toolchain is faster, smaller and uses less
      memory than the same code under NativeAOT (section 1), measured on Roslyn compiling a fixed set of programs.
+  5. One game: Bazoodle's `hello2d` in C#, built in the browser, played in the engine.
 
 ---
 

@@ -519,8 +519,8 @@ browser host. The compiler has not been run on the browser .NET runtime.
 
 ### 10. Testing — started
 Proof 1 is partially met (the programs listed above). Proof 2 is met (GodotSharp's math types). Proof 3 is met on
-stock Godot 4.7.2 with .NET (`godot_proof3_node2d`: the module's engine calls equal stock Godot's). Proof 4 (a game
-played in the engine) and proof 5 (self-hosting) are not met.
+stock Godot 4.7.2 with .NET (`godot_proof3_node2d`: the module's engine calls equal stock Godot's). Proof 4 (self-hosting
+beating NativeAOT on Roslyn) and proof 5 (a game played in the engine) are not met.
 
 ## Known divergences from .NET
 
