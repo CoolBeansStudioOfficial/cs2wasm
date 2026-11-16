@@ -15,6 +15,8 @@ namespace Cs2Wasm.Compiler;
 sealed partial class FunctionCompiler
 {
     (int At, int Off) _fresh = (-1, -1);
+    /// <summary>Where a consumed struct parameter's address was pushed (OwnedParams.cs): its store moves it.</summary>
+    int _freshParam = -1, _structParamLoads, _structParamMoves;
     static readonly bool s_noStableStatics = Environment.GetEnvironmentVariable("CS2WASM_NO_STABLE_STATICS") == "1";
     static readonly bool s_noStructMoves =Environment.GetEnvironmentVariable("CS2WASM_NO_STRUCT_MOVES") == "1";
 
@@ -25,6 +27,7 @@ sealed partial class FunctionCompiler
     /// offset, and the temporary no longer released at the statement's end.</summary>
     bool TakeFresh(ITypeSymbol t)
     {
+        if (_freshParam >= 0 && _freshParam == E.Body.Count) { _freshParam = -1; _structParamMoves++; return true; }
         int off = _fresh.Off;
         if (s_noStructMoves || _fresh.At != E.Body.Count || _temps.Count == 0 || !T.NeedsRc(t)) return false;
         var s = _temps[^1].FirstOrDefault(x => x.Local < 0 && x.FrameOffset == off && !x.Moved);

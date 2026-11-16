@@ -564,17 +564,36 @@ internal sealed partial class Driver
         var def = m.OriginalDefinition;
         if (def.MethodKind is not (MethodKind.Ordinary or MethodKind.PropertyGet) || def.IsAsync || def.IsIterator || def.ReturnsVoid || def.ReturnsByRef || def.ReturnsByRefReadonly) return false;
         if (!def.ReturnType.IsReferenceType && def.ReturnType.TypeKind != TypeKind.TypeParameter) return false;
-        if (!def.IsStatic && def.ContainingType is not { TypeKind: TypeKind.Class }) return false;
+        // (this instantiation's: a type parameter's field is a reference here only when its argument is)
+        if (!m.ReturnType.IsReferenceType) return false;
+        // (a struct's `this` is the address of its storage, valid to the end of the caller's statement: its field's value
+        // borrowed is what the caller's own load through that address would be)
+        if (!def.IsStatic && def.ContainingType is not { TypeKind: TypeKind.Class or TypeKind.Struct }) return false;
         if (def.DeclaringSyntaxReferences.Length != 1) return false;
         var sr = def.DeclaringSyntaxReferences[0];
         if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) return false;
         var block = body switch { IMethodBodyOperation mb => mb.BlockBody ?? mb.ExpressionBody, IBlockOperation b => b, _ => null };
         if (block is not { Operations: [IReturnOperation { ReturnedValue: { } v }] }) return false;
         while (v is IConversionOperation { OperatorMethod: null, IsImplicit: true } c && (c.Conversion.IsIdentity || c.Conversion.IsReference)) v = c.Operand;
-        bool Path(IOperation o) => o is IFieldReferenceOperation { Field: { IsVolatile: false } f } fr && f.Type.IsReferenceType && !f.IsFixedSizeBuffer
-            && (f.IsStatic || fr.Instance is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }
-                || fr.Instance is IFieldReferenceOperation inner && inner.Field.Type.TypeKind == TypeKind.Class && Path(inner))
-            && (f.IsStatic || f.ContainingType.TypeKind == TypeKind.Class);
+        // a lazy getter (`return _f ??= Make();`): the result is the field's value after the store
+        if (v is ICoalesceAssignmentOperation { Target: var lazy }) v = lazy;
+        // the roots: `this`, a static field, a struct parameter (by value: the caller's temporary or its own variable,
+        // either alive to the end of the caller's statement); through fields, and elements of arrays they hold
+        bool Root(IOperation? o) => o is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }
+            || o is IParameterReferenceOperation { Parameter: { RefKind: RefKind.None or RefKind.In, Type.TypeKind: TypeKind.Struct } };
+        bool Simple(IOperation o) => o.ConstantValue.HasValue || o is IParameterReferenceOperation or ILocalReferenceOperation
+            || o is IFieldReferenceOperation { Field.IsVolatile: false } fi && (fi.Field.IsStatic || Root(fi.Instance))
+            || o is IConversionOperation { OperatorMethod: null } cv && Simple(cv.Operand);
+        bool Holder(IOperation o) => o is IFieldReferenceOperation { Field: { IsVolatile: false, IsFixedSizeBuffer: false } f } fr
+            && (f.IsStatic || Root(fr.Instance) || fr.Instance is { } inner && inner.Type?.TypeKind is TypeKind.Class or TypeKind.Struct && Holder(inner))
+            && (f.IsStatic || f.ContainingType.TypeKind is TypeKind.Class or TypeKind.Struct);
+        bool Path(IOperation o) => o switch
+        {
+            IFieldReferenceOperation fr => (fr.Field.Type.IsReferenceType || fr.Field.Type.TypeKind == TypeKind.TypeParameter) && Holder(fr),
+            IArrayElementReferenceOperation { Indices: [var ix] } ae => (ae.Type?.IsReferenceType == true || ae.Type?.TypeKind == TypeKind.TypeParameter) && Simple(ix)
+                && ae.ArrayReference is IFieldReferenceOperation arr && arr.Type is IArrayTypeSymbol { IsSZArray: true } && Holder(arr),
+            _ => false,
+        };
         return Path(v);
     }
 

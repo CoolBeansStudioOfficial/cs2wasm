@@ -95,6 +95,7 @@ sealed partial class FunctionCompiler
                     E.Get(mv.Local); E.I32(0); E.Set(mv.Local);
                     return Own.Owned;
                 }
+                if (IsMovedStructParamUse(p)) { var sv = LoadVar(_vars[p.Parameter]); _freshParam = E.Body.Count; _structParamLoads++; return sv; }
                 return LoadVar(_vars[p.Parameter]);
             case IInstanceReferenceOperation ir:
                 {

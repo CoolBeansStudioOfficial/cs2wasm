@@ -50,6 +50,33 @@ internal sealed partial class Driver
         return true;
     }
 
+    readonly Dictionary<string, bool> _leafCallees = [];
+
+    /// <summary>m's body calls nothing and stores only into its locals (and, a constructor, its own fields): nothing it
+    /// runs can write memory a caller's struct lives in (StructArgs: a readonly struct's `this` passed by address).</summary>
+    internal bool LeafCallee(IMethodSymbol m)
+    {
+        var def = m.OriginalDefinition;
+        var key = Types.MethodKey(def);
+        if (_leafCallees.TryGetValue(key, out var r)) return r;
+        r = def.DeclaringSyntaxReferences.Length == 1 && ModelFor(def.DeclaringSyntaxReferences[0].SyntaxTree).GetOperation(def.DeclaringSyntaxReferences[0].GetSyntax()) is { } body
+            && body.DescendantsAndSelf().All(o => o switch
+            {
+                IBlockOperation or IMethodBodyOperation or IConstructorBodyOperation or IExpressionStatementOperation or IReturnOperation
+                    or IVariableDeclarationGroupOperation or IVariableDeclarationOperation or IVariableDeclaratorOperation or IVariableInitializerOperation
+                    or IFieldReferenceOperation or IParameterReferenceOperation or ILocalReferenceOperation or IInstanceReferenceOperation or ILiteralOperation
+                    or IConditionalOperation or IParenthesizedOperation or IEmptyOperation => true,
+                IConversionOperation c => c.OperatorMethod == null,
+                IBinaryOperation bo => bo.OperatorMethod == null,
+                IUnaryOperation u => u.OperatorMethod == null,
+                ISimpleAssignmentOperation { IsRef: false } sa => sa.Target is ILocalReferenceOperation
+                    || def.MethodKind == MethodKind.Constructor && sa.Target is IFieldReferenceOperation { Field.IsStatic: false, Instance: IInstanceReferenceOperation },
+                _ => false,
+            });
+        _leafCallees[key] = r;
+        return r;
+    }
+
     static bool ReadOnlyUse(IOperation use)
     {
         var p = use.Parent;
@@ -77,6 +104,8 @@ internal sealed partial class Driver
 
 internal sealed partial class FunctionCompiler
 {
+    static readonly bool s_borrowThis = Environment.GetEnvironmentVariable("CS2WASM_NO_BORROWED_THIS") != "1";
+
     /// <summary>A struct argument passed as the address of the caller's own value (see Driver.ReadOnlyStructParam).</summary>
     bool TryPushBorrowedStruct(IParameterSymbol p, IOperation value, ITypeSymbol pt)
     {
@@ -87,6 +116,11 @@ internal sealed partial class FunctionCompiler
         {
             ILocalReferenceOperation { Local: { IsRef: false } l } when !IsCaptured(l) && !_addrTaken.Contains(l) => l,
             IParameterReferenceOperation { Parameter: { RefKind: RefKind.None } q } when !IsCaptured(q) && !_addrTaken.Contains(q) && !_addrTaken.Contains(q.OriginalDefinition) && !IsPrimaryParamHere(q) => q,
+            // a readonly struct's `this` (or a readonly member's): its storage is the caller's, which only a callee that
+            // runs nothing else can leave alone (`new Reader(this)`)
+            IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } when s_borrowThis && _machine == null && _closure == null
+                && M.ContainingType is { TypeKind: TypeKind.Struct } ct && (ct.IsReadOnly || M.IsReadOnly) && M.MethodKind != MethodKind.Constructor
+                && p.ContainingSymbol is IMethodSymbol lm && D.LeafCallee(lm) => M.ContainingType,
             _ => null,
         };
         if (src == null || p.ContainingSymbol is not IMethodSymbol m || !D.ReadOnlyStructParam(m, p.Ordinal)) return false;

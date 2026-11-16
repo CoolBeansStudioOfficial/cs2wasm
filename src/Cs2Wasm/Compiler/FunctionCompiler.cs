@@ -142,6 +142,9 @@ sealed partial class FunctionCompiler
             else if (body is IMethodBodyOperation mb) EmitStatement((IOperation?)mb.BlockBody ?? mb.ExpressionBody!);
             else EmitStatement(body);
         }
+        // (a consumed struct parameter must have moved: its caller does not release the temporary it passed)
+        if (_structParamLoads != _structParamMoves)
+            throw new CompileException($"internal: consumed struct parameter not moved in {M.ToDisplayString()}");
         Finish();
     }
 

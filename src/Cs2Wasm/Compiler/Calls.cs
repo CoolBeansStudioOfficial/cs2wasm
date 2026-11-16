@@ -272,8 +272,15 @@ sealed partial class FunctionCompiler
         if (Types.IsStruct(pt))
         {
             // by value: the callee gets its own copy unless the argument is already a fresh temporary
-            if (IsFreshStruct(value)) { EmitValueAs(value, pt); return; }
-            if (TryPushBorrowedStruct(p, value, pt)) return;
+            // (a callee that consumes the parameter moves the temporary into its place: OwnedParams.cs)
+            bool consume = _consume is { } scc && (scc.Mask & (1 << p.Ordinal)) != 0 && SymbolEqualityComparer.Default.Equals(p.ContainingSymbol, scc.M) && T.NeedsRc(pt);
+            if (IsFreshStruct(value))
+            {
+                EmitValueAs(value, pt);
+                if (consume && TakeFresh(pt)) _consume!.Moved |= 1 << p.Ordinal;
+                return;
+            }
+            if (!consume && TryPushBorrowedStruct(p, value, pt)) return;
             int off = TempStruct(pt);
             EmitValueAs(value, pt);
             int src = Scratch(ValType.I32); E.Set(src);
@@ -281,6 +288,11 @@ sealed partial class FunctionCompiler
             E.Get(src); CopyStructInit(pt);
             FreeScratch(ValType.I32, src);
             E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+            if (consume && _temps.Count > 0 && _temps[^1].LastOrDefault(x => x.Local < 0 && x.FrameOffset == off && !x.Moved) is { } ts)
+            {
+                ts.Moved = true;
+                _consume!.Moved |= 1 << p.Ordinal;
+            }
             return;
         }
         var o = EmitValueAs(value, pt);

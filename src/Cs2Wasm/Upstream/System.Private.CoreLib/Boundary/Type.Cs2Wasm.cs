@@ -41,16 +41,26 @@ namespace System
         internal static RuntimeType FromId(int id)
         {
             if ((id & Cs2Wasm.Runtime.Meta.ByRef) != 0) return ByRefOf(id & ~Cs2Wasm.Runtime.Meta.ByRef);
-            var table = s_byId;
-            if ((uint)id < (uint)table.Length && table[id] is { } t) return t;
+            // (the table read where it is, without a count: a table replaced by a bigger one is kept, s_retired, so a
+            // thread that read the old one reads valid memory, and its entries are in the new one)
+            if ((uint)id < (uint)s_byId.Length && s_byId[id] is { } t) return t;
+            return Make(id);
+        }
+
+        static RetiredTable? s_retired;
+        sealed class RetiredTable(RuntimeType?[] table, RetiredTable? next) { readonly RuntimeType?[] _table = table; readonly RetiredTable? _next = next; }
+
+        static RuntimeType Make(int id)
+        {
             while (Atomic.CompareExchange32(ref s_lock, 0, 1) != 0) { }
             try
             {
-                table = s_byId;
+                var table = s_byId;
                 if ((uint)id >= (uint)table.Length)
                 {
                     var bigger = new RuntimeType?[Math.Max(table.Length * 2, id + 1)];
                     for (int i = 0; i < table.Length; i++) bigger[i] = table[i];
+                    s_retired = new RetiredTable(table, s_retired);
                     s_byId = table = bigger;
                 }
                 return table[id] ??= new RuntimeType(id);

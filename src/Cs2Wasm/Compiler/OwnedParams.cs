@@ -49,8 +49,11 @@ internal sealed partial class Driver
         var body = BodyOperation(this, def);
         if (body == null) return s_noConsuming;
         // large functions keep one shared, borrow-first version (section 4.1); 10 operations is where the copies stop
-        // paying for themselves in module size (measured)
-        if (body.Descendants().Count() > s_ownedLimit) return s_noConsuming;
+        // paying for themselves in module size (measured); a struct parameter saves a count per reference it holds,
+        // twice, so a larger body still pays (a constructor that stores its struct arguments)
+        int size = body.Descendants().Count();
+        bool small = size <= s_ownedLimit;
+        if (size > s_ownedLimit * 4) return s_noConsuming;
         if (body.DescendantsAndSelf().Any(o => o is ILabeledOperation || o is IBranchOperation { BranchKind: BranchKind.GoTo } || o.Kind is OperationKind.YieldReturn or OperationKind.YieldBreak))
             return s_noConsuming;
         var nested = body.Descendants().Where(o => o is IAnonymousFunctionOperation or ILocalFunctionOperation).SelectMany(o => o.DescendantsAndSelf()).ToHashSet();
@@ -60,6 +63,16 @@ internal sealed partial class Driver
         for (int i = 0; i < def.Parameters.Length; i++)
         {
             var p = def.Parameters[i];
+            if (p.RefKind == RefKind.None && p.Type.TypeKind == TypeKind.Struct && !p.Type.IsRefLikeType && !p.IsParams)
+            {
+                // a struct stored once, unconditionally, into a field: StructMoves (the caller's temporary moves in)
+                var us = refs[i].Where(r => SymbolEqualityComparer.Default.Equals(r.Parameter.ContainingSymbol.OriginalDefinition, def)).ToList();
+                if (s_noStructParams || us.Count != 1 || nested.Contains(us[0]) || !UnconditionalStructStore(us[0], body)) continue;
+                mask |= 1 << i;
+                moves.Add(us[0].Syntax);
+                continue;
+            }
+            if (!small) continue;
             if (p.RefKind != RefKind.None || p.Type.IsValueType || p.Type.IsRefLikeType || p.IsParams) continue;
             var rs = refs[i].Where(r => SymbolEqualityComparer.Default.Equals(r.Parameter.ContainingSymbol.OriginalDefinition, def)).ToList();
             if (rs.Count == 0 || rs.Count > 4) continue;
@@ -73,6 +86,26 @@ internal sealed partial class Driver
             foreach (var r in rs) moves.Add(r.Syntax);
         }
         return mask == 0 ? s_noConsuming : new Consuming(mask, moves);
+    }
+
+    static readonly bool s_noStructParams = Environment.GetEnvironmentVariable("CS2WASM_NO_STRUCT_PARAMS") == "1";
+
+    /// <summary>`this.f = p;` as a statement of the body's own block, every path through the body reaching it (no
+    /// return before it, no try, no jump); f's type is p's. An exception before it leaves the value where the caller
+    /// put it: the caller's temporary, released by the caller's unwinding.</summary>
+    static bool UnconditionalStructStore(IParameterReferenceOperation r, IOperation body)
+    {
+        if (r.Parent is not ISimpleAssignmentOperation { IsRef: false } sa || !ReferenceEquals(sa.Value, r)) return false;
+        if (sa.Target is not IFieldReferenceOperation { Field: { IsStatic: false, IsVolatile: false } f, Instance: IInstanceReferenceOperation }) return false;
+        if (!SymbolEqualityComparer.Default.Equals(f.Type, r.Parameter.Type)) return false;
+        if (sa.Parent is not IExpressionStatementOperation { Parent: IBlockOperation blk } st) return false;
+        if (!(blk.Parent is IMethodBodyOperation or IConstructorBodyOperation || ReferenceEquals(blk, body))) return false;
+        foreach (var o in body.Descendants())
+        {
+            if (o is ITryOperation || o is IBranchOperation || o is ILabeledOperation || o is IAnonymousFunctionOperation || o is ILocalFunctionOperation) return false;
+            if (o is IReturnOperation && o.Syntax.SpanStart < st.Syntax.SpanStart) return false;
+        }
+        return true;
     }
 
     static bool InLoop(IOperation op)
@@ -177,6 +210,12 @@ sealed partial class FunctionCompiler
             _allSlots.Add(slot);
         }
     }
+
+    /// <summary>A consumed struct parameter's store (OwnedParams: UnconditionalStructStore): it moves from the
+    /// caller's temporary.</summary>
+    bool IsMovedStructParamUse(IParameterReferenceOperation p) =>
+        _moves != null && _moves.Contains(p.Syntax) && Inst is { OwnedParams: var om } && (om & (1 << p.Parameter.Ordinal)) != 0
+        && _vars.TryGetValue(p.Parameter, out var v) && Types.IsStruct(v.Type);
 
     bool IsMovedParamUse(IParameterReferenceOperation p) =>
         _moves != null && _moves.Contains(p.Syntax) && Inst is { OwnedParams: var om } && (om & (1 << p.Parameter.Ordinal)) != 0

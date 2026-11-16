@@ -18,6 +18,41 @@ struct Pair
     public Node A, B;
     public Pair(Node a, Node b) { A = a; B = b; }
     public int Sum => A.V + B.V;
+    public Node First => A;
+}
+
+struct Elem
+{
+    public Node Value;
+    public static implicit operator Node(Elem e) => e.Value;
+}
+
+struct Cursor<T> where T : class
+{
+    T[] _items; int _i;
+    public Cursor(T[] items) { _items = items; _i = 0; }
+    public T Current => _items[_i];
+    public bool Next() => ++_i < _items.Length;
+}
+
+readonly struct Frozen
+{
+    public readonly Node A, B;
+    public Frozen(Node a, Node b) { A = a; B = b; }
+    public int Read() { var r = new FrozenReader(this); return r.Sum(); }
+}
+
+struct FrozenReader
+{
+    Node _a, _b;
+    public FrozenReader(Frozen f) { _a = f.A; _b = f.B; }
+    public int Sum() => _a.V + _b.V;
+}
+
+struct Wrap
+{
+    public Pair P; public int K;
+    public Wrap(Pair p, int k) { K = k; P = p; }
 }
 
 sealed class Holder { public Pair P; public Pair[] Ps = new Pair[2]; }
@@ -26,6 +61,9 @@ sealed class Box
 {
     Node? _held;
     public Node? Held => _held;
+    Node? _lazy;
+    public Node Lazy => _lazy ??= new Node(42);
+    public void Reset() { _lazy = null; }
     public Node? Take() { var h = _held; _held = null; return h; }
     public void Put(Node n) { var local = n; _held = local; }
 }
@@ -76,6 +114,8 @@ static class Program
     static Pair Forward(int v) { return MakePair(v); }
     static Pair Swap(Pair p) => new Pair(p.B, p.A);
 
+    static int Throws() => throw new InvalidOperationException("thrown between the arguments");
+
     static void StructMoves()
     {
         var p = Forward(1);
@@ -90,6 +130,24 @@ static class Program
         int n = 0;
         for (int i = 0; i < 3; i++) { var q = i % 2 == 0 ? MakePair(i) : Swap(MakePair(i)); n += q.A.V; }
         Console.WriteLine(n);
+        Node fromElem = new Elem { Value = new Node(50) };
+        var es = new Elem[] { new Elem { Value = new Node(51) } };
+        Node e0 = es[0]; es[0] = default;
+        var cur = new Cursor<Node>([new Node(60), new Node(61)]);
+        int cs = 0; do cs += cur.Current.V; while (cur.Next());
+        Console.WriteLine(fromElem.V + " " + e0.V + " " + cs);
+        var fz = new Frozen(new Node(70), new Node(71));
+        var fzs = new[] { fz };
+        Console.WriteLine(fz.Read() + " " + fzs[0].Read() + " " + new Frozen(new Node(1), new Node(2)).Read());
+        var w1 = new Wrap(MakePair(80), 1);
+        var pl = MakePair(90);
+        var w2 = new Wrap(pl, 2);
+        var w3 = new Wrap(h.P, 3);
+        Console.WriteLine(w1.P.Sum + " " + w2.P.Sum + " " + pl.Sum + " " + (w2.P.A == pl.A) + " " + w3.P.Sum + " " + (w3.P.B == h.P.B));
+        try { var w4 = new Wrap(MakePair(1), Throws()); Console.WriteLine(w4.K); } catch (InvalidOperationException e) { Console.WriteLine(e.Message); }
+        var f = MakePair(20).First; var g = h.P.First;
+        h.P = MakePair(30);
+        Console.WriteLine(f.V + " " + g.V + " " + h.P.First.V + " " + Swap(h.P).First.V);
     }
 
     [UnmanagedCallersOnly(EntryPoint = "main")]
@@ -113,5 +171,8 @@ static class Program
         y = null;
         Console.WriteLine(z.V + " " + (y == null));
         StructMoves();
+        var lz = box.Lazy; var lz2 = box.Lazy;
+        box.Reset();
+        Console.WriteLine(lz.V + " " + (lz == lz2) + " " + (box.Lazy == lz) + " " + box.Lazy.V);
     }
 }
