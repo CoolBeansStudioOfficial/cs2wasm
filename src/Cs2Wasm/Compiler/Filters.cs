@@ -19,8 +19,15 @@ internal sealed partial class Driver
 {
     bool? _usesFilters;
     /// <summary>True when the program has an exception filter: try/catch statements then keep the handler chain.</summary>
-    public bool UsesFilters => _usesFilters ??= Inputs.Any(c => c.SyntaxTrees.Any(t =>
-        t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.CatchFilterClauseSyntax>().Any()));
+    public bool UsesFilters => _usesFilters ??= FindFilters();
+
+    bool FindFilters()
+    {
+        var found = Inputs.SelectMany(c => c.SyntaxTrees).SelectMany(t => t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.CatchFilterClauseSyntax>()).FirstOrDefault();
+        if (found != null && Environment.GetEnvironmentVariable("CS2WASM_DEBUG") != null)
+            Console.Error.WriteLine($"filter found: {found.GetType().Name} kind {found.Kind()} '{found}' in {found.SyntaxTree.FilePath} (trees {Inputs.Sum(c => c.SyntaxTrees.Count())})");
+        return found != null;
+    }
     WasmGlobal? _ehChain, _ehRecord, _ehClause;
     public WasmGlobal EhChain => _ehChain ??= AddGlobal("__eh_chain");
     public WasmGlobal EhRecord => _ehRecord ??= AddGlobal("__eh_record");

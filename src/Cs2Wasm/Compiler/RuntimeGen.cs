@@ -1427,6 +1427,31 @@ internal sealed partial class Driver
         long naive = 2 * transfers;
         Console.Error.WriteLine($"  reference counting: {emitted} count operations in the module, against {naive} for counting every transfer ({transfers} transfers): {(naive == 0 ? 0 : 100.0 * (naive - emitted) / naive):F1}% removed (static)");
     }
+    /// <summary>A JSON string literal, as System.Text.Json writes one by default (quote, backslash and control
+    /// characters escaped; the others outside printable ASCII as \uXXXX), so the source map is the same however the compiler is built.</summary>
+    static string JsonString(string s)
+    {
+        var sb = new StringBuilder("\"");
+        foreach (char c in s)
+        {
+            switch (c)
+            {
+                case '"': sb.Append("\\u0022"); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                case '\b': sb.Append("\\b"); break;
+                case '\f': sb.Append("\\f"); break;
+                default:
+                    if (c < 0x20 || c > 0x7E || c is '<' or '>' or '&' or '\'' or '+' or '`') sb.Append("\\u").Append(((int)c).ToString("X4"));
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        return sb.Append('"').ToString();
+    }
+
 
     static string NormalizePath(string p) => p.Replace('\\', '/');
 
@@ -1434,7 +1459,7 @@ internal sealed partial class Driver
     {
         var sb = new StringBuilder();
         sb.Append("{\"version\":3,\"sources\":[");
-        sb.Append(string.Join(",", Files.Select(f => System.Text.Json.JsonSerializer.Serialize(NormalizePath(f)))));
+        sb.Append(string.Join(",", Files.Select(f => JsonString(NormalizePath(f)))));
         sb.Append("],\"names\":[],\"mappings\":\"");
         int prevCol = 0, prevFile = 0, prevLine = 0;
         bool first = true;

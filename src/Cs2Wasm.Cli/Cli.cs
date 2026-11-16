@@ -19,6 +19,7 @@ public static class Cli
         // @file: more arguments, one per line (a response file)
         args = args.SelectMany(a => a.StartsWith('@') && File.Exists(a[1..]) ? File.ReadAllLines(a[1..]).Where(l => l.Length > 0) : [a]).ToArray();
         var inputs = new List<string>();
+        var pathMap = new List<(string From, string To)>();
         string? output = null, boundary = null, map = null;
         var sections = new List<(string, byte[])>();
         var resources = new List<(string, byte[])>();
@@ -49,6 +50,14 @@ public static class Cli
                     }
                 case "--memory-pages": pages = int.Parse(args[++i]); break;
                 case "--max-pages": maxPages = int.Parse(args[++i]); break;
+                case "--pathmap":
+                    {
+                        // from=to: source paths under `from` are written as under `to` (as csc's -pathmap: the module's
+                        // file names do not depend on where the sources are; '/' separators)
+                        var kv = args[++i].Split('=', 2);
+                        pathMap.Add((Path.GetFullPath(kv[0]), kv.Length > 1 ? kv[1] : ""));
+                        break;
+                    }
                 case "--no-opt": optimize = false; break;
                 case "--watch": watch = true; break;
                 case "-r": refs.Add(MetadataReference.CreateFromFile(args[++i])); break;
@@ -60,7 +69,7 @@ public static class Cli
                         break;
                     }
                 case "-h": case "--help":
-                    Console.WriteLine("usage: cs2wasm <file.cs|dir>... -o out.wasm [--boundary table.json] [--map out.map] [--section name=file] [--resource name=file] [--memory-pages N] [--no-opt] [-r ref.dll] [--watch]");
+                    Console.WriteLine("usage: cs2wasm <file.cs|dir>... -o out.wasm [--boundary table.json] [--map out.map] [--section name=file] [--resource name=file] [--pathmap from=to] [--memory-pages N] [--no-opt] [-r ref.dll] [--watch]");
                     return 0;
                 default: inputs.Add(args[i]); break;
             }
@@ -79,7 +88,7 @@ public static class Cli
             {
                 // (directories are listed again on every build: a file added while watching is compiled)
                 files = inputs.SelectMany<string, string>(p => Directory.Exists(p) ? Directory.GetFiles(p, "*.cs", SearchOption.AllDirectories).Order(StringComparer.Ordinal) : [p]).ToList();
-                var compilation = Frontend.CreateCompilation(Path.GetFileNameWithoutExtension(output), files.Select(f => (Path.GetFullPath(f), File.ReadAllText(f))), refs);
+                var compilation = Frontend.CreateCompilation(Path.GetFileNameWithoutExtension(output), files.Select(f => (MapPath(Path.GetFullPath(f)), File.ReadAllText(f))), refs);
                 if (analyzers.Count > 0)
                 {
                     compilation = Frontend.RunGenerators(compilation, analyzers, properties, out var gdiags);
@@ -113,6 +122,14 @@ public static class Cli
                 Console.Error.WriteLine("cs2wasm: " + ex.Message);
                 return 1;
             }
+        }
+
+        string MapPath(string full)
+        {
+            foreach (var (from, to) in pathMap)
+                if (full.StartsWith(from, StringComparison.OrdinalIgnoreCase))
+                    return (to.TrimEnd('/') + "/" + full[from.Length..].TrimStart('/', '\\').Replace('\\', '/')).Replace("//", "/");
+            return full;
         }
 
         int code = Build();

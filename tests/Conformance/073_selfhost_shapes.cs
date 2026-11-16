@@ -4,7 +4,9 @@
 // set and read back), a resource writer's output read back by a resource reader, `default` of a struct in a loop (a
 // fresh zero value each time, never the last iteration's), an ordered PLINQ query enumerated as it is merged, and list
 // patterns over ImmutableArray<T> in generic code (T a struct, a class, an int), an iterator of a struct (its `this` a
-// copy in the iterator, read after the original is gone), and a switch on a tuple of references with type patterns.
+// copy in the iterator, read after the original is gone), a switch on a tuple of references with type patterns, and
+// assignments through an index from the end on a List<T> (its indexer's setter: `list[^1] = x`, `list[^3] += 10`), and
+// `??=` on nullable values (its value is the underlying value: a lazily computed bool? that is false stays false).
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -21,6 +23,15 @@ readonly struct OM<T>
     public OM(System.Collections.Immutable.ImmutableArray<T> many) { if (many is [var item]) { _one = item; _many = default; } else { _one = default; _many = many; } }
     public string Show() => _many.IsDefault ? "one " + _one : "many " + _many.Length;
     public static string Lp(System.Collections.Immutable.ImmutableArray<T> a) => a is [var x] ? "1:" + x : a is [var f, .., var l] ? "n:" + f + "-" + l : "0";
+}
+
+sealed class Lazy2
+{
+    bool? _a; int? _n; int _calls;
+    bool F() { _calls++; return false; }
+    public bool A => _a ??= F();
+    public int N => _n ??= 7 * 0;
+    public int Calls => _calls;
 }
 
 struct BV
@@ -99,6 +110,14 @@ static class Program
         Console.WriteLine(string.Join(",", bits1) + " | " + string.Join(",", bits2) + " | " + string.Join(",", bvl.TrueBits()));
         Console.WriteLine(Same(new TypeTest("a"), new TypeTest("a")) + " " + Same(new ValueTest(2), new ValueTest(3)) + " " + Same(new ValueTest(4), new ValueTest(4))
             + " " + Same(new NullTest(), new NullTest()) + " " + Same(new NullTest(), new TypeTest("x")));
+
+        var il = new List<int> { 1, 2, 3 }; il[^1] = 9; il[^3] += 10;
+        var sl = new List<string> { "a", "b" }; sl[^1] = "z";
+        Console.WriteLine(string.Join(",", il) + " " + string.Join(",", sl));
+
+        var lz = new Lazy2();
+        int? nx = null; int ny = (nx ??= 0) + 1; bool? nb = null; bool nz = nb ??= false;
+        Console.WriteLine($"{lz.A} {lz.A} {lz.Calls} {lz.N} | {ny} {nx} {nz} {nb}");
 
         var ms = new MemoryStream();
         using (var w = new ResourceWriter(ms)) { w.AddResource("b", "two"); w.AddResource("a", "one"); }

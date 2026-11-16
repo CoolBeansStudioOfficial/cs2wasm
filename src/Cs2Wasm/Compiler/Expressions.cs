@@ -1938,7 +1938,10 @@ sealed partial class FunctionCompiler
         lv.Store(o, false);
         E.End();
         if (!needResult) return Own.None;
-        return lv.Load();
+        var r = lv.Load();
+        // `x ??= v` on a T? has type T when v does: the value, not the T?
+        if (IsNullable(tt) && !IsNullable(TypeOf(cas))) { NullableVal(tt); var u = Underlying(tt); return Types.IsRef(u) ? Own.Unstable : Own.None; }
+        return r;
     }
 
     void EmitEventAssign(IEventAssignmentOperation ea)
@@ -2082,6 +2085,50 @@ sealed partial class FunctionCompiler
         }
     }
 
+    /// <summary>`list[^i] = v` (and `list[^i] += v`): the receiver and the offset from the end once, then the
+    /// indexer's getter and setter, as C# lowers it.</summary>
+    sealed class ImplicitIndexerLV(FunctionCompiler f, IImplicitIndexerReferenceOperation ii, ITypeSymbol t) : LValue(f, t)
+    {
+        int _recv = -1, _idx = -1; bool _recvIsStruct;
+        IPropertySymbol Indexer => (IPropertySymbol)ii.IndexerSymbol!;
+        public override void Prepare()
+        {
+            var rt = F.TypeOf(ii.Instance);
+            _recvIsStruct = rt.IsValueType;
+            if (_recvIsStruct) { if (F.IsAddressable(ii.Instance)) F.EmitAddress(ii.Instance); else F.EmitValue(ii.Instance); }
+            else
+            {
+                var o = F.EmitValue(ii.Instance);
+                F.ToCallSafe(o, rt);
+                if (!F.IsKnownNonNull(ii.Instance)) F.NullCheckKeep();
+            }
+            _recv = F.E.AddLocal(ValType.I32); F.E.Set(_recv);
+            var lengthGetter = ii.LengthSymbol switch { IPropertySymbol p => p.GetMethod!, IMethodSymbol m => m, _ => throw new CompileException("implicit indexer without a length", ii.Syntax.GetLocation()) };
+            int len = F.E.AddLocal(ValType.I32);
+            F.CallWith(F.SubstMethod(lengthGetter), !_recvIsStruct, () => F.E.Get(_recv), () => { }, null, ii.Syntax);
+            F.E.Set(len);
+            _idx = F.E.AddLocal(ValType.I32);
+            F.EmitIndexOffset(ii.Argument, len, fromStartDefault: true); F.E.Set(_idx);
+        }
+        public override Own Load()
+        {
+            var g = F.SubstMethod(Indexer.GetMethod ?? throw new CompileException("indexer has no getter"));
+            return F.CallWith(g, !_recvIsStruct && IsVirtualDispatch(g), () => F.E.Get(_recv), () => F.E.Get(_idx), null, ii.Syntax);
+        }
+        public override Own Store(Own o, bool needResult)
+        {
+            var sm = F.SubstMethod(Indexer.SetMethod ?? throw new CompileException("indexer has no setter"));
+            var vt = Type;
+            int v;
+            if (Types.IsRef(vt)) { o = F.ToCallSafe(o, vt); v = F.Scratch(ValType.I32); F.E.Set(v); }
+            else { v = F.Scratch(Types.WasmType(vt)!.Value); F.E.Set(v); }
+            F.CallWith(sm, !_recvIsStruct && IsVirtualDispatch(sm), () => F.E.Get(_recv), () => { F.E.Get(_idx); F.E.Get(v); }, null, ii.Syntax);
+            if (needResult) { F.E.Get(v); F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v); return Types.IsRef(vt) ? Own.Stable : Own.None; }
+            F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v);
+            return Own.None;
+        }
+    }
+
     sealed class CapturedLV(FunctionCompiler f, ISymbol sym, ITypeSymbol t) : LValue(f, t)
     {
         public override void Prepare() { }
@@ -2150,6 +2197,8 @@ sealed partial class FunctionCompiler
                 }
                 if (pr.Property.ReturnsByRef) break;
                 return new PropLV(this, pr, t);
+            case IImplicitIndexerReferenceOperation ii when ii.IndexerSymbol is IPropertySymbol { ReturnsByRef: false, ReturnsByRefReadonly: false }:
+                return new ImplicitIndexerLV(this, ii, t);
             case IDeclarationExpressionOperation de: return LValueOf(de.Expression);
             case IFieldReferenceOperation fr when Types.IsRef(t):
                 {
