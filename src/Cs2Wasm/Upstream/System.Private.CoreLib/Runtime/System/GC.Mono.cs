@@ -34,7 +34,7 @@ namespace System
         private static int GetMaxGeneration() => 0;
 
         // cs2wasm: no collector; counting frees objects as they become unreachable
-        private static void InternalCollect(int generation) => Cs2Wasm.Runtime.ObjectMarks.Drain();
+        private static void InternalCollect(int generation) { }
 
         // cs2wasm: no collector; counting frees objects as they become unreachable
         private static void AddPressure(ulong bytesAllocated) { }
@@ -130,7 +130,7 @@ namespace System
         }
 
         // cs2wasm: no collector; counting frees objects as they become unreachable
-        public static void WaitForPendingFinalizers() => Cs2Wasm.Runtime.ObjectMarks.Drain();
+        public static void WaitForPendingFinalizers() { }
 
         // cs2wasm: no collector; counting frees objects as they become unreachable
         private static void _SuppressFinalize(object o) => Cs2Wasm.Runtime.ObjectMarks.Set(o, Cs2Wasm.Runtime.ObjectMarks.FinalizerSuppressed);

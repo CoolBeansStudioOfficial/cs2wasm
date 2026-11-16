@@ -696,10 +696,7 @@ sealed partial class RuntimeGen
         }
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
-        {
             D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
-            D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "Grace", 1);
-        }
         // host operations (the host's fetch: section 8): the host finishes them through this export
         // a worker instance starts here: its own stack, thread-local block and id, then the thread's delegate
         if (D.UsesThreads)
@@ -956,6 +953,8 @@ sealed partial class RuntimeGen
     /// instance's memory (section 7.2). A constant and a value just loaded from memory are stored as they are.</summary>
     void CanonicalizeFloatStores()
     {
+        // (CS2WASM_NO_CANON=1, measurement only: what the stores cost)
+        if (Environment.GetEnvironmentVariable("CS2WASM_NO_CANON") == "1") return;
         foreach (var f in D.Module.Functions.ToList())
         {
             if (f.IsImport || f.Name.StartsWith("rt.canon_", StringComparison.Ordinal)) continue;
@@ -1002,12 +1001,6 @@ sealed partial class RuntimeGen
     void EmitDestroyDispatch()
     {
         var e = new Emitter(D.Rt.Destroy);
-        // (a program with marks: an object with a weak reference lives on until a collection, ObjectMarks.Grace)
-        if (D.AllMethods.FirstOrDefault(m => m.Sym.Name == "Grace" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled) is { } grace)
-        {
-            e.Get(0); e.Call(grace.Fn);
-            e.If(); e.Op(Op.Return); e.End();
-        }
         int n = D.TypeCount;
         var targets = new Label[n];
         var dflt = e.Block();

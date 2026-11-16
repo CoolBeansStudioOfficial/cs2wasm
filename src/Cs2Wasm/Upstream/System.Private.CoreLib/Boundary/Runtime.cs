@@ -274,14 +274,18 @@ namespace Cs2Wasm.Runtime
             if (got == 0)
             {
                 int bytes = want * size;
+                int start = 0;
                 if (s_top + bytes > s_end || s_top + bytes < s_top)
                 {
-                    int need = s_top + bytes - s_end;
-                    GrowFor(need);
-                    s_end = Mem.Size() * 65536;
+                    start = TakeLarge(bytes);
+                    if (start == 0)
+                    {
+                        int need = s_top + bytes - s_end;
+                        GrowFor(need);
+                        s_end = Mem.Size() * 65536;
+                    }
                 }
-                int start = s_top;
-                s_top += bytes;
+                if (start == 0) { start = s_top; s_top += bytes; }
                 for (int i = want - 1; i >= 0; i--) { int b = start + i * size; Mem.StoreI32(b + 8, list); list = b; }
                 got = want;
             }
@@ -373,14 +377,37 @@ namespace Cs2Wasm.Runtime
             }
             if (s_top + size > s_end || s_top + size < s_top)
             {
+                // (freed space first, section 4.6: a larger freed block is split before the memory grows)
+                int blk = TakeLarge(size);
+                if (blk != 0) return blk;
                 int need = s_top + size - s_end;
-                int pages = (need + 65535) / 65536;
                 GrowFor(need);
                 s_end = Mem.Size() * 65536;
             }
             int a = s_top;
             s_top += size;
             return a;
+        }
+
+        /// <summary>The first freed large block that holds size bytes (a multiple of 8), zeroed; what is left of it is
+        /// freed again (to its size's list). 0 if there is none.</summary>
+        static int TakeLarge(int size)
+        {
+            int prev = 0, cur = s_large;
+            while (cur != 0)
+            {
+                int csize = Mem.LoadI32(cur + 4);
+                if (csize >= size)
+                {
+                    int next = Mem.LoadI32(cur);
+                    if (prev == 0) s_large = next; else Mem.StoreI32(prev, next);
+                    Mem.Fill(cur, 0, size);
+                    if (csize - size >= 16) FreeCore(cur + size, csize - size);
+                    return cur;
+                }
+                prev = cur; cur = Mem.LoadI32(cur);
+            }
+            return 0;
         }
 
         public static void Free(int addr, int size)
@@ -811,12 +838,43 @@ namespace Cs2Wasm.Runtime
         public static void OnThrow(object ex)
         {
             if (ex is not Exception e) return;
-            // (no memory: none for the trace either, and asking would fail the same way, without end)
-            if (ex is OutOfMemoryException) { e._fullTrace = null; e._stackTraceString = null; e._throwDepth = Engine.StackDepth(); return; }
+            if (ex is OutOfMemoryException)
+            {
+                // The trace needs memory too. There usually is some (one large allocation failed), and then the
+                // exception has its trace as any other; with no room for the trace, it has none.
+                e._fullTrace = null; e._stackTraceString = null;
+                e._throwDepth = Engine.StackDepth();
+                if (HasRoom(TraceRoom)) CaptureTrace(e);
+                return;
+            }
+            CaptureTrace(e);
+            e._throwDepth = Engine.StackDepth();
+        }
+
+        /// <summary>What taking a trace allocates at most (its buffer, its string, a thread's refill), with a margin.</summary>
+        const int TraceRoom = 131072;
+
+        /// <summary>Whether the heap's top has room for this many bytes, growing the memory if it can.</summary>
+        static bool HasRoom(int bytes)
+        {
+            RuntimeLock();
+            bool ok = true;
+            if (s_top == 0) InitHeap();
+            if (s_top + bytes > s_end || s_top + bytes < s_top)
+            {
+                int pages = (s_top + bytes - s_end + 65535) / 65536;
+                ok = Mem.Grow(pages) >= 0;
+                if (ok) s_end = Mem.Size() * 65536;
+            }
+            RuntimeUnlock();
+            return ok;
+        }
+
+        static void CaptureTrace(Exception e)
+        {
             var buf = new char[16384];
             int n = Engine.CaptureStack(ArrayData(buf), buf.Length);
             e._fullTrace = n > 0 ? StringOf(buf, n) : null;
-            e._throwDepth = Engine.StackDepth();
             e._stackTraceString = e._fullTrace;
         }
 
@@ -1012,7 +1070,6 @@ namespace Cs2Wasm.Runtime
                 Atomic.Add32(ref s_live, -1);
                 System.Threading.Thread.OnThreadExiting(t);
                 System.Threading.Thread.SetCurrent(null);
-                ObjectMarks.Drain();
                 // the thread's statics die with it (as .NET's become unreachable)
                 Rt.ReleaseThreadStatics();
                 Rt.FlushThreadCache();

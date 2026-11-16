@@ -3,8 +3,8 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Xml.Linq;
 
-// System.Xml.Linq keeps its namespaces and names in caches of weak references: an object only a weak reference refers
-// to must live until a collection, as under .NET (section 4.4).
+// System.Xml.Linq keeps its namespaces in caches of weak references, written for a collector; cs2wasm's manifest makes
+// the code that creates a namespace keep it while it hands it out (section 7.4).
 static class Program
 {
     [UnmanagedCallersOnly(EntryPoint = "main")]
@@ -18,7 +18,5 @@ static class Program
         XNamespace ns = "urn:x";
         var q = new XElement(ns + "q", new XElement(ns + "r", 5));
         Console.WriteLine(q.Element(ns + "r").Value + " " + q.Name.NamespaceName + " " + (XName.Get("q", "urn:x") == q.Name));
-        var w = new WeakReference<object>(new object());
-        Console.WriteLine(w.TryGetTarget(out _));
     }
 }

@@ -61,3 +61,5 @@ file src/libraries/System.Private.Xml.Linq/src/System/Xml/Schema/XNodeValidator.
 file src/libraries/System.Private.Xml.Linq/src/System/Xml/XPath/XNodeNavigator.cs
 file src/libraries/System.Private.Xml.Linq/src/System/Xml/XPath/XObjectExtensions.cs
 file src/libraries/Common/src/System/SR.cs
+edit	src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNamespace.cs	refNamespace = s_namespaces.Add(new WeakReference<XNamespace>(new XNamespace(namespaceName.Substring(index, count))));	var made = new XNamespace(namespaceName.Substring(index, count)); refNamespace = s_namespaces.Add(new WeakReference<XNamespace>(made)); if (refNamespace != null && refNamespace.TryGetTarget(out XNamespace? own) && ReferenceEquals(own, made)) return own;
+edit	src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNamespace.cs	Interlocked.CompareExchange(ref refNmsp, new WeakReference<XNamespace>(new XNamespace(namespaceName)), refOld);	var made = new XNamespace(namespaceName); if (Interlocked.CompareExchange(ref refNmsp, new WeakReference<XNamespace>(made), refOld) == refOld) return made;

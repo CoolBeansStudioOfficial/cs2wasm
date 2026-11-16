@@ -198,6 +198,13 @@ sealed class Manifest
             // lifting a struct: the Nullable instances the program makes exist (MakeGenericType)
             sb.AppendLine("edit	src/libraries/System.Linq.Expressions/src/System/Dynamic/Utils/TypeUtils.cs	                    throw new NotSupportedException(Strings.LiftingInExpressionRequiresDynamicCode(type));	                    return GetNullableType(type); // cs2wasm: the Nullable instances the program makes exist (MakeGenericType)");
         }
+        // a cache of weak references assumes a collector (an object only a weak reference refers to lives until one):
+        // with counting it dies at once, so the code that makes a namespace keeps it while it hands it out
+        if (lib == "System.Private.Xml.Linq")
+        {
+            sb.AppendLine("edit\tsrc/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNamespace.cs\trefNamespace = s_namespaces.Add(new WeakReference<XNamespace>(new XNamespace(namespaceName.Substring(index, count))));\tvar made = new XNamespace(namespaceName.Substring(index, count)); refNamespace = s_namespaces.Add(new WeakReference<XNamespace>(made)); if (refNamespace != null && refNamespace.TryGetTarget(out XNamespace? own) && ReferenceEquals(own, made)) return own;");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNamespace.cs\tInterlocked.CompareExchange(ref refNmsp, new WeakReference<XNamespace>(new XNamespace(namespaceName)), refOld);\tvar made = new XNamespace(namespaceName); if (Interlocked.CompareExchange(ref refNmsp, new WeakReference<XNamespace>(made), refOld) == refOld) return made;");
+        }
         // feature switches without a trimmer substitution that cs2wasm fixes: no code is generated at run time
         if (lib == "System.Private.CoreLib")
         {

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The NativeAOT side of tools/bench.mjs: the same programs cs2wasm compiles (WasmMain.cs is cs2wasm's entry). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>preview</LangVersion>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Optimize>true</Optimize>
+    <AssemblyName>bench-aot</AssemblyName>
+    <RootNamespace>Bench</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Programs.cs" />
+    <Compile Include="AotMain.cs" />
+  </ItemGroup>
+</Project>
