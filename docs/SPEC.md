@@ -25,6 +25,7 @@ output.
 | Input scope | **Every program .NET accepts compiles.** Where the compiler cannot prove something cheap, it pays a run-time cost; it never rejects a program for being hard to analyse. What the sandbox does not offer (section 8) is the only refusal |
 | Memory | No garbage collector, no background collector, no whole-heap scan. Compile-time reference counting copied from Lobster (section 4) |
 | Speed | Speed and module size are the priorities, reached by real translations of C# concepts, not by imitating the .NET runtime |
+| Against NativeAOT | **Anything cs2wasm compiles is faster, smaller and uses less memory than the same program under .NET NativeAOT.** Run time, binary size and peak memory are each measured against NativeAOT on real programs; Roslyn, compiled by cs2wasm and compiling programs, is the main measure (section 10, proof 5) |
 | Self-hosting | The compiler is written in C# and compiles itself to WASM (section 9) |
 | Whole program | All source is present at the final build. Whole-program analysis is allowed and expected |
 | Threads | Real threads for game code (owner): they are how the engine gets the most out of a device (section 4.5) |
@@ -346,10 +347,12 @@ results on every machine**. The compiler must not introduce variation:
 - **Build time:** a few seconds from editing a small game to playing it, in the browser, on an ordinary laptop. The
   program is analysed whole on every build; caching the analysis of library compilations that did not change is
   allowed.
-- **Module size:** as small as the code allows. A small 2D game compiled from Rust was about 24 KiB compressed; that
-  is the bar to measure against (GodotSharp's reachable part comes on top).
+- **Module size:** as small as the code allows, and smaller than the same program under NativeAOT (section 1). A small
+  2D game compiled from Rust was about 24 KiB compressed; that is the bar to measure against (GodotSharp's reachable
+  part comes on top).
 - **Call cost:** calls between the module and the engine cost about 3 to 5 ns each in Chrome. Keep the boundary thin.
-- **Run-time speed:** match or beat the same C# under .NET NativeAOT on average.
+- **Run-time speed:** faster than the same C# under .NET NativeAOT (section 1).
+- **Memory:** a lower peak memory use than the same C# under .NET NativeAOT (section 1).
 - **Toolchain download (owner):** as small as possible; the ballpark aim is **20 to 30 MB** for everything a creator
   downloads to build (Roslyn and cs2wasm as self-hosted WASM, plus the library sources or their cached analysis). It is
   fetched lazily on the first build and cached, measured and reported with every release. Self-hosting (section 9) is
@@ -406,7 +409,7 @@ What does exist, though .NET programs might expect it not to here (owner):
   engine calls under stock Godot 4.7.2 with .NET as under the compiled module.
 - **Evidence rules:** claim nothing that has not been tested; label anything unmeasured as unmeasured; report numbers
   and failures as they came out, including results that hurt the design. Measure the reference-count operations
-  removed, module size, build time and run-time speed against NativeAOT, on real programs.
+  removed, build time, and module size, run-time speed and peak memory against NativeAOT, on real programs.
 - **Smallest proofs, in order:**
   1. Pure C#: a set of console programs (math, collections, strings, LINQ, async on one thread, exceptions); output
      equals .NET.
@@ -415,7 +418,8 @@ What does exist, though .NET programs might expect it not to here (owner):
   3. One wrapper: `Node2D` from Bazoodle's patched generator, a 20-line script, upstream's source generators, and a stub
      boundary that logs calls; the log equals the one from stock Godot with .NET.
   4. One game: Bazoodle's `hello2d` in C#, built in the browser, played in the engine.
-  5. The compiler compiles itself.
+  5. The compiler compiles itself, Roslyn included, and the self-hosted toolchain is faster, smaller and uses less
+     memory than the same code under NativeAOT (section 1), measured on Roslyn compiling a fixed set of programs.
 
 ---
 
