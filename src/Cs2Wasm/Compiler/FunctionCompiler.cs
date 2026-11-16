@@ -678,11 +678,12 @@ sealed partial class FunctionCompiler
         var c = new Ctl { Kind = CtlKind.Block, Break = exit, Continue = disp, GotoState = st, ScopeDepth = _scopes.Count, TempDepth = _temps.Count };
         _ctl.Add(c);
         for (int k = 0; k < labeled.Count; k++)
-        {
-            var lbl = ((ILabeledOperation)ops[labeled[k]]).Label;
-            _labels[lbl] = (c, true);
-            _gotoIndex[lbl] = k + 1;
-        }
+            // (`A: B: stmt`: each label of a chain names the same segment)
+            for (IOperation? lo = ops[labeled[k]]; lo is ILabeledOperation lop; lo = lop.Operation)
+            {
+                _labels[lop.Label] = (c, true);
+                _gotoIndex[lop.Label] = k + 1;
+            }
         var segs = new Label[n];
         for (int k = n - 1; k >= 0; k--) segs[k] = E.Block();
         E.Get(st); E.BrTable(segs, segs[0]);
@@ -691,7 +692,8 @@ sealed partial class FunctionCompiler
             E.End();
             int from = k == 0 ? start : labeled[k - 1];
             int to = k < labeled.Count ? labeled[k] : ops.Count;
-            if (k > 0) _gotoOwned[((ILabeledOperation)ops[from]).Label] = _scopes[^1].Owned.Count;
+            if (k > 0)
+                for (IOperation? lo = ops[from]; lo is ILabeledOperation lop; lo = lop.Operation) _gotoOwned[lop.Label] = _scopes[^1].Owned.Count;
             EmitStatementsPlain(ops, from, to);
         }
         _ctl.Remove(c);

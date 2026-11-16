@@ -258,21 +258,22 @@ internal static class UpstreamSources
     /// them in this order, which they may reference).</summary>
     public static readonly string[] Libraries =
     [
-        "System.Private.CoreLib", "System.Collections", "System.Collections.NonGeneric", "System.ObjectModel", "System.Memory",
-        "System.Threading", "System.Collections.Concurrent", "System.Linq", "System.Console", "System.Runtime.Numerics",
-        "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions", "System.Linq.Expressions", "Microsoft.CSharp", "System.Linq.Queryable",
-        "System.Collections.Immutable", "System.IO.MemoryMappedFiles", "System.IO.Compression", "System.Reflection.Metadata",
-        "System.Private.Uri", "System.Net.Primitives", "System.Runtime.Serialization.Primitives", "System.Private.Xml", "System.Xml.XPath",
-        "System.Private.Xml.Linq", "System.Xml.XPath.XDocument", "System.Security.Cryptography", "System.Text.Encoding.CodePages",
-        "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
-        "System.ComponentModel", "System.ComponentModel.Primitives", "System.Collections.Specialized", "System.Diagnostics.TraceSource",
-        "GodotSharp",
+        "System.Private.CoreLib", "System.Collections", "System.Collections.NonGeneric", "System.ObjectModel",
+        "System.Memory", "System.Threading", "System.Collections.Concurrent", "System.Linq", "System.Console",
+        "System.Runtime.Numerics", "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions",
+        "System.Linq.Expressions", "Microsoft.CSharp", "System.Linq.Queryable",
+        "System.ComponentModel", "System.ComponentModel.Primitives", "System.Collections.Specialized",
+        "System.Diagnostics.TraceSource", "System.Collections.Immutable", "System.IO.MemoryMappedFiles",
+        "System.IO.Compression", "System.Reflection.Metadata", "System.Private.Uri", "System.Net.Primitives",
+        "System.Net.Http", "System.Runtime.Serialization.Primitives", "System.Security.Cryptography",
+        "System.Private.Xml", "System.Xml.XPath", "System.Private.Xml.Linq", "System.Xml.XPath.XDocument",
+        "System.Text.Encoding.CodePages", "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp", "GodotSharp",
     ];
 
-    /// <summary>Libraries compiled against the core ones and what their manifests reference, so that needing one
-    /// brings in only those: GodotSharp (stock Godot's C# API, for Godot scripts: section 10's proofs 3 and 4) and the
-    /// upstream libraries it uses (System.Diagnostics.Trace, which GodotSharp sends to the engine's output).</summary>
-    public static readonly HashSet<string> Standalone = ["System.ComponentModel", "System.ComponentModel.Primitives", "System.Collections.Specialized", "System.Diagnostics.TraceSource", "GodotSharp"];
+    /// <summary>Libraries compiled against the core ones and what their manifests reference (with what those are compiled
+    /// against), so that needing one brings in only those: GodotSharp (stock Godot's C# API, for Godot scripts: section
+    /// 10's proofs 3 and 4), which references System.Diagnostics.TraceSource (right after the core libraries).</summary>
+    public static readonly HashSet<string> Standalone = ["GodotSharp"];
 
     public const int CoreCount = 15;
 

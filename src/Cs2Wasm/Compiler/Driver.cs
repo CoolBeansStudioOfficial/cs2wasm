@@ -148,6 +148,7 @@ internal sealed partial class Driver
 
     public Driver(CSharpCompilation main, CompileOptions options)
     {
+        s_files = options.FileSystem;
         // dynamic operations: call sites in a generated class of the program (DynamicLowering.cs)
         main = AddGodotPlugins(main);
         try { main = DynamicLowering.Rewrite(main, out Dynamic); }
@@ -650,13 +651,21 @@ internal sealed partial class Driver
         return MethodImpl.Missing;
     }
 
-    /// <summary>The capability a library member marked [MissingCapability] needs (SPEC section 8): reaching it is a build error.</summary>
+    /// <summary>The capability a library member marked [MissingCapability] needs (SPEC section 8): reaching it is a build
+    /// error. A member marked [Capability("files")] (the boundary's file system, over the host's imports) needs the file
+    /// system unless the build has the file capability (CompileOptions.FileSystem: the toolchain's, section 8).</summary>
     public static string? MissingCapability(IMethodSymbol def)
     {
         foreach (var m in new[] { def, def.PartialImplementationPart, def.PartialDefinitionPart })
+        {
             if (m?.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "MissingCapabilityAttribute") is { ConstructorArguments: [{ Value: string cap }] }) return cap;
+            if (m?.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "CapabilityAttribute") is { ConstructorArguments: [{ Value: "files" }] } && !s_files) return "the file system";
+        }
         return null;
     }
+
+    /// <summary>The build's file capability (for MissingCapability; a build runs on one thread).</summary>
+    [ThreadStatic] static bool s_files;
 
     public static bool HasBody(IMethodSymbol def)
     {

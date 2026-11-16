@@ -69,6 +69,10 @@ namespace Cs2Wasm.Runtime
 
     public static class Rt
     {
+        /// <summary>A string constant pattern on a span of chars (`span is "abc"`, `switch (span) { case "abc": }`): the
+        /// span's characters equal the string's (C#: MemoryExtensions.SequenceEqual).</summary>
+        public static bool SpanEqualsString(System.ReadOnlySpan<char> span, string value) => System.MemoryExtensions.SequenceEqual(span, value);
+
         [Intrinsic] public static extern int AddressOf(object o);
         /// <summary>A null reference (address 0): what `fixed` over an empty span gives.</summary>
         [Intrinsic] public static extern ref T NullRef<T>();

@@ -30,19 +30,22 @@ static class Libraries
     /// <summary>The libraries cs2wasm builds, each after those it references.</summary>
     public static readonly string[] All =
     [
-        "System.Private.CoreLib", "System.Collections", "System.Collections.NonGeneric", "System.ObjectModel", "System.Memory",
-        "System.Threading", "System.Collections.Concurrent", "System.Linq", "System.Console", "System.Runtime.Numerics",
-        "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions", "System.Linq.Expressions", "Microsoft.CSharp", "System.Linq.Queryable",
-        "System.Collections.Immutable", "System.IO.MemoryMappedFiles", "System.IO.Compression", "System.Reflection.Metadata",
-        "System.Private.Uri", "System.Net.Primitives", "System.Runtime.Serialization.Primitives", "System.Private.Xml", "System.Xml.XPath", "System.Private.Xml.Linq", "System.Xml.XPath.XDocument", "System.Security.Cryptography", "System.Text.Encoding.CodePages",
-        "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
-        "System.ComponentModel", "System.ComponentModel.Primitives", "System.Collections.Specialized", "System.Diagnostics.TraceSource",
+        "System.Private.CoreLib", "System.Collections", "System.Collections.NonGeneric", "System.ObjectModel",
+        "System.Memory", "System.Threading", "System.Collections.Concurrent", "System.Linq", "System.Console",
+        "System.Runtime.Numerics", "System.Threading.Tasks.Parallel", "System.Text.RegularExpressions",
+        "System.Linq.Expressions", "Microsoft.CSharp", "System.Linq.Queryable",
+        "System.ComponentModel", "System.ComponentModel.Primitives", "System.Collections.Specialized",
+        "System.Diagnostics.TraceSource", "System.Collections.Immutable", "System.IO.MemoryMappedFiles",
+        "System.IO.Compression", "System.Reflection.Metadata", "System.Private.Uri", "System.Net.Primitives",
+        "System.Net.Http", "System.Runtime.Serialization.Primitives", "System.Security.Cryptography",
+        "System.Private.Xml", "System.Xml.XPath", "System.Private.Xml.Linq", "System.Xml.XPath.XDocument",
+        "System.Text.Encoding.CodePages", "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
     ];
 
     /// <summary>Libraries cs2wasm writes by hand (members the others name, for capabilities the sandbox lacks): compiled,
     /// never evaluated from dotnet/runtime.</summary>
     public static readonly HashSet<string> HandWritten = ["System.IO.MemoryMappedFiles", "System.IO.Compression", "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
-        "System.Private.Uri", "System.Net.Primitives", "System.Runtime.Serialization.Primitives", "System.Private.Xml", "System.Xml.XPath", "System.Private.Xml.Linq", "System.Xml.XPath.XDocument", "System.Security.Cryptography", "System.Text.Encoding.CodePages"];
+        "System.Net.Primitives", "System.Net.Http", "System.Runtime.Serialization.Primitives", "System.Security.Cryptography", "System.Text.Encoding.CodePages"];
 
     public static string Project(string root, string lib) => lib == "System.Private.CoreLib"
         ? Path.Combine(root, "src", "mono", "System.Private.CoreLib", "System.Private.CoreLib.csproj")
@@ -115,7 +118,10 @@ sealed class Manifest
         props["TargetOS"] = "browser";
         props["TargetsBrowser"] = "true";
         props["TargetsWasm"] = "true";
-        props["TargetPlatformIdentifier"] = "browser";
+        // (the project's browser build when it has one; else its build for no platform, which is what a browser app
+        // gets: System.Private.Xml's XmlCollation.Unix.cs)
+        var projText = File.Exists(Libraries.Project(root, lib)) ? File.ReadAllText(Libraries.Project(root, lib)) : "";
+        props["TargetPlatformIdentifier"] = lib == "System.Private.CoreLib" || projText.Contains("-browser") ? "browser" : "";
         props["Is64Bit"] = "false";
         props["FeaturePerfTracing"] = "false";
         props["FeatureWasmManagedThreads"] = "false";

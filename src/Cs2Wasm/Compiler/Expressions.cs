@@ -2352,6 +2352,12 @@ sealed partial class FunctionCompiler
                     {
                         E.Get(v); EmitValue(cv); E.Call(D.StringEquals.Fn); return;
                     }
+                    // a span of chars against a string constant: its characters (the span's address, as held)
+                    if (vt is INamedTypeSymbol { Arity: 1 } sv && Types.FullName(sv) is "System.Span`1" or "System.ReadOnlySpan`1"
+                        && sv.TypeArguments[0].SpecialType == SpecialType.System_Char && cv.ConstantValue.Value is string)
+                    {
+                        E.Get(v); EmitValue(cv); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "SpanEqualsString", 2).Fn); return;
+                    }
                     if (!vt.IsValueType)
                     {
                         // object o is 5 / is "x"
