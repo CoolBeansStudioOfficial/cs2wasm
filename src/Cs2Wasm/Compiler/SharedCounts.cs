@@ -18,7 +18,12 @@ internal sealed partial class RuntimeFns
     public const int SharedBit = 0x40000000;
     /// <summary>With SharedBit: the object waits in limbo (its count reached zero; Limbo).</summary>
     public const int LimboBit = 0x20000000;
-    WasmFunction? _pubInto, _pubAt, _pubAlways, _share, _shareVisit;
+    WasmFunction? _pubInto, _pubAt, _pubAlways, _share, _shareVisit, _storeRef;
+    /// <summary>(address, value) -> old value: a reference stored into memory that is not the frame. With threads an
+    /// atomic exchange: a plain read and write would race with another thread's store or compare-and-swap of the same
+    /// slot and release the old value twice (racy code stays memory-safe, section 4.5); without, the read and the write.</summary>
+    public WasmFunction StoreRef => _storeRef ??= M.AddFunction("rt.store_ref", FT([I, I], [I]));
+    public WasmFunction? StoreRefIfMade => _storeRef;
     /// <summary>(value, container) -> value: shares the value if the container is shared.</summary>
     public WasmFunction PublishInto => _pubInto ??= M.AddFunction("rt.publish_into", FT([I, I], [I]));
     /// <summary>(value, address) -> value: shares the value unless the address is on this thread's stack.</summary>
@@ -47,6 +52,12 @@ internal sealed partial class Driver
     {
         var rt = Rt;
         var fns = new[] { rt.PublishIntoIfMade, rt.PublishAtIfMade, rt.PublishAlwaysIfMade, rt.ShareIfMade };
+        if (rt.StoreRefIfMade is { } sr)
+        {
+            var e = new Emitter(sr);
+            if (threads) { e.Get(0); e.Get(1); e.Emit(Op.I32AtomicRmwXchg, 0, 2); }
+            else { e.Get(0); e.Load(Op.I32Load); e.Get(0); e.Get(1); e.Store(Op.I32Store); }
+        }
         if (!threads)
         {
             foreach (var fn in Module.Functions)

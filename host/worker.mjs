@@ -18,6 +18,9 @@ for (const imp of WebAssembly.Module.imports(module)) {
   imports[imp.module][imp.name] ??= () => 0;
 }
 const instance = new WebAssembly.Instance(module, imports);
+// (the memory may have grown since it was sent to this worker: growing it by nothing makes this thread's instance see
+// its current size, which bulk memory operations check against)
+memory.grow(0);
 try { instance.exports.__thread_entry(...args); }
 catch (e) {
   // the engine thread may be busy in a wait and never see a message: report here and end the process

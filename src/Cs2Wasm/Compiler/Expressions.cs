@@ -57,7 +57,8 @@ sealed partial class FunctionCompiler
     Own EmitValue(IOperation op)
     {
         int save = E.CurrentPos;
-        try { return EmitValueCore(op); }
+        // (a value of an immortal type is never counted: Types.IsImmortalType)
+        try { var o = EmitValueCore(op); return o != Own.None && op.Type != null && Types.IsImmortalType(op.Type) ? Own.None : o; }
         catch (CompileException ex) when (ex.Location == null) { throw new CompileException(ex.Message, op.Syntax.GetLocation()); }
         finally { E.CurrentPos = save; }
     }
@@ -287,7 +288,7 @@ sealed partial class FunctionCompiler
         var t = v.Type;
         if (!v.InMemory)
         {
-            if (Types.IsRef(t))
+            if (Types.IsRef(t) && !Types.IsImmortalType(t))
             {
                 ToOwned(o);
                 int nv = Scratch(ValType.I32); E.Set(nv);
@@ -299,12 +300,12 @@ sealed partial class FunctionCompiler
             return;
         }
         if (v.AddrLocal != _fb && T.NeedsRc(t)) D.NoteFieldWrite(E.Fn, Driver.ElementsKey);
-        StoreToAddressFromStack(() => E.Get(v.AddrLocal), v.Offset, t, o);
+        StoreToAddressFromStack(() => E.Get(v.AddrLocal), v.Offset, t, o, frame: v.AddrLocal == _fb && !IsRefLocal(v));
     }
 
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
     void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null,
-                                 Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null)
+                                 Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false)
     {
         if (Types.IsStruct(t))
         {
@@ -312,11 +313,13 @@ sealed partial class FunctionCompiler
             int src = Scratch(ValType.I32); E.Set(src);
             pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); }
             // (a fresh temporary's counts are taken: the old value released, no new counts)
-            E.Get(src); if (move) MoveStruct(t, assign: true); else CopyStructAssign(t);
+            E.Get(src); if (move) E.Call(D.Rt.MoveAssign(t, shared: !frame)); else CopyStructAssign(t, shared: !frame);
             FreeScratch(ValType.I32, src);
             return;
         }
         var vt = Types.WasmType(t)!.Value;
+        // (an immortal object: stored as it is, nothing counted, nothing to publish: its count word marks it shared)
+        if (Types.IsImmortalType(t) && site == null && pin == null) { int iv = Scratch(vt); E.Set(iv); pushAddr(); E.Get(iv); E.Store(Op.I32Store, offset); FreeScratch(vt, iv); return; }
         int val = Scratch(vt);
         if (Types.IsRef(t)) ToOwned(o);
         E.Set(val);
@@ -327,10 +330,20 @@ sealed partial class FunctionCompiler
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
             EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
             int a = Scratch(ValType.I32);
-            pushAddr(); E.Tee(a);
-            E.Load(Op.I32Load, offset);
-            int old = Scratch(ValType.I32); E.Set(old);
-            E.Get(a); E.Get(val); E.Store(Op.I32Store, offset);
+            int old = Scratch(ValType.I32);
+            if (frame)
+            {
+                pushAddr(); E.Tee(a);
+                E.Load(Op.I32Load, offset);
+                E.Set(old);
+                E.Get(a); E.Get(val); E.Store(Op.I32Store, offset);
+            }
+            else
+            {
+                // (an exchange: rt.store_ref)
+                pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); }
+                E.Get(val); E.Call(Rt.StoreRef); E.Set(old);
+            }
             E.Get(old);
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
             if (site != null) { pushContainer!(); E.Call(site.Unlink); } else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.Release);
@@ -347,9 +360,9 @@ sealed partial class FunctionCompiler
         E.I32(T.StorageOf(t).size); E.Op(Op.MemoryCopy);
     }
 
-    void CopyStructAssign(ITypeSymbol t)
+    void CopyStructAssign(ITypeSymbol t, bool shared = true)
     {
-        if (T.LayoutOf(t).HasRefs) { E.Call(Rt.CopyAssign(t)); return; }
+        if (T.LayoutOf(t).HasRefs) { E.Call(Rt.CopyAssign(t, shared)); return; }
         E.I32(T.StorageOf(t).size); E.Op(Op.MemoryCopy);
     }
 

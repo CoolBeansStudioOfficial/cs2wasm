@@ -562,7 +562,7 @@ internal sealed partial class Driver
     {
         if (s_noReturnField) return false;
         var def = m.OriginalDefinition;
-        if (def.MethodKind is not (MethodKind.Ordinary or MethodKind.PropertyGet) || def.IsAsync || def.IsIterator || def.ReturnsVoid || def.ReturnsByRef || def.ReturnsByRefReadonly) return false;
+        if (def.MethodKind is not (MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.Conversion or MethodKind.UserDefinedOperator) || def.IsAsync || def.IsIterator || def.ReturnsVoid || def.ReturnsByRef || def.ReturnsByRefReadonly) return false;
         if (!def.ReturnType.IsReferenceType && def.ReturnType.TypeKind != TypeKind.TypeParameter) return false;
         // (this instantiation's: a type parameter's field is a reference here only when its argument is)
         if (!m.ReturnType.IsReferenceType) return false;

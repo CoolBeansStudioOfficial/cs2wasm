@@ -355,6 +355,14 @@ internal sealed class Types
         return (4, 4);
     }
 
+    /// <summary>A type whose objects are never freed and are made immortal when allocated (their count word -1:
+    /// retains and releases leave it): System.RuntimeType, whose one object per type id the type table keeps for the
+    /// program's life (Boundary/Type.Cs2Wasm.cs). Its values are never counted (section 4.1: a borrow from the table).</summary>
+    public static bool IsImmortalType(ITypeSymbol t) =>
+        !s_noImmortal && t is INamedTypeSymbol { Name: "RuntimeType", IsSealed: true, TypeKind: TypeKind.Class, ContainingNamespace: { Name: "System", ContainingNamespace.IsGlobalNamespace: true } } nt
+        && nt.ContainingAssembly?.Name == "System.Private.CoreLib";
+    static readonly bool s_noImmortal = Environment.GetEnvironmentVariable("CS2WASM_NO_IMMORTAL") == "1";
+
     public bool NeedsRc(ITypeSymbol t) => IsRef(t) || (IsStruct(t) && LayoutOf(t).HasRefs);
 
     public static Op LoadOp(ITypeSymbol t) => LoadOp(PrimOf(t) is var p && p != Prim.None ? p : Prim.I32);

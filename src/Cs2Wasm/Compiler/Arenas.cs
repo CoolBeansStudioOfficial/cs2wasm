@@ -256,9 +256,10 @@ internal sealed class Arenas
             var hubs = new List<int>();
             siteNodes[s] = hubs;
             if (s.AddressTaken || s.Values.Count == 0) continue;
-            var containers = SubtypesOf(s.Container).Where(x => s.IsArray ? x.t is IArrayTypeSymbol : x.t.TypeKind == TypeKind.Class && x.t is not IArrayTypeSymbol).ToList();
+            // (an immortal object is never freed: no cycle through it can leak, and it is never an arena's member)
+            var containers = SubtypesOf(s.Container).Where(x => s.IsArray ? x.t is IArrayTypeSymbol : x.t.TypeKind == TypeKind.Class && x.t is not IArrayTypeSymbol && !Types.IsImmortalType(x.t)).ToList();
             if (containers.Count == 0) continue;
-            var targets = s.Values.Values.SelectMany(SubtypesOf).Where(x => !x.t.IsValueType).Select(x => x.id).Distinct().ToList();
+            var targets = s.Values.Values.SelectMany(SubtypesOf).Where(x => !x.t.IsValueType && !Types.IsImmortalType(x.t)).Select(x => x.id).Distinct().ToList();
             if (targets.Count == 0) continue;
             int Hub(IEnumerable<int> to) { int h = adj.Count; adj.Add([.. to]); hubs.Add(h); return h; }
             if (!s.IsArray)

@@ -26,12 +26,16 @@ namespace System
                     for (int i = 0; i < table.Length; i++) bigger[i] = table[i];
                     s_byRef = table = bigger;
                 }
-                return table[element] ??= new RuntimeType(element | Cs2Wasm.Runtime.Meta.ByRef);
+                return table[element] ??= Immortal(new RuntimeType(element | Cs2Wasm.Runtime.Meta.ByRef));
             }
             finally { Atomic.Store32(ref s_lock, 0); }
         }
 
         private RuntimeType(int id) => _impl = new RuntimeTypeHandle((IntPtr)id);
+
+        // a type's object lives as long as the program (the table keeps it): its count is made immortal, so the
+        // compiler counts no RuntimeType value (Compiler/Types.cs: IsImmortalType) and no retain or release changes it
+        static RuntimeType Immortal(RuntimeType t) { Mem.StoreI32(Rt.AddressOf(t), -1); return t; }
 
         internal int TypeId => (int)_impl.Value;
 
@@ -63,7 +67,7 @@ namespace System
                     s_retired = new RetiredTable(table, s_retired);
                     s_byId = table = bigger;
                 }
-                return table[id] ??= new RuntimeType(id);
+                return table[id] ??= Immortal(new RuntimeType(id));
             }
             finally { Atomic.Store32(ref s_lock, 0); }
         }

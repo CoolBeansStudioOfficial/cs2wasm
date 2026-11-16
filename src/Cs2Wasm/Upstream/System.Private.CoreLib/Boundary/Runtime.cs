@@ -380,7 +380,8 @@ namespace Cs2Wasm.Runtime
         public static void Free(int addr, int size)
         {
             // CS2WASM_SHARE_CHECK: freed memory is poisoned (0x0EAD, the freeing thread) and never reused
-            if (ShareCheck() && size >= 8) { Mem.StoreI32(addr, 0x0EAD0000 | (ThreadId() & 0xFFFF)); return; }
+            // (its type word too: a borrowed reference used after the free traps at its next dispatch or type test)
+            if (ShareCheck() && size >= 8) { Mem.StoreI32(addr, 0x0EAD0000 | (ThreadId() & 0xFFFF)); Mem.StoreI32(addr + 4, 0x7EAD0000); return; }
             if (!SingleThreaded() && size <= MaxSmall) { FreeLocal(addr, size); return; }
             RuntimeLock();
             FreeCore(addr, size);

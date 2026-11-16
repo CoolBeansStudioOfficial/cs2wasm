@@ -143,6 +143,22 @@ internal sealed partial class RuntimeFns
         }
     }
 
+    /// <summary>Each reference of src (at baseOff) exchanged into dst's place, the old one released.</summary>
+    void EmitExchangeFields(Emitter e, int dst, int src, int baseOff, ITypeSymbol t)
+    {
+        foreach (var f in D.Types.LayoutOf(t).Fields)
+        {
+            int o = baseOff + f.Offset;
+            if (Types.IsRef(f.Type))
+            {
+                e.Get(dst); if (o != 0) { e.I32(o); e.Op(Op.I32Add); }
+                e.Get(src); e.Load(Op.I32Load, o);
+                e.Call(StoreRef); e.Call(Release);
+            }
+            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitExchangeFields(e, dst, src, o, f.Type);
+        }
+    }
+
     void EmitRetainFields(Emitter e, int addrLocal, ITypeSymbol t)
     {
         var l = D.Types.LayoutOf(t);
@@ -189,28 +205,33 @@ internal sealed partial class RuntimeFns
         });
     }
 
-    /// <summary>(dst, src): a move over a value: the old contents released, then as MoveInit.</summary>
-    public WasmFunction MoveAssign(ITypeSymbol t)
+    /// <summary>(dst, src): a move over a value: the old contents released, then as MoveInit. Into memory that is not
+    /// the frame (shared), each reference is exchanged into place and the old one released (rt.store_ref: another
+    /// thread's store or compare-and-swap of the same slot cannot make it released twice).</summary>
+    public WasmFunction MoveAssign(ITypeSymbol t, bool shared = true)
     {
         t = D.Types.Canonical(t);
-        return Cached("rt.move_assign " + Types.Key(t), FT([I, I], []), e =>
+        return Cached((shared ? "rt.move_assign " : "rt.move_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
         {
             int size = D.Types.StorageOf(t).size;
-            e.Get(0); e.Call(ReleaseStruct(t));
+            if (shared) EmitExchangeFields(e, 0, 1, 0, t);
+            else { e.Get(0); e.Call(ReleaseStruct(t)); }
             e.Get(0); e.Get(1); e.I32(size); e.Op(Op.MemoryCopy);
             e.Get(1); e.I32(0); e.I32(size); e.Op(Op.MemoryFill);
             if (D.Types.LayoutOf(t).HasRefs) NoteStructCopy(e.Fn, t);
         });
     }
 
-    /// <summary>(dst, src): assignment: take new counts, release old contents, copy.</summary>
-    public WasmFunction CopyAssign(ITypeSymbol t)
+    /// <summary>(dst, src): assignment: take new counts, release old contents, copy (into memory that is not the
+    /// frame, the references exchanged: MoveAssign).</summary>
+    public WasmFunction CopyAssign(ITypeSymbol t, bool shared = true)
     {
         t = D.Types.Canonical(t);
-        return Cached("rt.copy_assign " + Types.Key(t), FT([I, I], []), e =>
+        return Cached((shared ? "rt.copy_assign " : "rt.copy_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
         {
             e.Get(1); e.Call(RetainStruct(t));
-            e.Get(0); e.Call(ReleaseStruct(t));
+            if (shared) EmitExchangeFields(e, 0, 1, 0, t);
+            else { e.Get(0); e.Call(ReleaseStruct(t)); }
             e.Get(0); e.Get(1); e.I32(D.Types.StorageOf(t).size); e.Op(Op.MemoryCopy);
             if (D.Types.LayoutOf(t).HasRefs) NoteStructCopy(e.Fn, t);
         });
