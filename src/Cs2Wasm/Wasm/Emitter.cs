@@ -8,6 +8,8 @@ internal sealed class Emitter
     public readonly WasmFunction Fn;
     readonly List<Label?> _blocks = [];
     public int CurrentPos = -1;
+    /// <summary>Reference values pushed since the last instruction (Instr.Probes).</summary>
+    public int PendingProbes;
     public Emitter(WasmFunction fn) { Fn = fn; }
 
     public List<Instr> Body => Fn.Body;
@@ -16,7 +18,8 @@ internal sealed class Emitter
 
     public ref Instr Emit(Op op, long imm = 0, long imm2 = 0, object? r = null)
     {
-        Fn.Body.Add(new Instr { Op = op, Imm = imm, Imm2 = imm2, Ref = r, Pos = CurrentPos });
+        Fn.Body.Add(new Instr { Op = op, Imm = imm, Imm2 = imm2, Ref = r, Pos = CurrentPos, Probes = (ushort)PendingProbes });
+        PendingProbes = 0;
         return ref System.Runtime.InteropServices.CollectionsMarshal.AsSpan(Fn.Body)[^1];
     }
 
@@ -38,11 +41,28 @@ internal sealed class Emitter
     public void Call(WasmFunction f)
     {
         if (RcSites != null && f.Name is "rt.retain" or "rt.release") NoteRcSite(f.Name);
+        // (CS2WASM_COUNT_RC: the compiler code that asked for the count, with the call: the run's counts by cause)
+        if (s_countRc && f.Name is "rt.retain" or "rt.release") { Emit(Wasm.Op.Call, 0, RcCause(), f); return; }
         Emit(Wasm.Op.Call, 0, 0, f);
     }
 
     /// <summary>CS2WASM_STATS: the compiler methods that emitted each retain and release (where counts come from).</summary>
     public static readonly Dictionary<string, int>? RcSites = Environment.GetEnvironmentVariable("CS2WASM_STATS") == "1" ? new() : null;
+
+    static readonly bool s_countRc = Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1";
+    public static readonly List<string> RcCauses = [];
+    static readonly Dictionary<string, int> s_rcCauseIds = [];
+
+    static int RcCause()
+    {
+        var frames = new System.Diagnostics.StackTrace(2, false).GetFrames();
+        var key = string.Join(" <- ", frames.Select(fr => fr.GetMethod()).Where(m => m != null && m.DeclaringType?.Name is not "Emitter").Take(3).Select(m => m!.Name));
+        lock (s_rcCauseIds)
+        {
+            if (!s_rcCauseIds.TryGetValue(key, out int id)) { s_rcCauseIds[key] = id = RcCauses.Count + 1; RcCauses.Add(key); }
+            return id;
+        }
+    }
 
     static void NoteRcSite(string what)
     {

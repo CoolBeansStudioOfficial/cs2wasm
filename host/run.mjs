@@ -53,9 +53,18 @@ if (process.env.CS2WASM_HOST_TIMES) { process.stderr.write(`[host] ${entry} retu
 `); process.on('exit', () => process.stderr.write(`[host] exit at ${performance.now().toFixed(0)} ms
 `)); }
 if (instance.exports.cs2wasm_rc_counts) { // (a module built with CS2WASM_COUNT_RC=1; CS2WASM_RC_NAMES: its sites file)
-  const at = instance.exports.cs2wasm_rc_counts(), v = new BigInt64Array(memory.buffer, at, 2);
+  const at = instance.exports.cs2wasm_rc_counts(), v = new BigInt64Array(memory.buffer, at, 3);
   process.stderr.write(`[host] count operations run: ${v[0]} retains, ${v[1]} releases
 `);
+  // the dynamic measure (section 4.1): calls of retain and release run, against two for every reference value pushed
+  if (instance.exports.cs2wasm_rc_sites && process.env.CS2WASM_RC_NAMES) {
+    const names = (await import('node:fs')).readFileSync(process.env.CS2WASM_RC_NAMES, 'utf8').split('\n');
+    const c = new BigInt64Array(memory.buffer, instance.exports.cs2wasm_rc_sites() + 8, names.length);
+    let calls = 0n; names.forEach((n, i) => { if (n.startsWith('retain ') || n.startsWith('release ')) calls += c[i]; });
+    const base = 2n * v[2];
+    process.stderr.write(`[host] count calls run: ${calls} against ${base} for counting every reference value pushed (${v[2]} values): ${base > 0n ? (100 - Number(calls * 10000n / base) / 100).toFixed(1) : '0'}% removed (dynamic)
+`);
+  }
   if (process.env.CS2WASM_RC_NAMES && instance.exports.cs2wasm_rc_sites) {
     const names = (await import('node:fs')).readFileSync(process.env.CS2WASM_RC_NAMES, 'utf8').split('\n');
     const c = new BigInt64Array(memory.buffer, instance.exports.cs2wasm_rc_sites() + 8, names.length);

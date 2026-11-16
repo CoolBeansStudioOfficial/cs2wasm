@@ -809,7 +809,7 @@ sealed partial class RuntimeGen
     /// of (the host prints them: CS2WASM_COUNT_RC).</summary>
     void EmitCountRc()
     {
-        var counters = D.StaticAddress("rt.rc_counts", 16, 8);
+        var counters = D.StaticAddress("rt.rc_counts", 24, 8);
         foreach (var (fn, off) in new[] { (D.Rt.Retain, 0), (D.Rt.Release, 8) })
         {
             var pre = new Emitter(new WasmFunction("tmp", fn.Type));
@@ -836,6 +836,16 @@ sealed partial class RuntimeGen
             {
                 if (f == D.Rt.Retain || f == D.Rt.Release) continue;
                 var b = f.Body;
+                // the baseline: the reference values pushed (Instr.Probes), into the third counter
+                for (int i = 0; i < b.Count; i++)
+                {
+                    if (b[i].Probes == 0) continue;
+                    var tmp = new Emitter(new WasmFunction("tmp", f.Type));
+                    tmp.I32Addr(counters); tmp.I64(b[i].Probes); tmp.Emit(Op.I64AtomicRmwAdd, 16, 3); tmp.Op(Op.Drop);
+                    b[i] = b[i] with { Probes = 0 };
+                    b.InsertRange(i, tmp.Fn.Body);
+                    i += tmp.Fn.Body.Count;
+                }
                 for (int i = 0; i < b.Count; i++)
                 {
                     if (b[i].Op != Op.Call || b[i].Ref is not WasmFunction g || names.Count >= MaxSites) continue;
@@ -843,7 +853,8 @@ sealed partial class RuntimeGen
                     bool helper = g.Name.StartsWith("rt.retain_struct") || g.Name.StartsWith("rt.release_struct") || g.Name.StartsWith("rt.copy_");
                     if (g != D.Rt.Retain && g != D.Rt.Release && !helper) continue;
                     if (helper && (f.Name.StartsWith("rt.retain_struct") || f.Name.StartsWith("rt.release_struct") || f.Name.StartsWith("rt.copy_"))) continue;
-                    names.Add((g == D.Rt.Retain ? "retain " : g == D.Rt.Release ? "release " : "[" + g.Name + "] ") + (f.FrameName ?? f.Name) + " @" + i);
+                    names.Add((g == D.Rt.Retain ? "retain " : g == D.Rt.Release ? "release " : "[" + g.Name + "] ") + (f.FrameName ?? f.Name) + " @" + i
+                        + (b[i].Imm2 > 0 && b[i].Imm2 <= Emitter.RcCauses.Count ? " {" + Emitter.RcCauses[(int)b[i].Imm2 - 1] + "}" : ""));
                     var tmp = new Emitter(new WasmFunction("tmp", f.Type));
                     tmp.I32Addr(sites); tmp.I64(1); tmp.Emit(Op.I64AtomicRmwAdd, 8 + 8 * (names.Count - 1), 3); tmp.Op(Op.Drop);
                     b.InsertRange(i, tmp.Fn.Body);

@@ -96,6 +96,9 @@ internal struct Instr
     public long Imm2;
     public object? Ref;
     public int Pos; // index into the line table's position list, -1 = none
+    /// <summary>CS2WASM_COUNT_RC: reference values the source pushes just before this instruction (the baseline a scheme
+    /// without ownership analysis would count up and down).</summary>
+    public ushort Probes;
 
     public override readonly string ToString() => $"{Op} {Imm} {Imm2} {Ref}";
 }

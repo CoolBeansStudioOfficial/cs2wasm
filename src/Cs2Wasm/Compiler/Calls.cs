@@ -465,7 +465,7 @@ sealed partial class FunctionCompiler
             var io = Driver.IsUpstreamIntrinsic(m) ? EmitUpstreamIntrinsic(m) : EmitIntrinsic(m);
             // an intrinsic that writes memory may overwrite an element someone borrows (FieldBorrows.cs)
             for (int k = before; k < E.Fn.Body.Count; k++)
-                if (Driver.WritesMemory(E.Fn.Body[k].Op)) { D.NoteFieldWrite(E.Fn, Driver.ElementsKey); break; }
+                if (Driver.WritesMemory(E.Fn.Body[k].Op)) { D.NoteFieldWrite(E, Driver.ElementsKey); break; }
             if (!m.ReturnsByRef && !m.ReturnsByRefReadonly) return io;
             // a ref-returning intrinsic leaves the address: callers that want the value load through it
             if (_wantRefReturnAddress) { _wantRefReturnAddress = false; return Own.None; }

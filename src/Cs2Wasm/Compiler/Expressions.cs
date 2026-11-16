@@ -57,10 +57,25 @@ sealed partial class FunctionCompiler
     Own EmitValue(IOperation op)
     {
         int save = E.CurrentPos;
+        if (s_countRc && IsCountedPush(op)) E.PendingProbes++;
         // (a value of an immortal type is never counted: Types.IsImmortalType)
         try { var o = EmitValueCore(op); return o != Own.None && op.Type != null && Types.IsImmortalType(op.Type) ? Own.None : o; }
         catch (CompileException ex) when (ex.Location == null) { throw new CompileException(ex.Message, op.Syntax.GetLocation()); }
         finally { E.CurrentPos = save; }
+    }
+
+    static readonly bool s_countRc = Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1";
+
+    /// <summary>The baseline of the count measurement (CS2WASM_COUNT_RC): a reference value an expression produces from a
+    /// variable, a field, an element, a property, a call or an allocation, which a scheme without ownership analysis
+    /// counts up when it is pushed and down when it is consumed (the same values PrintCountStats counts statically).</summary>
+    static bool IsCountedPush(IOperation op)
+    {
+        if (op is not (ILocalReferenceOperation or IParameterReferenceOperation or IFieldReferenceOperation or IArrayElementReferenceOperation
+            or IInvocationOperation or IObjectCreationOperation or IArrayCreationOperation or IPropertyReferenceOperation or IInstanceReferenceOperation)) return false;
+        var t = op.Type;
+        if (t == null || !(t.IsReferenceType || t.TypeKind == TypeKind.TypeParameter && !t.IsValueType)) return false;
+        return !(op.Parent is IAssignmentOperation asg && ReferenceEquals(asg.Target, op));
     }
 
     Own EmitValueCore(IOperation op)
@@ -299,8 +314,8 @@ sealed partial class FunctionCompiler
             else E.Set(v.Local);
             return;
         }
-        if (v.AddrLocal != _fb && T.NeedsRc(t)) D.NoteFieldWrite(E.Fn, Driver.ElementsKey);
         StoreToAddressFromStack(() => E.Get(v.AddrLocal), v.Offset, t, o, frame: v.AddrLocal == _fb && !IsRefLocal(v));
+        if (v.AddrLocal != _fb && T.NeedsRc(t)) D.NoteFieldWrite(E, Driver.ElementsKey);
     }
 
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
@@ -693,7 +708,7 @@ sealed partial class FunctionCompiler
 
     void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce, bool initializer = false)
     {
-        if (!f.IsStatic) D.NoteFieldWrite(E.Fn, Driver.FieldKey(Owner(f), f));
+        if (!f.IsStatic) D.NoteFieldWrite(E, Driver.FieldKey(Owner(f), f));
         var ft = T.Resolve(f.Type, Map);
         int a = E.AddLocal(ValType.I32);
         int off;
@@ -2033,9 +2048,9 @@ sealed partial class FunctionCompiler
         {
             if (site != null && !_noted) site.AddValue(Type);
             // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
-            if (elements && F.T.NeedsRc(Type)) F.D.NoteFieldWrite(F.E.Fn, Driver.ElementsKey);
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
                 pub, () => F.E.Get(container >= 0 ? container : _addr), initKey);
+            if (elements && F.T.NeedsRc(Type)) F.D.NoteFieldWrite(F.E, Driver.ElementsKey);
             return needResult ? Load() : Own.None;
         }
     }
@@ -2210,7 +2225,7 @@ sealed partial class FunctionCompiler
                     var bf = Driver.AutoPropertyField(pr.Property.OriginalDefinition)!;
                     var ft = T.Resolve(pr.Property.Type, Map);
                     var owner = Owner(pr.Property);
-                    if (!bf.IsStatic) D.NoteFieldWrite(E.Fn, Driver.FieldKey(owner, bf));
+                    if (!bf.IsStatic) D.NoteFieldWrite(E, Driver.FieldKey(owner, bf));
                     Arenas.Site? psite = null; WasmFunction? ppin = null;
                     if (Types.IsRef(ft))
                     {
@@ -2232,7 +2247,7 @@ sealed partial class FunctionCompiler
             case IFieldReferenceOperation fr when Types.IsRef(t):
                 {
                     var field = fr.Field;
-                    if (!field.IsStatic) D.NoteFieldWrite(E.Fn, Driver.FieldKey(Owner(field), StorageField(field)));
+                    if (!field.IsStatic) D.NoteFieldWrite(E, Driver.FieldKey(Owner(field), StorageField(field)));
                     if (field.IsStatic) return new MemLV(this, t, () => EmitAddressBase(target), pin: D.Arenas.Pin(t), pub: IsThreadStatic(StorageField(field)) ? Publish.None : Publish.Always);
                     if (fr.Instance != null && !TypeOf(fr.Instance).IsValueType)
                     {

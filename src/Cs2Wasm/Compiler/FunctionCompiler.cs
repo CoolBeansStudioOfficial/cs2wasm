@@ -234,7 +234,7 @@ sealed partial class FunctionCompiler
         }
         else body.InsertRange(0, prologue);
         for (int i = 0; i < body.Count; i++) if (ReferenceEquals(body[i].Ref, FrameMarker)) body[i] = body[i] with { Ref = null };
-        E.Fn.Body.RemoveAll(i => i.Op == Op.Nop);
+        E.Fn.Body.RemoveAll(i => i.Op == Op.Nop && i.Ref is not Driver.WriteMark);
     }
 
     readonly List<Instr> _entryCode = [];
@@ -419,6 +419,9 @@ sealed partial class FunctionCompiler
     {
         var s = _scopes[^1];
         for (int i = s.Owned.Count - 1; i >= 0; i--) ReleaseSlot(s.Owned[i]);
+        // (where each reference local's scope ends: FieldBorrows.cs looks for stores up to here)
+        foreach (var o in s.Owned)
+            if (o.Local >= 0 && o.ReleaseMarker == null) { E.Emit(Op.Nop, o.Local, 0, Driver.ScopeEnd); E.Body[^1] = E.Body[^1] with { Pos = -1 }; }
         _scopes.RemoveAt(_scopes.Count - 1);
     }
 

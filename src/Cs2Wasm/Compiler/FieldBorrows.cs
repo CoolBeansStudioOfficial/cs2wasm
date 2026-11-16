@@ -98,16 +98,67 @@ internal sealed partial class Driver
         return (r, d);
     }
 
+    /// <summary>A store whose place in the function is not marked (the runtime's own functions): anywhere in it.</summary>
     public void NoteFieldWrite(WasmFunction fn, string key)
     {
         if (!FieldWrites.TryGetValue(fn, out var s)) FieldWrites[fn] = s = [];
         s.Add(key);
+        if (!_unplacedWrites.TryGetValue(fn, out var u)) _unplacedWrites[fn] = u = [];
+        u.Add(key);
     }
+
+    /// <summary>Where a function stores a field (a no-op instruction carrying the key, beside the store): a borrow is
+    /// broken only by a store that runs while the borrowing local is live (section 4.1, retroactive owners). Taken out
+    /// again once the borrows are decided.</summary>
+    internal sealed class WriteMark(string key) { public readonly string Key = key; }
+    readonly Dictionary<string, WriteMark> _writeMarks = [];
+    readonly Dictionary<WasmFunction, HashSet<string>> _unplacedWrites = [];
+
+    public void NoteFieldWrite(Emitter e, string key)
+    {
+        if (!FieldWrites.TryGetValue(e.Fn, out var s)) FieldWrites[e.Fn] = s = [];
+        s.Add(key);
+        if (!_writeMarks.TryGetValue(key, out var m)) _writeMarks[key] = m = new WriteMark(key);
+        e.Emit(Op.Nop, 0, 0, m);
+        e.Body[^1] = e.Body[^1] with { Pos = -1 };
+    }
+
+    void StripWriteMarks()
+    {
+        foreach (var f in Module.Functions)
+            if (!f.IsImport) f.Body.RemoveAll(x => x.Op == Op.Nop && x.Ref is WriteMark);
+    }
+
+    /// <summary>Whether a store of one of the keys may run while the local is in scope (section 4.1: a variable
+    /// borrows from its source for its scope): from its definition (at `def`) to the end of its scope (the mark
+    /// PopScope leaves; the function's end without one). Everything derived from the local (temporaries, references
+    /// into its object, locals that borrow from its fields) lives inside that scope, so the lexical range is enough.
+    /// Stores: the function's own (marks), and those of what it calls in the range.</summary>
+    bool StoredWhileInScope(WasmFunction fn, int local, int def, string[] keys, StoreSummary summary)
+    {
+        if (_unplacedWrites.TryGetValue(fn, out var u) && keys.Any(u.Contains)) return true;
+        var b = fn.Body;
+        for (int i = def; i < b.Count; i++)
+        {
+            var ins = b[i];
+            if (ins.Op == Op.Nop)
+            {
+                if (ins.Ref is WriteMark wm) { if (Array.IndexOf(keys, wm.Key) >= 0) return true; }
+                else if (ReferenceEquals(ins.Ref, ScopeEnd) && ins.Imm == local) return false;
+            }
+            else if (ins.Op == Op.Call && ins.Ref is WasmFunction g) { foreach (var k in keys) if (summary.Has(g, k)) return true; }
+            else if (ins.Op == Op.CallIndirect) { foreach (var k in keys) if (summary.HasIndirect(k)) return true; }
+        }
+        return false;
+    }
+
+    /// <summary>The end of a local's scope (a no-op instruction: Imm is the local), for StoredWhileInScope.</summary>
+    internal static readonly WriteMark ScopeEnd = new("scope end");
 
     /// <summary>Resolves the placeholders (RuntimeGen.Finish, when every function exists).</summary>
     public void ResolveFieldBorrows()
     {
-        if (FieldBorrows.Count == 0 && _tempBorrows.Count == 0) return;
+        if (FieldBorrows.Count == 0 && _tempBorrows.Count == 0) { StripWriteMarks(); return; }
         var byFn = FieldBorrows.GroupBy(b => b.fn).ToDictionary(g => g.Key, g => g.ToList());
         bool threads = UsesThreads;
         // what each function may store, with everything it can call (an indirect call: any function in the table)
@@ -127,7 +178,13 @@ internal sealed partial class Driver
             {
                 // (an init-only field never changes once its object is constructed: no code, on no thread, writes it)
                 bool ok = field == "" || field.Split('\n').All(k => !FieldsAddressTaken.Contains(k) && !reflected.Contains(k)
-                    && (InitOnlyKey(k) || !threads && summary != null && !summary.Has(fn, k)));
+                    && (InitOnlyKey(k) || !threads && summary != null));
+                if (ok && field != "" && summary != null)
+                {
+                    var keys = field.Split('\n').Where(k => !InitOnlyKey(k)).ToArray();
+                    int def = b.FindIndex(x => x.Op == Op.Call && x.Ref == marker);
+                    if (keys.Length > 0 && (def < 0 || StoredWhileInScope(fn, local, def, keys, summary))) ok = false;
+                }
                 if (s_borrowDebug) Console.Error.WriteLine($"borrow {fn.Name} local {local} {field.Replace('\n', '|')}: {ok}"
                     + (summary != null ? " own=" + (FieldWrites.TryGetValue(fn, out var ow) && ow.Contains(field) ? "y" : "n") + " via "
                         + string.Join(",", fn.Body.Where(x => x.Op == Op.Call && x.Ref is WasmFunction g && summary.Has(g, field)).Select(x => ((WasmFunction)x.Ref!).Name).Distinct().Take(5)) : ""));
@@ -193,6 +250,7 @@ internal sealed partial class Driver
             }
         var dead = markers.Keys.Concat(FieldBorrows.Select(b => b.marker)).ToHashSet();
         Module.Functions.RemoveAll(dead.Contains);
+        StripWriteMarks();
     }
 
     /// <summary>What each function may store, with everything it can call: bits over the fields some borrow asks about,
@@ -270,6 +328,9 @@ internal sealed partial class Driver
                 }
             }
         }
+
+        /// <summary>Whether some function an indirect call can reach stores the field.</summary>
+        public bool HasIndirect(string key) => _key.TryGetValue(key, out int k) && (_bits[^1][k >> 6] & (1UL << (k & 63))) != 0;
 
         public bool Has(WasmFunction f, string key) =>
             _key.TryGetValue(key, out int k) && _node.TryGetValue(f, out int i) && (_bits[i][k >> 6] & (1UL << (k & 63))) != 0;
