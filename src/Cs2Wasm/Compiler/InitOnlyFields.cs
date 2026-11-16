@@ -1,3 +1,4 @@
+using Cs2Wasm.Wasm;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Operations;
@@ -24,22 +25,51 @@ internal sealed partial class Driver
         if (storage is IFieldSymbol f) _borrowFields.TryAdd(key, f);
     }
 
-    internal bool InitOnlyKey(string key) => !s_noInitOnly && _borrowFields.TryGetValue(key, out var f) && InitOnly(f);
+    /// <summary>Whether the field a key names is init-only (asked once the whole program is compiled: a field that is
+    /// not `readonly` qualifies when only its own type's constructors write it).</summary>
+    internal bool InitOnlyKey(string key)
+    {
+        if (s_noInitOnly || !_borrowFields.TryGetValue(key, out var f) || !OncePerConstruction(f)) return false;
+        if (FieldsAddressTaken.Contains(key)) return false;
+        return f.IsReadOnly && f.AssociatedSymbol is not IPropertySymbol { SetMethod: not null } || OnlyConstructorsWrite(key, f);
+    }
 
-    internal bool InitOnly(IFieldSymbol f)
+    Dictionary<WasmFunction, INamedTypeSymbol>? _ctorFns;
+
+    /// <summary>Every function that stores to the field (FieldWrites) is a constructor of the field's own type.</summary>
+    bool OnlyConstructorsWrite(string key, IFieldSymbol f)
+    {
+        if (_ctorFns == null)
+        {
+            _ctorFns = [];
+            foreach (var mi in AllMethods) if (mi.Sym.MethodKind == MethodKind.Constructor) _ctorFns[mi.Fn] = mi.Sym.ContainingType.OriginalDefinition;
+        }
+        var own = f.OriginalDefinition.ContainingType;
+        foreach (var (fn, keys) in FieldWrites)
+        {
+            if (!keys.Contains(key)) continue;
+            if (!_ctorFns.TryGetValue(fn, out var ct) || !SymbolEqualityComparer.Default.Equals(ct, own)) return false;
+        }
+        return true;
+    }
+
+    internal bool InitOnly(IFieldSymbol f) => f.IsReadOnly && f.AssociatedSymbol is not IPropertySymbol { SetMethod: not null } && OncePerConstruction(f);
+
+    /// <summary>Every way of constructing an object writes the field at most once, from null.</summary>
+    bool OncePerConstruction(IFieldSymbol f)
     {
         f = f.OriginalDefinition;
         if (_initOnly.TryGetValue(f, out var r)) return r;
-        _initOnly[f] = r = ComputeInitOnly(f);
-        if (BorrowDebug) Console.Error.WriteLine($"init-only {f.ContainingType.Name}.{f.Name}: {r}");
+        _initOnly[f] = r = ComputeOnce(f);
+        if (BorrowDebug) Console.Error.WriteLine($"once per construction {f.ContainingType.Name}.{f.Name}: {r}");
         return r;
     }
 
-    bool ComputeInitOnly(IFieldSymbol f)
+    bool ComputeOnce(IFieldSymbol f)
     {
-        if (f.IsStatic || !f.IsReadOnly || f.IsVolatile || f.ContainingType is not { TypeKind: TypeKind.Class } ct) return false;
+        if (f.IsStatic || f.IsVolatile || f.ContainingType is not { TypeKind: TypeKind.Class } ct) return false;
         // (an `init` accessor's backing field is written by object initializers and `with` too)
-        if (f.AssociatedSymbol is IPropertySymbol { SetMethod: not null }) return false;
+        if (f.AssociatedSymbol is IPropertySymbol { SetMethod: { IsInitOnly: true } }) return false;
         if (ct.DeclaringSyntaxReferences.Length == 0) return false;
         int init = HasInitializer(f) ? 1 : 0;
         var memo = new Dictionary<IMethodSymbol, int>(SymbolEqualityComparer.Default);
@@ -117,5 +147,43 @@ internal sealed partial class Driver
             case ISimpleAssignmentOperation { IsRef: true } ra when ReferenceEquals(ra.Value, x): countable = false; return true;
         }
         return false;
+    }
+
+    // ---- a constructor's first store to its own field: no release of the old value (null) ----
+    readonly List<(WasmFunction fn, string key, WasmFunction marker)> _initStores = [];
+    readonly Dictionary<string, WasmFunction> _initStoreMarkers = [];
+
+    /// <summary>The release of a field's old value in a constructor's store to its own object, as a placeholder.</summary>
+    internal WasmFunction InitStoreRelease(WasmFunction fn, string key)
+    {
+        if (!_initStoreMarkers.TryGetValue(key, out var m))
+        {
+            _initStoreMarkers[key] = m = Module.AddFunction("init store? " + key, new Wasm.FuncType([Wasm.ValType.I32], []));
+            _initStores.Add((fn, key, m));
+        }
+        return m;
+    }
+
+    /// <summary>The placeholders become nothing (the field held null) or the release (RuntimeGen.Finish).</summary>
+    internal void ResolveInitStores()
+    {
+        if (_initStoreMarkers.Count == 0) return;
+        var reflected = ReflectedFieldKeys();
+        var to = new Dictionary<WasmFunction, bool>();
+        foreach (var (key, marker) in _initStoreMarkers)
+        {
+            bool ok = !s_noInitOnly && _borrowFields.TryGetValue(key, out var f) && !reflected.Contains(key) && !FieldsAddressTaken.Contains(key)
+                && OncePerConstruction(f) && (f.IsReadOnly || OnlyConstructorsWrite(key, f));
+            if (BorrowDebug) Console.Error.WriteLine($"init store {key}: {ok}");
+            to[marker] = ok;
+        }
+        foreach (var fn in Module.Functions)
+        {
+            var b = fn.Body;
+            for (int i = 0; i < b.Count; i++)
+                if (b[i].Op == Op.Call && b[i].Ref is WasmFunction g && to.TryGetValue(g, out var ok))
+                    b[i] = ok ? b[i] with { Op = Op.Drop, Ref = null } : b[i] with { Ref = Rt.Release };
+        }
+        Module.Functions.RemoveAll(f => to.ContainsKey(f));
     }
 }

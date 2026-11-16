@@ -1637,13 +1637,13 @@ sealed partial class FunctionCompiler
             switch (op)
             {
                 case IFieldInitializerOperation fi:
-                    foreach (var f in fi.InitializedFields) EmitStoreField(f, () => E.Get(_thisLocal), fi.Value);
+                    foreach (var f in fi.InitializedFields) EmitStoreField(f, () => E.Get(_thisLocal), fi.Value, initializer: true);
                     break;
                 case IPropertyInitializerOperation pi:
                     foreach (var p in pi.InitializedProperties)
                     {
                         var bf = Driver.AutoPropertyField(p) ?? throw new CompileException("property initializer without backing field");
-                        EmitStoreField(bf, () => E.Get(_thisLocal), pi.Value);
+                        EmitStoreField(bf, () => E.Get(_thisLocal), pi.Value, initializer: true);
                     }
                     break;
             }

@@ -20,6 +20,19 @@ sealed partial class FunctionCompiler
     static readonly bool s_noStableStatics = Environment.GetEnvironmentVariable("CS2WASM_NO_STABLE_STATICS") == "1";
     static readonly bool s_noStructMoves =Environment.GetEnvironmentVariable("CS2WASM_NO_STRUCT_MOVES") == "1";
 
+    static readonly bool s_noInitStores = Environment.GetEnvironmentVariable("CS2WASM_NO_INIT_STORES") == "1";
+
+    /// <summary>A constructor's store to a field of its own object (InitOnlyFields.cs: the old value may be known null).</summary>
+    string? InitStoreKey(IFieldSymbol storage, ITypeSymbol owner, IOperation? instance)
+    {
+        if (s_noInitStores || M.MethodKind != MethodKind.Constructor || _closure != null || _machine != null || storage.IsStatic) return null;
+        if (M.ContainingType.TypeKind != TypeKind.Class || !SymbolEqualityComparer.Default.Equals(storage.ContainingType.OriginalDefinition, M.ContainingType.OriginalDefinition)) return null;
+        if (instance != null && instance is not Microsoft.CodeAnalysis.Operations.IInstanceReferenceOperation { ReferenceKind: Microsoft.CodeAnalysis.Operations.InstanceReferenceKind.ContainingTypeInstance }) return null;
+        var key = Driver.FieldKey(owner, storage);
+        D.NoteBorrowField(key, storage);
+        return key;
+    }
+
     /// <summary>The struct temporary at off was just filled and its address pushed.</summary>
     void NoteFresh(int off) => _fresh = (E.Body.Count, off);
 

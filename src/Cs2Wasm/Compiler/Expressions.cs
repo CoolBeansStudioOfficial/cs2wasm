@@ -304,7 +304,7 @@ sealed partial class FunctionCompiler
 
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
     void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null,
-                                 Publish pub = Publish.Unknown, Action? pubContainer = null)
+                                 Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null)
     {
         if (Types.IsStruct(t))
         {
@@ -332,7 +332,8 @@ sealed partial class FunctionCompiler
             int old = Scratch(ValType.I32); E.Set(old);
             E.Get(a); E.Get(val); E.Store(Op.I32Store, offset);
             E.Get(old);
-            if (site != null) { pushContainer!(); E.Call(site.Unlink); } else E.Call(Rt.Release);
+            // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
+            if (site != null) { pushContainer!(); E.Call(site.Unlink); } else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.Release);
             FreeScratch(ValType.I32, old); FreeScratch(ValType.I32, a);
         }
         else { pushAddr(); E.Get(val); E.Store(Types.StoreOp(t), offset); }
@@ -661,7 +662,7 @@ sealed partial class FunctionCompiler
         };
     }
 
-    void EmitStoreField(IFieldSymbol f, Action? recv, IOperation value)
+    void EmitStoreField(IFieldSymbol f, Action? recv, IOperation value, bool initializer = false)
     {
         var ft = T.Resolve(f.Type, Map);
         EmitStoreFieldFrom(f, recv, value.Type != null ? TypeOf(value) : ft, () =>
@@ -672,12 +673,12 @@ sealed partial class FunctionCompiler
                 return EmitValue(value);
             }
             return EmitValue(value);
-        });
+        }, initializer);
     }
 
     static bool IsThreadStatic(ISymbol f) => f.GetAttributes().Any(a => a.AttributeClass?.Name == "ThreadStaticAttribute");
 
-    void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce)
+    void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce, bool initializer = false)
     {
         if (!f.IsStatic) D.NoteFieldWrite(E.Fn, Driver.FieldKey(Owner(f), f));
         var ft = T.Resolve(f.Type, Map);
@@ -696,7 +697,8 @@ sealed partial class FunctionCompiler
             else if ((site = D.Arenas.FieldSite(Owner(f), T.Field(f, Map))) != null) site.AddValue(valueType);
         }
         var pub = f.IsStatic ? (IsThreadStatic(f) ? Publish.None : Publish.Always) : f.ContainingType.IsValueType ? Publish.Unknown : Publish.Container;
-        StoreToAddressFromStack(() => E.Get(a), off, ft, o, site, () => E.Get(a), pin, pub, () => E.Get(a));
+        StoreToAddressFromStack(() => E.Get(a), off, ft, o, site, () => E.Get(a), pin, pub, () => E.Get(a),
+            initializer && !f.IsStatic ? InitStoreKey(f, Owner(f), null) : null);
     }
 
     bool IsDirectAutoProperty(IPropertySymbol p, IOperation? instance)
@@ -2002,7 +2004,7 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null) : LValue(f, t)
     {
         int _addr = -1, _off;
         public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
@@ -2020,7 +2022,7 @@ sealed partial class FunctionCompiler
             // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
             if (elements && F.T.NeedsRc(Type)) F.D.NoteFieldWrite(F.E.Fn, Driver.ElementsKey);
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
-                pub, () => F.E.Get(container >= 0 ? container : _addr));
+                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey);
             return needResult ? Load() : Own.None;
         }
     }
@@ -2206,7 +2208,8 @@ sealed partial class FunctionCompiler
                     {
                         if (bf.IsStatic) { D.StaticReads.Add(Driver.StaticKey(owner, bf)); EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, bf, ft)); return 0; }
                         return EmitReceiverAddressForField(pr.Instance!) + T.FieldIn(owner, bf).Offset;
-                    }, psite, -1, ppin, bf.IsStatic ? Publish.Always : pr.Instance != null && !TypeOf(pr.Instance).IsValueType ? Publish.Container : Publish.Unknown);
+                    }, psite, -1, ppin, bf.IsStatic ? Publish.Always : pr.Instance != null && !TypeOf(pr.Instance).IsValueType ? Publish.Container : Publish.Unknown,
+                    initKey: InitStoreKey(bf, owner, pr.Instance));
                 }
                 if (pr.Property.ReturnsByRef) break;
                 return new PropLV(this, pr, t);
@@ -2221,7 +2224,8 @@ sealed partial class FunctionCompiler
                     if (fr.Instance != null && !TypeOf(fr.Instance).IsValueType)
                     {
                         var site = D.Arenas.FieldSite(Owner(field), T.FieldIn(Owner(field), StorageField(field)));
-                        return new MemLV(this, t, () => EmitAddressBase(target), site, pub: Publish.Container);
+                        return new MemLV(this, t, () => EmitAddressBase(target), site, pub: Publish.Container,
+                            initKey: StorageField(field) is IFieldSymbol sf ? InitStoreKey(sf, Owner(field), fr.Instance) : null);
                     }
                     break;
                 }

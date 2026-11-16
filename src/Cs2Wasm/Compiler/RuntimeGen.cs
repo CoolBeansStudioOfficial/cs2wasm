@@ -902,6 +902,7 @@ sealed partial class RuntimeGen
         D.Mark("  finish: EmitTypeNames");
         // (every function exists: what each can store is known)
         D.ResolveFieldBorrows();
+        D.ResolveInitStores();
         D.Mark("  finish: D.ResolveFieldBorrows");
         D.LayoutMemory();
         D.Mark("  finish: D.LayoutMemory");
@@ -1491,7 +1492,7 @@ internal sealed partial class Driver
     /// </summary>
     void PrintCountStats(WasmModule.Encoded enc)
     {
-        long transfers = 0;
+        long transfers = 0, pushes = 0;
         foreach (var mi in AllMethods.Where(m => m.Compiled && m.Impl == MethodImpl.Body))
             foreach (var r in mi.Sym.OriginalDefinition.DeclaringSyntaxReferences)
             {
@@ -1506,6 +1507,12 @@ internal sealed partial class Driver
                         case IArgumentOperation ar when ar.Parameter != null && Ref(ar.Parameter.Type): transfers++; break;
                         case IReturnOperation { ReturnedValue: { } rv } when Ref(rv.Type): transfers++; break;
                     }
+                    // Lobster's baseline: every reference a value expression produces is counted up when it is pushed
+                    // and down when it is consumed (a variable's or field's read, a call's or allocation's result)
+                    if (op is ILocalReferenceOperation or IParameterReferenceOperation or IFieldReferenceOperation or IArrayElementReferenceOperation
+                            or IInvocationOperation or IObjectCreationOperation or IArrayCreationOperation or IPropertyReferenceOperation or IInstanceReferenceOperation
+                        && Ref(op.Type) && !(op.Parent is IAssignmentOperation asg && ReferenceEquals(asg.Target, op)))
+                        pushes++;
                 }
             }
         long emitted = 0;
@@ -1516,6 +1523,16 @@ internal sealed partial class Driver
         if (Emitter.RcSites != null)
             foreach (var (k, v) in Emitter.RcSites.OrderByDescending(x => x.Value).Take(30)) Console.Error.WriteLine($"    {v,6} {k}");
         Console.Error.WriteLine($"  reference counting: {emitted} count operations in the module, against {naive} for counting every transfer ({transfers} transfers): {(naive == 0 ? 0 : 100.0 * (naive - emitted) / naive):F1}% removed (static)");
+        // (Lobster's measure: against counting every reference value up and down, the destroy functions' releases on both sides)
+        long destroys = 0;
+        foreach (var f in enc.FunctionOrder)
+            if (f.Name.StartsWith("destroy ", StringComparison.Ordinal))
+                foreach (var ins in f.Body) if (ins.Op == Op.Call && ins.Ref is WasmFunction g2 && g2.Name == "rt.release") destroys++;
+        long lob = 2 * pushes + destroys;
+        if (Environment.GetEnvironmentVariable("CS2WASM_RC_BYFN") == "1")
+            foreach (var (n, c) in enc.FunctionOrder.Select(f => (f.Name, f.Body.Count(i => i.Op == Op.Call && i.Ref is WasmFunction g3 && g3.Name is "rt.retain" or "rt.release"))).Where(x => x.Item2 > 0).OrderByDescending(x => x.Item2).Take(60))
+                Console.Error.WriteLine($"    {c,5} {n}");
+        Console.Error.WriteLine($"  reference counting: {emitted} against {lob} for counting every reference value pushed and popped ({pushes} values, {destroys} destroy releases): {(lob == 0 ? 0 : 100.0 * (lob - emitted) / lob):F1}% removed (static, Lobster's measure)");
     }
     /// <summary>A JSON string literal, as System.Text.Json writes one by default (quote, backslash and control
     /// characters escaped; the others outside printable ASCII as \uXXXX), so the source map is the same however the compiler is built.</summary>
