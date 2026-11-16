@@ -17,14 +17,18 @@ static class Inliner
     // in three rounds; traces lose the inlined frames)
     static readonly int s_exp = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_EXP_INLINE"), out var x) ? x : 0;
 
-    public static void Run(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow)
+    /// <summary>Returns the functions it changed.</summary>
+    public static HashSet<WasmFunction> Run(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow, bool tiny = false)
     {
-        if (s_exp > 0) { for (int round = 0; round < 3; round++) RunOnce(functions, []); return; }
-        RunOnce(functions, mayThrow);
+        if (s_exp > 0) { for (int round = 0; round < 3; round++) RunOnce(functions, [], false); return []; }
+        return RunOnce(functions, mayThrow, tiny);
     }
 
-    static void RunOnce(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow)
+    /// <summary>tiny: only bodies of a few instructions that call nothing and have no locals (a getter once its local
+    /// traffic is gone): their copy is no larger than the call.</summary>
+    static HashSet<WasmFunction> RunOnce(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow, bool tiny)
     {
+        var changed = new HashSet<WasmFunction>();
         var callers = new Dictionary<WasmFunction, int>();
         foreach (var f in functions)
         {
@@ -42,9 +46,10 @@ static class Inliner
             int copy = n + g.Type.Params.Length + 2 * g.Locals.Count + 2;
             // (a function that calls others, inlined into its one caller up to a smaller size: measured on the module)
             bool leaf = !g.Body.Any(x => x.Op == Op.Call);
+            if (tiny) { if (leaf && n <= 4 && g.Locals.Count == 0 && g.Type.Params.Length <= 2) candidates.Add(g); continue; }
             if (copy <= (s_exp > 0 ? s_exp : SmallBody) || single && n <= (leaf ? SingleCallerBody : SingleCallerCalling)) candidates.Add(g);
         }
-        if (candidates.Count == 0) return;
+        if (candidates.Count == 0) return changed;
         foreach (var f in functions)
         {
             if (f.IsImport) continue;
@@ -58,7 +63,9 @@ static class Inliner
                 else outBody.Add(ins);
             }
             f.Body = outBody;
+            changed.Add(f);
         }
+        return changed;
     }
 
     /// <summary>No calls of functions that can throw, no throws, no exception handling, no frame (stack pointer), no
@@ -84,6 +91,26 @@ static class Inliner
         return true;
     }
 
+    /// <summary>No return but possibly a last one, and no branch out of the body.</summary>
+    static bool StraightLine(WasmFunction g)
+    {
+        int depth = 0;
+        for (int k = 0; k < g.Body.Count; k++)
+        {
+            var ins = g.Body[k];
+            switch (ins.Op)
+            {
+                case Op.Block or Op.Loop or Op.If or Op.TryTable: depth++; break;
+                case Op.End: depth--; break;
+                case Op.Return: if (k != g.Body.Count - 1) return false; break;
+                case Op.Br or Op.BrIf: if (ins.Imm >= depth) return false; break;
+                case Op.BrTable: return false;
+                case Op.Unreachable: if (depth == 0 && k != g.Body.Count - 1) return false; break;
+            }
+        }
+        return depth == 0;
+    }
+
     static void Expand(WasmFunction f, WasmFunction g, List<Instr> outBody, int pos)
     {
         int np = g.Type.Params.Length;
@@ -106,6 +133,18 @@ static class Inliner
                 default: continue; // reference locals start null; none in inlinable bodies
             }
             Add(Op.LocalSet, map[np + i]);
+        }
+        // a body that runs straight to its one return, at its end, goes in as it is: no block, no branch
+        if (StraightLine(g))
+        {
+            for (int k = 0; k < g.Body.Count - 1; k++)
+            {
+                var ins = g.Body[k];
+                if (ins.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee) ins.Imm = map[(int)ins.Imm];
+                outBody.Add(ins);
+            }
+            if (g.Body[^1].Op != Op.Return) { var last = g.Body[^1]; if (last.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee) last.Imm = map[(int)last.Imm]; outBody.Add(last); }
+            return;
         }
         object? bt = g.Type.Results.Length switch { 0 => null, 1 => g.Type.Results[0], _ => new FuncType([], g.Type.Results) };
         Add(Op.Block, 0, bt);

@@ -140,6 +140,26 @@ internal sealed class WasmModule
                 finally { Locals.MayThrow = null; }
                 if (Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH") != "1")
                     Fresh.Run(Functions, Functions.FirstOrDefault(f => f.Name.StartsWith("Cs2Wasm.Runtime.Rt.AllocObject(")));
+                // Once more: a getter is a load and a return only after the passes above took its local traffic out, and
+                // small enough to inline only then. The functions it went into are cleaned again.
+                var mayThrow = ComputeMayThrow();
+                var again = Inliner.Run(Functions, mayThrow, tiny: true);
+                if (again.Count > 0)
+                {
+                    var nn = Functions.FirstOrDefault(f => f.Name == "rt.nonnull");
+                    Locals.MayThrow = mayThrow;
+                    try
+                    {
+                        foreach (var f in Functions)
+                        {
+                            if (!again.Contains(f)) continue;
+                            Peephole.Run(f);
+                            if (nn != null) NullChecks.Run(f, nn);
+                            Locals.Run(f);
+                        }
+                    }
+                    finally { Locals.MayThrow = null; }
+                }
             }
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
