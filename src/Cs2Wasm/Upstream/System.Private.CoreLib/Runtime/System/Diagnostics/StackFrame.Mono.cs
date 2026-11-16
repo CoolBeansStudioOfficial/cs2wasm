@@ -62,6 +62,12 @@ namespace System.Diagnostics
 
                 private static bool GetFrameInfo(int skipFrames, bool needFileInfo,
                                                 ObjectHandleOnStack out_method, ObjectHandleOnStack out_file,
-                                                out int ilOffset, out int nativeOffset, out int line, out int column) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("StackFrame (the stack trace is text)");
+                                                out int ilOffset, out int nativeOffset, out int line, out int column)
+                {
+                    // cs2wasm: traces are text (Exception.StackTrace), not frames: a StackTrace of the current thread has
+                    // none (so code that takes one, as Task does for a canceled task's exception, goes on)
+                    ilOffset = nativeOffset = line = column = 0;
+                    return false;
+                }
     }
 }
