@@ -29,7 +29,8 @@ namespace Cs2Wasm.Runtime
             s_marks[a] = f | flag;
             s_busy--;
             Rt.RuntimeUnlock();
-            if (Mem.LoadI32(a) > 0)
+            // (a live object, an arena's member too: not an immortal one, whose word never changes)
+            if (Mem.LoadI32(a) is > 0 or < -1)
             {
                 ref int w = ref Mem.RefI32(a + 8);
                 while (true) { int v = Atomic.Load32(ref w); if ((v & MarkedBit) != 0 || Atomic.CompareExchange32(ref w, v, v | MarkedBit) == v) break; }
@@ -55,7 +56,7 @@ namespace Cs2Wasm.Runtime
         public static int OnDestroy(int addr)
         {
             if (s_count == 0 || s_busy != 0) return 1;
-            if (Mem.LoadI32(addr) > -2 && (Mem.LoadI32(addr + 8) & MarkedBit) == 0) return 1;
+            if ((Mem.LoadI32(addr + 8) & MarkedBit) == 0) return 1;
             Rt.RuntimeLock();
             s_busy++;
             bool has = s_marks!.TryGetValue(addr, out int f);

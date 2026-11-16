@@ -308,7 +308,7 @@ static class ApiChecks
             }
             """, "1000000\n"));
 
-        Check("cycles: a long-lived tree that keeps dropping subtrees stays in a fixed 16 MB memory (arena sweep)", () => Bounded("api_cycles_tree", """
+        Check("cycles: a long-lived tree that keeps dropping subtrees stays in a fixed 16 MB memory (the part cut off is freed at the store that cuts it)", () => Bounded("api_cycles_tree", """
             class T {
                 public T Parent; public List<T> Kids = new(); public object Tag;
                 public T Add(T c) { c.Parent = this; Kids.Add(c); return c; }

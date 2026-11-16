@@ -608,6 +608,26 @@ sealed partial class RuntimeGen
                 clr.Body.InsertRange(0, pre.Body);
             }
         }
+        // an object of a cycle-capable type has its arena's words before its header: allocated so (AllocObject goes to
+        // AllocObjectArena for such a type), and freed so by its destroy function
+        var allocArena = ar.RuntimeFn("AllocObjectArena", 2);
+        var freeArena = ar.RuntimeFn("FreeObjectArena", 2);
+        {
+            var alloc = rt.AllocObject;
+            var pre = new Emitter(new WasmFunction("tmp", alloc.Type));
+            pre.Get(1); pre.Call(rt.SccOfFn);
+            pre.If();
+            pre.Get(0); pre.Get(1); pre.Call(allocArena); pre.Op(Op.Return);
+            pre.End();
+            alloc.Body.InsertRange(0, pre.Body);
+        }
+        void FreeWithPrefix(WasmFunction fn)
+        {
+            var b = fn.Body;
+            for (int i = 0; i < b.Count; i++)
+                if (b[i].Op == Op.Call && ReferenceEquals(b[i].Ref, rt.Free)) b[i] = b[i] with { Ref = freeArena };
+        }
+        foreach (var id in ar.CycleTypes) if (_destroyFns.TryGetValue(id, out var df)) FreeWithPrefix(df);
         // per cycle-capable type: clear, free, visit (member-to-member slots); dispatch on the type id
         var clearFns = new Dictionary<int, WasmFunction>();
         var freeFns = new Dictionary<int, WasmFunction>();
@@ -620,6 +640,7 @@ sealed partial class RuntimeGen
             clearFns[id] = c;
             var fr = D.Module.AddFunction("arena.free " + id, new FuncType([ValType.I32], []));
             EmitDestroy(new Emitter(fr), id, clear: false, free: true);
+            FreeWithPrefix(fr);
             freeFns[id] = fr;
             var t = D.TypeById[id];
             var v = D.Module.AddFunction("arena.visit " + id, new FuncType([ValType.I32], []));
@@ -985,10 +1006,8 @@ sealed partial class RuntimeGen
         var e = new Emitter(f);
         if (marks != null)
         {
-            // (an object without a mark, which is nearly every object: nothing to ask; ObjectMarks.MarkedBit, and not
-            // an arena's member, whose hash word is its index)
+            // (an object without a mark, which is nearly every object: nothing to ask; ObjectMarks.MarkedBit)
             e.Get(0); e.Load(Op.I32Load, 8); e.I32(0x40000000); e.Op(Op.I32And); e.Op(Op.I32Eqz);
-            e.Get(0); e.Load(Op.I32Load); e.I32(-2); e.Op(Op.I32GtS); e.Op(Op.I32And);
             e.If(ValType.I32); e.I32(1); e.Else(); e.Get(0); e.Call(marks.Fn); e.End();
             return;
         }
@@ -1060,6 +1079,8 @@ sealed partial class RuntimeGen
                 }
                 if (!any) continue;
             }
+            // (a cycle-capable type's copy: its references in slots that can close a cycle are linked, section 4.3)
+            if (D.Arenas.Enabled && D.Arenas.CycleTypes.Contains(id)) { body.Get(0); body.Call(D.Arenas.RuntimeFn("ArenaLinkContents", 1)); }
             e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
             e.If();
             e.Fn.Body.AddRange(body.Fn.Body);

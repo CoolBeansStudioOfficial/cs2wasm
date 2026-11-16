@@ -344,7 +344,8 @@ internal sealed class Arenas
         t is IArrayTypeSymbol && _sites.Values.Any(s => s.Cyclic && s.IsArray && D.Types.IsSubtype(t, s.Container));
 
     static readonly (string name, int arity)[] RuntimeMethods =
-        [("ArenaLink", 2), ("ArenaUnlink", 2), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1)];
+        [("ArenaLink", 2), ("ArenaUnlink", 2), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
+         ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1)];
 
     /// <summary>Queues the library's arena runtime for compilation (only when some site is cyclic).</summary>
     public void RequestRuntime()
