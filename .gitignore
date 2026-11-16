@@ -3,3 +3,4 @@ obj/
 *.wasm
 *.wasm.map
 tests/out/
+!src/Cs2Wasm.Wasm/
