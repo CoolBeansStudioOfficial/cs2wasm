@@ -285,6 +285,24 @@ internal sealed partial class RuntimeFns
     IEnumerable<(int id, IArrayTypeSymbol at)> ConstructedArrays() =>
         D.Constructed.Where(id => !D.DisplayById.ContainsKey(id) && D.TypeById[id] is IArrayTypeSymbol).Select(id => (id, (IArrayTypeSymbol)D.TypeById[id]));
 
+    /// <summary>A dispatch on the type id in `tid`: a br_table to each case's body (which returns); the other ids fall
+    /// out after it. (A chain of comparisons would cost every call a walk over the types.) Type ids must be numbered.</summary>
+    void IdSwitch(Emitter e, int tid, List<(int id, Action body)> cases)
+    {
+        var cs = cases.Select(c => (ext: D.ExtId(c.id), c.body)).Where(c => c.ext >= 0).GroupBy(c => c.ext).Select(g => g.First()).OrderBy(c => c.ext).ToList();
+        if (cs.Count == 0) return;
+        var dflt = e.Block();
+        var labels = new Label[cs.Count];
+        for (int i = cs.Count - 1; i >= 0; i--) labels[i] = e.Block();
+        var targets = new Label[D.TypeCount];
+        for (int i = 0; i < targets.Length; i++) targets[i] = dflt;
+        for (int i = 0; i < cs.Count; i++) if (cs[i].ext < targets.Length) targets[cs[i].ext] = labels[i];
+        e.Get(tid); e.BrTable(targets, dflt);
+        foreach (var (_, body) in cs) { e.End(); body(); }
+        e.End();
+    }
+
+    /// <summary>The array helpers' dispatch on the array's type (after the type ids are numbered).</summary>
     public void EmitArrayDispatch()
     {
         if (_arrayElemSize != null)
@@ -292,11 +310,7 @@ internal sealed partial class RuntimeFns
             var e = new Emitter(_arrayElemSize);
             int tid = e.AddLocal(I);
             e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-            foreach (var (id, at) in ConstructedArrays())
-            {
-                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
-                e.If(); e.I32(D.Types.StorageOf(D.Types.Canonical(at.ElementType)).size); e.Op(Op.Return); e.End();
-            }
+            IdSwitch(e, tid, ConstructedArrays().Select(x => (x.id, (Action)(() => { e.I32(D.Types.StorageOf(D.Types.Canonical(x.at.ElementType)).size); e.Op(Op.Return); }))).ToList());
             e.I32(1);
         }
         if (_arrayRank != null)
@@ -304,12 +318,7 @@ internal sealed partial class RuntimeFns
             var e = new Emitter(_arrayRank);
             int tid = e.AddLocal(I);
             e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-            foreach (var (id, at) in ConstructedArrays())
-            {
-                if (at.Rank == 1) continue;
-                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
-                e.If(); e.I32(at.Rank); e.Op(Op.Return); e.End();
-            }
+            IdSwitch(e, tid, ConstructedArrays().Where(x => x.at.Rank != 1).Select(x => (x.id, (Action)(() => { e.I32(x.at.Rank); e.Op(Op.Return); }))).ToList());
             e.I32(1);
         }
         if (_arrayCounted != null)
@@ -317,12 +326,7 @@ internal sealed partial class RuntimeFns
             var e = new Emitter(_arrayCounted);
             int tid = e.AddLocal(I);
             e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-            foreach (var (id, at) in ConstructedArrays())
-            {
-                if (!D.Types.NeedsRc(D.Types.Canonical(at.ElementType))) continue;
-                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
-                e.If(); e.I32(1); e.Op(Op.Return); e.End();
-            }
+            IdSwitch(e, tid, ConstructedArrays().Where(x => D.Types.NeedsRc(D.Types.Canonical(x.at.ElementType))).Select(x => (x.id, (Action)(() => { e.I32(1); e.Op(Op.Return); }))).ToList());
             e.I32(0);
         }
         foreach (var (fn, release) in new[] { (_arrayRetain, false), (_arrayRelease, true) })
@@ -331,13 +335,12 @@ internal sealed partial class RuntimeFns
             var e = new Emitter(fn);
             int tid = e.AddLocal(I);
             e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-            foreach (var (id, at) in ConstructedArrays())
+            IdSwitch(e, tid, ConstructedArrays().Where(x => D.Types.NeedsRc(D.Types.Canonical(x.at.ElementType))).Select(x =>
             {
-                var et = D.Types.Canonical(at.ElementType);
-                if (!D.Types.NeedsRc(et)) continue;
-                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
-                e.If(); e.Get(1); e.Get(2); e.Call(release ? ReleaseRange(et) : RetainRange(et)); e.Op(Op.Return); e.End();
-            }
+                var et = D.Types.Canonical(x.at.ElementType);
+                var target = release ? ReleaseRange(et) : RetainRange(et);
+                return (x.id, (Action)(() => { e.Get(1); e.Get(2); e.Call(target); e.Op(Op.Return); }));
+            }).ToList());
         }
     }
 

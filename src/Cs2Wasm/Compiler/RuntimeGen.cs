@@ -598,16 +598,25 @@ sealed partial class RuntimeGen
             var e = new Emitter(fn);
             int tid = e.AddLocal(ValType.I32);
             e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-            foreach (var (id, f) in per)
-            {
-                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
-                e.If(); e.Get(0); e.Call(f); e.Op(Op.Return); e.End();
-            }
+            // (a br_table on the type id: the ids are numbered by then)
+            var cases = per.Select(x => (ext: D.ExtId(x.Key), fn: x.Value)).Where(x => x.ext >= 0).GroupBy(x => x.ext).Select(g => g.First()).OrderBy(x => x.ext).ToList();
+            var dflt = e.Block();
+            var labels = new Label[cases.Count];
+            for (int i = cases.Count - 1; i >= 0; i--) labels[i] = e.Block();
+            var targets = new Label[D.TypeCount];
+            for (int i = 0; i < targets.Length; i++) targets[i] = dflt;
+            for (int i = 0; i < cases.Count; i++) if (cases[i].ext < targets.Length) targets[cases[i].ext] = labels[i];
+            e.Get(tid); e.BrTable(targets, dflt);
+            foreach (var (_, f) in cases) { e.End(); e.Get(0); e.Call(f); e.Op(Op.Return); }
+            e.End();
         }
-        Dispatch(rt.ArenaClearFnIfMade, clearFns);
-        Dispatch(rt.ArenaFreeFnIfMade, freeFns);
-        Dispatch(rt.ArenaVisitFnIfMade, visitFns);
-        _emitScc = () => { if (rt.SccOfIfMade is { } scc) EmitIdTable(scc, D.TypeById.Count, i => (null, ar.SccOf(i))); };
+        _emitScc = () =>
+        {
+            Dispatch(rt.ArenaClearFnIfMade, clearFns);
+            Dispatch(rt.ArenaFreeFnIfMade, freeFns);
+            Dispatch(rt.ArenaVisitFnIfMade, visitFns);
+            if (rt.SccOfIfMade is { } scc) EmitIdTable(scc, D.TypeById.Count, i => (null, ar.SccOf(i)));
+        };
     }
 
     IMethodSymbol? FindFinalizer(ITypeSymbol t)
@@ -757,7 +766,6 @@ sealed partial class RuntimeGen
         D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled),
                            D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled));
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
-        D.Rt.EmitArrayDispatch();
         D.Module.UsesThreads = D.UsesThreads;
         D.EmitObjectArrayDelegate();
         D.EmitDynamicInvoke();
@@ -797,6 +805,7 @@ sealed partial class RuntimeGen
         AssignTypeIds();
         D.Mark("  finish: AssignTypeIds");
         _emitScc?.Invoke();
+        D.Rt.EmitArrayDispatch();
         D.EmitReflectionTables();
         D.Mark("  finish: D.EmitReflectionTables");
         D.EmitDelegateMethod();

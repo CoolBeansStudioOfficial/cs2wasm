@@ -40,11 +40,17 @@ for (const imp of WebAssembly.Module.imports(module)) {
   imports[imp.module][imp.name] = (...a) => { buf += `[engine] ${imp.module}.${imp.name}(${a.join(', ')})\n`; return 0; };
 }
 startIo(module, memory);
+const t0 = performance.now();
 const instance = new WebAssembly.Instance(module, imports);
 instance.exports.init();
+if (process.env.CS2WASM_HOST_TIMES) process.stderr.write(`[host] instantiate and init ${(performance.now() - t0).toFixed(0)} ms (since start ${performance.now().toFixed(0)} ms)
+`);
 const fn = instance.exports[entry];
 if (!fn) { console.error(`no export '${entry}'`); process.exit(2); }
 let r;
 try { r = fn(); } finally { flush(); }
+if (process.env.CS2WASM_HOST_TIMES) { process.stderr.write(`[host] ${entry} returned at ${performance.now().toFixed(0)} ms
+`); process.on('exit', () => process.stderr.write(`[host] exit at ${performance.now().toFixed(0)} ms
+`)); }
 if (r !== undefined && process.env.CS2WASM_PRINT_RESULT) console.log(`=> ${r}`);
 if (process.env.CS2WASM_PRINT_MEMORY) console.error(`memory: ${memory.buffer.byteLength / 65536} pages`);

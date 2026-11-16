@@ -95,10 +95,19 @@ internal sealed partial class Driver
             }
             int tid = e.AddLocal(ValType.I32);
             e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-            foreach (var (id, type) in types)
+            // one case per type, reached through a br_table on the type id (a chain of comparisons would cost every
+            // visit a walk over the types)
+            var cases = types.Select(x => (ext: ExtId(x.id), x.id, x.type)).Where(x => x.ext >= 0).GroupBy(x => x.ext).Select(g => g.First()).OrderBy(x => x.ext).ToList();
+            var dflt = e.Block();
+            var labels = new Label[cases.Count];
+            for (int i = cases.Count - 1; i >= 0; i--) labels[i] = e.Block();
+            var targets = new Label[TypeCount];
+            for (int i = 0; i < targets.Length; i++) targets[i] = dflt;
+            for (int i = 0; i < cases.Count; i++) if (cases[i].ext < targets.Length) targets[cases[i].ext] = labels[i];
+            e.Get(tid); e.BrTable(targets, dflt);
+            foreach (var (_, id, type) in cases)
             {
-                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
-                e.If();
+                e.End();
                 if (DisplayById.TryGetValue(id, out var disp))
                 {
                     e.Get(0); e.Load(Op.I32Load, 12); e.Call(markPush);
@@ -125,8 +134,8 @@ internal sealed partial class Driver
                     else foreach (var f in Types.LayoutOf(nt).Fields) Refs(0, f.Offset, f.Type);
                 }
                 e.Op(Op.Return);
-                e.End();
             }
+            e.End();
         }
         // struct copies into memory the compiler cannot place: share what they bring
         foreach (var (fn, t) in rt.StructCopies)

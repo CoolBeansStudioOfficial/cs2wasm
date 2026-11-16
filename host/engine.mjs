@@ -104,7 +104,9 @@ export function debugInfo(module) {
 }
 
 export function cs2wasmImports(module, getMemory, out) {
-  const info = debugInfo(module);
+  // (the frame names and lines, read when a stack trace is first wanted: every thread's instance would pay for them)
+  let infoCache = null;
+  const info = { get frames() { return (infoCache ??= debugInfo(module)).frames; }, lineAt: (o) => (infoCache ??= debugInfo(module)).lineAt(o) };
   const str = (ptr, len) => {
     const u16 = new Uint16Array(getMemory().buffer, ptr, len);
     let s = '';
