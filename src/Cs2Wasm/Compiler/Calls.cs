@@ -541,6 +541,26 @@ sealed partial class FunctionCompiler
         {
             if (T.NeedsRc(t)) throw new CompileException($"{Driver.Display(m)} on {t}, which holds counted references, is not supported");
         }
+        if (Types.FullName(m.ContainingType) == "System.Numerics.BitOperations")
+        {
+            bool l = Types.Is64(Types.PrimOf(m.Parameters[0].Type));
+            switch (m.Name)
+            {
+                case "LeadingZeroCount": E.Op(l ? Op.I64Clz : Op.I32Clz); break;
+                case "TrailingZeroCount": E.Op(l ? Op.I64Ctz : Op.I32Ctz); break;
+                case "PopCount": E.Op(l ? Op.I64Popcnt : Op.I32Popcnt); break;
+                // (the count is an int; the instruction takes it in the value's width, and by its low bits as .NET does)
+                case "RotateLeft": if (l) { E.Op(Op.I64ExtendI32U); E.Op(Op.I64Rotl); } else E.Op(Op.I32Rotl); return Own.None;
+                case "RotateRight": if (l) { E.Op(Op.I64ExtendI32U); E.Op(Op.I64Rotr); } else E.Op(Op.I32Rotr); return Own.None;
+                // Log2(0) is 0: value |= 1; 31 ^ lzcnt
+                case "Log2":
+                    if (l) { E.I64(1); E.Op(Op.I64Or); E.Op(Op.I64Clz); E.I64(63); E.Op(Op.I64Xor); }
+                    else { E.I32(1); E.Op(Op.I32Or); E.Op(Op.I32Clz); E.I32(31); E.Op(Op.I32Xor); }
+                    break;
+            }
+            if (l) E.Op(Op.I32WrapI64);
+            return Own.None;
+        }
         switch (Types.FullName(m.ContainingType) + "." + m.Name)
         {
             case "System.Runtime.CompilerServices.Unsafe.AsPointer":

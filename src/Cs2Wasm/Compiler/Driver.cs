@@ -529,6 +529,7 @@ internal sealed partial class Driver
         mi = new MethodInst { Sym = m, Fn = fn, Key = key, Impl = impl, ReachedFrom = Compiling };
         fn.FrameName = IsHiddenFrame(m) ? null : FrameName(m);
         fn.ProgramCode = !IsLibrary(m);
+        fn.InlineHint = impl == MethodImpl.Body && IsInlineHint(m.OriginalDefinition);
         _methods[key] = mi;
         bool returnsThis = impl == MethodImpl.Body && ReturnsThis(m);
         if (returnsThis || impl == MethodImpl.Body && ReturnsField(m))
@@ -710,6 +711,9 @@ internal sealed partial class Driver
             "System.Double" or "System.Single" => m.Name == "ConvertToIntegerNative" && m.TypeArguments.Length == 1 && Types.PrimOf(m.TypeArguments[0]) is not (Prim.None or Prim.F32 or Prim.F64 or Prim.Bool),
             "System.Runtime.CompilerServices.RuntimeHelpers" => m.Name is "GetRawData" or "IsBitwiseEquatable" or "IsReferenceOrContainsReferences" or "ObjectHasComponentSize",
             "System.Threading.Volatile" => m.Name is "ReadBarrier" or "WriteBarrier",
+            // (the machine's own instructions: upstream asks for a processor's, and falls back to loops and tables)
+            "System.Numerics.BitOperations" => m.Name is "LeadingZeroCount" or "TrailingZeroCount" or "PopCount" or "RotateLeft" or "RotateRight" or "Log2"
+                && m.Parameters.Length > 0 && Types.PrimOf(m.Parameters[0].Type) is not (Prim.None or Prim.F32 or Prim.F64 or Prim.Bool),
             "System.Object" => m.Name == "GetType",
             // new T() for a T known at compile time (LazyInitializer and friends call it directly)
             "System.Activator" => m.Name == "CreateInstance" && m.IsGenericMethod && m.Parameters.Length == 0,

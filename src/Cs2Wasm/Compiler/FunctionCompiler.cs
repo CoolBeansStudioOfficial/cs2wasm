@@ -190,7 +190,9 @@ sealed partial class FunctionCompiler
         if (E.Fn.Type.Results.Length == 0) EmitReturnSequence(false);
         else E.Op(Op.Unreachable);
 
-        bool needHandler = _allSlots.Count > 0 || _usesFrame;
+        // (a frame alone needs no handler: the stack pointer is put back where the exception is caught,
+        // RuntimeGen.RestoreStackAtCatches)
+        bool needHandler = _allSlots.Count > 0;
         var body = E.Fn.Body;
         var prologue = new List<Instr>();
         void P(Op op, long imm = 0, object? r = null) => prologue.Add(new Instr { Op = op, Imm = imm, Ref = r, Pos = -1 });
@@ -228,7 +230,6 @@ sealed partial class FunctionCompiler
             H(Op.Nop, -1, Driver.HandlerStart);
             var save = E.Fn.Body; E.Fn.Body = handler;
             foreach (var s in _allSlots) ReleaseSlot(s);
-            if (_usesFrame) { E.Get(_spEntry); E.GSet(D.StackPointer); }
             E.Fn.Body = save;
             H(Op.LocalGet, exn); H(Op.ThrowRef);
             body.InsertRange(0, prologue);

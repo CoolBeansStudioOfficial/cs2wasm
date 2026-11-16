@@ -39,6 +39,34 @@ static class Peephole
                 {
                     prev.Op = Op.LocalSet; dst[^1] = prev; continue;
                 }
+                // const ; const ; op  =>  const   (sizeof(T) * 2 once T is known)
+                if (prev.Op == Op.I32Const && prev.Ref == null && dst.Count > 1 && dst[^2].Op == Op.I32Const && dst[^2].Ref == null
+                    && ins.Op is Op.I32Add or Op.I32Sub or Op.I32Mul or Op.I32Shl or Op.I32And or Op.I32Or or Op.I32Xor)
+                {
+                    int x = (int)dst[^2].Imm, y = (int)prev.Imm;
+                    int r = ins.Op switch { Op.I32Add => x + y, Op.I32Sub => x - y, Op.I32Mul => x * y, Op.I32Shl => x << y, Op.I32And => x & y, Op.I32Or => x | y, _ => x ^ y };
+                    dst.RemoveAt(dst.Count - 1);
+                    dst[^1] = dst[^1] with { Imm = r };
+                    continue;
+                }
+                // a division by a constant that is neither 0 nor -1 cannot fail: the instruction, not the checked helper
+                if (ins.Op == Op.Call && ins.Ref is WasmFunction { Name: var dn } && dn.StartsWith("rt.", StringComparison.Ordinal) && dn.Length == 10
+                    && (dn.StartsWith("rt.div_", StringComparison.Ordinal) || dn.StartsWith("rt.rem_", StringComparison.Ordinal))
+                    && prev.Ref == null && prev.Imm != 0 && (prev.Op == Op.I32Const && dn.EndsWith("32", StringComparison.Ordinal) && (int)prev.Imm != -1
+                        || prev.Op == Op.I64Const && dn.EndsWith("64", StringComparison.Ordinal) && prev.Imm != -1))
+                {
+                    bool div = dn[3] == 'd', sg = dn[7] == 's', l = prev.Op == Op.I64Const;
+                    dst.Add(ins with
+                    {
+                        Ref = null,
+                        Op = (div, l, sg) switch
+                        {
+                            (true, false, true) => Op.I32DivS, (true, false, false) => Op.I32DivU, (true, true, true) => Op.I64DivS, (true, true, false) => Op.I64DivU,
+                            (false, false, true) => Op.I32RemS, (false, false, false) => Op.I32RemU, (false, true, true) => Op.I64RemS, _ => Op.I64RemU,
+                        },
+                    });
+                    continue;
+                }
                 // i32.const 0 ; i32.ne ; i32.eqz  =>  i32.eqz   (`while (x != null)`: leave when x is null)
                 if (ins.Op == Op.I32Eqz && prev.Op == Op.I32Ne && dst.Count > 1 && dst[^2].Op == Op.I32Const && dst[^2].Imm == 0 && dst[^2].Ref == null)
                 {

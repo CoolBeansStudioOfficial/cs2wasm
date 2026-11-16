@@ -963,11 +963,57 @@ sealed partial class RuntimeGen
         D.ResolveInitStores();
         D.Mark("  finish: D.ResolveFieldBorrows");
         // (the floats stored to memory get the NaN of .NET on the final bodies: FloatStores.cs)
+        RestoreStackAtCatches();
         D.Module.Canon = d => d ? D.Rt.CanonF64 : D.Rt.CanonF32;
         D.Module.StackPointer = D.StackPointer;
         D.LayoutMemory();
         D.Mark("  finish: D.LayoutMemory");
         EmitInit();
+    }
+
+    /// <summary>An exception leaves the frames between the throw and the catch without running their ends, so the
+    /// shadow stack's pointer is still the innermost frame's when the catch gets it. Each try that catches (not one
+    /// that only cleans up and throws on) notes the pointer on its way in and puts it back where the catch lands:
+    /// one global read per try entered, and no function needs a handler only to give its frame back.</summary>
+    void RestoreStackAtCatches()
+    {
+        foreach (var f in D.Module.Functions)
+        {
+            if (f.IsImport) continue;
+            var b = f.Body;
+            if (!b.Any(x => x.Ref is TryTableInfo t && t.Catches.Any(c => c.Kind != 3))) continue;
+            int n = b.Count;
+            var match = new int[n];
+            var st = new Stack<int>();
+            for (int i = 0; i < n; i++)
+            {
+                if (b[i].Op is Op.Block or Op.Loop or Op.If or Op.TryTable) st.Push(i);
+                else if (b[i].Op == Op.End && st.Count > 0) match[st.Pop()] = i;
+            }
+            // (index, instructions to put in before it), in the order found
+            var ins = new List<(int at, Instr a, Instr b2)>();
+            var ctl = new List<int>();
+            for (int i = 0; i < n; i++)
+            {
+                var x = b[i];
+                if (x.Ref is TryTableInfo t && t.Catches.Any(c => c.Kind != 3))
+                {
+                    f.Locals.Add(ValType.I32);
+                    int tmp = f.Type.Params.Length + f.Locals.Count - 1;
+                    ins.Add((i, new Instr { Op = Op.GlobalGet, Ref = D.StackPointer, Pos = -1 }, new Instr { Op = Op.LocalSet, Imm = tmp, Pos = -1 }));
+                    foreach (var c in t.Catches)
+                    {
+                        if (c.Kind == 3) continue;
+                        int k = ctl.Count - 1 - c.Label;
+                        if (k < 0 || b[ctl[k]].Op == Op.Loop) continue;
+                        ins.Add((match[ctl[k]] + 1, new Instr { Op = Op.LocalGet, Imm = tmp, Pos = -1 }, new Instr { Op = Op.GlobalSet, Ref = D.StackPointer, Pos = -1 }));
+                    }
+                }
+                if (x.Op is Op.Block or Op.Loop or Op.If or Op.TryTable) ctl.Add(i);
+                else if (x.Op == Op.End && ctl.Count > 0) ctl.RemoveAt(ctl.Count - 1);
+            }
+            foreach (var (at, a, b2) in ins.OrderByDescending(p => p.at)) { b.Insert(at, b2); b.Insert(at, a); }
+        }
     }
 
     /// <summary>rt.on_destroy(p): 1 if p's finalizer runs. Without marks in the program it is `1`, and the calls whose

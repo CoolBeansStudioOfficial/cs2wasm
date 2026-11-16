@@ -13,6 +13,7 @@ static class Inliner
     const int SingleCallerBody = 120; // a function with one call site and no other use is inlined up to this size
     const int SingleCallerCalling = 100; // the same for one that calls functions
     const int LoopBody = 24;      // a straight-line body that calls nothing, at a call site inside a loop
+    const int HintedBody = 16;    // a method marked AggressiveInlining, at every call site
     static readonly int s_loopBody = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_LOOP_INLINE"), out var lb) ? lb : LoopBody;
 
     // (CS2WASM_EXP_INLINE=n, an experiment: bodies up to n instructions at every site, whether they can throw or not,
@@ -46,7 +47,14 @@ static class Inliner
             // (the null check: it has no frame of its own in a trace, so a copy of it throws from the same frames; in
             // the second round, when the checks that are not needed are gone)
             if (tiny && g.Name == "rt.nonnull" && !g.IsImport && s_loopBody > 0) { inLoops.Add(g); continue; }
-            if (mayThrow.Contains(g) || !Inlinable(g, mayThrow)) continue;
+            if (mayThrow.Contains(g) || !Inlinable(g, mayThrow))
+            {
+                // (marked AggressiveInlining: in although it can throw, when it is small; larger in a loop)
+                if (!g.InlineHint || s_exp > 0 || !InlinableHinted(g)) continue;
+                int hc = g.Body.Count + g.Type.Params.Length + 2 * g.Locals.Count + 2;
+                if (hc <= HintedBody) candidates.Add(g); else if (hc <= 2 * s_loopBody) inLoops.Add(g);
+                continue;
+            }
             int n = g.Body.Count;
             bool single = callers.GetValueOrDefault(g) == 1 && g.Exports.Count == 0 && !g.InTable;
             // at many sites only when the copy is about as small as the call (parameter moves, block, local resets)
@@ -110,6 +118,20 @@ static class Inliner
                     return false;
             }
             if ((int)ins.Op >= 0xFE00) return false; // atomics: keep their functions (threads mode bodies are filled late)
+        }
+        return true;
+    }
+
+    /// <summary>A method marked AggressiveInlining: no exception handling of its own, no frame, no atomics.</summary>
+    internal static bool InlinableHinted(WasmFunction g)
+    {
+        if (g.IsImport || g.ForwardTo != null || g.Body.Count == 0) return false;
+        foreach (var ins in g.Body)
+        {
+            if (ins.Op is Op.TryTable) return false;
+            if (ins.Op == Op.Call && ReferenceEquals(ins.Ref, g)) return false;
+            if (ins.Op is Op.GlobalGet or Op.GlobalSet && ins.Ref is WasmGlobal { Export: "__stack_pointer" }) return false;
+            if ((int)ins.Op >= 0xFE00) return false;
         }
         return true;
     }

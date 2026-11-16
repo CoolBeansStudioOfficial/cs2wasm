@@ -140,6 +140,9 @@ internal sealed class WasmFunction
     /// FrameSlots.cs; null: no frame, or one that pass must leave alone.</summary>
     public List<(int off, int size)>? FrameSlots;
     public bool NoFramePromotion;
+    /// <summary>The method is marked AggressiveInlining: .NET folds it into its callers (and its frame is in no stack
+    /// trace there either), so it may be inlined although an exception can come out of it.</summary>
+    public bool InlineHint;
     public WasmFunction(string name, FuncType type) { Name = name; Type = type; }
     public override string ToString() => Name;
 }

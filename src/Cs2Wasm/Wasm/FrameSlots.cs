@@ -235,7 +235,7 @@ static partial class Locals
             for (int k = 0; k < pop; k++) { var v = Pop(); if (v.Kind == K.Frame) { framed = true; Esc(v); } }
             for (int k = 0; k < push; k++) stack.Add(top);
             if (record && framed && ins.Op == Op.Call && ins.Ref is WasmFunction g && g != f && !g.IsImport && g.Body.Count <= MaxInlinedBody
-                && MayThrow != null && !MayThrow.Contains(g) && Inliner.Inlinable(g, MayThrow)) scan.InlineSites.Add(i);
+                && MayThrow != null && (!MayThrow.Contains(g) && Inliner.Inlinable(g, MayThrow) || g.InlineHint && Inliner.InlinableHinted(g))) scan.InlineSites.Add(i);
         }
 
         void Flow(int[] st, int s)
