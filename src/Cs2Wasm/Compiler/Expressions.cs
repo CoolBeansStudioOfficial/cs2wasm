@@ -1284,8 +1284,9 @@ sealed partial class FunctionCompiler
         {
             EmitCondition(b.LeftOperand);
             E.If(ValType.I32);
-            if (kind == BinaryOperatorKind.ConditionalAnd) { EmitCondition(b.RightOperand); E.Else(); E.I32(0); }
-            else { E.I32(1); E.Else(); EmitCondition(b.RightOperand); }
+            // (the right operand's temporaries are released where it ran, not at the statement's end whether it ran or not)
+            if (kind == BinaryOperatorKind.ConditionalAnd) { BeginBranchTemps(); EmitCondition(b.RightOperand); EndBranchTempsValue(ValType.I32); E.Else(); E.I32(0); }
+            else { E.I32(1); E.Else(); BeginBranchTemps(); EmitCondition(b.RightOperand); EndBranchTempsValue(ValType.I32); }
             E.End();
             return Own.None;
         }
@@ -2281,13 +2282,55 @@ sealed partial class FunctionCompiler
         var vt = Types.WasmType(rt) ?? ValType.I32;
         EmitCondition(co.Condition);
         E.If(vt);
+        BeginBranchTemps();
         var a = EmitValueAs(co.WhenTrue, rt);
-        if (Types.IsRef(rt)) ToOwned(a);
+        int aEnd = E.Fn.Body.Count;
+        EndBranchTemps(a, rt);
         E.Else();
+        BeginBranchTemps();
         var b = EmitValueAs(co.WhenFalse!, rt);
-        if (Types.IsRef(rt)) ToOwned(b);
+        if (!Types.IsRef(rt)) { EndBranchTemps(b, rt); E.End(); return Own.None; }
+        // section 4.1: the value is borrowed when both branches' are (no count); owned when one is (the other's is counted)
+        var joined = JoinOwn(a, b);
+        if (joined == Own.Owned)
+        {
+            ToOwned(b);
+            if (a is Own.Stable or Own.Unstable) E.Fn.Body.Insert(aEnd, new Instr { Op = Op.Call, Ref = Rt.Retain, Pos = E.CurrentPos });
+            b = Own.Owned;
+        }
+        EndBranchTemps(b, rt);
         E.End();
-        return Types.IsRef(rt) ? Own.Owned : Own.None;
+        _lastFieldLoad = null;
+        return joined;
+    }
+
+    /// <summary>The ownership of a value that is one of two: owned if either is (the caller counts the other), not counted
+    /// if neither needs counting, else borrowed, from memory that may change if either is.</summary>
+    static Own JoinOwn(Own a, Own b)
+    {
+        if (a == Own.Owned || b == Own.Owned) return Own.Owned;
+        if (a == Own.None && b == Own.None) return Own.None;
+        // (None beside a borrow: null, a literal, an immortal object: as stable as the other)
+        if (a == Own.Unstable || b == Own.Unstable) return Own.Unstable;
+        return Own.Stable;
+    }
+
+    // A branch's temporaries: released at the branch's end when its value does not depend on them (an owned
+    // reference, a number), so a branch that does not run releases nothing; else they wait for the statement's end.
+    void BeginBranchTemps() { if (_machine == null) BeginTemps(); }
+
+    void EndBranchTempsValue(ValType keep) { if (_machine == null) EndTemps(keep); }
+
+    void EndBranchTemps(Own o, ITypeSymbol t)
+    {
+        if (_machine != null) return;
+        bool independent = o == Own.Owned || o == Own.None && (Types.IsRef(t) || Types.PrimOf(t) != Prim.None);
+        if (independent) { EndTemps(Types.WasmType(t) ?? ValType.I32); return; }
+        var list = _temps[^1];
+        _temps.RemoveAt(_temps.Count - 1);
+        if (list.Count == 0) return;
+        if (_temps.Count == 0) BeginTemps();
+        _temps[^1].AddRange(list);
     }
 
     Own EmitCoalesce(ICoalesceOperation c)
@@ -2297,17 +2340,27 @@ sealed partial class FunctionCompiler
         if (IsNullable(lt)) return EmitNullableCoalesce(c);
         if (!Types.IsRef(lt)) throw new CompileException("?? on this type is not supported", c.Syntax.GetLocation());
         var o = EmitValue(c.Value);
-        ToOwned(o);
         int t = Scratch(ValType.I32);
         E.Tee(t);
         E.If(ValType.I32);
         E.Get(t);
+        int aEnd = E.Fn.Body.Count;
         E.Else();
+        BeginBranchTemps();
         var o2 = EmitValueAs(c.WhenNull, rt);
-        if (Types.IsRef(rt)) ToOwned(o2);
+        // section 4.1: borrowed when both sides are; owned when one is (the other is counted then)
+        var joined = Types.IsRef(rt) ? JoinOwn(o, o2) : Own.Owned;
+        if (joined == Own.Owned)
+        {
+            if (Types.IsRef(rt)) ToOwned(o2);
+            if (o is Own.Stable or Own.Unstable) E.Fn.Body.Insert(aEnd, new Instr { Op = Op.Call, Ref = Rt.Retain, Pos = E.CurrentPos });
+            o2 = Own.Owned;
+        }
+        EndBranchTemps(o2, rt);
         E.End();
         FreeScratch(ValType.I32, t);
-        return Own.Owned;
+        _lastFieldLoad = null;
+        return joined;
     }
 
     Own EmitIsType(IIsTypeOperation it)
