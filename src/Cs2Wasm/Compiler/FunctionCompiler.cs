@@ -1292,6 +1292,21 @@ sealed partial class FunctionCompiler
             E.Call(D.StringEquals.Fn);
             return;
         }
+        if (IsNullable(vt))
+        {
+            // `case null:` is !HasValue; `case c:` is HasValue && Value == c (the value is the T?'s address)
+            var c = constant;
+            while (c is IConversionOperation cv && cv.Type is { } cvt && IsNullable(cvt)) c = cv.Operand;
+            if (c.ConstantValue is { HasValue: true, Value: null } || c.Type == null) { E.Get(val); NullableHas(vt); E.Op(Op.I32Eqz); return; }
+            var u = Underlying(vt);
+            E.Get(val); NullableHas(vt);
+            E.If(ValType.I32);
+            int uv = E.AddLocal(Types.WasmType(u) ?? ValType.I32);
+            E.Get(val); NullableVal(vt); E.Set(uv);
+            EmitEqualsConst(uv, u, c);
+            E.Else(); E.I32(0); E.End();
+            return;
+        }
         E.Get(val); var ct = constant.Type != null ? T.Resolve(constant.Type, Map) : vt;
         var o = EmitValue(constant); ConvertTop(ct, vt, ref o);
         EmitCompare(BinaryOperatorKind.Equals, vt);

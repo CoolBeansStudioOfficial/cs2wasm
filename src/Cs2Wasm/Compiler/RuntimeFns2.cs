@@ -41,6 +41,13 @@ internal sealed partial class RuntimeFns
         const int S = SharedBit;
         // a shared object's last release puts it in limbo (Boundary/Runtime.cs, Limbo)
         WasmFunction? limboAdd = D.LibMethod("Cs2Wasm.Runtime.Limbo", "Add", 1).Fn;
+        var violation = ShareCheckOn ? D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareViolation", 1).Fn : null;
+        void CheckOwner(Emitter e)
+        {
+            if (violation == null) return;
+            e.Get(0); e.Load(Op.I32Load, 8); e.I32(24); e.Op(Op.I32ShrU); e.I32(0x7F); e.Op(Op.I32And); e.GGet(D.ThreadId); e.I32(0x7F); e.Op(Op.I32And); e.Op(Op.I32Ne);
+            e.If(); e.Get(0); e.Call(violation); e.End();
+        }
         {
             var f = Retain; f.Body.Clear(); f.Locals.Clear();
             var e = new Emitter(f);
@@ -48,8 +55,8 @@ internal sealed partial class RuntimeFns
             e.Get(0); e.If();
             e.Get(0); e.Load(Op.I32Load); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
             e.If();
-            e.Get(r); e.I32(S); e.Op(Op.I32And); e.Op(Op.I32Eqz);
-            e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Store(Op.I32Store);
+            if (s_allShared) e.I32(0); else { e.Get(r); e.I32(S); e.Op(Op.I32And); e.Op(Op.I32Eqz); }
+            e.If(); CheckOwner(e); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Store(Op.I32Store);
             e.Else();
             var brk = e.Block(); var top = e.Loop();
             e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(brk);
@@ -69,9 +76,10 @@ internal sealed partial class RuntimeFns
             e.Get(0); e.If();
             e.Get(0); e.Load(Op.I32Load); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
             e.If();
-            e.Get(r); e.I32(S); e.Op(Op.I32And); e.Op(Op.I32Eqz);
+            if (s_allShared) e.I32(0); else { e.Get(r); e.I32(S); e.Op(Op.I32And); e.Op(Op.I32Eqz); }
             e.If();
             // owned by this thread
+            CheckOwner(e);
             e.Get(r); e.I32(1); e.Op(Op.I32Eq);
             e.If(); e.Get(0); e.I32(0); e.Store(Op.I32Store); e.Get(0); e.Call(Destroy);
             e.Else(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Store(Op.I32Store);
@@ -105,6 +113,11 @@ internal sealed partial class RuntimeFns
             e.End();
         }
     }
+
+    /// <summary>CS2WASM_ALL_SHARED=1 (diagnosis): every count is updated atomically, as a shared object's.</summary>
+    static readonly bool s_allShared = Environment.GetEnvironmentVariable("CS2WASM_ALL_SHARED") == "1";
+    /// <summary>CS2WASM_SHARE_CHECK=1 (diagnosis): plain count updates check the object's allocating thread (Rt.ShareCheck).</summary>
+    public static readonly bool ShareCheckOn = Environment.GetEnvironmentVariable("CS2WASM_SHARE_CHECK") == "1";
 
     WasmFunction? _ecSave, _ecRestore;
     /// <summary>Around an async method's first MoveNext: the caller's AsyncLocal context is put back afterwards.</summary>

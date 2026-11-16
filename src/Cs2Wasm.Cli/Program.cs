@@ -13,6 +13,7 @@ using Microsoft.CodeAnalysis;
 var inputs = new List<string>();
 string? output = null, boundary = null, map = null;
 var sections = new List<(string, byte[])>();
+var resources = new List<(string, byte[])>();
 var refs = new List<MetadataReference>();
 var analyzers = new List<string>();
 var properties = new Dictionary<string, string>();
@@ -31,6 +32,13 @@ for (int i = 0; i < args.Length; i++)
                 sections.Add((kv[0], File.ReadAllBytes(kv[1])));
                 break;
             }
+        case "--resource":
+            {
+                // a manifest resource of the program: logical name = file
+                var kv = args[++i].Split('=', 2);
+                resources.Add((kv[0], File.ReadAllBytes(kv[1])));
+                break;
+            }
         case "--memory-pages": pages = int.Parse(args[++i]); break;
         case "--max-pages": maxPages = int.Parse(args[++i]); break;
         case "--no-opt": optimize = false; break;
@@ -44,7 +52,7 @@ for (int i = 0; i < args.Length; i++)
                 break;
             }
         case "-h": case "--help":
-            Console.WriteLine("usage: cs2wasm <file.cs|dir>... -o out.wasm [--boundary table.json] [--map out.map] [--section name=file] [--memory-pages N] [--no-opt] [-r ref.dll] [--watch]");
+            Console.WriteLine("usage: cs2wasm <file.cs|dir>... -o out.wasm [--boundary table.json] [--map out.map] [--section name=file] [--resource name=file] [--memory-pages N] [--no-opt] [-r ref.dll] [--watch]");
             return 0;
         default: inputs.Add(args[i]); break;
     }
@@ -73,6 +81,7 @@ int Build()
         {
             Boundary = boundary != null ? BoundaryTable.FromJson(File.ReadAllText(boundary)) : new BoundaryTable(),
             CustomSections = sections,
+            Resources = resources,
             MemoryInitialPages = pages,
             MemoryMaximumPages = maxPages,
             Optimize = optimize,

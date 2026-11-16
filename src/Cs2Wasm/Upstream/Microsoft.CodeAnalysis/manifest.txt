@@ -1076,3 +1076,5 @@ file src/Dependencies/PooledObjects/PooledDictionary.cs
 file src/Dependencies/PooledObjects/PooledDisposer.cs
 file src/Dependencies/PooledObjects/PooledHashSet.cs
 file src/Dependencies/PooledObjects/PooledStringBuilder.cs
+resource Microsoft.CodeAnalysis.CodeAnalysisResources.resources src/Compilers/Core/Portable/CodeAnalysisResources.resx
+resource Microsoft.CodeAnalysis.Resources.default.win32manifest src/Compilers/Core/Portable/Resources/default.win32manifest

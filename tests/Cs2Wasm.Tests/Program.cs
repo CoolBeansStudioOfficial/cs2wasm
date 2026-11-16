@@ -44,6 +44,13 @@ if (Directory.Exists(godotDir))
     }
 int pass = 0, fail = 0;
 var report = new StringBuilder();
+// the HTTP server of the programs that use HTTP (072_http): one for the run
+Process? httpServer = null;
+if (programs.Any(p => p.name.EndsWith("_http") && (filter == null || p.name.Contains(filter))))
+{
+    httpServer = Process.Start(new ProcessStartInfo("node", [Path.Combine(dir, "http-server.mjs")]) { RedirectStandardOutput = true })!;
+    httpServer.StandardOutput.ReadLine(); // "ready <port>"
+}
 foreach (var n in skipped) { var l = $"SKIP {n} (GodotSharp sources not found at {godotSharp})"; Console.WriteLine(l); report.AppendLine(l); }
 foreach (var (name, sources, symbols) in programs.Where(p => filter == null || p.name.Contains(filter)))
 {
@@ -91,6 +98,7 @@ if (filter == null || "godot".Contains(filter) || filter.StartsWith("godot_"))
 if (filter == null || filter == "api")
     foreach (var (n, failure) in ApiChecks.Run(root, outDir))
         if (failure == null) Pass("api: " + n, "ok"); else Fail("api: " + n, failure);
+try { httpServer?.Kill(); } catch { }
 Console.WriteLine($"\n{pass} passed, {fail} failed");
 File.WriteAllText(Path.Combine(outDir, "report.txt"), report.ToString());
 return fail == 0 ? 0 : 1;

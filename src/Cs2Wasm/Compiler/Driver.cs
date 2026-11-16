@@ -798,6 +798,8 @@ internal sealed partial class Driver
         // a non-generic interface of an array (IList, ICollection, IEnumerable, ICloneable...) is System.Array's
         // implementation (IList.Add throws NotSupportedException, as in the CLR)
         if (c is IArrayTypeSymbol && slot.ContainingType is { TypeKind: TypeKind.Interface, IsGenericType: false }) c = LibType("System.Array");
+        // an array's class virtuals (ToString, Equals, GetHashCode) are System.Array's (object's)
+        if (c is IArrayTypeSymbol && slot.ContainingType.TypeKind == TypeKind.Class) c = LibType("System.Array");
         if (c is IArrayTypeSymbol arrT && slot.ContainingType.TypeKind == TypeKind.Interface)
         {
             // arrays implement the generic collection interfaces through SZArrayHelper (as in the CLR)
@@ -1121,6 +1123,7 @@ internal sealed partial class Driver
                     try { if (mi.Compile != null) mi.Compile(); else FunctionCompiler.Compile(this, mi); }
                     catch (CompileException ex)
                     {
+                        if (Environment.GetEnvironmentVariable("CS2WASM_DEBUG") != null) Console.Error.WriteLine(ex.StackTrace);
                         Report(Diags.Unsupported, ex.Location ?? mi.Sym.Locations.FirstOrDefault(), ex.Message);
                         mi.Fn.Body.Clear(); mi.Fn.Locals.Clear();
                         mi.Fn.Body.Add(new Instr { Op = Op.Unreachable, Pos = -1 });

@@ -560,6 +560,30 @@ internal sealed partial class Driver
         return $"{id.Name}, Version={id.Version}, Culture={(string.IsNullOrEmpty(id.CultureName) ? "neutral" : id.CultureName)}, PublicKeyToken={token}";
     }
 
+    WasmFunction? _manifestResources;
+    public WasmFunction ManifestResourcesFn => _manifestResources ??= Module.AddFunction("rt.manifest_resources", new FuncType([], [ValType.I32]));
+
+    /// <summary>The manifest resources, when code reads them (Assembly.GetManifestResourceStream, ResourceManager):
+    /// the libraries' (their manifests' `resource` lines: a .resx is compiled to .resources, as the build does) and
+    /// the program's (CompileOptions.Resources), each with its assembly's name.</summary>
+    internal void EmitManifestResources()
+    {
+        if (_manifestResources == null) return;
+        var all = Lib.ManifestResources().Concat(Options.Resources.Select(r => (Asm: Inputs[0].AssemblyName ?? "", r.Name, Data: (Func<byte[]>)(() => r.Data)))).ToList();
+        var words = new byte[4 + 16 * all.Count];
+        BitConverter.GetBytes(all.Count).CopyTo(words, 0);
+        var relocs = new List<(int, IAddress)>();
+        for (int i = 0; i < all.Count; i++)
+        {
+            var data = all[i].Data();
+            BitConverter.GetBytes(data.Length).CopyTo(words, 4 + 16 * i + 12);
+            relocs.Add((4 + 16 * i, StringLiteral(all[i].Asm)));
+            relocs.Add((4 + 16 * i + 4, StringLiteral(all[i].Name)));
+            relocs.Add((4 + 16 * i + 8, DataBlob(data.Length == 0 ? new byte[1] : data, 8)));
+        }
+        new Emitter(_manifestResources).I32Addr(DataBlob(words, 4, relocs));
+    }
+
     internal void EmitAssemblyNames()
     {
         if (_assemblyNames == null) return;

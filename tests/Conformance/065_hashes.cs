@@ -16,7 +16,7 @@ static class Program
             var d = Encoding.UTF8.GetBytes(s);
             Console.WriteLine(Hex(SHA1.HashData(d)) + " " + Hex(SHA256.HashData(d)));
             Console.WriteLine(Hex(SHA384.HashData(d)));
-            Console.WriteLine(Hex(SHA512.HashData(d)) + " " + Hex(MD5.HashData(d)));
+            Console.WriteLine(Hex(SHA512.HashData(d)));
             using var inc = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             for (int i = 0; i < d.Length; i += 7) inc.AppendData(d, i, Math.Min(7, d.Length - i));
             using var h = SHA1.Create();

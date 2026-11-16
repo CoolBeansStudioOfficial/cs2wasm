@@ -562,7 +562,8 @@ internal sealed class Types
             if (fn == "System.Array") return true;
             if (target is INamedTypeSymbol { IsGenericType: false } && _d.LibType("System.Array") is { } arrayT && SupertypeKeys(arrayT).Contains(tk)) return true;
             if (ca.Rank == 1 && target is INamedTypeSymbol nt && nt.Arity == 1 && nt.TypeKind == TypeKind.Interface &&
-                (fn.StartsWith("System.Collections.Generic.I") || fn.StartsWith("System.Collections.Generic.IReadOnly")))
+                fn is "System.Collections.Generic.IList`1" or "System.Collections.Generic.ICollection`1" or "System.Collections.Generic.IEnumerable`1"
+                    or "System.Collections.Generic.IReadOnlyList`1" or "System.Collections.Generic.IReadOnlyCollection`1")
             {
                 // T[] is an IList<U> for each U a reference T converts to (array covariance, as in the CLR)
                 var u = nt.TypeArguments[0];

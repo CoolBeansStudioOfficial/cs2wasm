@@ -66,7 +66,7 @@ static class GodotNativeFuncs
         var po = new Microsoft.CodeAnalysis.CSharp.CSharpParseOptions(Microsoft.CodeAnalysis.CSharp.LanguageVersion.Preview, preprocessorSymbols: defines);
         var trees = manifest.Where(l => l.StartsWith("file ")).Select(l => l[5..]).AsParallel()
             .Select(f => Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(godotRoot, f)), po, path: f)).ToList();
-        var refDir = Directory.GetDirectories(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "packs", "Microsoft.NETCore.App.Ref")).Order().Last();
+        var refDir = Directory.GetDirectories(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "packs", "Microsoft.NETCore.App.Ref")).OrderBy(d => Version.TryParse(Path.GetFileName(d), out var v) ? v : new Version()).Last();
         var refs = Directory.GetFiles(Path.Combine(refDir, "ref"), "*.dll", SearchOption.AllDirectories).Select(f => Microsoft.CodeAnalysis.MetadataReference.CreateFromFile(f));
         var comp = Microsoft.CodeAnalysis.CSharp.CSharpCompilation.Create("GodotSharp", trees, refs,
             new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true));

@@ -1188,3 +1188,4 @@ file src/Compilers/CSharp/Portable/Utilities/ValueSetFactory.ULongTC.cs
 file src/Compilers/CSharp/Portable/Utilities/ValueSetFactory.UShortTC.cs
 file src/Compilers/CSharp/Portable/Utilities/ValueSetFactory.UnionTypeTypeUnionValueSetFactory.cs
 file src/Compilers/CSharp/Portable/Utilities/ValueSetFactory.cs
+resource Microsoft.CodeAnalysis.CSharp.CSharpResources.resources src/Compilers/CSharp/Portable/CSharpResources.resx

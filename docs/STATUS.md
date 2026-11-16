@@ -29,7 +29,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
 - **API checks:** 18 checks of the module shape, embedder API and memory pass (boundary imports, sandbox errors,
   custom and version sections, shared memory import, reproducible output, exception reporting at exports, plugin
   passes (scheduling dependence too), source map, cycles bounded in a fixed 16 MB memory, no arena code without cycle-capable types).
-- **Module size (raw, measured):** `Console.WriteLine(42)` is 26,756 bytes on upstream's library (code 20.5 KB,
+- **Module size (raw, measured):** `Console.WriteLine(42)` is 26,729 bytes on upstream's library (code 20.5 KB,
   LZ-packed data and frame names about 6 KB); NetWasm's build of the same program is 28,383 bytes. The conformance
   programs are 30–300 KB raw (`tests/Cs2Wasm.Tests` prints each size). The Rust 2D game bar in the spec (24 KB
   compressed) is for a game with GodotSharp, which is not built yet.
@@ -38,7 +38,7 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
   bodies are kept between builds (section 7.6 allows caching the library's analysis): with `cs2wasmc --watch` a
   rebuild of `Console.WriteLine(42)` takes 0.1–0.2 s and of the async conformance program (644 KB) about 1 s, the
   heap after collection staying the same from build to build. The suite's 83 builds take 85 s in one process.
-  Roslyn as a program (the binder test) builds in about 2 minutes with a 4.2 GB peak. `CS2WASM_TIMES=1` prints the
+  Roslyn as a program (the binder test) builds in about 3 minutes with a 5.9 GB peak. `CS2WASM_TIMES=1` prints the
   phases and the managed heap. Not measured in the browser.
 - **Run-time speed vs NativeAOT:** unmeasured.
 - **Reference-count operations removed at compile time (static, `CS2WASM_STATS=1`):** a scheme without ownership
@@ -238,8 +238,11 @@ into an object or array that is already shared (containers known at the store: c
 captured variables, state machines), handed to another thread (`Thread.Start`, the pool), or stored where the
 compiler cannot see the container (struct fields through addresses, struct copies) unless the address is on the
 storing thread's own stack. So an object another thread can reach is marked before it can, and an object one thread
-owns keeps plain counts (checked under stress with a per-thread allocation assertion during development).
-Programs that never start a thread contain none of this, and the lock functions are empty.
+owns keeps plain counts. `CS2WASM_SHARE_CHECK=1` checks it: an object's hash word then records the thread that
+allocated it, and a plain count update on another thread is reported with the stack (it found that publication was
+emitted only when the program's own source named threads, missing Roslyn's `Parallel.For`, and that `GCHandle`
+targets were not shared; both fixed). Publication code is emitted for every program and removed at the end when no
+thread is reachable: programs that never start a thread contain none of it, and the lock functions are empty.
 
 Deferred destruction (upstream library): .NET lets one thread read a reference from a shared field while another
 overwrites it, and upstream's threading code does so (benign races in tasks, the pool, `Parallel`). With counting,
@@ -409,10 +412,23 @@ file functions (`Boundary/Interop.Files.cs`) call the `cs2wasm.fs_*` imports wit
 plain, positioned and vectored, seek, stat, truncate, directories, links, rename, copy, chmod and times; errors as
 .NET's PAL codes); the Node host (`host/fs.mjs`) shows a directory of the machine (`CS2WASM_FS_ROOT`, else the
 current directory) as `/`, the working directory starting at `/` as in .NET's browser target, with descriptor
-positions and the working directory shared by all threads (`070_files` matches .NET). Not yet: HTTP through the
-host's fetch (System.Net.Http is a stub library: reaching it is still a build error), environment variables, and the
-rest of System.Native as the browser target has it (temporary files, sysconf, library loading, mmap, pipes, logging);
-platform invoke into native libraries is the one build error (`CW0004`). `unsafe` code and pointers compile. Reflection metadata is kept for what the
+positions and the working directory shared by all threads (`070_files` matches .NET). HTTP: System.Net.Http is
+upstream's browser build, its `BrowserHttpHandler` unchanged over a boundary of cs2wasm's
+(`Upstream/System.Net.Http/Boundary/BrowserHttpInterop.cs`: the `cs2wasm.http_*` imports, streamed responses); a
+promise is a host operation (`Boundary/HostOps.cs`) that a background pump thread completes. The Node host keeps
+every fetch in one plain-JavaScript I/O worker (`host/io.mjs`) whose event loop no module thread blocks: each thread's
+import is a synchronous call into it over shared memory, and settled fetches come back through a completion ring
+(`host/http.mjs`). `072_http` (GET, POST, PUT, headers, a 300 KB streamed body, 404, a refused connection) matches
+.NET. The libraries HTTP brings come from upstream too: cryptography (SHA-1/2 and HMAC managed, as on the browser
+target; MD5 and the rest throw as there), Formats.Asn1, Security.Claims, DiagnosticSource, Channels, Uri,
+Net.Primitives; those .NET ships for the browser as platform-not-supported builds (Sockets, Security, Quic,
+NameResolution, NetworkInformation, Brotli) are generated so from the reference pack (`tools/CoreLibManifest`).
+Manifest resources: a library manifest's `resource <name> <file>` lines (a .resx compiled to .resources when a
+program reads it) and the program's own (`CompileOptions.Resources`, `cs2wasmc --resource name=file`) are served by
+`Assembly.GetManifestResourceStream`/`GetManifestResourceNames`, so `ResourceManager` works as on .NET. Not yet:
+environment variables, and the rest of System.Native as the browser target has it (temporary files, sysconf, library
+loading, mmap, pipes, logging); compression (zlib) has no managed implementation yet. Platform invoke into native
+libraries is the one build error (`CW0004`). `unsafe` code and pointers compile. Reflection metadata is kept for what the
 program's reflection can be proven to reach (a trimming analysis): `typeof(X).GetMethod("M")` keeps X.M,
 `GetMethods()`/`GetProperties()`/`GetFields()` keep that kind of X's members, `GetConstructors`/`Activator` keep
 constructors, a type marked `[DynamicallyAccessedMembers]` keeps everything, and reflection on a Type the compiler
@@ -489,15 +505,17 @@ program.
 Roslyn compiles to WASM. Its compiler libraries (Microsoft.CodeAnalysis and Microsoft.CodeAnalysis.CSharp, 2,200
 files at the commit of the 5.12.0 package cs2wasm is built with, fetched from dotnet/roslyn on first use) are optional
 libraries of cs2wasm's, with the libraries they need: System.Collections.Immutable and System.Reflection.Metadata from
-dotnet/runtime, managed hashing (SHA-1, SHA-2, MD5, `IncrementalHash`; `065_hashes`), and generated declarations of
-what the sandbox lacks (XML, the rest of cryptography, URIs, networking types, memory-mapped files, compression: every
-member a `[MissingCapability]`, a build error only where reached; `tools/CoreLibManifest stubs` writes them from the
-.NET reference assemblies). Optional libraries are compiled only for programs that use them (a reference to Roslyn's
+dotnet/runtime, cryptography, XML, URIs and networking from upstream (section 8), and generated declarations of what has no
+implementation yet (memory-mapped files, compression: every member a `[MissingCapability]`, a build error only where
+reached; `tools/CoreLibManifest stubs` writes them from the .NET reference assemblies). Optional libraries are compiled only for programs that use them (a reference to Roslyn's
 assemblies, or the namespace in the source), so other programs build as before. Roslyn's resource classes and the
 outputs of the source generators it relies on (`[GeneratedRegex]`, CoreLib's product version) are written down:
 cs2wasm runs no generators. A program that parses C# with Roslyn and walks the syntax tree builds (66 s; 2.6 MB) and
-prints what .NET does (`tests/out/roslyn/parse.cs`). Binding (compilations, semantic models, operations) is next,
-then the compiler itself, then the browser host. The compiler has not been run on the browser .NET runtime.
+prints what .NET does (`tests/out/roslyn/parse.cs`). A program that binds (`tests/out/roslyn/bind.cs`: a
+compilation's diagnostics with their messages from Roslyn's resources, symbols of invocations and declarations, the
+operation tree of a statement; Roslyn binds on several threads through `Parallel.For`) builds in about 3 minutes
+(5.9 GB peak, 35.7 MB) and prints what .NET does, the same on every run. The compiler itself is next, then the
+browser host. The compiler has not been run on the browser .NET runtime.
 
 ### 10. Testing — started
 Proof 1 is partially met (the programs listed above). Proof 2 is met (GodotSharp's math types). Proof 3 is met on
@@ -508,6 +526,8 @@ played in the engine) and proof 5 (self-hosting) are not met.
 
 - `Environment.NewLine` is `\n` (as .NET on Linux and in browsers); the test runner normalizes .NET-on-Windows output.
 - `IntPtr.Size` is 4 (32-bit WASM).
+- The platform is .NET's browser target's (section 8), not desktop .NET's: what that target lacks throws as there
+  (MD5, sockets, `HttpRequestException`'s inner exception is a `JSException`).
 - `ValueType.GetHashCode` for structs that do not override it hashes the value's bytes (FNV-1a), not .NET's
   per-process randomized hash; both are legal, and cs2wasm's is the same on every machine (section 7.3).
   `ValueType.Equals` is .NET's: bytes when the struct can be compared bit by bit, else field by field.

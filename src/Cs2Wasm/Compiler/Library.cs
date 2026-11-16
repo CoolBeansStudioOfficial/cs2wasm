@@ -30,6 +30,9 @@ internal sealed class Library
             ["RSEXPERIMENTAL001"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL002"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL003"] = ReportDiagnostic.Suppress,
             ["RSEXPERIMENTAL004"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL005"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL006"] = ReportDiagnostic.Suppress,
             ["RSEXPERIMENTAL007"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL008"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL009"] = ReportDiagnostic.Suppress,
+            // (the libraries' experimental APIs, which their projects suppress: ML-KEM, ML-DSA, HPKE...)
+            ["SYSLIB5001"] = ReportDiagnostic.Suppress, ["SYSLIB5002"] = ReportDiagnostic.Suppress, ["SYSLIB5003"] = ReportDiagnostic.Suppress, ["SYSLIB5004"] = ReportDiagnostic.Suppress, ["SYSLIB5005"] = ReportDiagnostic.Suppress,
+            ["SYSLIB5006"] = ReportDiagnostic.Suppress, ["SYSLIB5007"] = ReportDiagnostic.Suppress, ["SYSLIB5008"] = ReportDiagnostic.Suppress, ["SYSLIB5009"] = ReportDiagnostic.Suppress, ["SYSLIB5010"] = ReportDiagnostic.Suppress,
         });
 
     public Library(CSharpCompilation program)
@@ -90,6 +93,37 @@ internal sealed class Library
         INamedTypeSymbol n => (n.ContainingNamespace is { IsGlobalNamespace: false } ns ? ns.ToDisplayString() + "." : "") + n.MetadataName,
         _ => t.Name,
     };
+
+    static readonly Dictionary<string, List<(string Name, string Path)>> s_resources = [];
+    static readonly Dictionary<string, byte[]> s_resourceBytes = [];
+
+    /// <summary>The libraries' manifest resources: assembly, logical name, and the contents (made when asked for).</summary>
+    public IEnumerable<(string Asm, string Name, Func<byte[]> Data)> ManifestResources()
+    {
+        foreach (var c in All)
+            if (s_resources.TryGetValue(c.AssemblyName!, out var list))
+                foreach (var (name, path) in list)
+                    yield return (c.AssemblyName!, name, () => { lock (s_resourceBytes) { return s_resourceBytes.TryGetValue(path, out var b) ? b : s_resourceBytes[path] = ResourceBytes(path); } });
+    }
+
+    /// <summary>A resource file's contents; a .resx as the build compiles it (System.Resources' .resources format,
+    /// as ResourceWriter writes it).</summary>
+    static byte[] ResourceBytes(string path)
+    {
+        if (!path.EndsWith(".resx", StringComparison.OrdinalIgnoreCase)) return File.ReadAllBytes(path);
+        var doc = System.Xml.Linq.XDocument.Load(path);
+        using var ms = new MemoryStream();
+        using (var w = new System.Resources.ResourceWriter(ms))
+        {
+            foreach (var d in doc.Root!.Elements("data"))
+            {
+                if (d.Attribute("type") != null || d.Attribute("mimetype") != null)
+                    throw new CompileException($"{path}: resource '{d.Attribute("name")?.Value}' is not a string (only strings are supported)");
+                w.AddResource(d.Attribute("name")!.Value, d.Element("value")?.Value ?? "");
+            }
+        }
+        return ms.ToArray();
+    }
 
     static readonly object s_lock = new();
     static readonly Dictionary<string, CSharpCompilation> s_built = [];
@@ -160,10 +194,15 @@ internal sealed class Library
             }
             var po = new CSharpParseOptions(LanguageVersion.Preview, preprocessorSymbols: defines);
             var files = lines.Where(l => l.StartsWith("file ")).Select(l => l[5..]).ToList();
+            // `resource <logical name> <file>`: a manifest resource of the library's assembly (a .resx is compiled to
+            // .resources when a program reads it)
+            var resources = lines.Where(l => l.StartsWith("resource ")).Select(l => l[9..].Split(' ', 2)).Where(p => p.Length == 2).ToList();
             // `root <dir>`: another source tree of the cache (Roslyn's), fetched like the runtime's
             var srcRoot = lines.FirstOrDefault(l => l.StartsWith("root ")) is { } rl ? UpstreamSources.OtherRoot(rl[5..].Trim()) : UpstreamSources.Root;
-            if (srcRoot == UpstreamSources.Root) UpstreamSources.Ensure(files); else UpstreamSources.EnsureOther(srcRoot, files);
+            var fetch = files.Concat(resources.Select(r => r[1])).ToList();
+            if (srcRoot == UpstreamSources.Root) UpstreamSources.Ensure(fetch); else UpstreamSources.EnsureOther(srcRoot, fetch);
             var root = srcRoot;
+            s_resources[lib] = resources.Select(r => (r[0], Path.Combine(root, r[1]))).ToList();
             bool nullable = lines.Contains("nullable enable");
             // edit<TAB>file<TAB>text<TAB>replacement: an exact change to one upstream file (each must still apply)
             var edits = lines.Where(l => l.StartsWith("edit\t")).Select(l => l.Split('\t')).Where(p => p.Length >= 4)
@@ -264,10 +303,14 @@ internal static class UpstreamSources
         "System.Linq.Expressions", "Microsoft.CSharp", "System.Linq.Queryable",
         "System.ComponentModel", "System.ComponentModel.Primitives", "System.Collections.Specialized",
         "System.Diagnostics.TraceSource", "System.Collections.Immutable", "System.IO.MemoryMappedFiles",
-        "System.IO.Compression", "System.Reflection.Metadata", "System.Private.Uri", "System.Net.Primitives",
-        "System.Net.Http", "System.Runtime.Serialization.Primitives", "System.Security.Cryptography",
-        "System.Private.Xml", "System.Xml.XPath", "System.Private.Xml.Linq", "System.Xml.XPath.XDocument",
-        "System.Text.Encoding.CodePages", "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp", "GodotSharp",
+        "System.IO.Compression", "System.IO.Compression.Brotli", "System.Reflection.Metadata", "System.Private.Uri",
+        "System.Diagnostics.DiagnosticSource", "System.Formats.Asn1", "System.Security.Claims",
+        "System.Diagnostics.StackTrace", "System.Threading.Channels", "System.Net.Primitives",
+        "System.Security.Cryptography", "System.Net.NameResolution", "System.Net.Sockets", "System.Net.Security",
+        "System.Net.Quic", "System.Net.NetworkInformation", "System.Net.Http",
+        "System.Runtime.Serialization.Primitives", "System.Private.Xml", "System.Xml.XPath",
+        "System.Private.Xml.Linq", "System.Xml.XPath.XDocument", "System.Text.Encoding.CodePages",
+        "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp", "GodotSharp",
     ];
 
     /// <summary>Libraries compiled against the core ones and what their manifests reference (with what those are compiled
@@ -285,8 +328,15 @@ internal static class UpstreamSources
         ("System.IO.MemoryMappedFiles", [], ["System.IO.MemoryMappedFiles"]),
         ("System.IO.Compression", [], ["System.IO.Compression"]),
         ("System.Reflection.Metadata", [], ["System.Reflection.Metadata", "System.Reflection.PortableExecutable"]),
-        ("System.Private.Xml", [], ["System.Xml"]),
+        ("System.Private.Uri", [], ["Uri"]),
+        ("System.Diagnostics.DiagnosticSource", [], ["System.Diagnostics.Metrics", "DiagnosticSource", "ActivitySource", "System.Diagnostics.Activity"]),
+        ("System.Formats.Asn1", [], ["System.Formats.Asn1"]),
+        ("System.Security.Claims", [], ["System.Security.Claims"]),
+        ("System.Threading.Channels", [], ["System.Threading.Channels"]),
         ("System.Security.Cryptography", [], ["System.Security.Cryptography"]),
+        ("System.Net.Primitives", [], ["System.Net"]),
+        ("System.Net.Http", [], ["System.Net.Http"]),
+        ("System.Private.Xml", [], ["System.Xml"]),
         ("Microsoft.CodeAnalysis.CSharp", ["Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp"], []),
         ("GodotSharp", ["GodotSharp"], []),
     ];

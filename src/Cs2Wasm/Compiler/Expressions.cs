@@ -39,7 +39,8 @@ sealed partial class FunctionCompiler
     void EmitCondition(IOperation op)
     {
         var o = EmitValue(op);
-        var t = TypeOf(op);
+        // (the graph's read of an interpolated string handler's `out bool` has no type: its slot's)
+        var t = op is IFlowCaptureReferenceOperation { Type: null } r && _captureSlots.TryGetValue(r.Id, out var s) ? s.type : TypeOf(op);
         if (Types.PrimOf(t) != Prim.Bool) throw new CompileException("condition is not bool: " + op.Syntax, op.Syntax.GetLocation());
     }
 
@@ -525,7 +526,13 @@ sealed partial class FunctionCompiler
             case IConversionOperation cv when cv.Operand is IAnonymousFunctionOperation == false && IsAddressable(cv.Operand) && T.StorageOf(TypeOf(cv)).size == T.StorageOf(TypeOf(cv.Operand)).size:
                 return EmitAddressBase(cv.Operand);
         }
-        if (op.Kind == OperationKind.None) return EmitPointerAddress(op);
+        if (op is IFlowCaptureReferenceOperation fcr && _captureSlots.TryGetValue(fcr.Id, out var cslot))
+        {
+            E.Get(0);
+            if (_addrCaptures.Contains(fcr.Id)) { E.Load(Op.I32Load, cslot.off); return 0; }
+            return cslot.off;
+        }
+        if (op.Kind == OperationKind.None && op.Syntax is not (StackAllocArrayCreationExpressionSyntax or ImplicitStackAllocArrayCreationExpressionSyntax)) return EmitPointerAddress(op);
         // rvalue: materialize a temporary
         var t = TypeOf(op);
         if (Types.IsStruct(t)) { EmitValue(op); return 0; }

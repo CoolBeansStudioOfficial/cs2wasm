@@ -36,16 +36,20 @@ static class Libraries
         "System.Linq.Expressions", "Microsoft.CSharp", "System.Linq.Queryable",
         "System.ComponentModel", "System.ComponentModel.Primitives", "System.Collections.Specialized",
         "System.Diagnostics.TraceSource", "System.Collections.Immutable", "System.IO.MemoryMappedFiles",
-        "System.IO.Compression", "System.Reflection.Metadata", "System.Private.Uri", "System.Net.Primitives",
-        "System.Net.Http", "System.Runtime.Serialization.Primitives", "System.Security.Cryptography",
-        "System.Private.Xml", "System.Xml.XPath", "System.Private.Xml.Linq", "System.Xml.XPath.XDocument",
-        "System.Text.Encoding.CodePages", "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
+        "System.IO.Compression", "System.IO.Compression.Brotli", "System.Reflection.Metadata", "System.Private.Uri",
+        "System.Diagnostics.DiagnosticSource", "System.Formats.Asn1", "System.Security.Claims",
+        "System.Diagnostics.StackTrace", "System.Threading.Channels", "System.Net.Primitives",
+        "System.Security.Cryptography", "System.Net.NameResolution", "System.Net.Sockets", "System.Net.Security",
+        "System.Net.Quic", "System.Net.NetworkInformation", "System.Net.Http",
+        "System.Runtime.Serialization.Primitives", "System.Private.Xml", "System.Xml.XPath",
+        "System.Private.Xml.Linq", "System.Xml.XPath.XDocument", "System.Text.Encoding.CodePages",
+        "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
     ];
 
     /// <summary>Libraries cs2wasm writes by hand (members the others name, for capabilities the sandbox lacks): compiled,
     /// never evaluated from dotnet/runtime.</summary>
     public static readonly HashSet<string> HandWritten = ["System.IO.MemoryMappedFiles", "System.IO.Compression", "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
-        "System.Net.Primitives", "System.Net.Http", "System.Runtime.Serialization.Primitives", "System.Security.Cryptography", "System.Text.Encoding.CodePages"];
+        "System.Runtime.Serialization.Primitives", "System.Text.Encoding.CodePages"];
 
     public static string Project(string root, string lib) => lib == "System.Private.CoreLib"
         ? Path.Combine(root, "src", "mono", "System.Private.CoreLib", "System.Private.CoreLib.csproj")
@@ -55,6 +59,13 @@ static class Libraries
         ? Path.Combine(root, "src", "libraries", "System.Private.CoreLib", "src", "Resources", "Strings.resx")
         : Path.Combine(root, "src", "libraries", lib, "src", "Resources", "Strings.resx");
 
+    /// <summary>The .NET reference pack (the public API of the libraries).</summary>
+    public static string RefPack()
+    {
+        var packs = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "packs", "Microsoft.NETCore.App.Ref");
+        return Directory.GetDirectories(Directory.GetDirectories(packs).OrderBy(d => Version.TryParse(Path.GetFileName(d), out var v) ? v : new Version()).Last(), "*", SearchOption.AllDirectories).First(d => File.Exists(Path.Combine(d, "System.Runtime.dll")));
+    }
+
     public static int Run(string root, string upstream, string[]? only = null)
     {
         foreach (var lib in All)
@@ -62,7 +73,18 @@ static class Libraries
             if (only != null && !only.Contains(lib) || HandWritten.Contains(lib)) continue;
             var dir = Path.Combine(upstream, lib);
             Directory.CreateDirectory(dir);
-            new Manifest(root, lib).Write(Path.Combine(dir, "manifest.txt"));
+            var manifest = new Manifest(root, lib);
+            manifest.Write(Path.Combine(dir, "manifest.txt"));
+            // a platform-not-supported assembly on the browser (Sockets, Security, Quic...): its API, throwing
+            var pnsePath = Path.Combine(dir, "Generated", "PlatformNotSupported.g.cs");
+            if (manifest.Prop("GeneratePlatformNotSupportedAssemblyMessage") is { Length: > 0 } msg)
+            {
+                var excl = manifest.Prop("ApiExclusionListPath") is { Length: > 0 } ex && File.Exists(Path.Combine(Path.GetDirectoryName(Project(root, lib))!, ex))
+                    ? File.ReadAllLines(Path.Combine(Path.GetDirectoryName(Project(root, lib))!, ex)) : [];
+                Directory.CreateDirectory(Path.GetDirectoryName(pnsePath)!);
+                File.WriteAllText(pnsePath, Stubs.Pnse(RefPack(), lib + ".dll", msg, excl, manifest.Files.Select(f => Path.Combine(root, f))));
+            }
+            else if (File.Exists(pnsePath)) File.Delete(pnsePath);
             var resx = Resx(root, lib);
             if (File.Exists(resx)) global::Resx.Run(resx, Path.Combine(dir, "Generated", "SR.g.cs"));
         }
@@ -76,6 +98,10 @@ static class Libraries
 sealed class Manifest
 {
     readonly Dictionary<string, string> props = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>An evaluated property of the project.</summary>
+    public string? Prop(string name) => props.TryGetValue(name, out var v) ? v : null;
+    /// <summary>The evaluated source files, relative to the runtime root.</summary>
+    public IReadOnlyList<string> Files => files;
     readonly List<string> files = [];
     readonly List<string> references = [];
     readonly List<(string Path, string Why)> replaced = [];
@@ -95,6 +121,7 @@ sealed class Manifest
     [
         ("src/libraries/System.Private.CoreLib/src/System/Threading/ThreadPool.Browser.Threads.cs", "cs2wasm's workers have no JS event loop to yield to"),
         ("src/libraries/System.Private.CoreLib/src/System/TimeZoneInfo.Unix.NonAndroid.cs", "no time zone database: the local zone has the engine clock's offset (Boundary/TimeZoneInfo.Cs2Wasm.cs)"),
+        ("src/libraries/System.Net.Http/src/System/Net/Http/BrowserHttpHandler/BrowserHttpInterop.cs", "the browser runtime's JavaScript interop: the host's fetch, through imports (Boundary/BrowserHttpInterop.cs)"),
     ];
     readonly SortedSet<string> unknown = [];
     // cs2wasm's choices: the projects may not override them

@@ -39,6 +39,9 @@ public sealed class CompileOptions
     public BoundaryTable Boundary { get; init; } = new();
     /// <summary>Custom sections written into the module as given.</summary>
     public IReadOnlyList<(string Name, byte[] Data)> CustomSections { get; init; } = [];
+    /// <summary>The program's manifest resources (its project's EmbeddedResource items: logical name, contents),
+    /// for Assembly.GetManifestResourceStream and ResourceManager.</summary>
+    public IReadOnlyList<(string Name, byte[] Data)> Resources { get; init; } = [];
     public IReadOnlyList<ICompilerPlugin> Plugins { get; init; } = [];
     /// <summary>Minimum size of the imported memory, in 64 KiB pages. The engine creates it at least this large.</summary>
     public int MemoryInitialPages { get; init; } = 256;

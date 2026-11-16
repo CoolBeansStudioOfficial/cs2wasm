@@ -820,6 +820,7 @@ sealed partial class FunctionCompiler
             case "TypeInfo.GenericParamMethod": E.Call(Rt.TypeInfo("gp_method")); return Own.None;
             case "TypeInfo.GenericConstraints": E.Call(Rt.TypeInfo("gp_constraints")); return Own.None;
             case "TypeInfo.AssemblyNames": E.Call(D.AssemblyNamesFn); return Own.None;
+            case "TypeInfo.ManifestResources": E.Call(D.ManifestResourcesFn); return Own.None;
             case "TypeInfo.DeclaringId": E.Call(Rt.TypeInfo("declaring")); return Own.None;
             case "TypeInfo.Size": E.Call(Rt.TypeInfo("size")); return Own.None;
             case "TypeInfo.BoxOffset": E.Call(Rt.TypeInfo("box_offset")); return Own.None;
@@ -852,6 +853,7 @@ sealed partial class FunctionCompiler
             case "Atomic.Notify": E.Emit(Op.MemoryAtomicNotify, 0, 2); return Own.None;
             case "Atomic.Fence": E.Emit(Op.AtomicFence); return Own.None;
             case "Rt.ThreadId": E.GGet(D.ThreadId); return Own.None;
+            case "Rt.ShareCheck": E.I32(RuntimeFns.ShareCheckOn ? 1 : 0); return Own.None;
             case "Limbo.DestroyObject": E.Call(Rt.Destroy); return Own.None;
             case "Rt.NullRef": E.I32(0); return Own.None;
             case "Mem.RefI32": return Own.None;

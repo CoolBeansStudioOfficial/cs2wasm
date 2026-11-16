@@ -35,6 +35,9 @@ static class Check
         ["RSEXPERIMENTAL001"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL002"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL003"] = ReportDiagnostic.Suppress,
         ["RSEXPERIMENTAL004"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL005"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL006"] = ReportDiagnostic.Suppress,
         ["RSEXPERIMENTAL007"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL008"] = ReportDiagnostic.Suppress, ["RSEXPERIMENTAL009"] = ReportDiagnostic.Suppress,
+            // (the libraries' experimental APIs, which their projects suppress: ML-KEM, ML-DSA, HPKE...)
+            ["SYSLIB5001"] = ReportDiagnostic.Suppress, ["SYSLIB5002"] = ReportDiagnostic.Suppress, ["SYSLIB5003"] = ReportDiagnostic.Suppress, ["SYSLIB5004"] = ReportDiagnostic.Suppress, ["SYSLIB5005"] = ReportDiagnostic.Suppress,
+            ["SYSLIB5006"] = ReportDiagnostic.Suppress, ["SYSLIB5007"] = ReportDiagnostic.Suppress, ["SYSLIB5008"] = ReportDiagnostic.Suppress, ["SYSLIB5009"] = ReportDiagnostic.Suppress, ["SYSLIB5010"] = ReportDiagnostic.Suppress,
     };
 
 

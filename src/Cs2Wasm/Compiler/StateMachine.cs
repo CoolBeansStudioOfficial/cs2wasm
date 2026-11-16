@@ -259,6 +259,8 @@ sealed partial class FunctionCompiler
     void AddMachineVar(Display d, ISymbol s, ITypeSymbol t)
     {
         if (d.Slots.ContainsKey(s)) return;
+        // a ref local holds an address, in a local of MoveNext's: C# keeps it from living across a suspension
+        if (s is ILocalSymbol { IsRef: true }) return;
         var (size, align) = T.StorageOf(t);
         d.Size = (d.Size + align - 1) / align * align;
         d.Slots[s] = (d.Size, t);
@@ -1154,6 +1156,16 @@ sealed partial class FunctionCompiler
     // CFG-only operations
     Own EmitFlowCapture(IFlowCaptureOperation fc)
     {
+        if (_addrCaptures.Contains(fc.Id))
+        {
+            // a captured reference (a branch of `ref c ? ref a : ref b`): its address
+            var s = _captureSlots[fc.Id];
+            int a = Scratch(ValType.I32);
+            BeginTemps(); EmitAddress(fc.Value); E.Set(a); EndTemps();
+            E.Get(0); E.Get(a); E.Store(Op.I32Store, s.off);
+            FreeScratch(ValType.I32, a);
+            return Own.None;
+        }
         var vt = fc.Value.Type != null ? TypeOf(fc.Value) : D.ObjectType;
         if (!_captureSlots.TryGetValue(fc.Id, out var slot))
         {
@@ -1175,6 +1187,9 @@ sealed partial class FunctionCompiler
     {
         var writes = new Dictionary<CaptureId, IFlowCaptureOperation>();
         var readTypes = new Dictionary<CaptureId, ITypeSymbol>();
+        var initOnly = new Dictionary<CaptureId, IFlowCaptureReferenceOperation>();
+        // captures read by reference: `r = ref capture`, or a ref/out/in argument
+        var byRef = new HashSet<CaptureId>();
         foreach (var b in _cfg!.Blocks)
         {
             var roots = b.Operations.AsEnumerable();
@@ -1182,12 +1197,34 @@ sealed partial class FunctionCompiler
             foreach (var r in roots)
                 foreach (var o in r.DescendantsAndSelf())
                 {
+                    if (o is IFlowCaptureReferenceOperation br && (br.Parent is ISimpleAssignmentOperation { IsRef: true } ra && ra.Value == br
+                        || br.Parent is IArgumentOperation { Parameter.RefKind: not RefKind.None }))
+                        byRef.Add(br.Id);
                     if (o is IFlowCaptureOperation fc && !writes.ContainsKey(fc.Id)) writes[fc.Id] = fc;
                     else if (o is IFlowCaptureReferenceOperation fr && fr.Type != null && !readTypes.ContainsKey(fr.Id)) readTypes[fr.Id] = TypeOf(fr);
+                    // an out argument the graph introduces (an interpolated string handler's trailing `out bool`):
+                    // untyped, initialized by the call it is passed to
+                    else if (o is IFlowCaptureReferenceOperation { Type: null, Parent: IArgumentOperation { Parameter: { } p } } ur)
+                    {
+                        readTypes.TryAdd(ur.Id, T.Resolve(p.Type, Map));
+                        initOnly.TryAdd(ur.Id, ur);
+                    }
                 }
         }
+        foreach (var (id, ur) in initOnly)
+            if (!writes.ContainsKey(id))
+            {
+                int off = _machine!.Machine.Extra("cap" + id.GetHashCode() + "_" + ur.Syntax.SpanStart, readTypes[id], T);
+                _captureSlots[id] = (off, readTypes[id]);
+            }
         foreach (var (id, fc) in writes)
         {
+            if (byRef.Contains(id))
+            {
+                _addrCaptures.Add(id);
+                _captureSlots[id] = (_machine!.Machine.Extra("cap" + id.GetHashCode() + "_" + fc.Syntax.SpanStart, IntType, T), readTypes.TryGetValue(id, out var rt0) ? rt0 : fc.Value.Type != null ? TypeOf(fc.Value) : D.ObjectType);
+                continue;
+            }
             var t = readTypes.TryGetValue(id, out var rt) ? rt : fc.Value.Type != null ? TypeOf(fc.Value) : D.ObjectType;
             int off = _machine!.Machine.Extra("cap" + id.GetHashCode() + "_" + fc.Syntax.SpanStart, t, T);
             _captureSlots[id] = (off, t);
@@ -1195,10 +1232,19 @@ sealed partial class FunctionCompiler
     }
 
     readonly Dictionary<CaptureId, (int off, ITypeSymbol type)> _captureSlots = [];
+    /// <summary>Captures that hold an address (their slot an i32; the type is what it refers to).</summary>
+    readonly HashSet<CaptureId> _addrCaptures = [];
 
     Own EmitFlowCaptureReference(IFlowCaptureReferenceOperation r)
     {
         if (!_captureSlots.TryGetValue(r.Id, out var s)) throw new CompileException("flow capture read before write");
+        if (_addrCaptures.Contains(r.Id))
+        {
+            E.Get(0); E.Load(Op.I32Load, s.off);
+            if (Types.IsStruct(s.type)) return Own.None;
+            E.Load(Types.LoadOp(s.type));
+            return Types.IsRef(s.type) ? Own.Unstable : Own.None;
+        }
         E.Get(0);
         if (Types.IsStruct(s.type)) { E.I32(s.off); E.Op(Op.I32Add); return Own.None; }
         E.Load(Types.LoadOp(s.type), s.off);

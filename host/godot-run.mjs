@@ -2,6 +2,7 @@
 // usage: node host/godot-run.mjs module.wasm extension_api.json res://Script.cs NativeClass [log.txt]
 import { readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { cs2wasmImports, threadImports } from './engine.mjs';
+import { startIo } from './http.mjs';
 import { GodotStub } from './godot.mjs';
 
 const [file, api, scriptPath, nodeClass, logFile] = process.argv.slice(2);
@@ -14,6 +15,7 @@ const out = {
 };
 const engine = new GodotStub(module, api, { log: (l) => lines.push(l), write: out.write });
 const imports = { env: { memory }, cs2wasm: { ...cs2wasmImports(module, () => memory, out), ...threadImports(module, memory, out, () => {}) }, godot: engine.imports() };
+startIo(module, memory);
 const instance = new WebAssembly.Instance(module, imports);
 engine.attach(instance, memory);
 instance.exports.init();

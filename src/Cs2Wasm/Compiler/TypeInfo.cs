@@ -156,6 +156,7 @@ sealed partial class RuntimeGen
             EmitIdTable(fn, n, entry, byRef);
         }
         D.EmitAssemblyNames();
+        D.EmitManifestResources();
     }
 
     static int GenericParameterAttributes(ITypeParameterSymbol tp) =>

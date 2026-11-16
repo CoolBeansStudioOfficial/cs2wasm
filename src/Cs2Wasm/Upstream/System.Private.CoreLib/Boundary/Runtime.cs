@@ -149,6 +149,24 @@ namespace Cs2Wasm.Runtime
         }
 
         [Intrinsic] public static extern int ThreadId();
+        /// <summary>CS2WASM_SHARE_CHECK=1 (diagnosis of section 4.5's sharing): true, and an object's hash word carries
+        /// the thread that allocated it in bits 24-30; a plain count update from another thread is reported.</summary>
+        [Intrinsic] public static extern bool ShareCheck();
+
+        static int s_violations;
+
+        /// <summary>CS2WASM_SHARE_CHECK: an object another thread allocated and never shared had its count updated
+        /// plainly on this one (the first few, with the stack).</summary>
+        public static unsafe void ShareViolation(int a)
+        {
+            if (Atomic.Add32(ref s_violations, 1) > 5) return;
+            string text = "share violation: " + TypeInfo.Type(Mem.LoadI32(a + 4)).ToString() + " allocated on thread " + ((Mem.LoadI32(a + 8) >> 24) & 0x7F).ToString()
+                + ", count " + Mem.LoadI32(a).ToString() + ", on thread " + ThreadId().ToString() + "\n";
+            fixed (char* p = text) Engine.Write((int)p, text.Length);
+            // (a trap: the engine's stack trace shows where)
+            Mem.StoreI32(-4, 0);
+        }
+
         /// <summary>No other thread can ever run: the program starts none (known when the whole program is compiled).</summary>
         [Intrinsic] public static extern bool SingleThreaded();
         /// <summary>Releases the current thread's thread-static references (its end).</summary>
@@ -261,7 +279,9 @@ namespace Cs2Wasm.Runtime
             int a = Alloc(size);
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
-            Mem.StoreI32(a + 8, Atomic.Add32(ref s_hash, 1) + 1);
+            int h = Atomic.Add32(ref s_hash, 1) + 1;
+            if (ShareCheck()) h = (h & 0xFFFFFF) | ((ThreadId() & 0x7F) << 24);
+            Mem.StoreI32(a + 8, h);
             return a;
         }
 

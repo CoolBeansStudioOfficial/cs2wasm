@@ -169,10 +169,43 @@ namespace System.Reflection
 
         public override string[] GetManifestResourceNames()
         {
-            var this_assembly = this;
-            string[]? res = null;
-            GetManifestResourceNames(new QCallAssembly(ref this_assembly), ObjectHandleOnStack.Create(ref res));
-            return res!;
+            // cs2wasm: the module's table of manifest resources
+            var r = new List<string>();
+            string simple = SimpleName();
+            int t = Cs2Wasm.Runtime.TypeInfo.ManifestResources(), n = Cs2Wasm.Runtime.Mem.LoadI32(t);
+            for (int i = 0; i < n; i++)
+            {
+                int e = t + 4 + 16 * i;
+                if (Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Mem.LoadI32(e)) == simple) r.Add(Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Mem.LoadI32(e + 4)));
+            }
+            return r.ToArray();
+        }
+
+        /// <summary>cs2wasm: the assembly's name without its version, culture and key.</summary>
+        private string SimpleName()
+        {
+            string full = FullName ?? "";
+            int comma = full.IndexOf(',');
+            return comma >= 0 ? full.Substring(0, comma) : full;
+        }
+
+        /// <summary>cs2wasm: this assembly's manifest resource of the name (case-sensitive, as the runtime's), from
+        /// the module's table (TypeInfo.ManifestResources): its bytes, or null.</summary>
+        private unsafe byte* ManifestResource(string name, out int size)
+        {
+            string simple = SimpleName();
+            int t = Cs2Wasm.Runtime.TypeInfo.ManifestResources(), n = Cs2Wasm.Runtime.Mem.LoadI32(t);
+            for (int i = 0; i < n; i++)
+            {
+                int e = t + 4 + 16 * i;
+                if (Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Mem.LoadI32(e + 4)) == name && Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Mem.LoadI32(e)) == simple)
+                {
+                    size = Cs2Wasm.Runtime.Mem.LoadI32(e + 12);
+                    return (byte*)Cs2Wasm.Runtime.Mem.LoadI32(e + 8);
+                }
+            }
+            size = 0;
+            return null;
         }
 
                 private static void GetExportedTypes(QCallAssembly assembly_h, ObjectHandleOnStack res) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's GetExportedTypes): cs2wasm's reflection reads the compiler's metadata");
@@ -276,11 +309,12 @@ namespace System.Reflection
                 int length;
                 Module? resourceModule = null;
                 RuntimeAssembly? assembly = this;
-                byte* data = (byte*)GetManifestResourceInternal(new QCallAssembly(ref assembly), name, out length, ObjectHandleOnStack.Create(ref resourceModule));
+                // cs2wasm: the module's table of manifest resources
+                byte* data = assembly.ManifestResource(name, out length);
                 if (data == null) {
                     assembly = AssemblyLoadContext.OnResourceResolve(assembly!, name);
                     if (assembly != null)
-                        data = (byte*)GetManifestResourceInternal(new QCallAssembly(ref assembly), name, out length, ObjectHandleOnStack.Create(ref resourceModule));
+                        data = assembly.ManifestResource(name, out length);
                     if (data == null)
                         return null;
                 }

@@ -2,6 +2,7 @@
 // usage: node host/run.mjs module.wasm [export=main] [--pages N] [--max-pages N]
 import { readFileSync, writeSync } from 'node:fs';
 import { cs2wasmImports, threadImports } from './engine.mjs';
+import { startIo } from './http.mjs';
 
 const args = process.argv.slice(2);
 const file = args[0];
@@ -34,6 +35,7 @@ for (const imp of WebAssembly.Module.imports(module)) {
   if (imports[imp.module][imp.name]) continue;
   imports[imp.module][imp.name] = (...a) => { buf += `[engine] ${imp.module}.${imp.name}(${a.join(', ')})\n`; return 0; };
 }
+startIo(module, memory);
 const instance = new WebAssembly.Instance(module, imports);
 instance.exports.init();
 const fn = instance.exports[entry];

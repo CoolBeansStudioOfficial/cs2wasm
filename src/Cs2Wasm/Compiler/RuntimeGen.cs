@@ -637,6 +637,7 @@ sealed partial class RuntimeGen
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
             D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
+        // host operations (the host's fetch: section 8): the host finishes them through this export
         // a worker instance starts here: its own stack, thread-local block and id, then the thread's delegate
         if (D.UsesThreads)
         {
@@ -647,6 +648,7 @@ sealed partial class RuntimeGen
             // deferred destruction of shared objects
             {
                 D.LibMethod("Cs2Wasm.Runtime.Limbo", "Add", 1);
+                if (RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareViolation", 1);
                 D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportEnter", 0);
                 D.LibMethod("Cs2Wasm.Runtime.Limbo", "ExportExit", 0);
             }

@@ -38,11 +38,9 @@ internal sealed partial class Driver
 {
     public WasmGlobal? StackLo, StackHi;
     bool? _mayUseThreads;
-    /// <summary>Whether the program's source names anything that starts threads; publication code is emitted only
-    /// then (it is removed again at the end if no thread is actually reachable).</summary>
-    public bool MayUseThreads => _mayUseThreads ??= Inputs.Any(c => c.SyntaxTrees.Any(t => t.GetRoot().DescendantNodes()
-        .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.SimpleNameSyntax>()
-        .Any(n => n.Identifier.ValueText is "Thread" or "ThreadPool" or "Parallel" or "Run" or "StartNew" or "QueueUserWorkItem")));
+    /// <summary>Publication code is emitted for every program: any code may start threads, the program's or a
+    /// library's (Roslyn's Parallel.For); it is removed again at the end if no thread is actually reachable.</summary>
+    public bool MayUseThreads => _mayUseThreads ??= true;
 
     /// <summary>Fills in the sharing functions (threads) or removes their calls (no threads).</summary>
     internal void EmitSharing(bool threads, IEnumerable<(int id, ITypeSymbol type)> types)
