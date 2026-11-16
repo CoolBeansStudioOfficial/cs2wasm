@@ -242,7 +242,7 @@ namespace Cs2Wasm.Runtime
             if (b == 0) { Refill(slot, size); b = Mem.LoadI32(slot); }
             Mem.StoreI32(slot, Mem.LoadI32(b + 8));
             t_cached -= size;
-            Mem.Fill(b, 0, size);
+            Zero(b, size);
             return b;
         }
 
@@ -354,7 +354,7 @@ namespace Cs2Wasm.Runtime
                 if (head != 0)
                 {
                     Mem.StoreI32(slot, Mem.LoadI32(head + 8));
-                    Mem.Fill(head, 0, size);
+                    Zero(head, size);
                     return head;
                 }
             }
@@ -441,12 +441,31 @@ namespace Cs2Wasm.Runtime
         }
 
         /// <summary>New object: count 1, type id, hash code from a per-instance counter in allocation order (section 7.3).</summary>
+        [System.ThreadStatic] static int t_hash;
+
+        /// <summary>An object's identity hash: a counter in allocation order (section 7.3). With threads, a counter of
+        /// each thread under the thread's id: the order on a thread does not depend on the others, and no thread
+        /// waits for a shared counter.</summary>
+        static int NextHash()
+        {
+            if (SingleThreaded()) return ++s_hash;
+            return ((ThreadId() & 0xFF) << 22) ^ ++t_hash;
+        }
+
+        /// <summary>Clears a block (a multiple of 8 bytes). A small one word by word: memory.fill is a call into the
+        /// engine, slower than the few stores.</summary>
+        static void Zero(int addr, int size)
+        {
+            if (size > 256) { Mem.Fill(addr, 0, size); return; }
+            for (int e = addr + size; addr < e; addr += 8) Mem.StoreI64(addr, 0);
+        }
+
         public static int AllocObject(int size, int typeId)
         {
             int a = Alloc(size);
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
-            int h = Atomic.Add32(ref s_hash, 1) + 1;
+            int h = NextHash();
             if (ShareCheck()) h = (h & 0xFFFFFF) | ((ThreadId() & 0x3F) << 24);
             Mem.StoreI32(a + 8, h);
             return a;
@@ -459,7 +478,7 @@ namespace Cs2Wasm.Runtime
             Mem.Fill(a, 0, size);
             Mem.StoreI32(a, -1);
             Mem.StoreI32(a + 4, typeId);
-            Mem.StoreI32(a + 8, Atomic.Add32(ref s_hash, 1) + 1);
+            Mem.StoreI32(a + 8, NextHash());
             return a;
         }
 

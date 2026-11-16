@@ -127,6 +127,8 @@ internal sealed class WasmModule
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
             Inliner.Run(Functions, ComputeMayThrow());
+            if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
+                foreach (var f in Functions) if (!f.IsImport) SmallBlocks.Run(f);
             foreach (var f in Functions) if (!f.IsImport) Peephole.Run(f);
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_LOCALS") != "1")
             {

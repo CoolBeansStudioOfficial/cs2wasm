@@ -13,7 +13,17 @@ static class Inliner
     const int SingleCallerBody = 120; // a function with one call site and no other use is inlined up to this size
     const int SingleCallerCalling = 100; // the same for one that calls functions
 
+    // (CS2WASM_EXP_INLINE=n, an experiment: bodies up to n instructions at every site, whether they can throw or not,
+    // in three rounds; traces lose the inlined frames)
+    static readonly int s_exp = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_EXP_INLINE"), out var x) ? x : 0;
+
     public static void Run(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow)
+    {
+        if (s_exp > 0) { for (int round = 0; round < 3; round++) RunOnce(functions, []); return; }
+        RunOnce(functions, mayThrow);
+    }
+
+    static void RunOnce(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow)
     {
         var callers = new Dictionary<WasmFunction, int>();
         foreach (var f in functions)
@@ -32,7 +42,7 @@ static class Inliner
             int copy = n + g.Type.Params.Length + 2 * g.Locals.Count + 2;
             // (a function that calls others, inlined into its one caller up to a smaller size: measured on the module)
             bool leaf = !g.Body.Any(x => x.Op == Op.Call);
-            if (copy <= SmallBody || single && n <= (leaf ? SingleCallerBody : SingleCallerCalling)) candidates.Add(g);
+            if (copy <= (s_exp > 0 ? s_exp : SmallBody) || single && n <= (leaf ? SingleCallerBody : SingleCallerCalling)) candidates.Add(g);
         }
         if (candidates.Count == 0) return;
         foreach (var f in functions)
@@ -61,6 +71,8 @@ static class Inliner
             switch (ins.Op)
             {
                 case Op.Call when ins.Ref is WasmFunction h && !h.IsImport && !mayThrow.Contains(h) && h != g:
+                    break;
+                case Op.Call or Op.CallIndirect or Op.Throw or Op.ThrowRef when s_exp > 0:
                     break;
                 case Op.Call or Op.CallIndirect or Op.Throw or Op.ThrowRef or Op.TryTable:
                     return false;

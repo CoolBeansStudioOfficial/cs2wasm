@@ -983,7 +983,15 @@ sealed partial class RuntimeGen
         if (f == null) return;
         var marks = D.AllMethods.FirstOrDefault(m => m.Sym.Name == "OnDestroy" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled);
         var e = new Emitter(f);
-        if (marks != null) { e.Get(0); e.Call(marks.Fn); return; }
+        if (marks != null)
+        {
+            // (an object without a mark, which is nearly every object: nothing to ask; ObjectMarks.MarkedBit, and not
+            // an arena's member, whose hash word is its index)
+            e.Get(0); e.Load(Op.I32Load, 8); e.I32(0x40000000); e.Op(Op.I32And); e.Op(Op.I32Eqz);
+            e.Get(0); e.Load(Op.I32Load); e.I32(-2); e.Op(Op.I32GtS); e.Op(Op.I32And);
+            e.If(ValType.I32); e.I32(1); e.Else(); e.Get(0); e.Call(marks.Fn); e.End();
+            return;
+        }
         e.I32(1);
         foreach (var fn in D.Module.Functions)
         {
