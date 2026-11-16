@@ -26,7 +26,16 @@ const bin = join(root, 'tests', 'out', 'up', 'bin');
 lines.push('-r', join(bin, 'Microsoft.CodeAnalysis.dll'), '-r', join(bin, 'Microsoft.CodeAnalysis.CSharp.dll'));
 lines.push('-o', out, ...extra);
 const rsp = out + '.rsp';
-writeFileSync(rsp, lines.join('\n') + '\n');
 const [cmd, ...pre] = compiler.split(' ');
-const r = spawnSync(cmd, [...pre, '@' + rsp], { stdio: 'inherit' });
+// The self-hosted compiler sees the host's files under one root with '/' separators (host/fs.mjs: CS2WASM_FS_ROOT):
+// on Windows the drive is the root, and the paths are written without it.
+const selfHosted = pre.some((a) => a.endsWith('.wasm'));
+const px = (s) => selfHosted && process.platform === 'win32' ? s.replace(/(^|=)[A-Za-z]:/, '$1').replaceAll('\\', '/') : s;
+const env = { ...process.env };
+if (selfHosted && process.platform === 'win32') {
+  env.CS2WASM_FS_ROOT ??= root.slice(0, 3);
+  if (process.env.LOCALAPPDATA) env.CS2WASM_CACHE ??= px(join(process.env.LOCALAPPDATA, 'cs2wasm'));
+}
+writeFileSync(rsp, lines.map(px).join('\n') + '\n');
+const r = spawnSync(cmd, [...pre, '@' + px(rsp)], { stdio: 'inherit', env });
 process.exit(r.status ?? 1);

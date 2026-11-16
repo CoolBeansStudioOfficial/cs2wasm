@@ -7,16 +7,41 @@ import { startIo } from './http.mjs';
 
 const args = process.argv.slice(2);
 const file = args[0];
-let entry = 'main', pages = 256, maxPages = 16384;
+let entry = 'main', pages = 256, maxPages = 16384, userMax = false;
 globalThis.__cs2wasmArgs = [file];
 for (let i = 1; i < args.length; i++) {
   if (args[i] === '--') { globalThis.__cs2wasmArgs.push(...args.slice(i + 1)); break; }
   if (args[i] === '--pages') pages = +args[++i];
-  else if (args[i] === '--max-pages') maxPages = +args[++i];
+  else if (args[i] === '--max-pages') { maxPages = +args[++i]; userMax = true; }
   else entry = args[i];
 }
 
-const module = new WebAssembly.Module(readFileSync(file));
+const bytes = readFileSync(file);
+const module = new WebAssembly.Module(bytes);
+// the memory the module asks for (its import of env.memory: at least, at most), unless the command line says more
+{
+  const leb = (p) => { let r = 0, s = 0, x; do { x = bytes[p.i++]; r += (x & 0x7f) * 2 ** s; s += 7; } while (x & 0x80); return r; };
+  const p = { i: 8 };
+  while (p.i < bytes.length) {
+    const id = bytes[p.i++], size = leb(p), end = p.i + size;
+    if (id === 2) {
+      for (let n = leb(p); n > 0; n--) {
+        const name = () => { const l = leb(p); const s = Buffer.from(bytes.subarray(p.i, p.i + l)).toString('utf8'); p.i += l; return s; };
+        const mod = name(), field = name(), kind = bytes[p.i++];
+        if (kind === 0) leb(p);
+        else if (kind === 1) { p.i++; const f = leb(p); leb(p); if (f & 1) leb(p); }
+        else if (kind === 2) {
+          const f = leb(p), min = leb(p), max = f & 1 ? leb(p) : 65536;
+          if (mod === 'env' && field === 'memory') { pages = Math.max(pages, min); maxPages = Math.min(Math.max(maxPages, pages), max); if (!userMax) maxPages = max; }
+        }
+        else if (kind === 3) p.i += 2;
+        else if (kind === 4) { p.i++; leb(p); }
+      }
+      break;
+    }
+    p.i = end;
+  }
+}
 const memory = new WebAssembly.Memory({ initial: pages, maximum: maxPages, shared: true });
 let buf = '';
 const flush = () => { if (buf) { writeSync(1, buf); buf = ''; } };

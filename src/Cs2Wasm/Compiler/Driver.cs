@@ -1304,6 +1304,10 @@ internal sealed partial class Driver
         int staticEnd = StaticBase + (_staticSize + 15) / 16 * 16;
         StackTop = staticEnd + Options.StackSize;
         HeapBase = StackTop + 16;
+        // The module says how much memory it needs to start at all: its data, statics and stack, and a first
+        // megabyte of heap (a program with large resources needs more than the default; the host reads the number).
+        long need = ((long)HeapBase + (1 << 20) + 65535) / 65536;
+        if (need > Module.MemoryMinPages) Module.MemoryMinPages = (int)Math.Min(need, Module.MemoryMaxPages);
     }
 
     public int Version => 1;
