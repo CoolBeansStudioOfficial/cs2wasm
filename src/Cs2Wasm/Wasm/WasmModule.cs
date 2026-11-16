@@ -161,6 +161,7 @@ internal sealed class WasmModule
                     finally { Locals.MayThrow = null; }
                 }
             }
+            if (Environment.GetEnvironmentVariable("CS2WASM_NO_NORETURN") != "1") NoReturn.Run(Functions);
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
             AfterOptimize?.Invoke(Functions.Where(f => !f.IsImport));

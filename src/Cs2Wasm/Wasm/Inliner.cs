@@ -12,6 +12,8 @@ static class Inliner
     const int SmallBody = 7;      // instructions of the inlined copy; inlined at every call site
     const int SingleCallerBody = 120; // a function with one call site and no other use is inlined up to this size
     const int SingleCallerCalling = 100; // the same for one that calls functions
+    const int LoopBody = 24;      // a straight-line body that calls nothing, at a call site inside a loop
+    static readonly int s_loopBody = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_LOOP_INLINE"), out var lb) ? lb : LoopBody;
 
     // (CS2WASM_EXP_INLINE=n, an experiment: bodies up to n instructions at every site, whether they can throw or not,
     // in three rounds; traces lose the inlined frames)
@@ -37,8 +39,13 @@ static class Inliner
                 if (ins.Op == Op.Call && ins.Ref is WasmFunction g) callers[g] = callers.GetValueOrDefault(g) + 1;
         }
         var candidates = new HashSet<WasmFunction>();
+        // (in a loop the call is paid for every time round: a larger body goes in there, and only there)
+        var inLoops = new HashSet<WasmFunction>();
         foreach (var g in functions)
         {
+            // (the null check: it has no frame of its own in a trace, so a copy of it throws from the same frames; in
+            // the second round, when the checks that are not needed are gone)
+            if (tiny && g.Name == "rt.nonnull" && !g.IsImport && s_loopBody > 0) { inLoops.Add(g); continue; }
             if (mayThrow.Contains(g) || !Inlinable(g, mayThrow)) continue;
             int n = g.Body.Count;
             bool single = callers.GetValueOrDefault(g) == 1 && g.Exports.Count == 0 && !g.InTable;
@@ -46,22 +53,38 @@ static class Inliner
             int copy = n + g.Type.Params.Length + 2 * g.Locals.Count + 2;
             // (a function that calls others, inlined into its one caller up to a smaller size: measured on the module)
             bool leaf = !g.Body.Any(x => x.Op == Op.Call);
-            if (tiny) { if (leaf && n <= 4 && g.Locals.Count == 0 && g.Type.Params.Length <= 2) candidates.Add(g); continue; }
+            if (tiny)
+            {
+                if (leaf && n <= 4 && g.Locals.Count == 0 && g.Type.Params.Length <= 2) candidates.Add(g);
+                else if (leaf && copy <= s_loopBody && StraightLine(g)) inLoops.Add(g);
+                continue;
+            }
             if (copy <= (s_exp > 0 ? s_exp : SmallBody) || single && n <= (leaf ? SingleCallerBody : SingleCallerCalling)) candidates.Add(g);
+            else if (leaf && copy <= s_loopBody && StraightLine(g)) inLoops.Add(g);
         }
-        if (candidates.Count == 0) return changed;
+        if (candidates.Count == 0 && inLoops.Count == 0) return changed;
         foreach (var f in functions)
         {
             if (f.IsImport) continue;
             bool any = false;
-            foreach (var ins in f.Body) if (ins.Op == Op.Call && ins.Ref is WasmFunction g && candidates.Contains(g) && g != f) { any = true; break; }
+            foreach (var ins in f.Body) if (ins.Op == Op.Call && ins.Ref is WasmFunction g && (candidates.Contains(g) || inLoops.Contains(g)) && g != f) { any = true; break; }
             if (!any) continue;
             var outBody = new List<Instr>(f.Body.Count + 32);
+            var open = new List<bool>(); // the blocks open here: whether each is a loop
+            int loops = 0;
+            any = false;
             foreach (var ins in f.Body)
             {
-                if (ins.Op == Op.Call && ins.Ref is WasmFunction g && candidates.Contains(g) && g != f) Expand(f, g, outBody, ins.Pos);
+                switch (ins.Op)
+                {
+                    case Op.Loop: open.Add(true); loops++; break;
+                    case Op.Block or Op.If or Op.TryTable: open.Add(false); break;
+                    case Op.End when open.Count > 0: if (open[^1]) loops--; open.RemoveAt(open.Count - 1); break;
+                }
+                if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != f && (candidates.Contains(g) || loops > 0 && inLoops.Contains(g))) { Expand(f, g, outBody, ins.Pos); any = true; }
                 else outBody.Add(ins);
             }
+            if (!any) continue;
             f.Body = outBody;
             changed.Add(f);
         }

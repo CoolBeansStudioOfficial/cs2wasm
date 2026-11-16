@@ -811,7 +811,23 @@ sealed partial class FunctionCompiler
         int off = EmitArrayElementAddress(ae);
         if (Types.IsStruct(et)) { E.I32(off); E.Op(Op.I32Add); return Own.None; }
         E.Load(Types.LoadOp(et), off);
-        return Types.IsRef(et) ? Own.Unstable : Own.None;
+        if (!Types.IsRef(et)) return Own.None;
+        // an element of an array that stays put (a stable reference, or a field of one): held for a call, it needs no
+        // count unless an element store can run meanwhile (FieldBorrows.cs decides at the end)
+        if (ae.Indices.Length == 1)
+        {
+            var ar = ae.ArrayReference;
+            while (ar is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } ac) ar = ac.Operand;
+            if (IsStableBase(ar)) _lastFieldLoad = (E.Fn.Body.Count, Driver.ElementsKey);
+            else if (ar is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ai } afr && IsStableBase(ai) && afr.Field.ContainingType.TypeKind == TypeKind.Class
+                && !(ai is IParameterReferenceOperation && TypeOf(ai).IsValueType))
+            {
+                var ak = Driver.FieldKey(Owner(afr.Field), StorageField(afr.Field));
+                D.NoteBorrowField(ak, StorageField(afr.Field), T.Resolve(afr.Field.Type, Map));
+                _lastFieldLoad = (E.Fn.Body.Count, ak + "\n" + Driver.ElementsKey);
+            }
+        }
+        return Own.Unstable;
     }
 
     int EmitArrayElementAddress(IArrayElementReferenceOperation ae, int keepArray = -1)
@@ -1408,6 +1424,20 @@ sealed partial class FunctionCompiler
         if (op == Op.Nop)
         {
             if (f) { E.Call(Rt.FloatRem(w)); return; }
+            // A constant divisor that is neither 0 nor -1 can fail in no way: the instruction itself, no checks.
+            if (E.Fn.Body.Count > 0 && E.Fn.Body[^1] is { Ref: null } last && last.Op == (w == ValType.I64 ? Op.I64Const : Op.I32Const)
+                && last.Imm != 0 && (w == ValType.I64 ? last.Imm : (int)last.Imm) != -1)
+            {
+                bool dv = kind == BinaryOperatorKind.Divide, l64 = w == ValType.I64;
+                E.Op((dv, l64, signed) switch
+                {
+                    (true, false, true) => Op.I32DivS, (true, false, false) => Op.I32DivU,
+                    (true, true, true) => Op.I64DivS, (true, true, false) => Op.I64DivU,
+                    (false, false, true) => Op.I32RemS, (false, false, false) => Op.I32RemU,
+                    (false, true, true) => Op.I64RemS, _ => Op.I64RemU,
+                });
+                return;
+            }
             E.Call(Rt.IntDiv(kind == BinaryOperatorKind.Divide, w, signed));
             return;
         }

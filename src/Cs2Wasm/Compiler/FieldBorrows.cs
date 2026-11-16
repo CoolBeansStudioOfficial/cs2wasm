@@ -215,6 +215,9 @@ internal sealed partial class Driver
 
     /// <summary>The end of a local's scope (a no-op instruction: Imm is the local), for StoredWhileInScope.</summary>
     internal static readonly WriteMark ScopeEnd = new("scope end");
+    /// <summary>Where a function's handler for an exception on its way out begins (it releases what the function
+    /// holds and throws on): a temporary is not read again past it.</summary>
+    internal static readonly WriteMark HandlerStart = new("handler");
 
     /// <summary>Resolves the placeholders (RuntimeGen.Finish, when every function exists).</summary>
     public void ResolveFieldBorrows()
@@ -339,19 +342,24 @@ internal sealed partial class Driver
             bool ok = tkeys != null;
             // the borrow lasts from the retain to the statement's release: only what runs in between may not store the
             // fields (the function's own stores anywhere: the whole function's summary decides)
-            if (ok && live.Length > 0 && FieldWrites.TryGetValue(fn, out var own) && live.Any(own.Contains)) ok = false;
-            if (ok && tkeys!.Length > 0)
+            // fields, the function's own stores: those marked in between, and those without a place)
+            if (ok && live.Length > 0 && _unplacedWrites.TryGetValue(fn, out var unplaced) && live.Any(unplaced.Contains)) ok = false;
+            if (ok && (live.Length > 0 || tkeys!.Length > 0))
             {
                 var b = fn.Body;
                 int r = b.FindIndex(x => x.Op == Op.Call && x.Ref == retain);
-                int e = r < 0 ? -1 : b.FindIndex(r + 1, x => x.Op == Op.Call && x.Ref == release);
-                if (r < 0 || e < 0) ok = !tkeys.Any(k => summary!.Has(fn, k));
+                // (to the last release on a way that goes on; the releases of the handler for an exception on its way
+                // out come after everything, and past them the value is not looked at)
+                int h = b.FindLastIndex(x => x.Op == Op.Nop && ReferenceEquals(x.Ref, HandlerStart));
+                int e = r < 0 ? -1 : b.FindLastIndex(h < 0 ? b.Count - 1 : h, x => x.Op == Op.Call && x.Ref == release);
+                if (r < 0 || e < r) ok = !tkeys!.Any(k => summary!.Has(fn, k)) && !(FieldWrites.TryGetValue(fn, out var own) && live.Any(own.Contains));
                 else
                     for (int k = r + 1; k < e && ok; k++)
                     {
                         var ins = b[k];
-                        if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != retain) { foreach (var key in tkeys) if (summary!.Has(g, key)) { ok = false; break; } }
-                        else if (ins.Op == Op.CallIndirect) { foreach (var key in tkeys) if (summary!.HasIndirect(key, ins)) { ok = false; break; } }
+                        if (ins.Op == Op.Nop) { if (ins.Ref is WriteMark wm && !ReferenceEquals(wm, ScopeEnd) && Array.IndexOf(live, wm.Key) >= 0) ok = false; }
+                        else if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != retain) { foreach (var key in tkeys!) if (summary!.Has(g, key)) { ok = false; break; } }
+                        else if (ins.Op == Op.CallIndirect) { foreach (var key in tkeys!) if (summary!.HasIndirect(key, ins)) { ok = false; break; } }
                     }
             }
             markers[retain] = ok ? null : Rt.Retain;

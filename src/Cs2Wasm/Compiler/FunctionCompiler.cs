@@ -224,6 +224,8 @@ sealed partial class FunctionCompiler
             prologue.Add(new Instr { Op = Op.TryTable, Ref = tti, Pos = -1 });
             H(Op.End); H(Op.Unreachable); H(Op.End);
             H(Op.LocalSet, exn);
+            // (from here on an exception is on its way out: nothing reads a temporary again, FieldBorrows.cs)
+            H(Op.Nop, -1, Driver.HandlerStart);
             var save = E.Fn.Body; E.Fn.Body = handler;
             foreach (var s in _allSlots) ReleaseSlot(s);
             if (_usesFrame) { E.Get(_spEntry); E.GSet(D.StackPointer); }
