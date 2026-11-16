@@ -368,6 +368,11 @@ The module runs in the browser's WASM sandbox with only the engine's imports. Th
 - files, sockets, processes, environment, registry;
 - platform invoke (`DllImport`, `LibraryImport`), COM.
 
+The one exception is **files for the toolchain**: a module built with the file capability (an option of the build, for
+the self-hosted toolchain of section 9: Roslyn reads key files and documentation includes) gets `System.IO` over a
+virtual file system that its host serves through imports (sources, references, the files the build names). Games are
+never built with it, so for them files stay a build error.
+
 What does exist, though .NET programs might expect it not to here (owner):
 
 - **`unsafe` code and pointers compile.** A pointer is an offset into the module's own linear memory, which the WASM
