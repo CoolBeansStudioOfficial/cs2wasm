@@ -147,8 +147,8 @@ internal static partial class Interop
             ref int l = ref Mem.RefI32((int)monitor);
             while (Atomic.CompareExchange32(ref l, 0, 1) != 0)
             {
-                // the engine thread never blocks (section 4.5): it spins
-                if (Rt.ThreadId() != 1) Atomic.Wait32(ref l, 1, 1000000);
+                // (an engine's thread never blocks, section 4.5: it spins)
+                Threads.Block(ref l, 1, 1000000);
             }
         }
 
@@ -174,7 +174,7 @@ internal static partial class Interop
                 long left = end - Engine.MonotonicNs();
                 if (left <= 0) break;
                 Threads.SafePoint();
-                if (Rt.ThreadId() != 1) Atomic.Wait32(ref seq, s, left > 1000000 ? 1000000 : left);
+                Threads.Block(ref seq, s, left > 10000000 ? 10000000 : left);
             }
             LowLevelMonitor_Acquire(monitor);
             return signaled;

@@ -11,6 +11,9 @@ namespace Cs2Wasm.Runtime
     public static class ObjectMarks
     {
         public const int Weak = 1, FinalizerSuppressed = 2;
+        /// <summary>Bit 30 of an object's hash word: it has (or had) a mark, so its destruction looks it up; every other
+        /// object's destruction skips the table and its lock. (The identity hash leaves the bit out: Rt.HashOf.)</summary>
+        internal const int MarkedBit = 0x40000000;
         static Dictionary<int, int>? s_marks;
         static int s_count, s_busy;
 
@@ -25,6 +28,11 @@ namespace Cs2Wasm.Runtime
             s_marks[a] = f | flag;
             s_busy--;
             Rt.RuntimeUnlock();
+            if (Mem.LoadI32(a) > 0)
+            {
+                ref int w = ref Mem.RefI32(a + 8);
+                while (true) { int v = Atomic.Load32(ref w); if ((v & MarkedBit) != 0 || Atomic.CompareExchange32(ref w, v, v | MarkedBit) == v) break; }
+            }
         }
 
         public static void Clear(object o, int flag) => ClearAt(Rt.AddressOf(o), flag);
@@ -46,6 +54,7 @@ namespace Cs2Wasm.Runtime
         public static int OnDestroy(int addr)
         {
             if (s_count == 0 || s_busy != 0) return 1;
+            if (Mem.LoadI32(addr) > -2 && (Mem.LoadI32(addr + 8) & MarkedBit) == 0) return 1;
             Rt.RuntimeLock();
             s_busy++;
             bool has = s_marks!.TryGetValue(addr, out int f);

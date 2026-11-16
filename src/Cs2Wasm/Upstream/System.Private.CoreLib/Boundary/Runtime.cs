@@ -46,6 +46,9 @@ namespace Cs2Wasm.Runtime
         [Import("cs2wasm", "thread_spawn")] public static extern int ThreadSpawn(int stackTop, int tls, int id, int arg, int background);
         /// <summary>Cores the pool may use (navigator.hardwareConcurrency on the web).</summary>
         [Import("cs2wasm", "processor_count")] public static extern int ProcessorCount();
+        /// <summary>1 when the module's main thread may block in a wait (a Node process, a Web Worker); 0 when it is an
+        /// engine's thread that must not (a browser page's main thread): it then spins.</summary>
+        [Import("cs2wasm", "main_can_block")] public static extern int MainCanBlock();
         /// <summary>Console output: UTF-16 text at (ptr, length in chars).</summary>
         [Import("cs2wasm", "write")] public static extern void Write(int ptr, int len);
         /// <summary>An exception escaped an export: type name, message, stack trace (UTF-16 ptr/len pairs).</summary>
@@ -172,7 +175,7 @@ namespace Cs2Wasm.Runtime
                 fixed (char* p = bad) Engine.Write((int)p, bad.Length);
                 Mem.StoreI32(-4, 0);
             }
-            string text = "share violation: " + TypeInfo.Type(Mem.LoadI32(a + 4)).ToString() + " allocated on thread " + ((Mem.LoadI32(a + 8) >> 24) & 0x7F).ToString()
+            string text = "share violation: " + TypeInfo.Type(Mem.LoadI32(a + 4)).ToString() + " allocated on thread " + ((Mem.LoadI32(a + 8) >> 24) & 0x3F).ToString()
                 + ", count " + Mem.LoadI32(a).ToString() + ", on thread " + ThreadId().ToString() + "\n";
             fixed (char* p = text) Engine.Write((int)p, text.Length);
             // (a trap: the engine's stack trace shows where)
@@ -208,10 +211,125 @@ namespace Cs2Wasm.Runtime
 
         public static int Alloc(int size)
         {
+            // threads: small blocks come from the thread's own free lists, without the runtime lock
+            if (!SingleThreaded() && size <= MaxSmall) return AllocLocal(size);
             RuntimeLock();
             int a = AllocCore(size);
             RuntimeUnlock();
             return a;
+        }
+
+        // ------------------------------------------------------------------
+        // Per-thread caches of small blocks (programs with threads): a thread allocates from and frees into its own
+        // free lists, one per size class, and takes from or gives back to the shared ones in batches under the runtime
+        // lock: when a list is empty, when it holds more than CacheLimit bytes, and when the thread ends.
+        // ------------------------------------------------------------------
+        const int CacheLimit = 256 * 1024, RefillBytes = 16 * 1024;
+        [System.ThreadStatic] static int t_heads, t_cached;
+
+        static int AllocLocal(int size)
+        {
+            size = (size + 7) & ~7;
+            if (size < 16) size = 16;
+            int heads = t_heads;
+            if (heads == 0) heads = InitThreadCache();
+            int slot = heads + (size >> 3) * 4;
+            int b = Mem.LoadI32(slot);
+            if (b == 0) { Refill(slot, size); b = Mem.LoadI32(slot); }
+            Mem.StoreI32(slot, Mem.LoadI32(b + 8));
+            t_cached -= size;
+            Mem.Fill(b, 0, size);
+            return b;
+        }
+
+        static int InitThreadCache()
+        {
+            RuntimeLock();
+            int h = AllocCore(Classes * 4);
+            RuntimeUnlock();
+            Mem.Fill(h, 0, Classes * 4);
+            t_heads = h;
+            return h;
+        }
+
+        /// <summary>Fills an empty list of the thread's: blocks of the shared list of the size, else new ones carved from
+        /// the heap's top, RefillBytes' worth.</summary>
+        static void Refill(int slot, int size)
+        {
+            int want = Math.Max(1, RefillBytes / size), got = 0, list = 0;
+            RuntimeLock();
+            if (s_top == 0) InitHeap();
+            int shared = s_table + (size >> 3) * 4;
+            while (got < want)
+            {
+                int b = Mem.LoadI32(shared);
+                if (b == 0) break;
+                Mem.StoreI32(shared, Mem.LoadI32(b + 8));
+                Mem.StoreI32(b + 8, list); list = b; got++;
+            }
+            if (got == 0)
+            {
+                int bytes = want * size;
+                if (s_top + bytes > s_end || s_top + bytes < s_top)
+                {
+                    int need = s_top + bytes - s_end;
+                    GrowFor(need);
+                    s_end = Mem.Size() * 65536;
+                }
+                int start = s_top;
+                s_top += bytes;
+                for (int i = want - 1; i >= 0; i--) { int b = start + i * size; Mem.StoreI32(b + 8, list); list = b; }
+                got = want;
+            }
+            RuntimeUnlock();
+            Mem.StoreI32(slot, list);
+            t_cached += got * size;
+        }
+
+        static void FreeLocal(int addr, int size)
+        {
+            size = (size + 7) & ~7;
+            if (size < 16) size = 16;
+            int heads = t_heads;
+            if (heads == 0) heads = InitThreadCache();
+            int slot = heads + (size >> 3) * 4;
+            // the link is at 8: word 0 (an object's count) stays 0, dead, for a reference read just before the free
+            Mem.StoreI32(addr, 0);
+            Mem.StoreI32(addr + 8, Mem.LoadI32(slot));
+            Mem.StoreI32(slot, addr);
+            t_cached += size;
+            if (t_cached > CacheLimit) FlushThreadCache();
+        }
+
+        /// <summary>Gives the thread's cached blocks back to the shared lists (too many cached, or the thread's end).</summary>
+        internal static void FlushThreadCache()
+        {
+            int heads = t_heads;
+            if (heads == 0) return;
+            RuntimeLock();
+            for (int c = 2; c < Classes; c++)
+            {
+                int slot = heads + c * 4, b = Mem.LoadI32(slot);
+                if (b == 0) continue;
+                int tail = b;
+                while (Mem.LoadI32(tail + 8) != 0) tail = Mem.LoadI32(tail + 8);
+                int shared = s_table + c * 4;
+                Mem.StoreI32(tail + 8, Mem.LoadI32(shared));
+                Mem.StoreI32(shared, b);
+                Mem.StoreI32(slot, 0);
+            }
+            RuntimeUnlock();
+            t_cached = 0;
+        }
+
+        /// <summary>Grows the memory by at least need bytes: by an eighth of its size, 16 MiB at least, when the maximum
+        /// allows (growing a shared memory is slow; growing it by a page at a time, for every refill, slower still).</summary>
+        static void GrowFor(int need)
+        {
+            int pages = (need + 65535) / 65536;
+            int more = Math.Max(pages, Math.Max(Mem.Size() / 8, 256));
+            if (Mem.Grow(more) >= 0) return;
+            if (Mem.Grow(pages) < 0) ThrowHelpers.OutOfMemory();
         }
 
         static int AllocCore(int size)
@@ -251,7 +369,7 @@ namespace Cs2Wasm.Runtime
             {
                 int need = s_top + size - s_end;
                 int pages = (need + 65535) / 65536;
-                if (Mem.Grow(pages) < 0) ThrowHelpers.OutOfMemory();
+                GrowFor(need);
                 s_end = Mem.Size() * 65536;
             }
             int a = s_top;
@@ -263,6 +381,7 @@ namespace Cs2Wasm.Runtime
         {
             // CS2WASM_SHARE_CHECK: freed memory is poisoned (0x0EAD, the freeing thread) and never reused
             if (ShareCheck() && size >= 8) { Mem.StoreI32(addr, 0x0EAD0000 | (ThreadId() & 0xFFFF)); return; }
+            if (!SingleThreaded() && size <= MaxSmall) { FreeLocal(addr, size); return; }
             RuntimeLock();
             FreeCore(addr, size);
             RuntimeUnlock();
@@ -294,7 +413,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
             int h = Atomic.Add32(ref s_hash, 1) + 1;
-            if (ShareCheck()) h = (h & 0xFFFFFF) | ((ThreadId() & 0x7F) << 24);
+            if (ShareCheck()) h = (h & 0xFFFFFF) | ((ThreadId() & 0x3F) << 24);
             Mem.StoreI32(a + 8, h);
             return a;
         }
@@ -351,8 +470,9 @@ namespace Cs2Wasm.Runtime
         {
             int a = AddressOf(o);
             int c = Mem.LoadI32(a);
-            if (c < -1) return Mem.LoadI32(ArenaEntry(-c, Mem.LoadI32(a + 8)) + 4);
-            return Mem.LoadI32(a + 8) & 0x7FFFFFFF;
+            // (bits 31 and 30 of the word are flags: pinned by a static, marked: ObjectMarks)
+            if (c < -1) return Mem.LoadI32(ArenaEntry(-c, Mem.LoadI32(a + 8)) + 4) & 0x3FFFFFFF;
+            return Mem.LoadI32(a + 8) & 0x3FFFFFFF;
         }
 
         // ------------------------------------------------------------------
@@ -885,6 +1005,7 @@ namespace Cs2Wasm.Runtime
                 System.Threading.Thread.SetCurrent(null);
                 // the thread's statics die with it (as .NET's become unreachable)
                 Rt.ReleaseThreadStatics();
+                Rt.FlushThreadCache();
                 Limbo.Quiescent();
                 GiveBlocks(t._stack, t._tls);
                 WakeAll();
@@ -918,13 +1039,32 @@ namespace Cs2Wasm.Runtime
         {
             SafePoint();
             // bounded, so timers and deadlines are rechecked: 1 ms
-            if (Rt.ThreadId() == 1)
+            Block(ref s_generation, g, 1000000);
+        }
+
+        static int s_mainBlocks = -1;
+
+        /// <summary>Whether this thread may block in a wait: a worker always; the main thread when its host says so.</summary>
+        internal static bool MayBlock()
+        {
+            if (Rt.ThreadId() != 1) return true;
+            if (s_mainBlocks < 0) s_mainBlocks = Engine.MainCanBlock();
+            return s_mainBlocks == 1;
+        }
+
+        /// <summary>Waits while the word holds expected, at most ns nanoseconds (-1: no limit); quiescent meanwhile (a
+        /// waiting thread holds only counted references, so deferred destruction does not wait for it). A thread that
+        /// may not block spins.</summary>
+        internal static void Block(ref int word, int expected, long ns)
+        {
+            Limbo.Quiescent();
+            if (MayBlock()) Atomic.Wait32(ref word, expected, ns);
+            else
             {
-                long end = Engine.MonotonicNs() + 1000000;
-                while (Atomic.Load32(ref s_generation) == g && Engine.MonotonicNs() < end) { }
-                return;
+                long end = ns < 0 ? long.MaxValue : Engine.MonotonicNs() + ns;
+                while (Atomic.Load32(ref word) == expected && Engine.MonotonicNs() < end) { }
             }
-            Atomic.Wait32(ref s_generation, g, 1000000);
+            Limbo.Active();
         }
     }
 
@@ -976,37 +1116,60 @@ namespace Cs2Wasm.Runtime
         /// <summary>The thread runs program code: what it reads from now on is protected.</summary>
         public static void Active() => SetEpoch(Atomic.Load32(ref s_epoch));
         /// <summary>The thread holds no references that are not counted, and runs no program code until Active.</summary>
-        public static void Quiescent() => SetEpoch(0);
+        public static void Quiescent() { Flush(); SetEpoch(0); }
         /// <summary>A safe point: the thread holds only counted references.</summary>
-        public static void Checkpoint() { Active(); if (Atomic.Load32(ref s_count) != 0) Collect(); }
+        // (a collection scans the list: only once it has grown by half since the last, so the cost stays linear)
+        public static void Checkpoint() { Active(); if (Atomic.Load32(ref s_count) != 0 && s_since >= Math.Max(64, s_count >> 1)) Collect(); }
         public static void ExportEnter() { if (t_depth++ == 0) Active(); }
         public static void ExportExit() { if (--t_depth == 0) { Quiescent(); if (Atomic.Load32(ref s_count) != 0) Collect(); } }
 
         /// <summary>The count of shared object p fell to zero (its count word is already S | L).</summary>
+        // (entries wait in a buffer of the thread's, BufferCap of them, and go to the shared list in one step under the
+        // runtime lock: when the buffer is full, and when the thread waits or ends; an entry's epoch is the one when it
+        // came, so a later move only delays its destruction)
+        const int BufferCap = 256;
+        [System.ThreadStatic] static int t_buffer, t_buffered;
+
         public static void Add(int p)
         {
+            int b = t_buffer;
+            if (b == 0) t_buffer = b = Rt.Alloc(BufferCap * 8);
+            int n = t_buffered;
+            Mem.StoreI32(b + 8 * n, p);
+            Mem.StoreI32(b + 8 * n + 4, Atomic.Load32(ref s_epoch));
+            t_buffered = n + 1;
+            if (n + 1 == BufferCap) Flush();
+        }
+
+        /// <summary>Moves the thread's buffered entries to the shared list (a collection follows when it has grown by half
+        /// since the last, so the cost stays linear).</summary>
+        static void Flush()
+        {
+            int n = t_buffered;
+            if (n == 0) return;
+            int b = t_buffer;
             Rt.RuntimeLock();
-            if (s_count == s_listCap)
+            if (s_count + n > s_listCap)
             {
-                int cap = Math.Max(64, s_listCap * 2);
+                int cap = Math.Max(Math.Max(64, s_listCap * 2), s_count + n);
                 int l = Rt.Alloc(cap * 8);
                 if (s_list != 0) { Mem.Copy(l, s_list, s_count * 8); Rt.Free(s_list, s_listCap * 8); }
                 s_list = l; s_listCap = cap;
             }
-            int ep = Atomic.Load32(ref s_epoch);
-            Mem.StoreI32(s_list + 8 * s_count, p);
-            Mem.StoreI32(s_list + 8 * s_count + 4, ep);
-            if (ep < s_oldest) s_oldest = ep;
-            Atomic.Store32(ref s_count, s_count + 1);
-            // (a collection scans the list: run one when the list has grown by half since, so the cost stays linear)
-            bool go = ++s_since >= Math.Max(64, s_count >> 1);
+            Mem.Copy(s_list + 8 * s_count, b, n * 8);
+            for (int i = 0; i < n; i++) { int ep = Mem.LoadI32(b + 8 * i + 4); if (ep < s_oldest) s_oldest = ep; }
+            Atomic.Store32(ref s_count, s_count + n);
+            s_since += n;
+            bool go = s_since >= Math.Max(64, s_count >> 1);
             Rt.RuntimeUnlock();
+            t_buffered = 0;
             if (go) Collect();
         }
 
         /// <summary>Destroys the entries every thread has passed a safe point since; advances the epoch.</summary>
         public static void Collect()
         {
+            Flush();
             Rt.RuntimeLock();
             int min = int.MaxValue;
             for (int i = 0; i < s_cap; i++)

@@ -22,6 +22,7 @@ let buf = '';
 const flush = () => { if (buf) { writeSync(1, buf); buf = ''; } };
 let threaded = false; // once a worker exists, output is written through at once so it interleaves in order
 const out = {
+  mainCanBlock: true, // (a Node process: its main thread may wait)
   write: (s) => { if (threaded) { writeSync(1, s); return; } buf += s; if (buf.length > 65536) flush(); },
   error: (type, message, stack) => {
     flush();

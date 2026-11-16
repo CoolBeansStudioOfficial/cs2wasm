@@ -45,7 +45,7 @@ internal sealed partial class RuntimeFns
         void CheckOwner(Emitter e)
         {
             if (violation == null) return;
-            e.Get(0); e.Load(Op.I32Load, 8); e.I32(24); e.Op(Op.I32ShrU); e.I32(0x7F); e.Op(Op.I32And); e.GGet(D.ThreadId); e.I32(0x7F); e.Op(Op.I32And); e.Op(Op.I32Ne);
+            e.Get(0); e.Load(Op.I32Load, 8); e.I32(24); e.Op(Op.I32ShrU); e.I32(0x3F); e.Op(Op.I32And); e.GGet(D.ThreadId); e.I32(0x3F); e.Op(Op.I32And); e.Op(Op.I32Ne);
             // (or freed: the poison of Rt.Free)
             e.Get(0); e.Load(Op.I32Load); e.I32(16); e.Op(Op.I32ShrU); e.I32(0x0EAD); e.Op(Op.I32Eq); e.Op(Op.I32Or);
             e.If(); e.Get(0); e.Call(violation); e.End();

@@ -275,10 +275,8 @@ namespace System.Threading
             {
                 long left = end - Engine.MonotonicNs();
                 if (left <= 0) return false;
-                // the engine thread never blocks: it spins
-                if (Rt.ThreadId() == 1) continue;
                 Threads.SafePoint();
-                Atomic.Wait32(ref thread._run, 1, left > 1000000 ? 1000000 : left);
+                Threads.Block(ref thread._run, 1, left > 10000000 ? 10000000 : left);
             }
             return true;
         }

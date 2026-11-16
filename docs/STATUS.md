@@ -40,7 +40,8 @@ tested is labelled so. Run `dotnet run --project tests/Cs2Wasm.Tests` to reprodu
   heap after collection staying the same from build to build. The suite's 83 builds take 85 s in one process.
   Roslyn as a program (the binder test) builds in about 3 minutes with a 5.9 GB peak. `CS2WASM_TIMES=1` prints the
   phases and the managed heap. Not measured in the browser.
-- **Run-time speed vs NativeAOT:** unmeasured.
+- **Run-time speed vs NativeAOT:** the self-hosted compiler compiling `Console.WriteLine(42)`: 19.3 s against
+  NativeAOT's 1.6 s; peak memory 3.9 GB against 396 MB (section 9). Not yet beaten.
 - **Reference-count operations removed at compile time (static, `CS2WASM_STATS=1`):** a scheme without ownership
   analysis pays an increment and a decrement for every reference transfer (assignment, initializer, argument,
   return); 53% are removed for `Console.WriteLine(42)`, 55% for the LINQ program, 57% for the game simulation, 54%
@@ -514,8 +515,19 @@ cs2wasm runs no generators. A program that parses C# with Roslyn and walks the s
 prints what .NET does (`tests/out/roslyn/parse.cs`). A program that binds (`tests/out/roslyn/bind.cs`: a
 compilation's diagnostics with their messages from Roslyn's resources, symbols of invocations and declarations, the
 operation tree of a statement; Roslyn binds on several threads through `Parallel.For`) builds in about 3 minutes
-(5.9 GB peak, 35.7 MB) and prints what .NET does, the same on every run. The compiler itself is next, then the
-browser host. The compiler has not been run on the browser .NET runtime.
+(5.9 GB peak, 35.7 MB) and prints what .NET does, the same on every run.
+
+cs2wasm compiles itself (proof 4, started): `node tools/selfhost.mjs <cs2wasmc> out.wasm` builds the compiler's
+sources, its embedded resources (the library manifests and sources) and Roslyn into one module (55 MB; about 5
+minutes, 6.4 GB peak) whose `main` export runs the command line (`src/Cs2Wasm.Wasm`, `Cli.Run`) on the arguments its
+host gives. Run under the Node host, it compiles `Console.WriteLine(42)` to the same bytes as the .NET build of the
+compiler (`--pathmap` makes source paths the same; `tools/wasmdiff.mjs` compares modules). Against the compiler
+built with NativeAOT, on that program (measured, this machine): NativeAOT 1.6 s and 396 MB peak; the WASM compiler
+19.3 s and 3.9 GB, the module 55 MB against NativeAOT's 45.7 MB executable. Not met yet: the self-built compiler
+compiling the compiler (whose build needs more than 32-bit WASM's 4 GB as it stands), and beating NativeAOT. The
+runtime work so far: per-thread caches of small blocks (no lock), deferred destruction with per-thread buffers and
+without collections at every wake, waiting threads quiescent, the main thread blocking where its host allows
+(`cs2wasm.main_can_block`), the heap growing geometrically, and a flag bit for objects with marks.
 
 ### 10. Testing — started
 Proof 1 is partially met (the programs listed above). Proof 2 is met (GodotSharp's math types). Proof 3 is met on

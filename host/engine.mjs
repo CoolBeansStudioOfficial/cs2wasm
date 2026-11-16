@@ -145,6 +145,8 @@ export function cs2wasmImports(module, getMemory, out) {
       return chars.length;
     },
     report_exception: (tp, tl, mp, ml, sp, sl) => out.error(str(tp, tl), str(mp, ml), str(sp, sl)),
+    // whether the module's main thread may block (out.mainCanBlock: a Node process yes, an engine's thread no)
+    main_can_block: () => (out.mainCanBlock ? 1 : 0),
     now_ms: () => Date.now(),
     monotonic_ns: () => process.hrtime.bigint(),
     random_seed: () => 12345,
