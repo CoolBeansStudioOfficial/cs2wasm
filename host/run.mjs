@@ -62,7 +62,7 @@ if (instance.exports.cs2wasm_rc_counts) { // (a module built with CS2WASM_COUNT_
     const c = new BigInt64Array(memory.buffer, instance.exports.cs2wasm_rc_sites() + 8, names.length);
     let calls = 0n; names.forEach((n, i) => { if (n.startsWith('retain ') || n.startsWith('release ')) calls += c[i]; });
     const base = 2n * v[2];
-    process.stderr.write(`[host] count calls run: ${calls} against ${base} for counting every reference value pushed (${v[2]} values): ${base > 0n ? (100 - Number(calls * 10000n / base) / 100).toFixed(1) : '0'}% removed (dynamic)
+    process.stderr.write(`[host] count calls run: ${calls} against ${base} for counting every reference value pushed (${v[2]} values): ${base > 0n ? (100 - Number(calls * 10000n / base) / 100).toFixed(1) : '0'}% removed (dynamic); ${v[0] + v[1]} of the calls changed a count (the others were of null or of an immortal object): ${base > 0n ? (100 - Number((v[0] + v[1]) * 10000n / base) / 100).toFixed(1) : '0'}% removed (dynamic, counts changed)
 `);
   }
   if (process.env.CS2WASM_RC_NAMES && instance.exports.cs2wasm_rc_sites) {

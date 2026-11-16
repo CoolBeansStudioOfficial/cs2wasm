@@ -250,13 +250,28 @@ sealed partial class FunctionCompiler
             case IBinaryOperation { OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals, OperatorMethod: null } b:
                 {
                     var side = IsNullLiteral(b.RightOperand) ? b.LeftOperand : IsNullLiteral(b.LeftOperand) ? b.RightOperand : null;
-                    if (side == null || !KnownNull(side, 0)) return null;
+                    if (side == null) return null;
+                    if (NeverNull(side)) return b.OperatorKind != BinaryOperatorKind.Equals;
+                    if (!KnownNull(side, 0)) return null;
                     return b.OperatorKind == BinaryOperatorKind.Equals;
                 }
+            case IIsPatternOperation { Pattern: IConstantPatternOperation { Value: var pv0 } } ip0 when IsNullLiteral(pv0) && NeverNull(ip0.Value): return false;
+            case IIsPatternOperation { Pattern: INegatedPatternOperation { Pattern: IConstantPatternOperation { Value: var nv0 } } } np0 when IsNullLiteral(nv0) && NeverNull(np0.Value): return true;
             case IIsPatternOperation { Pattern: IConstantPatternOperation { Value: var pv } } ip when IsNullLiteral(pv) && KnownNull(ip.Value, 0): return true;
             case IIsPatternOperation { Pattern: INegatedPatternOperation { Pattern: IConstantPatternOperation { Value: var nv } } } np when IsNullLiteral(nv) && KnownNull(np.Value, 0): return false;
         }
         return null;
+    }
+
+    /// <summary>A value of a value type that is not Nullable (a type parameter's, in an instance over one): compared
+    /// with null it is never equal, and it need not be boxed to find out (generic code: `if (key == null)`). Only
+    /// when reading it has no effect, as the comparison is then not evaluated at all.</summary>
+    bool NeverNull(IOperation op)
+    {
+        while (op is IConversionOperation { OperatorMethod: null } c) op = c.Operand;
+        if (op.Type == null || op.Type.TypeKind == TypeKind.Pointer || op.Type.TypeKind == TypeKind.FunctionPointer) return false;
+        var t = T.Resolve(op.Type, Map);
+        return t.IsValueType && t.TypeKind != TypeKind.TypeParameter && t.OriginalDefinition.SpecialType != SpecialType.System_Nullable_T && IsPure(op);
     }
 
     bool KnownNull(IOperation op, int depth)
