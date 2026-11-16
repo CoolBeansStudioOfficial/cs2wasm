@@ -52,5 +52,17 @@ try { r = fn(); } finally { flush(); }
 if (process.env.CS2WASM_HOST_TIMES) { process.stderr.write(`[host] ${entry} returned at ${performance.now().toFixed(0)} ms
 `); process.on('exit', () => process.stderr.write(`[host] exit at ${performance.now().toFixed(0)} ms
 `)); }
+if (instance.exports.cs2wasm_rc_counts) { // (a module built with CS2WASM_COUNT_RC=1; CS2WASM_RC_NAMES: its sites file)
+  const at = instance.exports.cs2wasm_rc_counts(), v = new BigInt64Array(memory.buffer, at, 2);
+  process.stderr.write(`[host] count operations run: ${v[0]} retains, ${v[1]} releases
+`);
+  if (process.env.CS2WASM_RC_NAMES && instance.exports.cs2wasm_rc_sites) {
+    const names = (await import('node:fs')).readFileSync(process.env.CS2WASM_RC_NAMES, 'utf8').split('\n');
+    const c = new BigInt64Array(memory.buffer, instance.exports.cs2wasm_rc_sites() + 8, names.length);
+    const top = names.map((n, i) => [n, c[i]]).filter((x) => x[1] > 0n).sort((x, y) => (y[1] > x[1] ? 1 : -1)).slice(0, +(process.env.CS2WASM_COUNT_RC_TOP ?? 30));
+    for (const [n, k] of top) process.stderr.write(`${String(k).padStart(10)}  ${n}
+`);
+  }
+}
 if (r !== undefined && process.env.CS2WASM_PRINT_RESULT) console.log(`=> ${r}`);
 if (process.env.CS2WASM_PRINT_MEMORY) console.error(`memory: ${memory.buffer.byteLength / 65536} pages`);

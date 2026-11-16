@@ -36,6 +36,8 @@ sealed class Slot
     public ITypeSymbol Type = null!;
     /// <summary>A field borrow's temp (FieldBorrows.cs): released through this placeholder (a release, or a drop).</summary>
     public WasmFunction? ReleaseMarker;
+    /// <summary>A struct temporary moved to its owner (StructMoves.cs): cleared, no release at the statement's end.</summary>
+    public bool Moved;
 }
 
 sealed class Scope { public List<Slot> Owned = []; }
@@ -316,6 +318,7 @@ sealed partial class FunctionCompiler
                 foreach (var t in da.Target.DescendantsAndSelf().OfType<IParameterReferenceOperation>()) _assignedParams.Add(t.Parameter);
         }
         AnalyzeCaptures(body);
+        ComputeLocalMoves(body);
         foreach (var p in M.Parameters)
         {
             var v = _vars[p];
@@ -453,7 +456,7 @@ sealed partial class FunctionCompiler
         if (keep != null) { k = Scratch(keep.Value); E.Set(k); }
         foreach (var s in list)
         {
-            ReleaseSlot(s);
+            if (!s.Moved) ReleaseSlot(s);
             if (s.Local >= 0) _refPool.Push(s.Local);
             else
             {
@@ -854,8 +857,10 @@ sealed partial class FunctionCompiler
                 {
                     // init-copy into the caller's destination
                     EmitValueAs(value, rt);
+                    bool move = TakeFresh(rt);
                     int src = Scratch(ValType.I32); E.Set(src);
-                    E.Get(_structRetLocal); E.Get(src); CopyStructInit(rt);
+                    E.Get(_structRetLocal); E.Get(src);
+                    if (move) MoveStruct(rt, assign: false); else CopyStructInit(rt);
                     FreeScratch(ValType.I32, src);
                     hasValue = false;
                 }
@@ -1207,8 +1212,10 @@ sealed partial class FunctionCompiler
             // a struct value is copied into a slot of the switch's own: its temporary goes back to the pool at once,
             // and the clauses' tests use temporaries too (`switch (this, other)`)
             int off = AllocFrame(vt);
+            bool move = TakeFresh(vt);
             int src = E.AddLocal(ValType.I32); E.Set(src);
-            E.Get(_fb); E.I32(off); E.Op(Op.I32Add); E.Get(src); CopyStructInit(vt);
+            E.Get(_fb); E.I32(off); E.Op(Op.I32Add); E.Get(src);
+            if (move) MoveStruct(vt, assign: false); else CopyStructInit(vt);
             if (T.NeedsRc(vt)) AddOwned(new Slot { FrameOffset = off, Type = vt });
             val = E.AddLocal(ValType.I32); E.Get(_fb); E.I32(off); E.Op(Op.I32Add); E.Set(val);
         }

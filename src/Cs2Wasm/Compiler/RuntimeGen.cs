@@ -175,6 +175,34 @@ internal sealed partial class RuntimeFns
         });
     }
 
+    /// <summary>(dst, src): a move into uninitialized memory (StructMoves.cs): the bytes copied with their counts, the
+    /// source cleared; what the value refers to is published as a copy's is (section 4.5).</summary>
+    public WasmFunction MoveInit(ITypeSymbol t)
+    {
+        t = D.Types.Canonical(t);
+        return Cached("rt.move_init " + Types.Key(t), FT([I, I], []), e =>
+        {
+            int size = D.Types.StorageOf(t).size;
+            e.Get(0); e.Get(1); e.I32(size); e.Op(Op.MemoryCopy);
+            e.Get(1); e.I32(0); e.I32(size); e.Op(Op.MemoryFill);
+            if (D.Types.LayoutOf(t).HasRefs) NoteStructCopy(e.Fn, t);
+        });
+    }
+
+    /// <summary>(dst, src): a move over a value: the old contents released, then as MoveInit.</summary>
+    public WasmFunction MoveAssign(ITypeSymbol t)
+    {
+        t = D.Types.Canonical(t);
+        return Cached("rt.move_assign " + Types.Key(t), FT([I, I], []), e =>
+        {
+            int size = D.Types.StorageOf(t).size;
+            e.Get(0); e.Call(ReleaseStruct(t));
+            e.Get(0); e.Get(1); e.I32(size); e.Op(Op.MemoryCopy);
+            e.Get(1); e.I32(0); e.I32(size); e.Op(Op.MemoryFill);
+            if (D.Types.LayoutOf(t).HasRefs) NoteStructCopy(e.Fn, t);
+        });
+    }
+
     /// <summary>(dst, src): assignment: take new counts, release old contents, copy.</summary>
     public WasmFunction CopyAssign(ITypeSymbol t)
     {
@@ -755,6 +783,56 @@ sealed partial class RuntimeGen
 
     Action? _emitScc;
 
+    /// <summary>CS2WASM_COUNT_RC=1 (measurement, section 4.1): retain and release count the operations that do
+    /// something (a live, mortal object) into two 64-bit counters, which the export cs2wasm_rc_counts gives the address
+    /// of (the host prints them: CS2WASM_COUNT_RC).</summary>
+    void EmitCountRc()
+    {
+        var counters = D.StaticAddress("rt.rc_counts", 16, 8);
+        foreach (var (fn, off) in new[] { (D.Rt.Retain, 0), (D.Rt.Release, 8) })
+        {
+            var pre = new Emitter(new WasmFunction("tmp", fn.Type));
+            pre.Get(0); pre.If();
+            pre.Get(0); pre.Load(Op.I32Load); pre.I32(0); pre.Op(Op.I32GtS);
+            pre.If(); pre.I32Addr(counters); pre.I64(1); pre.Emit(Op.I64AtomicRmwAdd, off, 3); pre.Op(Op.Drop); pre.End();
+            pre.End();
+            fn.Body.InsertRange(0, pre.Fn.Body);
+        }
+        var get = D.Module.AddFunction("cs2wasm_rc_counts", new FuncType([], [ValType.I32]));
+        new Emitter(get).I32Addr(counters);
+        get.Exports.Add("cs2wasm_rc_counts");
+        // a counter per call site of retain and release, after optimization; the sites' functions are written to the
+        // file CS2WASM_COUNT_RC_SITES names (the host prints the busiest: [count, then a counter per site])
+        const int MaxSites = 1 << 20;
+        var sites = D.StaticAddress("rt.rc_sites", 8 * MaxSites + 8, 8);
+        var getSites = D.Module.AddFunction("cs2wasm_rc_sites", new FuncType([], [ValType.I32]));
+        new Emitter(getSites).I32Addr(sites);
+        getSites.Exports.Add("cs2wasm_rc_sites");
+        D.Module.AfterOptimize = fns =>
+        {
+            var names = new List<string>();
+            foreach (var f in fns)
+            {
+                if (f == D.Rt.Retain || f == D.Rt.Release) continue;
+                var b = f.Body;
+                for (int i = 0; i < b.Count; i++)
+                {
+                    if (b[i].Op != Op.Call || b[i].Ref is not WasmFunction g || names.Count >= MaxSites) continue;
+                    // (and calls of the struct helpers, which count the references a struct holds)
+                    bool helper = g.Name.StartsWith("rt.retain_struct") || g.Name.StartsWith("rt.release_struct") || g.Name.StartsWith("rt.copy_");
+                    if (g != D.Rt.Retain && g != D.Rt.Release && !helper) continue;
+                    if (helper && (f.Name.StartsWith("rt.retain_struct") || f.Name.StartsWith("rt.release_struct") || f.Name.StartsWith("rt.copy_"))) continue;
+                    names.Add((g == D.Rt.Retain ? "retain " : g == D.Rt.Release ? "release " : "[" + g.Name + "] ") + (f.FrameName ?? f.Name) + " @" + i);
+                    var tmp = new Emitter(new WasmFunction("tmp", f.Type));
+                    tmp.I32Addr(sites); tmp.I64(1); tmp.Emit(Op.I64AtomicRmwAdd, 8 + 8 * (names.Count - 1), 3); tmp.Op(Op.Drop);
+                    b.InsertRange(i, tmp.Fn.Body);
+                    i += tmp.Fn.Body.Count;
+                }
+            }
+            if (Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC_SITES") is { Length: > 0 } file) File.WriteAllLines(file, names);
+        };
+    }
+
     public void Finish()
     {
         CloseTypeInfo();
@@ -766,6 +844,7 @@ sealed partial class RuntimeGen
         D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled),
                            D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled));
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
+        if (Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1") EmitCountRc();
         D.Module.UsesThreads = D.UsesThreads;
         D.EmitObjectArrayDelegate();
         D.EmitDynamicInvoke();
@@ -1434,6 +1513,8 @@ internal sealed partial class Driver
             foreach (var ins in f.Body)
                 if (ins.Op == Op.Call && ins.Ref is WasmFunction g && (g.Name is "rt.retain" or "rt.release" || g.Name.StartsWith("Cs2Wasm.Runtime.Rt.Arena"))) emitted++;
         long naive = 2 * transfers;
+        if (Emitter.RcSites != null)
+            foreach (var (k, v) in Emitter.RcSites.OrderByDescending(x => x.Value).Take(30)) Console.Error.WriteLine($"    {v,6} {k}");
         Console.Error.WriteLine($"  reference counting: {emitted} count operations in the module, against {naive} for counting every transfer ({transfers} transfers): {(naive == 0 ? 0 : 100.0 * (naive - emitted) / naive):F1}% removed (static)");
     }
     /// <summary>A JSON string literal, as System.Text.Json writes one by default (quote, backslash and control

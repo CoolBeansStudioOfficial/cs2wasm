@@ -83,6 +83,7 @@ sealed partial class FunctionCompiler
             case IConversionOperation c: return EmitConversion(c);
             case ILocalReferenceOperation l:
                 if (IsCaptured(l.Local)) return LoadCaptured(l.Local);
+                if (TryEmitLocalMove(l, out var moved)) return moved;
                 return LoadVar(LocalVar(l.Local));
             case IParameterReferenceOperation p:
                 if (IsPrimaryParamHere(p.Parameter)) { var ps = PrimarySlot(p.Parameter); PushPrimaryThis(); if (Types.IsStruct(ps.Type)) { E.I32(ps.Offset); E.Op(Op.I32Add); return Own.None; } E.Load(Types.LoadOp(ps.Type), ps.Offset); return Types.IsRef(ps.Type) ? Own.Unstable : Own.None; }
@@ -306,9 +307,11 @@ sealed partial class FunctionCompiler
     {
         if (Types.IsStruct(t))
         {
+            bool move = TakeFresh(t);
             int src = Scratch(ValType.I32); E.Set(src);
             pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); }
-            E.Get(src); CopyStructAssign(t);
+            // (a fresh temporary's counts are taken: the old value released, no new counts)
+            E.Get(src); if (move) MoveStruct(t, assign: true); else CopyStructAssign(t);
             FreeScratch(ValType.I32, src);
             return;
         }
@@ -630,6 +633,11 @@ sealed partial class FunctionCompiler
         E.Load(Types.LoadOp(ft), off);
         if (Types.IsRef(ft) && !f.Field.IsStatic && f.Instance != null && IsStableBase(f.Instance) && f.Field.ContainingType.TypeKind == TypeKind.Class)
             _lastFieldLoad = (E.Fn.Body.Count, Driver.FieldKey(Owner(f.Field), StorageField(f.Field)));
+        // a static readonly field keeps its value from its static constructor on (section 4.1: Stable, no count to
+        // borrow it); in a static constructor it may still change
+        if (Types.IsRef(ft) && f.Field is { IsStatic: true, IsReadOnly: true } && M.MethodKind != MethodKind.StaticConstructor && !s_noStableStatics
+            && !f.Field.GetAttributes().Any(a => a.AttributeClass?.Name == "ThreadStaticAttribute"))
+            return Own.Stable;
         return Types.IsRef(ft) ? Own.Unstable : Own.None;
     }
 

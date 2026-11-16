@@ -35,7 +35,23 @@ internal sealed class Emitter
     public void Tee(int l) => Emit(Wasm.Op.LocalTee, l);
     public void GGet(WasmGlobal g) => Emit(Wasm.Op.GlobalGet, 0, 0, g);
     public void GSet(WasmGlobal g) => Emit(Wasm.Op.GlobalSet, 0, 0, g);
-    public void Call(WasmFunction f) => Emit(Wasm.Op.Call, 0, 0, f);
+    public void Call(WasmFunction f)
+    {
+        if (RcSites != null && f.Name is "rt.retain" or "rt.release") NoteRcSite(f.Name);
+        Emit(Wasm.Op.Call, 0, 0, f);
+    }
+
+    /// <summary>CS2WASM_STATS: the compiler methods that emitted each retain and release (where counts come from).</summary>
+    public static readonly Dictionary<string, int>? RcSites = Environment.GetEnvironmentVariable("CS2WASM_STATS") == "1" ? new() : null;
+
+    static void NoteRcSite(string what)
+    {
+        var frames = new System.Diagnostics.StackTrace(2, false).GetFrames();
+        var names = frames.Select(fr => fr.GetMethod()).Where(m => m != null && m.DeclaringType?.Name is not "Emitter")
+            .Take(2).Select(m => m!.Name);
+        var key = what[3..] + " <- " + string.Join(" <- ", names);
+        lock (RcSites!) RcSites[key] = RcSites.GetValueOrDefault(key) + 1;
+    }
     public void Op(Op op) => Emit(op);
     public void Load(Op op, int offset = 0) => Emit(op, offset, NaturalAlign(op));
     public void Store(Op op, int offset = 0) => Emit(op, offset, NaturalAlign(op));

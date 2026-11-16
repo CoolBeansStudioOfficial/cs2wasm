@@ -18,7 +18,8 @@ static class Peephole
                     prev.Op = Op.LocalTee; dst[^1] = prev; continue;
                 }
                 // an immortal object (a string literal): retain gives it back, release does nothing
-                if (ins.Op == Op.Call && prev.Op == Op.I32Const && prev.Ref is IAddress { Immortal: true } && ins.Ref is WasmFunction { Name: "rt.retain" or "rt.release" } rf)
+                // (and null: a moved local's release, its local cleared, is a release of 0)
+                if (ins.Op == Op.Call && prev.Op == Op.I32Const && (prev.Ref is IAddress { Immortal: true } || prev.Ref == null && prev.Imm == 0) && ins.Ref is WasmFunction { Name: "rt.retain" or "rt.release" } rf)
                 {
                     if (rf.Name == "rt.release") dst.RemoveAt(dst.Count - 1);
                     continue;

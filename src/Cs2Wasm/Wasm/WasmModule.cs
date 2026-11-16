@@ -111,6 +111,11 @@ internal sealed class WasmModule
         return may;
     }
 
+    /// <summary>Runs on the optimized bodies before they are encoded (measurement: CS2WASM_COUNT_RC's site counters).</summary>
+    public Action<IEnumerable<WasmFunction>>? AfterOptimize;
+    /// <summary>CS2WASM_NO_MERGE=1: identical bodies stay apart (measurement: each site keeps its own name).</summary>
+    static readonly bool s_noMerge = Environment.GetEnvironmentVariable("CS2WASM_NO_MERGE") == "1";
+
     public Encoded Encode(bool optimize)
     {
         foreach (var f in Functions) ResolveForwards(f);
@@ -119,7 +124,7 @@ internal sealed class WasmModule
         if (optimize)
         {
             // (identical bodies first: a merged function's call sites count as its callers)
-            MergeIdenticalBodies();
+            if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
             Inliner.Run(Functions, ComputeMayThrow());
             foreach (var f in Functions) if (!f.IsImport) Peephole.Run(f);
@@ -132,8 +137,9 @@ internal sealed class WasmModule
                 if (Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH") != "1")
                     Fresh.Run(Functions, Functions.FirstOrDefault(f => f.Name.StartsWith("Cs2Wasm.Runtime.Rt.AllocObject(")));
             }
-            MergeIdenticalBodies();
+            if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
+            AfterOptimize?.Invoke(Functions.Where(f => !f.IsImport));
             if (validate) Validate("after optimization");
         }
 

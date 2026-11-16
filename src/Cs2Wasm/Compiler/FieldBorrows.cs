@@ -16,7 +16,18 @@ sealed partial class FunctionCompiler
     /// <summary>The field a declaration can borrow from (key), when the local and its source qualify.</summary>
     string? FieldBorrowCandidate(ILocalSymbol l, IOperation init)
     {
-        if (l.IsRef || IsCaptured(l) || WrittenLocals().Contains(l) || _closure != null || _machine != null) return null;
+        var r = FieldBorrowCandidateCore(l, init);
+        if (Driver.BorrowDebug && r == null) Console.Error.WriteLine($"borrow? {M.Name} {l.Name}: none for {init.Kind} {init.Syntax}");
+        return r;
+    }
+
+    string? FieldBorrowCandidateCore(ILocalSymbol l, IOperation init)
+    {
+        if (l.IsRef || IsCaptured(l) || WrittenLocals().Contains(l) || _closure != null || _machine != null)
+        {
+            if (Driver.BorrowDebug) Console.Error.WriteLine($"borrow? {M.Name} {l.Name}: no (ref {l.IsRef}, captured {IsCaptured(l)}, written {WrittenLocals().Contains(l)}, closure {_closure != null}, machine {_machine != null})");
+            return null;
+        }
         while (init is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit)) init = c.Operand;
         // a copy of a reference that stays put for the whole method: the object outlives the local ("": always)
         if (IsStableBase(init)) return "";
@@ -61,6 +72,7 @@ internal sealed partial class Driver
     /// <summary>The pseudo-field of every reference element (and of memory written through an address).</summary>
     public const string ElementsKey = "[]";
     static readonly bool s_borrowDebug = Environment.GetEnvironmentVariable("CS2WASM_BORROW") == "1";
+    internal static bool BorrowDebug => s_borrowDebug;
 
     public static bool WritesMemory(Op op) => op is Op.I32Store or Op.I32Store8 or Op.I32Store16 or Op.I64Store or Op.I64Store8 or Op.I64Store16 or Op.I64Store32
         or Op.MemoryCopy or Op.MemoryFill || (int)op >= 0xFE00 && op is not (Op.I32AtomicLoad or Op.I64AtomicLoad);

@@ -31,6 +31,9 @@ internal sealed class MethodInst
     public MethodInst? BorrowedReturn;
     /// <summary>Set on that body: `return this` does not count.</summary>
     public bool ReturnsBorrowed;
+    /// <summary>A borrowed return's kind for its callers: Stable (the receiver: `return this`) or Unstable (a field's
+    /// value, as the caller's own load of that field would be).</summary>
+    public Own BorrowedKind = Own.Stable;
     /// <summary>A copy that takes these arguments (a bit per parameter ordinal) owned (OwnedParams.cs).</summary>
     public int OwnedParams;
 }
@@ -521,12 +524,15 @@ internal sealed partial class Driver
         fn.FrameName = IsHiddenFrame(m) ? null : FrameName(m);
         fn.ProgramCode = !IsLibrary(m);
         _methods[key] = mi;
-        if (impl == MethodImpl.Body && ReturnsThis(m))
+        bool returnsThis = impl == MethodImpl.Body && ReturnsThis(m);
+        if (returnsThis || impl == MethodImpl.Body && ReturnsField(m))
         {
-            // the body returns `this` borrowed; the method's own function retains it for indirect callers
-            var bfn = Module.AddFunction(Display(m) + " [returns this]", Signature(m, Types));
+            // the body returns `this`, or a field's value, borrowed; the method's own function retains it for indirect
+            // callers (section 4.1: a getter costs what the field's load costs)
+            var bfn = Module.AddFunction(Display(m) + (returnsThis ? " [returns this]" : " [returns a field]"), Signature(m, Types));
             bfn.FrameName = fn.FrameName; bfn.ProgramCode = fn.ProgramCode;
-            var mb = new MethodInst { Sym = m, Fn = bfn, Key = key + "|returns-this", Impl = MethodImpl.Body, ReachedFrom = Compiling, ReturnsBorrowed = true };
+            var mb = new MethodInst { Sym = m, Fn = bfn, Key = key + (returnsThis ? "|returns-this" : "|returns-field"), Impl = MethodImpl.Body, ReachedFrom = Compiling, ReturnsBorrowed = true,
+                BorrowedKind = returnsThis ? Own.Stable : Own.Unstable };
             _methods[mb.Key] = mb;
             _work.Enqueue(mb);
             mi.BorrowedReturn = mb;
@@ -546,6 +552,31 @@ internal sealed partial class Driver
     }
 
     readonly Dictionary<string, bool> _returnsThis = [];
+
+    /// <summary>A method whose body is one `return` of a field's value: a field of `this` (of a class), of such a field,
+    /// or a static field (`Name => _name;`, `get { return s_default; }`). Its borrowed form returns the value without a
+    /// count: what the caller gets is what loading the field itself would give it.</summary>
+    static readonly bool s_noReturnField = Environment.GetEnvironmentVariable("CS2WASM_NO_RETURN_FIELD") == "1";
+
+    bool ReturnsField(IMethodSymbol m)
+    {
+        if (s_noReturnField) return false;
+        var def = m.OriginalDefinition;
+        if (def.MethodKind is not (MethodKind.Ordinary or MethodKind.PropertyGet) || def.IsAsync || def.IsIterator || def.ReturnsVoid || def.ReturnsByRef || def.ReturnsByRefReadonly) return false;
+        if (!def.ReturnType.IsReferenceType && def.ReturnType.TypeKind != TypeKind.TypeParameter) return false;
+        if (!def.IsStatic && def.ContainingType is not { TypeKind: TypeKind.Class }) return false;
+        if (def.DeclaringSyntaxReferences.Length != 1) return false;
+        var sr = def.DeclaringSyntaxReferences[0];
+        if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) return false;
+        var block = body switch { IMethodBodyOperation mb => mb.BlockBody ?? mb.ExpressionBody, IBlockOperation b => b, _ => null };
+        if (block is not { Operations: [IReturnOperation { ReturnedValue: { } v }] }) return false;
+        while (v is IConversionOperation { OperatorMethod: null, IsImplicit: true } c && (c.Conversion.IsIdentity || c.Conversion.IsReference)) v = c.Operand;
+        bool Path(IOperation o) => o is IFieldReferenceOperation { Field: { IsVolatile: false } f } fr && f.Type.IsReferenceType && !f.IsFixedSizeBuffer
+            && (f.IsStatic || fr.Instance is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }
+                || fr.Instance is IFieldReferenceOperation inner && inner.Field.Type.TypeKind == TypeKind.Class && Path(inner))
+            && (f.IsStatic || f.ContainingType.TypeKind == TypeKind.Class);
+        return Path(v);
+    }
 
     /// <summary>An instance method of a class whose every return is `this` (StringBuilder.Append and friends).</summary>
     bool ReturnsThis(IMethodSymbol m)

@@ -1,0 +1,117 @@
+// Ownership (section 4.1): moves of a local's last use into an owner (a field, an element, another local, a return),
+// with the cases a move must not take: a `for` loop's variable (its increment runs after the body's last use), a
+// local declared outside a loop and read in it, a use inside a lambda, `goto`. Getters that return a field return it
+// borrowed. Everything prints what .NET prints; destruction order is observed through finalizers' side effects on a
+// log kept in a static list.
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+sealed class Node
+{
+    public int V; public Node? Next;
+    public Node(int v) { V = v; }
+}
+
+struct Pair
+{
+    public Node A, B;
+    public Pair(Node a, Node b) { A = a; B = b; }
+    public int Sum => A.V + B.V;
+}
+
+sealed class Holder { public Pair P; public Pair[] Ps = new Pair[2]; }
+
+sealed class Box
+{
+    Node? _held;
+    public Node? Held => _held;
+    public Node? Take() { var h = _held; _held = null; return h; }
+    public void Put(Node n) { var local = n; _held = local; }
+}
+
+static class Program
+{
+    static Node Make(int v) { var n = new Node(v); n.Next = new Node(v + 1); return n; }
+
+    static int Walk(Node? head)
+    {
+        Node? prev = null; int n = 0;
+        for (Node? node = head; node is not null; node = node.Next) { n += node.V; prev = node; }
+        return n + (prev?.V ?? 0);
+    }
+
+    static int OutsideLoop(Node seed)
+    {
+        Node cur = seed; int sum = 0;
+        var keep = new List<Node>();
+        for (int i = 0; i < 3; i++) { keep.Add(cur); sum += cur.V; cur = new Node(cur.V * 2); }
+        return sum + keep.Count + cur.V;
+    }
+
+    static Node[] IntoArray()
+    {
+        var a = new Node(1); var b = new Node(2);
+        return [a, b];
+    }
+
+    static Func<int> Captured()
+    {
+        var n = new Node(7);
+        return () => n.V;
+    }
+
+    static int WithGoto(int k)
+    {
+        var n = new Node(k);
+        int r = 0;
+    again:
+        r += n.V;
+        if (r < 10) goto again;
+        return r;
+    }
+
+    // struct moves: a call's struct result or a constructed struct handed to a variable, a field, an element, a return
+    static Pair MakePair(int v) => new Pair(new Node(v), new Node(v + 1));
+    static Pair Forward(int v) { return MakePair(v); }
+    static Pair Swap(Pair p) => new Pair(p.B, p.A);
+
+    static void StructMoves()
+    {
+        var p = Forward(1);
+        var h = new Holder();
+        h.P = MakePair(10);
+        h.Ps[0] = Swap(h.P);
+        h.Ps[1] = new Pair(h.P.A, p.B);
+        p = Swap(p);
+        h.P = Swap(h.P);
+        Console.WriteLine(p.Sum + " " + p.A.V + " " + h.P.A.V + " " + h.Ps[0].A.V + " " + h.Ps[1].Sum + " " + (h.Ps[1].A == h.P.B));
+        switch (MakePair(4)) { case { A.V: 4 } q: Console.WriteLine(q.Sum); break; }
+        int n = 0;
+        for (int i = 0; i < 3; i++) { var q = i % 2 == 0 ? MakePair(i) : Swap(MakePair(i)); n += q.A.V; }
+        Console.WriteLine(n);
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "main")]
+    static void Main()
+    {
+        var m = Make(3);
+        Console.WriteLine(m.V + " " + m.Next!.V + " " + Walk(m));
+        Console.WriteLine(OutsideLoop(new Node(1)));
+        var arr = IntoArray();
+        Console.WriteLine(arr[0].V + arr[1].V);
+        Console.WriteLine(Captured()());
+        Console.WriteLine(WithGoto(3));
+        var box = new Box();
+        var x = new Node(5);
+        box.Put(x);
+        Console.WriteLine(box.Held!.V + " " + (box.Held == x));
+        var taken = box.Take();
+        Console.WriteLine((taken?.V ?? -1) + " " + (box.Held == null));
+        Node? y = new Node(9);
+        var z = y;
+        y = null;
+        Console.WriteLine(z.V + " " + (y == null));
+        StructMoves();
+    }
+}

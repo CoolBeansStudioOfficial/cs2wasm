@@ -273,6 +273,7 @@ sealed partial class FunctionCompiler
         {
             // by value: the callee gets its own copy unless the argument is already a fresh temporary
             if (IsFreshStruct(value)) { EmitValueAs(value, pt); return; }
+            if (TryPushBorrowedStruct(p, value, pt)) return;
             int off = TempStruct(pt);
             EmitValueAs(value, pt);
             int src = Scratch(ValType.I32); E.Set(src);
@@ -486,7 +487,7 @@ sealed partial class FunctionCompiler
                 // of the statement, in a temp if it was not a variable)
                 E.Call(mb.Fn);
                 Inst?.Callees.Add(mb);
-                return Own.Stable;
+                return mb.BorrowedKind;
             }
             E.Call(mi.Fn);
             Inst?.Callees.Add(mi);
@@ -499,7 +500,7 @@ sealed partial class FunctionCompiler
             E.Load(Types.LoadOp(rt));
             return Types.IsRef(rt) ? Own.Unstable : Own.None;
         }
-        if (sretOff >= 0) { E.Get(_fb); E.I32(sretOff); E.Op(Op.I32Add); return Own.None; }
+        if (sretOff >= 0) { E.Get(_fb); E.I32(sretOff); E.Op(Op.I32Add); NoteFresh(sretOff); return Own.None; }
         if (Types.IsVoid(rt) || ReturnsStruct(m)) return Own.None;
         return Types.IsRef(rt) ? Own.Owned : Own.None;
     }
@@ -903,6 +904,7 @@ sealed partial class FunctionCompiler
             int off = TempStruct(t);
             EmitStructCtor(oc, t, () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); });
             E.Get(_fb); E.I32(off); E.Op(Op.I32Add);
+            NoteFresh(off);
             return Own.None;
         }
         if (Types.IsString(t))
@@ -1432,7 +1434,7 @@ sealed partial class FunctionCompiler
         }
         E.Call(lf.Fn);
         var rt = T.Resolve(m.ReturnType, map);
-        if (sret) { E.Get(_fb); E.I32(sretOff); E.Op(Op.I32Add); return Own.None; }
+        if (sret) { E.Get(_fb); E.I32(sretOff); E.Op(Op.I32Add); NoteFresh(sretOff); return Own.None; }
         if (Types.IsVoid(rt)) return Own.None;
         return Types.IsRef(rt) ? Own.Owned : Own.None;
     }
@@ -1444,6 +1446,7 @@ sealed partial class FunctionCompiler
         if (Types.IsStruct(pt))
         {
             if (IsFreshStruct(value)) { EmitValueAs(value, pt); return; }
+            if (TryPushBorrowedStruct(p, value, pt)) return;
             int off = TempStruct(pt);
             EmitValueAs(value, pt);
             int src = Scratch(ValType.I32); E.Set(src);
