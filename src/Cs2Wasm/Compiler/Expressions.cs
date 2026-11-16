@@ -1756,6 +1756,8 @@ sealed partial class FunctionCompiler
             Drop(o0, sa.Value.Type);
             return Own.None;
         }
+        if (target is ILocalReferenceOperation { Local: { IsRef: false } bl } && WrittenBorrow(bl) is { } bwb && LocalVar(bl) is { InMemory: false } bv)
+            return EmitBorrowAssign(bv, sa.Value, bwb, needResult);
         var tt = TypeOf(target);
         var lv = LValueOf(target);
         lv.Note(StaticValueType(sa.Value));

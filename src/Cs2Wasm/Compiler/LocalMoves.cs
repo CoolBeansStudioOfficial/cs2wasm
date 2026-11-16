@@ -82,6 +82,8 @@ sealed partial class FunctionCompiler
     {
         own = Own.None;
         if (!_localMoves.Contains(l)) return false;
+        // (a local that may borrow every value it gets has no count to hand over)
+        if (WrittenBorrow(l.Local) != null) return false;
         var v = LocalVar(l.Local);
         // (only an owner moves: a borrowing local, a field borrow's or a frame object's, has a release marker)
         var slot = _allSlots.FirstOrDefault(s => v.InMemory ? s.Local < 0 && s.FrameOffset == v.Offset && v.AddrLocal == _fb : s.Local == v.Local);

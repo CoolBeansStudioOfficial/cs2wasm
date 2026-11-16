@@ -203,8 +203,9 @@ internal sealed partial class Driver
             var ins = b[i];
             if (ins.Op == Op.Nop)
             {
-                if (ins.Ref is WriteMark wm) { if (Array.IndexOf(keys, wm.Key) >= 0) return Why("the function itself", wm.Key); }
-                else if (ReferenceEquals(ins.Ref, ScopeEnd) && ins.Imm == local) return false;
+                // (the scope's end is a mark too: asked first)
+                if (ReferenceEquals(ins.Ref, ScopeEnd)) { if (ins.Imm == local) return false; }
+                else if (ins.Ref is WriteMark wm && Array.IndexOf(keys, wm.Key) >= 0) return Why("the function itself", wm.Key);
             }
             else if (ins.Op == Op.Call && ins.Ref is WasmFunction g) { foreach (var k in keys) if (summary.Has(g, k)) return Why("a call of " + g.Name, k); }
             else if (ins.Op == Op.CallIndirect) { foreach (var k in keys) if (summary.HasIndirect(k, ins)) return Why("an indirect call", k); }
@@ -306,7 +307,12 @@ internal sealed partial class Driver
                     for (int i = 0; i < b.Count && ok; i++)
                         if (b[i].Op is Op.LocalSet or Op.LocalTee && b[i].Imm == local && !(i > 0 && b[i - 1].Op == Op.Call && b[i - 1].Ref == marker))
                             ok = i >= 3 && b[i - 1].Op == Op.I32Const && b[i - 1].Imm == 0 && b[i - 1].Ref == null
-                                 && b[i - 2].Op == Op.Call && b[i - 2].Ref == Rt.Release && b[i - 3].Op == Op.LocalGet && b[i - 3].Imm == local;
+                                 && b[i - 2].Op == Op.Call && b[i - 2].Ref == Rt.Release && b[i - 3].Op == Op.LocalGet && b[i - 3].Imm == local
+                                 // (an assignment of a local that is assigned again, LocalBorrows.cs: the value through the
+                                 // placeholder, the old value released, then the store)
+                                 || i >= 5 && b[i - 1].Op == Op.LocalGet && b[i - 2].Op == Op.Call && b[i - 2].Ref == Rt.Release
+                                    && b[i - 3].Op == Op.LocalGet && b[i - 3].Imm == local && b[i - 4].Op == Op.LocalSet && b[i - 4].Imm == b[i - 1].Imm
+                                    && b[i - 5].Op == Op.Call && b[i - 5].Ref == marker;
                 for (int i = 0; i < b.Count; i++)
                 {
                     if (b[i].Op == Op.Call && b[i].Ref == marker)

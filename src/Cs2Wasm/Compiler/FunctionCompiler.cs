@@ -837,6 +837,13 @@ sealed partial class FunctionCompiler
             {
                 EmitStructInto(init, () => { E.Get(v.AddrLocal); if (v.Offset != 0) { E.I32(v.Offset); E.Op(Op.I32Add); } });
             }
+            else if (!v.InMemory && Types.IsRef(v.Type) && WrittenBorrow(d.Symbol) is { } wb)
+            {
+                // a local assigned again whose every value can be borrowed (LocalBorrows.cs)
+                var bo = EmitValueAs(init, v.Type);
+                EmitBorrowMark(v, wb, bo);
+                E.Set(v.Local);
+            }
             else if (!v.InMemory && Types.IsRef(v.Type) && FieldBorrowCandidate(d.Symbol, init) is { } fkey) EmitFieldBorrow(v, init, fkey);
             else EmitStoreToVar(d.Symbol, init);
             EndTemps();
