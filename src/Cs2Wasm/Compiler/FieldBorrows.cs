@@ -660,7 +660,7 @@ internal sealed partial class Driver
             // what writes only memory no program code can reach: the runtime's throw helpers (bounds, null and cast
             // checks: the exception they make), the allocator (fresh or freed blocks), the arenas' and the marks'
             // own tables (a finalizer a release runs still counts: it is compiled code the destroy path calls)
-            string[] internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks."];
+            string[] internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.FreeObject(", "Cs2Wasm.Runtime.Rt.FreeBlock(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks."];
             var skip = new bool[n];
             for (int i = 0; i < fns.Count; i++) skip[i] = internals.Any(p => fns[i].Name.StartsWith(p, StringComparison.Ordinal));
             var edges = new List<int>[n];

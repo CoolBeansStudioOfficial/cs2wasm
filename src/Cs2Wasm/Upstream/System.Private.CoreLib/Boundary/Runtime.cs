@@ -168,12 +168,12 @@ namespace Cs2Wasm.Runtime
         static void NewChunk()
         {
             int a;
-            int blk = TakeLarge(131072);
+            int blk = TakeLarge(131072, KindPlain);
             if (blk != 0)
             {
                 a = (blk + 65535) & ~65535;
-                if (a - blk >= 16) FreeChunk(blk, a - blk);
-                if (blk + 131072 - (a + 65536) >= 16) FreeChunk(a + 65536, blk + 131072 - (a + 65536));
+                if (a - blk >= 16) FreeChunk(blk, a - blk, KindPlain);
+                if (blk + 131072 - (a + 65536) >= 16) FreeChunk(a + 65536, blk + 131072 - (a + 65536), KindPlain);
             }
             else
             {
@@ -189,7 +189,7 @@ namespace Cs2Wasm.Runtime
                     if (s_freePages != 0) return;
                 }
                 s_top = a + 65536;
-                if (a - t0 >= 16) FreeChunk(t0, (a - t0) & ~7);
+                if (a - t0 >= 16) FreeChunk(t0, (a - t0) & ~7, KindPlain);
             }
             int bit = s_pageMap + (int)((uint)a >> 19);
             Mem.StoreU8(bit, Mem.LoadU8(bit) | (1 << (int)(((uint)a >> 16) & 7)));
@@ -292,7 +292,8 @@ namespace Cs2Wasm.Runtime
         {
             int b = (HeapBase() + 15) & ~15;
             s_table = b;
-            b += Classes * 4 + LargeBins * 4;
+            // (the lists of the two kinds of blocks: Lists)
+            b += 2 * (Classes * 4 + LargeBins * 4);
             // (the pages of small blocks: each size's current page, its pages with freed blocks, the block of each
             // size freed last, and which 64 KB of memory are pages)
             s_cur = b; b += Classes * 4;
@@ -390,35 +391,66 @@ namespace Cs2Wasm.Runtime
         /// <summary>Bytes from the heap's start to its top (freed blocks included).</summary>
         public static long HeapUsed() => s_top == 0 ? 0 : (long)(uint)s_top - HeapBase();
 
+        // ------------------------------------------------------------------
+        // With threads, a read that counts takes no lock (rt.load_retain): it reads a reference, counts the object if
+        // its count word says it is alive, and looks at the place again. The reference may be out of date by then, so
+        // the word it counts at must always be a count word or zero, whatever became of the memory:
+        // - a block keeps its kind for good: a plain object's (count word first), or a cycle-capable object's (the
+        //   arena's words first, the count word after them); each kind has its own lists, and a block is never joined
+        //   to its neighbours;
+        // - memory that is no object (Alloc: the runtime's records, a thread's stack, a program's native memory) has
+        //   a word before it that stays zero, and so can share the plain objects' lists;
+        // - a free block's first word is zero (and its count word, for the second kind), its link is at 8.
+        // Without threads the kinds are not told apart (nothing reads without counting first).
+        // ------------------------------------------------------------------
+        const int KindPlain = 0, KindArena = 1;
+
         public static int Alloc(int size)
         {
-            // threads: small blocks come from the thread's own free lists, without the runtime lock
-            if (!SingleThreaded() && size <= MaxSmall) return AllocLocal(size);
+            if (SingleThreaded()) return AllocBlock(size, KindPlain);
+            return AllocBlock(size + 8, KindPlain) + 8;
+        }
+
+        /// <summary>Alloc for the first thread's own block of thread statics: before there is one, nothing may read a
+        /// thread static, the thread's lists of free blocks among them.</summary>
+        public static int AllocFirst(int size)
+        {
+            if (SingleThreaded()) return AllocBlock(size, KindPlain);
             RuntimeLock();
-            int a = AllocCore(size);
+            int a = AllocCore(size + 8, KindPlain) + 8;
+            RuntimeUnlock();
+            return a;
+        }
+
+        static int AllocBlock(int size, int kind)
+        {
+            // threads: small blocks come from the thread's own free lists, without the runtime lock
+            if (!SingleThreaded() && size <= MaxSmall) return AllocLocal(size, kind);
+            RuntimeLock();
+            int a = AllocCore(size, kind);
             RuntimeUnlock();
             return a;
         }
 
         // ------------------------------------------------------------------
         // Per-thread caches of small blocks (programs with threads): a thread allocates from and frees into its own
-        // free lists, one per size class, and takes from or gives back to the shared ones in batches under the runtime
-        // lock: when a list is empty, when it holds more than CacheLimit bytes, and when the thread ends.
+        // free lists, one per kind and size class, and takes from or gives back to the shared ones in batches under
+        // the runtime lock: when a list is empty, when the thread has freed more than CacheLimit bytes into them, and
+        // when the thread ends.
         // ------------------------------------------------------------------
         const int CacheLimit = 256 * 1024, RefillBytes = 16 * 1024;
         [System.ThreadStatic] static int t_heads, t_cached;
 
-        static int AllocLocal(int size)
+        static int AllocLocal(int size, int kind)
         {
             size = (size + 7) & ~7;
             if (size < 16) size = 16;
             int heads = t_heads;
             if (heads == 0) heads = InitThreadCache();
-            int slot = heads + (size >> 3) * 4;
+            int slot = heads + (kind * Classes + (size >> 3)) * 4;
             int b = Mem.LoadI32(slot);
-            if (b == 0) { Refill(slot, size); b = Mem.LoadI32(slot); }
+            if (b == 0) { Refill(slot, size, kind); b = Mem.LoadI32(slot); }
             Mem.StoreI32(slot, Mem.LoadI32(b + 8));
-            t_cached -= size;
             Zero(b, size);
             return b;
         }
@@ -426,21 +458,21 @@ namespace Cs2Wasm.Runtime
         static int InitThreadCache()
         {
             RuntimeLock();
-            int h = AllocCore(Classes * 4);
+            int h = AllocCore(2 * Classes * 4 + 8, KindPlain) + 8;
             RuntimeUnlock();
-            Mem.Fill(h, 0, Classes * 4);
+            Mem.Fill(h, 0, 2 * Classes * 4);
             t_heads = h;
             return h;
         }
 
-        /// <summary>Fills an empty list of the thread's: blocks of the shared list of the size, else new ones carved from
-        /// the heap's top, RefillBytes' worth.</summary>
-        static void Refill(int slot, int size)
+        /// <summary>Fills an empty list of the thread's: blocks of the shared list of the kind and size, else new ones
+        /// carved from the heap's top, RefillBytes' worth.</summary>
+        static void Refill(int slot, int size, int kind)
         {
             int want = Math.Max(1, RefillBytes / size), got = 0, list = 0;
             RuntimeLock();
             if (s_top == 0) InitHeap();
-            int shared = s_table + (size >> 3) * 4;
+            int shared = Lists(kind) + (size >> 3) * 4;
             while (got < want)
             {
                 int b = Mem.LoadI32(shared);
@@ -454,7 +486,7 @@ namespace Cs2Wasm.Runtime
                 int start = 0;
                 if ((uint)(s_end - s_top) < (uint)bytes)
                 {
-                    start = TakeLarge(bytes);
+                    start = TakeLarge(bytes, kind);
                     if (start == 0)
                     {
                         int need = s_top + bytes - s_end;
@@ -468,41 +500,43 @@ namespace Cs2Wasm.Runtime
             }
             RuntimeUnlock();
             Mem.StoreI32(slot, list);
-            t_cached += got * size;
         }
 
-        static void FreeLocal(int addr, int size)
+        static void FreeLocal(int addr, int size, int kind)
         {
             size = (size + 7) & ~7;
             if (size < 16) size = 16;
             int heads = t_heads;
             if (heads == 0) heads = InitThreadCache();
-            int slot = heads + (size >> 3) * 4;
-            // the link is at 8: word 0 (an object's count) stays 0, dead, for a reference read just before the free
+            int slot = heads + (kind * Classes + (size >> 3)) * 4;
+            // the link is at 8: word 0 (a plain object's count) stays 0, dead, for a reference read just before the free
             Mem.StoreI32(addr, 0);
             Mem.StoreI32(addr + 8, Mem.LoadI32(slot));
             Mem.StoreI32(slot, addr);
-            t_cached += size;
-            if (t_cached > CacheLimit) FlushThreadCache();
+            // (counted by what is freed only: an allocation writes nothing but its list)
+            int cached = t_cached + size;
+            t_cached = cached;
+            if (cached > CacheLimit) FlushThreadCache();
         }
 
-        /// <summary>Gives the thread's cached blocks back to the shared lists (too many cached, or the thread's end).</summary>
+        /// <summary>Gives the thread's cached blocks back to the shared lists (it has freed much, or it ends).</summary>
         internal static void FlushThreadCache()
         {
             int heads = t_heads;
             if (heads == 0) return;
             RuntimeLock();
-            for (int c = 2; c < Classes; c++)
-            {
-                int slot = heads + c * 4, b = Mem.LoadI32(slot);
-                if (b == 0) continue;
-                int tail = b;
-                while (Mem.LoadI32(tail + 8) != 0) tail = Mem.LoadI32(tail + 8);
-                int shared = s_table + c * 4;
-                Mem.StoreI32(tail + 8, Mem.LoadI32(shared));
-                Mem.StoreI32(shared, b);
-                Mem.StoreI32(slot, 0);
-            }
+            for (int kind = 0; kind < 2; kind++)
+                for (int c = 2; c < Classes; c++)
+                {
+                    int slot = heads + (kind * Classes + c) * 4, b = Mem.LoadI32(slot);
+                    if (b == 0) continue;
+                    int tail = b;
+                    while (Mem.LoadI32(tail + 8) != 0) tail = Mem.LoadI32(tail + 8);
+                    int shared = Lists(kind) + c * 4;
+                    Mem.StoreI32(tail + 8, Mem.LoadI32(shared));
+                    Mem.StoreI32(shared, b);
+                    Mem.StoreI32(slot, 0);
+                }
             RuntimeUnlock();
             t_cached = 0;
         }
@@ -521,8 +555,11 @@ namespace Cs2Wasm.Runtime
 
         // Blocks above MaxSmall: their sizes are rounded up to one of eight steps per power of two (an eighth more at
         // most), and each such size has its own list of freed blocks, so allocating and freeing one is a push or a pop
-        // whatever is free. [0] next.
+        // whatever is free. A free one: [0] zero, [8] next.
         const int LargeBins = 20 * 8;
+
+        /// <summary>The lists of a kind: its small blocks by size (a word each, Classes of them), then its large ones.</summary>
+        static int Lists(int kind) => kind == 0 ? s_table : s_table + (Classes + LargeBins) * 4;
 
         /// <summary>The list of a large size that is one of the steps (or the last list a smaller size fits: the floor).</summary>
         static int LargeBin(int size)
@@ -538,7 +575,7 @@ namespace Cs2Wasm.Runtime
             return (size + step - 1) & ~(step - 1);
         }
 
-        static int AllocCore(int size)
+        static int AllocCore(int size, int kind)
         {
             if (s_top == 0) InitHeap();
             size = (size + 7) & ~7;
@@ -546,17 +583,17 @@ namespace Cs2Wasm.Runtime
             // (small blocks: from pages without threads; with them, from the lists by size the threads' caches refill from)
             if (size <= MaxSmall)
             {
-                return SingleThreaded() ? PageAlloc(size) : AllocSmallShared(size);
+                return SingleThreaded() ? PageAlloc(size) : AllocSmallShared(size, kind);
             }
             if (size < 0x40000000)
             {
                 size = RoundLarge(size);
-                int bins = s_table + Classes * 4;
+                int bins = Lists(kind) + Classes * 4;
                 int bin = LargeBin(size);
                 int head = Mem.LoadI32(bins + bin * 4);
                 if (head != 0)
                 {
-                    Mem.StoreI32(bins + bin * 4, Mem.LoadI32(head));
+                    Mem.StoreI32(bins + bin * 4, Mem.LoadI32(head + 8));
                     Mem.Fill(head, 0, size);
                     return head;
                 }
@@ -566,17 +603,17 @@ namespace Cs2Wasm.Runtime
                 {
                     int blk = Mem.LoadI32(bins + i * 4);
                     if (blk == 0) continue;
-                    Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk));
+                    Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk + 8));
                     int csize = LargeSize(i);
                     Mem.Fill(blk, 0, size);
-                    FreeChunk(blk + size, csize - size);
+                    FreeChunk(blk + size, csize - size, kind);
                     return blk;
                 }
             }
             if ((uint)(s_end - s_top) < (uint)size)
             {
                 // freed space first (section 4.6), before the memory grows
-                int blk = TakeLarge(size);
+                int blk = TakeLarge(size, kind);
                 if (blk != 0) return blk;
                 int need = s_top + size - s_end;
                 GrowFor(need);
@@ -587,11 +624,11 @@ namespace Cs2Wasm.Runtime
             return a;
         }
 
-        /// <summary>A small block in a program with threads: off its size's list, or cut from the region small blocks
-        /// are cut from, or from the top.</summary>
-        static int AllocSmallShared(int size)
+        /// <summary>A small block in a program with threads: off its kind's list of the size, or cut from the region
+        /// small blocks of the kind are cut from, or from the top.</summary>
+        static int AllocSmallShared(int size, int kind)
         {
-            int slot = s_table + (size >> 3) * 4;
+            int slot = Lists(kind) + (size >> 3) * 4;
             int head = Mem.LoadI32(slot);
             if (head != 0)
             {
@@ -600,22 +637,24 @@ namespace Cs2Wasm.Runtime
                 return head;
             }
             // (addresses compare as unsigned numbers: memory goes on past 2 GB)
-            if ((uint)(s_carveEnd - s_carve) >= (uint)size) { int c = s_carve; s_carve = c + size; return c; }
+            ref int carve = ref (kind == 0 ? ref s_carve : ref s_carve1);
+            ref int carveEnd = ref (kind == 0 ? ref s_carveEnd : ref s_carveEnd1);
+            if ((uint)(carveEnd - carve) >= (uint)size) { int c = carve; carve = c + size; return c; }
             if ((uint)(s_end - s_top) < (uint)size)
             {
-                // Freed space first (section 4.6), before the memory grows: a whole freed large block becomes the
-                // region small blocks are cut from, one after the other (cutting one small block off a large one at
-                // a time would look for a block at every allocation).
-                int bins = s_table + Classes * 4;
+                // Freed space first (section 4.6), before the memory grows: a whole freed large block of the kind
+                // becomes the region small blocks are cut from, one after the other (cutting one small block off a
+                // large one at a time would look for a block at every allocation).
+                int bins = Lists(kind) + Classes * 4;
                 for (int i = 0; i < LargeBins; i++)
                 {
                     int blk = Mem.LoadI32(bins + i * 4);
                     if (blk == 0) continue;
-                    Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk));
+                    Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk + 8));
                     int csize = LargeSize(i);
-                    if (s_carveEnd - s_carve >= 16) FreeCore(s_carve, (s_carveEnd - s_carve) & ~7);
+                    if (carveEnd - carve >= 16) FreeCore(carve, (carveEnd - carve) & ~7, kind);
                     Mem.Fill(blk, 0, csize);
-                    s_carve = blk + size; s_carveEnd = blk + csize;
+                    carve = blk + size; carveEnd = blk + csize;
                     return blk;
                 }
                 int need = s_top + size - s_end;
@@ -627,33 +666,36 @@ namespace Cs2Wasm.Runtime
             return a;
         }
 
-        // (a freed large block that small blocks are being cut from: where the next one starts, and its end)
-        static int s_carve, s_carveEnd;
+        // (a freed large block that small blocks are being cut from, for each kind: where the next one starts, and its end)
+        static int s_carve, s_carveEnd, s_carve1, s_carveEnd1;
 
         /// <summary>The size of the blocks on a large list.</summary>
         static int LargeSize(int bin) => (8 + (bin & 7)) << ((bin >> 3) + 8);
 
-        /// <summary>A piece of free memory of any size (a multiple of 8): onto the lists, in blocks of their sizes.</summary>
-        static void FreeChunk(int addr, int size)
+        /// <summary>A piece of free memory of any size (a multiple of 8): onto the kind's lists, in blocks of their sizes.</summary>
+        static void FreeChunk(int addr, int size, int kind)
         {
-            int bins = s_table + Classes * 4;
+            int bins = Lists(kind) + Classes * 4;
             while (size > MaxSmall)
             {
-                if (addr + size == s_top) { Mem.Fill(addr, 0, size); s_top = addr; return; }
+                // (the last piece below the top is the top again; not with threads: what was a block's start there
+                // would be the middle of whatever is cut from the top next)
+                if (SingleThreaded() && addr + size == s_top) { Mem.Fill(addr, 0, size); s_top = addr; return; }
                 int bin = LargeBin(size);
                 int csize = LargeSize(bin);
-                Mem.StoreI32(addr, Mem.LoadI32(bins + bin * 4));
+                Mem.StoreI32(addr, 0);
+                Mem.StoreI32(addr + 8, Mem.LoadI32(bins + bin * 4));
                 Mem.StoreI32(bins + bin * 4, addr);
                 addr += csize; size -= csize;
             }
-            if (size >= 16) FreeCore(addr, size);
+            if (size >= 16) FreeCore(addr, size, kind);
         }
 
-        /// <summary>A freed large block that holds size bytes (a multiple of 8), zeroed; what is left of it is freed
-        /// again. 0 if there is none.</summary>
-        static int TakeLarge(int size)
+        /// <summary>A freed large block of the kind that holds size bytes (a multiple of 8), zeroed; what is left of it
+        /// is freed again. 0 if there is none.</summary>
+        static int TakeLarge(int size, int kind)
         {
-            int bins = s_table + Classes * 4;
+            int bins = Lists(kind) + Classes * 4;
             int first = size <= MaxSmall ? 0 : LargeBin(RoundLarge(size));
             for (int i = first; i < LargeBins; i++)
             {
@@ -661,26 +703,61 @@ namespace Cs2Wasm.Runtime
                 if (blk == 0) continue;
                 int csize = LargeSize(i);
                 if (csize < size) continue;
-                Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk));
+                Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk + 8));
                 Mem.Fill(blk, 0, size);
-                if (csize - size >= 16) FreeChunk(blk + size, csize - size);
+                if (csize - size >= 16) FreeChunk(blk + size, csize - size, kind);
                 return blk;
             }
             return 0;
         }
 
+        // The objects whose destruction waits for the outermost one to finish (rt.destroy, past a depth of nesting),
+        // in a program with threads: a list of the thread's own (without threads they are linked through their
+        // count words, which a program with threads keeps zero in a dead object).
+        [System.ThreadStatic] static int t_pendQ, t_pendN, t_pendCap;
+
+        public static void PendDestroy(int obj)
+        {
+            if (t_pendN == t_pendCap)
+            {
+                int cap = t_pendCap == 0 ? 64 : t_pendCap * 2;
+                int nq = Alloc(cap * 4);
+                if (t_pendQ != 0) { Mem.Copy(nq, t_pendQ, t_pendN * 4); Free(t_pendQ, t_pendCap * 4); }
+                t_pendQ = nq; t_pendCap = cap;
+            }
+            Mem.StoreI32(t_pendQ + 4 * t_pendN, obj);
+            t_pendN++;
+        }
+
+        public static int NextPending()
+        {
+            if (t_pendN == 0) return 0;
+            t_pendN--;
+            return Mem.LoadI32(t_pendQ + 4 * t_pendN);
+        }
+
+        /// <summary>Frees memory Alloc gave (not an object: FreeObject).</summary>
         public static void Free(int addr, int size)
+        {
+            if (SingleThreaded()) FreeBlock(addr, size, KindPlain);
+            else FreeBlock(addr - 8, size + 8, KindPlain);
+        }
+
+        /// <summary>Frees an object's memory (its destruction: the compiler's destroy functions).</summary>
+        public static void FreeObject(int addr, int size) => FreeBlock(addr, size, KindPlain);
+
+        static void FreeBlock(int addr, int size, int kind)
         {
             // CS2WASM_SHARE_CHECK: freed memory is poisoned (0x0EAD, the freeing thread) and never reused
             // (its type word too: a borrowed reference used after the free traps at its next dispatch or type test)
             if (ShareCheck() && size >= 8) { Mem.StoreI32(addr, 0x0EAD0000 | (ThreadId() & 0xFFFF)); Mem.StoreI32(addr + 4, 0x7EAD0000); return; }
-            if (!SingleThreaded() && size <= MaxSmall) { FreeLocal(addr, size); return; }
+            if (!SingleThreaded() && size <= MaxSmall) { FreeLocal(addr, size, kind); return; }
             RuntimeLock();
-            FreeCore(addr, size);
+            FreeCore(addr, size, kind);
             RuntimeUnlock();
         }
 
-        static void FreeCore(int addr, int size)
+        static void FreeCore(int addr, int size, int kind)
         {
             size = (size + 7) & ~7;
             if (size < 16) size = 16;
@@ -698,14 +775,14 @@ namespace Cs2Wasm.Runtime
                     if (IsPage(addr)) { PageFree(addr); return; }
                 }
                 // the link is at 8: word 0 (an object's count) stays 0, dead, for a reference read just before the free
-                int slot = s_table + (size >> 3) * 4;
+                int slot = Lists(kind) + (size >> 3) * 4;
                 Mem.StoreI32(addr, 0);
                 Mem.StoreI32(addr + 8, Mem.LoadI32(slot));
                 Mem.StoreI32(slot, addr);
                 return;
             }
             // (a large block has its size's step: as it was allocated)
-            FreeChunk(addr, size < 0x40000000 ? RoundLarge(size) : size);
+            FreeChunk(addr, size < 0x40000000 ? RoundLarge(size) : size, kind);
         }
 
         /// <summary>New object: count 1, type id, hash code from a per-instance counter in allocation order (section 7.3).</summary>
@@ -783,7 +860,7 @@ namespace Cs2Wasm.Runtime
                     }
                 }
             }
-            int a = Alloc(size);
+            int a = AllocBlock(size, KindPlain);
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
             if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x3F) << 24);
@@ -974,7 +1051,7 @@ namespace Cs2Wasm.Runtime
                     return head + ArenaPrefix;
                 }
             }
-            int a = Alloc(size + ArenaPrefix) + ArenaPrefix;
+            int a = AllocBlock(size + ArenaPrefix, KindArena) + ArenaPrefix;
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
             if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x3F) << 24);
@@ -982,7 +1059,12 @@ namespace Cs2Wasm.Runtime
         }
 
         /// <summary>Frees such an object (the destroy functions of cycle-capable types).</summary>
-        public static void FreeObjectArena(int addr, int size) => Free(addr - ArenaPrefix, size + ArenaPrefix);
+        public static void FreeObjectArena(int addr, int size)
+        {
+            // (its count word reads as dead from here on, wherever the block goes)
+            Mem.StoreI32(addr, 0);
+            FreeBlock(addr - ArenaPrefix, size + ArenaPrefix, KindArena);
+        }
 
         /// <summary>The arena of a member (its count word says it is one).</summary>
         internal static int ArenaOf(int obj)

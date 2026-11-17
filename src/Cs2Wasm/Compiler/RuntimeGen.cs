@@ -56,7 +56,8 @@ internal sealed partial class RuntimeFns
 
     public WasmFunction AllocObject => Lib("Cs2Wasm.Runtime.Rt", "AllocObject", 2);
     public WasmFunction AllocArray => Lib("Cs2Wasm.Runtime.Rt", "AllocArray", 3);
-    public WasmFunction Free => Lib("Cs2Wasm.Runtime.Rt", "Free", 2);
+    /// <summary>Frees an object's memory (Rt.Free frees what is no object).</summary>
+    public WasmFunction Free => Lib("Cs2Wasm.Runtime.Rt", "FreeObject", 2);
     public WasmFunction ThrowNullRef => Lib("Cs2Wasm.Runtime.ThrowHelpers", "NullReference");
     public WasmFunction ThrowIndex => Lib("Cs2Wasm.Runtime.ThrowHelpers", "IndexOutOfRange");
     public WasmFunction ThrowOverflow => Lib("Cs2Wasm.Runtime.ThrowHelpers", "Overflow");
@@ -438,7 +439,9 @@ sealed partial class RuntimeGen
         D.Rt.AllocObject.ToString();
         D.LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1);
         D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "InvalidCast", 2);
-        D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2);
+        D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeObject", 2);
+        D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1);
+        if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); }
     }
 
     public void Export(string name, MethodInst mi) => _exports.Add((name, mi));
@@ -1245,10 +1248,18 @@ sealed partial class RuntimeGen
                 w.Get(0); w.Load(Op.I32Load, 4); w.I32(D.LeafTypeCount); w.Op(Op.I32LtU);
                 w.If(); w.Get(0); w.Call(now); w.Op(Op.Return); w.End();
             }
+            // (threads: the objects that wait are kept in a list of the thread's own, Rt.PendDestroy; a dead object's
+            // count word stays zero, which is what a read that counts takes for "not this one", rt.load_retain)
+            var pend = D.ThreadMode ? D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1).Fn : null;
+            var nextPending = D.ThreadMode ? D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0).Fn : null;
             w.GGet(D.DestroyDepth); w.I32(MaxNesting); w.Op(Op.I32GeU);
             w.If();
-            w.Get(0); w.GGet(D.DestroyPending); w.Store(Op.I32Store);
-            w.Get(0); w.GSet(D.DestroyPending);
+            if (pend != null) { w.Get(0); w.Call(pend); }
+            else
+            {
+                w.Get(0); w.GGet(D.DestroyPending); w.Store(Op.I32Store);
+                w.Get(0); w.GSet(D.DestroyPending);
+            }
             w.Op(Op.Return);
             w.End();
             w.GGet(D.DestroyDepth); w.I32(1); w.Op(Op.I32Add); w.GSet(D.DestroyDepth);
@@ -1257,9 +1268,13 @@ sealed partial class RuntimeGen
             w.GGet(D.DestroyDepth); w.Op(Op.I32Eqz);
             w.If();
             var exit = w.Block(); var top = w.Loop();
-            w.GGet(D.DestroyPending); w.Tee(q); w.Op(Op.I32Eqz); w.BrIf(exit);
-            w.Get(q); w.Load(Op.I32Load); w.GSet(D.DestroyPending);
-            w.Get(q); w.I32(0); w.Store(Op.I32Store);
+            if (nextPending != null) { w.Call(nextPending); w.Tee(q); w.Op(Op.I32Eqz); w.BrIf(exit); }
+            else
+            {
+                w.GGet(D.DestroyPending); w.Tee(q); w.Op(Op.I32Eqz); w.BrIf(exit);
+                w.Get(q); w.Load(Op.I32Load); w.GSet(D.DestroyPending);
+                w.Get(q); w.I32(0); w.Store(Op.I32Store);
+            }
             w.I32(1); w.GSet(D.DestroyDepth);
             w.Get(q); w.Call(now);
             w.I32(0); w.GSet(D.DestroyDepth);
@@ -1599,7 +1614,7 @@ sealed partial class RuntimeGen
         }
         e.I32(D.StackTop); e.GSet(D.StackPointer);
         e.I32(D.StackTop); e.GSet(D.StackHi!); e.I32(D.StackTop - D.Options.StackSize); e.GSet(D.StackLo!);
-        if (D.TlsSize > 0) { e.I32(D.TlsSize); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Alloc", 1).Fn); e.GSet(D.TlsBase); }
+        if (D.TlsSize > 0) { e.I32(D.TlsSize); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1).Fn); e.GSet(D.TlsBase); }
     }
 }
 

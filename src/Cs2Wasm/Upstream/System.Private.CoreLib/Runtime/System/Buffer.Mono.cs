@@ -32,7 +32,9 @@ namespace System
                     Cs2Wasm.Runtime.Rt.BulkEnter();
                     Cs2Wasm.Runtime.Rt.RetainElements<T>(src, (int)elementCount);
                     Cs2Wasm.Runtime.Mem.Copy(tmp, dst, bytes);
-                    Cs2Wasm.Runtime.Mem.Copy(dst, src, bytes);
+                    // (word by word: another thread may read one of the references meanwhile, and must find it whole)
+                    if ((uint)(dst - src) >= (uint)bytes) { for (int i = 0; i < bytes; i += 4) Cs2Wasm.Runtime.Mem.StoreI32(dst + i, Cs2Wasm.Runtime.Mem.LoadI32(src + i)); }
+                    else for (int i = bytes - 4; i >= 0; i -= 4) Cs2Wasm.Runtime.Mem.StoreI32(dst + i, Cs2Wasm.Runtime.Mem.LoadI32(src + i));
                     Cs2Wasm.Runtime.Rt.BulkExit();
                     Cs2Wasm.Runtime.Rt.ReleaseElements<T>(tmp, (int)elementCount);
                     Cs2Wasm.Runtime.Rt.Free(tmp, bytes);

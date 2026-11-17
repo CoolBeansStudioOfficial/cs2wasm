@@ -249,7 +249,7 @@ internal sealed partial class RuntimeFns
         {
             var e = new Emitter(_loadRetain);
             if (!threads) { e.Get(0); e.Load(Op.I32Load); e.Call(Retain); return; }
-            if (s_lockFreeLoads) { EmitLoadRetainLockFree(e, arenas); return; }
+            if (!s_lockedLoads) { EmitLoadRetainLockFree(e, arenas); return; }
             int s = e.AddLocal(I), p = e.AddLocal(I), r = e.AddLocal(I);
             EmitRefLock(e, 0, s);
             e.Get(0); e.Load(Op.I32Load); e.Tee(p);
@@ -289,8 +289,57 @@ internal sealed partial class RuntimeFns
         }
     }
 
-    /// <summary>CS2WASM_LOCKFREE_LOADS=1 (an experiment): a read that counts takes no lock.</summary>
-    static readonly bool s_lockFreeLoads = Environment.GetEnvironmentVariable("CS2WASM_LOCKFREE_LOADS") == "1";
+    /// <summary>CS2WASM_LOCKED_LOADS=1 (a measurement): a read that counts takes its place's lock, as a store does.</summary>
+    static readonly bool s_lockedLoads = Environment.GetEnvironmentVariable("CS2WASM_LOCKED_LOADS") == "1";
+
+    WasmFunction? _copyWords, _zeroWords;
+    /// <summary>(to, from, bytes): a copy word by word, the right way round when the two overlap. For references
+    /// another thread may read meanwhile (rt.load_retain reads without a lock): each is there whole, the old one or
+    /// the new one, never bytes of both, which a copy of bytes does not promise.</summary>
+    public WasmFunction CopyWords => _copyWords ??= MakeCopyWords();
+    /// <summary>(at, bytes): zero, word by word (as rt.copy_words).</summary>
+    public WasmFunction ZeroWords => _zeroWords ??= MakeZeroWords();
+
+    WasmFunction MakeCopyWords()
+    {
+        var f = M.AddFunction("rt.copy_words", FT([I, I, I], []));
+        var e = new Emitter(f);
+        int i = e.AddLocal(I);
+        // (what is left over a multiple of four: bytes, first or last as the direction asks; there is none for
+        // elements that hold references)
+        e.Get(0); e.Get(1); e.Op(Op.I32Sub); e.Get(2); e.Op(Op.I32GeU);
+        e.If();
+        { var done = e.Block(); var next = e.Loop();
+          e.Get(i); e.Get(2); e.I32(-4); e.Op(Op.I32And); e.Op(Op.I32GeU); e.BrIf(done);
+          e.Get(0); e.Get(i); e.Op(Op.I32Add); e.Get(1); e.Get(i); e.Op(Op.I32Add); e.Load(Op.I32Load); e.Store(Op.I32Store);
+          e.Get(i); e.I32(4); e.Op(Op.I32Add); e.Set(i);
+          e.Br(next); e.End(); e.End(); }
+        e.Get(0); e.Get(i); e.Op(Op.I32Add); e.Get(1); e.Get(i); e.Op(Op.I32Add); e.Get(2); e.Get(i); e.Op(Op.I32Sub); e.Op(Op.MemoryCopy);
+        e.Else();
+        e.Get(2); e.I32(-4); e.Op(Op.I32And); e.Set(i);
+        e.Get(0); e.Get(i); e.Op(Op.I32Add); e.Get(1); e.Get(i); e.Op(Op.I32Add); e.Get(2); e.Get(i); e.Op(Op.I32Sub); e.Op(Op.MemoryCopy);
+        { var done = e.Block(); var next = e.Loop();
+          e.Get(i); e.Op(Op.I32Eqz); e.BrIf(done);
+          e.Get(i); e.I32(4); e.Op(Op.I32Sub); e.Set(i);
+          e.Get(0); e.Get(i); e.Op(Op.I32Add); e.Get(1); e.Get(i); e.Op(Op.I32Add); e.Load(Op.I32Load); e.Store(Op.I32Store);
+          e.Br(next); e.End(); e.End(); }
+        e.End();
+        return f;
+    }
+
+    WasmFunction MakeZeroWords()
+    {
+        var f = M.AddFunction("rt.zero_words", FT([I, I], []));
+        var e = new Emitter(f);
+        int i = e.AddLocal(I);
+        { var done = e.Block(); var next = e.Loop();
+          e.Get(i); e.Get(1); e.I32(-4); e.Op(Op.I32And); e.Op(Op.I32GeU); e.BrIf(done);
+          e.Get(0); e.Get(i); e.Op(Op.I32Add); e.I32(0); e.Store(Op.I32Store);
+          e.Get(i); e.I32(4); e.Op(Op.I32Add); e.Set(i);
+          e.Br(next); e.End(); e.End(); }
+        e.Get(0); e.Get(i); e.Op(Op.I32Add); e.I32(0); e.Get(1); e.Get(i); e.Op(Op.I32Sub); e.Op(Op.MemoryFill);
+        return f;
+    }
 
     /// <summary>A read that counts, with no lock: read the reference, count the object if its count says it is alive
     /// (an exchange, as rt.retain), then read the place again. The same reference there: the object counted is the
@@ -560,7 +609,7 @@ internal sealed partial class RuntimeFns
                 e.Br(next);
                 e.End(); e.End();
                 e.Get(tmp); e.Get(d); e.Get(bytes); e.Op(Op.MemoryCopy);
-                e.Get(d); e.Get(s); e.Get(bytes); e.Op(Op.MemoryCopy);
+                e.Get(d); e.Get(s); e.Get(bytes); e.Call(CopyWords);
                 e.Get(locks); e.Call(StripesExit);
                 e.Get(2); e.Get(tmp); e.Get(4); e.Call(ArrayReleaseRange);
                 e.Get(tmp); e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn);
@@ -579,7 +628,7 @@ internal sealed partial class RuntimeFns
             e.Get(locks); e.Call(MaskEnter);
             e.Get(0); e.Get(s); e.Get(4); e.Call(ArrayRetainRange);
             e.Get(tmp); e.Get(d); e.Get(bytes); e.Op(Op.MemoryCopy);
-            e.Get(d); e.Get(s); e.Get(bytes); e.Op(Op.MemoryCopy);
+            e.Get(d); e.Get(s); e.Get(bytes); e.Call(CopyWords);
             e.Get(locks); e.Call(MaskExit);
             e.Get(2); e.Get(tmp); e.Get(4); e.Call(ArrayReleaseRange);
             e.Get(tmp); e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn);
@@ -634,7 +683,7 @@ internal sealed partial class RuntimeFns
             e.End();
             e.Get(a); e.Get(bytes); e.Call(StripeMask); e.Call(StripesEnter);
             e.Get(tmp); e.Get(a); e.Get(bytes); e.Op(Op.MemoryCopy);
-            e.Get(a); e.I32(0); e.Get(bytes); e.Op(Op.MemoryFill);
+            e.Get(a); e.Get(bytes); e.Call(ZeroWords);
             e.Get(a); e.Get(bytes); e.Call(StripeMask); e.Call(StripesExit);
             e.Get(0); e.Get(tmp); e.Get(2); e.Call(ArrayReleaseRange);
             e.Get(tmp); e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn);
