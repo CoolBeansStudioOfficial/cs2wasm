@@ -184,6 +184,13 @@ internal sealed class WasmModule
                     try { foreach (var f in Functions) if (!f.IsImport && SmallBlocks.Run(f)) { Peephole.Run(f); Locals.Run(f); } }
                     finally { Locals.MayThrow = null; }
                 }
+                // the loads a loop repeats (on the final bodies: the structs are in locals, the small helpers inlined)
+                if (Environment.GetEnvironmentVariable("CS2WASM_NO_LOOP_LOADS") != "1")
+                {
+                    Locals.MayThrow = mayThrow;
+                    try { foreach (var f in Functions) if (!f.IsImport && LoopLoads.Run(f)) { Peephole.Run(f); Locals.Run(f); } }
+                    finally { Locals.MayThrow = null; }
+                }
             }
             else if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
                 foreach (var f in Functions) if (!f.IsImport && SmallBlocks.Run(f)) Peephole.Run(f);
