@@ -142,11 +142,158 @@ namespace Cs2Wasm.Runtime
         const int Classes = MaxSmall / 8 + 1;
         static int s_top, s_end, s_table, s_hash;
 
+        // ------------------------------------------------------------------
+        // Small blocks in pages (programs without threads). Blocks of one size are cut from 16 KB pages of that size,
+        // and a page's freed blocks are used again before another page is touched: objects made one after the other
+        // lie next to each other however the program has allocated and freed before, as they would after a moving
+        // collector (lists of freed blocks for the whole heap hand out blocks from all over it, and a walk over a
+        // list or a tree then misses the cache at every step).
+        // A page: [0] its freed blocks (linked at +8), [4] next page and [8] previous one (the size's pages with
+        // freed blocks, or the empty pages), [12] the first block never used (0: none), [16] blocks in use,
+        // [20] size class * 2 + (1: it is the size's current page or among its pages with freed blocks).
+        // A page nothing is left in goes back to the empty pages, for any size. Pages come four at a time from
+        // 64 KB of memory at a multiple of 64 KB, noted in a map, so a small block that is not in a page (what is
+        // left over when a large block is cut) is told from one that is, and kept on the old lists by size.
+        // ------------------------------------------------------------------
+        const int PageSize = 16384, PageHead = 24;
+        static int s_cur, s_avail, s_pageMap, s_freePages;
+
+        static bool IsPage(int addr) => ((Mem.LoadU8(s_pageMap + (int)((uint)addr >> 19)) >> (int)(((uint)addr >> 16) & 7)) & 1) != 0;
+
+        /// <summary>Four empty pages: 64 KB of a freed large block, or of new memory.</summary>
+        static void NewChunk()
+        {
+            int a;
+            int blk = TakeLarge(131072);
+            if (blk != 0)
+            {
+                a = (blk + 65535) & ~65535;
+                if (a - blk >= 16) FreeChunk(blk, a - blk);
+                if (blk + 131072 - (a + 65536) >= 16) FreeChunk(a + 65536, blk + 131072 - (a + 65536));
+            }
+            else
+            {
+                int t0;
+                while (true)
+                {
+                    t0 = s_top;
+                    a = (t0 + 65535) & ~65535;
+                    if (!((uint)a > (uint)s_end - 1u || (uint)s_end - (uint)a < 65536u)) break;
+                    // (growing allocates too, the exception kept for when memory runs out: look again after it)
+                    GrowFor(a + 65536 - s_end);
+                    s_end = Mem.Size() * 65536;
+                    if (s_freePages != 0) return;
+                }
+                s_top = a + 65536;
+                if (a - t0 >= 16) FreeChunk(t0, (a - t0) & ~7);
+            }
+            int bit = s_pageMap + (int)((uint)a >> 19);
+            Mem.StoreU8(bit, Mem.LoadU8(bit) | (1 << (int)(((uint)a >> 16) & 7)));
+            // (the lowest first out: blocks made one after the other go up through memory, page after page)
+            for (int p = a + 65536 - PageSize; p != a - PageSize; p -= PageSize) { Mem.StoreI32(p + 4, s_freePages); s_freePages = p; }
+        }
+
+        /// <summary>A small block of the size (a multiple of 8, 16 at least), cleared.</summary>
+        static int PageAlloc(int size)
+        {
+            int c = size >> 3;
+            int curSlot = s_cur + c * 4;
+            while (true)
+            {
+                int pg = Mem.LoadI32(curSlot);
+                if (pg != 0)
+                {
+                    int head = Mem.LoadI32(pg);
+                    if (head != 0)
+                    {
+                        Mem.StoreI32(pg, Mem.LoadI32(head + 8));
+                        Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
+                        Zero(head, size);
+                        return head;
+                    }
+                    int bump = Mem.LoadI32(pg + 12);
+                    if (bump != 0)
+                    {
+                        int nb = bump + size;
+                        Mem.StoreI32(pg + 12, nb + size <= pg + PageSize ? nb : 0);
+                        Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
+                        Zero(bump, size);
+                        return bump;
+                    }
+                    // full: neither current nor among the pages with freed blocks, until a block of it is freed
+                    Mem.StoreI32(pg + 20, Mem.LoadI32(pg + 20) & ~1);
+                    Mem.StoreI32(curSlot, 0);
+                }
+                // a block of the size that is in no page
+                int oddSlot = s_table + c * 4;
+                int odd = Mem.LoadI32(oddSlot);
+                if (odd != 0) { Mem.StoreI32(oddSlot, Mem.LoadI32(odd + 8)); Zero(odd, size); return odd; }
+                // a page of the size with freed blocks; else an empty page
+                int availSlot = s_avail + c * 4;
+                int q = Mem.LoadI32(availSlot);
+                if (q != 0)
+                {
+                    int next = Mem.LoadI32(q + 4);
+                    Mem.StoreI32(availSlot, next);
+                    if (next != 0) Mem.StoreI32(next + 8, 0);
+                    Mem.StoreI32(curSlot, q);
+                    continue;
+                }
+                while (s_freePages == 0) NewChunk();
+                int np = s_freePages;
+                s_freePages = Mem.LoadI32(np + 4);
+                Mem.StoreI64(np, 0);
+                Mem.StoreI32(np + 8, 0);
+                Mem.StoreI32(np + 12, np + PageHead);
+                Mem.StoreI32(np + 16, 0);
+                Mem.StoreI32(np + 20, c * 2 + 1);
+                Mem.StoreI32(curSlot, np);
+            }
+        }
+
+        /// <summary>A block of a page is free again.</summary>
+        static void PageFree(int addr)
+        {
+            int pg = addr & ~(PageSize - 1);
+            Mem.StoreI32(addr, 0);
+            Mem.StoreI32(addr + 8, Mem.LoadI32(pg));
+            Mem.StoreI32(pg, addr);
+            int used = Mem.LoadI32(pg + 16) - 1;
+            Mem.StoreI32(pg + 16, used);
+            int fl = Mem.LoadI32(pg + 20);
+            int c = fl >> 1;
+            int availSlot = s_avail + c * 4;
+            if ((fl & 1) == 0)
+            {
+                // it was full: among its size's pages with freed blocks from now on
+                int head = Mem.LoadI32(availSlot);
+                Mem.StoreI32(pg + 4, head);
+                Mem.StoreI32(pg + 8, 0);
+                if (head != 0) Mem.StoreI32(head + 8, pg);
+                Mem.StoreI32(availSlot, pg);
+                Mem.StoreI32(pg + 20, fl | 1);
+            }
+            else if (used == 0 && Mem.LoadI32(s_cur + c * 4) != pg)
+            {
+                // nothing left in it: an empty page, for any size
+                int next = Mem.LoadI32(pg + 4), prev = Mem.LoadI32(pg + 8);
+                if (prev != 0) Mem.StoreI32(prev + 4, next); else Mem.StoreI32(availSlot, next);
+                if (next != 0) Mem.StoreI32(next + 8, prev);
+                Mem.StoreI32(pg + 4, s_freePages);
+                s_freePages = pg;
+            }
+        }
+
         static void InitHeap()
         {
             int b = (HeapBase() + 15) & ~15;
             s_table = b;
             s_top = b + Classes * 4 + LargeBins * 4;
+            // (the pages of small blocks: each size's current page, its pages with freed blocks, and which 64 KB of
+            // memory are pages)
+            s_cur = s_top; s_top += Classes * 4;
+            s_avail = s_top; s_top += Classes * 4;
+            s_pageMap = s_top; s_top += 8192;
             s_top = (s_top + 15) & ~15;
             s_end = Mem.Size() * 65536;
         }
@@ -391,6 +538,7 @@ namespace Cs2Wasm.Runtime
             if (s_top == 0) InitHeap();
             size = (size + 7) & ~7;
             if (size < 16) size = 16;
+            if (SingleThreaded() && size <= MaxSmall) return PageAlloc(size);
             if (size <= MaxSmall)
             {
                 int slot = s_table + (size >> 3) * 4;
@@ -523,6 +671,7 @@ namespace Cs2Wasm.Runtime
             if (size < 16) size = 16;
             if (size <= MaxSmall)
             {
+                if (SingleThreaded() && IsPage(addr)) { PageFree(addr); return; }
                 // the link is at 8: word 0 (an object's count) stays 0, dead, for a reference read just before the free
                 int slot = s_table + (size >> 3) * 4;
                 Mem.StoreI32(addr, 0);
@@ -563,14 +712,22 @@ namespace Cs2Wasm.Runtime
                 int s = (size + 7) & ~7;
                 if (s <= MaxSmall && s_table != 0)
                 {
-                    int slot = s_table + (s >> 3) * 4;
-                    int head = Mem.LoadI32(slot);
+                    int pg = Mem.LoadI32(s_cur + (s >> 3) * 4);
+                    int head = pg != 0 ? Mem.LoadI32(pg) : 0;
                     if (head != 0)
                     {
-                        Mem.StoreI32(slot, Mem.LoadI32(head + 8));
+                        Mem.StoreI32(pg, Mem.LoadI32(head + 8));
+                        Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
                         Mem.StoreI32(head, 1);
                         Mem.StoreI32(head + 4, typeId);
                         for (int p = head + 8, e = head + s; p != e; p += 8) Mem.StoreI64(p, 0);
+                        return head;
+                    }
+                    if (s >= 16)
+                    {
+                        head = PageAlloc(s);
+                        Mem.StoreI32(head, 1);
+                        Mem.StoreI32(head + 4, typeId);
                         return head;
                     }
                 }
@@ -696,6 +853,29 @@ namespace Cs2Wasm.Runtime
         /// sends AllocObject here for such a type).</summary>
         public static int AllocObjectArena(int size, int typeId)
         {
+            // (the usual case in one piece, as AllocObject: a freed block of the size, cleared, its header set)
+            if (SingleThreaded())
+            {
+                int s = (size + ArenaPrefix + 7) & ~7;
+                if (s <= MaxSmall && s_table != 0)
+                {
+                    int pg = Mem.LoadI32(s_cur + (s >> 3) * 4);
+                    int head = pg != 0 ? Mem.LoadI32(pg) : 0;
+                    if (head != 0)
+                    {
+                        Mem.StoreI32(pg, Mem.LoadI32(head + 8));
+                        Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
+                        for (int p = head, e = head + s; p != e; p += 8) Mem.StoreI64(p, 0);
+                        Mem.StoreI32(head + ArenaPrefix, 1);
+                        Mem.StoreI32(head + ArenaPrefix + 4, typeId);
+                        return head + ArenaPrefix;
+                    }
+                    head = PageAlloc(s);
+                    Mem.StoreI32(head + ArenaPrefix, 1);
+                    Mem.StoreI32(head + ArenaPrefix + 4, typeId);
+                    return head + ArenaPrefix;
+                }
+            }
             int a = Alloc(size + ArenaPrefix) + ArenaPrefix;
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
@@ -979,7 +1159,7 @@ namespace Cs2Wasm.Runtime
             if (Mem.LoadI32(p) >= -1 || OnChain(p, v)) return;
             Mem.StoreI32(v - 32, p);
             Mem.StoreI32(v - 24, Mem.LoadI32(v - 24) | Owned | MultOne);
-            Reevaluate(v);
+            if ((Mem.LoadI32(v - 28) & 0x55555555) != 0) Reevaluate(v);
         }
 
         /// <summary>The member has an owner now: a counted reference in one of its own slots to a member that is on its
@@ -1009,7 +1189,8 @@ namespace Cs2Wasm.Runtime
             }
             Mem.StoreI32(val - 32, container);
             Mem.StoreI32(val - 24, Mem.LoadI32(val - 24) | Owned | MultOne);
-            Reevaluate(val);
+            // (only a counted reference in one of its own slots can become an up-reference)
+            if ((Mem.LoadI32(val - 28) & 0x55555555) != 0) Reevaluate(val);
         }
 
         /// <summary>The container gave up one counted reference to the member: if it owned it, one of the owner's
@@ -1068,10 +1249,17 @@ namespace Cs2Wasm.Runtime
             // (a container that joins an arena here has its slots linked: not this one, whose value is on its way out)
             int outer = s_storeSlot;
             s_storeSlot = slot;
-            int r = val == 0 ? 0 : ArenaLinkCore(val, container, slot);
-            ArenaLinkJoined();
+            int r = val;
+            if (val != 0)
+            {
+                // (the usual case: both are members of one arena already, which is not being destroyed or merged)
+                int ar = Mem.LoadI32(container) < -1 && Mem.LoadI32(val) < -1 ? Mem.LoadI32(container - 16) : 0;
+                if (ar != 0 && ar == Mem.LoadI32(val - 16) && Mem.LoadI64(ar + 12) == 0) LinkMembers(val, container, slot, ar);
+                else ArenaLinkCore(val, container, slot);
+            }
+            if (s_linkN != 0) ArenaLinkJoined();
             s_storeSlot = outer;
-            DrainKills();
+            if (s_killN != 0) DrainKills();
             RuntimeUnlock();
             return r;
         }
@@ -1112,6 +1300,13 @@ namespace Cs2Wasm.Runtime
                 int now = ArenaOf(val);
                 if (now != ar) ar = ArenaMerge(ar, now);
             }
+            return LinkMembers(val, container, slot, ar);
+        }
+
+        /// <summary>The value and the container are members of the arena: the stored reference becomes an inside one or
+        /// an up-reference.</summary>
+        static int LinkMembers(int val, int container, int slot, int ar)
+        {
             // the stored reference is inside the arena now: the count the store took is given back
             Mem.StoreI32(val, Mem.LoadI32(val) + 1);
             Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
@@ -1166,8 +1361,9 @@ namespace Cs2Wasm.Runtime
             bool inside = co < -1 && cc < -1 && Mem.LoadI32(old - 4) != 0;
             if (inside)
             {
-                int ar = ArenaOf(old);
-                inside = ar == ArenaOf(container) && (Mem.LoadI32(ar + 12) & ArenaBusy) == 0;
+                int ar = Mem.LoadI32(old - 16);
+                if (ar != Mem.LoadI32(container - 16) || Mem.LoadI32(ar + 16) != 0) { ar = ArenaOf(old); inside = ar == ArenaOf(container); }
+                inside = inside && (Mem.LoadI32(ar + 12) & ArenaBusy) == 0;
             }
             if (inside)
             {
@@ -1180,7 +1376,7 @@ namespace Cs2Wasm.Runtime
                     if (Mem.LoadI32(old - 32) == 0) Adopt(old);
                     UpdateHold(old);
                 }
-                DrainKills();
+                if (s_killN != 0) DrainKills();
             }
             RuntimeUnlock();
             if (!inside) Release(Borrow<object>(old));
