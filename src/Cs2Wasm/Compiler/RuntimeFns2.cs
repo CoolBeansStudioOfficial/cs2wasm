@@ -54,6 +54,7 @@ internal sealed partial class RuntimeFns
             e.If(); e.I32Addr(owner); e.I32(1); e.Emit(Op.MemoryAtomicNotify, 0, 2); e.Op(Op.Drop); e.End();
             e.End();
         }
+        if (s_plainCounts) { EmitLoadRetain(false, arenas); return; }
         EmitLoadRetain(threads, arenas);
         if (!threads) return;
         // retain(p), release(p) with threads: the count is exchanged for the new one atomically (whoever counts holds
@@ -138,8 +139,13 @@ internal sealed partial class RuntimeFns
     /// <summary>(locks): the runtime lock, then those locks, lowest first (two threads never wait for each other);
     /// (locks): gives them back. For an array's range of references copied or cleared: every place's lock
     /// (rt.bulk_enter) stopped every thread that read or stored a reference anywhere.</summary>
-    public WasmFunction MaskEnter => _maskEnter ??= MakeMaskLock(true);
-    public WasmFunction MaskExit => _maskExit ??= MakeMaskLock(false);
+    public WasmFunction MaskEnter => _maskEnter ??= MakeMaskLock(true, true);
+    public WasmFunction MaskExit => _maskExit ??= MakeMaskLock(false, true);
+    WasmFunction? _stripesEnter, _stripesExit;
+    /// <summary>As rt.mask_enter and rt.mask_exit without the runtime lock: for what counts nothing while it holds
+    /// the places' locks (a range cleared: what it held is released afterwards).</summary>
+    public WasmFunction StripesEnter => _stripesEnter ??= MakeMaskLock(true, false);
+    public WasmFunction StripesExit => _stripesExit ??= MakeMaskLock(false, false);
 
     WasmFunction MakeStripeMask()
     {
@@ -159,14 +165,14 @@ internal sealed partial class RuntimeFns
         return f;
     }
 
-    WasmFunction MakeMaskLock(bool enter)
+    WasmFunction MakeMaskLock(bool enter, bool runtimeLock)
     {
-        var f = M.AddFunction(enter ? "rt.mask_enter" : "rt.mask_exit", FT([ValType.I64], []));
+        var f = M.AddFunction((runtimeLock ? "rt.mask_" : "rt.stripes_") + (enter ? "enter" : "exit"), FT([ValType.I64], []));
         var e = new Emitter(f);
         if (!D.ThreadMode) return f;
         int p = e.AddLocal(I), k = e.AddLocal(I);
         var table = D.StaticAddress("rt.ref.locks", RefLockBytes, 64);
-        if (enter) e.Call(LockEnter);
+        if (enter && runtimeLock) e.Call(LockEnter);
         e.I32Addr(table); e.Set(p);
         var done = e.Block(); var next = e.Loop();
         e.Get(k); e.I32(64); e.Op(Op.I32GeU); e.BrIf(done);
@@ -178,7 +184,7 @@ internal sealed partial class RuntimeFns
         e.Get(p); e.I32(64); e.Op(Op.I32Add); e.Set(p);
         e.Get(k); e.I32(1); e.Op(Op.I32Add); e.Set(k);
         e.Br(next); e.End(); e.End();
-        if (!enter) e.Call(LockExit);
+        if (!enter && runtimeLock) e.Call(LockExit);
         return f;
     }
 
@@ -282,6 +288,9 @@ internal sealed partial class RuntimeFns
         }
     }
 
+    /// <summary>CS2WASM_PLAIN_COUNTS=1 (a measurement, unsafe with more than one thread running): counts and counted
+    /// reads as in a program without threads, to see what the atomic ones cost.</summary>
+    static readonly bool s_plainCounts = Environment.GetEnvironmentVariable("CS2WASM_PLAIN_COUNTS") == "1";
     /// <summary>CS2WASM_ALL_SHARED=1 (diagnosis): every count is updated atomically, as a shared object's.</summary>
     static readonly bool s_allShared = Environment.GetEnvironmentVariable("CS2WASM_ALL_SHARED") == "1";
     /// <summary>CS2WASM_SHARE_CHECK=1 (diagnosis): plain count updates check the object's allocating thread (Rt.ShareCheck).</summary>
@@ -451,9 +460,64 @@ internal sealed partial class RuntimeFns
             // to come in between (rt.bulk_enter: every place's lock); the old ones, set aside, are released after.
             int bytes = e.AddLocal(I), tmp = e.AddLocal(I); int locks = e.AddLocal(ValType.I64);
             e.Get(4); e.Get(5); e.Op(Op.I32Mul); e.Tee(bytes); e.Op(Op.I32Eqz); e.If(); e.Op(Op.Return); e.End();
+            // (elements that hold no reference: their bytes, with no lock)
+            e.Get(0); e.Call(ArrayCounted); e.Op(Op.I32Eqz);
+            e.If(); e.Get(d); e.Get(s); e.Get(bytes); e.Op(Op.MemoryCopy); e.Op(Op.Return); e.End();
             e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Alloc", 1).Fn); e.Set(tmp);
             // (the locks of the two ranges' places, not every place's)
             e.Get(s); e.Get(bytes); e.Call(StripeMask); e.Get(d); e.Get(bytes); e.Call(StripeMask); e.Op(Op.I64Or); e.Set(locks);
+            // Elements that are one reference each: counted under the places' locks alone, each by the exchange
+            // rt.retain makes without a lock (what was counted is kept in tmp). An element that needs the runtime
+            // lock (a member's first outside reference) ends the attempt: the counts are given back and the copy is
+            // made the other way, with the runtime lock taken first.
+            e.Get(5); e.I32(4); e.Op(Op.I32Eq);
+            e.If();
+            {
+                int i = e.AddLocal(I), q = e.AddLocal(I), r = e.AddLocal(I);
+                e.Get(locks); e.Call(StripesEnter);
+                e.I32(0); e.Set(i);
+                var fail = e.Block();
+                var ok = e.Block(); var next = e.Loop();
+                e.Get(i); e.Get(bytes); e.Op(Op.I32GeU); e.BrIf(ok);
+                e.Get(tmp); e.Get(i); e.Op(Op.I32Add);
+                e.Get(s); e.Get(i); e.Op(Op.I32Add); e.Load(Op.I32Load); e.Tee(q);
+                e.Store(Op.I32Store);
+                e.Get(q);
+                e.If();
+                var counted = e.Block(); var again = e.Loop();
+                e.Get(q); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
+                e.If();
+                e.Get(q); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(counted);
+                e.Br(again);
+                e.End();
+                e.Get(r); e.I32(-2); e.Op(Op.I32LtS);
+                e.If();
+                e.Get(q); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(counted);
+                e.Br(again);
+                e.End();
+                e.Get(r); e.I32(-2); e.Op(Op.I32Eq); e.BrIf(fail);
+                e.End(); e.End();
+                e.End();
+                e.Get(i); e.I32(4); e.Op(Op.I32Add); e.Set(i);
+                e.Br(next);
+                e.End(); e.End();
+                e.Get(tmp); e.Get(d); e.Get(bytes); e.Op(Op.MemoryCopy);
+                e.Get(d); e.Get(s); e.Get(bytes); e.Op(Op.MemoryCopy);
+                e.Get(locks); e.Call(StripesExit);
+                e.Get(2); e.Get(tmp); e.Get(4); e.Call(ArrayReleaseRange);
+                e.Get(tmp); e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn);
+                e.Op(Op.Return);
+                e.End();
+                e.Get(locks); e.Call(StripesExit);
+                // (the element that stopped it was not counted: those before it, kept in tmp, are released)
+                e.I32(0); e.Set(q);
+                { var undone = e.Block(); var undo = e.Loop();
+                  e.Get(q); e.Get(i); e.Op(Op.I32GeU); e.BrIf(undone);
+                  e.Get(tmp); e.Get(q); e.Op(Op.I32Add); e.Load(Op.I32Load); e.Call(Release);
+                  e.Get(q); e.I32(4); e.Op(Op.I32Add); e.Set(q);
+                  e.Br(undo); e.End(); e.End(); }
+            }
+            e.End();
             e.Get(locks); e.Call(MaskEnter);
             e.Get(0); e.Get(s); e.Get(4); e.Call(ArrayRetainRange);
             e.Get(tmp); e.Get(d); e.Get(bytes); e.Op(Op.MemoryCopy);
@@ -510,10 +574,10 @@ internal sealed partial class RuntimeFns
             e.Get(tmp); e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn);
             e.Op(Op.Return);
             e.End();
-            e.Get(a); e.Get(bytes); e.Call(StripeMask); e.Call(MaskEnter);
+            e.Get(a); e.Get(bytes); e.Call(StripeMask); e.Call(StripesEnter);
             e.Get(tmp); e.Get(a); e.Get(bytes); e.Op(Op.MemoryCopy);
             e.Get(a); e.I32(0); e.Get(bytes); e.Op(Op.MemoryFill);
-            e.Get(a); e.Get(bytes); e.Call(StripeMask); e.Call(MaskExit);
+            e.Get(a); e.Get(bytes); e.Call(StripeMask); e.Call(StripesExit);
             e.Get(0); e.Get(tmp); e.Get(2); e.Call(ArrayReleaseRange);
             e.Get(tmp); e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn);
             return f;
