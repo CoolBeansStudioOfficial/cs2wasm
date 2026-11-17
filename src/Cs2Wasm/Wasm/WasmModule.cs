@@ -48,6 +48,25 @@ internal sealed class WasmModule
         return live;
     }
 
+    /// <summary>For an internal error's message: the shortest chain of calls from a root to the function.</summary>
+    string WhyLive(WasmFunction target)
+    {
+        var parent = new Dictionary<WasmFunction, WasmFunction?>();
+        var q = new Queue<WasmFunction>();
+        foreach (var f in Functions) if (f.Exports.Count > 0 || f.TableRoot) { parent[f] = null; q.Enqueue(f); }
+        while (q.Count > 0)
+        {
+            var f = q.Dequeue();
+            if (f == target) break;
+            if (f.ForwardTo != null && parent.TryAdd(f.ForwardTo, f)) q.Enqueue(f.ForwardTo);
+            foreach (var ins in f.Body)
+                if (ins.Ref is WasmFunction g && parent.TryAdd(g, f)) q.Enqueue(g);
+        }
+        var sb = new System.Text.StringBuilder();
+        for (var f = parent.GetValueOrDefault(target); f != null; f = parent.GetValueOrDefault(f)) sb.Append(", called by ").Append(f.Name);
+        return sb.ToString();
+    }
+
     static readonly List<(int, string)>? s_sizes = Environment.GetEnvironmentVariable("CS2WASM_SIZES") == "1" ? [] : null;
     static readonly string? s_dump = Environment.GetEnvironmentVariable("CS2WASM_DUMP") is { Length: > 0 } d ? d : null;
     /// <summary>The module's number for each internal type id (Driver.AssignTypeIds).</summary>
@@ -344,7 +363,7 @@ internal sealed class WasmModule
             foreach (var ins in f.Body)
             {
                 if (ins.Pos >= 0 && ins.Pos != lastPos) { bodyLines.Add((body.Length, ins.Pos)); lastPos = ins.Pos; }
-                try { EncodeInstr(body, ins, TypeOf); } catch (Exception ex) when (ex.Message.StartsWith("internal: type")) { throw new Exception(ex.Message + " (in " + f.Name + ")"); }
+                try { EncodeInstr(body, ins, TypeOf); } catch (Exception ex) when (ex.Message.StartsWith("internal: type")) { throw new Exception(ex.Message + " (in " + f.Name + WhyLive(f) + ")"); }
             }
             body.Byte(0x0B);
             if (s_sizes != null) s_sizes.Add((body.Length, f.FrameName ?? f.Name));

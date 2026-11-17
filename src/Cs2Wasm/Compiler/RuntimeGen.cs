@@ -900,6 +900,9 @@ sealed partial class RuntimeGen
     {
         var types = D.Constructed.ToHashSet();
         var unboxThrows = D.Rt.BoxTests.Values.Where(x => !x.exact).ToDictionary(x => x.fn, x => D.Rt.ThrowInvalidCast(x.type));
+        // (init is written after pruning too: it takes the first thread's block, and with no memory for it throws,
+        // which may be the program's only throw: a trace's buffer is then constructed there alone)
+        var allocFirst = D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1).Fn;
         while (true)
         {
             var destroyOf = new Dictionary<WasmFunction, int>();
@@ -913,6 +916,7 @@ sealed partial class RuntimeGen
                 if (f == D.Rt.Destroy) foreach (var (id, df) in _destroyFns) if (types.Contains(id)) r.Add(df);
                 // (the unbox tests are written after pruning: a failed unbox throws InvalidCastException)
                 if (unboxThrows.TryGetValue(f, out var th)) r.Add(th);
+                if (f.Exports.Contains("init")) r.Add(allocFirst);
                 return r;
             });
             var next = types.Where(id => !D.ConstructedBy.TryGetValue(id, out var by) || by.Contains(null) || by.Any(f => f != null && live.Contains(f))).ToHashSet();
@@ -921,6 +925,10 @@ sealed partial class RuntimeGen
             types = next;
         }
         if (types.Count == D.Constructed.Count) return;
+        if (Environment.GetEnvironmentVariable("CS2WASM_WHY_PRUNED") is { Length: > 0 } whyP)
+            foreach (int id in D.Constructed)
+                if (!types.Contains(id) && id < D.TypeById.Count && D.TypeById[id].ToString()!.Contains(whyP))
+                    Console.Error.WriteLine($"pruned {D.TypeById[id]}: constructed by {string.Join(", ", D.ConstructedBy[id].Select(f => f == null ? "(none)" : f.Name + (_prunedLive!.Contains(f) ? " (live)" : " (dead)") + (D.Module.Functions.Contains(f) ? "" : " (not in the module)")))}");
         D.Constructed.IntersectWith(types);
         foreach (var stub in D.Stubs.Values)
             foreach (var k in stub.Cases.Keys.ToList())

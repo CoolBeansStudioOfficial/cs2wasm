@@ -48,6 +48,9 @@ for (const f of walk(join(src, 'Upstream')).filter((f) => f.endsWith('.cs') || f
 // Roslyn: the assemblies beside the .NET build of cs2wasmc
 const bin = join(root, 'tests', 'out', 'up', 'bin');
 lines.push('-r', join(bin, 'Microsoft.CodeAnalysis.dll'), '-r', join(bin, 'Microsoft.CodeAnalysis.CSharp.dll'));
+// (a compiler's memory: 4 GiB at most, all a 32-bit module can have. A program with a large library needs more than
+// the 1 GiB a module gets by default)
+if (!extra.includes('--max-pages')) extra.push('--max-pages', '65536');
 lines.push('-o', out, ...extra);
 const rsp = out + '.rsp';
 const [cmd, ...pre] = compiler.split(' ');

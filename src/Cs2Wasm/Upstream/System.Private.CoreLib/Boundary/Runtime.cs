@@ -2051,6 +2051,16 @@ namespace Cs2Wasm.Runtime
             e._stackTraceString = e._fullTrace;
         }
 
+        /// <summary>The stack of the calling code as an exception's trace has it, innermost frame first (for
+        /// System.Diagnostics.StackTrace and StackFrame).</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        public static string CurrentTrace()
+        {
+            var buf = new char[16384];
+            int n = Engine.CaptureStack(ArrayData(buf), buf.Length);
+            return n > 0 ? StringOf(buf, n) : "";
+        }
+
         /// <summary>A catch clause took the exception: its trace runs from the throw to the catching frame, as in .NET.</summary>
         public static void OnCatch(object ex)
         {
@@ -2072,8 +2082,8 @@ namespace Cs2Wasm.Runtime
         /// <summary>Exception.GetStackTrace (manifest substitution): the trace captured when it was thrown.</summary>
         public static string StackTraceOf(Exception e) => e._stackTraceString ?? e._fullTrace ?? "";
 
-        /// <summary>StackTrace.ToString(TraceFormat) (manifest substitution): cs2wasm's StackTrace has no frames (traces are text).</summary>
-        public static string EmptyTrace(System.Diagnostics.StackTrace t, int format) => "";
+        /// <summary>StackTrace.ToString(TraceFormat) (manifest substitution): the frames' text (StackTrace.Mono.cs).</summary>
+        public static string EmptyTrace(System.Diagnostics.StackTrace t, int format) => t.Cs2WasmText(format);
 
         public static long CheckedMulI64(long a, long b)
         {

@@ -12,8 +12,12 @@ namespace System.Diagnostics
 {
     public partial class StackFrame
     {
+        /// <summary>cs2wasm: the frame's method as a trace writes it ("Program.A()"); GetMethod() is null.</summary>
+        internal string? _cs2wasmName;
+
         internal StackFrame(MonoStackFrame monoStackFrame, bool needFileInfo)
         {
+            _cs2wasmName = monoStackFrame.internalMethodName;
             _method = monoStackFrame.methodBase;
             _nativeOffset = monoStackFrame.nativeOffset;
             _ilOffset = monoStackFrame.ilOffset;
@@ -31,28 +35,19 @@ namespace System.Diagnostics
         [MethodImplAttribute(MethodImplOptions.NoInlining)]
         private void BuildStackFrame(int skipFrames, bool needFileInfo)
         {
-            const int SystemDiagnosticsStackDepth = 3;
-
-            if (skipFrames + SystemDiagnosticsStackDepth < 0)
+            // cs2wasm: the stack as the engine gives it (Rt.CurrentTrace), without this class's own frames
+            if (skipFrames < 0)
                 return;
-
-            MethodBase? method = null;
-            string? fileName = null;
-            bool success = GetFrameInfo(skipFrames + SystemDiagnosticsStackDepth, needFileInfo,
-                                        ObjectHandleOnStack.Create(ref method), ObjectHandleOnStack.Create(ref fileName),
-                                        out int ilOffset, out int nativeOffset, out int line, out int column);
-            if (!success)
+            var all = StackTrace.CurrentFrames();
+            if (skipFrames >= all.Count)
                 return;
-
-            _method = method;
-            _ilOffset = ilOffset;
-            _nativeOffset = nativeOffset;
-
+            var f = all[skipFrames];
+            _cs2wasmName = f.internalMethodName;
             if (needFileInfo)
             {
-                _fileName = fileName;
-                _lineNumber = line;
-                _columnNumber = column;
+                _fileName = f.fileName;
+                _lineNumber = f.lineNumber;
+                _columnNumber = f.columnNumber;
             }
         }
 

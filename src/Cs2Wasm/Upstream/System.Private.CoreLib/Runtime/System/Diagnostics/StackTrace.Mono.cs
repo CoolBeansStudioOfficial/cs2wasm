@@ -41,12 +41,28 @@ namespace System.Diagnostics
         internal static void GetTrace(ObjectHandleOnStack ex, ObjectHandleOnStack res, int skipFrames, bool needFileInfo)
         {
             var e = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Exception>(ex);
-            var lines = (e.StackTrace ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            Cs2Wasm.Runtime.TypeInfo.Set(res, FramesOf(e.StackTrace ?? "", skipFrames, false).ToArray());
+        }
+
+        /// <summary>cs2wasm: the frames of the calling code, innermost first, without those of StackTrace and
+        /// StackFrame themselves (and of the runtime under them), whichever of them the compiler inlined.</summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        internal static List<MonoStackFrame> CurrentFrames() => FramesOf(Cs2Wasm.Runtime.Rt.CurrentTrace(), 0, true);
+
+        static List<MonoStackFrame> FramesOf(string text, int skipFrames, bool current)
+        {
+            var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
             var frames = new List<MonoStackFrame>();
             foreach (var raw in lines)
             {
                 var l = raw.Trim();
                 if (!l.StartsWith("at ", StringComparison.Ordinal)) continue;
+                if (current)
+                {
+                    if (l.StartsWith("at System.Diagnostics.StackTrace.", StringComparison.Ordinal) || l.StartsWith("at System.Diagnostics.StackFrame.", StringComparison.Ordinal)
+                        || l.StartsWith("at Cs2Wasm.Runtime.", StringComparison.Ordinal)) continue;
+                    current = false;
+                }
                 if (skipFrames > 0) { skipFrames--; continue; }
                 var f = new MonoStackFrame { ilOffset = -1, nativeOffset = -1 };
                 int i = l.LastIndexOf(" in ", StringComparison.Ordinal), ln = l.LastIndexOf(":line ", StringComparison.Ordinal);
@@ -59,7 +75,26 @@ namespace System.Diagnostics
                 else f.internalMethodName = l.Substring(3);
                 frames.Add(f);
             }
-            Cs2Wasm.Runtime.TypeInfo.Set(res, frames.ToArray());
+            return frames;
+        }
+
+        /// <summary>cs2wasm: ToString(TraceFormat) (manifest substitution, through Rt.TraceText): the frames as an
+        /// exception's trace writes them. A frame has its method as text and no MethodBase (reflection metadata is
+        /// kept only for what the program reflects on), so .NET's own code, which reads the MethodBase, writes nothing.</summary>
+        internal string Cs2WasmText(int format)
+        {
+            var sb = new System.Text.StringBuilder();
+            bool first = true;
+            for (int i = 0; i < _numOfFrames; i++)
+            {
+                var sf = GetFrame(i);
+                if (sf?._cs2wasmName == null) continue;
+                if (first) first = false; else sb.AppendLine();
+                sb.Append("   at ").Append(sf._cs2wasmName);
+                if (sf.GetFileName() is { } file) sb.Append(" in ").Append(file).Append(":line ").Append(sf.GetFileLineNumber());
+            }
+            if (format == 1 /* TraceFormat.TrailingNewLine */) sb.AppendLine();
+            return sb.ToString();
         }
 
         [UnconditionalSuppressMessage("ReflectionAnalysis", "IL2026:RequiresUnreferencedCode",
@@ -67,20 +102,10 @@ namespace System.Diagnostics
         [MethodImplAttribute(MethodImplOptions.NoInlining)]
         private void InitializeForCurrentThread(int skipFrames, bool needFileInfo)
         {
-            skipFrames += 2; // Current method + parent ctor
-
-            StackFrame sf;
+            // cs2wasm: the stack as the engine gives it (Rt.CurrentTrace), read once
+            var all = CurrentFrames();
             var frames = new List<StackFrame>();
-            while (skipFrames >= 0)
-            {
-                sf = new StackFrame(skipFrames, needFileInfo);
-                if (sf.GetMethod() == null)
-                {
-                    break;
-                }
-                frames.Add(sf);
-                skipFrames++;
-            }
+            for (int i = Math.Max(skipFrames, 0); i < all.Count; i++) frames.Add(new StackFrame(all[i], needFileInfo));
 
             _stackFrames = frames.ToArray();
             _numOfFrames = _stackFrames.Length;
