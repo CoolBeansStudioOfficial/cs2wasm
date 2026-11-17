@@ -1,0 +1,64 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://Character.cs" id="1_char"]
+[ext_resource type="Texture2D" path="res://icon.svg" id="2_icon"]
+[ext_resource type="Script" path="res://Hud.cs" id="3_hud"]
+
+[sub_resource type="RectangleShape2D" id="Shape_player"]
+size = Vector2(64, 64)
+
+[sub_resource type="RectangleShape2D" id="Shape_floor"]
+size = Vector2(4000, 40)
+
+[sub_resource type="RectangleShape2D" id="Shape_box"]
+size = Vector2(120, 40)
+
+[node name="Main" type="Node2D"]
+
+[node name="Floor" type="StaticBody2D" parent="."]
+position = Vector2(576, 600)
+
+[node name="Shape" type="CollisionShape2D" parent="Floor"]
+shape = SubResource("Shape_floor")
+
+[node name="Visual" type="ColorRect" parent="Floor"]
+offset_left = -2000.0
+offset_top = -20.0
+offset_right = 2000.0
+offset_bottom = 20.0
+color = Color(0.25, 0.3, 0.4, 1)
+
+[node name="Ledge" type="StaticBody2D" parent="."]
+position = Vector2(800, 470)
+
+[node name="Shape" type="CollisionShape2D" parent="Ledge"]
+shape = SubResource("Shape_box")
+
+[node name="Visual" type="ColorRect" parent="Ledge"]
+offset_left = -60.0
+offset_top = -20.0
+offset_right = 60.0
+offset_bottom = 20.0
+color = Color(0.4, 0.5, 0.3, 1)
+
+[node name="Character" type="CharacterBody2D" parent="."]
+position = Vector2(576, 400)
+script = ExtResource("1_char")
+Speed = 320.0
+
+[node name="Sprite" type="Sprite2D" parent="Character"]
+texture = ExtResource("2_icon")
+
+[node name="Shape" type="CollisionShape2D" parent="Character"]
+shape = SubResource("Shape_player")
+
+[node name="Camera" type="Camera2D" parent="Character"]
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Hud" type="Label" parent="UI"]
+offset_left = 16.0
+offset_top = 12.0
+offset_right = 600.0
+offset_bottom = 120.0
+script = ExtResource("3_hud")
