@@ -43,6 +43,25 @@ sealed partial class FunctionCompiler
         if (target.Name is "New" or "NewOfNullableArg" && Types.FullName(target.ContainingType) == "Cs2Wasm.Runtime.Generics" && D.IsLibrary(target))
             return EmitGenericsNew(inv);
         if (target.MethodKind == MethodKind.LocalFunction) return EmitLocalFunctionCall(inv);
+        // EqualityComparer<T>.Default.Equals(a, b) and .GetHashCode(a) for an integer T (a Dictionary<int, V>'s probe):
+        // the comparison itself, as .NET's compilers make it; the comparer is not fetched.
+        if (inv.Instance is IPropertyReferenceOperation { Property: { Name: "Default", IsStatic: true } } dflt
+            && T.Resolve(dflt.Property.ContainingType, Map) is INamedTypeSymbol { Name: "EqualityComparer", Arity: 1 } ect
+            && ect.ContainingNamespace?.ToDisplayString() == "System.Collections.Generic"
+            && target.Name is "Equals" or "GetHashCode" && target.Parameters.Length == (target.Name == "Equals" ? 2 : 1))
+        {
+            var kt = T.Canonical(ect.TypeArguments[0]);
+            var kp = Types.PrimOf(kt);
+            if (kp is Prim.Bool or Prim.Char or Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.I32 or Prim.U32 or Prim.I64 or Prim.U64 or Prim.IntPtr or Prim.UIntPtr
+                && (target.Name == "Equals" || kp is Prim.I32 && kt.TypeKind != TypeKind.Enum))
+            {
+                EmitValueAs(inv.Arguments[0].Value, kt);
+                if (target.Name == "GetHashCode") return Own.None; // an int's hash code is the int
+                EmitValueAs(inv.Arguments[1].Value, kt);
+                E.Op(Types.Is64(kp) ? Op.I64Eq : Op.I32Eq);
+                return Own.None;
+            }
+        }
         // Array.CreateInstance(typeof(T), n), typeof(T).MakeArrayType(): T[] is a type the program makes
         if (target.ContainingType?.SpecialType == SpecialType.System_Array && target.Name == "CreateInstance" && inv.Arguments.Length == 2
             && StripConversions(inv.Arguments[0].Value) is ITypeOfOperation cto)

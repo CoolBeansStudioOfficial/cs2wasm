@@ -234,6 +234,9 @@ sealed class Manifest
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(1);\tCs2Wasm.Runtime.Threads.SpinPause(1);");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(0);\tCs2Wasm.Runtime.Threads.SpinPause(0);");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Yield();\tCs2Wasm.Runtime.Threads.SpinPause(0);");
+            // a hash table picks its bucket by two multiplications (upstream does so on 64-bit targets only; a division otherwise)
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Collections/Generic/Dictionary.cs\t#if TARGET_64BIT\t#if true");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Collections/Generic/HashSet.cs\t#if TARGET_64BIT\t#if true");
             // Span<T>.Clear over references releases them (the upstream loop writes zeros over them)
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Span.cs\tSpanHelpers.ClearWithReferences(ref Unsafe.As<T, IntPtr>(ref _reference), (uint)_length * (nuint)(sizeof(T) / sizeof(nuint)));\tfor (int i = 0; i < _length; i++) Unsafe.Add(ref _reference, i) = default!;");
             // the text scans with 128-bit instructions (Boundary/TextScan.cs)
