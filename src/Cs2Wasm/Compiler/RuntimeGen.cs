@@ -506,6 +506,13 @@ sealed partial class RuntimeGen
 
     /// <summary>The keys of a type, its base types and its interfaces (what IsSubtype finds without variance).</summary>
 
+    /// <summary>The type's destruction frees the object and does nothing else that can destroy another: it calls
+    /// only the free (and the marks' notice).</summary>
+    bool IsLeafDestroy(int id) =>
+        _destroyFns.TryGetValue(id, out var f) && f.Body.All(i => i.Op != Op.Call && i.Op != Op.CallIndirect || ReferenceEquals(i.Ref, D.Rt.Free) || ReferenceEquals(i.Ref, D.Rt.OnDestroy));
+
+    bool HasDestroy(int id) => _destroyFns.ContainsKey(id);
+
     WasmFunction MakeDestroy(int id)
     {
         var f = D.Module.AddFunction("destroy " + id, new FuncType([ValType.I32], []));
@@ -561,6 +568,45 @@ sealed partial class RuntimeGen
         }
         // class: finalizer, then fields, then the memory
         var l = D.Types.LayoutOf(type);
+        // A sealed class with a field of its own type (a list's node and its next): the object that field holds is
+        // of this very class, so when this object's reference to it is the last, its destruction is this function
+        // again: a loop, not a call. A list let go at its head is freed node by node in a few instructions each,
+        // with no nesting to count and no stack to run out of. (The field is let go of last, after the object's
+        // memory is freed: any order C# allows. A tree's node loops on its last such field and nests on the others.)
+        if (clear && free && finalizer == 0 && !D.ThreadMode && FindFinalizer(type) == null
+            && type is INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true }
+            && l.Fields.LastOrDefault(f => f.Type is INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true } ft && D.ExistingTypeId(D.Types.Canonical(ft)) == id) is { } tail)
+        {
+            int next = e.AddLocal(ValType.I32), c = e.AddLocal(ValType.I32);
+            var top = e.Loop();
+            e.Get(0); e.Call(rt.OnDestroy); e.Op(Op.Drop);
+            foreach (var fs in l.Fields)
+            {
+                if (ReferenceEquals(fs, tail)) continue;
+                if (Types.IsRef(fs.Type)) { e.Get(0); e.Load(Op.I32Load, fs.Offset); e.Call(ReleaseOfField(fs.Type)); }
+                else if (Types.IsStruct(fs.Type) && D.Types.LayoutOf(fs.Type).HasRefs) { e.Get(0); e.I32(fs.Offset); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(fs.Type)); }
+            }
+            e.Get(0); e.Load(Op.I32Load, tail.Offset); e.Set(next);
+            e.Get(0); e.I32(Math.Max(l.Size, Types.ObjectHeader)); e.Call(rt.Free);
+            e.Get(next);
+            e.If();
+            e.Get(next); e.Load(Op.I32Load); e.Tee(c); e.I32(1); e.Op(Op.I32GtS);
+            e.If();
+            e.Get(next); e.Get(c); e.I32(1); e.Op(Op.I32Sub); e.Store(Op.I32Store);
+            e.Else();
+            e.Get(c); e.I32(1); e.Op(Op.I32Eq);
+            e.If();
+            e.Get(next); e.I32(0); e.Store(Op.I32Store);
+            e.Get(next); e.Set(0);
+            e.Br(top);
+            e.End();
+            // (a member of a cycle's group, or an object that is never freed: as any release)
+            e.Get(next); e.Call(rt.Release);
+            e.End();
+            e.End();
+            e.End();
+            return;
+        }
         if (clear || finalizer == 1)
         {
             var fin = finalizer == -1 ? null : FindFinalizer(type);
@@ -1177,10 +1223,28 @@ sealed partial class RuntimeGen
         // gone, in some order), and no stack to run out of.
         const int MaxNesting = 48;
         ExpandExactReleases(MaxNesting);
+        if (!D.ThreadMode)
+        {
+            D.Module.ReleaseFn = D.Rt.Release;
+            D.Module.LeafDestroy = id => IsLeafDestroy(id) && D.ExtId(id) >= 0 ? _destroyFns[id] : null;
+        }
         var now = D.Module.AddFunction("rt.destroy_now", new FuncType([ValType.I32], []));
         {
             var w = new Emitter(D.Rt.Destroy);
             int q = w.AddLocal(ValType.I32);
+            // (an object that holds no reference: freed, with no nesting to count. The depth is a global that every
+            // destruction would write twice, each write waiting for the one before)
+            if (D.LeafTypeCount > 0)
+            {
+                // (a string, the most usual of them: straight to its own)
+                if (_destroyFns.TryGetValue(1, out var ds))
+                {
+                    w.Get(0); w.Load(Op.I32Load, 4); w.I32(1); w.Op(Op.I32Eq);
+                    w.If(); w.Get(0); w.Call(ds); w.Op(Op.Return); w.End();
+                }
+                w.Get(0); w.Load(Op.I32Load, 4); w.I32(D.LeafTypeCount); w.Op(Op.I32LtU);
+                w.If(); w.Get(0); w.Call(now); w.Op(Op.Return); w.End();
+            }
             w.GGet(D.DestroyDepth); w.I32(MaxNesting); w.Op(Op.I32GeU);
             w.If();
             w.Get(0); w.GGet(D.DestroyPending); w.Store(Op.I32Store);
@@ -1265,6 +1329,13 @@ sealed partial class RuntimeGen
         }
     }
 
+    /// <summary>A virtual call's stub: from the object's type id to the implementation of its class. Only an object
+    /// of a class that has a case can come here (the receiver is of the slot's type, and its class is one the
+    /// program makes), so the cases, in the order of their ids, are cut where the implementation changes, and the
+    /// stub finds the stretch the id is in by halving: `id &lt; first id of the upper half`. A slot most classes
+    /// take from one base (Exception.Message, object.ToString) is a comparison or two; one with a thousand
+    /// implementations (IEnumerator.MoveNext in a large program) is ten. A class whose id is not numbered has no
+    /// object, and no case. One stretch: every call of the stub goes straight to the implementation.</summary>
     void EmitStubs()
     {
         foreach (var stub in D.Stubs.Values)
@@ -1274,24 +1345,45 @@ sealed partial class RuntimeGen
             int thisIdx = Driver.Signature(stub.Slot, D.Types).Params.Length > stub.Slot.Parameters.Length + (stub.Slot.IsStatic ? 0 : 1) ? 1 : 0;
             int nparams = sig.Params.Length;
             var cases = stub.Cases.Values.ToList();
-            if (cases.Count == 1 && !cases[0].boxed) stub.Fn.ForwardTo = cases[0].impl!.Fn;
+            if (Environment.GetEnvironmentVariable("CS2WASM_STUBSTATS") == "1") Console.Error.WriteLine("stub " + cases.Count + " " + stub.Fn.Name);
             int tid = e.AddLocal(ValType.I32);
-            e.Get(thisIdx); e.Load(Op.I32Load, 4); e.Set(tid);
+            var sorted = new List<(int ext, int id, ITypeSymbol type, MethodInst impl, bool boxed)>();
             foreach (var (ckey, (type, impl, boxed)) in stub.Cases)
             {
                 int id = ckey.StartsWith("synthetic#") ? int.Parse(ckey[10..]) : D.TypeId(type);
-                e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
-                e.If();
-                for (int i = 0; i < nparams; i++)
-                {
-                    e.Get(i);
-                    if (i == thisIdx && boxed) { e.I32(FunctionCompilerHelpers.BoxDataOffset(D.Types, type)); e.Op(Op.I32Add); }
-                }
-                e.Call(impl!.Fn);
-                e.Op(Op.Return);
-                e.End();
+                int ext = D.ExtId(id);
+                if (ext >= 0) sorted.Add((ext, id, type, impl!, boxed));
             }
-            e.Op(Op.Unreachable);
+            sorted.Sort((a, b) => a.ext.CompareTo(b.ext));
+            // the stretches: (the first case's id, the implementation, the offset of a boxed value in its box or 0)
+            var runs = new List<(int id, WasmFunction fn, int box)>();
+            foreach (var c in sorted)
+            {
+                int box = c.boxed ? FunctionCompilerHelpers.BoxDataOffset(D.Types, c.type) : 0;
+                if (runs.Count == 0 || !ReferenceEquals(runs[^1].fn, c.impl.Fn) || runs[^1].box != box) runs.Add((c.id, c.impl.Fn, box));
+            }
+            if (runs.Count == 0) { e.Op(Op.Unreachable); continue; }
+            if (runs.Count == 1 && runs[0].box == 0) stub.Fn.ForwardTo = runs[0].fn;
+            if (runs.Count > 1) { e.Get(thisIdx); e.Load(Op.I32Load, 4); e.Set(tid); }
+            void Tree(int lo, int hi)
+            {
+                if (lo == hi)
+                {
+                    for (int i = 0; i < nparams; i++)
+                    {
+                        e.Get(i);
+                        if (i == thisIdx && runs[lo].box != 0) { e.I32(runs[lo].box); e.Op(Op.I32Add); }
+                    }
+                    e.Call(runs[lo].fn);
+                    e.Op(Op.Return);
+                    return;
+                }
+                int mid = (lo + hi + 1) / 2;
+                e.Get(tid); e.Tid(runs[mid].id); e.Op(Op.I32LtU);
+                e.If(); Tree(lo, mid - 1); e.End();
+                Tree(mid, hi);
+            }
+            Tree(0, runs.Count - 1);
         }
     }
 

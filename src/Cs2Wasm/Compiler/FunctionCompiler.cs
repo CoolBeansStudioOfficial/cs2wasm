@@ -431,18 +431,45 @@ sealed partial class FunctionCompiler
         _scopes.RemoveAt(_scopes.Count - 1);
     }
 
+    /// <summary>A release of a value whose type says exactly what class of object it is (a string, an array of
+    /// numbers, a sealed class): the call carries the type (its second number, the type's id + 1), and where
+    /// destroying such an object only frees it, the final pass writes the count's test and the call of that class's
+    /// own destruction in its place (WasmModule.ExpandLeafReleases) instead of the dispatch on the object's type.</summary>
+    void ReleaseOf(ITypeSymbol? t)
+    {
+        E.Call(Rt.Release);
+        int hint = ExactTypeHint(t);
+        if (hint != 0) E.Body[^1] = E.Body[^1] with { Imm2 = hint };
+    }
+
+    int ExactTypeHint(ITypeSymbol? t)
+    {
+        if (t == null || D.ThreadMode) return 0;
+        t = T.Resolve(t, Map);
+        if (Types.IsString(t)) return 2;
+        if (t is IArrayTypeSymbol { Rank: 1 } at)
+            return at.ElementType is INamedTypeSymbol { IsValueType: true } et && Types.PrimOf(et) != Prim.None ? D.TypeId(D.Types.Canonical(t)) + 1 : 0;
+        if (t is INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true, IsGenericType: false } nt && !Types.IsImmortalType(nt))
+        {
+            for (var c = nt.ContainingType; c != null; c = c.ContainingType) if (c.IsGenericType) return 0;
+            return D.TypeId(D.Types.Canonical(nt)) + 1;
+        }
+        return 0;
+    }
+
     void ReleaseSlot(Slot s)
     {
         if (s.Local >= 0)
         {
-            E.Get(s.Local); E.Call(s.ReleaseMarker ?? Rt.Release);
+            E.Get(s.Local);
+            if (s.ReleaseMarker != null) E.Call(s.ReleaseMarker); else ReleaseOf(s.Type);
             E.I32(0); E.Set(s.Local);
         }
         else
         {
             if (Types.IsRef(s.Type))
             {
-                E.Get(_fb); E.Load(Op.I32Load, s.FrameOffset); E.Call(Rt.Release);
+                E.Get(_fb); E.Load(Op.I32Load, s.FrameOffset); ReleaseOf(s.Type);
                 E.Get(_fb); E.I32(0); E.Store(Op.I32Store, s.FrameOffset);
             }
             else
@@ -562,7 +589,7 @@ sealed partial class FunctionCompiler
     void Drop(Own o, ITypeSymbol? t)
     {
         if (t != null && Types.IsVoid(t)) return;
-        if (o == Own.Owned) E.Call(Rt.Release);
+        if (o == Own.Owned) ReleaseOf(t);
         else E.Op(Op.Drop);
     }
 

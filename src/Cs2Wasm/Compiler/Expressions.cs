@@ -1461,29 +1461,33 @@ sealed partial class FunctionCompiler
     readonly Dictionary<ILocalSymbol, bool> _ownedLocals = new(SymbolEqualityComparer.Default);
 
     /// <summary>The expression is a local variable that owns the reference it holds: a plain local of this function
-    /// (not captured, not a state machine's, not a ref) whose every value is a new object or the result of a call
-    /// (never a field's value or another variable's, which it could borrow). While such an object's count is 1, the
-    /// variable's is the only reference to it there is (Rt.ArenaLinkOwned).</summary>
+    /// (not captured, not a state machine's, not a ref, its address not taken), declared in a declaration statement
+    /// or a `for`, written by plain assignments only, and one that takes a count for every value it is given: not
+    /// one that may borrow (a local assigned again whose every value something else keeps, LocalBorrows.cs; one
+    /// never assigned again that reads a field or a stable reference, FieldBorrows.cs), nor a `foreach` or pattern
+    /// variable. One of the counts of the object it holds is then this function's own, whatever the final pass makes
+    /// of the counts between this function's variables (a count handed from one of them to the other is still this
+    /// function's). So while that object's count is 1, no object anywhere refers to it (Rt.ArenaLinkOwned): a list
+    /// reversed in place, `n.Next = prev`, is plain stores.</summary>
     bool OwnedLocal(IOperation? instance)
     {
         if (_machine != null || _closure != null || instance is not ILocalReferenceOperation lr) return false;
         var local = lr.Local;
         if (_ownedLocals.TryGetValue(local, out bool ok)) return ok;
         ok = false;
-        if (local.RefKind == RefKind.None && !IsCaptured(local)
-            && local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is VariableDeclaratorSyntax { Initializer: { } ini } vd
-            && D.ModelFor(vd.SyntaxTree).GetOperation(ini.Value) is { } first && OwnedValue(first))
-            ok = !LocalWrites().TryGetValue(local, out var writes) || writes.All(w => w != null && OwnedValue(w));
+        if (local.RefKind == RefKind.None && !IsCaptured(local) && !_addrTaken.Contains(local) && Types.IsRef(T.Resolve(local.Type, Map))
+            && local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is VariableDeclaratorSyntax { Parent: VariableDeclarationSyntax { Parent: var holder } } vd
+            && (holder is ForStatementSyntax || holder is LocalDeclarationStatementSyntax ld && ld.UsingKeyword.RawKind == 0)
+            && D.ModelFor(vd.SyntaxTree).GetOperation(vd) is IVariableDeclaratorOperation vdo
+            && (!LocalWrites().TryGetValue(local, out var writes) || writes.All(w => w != null))
+            && WrittenBorrow(local) == null)
+        {
+            var init = vdo.Initializer?.Value ?? (vdo.Parent as IVariableDeclarationOperation)?.Initializer?.Value;
+            ok = init == null || FieldBorrowCandidate(local, init) == null;
+        }
         return _ownedLocals[local] = ok;
     }
 
-    bool OwnedValue(IOperation v)
-    {
-        while (v is IParenthesizedOperation or IConversionOperation { Conversion: { IsImplicit: true, IsReference: true } or { IsIdentity: true } })
-            v = v is IParenthesizedOperation p ? p.Operand : ((IConversionOperation)v).Operand;
-        if (v is IObjectCreationOperation or IArrayCreationOperation || v.ConstantValue is { HasValue: true, Value: null }) return true;
-        return v is IInvocationOperation inv && !inv.TargetMethod.ReturnsByRef && !inv.TargetMethod.ReturnsByRefReadonly && !D.ReturnsFieldOf(SubstMethod(inv.TargetMethod));
-    }
     static bool IsDelegateLike(ITypeSymbol t) => t.TypeKind == TypeKind.Delegate || t is INamedTypeSymbol { Name: "Delegate" or "MulticastDelegate", ContainingNamespace.Name: "System" };
 
     /// <summary>Stack: a b (in prim p) → result.</summary>

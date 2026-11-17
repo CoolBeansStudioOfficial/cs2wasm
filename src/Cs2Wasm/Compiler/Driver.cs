@@ -225,6 +225,8 @@ internal sealed partial class Driver
     List<int> _intId = [];
     /// <summary>How many types the module numbers (RuntimeGen.AssignTypeIds).</summary>
     public int TypeCount;
+    /// <summary>The types numbered below this hold no reference: destroying one frees it (RuntimeGen.AssignTypeIds).</summary>
+    public int LeafTypeCount;
     public void SetTypeNumbers(List<int> internals)
     {
         _intId = internals;

@@ -157,7 +157,9 @@ internal sealed class WasmModule
                 // Once more: a getter is a load and a return only after the passes above took its local traffic out, and
                 // small enough to inline only then. The functions it went into are cleaned again.
                 var mayThrow = ComputeMayThrow();
+                var leafExpanded = ExpandLeafReleases();
                 var again = Inliner.Run(Functions, mayThrow, tiny: true);
+                again.UnionWith(leafExpanded);
                 {
                     var nn = Functions.FirstOrDefault(f => f.Name == "rt.nonnull");
                     Locals.MayThrow = mayThrow;
@@ -434,6 +436,89 @@ internal sealed class WasmModule
             if (!changed) break;
             foreach (var f in Functions) ResolveForwards(f);
         }
+    }
+
+    /// <summary>The release function, and for a type's id the destruction of its objects when that only frees them
+    /// (null otherwise): set by the compiler for programs without threads.</summary>
+    public WasmFunction? ReleaseFn;
+    public Func<int, WasmFunction?>? LeafDestroy;
+
+    /// <summary>A release whose call says what class the object is of exactly (FunctionCompiler.ReleaseOf), where
+    /// destroying such an object only frees it: the count's test and the class's own destruction, in place of the
+    /// call that would find the class by the object's type. A count below zero is an object that is never freed.</summary>
+    HashSet<WasmFunction> ExpandLeafReleases()
+    {
+        var changed = new HashSet<WasmFunction>();
+        if (ReleaseFn == null || LeafDestroy == null) return changed;
+        var destroyOf = new Dictionary<long, WasmFunction?>();
+        WasmFunction? DestroyOf(long hint)
+        {
+            if (!destroyOf.TryGetValue(hint, out var d)) destroyOf[hint] = d = LeafDestroy((int)hint - 1);
+            return d;
+        }
+        // (in a loop the test is written out; elsewhere it is a call of the one function that does it for the type,
+        // no larger than the call it replaces)
+        var releaseOf = new Dictionary<WasmFunction, WasmFunction>();
+        void Sequence(List<Instr> o, WasmFunction destroy, int t, int c, int pos)
+        {
+            void Add(Op op, long imm = 0, object? r = null) => o.Add(new Instr { Op = op, Imm = imm, Imm2 = op is Op.I32Load or Op.I32Store ? 2 : 0, Ref = r, Pos = pos });
+            Add(Op.LocalTee, t);
+            Add(Op.If);
+            Add(Op.LocalGet, t); Add(Op.I32Load); Add(Op.LocalTee, c); Add(Op.I32Const, 1); Add(Op.I32GtS);
+            Add(Op.If);
+            Add(Op.LocalGet, t); Add(Op.LocalGet, c); Add(Op.I32Const, 1); Add(Op.I32Sub); Add(Op.I32Store);
+            Add(Op.Else);
+            Add(Op.LocalGet, c); Add(Op.I32Const, 1); Add(Op.I32Eq);
+            Add(Op.If);
+            Add(Op.LocalGet, t); Add(Op.I32Const, 0); Add(Op.I32Store);
+            Add(Op.LocalGet, t); Add(Op.Call, 0, destroy);
+            Add(Op.End);
+            Add(Op.End);
+            Add(Op.End);
+        }
+        WasmFunction ReleaseOf(WasmFunction destroy)
+        {
+            if (releaseOf.TryGetValue(destroy, out var r)) return r;
+            r = AddFunction("rt.release of " + destroy.Name, new FuncType([ValType.I32], []));
+            r.Locals.Add(ValType.I32);
+            r.Body.Add(new Instr { Op = Op.LocalGet, Imm = 0, Pos = -1 });
+            Sequence(r.Body, destroy, 0, 1, -1);
+            return releaseOf[destroy] = r;
+        }
+        foreach (var f in Functions.ToList())
+        {
+            if (f.IsImport) continue;
+            bool any = false;
+            foreach (var ins in f.Body)
+                if (ins.Op == Op.Call && ins.Imm2 != 0 && ReferenceEquals(ins.Ref, ReleaseFn) && DestroyOf(ins.Imm2) != null) { any = true; break; }
+            if (!any) continue;
+            int np = f.Type.Params.Length;
+            int t = -1, c = -1;
+            var o = new List<Instr>(f.Body.Count + 32);
+            var open = new List<bool>();
+            int loops = 0;
+            foreach (var ins in f.Body)
+            {
+                switch (ins.Op)
+                {
+                    case Op.Loop: open.Add(true); loops++; break;
+                    case Op.Block or Op.If or Op.TryTable: open.Add(false); break;
+                    case Op.End when open.Count > 0: if (open[^1]) loops--; open.RemoveAt(open.Count - 1); break;
+                }
+                if (ins.Op != Op.Call || ins.Imm2 == 0 || !ReferenceEquals(ins.Ref, ReleaseFn) || DestroyOf(ins.Imm2) is not { } destroy) { o.Add(ins); continue; }
+                if (loops == 0) { o.Add(ins with { Imm2 = 0, Ref = ReleaseOf(destroy) }); continue; }
+                if (t < 0)
+                {
+                    f.Locals.Add(ValType.I32); t = np + f.Locals.Count - 1;
+                    f.Locals.Add(ValType.I32); c = np + f.Locals.Count - 1;
+                }
+                Sequence(o, destroy, t, c, ins.Pos);
+                continue;
+            }
+            f.Body = o;
+            changed.Add(f);
+        }
+        return changed;
     }
 
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, string> s_ids = new();
