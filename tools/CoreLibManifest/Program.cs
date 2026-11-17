@@ -234,6 +234,8 @@ sealed class Manifest
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(1);\tCs2Wasm.Runtime.Threads.SpinPause(1);");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(0);\tCs2Wasm.Runtime.Threads.SpinPause(0);");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Yield();\tCs2Wasm.Runtime.Threads.SpinPause(0);");
+            // Span<T>.Clear over references releases them (the upstream loop writes zeros over them)
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Span.cs\tSpanHelpers.ClearWithReferences(ref Unsafe.As<T, IntPtr>(ref _reference), (uint)_length * (nuint)(sizeof(T) / sizeof(nuint)));\tfor (int i = 0; i < _length; i++) Unsafe.Add(ref _reference, i) = default!;");
             // the text scans with 128-bit instructions (Boundary/TextScan.cs)
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/SpanHelpers.T.cs\t=> IndexOfValueType(ref Unsafe.As<char, short>(ref searchSpace), (short)value, length);\t=> Cs2Wasm.Runtime.TextScan.IndexOfChar(ref searchSpace, value, length);");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/String.Manipulation.cs\tif (Vector128.IsHardwareAccelerated && source.Length >= Vector128<ushort>.Count * 2)\tif (source.Length >= 16)");

@@ -47,6 +47,7 @@ edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	
 edit	src/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs	Thread.Sleep(1);	Cs2Wasm.Runtime.Threads.SpinPause(1);
 edit	src/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs	Thread.Sleep(0);	Cs2Wasm.Runtime.Threads.SpinPause(0);
 edit	src/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs	Thread.Yield();	Cs2Wasm.Runtime.Threads.SpinPause(0);
+edit	src/libraries/System.Private.CoreLib/src/System/Span.cs	SpanHelpers.ClearWithReferences(ref Unsafe.As<T, IntPtr>(ref _reference), (uint)_length * (nuint)(sizeof(T) / sizeof(nuint)));	for (int i = 0; i < _length; i++) Unsafe.Add(ref _reference, i) = default!;
 edit	src/libraries/System.Private.CoreLib/src/System/SpanHelpers.T.cs	=> IndexOfValueType(ref Unsafe.As<char, short>(ref searchSpace), (short)value, length);	=> Cs2Wasm.Runtime.TextScan.IndexOfChar(ref searchSpace, value, length);
 edit	src/libraries/System.Private.CoreLib/src/System/String.Manipulation.cs	if (Vector128.IsHardwareAccelerated && source.Length >= Vector128<ushort>.Count * 2)	if (source.Length >= 16)
 edit	src/libraries/System.Private.CoreLib/src/System/String.Manipulation.cs	MakeSeparatorListVectorized(source, ref sepListBuilder, sep0, sep1, sep2);	Cs2Wasm.Runtime.TextScan.Separators(source, ref sepListBuilder, sep0, sep1, sep2);

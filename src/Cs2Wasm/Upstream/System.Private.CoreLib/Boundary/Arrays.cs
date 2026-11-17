@@ -13,6 +13,19 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] internal static extern void CopyElements(Array src, int si, Array dst, int di, int length, int size);
         [Intrinsic] internal static extern void ClearElements(Array a, int index, int length, int size);
 
+        /// <summary>Array.Clear of elements that are or hold counted references: each is released, then the zeros.
+        /// False when the elements hold none (the caller's zeros are all there is to do).</summary>
+        internal static bool ClearCounted(Array a, int index, int length)
+        {
+            if (!HasCountedElements(a)) return false;
+            int size = ElementSize(a);
+            // (the runtime's clear counts from where a vector's elements start: an array of more dimensions starts later)
+            int lead = Data(a) - Rt.AddressOf(a) - 16;
+            if (lead % size != 0) return false;
+            ClearElements(a, index + lead / size, length, size);
+            return true;
+        }
+
         /// <summary>The address of element 0.</summary>
         internal static int Data(Array a)
         {

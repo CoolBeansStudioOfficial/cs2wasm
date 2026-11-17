@@ -62,6 +62,8 @@ namespace System
             ref byte ptr = ref MemoryMarshal.GetArrayDataReference(array);
             nuint byteLength = array.NativeLength * (nuint)(uint)array.GetElementSize() /* force zero-extension */;
 
+            // cs2wasm: the references the elements hold are released (zeros alone would leave their objects for ever)
+            if (Cs2Wasm.Runtime.Cs2WasmArrays.ClearCounted(array, 0, (int)array.NativeLength)) return;
             if (RuntimeHelpers.ObjectHasReferences(array))
                 SpanHelpers.ClearWithReferences(ref Unsafe.As<byte, IntPtr>(ref ptr), byteLength / (uint)sizeof(IntPtr));
             else
@@ -85,6 +87,7 @@ namespace System
             ref byte ptr = ref Unsafe.AddByteOffset(ref MemoryMarshal.GetArrayDataReference(array), (uint)offset * (nuint)elementSize);
             nuint byteLength = (uint)length * (nuint)elementSize;
 
+            if (Cs2Wasm.Runtime.Cs2WasmArrays.ClearCounted(array, offset, length)) return;
             if (RuntimeHelpers.ObjectHasReferences(array))
                 SpanHelpers.ClearWithReferences(ref Unsafe.As<byte, IntPtr>(ref ptr), byteLength / (uint)sizeof(IntPtr));
             else

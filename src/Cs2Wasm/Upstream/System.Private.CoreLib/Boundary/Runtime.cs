@@ -1025,7 +1025,8 @@ namespace Cs2Wasm.Runtime
         // keeps the owner as long as it holds it; then it has none, and the next container that holds it takes over.
         // Slot bits (two per slot, the first 16 words after the header): 1 a counted inside reference, 2 an
         // up-reference, 0 anything else (an outside-counted reference, or nothing).
-        const int Owned = 1, Held = 2, Dying = 4, MultOne = 8, MultMask = 0x78, Queued = 0x80, UOne = 0x100;
+        // An array has no slot bits: its word counts the inside references its elements hold (Elems says so).
+        const int Owned = 1, Held = 2, Dying = 4, MultOne = 8, MultMask = 0x78, Queued = 0x80, Elems = 0x100, UOne = 0x200, UShift = 9;
         const int ChainMax = 8;
         [System.ThreadStatic] static int t_prevSlot, t_prevBits;
         static int s_visitObj, s_visitElem, s_destroying, s_killQ, s_killN, s_killCap, s_storeSlot;
@@ -1166,7 +1167,34 @@ namespace Cs2Wasm.Runtime
             if (Mem.LoadI32(p) >= -1 || OnChain(p, v)) return;
             Mem.StoreI32(v - 32, p);
             Mem.StoreI32(v - 24, Mem.LoadI32(v - 24) | Owned | MultOne);
-            if ((Mem.LoadI32(v - 28) & 0x55555555) != 0) Reevaluate(v);
+            if ((Mem.LoadI32(v - 28) & 0x55555555) != 0 && (Mem.LoadI32(v - 24) & Elems) == 0) Reevaluate(v);
+        }
+
+        /// <summary>A member that no member refers to and that refers to none (a list's array after Clear, held by a
+        /// static): a plain object again, so what it once held is not kept in one unit with it. With it gone, an arena
+        /// nothing outside refers to is freed.</summary>
+        static void TryLeave(int m)
+        {
+            int c = Mem.LoadI32(m);
+            if (c >= -2 || Mem.LoadI32(m - 4) != 0 || Mem.LoadI32(m - 28) != 0 || s_destroying != 0) return;
+            if ((Mem.LoadI32(m - 24) & ~Elems) != 0 || Mem.LoadI32(m - 32) != 0) return;
+            int ar = ArenaOf(m);
+            if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
+            // (its own slots, read once: none holds a member of the arena, whatever the counts say)
+            int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem, ss = s_handSum;
+            s_visitArena = ar; s_visitMode = 8; s_visitObj = m; s_visitElem = 0; s_handSum = 0;
+            ArenaVisitObject(m);
+            int found = s_handSum;
+            s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se; s_handSum = ss;
+            if (found != 0) return;
+            ArenaTakeOut(ar, m);
+            int outside = -c - 2;
+            Mem.StoreI32(m, outside);
+            Mem.StoreI64(m - 32, 0); Mem.StoreI64(m - 24, 0); Mem.StoreI64(m - 16, 0); Mem.StoreI64(m - 8, 0);
+            int total = Mem.LoadI32(ar) - outside;
+            Mem.StoreI32(ar, total);
+            if (total != 0) return;
+            if (Mem.LoadI32(ar + 8) == 0) ArenaEmpty(ar); else ArenaFree(ar);
         }
 
         /// <summary>The member has an owner now: a counted reference in one of its own slots to a member that is on its
@@ -1197,7 +1225,32 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(val - 32, container);
             Mem.StoreI32(val - 24, Mem.LoadI32(val - 24) | Owned | MultOne);
             // (only a counted reference in one of its own slots can become an up-reference)
-            if ((Mem.LoadI32(val - 28) & 0x55555555) != 0) Reevaluate(val);
+            if ((Mem.LoadI32(val - 28) & 0x55555555) != 0 && (Mem.LoadI32(val - 24) & Elems) == 0) Reevaluate(val);
+        }
+
+        static int s_handFrom, s_handSum;
+
+        /// <summary>The owner of `from` put `to` in the slot where `from` was (a list's array grown: the new array has
+        /// taken the old one's items). An item the old container owned that the new one holds too is the new one's
+        /// from now on, with the references it and what it owns have to objects above: the two containers have the
+        /// same owner, so those go the same way up. Otherwise the items, referred to from two containers, would hold
+        /// the old one (as anything referred to from elsewhere holds its owner), and it them, for good.
+        /// Not when something below refers to the old container itself (then it must stay): told by the counts, the
+        /// references that pass it being all that its items have above them.</summary>
+        static void Handover(int from, int to, int owner)
+        {
+            if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || Mem.LoadI32(to - 32) != owner || Mem.LoadI32(to - 16) != Mem.LoadI32(from - 16)) return;
+            int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem, sf = s_handFrom, ss = s_handSum;
+            s_visitArena = Mem.LoadI32(from - 16); s_handFrom = from; s_handSum = 0; s_visitElem = 0;
+            s_visitMode = 6; s_visitObj = from;
+            ArenaVisitObject(from);
+            if (s_handSum == (int)((uint)Mem.LoadI32(from - 24) >> UShift))
+            {
+                s_visitMode = 7; s_visitObj = to;
+                ArenaVisitObject(to);
+            }
+            s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se; s_handFrom = sf; s_handSum = ss;
+            UpdateHold(to);
         }
 
         /// <summary>The container gave up one counted reference to the member: if it owned it, one of the owner's
@@ -1329,6 +1382,11 @@ namespace Cs2Wasm.Runtime
             }
             Mem.StoreI32(val - 4, Mem.LoadI32(val - 4) + 1);
             if (i >= 0) SetSlotBits(container, i, 1);
+            else if (slot == 0 || s_visitElem != 0)
+            {
+                Mem.StoreI32(container - 28, Mem.LoadI32(container - 28) + 1);
+                Mem.StoreI32(container - 24, Mem.LoadI32(container - 24) | Elems);
+            }
             if (val != container)
             {
                 int ow = Mem.LoadI32(val - 32);
@@ -1376,20 +1434,30 @@ namespace Cs2Wasm.Runtime
             {
                 int n = Mem.LoadI32(old - 4) - 1;
                 Mem.StoreI32(old - 4, n);
+                if (slot == 0 && Mem.LoadI32(container - 28) > 0) Mem.StoreI32(container - 28, Mem.LoadI32(container - 28) - 1);
+                bool owned = Mem.LoadI32(old - 32) == container && (Mem.LoadI32(old - 24) & (Owned | MultMask)) == (Owned | MultOne);
                 OwnerLetGo(old, container);
+                // (a container replaced by another in the same slot, a list's array by a larger one: what it owned is
+                // the new one's from here on)
+                if (owned && n > 0 && slot != 0) { Handover(old, Mem.LoadI32(slot), container); n = Mem.LoadI32(old - 4); }
                 if (n == 0 && co == -2) ArenaDestroyFrom(old);
                 else
                 {
                     if (Mem.LoadI32(old - 32) == 0) Adopt(old);
                     UpdateHold(old);
+                    if (old != container) TryLeave(old);
                 }
                 if (s_killN != 0) DrainKills();
+                TryLeave(container);
             }
             RuntimeUnlock();
             if (!inside) Release(Borrow<object>(old));
         }
 
-        /// <summary>A store into a static field: the object stays out of arenas (statics never end).</summary>
+        /// <summary>A store into a static readonly field: the object stays out of arenas. The field never changes, so the
+        /// object lasts as long as the program and no cycle through it is ever garbage; and what many structures share
+        /// from such fields (the empty array every list starts with) does not make one arena of them all. An object in
+        /// any other static field is a member like any other: the static is one more reference to it.</summary>
         public static int ArenaPin(int val)
         {
             if (val != 0 && Mem.LoadI32(val) > 0) Mem.StoreI32(val + 8, Mem.LoadI32(val + 8) | int.MinValue);
@@ -1418,7 +1486,25 @@ namespace Cs2Wasm.Runtime
             if (s_visitMode == 4) { if (child != 0 && slot != s_storeSlot) ArenaLinkCore(child, s_visitArena, slot); return; }
             if (child == 0 || Mem.LoadI32(child) >= -1) return;
             if (s_visitMode == 1) { if (ArenaOf(child) == s_visitArena) Mem.StoreI32(slot, 0); return; }
+            if (s_visitMode == 8) { if (ArenaOf(child) == s_visitArena) s_handSum++; return; }
             int obj = s_visitObj;
+            if (s_visitMode >= 6)
+            {
+                // Handover: 6 what the old container's own items have above them, in all; 7 an item of the new
+                // container that the old one owns changes owner
+                int cf = Mem.LoadI32(child - 24);
+                if (Mem.LoadI32(child - 32) != s_handFrom || (cf & Owned) == 0) return;
+                int uc = (int)((uint)cf >> UShift);
+                if (s_visitMode == 6) { s_handSum += uc; return; }
+                // (what it held of the old container, it holds of the new)
+                if ((cf & Held) != 0) { Mem.StoreI32(s_handFrom - 4, Mem.LoadI32(s_handFrom - 4) - 1); Mem.StoreI32(obj - 4, Mem.LoadI32(obj - 4) + 1); }
+                Mem.StoreI32(child - 24, (cf & ~MultMask) | MultOne);
+                Mem.StoreI32(child - 32, obj);
+                if (Mem.LoadI32(child - 20) == obj) Mem.StoreI32(child - 20, 0);
+                Mem.StoreI32(obj - 24, Mem.LoadI32(obj - 24) + uc * UOne);
+                Mem.StoreI32(s_handFrom - 24, Mem.LoadI32(s_handFrom - 24) - uc * UOne);
+                return;
+            }
             int i = s_visitElem != 0 ? -1 : SlotIndex(obj, slot);
             int bits = i >= 0 ? SlotBits(obj, i) : -1;
             if (s_visitMode == 5)

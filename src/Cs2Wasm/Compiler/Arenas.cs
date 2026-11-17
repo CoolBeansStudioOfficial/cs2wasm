@@ -26,6 +26,9 @@ internal sealed class Arenas
         public required string Key;
         public required ITypeSymbol Container; // declaring class of the field, or the array type
         public required bool IsArray;
+        /// <summary>A field set only while its object is constructed, by constructors that keep `this` in: objects cannot
+        /// form a cycle through such fields alone (the later object would have to exist before the earlier is done).</summary>
+        public bool Immutable;
         public int Offset; // field sites
         public readonly Dictionary<string, ITypeSymbol> Values = [];
         public bool AddressTaken;
@@ -83,11 +86,16 @@ internal sealed class Arenas
     {
         owner = D.Types.Canonical(owner);
         if (owner.IsValueType || !Types.IsRef(slot.Type)) return null;
-        if (ImmutableEdge(owner, slot)) return null;
-        return Get("f " + Types.Key(owner) + " " + slot.Offset, owner, false, slot.Offset);
+        // (a readonly field is an edge like any other: what it stores may come to refer back later, a list of children
+        // whose items refer to their parent. Only a cycle made of such edges alone cannot exist: Analyze)
+        var site = Get("f " + Types.Key(owner) + " " + slot.Offset, owner, false, slot.Offset);
+        site.Immutable = ImmutableEdge(owner, slot);
+        return site;
     }
 
     readonly Dictionary<string, bool> _keepsThis = [];
+    /// <summary>CS2WASM_IMMUTABLE_EDGES=1 (measurement only: the old, unsound rule).</summary>
+    static readonly bool s_immutableEdges = Environment.GetEnvironmentVariable("CS2WASM_IMMUTABLE_EDGES") == "1";
 
     /// <summary>A readonly field (or get-only auto-property) is set only while its object is being constructed. If no
     /// constructor of the type or its bases lets `this` out before then, nothing the stored value reaches can refer
@@ -255,6 +263,7 @@ internal sealed class Arenas
         var adj = new List<List<int>>();
         for (int i = 0; i < n; i++) adj.Add([]);
         var siteNodes = new Dictionary<Site, List<int>>();
+        var hubSite = new Dictionary<int, Site>();
         foreach (var s in _sites.Values)
         {
             var hubs = new List<int>();
@@ -265,7 +274,7 @@ internal sealed class Arenas
             if (containers.Count == 0) continue;
             var targets = s.Values.Values.SelectMany(SubtypesOf).Where(x => !x.t.IsValueType && !Types.IsImmortalType(x.t)).Select(x => x.id).Distinct().ToList();
             if (targets.Count == 0) continue;
-            int Hub(IEnumerable<int> to) { int h = adj.Count; adj.Add([.. to]); hubs.Add(h); return h; }
+            int Hub(IEnumerable<int> to) { int h = adj.Count; adj.Add([.. to]); hubs.Add(h); hubSite[h] = s; return h; }
             if (!s.IsArray)
             {
                 int h = Hub(targets);
@@ -316,6 +325,8 @@ internal sealed class Arenas
                 do { x = stack.Pop(); onStack[x] = false; comp.Add(x); } while (x != v);
                 // (no node has an edge to itself: a type's own cycle goes through a site's node)
                 if (comp.Count < 2) continue;
+                // (a component whose every edge is a field filled at construction: no objects can make that cycle)
+                if (!comp.Any(m => hubSite.TryGetValue(m, out var hs) && !hs.Immutable)) continue;
                 sccCount++;
                 foreach (var m in comp) scc[m] = sccCount;
             }

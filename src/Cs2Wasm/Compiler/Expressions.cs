@@ -2321,7 +2321,7 @@ sealed partial class FunctionCompiler
                 {
                     var field = fr.Field;
                     if (!field.IsStatic) D.NoteFieldWrite(E, Driver.FieldKey(Owner(field), StorageField(field)));
-                    if (field.IsStatic) return new MemLV(this, t, () => EmitAddressBase(target), pin: D.Arenas.Pin(t), pub: IsThreadStatic(StorageField(field)) ? Publish.None : Publish.Always);
+                    if (field.IsStatic) return new MemLV(this, t, () => EmitAddressBase(target), pin: field.IsReadOnly ? D.Arenas.Pin(t) : null, pub: IsThreadStatic(StorageField(field)) ? Publish.None : Publish.Always);
                     if (fr.Instance != null && !TypeOf(fr.Instance).IsValueType)
                     {
                         var site = D.Arenas.FieldSite(Owner(field), T.FieldIn(Owner(field), StorageField(field)));
