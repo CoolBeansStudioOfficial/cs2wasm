@@ -1,0 +1,1669 @@
+Node.get_node_or_null(^"Camera") -> <Node>
+Camera2D.make_current()
+Node.get_name() -> &"Character"
+Node2D.get_position() -> (576, 400)
+print Character ready at (576, 400), speed 320
+print clocks: checksum 5; a year after 2020: True; stopwatch ran: True
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 25.000002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 400.41666)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 400)")
+CharacterBody2D.get_velocity() -> (0, 25.000002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 50.000004))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 401.25)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 401)")
+CharacterBody2D.get_velocity() -> (0, 50.000004)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 75.00001))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 402.5)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 402)")
+CharacterBody2D.get_velocity() -> (0, 75.00001)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 100.00001))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 404.16666)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 404)")
+CharacterBody2D.get_velocity() -> (0, 100.00001)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 125.00001))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 406.25)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 406)")
+CharacterBody2D.get_velocity() -> (0, 125.00001)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 150.00002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 408.75)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 409)")
+CharacterBody2D.get_velocity() -> (0, 150.00002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 175.00002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 411.66666)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 412)")
+CharacterBody2D.get_velocity() -> (0, 175.00002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 200.00002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 415)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 415)")
+CharacterBody2D.get_velocity() -> (0, 200.00002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 225.00002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 418.75)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 419)")
+CharacterBody2D.get_velocity() -> (0, 225.00002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 250.00002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 422.91666)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 423)")
+CharacterBody2D.get_velocity() -> (0, 250.00002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 275.00003))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 427.5)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 428)")
+CharacterBody2D.get_velocity() -> (0, 275.00003)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 300.00003))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 432.5)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 432)")
+CharacterBody2D.get_velocity() -> (0, 300.00003)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 325.00003))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 437.91666)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 438)")
+CharacterBody2D.get_velocity() -> (0, 325.00003)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 350.00003))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 443.75)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 444)")
+CharacterBody2D.get_velocity() -> (0, 350.00003)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 375.00003))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 450)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 450)")
+CharacterBody2D.get_velocity() -> (0, 375.00003)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 400.00003))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 456.66666)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 457)")
+CharacterBody2D.get_velocity() -> (0, 400.00003)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 425.00003))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 463.75)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 464)")
+CharacterBody2D.get_velocity() -> (0, 425.00003)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 450.00003))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 471.25)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 471)")
+CharacterBody2D.get_velocity() -> (0, 450.00003)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 475.00003))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 479.16666)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 479)")
+CharacterBody2D.get_velocity() -> (0, 475.00003)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 500.00003))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (576, 487.5)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (576, 488)")
+CharacterBody2D.get_velocity() -> (0, 500.00003)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((320, 525.00006))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (581.3333, 496.25)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (581, 496)")
+CharacterBody2D.get_velocity() -> (320, 525.00006)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((320, 550.00006))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (586.6666, 505.41666)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (587, 505)")
+CharacterBody2D.get_velocity() -> (320, 550.00006)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((320, 575.00006))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (591.99994, 515)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (592, 515)")
+CharacterBody2D.get_velocity() -> (320, 575.00006)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((320, 600.00006))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (597.33325, 525)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (597, 525)")
+CharacterBody2D.get_velocity() -> (320, 600.00006)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((320, 625.00006))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (602.66656, 535.4167)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (603, 535)")
+CharacterBody2D.get_velocity() -> (320, 625.00006)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((320, 650.00006))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (607.9999, 546.25)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (608, 546)")
+CharacterBody2D.get_velocity() -> (320, 650.00006)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((320, 675.00006))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (613.3331, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (613, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (618.66644, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (619, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (623.99976, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (624, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (629.33307, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (629, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (634.6664, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (635, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (639.9997, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (640, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (645.333, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (645, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (650.6663, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (651, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (655.99963, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (656, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (661.33295, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (661, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (666.66626, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (667, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (671.9996, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (672, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (677.3329, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (677, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (687.9995, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (688, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (693.3328, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (693, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (698.66614, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (699, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (703.99945, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (704, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (709.33276, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (709, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (714.6661, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (715, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (719.9994, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (720, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (725.3327, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (725, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (730.666, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (731, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (735.9993, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (736, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (741.33264, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (741, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (746.66595, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (747, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (751.99927, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (752, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (757.3326, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (757, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (762.6659, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (763, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (767.9992, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (768, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (773.3325, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (773, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (778.66583, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (779, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (783.99915, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (784, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (789.33246, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (789, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (794.6658, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (795, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (799.9991, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (800, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (805.3324, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (805, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (810.6657, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (811, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (815.999, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (816, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (821.33234, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (821, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (826.66565, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (827, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (831.99896, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (832, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (837.3323, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (837, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.9251)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 0\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> true
+CharacterBody2D.set_velocity((0, -650))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 537.0907)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 537)")
+CharacterBody2D.get_velocity() -> (0, -650)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, -625))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 526.674)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 527)")
+CharacterBody2D.get_velocity() -> (0, -625)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, -600))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 522.0256)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 522)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 25.000002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 522.4918)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 522)")
+CharacterBody2D.get_velocity() -> (0, 25.000002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 50.000004))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 523.32513)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 523)")
+CharacterBody2D.get_velocity() -> (0, 50.000004)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 75.00001))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 524.57513)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 525)")
+CharacterBody2D.get_velocity() -> (0, 75.00001)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 100.00001))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 526.2418)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 526)")
+CharacterBody2D.get_velocity() -> (0, 100.00001)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 125.00001))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 528.32513)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 528)")
+CharacterBody2D.get_velocity() -> (0, 125.00001)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 150.00002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 530.82513)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 531)")
+CharacterBody2D.get_velocity() -> (0, 150.00002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 175.00002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 533.7418)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 534)")
+CharacterBody2D.get_velocity() -> (0, 175.00002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 200.00002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 537.07513)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 537)")
+CharacterBody2D.get_velocity() -> (0, 200.00002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 225.00002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 540.82513)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 541)")
+CharacterBody2D.get_velocity() -> (0, 225.00002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 250.00002))
+CharacterBody2D.move_and_slide() -> false
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 544.9918)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 545)")
+CharacterBody2D.get_velocity() -> (0, 250.00002)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> false
+CharacterBody2D.set_velocity((0, 275.00003))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (842.6656, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (843, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (837.3323, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (837, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (831.99896, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (832, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (826.66565, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (827, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (821.33234, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (821, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (815.999, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (816, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (810.6657, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (811, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (805.3324, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (805, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (799.9991, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (800, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (794.6658, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (795, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (789.33246, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (789, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (783.99915, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (784, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (778.66583, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (779, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (773.3325, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (773, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (767.9992, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (768, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (762.6659, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (763, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (757.3326, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (757, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (751.99927, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (752, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (746.66595, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (747, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (741.33264, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (741, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (735.9993, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (736, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (730.666, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (731, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (725.3327, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (725, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (719.9994, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (720, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (714.6661, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (715, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (709.33276, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (709, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (703.99945, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (704, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (698.66614, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (699, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (693.3328, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (693, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (687.9995, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (688, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> -1
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((-320, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (-320, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> true
+print about to read checkpoint 4 of 0
+ProjectSettings.localize_path("/root/godot/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/ExceptionUtils.cs") -> "/root/godot/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/ExceptionUtils.cs"
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+CharacterBody2D.get_velocity() -> (0, 0)
+Input.get_axis(&"move_left", &"move_right") -> 0
+CharacterBody2D.is_on_floor() -> true
+Input.is_action_just_pressed(&"jump", false) -> false
+CharacterBody2D.set_velocity((0, 0))
+CharacterBody2D.move_and_slide() -> true
+Input.is_action_just_pressed(&"debug_panic", false) -> false
+Node.get_node_or_null(^"../../Character") -> <Node>
+Node2D.get_position() -> (682.6662, 547.99963)
+Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
+OS.is_stdout_verbose() -> false
