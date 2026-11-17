@@ -9,7 +9,7 @@ SPEC section 10, proof 5. **Not met yet.** What is here, what was run, and what 
 | Compiled by the .NET-hosted cs2wasmc, on a replayed engine | `node tools/proof5.mjs stub` (also in `dotnet run --project tests/Cs2Wasm.Tests`: `godot_proof5_hello2d`) | 3,740,445 bytes in 32 s; its 1,667 log lines equal the oracle's |
 | The same module played in the engine in a browser | `node tools/proof5.mjs check --module tests/out/proof5/game-net.wasm` | 1,667 log lines equal the oracle's (**the engine was not a stock template**: below) |
 | ... and by the keyboard | `... check --module tests/out/proof5/game-net.wasm --play shot.png` | right arrow for 1 s then Space: the HUD goes from `jumps: 0 position: (576, 548)` to `jumps: 1 position: (896, 548)` |
-| A console program built in the browser by the self-hosted compiler | `node tools/proof5.mjs check --game hello` | 27,805 bytes in 23 to 29 s (four runs), 17,139,958 bytes downloaded; the same bytes as the self-hosted compiler under Node writes; run in the page it writes `42` |
+| A console program built in the browser by the self-hosted compiler | `node tools/proof5.mjs check --game hello` | 27,805 bytes in 23 to 30 s (five runs), 17,139,958 bytes downloaded; the same bytes as the self-hosted compiler under Node writes; run in the page it writes `42` |
 | **The game built in the browser** | `node tools/proof5.mjs check` | **fails** 3 s in: the self-hosted compiler traps (`repro/SelfHostRefSafety.cs`) |
 | The script throws (key P) | `node tools/proof5.mjs stub --panic` | **fails** at line 1575: `GD.PushError` throws in the module (`repro/pusherror`) |
 
@@ -71,7 +71,7 @@ Measured for `repro/Hello.cs` (`check --game hello`): the browser downloads **17
 unpacked; plus the program's sources). `library.pack` is the 4,896 files the self-hosted compiler opened when it built
 a program that references GodotSharp: 72.2 MB of sources from the cache (the .NET library's, 3,633 files, 46.6 MB;
 GodotSharp's, 1,086 files, 25.6 MB), 6.5 MB of reference assemblies, GodotSharp.dll (5.9 MB). The build itself took
-22.8 to 28.8 s of the 23.2 to 29.4 s (four runs, one of them told four cores; the downloads are from this machine,
+22.8 to 29.4 s of the 23.2 to 29.9 s (five runs, one of them told four cores; the downloads are from this machine,
 0.2 to 0.3 s; the browser reports 0.0 s to compile the compiler's module, which it compiles lazily). The compiler's
 memory at the end: 395 MB (444 MB told four cores). The game's own sources are 28,897 bytes in 15 files.
 
