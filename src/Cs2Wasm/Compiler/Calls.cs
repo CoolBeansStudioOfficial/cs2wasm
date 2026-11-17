@@ -53,10 +53,20 @@ sealed partial class FunctionCompiler
             var kt = T.Canonical(ect.TypeArguments[0]);
             var kp = Types.PrimOf(kt);
             if (kp is Prim.Bool or Prim.Char or Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.I32 or Prim.U32 or Prim.I64 or Prim.U64 or Prim.IntPtr or Prim.UIntPtr
-                && (target.Name == "Equals" || kp is Prim.I32 && kt.TypeKind != TypeKind.Enum))
+                && (target.Name == "Equals" || kp is Prim.I32 or Prim.U32 or Prim.I64 or Prim.U64 && kt.TypeKind != TypeKind.Enum))
             {
                 EmitValueAs(inv.Arguments[0].Value, kt);
-                if (target.Name == "GetHashCode") return Own.None; // an int's hash code is the int
+                if (target.Name == "GetHashCode")
+                {
+                    // (an int's hash code is the int, a uint's its bits; a long's the two halves xor-ed: Int64.GetHashCode)
+                    if (Types.Is64(kp))
+                    {
+                        int hv = Scratch(ValType.I64);
+                        E.Tee(hv); E.Op(Op.I32WrapI64); E.Get(hv); E.I64(32); E.Op(Op.I64ShrU); E.Op(Op.I32WrapI64); E.Op(Op.I32Xor);
+                        FreeScratch(ValType.I64, hv);
+                    }
+                    return Own.None;
+                }
                 EmitValueAs(inv.Arguments[1].Value, kt);
                 E.Op(Types.Is64(kp) ? Op.I64Eq : Op.I32Eq);
                 return Own.None;
