@@ -63,4 +63,61 @@ static class SmallBlocks
         f.Body = o;
         return changed;
     }
+    /// <summary>The copies whose size is known only when the program runs (a string's characters into another, a
+    /// span into a builder): most are a few bytes, and memory.copy costs the same call into the engine however
+    /// few. They go through a function that copies up to 64 bytes itself, eight at a time, and leaves the rest,
+    /// and a copy to an address inside the source, to memory.copy.</summary>
+    public static void Variable(WasmModule m)
+    {
+        WasmFunction? helper = null;
+        foreach (var f in m.Functions.ToArray())
+        {
+            if (f.IsImport) continue;
+            var b = f.Body;
+            for (int i = 0; i < b.Count; i++)
+            {
+                if (b[i].Op != Op.MemoryCopy) continue;
+                helper ??= MakeCopy(m);
+                b[i] = b[i] with { Op = Op.Call, Imm = 0, Imm2 = 0, Ref = helper };
+            }
+        }
+    }
+
+    static WasmFunction MakeCopy(WasmModule m)
+    {
+        var f = m.AddFunction("rt.copy", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
+        var o = f.Body;
+        void Add(Op op, long imm = 0, long imm2 = 0) => o.Add(new Instr { Op = op, Imm = imm, Imm2 = imm2, Pos = -1 });
+        const int d = 0, s = 1, n = 2;
+        void Step(int by) { Add(Op.LocalGet, d); Add(Op.I32Const, by); Add(Op.I32Add); Add(Op.LocalSet, d); Add(Op.LocalGet, s); Add(Op.I32Const, by); Add(Op.I32Add); Add(Op.LocalSet, s); }
+        // large, or to an address inside the source (the words would be read after they were written over)
+        Add(Op.LocalGet, n); Add(Op.I32Const, 64); Add(Op.I32GtU);
+        Add(Op.LocalGet, d); Add(Op.LocalGet, s); Add(Op.I32Sub); Add(Op.LocalGet, n); Add(Op.I32LtU);
+        Add(Op.I32Or);
+        Add(Op.If);
+        Add(Op.LocalGet, d); Add(Op.LocalGet, s); Add(Op.LocalGet, n); Add(Op.MemoryCopy); Add(Op.Return);
+        Add(Op.End);
+        Add(Op.Block); Add(Op.Loop);
+        Add(Op.LocalGet, n); Add(Op.I32Const, 8); Add(Op.I32LtU); Add(Op.BrIf, 1);
+        Add(Op.LocalGet, d); Add(Op.LocalGet, s); Add(Op.I64Load, 0, 0); Add(Op.I64Store, 0, 0);
+        Step(8);
+        Add(Op.LocalGet, n); Add(Op.I32Const, 8); Add(Op.I32Sub); Add(Op.LocalSet, n);
+        Add(Op.Br, 0);
+        Add(Op.End); Add(Op.End);
+        Add(Op.LocalGet, n); Add(Op.I32Const, 4); Add(Op.I32And);
+        Add(Op.If);
+        Add(Op.LocalGet, d); Add(Op.LocalGet, s); Add(Op.I32Load, 0, 0); Add(Op.I32Store, 0, 0);
+        Step(4);
+        Add(Op.End);
+        Add(Op.LocalGet, n); Add(Op.I32Const, 2); Add(Op.I32And);
+        Add(Op.If);
+        Add(Op.LocalGet, d); Add(Op.LocalGet, s); Add(Op.I32Load16U, 0, 0); Add(Op.I32Store16, 0, 0);
+        Step(2);
+        Add(Op.End);
+        Add(Op.LocalGet, n); Add(Op.I32Const, 1); Add(Op.I32And);
+        Add(Op.If);
+        Add(Op.LocalGet, d); Add(Op.LocalGet, s); Add(Op.I32Load8U, 0, 0); Add(Op.I32Store8, 0, 0);
+        Add(Op.End);
+        return f;
+    }
 }
