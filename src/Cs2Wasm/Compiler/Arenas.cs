@@ -258,11 +258,38 @@ internal sealed class Arenas
         // product; such a node passes paths through, so the types' components and cycles are the same
         var subs = new SubtypeIndex(D.Types);
         foreach (var (id, t) in nodes) subs.Add(id, t is IArrayTypeSymbol ? null : t);
-        IEnumerable<(int id, ITypeSymbol t)> SubtypesOf(ITypeSymbol target)
+        // (asked for the same few types, object and the common interfaces among them, by thousands of sites: each
+        // answer is kept; without that this was three minutes of the compiler compiling itself)
+        var subtypes = new Dictionary<string, List<(int id, ITypeSymbol t)>>();
+        List<(int id, ITypeSymbol t)> SubtypesOf(ITypeSymbol target)
         {
-            var cl = subs.Candidates(target);
+            string key = Types.Key(target);
+            if (subtypes.TryGetValue(key, out var known)) return known;
+            var r = new List<(int id, ITypeSymbol t)>();
+            // (only an array is a subtype of an array type: the arrays are among the special ones)
+            var cl = target is IArrayTypeSymbol ? [] : subs.Candidates(target);
             foreach (var id in cl == subs.All ? cl : cl.Concat(subs.Special))
-                if (D.Types.IsSubtype(D.TypeById[id], target)) yield return (id, D.TypeById[id]);
+                if (D.Types.IsSubtype(D.TypeById[id], target)) r.Add((id, D.TypeById[id]));
+            return subtypes[key] = r;
+        }
+        D.Mark("    arenas: subtype index");
+        long arrayTicks = 0, fieldTicks = 0, edges = 0, contTicks = 0, targTicks = 0; var sw = System.Diagnostics.Stopwatch.StartNew();
+        // (and what each site takes of them: the classes or the arrays that can be the container, the ids of the
+        // objects that can be the value)
+        var containerLists = new Dictionary<(string, bool), List<(int id, ITypeSymbol t)>>();
+        List<(int id, ITypeSymbol t)> ContainersOf(ITypeSymbol target, bool arrays)
+        {
+            var key = (Types.Key(target), arrays);
+            if (containerLists.TryGetValue(key, out var known)) return known;
+            // (an immortal object is never freed: no cycle through it can leak, and it is never an arena's member)
+            return containerLists[key] = SubtypesOf(target).Where(x => arrays ? x.t is IArrayTypeSymbol : x.t.TypeKind == TypeKind.Class && x.t is not IArrayTypeSymbol && !Types.IsImmortalType(x.t)).ToList();
+        }
+        var targetLists = new Dictionary<string, List<int>>();
+        List<int> TargetsOf(ITypeSymbol target)
+        {
+            string key = Types.Key(target);
+            if (targetLists.TryGetValue(key, out var known)) return known;
+            return targetLists[key] = SubtypesOf(target).Where(x => !x.t.IsValueType && !Types.IsImmortalType(x.t)).Select(x => x.id).ToList();
         }
         var adj = new List<List<int>>();
         for (int i = 0; i < n; i++) adj.Add([]);
@@ -274,26 +301,36 @@ internal sealed class Arenas
             siteNodes[s] = hubs;
             if (s.AddressTaken || s.Values.Count == 0) continue;
             // (an immortal object is never freed: no cycle through it can leak, and it is never an arena's member)
-            var containers = SubtypesOf(s.Container).Where(x => s.IsArray ? x.t is IArrayTypeSymbol : x.t.TypeKind == TypeKind.Class && x.t is not IArrayTypeSymbol && !Types.IsImmortalType(x.t)).ToList();
+            long tc = sw.ElapsedTicks;
+            var containers = ContainersOf(s.Container, s.IsArray);
+            contTicks += sw.ElapsedTicks - tc; tc = sw.ElapsedTicks;
             if (containers.Count == 0) continue;
-            var targets = s.Values.Values.SelectMany(SubtypesOf).Where(x => !x.t.IsValueType && !Types.IsImmortalType(x.t)).Select(x => x.id).Distinct().ToList();
+            var targets = s.Values.Count == 1 ? TargetsOf(s.Values.Values.First()) : s.Values.Values.SelectMany(TargetsOf).Distinct().ToList();
+            targTicks += sw.ElapsedTicks - tc;
             if (targets.Count == 0) continue;
             int Hub(IEnumerable<int> to) { int h = adj.Count; adj.Add([.. to]); hubs.Add(h); hubSite[h] = s; return h; }
+            HashSet<int>? targetSet = null;
+            long t0 = sw.ElapsedTicks;
             if (!s.IsArray)
             {
                 int h = Hub(targets);
                 foreach (var c in containers) adj[c.id].Add(h);
+                edges += targets.Count + containers.Count;
             }
             else
                 foreach (var c in containers)
                 {
                     // a covariant array (string[] seen as object[]) only ever holds its own element type
                     var et = ((IArrayTypeSymbol)c.t).ElementType;
-                    var held = targets.Where(t => D.Types.IsSubtype(D.TypeById[t], et)).ToList();
+                    targetSet ??= [.. targets];
+                    var held = et.IsValueType ? [] : SubtypesOf(et).Where(x => targetSet.Contains(x.id)).Select(x => x.id).ToList();
                     if (held.Count > 0) adj[c.id].Add(Hub(held));
+                    edges += held.Count + 1;
                 }
+            if (s.IsArray) arrayTicks += sw.ElapsedTicks - t0; else fieldTicks += sw.ElapsedTicks - t0;
         }
         int total = adj.Count;
+        D.Mark($"    arenas: graph ({_sites.Count} sites, {total} nodes, {edges} edges; containers {contTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms, targets {targTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms, array sites {arrayTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms, field sites {fieldTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms of it)");
 
         // Tarjan's strongly connected components (iterative)
         var scc = new int[total];
@@ -335,6 +372,7 @@ internal sealed class Arenas
                 foreach (var m in comp) scc[m] = sccCount;
             }
         }
+        D.Mark("    arenas: components");
         // (numbered by their smallest type id: the numbers do not depend on the order the search met them)
         var renumber = new Dictionary<int, int>();
         foreach (var g in Enumerable.Range(0, n).Where(id => scc[id] != 0).GroupBy(id => scc[id]).OrderBy(g => g.Min()))

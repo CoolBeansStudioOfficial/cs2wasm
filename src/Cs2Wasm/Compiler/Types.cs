@@ -472,10 +472,24 @@ internal sealed class Types
         // [StructLayout(Pack = n)]: a struct's fields are aligned to n bytes at most (not references: their slots stay
         // aligned for the atomic operations on them)
         int pack = t.IsValueType && layoutAttr?.NamedArguments.FirstOrDefault(a => a.Key == "Pack").Value.Value is int pk && pk > 0 ? pk : 0;
-        foreach (var m in t.GetMembers())
+        // (a tuple of eight elements or more presents its elements as fields of its own, Item8 and up among them:
+        // its storage is its definition's seven fields and Rest)
+        bool bigTuple = t is { IsTupleType: true, Arity: 8 } && FullName(t).StartsWith("System.ValueTuple`");
+        foreach (var m in bigTuple ? t.OriginalDefinition.GetMembers() : t.GetMembers())
         {
             if (!IsInstanceStorage(m)) continue;
             var f = (IFieldSymbol)m;
+            if (bigTuple)
+            {
+                var et = Canonical(t.TypeArguments[f.Name == "Rest" ? 7 : f.Name[4] - '1']);
+                var (es, ea) = StorageOf(et);
+                offset = (offset + ea - 1) / ea * ea;
+                l.Fields.Add(new FieldSlot { Symbol = f, Type = et, Offset = offset });
+                offset += es;
+                l.Align = Math.Max(l.Align, ea);
+                if (NeedsRc(et)) l.HasRefs = true;
+                continue;
+            }
             // a ref field (in a ref struct) is the address of what it refers to: not counted
             var ft = f.RefKind != RefKind.None ? _d.LibCompilation.CreatePointerTypeSymbol(Canonical(f.Type)) : Canonical(f.Type);
             var (size, align) = StorageOf(ft);
@@ -539,6 +553,16 @@ internal sealed class Types
         owner = Canonical(owner);
         var l = LayoutOf(owner);
         var slot = l.Find(f) ?? l.Fields.FirstOrDefault(x => x.Symbol.Name == f.Name && DocId(x.Symbol) == DocId(f));
+        // a tuple of eight or more: its first seven by name; the eighth onward (Item8, or its name) is in Rest, a
+        // tuple itself
+        if (slot == null && owner is INamedTypeSymbol { Arity: 8, IsTupleType: true }) slot = l.Fields.FirstOrDefault(x => x.Symbol.Name == f.Name);
+        if (slot == null && owner is INamedTypeSymbol { Arity: 8 } big && f.Name.StartsWith("Item") && int.TryParse(f.Name.AsSpan(4), out int n) && n > 7
+            && big.GetMembers("Rest").OfType<IFieldSymbol>().FirstOrDefault() is { } restField && l.Find(restField) is { } rest
+            && Canonical(rest.Type) is INamedTypeSymbol restType && restType.GetMembers("Item" + (n - 7)).OfType<IFieldSymbol>().FirstOrDefault() is { } inner)
+        {
+            var s = FieldIn(restType, inner);
+            return new FieldSlot { Symbol = s.Symbol, Type = s.Type, Offset = rest.Offset + s.Offset };
+        }
         return slot ?? throw new CompileException($"field {f.ToDisplayString()} has no storage in {Key(owner)}");
     }
 

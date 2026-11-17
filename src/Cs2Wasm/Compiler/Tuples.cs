@@ -11,12 +11,27 @@ sealed partial class FunctionCompiler
 {
     static bool IsValueTuple(ITypeSymbol t) => t is INamedTypeSymbol n && (n.IsTupleType || (Types.FullName(n).StartsWith("System.ValueTuple`") && n.ContainingType == null));
 
-    List<IFieldSymbol> TupleFields(ITypeSymbol tupleType)
+    /// <summary>A tuple's elements in order, each with its place in the tuple's storage. The eighth element onward
+    /// is in Rest, a tuple itself (C#'s `(a, b, c, d, e, f, g, h, i)` is ValueTuple`8 with Rest = ValueTuple`2).</summary>
+    readonly record struct TupleSlot(int Offset, ITypeSymbol Type);
+    List<TupleSlot> TupleFields(ITypeSymbol tupleType)
     {
-        var lt = (INamedTypeSymbol)T.Canonical(tupleType);
-        var l = new List<IFieldSymbol>();
-        for (int i = 1; i <= lt.Arity; i++) l.Add(lt.GetMembers("Item" + i).OfType<IFieldSymbol>().First());
-        if (lt.Arity > 7) throw new CompileException("tuples with more than 7 elements are not supported yet");
+        var l = new List<TupleSlot>();
+        void Add(ITypeSymbol t, int at)
+        {
+            var lt = (INamedTypeSymbol)T.Canonical(t);
+            for (int i = 1; i <= Math.Min(lt.Arity, 7); i++)
+            {
+                var s = T.FieldIn(lt, lt.GetMembers("Item" + i).OfType<IFieldSymbol>().First());
+                l.Add(new TupleSlot(at + s.Offset, s.Type));
+            }
+            if (lt.Arity > 7)
+            {
+                var rest = T.FieldIn(lt, lt.GetMembers("Rest").OfType<IFieldSymbol>().First());
+                Add(rest.Type, at + rest.Offset);
+            }
+        }
+        Add(tupleType, 0);
         return l;
     }
 
@@ -29,7 +44,7 @@ sealed partial class FunctionCompiler
         var layout = T.LayoutOf(tt);
         for (int i = 0; i < tup.Elements.Length; i++)
         {
-            var slot = T.FieldIn(tt, fields[i]);
+            var slot = fields[i];
             var ft = slot.Type;
             var el = tup.Elements[i];
             if (el is ITupleOperation inner && IsValueTuple(ft)) { EmitTuple(inner, ft); }
@@ -49,7 +64,7 @@ sealed partial class FunctionCompiler
         int off = TempStruct(to);
         for (int i = 0; i < tf.Count; i++)
         {
-            var fs = T.FieldIn(from, ff[i]); var ts = T.FieldIn(to, tf[i]);
+            var fs = ff[i]; var ts = tf[i];
             E.Get(src);
             Own o;
             if (Types.IsStruct(fs.Type)) { if (fs.Offset != 0) { E.I32(fs.Offset); E.Op(Op.I32Add); } o = Own.None; }
@@ -71,9 +86,9 @@ sealed partial class FunctionCompiler
         var done = E.Block(ValType.I32);
         for (int i = 0; i < lf.Count; i++)
         {
-            var ls = T.FieldIn(lt, lf[i]); var rs = T.FieldIn(rt, rf[i]);
+            var ls = lf[i]; var rs = rf[i];
             var et = ls.Type;
-            void Push(int a, FieldSlot s)
+            void Push(int a, TupleSlot s)
             {
                 E.Get(a);
                 if (Types.IsStruct(s.Type)) { if (s.Offset != 0) { E.I32(s.Offset); E.Op(Op.I32Add); } }
@@ -152,7 +167,7 @@ sealed partial class FunctionCompiler
         var fields = TupleFields(vt);
         for (int i = 0; i < fields.Count; i++)
         {
-            var slot = T.FieldIn(vt, fields[i]);
+            var slot = fields[i];
             int l = E.AddLocal(ValType.I32);
             E.Get(src); if (slot.Offset != 0) { E.I32(slot.Offset); E.Op(Op.I32Add); } E.Set(l);
             parts.Add((l, slot.Type));

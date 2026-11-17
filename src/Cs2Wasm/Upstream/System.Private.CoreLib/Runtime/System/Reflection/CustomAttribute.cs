@@ -58,7 +58,17 @@ namespace System.Reflection
                 internal static Attribute[] GetCustomAttributesInternal(ICustomAttributeProvider obj, Type attributeType, bool pseudoAttrs)
         {
             var (n, a) = AttributeList(obj);
-            return Cs2Wasm.Runtime.Meta.Attributes(n, a, attributeType);
+            var found = Cs2Wasm.Runtime.Meta.Attributes(n, a, attributeType);
+            // cs2wasm: [Extension], which the C# compiler puts on an extension method (a flag of its record)
+            if (obj is RuntimeMethodInfo em && (Cs2Wasm.Runtime.Meta.I((int)em.mhandle, 2) & (1 << 17)) != 0
+                && (attributeType == null || attributeType.IsAssignableFrom(typeof(System.Runtime.CompilerServices.ExtensionAttribute))))
+            {
+                var with = new Attribute[found.Length + 1];
+                Array.Copy(found, with, found.Length);
+                with[found.Length] = new System.Runtime.CompilerServices.ExtensionAttribute();
+                return with;
+            }
+            return found;
         }
 
         /// <summary>cs2wasm: where the compiler's reflection record keeps a provider's attributes.</summary>

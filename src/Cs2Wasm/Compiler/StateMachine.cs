@@ -24,6 +24,7 @@ sealed class MachineInfo
     public ITypeSymbol? ElementType;   // iterator: T
     public ITypeSymbol? ResultType;    // async: T of Task<T>, or null
     public ITypeSymbol? TaskType;      // async: Task or Task<T> (canonical)
+    public INamedTypeSymbol? Builder;  // async: the program's own builder of a task-like return type ([AsyncMethodBuilder])
     public ITypeSymbol? DeclaredReturn; // the method's declared return type (Task, ValueTask, IEnumerable<T>...)
     public required WasmFunction MoveNext;
     public required IMethodSymbol Method;
@@ -40,6 +41,9 @@ sealed class MachineInfo
 internal sealed partial class Driver
 {
     public readonly Dictionary<int, SyntheticType> SyntheticById = [];
+    /// <summary>A type id that stands for no symbol: a closure, or a synthetic type other than an anonymous type
+    /// (whose overrides are synthetic while its symbol, base type and members are Roslyn's).</summary>
+    public bool IsSymbolless(int id) => DisplayById.ContainsKey(id) || SyntheticById.ContainsKey(id) && !(id < TypeById.Count && TypeById[id] is INamedTypeSymbol { IsAnonymousType: true });
 }
 
 /// <summary>A compiler-made class (iterator objects): its interfaces and the functions implementing their methods.</summary>
@@ -121,10 +125,17 @@ sealed partial class FunctionCompiler
                 var n = (INamedTypeSymbol)ret;
                 var full = Types.FullName(n);
                 if (full is not ("System.Threading.Tasks.Task" or "System.Threading.Tasks.Task`1" or "System.Threading.Tasks.ValueTask" or "System.Threading.Tasks.ValueTask`1"))
-                    throw new CompileException("async methods returning " + n + " are not supported yet (custom builders)", def.Locations.FirstOrDefault());
-                info.ResultType = n.Arity == 1 ? T.Canonical(n.TypeArguments[0]) : null;
-                var task = info.ResultType == null ? D.LibType("System.Threading.Tasks.Task") : D.LibType("System.Threading.Tasks.Task`1").Construct(info.ResultType);
-                info.TaskType = task;
+                {
+                    // a task-like type: its builder makes the result, as [AsyncMethodBuilder] on the type (or the method) says
+                    info.Builder = CustomAsyncBuilder(def, n) ?? throw new CompileException("async method returning " + n + ", which names no async method builder", def.Locations.FirstOrDefault());
+                    info.ResultType = BuilderMember(info.Builder, "SetResult").Parameters is [{ } rp] ? T.Canonical(rp.Type) : null;
+                }
+                else
+                {
+                    info.ResultType = n.Arity == 1 ? T.Canonical(n.TypeArguments[0]) : null;
+                    var task = info.ResultType == null ? D.LibType("System.Threading.Tasks.Task") : D.LibType("System.Threading.Tasks.Task`1").Construct(info.ResultType);
+                    info.TaskType = task;
+                }
             }
         }
         // the machine holds parameters, `this`, and every local of the body
@@ -149,6 +160,7 @@ sealed partial class FunctionCompiler
                 foreach (var p in M.Parameters) machine.Extra("init:" + p.Name, T.Resolve(p.Type, Map), T);
         }
         if (info.TaskType != null) machine.Extra("task", info.TaskType, T);
+        if (info.Builder != null) machine.Extra("builder", info.Builder, T);
         int tid = D.DisplayTypeId(machine);
         var sizeAddr = new LateAddr(() => machine.Size);
 
@@ -181,6 +193,33 @@ sealed partial class FunctionCompiler
                 E.Get(obj); E.Call(Rt.Retain);
                 _retLocal = E.AddLocal(ValType.I32); E.Set(_retLocal);
                 EmitReturnSequence(true);
+            }
+            else if (info.Builder != null)
+            {
+                // as Roslyn's kickoff: builder = Builder.Create(); builder.Start(ref machine); return builder.Task;
+                int boff = machine.ExtraSlots["builder"].offset;
+                void PushBuilder() { E.Get(obj); if (Types.IsStruct(info.Builder)) { E.I32(boff); E.Op(Op.I32Add); } else E.Load(Op.I32Load, boff); }
+                BeginTemps();
+                StoreToAddressFromStackCopy(obj, boff, info.Builder, () => CallWith(BuilderMember(info.Builder, "Create"), false, null, () => { }, null, syntax));
+                int box = PushMachineBox(info, () => E.Get(obj));
+                CallWith(BuilderMember(info.Builder, "Start", MachineBoxType), false, PushBuilder, () => { E.Get(_fb); E.I32(box); E.Op(Op.I32Add); }, null, syntax);
+                EndTemps();
+                var taskGet = BuilderMember(info.Builder, "get_Task");
+                if (Types.IsStruct(ret))
+                {
+                    BeginTemps();
+                    CallWith(taskGet, false, PushBuilder, () => { }, () => E.Get(_structRetLocal), syntax);
+                    E.Op(Op.Drop);
+                    EndTemps();
+                    EmitReturnSequence(false);
+                }
+                else
+                {
+                    var o = CallWith(taskGet, false, PushBuilder, () => { }, null, syntax);
+                    if (Types.IsRef(ret) && o != Own.Owned) E.Call(Rt.Retain);
+                    _retLocal = E.AddLocal(Types.WasmType(ret) ?? ValType.I32); E.Set(_retLocal);
+                    EmitReturnSequence(true);
+                }
             }
             else
             {
@@ -218,6 +257,56 @@ sealed partial class FunctionCompiler
             }
         }
         Finish();
+    }
+
+    /// <summary>The builder an async method with a task-like return type names: [AsyncMethodBuilder(typeof(B))] on the
+    /// method or on the return type; an open B&lt;&gt; takes the return type's type arguments.</summary>
+    INamedTypeSymbol? CustomAsyncBuilder(IMethodSymbol def, INamedTypeSymbol ret)
+    {
+        var attr = def.GetAttributes().Concat(ret.OriginalDefinition.GetAttributes()).FirstOrDefault(a => a.AttributeClass?.Name == "AsyncMethodBuilderAttribute");
+        if (attr?.ConstructorArguments is not [{ Value: INamedTypeSymbol b }]) return null;
+        if (b.IsUnboundGenericType || b.IsGenericType && b.TypeArguments.Any(a => a.TypeKind == TypeKind.TypeParameter))
+            b = b.OriginalDefinition.Construct([.. ret.TypeArguments]);
+        return (INamedTypeSymbol)T.Canonical(b);
+    }
+
+    INamedTypeSymbol MachineBoxType => D.LibType("Cs2Wasm.Runtime.MachineBox");
+
+    /// <summary>A member of an async method builder by name (Create, Start, SetResult, SetException, get_Task,
+    /// AwaitOnCompleted, AwaitUnsafeOnCompleted), constructed with its type arguments.</summary>
+    IMethodSymbol BuilderMember(INamedTypeSymbol builder, string name, params ITypeSymbol[] typeArgs)
+    {
+        IMethodSymbol? m = null;
+        for (var t = builder; t != null && m == null; t = t.BaseType is { } bt ? (INamedTypeSymbol)T.Canonical(bt) : null)
+            m = t.GetMembers(name).OfType<IMethodSymbol>().FirstOrDefault(x => x.Arity == typeArgs.Length);
+        if (m == null) throw new CompileException("the async method builder " + builder + " has no " + name);
+        if (typeArgs.Length > 0) m = m.Construct(typeArgs);
+        return D.CanonicalMethod(m);
+    }
+
+    /// <summary>Makes the state machine as a builder sees it (a MachineBox whose MoveNext is the machine's) in a frame
+    /// slot, for a `ref TStateMachine` argument; returns the slot's frame offset.</summary>
+    int PushMachineBox(MachineInfo info, Action pushMachine)
+    {
+        var actionT = T.Canonical(D.Main.GetTypeByMetadataName("System.Action")!);
+        int slot = TempValue(MachineBoxType);
+        var o = CallWith(AsyncMember("Box", null), false, null, () =>
+        {
+            pushMachine(); E.Call(Rt.Retain);
+            NewDelegate(actionT, info.MoveNext.Type.Results.Length == 0 ? info.MoveNext : MoveNextVoidThunk(info));
+            int dl = TempRef(actionT); E.Tee(dl);
+        }, null, null);
+        StoreToAddressFromStack(() => E.Get(_fb), slot, MachineBoxType, o, pub: Publish.None);
+        return slot;
+    }
+
+    /// <summary>In MoveNext: the builder in the machine, as the receiver of a call.</summary>
+    void PushBuilderM()
+    {
+        var info = _machine!;
+        int boff = info.Machine.ExtraSlots["builder"].offset;
+        E.Get(0);
+        if (Types.IsStruct(info.Builder!)) { E.I32(boff); E.Op(Op.I32Add); } else E.Load(Op.I32Load, boff);
     }
 
     /// <summary>The CFG of a lambda or local function, found inside its enclosing member's CFG.</summary>
@@ -777,6 +866,19 @@ sealed partial class FunctionCompiler
         SetState(-1);
         if (info.AsyncIterator) { CompletePromise(false); E.Op(Op.Return); return; }
         if (info.IsIterator) { E.I32(0); E.Op(Op.Return); return; }
+        if (info.Builder != null)
+        {
+            BeginTemps();
+            CallWith(BuilderMember(info.Builder, "SetResult"), false, PushBuilderM, () =>
+            {
+                if (info.ResultType == null) return;
+                var rv = info.Machine.Extra("retval", info.ResultType, T);
+                E.Get(0);
+                if (Types.IsStruct(info.ResultType)) { E.I32(rv); E.Op(Op.I32Add); }
+                else E.Load(Types.LoadOp(info.ResultType), rv);
+            }, null, null);
+            EndTemps();
+        }
         if (info.TaskType != null)
         {
             var task = info.Machine.ExtraSlots["task"].offset;
@@ -835,6 +937,16 @@ sealed partial class FunctionCompiler
             var promise = info.Machine.ExtraSlots["promise"].offset;
             E.Get(0); E.Load(Op.I32Load, promise); E.Get(ex);
             E.Call(D.Method(AsyncMember("TrySetExceptionCore", null)).Fn); E.Op(Op.Drop);
+            E.Get(ex); E.Call(Rt.Release);
+            E.Op(Op.Return);
+            return;
+        }
+        if (info.IsAsync && info.Builder != null)
+        {
+            SetState(-1);
+            BeginTemps();
+            CallWith(BuilderMember(info.Builder, "SetException"), false, PushBuilderM, () => E.Get(ex), null, null);
+            EndTemps();
             E.Get(ex); E.Call(Rt.Release);
             E.Op(Op.Return);
             return;
@@ -1041,6 +1153,24 @@ sealed partial class FunctionCompiler
                         E.Op(Op.I32Eqz);
                         E.If();
                         SetState(resume);
+                        if (info.Builder != null)
+                        {
+                            // the program's own builder schedules the continuation (AwaitUnsafeOnCompleted for an
+                            // ICriticalNotifyCompletion awaiter, as Roslyn chooses)
+                            BeginTemps();
+                            bool critical = awT.AllInterfaces.Any(i => i.Name == "ICriticalNotifyCompletion");
+                            int box = PushMachineBox(info, () => E.Get(0));
+                            CallWith(BuilderMember(info.Builder, critical ? "AwaitUnsafeOnCompleted" : "AwaitOnCompleted", awT, MachineBoxType), false, PushBuilderM, () =>
+                            {
+                                E.Get(0); E.I32(awOff); E.Op(Op.I32Add);
+                                E.Get(_fb); E.I32(box); E.Op(Op.I32Add);
+                            }, null, null);
+                            EndTemps();
+                            E.Op(Op.Return);
+                            E.End();
+                            Goto(resume);
+                            return false;
+                        }
                         BeginTemps();
                         var onCompleted = FindOnCompleted(awT) ?? throw new CompileException("awaiter " + awT + " has no OnCompleted(Action)", a.Syntax.GetLocation());
                         var actionT = T.Canonical(D.Main.GetTypeByMetadataName("System.Action")!);

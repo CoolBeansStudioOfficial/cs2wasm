@@ -16,7 +16,7 @@ sealed partial class FunctionCompiler
     void RegisterAnonymous(INamedTypeSymbol at, int tid)
     {
         if (D.SyntheticById.ContainsKey(tid)) return;
-        var st = new SyntheticType { Name = "<>f__AnonymousType" };
+        var st = new SyntheticType { Name = D.AnonymousTypeName(at) };
         var obj = D.LibType("System.Object");
         foreach (var name in new[] { "ToString", "Equals", "GetHashCode" })
         {
@@ -76,6 +76,12 @@ sealed partial class FunctionCompiler
                     return;
                 }
             case (MethodKind.Constructor, _):
+                // (called through reflection only, by an expression tree's New: each argument is its property's value)
+                foreach (var p in M.Parameters)
+                {
+                    var f = fields.First(x => x.Symbol.Name == p.Name);
+                    StoreToAddressFromStackCopy(_thisLocal, f.Offset, f.Type, () => LoadVar(_vars[p]));
+                }
                 EmitReturnSequence(false);
                 return;
             case (_, "Equals"):
@@ -159,5 +165,47 @@ sealed partial class FunctionCompiler
         int h = unchecked((int)2166136261);
         foreach (var c in s) h = unchecked((h ^ c) * 16777619);
         return h;
+    }
+}
+
+internal sealed partial class Driver
+{
+    readonly Dictionary<Compilation, Dictionary<string, int>> _anonymousTemplates = [];
+
+    /// <summary>An anonymous type's name as Roslyn gives it: &lt;&gt;f__AnonymousType, the number of its template in
+    /// its compilation, and the count of its properties (types of the same property names in the same order share a
+    /// template; templates are numbered in source order).</summary>
+    public string AnonymousTypeName(INamedTypeSymbol at)
+    {
+        var names = at.GetMembers().OfType<IPropertySymbol>().Select(p => p.Name).ToList();
+        string suffix = names.Count > 0 ? "`" + names.Count : "";
+        var tree = at.Locations.FirstOrDefault()?.SourceTree;
+        Compilation? comp = tree == null ? null : Inputs.FirstOrDefault(c => c.ContainsSyntaxTree(tree)) ?? Lib.CompilationOf(tree);
+        if (comp == null) return "<>f__AnonymousType" + suffix;
+        Dictionary<string, int>? map;
+        lock (_anonymousTemplates)
+        {
+            if (!_anonymousTemplates.TryGetValue(comp, out map))
+            {
+                map = [];
+                foreach (var t in comp.SyntaxTrees)
+                    foreach (var node in t.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousObjectCreationExpressionSyntax>())
+                    {
+                        string key = string.Join("\0", node.Initializers.Select(i => i.NameEquals?.Name.Identifier.ValueText ?? InferredName(i.Expression)));
+                        if (!map.ContainsKey(key)) map[key] = map.Count;
+                    }
+                _anonymousTemplates[comp] = map;
+            }
+        }
+        return "<>f__AnonymousType" + (map.TryGetValue(string.Join("\0", names), out int n) ? n : map.Count) + suffix;
+
+        static string InferredName(Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionSyntax e) => e switch
+        {
+            Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax id => id.Identifier.ValueText,
+            Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax ma => ma.Name.Identifier.ValueText,
+            Microsoft.CodeAnalysis.CSharp.Syntax.ConditionalAccessExpressionSyntax ca => InferredName(ca.WhenNotNull),
+            Microsoft.CodeAnalysis.CSharp.Syntax.MemberBindingExpressionSyntax mb => mb.Name.Identifier.ValueText,
+            _ => "",
+        };
     }
 }

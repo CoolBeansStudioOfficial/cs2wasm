@@ -80,6 +80,17 @@ sealed partial class FunctionCompiler
                     EmitReturnSequence(true);
                     return;
                 }
+            case "Equals" when !IsRecordStruct && Types.Key(T.Canonical(def.Parameters[0].Type)) != Types.Key(rt)
+                && rt.GetMembers("Equals").OfType<IMethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 1 && Types.IsObject(m.Parameters[0].Type)) is { } eqObj:
+                {
+                    // a derived record's Equals(Base other) => Equals((object)other): the record's own Equals(R),
+                    // which the program may have written, decides
+                    var arg = _vars[M.Parameters[0]];
+                    CallWith(D.CanonicalMethod(eqObj), false, () => E.Get(_thisLocal), () => LoadVar(arg), null, null);
+                    _retLocal = E.AddLocal(ValType.I32); E.Set(_retLocal);
+                    EmitReturnSequence(true);
+                    return;
+                }
             case "Equals":
                 EmitRecordEquals(rt);
                 return;

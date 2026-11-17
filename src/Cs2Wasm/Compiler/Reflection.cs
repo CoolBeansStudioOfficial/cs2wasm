@@ -666,10 +666,12 @@ internal sealed partial class Driver
     const int FEventAccessor = 1 << 12;
     /// <summary>MethodAttributes the CLR gives: SpecialName (accessors, operators), Final, NewSlot.</summary>
     const int FSpecialName = 1 << 13, FFinal = 1 << 14, FNewSlot = 1 << 15, FInitOnly = 1 << 16;
+    /// <summary>An extension method: [Extension] is on it, as the C# compiler puts it (CustomAttribute.cs adds it).</summary>
+    const int FExtension = 1 << 17;
 
     static int MethodShape(IMethodSymbol ms)
     {
-        int f = (ms.IsInitOnly ? FInitOnly : 0) | (ms.MethodKind is MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.EventAdd or MethodKind.EventRemove
+        int f = (ms.IsInitOnly ? FInitOnly : 0) | (ms.IsExtensionMethod ? FExtension : 0) | (ms.MethodKind is MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.EventAdd or MethodKind.EventRemove
             or MethodKind.UserDefinedOperator or MethodKind.Conversion ? FSpecialName : 0);
         if (ms.IsStatic) return f;
         bool virt = ms.IsVirtual || ms.IsAbstract || ms.IsOverride;

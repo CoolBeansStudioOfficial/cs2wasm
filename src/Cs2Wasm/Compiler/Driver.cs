@@ -140,6 +140,8 @@ internal sealed partial class Driver
     /// without threads. Whether a program starts threads is known when it has been compiled once
     /// (Cs2WasmCompiler.Compile compiles it again in this mode if it does).</summary>
     public bool ThreadMode { get; init; }
+    /// <summary>Thrown out of Run when a compilation that is not in thread mode meets the start of a thread.</summary>
+    public sealed class ThreadsSeen : Exception { }
     public readonly WasmTag ExceptionTag;
     readonly List<SourcePos> _positions = [];
     readonly Dictionary<SourcePos, int> _posIndex = [];
@@ -876,6 +878,8 @@ internal sealed partial class Driver
             return m;
         }
     }
+    // (kept for the whole build: a local function's symbol, and its type parameters, are its semantic model's, so a
+    // model dropped and made again gives other symbols than the ones the compiler holds)
     readonly Dictionary<SyntaxTree, SemanticModel> _models = [];
 
     // ---------------- lib helpers ----------------
@@ -1077,7 +1081,8 @@ internal sealed partial class Driver
     public void Mark(string phase)
     {
         if (!_times) return;
-        Console.Error.WriteLine($"  {_clock.ElapsedMilliseconds,6} ms  {GC.GetTotalMemory(false) >> 20,6} MB  {phase}  (binding so far {BindTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms)");
+        long ins = 0, cap = 0; foreach (var f in Module.Functions) { ins += f.Body.Count; cap += f.Body.Capacity; }
+        Console.Error.WriteLine($"  {_clock.ElapsedMilliseconds,6} ms  {GC.GetTotalMemory(false) >> 20,6} MB  {phase}  ({Module.Functions.Count} functions, {ins / 1000000.0:F1}M instructions in room for {cap / 1000000.0:F1}M)");
         _clock.Restart();
     }
 
@@ -1128,9 +1133,12 @@ internal sealed partial class Driver
             CurrentFn = null;
             Drain(rt);
         }
+        Mark("  static initializers again");
         // cycles (section 4.3): the type graph is complete only now; arena runtime is compiled only if some site needs it
         Arenas.Analyze();
+        Mark("  arenas: analyze");
         if (Arenas.Enabled) { Arenas.RequestRuntime(); Drain(rt); }
+        Mark("  arenas: runtime drained");
         Arenas.Resolve();
         Mark("static initializers again, arenas");
         ReportEngineThreadBlocking(rt.UserExports);
@@ -1239,9 +1247,12 @@ internal sealed partial class Driver
                     var mi = _work.Dequeue();
                     if (mi.Compiled) continue;
                     mi.Compiled = true;
+                    // (the program starts threads: it is compiled as one that does, from the start; nothing more of
+                    // this compilation is of use)
+                    if (!ThreadMode && mi.Sym.Name == "SpawnCore" && mi.Sym.ContainingType?.Name == "Threads") throw new ThreadsSeen();
                     Compiling = mi;
                     CurrentFn = mi.Fn;
-                    try { if (mi.Compile != null) mi.Compile(); else FunctionCompiler.Compile(this, mi); }
+                    try { if (mi.Compile != null) mi.Compile(); else FunctionCompiler.Compile(this, mi); mi.Fn.Body.TrimExcess(); mi.Fn.Locals.TrimExcess(); }
                     catch (CompileException ex)
                     {
                         if (Environment.GetEnvironmentVariable("CS2WASM_DEBUG") != null) Console.Error.WriteLine(ex.StackTrace);

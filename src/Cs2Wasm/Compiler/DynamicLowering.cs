@@ -74,6 +74,21 @@ internal sealed class DynamicLowering
     }
 
     static bool IsDyn(ITypeSymbol? t) => t is IDynamicTypeSymbol;
+    /// <summary>An operand's type. (The variable of `foreach (var v in d)` over a dynamic d is an object to its symbol
+    /// and to the operation tree, while what is done with it is bound as dynamic: the loop's element type says so.)</summary>
+    ITypeSymbol? TypeOfOperand(IOperation? o)
+    {
+        if (o is ILocalReferenceOperation { Local: { Type.SpecialType: SpecialType.System_Object } l })
+        {
+            if (!_foreachDynamic.TryGetValue(l, out var dt))
+                _foreachDynamic[l] = dt = l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is ForEachStatementSyntax { Type.IsVar: true } fs
+                    && fs.SyntaxTree == _model.SyntaxTree && _model.GetForEachStatementInfo(fs).ElementType is IDynamicTypeSymbol d ? d : null;
+            if (dt != null) return dt;
+        }
+        return o?.Type;
+    }
+    readonly Dictionary<ILocalSymbol, ITypeSymbol?> _foreachDynamic = new(SymbolEqualityComparer.Default);
+    bool Dyn(IOperation? o) => IsDyn(TypeOfOperand(o));
 
     void Visit(IOperation op)
     {
@@ -88,11 +103,11 @@ internal sealed class DynamicLowering
                 Indexer(ia); break;
             case IDynamicObjectCreationOperation oc: Creation(oc); break;
             case ISimpleAssignmentOperation { Target: IDynamicMemberReferenceOperation or IDynamicIndexerAccessOperation } sa: Assignment(sa); break;
-            case ICompoundAssignmentOperation ca when ca.OperatorMethod == null && (IsDyn(ca.Target.Type) || IsDyn(ca.Value.Type)): Compound(ca); break;
-            case IIncrementOrDecrementOperation inc when inc.OperatorMethod == null && IsDyn(inc.Target.Type): IncDec(inc); break;
-            case IBinaryOperation b when b.OperatorMethod == null && (IsDyn(b.LeftOperand.Type) || IsDyn(b.RightOperand.Type)): Binary(b); break;
-            case IUnaryOperation u when u.OperatorMethod == null && IsDyn(u.Operand.Type): Unary(u); break;
-            case IConversionOperation c when IsDyn(c.Operand.Type) && c.Type != null && !IsDyn(c.Type) && c.Type.SpecialType != SpecialType.System_Object: Conversion(c); break;
+            case ICompoundAssignmentOperation ca when ca.OperatorMethod == null && (Dyn(ca.Target) || Dyn(ca.Value)): Compound(ca); break;
+            case IIncrementOrDecrementOperation inc when inc.OperatorMethod == null && Dyn(inc.Target): IncDec(inc); break;
+            case IBinaryOperation b when b.OperatorMethod == null && (Dyn(b.LeftOperand) || Dyn(b.RightOperand)): Binary(b); break;
+            case IUnaryOperation u when u.OperatorMethod == null && Dyn(u.Operand): Unary(u); break;
+            case IConversionOperation c when Dyn(c.Operand) && c.Type != null && !IsDyn(c.Type) && c.Type.SpecialType != SpecialType.System_Object: Conversion(c); break;
         }
     }
 
@@ -110,7 +125,7 @@ internal sealed class DynamicLowering
     Arg ValueArg(IOperation a, string? name = null, RefKind rk = RefKind.None)
     {
         int f = name != null ? NamedArgument : 0;
-        var t = a.Type;
+        var t = TypeOfOperand(a);
         string pt = "object";
         if (t == null) f |= UseCompileTimeType; // the null literal
         else if (!IsDyn(t) && TypeName(t) is { } n) { pt = n; f |= UseCompileTimeType; }
@@ -369,14 +384,14 @@ internal sealed class DynamicLowering
         {
             // x && y: IsFalse(x) ? x : x & y (x || y: IsTrue(x) ? x : x | y), the operator a logical one (C# 12.12.8)
             bool and = b.OperatorKind == BinaryOperatorKind.ConditionalAnd;
-            if (!IsDyn(b.LeftOperand.Type))
+            if (!Dyn(b.LeftOperand))
             {
-                // a static left operand: the test is the static one (a bool here), the result when it decides is x as dynamic
-                if (b.LeftOperand.Type?.SpecialType != SpecialType.System_Boolean)
-                    throw new CompileException("dynamic && or || with a static left operand of a type other than bool is not supported yet", b.Syntax.GetLocation());
+                // a static left operand: the test is the static one (the bool itself, or the type's operator false
+                // for && and operator true for ||), the result when it decides is x as dynamic
                 MemberNames.Add(and ? "op_BitwiseAnd" : "op_BitwiseOr");
                 int bn = _n++;
-                _sb.Append("        public static object Site").Append(bn).Append("(bool v) => v;\n");
+                string leftT = b.LeftOperand.Type?.SpecialType == SpecialType.System_Boolean ? "bool" : ValueArg(b.LeftOperand).ParamType ?? "object";
+                _sb.Append("        public static object Site").Append(bn).Append('(').Append(leftT).Append(" v) => v;\n");
                 _sites[Key(b, "box")] = new Site("Site" + bn, false);
                 Emit(b, "op", Ns + "Binder.BinaryOperation(" + Flags(b, 8) + ", global::System.Linq.Expressions.ExpressionType." + (and ? "And" : "Or") + ", typeof(" + Context(b.Syntax) + "), $INFOS)", [ValueArg(b.LeftOperand), ValueArg(b.RightOperand)], "object");
                 return;
@@ -425,6 +440,13 @@ internal sealed class DynamicLowering
             return;
         }
         Emit(ca, "op", BinaryBinder(ca, ca.OperatorKind, true), [ValueArg(ca.Target), ValueArg(ca.Value)], "object");
+        // a variable of a type of its own (`int sum; sum += d`): the result goes back as that type, by an explicit
+        // conversion found at run time, as Roslyn writes it
+        if (TypeOfOperand(ca.Target) is { } tt && !IsDyn(tt) && tt.SpecialType != SpecialType.System_Object && TypeName(tt) is { } tn)
+        {
+            Emit(ca, "conv", Ns + "Binder.Convert(" + Flags(ca, ConvertExplicit) + ", typeof(" + tn + "), typeof(" + Context(ca.Syntax) + "))", [new Arg("object", 0, null, null)], tn);
+            MemberNames.Add("op_Implicit"); MemberNames.Add("op_Explicit");
+        }
     }
 
     void IncDec(IIncrementOrDecrementOperation inc)

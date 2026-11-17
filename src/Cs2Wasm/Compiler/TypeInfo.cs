@@ -46,7 +46,7 @@ sealed partial class RuntimeGen
         while (work.Count > 0)
         {
             int id = work.Pop();
-            if (id <= 0 || id >= D.TypeById.Count || D.SyntheticById.ContainsKey(id) || D.DisplayById.ContainsKey(id)) continue;
+            if (id <= 0 || id >= D.TypeById.Count || D.IsSymbolless(id)) continue;
             foreach (var r in Related(D.TypeById[id], kinds)) Add(D.TypeId(r));
             if (defs && D.TypeById[id] is INamedTypeSymbol { IsGenericType: true } gi && !Types.IsGenericDefinition(gi))
                 Add(D.TypeId(D.Types.Canonical(gi.OriginalDefinition)));
@@ -62,7 +62,7 @@ sealed partial class RuntimeGen
         if (kinds.Count == 0) return;
         for (int i = 1; i < D.TypeById.Count; i++)
         {
-            if (D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i)) continue;
+            if (D.IsSymbolless(i)) continue;
             foreach (var r in Related(D.TypeById[i], kinds)) D.TypeId(r);
         }
     }
@@ -106,7 +106,7 @@ sealed partial class RuntimeGen
     void EmitTypeInfo()
     {
         int n = D.TypeCount;
-        bool Real(int i) => i > 0 && !D.SyntheticById.ContainsKey(i) && !D.DisplayById.ContainsKey(i);
+        bool Real(int i) => i > 0 && !D.IsSymbolless(i);
         IAddress Ids(IEnumerable<ITypeSymbol> types)
         {
             var ids = types.Select(x => D.ExtId(D.TypeId(D.Types.Canonical(x)))).ToList();

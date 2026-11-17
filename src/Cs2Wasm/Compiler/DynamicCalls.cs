@@ -55,22 +55,36 @@ sealed partial class FunctionCompiler
         return Own.Owned;
     }
 
-    /// <summary>b && y on a static bool b: when b decides (false for &&, true for ||), b as dynamic; else the
-    /// operator's site on b and y.</summary>
+    /// <summary>b && y on a static b: when b decides (false for &&, true for ||; for a type of the program's, its
+    /// operator false or operator true says), b as dynamic; else the operator's site on b and y.</summary>
     Own EmitStaticLogical(IBinaryOperation b, DynamicLowering.Site box, DynamicLowering.Site op)
     {
         var bm = SiteMethod(box); var om = SiteMethod(op);
         bool and = b.OperatorKind == BinaryOperatorKind.ConditionalAnd;
-        int x = E.AddLocal(ValType.I32);
-        EmitValueAs(b.LeftOperand, bm.Parameters[0].Type);
+        var lt = T.Canonical(bm.Parameters[0].Type);
+        int x = E.AddLocal(Types.WasmType(lt) ?? ValType.I32);
+        var xo = EmitValueAs(b.LeftOperand, lt);
+        if (Types.IsStruct(lt)) CopyToTemp(lt); else if (Types.IsRef(lt)) ToCallSafe(xo, lt);
         E.Set(x);
-        E.Get(x); if (and) E.Op(Op.I32Eqz);
+        void PushX() { E.Get(x); if (Types.IsStruct(lt)) CopyToTemp(lt); }
+        if (lt.SpecialType == SpecialType.System_Boolean) { E.Get(x); if (and) E.Op(Op.I32Eqz); }
+        else
+        {
+            var st = TypeOf(b.LeftOperand);
+            IMethodSymbol? test = null;
+            for (var t = st as INamedTypeSymbol; t != null && test == null; t = t.BaseType)
+                test = t.GetMembers(and ? "op_False" : "op_True").OfType<IMethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 1);
+            if (test == null) throw new CompileException("&& or || on " + st + ", which has no operator true and false", b.Syntax.GetLocation());
+            var tp = T.Resolve(test.Parameters[0].Type, Map);
+            if (Types.Key(tp) != Types.Key(lt)) throw new CompileException("dynamic && or || on a type that cannot be named here", b.Syntax.GetLocation());
+            CallWith(SubstMethod(test), false, null, PushX, null, b.Syntax);
+        }
         E.If(ValType.I32);
-        var r1 = CallWith(bm, false, null, () => E.Get(x), null, b.Syntax);
+        var r1 = CallWith(bm, false, null, PushX, null, b.Syntax);
         ToOwned(r1);
         E.Else();
         var pt = T.Canonical(om.Parameters[1].Type);
-        var r2 = CallWith(om, false, null, () => { E.Get(x); var ro = EmitValueAs(b.RightOperand, pt); if (Types.IsRef(pt)) ToCallSafe(ro, pt); }, null, b.Syntax);
+        var r2 = CallWith(om, false, null, () => { PushX(); var ro = EmitValueAs(b.RightOperand, pt); if (Types.IsRef(pt)) ToCallSafe(ro, pt); }, null, b.Syntax);
         ToOwned(r2);
         E.End();
         return Own.Owned;
@@ -84,7 +98,7 @@ sealed partial class FunctionCompiler
         void Receiver(IOperation? instance)
         {
             if (instance == null) return;
-            if (instance is IInstanceReferenceOperation { IsImplicit: true } && M.IsStatic) return;
+            if (instance is IInstanceReferenceOperation { IsImplicit: true } && OuterMethod.IsStatic) return;
             args.Add(instance);
         }
         void Target(IOperation t)

@@ -22,15 +22,26 @@ namespace Cs2Wasm.Runtime
         /// <summary>A field of a record entry (a closure's captured variable, for expression trees).</summary>
         public static System.Reflection.FieldInfo FieldFromEntry(int entry) => new System.Reflection.RuntimeFieldInfo(entry, TypeAt(I(entry, 4)));
 
-        /// <summary>The `index`th generic method of the name and parameter count, made with the type arguments.</summary>
-        public static System.Reflection.MethodInfo GenericMethod(Type owner, string name, int parameters, int index, Type[] typeArgs)
+        /// <summary>The generic method of the name which, made with the type arguments, takes these parameter types
+        /// (the overloads are told apart by what they take: `index` is the place among those of the name, arity and
+        /// parameter count, tried first).</summary>
+        public static System.Reflection.MethodInfo GenericMethod(Type owner, string name, Type[] parameterTypes, int index, Type[] typeArgs)
         {
+            System.Reflection.MethodInfo? atIndex = null;
             int i = 0;
             foreach (var m in owner.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly))
             {
-                if (m.Name != name || !m.IsGenericMethodDefinition || m.GetGenericArguments().Length != typeArgs.Length || m.GetParameters().Length != parameters) continue;
-                if (i++ == index) return m.MakeGenericMethod(typeArgs);
+                if (m.Name != name || !m.IsGenericMethodDefinition || m.GetGenericArguments().Length != typeArgs.Length || m.GetParameters().Length != parameterTypes.Length) continue;
+                if (i++ == index) atIndex = m;
+                System.Reflection.MethodInfo made;
+                try { made = m.MakeGenericMethod(typeArgs); }
+                catch (Exception e) when (e is PlatformNotSupportedException or ArgumentException) { continue; }
+                var ps = made.GetParameters();
+                bool same = true;
+                for (int k = 0; k < ps.Length && same; k++) same = ps[k].ParameterType == parameterTypes[k];
+                if (same) return made;
             }
+            if (atIndex != null) return atIndex.MakeGenericMethod(typeArgs);
             throw new MissingMethodException(owner.FullName, name);
         }
 

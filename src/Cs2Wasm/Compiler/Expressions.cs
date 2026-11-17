@@ -1953,11 +1953,19 @@ sealed partial class FunctionCompiler
         var tt = TypeOf(ca.Target);
         var lv = LValueOf(ca.Target);
         lv.Prepare();
-        var vt = TypeOf(ca.Value);
+        var vt = ca.Value.Type != null ? TypeOf(ca.Value) : tt;
         var caOp = ca.OperatorMethod ?? DynamicOperatorSite(ca) ?? (IsDecimal(tt) ? DecimalOpFor(ca.OperatorKind) : null);
+        // a compound assignment operator declared as an instance member (C# 14: `public void operator +=(int n)`):
+        // a call on the target, whose value is the expression's
+        if (caOp is { IsStatic: false }) return EmitInstanceOperator(caOp, ca.Target, [ca.Value], needResult, ca.Syntax);
         if (caOp != null)
         {
             var m = caOp;
+            // a static abstract operator through a constrained type parameter (`s += x` on a T : IAdditionOperators):
+            // the type argument's own operator (the primitives' are written out where they are called)
+            if (IsStaticInterfaceMember(m) && ca.ConstrainedToType is { } cct && T.Resolve(cct, Map) is var concrete
+                && Types.PrimOf(concrete) == Prim.None && ImplementationOf(concrete, SubstMethod(m)) is { } impl)
+                m = impl;
             var p0 = T.Resolve(m.Parameters[0].Type, Map);
             var p1 = T.Resolve(m.Parameters[1].Type, Map);
             var r = CallWith(SubstMethod(m), false, null, () =>
@@ -1968,6 +1976,16 @@ sealed partial class FunctionCompiler
                 var ov = EmitValueAs(ca.Value, p1);
                 if (Types.IsRef(p1)) ToCallSafe(ov, p1);
             }, null, ca.Syntax);
+            // (a dynamic operation on a variable of a type of its own: the site that converts the result back)
+            if (ca.OperatorMethod == null && D.Dynamic.Any && D.Dynamic.Find(ca, "conv") is { } convSite)
+            {
+                ToOwned(r);
+                int dyn = TempRef(D.ObjectType); E.Set(dyn);
+                var cm = SiteMethod(convSite);
+                r = CallWith(cm, false, null, () => E.Get(dyn), null, ca.Syntax);
+                ConvertTop(T.Resolve(cm.ReturnType, Map), tt, ref r);
+                return lv.Store(r, needResult);
+            }
             ConvertTop(T.Resolve(m.ReturnType, Map), tt, ref r);
             return lv.Store(r, needResult);
         }
@@ -2053,6 +2071,43 @@ sealed partial class FunctionCompiler
         return lv.Store(Own.None, needResult);
     }
 
+    /// <summary>`target op= value` and `++target` where the operator is an instance member of the target's type: the
+    /// member is called on the target (a variable, for a struct), and the target is the value of the expression.</summary>
+    Own EmitInstanceOperator(IMethodSymbol op, IOperation target, IReadOnlyList<IOperation> args, bool needResult, SyntaxNode syntax)
+    {
+        var tt = TypeOf(target);
+        bool virt = op.IsVirtual || op.IsAbstract || op.IsOverride || op.ContainingType.TypeKind == TypeKind.Interface;
+        if (!needResult || tt.IsValueType || tt.TypeKind == TypeKind.TypeParameter)
+        {
+            var r = EmitCall(op, target, args, virt, syntax);
+            if (!op.ReturnsVoid) Drop(r, T.Resolve(op.ReturnType, Map));
+            return needResult ? EmitValue(target) : Own.None;
+        }
+        // a reference: evaluated once, held for the statement
+        int recv = E.AddLocal(ValType.I32);
+        Own held = Own.None;
+        var m = SubstMethod(op);
+        if (virt && tt is INamedTypeSymbol { IsSealed: true, TypeKind: TypeKind.Class } st && D.Implementation(st, m) is { } simpl) { m = simpl; virt = false; }
+        var cr = CallWith(m, virt, () =>
+        {
+            var o = EmitValue(target);
+            held = ToCallSafe(o, tt);
+            NullCheckKeep();
+            E.Tee(recv);
+        }, () =>
+        {
+            for (int i = 0; i < args.Count; i++)
+            {
+                var pt = T.Resolve(m.Parameters[i].Type, Map);
+                var ov = Types.IsStruct(pt) ? EmitValue(args[i]) : EmitValueAs(args[i], pt);
+                if (Types.IsRef(pt)) ToCallSafe(ov, pt);
+            }
+        }, null, syntax);
+        if (!op.ReturnsVoid) Drop(cr, T.Resolve(op.ReturnType, Map));
+        E.Get(recv);
+        return held;
+    }
+
     /// <summary>Stack: struct address → address of a temporary copy (a by-value struct argument).</summary>
     void CopyToTemp(ITypeSymbol t)
     {
@@ -2086,6 +2141,10 @@ sealed partial class FunctionCompiler
         lv.Prepare();
         bool isInc = inc.Kind == OperationKind.Increment;
         var incOp = inc.OperatorMethod ?? DynamicOperatorSite(inc) ?? (IsDecimal(tt) ? DecimalOp(isInc ? "op_Increment" : "op_Decrement", 1) : null);
+        if (incOp is { IsStatic: false }) return EmitInstanceOperator(incOp, inc.Target, [], needResult, inc.Syntax);
+        if (incOp != null && IsStaticInterfaceMember(incOp) && inc.ConstrainedToType is { } ict && T.Resolve(ict, Map) is var iconcrete
+            && Types.PrimOf(iconcrete) == Prim.None && ImplementationOf(iconcrete, SubstMethod(incOp)) is { } iimpl)
+            incOp = iimpl;
         if (incOp != null)
         {
             Own cur = Own.None;
@@ -2913,9 +2972,9 @@ sealed partial class FunctionCompiler
         }
         if (IsValueTuple(mt))
         {
-            foreach (var f in TupleFields(mt))
+            foreach (var slot in TupleFields(mt))
             {
-                var slot = T.FieldIn(mt, f);
+
                 int l = E.AddLocal(Types.WasmType(slot.Type) ?? ValType.I32);
                 E.Get(nv);
                 if (Types.IsStruct(slot.Type)) { if (slot.Offset != 0) { E.I32(slot.Offset); E.Op(Op.I32Add); } } else E.Load(Types.LoadOp(slot.Type), slot.Offset);
@@ -3069,6 +3128,9 @@ sealed partial class FunctionCompiler
             E.Set(nv);
             return nv;
         }
+        // a value seen as an interface or a class it converts to (`rest is ITuple t` in generic code over a struct):
+        // its box
+        if (vt.IsValueType && Types.IsRef(mt)) { E.Get(v); EmitBox(vt, Own.None); int bl = TempRef(mt); E.Set(bl); return bl; }
         return v;
     }
 

@@ -1087,6 +1087,43 @@ sealed partial class FunctionCompiler
             PopScope();
             return;
         }
+        if (Types.InlineArrayLength(collType) is int inlineLength && fe.LoopControlVariable is not IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None })
+        {
+            // an [InlineArray(n)] struct: its n elements in place, one after another (C# goes over it as a span)
+            var elemType = T.LayoutOf(collType).Fields[0].Type;
+            BeginTemps();
+            EmitValue(coll);
+            int baseAddr = E.AddLocal(ValType.I32); E.Set(baseAddr);
+            int i = E.AddLocal(ValType.I32);
+            E.I32(0); E.Set(i);
+            var brk = E.Block();
+            var top = E.Loop();
+            E.Get(i); E.I32(inlineLength); E.Op(Op.I32GeU); E.BrIf(brk);
+            var cont = E.Block();
+            var c = PushLoop(fe, brk, cont);
+            PushScope();
+            EnterDisplay(fe);
+            AssignLoopVariable(fe, elemType, borrowElement: false, produce: () =>
+            {
+                E.Get(baseAddr); E.Get(i); var sz = T.StorageOf(elemType).size;
+                if (sz != 1) { E.I32(sz); E.Op(Op.I32Mul); }
+                E.Op(Op.I32Add);
+                if (Types.IsStruct(elemType)) return Own.None;
+                E.Load(Types.LoadOp(elemType));
+                return Types.IsRef(elemType) ? Own.Unstable : Own.None;
+            });
+            EmitStatement(fe.Body);
+            ExitDisplay(fe);
+            PopScope();
+            _ctl.Remove(c);
+            E.End();
+            E.Get(i); E.I32(1); E.Op(Op.I32Add); E.Set(i);
+            E.Br(top);
+            E.End(); E.End();
+            EndTemps();
+            PopScope();
+            return;
+        }
         var syntax = fe.Syntax as CommonForEachStatementSyntax ?? throw new CompileException("foreach syntax");
         var info = D.ModelFor(syntax.SyntaxTree).GetForEachStatementInfo(syntax);
         if (info.GetEnumeratorMethod == null || info.MoveNextMethod == null || info.CurrentProperty == null)
@@ -1477,14 +1514,29 @@ sealed partial class FunctionCompiler
             else E.I32(1);
             if (cc.Filter != null && !twoPass)
             {
-                E.If(ValType.I32);
+                // one pass (a program none of whose own code has a filter): the filter runs here, when the exception
+                // has reached its catch. What the filter declares is the handler's too
+                // (`when (Find(e, out var handler))`), so both are in one scope; `keep` takes the count the
+                // exception came with when the filter holds, and is released with the scope.
+                E.If();
                 PushScope();
+                int keepF = E.AddLocal(ValType.I32);
+                E.I32(0); E.Set(keepF); AddOwned(new Slot { Local = keepF, Type = D.ObjectType });
                 BindCatchVariable(cc, ex, retain: true);
                 BeginTemps(); EmitCondition(cc.Filter); EndTemps(ValType.I32);
-                int fr = Scratch(ValType.I32); E.Set(fr);
+                E.If();
+                E.Get(ex); E.Set(keepF);
+                var cf = new Ctl { Kind = CtlKind.Catch, ExnLocal = exn, ExPtrLocal = ex, ScopeDepth = _scopes.Count, TempDepth = _temps.Count };
+                _ctl.Add(cf);
+                EmitStatement(cc.Handler);
+                _ctl.Remove(cf);
+                var fs = _scopes[^1];
+                for (int i = fs.Owned.Count - 1; i >= 0; i--) ReleaseSlot(fs.Owned[i]);
+                E.Br(done);
+                E.End();
                 PopScope();
-                E.Get(fr); FreeScratch(ValType.I32, fr);
-                E.Else(); E.I32(0); E.End();
+                E.End();
+                continue;
             }
             E.If();
             PushScope();
@@ -1684,7 +1736,12 @@ sealed partial class FunctionCompiler
             switch (op)
             {
                 case IFieldInitializerOperation fi:
-                    foreach (var f in fi.InitializedFields) EmitStoreField(f, () => E.Get(_thisLocal), fi.Value, initializer: true);
+                    foreach (var f in fi.InitializedFields)
+                    {
+                        // a ref field (`ref int _first = ref first;`): the slot takes the address
+                        if (f.RefKind != RefKind.None) { E.Get(_thisLocal); EmitAddress(fi.Value); E.Store(Op.I32Store, T.Field(f, Map).Offset); }
+                        else EmitStoreField(f, () => E.Get(_thisLocal), fi.Value, initializer: true);
+                    }
                     break;
                 case IPropertyInitializerOperation pi:
                     foreach (var p in pi.InitializedProperties)
