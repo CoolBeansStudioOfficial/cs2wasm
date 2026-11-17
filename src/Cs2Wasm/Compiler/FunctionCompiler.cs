@@ -534,7 +534,10 @@ sealed partial class FunctionCompiler
     int TempStruct(ITypeSymbol t)
     {
         var key = T.StorageOf(t);
-        int off = _structPool.TryGetValue(key, out var st) && st.Count > 0 ? st.Pop() : AllocFrame(t);
+        // (a slot given back is one that held references: released and cleared at its statement's end, and found
+        // clear by the code that uses it next. Only another such temporary may take it: one that holds no reference
+        // is never cleared, and in a loop the slot's first user would find its bytes there as a reference)
+        int off = T.NeedsRc(t) && _structPool.TryGetValue(key, out var st) && st.Count > 0 ? st.Pop() : AllocFrame(t);
         _usesFrame = true;
         if (T.NeedsRc(t)) RegisterTemp(new Slot { FrameOffset = off, Type = t });
         return off;
