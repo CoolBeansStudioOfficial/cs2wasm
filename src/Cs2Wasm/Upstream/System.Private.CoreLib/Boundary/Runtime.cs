@@ -538,22 +538,9 @@ namespace Cs2Wasm.Runtime
             if (s_top == 0) InitHeap();
             size = (size + 7) & ~7;
             if (size < 16) size = 16;
-            if (SingleThreaded() && size <= MaxSmall) return PageAlloc(size);
-            if (size <= MaxSmall)
-            {
-                int slot = s_table + (size >> 3) * 4;
-                int head = Mem.LoadI32(slot);
-                if (head != 0)
-                {
-                    Mem.StoreI32(slot, Mem.LoadI32(head + 8));
-                    Zero(head, size);
-                    return head;
-                }
-                // (the region cut from a freed large block, below)
-                // (addresses compare as unsigned numbers: memory goes on past 2 GB)
-                if ((uint)(s_carveEnd - s_carve) >= (uint)size) { int c = s_carve; s_carve = c + size; return c; }
-            }
-            else if (size < 0x40000000)
+            // (small blocks: from pages without threads; with them, from the lists by size the threads' caches refill from)
+            if (size <= MaxSmall) return SingleThreaded() ? PageAlloc(size) : AllocSmallShared(size);
+            if (size < 0x40000000)
             {
                 size = RoundLarge(size);
                 int bins = s_table + Classes * 4;
@@ -580,28 +567,48 @@ namespace Cs2Wasm.Runtime
             }
             if ((uint)(s_end - s_top) < (uint)size)
             {
-                // Freed space first (section 4.6), before the memory grows. For a small block, a whole freed large
-                // block becomes the region small blocks are cut from, one after the other (cutting one small block
-                // off a large one at a time would look for a block at every allocation).
-                if (size <= MaxSmall)
+                // freed space first (section 4.6), before the memory grows
+                int blk = TakeLarge(size);
+                if (blk != 0) return blk;
+                int need = s_top + size - s_end;
+                GrowFor(need);
+                s_end = Mem.Size() * 65536;
+            }
+            int a = s_top;
+            s_top += size;
+            return a;
+        }
+
+        /// <summary>A small block in a program with threads: off its size's list, or cut from the region small blocks
+        /// are cut from, or from the top.</summary>
+        static int AllocSmallShared(int size)
+        {
+            int slot = s_table + (size >> 3) * 4;
+            int head = Mem.LoadI32(slot);
+            if (head != 0)
+            {
+                Mem.StoreI32(slot, Mem.LoadI32(head + 8));
+                Zero(head, size);
+                return head;
+            }
+            // (addresses compare as unsigned numbers: memory goes on past 2 GB)
+            if ((uint)(s_carveEnd - s_carve) >= (uint)size) { int c = s_carve; s_carve = c + size; return c; }
+            if ((uint)(s_end - s_top) < (uint)size)
+            {
+                // Freed space first (section 4.6), before the memory grows: a whole freed large block becomes the
+                // region small blocks are cut from, one after the other (cutting one small block off a large one at
+                // a time would look for a block at every allocation).
+                int bins = s_table + Classes * 4;
+                for (int i = 0; i < LargeBins; i++)
                 {
-                    int bins = s_table + Classes * 4;
-                    for (int i = 0; i < LargeBins; i++)
-                    {
-                        int blk = Mem.LoadI32(bins + i * 4);
-                        if (blk == 0) continue;
-                        Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk));
-                        int csize = LargeSize(i);
-                        if (s_carveEnd - s_carve >= 16) FreeCore(s_carve, (s_carveEnd - s_carve) & ~7);
-                        Mem.Fill(blk, 0, csize);
-                        s_carve = blk + size; s_carveEnd = blk + csize;
-                        return blk;
-                    }
-                }
-                else
-                {
-                    int blk = TakeLarge(size);
-                    if (blk != 0) return blk;
+                    int blk = Mem.LoadI32(bins + i * 4);
+                    if (blk == 0) continue;
+                    Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk));
+                    int csize = LargeSize(i);
+                    if (s_carveEnd - s_carve >= 16) FreeCore(s_carve, (s_carveEnd - s_carve) & ~7);
+                    Mem.Fill(blk, 0, csize);
+                    s_carve = blk + size; s_carveEnd = blk + csize;
+                    return blk;
                 }
                 int need = s_top + size - s_end;
                 GrowFor(need);
