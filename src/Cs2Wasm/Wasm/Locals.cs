@@ -164,6 +164,12 @@ static partial class Locals
                 }
         }
         int v = (int)op;
+        switch (op)
+        {
+            case Op.V128Load: case Op.I16x8Splat: case Op.I16x8Bitmask: return (1, 1);
+            case Op.V128Store: return (2, 0);
+            case Op.I16x8Eq: case Op.I16x8LtU: case Op.I16x8GtU: case Op.V128And: case Op.V128Or: case Op.I16x8Sub: case Op.I16x8Add: return (2, 1);
+        }
         if (op >= Op.I32Load && op <= Op.I64Load32U) return (1, 1);
         if (op >= Op.I32Store && op <= Op.I64Store32) return (2, 0);
         if (op == Op.I32Eqz || op == Op.I64Eqz) return (1, 1);

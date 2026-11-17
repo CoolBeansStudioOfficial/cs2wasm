@@ -737,6 +737,43 @@ sealed partial class FunctionCompiler
         var name = m.ContainingType.Name + "." + m.Name;
         switch (name)
         {
+            case "TextScan.Eq16":
+                {
+                    // (addr, value): the eight chars compared with the value in every lane, one bit a lane
+                    int v = Scratch(ValType.I32);
+                    E.Set(v);
+                    E.Op(Op.V128Load); E.Get(v); E.Op(Op.I16x8Splat); E.Op(Op.I16x8Eq); E.Op(Op.I16x8Bitmask);
+                    FreeScratch(ValType.I32, v);
+                    return Own.None;
+                }
+            case "TextScan.Eq16Any3":
+                {
+                    int c = Scratch(ValType.I32), b = Scratch(ValType.I32), a = Scratch(ValType.I32), p = Scratch(ValType.I32);
+                    E.Set(c); E.Set(b); E.Set(a); E.Set(p);
+                    E.Get(p); E.Op(Op.V128Load); E.Get(a); E.Op(Op.I16x8Splat); E.Op(Op.I16x8Eq);
+                    E.Get(p); E.Op(Op.V128Load); E.Get(b); E.Op(Op.I16x8Splat); E.Op(Op.I16x8Eq); E.Op(Op.V128Or);
+                    E.Get(p); E.Op(Op.V128Load); E.Get(c); E.Op(Op.I16x8Splat); E.Op(Op.I16x8Eq); E.Op(Op.V128Or);
+                    E.Op(Op.I16x8Bitmask);
+                    FreeScratch(ValType.I32, p); FreeScratch(ValType.I32, a); FreeScratch(ValType.I32, b); FreeScratch(ValType.I32, c);
+                    return Own.None;
+                }
+            case "TextScan.Upper16": case "TextScan.Lower16":
+                {
+                    // dst = x - ((x - 'a') below 26 ? 32 : 0) (or + for lower, from 'A'); then the lanes above 127
+                    bool up = name == "TextScan.Upper16";
+                    int d = Scratch(ValType.I32), s = Scratch(ValType.I32);
+                    E.Set(d); E.Set(s);
+                    E.Get(d);
+                    E.Get(s); E.Op(Op.V128Load);
+                    E.Get(s); E.Op(Op.V128Load); E.I32(up ? 'a' : 'A'); E.Op(Op.I16x8Splat); E.Op(Op.I16x8Sub);
+                    E.I32(26); E.Op(Op.I16x8Splat); E.Op(Op.I16x8LtU);
+                    E.I32(32); E.Op(Op.I16x8Splat); E.Op(Op.V128And);
+                    E.Op(up ? Op.I16x8Sub : Op.I16x8Add);
+                    E.Op(Op.V128Store);
+                    E.Get(s); E.Op(Op.V128Load); E.I32(127); E.Op(Op.I16x8Splat); E.Op(Op.I16x8GtU); E.Op(Op.I16x8Bitmask);
+                    FreeScratch(ValType.I32, s); FreeScratch(ValType.I32, d);
+                    return Own.None;
+                }
             case "Mem.LoadI32": E.Load(Op.I32Load); return Own.None;
             case "Mem.LoadU8": E.Load(Op.I32Load8U); return Own.None;
             case "Mem.LoadI8": E.Load(Op.I32Load8S); return Own.None;

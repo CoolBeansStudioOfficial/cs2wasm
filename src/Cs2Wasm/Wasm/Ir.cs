@@ -46,6 +46,11 @@ internal enum Op : ushort
     I64TruncSatF32S, I64TruncSatF32U, I64TruncSatF64S, I64TruncSatF64U,
     MemoryInit = 0xFC08, DataDrop = 0xFC09, MemoryCopy = 0xFC0A, MemoryFill = 0xFC0B,
 
+    // 128-bit instructions (0xFD prefix): the few the text scans use (Boundary/TextScan.cs). Their values are on the
+    // stack only: no local holds one.
+    V128Load = 0xFD00, V128Store = 0xFD0B, I16x8Splat = 0xFD10, I16x8Eq = 0xFD2D, I16x8LtU = 0xFD30, I16x8GtU = 0xFD32,
+    V128And = 0xFD4E, V128Or = 0xFD50, I16x8Bitmask = 0xFD84, I16x8Sub = 0xFD91, I16x8Add = 0xFD8E,
+
     // threads proposal (0xFE prefix)
     MemoryAtomicNotify = 0xFE00, MemoryAtomicWait32 = 0xFE01, MemoryAtomicWait64 = 0xFE02, AtomicFence = 0xFE03,
     I32AtomicLoad = 0xFE10, I64AtomicLoad = 0xFE11, I32AtomicStore = 0xFE17, I64AtomicStore = 0xFE18,

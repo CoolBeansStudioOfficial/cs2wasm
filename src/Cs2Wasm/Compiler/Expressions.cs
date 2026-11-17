@@ -1586,17 +1586,19 @@ sealed partial class FunctionCompiler
 
     Own ConcatParts(List<Func<Own>> parts)
     {
-        var concat = D.LibMethod("System.String", "Concat2", 2);
+        // up to four strings in one call, one new string (as the C# compiler does); more: four, then the result
+        // with the next three, and so on. Every part is evaluated before the call that takes it.
         var first = parts[0]();
         first = ToCallSafe(first, D.StringType);
         Own acc = first;
-        for (int i = 1; i < parts.Count; i++)
+        for (int i = 1; i < parts.Count;)
         {
-            var o = parts[i]();
-            ToCallSafe(o, D.StringType);
-            E.Call(concat.Fn);
+            int n = Math.Min(3, parts.Count - i);
+            for (int k = 0; k < n; k++) { var o = parts[i + k](); ToCallSafe(o, D.StringType); }
+            E.Call(D.LibMethod("System.String", n == 1 ? "Concat2" : n == 2 ? "Concat3" : "Concat4", n + 1).Fn);
+            i += n;
             acc = Own.Owned;
-            if (i < parts.Count - 1) acc = ToCallSafe(acc, D.StringType);
+            if (i < parts.Count) acc = ToCallSafe(acc, D.StringType);
         }
         if (parts.Count == 1)
         {

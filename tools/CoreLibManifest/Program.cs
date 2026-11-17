@@ -234,6 +234,11 @@ sealed class Manifest
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(1);\tCs2Wasm.Runtime.Threads.SpinPause(1);");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(0);\tCs2Wasm.Runtime.Threads.SpinPause(0);");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Yield();\tCs2Wasm.Runtime.Threads.SpinPause(0);");
+            // the text scans with 128-bit instructions (Boundary/TextScan.cs)
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/SpanHelpers.T.cs\t=> IndexOfValueType(ref Unsafe.As<char, short>(ref searchSpace), (short)value, length);\t=> Cs2Wasm.Runtime.TextScan.IndexOfChar(ref searchSpace, value, length);");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/String.Manipulation.cs\tif (Vector128.IsHardwareAccelerated && source.Length >= Vector128<ushort>.Count * 2)\tif (source.Length >= 16)");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/String.Manipulation.cs\tMakeSeparatorListVectorized(source, ref sepListBuilder, sep0, sep1, sep2);\tCs2Wasm.Runtime.TextScan.Separators(source, ref sepListBuilder, sep0, sep1, sep2);");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Text/Ascii.CaseConversion.cs\tif (!conversionIsWidthPreserving && !Vector128.IsHardwareAccelerated)\tif (sizeof(TFrom) == 2 && sizeof(TTo) == 2) i = Cs2Wasm.Runtime.TextScan.ChangeCase16((int)pSrc, (int)pDest, (int)elementCount, conversionIsToUpper); if (!conversionIsWidthPreserving && !Vector128.IsHardwareAccelerated)");
             // resource keys are not used for messages (System.Resources.UseSystemResourceKeys is off, as by default)
             sb.AppendLine("substitute	method	System.SR	System.Boolean UsingResourceKeys()	false");
             // a WASM worker has no processor number: the thread's id stands for it (a hint, as in .NET)
