@@ -1,8 +1,8 @@
 # cs2wasm
 
 A compiler from C# (a Roslyn `Compilation`, C# 15 / .NET 11) to one core WebAssembly module, with no garbage
-collector and no .NET runtime. The design is in [docs/SPEC.md](docs/SPEC.md); what is built so far, and what is not,
-is in [docs/STATUS.md](docs/STATUS.md).
+collector and no .NET runtime. The design is in [docs/SPEC.md](docs/SPEC.md); what is built is what the tests check
+(`dotnet run --project tests/Cs2Wasm.Tests`, `node tools/bench.mjs`).
 
 ## Layout
 
