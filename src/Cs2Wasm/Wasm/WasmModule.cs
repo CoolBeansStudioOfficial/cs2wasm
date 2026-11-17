@@ -117,6 +117,7 @@ internal sealed class WasmModule
     public Func<bool, WasmFunction>? Canon;
     public WasmGlobal? StackPointer;
     /// <summary>CS2WASM_NO_MERGE=1: identical bodies stay apart (measurement: each site keeps its own name).</summary>
+    static readonly bool s_noLoops = Environment.GetEnvironmentVariable("CS2WASM_NO_LOOPS") == "1";
     static readonly bool s_noMerge = Environment.GetEnvironmentVariable("CS2WASM_NO_MERGE") == "1";
 
     public Encoded Encode(bool optimize)
@@ -138,6 +139,7 @@ internal sealed class WasmModule
                 Locals.MayThrow = ComputeMayThrow();
                 Locals.Threads = UsesThreads;
                 Locals.StackPointer = StackPointer;
+                var loopNonNull = Functions.FirstOrDefault(f => f.Name == "rt.nonnull");
                 try
                 {
                     foreach (var f in Functions)
@@ -145,6 +147,8 @@ internal sealed class WasmModule
                         if (f.IsImport) continue;
                         if (Locals.PromoteFrame(f)) Peephole.Run(f);
                         Locals.Run(f);
+                        // (the index checks a loop's own condition has made: on the tidied body, where they are told)
+                        if (!s_noLoops && Loops.Run(f, loopNonNull)) { Peephole.Run(f); Locals.Run(f); }
                     }
                 }
                 finally { Locals.MayThrow = null; }

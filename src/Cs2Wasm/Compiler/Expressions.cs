@@ -793,7 +793,7 @@ sealed partial class FunctionCompiler
             var o = EmitValue(pr.Instance);
             ToTransient(o, TypeOf(pr.Instance));
             NullCheckKeep();
-            E.Load(Op.I32Load, 12);
+            E.Emit(Op.I32Load, 12, 2, Loops.Length);
             return Own.None;
         }
         return EmitPropertyGetCall(pr);
@@ -904,7 +904,7 @@ sealed partial class FunctionCompiler
         }
         else EmitIndex(ae.Indices[0]);
         E.Set(idx);
-        E.Get(idx); E.Get(arr); E.Load(Op.I32Load, 12); E.Op(Op.I32GeU);
+        E.Get(idx); E.Get(arr); E.Emit(Op.I32Load, 12, 2, Loops.Length); E.Op(Op.I32GeU);
         E.If(); E.Call(Rt.ThrowIndex); E.End();
         E.Get(arr); E.Get(idx);
         int size = T.StorageOf(et).size;

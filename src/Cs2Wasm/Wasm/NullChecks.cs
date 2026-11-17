@@ -45,6 +45,10 @@ static class NullChecks
                     else if (topLocal >= 0) known.Add(topLocal);
                     top = true; // (the checked value; topLocal stays: the same value)
                     continue;
+                case Op.Call when ins.Ref is WasmFunction { Name: var an } && an.StartsWith("Cs2Wasm.Runtime.Rt.Alloc", StringComparison.Ordinal) && ((WasmFunction)ins.Ref).Type.Results.Length == 1:
+                    // (a new object, array or string: never null)
+                    top = true; topLocal = -1;
+                    continue;
                 case Op.LocalTee:
                     if (top) known.Add((int)ins.Imm); else known.Remove((int)ins.Imm);
                     topLocal = (int)ins.Imm;
