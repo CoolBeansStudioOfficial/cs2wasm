@@ -848,7 +848,7 @@ namespace Cs2Wasm.Runtime
         // in its count. A member's count word is -(outside count + 2): below -1, so retain and release take the
         // arena's path, where the outside references (locals, statics, other objects and arenas) count on the
         // member and on the arena's total.
-        // Arena record (24 bytes): [0] total outside count, [4] a member (the ring), [8] members, [12] flags,
+        // Arena record (24 bytes): [0] its members that have outside references, [4] a member (the ring), [8] members, [12] flags,
         //   [16] the arena this one was merged into (0: none), [20] the members and merged records that point here.
         // Two arenas merge in a few steps whatever their sizes: the smaller's record points to the larger's, and its
         // ring is joined to the other's. A member's record word may so be a merged record: ArenaOf follows it to the
@@ -977,7 +977,9 @@ namespace Cs2Wasm.Runtime
                 Mem.StoreI32(head - 8, obj);
             }
             Mem.StoreI32(ar + 8, Mem.LoadI32(ar + 8) + 1);
-            Mem.StoreI32(ar, Mem.LoadI32(ar) + c);
+            // (the record's first word: the members that have outside references. A count that leaves a member with
+            // some before and after then changes the member's own count word and nothing else: no lock, rt.retain)
+            if (c > 0) Mem.StoreI32(ar, Mem.LoadI32(ar) + 1);
             Mem.StoreI32(ar + 20, Mem.LoadI32(ar + 20) + 1);
             // what its slots hold already (stored while only the storing code knew it: ArenaLinkFresh) is linked next
             if (s_linkN == s_linkCap)
@@ -1214,10 +1216,10 @@ namespace Cs2Wasm.Runtime
             s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se; s_handSum = ss;
             if (found != 0) return;
             ArenaTakeOut(ar, m);
-            int outside = -c - 2;
-            Mem.StoreI32(m, outside);
+            // (exchanged: other threads count it meanwhile; it has outside references, so one member fewer that does)
+            do { c = Atomic.Load32(ref Mem.RefI32(m)); } while (Atomic.CompareExchange32(ref Mem.RefI32(m), c, -c - 2) != c);
             Mem.StoreI64(m - 32, 0); Mem.StoreI64(m - 24, 0); Mem.StoreI64(m - 16, 0); Mem.StoreI64(m - 8, 0);
-            int total = Mem.LoadI32(ar) - outside;
+            int total = Mem.LoadI32(ar) - 1;
             Mem.StoreI32(ar, total);
             if (total != 0) return;
             if (Mem.LoadI32(ar + 8) == 0) ArenaEmpty(ar); else ArenaFree(ar);
@@ -1337,24 +1339,26 @@ namespace Cs2Wasm.Runtime
             if ((fl & Held) == 0) Mem.StoreI32(old - 32, 0);
         }
 
-        /// <summary>Retain of an arena member: one more outside reference.</summary>
+        /// <summary>Retain of an arena member, under the runtime lock: one more outside reference (its first: the
+        /// others are counted without the lock, rt.retain; so the count is added to atomically here too).</summary>
         public static void ArenaRetain(int p)
         {
-            Mem.StoreI32(p, Mem.LoadI32(p) - 1);
-            int ar = ArenaOf(p);
-            Mem.StoreI32(ar, Mem.LoadI32(ar) + 1);
+            int old = Atomic.Add32(ref Mem.RefI32(p), -1);
+            if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); }
             if ((uint)Mem.LoadI32(p - 24) >= UOne) UpdateHold(p);
         }
 
-        /// <summary>Release of an arena member: one outside reference fewer.</summary>
+        /// <summary>Release of an arena member, under the runtime lock: one outside reference fewer (its last).</summary>
         public static void ArenaRelease(int p)
         {
-            int w = Mem.LoadI32(p) + 1;
-            Mem.StoreI32(p, w);
+            int w = Atomic.Add32(ref Mem.RefI32(p), 1) + 1;
             int ar = ArenaOf(p);
-            int total = Mem.LoadI32(ar) - 1;
-            Mem.StoreI32(ar, total);
-            if (total == 0) { ArenaFree(ar); return; }
+            if (w == -2)
+            {
+                int total = Mem.LoadI32(ar) - 1;
+                Mem.StoreI32(ar, total);
+                if (total == 0) { ArenaFree(ar); return; }
+            }
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
             // (no reference of either kind: it goes now, with what only it referred to)
             if (w == -2 && Mem.LoadI32(p - 4) == 0) { ArenaDestroyFrom(p); DrainKills(); return; }
@@ -1369,6 +1373,19 @@ namespace Cs2Wasm.Runtime
         public static int ArenaLink(int val, int container, int slot)
         {
             if (container == 0) return val;
+            // Nothing to link, and nothing of the container's to change: no lock. The value is null, or its own class
+            // cannot be on a cycle with the container's (the site can store others that can: a list of nodes takes a
+            // leaf), so the reference is a plain counted one whatever becomes of the two; and the slot is one whose
+            // bits say nothing now (an array's element, a slot past those an object keeps bits for, a plain object's,
+            // or a member's that holds no linked reference: `field = null` over null). (Under the lock, each such
+            // store of twenty-four parsing threads stopped the rest: of a million stores that took it, 991,000
+            // were a null into a member's field.)
+            if (val == 0 || !CanLink(val, container))
+            {
+                int i0 = SlotIndex(container, slot), cw = Mem.LoadI32(container);
+                if (i0 < 0 || cw > 0) { t_prevSlot = slot; t_prevBits = slot != 0 && i0 >= 0 ? 0 : -1; return val; }
+                if (cw < -1 && SlotBits(container, i0) == 0) { t_prevSlot = slot; t_prevBits = 0; return val; }
+            }
             RuntimeLock();
             // (what the slot's bits said of the value it held: for the ArenaUnlink that follows the store)
             int i = Mem.LoadI32(container) < -1 ? SlotIndex(container, slot) : -1;
@@ -1449,8 +1466,7 @@ namespace Cs2Wasm.Runtime
         static int LinkMembers(int val, int container, int slot, int ar)
         {
             // the stored reference is inside the arena now: the count the store took is given back
-            Mem.StoreI32(val, Mem.LoadI32(val) + 1);
-            Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
+            if (Atomic.Add32(ref Mem.RefI32(val), 1) == -3) Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
             int i = s_visitElem != 0 ? -1 : SlotIndex(container, slot);
             if (i >= 0 && OnChain(container, val))
             {
@@ -1486,6 +1502,14 @@ namespace Cs2Wasm.Runtime
         }
 
         /// <summary>The old value of a slot that can close a cycle was overwritten.</summary>
+        /// <summary>Whether a reference from the container to the value can be part of a cycle: both of one group of
+        /// classes that can refer to each other. Told by their classes, which do not change: no lock.</summary>
+        static bool CanLink(int val, int container)
+        {
+            int g = SccOf(Mem.LoadI32(val + 4));
+            return g != 0 && g == SccOf(Mem.LoadI32(container + 4));
+        }
+
         public static void ArenaUnlink(int old, int container, int slot)
         {
             // what the slot held, by its bits before the store (ArenaLink noted them); -1: not known, by the counts
@@ -1493,6 +1517,8 @@ namespace Cs2Wasm.Runtime
             if (slot != 0 && t_prevSlot == slot) { bits = t_prevBits; t_prevSlot = 0; }
             if (old == 0) return;
             if (bits == 0) { Release(Borrow<object>(old)); return; }
+            // (never linked: a plain counted reference, see ArenaLink)
+            if (!CanLink(old, container)) { Release(Borrow<object>(old)); return; }
             RuntimeLock();
             int co = Mem.LoadI32(old), cc = Mem.LoadI32(container);
             if (bits == 2)

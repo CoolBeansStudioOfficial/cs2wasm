@@ -8,52 +8,9 @@ internal sealed partial class RuntimeFns
 {
     WasmFunction? _lockEnter, _lockExit;
     /// <summary>The runtime lock (allocator, arenas, task continuations): reentrant, owned by a thread id. Empty
-    /// without threads. It is held alone by what changes how objects are grouped (rt.lock_enter); a count of an
-    /// arena's member, which changes two numbers and nothing else, holds it with others (EmitSharedEnter): the lock's
-    /// second word counts those holders, and its top bit says an owner is in or waiting, at which they stand back.
-    /// Every count of a member took the lock alone before: the threads of a parallel parse ran one at a time.</summary>
+    /// without threads.</summary>
     public WasmFunction LockEnter => _lockEnter ??= M.AddFunction("rt.lock_enter", FT([], []));
     public WasmFunction LockExit => _lockExit ??= M.AddFunction("rt.lock_exit", FT([], []));
-    const int Writer = int.MinValue;
-    // (Runtime.cs: a member's flags word holds the count of its up-references from UOne on; such a member's counts
-    // are followed by more work, under the lock held alone)
-    const int ArenaUOne = 0x200;
-
-    /// <summary>Takes the lock with others, or branches to `slow` (an owner is in, and stays in).</summary>
-    void EmitSharedEnter(Emitter e, IAddress readers, Label slow, bool wait)
-    {
-        int tries = e.AddLocal(I), n = e.AddLocal(I);
-        e.I32(0); e.Set(tries);
-        var got = e.Block(); var again = e.Loop();
-        e.I32Addr(readers); e.I32(1); e.Emit(Op.I32AtomicRmwAdd, 0, 2); e.I32(0); e.Op(Op.I32GeS); e.BrIf(got);
-        e.I32Addr(readers); e.I32(1); e.Emit(Op.I32AtomicRmwSub, 0, 2); e.Op(Op.Drop);
-        if (!wait) e.Br(slow);
-        else
-        {
-            e.Get(tries); e.I32(1); e.Op(Op.I32Add); e.Tee(tries); e.I32(3); e.Op(Op.I32GtS); e.BrIf(slow);
-            e.I32(0); e.Set(n);
-            var spun = e.Block(); var spin = e.Loop();
-            e.I32Addr(readers); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(0); e.Op(Op.I32GeS); e.BrIf(spun);
-            e.Get(n); e.I32(1); e.Op(Op.I32Add); e.Tee(n); e.I32(300); e.Op(Op.I32LtS); e.BrIf(spin);
-            e.End(); e.End();
-            e.Br(again);
-        }
-        e.End(); e.End();
-    }
-    void EmitSharedExit(Emitter e, IAddress readers) { e.I32Addr(readers); e.I32(1); e.Emit(Op.I32AtomicRmwSub, 0, 2); e.Op(Op.Drop); }
-
-    /// <summary>Local p holds a member, the lock is held with others: its arena's record (as Rt.ArenaOf finds it, without
-    /// its shortening of the way there, which is the owner's to do).</summary>
-    static void EmitArenaRoot(Emitter e, int p, int ar)
-    {
-        int f = e.AddLocal(I);
-        e.Get(p); e.I32(16); e.Op(Op.I32Sub); e.Load(Op.I32Load);
-        e.Set(ar);
-        var done = e.Block(); var next = e.Loop();
-        e.Get(ar); e.Load(Op.I32Load, 16); e.Tee(f); e.Op(Op.I32Eqz); e.BrIf(done);
-        e.Get(f); e.Set(ar); e.Br(next);
-        e.End(); e.End();
-    }
 
     /// <summary>Fills in the lock and, when threads exist, makes retain/release atomic.</summary>
     public void EmitThreadSupport(bool threads, Func<WasmFunction> retainSlow, Func<WasmFunction> releaseSlow, bool arenas)
@@ -61,7 +18,6 @@ internal sealed partial class RuntimeFns
         if (threads) { _ = LockEnter; _ = LockExit; }
         var owner = D.StaticAddress("rt.lock.owner", 4, 4);
         var depth = D.StaticAddress("rt.lock.depth", 4, 4);
-        var readers = D.StaticAddress("rt.lock.readers", 4, 4);
         var waiters = D.StaticAddress("rt.lock.waiters", 4, 4);
         if (_lockEnter != null && threads)
         {
@@ -85,11 +41,6 @@ internal sealed partial class RuntimeFns
             e.I32Addr(waiters); e.I32(1); e.Emit(Op.I32AtomicRmwSub, 0, 2); e.Op(Op.Drop);
             e.End();
             e.Br(top); e.End(); e.End();
-            // the owner is in: those who hold the lock with others finish (a few instructions each), no more come
-            e.I32Addr(readers); e.I32(Writer); e.Emit(Op.I32AtomicRmwAdd, 0, 2); e.Op(Op.Drop);
-            { var drained = e.Block(); var wait = e.Loop();
-              e.I32Addr(readers); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(Writer); e.Op(Op.I32Eq); e.BrIf(drained);
-              e.Br(wait); e.End(); e.End(); }
             e.I32Addr(depth); e.I32(1); e.Store(Op.I32Store);
         }
         if (_lockExit != null && threads)
@@ -98,7 +49,6 @@ internal sealed partial class RuntimeFns
             e.I32Addr(depth); e.I32Addr(depth); e.Load(Op.I32Load); e.I32(1); e.Op(Op.I32Sub); e.Store(Op.I32Store);
             e.I32Addr(depth); e.Load(Op.I32Load); e.Op(Op.I32Eqz);
             e.If();
-            e.I32Addr(readers); e.I32(Writer); e.Emit(Op.I32AtomicRmwSub, 0, 2); e.Op(Op.Drop);
             e.I32Addr(owner); e.I32(0); e.Emit(Op.I32AtomicStore, 0, 2);
             e.I32Addr(waiters); e.Emit(Op.I32AtomicLoad, 0, 2);
             e.If(); e.I32Addr(owner); e.I32(1); e.Emit(Op.MemoryAtomicNotify, 0, 2); e.Op(Op.Drop); e.End();
@@ -108,14 +58,17 @@ internal sealed partial class RuntimeFns
         if (!threads) return;
         // retain(p), release(p) with threads: the count is exchanged for the new one atomically (whoever counts holds
         // a reference, so the count cannot reach zero meanwhile; an exchange, not an addition: the object may become
-        // an arena's member under the counting thread, Rt.ArenaJoin, and its count word change its meaning); the
-        // release that takes the last one destroys the object, at once. Immortal (-1) and dead (0) stay. An arena's
-        // member: its count and its arena's, with the runtime lock held with others; what needs more than those two
-        // numbers (the member's last outside reference, a member with up-references) holds the lock alone.
+        // an arena's member under the counting thread, Rt.ArenaJoin, or a plain object again, Rt.TryLeave, and its
+        // count word change its meaning); the release that takes the last one destroys the object, at once. Immortal
+        // (-1) and dead (0) stay.
+        // An arena's member (its count word below -1: -2 less its outside references): a count that leaves it with
+        // outside references before and after is the same exchange, with no lock: the arena's record counts the
+        // members that have outside references, not the references, so nothing else changes. Its first outside
+        // reference and its last go under the runtime lock (Rt.ArenaRetain, Rt.ArenaRelease).
         {
             var f = Retain; f.Body.Clear(); f.Locals.Clear();
             var e = new Emitter(f);
-            int r = e.AddLocal(I), ar = e.AddLocal(I);
+            int r = e.AddLocal(I);
             e.Get(0); e.If();
             var done = e.Block(); var top = e.Loop();
             e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
@@ -126,18 +79,10 @@ internal sealed partial class RuntimeFns
             if (arenas)
             {
                 e.Get(r); e.I32(-1); e.Op(Op.I32GeS); e.BrIf(done);
-                var slow = e.Block();
-                e.I32Addr(owner); e.Emit(Op.I32AtomicLoad, 0, 2); e.GGet(D.ThreadId); e.Op(Op.I32Eq); e.BrIf(slow);
-                EmitSharedEnter(e, readers, slow, wait: true);
-                e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(-1); e.Op(Op.I32GeS);
-                e.If(); EmitSharedExit(e, readers); e.Br(top); e.End();
-                e.Get(0); e.I32(24); e.Op(Op.I32Sub); e.Load(Op.I32Load); e.I32(ArenaUOne); e.Op(Op.I32GeU);
-                e.If(); EmitSharedExit(e, readers); e.Br(slow); e.End();
-                EmitArenaRoot(e, 0, ar);
-                e.Get(0); e.I32(1); e.Emit(Op.I32AtomicRmwSub, 0, 2); e.Op(Op.Drop);
-                e.Get(ar); e.I32(1); e.Emit(Op.I32AtomicRmwAdd, 0, 2); e.Op(Op.Drop);
-                EmitSharedExit(e, readers);
-                e.Br(done);
+                e.Get(r); e.I32(-2); e.Op(Op.I32LtS);
+                e.If();
+                e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(done);
+                e.Br(top);
                 e.End();
                 e.Call(LockEnter);
                 e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(-1); e.Op(Op.I32LtS);
@@ -152,7 +97,7 @@ internal sealed partial class RuntimeFns
         {
             var f = Release; f.Body.Clear(); f.Locals.Clear();
             var e = new Emitter(f);
-            int r = e.AddLocal(I), ar = e.AddLocal(I);
+            int r = e.AddLocal(I);
             e.Get(0); e.If();
             var done = e.Block(); var top = e.Loop();
             e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
@@ -165,31 +110,10 @@ internal sealed partial class RuntimeFns
             if (arenas)
             {
                 e.Get(r); e.I32(-1); e.Op(Op.I32GeS); e.BrIf(done);
-                var slow = e.Block();
-                e.I32Addr(owner); e.Emit(Op.I32AtomicLoad, 0, 2); e.GGet(D.ThreadId); e.Op(Op.I32Eq); e.BrIf(slow);
-                EmitSharedEnter(e, readers, slow, wait: true);
-                e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(-1); e.Op(Op.I32GeS);
-                e.If(); EmitSharedExit(e, readers); e.Br(top); e.End();
-                // (-3: its last outside reference; with no inside one either, it goes)
-                e.Get(r); e.I32(-3); e.Op(Op.I32Eq); e.Get(0); e.I32(4); e.Op(Op.I32Sub); e.Load(Op.I32Load); e.Op(Op.I32Eqz); e.Op(Op.I32And);
-                e.Get(0); e.I32(24); e.Op(Op.I32Sub); e.Load(Op.I32Load); e.I32(ArenaUOne); e.Op(Op.I32GeU);
-                e.Op(Op.I32Or);
-                e.If(); EmitSharedExit(e, readers); e.Br(slow); e.End();
-                EmitArenaRoot(e, 0, ar);
-                // the arena's count first: its last outside reference frees it, under the lock held alone
-                { int t = e.AddLocal(I);
-                  var took = e.Block(); var retry = e.Loop();
-                  e.Get(ar); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(t); e.I32(1); e.Op(Op.I32LeS);
-                  e.If(); EmitSharedExit(e, readers); e.Br(slow); e.End();
-                  e.Get(ar); e.Get(t); e.Get(t); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(t); e.Op(Op.I32Eq); e.BrIf(took);
-                  e.Br(retry); e.End(); e.End(); }
-                e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Ne);
+                e.Get(r); e.I32(-3); e.Op(Op.I32LtS);
                 e.If();
-                e.Get(ar); e.I32(1); e.Emit(Op.I32AtomicRmwAdd, 0, 2); e.Op(Op.Drop);
-                EmitSharedExit(e, readers); e.Br(top);
-                e.End();
-                EmitSharedExit(e, readers);
-                e.Br(done);
+                e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(done);
+                e.Br(top);
                 e.End();
                 e.Call(LockEnter);
                 e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(-1); e.Op(Op.I32LtS);
@@ -208,6 +132,56 @@ internal sealed partial class RuntimeFns
     /// Nothing of the program runs inside. Empty without threads.</summary>
     public WasmFunction BulkEnter => _bulkEnter ??= M.AddFunction("rt.bulk_enter", FT([], []));
     public WasmFunction BulkExit => _bulkExit ??= M.AddFunction("rt.bulk_exit", FT([], []));
+    WasmFunction? _stripeMask, _maskEnter, _maskExit;
+    /// <summary>(address, bytes) -> the locks of the places in the range, a bit each (all of them from 64 places on).</summary>
+    public WasmFunction StripeMask => _stripeMask ??= MakeStripeMask();
+    /// <summary>(locks): the runtime lock, then those locks, lowest first (two threads never wait for each other);
+    /// (locks): gives them back. For an array's range of references copied or cleared: every place's lock
+    /// (rt.bulk_enter) stopped every thread that read or stored a reference anywhere.</summary>
+    public WasmFunction MaskEnter => _maskEnter ??= MakeMaskLock(true);
+    public WasmFunction MaskExit => _maskExit ??= MakeMaskLock(false);
+
+    WasmFunction MakeStripeMask()
+    {
+        var f = M.AddFunction("rt.stripe_mask", FT([I, I], [ValType.I64]));
+        var e = new Emitter(f);
+        int i = e.AddLocal(I), n = e.AddLocal(I); int m = e.AddLocal(ValType.I64);
+        e.Get(1); e.I32(3); e.Op(Op.I32Add); e.I32(2); e.Op(Op.I32ShrU); e.Tee(n); e.I32(64); e.Op(Op.I32GeU);
+        e.If(); e.I64(-1); e.Op(Op.Return); e.End();
+        e.Get(0); e.I32(2); e.Op(Op.I32ShrU); e.Set(i);
+        var done = e.Block(); var next = e.Loop();
+        e.Get(n); e.Op(Op.I32Eqz); e.BrIf(done);
+        e.Get(m); e.I64(1); e.Get(i); e.I32(63); e.Op(Op.I32And); e.Op(Op.I64ExtendI32U); e.Op(Op.I64Shl); e.Op(Op.I64Or); e.Set(m);
+        e.Get(i); e.I32(1); e.Op(Op.I32Add); e.Set(i);
+        e.Get(n); e.I32(1); e.Op(Op.I32Sub); e.Set(n);
+        e.Br(next); e.End(); e.End();
+        e.Get(m);
+        return f;
+    }
+
+    WasmFunction MakeMaskLock(bool enter)
+    {
+        var f = M.AddFunction(enter ? "rt.mask_enter" : "rt.mask_exit", FT([ValType.I64], []));
+        var e = new Emitter(f);
+        if (!D.ThreadMode) return f;
+        int p = e.AddLocal(I), k = e.AddLocal(I);
+        var table = D.StaticAddress("rt.ref.locks", RefLockBytes, 64);
+        if (enter) e.Call(LockEnter);
+        e.I32Addr(table); e.Set(p);
+        var done = e.Block(); var next = e.Loop();
+        e.Get(k); e.I32(64); e.Op(Op.I32GeU); e.BrIf(done);
+        e.Get(0); e.Get(k); e.Op(Op.I64ExtendI32U); e.Op(Op.I64ShrU); e.I64(1); e.Op(Op.I64And); e.Op(Op.I64Eqz); e.Op(Op.I32Eqz);
+        e.If();
+        if (enter) { var got = e.Block(); var spin = e.Loop(); e.Get(p); e.I32(0); e.I32(1); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Op(Op.I32Eqz); e.BrIf(got); e.Br(spin); e.End(); e.End(); }
+        else { e.Get(p); e.I32(0); e.Emit(Op.I32AtomicStore, 0, 2); }
+        e.End();
+        e.Get(p); e.I32(64); e.Op(Op.I32Add); e.Set(p);
+        e.Get(k); e.I32(1); e.Op(Op.I32Add); e.Set(k);
+        e.Br(next); e.End(); e.End();
+        if (!enter) e.Call(LockExit);
+        return f;
+    }
+
     /// <summary>(address) -> the reference there, counted: read and counted in one step with respect to rt.store_ref
     /// (Driver.ThreadMode). Without threads: the read, then the count.</summary>
     public WasmFunction LoadRetain => _loadRetain ??= M.AddFunction("rt.load_retain", FT([I], [I]));
@@ -217,11 +191,14 @@ internal sealed partial class RuntimeFns
     public WasmFunction RefUnlock => _refUnlock ??= M.AddFunction("rt.ref_unlock", FT([I], []));
 
     /// <summary>The locks of the places that hold references: one of 64 words by the place's address, held for the
-    /// few instructions of a read that counts or of a store. Never held across a call into the program.</summary>
+    /// few instructions of a read that counts or of a store. Never held across a call into the program. Each word is
+    /// 64 bytes from the next: packed together they were four cache lines that every thread reading or storing a
+    /// reference wrote to.</summary>
+    const int RefLockBytes = 64 * 64;
     internal void EmitRefLock(Emitter e, int addrLocal, int lockLocal)
     {
-        var table = D.StaticAddress("rt.ref.locks", 256, 4);
-        e.I32Addr(table); e.Get(addrLocal); e.I32(2); e.Op(Op.I32ShrU); e.I32(63); e.Op(Op.I32And); e.I32(2); e.Op(Op.I32Shl); e.Op(Op.I32Add); e.Set(lockLocal);
+        var table = D.StaticAddress("rt.ref.locks", RefLockBytes, 64);
+        e.I32Addr(table); e.Get(addrLocal); e.I32(2); e.Op(Op.I32ShrU); e.I32(63); e.Op(Op.I32And); e.I32(6); e.Op(Op.I32Shl); e.Op(Op.I32Add); e.Set(lockLocal);
         var brk = e.Block(); var top = e.Loop();
         e.Get(lockLocal); e.I32(0); e.I32(1); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Op(Op.I32Eqz); e.BrIf(brk);
         e.Br(top); e.End(); e.End();
@@ -240,25 +217,25 @@ internal sealed partial class RuntimeFns
         {
             var e = new Emitter(_bulkEnter);
             int p = e.AddLocal(I), end = e.AddLocal(I);
-            var table = D.StaticAddress("rt.ref.locks", 256, 4);
+            var table = D.StaticAddress("rt.ref.locks", RefLockBytes, 64);
             e.Call(LockEnter);
-            e.I32Addr(table); e.Tee(p); e.I32(256); e.Op(Op.I32Add); e.Set(end);
+            e.I32Addr(table); e.Tee(p); e.I32(RefLockBytes); e.Op(Op.I32Add); e.Set(end);
             var done = e.Block(); var next = e.Loop();
             e.Get(p); e.Get(end); e.Op(Op.I32GeU); e.BrIf(done);
             { var got = e.Block(); var spin = e.Loop(); e.Get(p); e.I32(0); e.I32(1); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Op(Op.I32Eqz); e.BrIf(got); e.Br(spin); e.End(); e.End(); }
-            e.Get(p); e.I32(4); e.Op(Op.I32Add); e.Set(p);
+            e.Get(p); e.I32(64); e.Op(Op.I32Add); e.Set(p);
             e.Br(next); e.End(); e.End();
         }
         if (_bulkExit != null && threads)
         {
             var e = new Emitter(_bulkExit);
             int p = e.AddLocal(I), end = e.AddLocal(I);
-            var table = D.StaticAddress("rt.ref.locks", 256, 4);
-            e.I32Addr(table); e.Tee(p); e.I32(256); e.Op(Op.I32Add); e.Set(end);
+            var table = D.StaticAddress("rt.ref.locks", RefLockBytes, 64);
+            e.I32Addr(table); e.Tee(p); e.I32(RefLockBytes); e.Op(Op.I32Add); e.Set(end);
             var done = e.Block(); var next = e.Loop();
             e.Get(p); e.Get(end); e.Op(Op.I32GeU); e.BrIf(done);
             e.Get(p); e.I32(0); e.Emit(Op.I32AtomicStore, 0, 2);
-            e.Get(p); e.I32(4); e.Op(Op.I32Add); e.Set(p);
+            e.Get(p); e.I32(64); e.Op(Op.I32Add); e.Set(p);
             e.Br(next); e.End(); e.End();
             e.Call(LockExit);
         }
@@ -267,43 +244,28 @@ internal sealed partial class RuntimeFns
             var e = new Emitter(_loadRetain);
             if (!threads) { e.Get(0); e.Load(Op.I32Load); e.Call(Retain); return; }
             int s = e.AddLocal(I), p = e.AddLocal(I), r = e.AddLocal(I);
-            int ar = e.AddLocal(I);
-            var readers = D.StaticAddress("rt.lock.readers", 4, 4);
             EmitRefLock(e, 0, s);
             e.Get(0); e.Load(Op.I32Load); e.Tee(p);
             e.If();
+            // (an exchange: the object may change between a plain one and an arena's member meanwhile, see rt.retain;
+            // a member that has outside references takes one more with no other lock)
             var counted = e.Block(); var again = e.Loop();
             e.Get(p); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
             e.If();
-            // (an exchange: the object may become an arena's member meanwhile, see rt.retain)
             e.Get(p); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(counted);
             e.Br(again);
             e.End();
-            e.End(); e.End();
-            e.Get(r); e.I32(0); e.Op(Op.I32GtS);
-            e.If();
             if (arenas)
             {
-                // an arena's member: its two counts with the runtime lock held with others, when no owner is in (the
-                // place's lock is held: no waiting here). Else under the runtime lock held alone, which is taken
-                // before a place's lock, never after: let go, take both in order, read again
-                e.Else(); e.Get(r); e.I32(-1); e.Op(Op.I32LtS);
+                e.Get(r); e.I32(-2); e.Op(Op.I32LtS);
                 e.If();
-                {
-                    var slow = e.Block();
-                    EmitSharedEnter(e, readers, slow, wait: false);
-                    e.Get(p); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(-1); e.Op(Op.I32GeS);
-                    e.Get(p); e.I32(24); e.Op(Op.I32Sub); e.Load(Op.I32Load); e.I32(ArenaUOne); e.Op(Op.I32GeU);
-                    e.Op(Op.I32Or);
-                    e.If(); EmitSharedExit(e, readers); e.Br(slow); e.End();
-                    EmitArenaRoot(e, p, ar);
-                    e.Get(p); e.I32(1); e.Emit(Op.I32AtomicRmwSub, 0, 2); e.Op(Op.Drop);
-                    e.Get(ar); e.I32(1); e.Emit(Op.I32AtomicRmwAdd, 0, 2); e.Op(Op.Drop);
-                    EmitSharedExit(e, readers);
-                    EmitRefUnlock(e, s);
-                    e.Get(p); e.Op(Op.Return);
-                    e.End();
-                }
+                e.Get(p); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(counted);
+                e.Br(again);
+                e.End();
+                // a member's first outside reference: under the runtime lock, which is taken before a place's lock,
+                // never after: let go, take both in order, read again
+                e.Get(r); e.I32(-2); e.Op(Op.I32Eq);
+                e.If();
                 EmitRefUnlock(e, s);
                 e.Call(LockEnter);
                 EmitRefLock(e, 0, s);
@@ -313,7 +275,7 @@ internal sealed partial class RuntimeFns
                 e.Get(p); e.Op(Op.Return);
                 e.End();
             }
-            e.End();
+            e.End(); e.End();
             e.End();
             EmitRefUnlock(e, s);
             e.Get(p);
@@ -487,14 +449,16 @@ internal sealed partial class RuntimeFns
         {
             // Threads: the source's elements are counted and the destination's old ones taken out with no store able
             // to come in between (rt.bulk_enter: every place's lock); the old ones, set aside, are released after.
-            int bytes = e.AddLocal(I), tmp = e.AddLocal(I);
+            int bytes = e.AddLocal(I), tmp = e.AddLocal(I); int locks = e.AddLocal(ValType.I64);
             e.Get(4); e.Get(5); e.Op(Op.I32Mul); e.Tee(bytes); e.Op(Op.I32Eqz); e.If(); e.Op(Op.Return); e.End();
             e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Alloc", 1).Fn); e.Set(tmp);
-            e.Call(BulkEnter);
+            // (the locks of the two ranges' places, not every place's)
+            e.Get(s); e.Get(bytes); e.Call(StripeMask); e.Get(d); e.Get(bytes); e.Call(StripeMask); e.Op(Op.I64Or); e.Set(locks);
+            e.Get(locks); e.Call(MaskEnter);
             e.Get(0); e.Get(s); e.Get(4); e.Call(ArrayRetainRange);
             e.Get(tmp); e.Get(d); e.Get(bytes); e.Op(Op.MemoryCopy);
             e.Get(d); e.Get(s); e.Get(bytes); e.Op(Op.MemoryCopy);
-            e.Call(BulkExit);
+            e.Get(locks); e.Call(MaskExit);
             e.Get(2); e.Get(tmp); e.Get(4); e.Call(ArrayReleaseRange);
             e.Get(tmp); e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn);
             return f;
@@ -546,10 +510,10 @@ internal sealed partial class RuntimeFns
             e.Get(tmp); e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn);
             e.Op(Op.Return);
             e.End();
-            e.Call(BulkEnter);
+            e.Get(a); e.Get(bytes); e.Call(StripeMask); e.Call(MaskEnter);
             e.Get(tmp); e.Get(a); e.Get(bytes); e.Op(Op.MemoryCopy);
             e.Get(a); e.I32(0); e.Get(bytes); e.Op(Op.MemoryFill);
-            e.Call(BulkExit);
+            e.Get(a); e.Get(bytes); e.Call(StripeMask); e.Call(MaskExit);
             e.Get(0); e.Get(tmp); e.Get(2); e.Call(ArrayReleaseRange);
             e.Get(tmp); e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn);
             return f;

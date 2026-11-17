@@ -606,7 +606,13 @@ sealed partial class RuntimeGen
             e.Get(0); e.If();
             e.Get(0); e.Load(Op.I32Load); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
             e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Store(Op.I32Store);
-            e.Else(); e.Get(r); e.I32(-1); e.Op(Op.I32LtS); e.If(); e.Get(0); e.Call(retainSlow); e.End();
+            e.Else();
+            // (a member that has outside references takes one more in its own count word: its arena's record counts
+            // the members that have any, Rt.ArenaRetain)
+            e.Get(r); e.I32(-2); e.Op(Op.I32LtS);
+            e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Store(Op.I32Store);
+            e.Else(); e.Get(r); e.I32(-2); e.Op(Op.I32Eq); e.If(); e.Get(0); e.Call(retainSlow); e.End();
+            e.End();
             e.End();
             e.End();
             e.Get(0);
@@ -620,7 +626,11 @@ sealed partial class RuntimeGen
             e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Store(Op.I32Store);
             e.Else();
             e.Get(r); e.I32(1); e.Op(Op.I32Eq); e.If(); e.Get(0); e.I32(0); e.Store(Op.I32Store); e.Get(0); e.Call(rt.Destroy);
+            e.Else();
+            e.Get(r); e.I32(-3); e.Op(Op.I32LtS);
+            e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Store(Op.I32Store);
             e.Else(); e.Get(r); e.I32(-1); e.Op(Op.I32LtS); e.If(); e.Get(0); e.Call(releaseSlow); e.End();
+            e.End();
             e.End();
             e.End();
             e.End();
