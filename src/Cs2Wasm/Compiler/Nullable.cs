@@ -58,6 +58,7 @@ sealed partial class FunctionCompiler
             var uf = Underlying(from); var ut = Underlying(to);
             int a = Scratch(ValType.I32); E.Set(a);
             int res = TempStruct(to);
+            E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.I32(0); E.I32(T.StorageOf(to).size); E.Op(Op.MemoryFill);
             E.Get(a); NullableHas(from);
             E.If();
             E.Get(a); NullableVal(from);
@@ -120,6 +121,7 @@ sealed partial class FunctionCompiler
         var u = Underlying(nt);
         int obj = Scratch(ValType.I32); E.Set(obj);
         int res = TempStruct(nt);
+        E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.I32(0); E.I32(T.StorageOf(nt).size); E.Op(Op.MemoryFill);
         E.Get(obj);
         E.If();
         E.Get(obj); EmitUnbox(u);
@@ -201,9 +203,38 @@ sealed partial class FunctionCompiler
             return Own.None;
         }
         if (Types.PrimOf(u) == Prim.Bool && kind is BinaryOperatorKind.And or BinaryOperatorKind.Or)
-            throw new CompileException("bool? & and | are not supported yet", b.Syntax.GetLocation());
-        // arithmetic: has && has ? value : null
+        {
+            // Three values (C# 12.13.5): false & anything is false, true | anything is true, whatever the other
+            // is; otherwise null when either is null.
+            int dom = kind == BinaryOperatorKind.And ? 0 : 1;
+            int r3 = TempStruct(resT);
+            E.Get(_fb); E.I32(r3); E.Op(Op.I32Add); E.I32(0); E.I32(T.StorageOf(resT).size); E.Op(Op.MemoryFill);
+            void Wrap(int v)
+            {
+                E.I32(v);
+                WrapNullable(resT, Own.None);
+                int ws = Scratch(ValType.I32); E.Set(ws);
+                E.Get(_fb); E.I32(r3); E.Op(Op.I32Add); E.Get(ws); CopyStructInit(resT);
+                FreeScratch(ValType.I32, ws);
+            }
+            void Decides(int addr, ITypeSymbol t)
+            {
+                E.Get(addr); NullableHas(t);
+                E.If(ValType.I32); E.Get(addr); NullableVal(t); E.I32(dom); E.Op(Op.I32Eq); E.Else(); E.I32(0); E.End();
+            }
+            Decides(la, nt); Decides(ra, ntR); E.Op(Op.I32Or);
+            E.If();
+            Wrap(dom);
+            E.Else();
+            E.Get(la); NullableHas(nt); E.Get(ra); NullableHas(ntR); E.Op(Op.I32And);
+            E.If(); Wrap(1 - dom); E.End();
+            E.End();
+            E.Get(_fb); E.I32(r3); E.Op(Op.I32Add);
+            return Own.None;
+        }
+        // arithmetic: has && has ? value : null (the slot may hold the value of an earlier turn of a loop)
         int res = TempStruct(resT);
+        E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.I32(0); E.I32(T.StorageOf(resT).size); E.Op(Op.MemoryFill);
         E.Get(la); NullableHas(nt); E.Get(ra); NullableHas(ntR); E.Op(Op.I32And);
         E.If();
         EmitUnderlyingOp(b, u, kind, Vals);
@@ -238,6 +269,7 @@ sealed partial class FunctionCompiler
         int a = LiftedOperand(un.Operand, nt);
         var u = Underlying(nt);
         int res = TempStruct(resT);
+        E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.I32(0); E.I32(T.StorageOf(resT).size); E.Op(Op.MemoryFill);
         E.Get(a); NullableHas(nt);
         E.If();
         if (un.OperatorMethod != null) CallWith(SubstMethod(un.OperatorMethod), false, null, () => { E.Get(a); NullableVal(nt); }, null, un.Syntax);

@@ -575,7 +575,7 @@ sealed partial class FunctionCompiler
             var b = _cfg.Blocks[_segments[id].block];
             var fins = new List<ControlFlowRegion>();
             ControlFlowRegion? child = null;
-            for (var x = b.EnclosingRegion; x != null; child = x, x = x.EnclosingRegion)
+            for (var x = b.EnclosingRegion; x != null && x.Kind != ControlFlowRegionKind.Root; child = x, x = x.EnclosingRegion)
                 if (x.Kind == ControlFlowRegionKind.TryAndFinally && child?.Kind == ControlFlowRegionKind.Try)
                     fins.Add(x.NestedRegions.First(n => n.Kind == ControlFlowRegionKind.Finally));
             if (fins.Count == 0) continue;
@@ -758,14 +758,14 @@ sealed partial class FunctionCompiler
     /// <summary>The region whose caught exception code in `r` sees: a catch, or a filter's FilterAndHandler.</summary>
     static ControlFlowRegion? CatchOf(ControlFlowRegion r)
     {
-        for (var x = r; x != null; x = x.EnclosingRegion)
+        for (var x = r; x != null && x.Kind != ControlFlowRegionKind.Root; x = x.EnclosingRegion)
             if (x.Kind is ControlFlowRegionKind.Catch or ControlFlowRegionKind.FilterAndHandler) return x;
         return null;
     }
 
     static ControlFlowRegion? EnclosingOf(ControlFlowRegion r, ControlFlowRegionKind kind)
     {
-        for (var x = r; x != null; x = x.EnclosingRegion) if (x.Kind == kind) return x;
+        for (var x = r; x != null && x.Kind != ControlFlowRegionKind.Root; x = x.EnclosingRegion) if (x.Kind == kind) return x;
         return null;
     }
 
@@ -909,7 +909,8 @@ sealed partial class FunctionCompiler
     {
         var result = new List<(int, ControlFlowRegion)>();
         ControlFlowRegion? child = null;
-        for (var x = r; x != null; child = x, x = x.EnclosingRegion)
+        // (a lambda's graph hangs in its enclosing method's regions: its own end at its root)
+        for (var x = r; x != null && x.Kind != ControlFlowRegionKind.Root; child = x, x = x.EnclosingRegion)
         {
             if (child?.Kind != ControlFlowRegionKind.Try) continue;
             if (x.Kind == ControlFlowRegionKind.TryAndCatch)

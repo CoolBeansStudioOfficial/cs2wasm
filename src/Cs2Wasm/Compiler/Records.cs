@@ -19,7 +19,7 @@ sealed partial class FunctionCompiler
 
     IEnumerable<ISymbol> PrintableMembers(INamedTypeSymbol t) =>
         t.GetMembers().Where(m => !m.IsStatic && m.DeclaredAccessibility == Accessibility.Public && !m.IsImplicitlyDeclared &&
-            (m is IFieldSymbol { IsConst: false } || m is IPropertySymbol { IsIndexer: false, GetMethod: not null } p && p.Name != "EqualityContract"));
+            (m is IFieldSymbol { IsConst: false } || m is IPropertySymbol { IsIndexer: false, GetMethod: not null, IsOverride: false } p && p.Name != "EqualityContract"));
 
     void PushThisValue() => E.Get(_thisLocal);
 

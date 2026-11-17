@@ -981,6 +981,7 @@ sealed partial class FunctionCompiler
             {
                 int ov = Scratch(ValType.I32); E.Set(ov);
                 int res = TempStruct(to);
+                E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.I32(0); E.I32(T.StorageOf(to).size); E.Op(Op.MemoryFill);
                 E.Get(ov); E.Call(Rt.IsExactBox(Underlying(to)));
                 E.If();
                 E.Get(ov); EmitUnbox(Underlying(to)); WrapNullable(to, Own.None);
@@ -2001,6 +2002,7 @@ sealed partial class FunctionCompiler
             int old = -1;
             if (needResult && inc.IsPostfix) { old = TempStruct(tt); E.Get(_fb); E.I32(old); E.Op(Op.I32Add); E.Get(ca); CopyStructInit(tt); }
             int res = TempStruct(tt);
+            E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.I32(0); E.I32(T.StorageOf(tt).size); E.Op(Op.MemoryFill);
             E.Get(ca); NullableHas(tt);
             E.If();
             E.Get(ca); NullableVal(tt);
@@ -2470,10 +2472,18 @@ sealed partial class FunctionCompiler
         var vt = TypeOf(it.ValueOperand);
         var target = T.Resolve(it.TypeOperand, Map);
         var o = EmitValue(it.ValueOperand);
-        if (vt.IsValueType)
+        if (IsNullable(vt))
+        {
+            // a nullable is what its value is, when it has one
+            var u = Underlying(vt);
+            var tu = IsNullable(target) ? Underlying(target) : target;
+            if (Types.Key(u) == Types.Key(T.Canonical(tu)) || T.IsSubtype(u, tu)) NullableHas(vt);
+            else { Drop(o, vt); E.I32(0); }
+        }
+        else if (vt.IsValueType)
         {
             Drop(o, vt);
-            E.I32(T.IsSubtype(vt, target) || Types.Key(vt) == Types.Key(target) ? 1 : 0);
+            E.I32(T.IsSubtype(vt, target) || Types.Key(vt) == Types.Key(target) || IsNullable(target) && Types.Key(vt) == Types.Key(T.Canonical(Underlying(target))) ? 1 : 0);
         }
         else
         {

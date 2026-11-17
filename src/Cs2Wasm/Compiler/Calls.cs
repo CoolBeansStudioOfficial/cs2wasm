@@ -147,7 +147,8 @@ sealed partial class FunctionCompiler
                 if (impl != null && Types.Key(T.Canonical(impl.ContainingType)) == Types.Key(T.Canonical(rt)))
                 {
                     m = impl; virt = false;
-                    pushThis = () => PushValueTypeReceiver(instance, rt);
+                    var callee = m;
+                    pushThis = () => PushValueTypeReceiver(instance, rt, callee);
                 }
                 else
                 {
@@ -197,11 +198,29 @@ sealed partial class FunctionCompiler
 
     int _refPoolLast => -1;
 
-    void PushValueTypeReceiver(IOperation instance, ITypeSymbol rt)
+    void PushValueTypeReceiver(IOperation instance, ITypeSymbol rt, IMethodSymbol? callee = null)
     {
         if (Types.IsStruct(rt))
         {
-            if (IsAddressable(instance)) EmitAddress(instance); else EmitValue(instance);
+            // A method that may change its struct runs on a copy when the struct is not a variable (C# 12.8.9.2):
+            // a property's value, an unboxed value, a readonly field outside its constructor, an `in` parameter.
+            bool mutates = callee != null && !callee.IsReadOnly && !callee.ContainingType.IsReadOnly && callee.MethodKind != MethodKind.Constructor;
+            var inst = instance;
+            while (inst is IParenthesizedOperation pa) inst = pa.Operand;
+            bool readOnlyPlace = inst is IFieldReferenceOperation { Field.IsReadOnly: true } fr
+                    && !(M.MethodKind is MethodKind.Constructor or MethodKind.StaticConstructor && SymbolEqualityComparer.Default.Equals(fr.Field.ContainingType.OriginalDefinition, M.ContainingType.OriginalDefinition))
+                || inst is IParameterReferenceOperation { Parameter.RefKind: RefKind.In or RefKind.RefReadOnlyParameter }
+                || inst is ILocalReferenceOperation { Local.RefKind: RefKind.RefReadOnly };
+            if (IsAddressable(instance))
+            {
+                EmitAddress(instance);
+                if (mutates && readOnlyPlace) CopyToTemp(rt);
+                return;
+            }
+            EmitValue(instance);
+            // (what is not a variable and not a temporary of its own: a property's value, an unboxed or converted value)
+            if (mutates && inst is IPropertyReferenceOperation or IConversionOperation { Conversion.IsIdentity: false } or IImplicitIndexerReferenceOperation)
+                CopyToTemp(rt);
             return;
         }
         // primitive or enum: the method takes the address of the value
@@ -232,9 +251,34 @@ sealed partial class FunctionCompiler
             else if (k < byParam.Length) byParam[k] = a;
             k++;
         }
+        // Named arguments written in another order than the parameters' (f(b: x(), a: y())) are evaluated as
+        // written: each into a local, then pushed in the parameters' order.
+        int[]? held = null;
+        int last = -1;
+        foreach (var a in args)
+            if (a is IArgumentOperation { Parameter: { } ap, ArgumentKind: not ArgumentKind.DefaultValue })
+            {
+                if (ap.Ordinal < last && afterEach == null) { held = new int[m.Parameters.Length]; break; }
+                last = ap.Ordinal;
+            }
+        if (held != null)
+        {
+            Array.Fill(held, -1);
+            foreach (var a in args)
+            {
+                if (a is not IArgumentOperation { Parameter: { } ap, ArgumentKind: not ArgumentKind.DefaultValue }) continue;
+                int i = ap.Ordinal;
+                if (convs[i] is { } cm0 && byParam[i] is { } v0) PushConvertedArg(m.Parameters[i], v0, cm0);
+                else PushArg(m.Parameters[i], byParam[i]);
+                var pt = T.Canonical(m.Parameters[i].Type);
+                held[i] = E.AddLocal(m.Parameters[i].RefKind != RefKind.None ? ValType.I32 : Types.WasmType(pt) ?? ValType.I32);
+                E.Set(held[i]);
+            }
+        }
         for (int i = 0; i < m.Parameters.Length; i++)
         {
-            if (convs[i] is { } cm && byParam[i] is { } v) PushConvertedArg(m.Parameters[i], v, cm);
+            if (held != null && held[i] >= 0) E.Get(held[i]);
+            else if (convs[i] is { } cm && byParam[i] is { } v) PushConvertedArg(m.Parameters[i], v, cm);
             else PushArg(m.Parameters[i], byParam[i]);
             afterEach?.Invoke(i);
         }
@@ -366,7 +410,8 @@ sealed partial class FunctionCompiler
                 if (Types.Key(T.Canonical(m.ContainingType)) != Types.Key(T.Canonical(rt)) && D.Implementation(rt, m) is { } impl
                     && Types.Key(T.Canonical(impl.ContainingType)) == Types.Key(T.Canonical(rt)))
                     m = impl;
-                pushThis = () => PushValueTypeReceiver(inv.Instance, rt); virt = false;
+                var callee = m;
+                pushThis = () => PushValueTypeReceiver(inv.Instance, rt, callee); virt = false;
             }
             else pushThis = () => { var o = EmitValue(inv.Instance); ToCallSafe(o, rt); if (!IsKnownNonNull(inv.Instance)) NullCheckKeep(); };
         }
