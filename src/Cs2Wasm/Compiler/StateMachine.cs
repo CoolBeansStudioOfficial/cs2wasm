@@ -653,7 +653,8 @@ sealed partial class FunctionCompiler
         }
         if (b.BranchValue != null && ContainsAwait(b.BranchValue))
         {
-            if (!EmitAwaitPlan(b.BranchValue, b, b.Operations.Length, actionStart)) return;
+            // (the segment's first action is of the operation it starts in: the branch value's only when it starts there)
+            if (!EmitAwaitPlan(b.BranchValue, b, b.Operations.Length, opStart == b.Operations.Length ? actionStart : 0)) return;
         }
         if (b.ConditionKind != ControlFlowConditionKind.None)
         {
