@@ -167,6 +167,7 @@ static partial class Locals
         switch (op)
         {
             case Op.V128Load: case Op.I16x8Splat: case Op.I16x8Bitmask: return (1, 1);
+            case Op.F64x2Splat: case Op.F64x2ExtractLane: case Op.F64x2Sqrt: return (1, 1);
             case Op.V128Store: return (2, 0);
             case Op.I16x8Eq: case Op.I16x8LtU: case Op.I16x8GtU: case Op.V128And: case Op.V128Or: case Op.I16x8Sub: case Op.I16x8Add: return (2, 1);
         }

@@ -879,7 +879,14 @@ sealed partial class FunctionCompiler
             case "Rt.F64FromBits": E.Op(Op.F64ReinterpretI64); return Own.None;
             case "Rt.F32Bits": E.Op(Op.I32ReinterpretF32); return Own.None;
             case "Rt.F32FromBits": E.Op(Op.F32ReinterpretI32); return Own.None;
-            case "Rt.Sqrt": E.Op(Op.F64Sqrt); return Own.None;
+            case "Rt.Sqrt":
+                // The square root of both lanes of a 128-bit value, one lane taken: the same result as f64.sqrt.
+                // The scalar instruction engines emit for f64.sqrt (sqrtsd) keeps the rest of its destination
+                // register, so each root waits for whatever wrote that register last: in a loop, for the previous
+                // turn's division. The two-lane instruction writes the whole register.
+                if (Environment.GetEnvironmentVariable("CS2WASM_SCALAR_SQRT") == "1") { E.Op(Op.F64Sqrt); return Own.None; }
+                E.Op(Op.F64x2Splat); E.Op(Op.F64x2Sqrt); E.Emit(Op.F64x2ExtractLane, 0, 0, null);
+                return Own.None;
             case "Rt.Floor": E.Op(Op.F64Floor); return Own.None;
             case "Rt.Ceiling": E.Op(Op.F64Ceil); return Own.None;
             case "Rt.Truncate": E.Op(Op.F64Trunc); return Own.None;

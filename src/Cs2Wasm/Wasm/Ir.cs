@@ -50,6 +50,8 @@ internal enum Op : ushort
     // stack only: no local holds one.
     V128Load = 0xFD00, V128Store = 0xFD0B, I16x8Splat = 0xFD10, I16x8Eq = 0xFD2D, I16x8LtU = 0xFD30, I16x8GtU = 0xFD32,
     V128And = 0xFD4E, V128Or = 0xFD50, I16x8Bitmask = 0xFD84, I16x8Sub = 0xFD91, I16x8Add = 0xFD8E,
+    // (a double's square root through both lanes: see Calls.cs, Rt.Sqrt)
+    F64x2Splat = 0xFD14, F64x2ExtractLane = 0xFD21, F64x2Sqrt = 0xFDEF,
 
     // threads proposal (0xFE prefix)
     MemoryAtomicNotify = 0xFE00, MemoryAtomicWait32 = 0xFE01, MemoryAtomicWait64 = 0xFE02, AtomicFence = 0xFE03,
