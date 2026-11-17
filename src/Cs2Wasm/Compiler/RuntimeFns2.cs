@@ -301,14 +301,22 @@ internal sealed partial class RuntimeFns
     /// <summary>(array, index, length, size): release and zero elements.</summary>
     public WasmFunction ArrayClear => _arrayClear ??= MakeArrayClear();
 
+    /// <summary>Pushes how far after a vector's first element the array's own first element is, in bytes: an array of
+    /// more dimensions has their lengths in between (Types.ArrayDataOffset).</summary>
+    public void EmitArrayLead(Emitter e, int arr, int tmp)
+    {
+        e.Get(arr); e.Call(ArrayRank); e.Tee(tmp); e.I32(4); e.Op(Op.I32Mul); e.I32(7); e.Op(Op.I32Add); e.I32(-8); e.Op(Op.I32And);
+        e.Get(tmp); e.I32(1); e.Op(Op.I32Ne); e.Op(Op.I32Mul);
+    }
+
     WasmFunction MakeArrayCopy()
     {
         var f = M.AddFunction("rt.array_copy", FT([I, I, I, I, I, I], []));
         D.NoteFieldWrite(f, Driver.ElementsKey);
         var e = new Emitter(f);
         int s = e.AddLocal(I), d = e.AddLocal(I);
-        e.Get(0); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(1); e.Get(5); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(s);
-        e.Get(2); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(3); e.Get(5); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(d);
+        e.Get(0); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(1); e.Get(5); e.Op(Op.I32Mul); e.Op(Op.I32Add); EmitArrayLead(e, 0, s); e.Op(Op.I32Add); e.Set(s);
+        e.Get(2); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(3); e.Get(5); e.Op(Op.I32Mul); e.Op(Op.I32Add); EmitArrayLead(e, 2, d); e.Op(Op.I32Add); e.Set(d);
         if (D.ThreadMode)
         {
             // Threads: the source's elements are counted and the destination's old ones taken out with no store able
@@ -337,7 +345,7 @@ internal sealed partial class RuntimeFns
         D.NoteFieldWrite(f, Driver.ElementsKey);
         var e = new Emitter(f);
         int a = e.AddLocal(I);
-        e.Get(0); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(1); e.Get(3); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(a);
+        e.Get(0); e.I32(Types.ArrayData); e.Op(Op.I32Add); e.Get(1); e.Get(3); e.Op(Op.I32Mul); e.Op(Op.I32Add); EmitArrayLead(e, 0, a); e.Op(Op.I32Add); e.Set(a);
         if (D.ThreadMode)
         {
             int bytes = e.AddLocal(I), tmp = e.AddLocal(I);

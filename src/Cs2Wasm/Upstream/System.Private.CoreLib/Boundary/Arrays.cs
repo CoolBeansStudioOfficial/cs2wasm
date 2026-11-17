@@ -18,11 +18,7 @@ namespace Cs2Wasm.Runtime
         internal static bool ClearCounted(Array a, int index, int length)
         {
             if (!HasCountedElements(a)) return false;
-            int size = ElementSize(a);
-            // (the runtime's clear counts from where a vector's elements start: an array of more dimensions starts later)
-            int lead = Data(a) - Rt.AddressOf(a) - 16;
-            if (lead % size != 0) return false;
-            ClearElements(a, index + lead / size, length, size);
+            ClearElements(a, index, length, ElementSize(a));
             return true;
         }
 

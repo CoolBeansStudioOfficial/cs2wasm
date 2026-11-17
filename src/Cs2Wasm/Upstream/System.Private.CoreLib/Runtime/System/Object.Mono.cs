@@ -22,9 +22,14 @@ namespace System
             if (this is string) return this;
             if (this is Array arr)
             {
-                if (arr.Rank != 1) throw Cs2Wasm.Runtime.TypeInfo.NotYet("cloning a multidimensional array");
+
                 int size = Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(arr);
-                var copy = Cs2Wasm.Runtime.Rt.Take<Array>(Cs2Wasm.Runtime.Rt.AllocArray(arr.Length, size, id));
+                // (an array of more dimensions has their lengths before its elements)
+                int rank = arr.Rank, from = Cs2Wasm.Runtime.Rt.AddressOf(arr);
+                int made = rank == 1 ? Cs2Wasm.Runtime.Rt.AllocArray(arr.Length, size, id)
+                    : Cs2Wasm.Runtime.Rt.AllocArrayWithHeader(arr.Length, size, id, Cs2Wasm.Runtime.Cs2WasmArrays.Data(arr) - from);
+                if (rank != 1) Cs2Wasm.Runtime.Mem.Copy(made + 16, from + 16, 4 * rank);
+                var copy = Cs2Wasm.Runtime.Rt.Take<Array>(made);
                 Cs2Wasm.Runtime.Cs2WasmArrays.CopyElements(arr, 0, copy, 0, arr.Length, size);
                 return copy;
             }

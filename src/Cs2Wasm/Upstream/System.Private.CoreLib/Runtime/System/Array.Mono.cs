@@ -121,7 +121,7 @@ namespace System
             ArgumentOutOfRangeException.ThrowIfNegative(length);
 
             if (sourceArray.Rank != destinationArray.Rank)
-                throw new RankException(SR.Rank_MultiDimNotSupported);
+                throw new RankException(SR.Rank_MustMatch);
 
             if (sourceIndex < 0)
                 throw new ArgumentOutOfRangeException(nameof(sourceIndex), SR.ArgumentOutOfRange_NeedNonNegNum);

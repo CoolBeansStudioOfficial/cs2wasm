@@ -626,7 +626,13 @@ sealed partial class RuntimeGen
                 pre.Get(5); pre.I32(4); pre.Op(Op.I32Eq);
                 pre.Get(2); pre.Load(Op.I32Load, 4); pre.Call(rt.SccOfFn); pre.I32(0); pre.Op(Op.I32Ne); pre.Op(Op.I32And);
                 pre.If();
-                for (int i = 0; i < 5; i++) pre.Get(i);
+                // (the indices count from where a vector's elements start)
+                int lead = pre.AddLocal(ValType.I32);
+                for (int i = 0; i < 5; i++)
+                {
+                    pre.Get(i);
+                    if (i is 1 or 3) { rt.EmitArrayLead(pre, i - 1, lead); pre.I32(2); pre.Op(Op.I32ShrU); pre.Op(Op.I32Add); }
+                }
                 pre.Call(ar.RuntimeFn("ArenaArrayCopy", 5)); pre.Op(Op.Return);
                 pre.End();
                 copy.Body.InsertRange(0, pre.Body);
@@ -637,7 +643,12 @@ sealed partial class RuntimeGen
                 pre.Get(3); pre.I32(4); pre.Op(Op.I32Eq);
                 pre.Get(0); pre.Load(Op.I32Load, 4); pre.Call(rt.SccOfFn); pre.I32(0); pre.Op(Op.I32Ne); pre.Op(Op.I32And);
                 pre.If();
-                for (int i = 0; i < 3; i++) pre.Get(i);
+                int lead = pre.AddLocal(ValType.I32);
+                for (int i = 0; i < 3; i++)
+                {
+                    pre.Get(i);
+                    if (i == 1) { rt.EmitArrayLead(pre, 0, lead); pre.I32(2); pre.Op(Op.I32ShrU); pre.Op(Op.I32Add); }
+                }
                 pre.Call(ar.RuntimeFn("ArenaArrayClear", 3)); pre.Op(Op.Return);
                 pre.End();
                 clr.Body.InsertRange(0, pre.Body);
