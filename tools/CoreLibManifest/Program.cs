@@ -48,7 +48,7 @@ static class Libraries
 
     /// <summary>Libraries cs2wasm writes by hand (members the others name, for capabilities the sandbox lacks): compiled,
     /// never evaluated from dotnet/runtime.</summary>
-    public static readonly HashSet<string> HandWritten = ["System.IO.Compression", "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
+    public static readonly HashSet<string> HandWritten = ["Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
         "System.Runtime.Serialization.Primitives", "System.Text.Encoding.CodePages"];
 
     public static string Project(string root, string lib) => lib == "System.Private.CoreLib"
