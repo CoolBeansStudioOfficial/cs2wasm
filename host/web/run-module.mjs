@@ -51,6 +51,9 @@ export async function runModule(options) {
           if (m.out !== undefined) say(m.out, false);
           if (m.err !== undefined) say(m.err, true);
           if (m.ready !== undefined && ++ready === pool) startMain();
+          // (a thread of the module that died: the run cannot be trusted to end, so it ends here, as host/worker.mjs
+          // ends the process)
+          if (m.failed && !m.done) fail(new Error('a thread of the module failed: ' + m.err));
           if (m.done) done(m);
         };
       };

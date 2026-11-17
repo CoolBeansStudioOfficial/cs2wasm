@@ -20,6 +20,7 @@ import { root, project, outDir, version, api, godotSharp, cache, editor, run, se
 import { buildArgs, compilerExe, scripts } from './stub.mjs';
 import { parseScene } from '../../../../host/godot-replay.mjs';
 import { makePack } from '../../../../host/web/vfs.mjs';
+import { raiseMemory } from './raise-memory.mjs';
 import { signatures } from '../../../../host/godot-bridge.mjs';
 
 export const site = join(outDir, 'site');
@@ -128,14 +129,26 @@ progressive_web_app/enabled=false
   return proxied;
 }
 
-/** The files the self-hosted compiler asks its host for when it builds the game (a run under Node, traced). */
-function trace(sources, file) {
+/** The files the self-hosted compiler asks its host for when a program references GodotSharp (a run under Node,
+ * traced). The program is the smallest one (repro/Hello.cs): with the reference the compiler loads GodotSharp's
+ * sources and asks about every library file it may read. (The game itself would be the program to trace, but the
+ * self-hosted compiler does not get through it yet: see the README.) Also leaves hello-self.wasm, the same program
+ * built without the reference, to compare a build in the browser with. */
+function trace(file, compiler) {
   rmSync(file, { force: true });
-  const out = join(outDir, 'game-self.wasm');
-  const t0 = performance.now();
-  const status = run('node', [join(project, 'check', 'self.mjs'), '--trace-files', file, ...sources, '-r', godotSharp, '-o', out]);
+  const hello = join(project, 'repro', 'Hello.cs');
+  const self = join(project, 'check', 'self.mjs');
+  // (the module the site serves, told it has one core: with more, a build of this size did not end in several
+  // minutes here, its threads idle; see the README)
+  const env = { ...process.env, CS2WASM_SELF: compiler, CS2WASM_PROCESSORS: '1' };
+  let t0 = performance.now();
+  // (the source's path is in the module's line table: mapped to the path the page gives the same file)
+  if (run('node', [self, hello, '--pathmap', join(project, 'repro') + '=/game', '-o', join(outDir, 'hello-self.wasm')], { env }) !== 0) throw new Error('the self-hosted compiler failed under Node');
+  console.log(`web: the self-hosted compiler under Node (one core) built repro/Hello.cs (${kb(statSync(join(outDir, 'hello-self.wasm')).size)}) in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+  t0 = performance.now();
+  const status = run('node', [self, '--trace-files', file, hello, '-r', godotSharp, '-o', join(outDir, 'hello-ref.wasm')], { env });
   if (status !== 0 || !existsSync(file)) throw new Error('the self-hosted compiler failed under Node (exit ' + status + ')');
-  console.log(`web: the self-hosted compiler under Node built ${out} (${kb(statSync(out).size)}) in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+  console.log(`web: and the same with a reference to GodotSharp in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
 }
 
 export async function web(args) {
@@ -199,27 +212,34 @@ export async function web(args) {
   // 3. the toolchain: the compiler's module, and a pack of what it reads
   if (!flags.has('--no-toolchain')) {
   const traceFile = join(outDir, 'trace.txt');
-  if (flags.has('--retrace') || !existsSync(traceFile)) trace([...scripts(), generated], traceFile);
+  // The compiler's module, with its memory's greatest size raised (check/raise-memory.mjs says why): 4 GiB.
+  const raised = raiseMemory(readFileSync(selfHosted()), 65536);
+  writeFileSync(join(toolchain, 'cs2wasm.wasm'), raised.bytes);
+  console.log(`web: toolchain/cs2wasm.wasm: ${selfHosted()} with the greatest memory ${raised.old} -> 65536 pages`);
+  if (flags.has('--retrace') || !existsSync(traceFile) || !existsSync(join(outDir, 'hello-self.wasm'))) trace(traceFile, join(toolchain, 'cs2wasm.wasm'));
   const refs = resolve(referenceDir()), cacheDir = resolve(cache);
-  const packed = new Map();
-  let opened = 0;
+  const packed = new Map(), wasOpened = new Set();
   for (const line of readFileSync(traceFile, 'utf8').split('\n')) {
     if (!line.startsWith('f ') && !line.startsWith('o ')) continue;
     const p = resolve(line.slice(2));
     const inside = (d) => p.toLowerCase().startsWith(d.toLowerCase() + sep);
     const virtual = inside(cacheDir) ? '/cache/' + relative(cacheDir, p).replaceAll(sep, '/') : inside(refs) ? '/ref/' + relative(refs, p).replaceAll(sep, '/')
       : p.toLowerCase() === resolve(godotSharp).toLowerCase() ? '/lib/GodotSharp.dll' : null;
-    if (!virtual || packed.has(virtual)) continue;
+    if (!virtual) continue;
     packed.set(virtual, p);
-    if (line.startsWith('o ')) opened += statSync(p).size;
+    if (line.startsWith('o ')) wasOpened.add(virtual);
   }
   // (the reference directory is listed, and every assembly in it opened: all of them)
   for (const f of readdirSync(refs)) if (f.endsWith('.dll') && !packed.has('/ref/' + f)) packed.set('/ref/' + f, join(refs, f));
   const pack = makePack([...packed].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([path, p]) => ({ path, bytes: readFileSync(p) })));
   writeFileSync(join(toolchain, 'library.pack'), pack);
   const by = (prefix) => [...packed].filter(([v]) => v.startsWith(prefix)).reduce((s, [, p]) => s + statSync(p).size, 0);
-  console.log(`web: toolchain/library.pack: ${packed.size} files, ${kb(pack.length)} (the cache's sources ${kb(by('/cache/'))}, reference assemblies ${kb(by('/ref/'))}, GodotSharp.dll ${kb(by('/lib/'))}; of all, ${kb(opened)} in files the build of this game opened)`);
-  cpSync(selfHosted(), join(toolchain, 'cs2wasm.wasm'));
+  const opened = [...packed].filter(([v]) => wasOpened.has(v)).reduce((s, [, p]) => s + statSync(p).size, 0);
+  console.log(`web: toolchain/library.pack: ${packed.size} files, ${kb(pack.length)} (the cache's sources ${kb(by('/cache/'))}, reference assemblies ${kb(by('/ref/'))}, GodotSharp.dll ${kb(by('/lib/'))}; ${wasOpened.size} of the files, ${kb(opened)}, were opened by the traced build, the others only asked about)`);
+  // a console program to build in the browser too (the smallest: ?game=hello)
+  mkdirSync(join(site, 'hello'), { recursive: true });
+  cpSync(join(project, 'repro', 'Hello.cs'), join(site, 'hello', 'Hello.cs'));
+  writeFileSync(join(site, 'hello', 'sources.json'), JSON.stringify({ sources: [{ path: '/game/Hello.cs', url: 'hello/Hello.cs' }], args: [], run: 'main' }));
   if (!flags.has('--no-compress')) {
     for (const f of ['cs2wasm.wasm', 'library.pack']) {
       const t0 = performance.now();

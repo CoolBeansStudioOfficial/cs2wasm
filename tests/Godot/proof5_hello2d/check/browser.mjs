@@ -4,10 +4,14 @@
 // oracle's (stock Godot .NET on the desktop). Reports the build's time in the browser and the bytes downloaded.
 //   --module <game.wasm>   play a module built elsewhere (no build in the browser): the engine's part alone
 //   --build-only           build in the browser and stop (no engine)
+//   --game hello           build the site's console program (repro/Hello.cs) in place of the game, and stop
 //   --panic                the fixed input with the key that makes the script throw (oracle-calls-panic.txt)
 //   --timeout <seconds>    how long the page may take (default 3600)
+//   --play <file.png>      no fixed input: the game played through the browser's keyboard (right arrow, Space), the
+//                          HUD's text before and after, and a picture of the page
 //   --headed               a browser window to watch; --keep: leave the server and the browser up at the end
-//   --processors <n>       the cores the compiler is told it has (default: the page's choice)
+//   --processors <n>       the cores the compiler is told it has (default: the page's choice, one)
+//   --times                the compiler's phase times in the page's output (tests/out/proof5/browser-output.txt)
 // The browser: CS2WASM_BROWSER, else Chrome or Edge where they are installed.
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, cpSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -51,6 +55,8 @@ export async function check(args) {
     if (args[i] === '--module') opt.module = args[++i];
     else if (args[i] === '--timeout') opt.timeout = +args[++i];
     else if (args[i] === '--processors') opt.processors = args[++i];
+    else if (args[i] === '--game') opt.game = args[++i];
+    else if (args[i] === '--play') opt.play = args[++i];
     else opt[args[i].replace(/^--/, '').replace(/-(.)/g, (_, c) => c.toUpperCase())] = true;
   }
   if (!existsSync(join(site, 'index.html')) || !existsSync(join(site, 'godot', 'index.wasm'))) { console.error('check: no site: node tools/proof5.mjs web'); return 1; }
@@ -69,6 +75,10 @@ export async function check(args) {
   if (opt.module) { cpSync(opt.module, join(site, 'prebuilt.wasm')); query.set('module', 'prebuilt.wasm'); }
   if (opt.buildOnly) query.set('build', 'only'); else query.set('drive', opt.panic ? 'panic' : '1');
   if (opt.processors) query.set('processors', opt.processors);
+  if (opt.times) query.set('times', '1');
+  if (opt.game) { query.set('game', opt.game); opt.buildOnly = true; query.set('build', 'only'); query.delete('drive'); }
+  if (opt.play) query.delete('drive');
+  const game = opt.game ?? 'game';
 
   const server = await serve(site, 0);
   const profile = mkdtempSync(join(tmpdir(), 'cs2wasm-proof5-'));
@@ -107,10 +117,33 @@ export async function check(args) {
       const s = JSON.parse((await evaluate('JSON.stringify(window.proof5 ? { state: proof5.state, error: proof5.error } : { state: "loading" })')) ?? '{"state":"loading"}');
       state = s.state;
       if (state !== last) { console.log(`check: [${((performance.now() - t0) / 1000).toFixed(0)} s] ${state}`); last = state; }
-      if (state === 'done' || state === 'failed') break;
+      if (state === 'done' || state === 'failed' || (opt.play && state.startsWith('playing:'))) break;
       if (performance.now() - t0 > opt.timeout * 1000) { failure = `the page did not finish in ${opt.timeout} s (at: ${state})\n`; break; }
     }
-    const r = JSON.parse(await evaluate('JSON.stringify({ build: proof5.build, error: proof5.error, log: proof5.log, calls: proof5.calls, rounds: proof5.rounds, output: proof5.output.slice(-6000), isolated: crossOriginIsolated, cores: navigator.hardwareConcurrency })'));
+    if (opt.play && state.startsWith('playing:')) {
+      // the game played by keys, as a person would: the right arrow held for a second, then Space; the HUD's text
+      // (the script's last Label.set_text) before and after, and a picture of the page
+      const hud = () => evaluate('proof5.live.log.filter((l) => l.startsWith("Label.set_text")).at(-1) ?? ""');
+      const key = (type, k, code, vk) => cdp.send('Input.dispatchKeyEvent', { type, key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+      await evaluate('document.getElementById("canvas").focus()');
+      await sleep(1500);
+      const before = await hud();
+      await key('rawKeyDown', 'ArrowRight', 'ArrowRight', 39); await sleep(1000); await key('keyUp', 'ArrowRight', 'ArrowRight', 39);
+      await key('rawKeyDown', ' ', 'Space', 32); await sleep(100); await key('keyUp', ' ', 'Space', 32);
+      await sleep(250);
+      const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(opt.play, Buffer.from(shot.data, 'base64'));
+      await sleep(1500);
+      const after = await hud();
+      const error = await evaluate('proof5.error');
+      console.log(`check: played by keys: the HUD before: ${before}\ncheck:                 and after: ${after}\ncheck: a picture of the page in the air: ${opt.play}`);
+      if (error) failure += `the page failed: ${error}\n`;
+      if (!/jumps: 1/.test(after) || before === after) failure += 'the keys did not move the character and make it jump\n';
+      if (failure) { console.log('check: FAILED\n' + failure); return finish(1); }
+      console.log('check: the game answers the keyboard in the engine');
+      return finish(0);
+    }
+    const r = JSON.parse(await evaluate('JSON.stringify({ build: proof5.build, error: proof5.error, log: proof5.log, ran: proof5.ran, calls: proof5.calls, rounds: proof5.rounds, output: proof5.output.slice(-6000), isolated: crossOriginIsolated, cores: navigator.hardwareConcurrency })'));
     const stats = server.stats();
     writeFileSync(join(outDir, 'browser-output.txt'), r.output ?? '');
     if (r.error) failure += `the page failed: ${r.error}\n`;
@@ -124,11 +157,17 @@ export async function check(args) {
       const built = await evaluate('(() => { const w = proof5.wasm; let s = ""; for (let i = 0; i < w.length; i += 32768) s += String.fromCharCode.apply(null, w.subarray(i, i + 32768)); return btoa(s); })()').catch(() => null);
       if (built) writeFileSync(join(outDir, 'game-browser.wasm'), Buffer.from(built, 'base64'));
       console.log(`check: built in the browser: game.wasm ${n(b.bytes)} bytes, exit ${b.exit}, in ${(b.ms.total / 1000).toFixed(1)} s (downloads ${(b.ms.download / 1000).toFixed(1)} s, compiling the compiler's module ${(b.ms.compile / 1000).toFixed(1)} s, starting its workers ${(b.ms.start / 1000).toFixed(1)} s, its init ${(b.ms.init / 1000).toFixed(1)} s, the build itself ${(b.ms.run / 1000).toFixed(1)} s); the compiler's memory at the end: ${n(b.pages * 65536 / 1048576)} MB; the browser reports ${r.cores} cores`);
-      const tool = sent('/toolchain/').filter((q) => !q.url.endsWith('signatures.json')), game = sent('/game/');
-      console.log(`check: downloaded to build: ${n(sum(tool) + sum(game))} bytes on the wire (${tool.map((q) => `${q.url.slice(11)} ${n(q.bytes)}${q.encoded ? ' Brotli' : ' not compressed'}`).join(', ')}; the game's sources ${n(sum(game))} in ${game.length} files); uncompressed: ${b.downloads.map((d) => n(d.bytes)).join(' + ')} bytes`);
-      for (const [name, file] of [['the self-hosted compiler under Node', 'game-self.wasm'], ['the .NET-hosted compiler from the same sources', 'game-net-gen.wasm']]) {
+      const tool = sent('/toolchain/').filter((q) => !q.url.endsWith('signatures.json')), src = sent(`/${game}/`);
+      console.log(`check: downloaded to build: ${n(sum(tool) + sum(src))} bytes on the wire (${tool.map((q) => `${q.url.slice(11)} ${n(q.bytes)}${q.encoded ? ' Brotli' : ' not compressed'}`).join(', ')}; the program's sources ${n(sum(src))} in ${src.length} files); uncompressed: ${b.downloads.map((d) => n(d.bytes)).join(' + ')} bytes`);
+      const others = opt.game === 'hello' ? [['the self-hosted compiler under Node', 'hello-self.wasm']]
+        : [['the self-hosted compiler under Node', 'game-self.wasm'], ['the .NET-hosted compiler from the same sources', 'game-net-gen.wasm']];
+      for (const [name, file] of others) {
         const p = join(outDir, file);
         if (built && existsSync(p)) console.log(`check: the module built in the browser ${Buffer.from(built, 'base64').equals(readFileSync(p)) ? 'has the same bytes as' : 'DIFFERS from'} the one built by ${name} (${file})`);
+      }
+      if (r.ran !== undefined) {
+        console.log(`check: the built program, run in the page, wrote ${JSON.stringify(r.ran)}`);
+        if (opt.game === 'hello' && r.ran.trim() !== '42') failure += 'the built program did not write 42\n';
       }
     }
     if (!opt.buildOnly && r.log) {
