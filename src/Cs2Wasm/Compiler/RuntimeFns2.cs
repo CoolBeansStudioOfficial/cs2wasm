@@ -274,6 +274,13 @@ internal sealed partial class RuntimeFns
     public WasmFunction ArenaFreeFn => _arenaFree ??= M.AddFunction("rt.arena_free", FT([I], []));
     public WasmFunction ArenaVisitFn => _arenaVisit ??= M.AddFunction("rt.arena_visit", FT([I], []));
     public WasmFunction SccOfFn => _sccOf ??= M.AddFunction("rt.scc_of", FT([I], [I]));
+    WasmFunction? _arenaFin, _arenaFinType;
+    /// <summary>rt.arena_finalize(obj): the finalizer of a member that has one (and is not suppressed).</summary>
+    public WasmFunction ArenaFinFn => _arenaFin ??= M.AddFunction("rt.arena_finalize", FT([I], []));
+    /// <summary>rt.arena_fin_type(type id): 1 for a cycle-capable type with a finalizer.</summary>
+    public WasmFunction ArenaFinTypeFn => _arenaFinType ??= M.AddFunction("rt.arena_fin_type", FT([I], [I]));
+    public WasmFunction? ArenaFinFnIfMade => _arenaFin;
+    public WasmFunction? ArenaFinTypeIfMade => _arenaFinType;
     WasmFunction? _singleThreaded;
     /// <summary>() → 1 when no other thread can ever run (the program starts none); written at the end (RuntimeGen.Finish).</summary>
     public WasmFunction SingleThreadedFn => _singleThreaded ??= M.AddFunction("rt.single_threaded", FT([], [I]));

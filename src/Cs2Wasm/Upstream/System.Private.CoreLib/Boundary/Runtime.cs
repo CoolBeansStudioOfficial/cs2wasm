@@ -766,6 +766,25 @@ namespace Cs2Wasm.Runtime
             return a;
         }
 
+        /// <summary>A store into an array that is not of the type the storing code names (a string[] used as an
+        /// object[]): the value must be of the array's own element type.</summary>
+        public static void StoreCheck(int arr, int val)
+        {
+            if (val == 0) return;
+            if (!ElementFits(TypeInfo.ElementId(Mem.LoadI32(arr + 4)), Mem.LoadI32(val + 4))) throw new ArrayTypeMismatchException();
+        }
+
+        /// <summary>What string concatenation takes of an object: its ToString, nothing for null.</summary>
+        public static string TextOf(object? o) => o?.ToString() ?? "";
+
+        internal static bool ElementFits(int to, int from)
+        {
+            if (TypeInfo.IsAssignable(to, from)) return true;
+            // (an array of a derived element type is an array of the base's)
+            int te = TypeInfo.ElementId(to), fe = TypeInfo.ElementId(from);
+            return te >= 0 && fe >= 0 && TypeInfo.Rank(to) == TypeInfo.Rank(from) && (TypeInfo.Flags(te) & 1) == 0 && (TypeInfo.Flags(fe) & 1) == 0 && ElementFits(te, fe);
+        }
+
         public static int AllocArrayWithHeader(int length, int elemSize, int typeId, int dataOffset)
         {
             long total = dataOffset + (long)length * elemSize;
@@ -849,10 +868,13 @@ namespace Cs2Wasm.Runtime
         // arena's are under the runtime lock); cycles among them are not collected.
         const int ArenaBusy = 1, ArenaShared = 4;
         const int SharedCount = 0x40000000;
-        const int ArenaPrefix = 32, ArenaRecord = 24;
+        // (record word 24: not zero when a member has a finalizer)
+        const int ArenaPrefix = 32, ArenaRecord = 32;
 
         [Intrinsic] static extern int SccOf(int typeId);
         [Intrinsic] static extern void ArenaClearObject(int addr);
+        [Intrinsic] static extern void ArenaFinalizeObject(int addr);
+        [Intrinsic] static extern int ArenaFinType(int typeId);
         [Intrinsic] static extern void ArenaFreeObject(int addr);
         [Intrinsic] static extern void ArenaVisitObject(int addr);
 
@@ -925,7 +947,7 @@ namespace Cs2Wasm.Runtime
         static int NewArena()
         {
             int ar = Alloc(ArenaRecord);
-            Mem.StoreI64(ar, 0); Mem.StoreI64(ar + 8, 0); Mem.StoreI64(ar + 16, 0);
+            Mem.StoreI64(ar, 0); Mem.StoreI64(ar + 8, 0); Mem.StoreI64(ar + 16, 0); Mem.StoreI64(ar + 24, 0);
             return ar;
         }
 
@@ -936,6 +958,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(obj, -(c + 2));
             Mem.StoreI32(obj - 16, ar);
             Mem.StoreI32(obj - 4, 0);
+            if (ArenaFinType(Mem.LoadI32(obj + 4)) != 0) Mem.StoreI32(ar + 24, 1);
             int head = Mem.LoadI32(ar + 4);
             if (head == 0)
             {
@@ -1004,6 +1027,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(a, Mem.LoadI32(a) + Mem.LoadI32(b));
             Mem.StoreI32(a + 8, Mem.LoadI32(a + 8) + Mem.LoadI32(b + 8));
             Mem.StoreI32(a + 12, Mem.LoadI32(a + 12) | Mem.LoadI32(b + 12));
+            Mem.StoreI32(a + 24, Mem.LoadI32(a + 24) | Mem.LoadI32(b + 24));
             // (b's members still point to b: b points to a, for as long as one of them does)
             Mem.StoreI32(b, 0); Mem.StoreI32(b + 4, 0); Mem.StoreI32(b + 8, 0);
             if (Mem.LoadI32(b + 20) == 0) Free(b, ArenaRecord);
@@ -1229,6 +1253,49 @@ namespace Cs2Wasm.Runtime
         }
 
         static int s_handFrom, s_handSum;
+
+        // The references that members with finalizers among them gave up as they died: (slot, value) pairs. .NET
+        // runs a finalizer while everything its object refers to is still there, so the references are put back
+        // for the finalizers of all that die together, and taken out again after.
+        static int s_cutQ, s_cutN, s_cutCap, s_cutOn;
+
+        static void NoteCut(int slot, int value)
+        {
+            if (s_cutN == s_cutCap)
+            {
+                int cap = s_cutCap == 0 ? 64 : s_cutCap * 2;
+                int nq = Alloc(cap * 8);
+                if (s_cutQ != 0) { Mem.Copy(nq, s_cutQ, s_cutN * 8); Free(s_cutQ, s_cutCap * 8); }
+                s_cutQ = nq; s_cutCap = cap;
+            }
+            Mem.StoreI32(s_cutQ + 8 * s_cutN, slot);
+            Mem.StoreI32(s_cutQ + 8 * s_cutN + 4, value);
+            s_cutN++;
+        }
+
+        /// <summary>The references noted from `from` on are back in their slots (one to an object that lives on is
+        /// counted meanwhile: a finalizer that clears its field releases it, as it does a plain object's).</summary>
+        static void CutsBack(int from, int to)
+        {
+            for (int i = from; i < to; i++)
+            {
+                int slot = Mem.LoadI32(s_cutQ + 8 * i), v = Mem.LoadI32(s_cutQ + 8 * i + 4);
+                Mem.StoreI32(slot, v);
+                if (Mem.LoadI32(v) != 0) Retain(Borrow<object>(v));
+            }
+        }
+
+        /// <summary>And out again, where the finalizers left them.</summary>
+        static void CutsOut(int from, int to)
+        {
+            for (int i = from; i < to; i++)
+            {
+                int slot = Mem.LoadI32(s_cutQ + 8 * i), v = Mem.LoadI32(s_cutQ + 8 * i + 4);
+                if (Mem.LoadI32(slot) != v) continue;
+                Mem.StoreI32(slot, 0);
+                if (Mem.LoadI32(v) != 0) Release(Borrow<object>(v));
+            }
+        }
 
         /// <summary>The owner of `from` put `to` in the slot where `from` was (a list's array grown: the new array has
         /// taken the old one's items). An item the old container owned that the new one holds too is the new one's
@@ -1485,7 +1552,7 @@ namespace Cs2Wasm.Runtime
             // (4: each reference, counted by the copy, as a store of it)
             if (s_visitMode == 4) { if (child != 0 && slot != s_storeSlot) ArenaLinkCore(child, s_visitArena, slot); return; }
             if (child == 0 || Mem.LoadI32(child) >= -1) return;
-            if (s_visitMode == 1) { if (ArenaOf(child) == s_visitArena) Mem.StoreI32(slot, 0); return; }
+            if (s_visitMode == 1) { if (ArenaOf(child) == s_visitArena) { if (s_cutOn != 0) NoteCut(slot, child); Mem.StoreI32(slot, 0); } return; }
             if (s_visitMode == 8) { if (ArenaOf(child) == s_visitArena) s_handSum++; return; }
             int obj = s_visitObj;
             if (s_visitMode >= 6)
@@ -1520,10 +1587,11 @@ namespace Cs2Wasm.Runtime
                 return;
             }
             // 0: the member (obj) is being destroyed
-            if (bits == 2) { Mem.StoreI32(slot, 0); SetSlotBits(obj, i, 0); UpPath(obj, child, -1); return; }
+            if (bits == 2) { if (s_cutOn != 0) NoteCut(slot, child); Mem.StoreI32(slot, 0); SetSlotBits(obj, i, 0); UpPath(obj, child, -1); return; }
             // (an outside-counted reference stays in the slot for the release every other reference of the dying
             // object gets; so does one whose kind is not known when the member has no inside count)
             if (bits == 0 || ArenaOf(child) != s_visitArena || Mem.LoadI32(child - 4) == 0) return;
+            if (s_cutOn != 0) NoteCut(slot, child);
             Mem.StoreI32(slot, 0);
             if (i >= 0) SetSlotBits(obj, i, 0);
             int left = Mem.LoadI32(child - 4) - 1;
@@ -1581,6 +1649,9 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(p - 12, 0);
             Mem.StoreI32(p - 24, Mem.LoadI32(p - 24) | Dying);
             int dead = p, done = 0;
+            bool fin = Mem.LoadI32(ar + 24) != 0;
+            int cutOn = s_cutOn, cutBase = s_cutN;
+            s_cutOn = fin ? 1 : 0;
             s_destroying++;
             while (dead != 0)
             {
@@ -1606,8 +1677,17 @@ namespace Cs2Wasm.Runtime
                 done = m;
             }
             s_destroying--;
+            s_cutOn = cutOn;
             // then as any object: no longer a member (count zero: being destroyed), its finalizer, its other references
             for (int m = done; m != 0; m = Mem.LoadI32(m - 8)) { Mem.StoreI32(m, 0); Mem.StoreI32(m - 16, 0); }
+            if (fin)
+            {
+                int cutEnd = s_cutN;
+                CutsBack(cutBase, cutEnd);
+                for (int m = done; m != 0; m = Mem.LoadI32(m - 8)) ArenaFinalizeObject(m);
+                CutsOut(cutBase, cutEnd);
+                s_cutN = cutBase;
+            }
             for (int m = done; m != 0; m = Mem.LoadI32(m - 8)) ArenaClearObject(m);
             for (int m = done; m != 0;)
             {
@@ -1632,10 +1712,26 @@ namespace Cs2Wasm.Runtime
                 int m = first;
                 do { ArenaOf(m); Unqueue(m); m = Mem.LoadI32(m - 12); } while (m != first);
                 int sa = s_visitArena, sm = s_visitMode;
+                bool fin = Mem.LoadI32(ar + 24) != 0;
+                int cutOn = s_cutOn, cutBase = s_cutN;
+                s_cutOn = fin ? 1 : 0;
                 s_visitArena = ar; s_visitMode = 1;
                 m = first;
                 do { ArenaVisitObject(m); m = Mem.LoadI32(m - 12); } while (m != first);
                 s_visitArena = sa; s_visitMode = sm;
+                s_cutOn = cutOn;
+                if (fin)
+                {
+                    // (all of them are going: counts on them mean nothing from here on)
+                    m = first;
+                    do { Mem.StoreI32(m, 0); m = Mem.LoadI32(m - 12); } while (m != first);
+                    int cutEnd = s_cutN;
+                    CutsBack(cutBase, cutEnd);
+                    m = first;
+                    do { ArenaFinalizeObject(m); m = Mem.LoadI32(m - 12); } while (m != first);
+                    CutsOut(cutBase, cutEnd);
+                    s_cutN = cutBase;
+                }
                 m = first;
                 do { ArenaClearObject(m); m = Mem.LoadI32(m - 12); } while (m != first);
                 m = first;

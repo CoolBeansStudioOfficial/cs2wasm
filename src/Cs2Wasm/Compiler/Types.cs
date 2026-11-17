@@ -469,6 +469,9 @@ internal sealed class Types
         var layoutAttr = t.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "StructLayoutAttribute");
         bool explicitLayout = layoutAttr is { ConstructorArguments: [{ Value: int kind }] } && kind == 2;
         int dataStart = offset, explicitEnd = offset;
+        // [StructLayout(Pack = n)]: a struct's fields are aligned to n bytes at most (not references: their slots stay
+        // aligned for the atomic operations on them)
+        int pack = t.IsValueType && layoutAttr?.NamedArguments.FirstOrDefault(a => a.Key == "Pack").Value.Value is int pk && pk > 0 ? pk : 0;
         foreach (var m in t.GetMembers())
         {
             if (!IsInstanceStorage(m)) continue;
@@ -477,6 +480,7 @@ internal sealed class Types
             var ft = f.RefKind != RefKind.None ? _d.LibCompilation.CreatePointerTypeSymbol(Canonical(f.Type)) : Canonical(f.Type);
             var (size, align) = StorageOf(ft);
             if (f.IsFixedSizeBuffer) size *= Math.Max(1, f.FixedSize);
+            if (pack != 0 && !NeedsRc(ft)) align = Math.Min(align, pack);
             if (explicitLayout && f.GetAttributes().FirstOrDefault(a => a.AttributeClass?.Name == "FieldOffsetAttribute") is { ConstructorArguments: [{ Value: int fo }] })
             {
                 l.Fields.Add(new FieldSlot { Symbol = f, Type = ft, Offset = dataStart + fo });

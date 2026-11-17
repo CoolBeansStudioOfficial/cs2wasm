@@ -514,8 +514,10 @@ sealed partial class RuntimeGen
     }
 
     /// <summary>An object's destruction: clear (finalizer, release of counted contents) and/or free (its memory).</summary>
-    void EmitDestroy(Emitter e, int id, bool clear, bool free)
+    void EmitDestroy(Emitter e, int id, bool clear, bool free, int finalizer = 0)
     {
+        // finalizer: 0 with the clear, 1 the finalizer alone, -1 the clear without it (an arena's members: the
+        // finalizers of all that die together run before any of them lets go of what it refers to)
         var rt = D.Rt;
         if (D.DisplayById.TryGetValue(id, out var disp))
         {
@@ -559,21 +561,27 @@ sealed partial class RuntimeGen
         }
         // class: finalizer, then fields, then the memory
         var l = D.Types.LayoutOf(type);
-        if (clear)
+        if (clear || finalizer == 1)
         {
-            var fin = FindFinalizer(type);
+            var fin = finalizer == -1 ? null : FindFinalizer(type);
+            if (finalizer == -1 && FindFinalizer(type) != null) { }
+            else
+            {
             // weak references to it are cleared first; GC.SuppressFinalize can skip the finalizer
             e.Get(0); e.Call(rt.OnDestroy);
             if (fin != null)
             {
                 e.If();
                 // the finalizer may resurrect nothing observable here; it runs with a temporary count
-                e.Get(0); e.I32(1); e.Store(Op.I32Store);
+                // (an arena member can refer to itself: its finalizer clearing that field must not destroy it)
+                e.Get(0); e.I32(finalizer == 1 ? 0x40000000 : 1); e.Store(Op.I32Store);
                 e.Call(rt.FinHold); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
                 e.Get(0); e.I32(0); e.Store(Op.I32Store);
                 e.End();
             }
             else e.Op(Op.Drop);
+            }
+            if (finalizer == 1) return;
             foreach (var fs in l.Fields)
             {
                 if (Types.IsRef(fs.Type)) { e.Get(0); e.Load(Op.I32Load, fs.Offset); e.Call(rt.Release); }
@@ -678,11 +686,19 @@ sealed partial class RuntimeGen
         var clearFns = new Dictionary<int, WasmFunction>();
         var freeFns = new Dictionary<int, WasmFunction>();
         var visitFns = new Dictionary<int, WasmFunction>();
+        var finFns = new Dictionary<int, WasmFunction>();
         var visit = ar.RuntimeFn("ArenaVisit", 1);
         foreach (var id in ar.CycleTypes)
         {
+            bool hasFin = !D.DisplayById.ContainsKey(id) && D.TypeById[id] is INamedTypeSymbol { TypeKind: TypeKind.Class } ft && FindFinalizer(ft) != null;
+            if (hasFin)
+            {
+                var fn = D.Module.AddFunction("arena.finalize " + id, new FuncType([ValType.I32], []));
+                EmitDestroy(new Emitter(fn), id, clear: false, free: false, finalizer: 1);
+                finFns[id] = fn;
+            }
             var c = D.Module.AddFunction("arena.clear " + id, new FuncType([ValType.I32], []));
-            EmitDestroy(new Emitter(c), id, clear: true, free: false);
+            EmitDestroy(new Emitter(c), id, clear: true, free: false, finalizer: hasFin ? -1 : 0);
             clearFns[id] = c;
             var fr = D.Module.AddFunction("arena.free " + id, new FuncType([ValType.I32], []));
             EmitDestroy(new Emitter(fr), id, clear: false, free: true);
@@ -733,6 +749,8 @@ sealed partial class RuntimeGen
             Dispatch(rt.ArenaClearFnIfMade, clearFns);
             Dispatch(rt.ArenaFreeFnIfMade, freeFns);
             Dispatch(rt.ArenaVisitFnIfMade, visitFns);
+            Dispatch(rt.ArenaFinFnIfMade, finFns);
+            if (rt.ArenaFinTypeIfMade is { } finType) EmitIdTable(finType, D.TypeById.Count, i => (null, finFns.ContainsKey(i) ? 1 : 0));
             if (rt.SccOfIfMade is { } scc) EmitIdTable(scc, D.TypeById.Count, i => (null, ar.SccOf(i)));
         };
     }

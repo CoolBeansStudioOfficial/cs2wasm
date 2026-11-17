@@ -305,8 +305,22 @@ internal sealed partial class Driver
     /// <summary>Field-wise ValueType.Equals per struct (ValueEquality.cs).</summary>
     public readonly Dictionary<string, MethodInst> ValueEqualsFns = [];
 
+    /// <summary>The program reads array elements as objects (Array.GetValue, a foreach over an Array): a value
+    /// element is boxed then, so the element type of every array type the program makes is one it makes boxes of.</summary>
+    public bool BoxesElements;
+    public void MarkBoxedElements()
+    {
+        if (BoxesElements) return;
+        BoxesElements = true;
+        foreach (var id in Constructed.ToList())
+            if (!DisplayById.ContainsKey(id) && TypeById[id] is IArrayTypeSymbol { ElementType: { IsValueType: true, IsRefLikeType: false } et } && et is not ITypeParameterSymbol and not IPointerTypeSymbol)
+                MarkConstructed(Types.Canonical(et));
+    }
+
     public int MarkConstructed(ITypeSymbol t)
     {
+        if (BoxesElements && t is IArrayTypeSymbol { ElementType: { IsValueType: true, IsRefLikeType: false } bet } && bet is not ITypeParameterSymbol and not IPointerTypeSymbol)
+            MarkConstructed(Types.Canonical(bet));
         var id = TypeId(t);
         if (!ConstructedBy.TryGetValue(id, out var by)) ConstructedBy[id] = by = [];
         by.Add(CurrentFn);

@@ -356,7 +356,8 @@ sealed partial class FunctionCompiler
             E.Get(a);
             return Own.None;
         }
-        var clone = SubstMethod(w.CloneMethod!);
+        if (w.CloneMethod == null) return EmitAnonymousWith(w, t);
+        var clone = SubstMethod(w.CloneMethod);
         var o = EmitCallOps(clone, w.Operand, [], true, w.Syntax, alreadyResolved: true);
         int obj = E.AddLocal(ValType.I32);
         E.Set(obj);
@@ -365,6 +366,46 @@ sealed partial class FunctionCompiler
         if (w.Initializer != null) EmitInitializer(w.Initializer, obj, t);
         _temps[^1].Remove(slot);
         E.Get(obj); E.I32(0); E.Set(obj);
+        return Own.Owned;
+    }
+    /// <summary>`with` on an anonymous type (it has no clone method and its members no setters): a new object whose
+    /// slots hold the given values, and the operand's for the rest.</summary>
+    Own EmitAnonymousWith(IWithOperation w, ITypeSymbol t)
+    {
+        var at = (INamedTypeSymbol)T.Canonical(t);
+        int tid = D.MarkConstructed(at);
+        RegisterAnonymous(at, tid);
+        var so = EmitValue(w.Operand);
+        ToTransient(so, t);
+        int src = E.AddLocal(ValType.I32);
+        E.Set(src);
+        int obj = E.AddLocal(ValType.I32);
+        E.I32(Math.Max(T.LayoutOf(at).Size, Types.ObjectHeader)); E.Tid(tid); E.Call(Rt.AllocObject); E.Set(obj);
+        var slot = new Slot { Local = obj, Type = at };
+        RegisterTemp(slot);
+        var given = new Dictionary<string, IOperation>();
+        if (w.Initializer != null)
+            foreach (var init in w.Initializer.Initializers)
+            {
+                if (init is not ISimpleAssignmentOperation { Target: IPropertyReferenceOperation pr } sa) throw new CompileException("anonymous type member", init.Syntax.GetLocation());
+                given[pr.Property.Name] = sa.Value;
+            }
+        foreach (var fs in T.LayoutOf(at).Fields)
+        {
+            BeginTemps();
+            Own vo;
+            if (given.TryGetValue(fs.Symbol.Name, out var value)) vo = EmitValueAs(value, fs.Type);
+            else
+            {
+                E.Get(src);
+                if (Types.IsStruct(fs.Type)) { E.I32(fs.Offset); E.Op(Op.I32Add); vo = Own.None; }
+                else { E.Load(Types.LoadOp(fs.Type), fs.Offset); vo = Own.None; if (Types.IsRef(fs.Type)) { E.Call(Rt.Retain); vo = Own.Owned; } }
+            }
+            StoreToAddressFromStack(() => E.Get(obj), fs.Offset, fs.Type, vo, pub: Publish.None);
+            EndTemps();
+        }
+        _temps[^1].Remove(slot);
+        E.Get(obj);
         return Own.Owned;
     }
 }

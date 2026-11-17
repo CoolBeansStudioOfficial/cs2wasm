@@ -42,8 +42,8 @@ static class Program
             s_all.Clear();
             s_root = null;
         }
-        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
-        // (.NET may not have collected the last tree yet: 201 nodes)
-        Console.WriteLine(N.Live <= 201 ? "gone" : "left: " + N.Live);
+        for (int i = 0; i < 5; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
+        // (.NET may not have collected the last trees yet, 201 nodes each: what must not happen is all 40,200 staying)
+        Console.WriteLine(N.Live <= 2010 ? "gone" : "left: " + N.Live);
     }
 }

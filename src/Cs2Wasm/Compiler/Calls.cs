@@ -47,6 +47,12 @@ sealed partial class FunctionCompiler
         if (target.ContainingType?.SpecialType == SpecialType.System_Array && target.Name == "CreateInstance" && inv.Arguments.Length == 2
             && StripConversions(inv.Arguments[0].Value) is ITypeOfOperation cto)
             MarkArrayOf(cto.TypeOperand);
+        // Enum.GetValues(typeof(E)), typeof(E).GetEnumValues(): the result is an E[]
+        if (target.Name is "GetValues" or "GetEnumValues" or "GetValuesAsUnderlyingType" or "GetEnumValuesAsUnderlyingType")
+        {
+            if (inv.Instance is ITypeOfOperation eto) MarkArrayOf(eto.TypeOperand);
+            foreach (var arg in inv.Arguments) if (StripConversions(arg.Value) is ITypeOfOperation ato) MarkArrayOf(ato.TypeOperand);
+        }
         if (target.Name == "MakeArrayType" && target.Parameters.Length == 0 && target.ContainingType?.ToDisplayString() == "System.Type" && inv.Instance is ITypeOfOperation mto)
             MarkArrayOf(mto.TypeOperand);
         // typeof(G<>).MakeGenericType(typeof(A), ...): the instance, known now (so its code is made, as NativeAOT's
@@ -124,7 +130,7 @@ sealed partial class FunctionCompiler
         // implementation of the interface. Only for types whose methods cannot change `this` (primitives, enums,
         // readonly structs), so calling on the value is calling on the box's copy.
         if (!m.IsStatic && isVirtual && instance is IConversionOperation { OperatorMethod: null } box
-            && TypeOf(instance) is { TypeKind: TypeKind.Interface or TypeKind.Class } && TypeOf(box.Operand) is var bt
+            && box.Operand.Type != null && TypeOf(instance) is { TypeKind: TypeKind.Interface or TypeKind.Class } && TypeOf(box.Operand) is var bt
             && bt.IsValueType && bt.TypeKind != TypeKind.TypeParameter && !IsNullable(bt)
             && (Types.PrimOf(bt) != Prim.None || bt is INamedTypeSymbol { IsReadOnly: true })
             && D.Implementation(bt, m) is { } dimpl && Types.Key(T.Canonical(dimpl.ContainingType)) == Types.Key(T.Canonical(bt)))
@@ -803,6 +809,9 @@ sealed partial class FunctionCompiler
             case "Rt.Retain": E.Call(Rt.Retain); E.Op(Op.Drop); return Own.None;
             case "Rt.Release": E.Call(Rt.Release); return Own.None;
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
+            case "Cs2WasmArrays.BoxesElements": D.MarkBoxedElements(); return Own.None;
+            case "Rt.ArenaFinalizeObject": E.Call(Rt.ArenaFinFn); return Own.None;
+            case "Rt.ArenaFinType": E.Call(Rt.ArenaFinTypeFn); return Own.None;
             case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;
             case "Rt.BulkEnter": E.Call(Rt.BulkEnter); return Own.None;

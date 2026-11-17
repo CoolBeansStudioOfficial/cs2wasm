@@ -77,7 +77,17 @@ namespace System.Runtime.InteropServices
 
                 [Cs2Wasm.Runtime.MissingCapability("platform invoke")]        private static extern void PrelinkInternal(MethodInfo m);
 
-                [Cs2Wasm.Runtime.MissingCapability("platform invoke")]        private static extern int SizeOfHelper(QCallTypeHandle t, bool throwIfNotMarshalable);
+                // cs2wasm: a value type's size in memory, which is its size as other code sees it (its layout is the declared one);
+        // bool and char have their sizes as C has them
+        private static int SizeOfHelper(QCallTypeHandle t, bool throwIfNotMarshalable)
+        {
+            int id = Cs2Wasm.Runtime.TypeInfo.Id(t);
+            if (id == Cs2Wasm.Runtime.Rt.TypeId((object)true)) return 4;
+            if (id == Cs2Wasm.Runtime.Rt.TypeId((object)'a')) return 1;
+            if ((Cs2Wasm.Runtime.TypeInfo.Flags(id) & 1) != 0) return Cs2Wasm.Runtime.TypeInfo.Size(id);
+            if (throwIfNotMarshalable) throw new ArgumentException("Type cannot be marshaled as an unmanaged structure; no meaningful size or offset can be computed.");
+            return 4;
+        }
 
         private static int SizeOfHelper(RuntimeType rttype, bool throwIfNotMarshalable)
         {

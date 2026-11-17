@@ -140,14 +140,39 @@ namespace System
             return z + y * log10_2hi;
         }
 
+        // (msun's e_log2.c: the logarithm's high and low parts times 1/ln 2's, so the last bit is right)
         public static double Log2(double x)
         {
-            if (x > 0 && !double.IsInfinity(x))
+            const double two54 = 1.80143985094819840000e+16, ivln2hi = 1.44269504072144627571e+00, ivln2lo = 1.67517131648865118353e-10;
+            int hx = Hi(x); uint lx = Lo(x);
+            int k = 0;
+            if (hx < 0x00100000)
             {
-                long b = Rt.F64Bits(x);
-                if ((b & 0xFFFFFFFFFFFFFL) == 0 && ((b >> 52) & 0x7FF) != 0) return ((b >> 52) & 0x7FF) - 1023;
+                if (((hx & 0x7fffffff) | (int)lx) == 0) return double.NegativeInfinity;
+                if (hx < 0) return double.NaN;
+                k -= 54; x *= two54; hx = Hi(x);
             }
-            return Log(x) * 1.44269504088896338700e+00;
+            if (hx >= 0x7ff00000) return x + x;
+            if (hx == 0x3ff00000 && lx == 0) return 0;
+            k += (hx >> 20) - 1023;
+            hx &= 0x000fffff;
+            int i = (hx + 0x95f64) & 0x100000;
+            x = WithHi(x, hx | (i ^ 0x3ff00000));
+            k += i >> 20;
+            double y = k;
+            double f = x - 1.0;
+            double hfsq = 0.5 * f * f;
+            double s = f / (2.0 + f), z = s * s, w = z * z;
+            double t1 = w * (Lg2 + w * (Lg4 + w * Lg6));
+            double t2 = z * (Lg1 + w * (Lg3 + w * (Lg5 + w * Lg7)));
+            double r = s * (hfsq + (t2 + t1));
+            double hi = WithLo(f - hfsq, 0);
+            double lo = (f - hi) - hfsq + r;
+            double valHi = hi * ivln2hi;
+            double valLo = (lo + hi) * ivln2lo + lo * ivln2hi;
+            w = y + valHi;
+            valLo += (y - w) + valHi;
+            return valLo + w;
         }
 
         // ------------------------------------------------------------------ trig kernels

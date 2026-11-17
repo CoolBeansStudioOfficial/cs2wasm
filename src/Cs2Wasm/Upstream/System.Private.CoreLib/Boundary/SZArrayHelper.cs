@@ -10,7 +10,12 @@ namespace System
         public static int get_Count<T>(T[] a) => a.Length;
         public static bool get_IsReadOnly<T>(T[] a) => true;
         public static T get_Item<T>(T[] a, int index) => a[index];
-        public static void set_Item<T>(T[] a, int index, T value) => a[index] = value;
+        public static void set_Item<T>(T[] a, int index, T value)
+        {
+            // (the call came through IList<Base> on a Derived[]: the value is a Base, the array's elements Derived)
+            if (!typeof(T).IsValueType) Cs2Wasm.Runtime.Rt.StoreCheck(Cs2Wasm.Runtime.Rt.AddressOf(a), Cs2Wasm.Runtime.Rt.AddressOf((object?)value!));
+            a[index] = value;
+        }
         public static bool Contains<T>(T[] a, T value) => Array.IndexOf(a, value, 0, a.Length) >= 0;
         public static int IndexOf<T>(T[] a, T value) => Array.IndexOf(a, value, 0, a.Length);
         public static void CopyTo<T>(T[] a, T[] array, int index) => Array.Copy(a, 0, array, index, a.Length);

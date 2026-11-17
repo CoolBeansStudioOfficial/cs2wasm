@@ -138,8 +138,55 @@ namespace System
         }
 
         // cs2wasm: the copies FastCopy does not do, by element type id (Cs2WasmArrays.GetBoxed/SetBoxed): references
-        // with a check per element, boxing into and unboxing out of reference arrays. Primitive widening (int[] into
-        // long[]) is not supported yet.
+        // with a check per element, boxing into and unboxing out of reference arrays, and primitives into a wider
+        // primitive type (int[] into long[]) or the type of the same size and other sign (the CLR's rules).
+        static int WidenKind(int k) => k == 0x18 ? 0x08 : k == 0x19 ? 0x09 : k;
+
+        // (bit d of entry s: a value of kind s goes into an element of kind d; kinds are CorElementTypes 2..13)
+        static bool CanWiden(int s, int d)
+        {
+            int to = s switch
+            {
+                0x02 => 1 << 0x02,
+                0x03 => 1 << 0x03 | 1 << 0x07 | 1 << 0x08 | 1 << 0x09 | 1 << 0x0A | 1 << 0x0B | 1 << 0x0C | 1 << 0x0D,
+                0x04 => 1 << 0x04 | 1 << 0x06 | 1 << 0x08 | 1 << 0x0A | 1 << 0x0C | 1 << 0x0D,
+                0x05 => 1 << 0x05 | 1 << 0x03 | 1 << 0x06 | 1 << 0x07 | 1 << 0x08 | 1 << 0x09 | 1 << 0x0A | 1 << 0x0B | 1 << 0x0C | 1 << 0x0D,
+                0x06 => 1 << 0x06 | 1 << 0x08 | 1 << 0x0A | 1 << 0x0C | 1 << 0x0D,
+                0x07 => 1 << 0x07 | 1 << 0x03 | 1 << 0x08 | 1 << 0x09 | 1 << 0x0A | 1 << 0x0B | 1 << 0x0C | 1 << 0x0D,
+                0x08 => 1 << 0x08 | 1 << 0x0A | 1 << 0x0C | 1 << 0x0D,
+                0x09 => 1 << 0x09 | 1 << 0x0A | 1 << 0x0B | 1 << 0x0C | 1 << 0x0D,
+                0x0A => 1 << 0x0A | 1 << 0x0C | 1 << 0x0D,
+                0x0B => 1 << 0x0B | 1 << 0x0C | 1 << 0x0D,
+                0x0C => 1 << 0x0C | 1 << 0x0D,
+                0x0D => 1 << 0x0D,
+                _ => 0,
+            };
+            return (to >> d & 1) != 0;
+        }
+
+        static bool SameBits(int s, int d) => s == d || (s ^ d) == 1 && s >= 0x04 && s <= 0x0B && d >= 0x04 && d <= 0x0B && (s & ~1) == (d & ~1);
+
+        static unsafe void WidenCopy(Array src, int si, int sk, Array dst, int di, int dk, int n)
+        {
+            int ss = Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(src), ds = Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(dst);
+            byte* p = (byte*)Cs2Wasm.Runtime.Cs2WasmArrays.Data(src) + si * ss, q = (byte*)Cs2Wasm.Runtime.Cs2WasmArrays.Data(dst) + di * ds;
+            for (int i = 0; i < n; i++, p += ss, q += ds)
+            {
+                if (sk == 0x0C) { if (dk == 0x0C) *(float*)q = *(float*)p; else *(double*)q = *(float*)p; continue; }
+                if (sk == 0x0D) { *(double*)q = *(double*)p; continue; }
+                long v = sk switch { 0x02 or 0x05 => *p, 0x04 => *(sbyte*)p, 0x06 => *(short*)p, 0x03 or 0x07 => *(ushort*)p, 0x08 => *(int*)p, 0x09 => *(uint*)p, _ => *(long*)p };
+                switch (dk)
+                {
+                    case 0x02: case 0x04: case 0x05: *q = (byte)v; break;
+                    case 0x03: case 0x06: case 0x07: *(short*)q = (short)v; break;
+                    case 0x08: case 0x09: *(int*)q = (int)v; break;
+                    case 0x0A: case 0x0B: *(long*)q = v; break;
+                    case 0x0C: *(float*)q = sk == 0x0B ? (float)(ulong)v : (float)v; break;
+                    default: *(double*)q = sk == 0x0B ? (double)(ulong)v : (double)v; break;
+                }
+            }
+        }
+
         private static void CopySlow(Array sourceArray, int sourceIndex, Array destinationArray, int destinationIndex, int length, bool reliable)
         {
             int source_pos = sourceIndex - sourceArray.GetLowerBound(0);
@@ -163,8 +210,16 @@ namespace System
             bool sv = (Cs2Wasm.Runtime.TypeInfo.Flags(se) & 1) != 0, dv = (Cs2Wasm.Runtime.TypeInfo.Flags(de) & 1) != 0;
             if (sv && dv)
             {
-                if (Cs2Wasm.Runtime.Cs2WasmArrays.PrimitiveKind(se) != 0 && Cs2Wasm.Runtime.Cs2WasmArrays.PrimitiveKind(de) != 0 && !reliable)
-                    throw Cs2Wasm.Runtime.TypeInfo.NotYet("Array.Copy with primitive widening");
+                int sk = WidenKind(Cs2Wasm.Runtime.Cs2WasmArrays.PrimitiveKind(se)), dk = WidenKind(Cs2Wasm.Runtime.Cs2WasmArrays.PrimitiveKind(de));
+                if (sk != 0 && dk != 0 && !reliable)
+                {
+                    if (SameBits(sk, dk))
+                    {
+                        Cs2Wasm.Runtime.Cs2WasmArrays.CopyElements(sourceArray, source_pos, destinationArray, dest_pos, length, Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(sourceArray));
+                        return;
+                    }
+                    if (CanWiden(sk, dk)) { WidenCopy(sourceArray, source_pos, sk, destinationArray, dest_pos, dk, length); return; }
+                }
                 throw new ArrayTypeMismatchException(SR.ArrayTypeMismatch_CantAssignType);
             }
             if (sv ? !Cs2Wasm.Runtime.TypeInfo.IsAssignable(de, se)
@@ -412,6 +467,24 @@ namespace System
                 same = sk != 0 && sk == Cs2Wasm.Runtime.Cs2WasmArrays.PrimitiveKind(de);
             }
             if (!same) return false;
+            // References into an array of another element type (object[] to string[]): each must be an element of
+            // the destination's; those before the first that is not are copied, then InvalidCastException.
+            int st = Cs2Wasm.Runtime.Rt.TypeId(src), dt = Cs2Wasm.Runtime.Rt.TypeId(dst);
+            if (st != dt && Cs2Wasm.Runtime.Cs2WasmArrays.HasCountedElements(src) && size == 4
+                && (Cs2Wasm.Runtime.TypeInfo.Flags(Cs2Wasm.Runtime.TypeInfo.ElementId(st)) & 1) == 0
+                && !Cs2Wasm.Runtime.Rt.ElementFits(Cs2Wasm.Runtime.TypeInfo.ElementId(dt), Cs2Wasm.Runtime.TypeInfo.ElementId(st)))
+            {
+                int de = Cs2Wasm.Runtime.TypeInfo.ElementId(dt), data = Cs2Wasm.Runtime.Cs2WasmArrays.Data(src) + 4 * source_idx;
+                for (int i = 0; i < length; i++)
+                {
+                    int v = Cs2Wasm.Runtime.Mem.LoadI32(data + 4 * i);
+                    if (v != 0 && !Cs2Wasm.Runtime.Rt.ElementFits(de, Cs2Wasm.Runtime.Mem.LoadI32(v + 4)))
+                    {
+                        Cs2Wasm.Runtime.Cs2WasmArrays.CopyElements(src, source_idx, dst, dest_idx, i, size);
+                        throw new InvalidCastException(SR.InvalidCast_DownCastArrayElement);
+                    }
+                }
+            }
             Cs2Wasm.Runtime.Cs2WasmArrays.CopyElements(src, source_idx, dst, dest_idx, length, size);
             return true;
         }

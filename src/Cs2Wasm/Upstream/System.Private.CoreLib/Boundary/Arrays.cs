@@ -12,6 +12,8 @@ namespace Cs2Wasm.Runtime
         /// <summary>Copies elements of arrays of one element type, counting references (overlap allowed).</summary>
         [Intrinsic] internal static extern void CopyElements(Array src, int si, Array dst, int di, int length, int size);
         [Intrinsic] internal static extern void ClearElements(Array a, int index, int length, int size);
+        /// <summary>Tells the compiler that elements are read as objects: every array's element type is boxed somewhere.</summary>
+        [Intrinsic] internal static extern void BoxesElements();
 
         /// <summary>Array.Clear of elements that are or hold counted references: each is released, then the zeros.
         /// False when the elements hold none (the caller's zeros are all there is to do).</summary>
@@ -46,6 +48,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>Element `pos` as an object: a reference as it is, a value boxed (Array.GetValue).</summary>
         internal static object? GetBoxed(Array a, int pos)
         {
+            BoxesElements();
             int e = TypeInfo.ElementId(Rt.TypeId(a));
             int size = ElementSize(a);
             int addr = Data(a) + pos * size;

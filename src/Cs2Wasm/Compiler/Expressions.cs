@@ -957,7 +957,8 @@ sealed partial class FunctionCompiler
         if (c.Operand.Type == null)
         {
             // null literal or default literal
-            if (Types.IsStruct(to)) return EmitDefault(to);
+            // (`c ? value : throw e` has no type either: the throw is what runs)
+            if (Types.IsStruct(to) && c.Operand is not IThrowOperation) return EmitDefault(to);
             var o = EmitValue(c.Operand);
             return o;
         }
@@ -1869,6 +1870,17 @@ sealed partial class FunctionCompiler
             FreeScratch(ValType.I32, c0);
             return lv.Store(r, needResult);
         }
+        if (ca.OperatorKind == BinaryOperatorKind.Add && tt.SpecialType == SpecialType.System_Object)
+        {
+            // o += x on an object: the text of what it holds (none for null) and x's, as a string
+            var cur = lv.Load();
+            ToCallSafe(cur, tt);
+            E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "TextOf", 1).Fn);
+            int c0 = Scratch(ValType.I32); E.Set(c0);
+            var r = ConcatParts([() => { E.Get(c0); return Own.Owned; }, () => EmitToString(ca.Value)]);
+            FreeScratch(ValType.I32, c0);
+            return lv.Store(r, needResult);
+        }
         if (ca.OperatorKind is BinaryOperatorKind.Add or BinaryOperatorKind.Subtract && tt.TypeKind == TypeKind.Delegate)
         {
             var cur = lv.Load(); ToCallSafe(cur, tt);
@@ -2105,7 +2117,7 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null) : LValue(f, t)
     {
         int _addr = -1, _off;
         public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
@@ -2120,6 +2132,19 @@ sealed partial class FunctionCompiler
         public override Own Store(Own o, bool needResult)
         {
             if (site != null && !_noted) site.AddValue(Type);
+            if (covariant != null && container >= 0)
+            {
+                // An array of a derived element type can stand where this array type does (string[] as object[]):
+                // what is stored must be an element of the array that is there (ArrayTypeMismatchException). The
+                // array is of the very type the code names, nearly always: one comparison.
+                int sv = F.Scratch(ValType.I32);
+                F.E.Tee(sv);
+                F.E.Get(container); F.E.Load(Op.I32Load, 4); F.E.Tid(F.D.TypeId(covariant)); F.E.Op(Op.I32Ne);
+                F.E.If();
+                F.E.Get(container); F.E.Get(sv); F.E.Call(F.D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreCheck", 2).Fn);
+                F.E.End();
+                F.FreeScratch(ValType.I32, sv);
+            }
             // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
                 pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh);
@@ -2334,7 +2359,11 @@ sealed partial class FunctionCompiler
             case IArrayElementReferenceOperation ae when Types.IsRef(t) && TypeOf(ae.ArrayReference) is IArrayTypeSymbol at:
                 {
                     int keep = E.AddLocal(ValType.I32);
-                    return new MemLV(this, t, () => EmitArrayElementAddress(ae, keep), D.Arenas.ArraySite(at), keep, pub: Publish.Container, elements: true);
+                    // (a sealed element type has no derived one: the array can only be of this type)
+                    var et = T.Canonical(at.ElementType);
+                    bool exact = et is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Delegate, IsSealed: true } || Types.IsString(et);
+                    return new MemLV(this, t, () => EmitArrayElementAddress(ae, keep), D.Arenas.ArraySite(at), keep, pub: Publish.Container, elements: true,
+                        covariant: exact || at.Rank != 1 ? null : (IArrayTypeSymbol)T.Canonical(at));
                 }
         }
         return new MemLV(this, t, () => EmitAddressBase(target), elements: true);
@@ -2663,6 +2692,45 @@ sealed partial class FunctionCompiler
             case IRecursivePatternOperation rp:
                 {
                     var mt = rp.MatchedType != null ? T.Resolve(rp.MatchedType, Map) : vt;
+                    // `o is (a, b)` on a value that is no tuple and has no Deconstruct: by ITuple, its Length and items
+                    var ituple = rp.DeconstructionSubpatterns.Length > 0 && rp.DeconstructSymbol is null or ITypeSymbol && !IsValueTuple(mt)
+                        ? D.LibType("System.Runtime.CompilerServices.ITuple") : null;
+                    if (ituple != null)
+                    {
+                        EmitTestType(v, vt, mt);
+                        E.If(ValType.I32);
+                        if (rp.DeclaredSymbol != null) BindPatternVariable(rp.DeclaredSymbol, v, vt, mt);
+                        int mv = Narrowed(v, vt, mt);
+                        EmitTestType(mv, mt, ituple);
+                        E.If(ValType.I32);
+                        int tv = Narrowed(mv, mt, ituple);
+                        _patternInputs.Add((mv, mt));
+                        var length = ituple.GetMembers("Length").OfType<IPropertySymbol>().First().GetMethod!;
+                        var item = ituple.GetMembers().OfType<IPropertySymbol>().First(p => p.IsIndexer).GetMethod!;
+                        var obj = D.Main.GetSpecialType(SpecialType.System_Object);
+                        CallWith(length, true, () => E.Get(tv), () => { }, null, rp.Syntax);
+                        E.I32(rp.DeconstructionSubpatterns.Length); E.Op(Op.I32Eq);
+                        E.If(ValType.I32);
+                        var items = new List<(int local, ITypeSymbol type)>();
+                        for (int k = 0; k < rp.DeconstructionSubpatterns.Length; k++)
+                        {
+                            int off = TempValue(obj);
+                            int kk = k;
+                            var own = CallWith(item, true, () => E.Get(tv), () => E.I32(kk), null, rp.Syntax);
+                            ToOwned(own);
+                            int l = E.AddLocal(ValType.I32);
+                            E.Set(l);
+                            E.Get(_fb); E.Load(Op.I32Load, off); E.Call(Rt.Release);
+                            E.Get(_fb); E.Get(l); E.Store(Op.I32Store, off);
+                            items.Add((l, obj));
+                        }
+                        EmitPartPatterns(rp.DeconstructionSubpatterns, items, 0, () => EmitSubpatterns(rp.PropertySubpatterns, 0));
+                        E.Else(); E.I32(0); E.End();
+                        _patternInputs.RemoveAt(_patternInputs.Count - 1);
+                        E.Else(); E.I32(0); E.End();
+                        E.Else(); E.I32(0); E.End();
+                        return;
+                    }
                     EmitTestType(v, vt, mt);
                     E.If(ValType.I32);
                     // narrowed value
