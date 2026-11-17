@@ -843,9 +843,6 @@ namespace Cs2Wasm.Runtime
             if (w != -2 || (Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
             // (no reference of either kind: it goes now, with what only it referred to)
             if (Mem.LoadI32(p - 4) == 0) { ArenaDestroyFrom(p); ArenaPending(); return; }
-            // (it lost an inside reference while this outside one held it: see whether it heads a part cut off)
-            int h = Mem.LoadI32(p + 8);
-            if (h < 0) { Mem.StoreI32(p + 8, h & int.MaxValue); ArenaSplit(p); ArenaPending(); }
         }
 
         /// <summary>
@@ -932,11 +929,6 @@ namespace Cs2Wasm.Runtime
                 int n = Mem.LoadI32(old - 4) - 1;
                 Mem.StoreI32(old - 4, n);
                 if (n == 0) { if (co == -2) { ArenaDestroyFrom(old); ArenaPending(); } }
-                // other inside references remain: with no outside one it may head a part of the arena that is cut off
-                // now; with one, that is looked at when the last outside one goes (the mark: bit 31 of the hash word,
-                // a member's to use, as a member is never pinned)
-                else if (co == -2) { ArenaSplit(old); ArenaPending(); }
-                else Mem.StoreI32(old + 8, Mem.LoadI32(old + 8) | int.MinValue);
             }
             RuntimeUnlock();
             if (!inside) Release(Borrow<object>(old));
@@ -1079,59 +1071,6 @@ namespace Cs2Wasm.Runtime
                 s_pendingN--;
                 ArenaRelease(Mem.LoadI32(s_pending + 4 * s_pendingN));
             }
-        }
-
-        /// <summary>
-        /// A member with inside references and no outside one, which just lost an inside reference: is it the head of a
-        /// part of the arena that only refers to itself? Counted from it: a member's references to other members are
-        /// taken off their inside counts, and a member whose count reaches zero that way (every reference to it came
-        /// from the part) is counted through in turn. If the head's own count reaches zero too, nothing outside the
-        /// part refers into it: it is destroyed, as an arena is. If not, the counts are put back. Only members all
-        /// of whose referrers are in the part are ever counted through, so the work is the size of the part: what is
-        /// freed, when it is; else what only the head refers to, up to SplitMax members.
-        /// </summary>
-        static void ArenaSplit(int x)
-        {
-            int ar = ArenaOf(x);
-            if ((Mem.LoadI32(ar + 12) & (ArenaBusy | ArenaShared)) != 0) return;
-            if (s_split == 0) s_split = Alloc(SplitMax * 4);
-            int buf = s_split;
-            int sa = s_visitArena, sm = s_visitMode;
-            s_visitArena = ar; s_visitMode = 2; s_splitRoot = x; s_splitN = 1; s_splitOver = 0;
-            Mem.StoreI32(buf, x);
-            int seen = 0;
-            while (seen < s_splitN && s_splitOver == 0) { ArenaVisitObject(Mem.LoadI32(buf + 4 * seen)); seen++; }
-            int n = s_splitN;
-            if (s_splitOver != 0 || Mem.LoadI32(x - 4) != 0)
-            {
-                // something outside the part refers into it (or it is too large to tell): as it was
-                s_visitMode = 3;
-                for (int i = 0; i < seen; i++) ArenaVisitObject(Mem.LoadI32(buf + 4 * i));
-                s_visitArena = sa; s_visitMode = sm;
-                return;
-            }
-            // the part goes: off the arena's ring (a list of its own, by the next word), its inside references taken
-            // out (counted off already), then each member as any object
-            int dead = 0;
-            for (int i = 0; i < n; i++)
-            {
-                int m = Mem.LoadI32(buf + 4 * i);
-                ArenaTakeOut(ar, m);
-                Mem.StoreI32(m - 12, dead);
-                dead = m;
-            }
-            s_visitMode = 1;
-            for (int m = dead; m != 0; m = Mem.LoadI32(m - 12)) ArenaVisitObject(m);
-            s_visitArena = sa; s_visitMode = sm;
-            for (int m = dead; m != 0; m = Mem.LoadI32(m - 12)) { Mem.StoreI32(m, 0); Mem.StoreI32(m - 16, 0); }
-            for (int m = dead; m != 0; m = Mem.LoadI32(m - 12)) ArenaClearObject(m);
-            for (int m = dead; m != 0;)
-            {
-                int next = Mem.LoadI32(m - 12);
-                ArenaFreeObject(m);
-                m = next;
-            }
-            ArenaEmpty(ar);
         }
 
         /// <summary>No outside reference remains: the whole arena goes (its members' inside references are taken out,

@@ -327,6 +327,13 @@ internal sealed class Arenas
         for (int i = 0; i < total; i++) if (scc[i] != 0) scc[i] = renumber.GetValueOrDefault(scc[i], -1);
         _scc = scc[..n];
         for (int id = 0; id < n; id++) if (_scc[id] != 0) CycleTypes.Add(id);
+        // The program's own classes among them are told to the programmer (section 4.3; as Lobster reports cycles, but
+        // when building): nothing looks for a let-go part of such a group at run time, so where that matters the
+        // cycle is the programmer's to break.
+        foreach (var id in CycleTypes)
+            if (D.TypeById[id] is INamedTypeSymbol { TypeKind: TypeKind.Class, IsImplicitlyDeclared: false } nt && !D.IsLibrary(nt)
+                && nt.Locations.FirstOrDefault(l => l.IsInSource) is { } at && nt.CanBeReferencedByName)
+                D.Report(Diags.CyclePossible, at, nt.ToDisplayString());
         // a site is cyclic when one of its nodes is on a cycle (then some container and a type it holds are on it)
         foreach (var (s, hubs) in siteNodes)
             s.Cyclic = hubs.Any(h => scc[h] != 0);

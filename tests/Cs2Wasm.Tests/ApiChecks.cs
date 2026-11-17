@@ -308,7 +308,9 @@ static class ApiChecks
             }
             """, "1000000\n"));
 
-        Check("cycles: a long-lived tree that keeps dropping subtrees stays in a fixed 16 MB memory (the part cut off is freed at the store that cuts it)", () => Bounded("api_cycles_tree", """
+        // (section 4.3: objects that refer to each other in a cycle are freed together, when nothing outside the group
+        // refers to any of them; no part of a group is looked for or freed on its own while the group lives)
+        Check("cycles: trees whose nodes link back to their parents, built and dropped, stay in a fixed 16 MB memory (each is freed whole with its last outside reference)", () => Bounded("api_cycle_trees", """
             class T {
                 public T Parent; public List<T> Kids = new(); public object Tag;
                 public T Add(T c) { c.Parent = this; Kids.Add(c); return c; }
@@ -316,16 +318,17 @@ static class ApiChecks
             static class P {
                 [UnmanagedCallersOnly(EntryPoint = "main")]
                 static void M() {
-                    var root = new T();
+                    int kids = 0;
                     for (int i = 0; i < 100000; i++) {
+                        var root = new T();
                         var sub = root.Add(new T());
                         for (int j = 0; j < 4; j++) sub.Add(new T()).Tag = sub;
-                        if (root.Kids.Count > 8) root.Kids.RemoveAt(0);
+                        kids += sub.Kids.Count + root.Kids.Count;
                     }
-                    Console.WriteLine(root.Kids.Count + " " + root.Kids[0].Kids.Count);
+                    Console.WriteLine(kids);
                 }
             }
-            """, "8 4\n"));
+            """, "500000\n"));
 
         Check("threads: 200 threads one after another run in a fixed 16 MB memory (stacks and thread-local blocks reused)", () => Bounded("api_thread_reuse", """
             using System.Threading;

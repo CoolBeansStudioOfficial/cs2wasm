@@ -127,6 +127,7 @@ public static class Diags
     public static readonly DiagnosticDescriptor LibraryMissing = E("CW0100", "Library member not implemented", "'{0}' is not implemented in cs2wasm's library yet");
     public static readonly DiagnosticDescriptor Unsupported = E("CW0101", "Not supported yet", "{0}");
     public static readonly DiagnosticDescriptor LibraryError = E("CW0102", "Library error", "cs2wasm library failed to compile: {0}");
+    public static readonly DiagnosticDescriptor CyclePossible = I("CW0202", "Reference cycle possible", "objects of '{0}' can refer to each other in a cycle; such a group is freed together, when nothing outside it refers to any of its objects (objects nothing refers to go at once; a let-go part whose objects still refer to each other stays until the group goes)");
     public static readonly DiagnosticDescriptor BlockingWait = I("CW0200", "Blocking wait", "'{0}' blocks; on the engine thread it costs frame time");
     public static readonly DiagnosticDescriptor ReflectionUnknown = W("CW0201", "Reflection the compiler cannot follow", "'{0}' on a type the compiler cannot see: metadata it needs may be missing (keep the type with [DynamicallyAccessedMembers])");
     public static readonly DiagnosticDescriptor Plugin = E("CW0300", "Plugin error", "{0}");
