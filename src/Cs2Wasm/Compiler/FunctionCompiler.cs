@@ -1108,13 +1108,16 @@ sealed partial class FunctionCompiler
             // (a struct enumerator from an abstract, virtual or interface GetEnumerator of a class or interface: the
             // call dispatches, as for a class enumerator; Roslyn's Rope, AbstractLookupSymbolsInfo.IArityEnumerable)
             bool dispatch = !collType.IsValueType && (getEnum.IsVirtual || getEnum.IsAbstract || getEnum.IsOverride || getEnum.ContainingType.TypeKind == TypeKind.Interface);
-            EmitCallResolved(SubstMethod(getEnum), () => ReceiverFromLocal(collLocal, collType, coll), [], dispatch, intoAddr: () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); });
+            // (an extension GetEnumerator takes the collection as its argument)
+            if (getEnum.IsStatic) CallWith(SubstMethod(getEnum), false, null, () => ReceiverFromLocal(collLocal, collType, coll), () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); }, fe.Syntax);
+            else EmitCallResolved(SubstMethod(getEnum), () => ReceiverFromLocal(collLocal, collType, coll), [], dispatch, intoAddr: () => { E.Get(_fb); E.I32(off); E.Op(Op.I32Add); });
             enumLocal = -1;
         }
         else
         {
             enumLocal = E.AddLocal(ValType.I32);
-            var r = EmitCallResolved(SubstMethod(getEnum), () => ReceiverFromLocal(collLocal, collType, coll), [], getEnum.IsVirtual || getEnum.IsAbstract || getEnum.ContainingType.TypeKind == TypeKind.Interface);
+            var r = getEnum.IsStatic ? CallWith(SubstMethod(getEnum), false, null, () => ReceiverFromLocal(collLocal, collType, coll), null, fe.Syntax)
+                : EmitCallResolved(SubstMethod(getEnum), () => ReceiverFromLocal(collLocal, collType, coll), [], getEnum.IsVirtual || getEnum.IsAbstract || getEnum.ContainingType.TypeKind == TypeKind.Interface);
             if (Types.IsRef(enumType)) { ToOwned(r); E.Set(enumLocal); AddOwned(new Slot { Local = enumLocal, Type = enumType }); }
             else E.Set(enumLocal);
             ev = new Var { Type = enumType, Local = enumLocal };
@@ -2025,7 +2028,8 @@ sealed partial class FunctionCompiler
         if (_valueEqualsType != null) { EmitValueEquals(); return; }
         if (_objectArrayThunkHandler != null) { EmitObjectArrayThunk(); return; }
         if (def.IsExtern && def.GetAttributes().Any(a => a.AttributeClass?.Name == "UnsafeAccessorAttribute")) { EmitUnsafeAccessorBody(); return; }
-        if (_anonType != null || def.ContainingType.IsAnonymousType) { EmitAnonymousMember(); return; }
+        // (a lambda with default or params parameters has a delegate type of its own, anonymous too: a delegate like any)
+        if (_anonType != null || def.ContainingType.IsAnonymousType && def.ContainingType.TypeKind != TypeKind.Delegate) { EmitAnonymousMember(); return; }
         if (def.ContainingType.IsRecord && def.IsImplicitlyDeclared && !(def.AssociatedSymbol is IPropertySymbol ap && Driver.AutoPropertyField(ap) != null) || def.ContainingType.IsRecord && def.MethodKind == MethodKind.Constructor && !Driver.HasBody(def)) { EmitRecordMember(); return; }
         if (def.MethodKind == MethodKind.Constructor)
         {

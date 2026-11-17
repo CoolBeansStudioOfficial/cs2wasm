@@ -975,6 +975,10 @@ sealed partial class FunctionCompiler
                 yield return asg.Value;
                 yield break;
             case IArgumentOperation arg: yield return arg.Value; yield break;
+            // (an interpolated string's parts are not values: what each hole evaluates is)
+            case IInterpolatedStringOperation iso:
+                foreach (var part in iso.Parts) if (part is IInterpolationOperation ip) yield return ip.Expression;
+                yield break;
         }
         foreach (var c in o.ChildOperations)
         {

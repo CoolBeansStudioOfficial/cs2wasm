@@ -8,5 +8,8 @@ namespace System
 {
     public abstract partial class MulticastDelegate
     {
+        // (equal: the same type, and the same targets and methods in the same order; Delegate.Mono.cs)
+        public sealed override bool Equals([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] object? obj) => base.Equals(obj);
+        public sealed override int GetHashCode() => base.GetHashCode();
     }
 }

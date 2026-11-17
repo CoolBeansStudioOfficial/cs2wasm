@@ -936,6 +936,10 @@ sealed partial class FunctionCompiler
     // =====================================================================
     Own EmitConversion(IConversionOperation c)
     {
+        // An interpolated string taken as a FormattableString or IFormattable (FormattableString.Invariant($"..")):
+        // the composite format and the holes' values, as the C# compiler builds it.
+        if (c.Operand is IInterpolatedStringOperation fiso && c.Type is { } ft && ft.Name is "FormattableString" or "IFormattable" && ft.ContainingNamespace?.ToDisplayString() == "System")
+            return EmitFormattableString(fiso);
         var to = TypeOf(c);
         if (c.Operand is IAnonymousFunctionOperation af) return EmitLambdaDelegate(af, to);
         if (c.Operand is IDelegateCreationOperation or IMethodReferenceOperation && to.TypeKind == TypeKind.Delegate && c.Operand is IMethodReferenceOperation mr)
@@ -1336,6 +1340,16 @@ sealed partial class FunctionCompiler
         var lt = ltN;
         var rt = rtN;
         var kind = b.OperatorKind;
+        // Two delegates are equal when they are of one type and call the same methods on the same targets (C#
+        // 12.12.9): not only when they are one object.
+        if (kind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && b.OperatorMethod == null && IsDelegateLike(lt) && IsDelegateLike(rt))
+        {
+            var dl = EmitValue(b.LeftOperand); ToCallSafe(dl, lt);
+            var dr = EmitValue(b.RightOperand); ToCallSafe(dr, rt);
+            E.Call(D.LibMethod("System.Delegate", "op_Equality", 2).Fn);
+            if (kind == BinaryOperatorKind.NotEquals) E.Op(Op.I32Eqz);
+            return Own.None;
+        }
         if (kind is BinaryOperatorKind.ConditionalAnd or BinaryOperatorKind.ConditionalOr)
         {
             EmitCondition(b.LeftOperand);
@@ -1412,6 +1426,7 @@ sealed partial class FunctionCompiler
     }
 
     static bool IsBuiltinOperator(IMethodSymbol m) => false;
+    static bool IsDelegateLike(ITypeSymbol t) => t.TypeKind == TypeKind.Delegate || t is INamedTypeSymbol { Name: "Delegate" or "MulticastDelegate", ContainingNamespace.Name: "System" };
 
     /// <summary>Stack: a b (in prim p) → result.</summary>
     void EmitArith(BinaryOperatorKind kind, Prim p, bool isChecked, Prim result)
@@ -1614,7 +1629,7 @@ sealed partial class FunctionCompiler
     /// <summary>Pushes a string for any value: strings as-is (null stays null; Concat treats it as empty), others via ToString().</summary>
     Own EmitToString(IOperation op, string? format = null)
     {
-        while (op is IConversionOperation { Conversion.IsImplicit: true } cv && cv.Operand.Type != null && cv.Type != null && (cv.Conversion.IsReference || (cv.Operand.Type.IsValueType && !cv.Type.IsValueType))) op = cv.Operand;
+        while (!_precomputed.ContainsKey(op) && op is IConversionOperation { Conversion.IsImplicit: true } cv && cv.Operand.Type != null && cv.Type != null && (cv.Conversion.IsReference || (cv.Operand.Type.IsValueType && !cv.Type.IsValueType))) op = cv.Operand;
         var t = TypeOf(op);
         if (Types.IsString(t) && format == null) return EmitValue(op);
         return EmitToStringOfValue(() => EmitValue(op), t, format, op);
@@ -1714,6 +1729,42 @@ sealed partial class FunctionCompiler
         E.End();
         FreeScratch(ValType.I32, v);
         // both branches are owned (+1) or immortal; treat as owned (release of an immortal literal is a no-op)
+        return Own.Owned;
+    }
+
+    Own EmitFormattableString(IInterpolatedStringOperation iso)
+    {
+        var format = new System.Text.StringBuilder();
+        var holes = new List<IInterpolationOperation>();
+        foreach (var part in iso.Parts)
+        {
+            if (part is IInterpolatedStringTextOperation text) format.Append(((string?)text.Text.ConstantValue.Value ?? "").Replace("{", "{{").Replace("}", "}}"));
+            else if (part is IInterpolationOperation ip)
+            {
+                format.Append('{').Append(holes.Count);
+                if (ip.Alignment?.ConstantValue.Value is int al) format.Append(',').Append(al);
+                if (ip.FormatString?.ConstantValue.Value is string fs) format.Append(':').Append(fs);
+                format.Append('}');
+                holes.Add(ip);
+            }
+            else throw new CompileException("unsupported interpolation part", part.Syntax.GetLocation());
+        }
+        var objT = D.ObjectType;
+        var arrT = T.Canonical(D.LibCompilation.CreateArrayTypeSymbol(objT));
+        int arr = E.AddLocal(ValType.I32);
+        E.I32(holes.Count); E.I32(4); E.Tid(D.MarkConstructed(arrT)); E.Call(Rt.AllocArray); E.Set(arr);
+        var slot = new Slot { Local = arr, Type = arrT };
+        RegisterTemp(slot);
+        for (int i = 0; i < holes.Count; i++)
+        {
+            BeginTemps();
+            var o = EmitValueAs(holes[i].Expression, objT);
+            StoreToAddressFromStack(() => E.Get(arr), Types.ArrayDataOffset(1) + 4 * i, objT, o, pub: Publish.None);
+            EndTemps();
+        }
+        var create = D.LibMethod("System.Runtime.CompilerServices.FormattableStringFactory", "Create", 2);
+        E.I32Addr(D.StringLiteral(format.ToString())); E.Get(arr);
+        E.Call(create.Fn);
         return Own.Owned;
     }
 
@@ -2680,7 +2731,14 @@ sealed partial class FunctionCompiler
             case IBinaryPatternOperation bp:
                 EmitPattern(bp.LeftPattern, v, vt);
                 E.If(ValType.I32);
-                if (bp.OperatorKind == BinaryOperatorKind.And) { EmitPattern(bp.RightPattern, v, vt); E.Else(); E.I32(0); }
+                if (bp.OperatorKind == BinaryOperatorKind.And)
+                {
+                    // (the left side may have told the type: `int[] and [var first, ..]` takes the value as an int[])
+                    var rit = bp.RightPattern.InputType != null ? T.Resolve(bp.RightPattern.InputType, Map) : vt;
+                    if (Types.Key(T.Canonical(rit)) != Types.Key(T.Canonical(vt)) && !IsNullable(vt)) EmitPattern(bp.RightPattern, Narrowed(v, vt, rit), rit);
+                    else EmitPattern(bp.RightPattern, v, vt);
+                    E.Else(); E.I32(0);
+                }
                 else { E.I32(1); E.Else(); EmitPattern(bp.RightPattern, v, vt); }
                 E.End();
                 return;
