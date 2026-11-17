@@ -68,7 +68,14 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
   return {
     fs_open: (p, len, flags, mode) => tryDo(() => {
       const r = real(p, len);
-      const fd = (flags & 3) === 0 && !(flags & 0x20) && fs.existsSync(r) && fs.statSync(r).isDirectory() ? fs.openSync(r, 'r') : fs.openSync(r, flagsOf(flags), mode);
+      // (a directory opened for reading is opened as one; asked only when the plain open fails: a compiler that
+      // reads thousands of files paid two more system calls for each)
+      let fd;
+      try { fd = fs.openSync(r, flagsOf(flags), mode); }
+      catch (e) {
+        if ((flags & 3) !== 0 || (flags & 0x20) || !fs.existsSync(r) || !fs.statSync(r).isDirectory()) throw e;
+        fd = fs.openSync(r, 'r');
+      }
       pos.set(fd, 0);
       return fd;
     }),

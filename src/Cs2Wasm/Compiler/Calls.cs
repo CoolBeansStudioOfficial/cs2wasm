@@ -153,7 +153,7 @@ sealed partial class FunctionCompiler
         int save = E.CurrentPos;
         Action? pushThis = null;
         ITypeSymbol? recvType = null;
-        bool virt = isVirtual;
+        bool virt = isVirtual, thisByValue = false;
         // `((ISpanFormattable)value).TryFormat(...)` on a value of a known value type (generic code over T = int):
         // call the type's own implementation, as the JIT does, instead of boxing and dispatching to every
         // implementation of the interface. Only for types whose methods cannot change `this` (primitives, enums,
@@ -177,7 +177,12 @@ sealed partial class FunctionCompiler
                 {
                     m = impl; virt = false;
                     var callee = m;
-                    pushThis = () => PushValueTypeReceiver(instance, rt, callee);
+                    // (a number's own method: the copy that takes the number itself, Driver.ThisValueVariant)
+                    thisByValue = s_thisByValue && Types.PrimOf(rt) != Prim.None && !Types.IsStruct(rt) && rt.TypeKind == TypeKind.Struct && _clone == null
+                        && !IsStaticInterfaceMember(m) && !args.Any(HasHandlerPlaceholders) && ConstArgsFor(m, args) == null
+                        && (m.Parameters.Length == 0 || D.ConsumingOf(m).Mask == 0) && D.CanPassThisByValue(m);
+                    if (thisByValue) pushThis = () => { EmitValueAs(instance, rt); };
+                    else pushThis = () => PushValueTypeReceiver(instance, rt, callee);
                 }
                 else
                 {
@@ -220,10 +225,12 @@ sealed partial class FunctionCompiler
             E.CurrentPos = save;
             return spilled;
         }
-        var r = CallWith(m, virt, pushThis, () => PushArgs(m, args), null, syntax, ConstArgsFor(m, args), stableRecv: instance != null && IsStableBase(instance));
+        var r = CallWith(m, virt, pushThis, () => PushArgs(m, args), null, syntax, ConstArgsFor(m, args), stableRecv: instance != null && IsStableBase(instance), thisByValue: thisByValue);
         E.CurrentPos = save;
         return r;
     }
+
+    static readonly bool s_thisByValue = Environment.GetEnvironmentVariable("CS2WASM_NO_THIS_BY_VALUE") != "1";
 
     int _refPoolLast => -1;
 
@@ -496,7 +503,7 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Calls a resolved method. Pushes the struct-return destination, then receiver, then arguments.</summary>
-    Own CallWith(IMethodSymbol m, bool virt, Action? pushThis, Action pushArgs, Action? intoAddr, SyntaxNode? syntax, IReadOnlyDictionary<int, ConstArg>? consts = null, bool stableRecv = false)
+    Own CallWith(IMethodSymbol m, bool virt, Action? pushThis, Action pushArgs, Action? intoAddr, SyntaxNode? syntax, IReadOnlyDictionary<int, ConstArg>? consts = null, bool stableRecv = false, bool thisByValue = false)
     {
         bool sret = ReturnsStruct(m);
         int sretOff = -1;
@@ -525,7 +532,7 @@ sealed partial class FunctionCompiler
         // (the callee owns them now)
         if (cc != null) foreach (var tl in cc.Temps) { E.I32(0); E.Set(tl); }
         _wantRefReturnAddress = wantAddress;
-        return EmitCallInstr(m, dispatch, syntax, sretOff, consts, cc?.Moved ?? 0, stableRecv);
+        return EmitCallInstr(m, dispatch, syntax, sretOff, consts, cc?.Moved ?? 0, stableRecv, thisByValue);
     }
 
     /// <summary>Arguments are already on the stack (not for struct-returning methods unless the destination was pushed first).</summary>
@@ -535,7 +542,7 @@ sealed partial class FunctionCompiler
         return EmitCallInstr(m, virt && IsVirtualDispatch(m), null, -1);
     }
 
-    Own EmitCallInstr(IMethodSymbol m, bool virt, SyntaxNode? syntax, int sretOff, IReadOnlyDictionary<int, ConstArg>? consts = null, int owned = 0, bool stableRecv = false)
+    Own EmitCallInstr(IMethodSymbol m, bool virt, SyntaxNode? syntax, int sretOff, IReadOnlyDictionary<int, ConstArg>? consts = null, int owned = 0, bool stableRecv = false, bool thisByValue = false)
     {
         if (IsStaticInterfaceMember(m) && TryStaticInterfaceMember(ref m, out var sim)) return sim;
         var rt = T.Canonical(m.ReturnType);
@@ -559,6 +566,7 @@ sealed partial class FunctionCompiler
         {
             var mi = D.Method(m, consts);
             if (owned != 0) mi = D.OwnedVariant(mi, owned);
+            else if (thisByValue) mi = D.ThisValueVariant(mi);
             if (_clone != null)
             {
                 // a clone (section 7.1): suppressed imports do nothing; other bodies are cloned too

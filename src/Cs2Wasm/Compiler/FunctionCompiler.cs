@@ -252,7 +252,21 @@ sealed partial class FunctionCompiler
         int idx = 0;
         if (StructRet) _structRetLocal = idx++;
         if (_closure != null) { _closure.ParamLocal = idx++; }
-        else if (!M.IsStatic) _thisLocal = idx++;
+        else if (!M.IsStatic)
+        {
+            _thisLocal = idx++;
+            if (Inst?.ThisByValue == true)
+            {
+                // (the number came itself: it is kept in the frame, and `this` is where: Driver.ThisValueVariant)
+                var nt = T.Canonical(M.ContainingType);
+                int value = _thisLocal, off = AllocFrame(nt);
+                _thisLocal = E.AddLocal(ValType.I32);
+                var save = E.Fn.Body; E.Fn.Body = _entryCode;
+                E.Get(_fb); E.Get(value); E.Store(Types.StoreOp(nt), off);
+                E.Get(_fb); E.I32(off); E.Op(Op.I32Add); E.Set(_thisLocal);
+                E.Fn.Body = save;
+            }
+        }
         // an extension member (C# 14 `extension(T x)` block): the receiver comes as `this` (its address when it is a
         // value or passed by reference), and the block's parameter names it
         if (_closure == null && !M.IsStatic && M.ContainingType is { IsExtension: true, ExtensionParameter: { } xp })
@@ -805,6 +819,31 @@ sealed partial class FunctionCompiler
 
     /// <summary>fixed: nothing moves without a collector, so pinning is holding the object for the statement and
     /// taking the address of its data (arrays and strings: null or empty gives a null pointer, as in C#).</summary>
+    /// <summary>The value is a local variable or a parameter of this function that nothing writes or moves out of
+    /// inside the statement: whatever it holds when the statement starts, it holds, alive, until the statement ends
+    /// (`string result = ...; fixed (char* p = result) { ... }`).</summary>
+    bool KeptThrough(IOperation value, SyntaxNode statement)
+    {
+        if (_machine != null || _closure != null) return false;
+        ISymbol? sym = value switch
+        {
+            ILocalReferenceOperation { Local: { IsRef: false } l } when !IsCaptured(l) && !_addrTaken.Contains(l) => l,
+            IParameterReferenceOperation { Parameter: { RefKind: RefKind.None } q } when !IsCaptured(q) && !_addrTaken.Contains(q) && !_addrTaken.Contains(q.OriginalDefinition)
+                && !_assignedParams.Contains(q) && !_assignedParams.Contains(q.OriginalDefinition) && !IsPrimaryParamHere(q) => q,
+            _ => null,
+        };
+        if (sym == null) return false;
+        // (a parameter this copy of the method consumes is moved into a field: OwnedParams.cs)
+        if (sym is IParameterSymbol ps && Inst is { OwnedParams: var om } && (om & (1 << ps.Ordinal)) != 0) return false;
+        var span = statement.Span;
+        if (sym is ILocalSymbol local)
+        {
+            if (LocalWrites().TryGetValue(local, out _) && _localWritePositions.TryGetValue(local, out var ws) && ws.Any(p => span.Contains(p))) return false;
+            foreach (var mv in _localMoves) if (mv is ILocalReferenceOperation lr && SymbolEqualityComparer.Default.Equals(lr.Local, local) && span.Contains(lr.Syntax.SpanStart)) return false;
+        }
+        return true;
+    }
+
     void EmitFixed(FixedStatementSyntax fs)
     {
         var model = D.ModelFor(fs.SyntaxTree);
@@ -822,7 +861,9 @@ sealed partial class FunctionCompiler
                 BeginTemps();
                 var o = EmitValue(init);
                 int h = E.AddLocal(ValType.I32);
-                ToOwned(o); E.Set(h); AddOwned(new Slot { Local = h, Type = it });
+                // (a variable that keeps its value for the whole statement keeps the object: no count of the pointer's own)
+                if (o != Own.Owned && KeptThrough(init, fs)) E.Set(h);
+                else { ToOwned(o); E.Set(h); AddOwned(new Slot { Local = h, Type = it }); }
                 EndTemps();
                 int data = it is IArrayTypeSymbol a2 ? Types.ArrayDataOffset(a2.Rank) : 16;
                 E.Get(h); E.Op(Op.I32Eqz);
@@ -905,7 +946,7 @@ sealed partial class FunctionCompiler
                 EmitBorrowMark(v, wb, bo);
                 E.Set(v.Local);
             }
-            else if (!v.InMemory && Types.IsRef(v.Type) && FieldBorrowCandidate(d.Symbol, init) is { } fkey) EmitFieldBorrow(v, init, fkey);
+            else if (!v.InMemory && Types.IsRef(v.Type) && FieldBorrowCandidate(d.Symbol, init) is { } fkey) EmitFieldBorrow(v, init, fkey, d.Symbol);
             else EmitStoreToVar(d.Symbol, init);
             EndTemps();
         }

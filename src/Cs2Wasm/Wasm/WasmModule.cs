@@ -127,6 +127,7 @@ internal sealed class WasmModule
         if (validate) Validate("before optimization");
         if (optimize)
         {
+            ForwardPureForwarders();
             // (identical bodies first: a merged function's call sites count as its callers)
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
@@ -435,6 +436,24 @@ internal sealed class WasmModule
             }
             if (!changed) break;
             foreach (var f in Functions) ResolveForwards(f);
+        }
+    }
+
+    /// <summary>A function that only passes its own arguments, in order, to another of the same type and returns what
+    /// that returns, and is no frame of a trace: every call of it is a call of the other.</summary>
+    void ForwardPureForwarders()
+    {
+        foreach (var f in Functions)
+        {
+            if (f.IsImport || f.ForwardTo != null || f.FrameName != null || f.Exports.Count > 0 || f.InTable || f.TableRoot) continue;
+            int np = f.Type.Params.Length;
+            var b = f.Body;
+            if (b.Count != np + 1 && !(b.Count == np + 2 && b[^1].Op == Op.Return)) continue;
+            if (b[np].Op != Op.Call || b[np].Ref is not WasmFunction g || g == f || g.ForwardTo == f) continue;
+            if (!g.Type.Params.AsSpan().SequenceEqual(f.Type.Params) || !g.Type.Results.AsSpan().SequenceEqual(f.Type.Results)) continue;
+            bool inOrder = true;
+            for (int i = 0; i < np && inOrder; i++) inOrder = b[i].Op == Op.LocalGet && b[i].Imm == i;
+            if (inOrder) f.ForwardTo = g;
         }
     }
 

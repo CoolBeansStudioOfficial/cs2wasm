@@ -162,6 +162,42 @@ internal sealed partial class Driver
         return false;
     }
 
+    /// <summary>Whether a direct call of an instance method of a number type (int.ToString(), x.CompareTo(y)) can
+    /// pass the number itself: the method's body is compiled from source, by the usual rules.</summary>
+    internal bool CanPassThisByValue(IMethodSymbol m)
+    {
+        var t = MethodTarget(m);
+        if (t.IsStatic || t.IsAbstract || t.IsExtern || t.IsAsync || t.IsIterator || t.MethodKind == MethodKind.Constructor) return false;
+        if (t.ContainingType is not { TypeKind: TypeKind.Struct } ct || Types.PrimOf(ct) == Prim.None || Types.IsStruct(ct)) return false;
+        if (t.ReturnsByRef || t.ReturnsByRefReadonly || Types.IsStruct(Types.Canonical(t.ReturnType))) return false;
+        if (IsIntrinsic(t) || Library.Substitution(t.OriginalDefinition) != null) return false;
+        if (Classify(t) != MethodImpl.Body) return false;
+        var mi = Method(t);
+        return mi.Impl == MethodImpl.Body && mi.Compile == null && mi.BorrowedReturn == null && mi.OwnedParams == 0;
+    }
+
+    /// <summary>The copy of a number type's instance method that takes the number itself as its first argument. The
+    /// method as it is takes the number's address, so each caller keeps the number in its frame and passes where
+    /// (`i.ToString()` in a loop: a frame, a store and an address per call); the copy keeps it in its own frame,
+    /// which the final pass turns into a local when the body only reads it (Wasm/Locals.cs: PromoteFrame).
+    /// What calls through the address still calls the method as it is (a boxed number's dispatch, a delegate).</summary>
+    internal MethodInst ThisValueVariant(MethodInst baseMi)
+    {
+        var key = baseMi.Key + "|thisval";
+        if (_methods.TryGetValue(key, out var vi)) return vi;
+        var bt = baseMi.Fn.Type;
+        var ps = bt.Params.ToArray();
+        ps[0] = Types.WasmType(Types.Canonical(baseMi.Sym.ContainingType))!.Value;
+        var fn = Module.AddFunction(Display(baseMi.Sym) + " [this by value]", new FuncType(ps, bt.Results));
+        fn.FrameName = baseMi.Fn.FrameName;
+        fn.ProgramCode = baseMi.Fn.ProgramCode;
+        fn.InlineHint = baseMi.Fn.InlineHint;
+        vi = new MethodInst { Sym = baseMi.Sym, Fn = fn, Key = key, Impl = MethodImpl.Body, ReachedFrom = Compiling, ThisByValue = true };
+        _methods[key] = vi;
+        _work.Enqueue(vi);
+        return vi;
+    }
+
     /// <summary>The copy of a method that takes the arguments in `mask` owned.</summary>
     internal MethodInst OwnedVariant(MethodInst baseMi, int mask)
     {

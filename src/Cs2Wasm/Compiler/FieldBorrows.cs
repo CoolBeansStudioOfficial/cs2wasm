@@ -1,5 +1,6 @@
 using Cs2Wasm.Wasm;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Operations;
 
 namespace Cs2Wasm.Compiler;
@@ -62,7 +63,7 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>The declaration of a borrowing candidate: the field's value goes to the local through the placeholder.</summary>
-    void EmitFieldBorrow(Var v, IOperation init, string key)
+    void EmitFieldBorrow(Var v, IOperation init, string key, ILocalSymbol sym)
     {
         var o = EmitValue(init);
         ConvertTop(TypeOf(init), v.Type, ref o);
@@ -71,11 +72,71 @@ sealed partial class FunctionCompiler
         E.Call(marker);
         E.Set(v.Local);
         D.FieldBorrows.Add((E.Fn, v.Local, key, marker));
+        if (SimpleArrayUses(sym)) D.SimpleBorrows.Add((E.Fn, v.Local));
+    }
+
+    /// <summary>Every use of the local is its array's length, or one of its elements read (a number, nothing that
+    /// holds a reference) or stored, with an index and a value that are variables, constants or arithmetic on them:
+    /// nothing derived from the local outlives the use, and no call runs between reading the local and using it.
+    /// A store of the field it borrows from then matters only if such a use can still follow it
+    /// (Driver.StoredWhileInScope): `T[] array = _items; if (size &lt; array.Length) array[size] = item; else Grow();`
+    /// borrows, though Grow stores _items.</summary>
+    bool SimpleArrayUses(ILocalSymbol l)
+    {
+        if (T.Resolve(l.Type, Map) is not IArrayTypeSymbol { Rank: 1 } at) return false;
+        IOperation? body = null;
+        foreach (var r in M.OriginalDefinition.DeclaringSyntaxReferences)
+            if (D.ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax()) is { } b) { body = b; break; }
+        if (body == null) return false;
+        // (a `fixed` statement's pointer into the array is none of the uses looked at below)
+        if (body.Syntax.DescendantNodes().Any(n => n is FixedStatementSyntax)) return false;
+        bool elementsHoldReferences = T.NeedsRc(T.Resolve(at.ElementType, Map));
+        static bool Trivial(IOperation? o) => o switch
+        {
+            null => true,
+            ILocalReferenceOperation or IParameterReferenceOperation or ILiteralOperation or IInstanceReferenceOperation => true,
+            IParenthesizedOperation p => Trivial(p.Operand),
+            IConversionOperation { OperatorMethod: null } c => (c.Conversion.IsIdentity || c.Conversion.IsNumeric || c.Conversion.IsReference && c.Conversion.IsImplicit) && Trivial(c.Operand),
+            IUnaryOperation { OperatorMethod: null } u => Trivial(u.Operand),
+            IBinaryOperation { OperatorMethod: null, OperatorKind: not (BinaryOperatorKind.Divide or BinaryOperatorKind.Remainder) } bin => Trivial(bin.LeftOperand) && Trivial(bin.RightOperand),
+            _ => o.ConstantValue.HasValue,
+        };
+        foreach (var op in body.DescendantsAndSelf())
+        {
+            if (op is not ILocalReferenceOperation lr || !SymbolEqualityComparer.Default.Equals(lr.Local, l) || lr.IsDeclaration) continue;
+            if (InLambda(lr, body)) return false;
+            IOperation use = lr;
+            while (use.Parent is IConversionOperation { OperatorMethod: null, Conversion.IsIdentity: true } or IParenthesizedOperation) use = use.Parent;
+            switch (use.Parent)
+            {
+                case IPropertyReferenceOperation { Property.Name: "Length", Arguments.Length: 0 } pr when ReferenceEquals(pr.Instance, use):
+                    break;
+                case IArrayElementReferenceOperation ae when ReferenceEquals(ae.ArrayReference, use) && ae.Indices.All(Trivial):
+                    if (ae.Parent is ISimpleAssignmentOperation { IsRef: false } sa && ReferenceEquals(sa.Target, ae))
+                    {
+                        if (!Trivial(sa.Value)) return false;
+                    }
+                    else
+                    {
+                        // a read: of a number only, and as a value (not `ref a[i]`, `a[i]++`, `a[i] += x`)
+                        if (elementsHoldReferences || Types.IsStruct(T.Resolve(at.ElementType, Map))) return false;
+                        if (ae.Parent is IArgumentOperation { Parameter.RefKind: not RefKind.None } or IAddressOfOperation or IIncrementOrDecrementOperation or ICompoundAssignmentOperation
+                            or ISimpleAssignmentOperation { IsRef: true } or IVariableInitializerOperation { Parent: IVariableDeclaratorOperation { Symbol.IsRef: true } }
+                            or IDeconstructionAssignmentOperation or ITupleOperation or ICoalesceAssignmentOperation) return false;
+                    }
+                    break;
+                default:
+                    return false;
+            }
+        }
+        return true;
     }
 }
 
 internal sealed partial class Driver
 {
+    /// <summary>The borrowing locals (function, local) whose uses are all plain array accesses (FunctionCompiler.SimpleArrayUses).</summary>
+    internal readonly HashSet<(WasmFunction, int)> SimpleBorrows = [];
     public static string FieldKey(ITypeSymbol owner, ISymbol storage) => Types.Key(owner) + "::" + storage.Name;
     /// <summary>The pseudo-field of every reference element (and of memory written through an address).</summary>
     public const string ElementsKey = "[]";
@@ -197,9 +258,19 @@ internal sealed partial class Driver
     /// Stores: the function's own (marks), and those of what it calls in the range.</summary>
     bool StoredWhileInScope(WasmFunction fn, int local, int def, string[] keys, StoreSummary summary)
     {
-        bool Why(string what, string k) { if (s_borrowDebug) Console.Error.WriteLine($"  refused {fn.Name} local {local}: {k} stored by {what}"); return true; }
-        if (_unplacedWrites.TryGetValue(fn, out var u) && keys.Any(u.Contains)) return Why("the function (unplaced)", "");
         var b = fn.Body;
+        // (a local whose uses are all its array's length and plain element accesses, FunctionCompiler.SimpleArrayUses:
+        // a store no such use can follow leaves nothing that looks at the array)
+        bool simple = SimpleBorrows.Contains((fn, local));
+        bool Why(int at, string what, string k)
+        {
+            // (not a cycle link's call: it sits between an element store's address and the store itself)
+            if (simple && at >= 0 && !(b[at].Ref is WasmFunction lf && (lf.Name.StartsWith("Cs2Wasm.Runtime.Rt.Arena") || lf.Name.StartsWith("arena.")))
+                && !UseCanFollow(b, at, local, def, Rt.Release)) return false;
+            if (s_borrowDebug) Console.Error.WriteLine($"  refused {fn.Name} local {local}: {k} stored by {what}");
+            return true;
+        }
+        if (_unplacedWrites.TryGetValue(fn, out var u) && keys.Any(u.Contains)) return Why(-1, "the function (unplaced)", "");
         for (int i = def; i < b.Count; i++)
         {
             var ins = b[i];
@@ -207,10 +278,58 @@ internal sealed partial class Driver
             {
                 // (the scope's end is a mark too: asked first)
                 if (ReferenceEquals(ins.Ref, ScopeEnd)) { if (ins.Imm == local) return false; }
-                else if (ins.Ref is WriteMark wm && Array.IndexOf(keys, wm.Key) >= 0) return Why("the function itself", wm.Key);
+                else if (ins.Ref is WriteMark wm && Array.IndexOf(keys, wm.Key) >= 0) { if (Why(i, "the function itself", wm.Key)) return true; }
             }
-            else if (ins.Op == Op.Call && ins.Ref is WasmFunction g) { foreach (var k in keys) if (summary.Has(g, k)) return Why("a call of " + g.Name, k); }
-            else if (ins.Op == Op.CallIndirect) { foreach (var k in keys) if (summary.HasIndirect(k, ins)) return Why("an indirect call", k); }
+            else if (ins.Op == Op.Call && ins.Ref is WasmFunction g) { foreach (var k in keys) if (summary.Has(g, k)) { if (Why(i, "a call of " + g.Name, k)) return true; break; } }
+            else if (ins.Op == Op.CallIndirect) { foreach (var k in keys) if (summary.HasIndirect(k, ins)) { if (Why(i, "an indirect call", k)) return true; break; } }
+        }
+        return false;
+    }
+
+    /// <summary>Whether a read of the local can run after the instruction at `at`, in the local's scope (it began at
+    /// `def`): one later in the function, unless it is in the other arm of an `if` that `at` is in the first arm of;
+    /// or any one inside a loop that began after `def` and that `at` is in (the way round). The releases of the
+    /// local at its scope's ends are no reads (they go with the count).</summary>
+    static bool UseCanFollow(List<Instr> b, int at, int local, int def, WasmFunction release)
+    {
+        bool IsUse(int k) => b[k].Op == Op.LocalGet && b[k].Imm == local && !(k + 1 < b.Count && b[k + 1].Op == Op.Call && ReferenceEquals(b[k + 1].Ref, release));
+        var open = new List<(int start, Op kind)>();
+        for (int k = 0; k < at; k++)
+            switch (b[k].Op)
+            {
+                case Op.Block or Op.Loop or Op.If or Op.TryTable: open.Add((k, b[k].Op)); break;
+                case Op.End: if (open.Count > 0) open.RemoveAt(open.Count - 1); break;
+            }
+        // a loop of the scope that is open here: everything in it can run again
+        int loop = -1;
+        foreach (var (start, kind) in open) if (kind == Op.Loop && start > def) { loop = start; break; }
+        if (loop >= 0)
+        {
+            int depth = 0;
+            for (int k = loop; k < b.Count; k++)
+            {
+                if (b[k].Op is Op.Block or Op.Loop or Op.If or Op.TryTable) depth++;
+                else if (b[k].Op == Op.End && --depth == 0) break;
+                if (IsUse(k)) return true;
+            }
+        }
+        // what follows: `outer` of the blocks open at `at` are still open, `inner` opened since; `skip`: in the other
+        // arm of an `if` that `at` was in the first arm of, until that `if` ends
+        int outer = open.Count, inner = 0, skip = -1;
+        for (int k = at + 1; k < b.Count; k++)
+        {
+            var ins = b[k];
+            switch (ins.Op)
+            {
+                case Op.Block or Op.Loop or Op.If or Op.TryTable: inner++; break;
+                case Op.Else: if (inner == 0 && skip < 0) skip = outer; break;
+                case Op.End:
+                    if (inner > 0) inner--;
+                    else { if (skip == outer) skip = -1; outer--; if (outer < 0) return false; }
+                    break;
+                case Op.Nop when ReferenceEquals(ins.Ref, ScopeEnd) && ins.Imm == local: return false;
+            }
+            if (skip < 0 && IsUse(k)) return true;
         }
         return false;
     }

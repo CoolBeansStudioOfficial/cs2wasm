@@ -249,6 +249,7 @@ internal sealed partial class RuntimeFns
         {
             var e = new Emitter(_loadRetain);
             if (!threads) { e.Get(0); e.Load(Op.I32Load); e.Call(Retain); return; }
+            if (s_lockFreeLoads) { EmitLoadRetainLockFree(e, arenas); return; }
             int s = e.AddLocal(I), p = e.AddLocal(I), r = e.AddLocal(I);
             EmitRefLock(e, 0, s);
             e.Get(0); e.Load(Op.I32Load); e.Tee(p);
@@ -286,6 +287,63 @@ internal sealed partial class RuntimeFns
             EmitRefUnlock(e, s);
             e.Get(p);
         }
+    }
+
+    /// <summary>CS2WASM_LOCKFREE_LOADS=1 (an experiment): a read that counts takes no lock.</summary>
+    static readonly bool s_lockFreeLoads = Environment.GetEnvironmentVariable("CS2WASM_LOCKFREE_LOADS") == "1";
+
+    /// <summary>A read that counts, with no lock: read the reference, count the object if its count says it is alive
+    /// (an exchange, as rt.retain), then read the place again. The same reference there: the object counted is the
+    /// one the place holds (it could not be freed and its memory given to another object since the count, which this
+    /// thread holds; and had it been freed before, the store that let it go came before that count, so this second
+    /// read sees it). Another: the count is given back and the read starts again. A store is the value's write, then
+    /// the old value's release (rt.store_ref), in that order.</summary>
+    void EmitLoadRetainLockFree(Emitter e, bool arenas)
+    {
+        int p = e.AddLocal(I), r = e.AddLocal(I);
+        var again = e.Loop(ValType.I32);
+        e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(p); e.Op(Op.I32Eqz);
+        e.If(); e.I32(0); e.Op(Op.Return); e.End();
+        var counted = e.Block(); var count = e.Loop();
+        e.Get(p); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
+        e.If();
+        e.Get(p); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(counted);
+        e.Br(count);
+        e.End();
+        // (dead: the place has another value by now)
+        e.Get(r); e.Op(Op.I32Eqz); e.BrIf(again);
+        // (never freed: no count, but the place must still say so: the memory may have been another object's)
+        e.Get(r); e.I32(-1); e.Op(Op.I32Eq);
+        e.If();
+        e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Get(p); e.Op(Op.I32Eq); e.If(); e.Get(p); e.Op(Op.Return); e.End();
+        e.Br(again);
+        e.End();
+        if (arenas)
+        {
+            e.Get(r); e.I32(-2); e.Op(Op.I32LtS);
+            e.If();
+            e.Get(p); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(counted);
+            e.Br(count);
+            e.End();
+            // a member's first outside reference: under the runtime lock, where members are freed, so what the place
+            // holds then, if it is a member, is alive
+            e.Call(LockEnter);
+            e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(p);
+            e.If();
+            e.Get(p); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(-1); e.Op(Op.I32LtS);
+            e.If(); e.Get(p); e.Call(Retain); e.Op(Op.Drop); e.Call(LockExit); e.Get(p); e.Op(Op.Return); e.End();
+            e.End();
+            e.Call(LockExit);
+            e.Br(again);
+        }
+        else e.Br(again);
+        e.End(); e.End();
+        // counted: the place again
+        e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Get(p); e.Op(Op.I32Eq);
+        e.If(); e.Get(p); e.Op(Op.Return); e.End();
+        e.Get(p); e.Call(Release);
+        e.Br(again);
+        e.End();
     }
 
     /// <summary>CS2WASM_PLAIN_COUNTS=1 (a measurement, unsafe with more than one thread running): counts and counted

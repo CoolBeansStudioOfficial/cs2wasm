@@ -40,6 +40,8 @@ internal sealed class MethodInst
     public string? BorrowKeys;
     /// <summary>A copy that takes these arguments (a bit per parameter ordinal) owned (OwnedParams.cs).</summary>
     public int OwnedParams;
+    /// <summary>A copy of a number type's method that takes the number itself, not its address (OwnedParams.cs: ThisValueVariant).</summary>
+    public bool ThisByValue;
 }
 
 sealed class StaticSlot(Driver d, int offset) : IAddress
