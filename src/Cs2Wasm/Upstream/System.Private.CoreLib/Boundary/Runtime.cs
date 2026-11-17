@@ -954,8 +954,10 @@ namespace Cs2Wasm.Runtime
         /// <summary>A plain object (count c > 0) becomes a member: its count is its outside count.</summary>
         static void ArenaJoin(int ar, int obj)
         {
-            int c = Mem.LoadI32(obj);
-            Mem.StoreI32(obj, -(c + 2));
+            // (exchanged, not stored: another thread that holds a reference may be counting it, without the lock, as
+            // the plain object it is until here; its exchange then fails and it counts the member)
+            int c;
+            do { c = Atomic.Load32(ref Mem.RefI32(obj)); } while (Atomic.CompareExchange32(ref Mem.RefI32(obj), c, -(c + 2)) != c);
             Mem.StoreI32(obj - 16, ar);
             Mem.StoreI32(obj - 4, 0);
             if (ArenaFinType(Mem.LoadI32(obj + 4)) != 0) Mem.StoreI32(ar + 24, 1);
