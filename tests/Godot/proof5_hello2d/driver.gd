@@ -1,15 +1,18 @@
 # Proof 5's fixed input (a test harness, the same script under stock Godot .NET on the desktop and in the web
 # export): presses the game's actions through Godot's Input at fixed physics ticks and quits after the last one.
-# Off unless the command line has --proof5-drive (desktop: after "--"; web: in the engine's args).
+# Off unless the command line has --proof5-drive (desktop: after "--"; web: in the engine's args). With
+# --proof5-panic too, it also presses debug_panic (the script then throws: the second oracle log).
 extends Node
 
 var tick := 0
 var driving := false
+var panic := false
 
 
 func _ready() -> void:
 	process_physics_priority = -100 # before the scripts, so a press is seen on the same tick
 	driving = "--proof5-drive" in OS.get_cmdline_user_args() or "--proof5-drive" in OS.get_cmdline_args()
+	panic = "--proof5-panic" in OS.get_cmdline_user_args() or "--proof5-panic" in OS.get_cmdline_args()
 	set_physics_process(driving)
 
 
@@ -29,7 +32,8 @@ func _physics_process(_delta: float) -> void:
 		130:
 			Input.action_release("move_left")
 		160:
-			Input.action_press("debug_panic")
+			if panic:
+				Input.action_press("debug_panic")
 		161:
 			Input.action_release("debug_panic")
 		170:

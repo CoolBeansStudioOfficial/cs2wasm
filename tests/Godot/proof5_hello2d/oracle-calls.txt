@@ -1570,9 +1570,7 @@ CharacterBody2D.is_on_floor() -> true
 Input.is_action_just_pressed(&"jump", false) -> false
 CharacterBody2D.set_velocity((0, 0))
 CharacterBody2D.move_and_slide() -> true
-Input.is_action_just_pressed(&"debug_panic", false) -> true
-print about to read checkpoint 4 of 0
-ProjectSettings.localize_path("/root/godot/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/ExceptionUtils.cs") -> "/root/godot/modules/mono/glue/GodotSharp/GodotSharp/Core/NativeInterop/ExceptionUtils.cs"
+Input.is_action_just_pressed(&"debug_panic", false) -> false
 Node.get_node_or_null(^"../../Character") -> <Node>
 Node2D.get_position() -> (682.6662, 547.99963)
 Label.set_text("Arrows/A-D move, Space jumps, P panics\njumps: 1\nposition: (683, 548)")
