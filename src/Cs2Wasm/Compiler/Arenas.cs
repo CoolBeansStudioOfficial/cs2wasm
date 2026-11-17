@@ -36,6 +36,9 @@ internal sealed class Arenas
         public required WasmFunction Link, Unlink;
         /// <summary>The same for a store into an object only the storing code knows (FreshStores.cs).</summary>
         public WasmFunction LinkFresh = null!, UnlinkFresh = null!;
+        /// <summary>The link for a store into an object held in a local that owns it (OwnedLocals in Expressions.cs):
+        /// when that local's is the only reference there is, nothing can reach the object and no cycle closes.</summary>
+        public WasmFunction LinkOwned = null!;
 
         public void AddValue(ITypeSymbol? t)
         {
@@ -44,7 +47,7 @@ internal sealed class Arenas
         }
     }
 
-    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh }
+    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh, LinkOwned }
 
     readonly Dictionary<string, Site> _sites = [];
     readonly Dictionary<WasmFunction, (Kind kind, Site? site, ITypeSymbol? pinType)> _placeholders = [];
@@ -77,6 +80,7 @@ internal sealed class Arenas
         s.Unlink = Placeholder("arena.unlink " + key, new FuncType([I, I, I], []), Kind.Unlink, s);
         s.LinkFresh = Placeholder("arena.link fresh " + key, new FuncType([I, I, I], [I]), Kind.LinkFresh, s);
         s.UnlinkFresh = Placeholder("arena.unlink fresh " + key, new FuncType([I, I, I], []), Kind.UnlinkFresh, s);
+        s.LinkOwned = Placeholder("arena.link owned " + key, new FuncType([I, I, I], [I]), Kind.LinkOwned, s);
         _sites[key] = s;
         return s;
     }
@@ -367,7 +371,7 @@ internal sealed class Arenas
 
     static readonly (string name, int arity)[] RuntimeMethods =
         [("ArenaLink", 3), ("ArenaUnlink", 3), ("ArenaVisitElement", 1), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
-         ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 3), ("ArenaUnlinkFresh", 3)];
+         ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 3), ("ArenaUnlinkFresh", 3), ("ArenaLinkOwned", 3)];
 
     /// <summary>Queues the library's arena runtime for compilation (only when some site is cyclic).</summary>
     public void RequestRuntime()
@@ -380,13 +384,14 @@ internal sealed class Arenas
     /// <summary>Replaces placeholder calls in every function: arena calls at cyclic sites, plain counting elsewhere.</summary>
     public void Resolve()
     {
-        WasmFunction? link = null, unlink = null, pin = null, linkFresh = null, unlinkFresh = null;
+        WasmFunction? link = null, unlink = null, pin = null, linkFresh = null, unlinkFresh = null, linkOwned = null;
         if (Enabled)
         {
             link = RuntimeFn("ArenaLink", 3);
             unlink = RuntimeFn("ArenaUnlink", 3);
             linkFresh = RuntimeFn("ArenaLinkFresh", 3);
             unlinkFresh = RuntimeFn("ArenaUnlinkFresh", 3);
+            linkOwned = RuntimeFn("ArenaLinkOwned", 3);
             pin = RuntimeFn("ArenaPin", 1);
         }
         foreach (var f in D.Module.Functions)
@@ -399,9 +404,9 @@ internal sealed class Arenas
                 var x = ins;
                 switch (ph.kind)
                 {
-                    case Kind.Link or Kind.LinkFresh:
+                    case Kind.Link or Kind.LinkFresh or Kind.LinkOwned:
                         // (value, container) -> value
-                        if (Enabled && ph.site!.Cyclic) { x.Ref = ph.kind == Kind.Link ? link : linkFresh; body.Add(x); }
+                        if (Enabled && ph.site!.Cyclic) { x.Ref = ph.kind == Kind.Link ? link : ph.kind == Kind.LinkOwned ? linkOwned : linkFresh; body.Add(x); }
                         else { x.Op = Op.Drop; x.Ref = null; body.Add(x); body.Add(x); }
                         break;
                     case Kind.Unlink or Kind.UnlinkFresh:

@@ -345,7 +345,7 @@ sealed partial class FunctionCompiler
 
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
     void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null,
-                                 Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false, bool fresh = false)
+                                 Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false, bool fresh = false, bool owned = false)
     {
         if (Types.IsStruct(t))
         {
@@ -367,7 +367,7 @@ sealed partial class FunctionCompiler
         {
             // section 4.3: a site that can close a cycle links the value into the container's arena (resolved later)
             void PushSlot() { if (site!.IsArray) { E.I32(0); return; } pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } }
-            if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : site.Link); E.Set(val); }
+            if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : owned ? site.LinkOwned : site.Link); E.Set(val); }
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
             EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
             int a = Scratch(ValType.I32);
@@ -387,7 +387,7 @@ sealed partial class FunctionCompiler
             }
             E.Get(old);
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
-            if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh ? site.UnlinkFresh : site.Unlink); } else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.Release);
+            if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink); } else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.Release);
             FreeScratch(ValType.I32, old); FreeScratch(ValType.I32, a);
         }
         else { pushAddr(); E.Get(val); E.Store(Types.StoreOp(t), offset); }
@@ -1426,6 +1426,33 @@ sealed partial class FunctionCompiler
     }
 
     static bool IsBuiltinOperator(IMethodSymbol m) => false;
+
+    readonly Dictionary<ILocalSymbol, bool> _ownedLocals = new(SymbolEqualityComparer.Default);
+
+    /// <summary>The expression is a local variable that owns the reference it holds: a plain local of this function
+    /// (not captured, not a state machine's, not a ref) whose every value is a new object or the result of a call
+    /// (never a field's value or another variable's, which it could borrow). While such an object's count is 1, the
+    /// variable's is the only reference to it there is (Rt.ArenaLinkOwned).</summary>
+    bool OwnedLocal(IOperation? instance)
+    {
+        if (_machine != null || _closure != null || instance is not ILocalReferenceOperation lr) return false;
+        var local = lr.Local;
+        if (_ownedLocals.TryGetValue(local, out bool ok)) return ok;
+        ok = false;
+        if (local.RefKind == RefKind.None && !IsCaptured(local)
+            && local.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is VariableDeclaratorSyntax { Initializer: { } ini } vd
+            && D.ModelFor(vd.SyntaxTree).GetOperation(ini.Value) is { } first && OwnedValue(first))
+            ok = !LocalWrites().TryGetValue(local, out var writes) || writes.All(w => w != null && OwnedValue(w));
+        return _ownedLocals[local] = ok;
+    }
+
+    bool OwnedValue(IOperation v)
+    {
+        while (v is IParenthesizedOperation or IConversionOperation { Conversion: { IsImplicit: true, IsReference: true } or { IsIdentity: true } })
+            v = v is IParenthesizedOperation p ? p.Operand : ((IConversionOperation)v).Operand;
+        if (v is IObjectCreationOperation or IArrayCreationOperation || v.ConstantValue is { HasValue: true, Value: null }) return true;
+        return v is IInvocationOperation inv && !inv.TargetMethod.ReturnsByRef && !inv.TargetMethod.ReturnsByRefReadonly && !D.ReturnsFieldOf(SubstMethod(inv.TargetMethod));
+    }
     static bool IsDelegateLike(ITypeSymbol t) => t.TypeKind == TypeKind.Delegate || t is INamedTypeSymbol { Name: "Delegate" or "MulticastDelegate", ContainingNamespace.Name: "System" };
 
     /// <summary>Stack: a b (in prim p) → result.</summary>
@@ -2170,7 +2197,7 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null, bool owned = false) : LValue(f, t)
     {
         int _addr = -1, _off;
         public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
@@ -2200,7 +2227,7 @@ sealed partial class FunctionCompiler
             }
             // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
-                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh);
+                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned);
             if (elements && F.T.NeedsRc(Type)) F.D.NoteFieldWrite(F.E, Driver.ElementsKey);
             return needResult ? Load() : Own.None;
         }
@@ -2405,7 +2432,8 @@ sealed partial class FunctionCompiler
                         var site = D.Arenas.FieldSite(Owner(field), T.FieldIn(Owner(field), StorageField(field)));
                         return new MemLV(this, t, () => EmitAddressBase(target), site, pub: Publish.Container,
                             initKey: StorageField(field) is IFieldSymbol sf ? InitStoreKey(sf, Owner(field), fr.Instance) : null,
-                            fresh: site != null && target.Parent != null && StoresIntoFresh(fr.Instance, target.Parent));
+                            fresh: site != null && target.Parent != null && StoresIntoFresh(fr.Instance, target.Parent),
+                            owned: site != null && OwnedLocal(fr.Instance));
                     }
                     break;
                 }
@@ -2416,7 +2444,7 @@ sealed partial class FunctionCompiler
                     var et = T.Canonical(at.ElementType);
                     bool exact = et is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Delegate, IsSealed: true } || Types.IsString(et);
                     return new MemLV(this, t, () => EmitArrayElementAddress(ae, keep), D.Arenas.ArraySite(at), keep, pub: Publish.Container, elements: true,
-                        covariant: exact || at.Rank != 1 ? null : (IArrayTypeSymbol)T.Canonical(at));
+                        covariant: exact || at.Rank != 1 ? null : (IArrayTypeSymbol)T.Canonical(at), owned: OwnedLocal(ae.ArrayReference));
                 }
         }
         return new MemLV(this, t, () => EmitAddressBase(target), elements: true);

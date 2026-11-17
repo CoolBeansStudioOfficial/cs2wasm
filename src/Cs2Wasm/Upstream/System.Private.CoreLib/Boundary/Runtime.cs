@@ -1400,6 +1400,18 @@ namespace Cs2Wasm.Runtime
             return ArenaLink(val, container, slot);
         }
 
+        /// <summary>ArenaLink where the storing code holds the container in a local variable that owns its reference
+        /// (the compiler saw that every value the variable gets is a new object or a call's result). When that
+        /// reference is the only one (count 1), no object anywhere refers to the container, so nothing the stored
+        /// value leads to can lead back to it: the store closes no cycle and is a plain counted one, and the objects
+        /// below it need not be gone through (a tree whose root gets a new branch stays a tree of plain objects).
+        /// The slot's old value goes as for a fresh object's (ArenaUnlinkFresh).</summary>
+        public static int ArenaLinkOwned(int val, int container, int slot)
+        {
+            if (container == 0 || Mem.LoadI32(container) == 1) { t_prevSlot = 0; return val; }
+            return ArenaLink(val, container, slot);
+        }
+
         /// <summary>The old value of a slot stored by ArenaLinkFresh: a plain object's slots hold counted references.</summary>
         public static void ArenaUnlinkFresh(int old, int container, int slot)
         {

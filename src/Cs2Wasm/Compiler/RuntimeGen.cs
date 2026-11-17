@@ -584,7 +584,7 @@ sealed partial class RuntimeGen
             if (finalizer == 1) return;
             foreach (var fs in l.Fields)
             {
-                if (Types.IsRef(fs.Type)) { e.Get(0); e.Load(Op.I32Load, fs.Offset); e.Call(rt.Release); }
+                if (Types.IsRef(fs.Type)) { e.Get(0); e.Load(Op.I32Load, fs.Offset); e.Call(ReleaseOfField(fs.Type)); }
                 else if (Types.IsStruct(fs.Type) && D.Types.LayoutOf(fs.Type).HasRefs) { e.Get(0); e.I32(fs.Offset); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(fs.Type)); }
             }
         }
@@ -1095,6 +1095,69 @@ sealed partial class RuntimeGen
         }
     }
 
+    // A field of a sealed class's type holds null or an object of exactly that class: when the field's object dies
+    // with the one that held it, its destruction is known where the field is released, and need not go through the
+    // dispatch on the type (rt.destroy, rt.destroy_now). The release is written as a call of a function that stands
+    // for "release an object of type T"; when the types are final (EmitDestroyDispatch) each such call becomes the
+    // count's test and a direct call of T's destruction.
+    readonly Dictionary<int, WasmFunction> _releaseOf = [];
+
+    WasmFunction ReleaseOfField(ITypeSymbol t)
+    {
+        var rt = D.Rt;
+        if (D.ThreadMode || t is not INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true } || Types.IsImmortalType(t)) return rt.Release;
+        int id = D.TypeId(D.Types.Canonical(t));
+        if (_releaseOf.TryGetValue(id, out var f)) return f;
+        // (as it stands it is a release: what it stays when T's destruction is not in the module)
+        f = D.Module.AddFunction("rt.release exact " + id, new FuncType([ValType.I32], []));
+        var e = new Emitter(f);
+        e.Get(0); e.Call(rt.Release);
+        return _releaseOf[id] = f;
+    }
+
+    void ExpandExactReleases(int maxNesting)
+    {
+        if (_releaseOf.Count == 0) return;
+        var byFn = _releaseOf.ToDictionary(kv => kv.Value, kv => kv.Key);
+        foreach (var f in D.Module.Functions)
+        {
+            if (f.IsImport || byFn.ContainsKey(f) || !f.Body.Any(x => x.Op == Op.Call && x.Ref is WasmFunction w && byFn.TryGetValue(w, out int wid) && _destroyFns.ContainsKey(wid) && D.Arenas.SccOf(wid) != 0)) continue;
+            int np = f.Type.Params.Length;
+            f.Locals.Add(ValType.I32); int t = np + f.Locals.Count - 1;
+            f.Locals.Add(ValType.I32); int c = np + f.Locals.Count - 1;
+            var o = new List<Instr>(f.Body.Count + 64);
+            foreach (var ins in f.Body)
+            {
+                // (only where structures are freed link by link: a type that can refer to itself, a tree's or a list's node)
+                if (ins.Op != Op.Call || ins.Ref is not WasmFunction w || !byFn.TryGetValue(w, out int id) || !_destroyFns.TryGetValue(id, out var destroy) || D.Arenas.SccOf(id) == 0) { o.Add(ins); continue; }
+                void Add(Op op, long imm = 0, object? r = null) => o.Add(new Instr { Op = op, Imm = imm, Imm2 = op is Op.I32Load or Op.I32Store ? 2 : 0, Ref = r, Pos = ins.Pos });
+                Add(Op.LocalTee, t);
+                Add(Op.If);
+                Add(Op.LocalGet, t); Add(Op.I32Load); Add(Op.LocalTee, c); Add(Op.I32Const, 1); Add(Op.I32GtS);
+                Add(Op.If);
+                Add(Op.LocalGet, t); Add(Op.LocalGet, c); Add(Op.I32Const, 1); Add(Op.I32Sub); Add(Op.I32Store);
+                Add(Op.Else);
+                // (the last reference, and not too deep in destructions: straight to the class's own; anything else,
+                // a member of a cycle's group among them, as any release)
+                Add(Op.LocalGet, c); Add(Op.I32Const, 1); Add(Op.I32Eq);
+                Add(Op.GlobalGet, 0, D.DestroyDepth); Add(Op.I32Const, maxNesting); Add(Op.I32LtU);
+                Add(Op.GlobalGet, 0, D.DestroyDepth); Add(Op.I32Const, 0); Add(Op.I32Ne);
+                Add(Op.I32And); Add(Op.I32And);
+                Add(Op.If);
+                Add(Op.LocalGet, t); Add(Op.I32Const, 0); Add(Op.I32Store);
+                Add(Op.GlobalGet, 0, D.DestroyDepth); Add(Op.I32Const, 1); Add(Op.I32Add); Add(Op.GlobalSet, 0, D.DestroyDepth);
+                Add(Op.LocalGet, t); Add(Op.Call, 0, destroy);
+                Add(Op.GlobalGet, 0, D.DestroyDepth); Add(Op.I32Const, 1); Add(Op.I32Sub); Add(Op.GlobalSet, 0, D.DestroyDepth);
+                Add(Op.Else);
+                Add(Op.LocalGet, t); Add(Op.Call, 0, D.Rt.Release);
+                Add(Op.End);
+                Add(Op.End);
+                Add(Op.End);
+            }
+            f.Body = o;
+        }
+    }
+
     void EmitDestroyDispatch()
     {
         // An object's destruction releases what it refers to, which may destroy that, and so on: a long chain (a
@@ -1103,6 +1166,7 @@ sealed partial class RuntimeGen
         // list one by one: the same order of events as far as a program can tell (finalizers run when the count is
         // gone, in some order), and no stack to run out of.
         const int MaxNesting = 48;
+        ExpandExactReleases(MaxNesting);
         var now = D.Module.AddFunction("rt.destroy_now", new FuncType([ValType.I32], []));
         {
             var w = new Emitter(D.Rt.Destroy);

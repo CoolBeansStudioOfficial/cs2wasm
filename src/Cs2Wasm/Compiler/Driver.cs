@@ -585,6 +585,9 @@ internal sealed partial class Driver
     /// count: what the caller gets is what loading the field itself would give it.</summary>
     static readonly bool s_noReturnField = Environment.GetEnvironmentVariable("CS2WASM_NO_RETURN_FIELD") == "1";
 
+    /// <summary>Whether a call of the method can give its caller a reference without a count (its borrowed form).</summary>
+    public bool ReturnsFieldOf(IMethodSymbol m) => ReturnsField(m);
+
     bool ReturnsField(IMethodSymbol m)
     {
         if (s_noReturnField) return false;
