@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cs2wasm proof 5: hello2d, built in the browser</title>
+<style>
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #16181d; color: #d8dbe2; }
+  main { max-width: 1152px; margin: 0 auto; padding: 12px; }
+  canvas { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; outline: none; }
+  #status { margin: 8px 0; font-weight: 600; }
+  pre { background: #0d0e11; padding: 8px; max-height: 260px; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+<main>
+  <div id="status">starting</div>
+  <canvas id="canvas" width="1152" height="648" tabindex="0"></canvas>
+  <pre id="output"></pre>
+</main>
+<script src="godot/index.js"></script>
+<script type="module" src="main.mjs"></script>
+</body>
+</html>

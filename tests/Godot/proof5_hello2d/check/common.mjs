@@ -30,3 +30,30 @@ export function run(cmd, args, opts = {}) {
   return r.status;
 }
 
+/** The self-hosted compiler (SPEC section 9): CS2WASM_SELF, or tests/out/self2/cs2wasm.wasm here or, from a git
+ * worktree, in the main checkout. */
+export function selfHosted() {
+  const candidates = [process.env.CS2WASM_SELF, join(root, 'tests', 'out', 'self2', 'cs2wasm.wasm'), join(root, '..', '..', '..', 'tests', 'out', 'self2', 'cs2wasm.wasm')];
+  const found = candidates.find((p) => p && existsSync(p));
+  if (!found) throw new Error('no self-hosted compiler: set CS2WASM_SELF (tools/selfhost.mjs builds one)');
+  return resolve(found);
+}
+
+/** The .NET reference assemblies the compiler reads (CS2WASM_REFERENCE_DIR, or the newest targeting pack). */
+export function referenceDir() {
+  if (process.env.CS2WASM_REFERENCE_DIR) return process.env.CS2WASM_REFERENCE_DIR;
+  const packs = join(process.env.DOTNET_ROOT ?? (process.platform === 'win32' ? 'C:\\Program Files\\dotnet' : '/usr/share/dotnet'), 'packs', 'Microsoft.NETCore.App.Ref');
+  const v = readdirSync(packs).sort().reverse().map((d) => join(packs, d, 'ref', 'net11.0')).find((d) => existsSync(d));
+  if (!v) throw new Error('no .NET 11 reference assemblies: set CS2WASM_REFERENCE_DIR');
+  return v;
+}
+
+/** A path of this machine as the self-hosted compiler under Node sees it (host/fs.mjs: on Windows the drive is the
+ * root, CS2WASM_FS_ROOT, and paths are written without it). */
+export const selfPath = (s) => (process.platform === 'win32' ? s.replace(/(^|=)[A-Za-z]:/, '$1').replaceAll('\\', '/') : s);
+export function selfEnv() {
+  const env = { ...process.env, CS2WASM_REFERENCE_DIR: selfPath(referenceDir()), CS2WASM_CACHE: selfPath(cache) };
+  if (process.platform === 'win32') env.CS2WASM_FS_ROOT = root.slice(0, 3);
+  return env;
+}
+

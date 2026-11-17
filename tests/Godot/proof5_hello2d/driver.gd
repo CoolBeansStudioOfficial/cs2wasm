@@ -38,7 +38,4 @@ func _physics_process(_delta: float) -> void:
 			Input.action_release("debug_panic")
 		170:
 			set_physics_process(false)
-			if OS.has_feature("web"):
-				JavaScriptBridge.eval("window.cs2wasmGameDone && window.cs2wasmGameDone()", true)
-			else:
-				get_tree().quit()
+			get_tree().quit()

@@ -1,0 +1,84 @@
+// Proof 5's page (SPEC section 10): builds the game's C# sources in the browser with the self-hosted compiler (in Web
+// Workers), instantiates the module beside stock Godot's web export, and plays it in the engine through the bridge.
+// The page's address chooses:
+//   ?module=<url>    a module built elsewhere, in place of the build in the browser (to try the engine's part alone)
+//   ?drive=1         the fixed input (driver.gd), after which the game quits; ?drive=panic: with the key that throws
+//   ?build=only      build, and do not start the engine
+// What happened is left in window.proof5 ({ state, build, log, error }) for tests/Godot/proof5_hello2d/check/browser.mjs.
+import { runModule } from './host/web/run-module.mjs';
+import { webImports, memoryLimits } from './host/web/cs2wasm-web.mjs';
+import { attachGame } from './host/web/godot-web.mjs';
+
+const params = new URLSearchParams(location.search);
+const result = (window.proof5 = { state: 'starting', build: null, log: null, error: null, output: '' });
+const status = (text) => { document.getElementById('status').textContent = text; result.state = text; };
+const print = (text) => { result.output += text; const o = document.getElementById('output'); o.textContent += text; o.scrollTop = o.scrollHeight; };
+
+async function build() {
+  status('downloading the game\'s sources');
+  const manifest = await (await fetch('game/sources.json')).json();
+  const files = await Promise.all(manifest.sources.map(async (s) => ({ path: s.path, bytes: new Uint8Array(await (await fetch(s.url)).arrayBuffer()) })));
+  files.push({ path: '/out/.keep', bytes: new Uint8Array(0) });
+  status('building in the browser (downloading the toolchain, then compiling)');
+  const r = await runModule({
+    module: 'toolchain/cs2wasm.wasm', packs: ['toolchain/library.pack'], files,
+    args: [...manifest.sources.map((s) => s.path), ...manifest.args, '-o', '/out/game.wasm'],
+    env: { CS2WASM_CACHE: '/cache', CS2WASM_REFERENCE_DIR: '/ref' },
+    processors: params.has('processors') ? +params.get('processors') : undefined,
+    onOutput: (text) => print(text),
+  });
+  const wasm = r.files.get('/out/game.wasm');
+  result.build = { exit: r.exit, bytes: wasm?.length ?? 0, downloads: r.downloads, ms: r.ms, pages: r.pages, sources: files.reduce((s, f) => s + f.bytes.length, 0) };
+  if (r.exit !== 0 || !wasm) throw new Error(`the build failed (exit ${r.exit})`);
+  print(`built game.wasm: ${wasm.length} bytes in ${(r.ms.total / 1000).toFixed(1)} s (download ${(r.ms.download / 1000).toFixed(1)} s, compiling the toolchain's module ${(r.ms.compile / 1000).toFixed(1)} s, the build ${(r.ms.run / 1000).toFixed(1)} s)\n`);
+  return wasm;
+}
+
+async function play(wasm) {
+  status('starting the engine');
+  result.wasm = wasm;
+  const sigs = await (await fetch('toolchain/signatures.json')).json();
+  const module = await WebAssembly.compile(wasm);
+  const limits = memoryLimits(wasm);
+  let ended;
+  const done = new Promise((r) => { ended = r; });
+  const out = {
+    mainCanBlock: false, // (the page's thread may not wait)
+    write: print,
+    print: (text) => print(text + '\n'),
+    printError: (text) => print('ERROR: ' + text + '\n'),
+    error: (type, message, stack) => print(`Unhandled exception. ${type}: ${message}${stack ? '\n' + stack : ''}\n`),
+    failed: (e) => { result.error ??= String(e?.stack ?? e); },
+    ended: () => ended(),
+  };
+  const game = await attachGame(module, sigs, out, async (godot) => {
+    const memory = new WebAssembly.Memory({ initial: limits.initial, maximum: limits.maximum, shared: true });
+    const instance = await WebAssembly.instantiate(module, { env: { memory }, cs2wasm: webImports(module, () => memory, out, {}), godot });
+    return { instance, memory };
+  });
+  const config = await (await fetch('godot/config.json')).json();
+  const drive = params.get('drive');
+  const args = ['--fixed-fps', '60', ...(drive ? ['--', '--proof5-drive', ...(drive === 'panic' ? ['--proof5-panic'] : [])] : [])];
+  const engine = new Engine({
+    ...config, executable: 'godot/index', mainPack: 'godot/index.pck', canvas: document.getElementById('canvas'), args, canvasResizePolicy: 0,
+    onPrint: (...a) => print('[engine] ' + a.join(' ') + '\n'), onPrintError: (...a) => print('[engine error] ' + a.join(' ') + '\n'),
+    onExit: () => ended(),
+  });
+  await engine.startGame();
+  status(drive ? 'playing the fixed input' : 'playing: arrows or A/D move, Space jumps, P throws');
+  if (!drive) { document.getElementById('canvas').focus(); return; }
+  await done;
+  result.log = game.log;
+  result.calls = game.bridge.calls;
+  result.rounds = game.backend.round;
+  status('done');
+}
+
+try {
+  const wasm = params.has('module') ? new Uint8Array(await (await fetch(params.get('module'))).arrayBuffer()) : await build();
+  if (params.get('build') === 'only') status('done'); else await play(wasm);
+} catch (e) {
+  result.error = String(e?.stack ?? e);
+  print('FAILED: ' + result.error + '\n');
+  status('failed');
+}
