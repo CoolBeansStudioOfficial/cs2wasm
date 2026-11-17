@@ -70,10 +70,10 @@ internal sealed class Arenas
             Key = key, Container = container, IsArray = isArray, Offset = offset,
             Link = null!, Unlink = null!,
         };
-        s.Link = Placeholder("arena.link " + key, new FuncType([I, I], [I]), Kind.Link, s);
-        s.Unlink = Placeholder("arena.unlink " + key, new FuncType([I, I], []), Kind.Unlink, s);
-        s.LinkFresh = Placeholder("arena.link fresh " + key, new FuncType([I, I], [I]), Kind.LinkFresh, s);
-        s.UnlinkFresh = Placeholder("arena.unlink fresh " + key, new FuncType([I, I], []), Kind.UnlinkFresh, s);
+        s.Link = Placeholder("arena.link " + key, new FuncType([I, I, I], [I]), Kind.Link, s);
+        s.Unlink = Placeholder("arena.unlink " + key, new FuncType([I, I, I], []), Kind.Unlink, s);
+        s.LinkFresh = Placeholder("arena.link fresh " + key, new FuncType([I, I, I], [I]), Kind.LinkFresh, s);
+        s.UnlinkFresh = Placeholder("arena.unlink fresh " + key, new FuncType([I, I, I], []), Kind.UnlinkFresh, s);
         _sites[key] = s;
         return s;
     }
@@ -355,8 +355,8 @@ internal sealed class Arenas
         t is IArrayTypeSymbol && _sites.Values.Any(s => s.Cyclic && s.IsArray && D.Types.IsSubtype(t, s.Container));
 
     static readonly (string name, int arity)[] RuntimeMethods =
-        [("ArenaLink", 2), ("ArenaUnlink", 2), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
-         ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 2), ("ArenaUnlinkFresh", 2)];
+        [("ArenaLink", 3), ("ArenaUnlink", 3), ("ArenaVisitElement", 1), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
+         ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 3), ("ArenaUnlinkFresh", 3)];
 
     /// <summary>Queues the library's arena runtime for compilation (only when some site is cyclic).</summary>
     public void RequestRuntime()
@@ -372,10 +372,10 @@ internal sealed class Arenas
         WasmFunction? link = null, unlink = null, pin = null, linkFresh = null, unlinkFresh = null;
         if (Enabled)
         {
-            link = RuntimeFn("ArenaLink", 2);
-            unlink = RuntimeFn("ArenaUnlink", 2);
-            linkFresh = RuntimeFn("ArenaLinkFresh", 2);
-            unlinkFresh = RuntimeFn("ArenaUnlinkFresh", 2);
+            link = RuntimeFn("ArenaLink", 3);
+            unlink = RuntimeFn("ArenaUnlink", 3);
+            linkFresh = RuntimeFn("ArenaLinkFresh", 3);
+            unlinkFresh = RuntimeFn("ArenaUnlinkFresh", 3);
             pin = RuntimeFn("ArenaPin", 1);
         }
         foreach (var f in D.Module.Functions)
@@ -391,12 +391,12 @@ internal sealed class Arenas
                     case Kind.Link or Kind.LinkFresh:
                         // (value, container) -> value
                         if (Enabled && ph.site!.Cyclic) { x.Ref = ph.kind == Kind.Link ? link : linkFresh; body.Add(x); }
-                        else { x.Op = Op.Drop; x.Ref = null; body.Add(x); }
+                        else { x.Op = Op.Drop; x.Ref = null; body.Add(x); body.Add(x); }
                         break;
                     case Kind.Unlink or Kind.UnlinkFresh:
                         // (old, container) -> ()
                         if (Enabled && ph.site!.Cyclic) { x.Ref = ph.kind == Kind.Unlink ? unlink : unlinkFresh; body.Add(x); }
-                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); x.Ref = D.Rt.Release; body.Add(x); }
+                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); x.Ref = D.Rt.Release; body.Add(x); }
                         break;
                     case Kind.Pin:
                         if (Enabled && CycleTypes.Any(id => D.Types.IsSubtype(D.TypeById[id], ph.pinType!))) { x.Ref = pin; body.Add(x); }

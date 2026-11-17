@@ -1138,7 +1138,7 @@ sealed partial class FunctionCompiler
             site?.AddValue(StaticValueType(v));
             var o = EmitValueAs(v, et); ToOwned(o);
             int val = Scratch(ValType.I32); E.Set(val);
-            if (site != null) { E.Get(val); E.Get(arr); E.Call(site.Link); E.Set(val); }
+            if (site != null) { E.Get(val); E.Get(arr); E.I32(0); E.Call(site.Link); E.Set(val); }
             E.Get(arr); E.Get(val); E.Store(Op.I32Store, dataOffset + idx * size);
             FreeScratch(ValType.I32, val);
             return;

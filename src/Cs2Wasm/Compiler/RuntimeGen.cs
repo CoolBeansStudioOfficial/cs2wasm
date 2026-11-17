@@ -689,7 +689,7 @@ sealed partial class RuntimeGen
                     ve.Get(i); ve.Get(0); ve.Load(Op.I32Load, 12); ve.I32(2); ve.Op(Op.I32Shl); ve.Op(Op.I32Add); ve.Set(end);
                     var exit = ve.Block(); var top = ve.Loop();
                     ve.Get(i); ve.Get(end); ve.Op(Op.I32GeU); ve.BrIf(exit);
-                    ve.Get(i); ve.Call(visit);
+                    ve.Get(i); ve.Call(ar.RuntimeFn("ArenaVisitElement", 1));
                     ve.Get(i); ve.I32(4); ve.Op(Op.I32Add); ve.Set(i);
                     ve.Br(top);
                     ve.End(); ve.End();

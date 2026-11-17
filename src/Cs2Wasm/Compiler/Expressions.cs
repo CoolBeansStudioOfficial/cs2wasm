@@ -366,7 +366,8 @@ sealed partial class FunctionCompiler
         if (Types.IsRef(t))
         {
             // section 4.3: a site that can close a cycle links the value into the container's arena (resolved later)
-            if (site != null) { E.Get(val); pushContainer!(); E.Call(fresh ? site.LinkFresh : site.Link); E.Set(val); }
+            void PushSlot() { if (site!.IsArray) { E.I32(0); return; } pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } }
+            if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : site.Link); E.Set(val); }
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
             EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
             int a = Scratch(ValType.I32);
@@ -386,7 +387,7 @@ sealed partial class FunctionCompiler
             }
             E.Get(old);
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
-            if (site != null) { pushContainer!(); E.Call(fresh ? site.UnlinkFresh : site.Unlink); } else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.Release);
+            if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh ? site.UnlinkFresh : site.Unlink); } else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.Release);
             FreeScratch(ValType.I32, old); FreeScratch(ValType.I32, a);
         }
         else { pushAddr(); E.Get(val); E.Store(Types.StoreOp(t), offset); }

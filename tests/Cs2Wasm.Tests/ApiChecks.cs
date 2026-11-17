@@ -330,6 +330,26 @@ static class ApiChecks
             }
             """, "500000\n"));
 
+        // (a reference from an object to what holds it is not counted, so the part cut off has no reference left)
+        Check("cycles: a long-lived tree that keeps dropping subtrees stays in a fixed 16 MB memory (the part cut off is destroyed at the store that cuts it, by its counts alone)", () => Bounded("api_cycle_split", """
+            class T {
+                public T Parent; public List<T> Kids = new(); public object Tag;
+                public T Add(T c) { c.Parent = this; Kids.Add(c); return c; }
+            }
+            static class P {
+                [UnmanagedCallersOnly(EntryPoint = "main")]
+                static void M() {
+                    var root = new T();
+                    for (int i = 0; i < 100000; i++) {
+                        var sub = root.Add(new T());
+                        for (int j = 0; j < 4; j++) sub.Add(new T()).Tag = sub;
+                        if (root.Kids.Count > 8) root.Kids.RemoveAt(0);
+                    }
+                    Console.WriteLine(root.Kids.Count + " " + root.Kids[0].Kids.Count);
+                }
+            }
+            """, "8 4\n"));
+
         Check("threads: 200 threads one after another run in a fixed 16 MB memory (stacks and thread-local blocks reused)", () => Bounded("api_thread_reuse", """
             using System.Threading;
             static class P {

@@ -656,7 +656,8 @@ namespace Cs2Wasm.Runtime
         // ------------------------------------------------------------------
         // Arenas (section 4.3). Compiled into a module only when the compiler found a store that can close a cycle.
         //
-        // An object of a cycle-capable type is allocated with 16 bytes before its header (AllocObjectArena):
+        // An object of a cycle-capable type is allocated with 32 bytes before its header (AllocObjectArena):
+        //   [-32] its owner, [-28] its slots' bits, [-24] flags and u, [-20] a container waiting to own it (Owners, below),
         //   [-16] its arena's record (0: none yet), [-12] next member, [-8] previous member (a ring),
         //   [-4] inside count: the references to it from slots of members of its arena.
         // It starts as a plain counted object. A store that can close a cycle puts the container and the value in one
@@ -673,10 +674,10 @@ namespace Cs2Wasm.Runtime
         // Nothing is scanned and nothing waits. A member no reference of either kind refers to is destroyed at once,
         // and the members only it referred to with it (a subtree taken out of a tree). An arena whose total reaches
         // zero is destroyed whole: what is left then is what its members' references to each other kept, the cycles.
-        // When a store takes away an inside reference to a member that has others left and no outside one, the member
-        // may head a part of the arena nothing else refers to any more (a subtree with links back to its parents,
-        // taken out of its tree): ArenaSplit looks at that part only, and frees it if so. A part it does not find
-        // (larger than its limit) stays until the arena goes, as section 4.3 allows.
+        // A reference from a member to one that holds it (a child to its parent) is not counted at all (Owners, below),
+        // so a part taken out of its tree has no reference left to it and goes at that store. A part that is let go while
+        // its members still refer to each other in some other way (two siblings that refer to each other) stays until
+        // the arena goes, as section 4.3 allows: nothing looks for it.
         // A pinned object (stored in a static) has bit 31 of its hash word set and never joins an arena.
         // ------------------------------------------------------------------
         // ArenaShared: another thread can reach the arena's members (Sharing): it takes no more members, and the
@@ -684,7 +685,7 @@ namespace Cs2Wasm.Runtime
         // arena's are under the runtime lock); cycles among them are not collected.
         const int ArenaBusy = 1, ArenaShared = 4;
         const int SharedCount = 0x40000000;
-        const int ArenaPrefix = 16, ArenaRecord = 24;
+        const int ArenaPrefix = 32, ArenaRecord = 24;
 
         [Intrinsic] static extern int SccOf(int typeId);
         [Intrinsic] static extern void ArenaClearObject(int addr);
@@ -790,10 +791,10 @@ namespace Cs2Wasm.Runtime
                 s_linkN--;
                 int o = Mem.LoadI32(s_linkQ + 4 * s_linkN);
                 // (still a member: nothing ran in between)
-                int sa = s_visitArena, sm = s_visitMode;
-                s_visitArena = o; s_visitMode = 4;
+                int sa = s_visitArena, sm = s_visitMode, so = s_visitObj;
+                s_visitArena = o; s_visitMode = 4; s_visitObj = o;
                 ArenaVisitObject(o);
-                s_visitArena = sa; s_visitMode = sm;
+                s_visitArena = sa; s_visitMode = sm; s_visitObj = so;
             }
         }
 
@@ -823,12 +824,216 @@ namespace Cs2Wasm.Runtime
             return a;
         }
 
+        // ---- Owners (section 4.3: cycles shaped like ownership are freed by counting alone) ----
+        // A member records its owner: the member whose slot first took a counted reference to it. A reference stored
+        // into one of a member's own slots (not an array's elements) to a member on its owner chain (itself, its
+        // owner, its owner's owner, .. ChainMax steps) is an up-reference: it is not counted at all, since whatever
+        // keeps the storing object alive through the chain keeps the target alive. So a child's reference to its
+        // parent, through the list and array that hold the child, costs nothing, and a subtree taken out of its tree
+        // has no reference left to it and is destroyed at that store.
+        // What makes that exact: u counts, for each member, the up-references from it and from what it owns to members
+        // above it (kept by walking the chain at each such store and removal, never anything else). A member with
+        // u > 0 that something other than its owner refers to holds its owner with a counted reference (Held), and
+        // so on up: a child held from outside keeps its parent, as it does in .NET. A member whose owner lets it go
+        // keeps the owner as long as it holds it; then it has none, and the next container that holds it takes over.
+        // Slot bits (two per slot, the first 16 words after the header): 1 a counted inside reference, 2 an
+        // up-reference, 0 anything else (an outside-counted reference, or nothing).
+        const int Owned = 1, Held = 2, Dying = 4, MultOne = 8, MultMask = 0x78, Queued = 0x80, UOne = 0x100;
+        const int ChainMax = 8;
+        [System.ThreadStatic] static int t_prevSlot, t_prevBits;
+        static int s_visitObj, s_visitElem, s_destroying, s_killQ, s_killN, s_killCap, s_storeSlot;
+
+        static int SlotIndex(int container, int slot)
+        {
+            if (slot == 0) return -1;
+            int off = slot - container;
+            return off >= 12 && off < 76 ? (off - 12) >> 2 : -1;
+        }
+        static int SlotBits(int container, int i) => (Mem.LoadI32(container - 28) >> (2 * i)) & 3;
+        static void SetSlotBits(int container, int i, int b)
+        {
+            int w = Mem.LoadI32(container - 28);
+            Mem.StoreI32(container - 28, (w & ~(3 << (2 * i))) | (b << (2 * i)));
+        }
+
+        /// <summary>The target is the member itself or one of its owners (ChainMax steps up).</summary>
+        static bool OnChain(int from, int target)
+        {
+            int v = from;
+            for (int k = 0; k <= ChainMax; k++)
+            {
+                if (v == target) return true;
+                v = Mem.LoadI32(v - 32);
+                if (v == 0) return false;
+            }
+            return false;
+        }
+
+        /// <summary>An up-reference from `from` to `target` came (d = 1) or went (d = -1): the u of each member from
+        /// `from` up to below the target, then what each of them holds.</summary>
+        static void UpPath(int from, int target, int d)
+        {
+            int v = from;
+            for (int k = 0; k <= ChainMax && v != target && v != 0; k++)
+            {
+                Mem.StoreI32(v - 24, Mem.LoadI32(v - 24) + d * UOne);
+                v = Mem.LoadI32(v - 32);
+            }
+            v = from;
+            for (int k = 0; k <= ChainMax && v != target && v != 0; k++)
+            {
+                int next = Mem.LoadI32(v - 32);
+                UpdateHold(v);
+                v = next;
+            }
+        }
+
+        /// <summary>A member with up-references below it that something other than its owner refers to holds its
+        /// owner; one that no longer does lets it go. Follows the change up the chain.</summary>
+        static void UpdateHold(int v)
+        {
+            while (true)
+            {
+                int c = Mem.LoadI32(v);
+                if (c >= -1) return;
+                int fl = Mem.LoadI32(v - 24);
+                if ((fl & Dying) != 0) return;
+                int w = Mem.LoadI32(v - 32);
+                if (w == 0) return;
+                int others = Mem.LoadI32(v - 4) - ((fl & MultMask) >> 3) + (-c - 2);
+                bool want = (uint)fl >= UOne && others > 0;
+                if (want == ((fl & Held) != 0)) return;
+                if (want)
+                {
+                    Mem.StoreI32(v - 24, fl | Held);
+                    Mem.StoreI32(w - 4, Mem.LoadI32(w - 4) + 1);
+                    v = w;
+                    continue;
+                }
+                fl &= ~Held;
+                Mem.StoreI32(v - 24, fl);
+                if ((fl & Owned) == 0) { Mem.StoreI32(v - 32, 0); Adopt(v); }
+                int n = Mem.LoadI32(w - 4) - 1;
+                Mem.StoreI32(w - 4, n);
+                if (n == 0 && Mem.LoadI32(w) == -2) { Kill(w); return; }
+                v = w;
+            }
+        }
+
+        /// <summary>A member no reference of either kind refers to, found while another change is under way: destroyed
+        /// when that change is done (DrainKills, before the operation returns), or with the others of a destruction.</summary>
+        static void Kill(int w)
+        {
+            int fl = Mem.LoadI32(w - 24);
+            if ((fl & (Dying | Queued)) != 0) return;
+            if (s_destroying != 0)
+            {
+                Mem.StoreI32(w - 24, fl | Dying);
+                ArenaTakeOut(ArenaOf(w), w);
+                Mem.StoreI32(w - 12, s_visitDead);
+                s_visitDead = w;
+                return;
+            }
+            if (s_killN == s_killCap)
+            {
+                int cap = s_killCap == 0 ? 16 : s_killCap * 2;
+                int nq = Alloc(cap * 4);
+                if (s_killQ != 0) { Mem.Copy(nq, s_killQ, s_killN * 4); Free(s_killQ, s_killCap * 4); }
+                s_killQ = nq; s_killCap = cap;
+            }
+            Mem.StoreI32(s_killQ + 4 * s_killN, w);
+            s_killN++;
+            Mem.StoreI32(w - 24, fl | Queued);
+        }
+
+        /// <summary>A member that is destroyed while it waits in the list: taken off it.</summary>
+        static void Unqueue(int m)
+        {
+            int fl = Mem.LoadI32(m - 24);
+            if ((fl & Queued) == 0) return;
+            Mem.StoreI32(m - 24, fl & ~Queued);
+            for (int i = 0; i < s_killN; i++) if (Mem.LoadI32(s_killQ + 4 * i) == m) Mem.StoreI32(s_killQ + 4 * i, 0);
+        }
+
+        static void DrainKills()
+        {
+            while (s_killN > 0)
+            {
+                s_killN--;
+                int w = Mem.LoadI32(s_killQ + 4 * s_killN);
+                // (0: destroyed since, with another; and it may be referred to again)
+                if (w == 0) continue;
+                Mem.StoreI32(w - 24, Mem.LoadI32(w - 24) & ~Queued);
+                if (Mem.LoadI32(w) == -2 && Mem.LoadI32(w - 4) == 0 && (Mem.LoadI32(w - 24) & Dying) == 0
+                    && (Mem.LoadI32(ArenaOf(w) + 12) & ArenaBusy) == 0) ArenaDestroyFrom(w);
+            }
+        }
+
+        /// <summary>A member without an owner whose reference a container still holds counted: that container owns it
+        /// from now on (unless the member is above it).</summary>
+        static void Adopt(int v)
+        {
+            int p = Mem.LoadI32(v - 20);
+            if (p == 0) return;
+            Mem.StoreI32(v - 20, 0);
+            if (Mem.LoadI32(p) >= -1 || OnChain(p, v)) return;
+            Mem.StoreI32(v - 32, p);
+            Mem.StoreI32(v - 24, Mem.LoadI32(v - 24) | Owned | MultOne);
+            Reevaluate(v);
+        }
+
+        /// <summary>The member has an owner now: a counted reference in one of its own slots to a member that is on its
+        /// chain becomes an up-reference (a parent set before the child was put in the parent's list).</summary>
+        static void Reevaluate(int v)
+        {
+            int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
+            s_visitArena = ArenaOf(v); s_visitMode = 5; s_visitObj = v; s_visitElem = 0;
+            ArenaVisitObject(v);
+            s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se;
+        }
+
+        /// <summary>The container took a counted reference to a member without an owner: it owns it, unless that
+        /// would make the member its own owner further up. Then the member right below it on the chain stops being
+        /// owned by it (when nothing below refers above it), and the ownership turns round: a parent first referred to
+        /// by a child, the child then put into the parent's list.</summary>
+        static void TakeOwnership(int val, int container)
+        {
+            if (OnChain(container, val))
+            {
+                int x = container;
+                for (int k = 0; k <= ChainMax && Mem.LoadI32(x - 32) != val; k++) x = Mem.LoadI32(x - 32);
+                int xf = Mem.LoadI32(x - 24);
+                if (Mem.LoadI32(x - 32) != val || (uint)xf >= UOne || (xf & Held) != 0) return;
+                Mem.StoreI32(x - 24, xf & ~(Owned | MultMask));
+                Mem.StoreI32(x - 32, 0);
+            }
+            Mem.StoreI32(val - 32, container);
+            Mem.StoreI32(val - 24, Mem.LoadI32(val - 24) | Owned | MultOne);
+            Reevaluate(val);
+        }
+
+        /// <summary>The container gave up one counted reference to the member: if it owned it, one of the owner's
+        /// references fewer; with the last, the member has no owner (unless it holds it: then until it lets go).</summary>
+        static void OwnerLetGo(int old, int container)
+        {
+            if (Mem.LoadI32(old - 20) == container) Mem.StoreI32(old - 20, 0);
+            if (Mem.LoadI32(old - 32) != container) return;
+            int fl = Mem.LoadI32(old - 24);
+            if ((fl & Owned) == 0) return;
+            fl -= MultOne;
+            if ((fl & MultMask) != 0) { Mem.StoreI32(old - 24, fl); return; }
+            fl &= ~Owned;
+            Mem.StoreI32(old - 24, fl);
+            if ((fl & Held) == 0) Mem.StoreI32(old - 32, 0);
+        }
+
         /// <summary>Retain of an arena member: one more outside reference.</summary>
         public static void ArenaRetain(int p)
         {
             Mem.StoreI32(p, Mem.LoadI32(p) - 1);
             int ar = ArenaOf(p);
             Mem.StoreI32(ar, Mem.LoadI32(ar) + 1);
+            if ((uint)Mem.LoadI32(p - 24) >= UOne) UpdateHold(p);
         }
 
         /// <summary>Release of an arena member: one outside reference fewer.</summary>
@@ -840,21 +1045,33 @@ namespace Cs2Wasm.Runtime
             int total = Mem.LoadI32(ar) - 1;
             Mem.StoreI32(ar, total);
             if (total == 0) { ArenaFree(ar); return; }
-            if (w != -2 || (Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
+            if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
             // (no reference of either kind: it goes now, with what only it referred to)
-            if (Mem.LoadI32(p - 4) == 0) { ArenaDestroyFrom(p); ArenaPending(); return; }
+            if (w == -2 && Mem.LoadI32(p - 4) == 0) { ArenaDestroyFrom(p); DrainKills(); return; }
+            if ((uint)Mem.LoadI32(p - 24) >= UOne) { UpdateHold(p); DrainKills(); }
         }
 
         /// <summary>
         /// A store of value (owned) into a slot of container that can close a cycle: if both are of one cycle-capable
-        /// group, they end up in one arena and the stored reference becomes an inside one. Returns the value to store.
+        /// group, they end up in one arena and the stored reference becomes an inside one, or an up-reference.
+        /// Returns the value to store. `slot`: the slot's address, 0 for an array's element.
         /// </summary>
-        public static int ArenaLink(int val, int container)
+        public static int ArenaLink(int val, int container, int slot)
         {
-            if (val == 0 || container == 0) return val;
+            if (container == 0) return val;
             RuntimeLock();
-            int r = ArenaLinkCore(val, container);
+            // (what the slot's bits said of the value it held: for the ArenaUnlink that follows the store)
+            int i = Mem.LoadI32(container) < -1 ? SlotIndex(container, slot) : -1;
+            t_prevSlot = slot;
+            t_prevBits = slot != 0 && SlotIndex(container, slot) >= 0 ? 0 : -1;
+            if (i >= 0) { t_prevBits = SlotBits(container, i); SetSlotBits(container, i, 0); }
+            // (a container that joins an arena here has its slots linked: not this one, whose value is on its way out)
+            int outer = s_storeSlot;
+            s_storeSlot = slot;
+            int r = val == 0 ? 0 : ArenaLinkCore(val, container, slot);
             ArenaLinkJoined();
+            s_storeSlot = outer;
+            DrainKills();
             RuntimeUnlock();
             return r;
         }
@@ -862,23 +1079,22 @@ namespace Cs2Wasm.Runtime
         /// <summary>ArenaLink where the compiler saw that only the storing code knows the container (a new object, not
         /// let out yet: FreshStores.cs): nothing can reach it, so the store closes no cycle and is a plain counted one.
         /// Unless the container is an arena's member already (it was linked while it was being made): then as any store.</summary>
-        public static int ArenaLinkFresh(int val, int container)
+        public static int ArenaLinkFresh(int val, int container, int slot)
         {
-            if (container == 0 || Mem.LoadI32(container) > 0) return val;
-            return ArenaLink(val, container);
+            if (container == 0 || Mem.LoadI32(container) > 0) { t_prevSlot = 0; return val; }
+            return ArenaLink(val, container, slot);
         }
 
         /// <summary>The old value of a slot stored by ArenaLinkFresh: a plain object's slots hold counted references.</summary>
-        public static void ArenaUnlinkFresh(int old, int container)
+        public static void ArenaUnlinkFresh(int old, int container, int slot)
         {
             if (container == 0 || Mem.LoadI32(container) > 0) { Release(Borrow<object>(old)); return; }
-            ArenaUnlink(old, container);
+            ArenaUnlink(old, container, slot);
         }
 
-        static int ArenaLinkCore(int val, int container)
+        static int ArenaLinkCore(int val, int container, int slot)
         {
             int cv = Mem.LoadI32(val), ca = Mem.LoadI32(container);
-            if (cv > 0 && (cv & SharedCount) != 0 || ca > 0 && (ca & SharedCount) != 0) return val; // shared: counted
             if (cv == -1 || cv == 0 || ca == -1 || ca == 0) return val; // immortal, or being destroyed
             int g = SccOf(Mem.LoadI32(val + 4));
             if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return val;
@@ -887,12 +1103,6 @@ namespace Cs2Wasm.Runtime
             int ra = ca < -1 ? ArenaOf(container) : 0, rv = cv < -1 ? ArenaOf(val) : 0;
             if (ra != 0 && (Mem.LoadI32(ra + 12) & ArenaBusy) != 0) return val;
             if (rv != 0 && (Mem.LoadI32(rv + 12) & ArenaBusy) != 0) return val;
-            // (a shared arena takes no more members; two of its members still link)
-            if (ra == 0 || ra != rv)
-            {
-                if (ra != 0 && (Mem.LoadI32(ra + 12) & ArenaShared) != 0) return val;
-                if (rv != 0 && (Mem.LoadI32(rv + 12) & ArenaShared) != 0) return val;
-            }
             int ar = ra;
             if (ar == 0) { ar = rv != 0 ? rv : NewArena(); ArenaJoin(ar, container); }
             cv = Mem.LoadI32(val); // val may be the container itself
@@ -902,22 +1112,57 @@ namespace Cs2Wasm.Runtime
                 int now = ArenaOf(val);
                 if (now != ar) ar = ArenaMerge(ar, now);
             }
-            // the stored reference is inside the arena now: the count the store took becomes an inside count
+            // the stored reference is inside the arena now: the count the store took is given back
             Mem.StoreI32(val, Mem.LoadI32(val) + 1);
             Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
+            int i = s_visitElem != 0 ? -1 : SlotIndex(container, slot);
+            if (i >= 0 && OnChain(container, val))
+            {
+                // an up-reference: not counted (the chain from the container to the value keeps the value)
+                SetSlotBits(container, i, 2);
+                UpPath(container, val, 1);
+                if (Mem.LoadI32(val) == -2 && Mem.LoadI32(val - 4) == 0) Kill(val);
+                else UpdateHold(val);
+                return val;
+            }
             Mem.StoreI32(val - 4, Mem.LoadI32(val - 4) + 1);
+            if (i >= 0) SetSlotBits(container, i, 1);
+            if (val != container)
+            {
+                int ow = Mem.LoadI32(val - 32);
+                int fl = Mem.LoadI32(val - 24);
+                if (ow == container && (fl & Owned) != 0)
+                {
+                    // (one more of its owner's references; more than can be told apart: no owner, as if let go)
+                    if ((fl & MultMask) == MultMask) { fl &= ~(Owned | MultMask); Mem.StoreI32(val - 24, fl); if ((fl & Held) == 0) Mem.StoreI32(val - 32, 0); }
+                    else Mem.StoreI32(val - 24, fl + MultOne);
+                }
+                else if (ow == 0) TakeOwnership(val, container);
+                else Mem.StoreI32(val - 20, container);
+            }
+            UpdateHold(val);
             return val;
         }
 
         /// <summary>The old value of a slot that can close a cycle was overwritten.</summary>
-        public static void ArenaUnlink(int old, int container)
+        public static void ArenaUnlink(int old, int container, int slot)
         {
+            // what the slot held, by its bits before the store (ArenaLink noted them); -1: not known, by the counts
+            int bits = -1;
+            if (slot != 0 && t_prevSlot == slot) { bits = t_prevBits; t_prevSlot = 0; }
             if (old == 0) return;
+            if (bits == 0) { Release(Borrow<object>(old)); return; }
             RuntimeLock();
             int co = Mem.LoadI32(old), cc = Mem.LoadI32(container);
+            if (bits == 2)
+            {
+                // (an up-reference: never counted)
+                if (co < -1 && cc < -1) { UpPath(container, old, -1); DrainKills(); }
+                RuntimeUnlock();
+                return;
+            }
             // an inside reference: both are members of one arena (they were linked when it was stored), the arena is
             // not being destroyed (its members' inside references are cut first), and it was counted as one
-            // (ArenaVisit says when a slot's reference to a member is not)
             bool inside = co < -1 && cc < -1 && Mem.LoadI32(old - 4) != 0;
             if (inside)
             {
@@ -928,7 +1173,14 @@ namespace Cs2Wasm.Runtime
             {
                 int n = Mem.LoadI32(old - 4) - 1;
                 Mem.StoreI32(old - 4, n);
-                if (n == 0) { if (co == -2) { ArenaDestroyFrom(old); ArenaPending(); } }
+                OwnerLetGo(old, container);
+                if (n == 0 && co == -2) ArenaDestroyFrom(old);
+                else
+                {
+                    if (Mem.LoadI32(old - 32) == 0) Adopt(old);
+                    UpdateHold(old);
+                }
+                DrainKills();
             }
             RuntimeUnlock();
             if (!inside) Release(Borrow<object>(old));
@@ -941,63 +1193,56 @@ namespace Cs2Wasm.Runtime
             return val;
         }
 
-        // The generated visitor calls ArenaVisit for each slot of a member that can hold an inside reference; what that
-        // does is the mode: 0 a dying member's references (taken out; a member that loses its last dies too),
-        // 1 the same when all of them die anyway (taken out only), 2 a split's count (ArenaSplit), 3 its undoing,
-        // 4 a copied object's slots (ArenaLinkContents).
+        // The generated visitor calls ArenaVisit for each slot of a member that can hold an inside reference
+        // (ArenaVisitElement for an array's elements); what that does is the mode: 0 a dying member's references
+        // (taken out; a member that loses its last dies too), 1 the same when all of them die anyway (taken out
+        // only), 4 a copied or joining object's slots (linked as the stores they stand for), 5 a member that got
+        // an owner (Reevaluate).
         static int s_visitArena, s_visitMode, s_visitDead;
-        const int SplitMax = 4096, PendingMax = 32;
-        static int s_split, s_splitN, s_splitRoot, s_splitOver, s_pending, s_pendingN;
+
+        public static void ArenaVisitElement(int slot)
+        {
+            int e = s_visitElem;
+            s_visitElem = 1;
+            ArenaVisit(slot);
+            s_visitElem = e;
+        }
 
         public static void ArenaVisit(int slot)
         {
             int child = Mem.LoadI32(slot);
             // (4: each reference, counted by the copy, as a store of it)
-            if (s_visitMode == 4) { if (child != 0) ArenaLinkCore(child, s_visitArena); return; }
-            if (child == 0 || Mem.LoadI32(child) >= -1 || ArenaOf(child) != s_visitArena) return;
-            switch (s_visitMode)
+            if (s_visitMode == 4) { if (child != 0 && slot != s_storeSlot) ArenaLinkCore(child, s_visitArena, slot); return; }
+            if (child == 0 || Mem.LoadI32(child) >= -1) return;
+            if (s_visitMode == 1) { if (ArenaOf(child) == s_visitArena) Mem.StoreI32(slot, 0); return; }
+            int obj = s_visitObj;
+            int i = s_visitElem != 0 ? -1 : SlotIndex(obj, slot);
+            int bits = i >= 0 ? SlotBits(obj, i) : -1;
+            if (s_visitMode == 5)
             {
-                case 1: Mem.StoreI32(slot, 0); return;
-                case 3: Mem.StoreI32(child - 4, Mem.LoadI32(child - 4) + 1); return;
-                case 2:
-                    {
-                        int n = Mem.LoadI32(child - 4) - 1;
-                        Mem.StoreI32(child - 4, n);
-                        // (below zero: this slot's reference was counted as an outside one, see below; nothing is decided then)
-                        if (n < 0) s_splitOver = 1;
-                        if (n != 0 || Mem.LoadI32(child) != -2 || child == s_splitRoot) return;
-                        if (s_splitN == SplitMax) { s_splitOver = 1; return; }
-                        Mem.StoreI32(s_split + 4 * s_splitN, child);
-                        s_splitN++;
-                        return;
-                    }
+                // a counted reference of the member's own to a member on its chain: an up-reference from now on
+                if (bits != 1 || Mem.LoadI32(child - 32) == obj || !OnChain(obj, child)) return;
+                if (Mem.LoadI32(child - 4) + (-Mem.LoadI32(child) - 2) <= 1) return;
+                Mem.StoreI32(child - 4, Mem.LoadI32(child - 4) - 1);
+                SetSlotBits(obj, i, 2);
+                if (Mem.LoadI32(child - 20) == obj) Mem.StoreI32(child - 20, 0);
+                UpPath(obj, child, 1);
+                UpdateHold(child);
+                return;
             }
-            // A slot filled by something other than a store the compiler links holds a counted, outside reference even
-            // to a member of the same arena. The member's inside count is then lower than its inside referrers; a
-            // reference found with that count at zero is such an outside one, and stays in the slot for the release
-            // every other reference of the dying object gets.
-            if (Mem.LoadI32(child - 4) == 0) return;
+            // 0: the member (obj) is being destroyed
+            if (bits == 2) { Mem.StoreI32(slot, 0); SetSlotBits(obj, i, 0); UpPath(obj, child, -1); return; }
+            // (an outside-counted reference stays in the slot for the release every other reference of the dying
+            // object gets; so does one whose kind is not known when the member has no inside count)
+            if (bits == 0 || ArenaOf(child) != s_visitArena || Mem.LoadI32(child - 4) == 0) return;
             Mem.StoreI32(slot, 0);
+            if (i >= 0) SetSlotBits(obj, i, 0);
             int left = Mem.LoadI32(child - 4) - 1;
             Mem.StoreI32(child - 4, left);
-            if (Mem.LoadI32(child) != -2) return;
-            if (left == 0)
-            {
-                ArenaTakeOut(s_visitArena, child);
-                Mem.StoreI32(child - 12, s_visitDead);
-                s_visitDead = child;
-            }
-            else if (s_pendingN < PendingMax)
-            {
-                // it lost a reference with its referrer and has others: it may head a part cut off now. Looked at
-                // when the referrer is done (ArenaPending); held by an outside count until then.
-                if (s_pending == 0) s_pending = Alloc(PendingMax * 4);
-                Mem.StoreI32(s_pending + 4 * s_pendingN, child);
-                s_pendingN++;
-                Mem.StoreI32(child, -3);
-                Mem.StoreI32(child + 8, Mem.LoadI32(child + 8) | int.MinValue);
-                Mem.StoreI32(s_visitArena, Mem.LoadI32(s_visitArena) + 1);
-            }
+            OwnerLetGo(child, obj);
+            if (left == 0 && Mem.LoadI32(child) == -2) { Kill(child); return; }
+            if (Mem.LoadI32(child - 32) == 0) Adopt(child);
+            UpdateHold(child);
         }
 
         /// <summary>A copy of an object (MemberwiseClone) has counted each reference it holds: those in slots that can
@@ -1005,11 +1250,12 @@ namespace Cs2Wasm.Runtime
         public static void ArenaLinkContents(int obj)
         {
             RuntimeLock();
-            int sa = s_visitArena, sm = s_visitMode;
-            s_visitArena = obj; s_visitMode = 4;
+            int sa = s_visitArena, sm = s_visitMode, so = s_visitObj;
+            s_visitArena = obj; s_visitMode = 4; s_visitObj = obj;
             ArenaVisitObject(obj);
-            s_visitArena = sa; s_visitMode = sm;
+            s_visitArena = sa; s_visitMode = sm; s_visitObj = so;
             ArenaLinkJoined();
+            DrainKills();
             RuntimeUnlock();
         }
 
@@ -1036,41 +1282,51 @@ namespace Cs2Wasm.Runtime
         }
 
         /// <summary>A member without references: it is destroyed, and so is each member that loses its last reference
-        /// with it, one after the other (no recursion: a long chain is a long list).</summary>
+        /// with it, one after the other (no recursion: a long chain is a long list). First every one of them gives
+        /// up its references to other members (their owners are still there to walk through), then each is destroyed
+        /// as any object.</summary>
         static void ArenaDestroyFrom(int p)
         {
             int ar = ArenaOf(p);
             ArenaTakeOut(ar, p);
             Mem.StoreI32(p - 12, 0);
-            int dead = p;
+            Mem.StoreI32(p - 24, Mem.LoadI32(p - 24) | Dying);
+            int dead = p, done = 0;
+            s_destroying++;
             while (dead != 0)
             {
                 int m = dead;
                 dead = Mem.LoadI32(m - 12);
-                // its inside references go first (they are not counted as the others: the visitor takes them out)
-                int sa = s_visitArena, sm = s_visitMode, sd = s_visitDead;
-                s_visitArena = ar; s_visitMode = 0; s_visitDead = dead;
+                Unqueue(m);
+                int sa = s_visitArena, sm = s_visitMode, sd = s_visitDead, so = s_visitObj, se = s_visitElem;
+                s_visitArena = ar; s_visitMode = 0; s_visitDead = dead; s_visitObj = m; s_visitElem = 0;
+                // (what it held of its owner goes back)
+                int fl = Mem.LoadI32(m - 24);
+                if ((fl & Held) != 0)
+                {
+                    int w = Mem.LoadI32(m - 32);
+                    Mem.StoreI32(m - 24, fl & ~Held);
+                    int n = Mem.LoadI32(w - 4) - 1;
+                    Mem.StoreI32(w - 4, n);
+                    if (n == 0 && Mem.LoadI32(w) == -2) Kill(w); else UpdateHold(w);
+                }
                 ArenaVisitObject(m);
                 dead = s_visitDead;
-                s_visitArena = sa; s_visitMode = sm; s_visitDead = sd;
-                // then as any object: no longer a member (count zero: being destroyed), its finalizer, its other references
-                Mem.StoreI32(m, 0);
-                Mem.StoreI32(m - 16, 0);
-                ArenaClearObject(m);
+                s_visitArena = sa; s_visitMode = sm; s_visitDead = sd; s_visitObj = so; s_visitElem = se;
+                Mem.StoreI32(m - 8, done);
+                done = m;
+            }
+            s_destroying--;
+            // then as any object: no longer a member (count zero: being destroyed), its finalizer, its other references
+            for (int m = done; m != 0; m = Mem.LoadI32(m - 8)) { Mem.StoreI32(m, 0); Mem.StoreI32(m - 16, 0); }
+            for (int m = done; m != 0; m = Mem.LoadI32(m - 8)) ArenaClearObject(m);
+            for (int m = done; m != 0;)
+            {
+                int next = Mem.LoadI32(m - 8);
                 ArenaFreeObject(m);
+                m = next;
             }
             ArenaEmpty(ar);
-        }
-
-        /// <summary>The members that lost a reference with a dying referrer (ArenaVisit): each gives its hold back and
-        /// is looked at as after a store.</summary>
-        static void ArenaPending()
-        {
-            while (s_pendingN > 0)
-            {
-                s_pendingN--;
-                ArenaRelease(Mem.LoadI32(s_pending + 4 * s_pendingN));
-            }
         }
 
         /// <summary>No outside reference remains: the whole arena goes (its members' inside references are taken out,
@@ -1085,7 +1341,7 @@ namespace Cs2Wasm.Runtime
             {
                 // (every member's record word straight at the arena: the merged records they pointed to go now)
                 int m = first;
-                do { ArenaOf(m); m = Mem.LoadI32(m - 12); } while (m != first);
+                do { ArenaOf(m); Unqueue(m); m = Mem.LoadI32(m - 12); } while (m != first);
                 int sa = s_visitArena, sm = s_visitMode;
                 s_visitArena = ar; s_visitMode = 1;
                 m = first;
@@ -1124,10 +1380,10 @@ namespace Cs2Wasm.Runtime
                     Mem.StoreI32(olds + k * 4, Mem.LoadI32(lost + k * 4));
                     int v = Mem.LoadI32(twice + k * 4);
                     Retain(Borrow<object>(v));
-                    ArenaLink(v, dst);
+                    ArenaLink(v, dst, 0);
                 }
                 Mem.Copy(d, s, length * 4);
-                for (int k = 0; k < n; k++) ArenaUnlink(Mem.LoadI32(olds + k * 4), dst);
+                for (int k = 0; k < n; k++) ArenaUnlink(Mem.LoadI32(olds + k * 4), dst, 0);
                 Free(olds, n * 4);
                 return;
             }
@@ -1137,10 +1393,10 @@ namespace Cs2Wasm.Runtime
                 int i = back ? length - 1 - k : k;
                 int v = Mem.LoadI32(s + i * 4);
                 Retain(Borrow<object>(v));
-                v = ArenaLink(v, dst);
+                v = ArenaLink(v, dst, 0);
                 int old = Mem.LoadI32(d + i * 4);
                 Mem.StoreI32(d + i * 4, v);
-                ArenaUnlink(old, dst);
+                ArenaUnlink(old, dst, 0);
             }
         }
 
@@ -1152,7 +1408,7 @@ namespace Cs2Wasm.Runtime
             {
                 int old = Mem.LoadI32(d + i * 4);
                 Mem.StoreI32(d + i * 4, 0);
-                ArenaUnlink(old, arr);
+                ArenaUnlink(old, arr, 0);
             }
         }
 
