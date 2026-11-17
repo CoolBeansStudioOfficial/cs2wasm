@@ -52,14 +52,44 @@ sealed partial class RuntimeGen
                 Add(D.TypeId(D.Types.Canonical(gi.OriginalDefinition)));
             if (kinds.Contains("array_of") && D.ExistingTypeId(D.Types.LibCompilationArray(D.TypeById[id])) is int ai && D.Constructed.Contains(ai)) Add(ai);
         }
-        // Object and string first, then the other types whose objects hold no reference (their destruction frees
-        // them and nothing else: rt.destroy tells them by their number alone), then the rest; each part in order.
+        // The order: a class before the classes derived from it, each with all of its own right after it (the class
+        // hierarchy, walked depth first), so the classes a type test or a cast accepts (a class and what derives
+        // from it) are numbers next to each other, one comparison of a range, and the classes that take a virtual
+        // method from one base are a stretch of a dispatch stub (EmitStubs). Twice over: first the types whose
+        // objects hold no reference (their destruction frees them and nothing else: rt.destroy tells them by their
+        // number alone), then the rest; so a class's own are two ranges at most. Object and string keep 0 and 1.
         var order = q.Order().ToList();
-        var leaves = order.Where(id => id > 1 && IsLeafDestroy(id)).ToList();
-        var leafSet = leaves.ToHashSet();
+        var children = new Dictionary<int, List<int>>();
+        var roots = new List<int>();
+        foreach (int id in order)
+        {
+            if (id <= 1) continue;
+            int parent = -1;
+            if (id < D.TypeById.Count && !D.IsSymbolless(id))
+            {
+                // (the nearest base that has a number)
+                for (var b = BaseOf(D.TypeById[id]); b != null; b = BaseOf(b))
+                    if (D.ExistingTypeId(b) is int bi && q.Contains(bi)) { parent = bi; break; }
+            }
+            if (parent <= 0) roots.Add(id);
+            else { if (!children.TryGetValue(parent, out var l)) children[parent] = l = []; l.Add(id); }
+        }
+        var walk = new List<int>();
+        var stack = new Stack<int>();
+        // (string's own, then the others: in the order of their ids, which is the order they were met in)
+        for (int k = roots.Count - 1; k >= 0; k--) stack.Push(roots[k]);
+        if (children.TryGetValue(1, out var ofString)) for (int k = ofString.Count - 1; k >= 0; k--) stack.Push(ofString[k]);
+        while (stack.Count > 0)
+        {
+            int id = stack.Pop();
+            walk.Add(id);
+            if (children.TryGetValue(id, out var cs)) for (int k = cs.Count - 1; k >= 0; k--) stack.Push(cs[k]);
+        }
+        var leafSet = walk.Where(IsLeafDestroy).ToHashSet();
         // (object, when the program makes none: no object has its number)
-        D.LeafTypeCount = (IsLeafDestroy(0) || !HasDestroy(0)) && IsLeafDestroy(1) ? 2 + leaves.Count : 0;
-        D.SetTypeNumbers(D.LeafTypeCount == 0 ? order : [0, 1, .. leaves, .. order.Where(id => id > 1 && !leafSet.Contains(id))]);
+        D.LeafTypeCount = (IsLeafDestroy(0) || !HasDestroy(0)) && IsLeafDestroy(1) ? 2 + leafSet.Count : 0;
+        D.SetTypeNumbers(D.LeafTypeCount == 0 ? [.. order.Where(id => id <= 1), .. walk]
+            : [.. order.Where(id => id <= 1), .. walk.Where(leafSet.Contains), .. walk.Where(id => !leafSet.Contains(id))]);
     }
 
     /// <summary>Gives ids to the types the requested tables refer to.</summary>

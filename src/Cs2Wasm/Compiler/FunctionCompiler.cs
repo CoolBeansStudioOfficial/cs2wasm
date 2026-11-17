@@ -1155,6 +1155,81 @@ sealed partial class FunctionCompiler
             PopScope();
             return;
         }
+        if (s_listForEach && _machine == null && ListParts(collType) is var (lItems, lSize, lVersion, lElem, lEnum, lMoveNext)
+            && fe.LoopControlVariable is not IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None })
+        {
+            // A List<T>: what its enumerator does, without the enumerator (the same checks in the same order):
+            //   version = list._version; for (i = 0; ; i++) { if (version != list._version) throw; if (i >= list._size) break; x = list._items[i]; body }
+            // The element comes straight from the list's array: one copy where the enumerator made two (into its
+            // Current, then into the variable), and a reference borrows from the array as an array's element does
+            // (section 4.1), unless something the loop runs stores elements or the list's array.
+            BeginTemps();
+            var o = EmitValue(coll);
+            int list = E.AddLocal(ValType.I32);
+            if (o == Own.Owned) { E.Set(list); AddOwned(new Slot { Local = list, Type = collType }); }
+            else { if (o == Own.Unstable || o == Own.Stable && !IsStableBase(coll)) { E.Call(Rt.Retain); E.Set(list); AddOwned(new Slot { Local = list, Type = collType }); } else E.Set(list); }
+            EndTemps();
+            E.Get(list); NullCheck();
+            int version = E.AddLocal(ValType.I32), i = E.AddLocal(ValType.I32), items = E.AddLocal(ValType.I32);
+            E.Get(list); E.Load(Op.I32Load, lVersion.Offset); E.Set(version);
+            E.I32(0); E.Set(i);
+            var brk = E.Block();
+            var top = E.Loop();
+            E.Get(list); E.Load(Op.I32Load, lVersion.Offset); E.Get(version); E.Op(Op.I32Ne);
+            E.If();
+            {
+                // the list was changed: the enumerator's own MoveNext throws (its frames are the trace's), on an
+                // enumerator in the state this loop is in
+                BeginTemps();
+                var el = T.LayoutOf(lEnum);
+                int tmp = TempStruct(lEnum);
+                E.Get(_fb); E.I32(tmp); E.Op(Op.I32Add); E.I32(0); E.I32(T.StorageOf(lEnum).size); E.Op(Op.MemoryFill);
+                foreach (var f in el.Fields)
+                {
+                    int src = f.Symbol.Name switch { "_list" => list, "_index" => i, "_version" => version, _ => -1 };
+                    if (src < 0) continue;
+                    E.Get(_fb); E.Get(src); E.Store(Op.I32Store, tmp + f.Offset);
+                    // (the enumerator's count of the list, which its release at the statement's end gives back)
+                    if (f.Symbol.Name == "_list") { E.Get(list); E.Call(Rt.Retain); E.Op(Op.Drop); }
+                }
+                CallWith(D.CanonicalMethod(lMoveNext), false, () => { E.Get(_fb); E.I32(tmp); E.Op(Op.I32Add); }, () => { }, null, fe.Syntax);
+                E.Op(Op.Drop);
+                EndTemps();
+            }
+            E.End();
+            E.Get(i); E.Get(list); E.Load(Op.I32Load, lSize.Offset); E.Op(Op.I32GeU); E.BrIf(brk);
+            // (the array as it is now, and the index within it: a list another thread changes may have a shorter one)
+            E.Get(list); E.Load(Op.I32Load, lItems.Offset); E.Set(items);
+            E.Get(items); NullCheck();
+            E.Get(i); E.Get(items); E.Load(Op.I32Load, 12); E.Op(Op.I32GeU);
+            E.If(); E.Call(D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "IndexOutOfRange", 0).Fn); E.Op(Op.Unreachable); E.End();
+            var cont = E.Block();
+            var c = PushLoop(fe, brk, cont);
+            PushScope();
+            EnterDisplay(fe);
+            var listType = (INamedTypeSymbol)collType;
+            string itemsKey = Driver.FieldKey(listType, lItems.Symbol);
+            D.NoteBorrowField(itemsKey, lItems.Symbol, lItems.Type);
+            AssignLoopVariable(fe, lElem, borrowElement: !D.ThreadMode, borrowKeys: Driver.ElementsKey + "\n" + itemsKey, produce: () =>
+            {
+                E.Get(items); E.Get(i); var sz = T.StorageOf(lElem).size;
+                if (sz != 1) { E.I32(sz); E.Op(Op.I32Mul); }
+                E.Op(Op.I32Add);
+                if (Types.IsStruct(lElem)) { E.I32(Types.ArrayData); E.Op(Op.I32Add); return Own.None; }
+                E.Load(Types.LoadOp(lElem), Types.ArrayData);
+                return Types.IsRef(lElem) ? Own.Unstable : Own.None;
+            });
+            EmitStatement(fe.Body);
+            ExitDisplay(fe);
+            PopScope();
+            _ctl.Remove(c);
+            E.End();
+            E.Get(i); E.I32(1); E.Op(Op.I32Add); E.Set(i);
+            E.Br(top);
+            E.End(); E.End();
+            PopScope();
+            return;
+        }
         if (Types.InlineArrayLength(collType) is int inlineLength && fe.LoopControlVariable is not IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None })
         {
             // an [InlineArray(n)] struct: its n elements in place, one after another (C# goes over it as a span)
@@ -1305,7 +1380,29 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Declares and assigns the foreach iteration variable from the value produced by <paramref name="produce"/>.</summary>
-    void AssignLoopVariable(IForEachLoopOperation fe, ITypeSymbol valueType, Func<Own> produce, IOperation? conversion = null, bool borrowElement = false)
+    static readonly bool s_listForEach = Environment.GetEnvironmentVariable("CS2WASM_NO_LIST_FOREACH") != "1";
+
+    /// <summary>The parts of the library's List&lt;T&gt; a `foreach` over one reads (EmitForEach): its array, size and
+    /// version fields, T, and its enumerator's type and MoveNext. Null for any other type.</summary>
+    (FieldSlot items, FieldSlot size, FieldSlot version, ITypeSymbol elem, INamedTypeSymbol enumerator, IMethodSymbol moveNext)? ListParts(ITypeSymbol t)
+    {
+        if (t is not INamedTypeSymbol { Name: "List", Arity: 1, TypeKind: TypeKind.Class } nt || nt.ContainingType != null
+            || nt.ContainingNamespace?.ToDisplayString() != "System.Collections.Generic") return null;
+        var elem = T.Canonical(nt.TypeArguments[0]);
+        if (elem is ITypeParameterSymbol || elem.IsRefLikeType) return null;
+        var fields = T.LayoutOf(nt).Fields;
+        FieldSlot? Field(string name) => fields.FirstOrDefault(f => f.Symbol.Name == name);
+        if (Field("_items") is not { } items || Field("_size") is not { } size || Field("_version") is not { } version) return null;
+        if (items.Type is not IArrayTypeSymbol { Rank: 1 }) return null;
+        if (nt.GetTypeMembers("Enumerator").FirstOrDefault() is not { } en) return null;
+        en = (INamedTypeSymbol)T.Canonical(en);
+        if (en.GetMembers("MoveNext").OfType<IMethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 0) is not { } moveNext) return null;
+        var names = T.LayoutOf(en).Fields.Select(f => f.Symbol.Name).ToHashSet();
+        if (!names.Contains("_list") || !names.Contains("_index") || !names.Contains("_version")) return null;
+        return (items, size, version, elem, en, moveNext);
+    }
+
+    void AssignLoopVariable(IForEachLoopOperation fe, ITypeSymbol valueType, Func<Own> produce, IOperation? conversion = null, bool borrowElement = false, string? borrowKeys = null)
     {
         if (fe.LoopControlVariable is not IVariableDeclaratorOperation decl)
         {
@@ -1342,7 +1439,7 @@ sealed partial class FunctionCompiler
                 var marker = D.Module.AddFunction("borrow? []", new FuncType([ValType.I32], [ValType.I32]));
                 E.Call(marker);
                 E.Set(v.Local);
-                D.FieldBorrows.Add((E.Fn, v.Local, Driver.ElementsKey, marker));
+                D.FieldBorrows.Add((E.Fn, v.Local, borrowKeys ?? Driver.ElementsKey, marker));
             }
             else StoreVar(v, o);
         }

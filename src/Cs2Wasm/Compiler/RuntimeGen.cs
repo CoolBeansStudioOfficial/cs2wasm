@@ -791,17 +791,9 @@ sealed partial class RuntimeGen
             var e = new Emitter(fn);
             int tid = e.AddLocal(ValType.I32);
             e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-            // (a br_table on the type id: the ids are numbered by then)
-            var cases = per.Select(x => (ext: D.ExtId(x.Key), fn: x.Value)).Where(x => x.ext >= 0).GroupBy(x => x.ext).Select(g => g.First()).OrderBy(x => x.ext).ToList();
-            var dflt = e.Block();
-            var labels = new Label[cases.Count];
-            for (int i = cases.Count - 1; i >= 0; i--) labels[i] = e.Block();
-            var targets = new Label[D.TypeCount];
-            for (int i = 0; i < targets.Length; i++) targets[i] = dflt;
-            for (int i = 0; i < cases.Count; i++) if (cases[i].ext < targets.Length) targets[cases[i].ext] = labels[i];
-            e.Get(tid); e.BrTable(targets, dflt);
-            foreach (var (_, f) in cases) { e.End(); e.Get(0); e.Call(f); e.Op(Op.Return); }
-            e.End();
+            // (a br_table on the type id: the ids are numbered by then; types whose functions are the same code share
+            // a case)
+            rt.IdSwitch(e, tid, per.Select(x => { var f = x.Value; return (x.Key, (object?)WasmModule.BodyKey(f), (Action)(() => { e.Get(0); e.Call(f); e.Op(Op.Return); })); }).ToList());
         }
         _emitScc = () =>
         {
@@ -1282,21 +1274,15 @@ sealed partial class RuntimeGen
             w.End(); w.End();
             w.End();
         }
+        // (types whose destructions are the same code share a case: in a large program most do)
         var e = new Emitter(now);
         int n = D.TypeCount;
-        var targets = new Label[n];
-        var dflt = e.Block();
-        var blocks = new Label[n];
-        for (int i = n - 1; i >= 0; i--) blocks[i] = e.Block();
-        e.Get(0); e.Load(Op.I32Load, 4);
-        e.BrTable(blocks, dflt);
+        int nowTid = e.AddLocal(ValType.I32);
+        e.Get(0); e.Load(Op.I32Load, 4); e.Set(nowTid);
+        var destroyCases = new List<(int, object?, Action)>();
         for (int i = 0; i < n; i++)
-        {
-            e.End();
-            if (_destroyFns.TryGetValue(D.IntId(i), out var fn)) { e.Get(0); e.Call(fn); e.Op(Op.Return); }
-            else e.Op(Op.Unreachable);
-        }
-        e.End();
+            if (_destroyFns.TryGetValue(D.IntId(i), out var fn)) { var f = fn; destroyCases.Add((D.IntId(i), WasmModule.BodyKey(f), () => { e.Get(0); e.Call(f); e.Op(Op.Return); })); }
+        D.Rt.IdSwitch(e, nowTid, destroyCases);
         e.Op(Op.Unreachable);
     }
 
@@ -1308,6 +1294,8 @@ sealed partial class RuntimeGen
         var rt = D.Rt;
         int tid = e.AddLocal(ValType.I32);
         e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
+        // (a branch on the type id; types whose references are in the same places share a case)
+        var retainCases = new List<(int, object?, Action)>();
         foreach (var id in D.Constructed)
         {
             if (D.DisplayById.ContainsKey(id) || D.SyntheticById.ContainsKey(id) || id <= 1 || id >= D.TypeById.Count) continue;
@@ -1336,12 +1324,10 @@ sealed partial class RuntimeGen
             }
             // (a cycle-capable type's copy: its references in slots that can close a cycle are linked, section 4.3)
             if (D.Arenas.Enabled && D.Arenas.CycleTypes.Contains(id)) { body.Get(0); body.Call(D.Arenas.RuntimeFn("ArenaLinkContents", 1)); }
-            e.Get(tid); e.Tid(id); e.Op(Op.I32Eq);
-            e.If();
-            e.Fn.Body.AddRange(body.Fn.Body);
-            e.Op(Op.Return);
-            e.End();
+            var instrs = body.Fn.Body;
+            retainCases.Add((id, WasmModule.BodyKey(body.Fn), () => { e.Fn.Body.AddRange(instrs); e.Op(Op.Return); }));
         }
+        rt.IdSwitch(e, tid, retainCases);
     }
 
     /// <summary>A virtual call's stub: from the object's type id to the implementation of its class. Only an object
@@ -1410,6 +1396,8 @@ sealed partial class RuntimeGen
         foreach (var (key, (target, fn)) in D.Rt.IsInstFns)
         {
             var e = new Emitter(fn);
+            // (every object is an object: the test is that there is one)
+            if (Types.IsObject(target)) { e.Get(0); e.I32(0); e.Op(Op.I32Ne); continue; }
             var cl = index.Candidates(target);
             IEnumerable<int> candidates = cl == index.All ? cl : cl.Concat(index.Special);
             var ids = candidates.Where(id => D.SyntheticById.TryGetValue(id, out var syn)
@@ -1446,22 +1434,42 @@ sealed partial class RuntimeGen
         }
     }
 
+    /// <summary>Whether the id in the local is one of the ids: runs of consecutive ids are range checks (the ids are
+    /// numbered so that a class and what derives from it are one or two runs: AssignTypeIds). A few runs are tested
+    /// one after the other; many (an interface's classes, from all over) by halving, a dozen comparisons for
+    /// thousands of runs where testing each in turn took thousands.</summary>
     void EmitIdSetTest(Emitter e, int tid, List<int> internalIds)
     {
         var ids = internalIds.Select(D.ExtId).Where(x => x >= 0).Distinct().ToList();
         ids.Sort();
-        e.I32(0);
-        // runs of consecutive ids become range checks
-        int i = 0;
-        while (i < ids.Count)
+        var runs = new List<(int lo, int hi)>();
+        for (int i = 0; i < ids.Count;)
         {
             int j = i;
             while (j + 1 < ids.Count && ids[j + 1] == ids[j] + 1) j++;
-            if (i == j) { e.Get(tid); e.I32(ids[i]); e.Op(Op.I32Eq); }
-            else { e.Get(tid); e.I32(ids[i]); e.Op(Op.I32Sub); e.I32(ids[j] - ids[i]); e.Op(Op.I32LeU); }
-            e.Op(Op.I32Or);
+            runs.Add((ids[i], ids[j]));
             i = j + 1;
         }
+        void Run(int k)
+        {
+            var (lo, hi) = runs[k];
+            if (lo == hi) { e.Get(tid); e.I32(lo); e.Op(Op.I32Eq); }
+            else { e.Get(tid); e.I32(lo); e.Op(Op.I32Sub); e.I32(hi - lo); e.Op(Op.I32LeU); }
+        }
+        void Tree(int a, int b)
+        {
+            if (b - a < 3)
+            {
+                Run(a);
+                for (int k = a + 1; k <= b; k++) { Run(k); e.Op(Op.I32Or); }
+                return;
+            }
+            int mid = (a + b + 1) / 2;
+            e.Get(tid); e.I32(runs[mid].lo); e.Op(Op.I32LtU);
+            e.If(ValType.I32); Tree(a, mid - 1); e.Else(); Tree(mid, b); e.End();
+        }
+        if (runs.Count == 0) { e.I32(0); return; }
+        Tree(0, runs.Count - 1);
     }
 
     void EmitTypeNames()

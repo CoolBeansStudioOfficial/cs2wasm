@@ -544,7 +544,7 @@ internal sealed class WasmModule
     static int s_next;
     static string Id(object o) => s_ids.GetValue(o, _ => Interlocked.Increment(ref s_next).ToString());
 
-    static string BodyKey(WasmFunction f)
+    internal static string BodyKey(WasmFunction f)
     {
         var sb = new StringBuilder();
         foreach (var p in f.Type.Params) sb.Append((char)p);

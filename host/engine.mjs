@@ -167,17 +167,31 @@ export function cs2wasmImports(module, getMemory, out) {
 
 /** thread_spawn for Node: a worker_threads Worker per thread, sharing the module and memory. */
 export function threadImports(module, memory, out, onSpawn) {
+  // A worker takes tens of milliseconds to start (a new engine instance, this file and its imports, the module's
+  // instance): one is kept ready, made when the first thread starts and again each time it is taken, so a thread
+  // started now and then (a timer's, a pool's first) runs at once. A burst of starts makes the others as before.
+  let spare = null;
+  const make = (args) => {
+    const w = new Worker(new URL('./worker.mjs', import.meta.url), { workerData: { module, memory, args, fs: fsShared(), io: ioShared(), argv: globalThis.__cs2wasmArgs } });
+    w.on('message', (m) => { if (m.unhandled) { process.stderr.write(m.unhandled); process.exit(3); } });
+    w.on('error', (e) => { process.stderr.write(String(e && e.stack || e) + '\n'); process.exit(4); });
+    return w;
+  };
+  const makeSpare = () => { spare = make(null); spare.unref(); };
   return {
     // (CS2WASM_PROCESSORS: the cores the module is told it has)
+    // (not an import: the host calls it once, before the program starts, when the module has threads)
+    __prewarm: makeSpare,
     processor_count: () => +(process.env.CS2WASM_PROCESSORS || availableParallelism()),
     thread_spawn: (sp, tls, id, arg, background) => {
       if (process.env.CS2WASM_TRACE_THREADS) process.stderr.write(`[thread_spawn id=${id} background=${background}]
 `);
       onSpawn?.();
-      const w = new Worker(new URL('./worker.mjs', import.meta.url), { workerData: { module, memory, args: [sp, tls, id, arg], fs: fsShared(), io: ioShared(), argv: globalThis.__cs2wasmArgs } });
-      w.on('message', (m) => { if (m.unhandled) { process.stderr.write(m.unhandled); process.exit(3); } });
-      w.on('error', (e) => { process.stderr.write(String(e && e.stack || e) + '\n'); process.exit(4); });
-      if (background) w.unref(); // background threads do not keep the process alive, as in .NET
+      let w = spare;
+      spare = null;
+      if (w) { if (!background) w.ref(); w.postMessage({ args: [sp, tls, id, arg] }); }
+      else { w = make([sp, tls, id, arg]); if (background) w.unref(); } // background threads do not keep the process alive, as in .NET
+      makeSpare();
       return 0;
     },
   };

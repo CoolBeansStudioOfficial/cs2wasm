@@ -83,7 +83,7 @@ public static class Cs2WasmCompiler
             bool threads = false;
             try { d.Run(); }
             catch (Driver.ThreadsSeen) { threads = true; }
-            if (threads || d.UsesThreads && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
+            if (threads || d.UsesThreads && !Driver.s_expNoThreadMode && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
             {
                 d = null!;
                 d = new Driver(cs, options) { ThreadMode = true };

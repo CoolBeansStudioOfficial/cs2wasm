@@ -144,6 +144,9 @@ internal sealed partial class Driver
     public bool ThreadMode { get; init; }
     /// <summary>Thrown out of Run when a compilation that is not in thread mode meets the start of a thread.</summary>
     public sealed class ThreadsSeen : Exception { }
+    /// <summary>CS2WASM_EXP_NO_THREADMODE=1 (a measurement, unsafe: the program must then run on one thread): a program
+    /// that starts threads is compiled as one that does not, to see what compiling for threads costs.</summary>
+    internal static readonly bool s_expNoThreadMode = Environment.GetEnvironmentVariable("CS2WASM_EXP_NO_THREADMODE") == "1";
     public readonly WasmTag ExceptionTag;
     readonly List<SourcePos> _positions = [];
     readonly Dictionary<SourcePos, int> _posIndex = [];
@@ -1009,10 +1012,29 @@ internal sealed partial class Driver
             // an exception from the initializer: TypeInitializationException now and at every later access (-2)
             var saved = StaticAddress("tie:" + key, 4, 4);
             var e = new Emitter(fn);
+            // (what every type's initializer does the same way is two functions of the module, not a copy a type:
+            // a large program has thousands of types with initializers)
+            if (_cctorFailed == null)
+            {
+                // (flag, saved, name, inner exception: owned): wraps it, keeps the wrapper for later accesses, throws it
+                _cctorFailed = Module.AddFunction("rt.cctor_failed", new FuncType([ValType.I32, ValType.I32, ValType.I32, ValType.I32], []));
+                var f = new Emitter(_cctorFailed);
+                f.Call(Rt.FinUnhold);
+                f.Get(1); f.Get(2); f.Get(3);
+                f.Call(LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "TypeInitFailed", 2).Fn);
+                f.Store(Op.I32Store);
+                f.Get(3); f.Call(Rt.Release);
+                f.Get(0); f.Call(Rt.CctorFail);
+                f.Get(1); f.Load(Op.I32Load); f.Call(Rt.Retain); f.Emit(Op.Throw, 0, 0, ExceptionTag);
+                // (flag, saved): the type's initializer failed before: its exception again
+                _cctorCheck = Module.AddFunction("rt.cctor_check", new FuncType([ValType.I32, ValType.I32], []));
+                var c = new Emitter(_cctorCheck);
+                c.Get(0); c.Load(Op.I32Load); c.I32(-2); c.Op(Op.I32Eq);
+                c.If(); c.Get(1); c.Load(Op.I32Load); c.Call(Rt.Retain); c.Emit(Op.Throw, 0, 0, ExceptionTag); c.End();
+            }
             e.I32Addr(flag); e.Call(Rt.CctorEnter);
             e.If();
             {
-                var done = e.Block();
                 var caught = e.Block(ValType.I32);
                 e.TryTable(null, (0, ExceptionTag, caught));
                 // (threads: the initializer passes no safe point, so code that touches a type for the first time
@@ -1022,29 +1044,24 @@ internal sealed partial class Driver
                 e.Call(Rt.FinUnhold);
                 e.End();
                 e.I32Addr(flag); e.Call(Rt.CctorExit);
-                e.Br(done);
+                e.Op(Op.Return);
                 e.End();
-                // inner exception on the stack (owned): wrap it
+                // inner exception on the stack (owned): wrapped and thrown
                 int inner = e.AddLocal(ValType.I32);
                 e.Set(inner);
-                e.Call(Rt.FinUnhold);
-                e.I32Addr(saved); e.I32Addr(StringLiteral(t.ContainingType != null ? t.MetadataName : ClrName(t))); e.Get(inner);
-                e.Call(LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "TypeInitFailed", 2).Fn);
-                e.Store(Op.I32Store);
-                e.Get(inner); e.Call(Rt.Release);
-                e.I32Addr(flag); e.Call(Rt.CctorFail);
-                e.I32Addr(saved); e.Load(Op.I32Load); e.Call(Rt.Retain); e.Emit(Op.Throw, 0, 0, ExceptionTag);
-                e.End();
+                e.I32Addr(flag); e.I32Addr(saved); e.I32Addr(StringLiteral(t.ContainingType != null ? t.MetadataName : ClrName(t))); e.Get(inner);
+                e.Call(_cctorFailed);
+                e.Op(Op.Unreachable);
             }
             e.Else();
-            e.I32Addr(flag); e.Load(Op.I32Load); e.I32(-2); e.Op(Op.I32Eq);
-            e.If(); e.I32Addr(saved); e.Load(Op.I32Load); e.Call(Rt.Retain); e.Emit(Op.Throw, 0, 0, ExceptionTag); e.End();
+            e.I32Addr(flag); e.I32Addr(saved); e.Call(_cctorCheck!);
             e.End();
         }
         _cctors[key] = (flag, fn);
         _pendingCctors.Enqueue((t, body, flag, cctor));
         return _cctors[key];
     }
+    WasmFunction? _cctorFailed, _cctorCheck;
     readonly Queue<(INamedTypeSymbol, WasmFunction, IAddress, IMethodSymbol?)> _pendingCctors = new();
     readonly List<(INamedTypeSymbol, WasmFunction, IAddress, IMethodSymbol?)> _compiledCctors = [];
 
@@ -1253,7 +1270,7 @@ internal sealed partial class Driver
                     mi.Compiled = true;
                     // (the program starts threads: it is compiled as one that does, from the start; nothing more of
                     // this compilation is of use)
-                    if (!ThreadMode && mi.Sym.Name == "SpawnCore" && mi.Sym.ContainingType?.Name == "Threads") throw new ThreadsSeen();
+                    if (!ThreadMode && !s_expNoThreadMode && mi.Sym.Name == "SpawnCore" && mi.Sym.ContainingType?.Name == "Threads") throw new ThreadsSeen();
                     Compiling = mi;
                     CurrentFn = mi.Fn;
                     try { if (mi.Compile != null) mi.Compile(); else FunctionCompiler.Compile(this, mi); mi.Fn.Body.TrimExcess(); mi.Fn.Locals.TrimExcess(); }

@@ -699,48 +699,65 @@ internal sealed partial class RuntimeFns
 
     /// <summary>A dispatch on the type id in `tid`: a br_table to each case's body (which returns); the other ids fall
     /// out after it. (A chain of comparisons would cost every call a walk over the types.) Type ids must be numbered.</summary>
-    void IdSwitch(Emitter e, int tid, List<(int id, Action body)> cases)
+    /// <summary>A branch on a type id to the code of its case. Cases with the same key (not null) are one piece of
+    /// code: in a large program most types share a few (the classes whose arrays hold one reference an element).</summary>
+    public void IdSwitch(Emitter e, int tid, List<(int id, object? key, Action body)> cases)
     {
-        var cs = cases.Select(c => (ext: D.ExtId(c.id), c.body)).Where(c => c.ext >= 0).GroupBy(c => c.ext).Select(g => g.First()).OrderBy(c => c.ext).ToList();
+        var cs = cases.Select(c => (ext: D.ExtId(c.id), c.key, c.body)).Where(c => c.ext >= 0).GroupBy(c => c.ext).Select(g => g.First()).OrderBy(c => c.ext).ToList();
         if (cs.Count == 0) return;
+        var pieces = new List<Action>();
+        var pieceOf = new Dictionary<object, int>();
+        var caseOf = new int[cs.Count];
+        for (int i = 0; i < cs.Count; i++)
+        {
+            if (cs[i].key != null && pieceOf.TryGetValue(cs[i].key!, out int have)) { caseOf[i] = have; continue; }
+            caseOf[i] = pieces.Count;
+            if (cs[i].key != null) pieceOf[cs[i].key!] = pieces.Count;
+            pieces.Add(cs[i].body);
+        }
         var dflt = e.Block();
-        var labels = new Label[cs.Count];
-        for (int i = cs.Count - 1; i >= 0; i--) labels[i] = e.Block();
+        var labels = new Label[pieces.Count];
+        for (int i = pieces.Count - 1; i >= 0; i--) labels[i] = e.Block();
         var targets = new Label[D.TypeCount];
         for (int i = 0; i < targets.Length; i++) targets[i] = dflt;
-        for (int i = 0; i < cs.Count; i++) if (cs[i].ext < targets.Length) targets[cs[i].ext] = labels[i];
+        for (int i = 0; i < cs.Count; i++) if (cs[i].ext < targets.Length) targets[cs[i].ext] = labels[caseOf[i]];
         e.Get(tid); e.BrTable(targets, dflt);
-        foreach (var (_, body) in cs) { e.End(); body(); }
+        foreach (var body in pieces) { e.End(); body(); }
         e.End();
+    }
+
+    /// <summary>A function of an object that is a small number by the object's type: read from a table in the data
+    /// (a byte or two a type), not branched to. False when a value does not fit (the caller branches).</summary>
+    bool IdNumbers(WasmFunction fn, int dflt, List<(int id, int value)> cases)
+    {
+        int max = Math.Max(dflt, cases.Count == 0 ? 0 : cases.Max(c => c.value));
+        if (dflt < 0 || cases.Any(c => c.value < 0) || max > 65535) return false;
+        int width = max <= 255 ? 1 : 2;
+        var blob = new byte[D.TypeCount * width];
+        void Put(int ext, int v) { blob[ext * width] = (byte)v; if (width == 2) blob[ext * width + 1] = (byte)(v >> 8); }
+        for (int i = 0; i < D.TypeCount; i++) Put(i, dflt);
+        foreach (var (id, v) in cases) { int ext = D.ExtId(id); if (ext >= 0 && ext < D.TypeCount) Put(ext, v); }
+        var e = new Emitter(fn);
+        e.Get(0); e.Load(Op.I32Load, 4);
+        if (width == 2) { e.I32(1); e.Op(Op.I32Shl); }
+        e.I32Addr(D.DataBlob(blob, width)); e.Op(Op.I32Add);
+        e.Load(width == 1 ? Op.I32Load8U : Op.I32Load16U);
+        return true;
     }
 
     /// <summary>The array helpers' dispatch on the array's type (after the type ids are numbered).</summary>
     public void EmitArrayDispatch()
     {
-        if (_arrayElemSize != null)
+        if (_arrayElemSize != null && !IdNumbers(_arrayElemSize, 1, ConstructedArrays().Select(x => (x.id, D.Types.StorageOf(D.Types.Canonical(x.at.ElementType)).size)).ToList()))
         {
             var e = new Emitter(_arrayElemSize);
             int tid = e.AddLocal(I);
             e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-            IdSwitch(e, tid, ConstructedArrays().Select(x => (x.id, (Action)(() => { e.I32(D.Types.StorageOf(D.Types.Canonical(x.at.ElementType)).size); e.Op(Op.Return); }))).ToList());
+            IdSwitch(e, tid, ConstructedArrays().Select(x => { int size = D.Types.StorageOf(D.Types.Canonical(x.at.ElementType)).size; return (x.id, (object?)size, (Action)(() => { e.I32(size); e.Op(Op.Return); })); }).ToList());
             e.I32(1);
         }
-        if (_arrayRank != null)
-        {
-            var e = new Emitter(_arrayRank);
-            int tid = e.AddLocal(I);
-            e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-            IdSwitch(e, tid, ConstructedArrays().Where(x => x.at.Rank != 1).Select(x => (x.id, (Action)(() => { e.I32(x.at.Rank); e.Op(Op.Return); }))).ToList());
-            e.I32(1);
-        }
-        if (_arrayCounted != null)
-        {
-            var e = new Emitter(_arrayCounted);
-            int tid = e.AddLocal(I);
-            e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-            IdSwitch(e, tid, ConstructedArrays().Where(x => D.Types.NeedsRc(D.Types.Canonical(x.at.ElementType))).Select(x => (x.id, (Action)(() => { e.I32(1); e.Op(Op.Return); }))).ToList());
-            e.I32(0);
-        }
+        if (_arrayRank != null) IdNumbers(_arrayRank, 1, ConstructedArrays().Where(x => x.at.Rank != 1).Select(x => (x.id, x.at.Rank)).ToList());
+        if (_arrayCounted != null) IdNumbers(_arrayCounted, 0, ConstructedArrays().Where(x => D.Types.NeedsRc(D.Types.Canonical(x.at.ElementType))).Select(x => (x.id, 1)).ToList());
         foreach (var (fn, release) in new[] { (_arrayRetain, false), (_arrayRelease, true) })
         {
             if (fn == null) continue;
@@ -751,7 +768,7 @@ internal sealed partial class RuntimeFns
             {
                 var et = D.Types.Canonical(x.at.ElementType);
                 var target = release ? ReleaseRange(et) : RetainRange(et);
-                return (x.id, (Action)(() => { e.Get(1); e.Get(2); e.Call(target); e.Op(Op.Return); }));
+                return (x.id, (object?)target, (Action)(() => { e.Get(1); e.Get(2); e.Call(target); e.Op(Op.Return); }));
             }).ToList());
         }
     }
