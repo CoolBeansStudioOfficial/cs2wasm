@@ -218,10 +218,10 @@ namespace Cs2Wasm.Runtime
                     int bump = Mem.LoadI32(pg + 12);
                     if (bump != 0)
                     {
+                        // (clear: the page was cleared when it was taken, below)
                         int nb = bump + size;
                         Mem.StoreI32(pg + 12, nb + size <= pg + PageSize ? nb : 0);
                         Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
-                        Zero(bump, size);
                         return bump;
                     }
                     // full: neither current nor among the pages with freed blocks, until a block of it is freed
@@ -246,8 +246,8 @@ namespace Cs2Wasm.Runtime
                 while (s_freePages == 0) NewChunk();
                 int np = s_freePages;
                 s_freePages = Mem.LoadI32(np + 4);
-                Mem.StoreI64(np, 0);
-                Mem.StoreI32(np + 8, 0);
+                // (cleared whole, once: a block of it that was never used needs no clearing when it is allocated)
+                Mem.Fill(np, 0, PageSize);
                 Mem.StoreI32(np + 12, np + PageHead);
                 Mem.StoreI32(np + 16, 0);
                 Mem.StoreI32(np + 20, c * 2 + 1);
@@ -743,11 +743,28 @@ namespace Cs2Wasm.Runtime
                     else
                     {
                         int pg = Mem.LoadI32(s_cur + (s >> 3) * 4);
-                        head = pg != 0 ? Mem.LoadI32(pg) : 0;
-                        if (head != 0)
+                        if (pg != 0)
                         {
-                            Mem.StoreI32(pg, Mem.LoadI32(head + 8));
-                            Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
+                            head = Mem.LoadI32(pg);
+                            if (head != 0)
+                            {
+                                Mem.StoreI32(pg, Mem.LoadI32(head + 8));
+                                Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
+                            }
+                            else
+                            {
+                                // (a block of the page never used: clear already, PageAlloc clears a page it takes)
+                                int bump = Mem.LoadI32(pg + 12);
+                                if (bump != 0)
+                                {
+                                    int nb = bump + s;
+                                    Mem.StoreI32(pg + 12, nb + s <= pg + PageSize ? nb : 0);
+                                    Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
+                                    Mem.StoreI32(bump, 1);
+                                    Mem.StoreI32(bump + 4, typeId);
+                                    return bump;
+                                }
+                            }
                         }
                     }
                     if (head != 0)
@@ -921,11 +938,27 @@ namespace Cs2Wasm.Runtime
                     else
                     {
                         int pg = Mem.LoadI32(s_cur + (s >> 3) * 4);
-                        head = pg != 0 ? Mem.LoadI32(pg) : 0;
-                        if (head != 0)
+                        if (pg != 0)
                         {
-                            Mem.StoreI32(pg, Mem.LoadI32(head + 8));
-                            Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
+                            head = Mem.LoadI32(pg);
+                            if (head != 0)
+                            {
+                                Mem.StoreI32(pg, Mem.LoadI32(head + 8));
+                                Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
+                            }
+                            else
+                            {
+                                int bump = Mem.LoadI32(pg + 12);
+                                if (bump != 0)
+                                {
+                                    int nb = bump + s;
+                                    Mem.StoreI32(pg + 12, nb + s <= pg + PageSize ? nb : 0);
+                                    Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
+                                    Mem.StoreI32(bump + ArenaPrefix, 1);
+                                    Mem.StoreI32(bump + ArenaPrefix + 4, typeId);
+                                    return bump + ArenaPrefix;
+                                }
+                            }
                         }
                     }
                     if (head != 0)

@@ -42,6 +42,25 @@ sealed partial class FunctionCompiler
                 { ok = false; break; }
             if (ok) _localMoves.Add(last);
         }
+        // `x = new Node { Next = x }`: the one read of x in the value assigned to x, when
+        // it hands the value to an owner, is the last use of what x held (the assignment replaces it): a move too,
+        // in a loop or not. Not under a `try` of this method (a handler could read x after an exception between the
+        // read and the assignment; one that leaves the method finds x gone with its frame either way).
+        foreach (var a in all.OfType<ISimpleAssignmentOperation>())
+        {
+            if (a.IsRef || a.Parent is not IExpressionStatementOperation || a.Target is not ILocalReferenceOperation { Local: var l }) continue;
+            if (l.IsRef || !Types.IsRef(T.Resolve(l.Type, Map)) || IsCaptured(l) || _addrTaken.Contains(l)) continue;
+            ILocalReferenceOperation? only = null;
+            int reads = 0;
+            foreach (var d in a.Value.DescendantsAndSelf())
+                if (d is ILocalReferenceOperation r && SymbolEqualityComparer.Default.Equals(r.Local, l)) { reads++; only = r; }
+            if (reads != 1 || only == null || InLambda(only, body) || !IsOwningSink(only)) continue;
+            // (a read in a branch of the value that does not run leaves x as it was: the assignment releases it)
+            bool ok = true;
+            for (var p = a.Parent; p != null && !ReferenceEquals(p, body); p = p.Parent)
+                if (p is ITryOperation) { ok = false; break; }
+            if (ok) _localMoves.Add(only);
+        }
     }
 
     static bool InLambda(IOperation op, IOperation body)
