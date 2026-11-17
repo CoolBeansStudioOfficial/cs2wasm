@@ -1319,6 +1319,19 @@ sealed partial class FunctionCompiler
         }
         var ltN = b.LeftOperand.Type != null ? TypeOf(b.LeftOperand) : null;
         var rtN = b.RightOperand.Type != null ? TypeOf(b.RightOperand) : null;
+        // `x == null` where x is a value that cannot be null, seen as an object (generic code over T = int:
+        // `if (array[i] == null)`): never equal. The value is evaluated, not boxed.
+        if (b.OperatorKind is BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals && b.OperatorMethod == null)
+        {
+            var nullSide = IsNullConstant(b.RightOperand) ? b.LeftOperand : IsNullConstant(b.LeftOperand) ? b.RightOperand : null;
+            if (nullSide != null && BoxedValue(nullSide) is { } boxed)
+            {
+                var bt = TypeOf(boxed);
+                Drop(EmitValue(boxed), bt);
+                E.I32(b.OperatorKind == BinaryOperatorKind.NotEquals ? 1 : 0);
+                return Own.None;
+            }
+        }
         if ((ltN != null && IsNullable(ltN)) || (rtN != null && IsNullable(rtN))) return EmitLiftedBinary(b);
         if (ltN == null || rtN == null)
         {
@@ -1426,6 +1439,24 @@ sealed partial class FunctionCompiler
     }
 
     static bool IsBuiltinOperator(IMethodSymbol m) => false;
+
+    static bool IsNullConstant(IOperation op)
+    {
+        while (op is IConversionOperation { Conversion.IsImplicit: true } c) op = c.Operand;
+        return op.ConstantValue is { HasValue: true, Value: null } && op.Type == null || op is ILiteralOperation { ConstantValue: { HasValue: true, Value: null } };
+    }
+
+    /// <summary>The value under a conversion to object or an interface, when it is of a value type that has no null.</summary>
+    IOperation? BoxedValue(IOperation op)
+    {
+        while (op is IConversionOperation { OperatorMethod: null } c && c.Operand.Type != null)
+        {
+            var ot = TypeOf(c.Operand);
+            if (ot.IsValueType) return !IsNullable(ot) && ot.TypeKind != TypeKind.TypeParameter && !TypeOf(c).IsValueType ? c.Operand : null;
+            op = c.Operand;
+        }
+        return null;
+    }
 
     readonly Dictionary<ILocalSymbol, bool> _ownedLocals = new(SymbolEqualityComparer.Default);
 
