@@ -629,6 +629,7 @@ sealed partial class FunctionCompiler
         E.Fn.NoFramePromotion = true;
         P(Op.GlobalGet, 0, D.StackPointer); P(Op.LocalTee, _spEntry);
         P(Op.I32Const, _frameSize); P(Op.I32Sub); P(Op.LocalTee, _fb); P(Op.GlobalSet, 0, D.StackPointer);
+        StackLimitCheck(prologue, _fb);
         P(Op.LocalGet, _fb); P(Op.I32Const, 0); P(Op.I32Const, _frameSize); P(Op.MemoryFill);
         body.InsertRange(0, prologue);
         // every return restores the stack pointer

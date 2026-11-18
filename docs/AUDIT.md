@@ -258,6 +258,28 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
 
 ## Part B. Plan
 
+### Progress
+
+- **Step 1: partly done (2026-11-18).** `CompileOptions.Checked` (`--checked`; the suite's default, `--unchecked`
+  for the shipped form): freed memory is filled with a pattern and never used again, and every function is
+  type-checked by the validator, whose findings are build errors. The validator learnt the 128-bit instructions.
+  Still to do: the count of blocks left at exit (1.2; tests 119 and 121 count live objects through finalizers
+  instead), CI (1.5).
+- **Step 2: done except A1.4 (2026-11-18).**
+  - A1.1 fixed: a local or parameter assigned inside an expression, or whose address is taken, is no longer a stable
+    borrow (`_nestedWrites`, `WrittenDuringUse`). Test 118.
+  - A1.2 fixed: an object its finalizer stored somewhere lives on and is not finalized twice (`Rt.FinalizedBit`,
+    cleared by `GC.ReRegisterForFinalize`). A member of a dying group brought back keeps the whole group, which is
+    then never freed: step 7 replaces this. Test 119.
+  - A1.3 fixed: the weak table's busy mark is per thread.
+  - A1.5 fixed: a field returned by reference counts as written after construction.
+  - A1.6 fixed: the first thread's stack lies under the data, so a frame past its end traps at its first write
+    with no check in the code; a program with threads compares each frame with its stack's end; `stackalloc`
+    checks its size. The default stack is 960 KiB (hello world: 28,089 bytes). Worker stacks are still 1 MiB
+    whatever `StackSize` says. Test 120.
+  - A1.4 open: test 121 (cycles through arrays and far fields, stored while a static holds the container) passes
+    in checked mode with no object left; the guess in `ArenaUnlink` is still there and goes with step 7.
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:

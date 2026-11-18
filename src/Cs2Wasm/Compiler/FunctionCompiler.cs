@@ -68,6 +68,30 @@ sealed partial class FunctionCompiler
     readonly TypeMap Map;
     readonly Dictionary<ISymbol, Var> _vars = new(SymbolEqualityComparer.Default);
     readonly HashSet<ISymbol> _addrTaken = new(SymbolEqualityComparer.Default);
+    /// <summary>Locals and parameters assigned inside an expression (`F(x, x = y)`, `while ((s = Next()) != null)`):
+    /// with those whose address is taken (`F(p, ref p)`), the variables that can be written while a value read
+    /// from them earlier in the same expression is still in use. A read of one is not a stable borrow.</summary>
+    readonly HashSet<ISymbol> _nestedWrites = new(SymbolEqualityComparer.Default);
+
+    void MarkNestedWrite(IOperation op)
+    {
+        IOperation? target = op switch
+        {
+            IAssignmentOperation a when a.Parent is not IExpressionStatementOperation => a.Target,
+            IIncrementOrDecrementOperation i when i.Parent is not IExpressionStatementOperation => i.Target,
+            _ => null,
+        };
+        if (target == null) return;
+        foreach (var t in target.DescendantsAndSelf())
+            switch (t)
+            {
+                case ILocalReferenceOperation l: _nestedWrites.Add(l.Local); break;
+                case IParameterReferenceOperation p: _nestedWrites.Add(p.Parameter); _nestedWrites.Add(p.Parameter.OriginalDefinition); break;
+            }
+    }
+
+    /// <summary>Whether the variable can be written while a value read from it is in use in the same expression.</summary>
+    bool WrittenDuringUse(ISymbol s) => _nestedWrites.Contains(s) || _addrTaken.Contains(s) || _addrTaken.Contains(s.OriginalDefinition);
     readonly HashSet<ISymbol> _assignedParams = new(SymbolEqualityComparer.Default);
     readonly List<Scope> _scopes = [];
     readonly List<List<Slot>> _temps = [];
@@ -204,6 +228,7 @@ sealed partial class FunctionCompiler
             _frameSize = (_frameSize + 15) / 16 * 16;
             P(Op.GlobalGet, 0, D.StackPointer); P(Op.LocalTee, _spEntry);
             P(Op.I32Const, _frameSize); P(Op.I32Sub); P(Op.LocalTee, _fb); P(Op.GlobalSet, 0, D.StackPointer);
+            StackLimitCheck(prologue, _fb);
             P(Op.LocalGet, _fb); P(Op.I32Const, 0); P(Op.I32Const, _frameSize); P(Op.MemoryFill);
         }
         else
@@ -305,6 +330,7 @@ sealed partial class FunctionCompiler
                 case IDynamicInvocationOperation or IDynamicIndexerAccessOperation or IDynamicObjectCreationOperation: MarkDynamicRefArgs(op); break;
                 case IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None, Initializer: { } init }: MarkAddr(init.Value); break;
                 case ISimpleAssignmentOperation { IsRef: true } sa: MarkAddr(sa.Value); break;
+                default: MarkNestedWrite(op); break;
             }
     }
 
@@ -335,6 +361,7 @@ sealed partial class FunctionCompiler
                 case ISimpleAssignmentOperation { IsRef: true } sa: MarkAddr(sa.Value); break;
                 case IReturnOperation { ReturnedValue: { } rv } when M.ReturnsByRef || M.ReturnsByRefReadonly: MarkAddr(rv); break;
             }
+            MarkNestedWrite(op);
             if (op is IAssignmentOperation asg && asg.Target is IParameterReferenceOperation pr) _assignedParams.Add(pr.Parameter);
             if (op is IIncrementOrDecrementOperation inc && inc.Target is IParameterReferenceOperation pr2) _assignedParams.Add(pr2.Parameter);
             if (op is IDeconstructionAssignmentOperation da)
@@ -374,6 +401,17 @@ sealed partial class FunctionCompiler
     }
 
     readonly List<Slot> _paramSlots = [];
+
+    /// <summary>A thread's stack is a block of the heap: a frame past its end would be other objects, so a program
+    /// with threads compares each new frame with the stack's end (the first thread's stack needs none:
+    /// Driver.LayoutMemory). Past it: a trap, which ends the instance (section 3).</summary>
+    void StackLimitCheck(List<Instr> code, int frameLocal)
+    {
+        if (!D.ThreadMode || D.StackLo == null) return;
+        void P(Op op, long imm = 0, object? r = null) => code.Add(new Instr { Op = op, Imm = imm, Ref = r, Pos = -1 });
+        P(Op.LocalGet, frameLocal); P(Op.GlobalGet, 0, D.StackLo); P(Op.I32LtU);
+        P(Op.If); P(Op.Unreachable); P(Op.End);
+    }
 
     void MarkAddr(IOperation op)
     {

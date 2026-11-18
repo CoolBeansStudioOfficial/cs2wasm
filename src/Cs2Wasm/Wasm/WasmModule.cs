@@ -83,16 +83,19 @@ internal sealed class WasmModule
     /// <summary>One emitted instruction that has a source position: absolute byte offset in the module.</summary>
     public readonly record struct LineEntry(int Offset, int Pos);
 
-    /// <summary>CS2WASM_VALIDATE=1: every function type-checked (Validator), problems to stderr.</summary>
+    /// <summary>Type-check every function (Validator) in Encode: a checked build (CompileOptions.Checked) and
+    /// CS2WASM_VALIDATE=1. The problems found are the build's errors (ValidationProblems).</summary>
+    public bool ValidateAlways;
+    public readonly List<string> ValidationProblems = [];
+
     void Validate(string when)
     {
         int n = 0;
         foreach (var f in Functions)
         {
             if (f.IsImport || f.ForwardTo != null) continue;
-            if (Validator.Check(f, Globals) is { } problem && n++ < 60) Console.Error.WriteLine($"invalid ({when}): {problem}");
+            if (Validator.Check(f, Globals) is { } problem && n++ < 60) ValidationProblems.Add($"invalid code ({when}): {problem}");
         }
-        if (n > 0) Console.Error.WriteLine($"{n} invalid functions ({when})");
     }
 
     public sealed class Encoded
@@ -159,7 +162,7 @@ internal sealed class WasmModule
     public Encoded Encode(bool optimize)
     {
         foreach (var f in Functions) ResolveForwards(f);
-        bool validate = Environment.GetEnvironmentVariable("CS2WASM_VALIDATE") == "1";
+        bool validate = ValidateAlways || Environment.GetEnvironmentVariable("CS2WASM_VALIDATE") == "1";
         if (validate) Validate("before optimization");
         if (optimize)
         {

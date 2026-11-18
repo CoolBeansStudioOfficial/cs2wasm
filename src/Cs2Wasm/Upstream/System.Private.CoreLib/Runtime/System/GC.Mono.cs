@@ -142,7 +142,11 @@ namespace System
         }
 
         // cs2wasm: no collector; counting frees objects as they become unreachable
-        private static void _ReRegisterForFinalize(object o) => Cs2Wasm.Runtime.ObjectMarks.Clear(o, Cs2Wasm.Runtime.ObjectMarks.FinalizerSuppressed);
+        private static void _ReRegisterForFinalize(object o)
+        {
+            Cs2Wasm.Runtime.ObjectMarks.Clear(o, Cs2Wasm.Runtime.ObjectMarks.FinalizerSuppressed);
+            Cs2Wasm.Runtime.Rt.ClearFinalized(o);
+        }
 
         public static void ReRegisterForFinalize(object obj)
         {

@@ -14,6 +14,8 @@ var outDir = Path.Combine(root, "tests", "out");
 Directory.CreateDirectory(outDir);
 string? filter = args.FirstOrDefault(a => !a.StartsWith("--"));
 bool verbose = args.Contains("--verbose");
+// (the conformance programs are built checked: a use after free shows; --unchecked builds them as shipped)
+bool checkedBuild = !args.Contains("--unchecked");
 // programs: each file in tests/Conformance, and each folder in tests/Godot (its files plus the upstream GodotSharp
 // sources it lists in godot-sources.txt, from $CS2WASM_GODOTSHARP or ../bazoodle/godot/modules/mono/glue/GodotSharp/GodotSharp)
 var programs = new List<(string name, List<(string path, string text)> sources, string[] symbols)>();
@@ -62,7 +64,7 @@ foreach (var (name, sources, symbols) in programs.Where(p => filter == null || p
     if (errs.Count > 0) { Fail(name, "C# errors:\n" + string.Join("\n", errs.Take(20))); continue; }
 
     var sw = Stopwatch.StartNew();
-    var result = Cs2WasmCompiler.Compile(comp, new CompileOptions());
+    var result = Cs2WasmCompiler.Compile(comp, new CompileOptions { Checked = checkedBuild });
     var buildMs = sw.ElapsedMilliseconds;
     if (expectError)
     {

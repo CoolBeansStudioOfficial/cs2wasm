@@ -15,19 +15,21 @@ namespace Cs2Wasm.Runtime
         /// object's destruction skips the table and its lock. (The identity hash leaves the bit out: Rt.HashOf.)</summary>
         internal const int MarkedBit = 0x40000000;
         static Dictionary<int, int>? s_marks;
-        static int s_count, s_busy;
+        static int s_count;
+        // (the table's own allocations free objects, whose destruction comes back here: that thread's, not another's)
+        [System.ThreadStatic] static int t_busy;
 
         public static void Set(object o, int flag) => SetAt(Rt.AddressOf(o), flag);
 
         static void SetAt(int a, int flag)
         {
             Rt.RuntimeLock();
-            s_busy++;
+            t_busy++;
             s_marks ??= new Dictionary<int, int>();
             s_marks.TryGetValue(a, out int f);
             if (f == 0) s_count++;
             s_marks[a] = f | flag;
-            s_busy--;
+            t_busy--;
             Rt.RuntimeUnlock();
             // (a live object, an arena's member too: not an immortal one, whose word never changes)
             if (Mem.LoadI32(a) is > 0 or < -1)
@@ -42,26 +44,26 @@ namespace Cs2Wasm.Runtime
         internal static void ClearAt(int a, int flag)
         {
             Rt.RuntimeLock();
-            s_busy++;
+            t_busy++;
             if (s_marks != null && s_marks.TryGetValue(a, out int f))
             {
                 f &= ~flag;
                 if (f == 0) { s_marks.Remove(a); s_count--; } else s_marks[a] = f;
             }
-            s_busy--;
+            t_busy--;
             Rt.RuntimeUnlock();
         }
 
         /// <summary>The object at `addr` is dying: clear weak handles to it; 0 if its finalizer must not run.</summary>
         public static int OnDestroy(int addr)
         {
-            if (s_count == 0 || s_busy != 0) return 1;
+            if (s_count == 0 || t_busy != 0) return 1;
             if ((Mem.LoadI32(addr + 8) & MarkedBit) == 0) return 1;
             Rt.RuntimeLock();
-            s_busy++;
+            t_busy++;
             bool has = s_marks!.TryGetValue(addr, out int f);
             if (has) { s_marks.Remove(addr); s_count--; }
-            s_busy--;
+            t_busy--;
             Rt.RuntimeUnlock();
             if (!has) return 1;
             if ((f & Weak) != 0) WeakSlots.Cleared(addr);

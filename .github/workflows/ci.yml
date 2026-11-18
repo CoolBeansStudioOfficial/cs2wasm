@@ -1,0 +1,27 @@
+# Builds the compiler and runs the conformance suite in checked mode (freed memory poisoned, every function
+# type-checked): docs/AUDIT.md, step 1. The library's sources are fetched by the compiler on first use
+# (dotnet/runtime at its pinned tag) and cached between runs. The Godot checks skip themselves without the editor.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  suite:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          dotnet-quality: preview
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\cs2wasm
+          key: cs2wasm-sources-${{ hashFiles('src/Cs2Wasm/Compiler/Library.cs') }}
+      - run: dotnet build -c Debug --nologo
+      - run: dotnet run --project tests/Cs2Wasm.Tests --no-build

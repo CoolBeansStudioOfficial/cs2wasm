@@ -7,6 +7,8 @@ namespace Cs2Wasm.Wasm;
 /// </summary>
 internal static class Validator
 {
+    const ValType V128 = (ValType)0x7B;
+
     sealed class Frame
     {
         public required Op Kind;
@@ -224,6 +226,15 @@ internal static class Validator
                     case Op.I32AtomicRmwCmpxchg or Op.I32AtomicRmw8CmpxchgU or Op.I32AtomicRmw16CmpxchgU: Pop(ValType.I32); Pop(ValType.I32); Pop(ValType.I32); Push(ValType.I32); break;
                     case Op.I32AtomicRmw8XchgU or Op.I32AtomicRmw16XchgU: Binop(ValType.I32, ValType.I32); break;
                     case Op.I64AtomicRmwCmpxchg: Pop(ValType.I64); Pop(ValType.I64); Pop(ValType.I32); Push(ValType.I64); break;
+                    // 128-bit instructions: their values are on the stack only (V128 below is the validator's own mark)
+                    case Op.V128Load: Pop(ValType.I32); Push(V128); break;
+                    case Op.V128Store: Pop(V128); Pop(ValType.I32); break;
+                    case Op.I16x8Splat: Pop(ValType.I32); Push(V128); break;
+                    case Op.F64x2Splat: Pop(ValType.F64); Push(V128); break;
+                    case Op.F64x2ExtractLane: Pop(V128); Push(ValType.F64); break;
+                    case Op.F64x2Sqrt: Pop(V128); Push(V128); break;
+                    case Op.I16x8Bitmask: Pop(V128); Push(ValType.I32); break;
+                    case Op.I16x8Eq or Op.I16x8LtU or Op.I16x8GtU or Op.V128And or Op.V128Or or Op.I16x8Sub or Op.I16x8Add: Pop(V128); Pop(V128); Push(V128); break;
                     default: throw new InvalidOperationException("unknown instruction");
                 }
             }

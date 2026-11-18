@@ -320,6 +320,10 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_SHARE_CHECK=1 (diagnosis of section 4.5's sharing): true, and an object's hash word carries
         /// the thread that allocated it in bits 24-30; a plain count update from another thread is reported.</summary>
         [Intrinsic] public static extern bool ShareCheck();
+        /// <summary>CompileOptions.Checked (the tests' build): freed memory is filled with a pattern and never used
+        /// again, so a reference used after its object was freed reads the pattern (a reference read from it traps
+        /// at its use, a number differs from .NET's) where it would have read whatever took the block.</summary>
+        [Intrinsic] public static extern bool Checked();
 
         static int s_violations;
 
@@ -340,7 +344,7 @@ namespace Cs2Wasm.Runtime
                 fixed (char* p = bad) Engine.Write((int)p, bad.Length);
                 Mem.StoreI32(-4, 0);
             }
-            string text = "share violation: " + TypeInfo.Type(Mem.LoadI32(a + 4)).ToString() + " allocated on thread " + ((Mem.LoadI32(a + 8) >> 24) & 0x3F).ToString()
+            string text = "share violation: " + TypeInfo.Type(Mem.LoadI32(a + 4)).ToString() + " allocated on thread " + ((Mem.LoadI32(a + 8) >> 24) & 0x1F).ToString()
                 + ", count " + Mem.LoadI32(a).ToString() + ", on thread " + ThreadId().ToString() + "\n";
             fixed (char* p = text) Engine.Write((int)p, text.Length);
             // (a trap: the engine's stack trace shows where)
@@ -762,7 +766,7 @@ namespace Cs2Wasm.Runtime
         {
             // The usual case in one small piece (an engine puts a small function into its callers, a large one it
             // calls): the block is kept aside for the next allocation of its size; the one that was there goes on.
-            if (SingleThreaded() && !ShareCheck())
+            if (SingleThreaded() && !ShareCheck() && !Checked())
             {
                 int s = (size + 7) & ~7;
                 if ((uint)s <= MaxSmall)
@@ -808,6 +812,15 @@ namespace Cs2Wasm.Runtime
         {
             // CS2WASM_SHARE_CHECK: freed memory is poisoned (0x0EAD, the freeing thread) and never reused
             // (its type word too: a borrowed reference used after the free traps at its next dispatch or type test)
+            if (Checked() && !ShareCheck() && size >= 8)
+            {
+                // (with threads a dead object's count word stays zero: a read that counts relies on it)
+                int whole = (size + 7) & ~7;
+                Mem.StoreI32(addr, SingleThreaded() ? 0x0EAD0000 : 0);
+                Mem.StoreI32(addr + 4, 0x7EAD0000);
+                if (whole > 8) Mem.Fill(addr + 8, 0xDD, whole - 8);
+                return;
+            }
             if (ShareCheck() && size >= 8) { Mem.StoreI32(addr, 0x0EAD0000 | (ThreadId() & 0xFFFF)); Mem.StoreI32(addr + 4, 0x7EAD0000); return; }
             if (!SingleThreaded() && size <= MaxSmall) { FreeLocal(addr, size, kind); return; }
             RuntimeLock();
@@ -955,7 +968,7 @@ namespace Cs2Wasm.Runtime
             int a = AllocBlock(size, KindPlain);
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
-            if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x3F) << 24);
+            if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x1F) << 24);
             return a;
         }
 
@@ -1030,9 +1043,9 @@ namespace Cs2Wasm.Runtime
         public static int HashOf(object o)
         {
             int a = AddressOf(o);
-            // (bits 31 and 30 of the word are flags: pinned by a static, marked: ObjectMarks; with the share check,
-            // bits 24 to 29 are the thread that made the object)
-            int mask = ShareCheck() ? 0xFFFFFF : 0x3FFFFFFF;
+            // (bits 31 to 29 of the word are flags: pinned by a static, marked: ObjectMarks, finalized; with the share
+            // check, bits 24 to 28 are the thread that made the object)
+            int mask = ShareCheck() ? 0xFFFFFF : 0x1FFFFFFF;
             int v = Mem.LoadI32(a + 8);
             if ((v & mask) == 0)
             {
@@ -1046,7 +1059,17 @@ namespace Cs2Wasm.Runtime
                     if (Atomic.CompareExchange32(ref w, v, v | h) == v) { v |= h; break; }
                 }
             }
-            return v & 0x3FFFFFFF;
+            return v & mask;
+        }
+
+        /// <summary>Bit 29 of an object's hash word: its finalizer has run (or is running). An object its finalizer
+        /// made reachable again lives on and is not finalized a second time, unless GC.ReRegisterForFinalize asks.</summary>
+        public const int FinalizedBit = 0x20000000;
+
+        public static void ClearFinalized(object o)
+        {
+            ref int w = ref Mem.RefI32(AddressOf(o) + 8);
+            while (true) { int v = Atomic.Load32(ref w); if ((v & FinalizedBit) == 0 || Atomic.CompareExchange32(ref w, v, v & ~FinalizedBit) == v) break; }
         }
 
         // ------------------------------------------------------------------
@@ -1193,7 +1216,7 @@ namespace Cs2Wasm.Runtime
             int a = AllocBlock(size + ArenaPrefix, KindArena) + ArenaPrefix;
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
-            if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x3F) << 24);
+            if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x1F) << 24);
             return a;
         }
 
@@ -1204,7 +1227,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(addr, 0);
             MemberWordsFree(addr);
             // (the usual case in one small piece, as FreeObject)
-            if (SingleThreaded() && !ShareCheck())
+            if (SingleThreaded() && !ShareCheck() && !Checked())
             {
                 int s = (size + ArenaPrefix + 7) & ~7;
                 if ((uint)s <= MaxSmall)
@@ -2031,6 +2054,18 @@ namespace Cs2Wasm.Runtime
                 int cutEnd = s_cutN;
                 CutsBack(cutBase, cutEnd);
                 for (int m = done; m != 0; m = PL(m, 8)) ArenaFinalizeObject(m);
+                // A finalizer stored one of them where the program can reach it: they all live on, with what they
+                // refer to, and are never freed (what one of several objects that die together can still reach is
+                // not followed: section 4.3's group stays whole).
+                bool back = false;
+                for (int m = done; m != 0; m = PL(m, 8)) if (Mem.LoadI32(m) != 0) { back = true; break; }
+                if (back)
+                {
+                    for (int m = done; m != 0;) { int next = PL(m, 8); Mem.StoreI32(m, -1); m = next; }
+                    s_cutN = cutBase;
+                    ArenaEmpty(ar);
+                    return;
+                }
                 CutsOut(cutBase, cutEnd);
                 s_cutN = cutBase;
             }
@@ -2075,6 +2110,18 @@ namespace Cs2Wasm.Runtime
                     CutsBack(cutBase, cutEnd);
                     m = first;
                     do { ArenaFinalizeObject(m); m = PL(m, 12); } while (m != first);
+                    // (a finalizer stored one of them where the program can reach it: as in ArenaDestroyFrom; the
+                    // arena's record stays, busy, for the words of its members that name it)
+                    bool back = false;
+                    m = first;
+                    do { if (Mem.LoadI32(m) != 0) back = true; m = PL(m, 12); } while (m != first);
+                    if (back)
+                    {
+                        m = first;
+                        do { int next = PL(m, 12); Mem.StoreI32(m, -1); m = next; } while (m != first);
+                        s_cutN = cutBase;
+                        return;
+                    }
                     CutsOut(cutBase, cutEnd);
                     s_cutN = cutBase;
                 }

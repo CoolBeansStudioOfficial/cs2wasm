@@ -163,7 +163,12 @@ internal sealed class Arenas
                     foreach (var op in body.DescendantsAndSelf())
                     {
                         if (op is not Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation fr || !SymbolEqualityComparer.Default.Equals(fr.Field.OriginalDefinition, f)) continue;
-                        if (!IsWrite(fr)) continue;
+                        // (returned by reference: whoever gets the reference can store through it, any time)
+                        bool refReturned = m is IMethodSymbol { ReturnsByRef: true } or IPropertySymbol { ReturnsByRef: true }
+                            && Ancestors(fr).TakeWhile(x => x is Microsoft.CodeAnalysis.Operations.IConversionOperation or Microsoft.CodeAnalysis.Operations.IParenthesizedOperation
+                                or Microsoft.CodeAnalysis.Operations.IConditionalOperation or Microsoft.CodeAnalysis.Operations.IReturnOperation)
+                                .Any(x => x is Microsoft.CodeAnalysis.Operations.IReturnOperation);
+                        if (!IsWrite(fr) && !refReturned) continue;
                         bool inCtor = m is IMethodSymbol { MethodKind: MethodKind.Constructor } ctor && SymbolEqualityComparer.Default.Equals(ctor.ContainingType, f.ContainingType)
                             && fr.Instance is Microsoft.CodeAnalysis.Operations.IInstanceReferenceOperation
                             && !Ancestors(fr).Any(x => x is Microsoft.CodeAnalysis.Operations.IAnonymousFunctionOperation or Microsoft.CodeAnalysis.Operations.ILocalFunctionOperation);
@@ -189,7 +194,6 @@ internal sealed class Arenas
                 Microsoft.CodeAnalysis.Operations.IAddressOfOperation => true,
                 Microsoft.CodeAnalysis.Operations.IArgumentOperation { Parameter.RefKind: not RefKind.None and not RefKind.In and not RefKind.RefReadOnlyParameter } => true,
                 Microsoft.CodeAnalysis.Operations.IVariableInitializerOperation { Parent: Microsoft.CodeAnalysis.Operations.IVariableDeclaratorOperation { Symbol.IsRef: true } } => true,
-                Microsoft.CodeAnalysis.Operations.IReturnOperation when o.Type != null && false => true,
                 Microsoft.CodeAnalysis.Operations.ITupleOperation => true,
                 _ => p is Microsoft.CodeAnalysis.Operations.IInvocationOperation { Instance: var inst, TargetMethod.IsReadOnly: false } && inst == o && o.Type?.IsValueType == true,
             };

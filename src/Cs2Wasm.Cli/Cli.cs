@@ -37,7 +37,7 @@ public static class Cli
         var analyzers = new List<string>();
         var properties = new Dictionary<string, string>();
         int pages = 256, maxPages = 16384;
-        bool optimize = true, watch = false;
+        bool optimize = true, watch = false, checkedBuild = false;
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -81,6 +81,7 @@ public static class Cli
                         break;
                     }
                 case "--no-opt": optimize = false; break;
+                case "--checked": checkedBuild = true; break;
                 case "--watch": watch = true; break;
                 case "-r": refs.Add(MetadataReference.CreateFromFile(args[++i])); break;
                 case "-a": analyzers.Add(args[++i]); break;
@@ -124,6 +125,7 @@ public static class Cli
                     MemoryInitialPages = pages,
                     MemoryMaximumPages = maxPages,
                     Optimize = optimize,
+                    Checked = checkedBuild,
                     Plugins = plugins,
                 };
                 var result = Cs2WasmCompiler.Compile(compilation, options);

@@ -125,7 +125,7 @@ sealed partial class FunctionCompiler
             case ILocalReferenceOperation l:
                 if (IsCaptured(l.Local)) return LoadCaptured(l.Local);
                 if (TryEmitLocalMove(l, out var moved)) return moved;
-                return LoadVar(LocalVar(l.Local));
+                { var lo = LoadVar(LocalVar(l.Local)); return lo == Own.Stable && WrittenDuringUse(l.Local) ? Own.Unstable : lo; }
             case IParameterReferenceOperation p:
                 if (IsPrimaryParamHere(p.Parameter)) { var ps = PrimarySlot(p.Parameter); PushPrimaryThis(); if (Types.IsStruct(ps.Type)) { E.I32(ps.Offset); E.Op(Op.I32Add); return Own.None; } E.Load(Types.LoadOp(ps.Type), ps.Offset); return Types.IsRef(ps.Type) ? Own.Unstable : Own.None; }
                 if (IsCaptured(p.Parameter)) return LoadCaptured(p.Parameter);
@@ -137,7 +137,7 @@ sealed partial class FunctionCompiler
                     return Own.Owned;
                 }
                 if (IsMovedStructParamUse(p)) { var sv = LoadVar(_vars[p.Parameter]); _freshParam = E.Body.Count; _structParamLoads++; return sv; }
-                return LoadVar(_vars[p.Parameter]);
+                { var po = LoadVar(_vars[p.Parameter]); return po == Own.Stable && WrittenDuringUse(p.Parameter) ? Own.Unstable : po; }
             case IInstanceReferenceOperation ir:
                 {
                     var to = EmitThis(ir);
@@ -675,7 +675,7 @@ sealed partial class FunctionCompiler
         var ft = T.Resolve(f.Field.Type, Map);
         if (f.Field.IsConst) return EmitConstant(f.Field.ConstantValue, ft);
         // string.Empty: the runtime's to set (upstream declares it without a value): the "" literal
-        if (f.Field is { IsStatic: true, Name: "Empty" } && Types.IsString(f.Field.ContainingType) && D.IsLibrary(f.Field)) { E.I32Addr(D.StringLiteral("")); return Own.Stable; }
+        if (f.Field is { IsStatic: true, Name: "Empty" } && Types.IsString(f.Field.ContainingType)) { E.I32Addr(D.StringLiteral("")); return Own.Stable; }
         // a primitive's own field (int.m_value) is the value itself
         if (!f.Field.IsStatic && f.Instance != null && Types.PrimOf(TypeOf(f.Instance)) is not Prim.None && Types.PrimOf(ft) == Types.PrimOf(TypeOf(f.Instance)))
         {
@@ -3217,6 +3217,11 @@ sealed partial class FunctionCompiler
         int bytes = Scratch(ValType.I32);
         int count = E.AddLocal(ValType.I32);
         PushCount(); E.Tee(count); E.I32(size); E.Op(Op.I32Mul); E.I32(7); E.Op(Op.I32Add); E.I32(-8); E.Op(Op.I32And); E.Set(bytes);
+        // (more than the stack has left: a trap, as the stack's overflow; the size is the program's own number)
+        E.Get(bytes); E.GGet(D.StackPointer);
+        if (D.ThreadMode && D.StackLo != null) { E.GGet(D.StackLo); E.Op(Op.I32Sub); }
+        E.Op(Op.I32GtU);
+        E.If(); E.Op(Op.Unreachable); E.End();
         E.GGet(D.StackPointer); E.Get(bytes); E.Op(Op.I32Sub);
         int p = E.AddLocal(ValType.I32); E.Tee(p); E.GSet(D.StackPointer);
         E.Get(p); E.I32(0); E.Get(bytes); E.Op(Op.MemoryFill);

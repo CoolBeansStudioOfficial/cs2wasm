@@ -632,11 +632,36 @@ sealed partial class RuntimeGen
             if (fin != null)
             {
                 e.If();
-                // the finalizer may resurrect nothing observable here; it runs with a temporary count
+                // (not a second time: an object its finalizer brought back, let go again; Rt.FinalizedBit)
+                e.Get(0); e.Load(Op.I32Load, 8); e.I32(0x20000000); e.Op(Op.I32And); e.Op(Op.I32Eqz);
+                e.If();
+                e.Get(0); e.Get(0); e.Load(Op.I32Load, 8); e.I32(0x20000000); e.Op(Op.I32Or); e.Store(Op.I32Store, 8);
+                // the finalizer runs with a temporary count
                 // (an arena member can refer to itself: its finalizer clearing that field must not destroy it)
-                e.Get(0); e.I32(finalizer == 1 ? 0x40000000 : 1); e.Store(Op.I32Store);
+                if (finalizer == 1)
+                {
+                    // (a group's member: what the finalizers of the others counted on it meanwhile stays, and so
+                    // does what its own counts: the group's destruction looks at the counts afterwards)
+                    e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Add); e.Store(Op.I32Store);
+                    e.Call(rt.FinHold); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
+                    e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Sub); e.Store(Op.I32Store);
+                    e.End();
+                    e.End();
+                    return;
+                }
+                e.Get(0); e.I32(1); e.Store(Op.I32Store);
                 e.Call(rt.FinHold); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
+                if (finalizer != 1)
+                {
+                    // the finalizer stored the object somewhere (its count is more than the temporary one): it
+                    // lives on, as under .NET; the temporary count goes like any other
+                    e.Get(0); e.Load(Op.I32Load); e.I32(1); e.Op(Op.I32Ne);
+                    e.If();
+                    e.Get(0); e.Call(rt.Release); e.Op(Op.Return);
+                    e.End();
+                }
                 e.Get(0); e.I32(0); e.Store(Op.I32Store);
+                e.End();
                 e.End();
             }
             else e.Op(Op.Drop);
@@ -1822,7 +1847,9 @@ internal sealed partial class Driver
         Module.CustomSections.Add(new CustomSection("cs2wasm.version", ver.ToArray()));
         foreach (var (n, data) in Options.CustomSections) Module.CustomSections.Add(new CustomSection(n, data));
         Mark("emit start");
+        Module.ValidateAlways = Options.Checked;
         var enc = Module.Encode(Options.Optimize);
+        foreach (var problem in Module.ValidationProblems) Report(Diags.Unsupported, null, "internal error: " + problem);
         Mark("encode (final pass)");
         if (Environment.GetEnvironmentVariable("CS2WASM_STATS") is "1" or "2") PrintCountStats(enc);
         // frames: which functions are .NET frames (a bit per function index), and the frame names of the library's

@@ -1033,6 +1033,7 @@ sealed partial class FunctionCompiler
             case "Atomic.Fence": E.Emit(Op.AtomicFence); return Own.None;
             case "Rt.ThreadId": E.GGet(D.ThreadId); return Own.None;
             case "Rt.ShareCheck": E.I32(RuntimeFns.ShareCheckOn ? 1 : 0); return Own.None;
+            case "Rt.Checked": E.I32(D.Options.Checked ? 1 : 0); return Own.None;
             case "Limbo.DestroyObject": E.Call(Rt.Destroy); return Own.None;
             case "Rt.NullRef": E.I32(0); return Own.None;
             case "Mem.RefI32": return Own.None;
