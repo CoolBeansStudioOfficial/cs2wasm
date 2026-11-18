@@ -61,6 +61,30 @@ sealed partial class FunctionCompiler
                 if (p is ITryOperation) { ok = false; break; }
             if (ok) _localMoves.Add(only);
         }
+        // `a.Next = x; x = b;`: the statement after the one that hands x's value to an owner assigns x without
+        // reading it, so that read is the last use of what x held: a move, in a loop or not (reversing a list in
+        // place: `n.Next = prev; prev = n;`). The handing statement reads x once, as the value it assigns. Not under a
+        // `try` of this method, as above.
+        foreach (var blk in all.OfType<IBlockOperation>())
+        {
+            var ops = blk.Operations;
+            for (int i = 0; i + 1 < ops.Length; i++)
+            {
+                if (ops[i] is not IExpressionStatementOperation { Operation: ISimpleAssignmentOperation { IsRef: false } give }) continue;
+                if (ops[i + 1] is not IExpressionStatementOperation { Operation: ISimpleAssignmentOperation { IsRef: false, Target: ILocalReferenceOperation { Local: var l } } take }) continue;
+                var value = give.Value;
+                while (value is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsImplicit && c.Conversion.IsReference)) value = c.Operand;
+                if (value is not ILocalReferenceOperation read || !SymbolEqualityComparer.Default.Equals(read.Local, l)) continue;
+                if (l.IsRef || !Types.IsRef(T.Resolve(l.Type, Map)) || IsCaptured(l) || _addrTaken.Contains(l)) continue;
+                if (_localMoves.Contains(read) || InLambda(read, body) || !IsOwningSink(read)) continue;
+                bool ok = true;
+                foreach (var d in give.Target.DescendantsAndSelf().Concat(take.Value.DescendantsAndSelf()))
+                    if (d is ILocalReferenceOperation r && SymbolEqualityComparer.Default.Equals(r.Local, l) || d is IAnonymousFunctionOperation or ILocalFunctionOperation) { ok = false; break; }
+                for (var p = blk.Parent; ok && p != null && !ReferenceEquals(p, body); p = p.Parent)
+                    if (p is ITryOperation) ok = false;
+                if (ok) _localMoves.Add(read);
+            }
+        }
     }
 
     static bool InLambda(IOperation op, IOperation body)

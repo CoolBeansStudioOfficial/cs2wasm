@@ -109,7 +109,7 @@ static class Fresh
         var drop = new HashSet<int>();
         for (int i = 0; i + 1 < b.Count; i++)
         {
-            if (b[i].Op != Op.Call || b[i].Ref != alloc) continue;
+            if (b[i].Op != Op.Call || b[i].Ref != alloc && b[i].Ref is not WasmFunction { IsObjectAlloc: true }) continue;
             if (b[i + 1].Op is not (Op.LocalSet or Op.LocalTee)) continue;
             // the locals holding the object (it moves between them), the instructions whose result is the object, and
             // the stores that put it in a local

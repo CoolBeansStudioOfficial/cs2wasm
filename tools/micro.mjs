@@ -1,4 +1,4 @@
-// Small operations one by one against NativeAOT (allocation, strings, collections, iterators, dispatch, lists):
+// Small operations one by one against NativeAOT compiled to WebAssembly (allocation, strings, collections, iterators, dispatch, lists):
 // where a benchmark of tools/bench.mjs loses, this says which operation. Each is its own function, called 25
 // times, the best time taken (an engine never replaces a loop that is running: a phase measured inside one
 // long function is measured in the baseline tier).
@@ -15,11 +15,18 @@ const out = join(root, 'tests', 'out', 'micro');
 mkdirSync(out, { recursive: true });
 const src = join(root, 'tools', 'micro');
 const newest = Math.max(...readdirSync(src).filter((f) => f.endsWith('.cs') || f.endsWith('.csproj')).map((f) => statSync(join(src, f)).mtimeMs));
-const rid = process.platform === 'win32' ? 'win-x64' : process.platform === 'darwin' ? 'osx-arm64' : 'linux-x64';
-const aotExe = join(out, 'aot', process.platform === 'win32' ? 'micro-aot.exe' : 'micro-aot');
-if (args.includes('--rebuild-aot') || !existsSync(aotExe) || statSync(aotExe).mtimeMs < newest) {
-  console.error('publishing the NativeAOT build...');
-  execFileSync('dotnet', ['publish', join(src, 'micro.csproj'), '-c', 'Release', '-r', rid, '-o', join(out, 'aot'), '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
+// NativeAOT compiled to WebAssembly (NativeAOT-LLVM, linked by Emscripten 3.1.56: EMSDK, or C:/tools/emsdk), run in Node as cs2wasm's module is
+const aotDir = join(out, 'naot-wasm'), aotJs = join(aotDir, 'micro-naot.js');
+if (args.includes('--rebuild-aot') || !existsSync(aotJs) || statSync(aotJs).mtimeMs < newest) {
+  const emsdk = process.env.EMSDK ?? (existsSync('C:/tools/emsdk') ? 'C:/tools/emsdk' : null);
+  if (!emsdk) throw new Error('NativeAOT for WebAssembly links with Emscripten 3.1.56: set EMSDK to its directory');
+  console.error('publishing the NativeAOT build for WebAssembly...');
+  const sub = (d) => { const p = join(emsdk, d); return existsSync(p) ? join(p, readdirSync(p)[0]) : null; };
+  const env = { ...process.env, EMSDK: emsdk, PATH: [emsdk, join(emsdk, 'upstream', 'emscripten'), process.env.PATH].join(process.platform === 'win32' ? ';' : ':') };
+  const py = sub('python'), nd = sub('node');
+  if (py) env.EMSDK_PYTHON = join(py, process.platform === 'win32' ? 'python.exe' : 'bin/python3');
+  if (nd) env.EMSDK_NODE = join(nd, process.platform === 'win32' ? 'node.exe' : 'bin/node');
+  execFileSync('dotnet', ['publish', join(root, 'tools', 'micro-naot-wasm', 'micro-naot-wasm.csproj'), '-c', 'Release', '-o', aotDir, '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'], env });
 }
 const cli = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
 execFileSync('dotnet', ['build', join(root, 'src', 'Cs2Wasm.Cli'), '-c', 'Release', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
@@ -30,13 +37,13 @@ const best = (a, b) => { for (const k in b) a[k] = Math.min(a[k] ?? Infinity, b[
 const aot = {}, mod = {};
 let checks = [];
 for (let i = 0; i < 2; i++) {
-  const a = spawnSync(aotExe, [], { encoding: 'utf8' });
+  const a = spawnSync(process.execPath, [aotJs], { encoding: 'utf8', cwd: aotDir });
   const w = spawnSync(process.execPath, [join(root, 'host', 'run.mjs'), wasm, 'main'], { encoding: 'utf8' });
   if (a.status !== 0 || w.status !== 0) { console.error(a.stderr, w.stdout, w.stderr); throw new Error('a run failed'); }
   best(aot, parse(a.stdout)); best(mod, parse(w.stdout));
   checks = [/check (-?\d+)/.exec(a.stdout)?.[1], /check (-?\d+)/.exec(w.stdout)?.[1]];
 }
-console.log('operation            NativeAOT us  cs2wasm us   ratio');
+console.log('operation         NativeAOT wasm us  cs2wasm us   ratio');
 let logSum = 0, n = 0;
 for (const k in aot) {
   if (filter && !k.includes(filter)) continue;

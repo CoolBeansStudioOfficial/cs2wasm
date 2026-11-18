@@ -727,6 +727,20 @@ sealed partial class RuntimeGen
         var freeArena = ar.RuntimeFn("FreeObjectArena", 2);
         {
             var alloc = rt.AllocObject;
+            // (where the allocating code names the type, which of the two it is is known here: its call goes straight
+            // to the one, a copy of AllocObject without the question for a type that cannot be in a cycle)
+            var plain = D.Module.AddFunction(alloc.Name + " [plain]", alloc.Type);
+            plain.Body = [.. alloc.Body]; plain.Locals = [.. alloc.Locals]; plain.IsObjectAlloc = true;
+            allocArena.IsObjectAlloc = true;
+            var cyc = ar.CycleTypes.ToHashSet();
+            foreach (var f in D.Module.Functions)
+            {
+                if (f.IsImport || f == alloc || f == plain) continue;
+                var b = f.Body;
+                for (int i = 1; i < b.Count; i++)
+                    if (b[i].Op == Op.Call && ReferenceEquals(b[i].Ref, alloc) && b[i - 1].Op == Op.I32Const && b[i - 1].Ref is TypeIdRef t)
+                        b[i] = b[i] with { Ref = cyc.Contains(t.Id) ? allocArena : plain };
+            }
             var pre = new Emitter(new WasmFunction("tmp", alloc.Type));
             pre.Get(1); pre.Call(rt.SccOfFn);
             pre.If();
@@ -903,14 +917,16 @@ sealed partial class RuntimeGen
         // (init is written after pruning too: it takes the first thread's block, and with no memory for it throws,
         // which may be the program's only throw: a trace's buffer is then constructed there alone)
         var allocFirst = D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1).Fn;
+        var stubOf = new Dictionary<WasmFunction, List<VirtualStub>>();
+        foreach (var stub in D.Stubs.Values) { if (!stubOf.TryGetValue(stub.Fn, out var l)) stubOf[stub.Fn] = l = []; l.Add(stub); }
         while (true)
         {
             var destroyOf = new Dictionary<WasmFunction, int>();
             var live = D.Module.LiveFunctions(f =>
             {
                 var r = new List<WasmFunction>();
-                foreach (var stub in D.Stubs.Values)
-                    if (stub.Fn == f)
+                if (stubOf.TryGetValue(f, out var stubs))
+                    foreach (var stub in stubs)
                         foreach (var (k, c) in stub.Cases)
                             if (c.impl != null && (k.StartsWith("synthetic#") || types.Contains(int.Parse(k[(k.LastIndexOf('#') + 1)..])))) r.Add(c.impl.Fn);
                 if (f == D.Rt.Destroy) foreach (var (id, df) in _destroyFns) if (types.Contains(id)) r.Add(df);

@@ -1117,6 +1117,21 @@ namespace Cs2Wasm.Runtime
         {
             // (its count word reads as dead from here on, wherever the block goes)
             Mem.StoreI32(addr, 0);
+            // (the usual case in one small piece, as FreeObject)
+            if (SingleThreaded() && !ShareCheck())
+            {
+                int s = (size + ArenaPrefix + 7) & ~7;
+                if ((uint)s <= MaxSmall)
+                {
+                    int blk = addr - ArenaPrefix;
+                    int hotSlot = s_hot + (s >> 3) * 4;
+                    int old = Mem.LoadI32(hotSlot);
+                    Mem.StoreI32(hotSlot, blk);
+                    Mem.StoreI32(blk, 0);
+                    if (old != 0) FreeSmallOld(old, s);
+                    return;
+                }
+            }
             FreeBlock(addr - ArenaPrefix, size + ArenaPrefix, KindArena);
         }
 

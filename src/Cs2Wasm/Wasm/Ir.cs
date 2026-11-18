@@ -136,6 +136,8 @@ internal sealed class WasmFunction
     public bool InTable; public int TableIndex = -1;
     /// <summary>In the table because data refers to it (reflection thunks, attribute factories): always live.</summary>
     public bool TableRoot;
+    /// <summary>Allocates an object as Rt.AllocObject does (size, type id): the copy of it for one kind of type.</summary>
+    public bool IsObjectAlloc;
     public bool IsImport => ImportName != null;
     /// <summary>If set, every call to this function is redirected to the target (pure forwarders).</summary>
     public WasmFunction? ForwardTo;

@@ -65,6 +65,19 @@ static class P
         for (var n = head; n != null;) { var next = n.Next; n.Next = prev; prev = n; n = next; }
         return prev!.Value;
     }
+    sealed class TreeNode { public TreeNode? Left, Right; public int Value; }
+    static TreeNode BuildTree(int depth, ref int counter)
+    {
+        var n = new TreeNode { Value = counter++ };
+        if (depth > 0) { n.Left = BuildTree(depth - 1, ref counter); n.Right = BuildTree(depth - 1, ref counter); }
+        return n;
+    }
+    static long WalkTree(TreeNode? n) => n == null ? 0 : n.Value + WalkTree(n.Left) + WalkTree(n.Right);
+    static TreeNode? s_tree;
+    static long TreeBuildFree() { int c = 0; var t = BuildTree(14, ref c); return t.Value + c; }
+    static long TreeWalk() => WalkTree(s_tree);
+    static long TreeReplace() { int c = 0; var t = s_tree!; t.Left!.Left = BuildTree(10, ref c); return c; }
+    static long LlReverse() { ListNode? prev = null; for (var n = s_list; n != null;) { var next = n.Next; n.Next = prev; prev = n; n = next; } s_list = prev; return prev!.Value; }
     static long Virtual() { long s = 0; object[] os = s_objs; for (int r = 0; r < 20; r++) for (int i = 0; i < os.Length; i++) s += os[i].GetHashCode(); return s; }
     static object[] s_objs = null!;
     sealed class H1 { public override int GetHashCode() => 1; }
@@ -82,6 +95,7 @@ static class P
         for (int i = 0; i < 16; i++) s_boxes[i] = new Box();
         for (int i = 0; i < 100000; i++) s_d[i * 7 % 50000] = i;
         s_list = BuildList();
+        { int c = 0; s_tree = BuildTree(14, ref c); }
         s_objs = new object[10000];
         for (int i = 0; i < s_objs.Length; i++) s_objs[i] = (Next() % 3) switch { 0 => new H1(), 1 => new H2(), _ => new H3() };
         var tests = new (string, Func<long>)[] {
@@ -90,7 +104,7 @@ static class P
             ("groupby", GroupBy), ("distinct", Distinct), ("delegate_call", DelegateCall), ("iface_foreach", IfaceForeach), ("split", Split), ("indexof", IndexOf),
             ("sb_append_str", SbAppendStr), ("sb_append_char", SbAppendChar), ("sb_append_int", SbAppendInt), ("hashset_add", HashSetAdd),
             ("dict_set", DictSet), ("dict_get", DictGet), ("dict_str", DictStr), ("dict_str_list", DictStrList), ("list_add", ListAdd), ("upper", Upper),
-            ("ll_build_free", LlBuildFree), ("ll_walk", LlWalk), ("ll_build_rev_free", LlBuildReverseFree), ("virtual3", Virtual),
+            ("ll_build_free", LlBuildFree), ("ll_walk", LlWalk), ("ll_build_rev_free", LlBuildReverseFree), ("ll_reverse", LlReverse), ("tree_build_free", TreeBuildFree), ("tree_walk", TreeWalk), ("tree_replace", TreeReplace), ("virtual3", Virtual),
         };
         long chk = 0;
         foreach (var (name, f) in tests)
