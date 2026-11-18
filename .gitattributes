@@ -1,1 +1,3 @@
 *.sh text eol=lf
+# (a string that spans lines in a test must be the same string wherever the repository is checked out)
+tests/Conformance/*.cs text eol=lf

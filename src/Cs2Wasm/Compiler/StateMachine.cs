@@ -1339,7 +1339,10 @@ sealed partial class FunctionCompiler
                 foreach (var o in r.DescendantsAndSelf())
                 {
                     if (o is IFlowCaptureReferenceOperation br && (br.Parent is ISimpleAssignmentOperation { IsRef: true } ra && ra.Value == br
-                        || br.Parent is IArgumentOperation { Parameter.RefKind: not RefKind.None }))
+                        || br.Parent is IArgumentOperation { Parameter.RefKind: not RefKind.None }
+                        // the target of an assignment the graph made from `x ??= v`, `x op= v`, `x++` around an await:
+                        // the capture stands for the variable, not for the value it had
+                        || !br.IsInitialization && (br.Parent is IAssignmentOperation asg && asg.Target == br || br.Parent is IIncrementOrDecrementOperation)))
                         byRef.Add(br.Id);
                     if (o is IFlowCaptureOperation fc && !writes.ContainsKey(fc.Id)) writes[fc.Id] = fc;
                     else if (o is IFlowCaptureReferenceOperation fr && fr.Type != null && !readTypes.ContainsKey(fr.Id)) readTypes[fr.Id] = TypeOf(fr);
