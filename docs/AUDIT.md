@@ -492,14 +492,20 @@ of each other. Step 5 gates steps 6, 7 and 9. Step 11 can proceed alongside thro
 
 ### Open decisions for the owner
 
-1. Whether a large synchronous free counts as a spike. Step 7.4 removes the per-object cost where the types allow;
-   what is left is a group with finalizers or outside references.
-2. The back-reference proof for cycles (still open from 2026-11-16): step 7.1 cannot start without it.
+None are open. All three were decided by the owner on 2026-11-18:
+
+1. A large free is handled by a release that does not visit the objects (step 7.4): regions and groups released by
+   returning their pages. The price is accepted: a member dropped early stays until its region or group goes. This
+   supersedes the 2026-11-16 ruling against retention, for regions and groups only; the growth is measured and
+   reported (step 7.5), never hidden.
+2. The back-reference proof goes ahead (step 7.1), with compile-time scoping (step 7.2) for what stays cyclic. The
+   run-time owner-chain counting built on 2026-11-16 (`Runtime.cs`, "Owners") is the fallback where the proof fails,
+   until step 7.2 covers the case; it is removed when nothing reaches it.
 3. Decided by the owner, 2026-11-18: the bar is **the same speed as NativeAOT, lower memory, no frame-time spikes**.
    Faster is welcome, not required. Step 6's target is therefore "no program in the set slower than NativeAOT's";
    step 6.6 (reuse) is done only if step 3's numbers call for it.
 
-Notes on decisions 1 and 2 (the auditor's recommendation, not decided):
+What was agreed for decisions 1 and 2:
 
 - Decision 1: the alternative to a large synchronous free that the owner's rules allow is a free that does not visit
   the objects. An arena whose member types have no finalizer and hold no counted reference to anything outside it
