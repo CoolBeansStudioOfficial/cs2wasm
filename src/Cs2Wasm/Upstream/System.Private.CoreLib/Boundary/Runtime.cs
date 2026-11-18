@@ -1817,7 +1817,8 @@ namespace Cs2Wasm.Runtime
         /// Unless the container is an arena's member already (it was linked while it was being made): then as any store.</summary>
         public static int ArenaLinkFresh(int val, int container, int slot)
         {
-            if (container == 0 || Mem.LoadI32(container) > 0) { t_prevSlot = 0; return val; }
+            // (an object stored into its own slot closes a cycle, whoever knows the object)
+            if (container == 0 || Mem.LoadI32(container) > 0 && val != container) { t_prevSlot = 0; return val; }
             return ArenaLink(val, container, slot);
         }
 
@@ -1829,7 +1830,7 @@ namespace Cs2Wasm.Runtime
         /// The slot's old value goes as for a fresh object's (ArenaUnlinkFresh).</summary>
         public static int ArenaLinkOwned(int val, int container, int slot)
         {
-            if (container == 0 || Mem.LoadI32(container) == 1) { t_prevSlot = 0; return val; }
+            if (container == 0 || Mem.LoadI32(container) == 1 && val != container) { t_prevSlot = 0; return val; }
             return ArenaLink(val, container, slot);
         }
 
@@ -1875,7 +1876,9 @@ namespace Cs2Wasm.Runtime
                 // an up-reference: not counted (the chain from the container to the value keeps the value)
                 SetSlotBits(container, i, 2);
                 UpPath(container, val, 1);
-                if (Mem.LoadI32(val) == -2 && PL(val, 4) == 0) Kill(val);
+                // (An object stored into its own slot, with the last reference there was: nothing refers to it any
+                // more. It goes when the store is done, ArenaUnlink: the storing code writes the slot first.)
+                if (Mem.LoadI32(val) == -2 && PL(val, 4) == 0) { if (val == container) t_selfStore = val; else Kill(val); }
                 else UpdateHold(val);
                 return val;
             }
@@ -1912,7 +1915,22 @@ namespace Cs2Wasm.Runtime
             return g != 0 && g == SccOf(Mem.LoadI32(container + 4));
         }
 
+        [System.ThreadStatic] static int t_selfStore;
+
         public static void ArenaUnlink(int old, int container, int slot)
+        {
+            int self = t_selfStore;
+            t_selfStore = 0;
+            ArenaUnlinkOld(old, container, slot);
+            if (self != 0 && self == container)
+            {
+                RuntimeLock();
+                if (Mem.LoadI32(self) == -2 && PL(self, 4) == 0) { ArenaDestroyFrom(self); DrainKills(); }
+                RuntimeUnlock();
+            }
+        }
+
+        static void ArenaUnlinkOld(int old, int container, int slot)
         {
             // what the slot held, by its bits before the store (ArenaLink noted them); -1: not known, by the counts
             int bits = -1;

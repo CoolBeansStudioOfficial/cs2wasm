@@ -254,6 +254,7 @@ internal sealed class Arenas
     }
 
     readonly Dictionary<string, WasmFunction> _linkAt = [], _unlinkAt = [];
+    WasmFunction? _linkAtFn, _unlinkAtFn;
     WasmFunction? _moveAt;
 
     /// <summary>(value, slot address) → value: a store of a reference into a slot the code knows by its address
@@ -284,9 +285,76 @@ internal sealed class Arenas
     // analysis
     // ------------------------------------------------------------------
 
+    /// <summary>The reference slots inside a struct (offset from `baseOff`, type), nested structs gone through; not
+    /// those of a type whose objects are never freed (a string: no cycle through it is garbage).</summary>
+    public IEnumerable<(int off, ITypeSymbol type)> RefLeaves(ITypeSymbol structType, int baseOff = 0)
+    {
+        foreach (var f in D.Types.LayoutOf(structType).Fields)
+        {
+            if (Types.IsRef(f.Type)) { if (!Types.IsImmortalType(f.Type)) yield return (baseOff + f.Offset, f.Type); }
+            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs)
+                foreach (var x in RefLeaves(f.Type, baseOff + f.Offset)) yield return x;
+        }
+    }
+
+    static readonly bool s_noStructSites = Environment.GetEnvironmentVariable("CS2WASM_NO_STRUCT_SITES") == "1";
+
+    /// <summary>A reference inside a struct that is a field of a class is a slot of the class's object like any other
+    /// (a tuple field, a nullable struct, a struct of the program's): a site at its offset, for whatever its type can
+    /// hold. Nothing records the stores (a struct is copied whole, and written through its own methods): the
+    /// copies and the stores by address ask the runtime (Arenas.LinkAt), which asks the object's type.
+    /// Not in a program with threads yet: there a struct is copied by other code (RuntimeGen.EmitCopyFieldsThreads).</summary>
+    void AddStructSites()
+    {
+        if (s_noStructSites || D.ThreadMode) return;
+        foreach (var t in D.ConstructedTypes().ToList())
+        {
+            // an array of structs that hold references (a dictionary's entries, a list of tuples): its elements' slots
+            if (t is IArrayTypeSymbol at)
+            {
+                var et = D.Types.Canonical(at.ElementType);
+                if (!Types.IsStruct(et) || !D.Types.LayoutOf(et).HasRefs) continue;
+                var act = D.Types.Canonical(at);
+                foreach (var (_, lt) in RefLeaves(et))
+                {
+                    var s = Get("a " + Types.Key(act), act, true, 0);
+                    s.AddValue(lt);
+                    s.General = true;
+                }
+                continue;
+            }
+            // a struct in a box (a struct stored as an object, or as an interface it implements): the box's slots
+            if (t.IsValueType)
+            {
+                var bt = D.Types.Canonical(t);
+                if (!Types.IsStruct(bt) || !D.Types.LayoutOf(bt).HasRefs) continue;
+                foreach (var (off, lt) in RefLeaves(bt, FunctionCompilerHelpers.BoxDataOffset(D.Types, bt)))
+                {
+                    var s = Get("f " + Types.Key(bt) + " " + off, bt, false, off);
+                    s.AddValue(lt);
+                    s.General = true;
+                }
+                continue;
+            }
+            if (t.TypeKind != TypeKind.Class || Types.IsImmortalType(t)) continue;
+            var ct = D.Types.Canonical(t);
+            foreach (var f in D.Types.LayoutOf(ct).Fields)
+            {
+                if (!Types.IsStruct(f.Type) || !D.Types.LayoutOf(f.Type).HasRefs) continue;
+                foreach (var (off, lt) in RefLeaves(f.Type, f.Offset))
+                {
+                    var s = Get("f " + Types.Key(ct) + " " + off, ct, false, off);
+                    s.AddValue(lt);
+                    s.General = true;
+                }
+            }
+        }
+    }
+
     /// <summary>Builds the type graph from the recorded sites and finds the cycle-capable components.</summary>
     public void Analyze()
     {
+        AddStructSites();
         // which sites have a store into an object that may be known elsewhere
         {
             var general = new Dictionary<WasmFunction, Site>();
@@ -329,14 +397,16 @@ internal sealed class Arenas
             var key = (Types.Key(target), arrays);
             if (containerLists.TryGetValue(key, out var known)) return known;
             // (an immortal object is never freed: no cycle through it can leak, and it is never an arena's member)
-            return containerLists[key] = SubtypesOf(target).Where(x => arrays ? x.t is IArrayTypeSymbol : x.t.TypeKind == TypeKind.Class && x.t is not IArrayTypeSymbol && !Types.IsImmortalType(x.t)).ToList();
+            return containerLists[key] = SubtypesOf(target).Where(x => arrays ? x.t is IArrayTypeSymbol : (x.t.TypeKind == TypeKind.Class || x.t.IsValueType) && x.t is not IArrayTypeSymbol && !Types.IsImmortalType(x.t)).ToList();
         }
         var targetLists = new Dictionary<string, List<int>>();
         List<int> TargetsOf(ITypeSymbol target)
         {
             string key = Types.Key(target);
             if (targetLists.TryGetValue(key, out var known)) return known;
-            return targetLists[key] = SubtypesOf(target).Where(x => !x.t.IsValueType && !Types.IsImmortalType(x.t)).Select(x => x.id).ToList();
+            // (a struct that holds references is an object when it is boxed: a slot of type object or of an interface
+            // can hold it)
+            return targetLists[key] = SubtypesOf(target).Where(x => (!x.t.IsValueType || Types.IsStruct(x.t) && D.Types.LayoutOf(x.t).HasRefs) && !Types.IsImmortalType(x.t)).Select(x => x.id).ToList();
         }
         var adj = new List<List<int>>();
         for (int i = 0; i < n; i++) adj.Add([]);
@@ -372,7 +442,8 @@ internal sealed class Arenas
                     // a covariant array (string[] seen as object[]) only ever holds its own element type
                     var et = ((IArrayTypeSymbol)c.t).ElementType;
                     targetSet ??= [.. targets];
-                    var held = et.IsValueType ? [] : SubtypesOf(et).Where(x => targetSet.Contains(x.id)).Select(x => x.id).ToList();
+                    // (an array of structs holds what the structs' reference slots can: the site's values)
+                    var held = et.IsValueType ? targets : SubtypesOf(et).Where(x => targetSet.Contains(x.id)).Select(x => x.id).ToList();
                     if (held.Count > 0) adj[c.id].Add(Hub(held));
                     edges += held.Count + 1;
                 }
@@ -454,6 +525,15 @@ internal sealed class Arenas
     public IEnumerable<int> CyclicFieldOffsets(ITypeSymbol t) =>
         _sites.Values.Where(s => s.Cyclic && !s.IsArray && D.Types.IsSubtype(t, s.Container)).Select(s => s.Offset).Distinct().Order();
 
+    /// <summary>Where the references are in an element of the array (offsets), and the element's size: one at 0 in
+    /// four bytes for an array of references.</summary>
+    public (List<(int off, ITypeSymbol type)> leaves, int size) ElementSlots(IArrayTypeSymbol at)
+    {
+        var et = D.Types.Canonical(at.ElementType);
+        if (Types.IsStruct(et)) return (RefLeaves(et).ToList(), D.Types.StorageOf(et).size);
+        return ([(0, et)], 4);
+    }
+
     public bool HasCyclicElements(ITypeSymbol t) =>
         t is IArrayTypeSymbol && _sites.Values.Any(s => s.Cyclic && s.IsArray && D.Types.IsSubtype(t, s.Container));
 
@@ -487,16 +567,15 @@ internal sealed class Arenas
         }
         // A store by address asks the runtime only for an address in the heap: the statics and the first thread's
         // stack lie below it, and a slot there is no object's.
-        WasmFunction? linkAt = null, unlinkAt = null, moveAt = null;
-        if (Enabled)
+        WasmFunction? linkAt = _linkAtFn, unlinkAt = _unlinkAtFn, moveAt = Enabled ? RuntimeFn("ArenaMove", 3) : null;
+        if (Enabled && linkAt == null)
         {
-            moveAt = RuntimeFn("ArenaMove", 3);
-            linkAt = D.Module.AddFunction("arena.link at", new FuncType([I, I], [I]));
+            _linkAtFn = linkAt = D.Module.AddFunction("arena.link at", new FuncType([I, I], [I]));
             var le = new Emitter(linkAt);
             le.Get(1); le.I32Addr(new LateAddr(() => D.HeapBase)); le.Op(Op.I32LtU);
             le.If(); le.Get(0); le.Op(Op.Return); le.End();
             le.Get(0); le.Get(1); le.Call(RuntimeFn("ArenaLinkAt", 2));
-            unlinkAt = D.Module.AddFunction("arena.unlink at", new FuncType([I, I], []));
+            _unlinkAtFn = unlinkAt = D.Module.AddFunction("arena.unlink at", new FuncType([I, I], []));
             var ue = new Emitter(unlinkAt);
             ue.Get(1); ue.I32Addr(new LateAddr(() => D.HeapBase)); ue.Op(Op.I32LtU);
             ue.If(); ue.Get(0); ue.Call(D.Rt.Release); ue.Op(Op.Return); ue.End();
@@ -538,7 +617,9 @@ internal sealed class Arenas
                             A(Op.Block, 0, ValType.I32);
                             A(Op.LocalGet, val);
                             A(Op.LocalGet, cont); A(Op.I32Eqz); A(Op.BrIf, 0);
-                            A(Op.LocalGet, cont); A(Op.I32Load); A(Op.I32Const, ph.kind == Kind.LinkOwned ? 1 : 0); A(ph.kind == Kind.LinkOwned ? Op.I32Eq : Op.I32GtS); A(Op.BrIf, 0);
+                            // (not an object stored into its own slot: that closes a cycle whoever knows the object)
+                            A(Op.LocalGet, cont); A(Op.I32Load); A(Op.I32Const, ph.kind == Kind.LinkOwned ? 1 : 0); A(ph.kind == Kind.LinkOwned ? Op.I32Eq : Op.I32GtS);
+                            A(Op.LocalGet, cont); A(Op.LocalGet, val); A(Op.I32Ne); A(Op.I32And); A(Op.BrIf, 0);
                             A(Op.Drop);
                             A(Op.LocalGet, val); A(Op.LocalGet, cont); A(Op.LocalGet, slot); A(Op.Call, 0, link);
                             A(Op.End);

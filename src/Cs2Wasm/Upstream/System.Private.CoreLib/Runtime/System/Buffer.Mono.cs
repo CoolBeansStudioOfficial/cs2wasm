@@ -42,6 +42,16 @@ namespace System
                     Cs2Wasm.Runtime.Rt.Free(tmp, bytes);
                     return;
                 }
+                if (!Cs2Wasm.Runtime.Rt.IsReference<T>())
+                {
+                    // structs that hold references: each element assigned (a struct's assignment stores its
+                    // references as stores by address, so they count as they would through the array), in the order
+                    // that reads every source before it is written
+                    int n = (int)elementCount;
+                    if ((uint)dst <= (uint)src) for (int i = 0; i < n; i++) Unsafe.Add(ref destination, i) = Unsafe.Add(ref source, i);
+                    else for (int i = n - 1; i >= 0; i--) Unsafe.Add(ref destination, i) = Unsafe.Add(ref source, i);
+                    return;
+                }
                 Cs2Wasm.Runtime.Rt.RetainElements<T>(src, (int)elementCount);
                 Cs2Wasm.Runtime.Rt.ReleaseElements<T>(dst, (int)elementCount);
                 SpanHelpers.Memmove(ref Unsafe.As<T, byte>(ref destination), ref Unsafe.As<T, byte>(ref source), elementCount * (nuint)sizeof(T));

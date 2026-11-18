@@ -160,6 +160,26 @@ internal sealed partial class RuntimeFns
         }
     }
 
+    /// <summary>EmitExchangeFields for a destination that may be a slot of an object a cycle can close through (a
+    /// struct that is a field of a class): each reference is stored as a store by address is (Arenas.LinkAt: the
+    /// runtime finds the object the slot is in), so it counts as the store through the object would.</summary>
+    void EmitStoreFieldsAt(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, int tmp)
+    {
+        foreach (var f in D.Types.LayoutOf(t).Fields)
+        {
+            int o = baseOff + f.Offset;
+            if (Types.IsRef(f.Type))
+            {
+                void Slot() { e.Get(dst); if (o != 0) { e.I32(o); e.Op(Op.I32Add); } }
+                if (Types.IsImmortalType(f.Type)) { Slot(); e.Get(src); e.Load(Op.I32Load, o); e.Call(StoreRef); e.Call(Release); continue; }
+                e.Get(src); e.Load(Op.I32Load, o); Slot(); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp);
+                Slot(); e.Get(tmp); e.Call(StoreRef);
+                Slot(); e.Call(D.Arenas.UnlinkAt(f.Type));
+            }
+            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitStoreFieldsAt(e, dst, src, o, f.Type, tmp);
+        }
+    }
+
     void EmitRetainFields(Emitter e, int addrLocal, ITypeSymbol t)
     {
         var l = D.Types.LayoutOf(t);
@@ -249,7 +269,7 @@ internal sealed partial class RuntimeFns
                 e.Get(1); e.I32(0); e.I32(size); e.Op(Op.MemoryFill);
                 return;
             }
-            if (shared) EmitExchangeFields(e, 0, 1, 0, t);
+            if (shared) EmitStoreFieldsAt(e, 0, 1, 0, t, e.AddLocal(I));
             else { e.Get(0); e.Call(ReleaseStruct(t)); }
             e.Get(0); e.Get(1); e.I32(size); e.Op(Op.MemoryCopy);
             e.Get(1); e.I32(0); e.I32(size); e.Op(Op.MemoryFill);
@@ -266,7 +286,7 @@ internal sealed partial class RuntimeFns
         {
             if (D.ThreadMode && D.Types.LayoutOf(t).HasRefs) { EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared, move: false, e.AddLocal(I)); return; }
             e.Get(1); e.Call(RetainStruct(t));
-            if (shared) EmitExchangeFields(e, 0, 1, 0, t);
+            if (shared) EmitStoreFieldsAt(e, 0, 1, 0, t, e.AddLocal(I));
             else { e.Get(0); e.Call(ReleaseStruct(t)); }
             e.Get(0); e.Get(1); e.I32(D.Types.StorageOf(t).size); e.Op(Op.MemoryCopy);
             if (D.Types.LayoutOf(t).HasRefs) NoteStructCopy(e.Fn, t);
@@ -797,6 +817,8 @@ sealed partial class RuntimeGen
         var visitFns = new Dictionary<int, WasmFunction>();
         var finFns = new Dictionary<int, WasmFunction>();
         var slotFns = new Dictionary<int, WasmFunction>();
+        var copyElemFns = new Dictionary<int, WasmFunction>();
+        var clearElemFns = new Dictionary<int, WasmFunction>();
         var visit = ar.RuntimeFn("ArenaVisit", 1);
         foreach (var id in ar.CycleTypes)
         {
@@ -821,13 +843,15 @@ sealed partial class RuntimeGen
             {
                 if (ar.HasCyclicElements(t))
                 {
+                    // (each element's references: one for an array of references, a struct's wherever they are in it)
+                    var (leaves, esize) = ar.ElementSlots((IArrayTypeSymbol)t);
                     int i = ve.AddLocal(ValType.I32), end = ve.AddLocal(ValType.I32);
                     ve.Get(0); ve.I32(Types.ArrayDataOffset(((IArrayTypeSymbol)t).Rank)); ve.Op(Op.I32Add); ve.Set(i);
-                    ve.Get(i); ve.Get(0); ve.Load(Op.I32Load, 12); ve.I32(2); ve.Op(Op.I32Shl); ve.Op(Op.I32Add); ve.Set(end);
+                    ve.Get(i); ve.Get(0); ve.Load(Op.I32Load, 12); ve.I32(esize); ve.Op(Op.I32Mul); ve.Op(Op.I32Add); ve.Set(end);
                     var exit = ve.Block(); var top = ve.Loop();
                     ve.Get(i); ve.Get(end); ve.Op(Op.I32GeU); ve.BrIf(exit);
-                    ve.Get(i); ve.Call(ar.RuntimeFn("ArenaVisitElement", 1));
-                    ve.Get(i); ve.I32(4); ve.Op(Op.I32Add); ve.Set(i);
+                    foreach (var (off, _) in leaves) { ve.Get(i); if (off != 0) { ve.I32(off); ve.Op(Op.I32Add); } ve.Call(ar.RuntimeFn("ArenaVisitElement", 1)); }
+                    ve.Get(i); ve.I32(esize); ve.Op(Op.I32Add); ve.Set(i);
                     ve.Br(top);
                     ve.End(); ve.End();
                 }
@@ -840,8 +864,81 @@ sealed partial class RuntimeGen
             var se = new Emitter(sl);
             if (t is IArrayTypeSymbol sat)
             {
-                if (ar.HasCyclicElements(t)) { se.Get(1); se.I32(Types.ArrayDataOffset(sat.Rank)); se.Op(Op.I32GeU); }
+                if (ar.HasCyclicElements(t))
+                {
+                    var (leaves, esize) = ar.ElementSlots(sat);
+                    int data = Types.ArrayDataOffset(sat.Rank);
+                    se.Get(1); se.I32(data); se.Op(Op.I32GeU);
+                    if (esize != 4 || leaves.Count != 1 || leaves[0].off != 0)
+                    {
+                        // (the offset within its element is one of the struct's reference slots)
+                        int r = se.AddLocal(ValType.I32);
+                        se.Get(1); se.I32(data); se.Op(Op.I32Sub); se.I32(esize); se.Op(Op.I32RemU); se.Set(r);
+                        for (int k = 0; k < leaves.Count; k++) { se.Get(r); se.I32(leaves[k].off); se.Op(Op.I32Eq); if (k > 0) se.Op(Op.I32Or); }
+                        if (leaves.Count == 0) se.I32(0);
+                        se.Op(Op.I32And);
+                    }
+                }
                 else se.I32(0);
+                // Array.Copy and Array.Clear do not know the element's type: for an array of structs they come here,
+                // element by element, each a struct's assignment (which stores its references as stores by address)
+                if (ar.HasCyclicElements(t) && Types.IsStruct(D.Types.Canonical(sat.ElementType)))
+                {
+                    var et = D.Types.Canonical(sat.ElementType);
+                    var (leaves, esize) = ar.ElementSlots(sat);
+                    int data = Types.ArrayDataOffset(sat.Rank);
+                    var cp = D.Module.AddFunction("arena.copy_elems " + id, new FuncType([ValType.I32, ValType.I32, ValType.I32, ValType.I32, ValType.I32], []));
+                    {
+                        var ce = new Emitter(cp);
+                        int s = ce.AddLocal(ValType.I32), d = ce.AddLocal(ValType.I32), k = ce.AddLocal(ValType.I32);
+                        ce.Get(0); ce.I32(data); ce.Op(Op.I32Add); ce.Get(1); ce.I32(esize); ce.Op(Op.I32Mul); ce.Op(Op.I32Add); ce.Set(s);
+                        ce.Get(2); ce.I32(data); ce.Op(Op.I32Add); ce.Get(3); ce.I32(esize); ce.Op(Op.I32Mul); ce.Op(Op.I32Add); ce.Set(d);
+                        void One() { ce.Get(d); ce.Get(k); ce.I32(esize); ce.Op(Op.I32Mul); ce.Op(Op.I32Add); ce.Get(s); ce.Get(k); ce.I32(esize); ce.Op(Op.I32Mul); ce.Op(Op.I32Add); ce.Call(rt.CopyAssign(et, true)); }
+                        ce.Get(d); ce.Get(s); ce.Op(Op.I32LeU);
+                        ce.If();
+                        {
+                            ce.I32(0); ce.Set(k);
+                            var ex = ce.Block(); var tp = ce.Loop();
+                            ce.Get(k); ce.Get(4); ce.Op(Op.I32GeS); ce.BrIf(ex);
+                            One();
+                            ce.Get(k); ce.I32(1); ce.Op(Op.I32Add); ce.Set(k);
+                            ce.Br(tp); ce.End(); ce.End();
+                        }
+                        ce.Else();
+                        {
+                            ce.Get(4); ce.Set(k);
+                            var ex = ce.Block(); var tp = ce.Loop();
+                            ce.Get(k); ce.I32(0); ce.Op(Op.I32LeS); ce.BrIf(ex);
+                            ce.Get(k); ce.I32(1); ce.Op(Op.I32Sub); ce.Set(k);
+                            One();
+                            ce.Br(tp); ce.End(); ce.End();
+                        }
+                        ce.End();
+                    }
+                    copyElemFns[id] = cp;
+                    var cl = D.Module.AddFunction("arena.clear_elems " + id, new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
+                    {
+                        var ce = new Emitter(cl);
+                        int p = ce.AddLocal(ValType.I32), end = ce.AddLocal(ValType.I32);
+                        ce.Get(0); ce.I32(data); ce.Op(Op.I32Add); ce.Get(1); ce.I32(esize); ce.Op(Op.I32Mul); ce.Op(Op.I32Add); ce.Set(p);
+                        ce.Get(p); ce.Get(2); ce.I32(esize); ce.Op(Op.I32Mul); ce.Op(Op.I32Add); ce.Set(end);
+                        var ex = ce.Block(); var tp = ce.Loop();
+                        ce.Get(p); ce.Get(end); ce.Op(Op.I32GeU); ce.BrIf(ex);
+                        foreach (var (off, lt) in leaves)
+                        {
+                            void Slot() { ce.Get(p); if (off != 0) { ce.I32(off); ce.Op(Op.I32Add); } }
+                            ce.I32(0); Slot(); ce.Call(ar.LinkAt(lt)); ce.Op(Op.Drop);
+                            Slot(); ce.I32(0); ce.Call(rt.StoreRef);
+                            Slot(); ce.Call(ar.UnlinkAt(lt));
+                        }
+                        // (what else it holds: strings and the like are released, the rest is cleared)
+                        ce.Get(p); ce.Call(rt.ReleaseStruct(et));
+                        ce.Get(p); ce.I32(0); ce.I32(esize); ce.Op(Op.MemoryFill);
+                        ce.Get(p); ce.I32(esize); ce.Op(Op.I32Add); ce.Set(p);
+                        ce.Br(tp); ce.End(); ce.End();
+                    }
+                    clearElemFns[id] = cl;
+                }
             }
             else
             {
@@ -850,6 +947,45 @@ sealed partial class RuntimeGen
                 for (int k = 0; k < offs.Count; k++) { se.Get(1); se.I32(offs[k]); se.Op(Op.I32Eq); if (k > 0) se.Op(Op.I32Or); }
             }
             slotFns[id] = sl;
+        }
+        if (copyElemFns.Count > 0)
+        {
+            var copyAll = D.Module.AddFunction("rt.arena_copy_elems", new FuncType([ValType.I32, ValType.I32, ValType.I32, ValType.I32, ValType.I32], []));
+            var clearAll = D.Module.AddFunction("rt.arena_clear_elems", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
+            if (rt.ArrayCopyIfMade is { } copy2)
+            {
+                var pre = new Emitter(new WasmFunction("tmp", copy2.Type));
+                pre.Get(5); pre.I32(4); pre.Op(Op.I32Ne);
+                pre.Get(2); pre.Load(Op.I32Load, 4); pre.Call(rt.SccOfFn); pre.I32(0); pre.Op(Op.I32Ne); pre.Op(Op.I32And);
+                pre.If();
+                for (int i = 0; i < 5; i++) pre.Get(i);
+                pre.Call(copyAll); pre.Op(Op.Return);
+                pre.End();
+                copy2.Body.InsertRange(0, pre.Body);
+            }
+            if (rt.ArrayClearIfMade is { } clr2)
+            {
+                var pre = new Emitter(new WasmFunction("tmp", clr2.Type));
+                pre.Get(3); pre.I32(4); pre.Op(Op.I32Ne);
+                pre.Get(0); pre.Load(Op.I32Load, 4); pre.Call(rt.SccOfFn); pre.I32(0); pre.Op(Op.I32Ne); pre.Op(Op.I32And);
+                pre.If();
+                for (int i = 0; i < 3; i++) pre.Get(i);
+                pre.Call(clearAll); pre.Op(Op.Return);
+                pre.End();
+                clr2.Body.InsertRange(0, pre.Body);
+            }
+            _emitElems = () =>
+            {
+                // (by the type of the array written to: the third argument of a copy, the first of a clear)
+                var e = new Emitter(copyAll);
+                int tid = e.AddLocal(ValType.I32);
+                e.Get(2); e.Load(Op.I32Load, 4); e.Set(tid);
+                rt.IdSwitch(e, tid, copyElemFns.Select(x => { var f = x.Value; return (x.Key, (object?)WasmModule.BodyKey(f), (Action)(() => { for (int i = 0; i < 5; i++) e.Get(i); e.Call(f); e.Op(Op.Return); })); }).ToList());
+                var e2 = new Emitter(clearAll);
+                int tid2 = e2.AddLocal(ValType.I32);
+                e2.Get(0); e2.Load(Op.I32Load, 4); e2.Set(tid2);
+                rt.IdSwitch(e2, tid2, clearElemFns.Select(x => { var f = x.Value; return (x.Key, (object?)WasmModule.BodyKey(f), (Action)(() => { for (int i = 0; i < 3; i++) e2.Get(i); e2.Call(f); e2.Op(Op.Return); })); }).ToList());
+            };
         }
         void Dispatch(WasmFunction? fn, Dictionary<int, WasmFunction> per)
         {
@@ -867,6 +1003,7 @@ sealed partial class RuntimeGen
             Dispatch(rt.ArenaFreeFnIfMade, freeFns);
             Dispatch(rt.ArenaVisitFnIfMade, visitFns);
             Dispatch(rt.ArenaFinFnIfMade, finFns);
+            _emitElems?.Invoke();
             if (rt.ArenaIsSlotFnIfMade is { } isSlot)
             {
                 var e = new Emitter(isSlot);
@@ -1012,7 +1149,7 @@ sealed partial class RuntimeGen
         foreach (var id in _destroyFns.Keys.ToList()) if (!types.Contains(id)) _destroyFns.Remove(id);
     }
 
-    Action? _emitScc;
+    Action? _emitScc, _emitElems;
 
     /// <summary>CS2WASM_COUNT_RC=1 (measurement, section 4.1): retain and release count the operations that do
     /// something (a live, mortal object) into two 64-bit counters, which the export cs2wasm_rc_counts gives the address
@@ -1079,6 +1216,8 @@ sealed partial class RuntimeGen
     {
         CloseTypeInfo();
         if (D.Arenas.Enabled) EmitArenaSupport();
+        // (what was generated just now stores by address too: its placeholders)
+        D.Arenas.Resolve();
         EmitFrameObjects();
         EmitOnDestroy();
         D.Rt.EmitCctorSupport(D.UsesThreads);
