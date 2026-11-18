@@ -744,7 +744,36 @@ namespace Cs2Wasm.Runtime
         }
 
         /// <summary>Frees an object's memory (its destruction: the compiler's destroy functions).</summary>
-        public static void FreeObject(int addr, int size) => FreeBlock(addr, size, KindPlain);
+        public static void FreeObject(int addr, int size)
+        {
+            // The usual case in one small piece (an engine puts a small function into its callers, a large one it
+            // calls): the block is kept aside for the next allocation of its size; the one that was there goes on.
+            if (SingleThreaded() && !ShareCheck())
+            {
+                int s = (size + 7) & ~7;
+                if ((uint)s <= MaxSmall)
+                {
+                    if (s < 16) s = 16;
+                    int hotSlot = s_hot + (s >> 3) * 4;
+                    int old = Mem.LoadI32(hotSlot);
+                    Mem.StoreI32(hotSlot, addr);
+                    Mem.StoreI32(addr, 0);
+                    if (old != 0) FreeSmallOld(old, s);
+                    return;
+                }
+            }
+            FreeBlock(addr, size, KindPlain);
+        }
+
+        /// <summary>The block that was kept aside for its size (FreeObject, FreeCore) when another takes its place.</summary>
+        static void FreeSmallOld(int addr, int size)
+        {
+            if (IsPage(addr)) { PageFree(addr); return; }
+            int slot = Lists(KindPlain) + (size >> 3) * 4;
+            Mem.StoreI32(addr, 0);
+            Mem.StoreI32(addr + 8, Mem.LoadI32(slot));
+            Mem.StoreI32(slot, addr);
+        }
 
         static void FreeBlock(int addr, int size, int kind)
         {
@@ -806,6 +835,31 @@ namespace Cs2Wasm.Runtime
         }
 
         public static int AllocObject(int size, int typeId)
+        {
+            // The usual case in one small piece, without a call (an engine puts a small function into its callers, a
+            // large one it calls): the block last freed of the size is taken, cleared and given its header. (An
+            // object's identity hash is made when it is first asked for: HashOf.)
+            if (SingleThreaded())
+            {
+                int s = (size + 7) & ~7, hot = s_hot;
+                if ((uint)s <= MaxSmall && hot != 0)
+                {
+                    int hotSlot = hot + (s >> 3) * 4;
+                    int head = Mem.LoadI32(hotSlot);
+                    if (head != 0)
+                    {
+                        Mem.StoreI32(hotSlot, 0);
+                        Mem.StoreI32(head, 1);
+                        Mem.StoreI32(head + 4, typeId);
+                        for (int p = head + 8, e = head + s; p != e; p += 8) Mem.StoreI64(p, 0);
+                        return head;
+                    }
+                }
+            }
+            return AllocObjectSlow(size, typeId);
+        }
+
+        static int AllocObjectSlow(int size, int typeId)
         {
             // The usual case in one piece, without a call: a freed block of the size is taken off its list, cleared
             // and given its header. (An object's identity hash is made when it is first asked for: HashOf.)

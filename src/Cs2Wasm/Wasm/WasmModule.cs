@@ -139,6 +139,8 @@ internal sealed class WasmModule
     static readonly bool s_noLoops = Environment.GetEnvironmentVariable("CS2WASM_NO_LOOPS") == "1";
     static readonly bool s_noMerge = Environment.GetEnvironmentVariable("CS2WASM_NO_MERGE") == "1";
 
+    static readonly bool s_noInitChecks = Environment.GetEnvironmentVariable("CS2WASM_NO_INIT_CHECKS") == "1";
+
     public Encoded Encode(bool optimize)
     {
         foreach (var f in Functions) ResolveForwards(f);
@@ -151,7 +153,8 @@ internal sealed class WasmModule
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
             Inliner.Run(Functions, ComputeMayThrow());
-            foreach (var f in Functions) if (!f.IsImport) Peephole.Run(f);
+            foreach (var f in Functions) if (!f.IsImport) { ConstBranches.Run(f); Peephole.Run(f); }
+            if (!s_noInitChecks) foreach (var f in Functions) if (!f.IsImport) InitChecks.Run(f);
             if (Functions.FirstOrDefault(f => f.Name == "rt.nonnull") is { } nonNull && Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_CHECKS") != "1")
                 foreach (var f in Functions) if (!f.IsImport) NullChecks.Run(f, nonNull);
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_LOCALS") != "1")
@@ -199,6 +202,8 @@ internal sealed class WasmModule
                     }
                     finally { Locals.MayThrow = null; }
                 }
+                // (the checks of a type's initialization that the inlined bodies brought next to the caller's own)
+                if (!s_noInitChecks) foreach (var f in Functions) if (!f.IsImport) { if (again.Contains(f)) ConstBranches.Run(f); if (InitChecks.Run(f)) Peephole.Run(f); }
                 // the copies and fills of constant size that are left become loads and stores
                 if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
                 {
