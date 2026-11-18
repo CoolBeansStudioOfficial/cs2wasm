@@ -2,7 +2,10 @@
 // where a benchmark of tools/bench.mjs loses, this says which operation. Each is its own function, called 25
 // times, the best time taken (an engine never replaces a loop that is running: a phase measured inside one
 // long function is measured in the baseline tier).
-//   node tools/micro.mjs [--rebuild-aot] [filter]
+//   node tools/micro.mjs [--rebuild-aot] [--baseline] [filter]
+// --baseline: both sides run in the engine's baseline tier only (V8: --liftoff-only), which executes the module as it
+// is written: what a short run over a great many functions gets (a compiler compiling: the self-hosted cs2wasm stays
+// in that tier, and is as much slower than NativeAOT's build as this says).
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, statSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -37,8 +40,9 @@ const best = (a, b) => { for (const k in b) a[k] = Math.min(a[k] ?? Infinity, b[
 const aot = {}, mod = {};
 let checks = [];
 for (let i = 0; i < 2; i++) {
-  const a = spawnSync(process.execPath, [aotJs], { encoding: 'utf8', cwd: aotDir });
-  const w = spawnSync(process.execPath, [join(root, 'host', 'run.mjs'), wasm, 'main'], { encoding: 'utf8' });
+  const tier = args.includes('--baseline') ? ['--liftoff-only'] : [];
+  const a = spawnSync(process.execPath, [...tier, aotJs], { encoding: 'utf8', cwd: aotDir });
+  const w = spawnSync(process.execPath, [...tier, join(root, 'host', 'run.mjs'), wasm, 'main'], { encoding: 'utf8' });
   if (a.status !== 0 || w.status !== 0) { console.error(a.stderr, w.stdout, w.stderr); throw new Error('a run failed'); }
   best(aot, parse(a.stdout)); best(mod, parse(w.stdout));
   checks = [/check (-?\d+)/.exec(a.stdout)?.[1], /check (-?\d+)/.exec(w.stdout)?.[1]];

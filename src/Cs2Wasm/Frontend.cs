@@ -43,7 +43,7 @@ public static class Frontend
         var opts = preprocessorSymbols == null ? ParseOptions : ParseOptions.WithPreprocessorSymbols(preprocessorSymbols);
         var trees = sources.Select(s => CSharpSyntaxTree.ParseText(Microsoft.CodeAnalysis.Text.SourceText.From(s.text, System.Text.Encoding.UTF8), opts, path: s.path)).ToList();
         return CSharpCompilation.Create(assemblyName, trees, DefaultReferences().Concat(extraReferences ?? []),
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, deterministic: true,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, deterministic: true, concurrentBuild: Environment.ProcessorCount > 1,
                 nullableContextOptions: NullableContextOptions.Enable));
     }
 
@@ -53,8 +53,9 @@ public static class Frontend
     public static CSharpCompilation RunGenerators(CSharpCompilation compilation, IEnumerable<string> analyzerPaths,
         IReadOnlyDictionary<string, string> buildProperties, out IReadOnlyList<Diagnostic> diagnostics)
     {
-        var generators = analyzerPaths.SelectMany(p => new Microsoft.CodeAnalysis.Diagnostics.AnalyzerFileReference(Path.GetFullPath(p), s_loader)
-            .GetGenerators(LanguageNames.CSharp)).ToList();
+        // (an assembly whose generators are compiled into this toolchain is not loaded: KnownGenerators)
+        var generators = analyzerPaths.SelectMany(p => KnownGenerators.TryGetValue(Path.GetFileNameWithoutExtension(p), out var known) ? known()
+            : new Microsoft.CodeAnalysis.Diagnostics.AnalyzerFileReference(Path.GetFullPath(p), s_loader).GetGenerators(LanguageNames.CSharp)).ToList();
         var driver = CSharpGeneratorDriver.Create(generators, parseOptions: (CSharpParseOptions?)compilation.SyntaxTrees.FirstOrDefault()?.Options,
             optionsProvider: new BuildProperties(buildProperties));
         driver = (CSharpGeneratorDriver)driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diags);
@@ -70,6 +71,11 @@ public static class Frontend
                 }
         return (CSharpCompilation)output;
     }
+
+    /// <summary>The source generators compiled into this toolchain (SPEC section 7.1), by the name of the assembly
+    /// they come in ("Godot.SourceGenerators"): a toolchain that cannot load assemblies (the self-hosted compiler)
+    /// runs these when given `-a` with that assembly. tools/selfhost.mjs --generators fills it.</summary>
+    public static readonly Dictionary<string, Func<IEnumerable<ISourceGenerator>>> KnownGenerators = new(StringComparer.OrdinalIgnoreCase);
 
     static readonly AnalyzerLoader s_loader = new();
 

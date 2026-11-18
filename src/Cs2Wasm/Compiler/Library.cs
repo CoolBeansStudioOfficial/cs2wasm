@@ -21,7 +21,7 @@ internal sealed class Library
     readonly HashSet<SyntaxTree> _trees = [];
 
 
-    static readonly CSharpCompilationOptions s_options = new(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true,
+    static readonly CSharpCompilationOptions s_options = new(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, concurrentBuild: Environment.ProcessorCount > 1,
         nullableContextOptions: NullableContextOptions.Disable,
         specificDiagnosticOptions: new Dictionary<string, ReportDiagnostic>
         {
@@ -207,7 +207,10 @@ internal sealed class Library
             // edit<TAB>file<TAB>text<TAB>replacement: an exact change to one upstream file (each must still apply)
             var edits = lines.Where(l => l.StartsWith("edit\t")).Select(l => l.Split('\t')).Where(p => p.Length >= 4)
                 .GroupBy(p => p[1]).ToDictionary(g => g.Key, g => g.Select(p => (p[2], p[3])).ToList());
-            var trees = files.AsParallel().AsOrdered().Select(f =>
+            // (on one processor the files are parsed one after the other, in the same order: nothing to hand the
+            // work to, and an engine with a single thread cannot wait for a task)
+            bool many = Environment.ProcessorCount > 1;
+            Func<string, SyntaxTree> parse = f =>
             {
                 var path = Path.Combine(root, f);
                 if (!File.Exists(path)) throw new CompileException($"library source missing: {path}");
@@ -219,9 +222,11 @@ internal sealed class Library
                         text = text.Replace(from, to);
                     }
                 return CSharpSyntaxTree.ParseText(text, po, path: UpstreamSources.DisplayPrefix(root) + f);
-            }).ToList();
-            trees.AddRange(own.Where(r => r.Name.StartsWith(prefix) && r.Name.EndsWith(".cs"))
-                .AsParallel().AsOrdered().Select(r => CSharpSyntaxTree.ParseText(r.Text, po, path: "cs2wasm/" + r.Name)));
+            };
+            var trees = (many ? files.AsParallel().AsOrdered().Select(parse) : files.Select(parse)).ToList();
+            var ownFiles = own.Where(r => r.Name.StartsWith(prefix) && r.Name.EndsWith(".cs"));
+            trees.AddRange(many ? ownFiles.AsParallel().AsOrdered().Select(r => CSharpSyntaxTree.ParseText(r.Text, po, path: "cs2wasm/" + r.Name))
+                                : ownFiles.Select(r => CSharpSyntaxTree.ParseText(r.Text, po, path: "cs2wasm/" + r.Name)));
             return CSharpCompilation.Create(lib, trees, built.Select(b => (MetadataReference)b.ToMetadataReference()),
                 nullable ? s_options.WithNullableContextOptions(NullableContextOptions.Enable) : s_options);
         }
