@@ -106,6 +106,9 @@ internal struct Instr
     /// <summary>CS2WASM_COUNT_RC: reference values the source pushes just before this instruction (the baseline a scheme
     /// without ownership analysis would count up and down).</summary>
     public ushort Probes;
+    /// <summary>The inlined call this instruction came with (an index into WasmModule.InlineScopes; 0: none, the
+    /// function's own code): a stack trace taken at it shows the frames of the methods that were inlined here.</summary>
+    public int Inl;
 
     public override readonly string ToString() => $"{Op} {Imm} {Imm2} {Ref}";
 }
@@ -152,6 +155,9 @@ internal sealed class WasmFunction
     /// <summary>The method is marked AggressiveInlining: .NET folds it into its callers (and its frame is in no stack
     /// trace there either), so it may be inlined although an exception can come out of it.</summary>
     public bool InlineHint;
+    /// <summary>Marked MethodImplOptions.NoInlining: the slow part a method keeps out of itself so that the method
+    /// stays small (List.AddWithResize). It stays a call, also into its only caller.</summary>
+    public bool NoInline;
     public WasmFunction(string name, FuncType type) { Name = name; Type = type; }
     public override string ToString() => Name;
 }

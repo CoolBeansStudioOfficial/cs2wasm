@@ -47,9 +47,7 @@ export function webImports(module, getMemory, out, options = {}) {
     for (const line of stack.split('\n')) {
       const m = /wasm-function\[(\d+)\]:0x([0-9a-f]+)/.exec(line);
       if (!m) continue;
-      const name = info().frames[+m[1]];
-      if (!name) continue;
-      result.push({ name, loc: info().lineAt(parseInt(m[2], 16)) });
+      result.push(...info().framesAt(+m[1], parseInt(m[2], 16)));
     }
     return result;
   };

@@ -100,13 +100,37 @@ export function debugInfo(module) {
     while (lo <= hi) { const m = (lo + hi) >> 1; if (lines[m][0] <= offset) { best = m; lo = m + 1; } else hi = m - 1; }
     return best < 0 || files[lines[best][1]] === undefined ? null : { file: files[lines[best][1]], line: lines[best][2] };
   };
-  return { frames, lineAt, names };
+  // inlined calls: the scopes (parent, name, where the call is), and the scope of each call or throw in inlined code
+  const scopes = [], inlineOf = new Map();
+  for (const sec of WebAssembly.Module.customSections(module, 'cs2wasm.inline')) {
+    const b = unpackSection(new Uint8Array(sec)), p = { i: 0 };
+    const inNames = [], inFiles = [];
+    for (let k = readU32(b, p); k > 0; k--) inNames.push(readName(b, p));
+    for (let k = readU32(b, p); k > 0; k--) inFiles.push(readName(b, p));
+    for (let k = readU32(b, p); k > 0; k--) {
+      const parent = readU32(b, p) - 1, name = inNames[readU32(b, p)], file = readU32(b, p) - 1, line = readU32(b, p);
+      scopes.push({ parent, name, call: file < 0 ? null : { file: inFiles[file], line } });
+    }
+    let off = 0;
+    for (let k = readU32(b, p); k > 0; k--) { off += readU32(b, p); inlineOf.set(off, readU32(b, p) - 1); }
+  }
+  // The frames a stack trace shows for one frame of the engine's (a function and a code offset in it), innermost
+  // first: the methods inlined at that offset, each where the code or its inlined call is, then the function itself
+  // (if it is a .NET frame) at the outermost inlined call, or at the offset when nothing is inlined there.
+  const framesAt = (index, offset) => {
+    const out = [];
+    let loc = lineAt(offset);
+    for (let s = inlineOf.get(offset) ?? -1; s >= 0; s = scopes[s].parent) { out.push({ name: scopes[s].name, loc }); loc = scopes[s].call; }
+    if (frames[index]) out.push({ name: frames[index], loc });
+    return out;
+  };
+  return { frames, lineAt, names, framesAt };
 }
 
 export function cs2wasmImports(module, getMemory, out) {
   // (the frame names and lines, read when a stack trace is first wanted: every thread's instance would pay for them)
   let infoCache = null;
-  const info = { get frames() { return (infoCache ??= debugInfo(module)).frames; }, lineAt: (o) => (infoCache ??= debugInfo(module)).lineAt(o) };
+  const info = { get frames() { return (infoCache ??= debugInfo(module)).frames; }, lineAt: (o) => (infoCache ??= debugInfo(module)).lineAt(o), framesAt: (i, o) => (infoCache ??= debugInfo(module)).framesAt(i, o) };
   // (an address comes as a signed 32-bit number: above 2 GB it is negative, hence `>>> 0` wherever one is used)
   const str = (ptr, len) => {
     const u16 = new Uint16Array(getMemory().buffer, ptr >>> 0, len);
@@ -123,9 +147,7 @@ export function cs2wasmImports(module, getMemory, out) {
     for (const line of stack.split('\n')) {
       const m = /wasm-function\[(\d+)\]:0x([0-9a-f]+)/.exec(line);
       if (!m) continue;
-      const name = info.frames[+m[1]];
-      if (!name) continue;
-      result.push({ name, loc: info.lineAt(parseInt(m[2], 16)) });
+      result.push(...info.framesAt(+m[1], parseInt(m[2], 16)));
     }
     return result;
   };

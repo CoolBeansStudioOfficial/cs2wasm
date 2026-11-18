@@ -559,6 +559,7 @@ internal sealed partial class Driver
         fn.FrameName = IsHiddenFrame(m) ? null : FrameName(m);
         fn.ProgramCode = !IsLibrary(m);
         fn.InlineHint = impl == MethodImpl.Body && IsInlineHint(m.OriginalDefinition);
+        fn.NoInline = impl == MethodImpl.Body && IsNoInline(m.OriginalDefinition);
         _methods[key] = mi;
         bool returnsThis = impl == MethodImpl.Body && ReturnsThis(m);
         if (returnsThis || impl == MethodImpl.Body && !ThreadMode && ReturnsField(m))

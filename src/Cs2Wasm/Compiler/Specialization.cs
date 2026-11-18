@@ -101,6 +101,10 @@ internal sealed partial class Driver
         return kept;
     }
 
+    /// <summary>MethodImplOptions.NoInlining (8).</summary>
+    static bool IsNoInline(IMethodSymbol def) => def.GetAttributes().Any(a => a.AttributeClass?.Name == "MethodImplAttribute" && a.ConstructorArguments.Length > 0
+        && a.ConstructorArguments[0].Value is { } v && (Convert.ToInt32(v) & 8) != 0);
+
     static bool IsInlineHint(IMethodSymbol def) => def.GetAttributes().Any(a => a.AttributeClass?.Name == "MethodImplAttribute" && a.ConstructorArguments.Length > 0
         && a.ConstructorArguments[0].Value is int flags && (flags & 0x100) != 0);
 

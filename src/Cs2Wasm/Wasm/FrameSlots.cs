@@ -64,7 +64,7 @@ static partial class Locals
                 var nb = new List<Instr>(b.Count + 64);
                 for (int i = 0; i < b.Count; i++)
                 {
-                    if (sites.Contains(i)) Inliner.Expand(f, (WasmFunction)b[i].Ref!, nb, b[i].Pos);
+                    if (sites.Contains(i)) Inliner.Expand(f, (WasmFunction)b[i].Ref!, nb, b[i].Pos, b[i].Inl);
                     else nb.Add(b[i]);
                 }
                 f.Body = nb;

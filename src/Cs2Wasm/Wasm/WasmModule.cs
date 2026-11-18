@@ -99,6 +99,9 @@ internal sealed class WasmModule
     {
         public byte[] Bytes = [];
         public List<LineEntry> Lines = [];
+        /// <summary>Where an instruction that can be a frame's position in a trace (a call, a throw) lies in inlined
+        /// code: its absolute byte offset in the module, and its inline scope.</summary>
+        public List<(int Offset, int Scope)> Inlines = [];
         public List<WasmFunction> FunctionOrder = [];
     }
 
@@ -139,6 +142,18 @@ internal sealed class WasmModule
     static readonly bool s_noLoops = Environment.GetEnvironmentVariable("CS2WASM_NO_LOOPS") == "1";
     static readonly bool s_noMerge = Environment.GetEnvironmentVariable("CS2WASM_NO_MERGE") == "1";
 
+    /// <summary>The calls the compiler inlined whose method is a frame of a stack trace (Inliner): the scope the call
+    /// was in (0: the function's own code), the method, and the call's source position. An instruction's Inl names
+    /// the innermost; the engine rebuilds the frames from the table Encode makes of them (cs2wasm.inline).</summary>
+    public readonly List<(int parent, WasmFunction fn, int pos)> InlineScopes = [default];
+    readonly Dictionary<(int, WasmFunction, int), int> _inlineScopeIds = [];
+    public int InlineScope(int parent, WasmFunction fn, int pos)
+    {
+        if (_inlineScopeIds.TryGetValue((parent, fn, pos), out int id)) return id;
+        InlineScopes.Add((parent, fn, pos));
+        return _inlineScopeIds[(parent, fn, pos)] = InlineScopes.Count - 1;
+    }
+
     static readonly bool s_noInitChecks = Environment.GetEnvironmentVariable("CS2WASM_NO_INIT_CHECKS") == "1";
 
     public Encoded Encode(bool optimize)
@@ -152,6 +167,7 @@ internal sealed class WasmModule
             // (identical bodies first: a merged function's call sites count as its callers)
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
+            Inliner.Module = this;
             Inliner.Run(Functions, ComputeMayThrow());
             foreach (var f in Functions) if (!f.IsImport) { ConstBranches.Run(f); Peephole.Run(f); }
             if (!s_noInitChecks) foreach (var f in Functions) if (!f.IsImport) InitChecks.Run(f);
@@ -356,6 +372,7 @@ internal sealed class WasmModule
         if (Environment.GetEnvironmentVariable("CS2WASM_INDEX") is { Length: > 0 } wantIdx) foreach (var x in wantIdx.Split(",")) if (int.TryParse(x, out int ix) && ix < result.FunctionOrder.Count) Console.Error.WriteLine($"function {ix}: {result.FunctionOrder.First(f => f.Index == ix || result.FunctionOrder.IndexOf(f) == ix).Name}");
         var code = new Writer();
         var relLines = new List<LineEntry>();
+        var relInlines = new List<(int, int)>();
         code.U32(defined.Count);
         foreach (var f in defined)
         {
@@ -365,10 +382,12 @@ internal sealed class WasmModule
                 if (runs.Count > 0 && runs[^1].t == l) runs[^1] = (runs[^1].n + 1, l); else runs.Add((1, l));
             body.U32(runs.Count); foreach (var (n, t) in runs) { body.U32(n); body.Byte((byte)t); }
             var bodyLines = new List<(int off, int pos)>();
+            List<(int off, int scope)>? bodyInlines = null;
             int lastPos = -1;
             foreach (var ins in f.Body)
             {
                 if (ins.Pos >= 0 && ins.Pos != lastPos) { bodyLines.Add((body.Length, ins.Pos)); lastPos = ins.Pos; }
+                if (ins.Inl != 0 && ins.Op is Op.Call or Op.CallIndirect or Op.Throw or Op.ThrowRef) (bodyInlines ??= []).Add((body.Length, ins.Inl));
                 try { EncodeInstr(body, ins, TypeOf); } catch (Exception ex) when (ex.Message.StartsWith("internal: type")) { throw new Exception(ex.Message + " (in " + f.Name + WhyLive(f) + ")"); }
             }
             body.Byte(0x0B);
@@ -377,6 +396,7 @@ internal sealed class WasmModule
             code.U32(body.Length);
             int start = code.Length;
             foreach (var (off, pos) in bodyLines) relLines.Add(new LineEntry(start + off, pos));
+            if (bodyInlines != null) foreach (var (off, scope) in bodyInlines) relInlines.Add((start + off, scope));
             code.Bytes(body.ToArray());
         }
         if (s_sizes != null)
@@ -388,6 +408,7 @@ internal sealed class WasmModule
         int codeStart = w.Length;
         w.Bytes(code.ToArray());
         foreach (var l in relLines) result.Lines.Add(new LineEntry(codeStart + l.Offset, l.Pos));
+        foreach (var (off, scope) in relInlines) result.Inlines.Add((codeStart + off, scope));
 
         if (Data.Count > 0)
             Section(w, 11, s =>
@@ -578,6 +599,8 @@ internal sealed class WasmModule
         foreach (var ins in f.Body)
         {
             sb.Append(';').Append((int)ins.Op).Append(',').Append(ins.Imm).Append(',').Append(ins.Imm2);
+            // (two bodies that differ in what was inlined where show different frames in a trace)
+            if (ins.Inl != 0) sb.Append('@').Append(ins.Inl);
             switch (ins.Ref)
             {
                 case null: break;

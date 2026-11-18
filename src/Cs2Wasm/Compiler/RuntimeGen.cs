@@ -1902,6 +1902,53 @@ internal sealed partial class Driver
         if (frPacked.Length + 8 < frRaw.Length) { fsec.Byte(1); fsec.U32(frRaw.Length); fsec.Bytes(frPacked); }
         else { fsec.Byte(0); fsec.Bytes(frRaw); }
         withLines.Byte(0); withLines.U32(fsec.Length); withLines.Bytes(fsec.ToArray());
+        // inlined calls (WasmModule.InlineScopes): for a call or a throw in inlined code, the frames a stack trace
+        // shows there besides the function's own. Names; the program's files; the scopes used (parent + 1 or 0,
+        // name, file + 1 or 0, line of the call); then (offset delta, scope + 1) in offset order. A module in which
+        // no such call was inlined has no such section.
+        if (enc.Inlines.Count > 0)
+        {
+            var scopeIds = new Dictionary<int, int>();
+            var scopeRows = new List<(int parent, int name, int file, int line)>();
+            var inNames = new List<string>(); var inNameIx = new Dictionary<string, int>();
+            var inFiles = new List<string>(); var inFileIx = new Dictionary<int, int>();
+            int ScopeId(int s)
+            {
+                if (s == 0) return -1;
+                if (scopeIds.TryGetValue(s, out int id)) return id;
+                var (parent, fn, pos) = Module.InlineScopes[s];
+                int pid = ScopeId(parent);
+                string nm = fn.FrameName ?? fn.Name;
+                if (!inNameIx.TryGetValue(nm, out int ni)) { ni = inNames.Count; inNames.Add(nm); inNameIx[nm] = ni; }
+                int fi = -1, line = 0;
+                if (pos >= 0)
+                {
+                    var sp = PositionAt(pos);
+                    if (inputFiles.Contains(Files[sp.File]))
+                    {
+                        if (!inFileIx.TryGetValue(sp.File, out fi)) { fi = inFiles.Count; inFiles.Add(Files[sp.File]); inFileIx[sp.File] = fi; }
+                        line = sp.Line;
+                    }
+                }
+                scopeRows.Add((pid, ni, fi, line));
+                return scopeIds[s] = scopeRows.Count - 1;
+            }
+            var ents = enc.Inlines.OrderBy(x => x.Offset).Select(x => (x.Offset, id: ScopeId(x.Scope))).ToList();
+            var iw = new Writer();
+            iw.U32(inNames.Count); foreach (var s in inNames) iw.Name(s);
+            iw.U32(inFiles.Count); foreach (var s in inFiles) iw.Name(s);
+            iw.U32(scopeRows.Count);
+            foreach (var (parent, name, file, line) in scopeRows) { iw.U32(parent + 1); iw.U32(name); iw.U32(file + 1); iw.U32(line); }
+            iw.U32(ents.Count);
+            int lastAt = 0;
+            foreach (var (off, id) in ents) { iw.U32(off - lastAt); iw.U32(id + 1); lastAt = off; }
+            var iRaw = iw.ToArray();
+            var iPacked = DataCompression.Compress(iRaw);
+            var isec = new Writer(); isec.Name("cs2wasm.inline");
+            if (iPacked.Length + 8 < iRaw.Length) { isec.Byte(1); isec.U32(iRaw.Length); isec.Bytes(iPacked); }
+            else { isec.Byte(0); isec.Bytes(iRaw); }
+            withLines.Byte(0); withLines.U32(isec.Length); withLines.Bytes(isec.ToArray());
+        }
         return (withLines.ToArray(), SourceMap(enc));
     }
 

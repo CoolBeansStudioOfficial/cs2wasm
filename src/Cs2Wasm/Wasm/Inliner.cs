@@ -14,6 +14,17 @@ static class Inliner
     const int SingleCallerCalling = 100; // the same for one that calls functions
     const int LoopBody = 24;      // a straight-line body that calls nothing, at a call site inside a loop
     const int HintedBody = 16;    // a method marked AggressiveInlining, at every call site
+    // A callee an exception can leave (it checks an index, calls what may throw): inlined too, and a stack trace
+    // still shows its frame, from the table of inlined calls (WasmModule.InlineScopes). An engine's baseline tier
+    // runs the module as it is written, every call a call: what a short run over a great many functions gets.
+    static readonly int s_throwBody = Env("CS2WASM_INLINE_THROWING", 0);         // at every call site (0: off, the default: see below)
+    static readonly int s_throwSingle = Env("CS2WASM_INLINE_THROWING_SINGLE", 60); // into its one caller
+    static readonly int s_throwLoop = Env("CS2WASM_INLINE_THROWING_LOOP", 24);   // at a call site inside a loop
+    static readonly bool s_rcEverywhere = Environment.GetEnvironmentVariable("CS2WASM_INLINE_RC") == "1";
+    static readonly bool s_ignoreNoInline = Environment.GetEnvironmentVariable("CS2WASM_IGNORE_NOINLINE") == "1";
+    static int Env(string name, int dflt) => int.TryParse(Environment.GetEnvironmentVariable(name), out var v) ? v : dflt;
+    /// <summary>The module being compiled: its table of inlined calls.</summary>
+    internal static WasmModule? Module;
     static readonly int s_loopBody = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_LOOP_INLINE"), out var lb) ? lb : LoopBody;
 
     // (CS2WASM_EXP_INLINE=n, an experiment: bodies up to n instructions at every site, whether they can throw or not,
@@ -49,15 +60,24 @@ static class Inliner
             if (tiny && g.Name == "rt.nonnull" && !g.IsImport && s_loopBody > 0) { inLoops.Add(g); continue; }
             // (a function that does nothing, a lock's in a program without threads: its calls go)
             if (!g.IsImport && g.ForwardTo == null && g.Body.Count == 0 && g.Type.Results.Length == 0 && g.Exports.Count == 0) { candidates.Add(g); continue; }
+            if (g.NoInline && !s_ignoreNoInline) continue;
             if (mayThrow.Contains(g) || !Inlinable(g, mayThrow))
             {
                 // (marked AggressiveInlining: in although it can throw, when it is small; larger in a loop)
                 // (the count operations: they have no frame of their own in a trace, so a copy throws from the same
                 // frames; in a loop the call would make the engine keep the loop's values in memory)
-                if (tiny && g.FrameName == null && g.Name is "rt.retain" or "rt.release" && s_loopBody > 0 && InlinableHinted(g)) { inLoops.Add(g); continue; }
-                if (!g.InlineHint || s_exp > 0 || !InlinableHinted(g)) continue;
-                int hc = g.Body.Count + g.Type.Params.Length + 2 * g.Locals.Count + 2;
-                if (hc <= HintedBody) candidates.Add(g); else if (hc <= 2 * s_loopBody) inLoops.Add(g);
+                if (tiny && g.FrameName == null && g.Name is "rt.retain" or "rt.release" && s_loopBody > 0 && InlinableHinted(g)) { if (s_rcEverywhere) candidates.Add(g); else inLoops.Add(g); continue; }
+                if (g.InlineHint && s_exp == 0 && InlinableHinted(g))
+                {
+                    int hc = g.Body.Count + g.Type.Params.Length + 2 * g.Locals.Count + 2;
+                    if (hc <= HintedBody) { candidates.Add(g); continue; }
+                    if (hc <= 2 * s_loopBody) { inLoops.Add(g); continue; }
+                }
+                if (tiny || s_exp > 0 || s_throwBody <= 0 || Module == null || !InlinableThrowing(g)) continue;
+                int tc = g.Body.Count + g.Type.Params.Length + 2 * g.Locals.Count + 2;
+                bool one = callers.GetValueOrDefault(g) == 1 && g.Exports.Count == 0 && !g.InTable && !g.TableRoot;
+                if (tc <= s_throwBody || one && g.Body.Count <= s_throwSingle) candidates.Add(g);
+                else if (tc <= s_throwLoop) inLoops.Add(g);
                 continue;
             }
             int n = g.Body.Count;
@@ -94,7 +114,7 @@ static class Inliner
                     case Op.Block or Op.If or Op.TryTable: open.Add(false); break;
                     case Op.End when open.Count > 0: if (open[^1]) loops--; open.RemoveAt(open.Count - 1); break;
                 }
-                if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != f && (candidates.Contains(g) || loops > 0 && inLoops.Contains(g))) { Expand(f, g, outBody, ins.Pos); any = true; }
+                if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != f && (candidates.Contains(g) || loops > 0 && inLoops.Contains(g))) { Expand(f, g, outBody, ins.Pos, ins.Inl); any = true; }
                 else outBody.Add(ins);
             }
             if (!any) continue;
@@ -125,6 +145,19 @@ static class Inliner
             if ((int)ins.Op >= 0xFE00) return false; // atomics: keep their functions (threads mode bodies are filled late)
         }
         return true;
+    }
+
+    /// <summary>A program's or the library's method that an exception can leave: no exception handling of its own, no
+    /// frame, no atomics, not calling itself. The runtime's own functions stay calls (the passes after this one know
+    /// them by their calls: the counts, the allocations, a type's initialization), and so do the dispatch stubs.</summary>
+    internal static bool InlinableThrowing(WasmFunction g)
+    {
+        if (g.Name.StartsWith("rt.", StringComparison.Ordinal) || g.Name.StartsWith("Cs2Wasm.Runtime.", StringComparison.Ordinal)
+            || g.Name.StartsWith("static init", StringComparison.Ordinal) || g.Name.StartsWith("destroy ", StringComparison.Ordinal)
+            || g.Name.StartsWith("virtual ", StringComparison.Ordinal) || g.Name.StartsWith("interface ", StringComparison.Ordinal)
+            || g.Name.StartsWith("arena.", StringComparison.Ordinal) || g.Name.StartsWith("borrow?", StringComparison.Ordinal) || g.Name.StartsWith("frameobj.", StringComparison.Ordinal)) return false;
+        if (g.Exports.Count > 0) return false;
+        return InlinableHinted(g);
     }
 
     /// <summary>A method marked AggressiveInlining: no exception handling of its own, no frame, no atomics.</summary>
@@ -161,14 +194,25 @@ static class Inliner
         return depth == 0;
     }
 
-    internal static void Expand(WasmFunction f, WasmFunction g, List<Instr> outBody, int pos)
+    internal static void Expand(WasmFunction f, WasmFunction g, List<Instr> outBody, int pos, int siteScope = 0)
     {
+        // The scope of the copy: the call's own, and inside it the callee's when the callee is a frame of a trace.
+        // What the callee had inlined in itself keeps its scopes, inside that one.
+        int scope = g.FrameName != null && Module != null ? Module.InlineScope(siteScope, g, pos) : siteScope;
+        Dictionary<int, int>? inner = null;
+        int Scoped(int own)
+        {
+            if (own == 0 || Module == null) return scope;
+            if ((inner ??= []).TryGetValue(own, out int s)) return s;
+            var (parent, fn, at) = Module.InlineScopes[own];
+            return inner[own] = Module.InlineScope(Scoped(parent), fn, at);
+        }
         int np = g.Type.Params.Length;
         int baseF = f.Type.Params.Length;
         var map = new int[np + g.Locals.Count];
         for (int i = 0; i < np; i++) { f.Locals.Add(g.Type.Params[i]); map[i] = baseF + f.Locals.Count - 1; }
         for (int i = 0; i < g.Locals.Count; i++) { f.Locals.Add(g.Locals[i]); map[np + i] = baseF + f.Locals.Count - 1; }
-        void Add(Op op, long imm = 0, object? r = null) => outBody.Add(new Instr { Op = op, Imm = imm, Ref = r, Pos = pos });
+        void Add(Op op, long imm = 0, object? r = null) => outBody.Add(new Instr { Op = op, Imm = imm, Ref = r, Pos = pos, Inl = siteScope });
         // arguments: last on top of the stack
         for (int i = np - 1; i >= 0; i--) Add(Op.LocalSet, map[i]);
         // the callee's locals start at zero, as on a call
@@ -192,9 +236,10 @@ static class Inliner
             {
                 var ins = g.Body[k];
                 if (ins.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee) ins.Imm = map[(int)ins.Imm];
+                ins.Inl = Scoped(ins.Inl);
                 outBody.Add(ins);
             }
-            if (g.Body[^1].Op != Op.Return) { var last = g.Body[^1]; if (last.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee) last.Imm = map[(int)last.Imm]; outBody.Add(last); }
+            if (g.Body[^1].Op != Op.Return) { var last = g.Body[^1]; if (last.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee) last.Imm = map[(int)last.Imm]; last.Inl = Scoped(last.Inl); outBody.Add(last); }
             return;
         }
         object? bt = g.Type.Results.Length switch { 0 => null, 1 => g.Type.Results[0], _ => new FuncType([], g.Type.Results) };
@@ -206,10 +251,11 @@ static class Inliner
             switch (ins.Op)
             {
                 case Op.LocalGet or Op.LocalSet or Op.LocalTee: ins.Imm = map[(int)ins.Imm]; break;
-                case Op.Block or Op.Loop or Op.If: depth++; break;
+                case Op.Block or Op.Loop or Op.If or Op.TryTable: depth++; break;
                 case Op.End: depth--; break;
                 case Op.Return: ins.Op = Op.Br; ins.Imm = depth; break;
             }
+            ins.Inl = Scoped(ins.Inl);
             outBody.Add(ins);
         }
         Add(Op.End);
