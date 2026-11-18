@@ -148,6 +148,12 @@ internal sealed partial class Driver
     /// (Cs2WasmCompiler.Compile compiles it again in this mode if it does).</summary>
     public bool ThreadMode { get; init; }
     Sharing? _sharing;
+    /// <summary>The types another thread can reach, as the last compilation of this program found them (Api: a
+    /// program with threads is compiled again knowing them). Null: not known; nothing is taken as the thread's own.</summary>
+    public IReadOnlyDictionary<string, bool>? SharingPrior { get; init; }
+    /// <summary>The borrow placeholders made for a place no other thread can store (FieldBorrows: no other thread's
+    /// store to look for).</summary>
+    internal readonly HashSet<WasmFunction> ThreadLocalBorrows = [];
     /// <summary>Which objects another thread can reach (Sharing.cs): recorded in a program with threads only.</summary>
     public Sharing? Sharing => ThreadMode ? _sharing ??= new Sharing(this) : null;
 

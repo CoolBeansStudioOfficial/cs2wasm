@@ -629,6 +629,8 @@ sealed partial class FunctionCompiler
         {
             // a field of a stable object: the count may not be needed (FieldBorrows.cs decides at the end)
             var (retain, release) = D.NewFieldBorrow(E.Fn, key);
+            // (threads: a field load that leaves its value unread-counted is of a place no other thread stores)
+            if (D.ThreadMode) D.ThreadLocalBorrows.Add(retain);
             E.Call(retain);
             int l = _refPool.Count > 0 ? _refPool.Pop() : E.AddLocal(ValType.I32);
             RegisterTemp(new Slot { Local = l, Type = t, ReleaseMarker = release });

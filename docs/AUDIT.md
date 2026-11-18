@@ -328,6 +328,20 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     cycle-capable object takes the runtime lock. Next: borrows for objects no other thread can reach (they are
     decided while compiling, before the answer is known: a second pass or deferred borrows), the runtime's own
     structures in types of their own, and the allocator.
+  - **Second part (2026-11-18): a program with threads is compiled again, knowing the answer.** Whether a value is
+    counted or borrowed shapes the code around it, so it cannot wait for the end of the compilation that finds out
+    which types another thread can reach. `Cs2WasmCompiler.Compile` compiles such a program once more with the first
+    answer (`Driver.SharingPrior`); where that says no other thread can reach an object of the static type, a field
+    or element of it is read as without threads (no counting read), and borrowed from: locals that borrow a field
+    (FieldBorrows.cs, LocalBorrows.cs), a field held for a call; the borrow's resolution needs no look at other
+    threads' stores (`Driver.ThreadLocalBorrows`). Statics are never the thread's own (a thread's own static is).
+    The new compilation's own answer must name no shared type the one it used did not, else it compiles again with
+    both (three rounds; then once taking every object as shared). The answer goes from one compilation to the next as type keys, each with whether an object another thread can reach can be one: each compilation has symbols of its own (one that adds generated code, dynamic call sites or a Godot game's, builds its own program compilation). Cost: a threaded program's compile time, the
+    bench's 18.3 s to 23.1 s. `CS2WASM_NO_SECOND_PASS=1` compiles once.
+  - The bench in thread mode now: 17.2, 8.8, 15.0, 47.1, 1.6, 1.1, 3.7, 20.3, 7.1 ms (nbody and shapes as fast as
+    without threads). The 33 threaded tests pass under the share check. Left: string and List<int> are shared types
+    (dictionary, list_sort, word_count), and tree's 20 ms against 8.2: the allocator's thread path and the loop
+    that frees a chain, still off in thread mode.
 
 - **Step 3: answered from measurements (2026-11-17 and 2026-11-18); the bench fixes (3.1, 3.2) are still to do.**
   - Optimizing tier (what a game runs in), `tools/bench.mjs`: 0.95x NativeAOT's time, 32 MB against 71 MB.

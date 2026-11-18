@@ -66,7 +66,13 @@ sealed partial class FunctionCompiler
         {
             var o = EmitValueCore(op);
             if (o != Own.None && op.Type != null && Types.IsImmortalType(op.Type)) return Own.None;
-            return o == Own.Unstable && D.ThreadMode ? CountedLoad(o, op) : o;
+            if (o == Own.Unstable && D.ThreadMode)
+            {
+                // (a place no other thread stores: read as without threads, Sharing.PriorThreadLocal)
+                if (UnsharedPlace(op)) { _plainLoadAt = E.Fn.Body.Count; return o; }
+                return CountedLoad(o, op);
+            }
+            return o;
         }
         catch (CompileException ex) when (ex.Location == null) { throw new CompileException(ex.Message, op.Syntax.GetLocation()); }
         finally { E.CurrentPos = save; }
@@ -715,7 +721,7 @@ sealed partial class FunctionCompiler
         E.Load(Types.LoadOp(ft), off);
         // (a readonly field is written by its object's constructors only, before the object is anyone else's)
         if (D.ThreadMode && f.Field.IsReadOnly && !f.Field.IsStatic && M.MethodKind != MethodKind.Constructor) _plainLoadAt = E.Fn.Body.Count;
-        if (!D.ThreadMode && Types.IsRef(ft) && !f.Field.IsStatic && f.Instance != null && f.Field.ContainingType.TypeKind == TypeKind.Class && (IsStableBase(f.Instance) || QuietLocalBase(f.Instance)))
+        if ((!D.ThreadMode || f.Instance != null && UnsharedContainer(TypeOf(f.Instance))) && Types.IsRef(ft) && !f.Field.IsStatic && f.Instance != null && f.Field.ContainingType.TypeKind == TypeKind.Class && (IsStableBase(f.Instance) || QuietLocalBase(f.Instance)))
         {
             var lk = Driver.FieldKey(Owner(f.Field), StorageField(f.Field));
             D.NoteBorrowField(lk, StorageField(f.Field), ft);
@@ -870,10 +876,11 @@ sealed partial class FunctionCompiler
         if (!Types.IsRef(et)) return Own.None;
         // an element of an array that stays put (a stable reference, or a field of one): held for a call, it needs no
         // count unless an element store can run meanwhile (FieldBorrows.cs decides at the end)
-        if (ae.Indices.Length == 1 && !D.ThreadMode)
+        if (ae.Indices.Length == 1 && (!D.ThreadMode || UnsharedPlace(ae)))
         {
             var ar = ae.ArrayReference;
             while (ar is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } ac) ar = ac.Operand;
+            if (D.ThreadMode && ar is IFieldReferenceOperation { Instance: { } fi } && !UnsharedContainer(TypeOf(fi))) return Own.Unstable;
             if (IsStableBase(ar)) _lastFieldLoad = (E.Fn.Body.Count, Driver.ElementsKey);
             else if (ar is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ai } afr && IsStableBase(ai) && afr.Field.ContainingType.TypeKind == TypeKind.Class
                 && !(ai is IParameterReferenceOperation && TypeOf(ai).IsValueType))

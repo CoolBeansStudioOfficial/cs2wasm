@@ -136,6 +136,45 @@ internal sealed class Sharing
         return _mayBeShared[k] = r;
     }
 
+    /// <summary>The types another thread can reach (not the closures' and state machines' own, which have no symbol).</summary>
+    public List<ITypeSymbol> SharedTypeSymbols() =>
+        _shared == null ? [] : _shared.Where(id => !D.DisplayById.ContainsKey(id) && !D.SyntheticById.ContainsKey(id) && id < D.TypeById.Count).Select(id => D.TypeById[id]).ToList();
+
+    /// <summary>For each type this compilation knows (its classes and arrays, and their bases), by its key: whether
+    /// an object another thread can reach can be in a place of that type. What the next compilation of the program
+    /// is given (Driver.SharingPrior): keys, not symbols, since each compilation has symbols of its own.</summary>
+    public Dictionary<string, bool> PriorMap(IReadOnlyDictionary<string, bool>? merge = null)
+    {
+        var r = new Dictionary<string, bool>();
+        foreach (var id in D.Constructed)
+        {
+            if (id <= 0 || id >= D.TypeById.Count || D.DisplayById.ContainsKey(id) || D.SyntheticById.ContainsKey(id)) continue;
+            var t = D.TypeById[id];
+            if (!Types.IsRef(t)) continue;
+            for (var b = t; b != null; b = (b as INamedTypeSymbol)?.BaseType is { } bt ? D.Types.Canonical(bt) : null)
+            {
+                var k = Types.Key(b);
+                if (r.ContainsKey(k)) break;
+                r[k] = MayBeShared(b);
+                if (b is IArrayTypeSymbol) break;
+            }
+        }
+        if (merge != null) foreach (var (k, v) in merge) r[k] = r.TryGetValue(k, out var x) ? x || v : v;
+        return r;
+    }
+
+    /// <summary>While compiling: whether the last compilation found that no object another thread can reach can be in
+    /// a place of this static type (then reading and borrowing from such an object is as without threads). False
+    /// when there was none, and for a type it did not know.</summary>
+    public bool PriorThreadLocal(ITypeSymbol container)
+    {
+        if (D.SharingPrior is not { } prior || s_off) return false;
+        if (container.TypeKind is TypeKind.Error or TypeKind.TypeParameter || !Types.IsRef(container)) return false;
+        // (object and the interfaces any closure or state machine may be: their objects are taken as shared)
+        if (Types.IsObject(container) || container.TypeKind == TypeKind.Interface) return false;
+        return prior.TryGetValue(Types.Key(D.Types.Canonical(container)), out var shared) && !shared;
+    }
+
     /// <summary>Whether an object of this type id (a closure's or state machine's) can be reached by another thread.</summary>
     public bool IdShared(int id) => _shared == null || _shared.Contains(id);
 
@@ -498,6 +537,22 @@ internal sealed class Sharing
 sealed partial class FunctionCompiler
 {
     Sharing? Sh => D.Sharing;
+
+    /// <summary>Threads: an object of this static type is one no other thread can reach (the last compilation's answer).</summary>
+    bool UnsharedContainer(ITypeSymbol t) => D.ThreadMode && D.Sharing is { } s && s.PriorThreadLocal(t);
+
+    /// <summary>Threads: the place an expression reads is one no other thread stores: a field of an object of such a
+    /// type, an element of such an array, a thread's own static.</summary>
+    bool UnsharedPlace(IOperation op)
+    {
+        switch (op)
+        {
+            case IFieldReferenceOperation { Field.IsStatic: true } sf: return IsThreadStatic(StorageField(sf.Field));
+            case IFieldReferenceOperation { Instance: { Type: not null } inst } when !TypeOf(inst).IsValueType: return UnsharedContainer(TypeOf(inst));
+            case IArrayElementReferenceOperation { ArrayReference.Type: not null } ae: return UnsharedContainer(TypeOf(ae.ArrayReference));
+            default: return false;
+        }
+    }
     HashSet<ISymbol>? _writtenParams;
     IOperation? _sharingBody;
 

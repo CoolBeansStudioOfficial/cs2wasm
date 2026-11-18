@@ -107,8 +107,10 @@ sealed partial class FunctionCompiler
                     return true;
                 }
             case IFieldReferenceOperation { Field: { IsStatic: false, IsVolatile: false } f, Instance: { } inst } fr
-                when !D.ThreadMode && f.ContainingType.TypeKind == TypeKind.Class && Types.IsRef(T.Resolve(f.Type, Map)):
+                when f.ContainingType.TypeKind == TypeKind.Class && Types.IsRef(T.Resolve(f.Type, Map)):
                 {
+                    // (threads: only a field of an object no other thread can reach, Sharing.PriorThreadLocal)
+                    if (D.ThreadMode && !UnsharedPlace(fr)) return false;
                     while (inst is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } ic) inst = ic.Operand;
                     // the object the field is read from: the local's own value, `this`, a parameter
                     bool held = inst is ILocalReferenceOperation il && (SymbolEqualityComparer.Default.Equals(il.Local, self) || HeldThroughScope(self, il.Local))
@@ -151,6 +153,7 @@ sealed partial class FunctionCompiler
     {
         if (o == Own.Owned) return;
         E.Call(wb.Marker);
+        if (D.ThreadMode) D.ThreadLocalBorrows.Add(wb.Marker);
         if (!wb.Registered) { wb.Registered = true; D.FieldBorrows.Add((E.Fn, v.Local, wb.Keys, wb.Marker)); }
     }
 

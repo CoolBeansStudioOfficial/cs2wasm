@@ -73,6 +73,9 @@ public static class Cs2WasmCompiler
 {
     public const string CompilerVersion = "0.1.0";
 
+    /// <summary>CS2WASM_NO_SECOND_PASS=1: a program with threads is compiled once, taking every object as shared.</summary>
+    static readonly bool s_noSecondPass = Environment.GetEnvironmentVariable("CS2WASM_NO_SECOND_PASS") == "1";
+
     public static CompileResult Compile(Compilation compilation, CompileOptions? options = null)
     {
         options ??= new CompileOptions();
@@ -92,6 +95,26 @@ public static class Cs2WasmCompiler
                 d = null!;
                 d = new Driver(cs, options) { ThreadMode = true };
                 d.Run();
+                // Section 4.5: compiled again knowing which types another thread can reach, so that objects no other
+                // thread can reach are read and borrowed from as without threads. The new compilation's own answer
+                // must name no type the one it used did not (else again, with both), so every decision holds.
+                if (!s_noSecondPass && d.Sharing is { Done: true } first && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
+                {
+                    var prior = first.PriorMap();
+                    var sharedKeys = first.SharedTypeSymbols().Select(Types.Key).ToHashSet();
+                    for (int round = 0; round < 3; round++)
+                    {
+                        d = null!;
+                        d = new Driver(cs, options) { ThreadMode = true, SharingPrior = prior };
+                        d.Run();
+                        if (d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error) || d.Sharing is not { Done: true } again) break;
+                        var extra = again.SharedTypeSymbols().Select(Types.Key).Where(k => !sharedKeys.Contains(k)).ToList();
+                        if (extra.Count == 0) break;
+                        if (round == 2) { d = new Driver(cs, options) { ThreadMode = true }; d.Run(); break; }
+                        prior = again.PriorMap(prior);
+                        sharedKeys.UnionWith(extra);
+                    }
+                }
             }
             if (!d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
                 (bytes, map) = d.Emit();

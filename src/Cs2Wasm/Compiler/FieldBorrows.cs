@@ -32,13 +32,15 @@ sealed partial class FunctionCompiler
         while (init is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit)) init = c.Operand;
         // a copy of a reference that stays put for the whole method: the object outlives the local ("": always)
         if (IsStableBase(init)) return "";
-        // (threads: nothing borrows from memory another thread may write)
-        if (D.ThreadMode) return null;
+        // (threads: only from a place no other thread stores, Sharing.PriorThreadLocal)
+        bool tm = D.ThreadMode;
         // an element of an array that stays put (a stable reference, or a field of one): no element store may run
         if (init is IArrayElementReferenceOperation { Indices.Length: 1 } ae && Types.IsRef(T.Resolve(ae.Type!, Map)))
         {
+            if (tm && !UnsharedPlace(ae)) return null;
             var ar = ae.ArrayReference;
             while (ar is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } ac) ar = ac.Operand;
+            if (tm && ar is IFieldReferenceOperation { Instance: { } fi } && !UnsharedContainer(TypeOf(fi))) return null;
             if (IsStableBase(ar)) return Driver.ElementsKey;
             if (ar is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ai } afr && IsStableBase(ai) && afr.Field.ContainingType.TypeKind == TypeKind.Class
                 && !(ai is IParameterReferenceOperation && TypeOf(ai).IsValueType))
@@ -50,6 +52,7 @@ sealed partial class FunctionCompiler
             return null;
         }
         // a static's value: as a field's, with the static's own key
+        if (tm && init is IFieldReferenceOperation { Field.IsStatic: true }) return null;
         if (init is IFieldReferenceOperation { Field: { IsStatic: true, IsVolatile: false } stf } sfr && Types.IsRef(T.Resolve(stf.Type, Map)) && !IsThreadStatic(StorageField(stf)))
         {
             var sk = Driver.FieldKey(Owner(sfr.Field), StorageField(sfr.Field));
@@ -58,6 +61,7 @@ sealed partial class FunctionCompiler
         }
         if (init is not IFieldReferenceOperation { Field.IsStatic: false, Instance: { } inst } fr) return null;
         if (!Types.IsRef(T.Resolve(fr.Field.Type, Map)) || fr.Field.ContainingType.TypeKind != TypeKind.Class) return null;
+        if (tm && !UnsharedPlace(fr)) return null;
         switch (inst)
         {
             case IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } when M.ContainingType.TypeKind == TypeKind.Class: break;
@@ -78,6 +82,7 @@ sealed partial class FunctionCompiler
         if (o == Own.Owned) { E.Set(v.Local); return; }
         E.Call(marker);
         E.Set(v.Local);
+        if (D.ThreadMode) D.ThreadLocalBorrows.Add(marker);
         D.FieldBorrows.Add((E.Fn, v.Local, key, marker));
         if (SimpleArrayUses(sym)) D.SimpleBorrows.Add((E.Fn, v.Local));
     }
@@ -348,6 +353,9 @@ internal sealed partial class Driver
     internal static readonly WriteMark HandlerStart = new("handler");
 
     /// <summary>Resolves the placeholders (RuntimeGen.Finish, when every function exists).</summary>
+    /// <summary>A release: the atomic one or (threads) the plain one, TypedCounts.cs.</summary>
+    bool IsRelease(object? f) => ReferenceEquals(f, Rt.Release) || f != null && ReferenceEquals(f, Rt.ReleasePlainIfMade);
+
     public void ResolveFieldBorrows()
     {
         PrintReachWhy();
@@ -405,9 +413,9 @@ internal sealed partial class Driver
             return r;
         }
         // null: no borrow; else the keys no store may reach in the range (the safe point's among them when it matters)
-        string[]? ThreadKeys(WasmFunction fn, string[] keys)
+        string[]? ThreadKeys(WasmFunction fn, string[] keys, WasmFunction? marker = null)
         {
-            if (worker == null || keys.All(k => Confined(fn, k))) return keys;
+            if (worker == null || marker != null && ThreadLocalBorrows.Contains(marker) || keys.All(k => Confined(fn, k))) return keys;
             if (s_borrowDebug) Console.Error.WriteLine($"  refused {fn.Name}: threads");
             return null;
         }
@@ -422,7 +430,7 @@ internal sealed partial class Driver
                     );
                 if (ok && field != "" && summary != null)
                 {
-                    var keys = ThreadKeys(fn, field.Split('\n').Where(k => !InitOnlyKey(k)).ToArray());
+                    var keys = ThreadKeys(fn, field.Split('\n').Where(k => !InitOnlyKey(k)).ToArray(), marker);
                     int def = b.FindIndex(x => x.Op == Op.Call && x.Ref == marker);
                     if (keys == null || keys.Length > 0 && (def < 0 || StoredWhileInScope(fn, local, def, keys, summary))) ok = false;
                 }
@@ -434,17 +442,17 @@ internal sealed partial class Driver
                     for (int i = 0; i < b.Count && ok; i++)
                         if (b[i].Op is Op.LocalSet or Op.LocalTee && b[i].Imm == local && !(i > 0 && b[i - 1].Op == Op.Call && b[i - 1].Ref == marker))
                             ok = i >= 3 && b[i - 1].Op == Op.I32Const && b[i - 1].Imm == 0 && b[i - 1].Ref == null
-                                 && b[i - 2].Op == Op.Call && b[i - 2].Ref == Rt.Release && b[i - 3].Op == Op.LocalGet && b[i - 3].Imm == local
+                                 && b[i - 2].Op == Op.Call && IsRelease(b[i - 2].Ref) && b[i - 3].Op == Op.LocalGet && b[i - 3].Imm == local
                                  // (an assignment of a local that is assigned again, LocalBorrows.cs: the value through the
                                  // placeholder, the old value released, then the store)
-                                 || i >= 5 && b[i - 1].Op == Op.LocalGet && b[i - 2].Op == Op.Call && b[i - 2].Ref == Rt.Release
+                                 || i >= 5 && b[i - 1].Op == Op.LocalGet && b[i - 2].Op == Op.Call && IsRelease(b[i - 2].Ref)
                                     && b[i - 3].Op == Op.LocalGet && b[i - 3].Imm == local && b[i - 4].Op == Op.LocalSet && b[i - 4].Imm == b[i - 1].Imm
                                     && b[i - 5].Op == Op.Call && b[i - 5].Ref == marker;
                 for (int i = 0; i < b.Count; i++)
                 {
                     if (b[i].Op == Op.Call && b[i].Ref == marker)
                         b[i] = ok ? b[i] with { Op = Op.Nop, Ref = null } : b[i] with { Ref = Rt.Retain };
-                    else if (ok && b[i].Op == Op.LocalGet && b[i].Imm == local && i + 1 < b.Count && b[i + 1].Op == Op.Call && b[i + 1].Ref == Rt.Release)
+                    else if (ok && b[i].Op == Op.LocalGet && b[i].Imm == local && i + 1 < b.Count && b[i + 1].Op == Op.Call && IsRelease(b[i + 1].Ref))
                     {
                         b[i] = b[i] with { Op = Op.Nop };
                         b[i + 1] = b[i + 1] with { Op = Op.Nop, Ref = null };
@@ -462,7 +470,7 @@ internal sealed partial class Driver
             bool addr = all.Any(k => FieldsAddressTaken.Contains(k) || reflected.Contains(k));
             // (an init-only field never changes: nothing to look for)
             var live = all.Where(k => !InitOnlyKey(k)).ToArray();
-            var tkeys = addr ? null : live.Length == 0 ? live : ThreadKeys(fn, live);
+            var tkeys = addr ? null : live.Length == 0 ? live : ThreadKeys(fn, live, retain);
             bool ok = tkeys != null;
             // the borrow lasts from the retain to the statement's release: only what runs in between may not store the
             // fields (the function's own stores anywhere: the whole function's summary decides)
