@@ -1687,7 +1687,7 @@ namespace Cs2Wasm.Runtime
             {
                 int slot = Mem.LoadI32(s_cutQ + 8 * i), v = Mem.LoadI32(s_cutQ + 8 * i + 4);
                 Mem.StoreI32(slot, v);
-                if (Mem.LoadI32(v) != 0) Retain(Borrow<object>(v));
+                Retain(Borrow<object>(v));
             }
         }
 
@@ -1699,7 +1699,7 @@ namespace Cs2Wasm.Runtime
                 int slot = Mem.LoadI32(s_cutQ + 8 * i), v = Mem.LoadI32(s_cutQ + 8 * i + 4);
                 if (Mem.LoadI32(slot) != v) continue;
                 Mem.StoreI32(slot, 0);
-                if (Mem.LoadI32(v) != 0) Release(Borrow<object>(v));
+                Release(Borrow<object>(v));
             }
         }
 
@@ -1848,6 +1848,8 @@ namespace Cs2Wasm.Runtime
             if (cv == -1 || cv == 0 || ca == -1 || ca == 0) return val; // immortal, or being destroyed
             int g = SccOf(Mem.LoadI32(val + 4));
             if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return val;
+            // (one whose finalizer is running, or that waits for the others': a counted reference, FinPhase)
+            if (((PL(val, 24) | PL(container, 24)) & Dying) != 0) return val;
             if (ca > 0 && Mem.LoadI32(container + 8) < 0) return val; // pinned
             if (cv > 0 && Mem.LoadI32(val + 8) < 0) return val;
             int ra = ca < -1 ? ArenaOf(container) : 0, rv = cv < -1 ? ArenaOf(val) : 0;
@@ -2098,6 +2100,16 @@ namespace Cs2Wasm.Runtime
             int child = Mem.LoadI32(slot);
             // (4: each reference, counted by the copy, as a store of it)
             if (s_visitMode == 4) { if (child != 0 && slot != s_storeSlot) ArenaLinkCore(child, s_visitArena, slot); return; }
+            // (10 to 12, FinPhase: a reference to a member that dies with this one comes off its count, goes back
+            // on, is taken out of the slot)
+            if (s_visitMode >= 10)
+            {
+                if (child == 0 || SccOf(Mem.LoadI32(child + 4)) == 0 || (PL(child, 24) & Dying) == 0 || Mem.LoadI32(child) <= 0) return;
+                if (s_visitMode == 10) Mem.StoreI32(child, Mem.LoadI32(child) - 1);
+                else if (s_visitMode == 11) Mem.StoreI32(child, Mem.LoadI32(child) + 1);
+                else Mem.StoreI32(slot, 0);
+                return;
+            }
             if (child == 0 || Mem.LoadI32(child) >= -1) return;
             if (s_visitMode == 1) { if (ArenaOf(child) == s_visitArena) { if (s_cutOn != 0) NoteCut(slot, child); Mem.StoreI32(slot, 0); } return; }
             if (s_visitMode == 8) { if (ArenaOf(child) == s_visitArena) s_handSum++; return; }
@@ -2186,6 +2198,53 @@ namespace Cs2Wasm.Runtime
             if (Mem.LoadI32(ar + 8) == 0 && Mem.LoadI32(ar) == 0 && (Mem.LoadI32(ar + 12) & ArenaBusy) == 0) Free(ar, ArenaRecord);
         }
 
+        // While the finalizers of members that die together run, every reference to one of them is counted, from
+        // wherever: the ones their slots held are put back counted, and a finalizer's own stores count as any store
+        // (a member that is dying joins no group: ArenaLinkCore). Each has FinBias on its count meanwhile, so no
+        // release destroys it a second time. Afterwards the references they hold to each other are taken off the
+        // counts (their slots, visited as when they were let go): a count that is left is a reference from where the
+        // program can reach it, and then they all live on.
+        const int FinBias = 0x10000000;
+
+        static int FinNext(int m, int first, int link) { int n = PL(m, link); return n == first ? 0 : n; }
+
+        static void FinVisit(int first, int link, int mode)
+        {
+            int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
+            for (int m = first; m != 0; m = FinNext(m, link == 12 ? first : 0, link))
+            {
+                s_visitMode = mode; s_visitObj = m; s_visitElem = 0;
+                ArenaVisitObject(m);
+            }
+            s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se;
+        }
+
+        /// <summary>The finalizers of the members (a list through the prefix word `link`: 8 ending in 0, 12 a ring).
+        /// True when one of them was stored where the program can reach it: they are never freed then.</summary>
+        static bool FinPhase(int first, int link, int cutBase)
+        {
+            int end = link == 12 ? first : 0;
+            for (int m = first; m != 0; m = FinNext(m, end, link)) { Mem.StoreI32(m, FinBias); PS(m, 24, PL(m, 24) | Dying); }
+            int cutEnd = s_cutN;
+            CutsBack(cutBase, cutEnd);
+            for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaFinalizeObject(m);
+            FinVisit(first, link, 10);
+            bool back = false;
+            for (int m = first; m != 0; m = FinNext(m, end, link)) if (Mem.LoadI32(m) != FinBias) { back = true; break; }
+            if (back)
+            {
+                FinVisit(first, link, 11);
+                for (int m = first; m != 0;) { int next = FinNext(m, end, link); Mem.StoreI32(m, -1); m = next; }
+                s_cutN = cutBase;
+                return true;
+            }
+            FinVisit(first, link, 12);
+            CutsOut(cutBase, cutEnd);
+            s_cutN = cutBase;
+            for (int m = first; m != 0; m = FinNext(m, end, link)) Mem.StoreI32(m, 0);
+            return false;
+        }
+
         /// <summary>A member without references: it is destroyed, and so is each member that loses its last reference
         /// with it, one after the other (no recursion: a long chain is a long list). First every one of them gives
         /// up its references to other members (their owners are still there to walk through), then each is destroyed
@@ -2228,26 +2287,10 @@ namespace Cs2Wasm.Runtime
             s_cutOn = cutOn;
             // then as any object: no longer a member (count zero: being destroyed), its finalizer, its other references
             for (int m = done; m != 0; m = PL(m, 8)) { Mem.StoreI32(m, 0); PS(m, 16, 0); }
-            if (fin)
-            {
-                int cutEnd = s_cutN;
-                CutsBack(cutBase, cutEnd);
-                for (int m = done; m != 0; m = PL(m, 8)) ArenaFinalizeObject(m);
-                // A finalizer stored one of them where the program can reach it: they all live on, with what they
-                // refer to, and are never freed (what one of several objects that die together can still reach is
-                // not followed: section 4.3's group stays whole).
-                bool back = false;
-                for (int m = done; m != 0; m = PL(m, 8)) if (Mem.LoadI32(m) != 0) { back = true; break; }
-                if (back)
-                {
-                    for (int m = done; m != 0;) { int next = PL(m, 8); Mem.StoreI32(m, -1); m = next; }
-                    s_cutN = cutBase;
-                    ArenaEmpty(ar);
-                    return;
-                }
-                CutsOut(cutBase, cutEnd);
-                s_cutN = cutBase;
-            }
+            // A finalizer stored one of them where the program can reach it: they all live on, with what they
+            // refer to, and are never freed (what one of several objects that die together can still reach is
+            // not followed: section 4.3's group stays whole).
+            if (fin && FinPhase(done, 8, cutBase)) { ArenaEmpty(ar); return; }
             for (int m = done; m != 0; m = PL(m, 8)) ArenaClearObject(m);
             for (int m = done; m != 0;)
             {
@@ -2280,30 +2323,9 @@ namespace Cs2Wasm.Runtime
                 do { ArenaVisitObject(m); m = PL(m, 12); } while (m != first);
                 s_visitArena = sa; s_visitMode = sm;
                 s_cutOn = cutOn;
-                if (fin)
-                {
-                    // (all of them are going: counts on them mean nothing from here on)
-                    m = first;
-                    do { Mem.StoreI32(m, 0); m = PL(m, 12); } while (m != first);
-                    int cutEnd = s_cutN;
-                    CutsBack(cutBase, cutEnd);
-                    m = first;
-                    do { ArenaFinalizeObject(m); m = PL(m, 12); } while (m != first);
-                    // (a finalizer stored one of them where the program can reach it: as in ArenaDestroyFrom; the
-                    // arena's record stays, busy, for the words of its members that name it)
-                    bool back = false;
-                    m = first;
-                    do { if (Mem.LoadI32(m) != 0) back = true; m = PL(m, 12); } while (m != first);
-                    if (back)
-                    {
-                        m = first;
-                        do { int next = PL(m, 12); Mem.StoreI32(m, -1); m = next; } while (m != first);
-                        s_cutN = cutBase;
-                        return;
-                    }
-                    CutsOut(cutBase, cutEnd);
-                    s_cutN = cutBase;
-                }
+                // (a finalizer stored one of them where the program can reach it: as in ArenaDestroyFrom; the
+                // arena's record stays, busy, for the words of its members that name it)
+                if (fin && FinPhase(first, 12, cutBase)) return;
                 m = first;
                 do { ArenaClearObject(m); m = PL(m, 12); } while (m != first);
                 m = first;

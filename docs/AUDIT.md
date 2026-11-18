@@ -280,8 +280,23 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     bench: 333 KB, 341 before) and no slower (bench 0.95x, micro in the baseline tier 2.29x). An earlier form of
     this fix put the stack under the data and shrank it to keep addresses short: the owner called that a hack, and
     it is gone. Worker stacks are still 1 MiB whatever `StackSize` says. Test 120.
-  - A1.4 open: test 121 (cycles through arrays and far fields, stored while a static holds the container) passes
-    in checked mode with no object left; the guess in `ArenaUnlink` is still there and goes with step 7.
+  - A1.4: no fault found (2026-11-18). Test 132 makes 70,000 stores chosen by a fixed pseudo-random sequence
+    among objects with twenty-two reference fields (more than a member keeps bits for), arrays, lists, a tuple, a
+    dictionary and an object field, a third of them in a group that statics keep alive: what is reachable sums
+    to what .NET's does all the way, checked and as shipped, and nothing is left at the end. Where there are no
+    bits, `ArenaUnlink` goes by the counts, and that is right as long as every reference between two members of
+    one group in a slot a cycle can close through is an inside one: a store links it, and an object that joins
+    has its slots linked. Bits for every slot (7.B2) would let a parent link be an array's element or a late
+    field; it is not needed for correctness.
+  - **Found by the same test, and fixed: a finalizer that stores a reference into its own object while its group
+    is destroyed** (`F19 = F2;` in `~Wide()`). The members had count zero then, so the stored one looked like a
+    new plain object and the two were joined into a new group over the words the destruction was using: a hang,
+    or a read out of bounds, checked and as shipped. Now a dying member joins no group; while the finalizers run
+    every reference to a member is counted (those put back in their slots too) over a bias that keeps a release
+    from destroying it twice; afterwards the references the dying members hold to each other come off the counts
+    (their slots are visited, as when they were let go), and a count that is left is a reference from where the
+    program can reach it: then they all live on, as before, with their fields as the finalizers left them
+    (`Rt.FinPhase`).
 
 - **Step 3: answered from measurements (2026-11-17 and 2026-11-18); the bench fixes (3.1, 3.2) are still to do.**
   - Optimizing tier (what a game runs in), `tools/bench.mjs`: 0.95x NativeAOT's time, 32 MB against 71 MB.
