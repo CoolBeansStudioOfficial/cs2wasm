@@ -2,23 +2,26 @@
 // module, with the project's embedded resources (the library manifests and sources) as manifest resources and Roslyn's
 // assemblies as references.
 // usage: node tools/selfhost.mjs <cs2wasmc> <out.wasm> [--plugin-source <file.cs|dir>]... [--plugin-type <Type>]...
-//        [cs2wasmc options...]
+//        [--generators <Assembly>=<dir of its sources>]... [cs2wasmc options...]
+// --generators: source generators compiled into the toolchain (SPEC section 7.1), run when a build names the
+// assembly with -a (Godot's: --generators Godot.SourceGenerators=<godot>/modules/mono/editor/Godot.NET.Sdk/Godot.SourceGenerators)
 // --plugin-source, --plugin-type: plugin passes (SPEC section 7.1) compiled into the toolchain: their sources, and the
 // full names of their ICompilerPlugin classes (each with a constructor without parameters); the toolchain runs one
 // when asked with --plugin <Type>
 // (<cs2wasmc> is a command: the .NET build's cs2wasmc.exe, or `node host/run.mjs cs2wasm.wasm main --` for the
 // self-hosted one)
-import { readdirSync, statSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const [compiler, out, ...rest] = process.argv.slice(2);
-const extra = [], pluginSources = [], pluginTypes = [];
+const extra = [], pluginSources = [], pluginTypes = [], generatorSets = [];
 for (let i = 0; i < rest.length; i++) {
   if (rest[i] === '--plugin-source') pluginSources.push(rest[++i]);
   else if (rest[i] === '--plugin-type') pluginTypes.push(rest[++i]);
+  else if (rest[i] === '--generators') generatorSets.push(rest[++i]);
   else extra.push(rest[i]);
 }
 const walk = (d) => readdirSync(d).flatMap((n) => { const p = join(d, n); return statSync(p).isDirectory() ? (n === 'bin' || n === 'obj' ? [] : walk(p)) : [p]; });
@@ -30,13 +33,29 @@ for (const f of walk(src).filter((f) => f.endsWith('.cs') && !/^(Upstream|Godot)
 lines.push(join(root, 'src', 'Cs2Wasm.Cli', 'Cli.cs'), ...walk(join(root, 'src', 'Cs2Wasm.Wasm')).filter((f) => f.endsWith('.cs')).sort());
 // the plugin passes compiled in: their sources, and the other part of Entry, which makes them known by name
 for (const p of pluginSources) lines.push(...(statSync(p).isDirectory() ? walk(p).filter((f) => f.endsWith('.cs')).sort() : [p]));
-if (pluginTypes.length > 0) {
+// the source generators compiled in: an assembly's name and the directory of its sources (the classes that are an
+// ISourceGenerator, each with a constructor without parameters; code fixes need Roslyn's workspaces and are left out)
+const generators = [];
+for (const set of generatorSets) {
+  const [name, dir] = [set.slice(0, set.indexOf('=')), set.slice(set.indexOf('=') + 1)];
+  const types = [];
+  for (const f of readdirSync(dir).filter((f) => f.endsWith('.cs')).sort().map((f) => join(dir, f))) {
+    const text = readFileSync(f, 'utf8');
+    if (/using Microsoft\.CodeAnalysis\.CodeFixes/.test(text)) continue;
+    lines.push(f);
+    const ns = /^\s*namespace\s+([\w.]+)/m.exec(text)?.[1];
+    for (const m of text.matchAll(/class\s+(\w+)\s*:\s*ISourceGenerator\b/g)) types.push((ns ? ns + '.' : '') + m[1]);
+  }
+  generators.push({ name, types });
+}
+if (pluginTypes.length > 0 || generators.length > 0) {
   const gen = out + '.plugins.g.cs';
   writeFileSync(gen, `static partial class Entry
 {
     static partial void AddPlugins()
     {
 ${pluginTypes.map((t) => `        Cs2Wasm.Cli.KnownPlugins.Add(new global::${t}());
+`).join('')}${generators.map((g) => `        Cs2Wasm.Frontend.KnownGenerators[${JSON.stringify(g.name)}] = () => new Microsoft.CodeAnalysis.ISourceGenerator[] { ${g.types.map((t) => `new global::${t}()`).join(', ')} };
 `).join('')}    }
 }
 `);

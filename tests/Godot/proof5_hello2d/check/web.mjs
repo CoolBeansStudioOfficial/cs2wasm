@@ -7,12 +7,10 @@
 //   toolchain/    the self-hosted compiler (cs2wasm.wasm), the files it reads to build a Godot script (library.pack:
 //                 the .NET library's sources and GodotSharp's from the cache, the reference assemblies, GodotSharp.dll),
 //                 and the engine's method signatures for the bridge (signatures.json); each also Brotli-compressed
-//   game/         the game's C# sources, and the sources Godot's source generators write for them (see below)
+//   game/         the game's C# sources
 //   index.html, main.mjs, host/   the page and the browser host
-// The self-hosted compiler cannot load Godot.SourceGenerators.dll (it is a .NET assembly, and the toolchain module has
-// no assembly loader: SPEC 7.1 has such code compiled into the toolchain, which this step does not rebuild). So the
-// generators' output for the game's scripts is written here by the .NET-hosted compiler (CS2WASM_GENERATED) and served
-// as sources: what the browser compiles is the game's two scripts plus those files, with no generator run.
+// Godot's source generators run in the page: they are compiled into the toolchain (tools/selfhost.mjs --generators,
+// SPEC 7.1), so what the browser compiles is the game's scripts as they are, with the .NET-hosted compiler's arguments.
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { brotliCompressSync, constants, inflateRawSync } from 'node:zlib';
@@ -155,18 +153,17 @@ export async function web(args) {
   const flags = new Set(args);
   mkdirSync(site, { recursive: true });
 
-  // 1. the generators' sources, by the .NET-hosted compiler (and its module, to compare with)
-  const generated = join(outDir, 'generated');
-  rmSync(generated, { recursive: true, force: true });
-  if (run(compilerExe(), [...buildArgs(), '-o', join(outDir, 'game-net.wasm')], { env: { ...process.env, CS2WASM_GENERATED: generated } }) !== 0) { console.error('web: cs2wasmc failed'); return 1; }
-  const gen = walk(generated).sort();
+  // 1. the game's sources, and the module the .NET-hosted compiler makes of them (to compare with). The page gives the
+  // toolchain the arguments that compiler gets: Godot's source generators are compiled into the toolchain
+  // (tools/selfhost.mjs --generators), and `-a Godot.SourceGenerators.dll` names them (the file is not read).
+  if (run(compilerExe(), [...buildArgs(), '-o', join(outDir, 'game-net.wasm')]) !== 0) { console.error('web: cs2wasmc failed'); return 1; }
   rmSync(join(site, 'game'), { recursive: true, force: true });
-  mkdirSync(join(site, 'game', 'generated'), { recursive: true });
+  mkdirSync(join(site, 'game'), { recursive: true });
   const sources = [];
   for (const f of scripts()) { const name = relative(project, f).replaceAll(sep, '/'); cpSync(f, join(site, 'game', name)); sources.push({ path: '/game/' + name, url: 'game/' + name }); }
-  for (const f of gen) { const name = 'generated/' + relative(generated, f).replaceAll(sep, '/'); mkdirSync(join(site, 'game', name, '..'), { recursive: true }); cpSync(f, join(site, 'game', name)); sources.push({ path: '/game/' + name, url: 'game/' + name }); }
-  writeFileSync(join(site, 'game', 'sources.json'), JSON.stringify({ sources, args: ['-r', '/lib/GodotSharp.dll'] }, null, 1));
-  console.log(`web: game/: ${scripts().length} scripts and ${gen.length} files Godot's source generators wrote for them`);
+  writeFileSync(join(site, 'game', 'sources.json'), JSON.stringify({ sources, args: ['-r', '/lib/GodotSharp.dll', '-a', 'Godot.SourceGenerators.dll',
+    '--property', 'GodotProjectDir=/game/', '--property', 'GodotDisabledSourceGenerators=GodotPluginsInitializer'] }, null, 1));
+  console.log(`web: game/: ${scripts().length} scripts`);
 
   const toolchain = join(site, 'toolchain');
   mkdirSync(toolchain, { recursive: true });
