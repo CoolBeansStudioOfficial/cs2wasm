@@ -459,10 +459,12 @@ sealed partial class FunctionCompiler
         if (hint != 0) E.Body[^1] = E.Body[^1] with { Imm2 = hint };
     }
 
-    int ExactTypeHint(ITypeSymbol? t)
+    int ExactTypeHint(ITypeSymbol? t) => t == null ? 0 : ExactTypeHint(D, T.Resolve(t, Map));
+
+    /// <summary>The same for a type that is already resolved (the runtime's own loops over an array's elements).</summary>
+    internal static int ExactTypeHint(Driver D, ITypeSymbol t)
     {
-        if (t == null || D.ThreadMode) return 0;
-        t = T.Resolve(t, Map);
+        if (D.ThreadMode) return 0;
         if (Types.IsString(t)) return 2;
         if (t is IArrayTypeSymbol { Rank: 1 } at)
             return at.ElementType is INamedTypeSymbol { IsValueType: true } et && Types.PrimOf(et) != Prim.None ? D.TypeId(D.Types.Canonical(t)) + 1 : 0;

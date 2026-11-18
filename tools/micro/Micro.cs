@@ -102,6 +102,12 @@ static class P
     static long TreeB1() { int c = 0; var root = BuildTree(15, ref c); return c; }
     static long TreeB2() { int c = 0; var root = BuildTree(15, ref c); return WalkTree(root); }
     static long TreeB3() { int c = 0; var root = BuildTree(15, ref c); long s = WalkTree(root); root.Left = BuildTree(10, ref c); return s + WalkTree(root); }
+    // (many small objects made, kept, then let go together: the allocator's two halves without a list's stores)
+    static Box[] s_keep = new Box[100000];
+    static long BulkAlloc() { var a = new Box[100000]; for (int i = 0; i < a.Length; i++) a[i] = new Box(); return a.Length; }
+    static long BulkAllocOnly() { var a = s_keep; for (int i = 0; i < a.Length; i++) a[i] = new Box(); return a.Length; }
+    sealed class Link { public Link? Next; public int Value; }
+    static long LinkBuildFree() { Link? head = null; for (int i = 0; i < 100000; i++) head = new Link { Next = head, Value = i }; return head!.Value; }
     static long Virtual() { long s = 0; object[] os = s_objs; for (int r = 0; r < 20; r++) for (int i = 0; i < os.Length; i++) s += os[i].GetHashCode(); return s; }
     static object[] s_objs = null!;
     sealed class H1 { public override int GetHashCode() => 1; }
@@ -128,7 +134,7 @@ static class P
             ("groupby", GroupBy), ("distinct", Distinct), ("delegate_call", DelegateCall), ("iface_foreach", IfaceForeach), ("split", Split), ("indexof", IndexOf),
             ("sb_append_str", SbAppendStr), ("sb_append_char", SbAppendChar), ("sb_append_int", SbAppendInt), ("hashset_add", HashSetAdd),
             ("dict_set", DictSet), ("dict_get", DictGet), ("dict_str", DictStr), ("dict_str_list", DictStrList), ("list_add", ListAdd), ("upper", Upper),
-            ("ll_build_free", LlBuildFree), ("ll_walk", LlWalk), ("ll_build_rev_free", LlBuildReverseFree), ("ll_reverse", LlReverse), ("llb_build", LlB1), ("llb_walk20", LlB2), ("llb_reverse", LlB3), ("llb_xor", LlB4), ("treeb_build", TreeB1), ("treeb_walk", TreeB2), ("treeb_replace", TreeB3), ("tree_build_free", TreeBuildFree), ("tree_walk", TreeWalk), ("tree_replace", TreeReplace), ("virtual3", Virtual),
+            ("ll_build_free", LlBuildFree), ("ll_walk", LlWalk), ("ll_build_rev_free", LlBuildReverseFree), ("ll_reverse", LlReverse), ("bulk_alloc_free", BulkAlloc), ("bulk_replace", BulkAllocOnly), ("link_build_free", LinkBuildFree), ("llb_build", LlB1), ("llb_walk20", LlB2), ("llb_reverse", LlB3), ("llb_xor", LlB4), ("treeb_build", TreeB1), ("treeb_walk", TreeB2), ("treeb_replace", TreeB3), ("tree_build_free", TreeBuildFree), ("tree_walk", TreeWalk), ("tree_replace", TreeReplace), ("virtual3", Virtual),
         };
         long chk = 0;
         foreach (var (name, f) in tests)

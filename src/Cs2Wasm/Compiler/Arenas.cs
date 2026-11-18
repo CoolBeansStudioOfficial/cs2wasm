@@ -420,6 +420,8 @@ internal sealed class Arenas
     public WasmFunction RuntimeFn(string name, int arity) => D.LibMethod("Cs2Wasm.Runtime.Rt", name, arity).Fn;
 
     /// <summary>Replaces placeholder calls in every function: arena calls at cyclic sites, plain counting elsewhere.</summary>
+    static readonly bool s_noInlineLinks = Environment.GetEnvironmentVariable("CS2WASM_NO_INLINE_LINKS") == "1";
+
     public void Resolve()
     {
         WasmFunction? link = null, unlink = null, pin = null, linkFresh = null, unlinkFresh = null, linkOwned = null;
@@ -444,12 +446,51 @@ internal sealed class Arenas
                 {
                     case Kind.Link or Kind.LinkFresh or Kind.LinkOwned:
                         // (value, container) -> value
-                        if (Enabled && ph.site!.Cyclic) { x.Ref = ph.kind == Kind.Link ? link : ph.kind == Kind.LinkOwned ? linkOwned : linkFresh; body.Add(x); }
+                        if (Enabled && ph.site!.Cyclic)
+                        {
+                            if (ph.kind == Kind.Link || s_noInlineLinks) { x.Ref = ph.kind == Kind.Link ? link : ph.kind == Kind.LinkOwned ? linkOwned : linkFresh; body.Add(x); break; }
+                            // Rt.ArenaLinkFresh and ArenaLinkOwned, their first question here and not behind a call:
+                            // a container that is a plain object (count above 0; for an owned one, exactly 1) takes
+                            // the value as a plain counted store. Only otherwise the call, of ArenaLink itself.
+                            // (The word ArenaLink leaves for the ArenaUnlink that follows it is not reset here: a
+                            // store that takes this way takes the plain way in its ArenaUnlinkFresh too, which does
+                            // not read it, and every ArenaUnlink that does read it follows an ArenaLink that set it.)
+                            int slot = f.Type.Params.Length + f.Locals.Count; f.Locals.Add(ValType.I32);
+                            int cont = slot + 1; f.Locals.Add(ValType.I32);
+                            int val = slot + 2; f.Locals.Add(ValType.I32);
+                            void A(Op op, long imm = 0, object? r = null) => body.Add(new Instr { Op = op, Imm = imm, Imm2 = op == Op.I32Load ? 2 : 0, Ref = r, Pos = ins.Pos });
+                            A(Op.LocalSet, slot); A(Op.LocalSet, cont); A(Op.LocalSet, val);
+                            A(Op.Block, 0, ValType.I32);
+                            A(Op.LocalGet, val);
+                            A(Op.LocalGet, cont); A(Op.I32Eqz); A(Op.BrIf, 0);
+                            A(Op.LocalGet, cont); A(Op.I32Load); A(Op.I32Const, ph.kind == Kind.LinkOwned ? 1 : 0); A(ph.kind == Kind.LinkOwned ? Op.I32Eq : Op.I32GtS); A(Op.BrIf, 0);
+                            A(Op.Drop);
+                            A(Op.LocalGet, val); A(Op.LocalGet, cont); A(Op.LocalGet, slot); A(Op.Call, 0, link);
+                            A(Op.End);
+                        }
                         else { x.Op = Op.Drop; x.Ref = null; body.Add(x); body.Add(x); }
                         break;
                     case Kind.Unlink or Kind.UnlinkFresh:
                         // (old, container) -> ()
-                        if (Enabled && ph.site!.Cyclic) { x.Ref = ph.kind == Kind.Unlink ? unlink : unlinkFresh; body.Add(x); }
+                        if (Enabled && ph.site!.Cyclic)
+                        {
+                            if (ph.kind == Kind.Unlink || s_noInlineLinks) { x.Ref = ph.kind == Kind.Unlink ? unlink : unlinkFresh; body.Add(x); break; }
+                            // Rt.ArenaUnlinkFresh, likewise: a plain container's old value is released as any
+                            int slot = f.Type.Params.Length + f.Locals.Count; f.Locals.Add(ValType.I32);
+                            int cont = slot + 1; f.Locals.Add(ValType.I32);
+                            int old = slot + 2; f.Locals.Add(ValType.I32);
+                            void A(Op op, long imm = 0, object? r = null) => body.Add(new Instr { Op = op, Imm = imm, Imm2 = op == Op.I32Load ? 2 : 0, Ref = r, Pos = ins.Pos });
+                            A(Op.LocalSet, slot); A(Op.LocalSet, cont); A(Op.LocalSet, old);
+                            A(Op.Block);
+                            A(Op.Block);
+                            A(Op.LocalGet, cont); A(Op.I32Eqz); A(Op.BrIf, 0);
+                            A(Op.LocalGet, cont); A(Op.I32Load); A(Op.I32Const, 0); A(Op.I32GtS); A(Op.BrIf, 0);
+                            A(Op.LocalGet, old); A(Op.LocalGet, cont); A(Op.LocalGet, slot); A(Op.Call, 0, unlink);
+                            A(Op.Br, 1);
+                            A(Op.End);
+                            A(Op.LocalGet, old); A(Op.Call, 0, D.Rt.Release);
+                            A(Op.End);
+                        }
                         else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); x.Ref = D.Rt.Release; body.Add(x); }
                         break;
                     case Kind.Pin:

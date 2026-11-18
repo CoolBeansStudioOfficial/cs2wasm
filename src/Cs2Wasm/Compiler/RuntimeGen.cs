@@ -288,7 +288,18 @@ internal sealed partial class RuntimeFns
             e.Get(0); e.Get(1); e.I32(size); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(end);
             var brk = e.Block(); var top = e.Loop();
             e.Get(0); e.Get(end); e.Op(Op.I32GeU); e.BrIf(brk);
-            if (Types.IsRef(et)) { e.Get(0); e.Load(Op.I32Load); if (release) e.Call(Release); else { e.Call(Retain); e.Op(Op.Drop); } }
+            if (Types.IsRef(et))
+            {
+                e.Get(0); e.Load(Op.I32Load);
+                if (release)
+                {
+                    // (elements of a class nothing derives from: each release names it, as a typed local's does)
+                    e.Call(Release);
+                    int hint = FunctionCompiler.ExactTypeHint(D, et);
+                    if (hint != 0) e.Body[^1] = e.Body[^1] with { Imm2 = hint };
+                }
+                else { e.Call(Retain); e.Op(Op.Drop); }
+            }
             else { e.Get(0); e.Call(release ? ReleaseStruct(et) : RetainStruct(et)); }
             e.Get(0); e.I32(size); e.Op(Op.I32Add); e.Set(0);
             e.Br(top); e.End(); e.End();

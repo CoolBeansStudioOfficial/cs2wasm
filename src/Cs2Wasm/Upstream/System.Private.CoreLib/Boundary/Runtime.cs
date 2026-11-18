@@ -202,6 +202,10 @@ namespace Cs2Wasm.Runtime
         {
             int c = size >> 3;
             int curSlot = s_cur + c * 4;
+            // the size's run first (AllocObject takes from it without coming here: this is for the other callers)
+            int runSlot = s_hot + (Classes + c) * 4;
+            int rp = Mem.LoadI32(runSlot);
+            if (rp != Mem.LoadI32(runSlot + Classes * 4)) { Mem.StoreI32(runSlot, rp + size); return rp; }
             while (true)
             {
                 int pg = Mem.LoadI32(curSlot);
@@ -247,11 +251,18 @@ namespace Cs2Wasm.Runtime
                 int np = s_freePages;
                 s_freePages = Mem.LoadI32(np + 4);
                 // (cleared whole, once: a block of it that was never used needs no clearing when it is allocated)
+                // An empty page becomes the size's run: its blocks are handed out one after the other by moving a
+                // word (the run's next block), without touching the page. The page counts them all as in use from
+                // the start (the ones not handed out yet too: it cannot become empty while the run is in it), and is
+                // neither the current page nor among those with freed blocks until one of its blocks is freed.
                 Mem.Fill(np, 0, PageSize);
-                Mem.StoreI32(np + 12, np + PageHead);
-                Mem.StoreI32(np + 16, 0);
-                Mem.StoreI32(np + 20, c * 2 + 1);
-                Mem.StoreI32(curSlot, np);
+                int cap = (PageSize - PageHead) / size;
+                Mem.StoreI32(np + 16, cap);
+                Mem.StoreI32(np + 20, c * 2);
+                int first = np + PageHead;
+                Mem.StoreI32(runSlot, first + size);
+                Mem.StoreI32(runSlot + Classes * 4, first + cap * size);
+                return first;
             }
         }
 
@@ -298,7 +309,8 @@ namespace Cs2Wasm.Runtime
             // size freed last, and which 64 KB of memory are pages)
             s_cur = b; b += Classes * 4;
             s_avail = b; b += Classes * 4;
-            s_hot = b; b += Classes * 4;
+            // (after the hot blocks, each size's run: its next block, and where the run ends)
+            s_hot = b; b += 3 * Classes * 4;
             s_pageMap = b; b += 8192;
             s_top = (b + 15) & ~15;
             s_end = Mem.Size() * 65536;
@@ -768,7 +780,22 @@ namespace Cs2Wasm.Runtime
         /// <summary>The block that was kept aside for its size (FreeObject, FreeCore) when another takes its place.</summary>
         static void FreeSmallOld(int addr, int size)
         {
-            if (IsPage(addr)) { PageFree(addr); return; }
+            if (IsPage(addr))
+            {
+                // (the usual case here, without another call: back onto its page's list; the page stays as it is
+                // unless this was its first freed block or its last one in use)
+                int pg = addr & ~(PageSize - 1);
+                int used = Mem.LoadI32(pg + 16) - 1;
+                if (used != 0 && (Mem.LoadI32(pg + 20) & 1) != 0)
+                {
+                    Mem.StoreI32(addr + 8, Mem.LoadI32(pg));
+                    Mem.StoreI32(pg, addr);
+                    Mem.StoreI32(pg + 16, used);
+                    return;
+                }
+                PageFree(addr);
+                return;
+            }
             int slot = Lists(KindPlain) + (size >> 3) * 4;
             Mem.StoreI32(addr, 0);
             Mem.StoreI32(addr + 8, Mem.LoadI32(slot));
@@ -853,6 +880,15 @@ namespace Cs2Wasm.Runtime
                         Mem.StoreI32(head + 4, typeId);
                         for (int p = head + 8, e = head + s; p != e; p += 8) Mem.StoreI64(p, 0);
                         return head;
+                    }
+                    // (else the next block of the size's run: memory never used, clear already)
+                    int run = Mem.LoadI32(hotSlot + Classes * 4);
+                    if (run != Mem.LoadI32(hotSlot + 2 * Classes * 4))
+                    {
+                        Mem.StoreI32(hotSlot + Classes * 4, run + s);
+                        Mem.StoreI32(run, 1);
+                        Mem.StoreI32(run + 4, typeId);
+                        return run;
                     }
                 }
             }
@@ -1106,6 +1142,15 @@ namespace Cs2Wasm.Runtime
                     if (head != 0) Mem.StoreI32(hotSlot, 0);
                     else
                     {
+                        // (the next block of the size's run: memory never used, clear already)
+                        int run = Mem.LoadI32(hotSlot + Classes * 4);
+                        if (run != Mem.LoadI32(hotSlot + 2 * Classes * 4))
+                        {
+                            Mem.StoreI32(hotSlot + Classes * 4, run + s);
+                            Mem.StoreI32(run + ArenaPrefix, 1);
+                            Mem.StoreI32(run + ArenaPrefix + 4, typeId);
+                            return run + ArenaPrefix;
+                        }
                         int pg = Mem.LoadI32(s_cur + (s >> 3) * 4);
                         if (pg != 0)
                         {
