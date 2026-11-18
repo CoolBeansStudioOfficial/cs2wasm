@@ -34,15 +34,18 @@ namespace System.Threading
                 return Rt.Take<object>(was);
             }
             if (v != 0) Rt.Retain(value!); // the count the slot takes if the exchange happens
+            // (linked as the store it may be, before it: taken back as a slot's old value is if it does not happen)
+            int ad = (int)Unsafe.AsPointer(ref slot);
+            v = Rt.LinkAt(v, ad);
             // under the place's lock: a read that counts (rt.load_retain) sees the old value still counted, or the new
             int held = Rt.RefLock(ref slot);
             int old = slot;
             bool swapped = old == c;
             if (swapped) slot = v;
-            else if (old != 0) Rt.Retain(Rt.Borrow<object>(old)); // the result's count, while the slot holds the object
+            if (old != 0) Rt.Retain(Rt.Borrow<object>(old)); // the result's count, while the slot holds the object
             Rt.RefUnlock(held);
-            if (!swapped && v != 0) Rt.Release(value!);
-            return Rt.Take<object>(old); // (exchanged: the slot's count of the old value passes to the result)
+            Rt.UnlinkAt(swapped ? old : v, ad);
+            return Rt.Take<object>(old);
         }
 
         public static int Decrement(ref int location) => Atomic.Add32(ref location, -1) - 1;
@@ -70,10 +73,14 @@ namespace System.Threading
                 Rt.UnlinkAt(was, at);
                 return Rt.Take<object>(was);
             }
+            int ad = (int)Unsafe.AsPointer(ref slot);
+            v = Rt.LinkAt(v, ad);
             int held = Rt.RefLock(ref slot);
             int old = slot;
             slot = v;
+            if (old != 0) Rt.Retain(Rt.Borrow<object>(old)); // the result's count
             Rt.RefUnlock(held);
+            Rt.UnlinkAt(old, ad);
             return Rt.Take<object>(old);
         }
 

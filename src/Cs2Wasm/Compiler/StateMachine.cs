@@ -293,7 +293,7 @@ sealed partial class FunctionCompiler
         var o = CallWith(AsyncMember("Box", null), false, null, () =>
         {
             pushMachine(); E.Call(Rt.Retain);
-            NewDelegate(actionT, info.MoveNext.Type.Results.Length == 0 ? info.MoveNext : MoveNextVoidThunk(info));
+            NewDelegate(actionT, info.MoveNext.Type.Results.Length == 0 ? info.MoveNext : MoveNextVoidThunk(info), env: info.Machine);
             int dl = TempRef(actionT); E.Tee(dl);
         }, null, null);
         StoreToAddressFromStack(() => E.Get(_fb), slot, MachineBoxType, o, pub: Publish.None);
@@ -1177,7 +1177,7 @@ sealed partial class FunctionCompiler
                         CallWith(onCompleted, false, () => PushAwaiter(awOff, awT), () =>
                         {
                             E.Get(0); E.Call(Rt.Retain);
-                            NewDelegate(actionT, info.MoveNext.Type.Results.Length == 0 ? info.MoveNext : MoveNextVoidThunk(info));
+                            NewDelegate(actionT, info.MoveNext.Type.Results.Length == 0 ? info.MoveNext : MoveNextVoidThunk(info), env: info.Machine);
                             int dl = TempRef(actionT); E.Tee(dl);
                         }, null, null);
                         EndTemps();

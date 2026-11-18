@@ -115,7 +115,7 @@ sealed partial class FunctionCompiler
             if (Types.IsRef(fty))
             {
                 D.FieldsAddressTaken.Add(Driver.FieldKey(fo, fld));
-                if (kind == 3 && !fo.IsValueType && D.Arenas.FieldSite(fo, T.FieldIn(fo, fld)) is { } site) site.AddressTaken = true;
+                if (kind == 3 && !fo.IsValueType && D.Arenas.FieldSite(fo, T.FieldIn(fo, fld)) is { } site) { site.AddressTaken = true; site.AddValue(T.Canonical(fty)); }
             }
             if (kind == 3)
             {
@@ -302,6 +302,7 @@ internal sealed partial class Driver
             if (dt.IsUnboundGenericType || dt.TypeArguments.Any(a => a is ITypeParameterSymbol) || dt.DelegateInvokeMethod.Parameters.Any(p => p.RefKind is RefKind.In or RefKind.RefReadOnlyParameter) || dt.DelegateInvokeMethod.ReturnsByRef) continue;
             if (dt.DelegateInvokeMethod.Parameters.Any(p => p.Type.IsRefLikeType || p.Type is IPointerTypeSymbol) || dt.DelegateInvokeMethod.ReturnType.IsRefLikeType) continue;
             _objectArrayThunks[id] = FunctionCompiler.ObjectArrayThunk(this, dt, handler);
+            Arenas.DelegateTarget(dt, handler, null);
             // (made by the dispatch at run time: its destructor and dispatch cases are needed)
             MarkConstructed(dt);
             any = true;

@@ -388,6 +388,35 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
 - **The suite runs twice from now on, checked and as shipped** (`--unchecked`; CI does both). A checked build never
   uses freed memory again, so it cannot see a fault in how memory is reused: the allocator's first version passed
   it and crashed the bench. The 153 programs pass both ways.
+- **Step 7.C: done but for one shape (2026-11-18).** Every container is in the graph of what can refer to what,
+  in programs with and without threads: a reference inside a struct that is a class's field, an array's element or
+  boxed (tests 129, 130); a closure's captured variables and its enclosing closure, a state machine's variables,
+  a delegate's target, an anonymous type's properties (a closure's object has no type of the program's: its sites
+  are by its type id); a field-like event's field (its accessors store by address); a slot whose address is taken
+  holds whatever its type can. Test 127 went from ten kinds of objects left to two.
+  - **Two faults in the runtime, found by these shapes, both about the moment a store is made.** `ArenaLink` gives
+    back the count the store took, before the storing code writes the slot. When that count was the value's last
+    outside one, (a) a group nothing outside referred to any more was never freed (`self.Slots[0] = self` with the
+    last reference: nothing looked at the group's number then), and (b) a value that became unreachable was
+    destroyed at once, and its container with it, before the slot was written and its old value read
+    (`t.Tag = new object[] { t }`: a write to freed memory, which the checked build showed). Now such a count is
+    kept until the store is written and given back then as any release (`Rt.GiveBackLater`, `AfterStore`; every
+    link is followed by an unlink, an array initializer's elements too). An object that joins its group for the
+    store gives the count back at once as before, so building a structure costs what it did (bench 0.96x,
+    unchanged; 16.0 MB against 71.3 MB; hello world 27,943 bytes).
+  - **What is left of test 127 (`async 5`, `pending 1`), and why it is not a missing container.** With a task in a
+    cycle (a continuation that captures what holds its task), tasks, state machines and delegates are of one
+    component with the program's objects, and every object an async method touches ends in one group with the
+    task machinery, which lives as long as the program. Inside it only what is shaped like ownership is freed when
+    let go, and an async method breaks the shape: the object it makes is first held by the state machine (its
+    owner then), so its reference to its parent is a counted one, and when the machine goes and the parent's list
+    becomes the owner, the reference to the parent stays counted (it is looked at again only if the new owner is
+    the direct one at that moment: here the result array took the object first). A counted cycle in a group that
+    lives: it stays. This is the limit the model states ("a part of a group that is let go while the group lives
+    may stay"), met by ordinary async code, so it is the owner's to weigh: steps 7.D and 7.E do not remove it. Ways
+    that keep the decisions (no search for garbage): keep the task machinery out of the program's groups (a
+    continuation's target linked only while it waits), or look at an object's counted references again whenever
+    any object above it gets an owner (a visit of what that object owns, at that store).
 
 ### Direction (revised 2026-11-18 with the owner)
 

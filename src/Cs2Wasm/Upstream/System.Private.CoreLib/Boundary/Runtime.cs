@@ -1788,6 +1788,7 @@ namespace Cs2Wasm.Runtime
                 if (i0 < 0 || cw > 0) { t_prevSlot = slot; t_prevBits = slot != 0 && i0 >= 0 ? 0 : -1; return val; }
                 if (cw < -1 && SlotBits(container, i0) == 0) { t_prevSlot = slot; t_prevBits = 0; return val; }
             }
+            if (t_backN != 0) AfterStore();
             RuntimeLock();
             // (what the slot's bits said of the value it held: for the ArenaUnlink that follows the store)
             int i = Mem.LoadI32(container) < -1 ? SlotIndex(container, slot) : -1;
@@ -1802,7 +1803,7 @@ namespace Cs2Wasm.Runtime
             {
                 // (the usual case: both are members of one arena already, which is not being destroyed or merged)
                 int ar = Mem.LoadI32(container) < -1 && Mem.LoadI32(val) < -1 ? PL(container, 16) : 0;
-                if (ar != 0 && ar == PL(val, 16) && Mem.LoadI64(ar + 12) == 0) LinkMembers(val, container, slot, ar);
+                if (ar != 0 && ar == PL(val, 16) && Mem.LoadI64(ar + 12) == 0) LinkMembers(val, container, slot, ar, false);
                 else ArenaLinkCore(val, container, slot);
             }
             if (s_linkN != 0) ArenaLinkJoined();
@@ -1861,24 +1862,59 @@ namespace Cs2Wasm.Runtime
                 int now = ArenaOf(val);
                 if (now != ar) ar = ArenaMerge(ar, now);
             }
-            return LinkMembers(val, container, slot, ar);
+            return LinkMembers(val, container, slot, ar, cv > 0);
+        }
+
+        // The count a store took is given back when the reference becomes an inside one. When that count is the
+        // value's last outside one, the value, its container, or the whole arena may have nothing referring to it
+        // from then on, and the storing code has yet to write the slot (and to read the slot's old value): the count
+        // is kept until the store is written (ArenaUnlink follows every store), and given back then as any release.
+        [System.ThreadStatic] static int t_backQ, t_backN, t_backCap;
+
+        static void GiveBackLater(int val)
+        {
+            if (t_backN == t_backCap)
+            {
+                int cap = t_backCap == 0 ? 8 : t_backCap * 2;
+                int nq = Alloc(cap * 4);
+                if (t_backQ != 0) { Mem.Copy(nq, t_backQ, t_backN * 4); Free(t_backQ, t_backCap * 4); }
+                t_backQ = nq; t_backCap = cap;
+            }
+            Mem.StoreI32(t_backQ + 4 * t_backN, val);
+            t_backN++;
+        }
+
+        static void AfterStore()
+        {
+            RuntimeLock();
+            while (t_backN > 0)
+            {
+                t_backN--;
+                ArenaRelease(Mem.LoadI32(t_backQ + 4 * t_backN));
+            }
+            RuntimeUnlock();
         }
 
         /// <summary>The value and the container are members of the arena: the stored reference becomes an inside one or
         /// an up-reference.</summary>
-        static int LinkMembers(int val, int container, int slot, int ar)
+        static int LinkMembers(int val, int container, int slot, int ar, bool joined)
         {
-            // the stored reference is inside the arena now: the count the store took is given back
-            if (Atomic.Add32(ref Mem.RefI32(val), 1) == -3) Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
+            // the stored reference is inside the arena now: the count the store took is given back (its last outside
+            // one after the store, GiveBackLater; at once for an object that joined for this store: nothing was
+            // counted on its being referred to from outside)
+            if (Atomic.Add32(ref Mem.RefI32(val), 1) == -3)
+            {
+                if (joined) Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
+                else { Atomic.Add32(ref Mem.RefI32(val), -1); GiveBackLater(val); }
+            }
             int i = s_visitElem != 0 ? -1 : SlotIndex(container, slot);
             if (i >= 0 && OnChain(container, val))
             {
                 // an up-reference: not counted (the chain from the container to the value keeps the value)
                 SetSlotBits(container, i, 2);
                 UpPath(container, val, 1);
-                // (An object stored into its own slot, with the last reference there was: nothing refers to it any
-                // more. It goes when the store is done, ArenaUnlink: the storing code writes the slot first.)
-                if (Mem.LoadI32(val) == -2 && PL(val, 4) == 0) { if (val == container) t_selfStore = val; else Kill(val); }
+                // (a value nothing else refers to kept its count: it goes when the store is written, AfterStore)
+                if (Mem.LoadI32(val) == -2 && PL(val, 4) == 0) Kill(val);
                 else UpdateHold(val);
                 return val;
             }
@@ -1915,19 +1951,10 @@ namespace Cs2Wasm.Runtime
             return g != 0 && g == SccOf(Mem.LoadI32(container + 4));
         }
 
-        [System.ThreadStatic] static int t_selfStore;
-
         public static void ArenaUnlink(int old, int container, int slot)
         {
-            int self = t_selfStore;
-            t_selfStore = 0;
             ArenaUnlinkOld(old, container, slot);
-            if (self != 0 && self == container)
-            {
-                RuntimeLock();
-                if (Mem.LoadI32(self) == -2 && PL(self, 4) == 0) { ArenaDestroyFrom(self); DrainKills(); }
-                RuntimeUnlock();
-            }
+            if (t_backN != 0) AfterStore();
         }
 
         static void ArenaUnlinkOld(int old, int container, int slot)
@@ -2132,6 +2159,7 @@ namespace Cs2Wasm.Runtime
             ArenaLinkJoined();
             DrainKills();
             RuntimeUnlock();
+            if (t_backN != 0) AfterStore();
         }
 
         /// <summary>Takes a member off its arena's ring (ar: its arena, which its record word points to: ArenaOf).</summary>

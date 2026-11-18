@@ -514,10 +514,10 @@ sealed partial class FunctionCompiler
                 break;
             case IFieldReferenceOperation { Field.IsStatic: false } f when f.Instance != null && !TypeOf(f.Instance).IsValueType && Types.IsRef(TypeOf(f)):
                 D.FieldsAddressTaken.Add(Driver.FieldKey(Owner(f.Field), StorageField(f.Field)));
-                if (D.Arenas.FieldSite(Owner(f.Field), T.FieldIn(Owner(f.Field), StorageField(f.Field))) is { } s) s.AddressTaken = true;
+                if (D.Arenas.FieldSite(Owner(f.Field), T.FieldIn(Owner(f.Field), StorageField(f.Field))) is { } s) { s.AddressTaken = true; s.AddValue(T.Canonical(TypeOf(f))); }
                 break;
             case IArrayElementReferenceOperation ae when TypeOf(ae.ArrayReference) is IArrayTypeSymbol at:
-                if (D.Arenas.ArraySite(at) is { } a) a.AddressTaken = true;
+                if (D.Arenas.ArraySite(at) is { } a) { a.AddressTaken = true; a.AddValue(T.Canonical(at.ElementType)); }
                 break;
         }
     }

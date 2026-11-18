@@ -209,7 +209,9 @@ internal sealed partial class RuntimeFns
             {
                 void Value() { if (move) { e.Get(src); e.Load(Op.I32Load, o); } else { Addr(src); e.Call(LoadRetain); } }
                 if (init) { e.Get(dst); Value(); e.Store(Op.I32Store, o); }
-                else if (shared) { Addr(dst); Value(); e.Call(StoreRef); e.Call(Release); }
+                else if (shared && Types.IsImmortalType(f.Type)) { Addr(dst); Value(); e.Call(StoreRef); e.Call(Release); }
+                // (as EmitStoreFieldsAt: the slot may be one a cycle can close through)
+                else if (shared) { Value(); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type)); }
                 else { Value(); e.Set(tmp); e.Get(dst); e.Load(Op.I32Load, o); e.Get(dst); e.Get(tmp); e.Store(Op.I32Store, o); e.Call(Release); }
             }
             else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitCopyFieldsThreads(e, dst, src, o, f.Type, init, shared, move, tmp);
@@ -857,7 +859,7 @@ sealed partial class RuntimeGen
                 }
             }
             else
-                foreach (var off in ar.CyclicFieldOffsets(t)) { ve.Get(0); ve.I32(off); ve.Op(Op.I32Add); ve.Call(visit); }
+                foreach (var off in ar.CyclicFieldOffsets(id)) { ve.Get(0); ve.I32(off); ve.Op(Op.I32Add); ve.Call(visit); }
             visitFns[id] = v;
             // whether an offset into the object is one of those slots (a store that has only the slot's address)
             var sl = D.Module.AddFunction("arena.is_slot " + id, new FuncType([ValType.I32, ValType.I32], [ValType.I32]));
@@ -942,7 +944,7 @@ sealed partial class RuntimeGen
             }
             else
             {
-                var offs = ar.CyclicFieldOffsets(t).ToList();
+                var offs = ar.CyclicFieldOffsets(id).ToList();
                 if (offs.Count == 0) se.I32(0);
                 for (int k = 0; k < offs.Count; k++) { se.Get(1); se.I32(offs[k]); se.Op(Op.I32Eq); if (k > 0) se.Op(Op.I32Or); }
             }

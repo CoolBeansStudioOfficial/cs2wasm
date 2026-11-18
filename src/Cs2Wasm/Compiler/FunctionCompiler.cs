@@ -2486,6 +2486,8 @@ sealed partial class FunctionCompiler
             E.Get(baseL); E.Load(Op.I32Load, off);
             LoadVar(_vars[M.Parameters[0]]);
             E.Call(combine.Fn);
+            // (the event's field is a slot of the object like any other: the store has its address, Arenas.LinkAt)
+            if (!ev.IsStatic && !M.ContainingType.IsValueType) D.Arenas.SlotByAddress(Owner(ev), off, dt);
             StoreToAddressFromStack(() => E.Get(baseL), off, dt, Own.Owned);
             return;
         }

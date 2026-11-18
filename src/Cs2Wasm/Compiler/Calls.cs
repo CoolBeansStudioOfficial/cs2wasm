@@ -1287,6 +1287,8 @@ sealed partial class FunctionCompiler
             int val = Scratch(ValType.I32); E.Set(val);
             if (site != null) { E.Get(val); E.Get(arr); E.I32(0); E.Call(site.Link); E.Set(val); }
             E.Get(arr); E.Get(val); E.Store(Op.I32Store, dataOffset + idx * size);
+            // (the store is written: what the link left for then, Rt.AfterStore; the element held nothing)
+            if (site != null) { E.I32(0); E.Get(arr); E.I32(0); E.Call(site.UnlinkFresh); }
             FreeScratch(ValType.I32, val);
             return;
         }
@@ -1572,8 +1574,9 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Allocates a delegate; stack: target (owned i32) → delegate (owned).</summary>
-    void NewDelegate(ITypeSymbol dt, WasmFunction fn)
+    void NewDelegate(ITypeSymbol dt, WasmFunction fn, ITypeSymbol? targetType = null, Display? env = null)
     {
+        D.Arenas.DelegateTarget(dt, targetType, env);
         int target = Scratch(ValType.I32); E.Set(target);
         int tid = D.MarkConstructed(dt);
         var layout = T.LayoutOf(dt);
@@ -1593,7 +1596,7 @@ sealed partial class FunctionCompiler
         {
             var lf = D.LocalFunction(this, m, Map, LocalFunctionEnv(m));
             PushDisplayPtr(LocalFunctionEnv(m), retain: true);
-            NewDelegate(dt, lf.Fn);
+            NewDelegate(dt, lf.Fn, env: LocalFunctionEnv(m));
             return Own.Owned;
         }
         if (m.IsStatic && !(m.IsExtensionMethod && mr.Instance != null))
@@ -1613,7 +1616,7 @@ sealed partial class FunctionCompiler
             var impl = Types.Key(T.Canonical(m.ContainingType)) == Types.Key(T.Canonical(it)) ? m : D.Implementation(it, m) ?? m;
             var bfn = Types.Key(T.Canonical(impl.ContainingType)) == Types.Key(T.Canonical(it)) ? D.BoxThunk(impl, it) : D.Stub(m);
             D.DelegateFnMethods.TryAdd(bfn, impl);
-            NewDelegate(dt, bfn);
+            NewDelegate(dt, bfn, targetType: it);
             return Own.Owned;
         }
         var ov = EmitValue(inst);
@@ -1621,7 +1624,7 @@ sealed partial class FunctionCompiler
         if (!IsKnownNonNull(inst)) NullCheckKeep();
         WasmFunction fn = mr.IsVirtual && IsVirtualDispatch(m) ? D.Stub(m) : D.Method(m).Fn;
         D.DelegateFnMethods.TryAdd(fn, m);
-        NewDelegate(dt, fn);
+        NewDelegate(dt, fn, targetType: it);
         return Own.Owned;
     }
 
@@ -1630,7 +1633,7 @@ sealed partial class FunctionCompiler
         var env = _machine != null ? MachineEnvAt(af.Syntax) : CurrentEnv();
         var fn = D.Lambda(this, af, Map, env);
         PushDisplayPtr(env, retain: true);
-        NewDelegate(dt, fn.Fn);
+        NewDelegate(dt, fn.Fn, env: env);
         return Own.Owned;
     }
 

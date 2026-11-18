@@ -1,4 +1,4 @@
-// known-gap: cycles through closures, events, tasks, and references inside structs (tuples, dictionary entries) are never freed
+// known-gap: objects an async method made and a continuation that never runs are in one group with the task machinery, which lives on: what is let go inside it and still refers to each other stays (docs/AUDIT.md, step 7.C)
 // Objects held every ordinary way, then let go: each kind must be gone afterwards (counted by finalizers, as .NET's
 // collector leaves none). Cycles of every shape among them: parent links, events, closures, collections that hold
 // their owner, structs with references, tasks and their continuations.
