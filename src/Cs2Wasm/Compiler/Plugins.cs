@@ -200,7 +200,8 @@ internal sealed partial class PluginHost
                         _ => null,
                     };
                     if (member == null) continue;
-                    _accesses.Add(new MemberAccess(member.OriginalDefinition, m, op, KindOf(op), ConditionsOf(op, body)));
+                    var kind = KindOf(op);
+                    _accesses.Add(new MemberAccess(member.OriginalDefinition, m, op, kind, ConditionsOf(op, body)) { Instrumentable = kind == AccessKind.Read ? op is not IEventReferenceOperation : HookedWrite(op) });
                 }
             }
             return _accesses;
@@ -211,6 +212,22 @@ internal sealed partial class PluginHost
     {
         var def = member.OriginalDefinition;
         return Accesses.Where(a => SymbolEqualityComparer.Default.Equals(a.Member, def));
+    }
+
+    /// <summary>A write the write hooks run at (FunctionCompiler.WriteTarget): `=`, a compound assignment, `++`/`--`, `??=`.</summary>
+    static bool HookedWrite(IOperation op)
+    {
+        if (op is IEventReferenceOperation) return false;
+        var p = op.Parent;
+        while (p is IConversionOperation { IsImplicit: true }) { op = p; p = p.Parent; }
+        return p switch
+        {
+            ISimpleAssignmentOperation sa => ReferenceEquals(sa.Target, op),
+            ICompoundAssignmentOperation ca => ReferenceEquals(ca.Target, op),
+            ICoalesceAssignmentOperation cc => ReferenceEquals(cc.Target, op),
+            IIncrementOrDecrementOperation inc => ReferenceEquals(inc.Target, op),
+            _ => false,
+        };
     }
 
     static AccessKind KindOf(IOperation op)

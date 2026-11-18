@@ -31,6 +31,12 @@ public sealed record BranchCondition(IOperation Test, bool WhenTrue);
 public sealed record MemberAccess(ISymbol Member, IMethodSymbol Method, IOperation Operation, AccessKind Kind, IReadOnlyList<BranchCondition> Conditions)
 {
     public Location Location => Operation.Syntax.GetLocation();
+    /// <summary>Whether a hook set with InstrumentWrites or InstrumentReads runs at this access. False for a write the
+    /// compiler does not make where it is written: the member passed as a `ref` or `out` argument (the callee
+    /// writes, any time until it returns, or later through a reference it kept), a deconstruction's target, an
+    /// event's handlers added or removed. A plugin that must see every write treats such a member as one it cannot
+    /// follow.</summary>
+    public bool Instrumentable { get; init; } = true;
 }
 
 /// <summary>Reaching definitions over a method's control-flow graph: for each read of a local or parameter, the

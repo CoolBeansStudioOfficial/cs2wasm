@@ -185,12 +185,15 @@ static class ApiChecks
                     string _label = "round";
                     public void Tick(float dt) { _timer -= dt; if (_timer <= 0) { _timer = 3f; _phase++; } }
                     public static Round Current => s_current;
+                    static void Zero(ref float f) { if (f < -100) f = 0; }
+                    public void Odd() { Zero(ref _timer); int unused; if (_timer < -100) (_timer, unused) = (0f, 1); }
                     public string Show() => _label + " " + _phase + " " + _timer;
                 }
                 static class Script {
                     [UnmanagedCallersOnly(EntryPoint = "main")]
                     static void Main() {
                         for (int i = 0; i < 7; i++) Round.Current.Tick(1f);
+                        Round.Current.Odd();
                         Console.WriteLine(Round.Current.Show());
                     }
                 }
@@ -206,6 +209,41 @@ static class ApiChecks
             // each phase change: the gate's answer and the timer the solver set; then the program's own line
             var want = "phase 1 open False timer 3\nphase 2 open True timer 3\nsolved round 2 1.5\n";
             return o == want ? null : $"output:\n{o}\nwanted:\n{want}\n{e}";
+        });
+
+        Check("plugin: hooks before and after a write, at a read and before a statement; the control-flow graph and aliasing; a plugin that fails or asks for a later interface fails the build", () =>
+        {
+            var src = Header + """
+                namespace Game {
+                class Counter { public int N; public Counter? Other; public void Inc() { N++; } }
+                static class Script {
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        var c = new Counter(); var d = new Counter();
+                        c.Other = d;
+                        c.Inc(); c.N = 5;
+                        int r = c.N;
+                        if (r > 1) Console.WriteLine("big");
+                        Console.WriteLine(r + " " + (c.Other == d));
+                    }
+                }
+                }
+                """;
+            var plugin = new HooksPlugin();
+            var r = Compile(src, new CompileOptions { Plugins = [plugin], Checked = true });
+            if (!r.Success) return Errors(r);
+            if (plugin.Problem != null) return plugin.Problem;
+            var path = Path.Combine(outDir, "api_plugin_hooks.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            var want = "before 0\nafter 1\nbefore 1\nafter 5\nread 5\nstatement 4\nbig\n5 True\n";
+            if (o != want) return $"output:\n{o}\nwanted:\n{want}\n{e}";
+            var failing = Compile(src, new CompileOptions { Plugins = [new ThrowingPlugin()] });
+            if (failing.Success || !failing.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("went wrong"))) return "a plugin that throws did not fail the build";
+            var later = Compile(src, new CompileOptions { Plugins = [new LaterPlugin()] });
+            if (later.Success || !later.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("interface version"))) return "a plugin for a later interface did not fail the build";
+            var erring = Compile(src, new CompileOptions { Plugins = [new ErrorPlugin()] });
+            return erring.Success ? "a plugin's error diagnostic did not fail the build" : null;
         });
 
         Check("plugin v3: values that depend on thread scheduling are marked; order-independent parallel work is not (section 7.3)", () =>
@@ -478,8 +516,13 @@ static class ApiChecks
             var round = c.Compilation.GetTypeByMetadataName("Game.Round")!;
             var phase = round.GetMembers("_phase").OfType<IFieldSymbol>().Single();
             var writes = c.AccessesOf(phase).Where(a => a.Kind != AccessKind.Read).ToList();
-            if (writes.Count != 1 || writes[0].Conditions.Count != 1 || writes[0].Conditions[0].Test.Syntax.ToString() != "_timer <= 0")
+            if (writes.Count != 1 || writes[0].Conditions.Count != 1 || writes[0].Conditions[0].Test.Syntax.ToString() != "_timer <= 0" || !writes[0].Instrumentable)
             { Problem = "_phase writes: " + writes.Count; return; }
+            // a write through `ref`, and a deconstruction's target: seen as writes, and marked as ones no hook runs at
+            var timer = round.GetMembers("_timer").OfType<IFieldSymbol>().Single();
+            var tw = c.AccessesOf(timer).Where(a => a.Kind != AccessKind.Read).ToList();
+            if (tw.Count(a => !a.Instrumentable) != 2 || tw.Count(a => a.Instrumentable) != 2)
+            { Problem = "_timer writes: " + string.Join(", ", tw.Select(a => a.Operation.Parent!.Kind + "=" + a.Instrumentable)); return; }
             var gen = c.AddSource("""
                 using System;
                 using System.Runtime.CompilerServices;
@@ -504,6 +547,66 @@ static class ApiChecks
             var hook = gen.GetTypeByMetadataName("Generated")!.GetMembers("PhaseChanged").OfType<IMethodSymbol>().Single();
             c.InstrumentWrites(phase, hook, tag: 1);
         }
+    }
+
+    sealed class HooksPlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public int InterfaceVersion => 3;
+        public string Name => "hooks";
+        public void Run(PluginContext c)
+        {
+            var counter = c.Compilation.GetTypeByMetadataName("Game.Counter")!;
+            var n = counter.GetMembers("N").OfType<IFieldSymbol>().Single();
+            var main = c.Compilation.GetTypeByMetadataName("Game.Script")!.GetMembers("Main").OfType<IMethodSymbol>().Single();
+            var graph = c.GetControlFlowGraph(main);
+            if (graph == null || graph.Blocks.Length < 4) { Problem = "control-flow graph: " + graph?.Blocks.Length; return; }
+            var tree = c.Compilation.SyntaxTrees.Single();
+            var model = c.Compilation.GetSemanticModel(tree);
+            var news = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ObjectCreationExpressionSyntax>().Select(x => model.GetOperation(x)!).ToList();
+            if (c.MayAlias(news[0], news[1])) { Problem = "two new objects alias"; return; }
+            var others = c.AccessesOf(counter.GetMembers("Other").Single()).Select(a => ((IFieldReferenceOperation)a.Operation).Instance!).ToList();
+            if (!c.MayAlias(others[0], others[1])) { Problem = "the same local does not alias itself"; return; }
+            if (c.PointsTo((IFieldSymbol)counter.GetMembers("Other").Single()).All(t => t.Name != "Counter")) { Problem = "Other points to no Counter"; return; }
+            var gen = c.AddSource("""
+                using System;
+                using Game;
+                public static class Hooks {
+                    public static void Before(object o, int tag) => Console.WriteLine("before " + ((Counter)o).N);
+                    public static void After(object o) => Console.WriteLine("after " + ((Counter)o).N);
+                    public static void Read(object o, int tag) => Console.WriteLine("read " + ((Counter)o).N);
+                    public static void Statement(int tag) => Console.WriteLine("statement " + tag);
+                }
+                """);
+            IMethodSymbol H(string name) => gen.GetTypeByMetadataName("Hooks")!.GetMembers(name).OfType<IMethodSymbol>().Single();
+            c.InstrumentWrites(n, H("Before"), 1, InstrumentPoint.Before);
+            c.InstrumentWrites(n, H("After"), 2, InstrumentPoint.After);
+            // (reads in the program's Main only show: the hooks' own reads of N are not instrumented again)
+            c.InstrumentReads(n, H("Read"), 3);
+            var big = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionStatementSyntax>().Single(s => s.ToString().Contains("\"big\""));
+            c.InstrumentBefore(model.GetOperation(big)!, H("Statement"), 4);
+        }
+    }
+
+    sealed class ThrowingPlugin : ICompilerPlugin
+    {
+        public int InterfaceVersion => 3;
+        public string Name => "throws";
+        public void Run(PluginContext c) => throw new InvalidOperationException("went wrong");
+    }
+
+    sealed class LaterPlugin : ICompilerPlugin
+    {
+        public int InterfaceVersion => PluginContext.InterfaceVersion + 1;
+        public string Name => "later";
+        public void Run(PluginContext c) { }
+    }
+
+    sealed class ErrorPlugin : ICompilerPlugin
+    {
+        public int InterfaceVersion => 3;
+        public string Name => "error";
+        public void Run(PluginContext c) => c.Report(Diagnostic.Create(new DiagnosticDescriptor("TP0002", "test", "refused", "test", DiagnosticSeverity.Error, true), Location.None));
     }
 
     sealed class SchedulingPlugin : ICompilerPlugin
