@@ -2679,6 +2679,14 @@ namespace Cs2Wasm.Runtime
             Rt.HoldEpoch(); var e = new InvalidOperationException(msg); Rt.ReleaseEpoch();
             throw e;
         }
+        /// <summary>What the sandbox does not have (processes, raw sockets, the registry: section 8), where a program
+        /// reaches it: .NET's own exception for a platform that lacks something, as its browser target throws.</summary>
+        public static void PlatformNotSupported()
+        {
+            Rt.HoldEpoch(); var e = new PlatformNotSupportedException(); Rt.ReleaseEpoch();
+            throw e;
+        }
+
         public static void NotSupported()
         {
             // (the exception is made without passing a safe point: the code that failed keeps what it borrowed)

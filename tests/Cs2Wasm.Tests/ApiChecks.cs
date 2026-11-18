@@ -338,6 +338,31 @@ static class ApiChecks
             return qo == quiet ? null : $"quiet output:\n{qo}\nwanted:\n{quiet}\n{qe}";
         });
 
+        Check("what the sandbox lacks builds with a warning and throws PlatformNotSupportedException where the program reaches it (section 8); the rest of the program runs", () =>
+        {
+            var src = Header + """
+                static class E {
+                    static void Try(string what, Action a) { try { a(); Console.WriteLine(what + ": ran"); } catch (PlatformNotSupportedException) { Console.WriteLine(what + ": PlatformNotSupportedException"); } }
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void M() {
+                        Console.WriteLine("before");
+                        Try("process", () => System.Diagnostics.Process.Start("notepad"));
+                        Try("socket", () => new System.Net.Sockets.Socket(System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp).Dispose());
+                        Try("code page", () => System.Text.CodePagesEncodingProvider.Instance.GetEncoding(1252)!.GetBytes("x"));
+                        Console.WriteLine("after");
+                    }
+                }
+                """;
+            var r = Compile(src, new CompileOptions(), "sandbox.cs");
+            if (!r.Success) return Errors(r);
+            if (!r.Diagnostics.Any(d => d.Severity == DiagnosticSeverity.Warning && d.Id is "CW0003" or "CW0100")) return "no warning names what the sandbox lacks: " + string.Join("; ", r.Diagnostics.Select(d => d.Id));
+            var path = Path.Combine(outDir, "api_sandbox.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            var want = "before\nprocess: PlatformNotSupportedException\nsocket: PlatformNotSupportedException\ncode page: PlatformNotSupportedException\nafter\n";
+            return o == want ? null : $"output:\n{o}\nwanted:\n{want}\n{e}";
+        });
+
         Check("plugin v3: values that depend on thread scheduling are marked; order-independent parallel work is not (section 7.3)", () =>
         {
             var src = Header + """

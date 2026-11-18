@@ -143,7 +143,11 @@ sealed partial class FunctionCompiler
         switch (Inst!.Impl)
         {
             case MethodImpl.Missing:
+                // Section 8: only what cannot be built at all is an error (platform invoke, an engine method the
+                // boundary table lacks). What the sandbox or the library does not have is a warning where the
+                // program reaches it, and .NET's exception when it runs that far.
                 ReportMissing(M, Inst.FirstUse);
+                E.Call(D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "PlatformNotSupported", 0).Fn);
                 E.Op(Op.Unreachable);
                 return;
             case MethodImpl.Synthesized:

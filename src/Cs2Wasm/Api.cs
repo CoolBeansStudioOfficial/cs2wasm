@@ -128,12 +128,12 @@ public static class Diags
 
     public static readonly DiagnosticDescriptor NotCSharp = E("CW0001", "Not C#", "cs2wasm compiles C# compilations only");
     public static readonly DiagnosticDescriptor MissingBoundary = E("CW0002", "Engine method not in boundary table", "'{0}' has no body and is not in the boundary table");
-    public static readonly DiagnosticDescriptor SandboxCapability = E("CW0003", "Capability does not exist in the sandbox", "'{0}' needs {1}, which does not exist in the WASM sandbox");
+    public static readonly DiagnosticDescriptor SandboxCapability = W("CW0003", "Capability does not exist in the sandbox", "'{0}' needs {1}, which does not exist in the WASM sandbox: it throws PlatformNotSupportedException when the program reaches it");
     public static readonly DiagnosticDescriptor PlatformInvoke = E("CW0004", "Platform invoke does not exist in the sandbox", "'{0}' uses platform invoke, which does not exist in the WASM sandbox");
     public static readonly DiagnosticDescriptor ExportNeedsName = E("CW0005", "Export needs an entry point name", "'{0}' is [UnmanagedCallersOnly] without EntryPoint; give it EntryPoint = \"name\"");
     public static readonly DiagnosticDescriptor ExportShape = E("CW0006", "Invalid export", "'{0}' must be a static, non-generic method to be exported");
     public static readonly DiagnosticDescriptor DuplicateExport = E("CW0007", "Duplicate export", "Export name '{0}' is used twice");
-    public static readonly DiagnosticDescriptor LibraryMissing = E("CW0100", "Library member not implemented", "'{0}' is not implemented in cs2wasm's library yet");
+    public static readonly DiagnosticDescriptor LibraryMissing = W("CW0100", "Library member not implemented", "'{0}' is not implemented in cs2wasm's library yet: it throws PlatformNotSupportedException when the program reaches it");
     public static readonly DiagnosticDescriptor Unsupported = E("CW0101", "Not supported yet", "{0}");
     public static readonly DiagnosticDescriptor LibraryError = E("CW0102", "Library error", "cs2wasm library failed to compile: {0}");
     public static readonly DiagnosticDescriptor CyclePossible = I("CW0202", "Reference cycle possible", "objects of '{0}' can refer to each other in a cycle; such a group is freed together, when nothing outside it refers to any of its objects (objects nothing refers to go at once; a let-go part whose objects still refer to each other stays until the group goes)");
