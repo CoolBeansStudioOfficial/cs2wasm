@@ -123,11 +123,33 @@ static class P
         Console.WriteLine(it.Sum());
         Console.WriteLine(Use(s_owner.Slots.Length == 4 ? (s_owner.Head = new Box(Mk('s', 34))) : null, Drop()));
     }
+    static Box s_chain;
+    [MethodImpl(MethodImplOptions.NoInlining)] static void CutChain() { s_chain = null; }
+    [MethodImpl(MethodImplOptions.NoInlining)] static void CutAfter(Box b) { b.Next = null; }
+    static void StaticChains()
+    {
+        for (int i = 0; i < 4; i++) s_chain = new Box(Mk('t', 35 + i)) { Next = s_chain };
+        int sum = 0;
+        // a walk from a static: nothing in it stores
+        for (var n = s_chain; n != null; n = n.Next) sum += n.Sum();
+        Console.WriteLine(sum);
+        // the static is cleared by a call while the walk holds its first node
+        for (var n = s_chain; n != null; n = n.Next) { CutChain(); sum += Use(n, 19); }
+        Console.WriteLine(sum);
+        for (int i = 0; i < 4; i++) s_chain = new Box(Mk('u', 40 + i)) { Next = s_chain };
+        // each node cut from the rest by a call while the walk holds the next one
+        for (var n = s_chain; n != null;) { var next = n.Next; CutAfter(n); sum += Use(next ?? n, 20); n = next; }
+        Console.WriteLine(sum);
+        var first = s_chain; s_chain = new Box("z"); Churn(21);
+        Console.WriteLine(first.Sum());
+        var keep = s_chain; CutChain(); Churn(22);
+        Console.WriteLine(keep.Sum());
+    }
     [MethodImpl(MethodImplOptions.NoInlining)] static int Drop() { s_owner.Head = null; s_owner = null; return 3; }
 
     [UnmanagedCallersOnly(EntryPoint = "main")]
     static void Main()
     {
-        Fields(); Properties(); Elements(); Collections(); Chains(); Statics();
+        Fields(); Properties(); Elements(); Collections(); Chains(); Statics(); StaticChains();
     }
 }

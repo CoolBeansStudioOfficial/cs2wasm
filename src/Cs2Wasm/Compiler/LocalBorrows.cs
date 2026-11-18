@@ -97,6 +97,15 @@ sealed partial class FunctionCompiler
                 return HeldThroughScope(self, lr.Local);
             case IInstanceReferenceOperation or IParameterReferenceOperation:
                 return IsStableBase(e);
+            // a static: it keeps its object until it is stored again, which the scope's code must not do
+            case IFieldReferenceOperation { Field: { IsStatic: true, IsVolatile: false } sf } sfr
+                when !D.ThreadMode && Types.IsRef(T.Resolve(sf.Type, Map)) && !IsThreadStatic(StorageField(sf)):
+                {
+                    var key = Driver.FieldKey(Owner(sfr.Field), StorageField(sfr.Field));
+                    D.NoteBorrowField(key, StorageField(sfr.Field), T.Resolve(sf.Type, Map));
+                    keys.Add(key);
+                    return true;
+                }
             case IFieldReferenceOperation { Field: { IsStatic: false, IsVolatile: false } f, Instance: { } inst } fr
                 when !D.ThreadMode && f.ContainingType.TypeKind == TypeKind.Class && Types.IsRef(T.Resolve(f.Type, Map)):
                 {
@@ -104,6 +113,8 @@ sealed partial class FunctionCompiler
                     // the object the field is read from: the local's own value, `this`, a parameter
                     bool held = inst is ILocalReferenceOperation il && (SymbolEqualityComparer.Default.Equals(il.Local, self) || HeldThroughScope(self, il.Local))
                         || inst is IInstanceReferenceOperation or IParameterReferenceOperation && IsStableBase(inst);
+                    // (a field of the object a static holds: the static's key too)
+                    if (!held && inst is IFieldReferenceOperation { Field.IsStatic: true }) held = BorrowSource(self, inst, keys);
                     if (!held) return false;
                     var key = Driver.FieldKey(Owner(fr.Field), StorageField(fr.Field));
                     D.NoteBorrowField(key, StorageField(fr.Field), T.Resolve(f.Type, Map));

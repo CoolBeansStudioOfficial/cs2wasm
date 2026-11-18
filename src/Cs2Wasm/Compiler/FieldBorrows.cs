@@ -49,6 +49,13 @@ sealed partial class FunctionCompiler
             }
             return null;
         }
+        // a static's value: as a field's, with the static's own key
+        if (init is IFieldReferenceOperation { Field: { IsStatic: true, IsVolatile: false } stf } sfr && Types.IsRef(T.Resolve(stf.Type, Map)) && !IsThreadStatic(StorageField(stf)))
+        {
+            var sk = Driver.FieldKey(Owner(sfr.Field), StorageField(sfr.Field));
+            D.NoteBorrowField(sk, StorageField(sfr.Field), T.Resolve(stf.Type, Map));
+            return sk;
+        }
         if (init is not IFieldReferenceOperation { Field.IsStatic: false, Instance: { } inst } fr) return null;
         if (!Types.IsRef(T.Resolve(fr.Field.Type, Map)) || fr.Field.ContainingType.TypeKind != TypeKind.Class) return null;
         switch (inst)

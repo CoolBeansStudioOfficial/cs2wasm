@@ -499,6 +499,9 @@ sealed partial class FunctionCompiler
         while (op is IConversionOperation { Conversion.IsIdentity: true } c) op = c.Operand;
         switch (op)
         {
+            case IFieldReferenceOperation { Field.IsStatic: true } sf when Types.IsRef(TypeOf(sf)):
+                D.FieldsAddressTaken.Add(Driver.FieldKey(Owner(sf.Field), StorageField(sf.Field)));
+                break;
             case IFieldReferenceOperation { Field.IsStatic: false } f when f.Instance != null && !TypeOf(f.Instance).IsValueType && Types.IsRef(TypeOf(f)):
                 D.FieldsAddressTaken.Add(Driver.FieldKey(Owner(f.Field), StorageField(f.Field)));
                 if (D.Arenas.FieldSite(Owner(f.Field), T.FieldIn(Owner(f.Field), StorageField(f.Field))) is { } s) s.AddressTaken = true;
@@ -736,7 +739,7 @@ sealed partial class FunctionCompiler
 
     void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce, bool initializer = false)
     {
-        if (!f.IsStatic) D.NoteFieldWrite(E, Driver.FieldKey(Owner(f), f));
+        D.NoteFieldWrite(E, Driver.FieldKey(Owner(f), f));
         var ft = T.Resolve(f.Type, Map);
         int a = E.AddLocal(ValType.I32);
         int off;
@@ -2497,7 +2500,7 @@ sealed partial class FunctionCompiler
                     var bf = Driver.AutoPropertyField(pr.Property.OriginalDefinition)!;
                     var ft = T.Resolve(pr.Property.Type, Map);
                     var owner = Owner(pr.Property);
-                    if (!bf.IsStatic) D.NoteFieldWrite(E, Driver.FieldKey(owner, bf));
+                    D.NoteFieldWrite(E, Driver.FieldKey(owner, bf));
                     Arenas.Site? psite = null; WasmFunction? ppin = null;
                     if (Types.IsRef(ft))
                     {
@@ -2519,7 +2522,7 @@ sealed partial class FunctionCompiler
             case IFieldReferenceOperation fr when Types.IsRef(t):
                 {
                     var field = fr.Field;
-                    if (!field.IsStatic) D.NoteFieldWrite(E, Driver.FieldKey(Owner(field), StorageField(field)));
+                    D.NoteFieldWrite(E, Driver.FieldKey(Owner(field), StorageField(field)));
                     if (field.IsStatic) return new MemLV(this, t, () => EmitAddressBase(target), pin: field.IsReadOnly ? D.Arenas.Pin(t) : null, pub: IsThreadStatic(StorageField(field)) ? Publish.None : Publish.Always);
                     if (fr.Instance != null && !TypeOf(fr.Instance).IsValueType)
                     {
