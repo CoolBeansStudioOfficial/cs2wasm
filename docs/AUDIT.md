@@ -417,6 +417,22 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     that keep the decisions (no search for garbage): keep the task machinery out of the program's groups (a
     continuation's target linked only while it waits), or look at an object's counted references again whenever
     any object above it gets an owner (a visit of what that object owns, at that store).
+  - **Both ways were tried the same day; neither is what fixed it.** Keeping the task machinery out has no rule
+    that is automatic and sound: the group that lives on holds the thread pool's queue, its per-thread parts, the
+    threads and the timer queue (measured: 39 members, 12 referred to from outside), their storage is ordinary
+    arrays and  segments shared with the program's own, and an object that never joins a group
+    (pinned) is never freed as part of a cycle, which a fired 's promise and timer are. The visit of
+    what a re-owned object owns changed nothing. What the counts showed instead: the object an async method makes
+    refers to its parent first and so *owns* the parent; when the state machine that held it goes, the next
+    owner was the latest other holder (the task's result, gone by then) or was refused because the object was
+    above it. Now the first other holder is remembered, and an adoption turns the ownership round as a first
+    store does (, ): constant time, no visit. Test 131: one child and four through
+     are freed (5 left each before). Suite 157 passed checked and as shipped, 1 known gap; bench
+    0.96x, 16.0 MB against 71.3 MB, unchanged.
+  - **What test 127 still leaves, exactly:** children held by two containers of one tree ( and
+    ). A member that something besides its owner refers to holds its owner, since that other
+    holder may be outside the tree; here it is inside, the tree holds itself, and in a group that lives on it
+    stays. Not specific to async; freed whenever the group goes (a program without a task on a cycle: at once).
 
 ### Direction (revised 2026-11-18 with the owner)
 

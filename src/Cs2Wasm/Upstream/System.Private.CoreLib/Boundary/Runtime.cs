@@ -1594,10 +1594,10 @@ namespace Cs2Wasm.Runtime
             int p = PL(v, 20);
             if (p == 0) return;
             PS(v, 20, 0);
-            if (Mem.LoadI32(p) >= -1 || OnChain(p, v)) return;
-            PS(v, 32, p);
-            PS(v, 24, PL(v, 24) | Owned | MultOne);
-            if ((PL(v, 28) & 0x55555555) != 0 && (PL(v, 24) & Elems) == 0) Reevaluate(v);
+            if (Mem.LoadI32(p) >= -1) return;
+            // (as the first container to hold it would have: the ownership turns round where the member owns
+            // what is above the container, a parent it referred to before it was in the parent's list)
+            TakeOwnership(v, p);
         }
 
         /// <summary>A member that no member refers to and that refers to none (a list's array after Clear, held by a
@@ -1936,7 +1936,9 @@ namespace Cs2Wasm.Runtime
                     else PS(val, 24, fl + MultOne);
                 }
                 else if (ow == 0) TakeOwnership(val, container);
-                else PS(val, 20, container);
+                // (the first other container that holds it is the one to own it next: a later one, a task's
+                // result, a temporary array, is as often gone by then)
+                else if (PL(val, 20) == 0) PS(val, 20, container);
             }
             UpdateHold(val);
             return val;
