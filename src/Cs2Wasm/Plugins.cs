@@ -158,6 +158,14 @@ public sealed class PluginContext
     /// (boundary methods) do nothing and return defaults; the copy is exported as `exportName`.</summary>
     public void CloneWithSuppressedImports(IMethodSymbol method, IEnumerable<IMethodSymbol> suppressedImports, string exportName) => _host.Clone(method, suppressedImports, exportName);
 
+    /// <summary>(Version 4.) Makes the imports (boundary methods) suppressible and returns their bit (1, 2, 4, ...; at
+    /// most 31 groups). While generated code has the bit set in <c>Cs2Wasm.Effects.Suppressed</c> (an int property
+    /// every source added with AddSource can name), a call to one of them does nothing and returns its type's
+    /// default, wherever the call is made from: a virtual method, a delegate, a lambda, the library. A run of the
+    /// program's own code with its effects left out (a re-simulation, a partial tick for display) is that code
+    /// called between setting the bit and restoring it; nothing is cloned. A worker thread has its own value.</summary>
+    public int SuppressibleImports(IEnumerable<IMethodSymbol> imports) => _host.Suppressible(imports);
+
     public void AddCustomSection(string name, byte[] data) => _sections.Add((name, data));
     public void Report(Diagnostic diagnostic) => _diagnostics.Add(diagnostic);
 

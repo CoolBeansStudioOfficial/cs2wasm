@@ -329,6 +329,26 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
 - **Step 13.1: done (2026-11-18).** `LICENSE`, `THIRD-PARTY-NOTICES.md`, a README that matches the tree and names
   what a build needs.
 
+- **Steps 8.2, 8.3: done (2026-11-18).** `MemberAccess.Instrumentable` says which accesses a hook runs at (not a
+  `ref` or `out` argument, a deconstruction's target, an event's handlers); every hook form and failure path of the
+  interface has an API check.
+- **Step 9, in part (2026-11-18): plugin interface version 4, without waiting for the IR.** The measurements put the
+  IR's first use in the optimizer, and what the Invisible API was blocked on turned out to need only the front end's
+  one entry point for expressions:
+  - `InterceptValue(expression, hook)`: the value of any one expression goes through a hook that returns the value
+    the program goes on with: a branch's outcome seen and replaced (A4.2), a draw redirected, the value a write
+    stores rounded or limited, an awaited answer. Works in async methods. A hook on something that is not computed
+    as a value fails the build.
+  - `InstrumentWrite(write, hook)`: a write hook at one write (A4.3).
+  - `SuppressibleImports(imports)` and `Cs2Wasm.Effects.Suppressed`: effects are left out by a switch the generated
+    code sets around a run, so it holds for virtual calls, delegates, lambdas and the library, and nothing is
+    cloned (A4.7). `CloneWithSuppressedImports` stays as it was.
+  - Generated code names the program's internal types and private members (step 8.1).
+  - Still open: collection entries as accesses (A4.4: a plugin can hook the key and the store itself, but
+    `Accesses` does not report them), a hook after a statement, the closed-form solver (A4.6), conditions across
+    calls and the ownership-based alias query (A4.8), the list of unsure sites, plugins before the first compile
+    (A4.9), and the first slice of the real plugin in the Bazoodle repository (9.4).
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:

@@ -34,6 +34,53 @@ internal sealed partial class Driver
     public readonly Dictionary<(string path, int start, int length), List<(IMethodSymbol hook, int tag)>> StatementHooks = [];
     public readonly Dictionary<((string path, int start, int length) site, OperationKind kind), List<ValueHook>> ValueHooks = [];
     public readonly Dictionary<(string path, int start, int length), List<MemberHook>> SiteWriteHooks = [];
+    /// <summary>Imports a plugin made suppressible (PluginContext.SuppressibleImports): the bits of each, by method key.</summary>
+    public readonly Dictionary<string, int> SuppressBits = [];
+    public int SuppressGroups;
+    WasmGlobal? _suppress;
+    /// <summary>Cs2Wasm.Effects.Suppressed: which groups of imports do nothing just now (a mutable global: exported,
+    /// and a worker instance's own).</summary>
+    public WasmGlobal SuppressGlobal()
+    {
+        if (_suppress == null) { _suppress = new WasmGlobal("__suppress", ValType.I32, true, 0); Module.Globals.Add(_suppress); }
+        return _suppress;
+    }
+    /// <summary>The trees of the sources plugins added: the declaration of Cs2Wasm.Effects in one is the compiler's.</summary>
+    public readonly HashSet<SyntaxTree> PluginTrees = [];
+    public bool IsEffectsIntrinsic(IMethodSymbol m) =>
+        PluginTrees.Count > 0 && m.ContainingType is { Name: "Effects", ContainingNamespace: { Name: "Cs2Wasm", ContainingNamespace.IsGlobalNamespace: true } }
+        && m.OriginalDefinition.DeclaringSyntaxReferences.Any(r => PluginTrees.Contains(r.SyntaxTree));
+
+    /// <summary>Every call of a suppressible import goes through a function that asks first (Emit, when all code exists).</summary>
+    void ApplySuppression()
+    {
+        if (SuppressBits.Count == 0) return;
+        var wrappers = new Dictionary<WasmFunction, WasmFunction>();
+        foreach (var mi in AllMethods.ToList())
+        {
+            if (mi.Impl != MethodImpl.Import || mi.Clone != null || !SuppressBits.TryGetValue(mi.Key, out int bits) || wrappers.ContainsKey(mi.Fn)) continue;
+            var w = Module.AddFunction("suppressible " + mi.Fn.Name, mi.Fn.Type);
+            var e = new Emitter(w);
+            e.GGet(SuppressGlobal()); e.I32(bits); e.Op(Op.I32And);
+            e.If();
+            foreach (var r in mi.Fn.Type.Results)
+                switch (r) { case ValType.I64: e.I64(0); break; case ValType.F32: e.F32(0); break; case ValType.F64: e.F64(0); break; default: e.I32(0); break; }
+            e.Op(Op.Return);
+            e.End();
+            for (int i = 0; i < mi.Fn.Type.Params.Length; i++) e.Get(i);
+            e.Call(mi.Fn);
+            wrappers[mi.Fn] = w;
+        }
+        if (wrappers.Count == 0) return;
+        foreach (var f in Module.Functions)
+        {
+            if (f.IsImport || wrappers.ContainsValue(f)) continue;
+            for (int i = 0; i < f.Body.Count; i++)
+                if (f.Body[i].Op == Op.Call && f.Body[i].Ref is WasmFunction g && wrappers.TryGetValue(g, out var w))
+                    f.Body[i] = f.Body[i] with { Ref = w };
+        }
+    }
+
     public bool HasInstrumentation => WriteHooks.Count > 0 || ReadHooks.Count > 0 || StatementHooks.Count > 0 || ValueHooks.Count > 0 || SiteWriteHooks.Count > 0;
     readonly HashSet<ISymbol> _instrumented = new(SymbolEqualityComparer.Default);
     readonly List<CloneSpec> _clones = [];
@@ -606,7 +653,11 @@ internal sealed partial class PluginHost
     public Compilation AddSource(string code, string path)
     {
         var tree = CSharpSyntaxTree.ParseText(code, (CSharpParseOptions)D.Main.SyntaxTrees.First().Options, path);
-        var comp = CSharpCompilation.Create("cs2wasm.plugin" + (++_sources), [tree], D.Main.References.Append(D.Main.ToMetadataReference()),
+        // (what every added source can name: PluginContext.SuppressibleImports)
+        var effects = CSharpSyntaxTree.ParseText("namespace Cs2Wasm { static class Effects { public static extern int Suppressed { get; set; } } }",
+            (CSharpParseOptions)D.Main.SyntaxTrees.First().Options, "cs2wasm.effects.g.cs");
+        D.PluginTrees.Add(tree); D.PluginTrees.Add(effects);
+        var comp = CSharpCompilation.Create("cs2wasm.plugin" + (++_sources), [tree, effects], D.Main.References.Append(D.Main.ToMetadataReference()),
             IgnoringAccessibility(D.Main.Options.WithOutputKind(OutputKind.DynamicallyLinkedLibrary).WithMetadataImportOptions(MetadataImportOptions.All)));
         // (not "inconsistent accessibility", CS0050 to CS0059: generated code is part of the program, and a method of it
         // that takes one of the program's internal types is as visible as that type needs)
@@ -622,6 +673,18 @@ internal sealed partial class PluginHost
         if (!table.TryGetValue(def, out var list)) table[def] = list = [];
         list.Add(new MemberHook(hook, tag, point));
         foreach (var a in AccessesOf(def)) D.MarkInstrumented(a.Method);
+    }
+
+    public int Suppressible(IEnumerable<IMethodSymbol> imports)
+    {
+        if (D.SuppressGroups >= 31) { D.Report(Diags.Plugin, null, "SuppressibleImports: no more than 31 groups"); return 0; }
+        int bit = 1 << D.SuppressGroups++;
+        foreach (var m in imports)
+        {
+            var key = Types.MethodKey(D.CanonicalMethod(m));
+            D.SuppressBits[key] = D.SuppressBits.GetValueOrDefault(key) | bit;
+        }
+        return bit;
     }
 
     public void AddSiteWriteHook(IOperation write, IMethodSymbol hook, int tag, InstrumentPoint point)

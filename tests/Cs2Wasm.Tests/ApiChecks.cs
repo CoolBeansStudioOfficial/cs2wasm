@@ -295,6 +295,49 @@ static class ApiChecks
             return !refused.Success && refused.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("was not applied")) ? null : "a value hook on an assignment's target was not refused";
         });
 
+        Check("plugin v4: suppressible imports do nothing while their bit is set, whatever calls them (a virtual method, a delegate, a lambda, an interface); other imports and the program's state go on", () =>
+        {
+            var src = Header + """
+                namespace Game {
+                static class Engine { public static extern void Play(int sound); public static extern int Spawn(int kind); public static extern void Move(int x); }
+                abstract class Thing { public abstract void Act(); }
+                class Loud : Thing { public override void Act() { Engine.Play(1); } }
+                interface IFx { int Go(); }
+                class Spawner : IFx { public int Go() => Engine.Spawn(7); }
+                static class Script {
+                    static int s_ticks;
+                    static readonly System.Action s_later = () => Engine.Play(2);
+                    public static void Tick() {
+                        s_ticks++;
+                        Thing t = new Loud(); t.Act();
+                        IFx fx = new Spawner(); int id = fx.Go();
+                        s_later();
+                        System.Func<int, int> f = k => Engine.Spawn(k + id);
+                        Engine.Move(s_ticks * 10 + f(1));
+                    }
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() { Tick(); Console.WriteLine("ticks " + s_ticks); }
+                }
+                }
+                """;
+            var table = BoundaryTable.FromJson("""{ "imports": [ { "method": "M:Game.Engine.Play(System.Int32)", "module": "game", "name": "play" }, { "method": "M:Game.Engine.Spawn(System.Int32)", "module": "game", "name": "spawn" }, { "method": "M:Game.Engine.Move(System.Int32)", "module": "game", "name": "move" } ] }""");
+            var plugin = new QuietPlugin();
+            var r = Compile(src, new CompileOptions { Boundary = table, Plugins = [plugin], Checked = true });
+            if (!r.Success) return Errors(r);
+            var path = Path.Combine(outDir, "api_plugin_quiet.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            // (the test host's imports return 0)
+            var loud = "[engine] game.play(1)\n[engine] game.spawn(7)\n[engine] game.play(2)\n[engine] game.spawn(1)\n[engine] game.move(10)\nticks 1\n";
+            if (o != loud) return $"main output:\n{o}\nwanted:\n{loud}\n{e}";
+            var psi = new ProcessStartInfo("node", [Path.Combine(root, "host", "run.mjs"), path, "quiet_tick"]) { RedirectStandardOutput = true, RedirectStandardError = true };
+            using var pr = Process.Start(psi)!;
+            var qo = pr.StandardOutput.ReadToEnd().Replace("\r\n", "\n"); var qe = pr.StandardError.ReadToEnd(); pr.WaitForExit();
+            // sounds and spawns left out, the move made, the state advanced, and loud again afterwards
+            var quiet = "[engine] game.move(10)\nquiet 1 0\n[engine] game.play(1)\n[engine] game.spawn(7)\n[engine] game.play(2)\n[engine] game.spawn(1)\n[engine] game.move(20)\n";
+            return qo == quiet ? null : $"quiet output:\n{qo}\nwanted:\n{quiet}\n{qe}";
+        });
+
         Check("plugin v3: values that depend on thread scheduling are marked; order-independent parallel work is not (section 7.3)", () =>
         {
             var src = Header + """
@@ -684,6 +727,34 @@ static class ApiChecks
                 var reset = (Microsoft.CodeAnalysis.Operations.ISimpleAssignmentOperation)Op<Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax>(a => a.ToString() == "_score = 0");
                 c.InterceptValue(reset.Target, H("Answer"));
             }
+        }
+    }
+
+    sealed class QuietPlugin : ICompilerPlugin
+    {
+        public int InterfaceVersion => 4;
+        public string Name => "quiet";
+        public void Run(PluginContext c)
+        {
+            var engine = c.Compilation.GetTypeByMetadataName("Game.Engine")!;
+            IMethodSymbol E(string n) => engine.GetMembers(n).OfType<IMethodSymbol>().Single();
+            int effects = c.SuppressibleImports([E("Play"), E("Spawn")]);
+            c.AddSource($$"""
+                using System;
+                using System.Runtime.InteropServices;
+                static class Quiet {
+                    [UnmanagedCallersOnly(EntryPoint = "quiet_tick")]
+                    static void Tick()
+                    {
+                        int before = Cs2Wasm.Effects.Suppressed;
+                        Cs2Wasm.Effects.Suppressed = before | {{effects}};
+                        try { Game.Script.Tick(); }
+                        finally { Cs2Wasm.Effects.Suppressed = before; }
+                        Console.WriteLine("quiet " + Game.Script.s_ticks + " " + Cs2Wasm.Effects.Suppressed);
+                        Game.Script.Tick();
+                    }
+                }
+                """);
         }
     }
 

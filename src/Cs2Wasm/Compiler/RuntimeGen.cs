@@ -1847,6 +1847,7 @@ internal sealed partial class Driver
         Module.CustomSections.Add(new CustomSection("cs2wasm.version", ver.ToArray()));
         foreach (var (n, data) in Options.CustomSections) Module.CustomSections.Add(new CustomSection(n, data));
         Mark("emit start");
+        ApplySuppression();
         Module.ValidateAlways = Options.Checked;
         var enc = Module.Encode(Options.Optimize);
         foreach (var problem in Module.ValidationProblems) Report(Diags.Unsupported, null, "internal error: " + problem);
