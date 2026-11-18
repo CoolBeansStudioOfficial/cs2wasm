@@ -135,7 +135,7 @@ internal sealed partial class RuntimeFns
         var l = D.Types.LayoutOf(t);
         foreach (var f in l.Fields)
         {
-            if (Types.IsRef(f.Type)) { e.Get(addrLocal); e.Load(Op.I32Load, baseOff + f.Offset); e.Call(Release); }
+            if (Types.IsRef(f.Type)) { e.Get(addrLocal); e.Load(Op.I32Load, baseOff + f.Offset); e.Call(ReleaseOf(f.Type)); }
             else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs)
             {
                 e.Get(addrLocal); if (baseOff + f.Offset != 0) { e.I32(baseOff + f.Offset); e.Op(Op.I32Add); }
@@ -185,7 +185,7 @@ internal sealed partial class RuntimeFns
         var l = D.Types.LayoutOf(t);
         foreach (var f in l.Fields)
         {
-            if (Types.IsRef(f.Type)) { e.Get(addrLocal); e.Load(Op.I32Load, f.Offset); e.Call(Retain); e.Op(Op.Drop); }
+            if (Types.IsRef(f.Type)) { e.Get(addrLocal); e.Load(Op.I32Load, f.Offset); e.Call(RetainOf(f.Type)); e.Op(Op.Drop); }
             else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs)
             {
                 e.Get(addrLocal); if (f.Offset != 0) { e.I32(f.Offset); e.Op(Op.I32Add); }
@@ -569,7 +569,7 @@ sealed partial class RuntimeGen
                 e.Get(0); e.Load(Op.I32Load, 12); e.Call(rt.Release);
                 foreach (var (off, t) in disp.Vars.Select(v => disp.Slots[v]).Concat(disp.ExtraSlots.Values))
                 {
-                    if (Types.IsRef(t)) { e.Get(0); e.Load(Op.I32Load, off); e.Call(rt.Release); }
+                    if (Types.IsRef(t)) { e.Get(0); e.Load(Op.I32Load, off); e.Call(rt.ReleaseOf(t)); }
                     else if (Types.IsStruct(t) && D.Types.LayoutOf(t).HasRefs) { e.Get(0); e.I32(off); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(t)); }
                 }
             }
@@ -1284,6 +1284,9 @@ sealed partial class RuntimeGen
         D.Rt.EmitEnumInfo();
         EmitTypeNames();
         D.Mark("  finish: EmitTypeNames");
+        // (every function exists: what another thread can reach is known, and so which counts are atomic)
+        D.ResolveSharing();
+        D.Mark("  finish: sharing");
         // (every function exists: what each can store is known)
         D.ResolveFieldBorrows();
         D.ResolveInitStores();
@@ -1382,7 +1385,8 @@ sealed partial class RuntimeGen
     WasmFunction ReleaseOfField(ITypeSymbol t)
     {
         var rt = D.Rt;
-        if (D.ThreadMode || t is not INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true } || Types.IsImmortalType(t)) return rt.Release;
+        if (D.ThreadMode) return rt.ReleaseOf(t);
+        if (t is not INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true } || Types.IsImmortalType(t)) return rt.Release;
         int id = D.TypeId(D.Types.Canonical(t));
         if (_releaseOf.TryGetValue(id, out var f)) return f;
         // (as it stands it is a release: what it stays when T's destruction is not in the module)
@@ -1447,6 +1451,12 @@ sealed partial class RuntimeGen
         if (!D.ThreadMode)
         {
             D.Module.ReleaseFn = D.Rt.Release;
+            D.Module.LeafDestroy = id => IsLeafDestroy(id) && D.ExtId(id) >= 0 ? _destroyFns[id] : null;
+        }
+        else if (D.Rt.ReleasePlainIfMade is { } rp)
+        {
+            // (threads: the plain releases, of objects no other thread can reach, TypedCounts.cs)
+            D.Module.ReleaseFn = rp;
             D.Module.LeafDestroy = id => IsLeafDestroy(id) && D.ExtId(id) >= 0 ? _destroyFns[id] : null;
         }
         var now = D.Module.AddFunction("rt.destroy_now", new FuncType([ValType.I32], []));

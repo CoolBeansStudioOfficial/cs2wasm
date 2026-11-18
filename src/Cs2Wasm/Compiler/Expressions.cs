@@ -66,7 +66,7 @@ sealed partial class FunctionCompiler
         {
             var o = EmitValueCore(op);
             if (o != Own.None && op.Type != null && Types.IsImmortalType(op.Type)) return Own.None;
-            return o == Own.Unstable && D.ThreadMode ? CountedLoad(o) : o;
+            return o == Own.Unstable && D.ThreadMode ? CountedLoad(o, op) : o;
         }
         catch (CompileException ex) when (ex.Location == null) { throw new CompileException(ex.Message, op.Syntax.GetLocation()); }
         finally { E.CurrentPos = save; }
@@ -78,7 +78,7 @@ sealed partial class FunctionCompiler
     /// over the place and release the object before this one counts or uses it, so the read becomes a read that
     /// counts in one step (rt.load_retain: under the lock the store takes too), and the value is this code's own.
     /// Not for a place that never changes once others can see it (_plainLoadAt: a readonly field).</summary>
-    Own CountedLoad(Own o)
+    Own CountedLoad(Own o, IOperation? op = null)
     {
         var b = E.Fn.Body;
         if (o != Own.Unstable || b.Count == 0 || _plainLoadAt == b.Count || s_noCountedLoads) return o;
@@ -86,7 +86,14 @@ sealed partial class FunctionCompiler
         if (last.Op != Op.I32Load || last.Ref != null) return o;
         b.RemoveAt(b.Count - 1);
         if (last.Imm != 0) { E.I32((int)last.Imm); E.Op(Op.I32Add); }
-        E.Call(Rt.LoadRetain);
+        // (a slot of an object no other thread can reach: no other thread stores there, TypedCounts.cs)
+        ITypeSymbol? container = op switch
+        {
+            IFieldReferenceOperation { Field.IsStatic: false, Instance: { Type: not null } inst } when !TypeOf(inst).IsValueType => TypeOf(inst),
+            IArrayElementReferenceOperation { ArrayReference.Type: not null } ae => TypeOf(ae.ArrayReference),
+            _ => null,
+        };
+        E.Call(container != null && op!.Type != null ? Rt.LoadRetainOf(container, TypeOf(op)) : Rt.LoadRetain);
         return Own.Owned;
     }
     /// <summary>Where (body length) a load ended whose place does not change: CountedLoad leaves it.</summary>
@@ -333,9 +340,9 @@ sealed partial class FunctionCompiler
         {
             if (Types.IsRef(t) && !Types.IsImmortalType(t))
             {
-                ToOwned(o);
+                ToOwned(o, t);
                 int nv = Scratch(ValType.I32); E.Set(nv);
-                E.Get(v.Local); E.Call(Rt.Release);
+                E.Get(v.Local); E.Call(Rt.ReleaseOf(t));
                 E.Get(nv); E.Set(v.Local);
                 FreeScratch(ValType.I32, nv);
             }
@@ -364,7 +371,7 @@ sealed partial class FunctionCompiler
         // (an immortal object: stored as it is, nothing counted, nothing to publish: its count word marks it shared)
         if (Types.IsImmortalType(t) && site == null && pin == null) { int iv = Scratch(vt); E.Set(iv); pushAddr(); E.Get(iv); E.Store(Op.I32Store, offset); FreeScratch(vt, iv); return; }
         int val = Scratch(vt);
-        if (Types.IsRef(t)) ToOwned(o);
+        if (Types.IsRef(t)) ToOwned(o, t);
         E.Set(val);
         if (Types.IsRef(t))
         {
@@ -391,13 +398,14 @@ sealed partial class FunctionCompiler
             {
                 // (an exchange: rt.store_ref)
                 pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); }
-                E.Get(val); E.Call(Rt.StoreRef); E.Set(old);
+                // (into an object no other thread can reach: a plain exchange, TypedCounts.cs)
+                E.Get(val); E.Call(site != null && !site.IsArray ? Rt.StoreRefOf(site.Container) : site != null ? Rt.StoreRefOf(site.Container) : Rt.StoreRef); E.Set(old);
             }
             E.Get(old);
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
             if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink); }
             else if (byAddress) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.UnlinkAt(t)); }
-            else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.Release);
+            else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.ReleaseOf(t));
             FreeScratch(ValType.I32, old); FreeScratch(ValType.I32, a);
         }
         else { pushAddr(); E.Get(val); E.Store(Types.StoreOp(t), offset); }
@@ -507,17 +515,22 @@ sealed partial class FunctionCompiler
     void NoteAddressTaken(IOperation op)
     {
         while (op is IConversionOperation { Conversion.IsIdentity: true } c) op = c.Operand;
+        // (Sharing.cs: stores through this address are recorded where they are made)
+        bool precise = _preciseAddr;
+        _preciseAddr = false;
+        List<Sharing.Src>? none = precise ? [] : null;
         switch (op)
         {
             case IFieldReferenceOperation { Field.IsStatic: true } sf when Types.IsRef(TypeOf(sf)):
                 D.FieldsAddressTaken.Add(Driver.FieldKey(Owner(sf.Field), StorageField(sf.Field)));
+                if (!precise) Sh?.Static(Driver.StaticKey(T.Canonical(Owner(sf.Field)), StorageField(sf.Field)), TypeOf(sf), IsThreadStatic(StorageField(sf.Field)), [TopSrc(TypeOf(sf))]);
                 break;
             case IFieldReferenceOperation { Field.IsStatic: false } f when f.Instance != null && !TypeOf(f.Instance).IsValueType && Types.IsRef(TypeOf(f)):
                 D.FieldsAddressTaken.Add(Driver.FieldKey(Owner(f.Field), StorageField(f.Field)));
-                if (D.Arenas.FieldSite(Owner(f.Field), T.FieldIn(Owner(f.Field), StorageField(f.Field))) is { } s) { s.AddressTaken = true; s.AddValue(T.Canonical(TypeOf(f))); }
+                if (D.Arenas.FieldSite(Owner(f.Field), T.FieldIn(Owner(f.Field), StorageField(f.Field))) is { } s) { s.AddressTaken = true; s.AddValue(T.Canonical(TypeOf(f)), none); }
                 break;
             case IArrayElementReferenceOperation ae when TypeOf(ae.ArrayReference) is IArrayTypeSymbol at:
-                if (D.Arenas.ArraySite(at) is { } a) { a.AddressTaken = true; a.AddValue(T.Canonical(at.ElementType)); }
+                if (D.Arenas.ArraySite(at) is { } a) { a.AddressTaken = true; a.AddValue(T.Canonical(at.ElementType), none); }
                 break;
         }
     }
@@ -734,7 +747,7 @@ sealed partial class FunctionCompiler
     void EmitStoreField(IFieldSymbol f, Action? recv, IOperation value, bool initializer = false)
     {
         var ft = T.Resolve(f.Type, Map);
-        EmitStoreFieldFrom(f, recv, value.Type != null ? TypeOf(value) : ft, () =>
+        EmitStoreFieldFrom(f, recv, value.Type != null ? TypeOf(value) : ft, srcs: Sh != null ? FlowSrcs(value) : null, produce: () =>
         {
             if (Types.IsStruct(ft) && IsDirectStructProducer(value))
             {
@@ -742,12 +755,12 @@ sealed partial class FunctionCompiler
                 return EmitValue(value);
             }
             return EmitValue(value);
-        }, initializer);
+        }, initializer: initializer);
     }
 
     static bool IsThreadStatic(ISymbol f) => f.GetAttributes().Any(a => a.AttributeClass?.Name == "ThreadStaticAttribute");
 
-    void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce, bool initializer = false)
+    void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce, bool initializer = false, List<Sharing.Src>? srcs = null)
     {
         D.NoteFieldWrite(E, Driver.FieldKey(Owner(f), f));
         var ft = T.Resolve(f.Type, Map);
@@ -763,8 +776,10 @@ sealed partial class FunctionCompiler
         if (Types.IsRef(ft))
         {
             if (f.IsStatic) pin = D.Arenas.Pin(ft);
-            else if ((site = D.Arenas.FieldSite(Owner(f), T.Field(f, Map))) != null) site.AddValue(valueType);
+            else if ((site = D.Arenas.FieldSite(Owner(f), T.Field(f, Map))) != null) site.AddValue(valueType, srcs);
         }
+        if (f.IsStatic) Sh?.Static(Driver.StaticKey(T.Canonical(Owner(f)), f), ft, IsThreadStatic(f), srcs ?? [TopSrc(valueType)]);
+        else if (Owner(f).IsValueType && Types.IsRef(ft)) Sh?.Add(Sharing.StructFieldNode(T.Canonical(Owner(f)), f), srcs ?? [TopSrc(valueType)]);
         var pub = f.IsStatic ? (IsThreadStatic(f) ? Publish.None : Publish.Always) : f.ContainingType.IsValueType ? Publish.Unknown : Publish.Container;
         StoreToAddressFromStack(() => E.Get(a), off, ft, o, site, () => E.Get(a), pin, pub, () => E.Get(a),
             initializer && !f.IsStatic ? InitStoreKey(f, Owner(f), null) : null);
@@ -2007,7 +2022,7 @@ sealed partial class FunctionCompiler
             return EmitBorrowAssign(bv, sa.Value, bwb, needResult);
         var tt = TypeOf(target);
         var lv = LValueOf(target);
-        lv.Note(StaticValueType(sa.Value));
+        lv.Note(StaticValueType(sa.Value), sa.Value);
         lv.Prepare();
         Own o = Types.IsStruct(tt) ? EmitValue(sa.Value) : EmitValueAs(sa.Value, tt);
         if (Types.IsStruct(tt) && sa.Value.Type != null) ConvertTop(TypeOf(sa.Value), tt, ref o);
@@ -2335,7 +2350,7 @@ sealed partial class FunctionCompiler
         var tt = TypeOf(cas.Target);
         if (!Types.IsRef(tt) && !IsNullable(tt)) throw new CompileException("??= on this type is not supported", cas.Syntax.GetLocation());
         var lv = LValueOf(cas.Target);
-        lv.Note(StaticValueType(cas.Value));
+        lv.Note(StaticValueType(cas.Value), cas.Value);
         lv.Prepare();
         lv.Load();
         if (IsNullable(tt)) NullableHas(tt);
@@ -2381,8 +2396,8 @@ sealed partial class FunctionCompiler
         public abstract Own Store(Own o, bool needResult);
         protected bool _noted;
         /// <summary>The static type of the value about to be stored (before conversion), for the cycle analysis.</summary>
-        public void Note(ITypeSymbol? vt) { _noted = true; NoteValue(vt); }
-        public virtual void NoteValue(ITypeSymbol? vt) { }
+        public void Note(ITypeSymbol? vt, IOperation? value = null) { _noted = true; NoteValue(vt, value); }
+        public virtual void NoteValue(ITypeSymbol? vt, IOperation? value) { }
     }
 
     sealed class VarLV(FunctionCompiler f, Var v) : LValue(f, v.Type)
@@ -2396,11 +2411,28 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null, bool owned = false) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null, bool owned = false, string? staticKey = null, bool threadStatic = false, string? structField = null, string? outParam = null, bool viaPointer = false) : LValue(f, t)
     {
+        /// <summary>Sharing.cs: where the value stored here comes from.</summary>
+        void Record(List<Sharing.Src>? srcs)
+        {
+            if (F.Sh is not { } sh) return;
+            srcs ??= [Sharing.Debug ? new Sharing.Src(Sharing.K.Top, "a store with no value seen in " + F.M.ToDisplayString(), Type: Type) : TopSrc(Type)];
+            if (site != null) return;
+            if (staticKey != null) sh.Static(staticKey, Type, threadStatic, srcs);
+            else if (structField != null) sh.Add(structField, srcs);
+            else if (outParam != null) sh.Add(outParam, srcs);
+            else if (viaPointer) { if (Types.IsRef(Type)) sh.Add(Sharing.PtrNode(F.T.Canonical(Type)), srcs); }
+            else if (!F.InRefWriter) sh.RefStore(Type, srcs);
+        }
         int _addr = -1, _off;
         public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
-        public override void NoteValue(ITypeSymbol? vt) { site?.AddValue(vt); }
+        public override void NoteValue(ITypeSymbol? vt, IOperation? value)
+        {
+            var srcs = F.Sh != null && value != null ? F.FlowSrcs(value) : null;
+            site?.AddValue(vt, srcs);
+            Record(srcs);
+        }
         public override Own Load()
         {
             F.E.Get(_addr);
@@ -2411,6 +2443,7 @@ sealed partial class FunctionCompiler
         public override Own Store(Own o, bool needResult)
         {
             if (site != null && !_noted) site.AddValue(Type);
+            if (!_noted) Record(null);
             if (covariant != null && container >= 0)
             {
                 // An array of a derived element type can stand where this array type does (string[] as object[]):
@@ -2435,6 +2468,13 @@ sealed partial class FunctionCompiler
     sealed class PropLV(FunctionCompiler f, IPropertyReferenceOperation pr, ITypeSymbol t) : LValue(f, t)
     {
         int _recv = -1; bool _recvIsStruct;
+        List<Sharing.Src>? _valueSrcs;
+        public override void NoteValue(ITypeSymbol? vt, IOperation? value) { if (F.Sh != null && value != null) _valueSrcs = F.FlowSrcs(value); }
+        void RecordIndexArgs(IMethodSymbol acc)
+        {
+            if (F.Sh == null) return;
+            for (int k = 0; k < pr.Arguments.Length && k < acc.Parameters.Length; k++) F.RecordParam(acc, acc.Parameters[k], F.FlowSrcs(pr.Arguments[k].Value));
+        }
         readonly List<(int local, ITypeSymbol type)> _args = [];
         public override void Prepare()
         {
@@ -2484,7 +2524,7 @@ sealed partial class FunctionCompiler
         {
             var g = pr.Property.GetMethod ?? throw new CompileException("property has no getter");
             var gm = Accessor(F.SubstMethod(g));
-            return F.CallWith(gm, !_recvIsStruct && F.IsVirtualCall(pr.Instance, g), _recv >= 0 ? () => F.E.Get(_recv) : null, () => { foreach (var (l, _) in _args) F.E.Get(l); }, null, pr.Syntax);
+            return F.CallWith(gm, !_recvIsStruct && F.IsVirtualCall(pr.Instance, g), _recv >= 0 ? () => F.E.Get(_recv) : null, () => { foreach (var (l, _) in _args) F.E.Get(l); RecordIndexArgs(gm); }, null, pr.Syntax);
         }
         public override Own Store(Own o, bool needResult)
         {
@@ -2498,7 +2538,13 @@ sealed partial class FunctionCompiler
             }
             else { v = F.Scratch(Types.WasmType(vt)!.Value); F.E.Set(v); }
             var sm = Accessor(F.SubstMethod(s));
-            F.CallWith(sm, !_recvIsStruct && F.IsVirtualCall(pr.Instance, s), _recv >= 0 ? () => F.E.Get(_recv) : null, () => { foreach (var (l, _) in _args) F.E.Get(l); F.E.Get(v); }, null, pr.Syntax);
+            F.CallWith(sm, !_recvIsStruct && F.IsVirtualCall(pr.Instance, s), _recv >= 0 ? () => F.E.Get(_recv) : null, () =>
+            {
+                foreach (var (l, _) in _args) F.E.Get(l);
+                F.E.Get(v);
+                RecordIndexArgs(sm);
+                if (sm.Parameters.Length > 0) F.RecordParam(sm, sm.Parameters[^1], _valueSrcs ?? [TopSrc(vt)]);
+            }, null, pr.Syntax);
             if (needResult) { F.E.Get(v); F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v); return Types.IsRef(vt) ? Own.Stable : Own.None; }
             F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v);
             return Own.None;
@@ -2560,7 +2606,7 @@ sealed partial class FunctionCompiler
             // value is on the stack; compute the address after it
             var vt = Types.WasmType(Type) ?? ValType.I32;
             int v = F.Scratch(vt);
-            if (Types.IsRef(Type)) F.ToOwned(o);
+            if (Types.IsRef(Type)) F.ToOwned(o, Type);
             F.E.Set(v);
             off = F.CapturedAddress(sym); F.E.Set(a);
             F.E.Get(v);
@@ -2614,7 +2660,8 @@ sealed partial class FunctionCompiler
                         if (bf.IsStatic) { D.StaticReads.Add(Driver.StaticKey(owner, bf)); EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, bf, ft)); return 0; }
                         return EmitReceiverAddressForField(pr.Instance!) + T.FieldIn(owner, bf).Offset;
                     }, psite, -1, ppin, bf.IsStatic ? Publish.Always : pr.Instance != null && !TypeOf(pr.Instance).IsValueType ? Publish.Container : Publish.Unknown,
-                    initKey: InitStoreKey(bf, owner, pr.Instance));
+                    initKey: InitStoreKey(bf, owner, pr.Instance), staticKey: bf.IsStatic ? Driver.StaticKey(T.Canonical(owner), bf) : null, threadStatic: bf.IsStatic && IsThreadStatic(bf),
+                    structField: !bf.IsStatic && owner.IsValueType && Sh != null ? Sharing.StructFieldNode(T.Canonical(owner), bf) : null);
                 }
                 if (pr.Property.ReturnsByRef) break;
                 return new PropLV(this, pr, t);
@@ -2625,7 +2672,8 @@ sealed partial class FunctionCompiler
                 {
                     var field = fr.Field;
                     D.NoteFieldWrite(E, Driver.FieldKey(Owner(field), StorageField(field)));
-                    if (field.IsStatic) return new MemLV(this, t, () => EmitAddressBase(target), pin: field.IsReadOnly ? D.Arenas.Pin(t) : null, pub: IsThreadStatic(StorageField(field)) ? Publish.None : Publish.Always);
+                    if (field.IsStatic) return new MemLV(this, t, () => EmitAddressBase(target), pin: field.IsReadOnly ? D.Arenas.Pin(t) : null, pub: IsThreadStatic(StorageField(field)) ? Publish.None : Publish.Always,
+                        staticKey: Driver.StaticKey(T.Canonical(Owner(field)), StorageField(field)), threadStatic: IsThreadStatic(StorageField(field)));
                     if (fr.Instance != null && !TypeOf(fr.Instance).IsValueType)
                     {
                         var site = D.Arenas.FieldSite(Owner(field), T.FieldIn(Owner(field), StorageField(field)));
@@ -2634,6 +2682,9 @@ sealed partial class FunctionCompiler
                             fresh: site != null && target.Parent != null && StoresIntoFresh(fr.Instance, target.Parent),
                             owned: site != null && OwnedLocal(fr.Instance));
                     }
+                    // a struct's field, wherever the struct is (Sharing.cs: one node for the field)
+                    if (fr.Instance != null && Sh != null)
+                        return new MemLV(this, t, () => EmitAddressBase(target), elements: true, structField: Sharing.StructFieldNode(T.Canonical(Owner(field)), StorageField(field)));
                     break;
                 }
             case IArrayElementReferenceOperation ae when Types.IsRef(t) && TypeOf(ae.ArrayReference) is IArrayTypeSymbol at:
@@ -2646,7 +2697,13 @@ sealed partial class FunctionCompiler
                         covariant: exact || at.Rank != 1 ? null : (IArrayTypeSymbol)T.Canonical(at), owned: OwnedLocal(ae.ArrayReference));
                 }
         }
-        return new MemLV(this, t, () => EmitAddressBase(target), elements: true);
+        // a store through an `out` or `ref` parameter: into what the caller passed (Sharing.cs: the parameter's node)
+        if (Sh != null && target is IParameterReferenceOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out } rp && SharingKey is { } opk
+            && SymbolEqualityComparer.Default.Equals(rp.Parameter.ContainingSymbol?.OriginalDefinition, M.OriginalDefinition))
+            return new MemLV(this, t, () => EmitAddressBase(target), elements: true, outParam: Sharing.OutNode(opk, rp.Parameter.Ordinal));
+        // (a ref made from a pointer: Unsafe.AsRef(void*))
+        bool viaPointer = target is IInvocationOperation { TargetMethod: { Name: "AsRef", Parameters: [{ Type: IPointerTypeSymbol }] } };
+        return new MemLV(this, t, () => EmitAddressBase(target), elements: true, viaPointer: viaPointer);
     }
 
     // =====================================================================
@@ -2658,7 +2715,7 @@ sealed partial class FunctionCompiler
         if (Fold(co.Condition) is bool known)
         {
             var o = EmitValueAs(known ? co.WhenTrue : co.WhenFalse!, rt);
-            if (Types.IsRef(rt)) { ToOwned(o); return Own.Owned; }
+            if (Types.IsRef(rt)) { ToOwned(o, rt); return Own.Owned; }
             return o;
         }
         var vt = Types.WasmType(rt) ?? ValType.I32;
@@ -2828,7 +2885,7 @@ sealed partial class FunctionCompiler
         }
         E.If(ValType.I32);
         var r = EmitValueAs(ca.WhenNotNull, rt!);
-        if (Types.IsRef(rt!)) ToOwned(r);
+        if (Types.IsRef(rt!)) ToOwned(r, rt);
         E.Else();
         if (IsNullable(rt!)) EmitDefault(rt!); else E.I32(0);
         E.End();
@@ -3270,7 +3327,7 @@ sealed partial class FunctionCompiler
             if (arm.Guard != null) { E.If(ValType.I32); EmitCondition(arm.Guard); E.Else(); E.I32(0); E.End(); }
             E.If();
             var o = EmitValueAs(arm.Value, rt);
-            if (Types.IsRef(rt)) ToOwned(o);
+            if (Types.IsRef(rt)) ToOwned(o, rt);
             E.Br(done);
             E.End();
         }

@@ -298,6 +298,37 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     program can reach it: then they all live on, as before, with their fields as the finalizers left them
     (`Rt.FinPhase`).
 
+- **Step 4, first part (2026-11-18): which types another thread can reach, decided when compiling; their counts
+  atomic, the others plain.** Measured first: a program is in thread mode as soon as a thread start is reachable,
+  and `await Task.Yield()` or `await Task.Delay(..)` makes one reachable (the thread pool), so most async code
+  pays it. The bench compiled so (a `Task.Run` it never runs) took 18.4, 61.0, 50.1, 52.2, 12.2, 22.8, 5.4, 45.0,
+  12.9 ms (dictionary, linked_list, linq, list_sort, nbody, shapes, strings, tree, word_count) against 7.1, 3.5,
+  12.9, 37.8, 1.6, 1.0, 2.8, 8.2, 2.5 without threads; with every count plain it would still take 32 ms for tree.
+  - `Compiler/Sharing.cs`: at every store into a field, an element, a static, a struct's field, at every argument
+    and every `return`, where the value comes from (a new object of a type, a parameter, a result, a field, an
+    element, a local's assignments, an `out` parameter's stores, a lambda's delegate's invocations, a
+    reflection thunk's member), else its static type. The types another thread can reach are what the statics and
+    the thread a thread start hands over lead to, through what those types' slots hold: a slot holds its declared
+    type's objects only; a `ref T` lands in a T slot (Unsafe.As recorded); an element read is of the arrays its
+    expression can be. A parameter's sources count only if every call to the method is one made from recorded
+    arguments (marked on the call instruction); generated code, stubs, delegates, the host make it its type.
+  - `Compiler/TypedCounts.cs`: retain, release, the read that counts and the store take the static type at about
+    a hundred places; once every function exists each becomes the atomic function or a plain one (rt.retain_plain,
+    rt.release_plain with a leaf's release written in place, rt.store_ref_plain; a read from an object no other
+    thread can reach is a plain read). `CS2WASM_SHARE_CHECK=1` makes the plain counts trap on an object another
+    thread made: the 33 tests that use threads, tasks or Parallel pass with it, and with every type taken as
+    thread-local (`CS2WASM_SHARING_NONE=1`, a test of the check) they trap.
+  - The bench in thread mode now: 18.1, 33.3, 36.0, 51.1, 2.7, 3.4, 5.4, 25.5, 11.6 ms. Of 413 types, 239 are
+    reachable by another thread, none of the bench's own. Without threads nothing changes (0.94x NativeAOT,
+    16.0 MB, hello world 27,943 bytes).
+  - What is left of thread mode's cost, measured: `string` is a type another thread reaches (the culture data is),
+    so every string count is atomic (word_count, dictionary); `List<int>` too (the runtime's weak-reference table
+    holds one): a per-type answer cannot separate an object from others of its type. Field borrows, the
+    allocator's single-thread path and the loop that frees a list are still off in thread mode, and a store into a
+    cycle-capable object takes the runtime lock. Next: borrows for objects no other thread can reach (they are
+    decided while compiling, before the answer is known: a second pass or deferred borrows), the runtime's own
+    structures in types of their own, and the allocator.
+
 - **Step 3: answered from measurements (2026-11-17 and 2026-11-18); the bench fixes (3.1, 3.2) are still to do.**
   - Optimizing tier (what a game runs in), `tools/bench.mjs`: 0.95x NativeAOT's time, 32 MB against 71 MB.
   - Baseline tier (what a short run over many functions stays in: the self-hosted compiler), `tools/micro.mjs

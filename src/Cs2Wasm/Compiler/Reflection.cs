@@ -810,6 +810,7 @@ sealed partial class FunctionCompiler
                 if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } o = Own.None; }
                 else { E.Load(Types.LoadOp(ft), off); o = Types.IsRef(ft) ? Own.Unstable : Own.None; }
                 BoxResult(ft, o);
+                Sh?.Add(Sharing.ReflectNode, ft.IsValueType ? new Sharing.Src(Sharing.K.Exact, Type: ft) : TopSrc(ft));
             }
             E.Else();
             {
@@ -941,6 +942,7 @@ sealed partial class FunctionCompiler
                         }
                         CopyBack(back);
                         E.Get(obj);
+                        Sh?.Add(Sharing.ReflectNode, new Sharing.Src(Sharing.K.Exact, Type: t));
                         break;
                     }
                 case IMethodSymbol ms:
@@ -950,6 +952,13 @@ sealed partial class FunctionCompiler
                         var own = CallWith(m, virt, m.IsStatic ? null : () => PushTargetAs(m.ContainingType),
                             () => { for (int i = 0; i < m.Parameters.Length; i++) PushParam(m.Parameters[i], i, back); }, null, null);
                         if (m.ReturnsVoid) E.I32(0); else BoxResult(m.ReturnType, own);
+                        // (what reflection's Invoke returns: Sharing.cs)
+                        if (Sh != null && !m.ReturnsVoid)
+                        {
+                            var mrt = T.Canonical(m.ReturnType);
+                            if (mrt.IsValueType) Sh.Add(Sharing.ReflectNode, new Sharing.Src(Sharing.K.Exact, Type: mrt is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nn ? T.Canonical(nn.TypeArguments[0]) : mrt));
+                            else { var rs = new List<Sharing.Src>(); AddRet(m, virt, rs); Sh.Add(Sharing.ReflectNode, rs); }
+                        }
                         if (back.Count > 0) { int r = E.AddLocal(ValType.I32); E.Set(r); CopyBack(back); E.Get(r); }
                         break;
                     }
@@ -973,9 +982,22 @@ sealed partial class FunctionCompiler
                             if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } o = Own.None; }
                             else { E.Load(Types.LoadOp(ft), off); o = Types.IsRef(ft) ? Own.Unstable : Own.None; }
                             BoxResult(ft, o);
+                            if (Sh != null)
+                            {
+                                if (ft.IsValueType) Sh.Add(Sharing.ReflectNode, new Sharing.Src(Sharing.K.Exact, Type: ft));
+                                else { var fs = new List<Sharing.Src>(); FieldSrc(f, owner, ft, fs); Sh.Add(Sharing.ReflectNode, fs); }
+                            }
                         }
                         E.Else();
                         {
+                            // (what reflection stores here: any object of the field's type, Sharing.cs)
+                            if (Sh != null && Types.IsRef(ft))
+                            {
+                                var rst = Sh;
+                                if (f.IsStatic) rst.ReflectWrite(() => rst.Static(Driver.StaticKey(owner, f), ft, IsThreadStatic(f), [TopSrc(ft)]));
+                                else if (owner.IsValueType) rst.ReflectWrite(() => rst.Add(Sharing.StructFieldNode(owner, f), TopSrc(ft)));
+                                else if (D.Arenas.FieldSite(owner, T.FieldIn(owner, f)) is { } rsite) rst.ReflectWrite(() => rsite.Sources.Add(TopSrc(ft)));
+                            }
                             int a = E.AddLocal(ValType.I32);
                             PushAddr(); E.Set(a);
                             E.Get(1); E.Load(Op.I32Load, Types.ArrayData);

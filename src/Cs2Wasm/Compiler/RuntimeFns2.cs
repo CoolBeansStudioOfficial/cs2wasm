@@ -57,6 +57,8 @@ internal sealed partial class RuntimeFns
         if (s_plainCounts) { EmitLoadRetain(false, arenas); return; }
         EmitLoadRetain(threads, arenas);
         if (!threads) return;
+        // (for objects no other thread can reach: TypedCounts.cs)
+        EmitPlainCounts(retainSlow, releaseSlow, arenas);
         // retain(p), release(p) with threads: the count is exchanged for the new one atomically (whoever counts holds
         // a reference, so the count cannot reach zero meanwhile; an exchange, not an addition: the object may become
         // an arena's member under the counting thread, Rt.ArenaJoin, or a plain object again, Rt.TryLeave, and its

@@ -147,6 +147,21 @@ internal sealed partial class Driver
     /// without threads. Whether a program starts threads is known when it has been compiled once
     /// (Cs2WasmCompiler.Compile compiles it again in this mode if it does).</summary>
     public bool ThreadMode { get; init; }
+    Sharing? _sharing;
+    /// <summary>Which objects another thread can reach (Sharing.cs): recorded in a program with threads only.</summary>
+    public Sharing? Sharing => ThreadMode ? _sharing ??= new Sharing(this) : null;
+
+    /// <summary>Which types another thread can reach, once every function exists; then the counts by type.</summary>
+    internal void ResolveSharing()
+    {
+        if (Sharing is { } sharing && !sharing.Done)
+        {
+            var keyOf = new Dictionary<WasmFunction, string>();
+            foreach (var mi in AllMethods) keyOf.TryAdd(mi.Fn, Types.MethodKey(mi.Sym));
+            sharing.Analyze(Arenas.AllSites, f => keyOf.TryGetValue(f, out var k) ? k : null);
+        }
+        Rt.ResolveCounts(Sharing);
+    }
     /// <summary>Thrown out of Run when a compilation that is not in thread mode meets the start of a thread.</summary>
     public sealed class ThreadsSeen : Exception { }
     /// <summary>CS2WASM_EXP_NO_THREADMODE=1 (a measurement, unsafe: the program must then run on one thread): a program

@@ -318,6 +318,13 @@ sealed partial class FunctionCompiler
             else PushArg(m.Parameters[i], byParam[i]);
             afterEach?.Invoke(i);
         }
+        // (a converted argument's source is the conversion's result: Sharing.cs)
+        if (Sh != null)
+        {
+            for (int i = 0; i < m.Parameters.Length; i++)
+                if (convs[i] is { } cm && byParam[i] != null) { var cs = new List<Sharing.Src>(1); AddRet(cm, false, cs); RecordParam(m, m.Parameters[i], cs); }
+            RecordRefWrite(m, byParam);
+        }
     }
 
     void PushConvertedArg(IParameterSymbol p, IOperation value, IMethodSymbol conversion)
@@ -337,6 +344,9 @@ sealed partial class FunctionCompiler
     void PushArg(IParameterSymbol p, IOperation? value)
     {
         var pt = T.Canonical(p.Type);
+        // (where the callee's parameter's value comes from: Sharing.cs)
+        if (Sh != null && p.ContainingSymbol is IMethodSymbol pm && p.RefKind == RefKind.None && Types.IsRef(pt))
+            RecordParam(pm, p, value != null ? FlowSrcs(value) : p.HasExplicitDefaultValue && p.ExplicitDefaultValue is string ? [new Sharing.Src(Sharing.K.Exact, Type: D.Main.GetSpecialType(SpecialType.System_String))] : []);
         if (value == null)
         {
             // default argument
@@ -346,6 +356,8 @@ sealed partial class FunctionCompiler
         }
         if (p.RefKind is RefKind.Ref or RefKind.Out or RefKind.RefReadOnlyParameter)
         {
+            if (Sh != null && p.RefKind is RefKind.Ref or RefKind.Out) RecordOutArg(p, value);
+            else if (Sh != null) _preciseAddr = true; // (read only)
             EmitAddress(value);
             return;
         }
@@ -400,7 +412,7 @@ sealed partial class FunctionCompiler
         if (Types.IsStruct(pt)) { EmitValueAs(value, pt); return; }
         int off = TempValue(pt);
         var o = EmitValueAs(value, pt);
-        if (Types.IsRef(pt)) ToOwned(o);
+        if (Types.IsRef(pt)) ToOwned(o, pt);
         int sv = Scratch(Types.WasmType(pt)!.Value); E.Set(sv);
         E.Get(_fb); E.Get(sv); E.Store(Types.StoreOp(pt), off);
         FreeScratch(Types.WasmType(pt)!.Value, sv);
@@ -523,16 +535,22 @@ sealed partial class FunctionCompiler
             cc = new CallConsume(m, cmask);
         var savedConsume = _consume;
         _consume = cc;
+        int rec0 = _recorded.Count;
         try
         {
             pushThis?.Invoke();
             pushArgs();
         }
         finally { _consume = savedConsume; }
+        // (a call whose arguments' sources were all recorded: Sharing.cs)
+        bool certified = Sh != null && AllRecorded(m, rec0);
+        if (_recorded.Count > rec0) _recorded.RemoveRange(rec0, _recorded.Count - rec0);
         // (the callee owns them now)
         if (cc != null) foreach (var tl in cc.Temps) { E.I32(0); E.Set(tl); }
         _wantRefReturnAddress = wantAddress;
-        return EmitCallInstr(m, dispatch, syntax, sretOff, consts, cc?.Moved ?? 0, stableRecv, thisByValue);
+        _certifyCall = certified;
+        try { return EmitCallInstr(m, dispatch, syntax, sretOff, consts, cc?.Moved ?? 0, stableRecv, thisByValue); }
+        finally { _certifyCall = false; }
     }
 
     /// <summary>Arguments are already on the stack (not for struct-returning methods unless the destination was pushed first).</summary>
@@ -561,7 +579,7 @@ sealed partial class FunctionCompiler
             return Types.IsRef(rt) ? Own.Unstable : Own.None;
         }
         if (_clone != null) consts = null;
-        if (virt) E.Call(D.Stub(m, consts));
+        if (virt) { E.Call(D.Stub(m, consts)); MarkCertified(); }
         else
         {
             var mi = D.Method(m, consts);
@@ -586,6 +604,7 @@ sealed partial class FunctionCompiler
                 // returns its receiver: borrowed from what the caller already holds (the receiver lives to the end
                 // of the statement, in a temp if it was not a variable)
                 E.Call(mb.Fn);
+                MarkCertified();
                 Inst?.Callees.Add(mb);
                 // a field's value from a receiver that stays put: held across calls like the field's own load
                 // (ToCallSafe: no count while nothing stores the fields it came through)
@@ -593,6 +612,7 @@ sealed partial class FunctionCompiler
                 return mb.BorrowedKind;
             }
             E.Call(mi.Fn);
+            MarkCertified();
             Inst?.Callees.Add(mi);
         }
         if (m.ReturnsByRef || m.ReturnsByRefReadonly)
@@ -658,6 +678,8 @@ sealed partial class FunctionCompiler
                 {
                     // As<T>(object): the same object; As<TFrom, TTo>(ref TFrom): the same address
                     if (m.Parameters[0].RefKind == RefKind.None) return Own.Unstable;
+                    // (a store through the TTo ref is one into the TFrom slot: Sharing.cs)
+                    if (m.TypeArguments.Length == 2) Sh?.RefAlias(Arg(0), Arg(1));
                     // a float's bits read as something else (BitConverter, BitCast): a NaN becomes the canonical NaN
                     // first, so its payload never shows (section 7.3)
                     if (m.TypeArguments.Length == 2 && Types.PrimOf(Arg(0)) is Prim.F32 or Prim.F64 && Types.PrimOf(Arg(1)) is not (Prim.F32 or Prim.F64))
@@ -1282,8 +1304,8 @@ sealed partial class FunctionCompiler
         if (Types.IsRef(et))
         {
             var site = D.Arenas.ArraySite(D.Main.CreateArrayTypeSymbol(et));
-            site?.AddValue(StaticValueType(v));
-            var o = EmitValueAs(v, et); ToOwned(o);
+            site?.AddValue(StaticValueType(v), Sh != null ? FlowSrcs(v) : null);
+            var o = EmitValueAs(v, et); ToOwned(o, et);
             int val = Scratch(ValType.I32); E.Set(val);
             if (site != null) { E.Get(val); E.Get(arr); E.I32(0); E.Call(site.Link); E.Set(val); }
             E.Get(arr); E.Get(val); E.Store(Op.I32Store, dataOffset + idx * size);
@@ -1632,6 +1654,7 @@ sealed partial class FunctionCompiler
     {
         var env = _machine != null ? MachineEnvAt(af.Syntax) : CurrentEnv();
         var fn = D.Lambda(this, af, Map, env);
+        Sh?.LambdaAs(af.Symbol, dt);
         PushDisplayPtr(env, retain: true);
         NewDelegate(dt, fn.Fn, env: env);
         return Own.Owned;

@@ -161,6 +161,8 @@ sealed partial class FunctionCompiler
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         var (body, syntax) = GetBody(def);
         Driver.BindTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
+        _sharingBody = body;
+        if (Sh != null && SharingKey is { } shk) Sh.BodyRets.Add(shk);
         E.CurrentPos = D.Position(syntax);
         PreScan(body);
         SetupOwnedParams();
@@ -486,7 +488,7 @@ sealed partial class FunctionCompiler
     /// own destruction in its place (WasmModule.ExpandLeafReleases) instead of the dispatch on the object's type.</summary>
     void ReleaseOf(ITypeSymbol? t)
     {
-        E.Call(Rt.Release);
+        E.Call(Rt.ReleaseOf(t != null ? T.Resolve(t, Map) : null));
         int hint = ExactTypeHint(t);
         if (hint != 0) E.Body[^1] = E.Body[^1] with { Imm2 = hint };
     }
@@ -494,9 +496,9 @@ sealed partial class FunctionCompiler
     int ExactTypeHint(ITypeSymbol? t) => t == null ? 0 : ExactTypeHint(D, T.Resolve(t, Map));
 
     /// <summary>The same for a type that is already resolved (the runtime's own loops over an array's elements).</summary>
-    internal static int ExactTypeHint(Driver D, ITypeSymbol t)
+    internal static int ExactTypeHint(Driver D, ITypeSymbol t, bool plain = false)
     {
-        if (D.ThreadMode) return 0;
+        if (D.ThreadMode && !plain) return 0;
         if (Types.IsString(t)) return 2;
         if (t is IArrayTypeSymbol { Rank: 1 } at)
             return at.ElementType is INamedTypeSymbol { IsValueType: true } et && Types.PrimOf(et) != Prim.None ? D.TypeId(D.Types.Canonical(t)) + 1 : 0;
@@ -604,10 +606,10 @@ sealed partial class FunctionCompiler
     // ownership conversions
     // =====================================================================
     /// <summary>Value on stack becomes owned (+1).</summary>
-    void ToOwned(Own o)
+    void ToOwned(Own o, ITypeSymbol? t = null)
     {
         if (D.ThreadMode && CountedLoad(o) == Own.Owned) return;
-        if (o is Own.Stable or Own.Unstable) E.Call(Rt.Retain);
+        if (o is Own.Stable or Own.Unstable) E.Call(Rt.RetainOf(t));
     }
 
     /// <summary>Value on stack stays valid for the rest of the statement.</summary>
@@ -633,7 +635,7 @@ sealed partial class FunctionCompiler
             E.Tee(l);
             return Own.Stable;
         }
-        if (o == Own.Unstable) { E.Call(Rt.Retain); E.Tee(TempRef(t)); return Own.Stable; }
+        if (o == Own.Unstable) { E.Call(Rt.RetainOf(t)); E.Tee(TempRef(t)); return Own.Stable; }
         return o;
     }
 
@@ -741,7 +743,7 @@ sealed partial class FunctionCompiler
                     BeginTemps();
                     var lo = EmitValue(lk.LockedValue);
                     int ll = E.AddLocal(ValType.I32);
-                    ToOwned(lo); E.Set(ll); AddOwned(new Slot { Local = ll, Type = lockT });
+                    ToOwned(lo, lockT); E.Set(ll); AddOwned(new Slot { Local = ll, Type = lockT });
                     EndTemps();
                     CallWith(D.CanonicalMethod(enterScope), false, () => E.Get(ll), () => { }, () => { E.Get(_fb); E.I32(sc); E.Op(Op.I32Add); }, lk.Syntax);
                     var dispose = ((INamedTypeSymbol)scopeT).GetMembers("Dispose").OfType<IMethodSymbol>().First(m => m.Parameters.Length == 0);
@@ -979,7 +981,7 @@ sealed partial class FunctionCompiler
                 int h = E.AddLocal(ValType.I32);
                 // (a variable that keeps its value for the whole statement keeps the object: no count of the pointer's own)
                 if (o != Own.Owned && KeptThrough(init, fs)) E.Set(h);
-                else { ToOwned(o); E.Set(h); AddOwned(new Slot { Local = h, Type = it }); }
+                else { ToOwned(o, it); E.Set(h); AddOwned(new Slot { Local = h, Type = it }); }
                 EndTemps();
                 int data = it is IArrayTypeSymbol a2 ? Types.ArrayDataOffset(a2.Rank) : 16;
                 E.Get(h); E.Op(Op.I32Eqz);
@@ -1017,7 +1019,7 @@ sealed partial class FunctionCompiler
                 {
                     var oo = EmitValue(init);
                     int h = E.AddLocal(ValType.I32);
-                    ToOwned(oo); E.Set(h); AddOwned(new Slot { Local = h, Type = it });
+                    ToOwned(oo, it); E.Set(h); AddOwned(new Slot { Local = h, Type = it });
                     _wantRefReturnAddress = true;
                     CallWith(m, IsVirtualDispatch(m), () => E.Get(h), () => { }, null, initExpr);
                     _wantRefReturnAddress = false;
@@ -1071,6 +1073,9 @@ sealed partial class FunctionCompiler
     void EmitReturn(IOperation? value)
     {
         bool hasValue = value != null;
+        // (where the result comes from: Sharing.cs)
+        if (value != null && Sh != null && SharingKey is { } shk && !M.ReturnsByRef && !M.ReturnsByRefReadonly && Types.IsRef(T.Resolve(M.ReturnType, Map)))
+            Sh.Add(Sharing.RetNode(shk), FlowSrcs(value));
         BeginTemps();
         if (value != null)
         {
@@ -1099,7 +1104,7 @@ sealed partial class FunctionCompiler
                 {
                     var o = EmitValueAs(value, rt);
                     // (a body that returns `this` borrowed: Driver.ReturnsThis)
-                    if (Types.IsRef(rt) && !(Inst?.ReturnsBorrowed == true && _closure == null)) ToOwned(o);
+                    if (Types.IsRef(rt) && !(Inst?.ReturnsBorrowed == true && _closure == null)) ToOwned(o, rt);
                     var vt = Types.WasmType(rt)!.Value;
                     _retLocal = _retLocal >= 0 ? _retLocal : E.AddLocal(vt);
                     E.Set(_retLocal);
@@ -1444,7 +1449,7 @@ sealed partial class FunctionCompiler
             enumLocal = E.AddLocal(ValType.I32);
             var r = getEnum.IsStatic ? CallWith(SubstMethod(getEnum), false, null, () => ReceiverFromLocal(collLocal, collType, coll), null, fe.Syntax)
                 : EmitCallResolved(SubstMethod(getEnum), () => ReceiverFromLocal(collLocal, collType, coll), [], getEnum.IsVirtual || getEnum.IsAbstract || getEnum.ContainingType.TypeKind == TypeKind.Interface);
-            if (Types.IsRef(enumType)) { ToOwned(r); E.Set(enumLocal); AddOwned(new Slot { Local = enumLocal, Type = enumType }); }
+            if (Types.IsRef(enumType)) { ToOwned(r, enumType); E.Set(enumLocal); AddOwned(new Slot { Local = enumLocal, Type = enumType }); }
             else E.Set(enumLocal);
             ev = new Var { Type = enumType, Local = enumLocal };
         }
@@ -1603,7 +1608,7 @@ sealed partial class FunctionCompiler
         if (Types.IsRef(vt))
         {
             val = E.AddLocal(ValType.I32);
-            ToOwned(o); E.Set(val); AddOwned(new Slot { Local = val, Type = vt });
+            ToOwned(o, vt); E.Set(val); AddOwned(new Slot { Local = val, Type = vt });
         }
         else if (Types.IsStruct(vt))
         {
@@ -1942,7 +1947,7 @@ sealed partial class FunctionCompiler
             var rt = T.Resolve(resources.Type!, Map);
             var o = EmitValue(resources);
             int l = E.AddLocal(ValType.I32);
-            if (Types.IsRef(rt)) { ToOwned(o); E.Set(l); AddOwned(new Slot { Local = l, Type = rt }); }
+            if (Types.IsRef(rt)) { ToOwned(o, rt); E.Set(l); AddOwned(new Slot { Local = l, Type = rt }); }
             else if (Types.IsStruct(rt))
             {
                 // a struct resource (Lock.Scope): its own frame slot, so the body's temporaries cannot reuse it
@@ -2472,7 +2477,8 @@ sealed partial class FunctionCompiler
             else
             {
                 var vp = M.Parameters[^1];
-                EmitStoreFieldFrom(bf, bf.IsStatic ? null : () => E.Get(_thisLocal), T.Resolve(vp.Type, Map), () => LoadVar(_vars[vp]));
+                List<Sharing.Src>? vsrc = Sh != null && SharingKey is { } sk && Types.IsRef(T.Resolve(vp.Type, Map)) ? [new Sharing.Src(Sharing.K.Param, sk, vp.Ordinal, T.Resolve(vp.Type, Map))] : null;
+                EmitStoreFieldFrom(bf, bf.IsStatic ? null : () => E.Get(_thisLocal), T.Resolve(vp.Type, Map), () => LoadVar(_vars[vp]), srcs: vsrc);
             }
             return;
         }

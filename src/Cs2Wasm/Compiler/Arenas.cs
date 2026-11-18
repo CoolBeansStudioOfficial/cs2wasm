@@ -30,6 +30,8 @@ internal sealed class Arenas
         /// form a cycle through such fields alone (the later object would have to exist before the earlier is done).</summary>
         public bool Immutable;
         public int Offset; // field sites
+        /// <summary>The slot's declared type (an array's element type): what a release of its old value counts.</summary>
+        public ITypeSymbol? SlotType;
         public readonly Dictionary<string, ITypeSymbol> Values = [];
         public bool AddressTaken;
         /// <summary>Some store through this site is into an object that other code may know (Analyze: the site's
@@ -49,8 +51,13 @@ internal sealed class Arenas
         /// when that local's is the only reference there is, nothing can reach the object and no cycle closes.</summary>
         public WasmFunction LinkOwned = null!;
 
-        public void AddValue(ITypeSymbol? t)
+        /// <summary>Where the values stored here come from (Sharing.cs): the sources given, else the static type.</summary>
+        public readonly List<Sharing.Src> Sources = [];
+
+        public void AddValue(ITypeSymbol? t, IEnumerable<Sharing.Src>? srcs = null)
         {
+            if (srcs != null) Sources.AddRange(srcs);
+            else if (t != null && t.TypeKind != TypeKind.Error) Sources.Add(new Sharing.Src(Sharing.K.Top, Type: t));
             if (t == null || t.TypeKind == TypeKind.Error) return;
             Values.TryAdd(Types.Key(t), t);
         }
@@ -77,6 +84,9 @@ internal sealed class Arenas
         return f;
     }
 
+    public Site? SiteByKey(string key) => _sites.TryGetValue(key, out var s) ? s : null;
+    public IReadOnlyCollection<Site> AllSites => _sites.Values;
+
     Site Get(string key, ITypeSymbol container, bool isArray, int offset)
     {
         if (_sites.TryGetValue(key, out var s)) return s;
@@ -102,6 +112,7 @@ internal sealed class Arenas
         // (a readonly field is an edge like any other: what it stores may come to refer back later, a list of children
         // whose items refer to their parent. Only a cycle made of such edges alone cannot exist: Analyze)
         var site = Get("f " + Types.Key(owner) + " " + slot.Offset, owner, false, slot.Offset);
+        site.SlotType ??= D.Types.Canonical(slot.Type);
         site.Immutable = ImmutableEdge(owner, slot);
         return site;
     }
@@ -254,7 +265,9 @@ internal sealed class Arenas
         var et = D.Types.Canonical(at.ElementType);
         if (!Types.IsRef(et) || at.Rank != 1) return null;
         var t = D.Types.Canonical(at);
-        return Get("a " + Types.Key(t), t, true, 0);
+        var s = Get("a " + Types.Key(t), t, true, 0);
+        s.SlotType ??= et;
+        return s;
     }
 
     /// <summary>(value) → value: a store into a static field; the object is pinned (never joins an arena).</summary>
@@ -721,10 +734,10 @@ internal sealed class Arenas
                             A(Op.LocalGet, old); A(Op.LocalGet, cont); A(Op.LocalGet, slot); A(Op.Call, 0, unlink);
                             A(Op.Br, 1);
                             A(Op.End);
-                            A(Op.LocalGet, old); A(Op.Call, 0, D.Rt.Release);
+                            A(Op.LocalGet, old); A(Op.Call, 0, D.Rt.ReleaseOf(ph.site!.SlotType));
                             A(Op.End);
                         }
-                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); x.Ref = D.Rt.Release; body.Add(x); }
+                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); x.Ref = D.Rt.ReleaseOf(ph.site!.SlotType); body.Add(x); }
                         break;
                     case Kind.LinkAt:
                         // (value, slot) -> value
