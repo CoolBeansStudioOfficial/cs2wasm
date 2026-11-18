@@ -349,6 +349,32 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     calls and the ownership-based alias query (A4.8), the list of unsure sites, plugins before the first compile
     (A4.9), and the first slice of the real plugin in the Bazoodle repository (9.4).
 
+- **Step 11.1, in part (2026-11-18): programs written to use every form, compared with .NET.** Tests 124 to 126
+  removed three refusals (`await` in conditional expressions was already handled; lifted compound assignment
+  through an operator method; a spread with an element conversion) and found five wrong results that no refusal
+  announced: `x ??= await f()` and `a[i] += await g()` lost the assignment; `x++` on a nullable struct with its own
+  operator; relational and constant patterns on a `decimal` (compared as addresses); a NaN constant pattern; an
+  empty nested initializer read its member. Writing such programs finds more than reading the refusal sites does.
+- **Step 11.2: done (2026-11-18).** What the sandbox or the library lacks is a warning and
+  `PlatformNotSupportedException` at run time (A5.2, A5.3).
+- **Found 2026-11-18, open, and it comes before speed: most cycles are never freed (A1.8).** Test 127 holds objects
+  every ordinary way, lets go, and counts what is left by finalizers. Freed: trees with parent links through a
+  list, rings, parts cut off a living structure, replaced values, iterators, exceptions, weak references. Never
+  freed: a cycle through
+  - a closure or a delegate (an event's subscriber that the publisher refers to; a callback that captures its
+    owner; LINQ over objects with a lambda that captures one),
+  - a task or an async method's state,
+  - a reference inside a struct: a tuple field, a dictionary's entries (`Dictionary<string, Node>` in a `Node`), a
+    `List` of structs, a boxed struct.
+  - Source: the type graph and its link sites (`Arenas.cs`) know class fields of reference type and arrays of
+    references only. Display classes and synthesized types are left out of the graph on purpose
+    (`Arenas.Analyze`: `!D.DisplayById.ContainsKey(id) && !D.SyntheticById.ContainsKey(id)`), a captured variable
+    is stored plainly (`StoreCaptured`), and a struct is copied with plain counts (`StoreToAddressFromStack`, the
+    struct branch; `rt.CopyAssign`).
+  - Fix (step 7, first): every reference a heap object holds is a site, whatever holds it: a class field, an
+    element, a struct inside either, a box, a display, a delegate, a state machine. The suite shows the test as a
+    known gap at every run until then (`// known-gap:` in a program).
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:

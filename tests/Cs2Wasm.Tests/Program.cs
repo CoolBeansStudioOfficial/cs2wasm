@@ -44,7 +44,7 @@ if (Directory.Exists(godotDir))
         }
         programs.Add((name, srcs, ["GODOT"]));
     }
-int pass = 0, fail = 0;
+int pass = 0, fail = 0, gaps = 0;
 var report = new StringBuilder();
 // the HTTP server of the programs that use HTTP (072_http): one for the run
 Process? httpServer = null;
@@ -87,7 +87,15 @@ foreach (var (name, sources, symbols) in programs.Where(p => filter == null || p
     try { expected = RunDotNet(comp); }
     catch (Exception ex) { Fail(name, ".NET run failed: " + ex); continue; }
     var (actual, stderr, code) = RunNode(wasmPath);
-    if (actual == expected && code == 0) Pass(name, $"{result.Module!.Length} bytes, build {buildMs} ms");
+    // `// known-gap: what` in a program: its difference from .NET is one the project knows and has not closed
+    // (docs/AUDIT.md). It is shown at every run and is no failure; the day the program passes, the marker must go.
+    string? gap = src.Contains("// known-gap:") ? src[(src.IndexOf("// known-gap:") + 13)..].Split('\n')[0].Trim() : null;
+    if (actual == expected && code == 0)
+    {
+        if (gap != null) Fail(name, "passes: it is no gap any more, remove its `// known-gap:` line");
+        else Pass(name, $"{result.Module!.Length} bytes, build {buildMs} ms");
+    }
+    else if (gap != null) { gaps++; var gl = $"GAP  {name}  ({gap})\n  " + Diff(expected, actual).Replace("\n", "\n  "); Console.WriteLine(gl); report.AppendLine(gl); }
     else Fail(name, $"output differs (exit {code})\n{Diff(expected, actual)}{(stderr.Length > 0 ? "\nstderr: " + stderr : "")}");
 }
 if (filter == null || "godot".Contains(filter) || filter.StartsWith("godot_"))
@@ -101,7 +109,7 @@ if (filter == null || filter == "api")
     foreach (var (n, failure) in ApiChecks.Run(root, outDir))
         if (failure == null) Pass("api: " + n, "ok"); else Fail("api: " + n, failure);
 try { httpServer?.Kill(); } catch { }
-Console.WriteLine($"\n{pass} passed, {fail} failed");
+Console.WriteLine($"\n{pass} passed, {fail} failed" + (gaps > 0 ? $", {gaps} known gap{(gaps == 1 ? "" : "s")}" : ""));
 File.WriteAllText(Path.Combine(outDir, "report.txt"), report.ToString());
 return fail == 0 ? 0 : 1;
 
