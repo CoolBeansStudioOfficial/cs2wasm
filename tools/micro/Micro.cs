@@ -78,6 +78,30 @@ static class P
     static long TreeWalk() => WalkTree(s_tree);
     static long TreeReplace() { int c = 0; var t = s_tree!; t.Left!.Left = BuildTree(10, ref c); return c; }
     static long LlReverse() { ListNode? prev = null; for (var n = s_list; n != null;) { var next = n.Next; n.Next = prev; prev = n; n = next; } s_list = prev; return prev!.Value; }
+    // (tools/bench's linked_list, cut after each of its phases: the differences are the phases)
+    static long LlBench(int phases)
+    {
+        s_seed = 9;
+        ListNode? head = null;
+        for (int i = 0; i < 100000; i++) head = new ListNode { Next = head, Name = s_words[Next() % (uint)s_words.Length], Value = i };
+        long sum = 0;
+        if (phases < 2) return head!.Value;
+        for (int round = 0; round < 20; round++)
+            for (var n = head; n != null; n = n.Next) { sum += n.Value; if (n.Name.Length == 3) sum++; }
+        if (phases < 3) return sum;
+        ListNode? prev = null;
+        for (var n = head; n != null;) { var next = n.Next; n.Next = prev; prev = n; n = next; }
+        if (phases < 4) return sum + prev!.Value;
+        for (var n = prev; n != null; n = n.Next) sum ^= n.Value;
+        return sum;
+    }
+    static long LlB1() => LlBench(1);
+    static long LlB2() => LlBench(2);
+    static long LlB3() => LlBench(3);
+    static long LlB4() => LlBench(4);
+    static long TreeB1() { int c = 0; var root = BuildTree(15, ref c); return c; }
+    static long TreeB2() { int c = 0; var root = BuildTree(15, ref c); return WalkTree(root); }
+    static long TreeB3() { int c = 0; var root = BuildTree(15, ref c); long s = WalkTree(root); root.Left = BuildTree(10, ref c); return s + WalkTree(root); }
     static long Virtual() { long s = 0; object[] os = s_objs; for (int r = 0; r < 20; r++) for (int i = 0; i < os.Length; i++) s += os[i].GetHashCode(); return s; }
     static object[] s_objs = null!;
     sealed class H1 { public override int GetHashCode() => 1; }
@@ -104,7 +128,7 @@ static class P
             ("groupby", GroupBy), ("distinct", Distinct), ("delegate_call", DelegateCall), ("iface_foreach", IfaceForeach), ("split", Split), ("indexof", IndexOf),
             ("sb_append_str", SbAppendStr), ("sb_append_char", SbAppendChar), ("sb_append_int", SbAppendInt), ("hashset_add", HashSetAdd),
             ("dict_set", DictSet), ("dict_get", DictGet), ("dict_str", DictStr), ("dict_str_list", DictStrList), ("list_add", ListAdd), ("upper", Upper),
-            ("ll_build_free", LlBuildFree), ("ll_walk", LlWalk), ("ll_build_rev_free", LlBuildReverseFree), ("ll_reverse", LlReverse), ("tree_build_free", TreeBuildFree), ("tree_walk", TreeWalk), ("tree_replace", TreeReplace), ("virtual3", Virtual),
+            ("ll_build_free", LlBuildFree), ("ll_walk", LlWalk), ("ll_build_rev_free", LlBuildReverseFree), ("ll_reverse", LlReverse), ("llb_build", LlB1), ("llb_walk20", LlB2), ("llb_reverse", LlB3), ("llb_xor", LlB4), ("treeb_build", TreeB1), ("treeb_walk", TreeB2), ("treeb_replace", TreeB3), ("tree_build_free", TreeBuildFree), ("tree_walk", TreeWalk), ("tree_replace", TreeReplace), ("virtual3", Virtual),
         };
         long chk = 0;
         foreach (var (name, f) in tests)

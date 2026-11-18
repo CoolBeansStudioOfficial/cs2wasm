@@ -51,6 +51,9 @@ sealed class Ctl
     public int ScopeDepth, TempDepth;
     public Action? FinallyAction;
     public int GotoState = -1; // goto: the dispatch loop's state local (Continue is the loop)
+    /// <summary>goto: the block each segment begins after, and the segment being compiled (a goto to a later one is a
+    /// branch out of that segment's block, still open: no dispatch).</summary>
+    public Label[]? GotoSegs; public int GotoSeg;
     public int ExnLocal = -1, ExPtrLocal = -1; // inside a catch: the caught exception
 }
 
@@ -761,6 +764,33 @@ sealed partial class FunctionCompiler
     void EmitLabeledStatements(IReadOnlyList<IOperation> ops, int start, List<int> labeled)
     {
         int n = labeled.Count + 1;
+        if (!s_noForwardGoto && GotosAllForward(ops, start, labeled))
+        {
+            // Every goto to these labels is before its label (`goto ReturnFound;` out of a loop, the labels at the
+            // method's end): no dispatch is needed. Each label is the end of a block that began before the first
+            // statement, and a goto to it is a branch out of that block; segments fall through in order.
+            var fexit = E.Block();
+            var fc = new Ctl { Kind = CtlKind.Block, Break = fexit, ScopeDepth = _scopes.Count, TempDepth = _temps.Count };
+            _ctl.Add(fc);
+            var ends = new Label[n];
+            for (int k = n - 1; k >= 1; k--)
+            {
+                ends[k] = E.Block();
+                for (IOperation? lo = ops[labeled[k - 1]]; lo is ILabeledOperation lop; lo = lop.Operation)
+                {
+                    _labels[lop.Label] = (fc, true);
+                    _gotoForward[lop.Label] = ends[k];
+                }
+            }
+            for (int k = 0; k < n; k++)
+            {
+                if (k > 0) E.End();
+                EmitStatementsPlain(ops, k == 0 ? start : labeled[k - 1], k < labeled.Count ? labeled[k] : ops.Count);
+            }
+            _ctl.Remove(fc);
+            E.End();
+            return;
+        }
         int st = E.AddLocal(ValType.I32);
         E.I32(0); E.Set(st);
         var exit = E.Block();
@@ -777,9 +807,11 @@ sealed partial class FunctionCompiler
         var segs = new Label[n];
         for (int k = n - 1; k >= 0; k--) segs[k] = E.Block();
         E.Get(st); E.BrTable(segs, segs[0]);
+        if (!s_noForwardGoto) c.GotoSegs = segs;
         for (int k = 0; k < n; k++)
         {
             E.End();
+            c.GotoSeg = k;
             int from = k == 0 ? start : labeled[k - 1];
             int to = k < labeled.Count ? labeled[k] : ops.Count;
             if (k > 0)
@@ -788,6 +820,23 @@ sealed partial class FunctionCompiler
         }
         _ctl.Remove(c);
         E.End(); E.End();
+    }
+
+    static readonly bool s_noForwardGoto = Environment.GetEnvironmentVariable("CS2WASM_NO_FORWARD_GOTO") == "1";
+    /// <summary>The labels every goto reaches from before them (EmitLabeledStatements): the block each one ends.</summary>
+    readonly Dictionary<ILabelSymbol, Label> _gotoForward = new(SymbolEqualityComparer.Default);
+
+    /// <summary>Whether every goto to one of the block's labels is before the label in the text (and so, being in
+    /// the label's scope, in a statement before it: a branch out of a block that ends at the label reaches it).</summary>
+    static bool GotosAllForward(IReadOnlyList<IOperation> ops, int start, List<int> labeled)
+    {
+        var at = new Dictionary<ILabelSymbol, int>(SymbolEqualityComparer.Default);
+        foreach (int i in labeled)
+            for (IOperation? lo = ops[i]; lo is ILabeledOperation lop; lo = lop.Operation) at[lop.Label] = ops[i].Syntax.SpanStart;
+        for (int i = start; i < ops.Count; i++)
+            foreach (var d in ops[i].DescendantsAndSelf())
+                if (d is IBranchOperation { BranchKind: BranchKind.GoTo } br && at.TryGetValue(br.Target, out int pos) && br.Syntax.SpanStart >= pos) return false;
+        return true;
     }
 
     void EmitStatementsPlain(IReadOnlyList<IOperation> ops, int start, int end)
@@ -1024,6 +1073,17 @@ sealed partial class FunctionCompiler
     {
         if (!_labels.TryGetValue(br.Target, out var t))
             throw new CompileException("goto to this label is not supported", br.Syntax.GetLocation());
+        if (_gotoForward.TryGetValue(br.Target, out var fwd))
+        {
+            int fi = _ctl.IndexOf(t.ctl);
+            for (int i = _ctl.Count - 1; i > fi; i--)
+                if (_ctl[i].Kind == CtlKind.TryFinally) EmitFinallyInline(i);
+            for (int i = _temps.Count - 1; i >= t.ctl.TempDepth; i--) foreach (var s in _temps[i]) ReleaseSlot(s);
+            for (int i = _scopes.Count - 1; i >= t.ctl.ScopeDepth; i--)
+                for (int j = _scopes[i].Owned.Count - 1; j >= 0; j--) ReleaseSlot(_scopes[i].Owned[j]);
+            E.Br(fwd);
+            return;
+        }
         if (_gotoIndex.TryGetValue(br.Target, out var seg) && t.ctl.GotoState >= 0)
         {
             int gi = _ctl.IndexOf(t.ctl);
@@ -1038,6 +1098,8 @@ sealed partial class FunctionCompiler
                 var owned = _scopes[t.ctl.ScopeDepth - 1].Owned;
                 for (int j = owned.Count - 1; j >= keep; j--) ReleaseSlot(owned[j]);
             }
+            // (forward: the segment's block is still open, and ends where the segment begins)
+            if (t.ctl.GotoSegs is { } gs && seg > t.ctl.GotoSeg && seg < gs.Length) { E.Br(gs[seg]); return; }
             E.I32(seg); E.Set(t.ctl.GotoState);
             E.Br(t.ctl.Continue!);
             return;
@@ -2120,8 +2182,27 @@ sealed partial class FunctionCompiler
     internal static int UnreadPureInits(Driver d, INamedTypeSymbol t)
     {
         s_pureDriver = d;
+        // (which of a type's initializers are pure never changes: found once, then each round only asks what is read.
+        // A program with a large library has thousands of types with static fields, asked about round after round)
+        if (!d.PureInitKeys.TryGetValue(t, out var groups))
+        {
+            var list = new List<string[]>();
+            PureInitGroups(d, t, list);
+            d.PureInitKeys[t] = groups = list.ToArray();
+        }
+        int count = 0;
+        foreach (var keys in groups)
+        {
+            bool read = false;
+            foreach (var k in keys) if (d.StaticReads.Contains(k)) { read = true; break; }
+            if (!read) count++;
+        }
+        return count;
+    }
+
+    static void PureInitGroups(Driver d, INamedTypeSymbol t, List<string[]> groups)
+    {
         var owner = d.Types.Canonical(t);
-        int n = 0;
         foreach (var m in t.GetMembers())
         {
             if (!m.IsStatic) continue;
@@ -2138,9 +2219,8 @@ sealed partial class FunctionCompiler
                 IPropertyInitializerOperation pi => pi.InitializedProperties.Select(p => (ISymbol?)Driver.AutoPropertyField(p)).Where(f => f != null)!,
                 _ => [],
             };
-            if (fields.Any() && !fields.Any(f => d.StaticReads.Contains(Driver.StaticKey(owner, f))) && PureInit(op.Value, t)) n++;
+            if (fields.Any() && PureInit(op.Value, t)) groups.Add(fields.Select(f => Driver.StaticKey(owner, f)).ToArray());
         }
-        return n;
     }
 
     /// <summary>Whether the second compilation would leave out any of the type's static initializers (else its

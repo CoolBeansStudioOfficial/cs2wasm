@@ -1044,7 +1044,45 @@ namespace Cs2Wasm.Runtime
         const int ArenaBusy = 1, ArenaShared = 4;
         const int SharedCount = 0x40000000;
         // (record word 24: not zero when a member has a finalizer)
-        const int ArenaPrefix = 32, ArenaRecord = 32;
+        const int ArenaRecord = 32;
+        // The eight words of an object of a cycle-capable type (below) are apart from it, in a block of their own
+        // made when the first of them is written (an object that never meets a store that can close a cycle has
+        // none: it is a plain object but for the word that would point to them). Before the object's header: that
+        // pointer, at -4. (With threads the object's count word must not be where a free block has its link, at 8:
+        // sixteen bytes before the header then.)
+        const int MemberWords = 32;
+        static int ArenaPrefix => SingleThreaded() ? 8 : 16;
+
+        /// <summary>One of the object's eight words (k: 4 to 32, the word that many bytes before where they end); 0
+        /// while the object has none.</summary>
+        static int PL(int obj, int k)
+        {
+            int r = Mem.LoadI32(obj - 4);
+            return r == 0 ? 0 : Mem.LoadI32(r + MemberWords - k);
+        }
+
+        /// <summary>Sets one of the object's eight words; the words are made for the first that is not zero.</summary>
+        static void PS(int obj, int k, int value)
+        {
+            int r = Mem.LoadI32(obj - 4);
+            if (r == 0)
+            {
+                if (value == 0) return;
+                r = Alloc(MemberWords);
+                Mem.StoreI64(r, 0); Mem.StoreI64(r + 8, 0); Mem.StoreI64(r + 16, 0); Mem.StoreI64(r + 24, 0);
+                Mem.StoreI32(obj - 4, r);
+            }
+            Mem.StoreI32(r + MemberWords - k, value);
+        }
+
+        /// <summary>The object's eight words are all zero again: their block goes.</summary>
+        static void MemberWordsFree(int obj)
+        {
+            int r = Mem.LoadI32(obj - 4);
+            if (r == 0) return;
+            Mem.StoreI32(obj - 4, 0);
+            Free(r, MemberWords);
+        }
 
         [Intrinsic] static extern int SccOf(int typeId);
         [Intrinsic] static extern void ArenaClearObject(int addr);
@@ -1117,6 +1155,7 @@ namespace Cs2Wasm.Runtime
         {
             // (its count word reads as dead from here on, wherever the block goes)
             Mem.StoreI32(addr, 0);
+            MemberWordsFree(addr);
             // (the usual case in one small piece, as FreeObject)
             if (SingleThreaded() && !ShareCheck())
             {
@@ -1138,13 +1177,13 @@ namespace Cs2Wasm.Runtime
         /// <summary>The arena of a member (its count word says it is one).</summary>
         internal static int ArenaOf(int obj)
         {
-            int ar = Mem.LoadI32(obj - 16);
+            int ar = PL(obj, 16);
             int f = Mem.LoadI32(ar + 16);
             if (f == 0) return ar;
             // (merged since: to the arena it is part of now, and straight there from here on)
             int root = f;
             while (true) { int g = Mem.LoadI32(root + 16); if (g == 0) break; root = g; }
-            Mem.StoreI32(obj - 16, root);
+            PS(obj, 16, root);
             Mem.StoreI32(root + 20, Mem.LoadI32(root + 20) + 1);
             ArenaDeref(ar);
             return root;
@@ -1178,23 +1217,23 @@ namespace Cs2Wasm.Runtime
             // the plain object it is until here; its exchange then fails and it counts the member)
             int c;
             do { c = Atomic.Load32(ref Mem.RefI32(obj)); } while (Atomic.CompareExchange32(ref Mem.RefI32(obj), c, -(c + 2)) != c);
-            Mem.StoreI32(obj - 16, ar);
-            Mem.StoreI32(obj - 4, 0);
+            PS(obj, 16, ar);
+            PS(obj, 4, 0);
             if (ArenaFinType(Mem.LoadI32(obj + 4)) != 0) Mem.StoreI32(ar + 24, 1);
             int head = Mem.LoadI32(ar + 4);
             if (head == 0)
             {
-                Mem.StoreI32(obj - 12, obj);
-                Mem.StoreI32(obj - 8, obj);
+                PS(obj, 12, obj);
+                PS(obj, 8, obj);
                 Mem.StoreI32(ar + 4, obj);
             }
             else
             {
-                int tail = Mem.LoadI32(head - 8);
-                Mem.StoreI32(obj - 12, head);
-                Mem.StoreI32(obj - 8, tail);
-                Mem.StoreI32(tail - 12, obj);
-                Mem.StoreI32(head - 8, obj);
+                int tail = PL(head, 8);
+                PS(obj, 12, head);
+                PS(obj, 8, tail);
+                PS(tail, 12, obj);
+                PS(head, 8, obj);
             }
             Mem.StoreI32(ar + 8, Mem.LoadI32(ar + 8) + 1);
             // (the record's first word: the members that have outside references. A count that leaves a member with
@@ -1243,9 +1282,9 @@ namespace Cs2Wasm.Runtime
                 else
                 {
                     // the two rings become one
-                    int ta = Mem.LoadI32(ha - 8), tb = Mem.LoadI32(hb - 8);
-                    Mem.StoreI32(ta - 12, hb); Mem.StoreI32(hb - 8, ta);
-                    Mem.StoreI32(tb - 12, ha); Mem.StoreI32(ha - 8, tb);
+                    int ta = PL(ha, 8), tb = PL(hb, 8);
+                    PS(ta, 12, hb); PS(hb, 8, ta);
+                    PS(tb, 12, ha); PS(ha, 8, tb);
                 }
             }
             Mem.StoreI32(a, Mem.LoadI32(a) + Mem.LoadI32(b));
@@ -1285,11 +1324,11 @@ namespace Cs2Wasm.Runtime
             int off = slot - container;
             return off >= 12 && off < 76 ? (off - 12) >> 2 : -1;
         }
-        static int SlotBits(int container, int i) => (Mem.LoadI32(container - 28) >> (2 * i)) & 3;
+        static int SlotBits(int container, int i) => (PL(container, 28) >> (2 * i)) & 3;
         static void SetSlotBits(int container, int i, int b)
         {
-            int w = Mem.LoadI32(container - 28);
-            Mem.StoreI32(container - 28, (w & ~(3 << (2 * i))) | (b << (2 * i)));
+            int w = PL(container, 28);
+            PS(container, 28, (w & ~(3 << (2 * i))) | (b << (2 * i)));
         }
 
         /// <summary>The target is the member itself or one of its owners (ChainMax steps up).</summary>
@@ -1299,7 +1338,7 @@ namespace Cs2Wasm.Runtime
             for (int k = 0; k <= ChainMax; k++)
             {
                 if (v == target) return true;
-                v = Mem.LoadI32(v - 32);
+                v = PL(v, 32);
                 if (v == 0) return false;
             }
             return false;
@@ -1312,13 +1351,13 @@ namespace Cs2Wasm.Runtime
             int v = from;
             for (int k = 0; k <= ChainMax && v != target && v != 0; k++)
             {
-                Mem.StoreI32(v - 24, Mem.LoadI32(v - 24) + d * UOne);
-                v = Mem.LoadI32(v - 32);
+                PS(v, 24, PL(v, 24) + d * UOne);
+                v = PL(v, 32);
             }
             v = from;
             for (int k = 0; k <= ChainMax && v != target && v != 0; k++)
             {
-                int next = Mem.LoadI32(v - 32);
+                int next = PL(v, 32);
                 UpdateHold(v);
                 v = next;
             }
@@ -1332,25 +1371,25 @@ namespace Cs2Wasm.Runtime
             {
                 int c = Mem.LoadI32(v);
                 if (c >= -1) return;
-                int fl = Mem.LoadI32(v - 24);
+                int fl = PL(v, 24);
                 if ((fl & Dying) != 0) return;
-                int w = Mem.LoadI32(v - 32);
+                int w = PL(v, 32);
                 if (w == 0) return;
-                int others = Mem.LoadI32(v - 4) - ((fl & MultMask) >> 3) + (-c - 2);
+                int others = PL(v, 4) - ((fl & MultMask) >> 3) + (-c - 2);
                 bool want = (uint)fl >= UOne && others > 0;
                 if (want == ((fl & Held) != 0)) return;
                 if (want)
                 {
-                    Mem.StoreI32(v - 24, fl | Held);
-                    Mem.StoreI32(w - 4, Mem.LoadI32(w - 4) + 1);
+                    PS(v, 24, fl | Held);
+                    PS(w, 4, PL(w, 4) + 1);
                     v = w;
                     continue;
                 }
                 fl &= ~Held;
-                Mem.StoreI32(v - 24, fl);
-                if ((fl & Owned) == 0) { Mem.StoreI32(v - 32, 0); Adopt(v); }
-                int n = Mem.LoadI32(w - 4) - 1;
-                Mem.StoreI32(w - 4, n);
+                PS(v, 24, fl);
+                if ((fl & Owned) == 0) { PS(v, 32, 0); Adopt(v); }
+                int n = PL(w, 4) - 1;
+                PS(w, 4, n);
                 if (n == 0 && Mem.LoadI32(w) == -2) { Kill(w); return; }
                 v = w;
             }
@@ -1360,13 +1399,13 @@ namespace Cs2Wasm.Runtime
         /// when that change is done (DrainKills, before the operation returns), or with the others of a destruction.</summary>
         static void Kill(int w)
         {
-            int fl = Mem.LoadI32(w - 24);
+            int fl = PL(w, 24);
             if ((fl & (Dying | Queued)) != 0) return;
             if (s_destroying != 0)
             {
-                Mem.StoreI32(w - 24, fl | Dying);
+                PS(w, 24, fl | Dying);
                 ArenaTakeOut(ArenaOf(w), w);
-                Mem.StoreI32(w - 12, s_visitDead);
+                PS(w, 12, s_visitDead);
                 s_visitDead = w;
                 return;
             }
@@ -1379,15 +1418,15 @@ namespace Cs2Wasm.Runtime
             }
             Mem.StoreI32(s_killQ + 4 * s_killN, w);
             s_killN++;
-            Mem.StoreI32(w - 24, fl | Queued);
+            PS(w, 24, fl | Queued);
         }
 
         /// <summary>A member that is destroyed while it waits in the list: taken off it.</summary>
         static void Unqueue(int m)
         {
-            int fl = Mem.LoadI32(m - 24);
+            int fl = PL(m, 24);
             if ((fl & Queued) == 0) return;
-            Mem.StoreI32(m - 24, fl & ~Queued);
+            PS(m, 24, fl & ~Queued);
             for (int i = 0; i < s_killN; i++) if (Mem.LoadI32(s_killQ + 4 * i) == m) Mem.StoreI32(s_killQ + 4 * i, 0);
         }
 
@@ -1399,8 +1438,8 @@ namespace Cs2Wasm.Runtime
                 int w = Mem.LoadI32(s_killQ + 4 * s_killN);
                 // (0: destroyed since, with another; and it may be referred to again)
                 if (w == 0) continue;
-                Mem.StoreI32(w - 24, Mem.LoadI32(w - 24) & ~Queued);
-                if (Mem.LoadI32(w) == -2 && Mem.LoadI32(w - 4) == 0 && (Mem.LoadI32(w - 24) & Dying) == 0
+                PS(w, 24, PL(w, 24) & ~Queued);
+                if (Mem.LoadI32(w) == -2 && PL(w, 4) == 0 && (PL(w, 24) & Dying) == 0
                     && (Mem.LoadI32(ArenaOf(w) + 12) & ArenaBusy) == 0) ArenaDestroyFrom(w);
             }
         }
@@ -1409,13 +1448,13 @@ namespace Cs2Wasm.Runtime
         /// from now on (unless the member is above it).</summary>
         static void Adopt(int v)
         {
-            int p = Mem.LoadI32(v - 20);
+            int p = PL(v, 20);
             if (p == 0) return;
-            Mem.StoreI32(v - 20, 0);
+            PS(v, 20, 0);
             if (Mem.LoadI32(p) >= -1 || OnChain(p, v)) return;
-            Mem.StoreI32(v - 32, p);
-            Mem.StoreI32(v - 24, Mem.LoadI32(v - 24) | Owned | MultOne);
-            if ((Mem.LoadI32(v - 28) & 0x55555555) != 0 && (Mem.LoadI32(v - 24) & Elems) == 0) Reevaluate(v);
+            PS(v, 32, p);
+            PS(v, 24, PL(v, 24) | Owned | MultOne);
+            if ((PL(v, 28) & 0x55555555) != 0 && (PL(v, 24) & Elems) == 0) Reevaluate(v);
         }
 
         /// <summary>A member that no member refers to and that refers to none (a list's array after Clear, held by a
@@ -1424,8 +1463,8 @@ namespace Cs2Wasm.Runtime
         static void TryLeave(int m)
         {
             int c = Mem.LoadI32(m);
-            if (c >= -2 || Mem.LoadI32(m - 4) != 0 || Mem.LoadI32(m - 28) != 0 || s_destroying != 0) return;
-            if ((Mem.LoadI32(m - 24) & ~Elems) != 0 || Mem.LoadI32(m - 32) != 0) return;
+            if (c >= -2 || PL(m, 4) != 0 || PL(m, 28) != 0 || s_destroying != 0) return;
+            if ((PL(m, 24) & ~Elems) != 0 || PL(m, 32) != 0) return;
             int ar = ArenaOf(m);
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
             // (its own slots, read once: none holds a member of the arena, whatever the counts say)
@@ -1438,7 +1477,7 @@ namespace Cs2Wasm.Runtime
             ArenaTakeOut(ar, m);
             // (exchanged: other threads count it meanwhile; it has outside references, so one member fewer that does)
             do { c = Atomic.Load32(ref Mem.RefI32(m)); } while (Atomic.CompareExchange32(ref Mem.RefI32(m), c, -c - 2) != c);
-            Mem.StoreI64(m - 32, 0); Mem.StoreI64(m - 24, 0); Mem.StoreI64(m - 16, 0); Mem.StoreI64(m - 8, 0);
+            MemberWordsFree(m);
             int total = Mem.LoadI32(ar) - 1;
             Mem.StoreI32(ar, total);
             if (total != 0) return;
@@ -1464,16 +1503,16 @@ namespace Cs2Wasm.Runtime
             if (OnChain(container, val))
             {
                 int x = container;
-                for (int k = 0; k <= ChainMax && Mem.LoadI32(x - 32) != val; k++) x = Mem.LoadI32(x - 32);
-                int xf = Mem.LoadI32(x - 24);
-                if (Mem.LoadI32(x - 32) != val || (uint)xf >= UOne || (xf & Held) != 0) return;
-                Mem.StoreI32(x - 24, xf & ~(Owned | MultMask));
-                Mem.StoreI32(x - 32, 0);
+                for (int k = 0; k <= ChainMax && PL(x, 32) != val; k++) x = PL(x, 32);
+                int xf = PL(x, 24);
+                if (PL(x, 32) != val || (uint)xf >= UOne || (xf & Held) != 0) return;
+                PS(x, 24, xf & ~(Owned | MultMask));
+                PS(x, 32, 0);
             }
-            Mem.StoreI32(val - 32, container);
-            Mem.StoreI32(val - 24, Mem.LoadI32(val - 24) | Owned | MultOne);
+            PS(val, 32, container);
+            PS(val, 24, PL(val, 24) | Owned | MultOne);
             // (only a counted reference in one of its own slots can become an up-reference)
-            if ((Mem.LoadI32(val - 28) & 0x55555555) != 0 && (Mem.LoadI32(val - 24) & Elems) == 0) Reevaluate(val);
+            if ((PL(val, 28) & 0x55555555) != 0 && (PL(val, 24) & Elems) == 0) Reevaluate(val);
         }
 
         static int s_handFrom, s_handSum;
@@ -1530,12 +1569,12 @@ namespace Cs2Wasm.Runtime
         /// references that pass it being all that its items have above them.</summary>
         static void Handover(int from, int to, int owner)
         {
-            if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || Mem.LoadI32(to - 32) != owner || Mem.LoadI32(to - 16) != Mem.LoadI32(from - 16)) return;
+            if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || PL(to, 32) != owner || PL(to, 16) != PL(from, 16)) return;
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem, sf = s_handFrom, ss = s_handSum;
-            s_visitArena = Mem.LoadI32(from - 16); s_handFrom = from; s_handSum = 0; s_visitElem = 0;
+            s_visitArena = PL(from, 16); s_handFrom = from; s_handSum = 0; s_visitElem = 0;
             s_visitMode = 6; s_visitObj = from;
             ArenaVisitObject(from);
-            if (s_handSum == (int)((uint)Mem.LoadI32(from - 24) >> UShift))
+            if (s_handSum == (int)((uint)PL(from, 24) >> UShift))
             {
                 s_visitMode = 7; s_visitObj = to;
                 ArenaVisitObject(to);
@@ -1548,15 +1587,15 @@ namespace Cs2Wasm.Runtime
         /// references fewer; with the last, the member has no owner (unless it holds it: then until it lets go).</summary>
         static void OwnerLetGo(int old, int container)
         {
-            if (Mem.LoadI32(old - 20) == container) Mem.StoreI32(old - 20, 0);
-            if (Mem.LoadI32(old - 32) != container) return;
-            int fl = Mem.LoadI32(old - 24);
+            if (PL(old, 20) == container) PS(old, 20, 0);
+            if (PL(old, 32) != container) return;
+            int fl = PL(old, 24);
             if ((fl & Owned) == 0) return;
             fl -= MultOne;
-            if ((fl & MultMask) != 0) { Mem.StoreI32(old - 24, fl); return; }
+            if ((fl & MultMask) != 0) { PS(old, 24, fl); return; }
             fl &= ~Owned;
-            Mem.StoreI32(old - 24, fl);
-            if ((fl & Held) == 0) Mem.StoreI32(old - 32, 0);
+            PS(old, 24, fl);
+            if ((fl & Held) == 0) PS(old, 32, 0);
         }
 
         /// <summary>Retain of an arena member, under the runtime lock: one more outside reference (its first: the
@@ -1565,7 +1604,7 @@ namespace Cs2Wasm.Runtime
         {
             int old = Atomic.Add32(ref Mem.RefI32(p), -1);
             if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); }
-            if ((uint)Mem.LoadI32(p - 24) >= UOne) UpdateHold(p);
+            if ((uint)PL(p, 24) >= UOne) UpdateHold(p);
         }
 
         /// <summary>Release of an arena member, under the runtime lock: one outside reference fewer (its last).</summary>
@@ -1581,8 +1620,8 @@ namespace Cs2Wasm.Runtime
             }
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
             // (no reference of either kind: it goes now, with what only it referred to)
-            if (w == -2 && Mem.LoadI32(p - 4) == 0) { ArenaDestroyFrom(p); DrainKills(); return; }
-            if ((uint)Mem.LoadI32(p - 24) >= UOne) { UpdateHold(p); DrainKills(); }
+            if (w == -2 && PL(p, 4) == 0) { ArenaDestroyFrom(p); DrainKills(); return; }
+            if ((uint)PL(p, 24) >= UOne) { UpdateHold(p); DrainKills(); }
         }
 
         /// <summary>
@@ -1619,8 +1658,8 @@ namespace Cs2Wasm.Runtime
             if (val != 0)
             {
                 // (the usual case: both are members of one arena already, which is not being destroyed or merged)
-                int ar = Mem.LoadI32(container) < -1 && Mem.LoadI32(val) < -1 ? Mem.LoadI32(container - 16) : 0;
-                if (ar != 0 && ar == Mem.LoadI32(val - 16) && Mem.LoadI64(ar + 12) == 0) LinkMembers(val, container, slot, ar);
+                int ar = Mem.LoadI32(container) < -1 && Mem.LoadI32(val) < -1 ? PL(container, 16) : 0;
+                if (ar != 0 && ar == PL(val, 16) && Mem.LoadI64(ar + 12) == 0) LinkMembers(val, container, slot, ar);
                 else ArenaLinkCore(val, container, slot);
             }
             if (s_linkN != 0) ArenaLinkJoined();
@@ -1693,29 +1732,29 @@ namespace Cs2Wasm.Runtime
                 // an up-reference: not counted (the chain from the container to the value keeps the value)
                 SetSlotBits(container, i, 2);
                 UpPath(container, val, 1);
-                if (Mem.LoadI32(val) == -2 && Mem.LoadI32(val - 4) == 0) Kill(val);
+                if (Mem.LoadI32(val) == -2 && PL(val, 4) == 0) Kill(val);
                 else UpdateHold(val);
                 return val;
             }
-            Mem.StoreI32(val - 4, Mem.LoadI32(val - 4) + 1);
+            PS(val, 4, PL(val, 4) + 1);
             if (i >= 0) SetSlotBits(container, i, 1);
             else if (slot == 0 || s_visitElem != 0)
             {
-                Mem.StoreI32(container - 28, Mem.LoadI32(container - 28) + 1);
-                Mem.StoreI32(container - 24, Mem.LoadI32(container - 24) | Elems);
+                PS(container, 28, PL(container, 28) + 1);
+                PS(container, 24, PL(container, 24) | Elems);
             }
             if (val != container)
             {
-                int ow = Mem.LoadI32(val - 32);
-                int fl = Mem.LoadI32(val - 24);
+                int ow = PL(val, 32);
+                int fl = PL(val, 24);
                 if (ow == container && (fl & Owned) != 0)
                 {
                     // (one more of its owner's references; more than can be told apart: no owner, as if let go)
-                    if ((fl & MultMask) == MultMask) { fl &= ~(Owned | MultMask); Mem.StoreI32(val - 24, fl); if ((fl & Held) == 0) Mem.StoreI32(val - 32, 0); }
-                    else Mem.StoreI32(val - 24, fl + MultOne);
+                    if ((fl & MultMask) == MultMask) { fl &= ~(Owned | MultMask); PS(val, 24, fl); if ((fl & Held) == 0) PS(val, 32, 0); }
+                    else PS(val, 24, fl + MultOne);
                 }
                 else if (ow == 0) TakeOwnership(val, container);
-                else Mem.StoreI32(val - 20, container);
+                else PS(val, 20, container);
             }
             UpdateHold(val);
             return val;
@@ -1750,27 +1789,27 @@ namespace Cs2Wasm.Runtime
             }
             // an inside reference: both are members of one arena (they were linked when it was stored), the arena is
             // not being destroyed (its members' inside references are cut first), and it was counted as one
-            bool inside = co < -1 && cc < -1 && Mem.LoadI32(old - 4) != 0;
+            bool inside = co < -1 && cc < -1 && PL(old, 4) != 0;
             if (inside)
             {
-                int ar = Mem.LoadI32(old - 16);
-                if (ar != Mem.LoadI32(container - 16) || Mem.LoadI32(ar + 16) != 0) { ar = ArenaOf(old); inside = ar == ArenaOf(container); }
+                int ar = PL(old, 16);
+                if (ar != PL(container, 16) || Mem.LoadI32(ar + 16) != 0) { ar = ArenaOf(old); inside = ar == ArenaOf(container); }
                 inside = inside && (Mem.LoadI32(ar + 12) & ArenaBusy) == 0;
             }
             if (inside)
             {
-                int n = Mem.LoadI32(old - 4) - 1;
-                Mem.StoreI32(old - 4, n);
-                if (slot == 0 && Mem.LoadI32(container - 28) > 0) Mem.StoreI32(container - 28, Mem.LoadI32(container - 28) - 1);
-                bool owned = Mem.LoadI32(old - 32) == container && (Mem.LoadI32(old - 24) & (Owned | MultMask)) == (Owned | MultOne);
+                int n = PL(old, 4) - 1;
+                PS(old, 4, n);
+                if (slot == 0 && PL(container, 28) > 0) PS(container, 28, PL(container, 28) - 1);
+                bool owned = PL(old, 32) == container && (PL(old, 24) & (Owned | MultMask)) == (Owned | MultOne);
                 OwnerLetGo(old, container);
                 // (a container replaced by another in the same slot, a list's array by a larger one: what it owned is
                 // the new one's from here on)
-                if (owned && n > 0 && slot != 0) { Handover(old, Mem.LoadI32(slot), container); n = Mem.LoadI32(old - 4); }
+                if (owned && n > 0 && slot != 0) { Handover(old, Mem.LoadI32(slot), container); n = PL(old, 4); }
                 if (n == 0 && co == -2) ArenaDestroyFrom(old);
                 else
                 {
-                    if (Mem.LoadI32(old - 32) == 0) Adopt(old);
+                    if (PL(old, 32) == 0) Adopt(old);
                     UpdateHold(old);
                     if (old != container) TryLeave(old);
                 }
@@ -1819,17 +1858,17 @@ namespace Cs2Wasm.Runtime
             {
                 // Handover: 6 what the old container's own items have above them, in all; 7 an item of the new
                 // container that the old one owns changes owner
-                int cf = Mem.LoadI32(child - 24);
-                if (Mem.LoadI32(child - 32) != s_handFrom || (cf & Owned) == 0) return;
+                int cf = PL(child, 24);
+                if (PL(child, 32) != s_handFrom || (cf & Owned) == 0) return;
                 int uc = (int)((uint)cf >> UShift);
                 if (s_visitMode == 6) { s_handSum += uc; return; }
                 // (what it held of the old container, it holds of the new)
-                if ((cf & Held) != 0) { Mem.StoreI32(s_handFrom - 4, Mem.LoadI32(s_handFrom - 4) - 1); Mem.StoreI32(obj - 4, Mem.LoadI32(obj - 4) + 1); }
-                Mem.StoreI32(child - 24, (cf & ~MultMask) | MultOne);
-                Mem.StoreI32(child - 32, obj);
-                if (Mem.LoadI32(child - 20) == obj) Mem.StoreI32(child - 20, 0);
-                Mem.StoreI32(obj - 24, Mem.LoadI32(obj - 24) + uc * UOne);
-                Mem.StoreI32(s_handFrom - 24, Mem.LoadI32(s_handFrom - 24) - uc * UOne);
+                if ((cf & Held) != 0) { PS(s_handFrom, 4, PL(s_handFrom, 4) - 1); PS(obj, 4, PL(obj, 4) + 1); }
+                PS(child, 24, (cf & ~MultMask) | MultOne);
+                PS(child, 32, obj);
+                if (PL(child, 20) == obj) PS(child, 20, 0);
+                PS(obj, 24, PL(obj, 24) + uc * UOne);
+                PS(s_handFrom, 24, PL(s_handFrom, 24) - uc * UOne);
                 return;
             }
             int i = s_visitElem != 0 ? -1 : SlotIndex(obj, slot);
@@ -1837,11 +1876,11 @@ namespace Cs2Wasm.Runtime
             if (s_visitMode == 5)
             {
                 // a counted reference of the member's own to a member on its chain: an up-reference from now on
-                if (bits != 1 || Mem.LoadI32(child - 32) == obj || !OnChain(obj, child)) return;
-                if (Mem.LoadI32(child - 4) + (-Mem.LoadI32(child) - 2) <= 1) return;
-                Mem.StoreI32(child - 4, Mem.LoadI32(child - 4) - 1);
+                if (bits != 1 || PL(child, 32) == obj || !OnChain(obj, child)) return;
+                if (PL(child, 4) + (-Mem.LoadI32(child) - 2) <= 1) return;
+                PS(child, 4, PL(child, 4) - 1);
                 SetSlotBits(obj, i, 2);
-                if (Mem.LoadI32(child - 20) == obj) Mem.StoreI32(child - 20, 0);
+                if (PL(child, 20) == obj) PS(child, 20, 0);
                 UpPath(obj, child, 1);
                 UpdateHold(child);
                 return;
@@ -1850,15 +1889,15 @@ namespace Cs2Wasm.Runtime
             if (bits == 2) { if (s_cutOn != 0) NoteCut(slot, child); Mem.StoreI32(slot, 0); SetSlotBits(obj, i, 0); UpPath(obj, child, -1); return; }
             // (an outside-counted reference stays in the slot for the release every other reference of the dying
             // object gets; so does one whose kind is not known when the member has no inside count)
-            if (bits == 0 || ArenaOf(child) != s_visitArena || Mem.LoadI32(child - 4) == 0) return;
+            if (bits == 0 || ArenaOf(child) != s_visitArena || PL(child, 4) == 0) return;
             if (s_cutOn != 0) NoteCut(slot, child);
             Mem.StoreI32(slot, 0);
             if (i >= 0) SetSlotBits(obj, i, 0);
-            int left = Mem.LoadI32(child - 4) - 1;
-            Mem.StoreI32(child - 4, left);
+            int left = PL(child, 4) - 1;
+            PS(child, 4, left);
             OwnerLetGo(child, obj);
             if (left == 0 && Mem.LoadI32(child) == -2) { Kill(child); return; }
-            if (Mem.LoadI32(child - 32) == 0) Adopt(child);
+            if (PL(child, 32) == 0) Adopt(child);
             UpdateHold(child);
         }
 
@@ -1879,13 +1918,13 @@ namespace Cs2Wasm.Runtime
         /// <summary>Takes a member off its arena's ring (ar: its arena, which its record word points to: ArenaOf).</summary>
         static void ArenaTakeOut(int ar, int m)
         {
-            int next = Mem.LoadI32(m - 12);
+            int next = PL(m, 12);
             if (next == m) Mem.StoreI32(ar + 4, 0);
             else
             {
-                int prev = Mem.LoadI32(m - 8);
-                Mem.StoreI32(prev - 12, next);
-                Mem.StoreI32(next - 8, prev);
+                int prev = PL(m, 8);
+                PS(prev, 12, next);
+                PS(next, 8, prev);
                 if (Mem.LoadI32(ar + 4) == m) Mem.StoreI32(ar + 4, next);
             }
             Mem.StoreI32(ar + 8, Mem.LoadI32(ar + 8) - 1);
@@ -1906,8 +1945,8 @@ namespace Cs2Wasm.Runtime
         {
             int ar = ArenaOf(p);
             ArenaTakeOut(ar, p);
-            Mem.StoreI32(p - 12, 0);
-            Mem.StoreI32(p - 24, Mem.LoadI32(p - 24) | Dying);
+            PS(p, 12, 0);
+            PS(p, 24, PL(p, 24) | Dying);
             int dead = p, done = 0;
             bool fin = Mem.LoadI32(ar + 24) != 0;
             int cutOn = s_cutOn, cutBase = s_cutN;
@@ -1916,42 +1955,42 @@ namespace Cs2Wasm.Runtime
             while (dead != 0)
             {
                 int m = dead;
-                dead = Mem.LoadI32(m - 12);
+                dead = PL(m, 12);
                 Unqueue(m);
                 int sa = s_visitArena, sm = s_visitMode, sd = s_visitDead, so = s_visitObj, se = s_visitElem;
                 s_visitArena = ar; s_visitMode = 0; s_visitDead = dead; s_visitObj = m; s_visitElem = 0;
                 // (what it held of its owner goes back)
-                int fl = Mem.LoadI32(m - 24);
+                int fl = PL(m, 24);
                 if ((fl & Held) != 0)
                 {
-                    int w = Mem.LoadI32(m - 32);
-                    Mem.StoreI32(m - 24, fl & ~Held);
-                    int n = Mem.LoadI32(w - 4) - 1;
-                    Mem.StoreI32(w - 4, n);
+                    int w = PL(m, 32);
+                    PS(m, 24, fl & ~Held);
+                    int n = PL(w, 4) - 1;
+                    PS(w, 4, n);
                     if (n == 0 && Mem.LoadI32(w) == -2) Kill(w); else UpdateHold(w);
                 }
                 ArenaVisitObject(m);
                 dead = s_visitDead;
                 s_visitArena = sa; s_visitMode = sm; s_visitDead = sd; s_visitObj = so; s_visitElem = se;
-                Mem.StoreI32(m - 8, done);
+                PS(m, 8, done);
                 done = m;
             }
             s_destroying--;
             s_cutOn = cutOn;
             // then as any object: no longer a member (count zero: being destroyed), its finalizer, its other references
-            for (int m = done; m != 0; m = Mem.LoadI32(m - 8)) { Mem.StoreI32(m, 0); Mem.StoreI32(m - 16, 0); }
+            for (int m = done; m != 0; m = PL(m, 8)) { Mem.StoreI32(m, 0); PS(m, 16, 0); }
             if (fin)
             {
                 int cutEnd = s_cutN;
                 CutsBack(cutBase, cutEnd);
-                for (int m = done; m != 0; m = Mem.LoadI32(m - 8)) ArenaFinalizeObject(m);
+                for (int m = done; m != 0; m = PL(m, 8)) ArenaFinalizeObject(m);
                 CutsOut(cutBase, cutEnd);
                 s_cutN = cutBase;
             }
-            for (int m = done; m != 0; m = Mem.LoadI32(m - 8)) ArenaClearObject(m);
+            for (int m = done; m != 0; m = PL(m, 8)) ArenaClearObject(m);
             for (int m = done; m != 0;)
             {
-                int next = Mem.LoadI32(m - 8);
+                int next = PL(m, 8);
                 ArenaFreeObject(m);
                 m = next;
             }
@@ -1970,34 +2009,34 @@ namespace Cs2Wasm.Runtime
             {
                 // (every member's record word straight at the arena: the merged records they pointed to go now)
                 int m = first;
-                do { ArenaOf(m); Unqueue(m); m = Mem.LoadI32(m - 12); } while (m != first);
+                do { ArenaOf(m); Unqueue(m); m = PL(m, 12); } while (m != first);
                 int sa = s_visitArena, sm = s_visitMode;
                 bool fin = Mem.LoadI32(ar + 24) != 0;
                 int cutOn = s_cutOn, cutBase = s_cutN;
                 s_cutOn = fin ? 1 : 0;
                 s_visitArena = ar; s_visitMode = 1;
                 m = first;
-                do { ArenaVisitObject(m); m = Mem.LoadI32(m - 12); } while (m != first);
+                do { ArenaVisitObject(m); m = PL(m, 12); } while (m != first);
                 s_visitArena = sa; s_visitMode = sm;
                 s_cutOn = cutOn;
                 if (fin)
                 {
                     // (all of them are going: counts on them mean nothing from here on)
                     m = first;
-                    do { Mem.StoreI32(m, 0); m = Mem.LoadI32(m - 12); } while (m != first);
+                    do { Mem.StoreI32(m, 0); m = PL(m, 12); } while (m != first);
                     int cutEnd = s_cutN;
                     CutsBack(cutBase, cutEnd);
                     m = first;
-                    do { ArenaFinalizeObject(m); m = Mem.LoadI32(m - 12); } while (m != first);
+                    do { ArenaFinalizeObject(m); m = PL(m, 12); } while (m != first);
                     CutsOut(cutBase, cutEnd);
                     s_cutN = cutBase;
                 }
                 m = first;
-                do { ArenaClearObject(m); m = Mem.LoadI32(m - 12); } while (m != first);
+                do { ArenaClearObject(m); m = PL(m, 12); } while (m != first);
                 m = first;
                 do
                 {
-                    int next = Mem.LoadI32(m - 12);
+                    int next = PL(m, 12);
                     ArenaFreeObject(m);
                     m = next;
                 } while (m != first);

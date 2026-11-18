@@ -221,6 +221,7 @@ internal sealed class WasmModule
             }
             else if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
                 foreach (var f in Functions) if (!f.IsImport && SmallBlocks.Run(f)) Peephole.Run(f);
+            if (Environment.GetEnvironmentVariable("CS2WASM_NO_IF_CONVERT") != "1") foreach (var f in Functions) if (!f.IsImport) IfConvert.Run(f);
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_COPIES") != "1") SmallBlocks.Variable(this);
             if (Canon != null) FloatStores.Run(Functions, Canon);
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_NORETURN") != "1") NoReturn.Run(Functions);
