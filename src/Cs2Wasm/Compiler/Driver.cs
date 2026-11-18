@@ -1084,6 +1084,9 @@ internal sealed partial class Driver
     public static string StaticKey(ITypeSymbol owner, ISymbol storage) => Types.Key(owner) + "::" + storage.Name;
     /// <summary>The second compilation of the static initializers: initializers of unread fields that have no effect are left out.</summary>
     public bool SkipUnreadInits;
+    /// <summary>For each type with static initializers: the static keys of the fields each pure initializer sets
+    /// (FunctionCompiler.UnreadPureInits).</summary>
+    public readonly Dictionary<INamedTypeSymbol, string[][]> PureInitKeys = new(SymbolEqualityComparer.Default);
 
     public static EqualsValueClauseSyntax? FieldInitializer(IFieldSymbol f) =>
         f.DeclaringSyntaxReferences.Select(r => r.GetSyntax()).OfType<VariableDeclaratorSyntax>().FirstOrDefault()?.Initializer;
@@ -1135,12 +1138,18 @@ internal sealed partial class Driver
         // read only by its method, the name only that bind's initializer read)
         StaticReads.Owner = this;
         var dropped = new Dictionary<WasmFunction, int>();
+        long tScan = 0, tBy = 0, tComp = 0, tDrain = 0; int rounds = 0, redone = 0;
+        var swp = System.Diagnostics.Stopwatch.StartNew();
         while (true)
         {
+            swp.Restart();
             var redo = _compiledCctors.Where(c => FunctionCompiler.UnreadPureInits(this, c.Item1) > dropped.GetValueOrDefault(c.Item2)).ToList();
+            tScan += swp.ElapsedMilliseconds; swp.Restart();
             if (redo.Count == 0) break;
+            rounds++; redone += redo.Count;
             var recompiled = redo.Select(c => c.Item2).ToHashSet();
             foreach (var by in ConstructedBy.Values) by.RemoveWhere(f => f != null && recompiled.Contains(f));
+            tBy += swp.ElapsedMilliseconds; swp.Restart();
             foreach (var (t, fn, flag, cctor) in redo)
             {
                 // (only the ones that lose an initializer: the others stay as they were compiled)
@@ -1152,8 +1161,11 @@ internal sealed partial class Driver
                 catch (CompileException ex) { Report(Diags.Unsupported, ex.Location ?? t.Locations.FirstOrDefault(), ex.Message); }
             }
             CurrentFn = null;
+            tComp += swp.ElapsedMilliseconds; swp.Restart();
             Drain(rt);
+            tDrain += swp.ElapsedMilliseconds;
         }
+        if (_times) Console.Error.WriteLine($"    static initializers again: {rounds} rounds, {redone} of {_compiledCctors.Count} compiled again; finding them {tScan} ms, constructed-by {tBy} ms, compiling {tComp} ms, drain {tDrain} ms");
         Mark("  static initializers again");
         // cycles (section 4.3): the type graph is complete only now; arena runtime is compiled only if some site needs it
         Arenas.Analyze();
