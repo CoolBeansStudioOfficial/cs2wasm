@@ -1559,6 +1559,20 @@ sealed partial class FunctionCompiler
         if (p is Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.Char && result == p) Narrow(p);
     }
 
+    /// <summary>`> c`, `<= c` and the like on a decimal (its address pushed by `pushLeft`): decimal's own operator.</summary>
+    void EmitDecimalRelation(IRelationalPatternOperation rp, Action pushLeft)
+    {
+        var dec = D.LibType("System.Decimal");
+        var op = DecimalOpFor(rp.OperatorKind) ?? throw new CompileException("relational pattern on decimal: " + rp.OperatorKind, rp.Syntax.GetLocation());
+        CallWith(op, false, null, () =>
+        {
+            pushLeft(); CopyToTemp(dec);
+            var o = EmitValue(rp.Value);
+            ConvertTop(TypeOf(rp.Value), dec, ref o);
+            CopyToTemp(dec);
+        }, null, rp.Syntax);
+    }
+
     void EmitCompare(BinaryOperatorKind kind, ITypeSymbol t) => EmitCompare(kind, Types.PrimOf(t) is var p && p != Prim.None ? p : Prim.U32);
 
     void EmitCompare(BinaryOperatorKind kind, Prim p)
@@ -1968,7 +1982,9 @@ sealed partial class FunctionCompiler
         // a compound assignment operator declared as an instance member (C# 14: `public void operator +=(int n)`):
         // a call on the target, whose value is the expression's
         if (caOp is { IsStatic: false }) return EmitInstanceOperator(caOp, ca.Target, [ca.Value], needResult, ca.Syntax);
-        if (caOp != null)
+        // (lifted: the operator is the underlying type's, `x op= y` on a T? is null unless both have a value: below)
+        bool liftedOp = IsNullable(tt) && !(caOp != null && IsNullable(T.Resolve(caOp.Parameters[0].Type, Map)));
+        if (caOp != null && !liftedOp)
         {
             var m = caOp;
             // a static abstract operator through a constrained type parameter (`s += x` on a T : IAdditionOperators):
@@ -2042,6 +2058,27 @@ sealed partial class FunctionCompiler
             E.Get(la); NullableHas(tt); E.Get(ra); NullableHas(ntR); E.Op(Op.I32And);
             E.If();
             var up = Types.PrimOf(u);
+            // an operator that is a method (the type's own, decimal's): called on the two values
+            if ((caOp ?? (IsDecimal(u) ? DecimalOpFor(ca.OperatorKind) : null)) is { } liftOp)
+            {
+                var lm = SubstMethod(liftOp);
+                var q0 = T.Resolve(lm.Parameters[0].Type, Map); var q1 = T.Resolve(lm.Parameters[1].Type, Map);
+                var rr = CallWith(lm, false, null, () =>
+                {
+                    E.Get(la); NullableVal(tt);
+                    var a0 = Own.None; ConvertTop(u, q0, ref a0);
+                    if (Types.IsStruct(q0)) CopyToTemp(q0);
+                    E.Get(ra); NullableVal(ntR);
+                    var a1 = Own.None; ConvertTop(Underlying(ntR), q1, ref a1);
+                    if (Types.IsStruct(q1)) CopyToTemp(q1);
+                }, null, ca.Syntax);
+                ConvertTop(T.Resolve(lm.ReturnType, Map), u, ref rr);
+                WrapNullable(tt, rr);
+                { int w = E.AddLocal(ValType.I32); E.Set(w); E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.Get(w); CopyStructInit(tt); }
+                E.End();
+                E.Get(_fb); E.I32(res); E.Op(Op.I32Add);
+                return lv.Store(Own.None, needResult);
+            }
             if (up == Prim.None) throw new CompileException($"lifted compound assignment on {tt} is not supported", ca.Syntax.GetLocation());
             E.Get(la); NullableVal(tt);
             E.Get(ra); NullableVal(ntR);
@@ -2155,7 +2192,9 @@ sealed partial class FunctionCompiler
         if (incOp != null && IsStaticInterfaceMember(incOp) && inc.ConstrainedToType is { } ict && T.Resolve(ict, Map) is var iconcrete
             && Types.PrimOf(iconcrete) == Prim.None && ImplementationOf(iconcrete, SubstMethod(incOp)) is { } iimpl)
             incOp = iimpl;
-        if (incOp != null)
+        // (lifted: the operator is the underlying type's, `x++` on a T? stays null when x is: below)
+        bool liftedInc = IsNullable(tt) && !(incOp != null && IsNullable(T.Resolve(incOp.Parameters[0].Type, Map)));
+        if (incOp != null && !liftedInc)
         {
             Own cur = Own.None;
             int old = -1;
@@ -2183,12 +2222,30 @@ sealed partial class FunctionCompiler
             E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.I32(0); E.I32(T.StorageOf(tt).size); E.Op(Op.MemoryFill);
             E.Get(ca); NullableHas(tt);
             E.If();
-            E.Get(ca); NullableVal(tt);
-            switch (uw) { case ValType.I64: E.I64(1); break; case ValType.F32: E.F32(1); break; case ValType.F64: E.F64(1); break; default: E.I32(1); break; }
-            var uop = Types.PrimSize(up) < 4 ? (Types.IsSigned(up) ? Prim.I32 : Prim.U32) : up;
-            EmitArith(isInc ? BinaryOperatorKind.Add : BinaryOperatorKind.Subtract, uop, inc.IsChecked && uop == up, uop);
-            if (uop != up) Narrow(up);
-            WrapNullable(tt, Own.None);
+            var wrapped = Own.None;
+            // an operator that is a method (the type's own, decimal's): called on the value
+            if ((incOp ?? (IsDecimal(u) ? DecimalOp(isInc ? "op_Increment" : "op_Decrement", 1) : null)) is { } liftOp)
+            {
+                var lm = SubstMethod(liftOp);
+                var q0 = T.Resolve(lm.Parameters[0].Type, Map);
+                wrapped = CallWith(lm, false, null, () =>
+                {
+                    E.Get(ca); NullableVal(tt);
+                    var a0 = Own.None; ConvertTop(u, q0, ref a0);
+                    if (Types.IsStruct(q0)) CopyToTemp(q0);
+                }, null, inc.Syntax);
+                ConvertTop(T.Resolve(lm.ReturnType, Map), u, ref wrapped);
+            }
+            else
+            {
+                if (up == Prim.None) throw new CompileException("++/-- on " + tt, inc.Syntax.GetLocation());
+                E.Get(ca); NullableVal(tt);
+                switch (uw) { case ValType.I64: E.I64(1); break; case ValType.F32: E.F32(1); break; case ValType.F64: E.F64(1); break; default: E.I32(1); break; }
+                var uop = Types.PrimSize(up) < 4 ? (Types.IsSigned(up) ? Prim.I32 : Prim.U32) : up;
+                EmitArith(isInc ? BinaryOperatorKind.Add : BinaryOperatorKind.Subtract, uop, inc.IsChecked && uop == up, uop);
+                if (uop != up) Narrow(up);
+            }
+            WrapNullable(tt, wrapped);
             int wn = Scratch(ValType.I32); E.Set(wn);
             E.Get(_fb); E.I32(res); E.Op(Op.I32Add); E.Get(wn); CopyStructInit(tt);
             FreeScratch(ValType.I32, wn);
@@ -2830,10 +2887,14 @@ sealed partial class FunctionCompiler
                     var u = Underlying(vt);
                     E.Get(v); NullableHas(vt);
                     E.If(ValType.I32);
-                    E.Get(v); NullableVal(vt);
-                    var ro = EmitValue(rp.Value);
-                    ConvertTop(TypeOf(rp.Value), u, ref ro);
-                    EmitCompare(rp.OperatorKind, u);
+                    if (IsDecimal(u)) EmitDecimalRelation(rp, () => { E.Get(v); NullableVal(vt); });
+                    else
+                    {
+                        E.Get(v); NullableVal(vt);
+                        var ro = EmitValue(rp.Value);
+                        ConvertTop(TypeOf(rp.Value), u, ref ro);
+                        EmitCompare(rp.OperatorKind, u);
+                    }
                     E.Else(); E.I32(0); E.End();
                     return;
                 }
@@ -2849,6 +2910,8 @@ sealed partial class FunctionCompiler
                         E.Else(); E.I32(0); E.End();
                         return;
                     }
+                    // (a decimal is compared by its operators: it is no number of the machine's)
+                    if (IsDecimal(vt)) { EmitDecimalRelation(rp, () => E.Get(v)); return; }
                     E.Get(v);
                     var o = EmitValue(rp.Value);
                     ConvertTop(TypeOf(rp.Value), vt, ref o);

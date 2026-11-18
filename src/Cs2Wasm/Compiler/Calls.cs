@@ -1160,6 +1160,8 @@ sealed partial class FunctionCompiler
                 case IMemberInitializerOperation mi:
                     {
                         // nested: new C { P = { X = 1 } }
+                        // (nothing to set or add: the member is not even read, `["k"] = { }` asks for no "k")
+                        if (mi.Initializer.Initializers.Length == 0) break;
                         var mt = TypeOf(mi.InitializedMember);
                         int inner = E.AddLocal(ValType.I32);
                         if (Types.IsStruct(mt)) EmitAddress(mi.InitializedMember);
@@ -1307,8 +1309,44 @@ sealed partial class FunctionCompiler
     /// <summary>A spread element: its elements added to the collection in `obj` (an ICollection&lt;T&gt;).</summary>
     void EmitSpreadInto(int obj, ITypeSymbol elemType, ISpreadOperation sp)
     {
-        if (sp.ElementConversion is var ec && ec.Exists && !ec.IsIdentity && !(ec.IsImplicit && ec.IsReference))
-            throw new CompileException("a spread element with an element conversion is not supported yet", sp.Syntax.GetLocation());
+        if (sp.ElementConversion is var ec && ec.Exists && !ec.IsIdentity && !(ec.IsImplicit && ec.IsReference) && sp.ElementType != null)
+        {
+            // Each element is converted on its way in (`long[] x = [.. ints]`): the spread's elements are gathered as
+            // they are, in a list of their own type (whatever the operand is: any enumerable, a span), and added
+            // one by one through the conversion.
+            var fromT = T.Canonical(T.Resolve(sp.ElementType, Map));
+            var toT = T.Canonical(elemType);
+            var listF = (INamedTypeSymbol)T.Canonical(D.LibType("System.Collections.Generic.List`1").Construct(fromT));
+            NewObject(listF, sp.Syntax);
+            int tmp = E.AddLocal(ValType.I32); E.Set(tmp);
+            RegisterTemp(new Slot { Local = tmp, Type = listF });
+            EmitSpreadElements(tmp, fromT, sp);
+            var count = D.CanonicalMethod(listF.GetMembers("get_Count").OfType<IMethodSymbol>().First());
+            var item = D.CanonicalMethod(listF.GetMembers("get_Item").OfType<IMethodSymbol>().First());
+            var add = D.CanonicalMethod(((INamedTypeSymbol)T.Canonical(D.LibType("System.Collections.Generic.ICollection`1").Construct(toT))).GetMembers("Add").OfType<IMethodSymbol>().First());
+            int n = E.AddLocal(ValType.I32), i = E.AddLocal(ValType.I32);
+            CallWith(count, false, () => E.Get(tmp), () => { }, null, sp.Syntax); E.Set(n);
+            E.I32(0); E.Set(i);
+            var done = E.Block(); var top = E.Loop();
+            E.Get(i); E.Get(n); E.Op(Op.I32GeS); E.BrIf(done);
+            BeginTemps();
+            CallWith(add, true, () => E.Get(obj), () =>
+            {
+                var o = CallWith(item, false, () => E.Get(tmp), () => E.Get(i), null, sp.Syntax);
+                ConvertValue(fromT, toT, false, ref o, false, ec);
+                if (Types.IsStruct(toT)) CopyToTemp(toT); else if (Types.IsRef(toT)) ToCallSafe(o, toT);
+            }, null, sp.Syntax);
+            EndTemps();
+            E.Get(i); E.I32(1); E.Op(Op.I32Add); E.Set(i);
+            E.Br(top);
+            E.End(); E.End();
+            return;
+        }
+        EmitSpreadElements(obj, elemType, sp);
+    }
+
+    void EmitSpreadElements(int obj, ITypeSymbol elemType, ISpreadOperation sp)
+    {
         var et = T.Canonical(sp.ElementType ?? elemType);
         var operandT = T.Resolve(sp.Operand.Type!, Map);
         string helper = operandT is INamedTypeSymbol { Arity: 1 } st && Types.FullName(st) is "System.ReadOnlySpan`1" ? "AddSpan"
