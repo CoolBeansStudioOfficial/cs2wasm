@@ -15,10 +15,24 @@ namespace System.Threading
         public static int CompareExchange(ref int location1, int value, int comparand) => Atomic.CompareExchange32(ref location1, comparand, value);
 
         [return: NotNullIfNotNull(nameof(location1))]
-        public static object? CompareExchange(ref object? location1, object? value, object? comparand)
+        public static unsafe object? CompareExchange(ref object? location1, object? value, object? comparand)
         {
             ref int slot = ref Unsafe.As<object?, int>(ref location1);
             int v = Rt.AddressOf(value!), c = Rt.AddressOf(comparand!);
+            if (Rt.SingleThreaded())
+            {
+                // (no other thread: the store the code would have written, the slot known by its address)
+                int at = (int)Unsafe.AsPointer(ref slot);
+                int was = slot;
+                if (was != 0) Rt.Retain(Rt.Borrow<object>(was)); // the result's count
+                if (was == c)
+                {
+                    if (v != 0) Rt.Retain(value!);
+                    slot = Rt.LinkAt(v, at);
+                    Rt.UnlinkAt(was, at);
+                }
+                return Rt.Take<object>(was);
+            }
             if (v != 0) Rt.Retain(value!); // the count the slot takes if the exchange happens
             // under the place's lock: a read that counts (rt.load_retain) sees the old value still counted, or the new
             int held = Rt.RefLock(ref slot);
@@ -42,11 +56,20 @@ namespace System.Threading
         public static int Exchange(ref int location1, int value) => Atomic.Exchange32(ref location1, value);
 
         [return: NotNullIfNotNull(nameof(location1))]
-        public static object? Exchange([NotNullIfNotNull(nameof(value))] ref object? location1, object? value)
+        public static unsafe object? Exchange([NotNullIfNotNull(nameof(value))] ref object? location1, object? value)
         {
             ref int slot = ref Unsafe.As<object?, int>(ref location1);
             int v = Rt.AddressOf(value!);
             if (v != 0) Rt.Retain(value!);
+            if (Rt.SingleThreaded())
+            {
+                int at = (int)Unsafe.AsPointer(ref slot);
+                int was = slot;
+                if (was != 0) Rt.Retain(Rt.Borrow<object>(was)); // the result's count
+                slot = Rt.LinkAt(v, at);
+                Rt.UnlinkAt(was, at);
+                return Rt.Take<object>(was);
+            }
             int held = Rt.RefLock(ref slot);
             int old = slot;
             slot = v;

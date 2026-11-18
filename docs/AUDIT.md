@@ -619,6 +619,39 @@ notice names the types, as today). The component that `object` fields make (anyt
 component: objects of it stored into each other share a group. Both are measured in 7.B and 7.C before 7.D and 7.E
 are ordered.
 
+**Correction, 2026-11-18, on reading the runtime whole before replacing it.** The audit's summary of it ("counted
+raw pointers", "arenas only merge", walks) was mine and was wrong in what mattered. `Boundary/Runtime.cs` already
+is the model above: an object of a cycle-capable type starts as a plain counted object; a store that can close a
+cycle puts container and value in one group (a union of two records, constant time, whatever their sizes); a member
+has its count of inside references and its count of outside ones, and its group counts the members that have
+outside ones; a member nothing refers to goes at once, a group nothing outside refers to goes whole.
+
+And it has one thing the model above gives up: **a reference from a member to one that holds it (a child to its
+parent) is not counted at all, decided at run time along the chain of owners**, so a subtree with parent links that
+is cut from a living tree is destroyed at the store that cuts it. The fixed-memory checks of the suite ("a
+long-lived tree that keeps dropping subtrees stays in 16 MB") depend on it, and so does any game that removes nodes
+from a scene. The model above would have kept such a subtree until the whole tree goes. The compile-time proof of
+7.E cannot stand in for it: a child may outlive its parent in ways a compiler cannot rule out, and the run-time
+chain handles those.
+
+So nothing is replaced. What was wrong with the runtime is narrower, and it is what step 7 now is:
+
+- **7.B (done 2026-11-18): a store that has only the slot's address is the store through the object.** Through a
+  `ref`, a span, a struct's own method, `Interlocked`, a block copy of references. The allocator says which object
+  the slot is in (7.A); the object's type says whether the slot is one a cycle can close through (`ArenaIsSlot`,
+  generated). Before, a slot whose address the program took was left out of the graph for good (cycles through it
+  were never freed: test 128 left four objects), and a store through a span into a slot that was not left out
+  counted the old value as an outside reference whatever it was.
+- **7.B2: what a slot holds is known for every slot.** A member keeps two bits for each of its first sixteen words
+  (nothing, an inside reference, an uncounted one to its owner); for an array's elements and later fields
+  `ArenaUnlink` goes by the counts (A1.4). Bits for every slot, in a block of their own for an object that has
+  more than sixteen: no guess, and a child's link to its parent may then be an element or a late field too.
+- **7.C: every container** (unchanged): references inside structs, boxes, display objects, delegates, state
+  machines. Test 127.
+- **7.D, 7.E** as above, after the measurements of 7.C. The store into an object nothing else can reach stays a
+  plain store, and what such an object holds is linked when it is first stored where a cycle can close, as today:
+  the paragraph above that proposed to measure the other way is moot.
+
 ### Step 8. Plugin fixes that do not need the IR (A4.1, A4.5, A4.11)
 
 1. `AddSource` compiles with access checks off for the game's assemblies (Roslyn's `IgnoresAccessChecksTo` on the

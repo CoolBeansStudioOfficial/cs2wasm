@@ -52,7 +52,7 @@ internal sealed class Arenas
         }
     }
 
-    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh, LinkOwned }
+    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh, LinkOwned, LinkAt, UnlinkAt, MoveAt }
 
     readonly Dictionary<string, Site> _sites = [];
     readonly Dictionary<WasmFunction, (Kind kind, Site? site, ITypeSymbol? pinType)> _placeholders = [];
@@ -253,6 +253,33 @@ internal sealed class Arenas
         return f;
     }
 
+    readonly Dictionary<string, WasmFunction> _linkAt = [], _unlinkAt = [];
+    WasmFunction? _moveAt;
+
+    /// <summary>(value, slot address) → value: a store of a reference into a slot the code knows by its address
+    /// alone (through a `ref`, a span, a struct's own method). The runtime finds the object the slot is in.</summary>
+    public WasmFunction LinkAt(ITypeSymbol slotType)
+    {
+        slotType = D.Types.Canonical(slotType);
+        var k = Types.Key(slotType);
+        if (!_linkAt.TryGetValue(k, out var f))
+            _linkAt[k] = f = Placeholder("arena.link at " + k, new FuncType([I, I], [I]), Kind.LinkAt, null, slotType);
+        return f;
+    }
+
+    /// <summary>(old value, slot address): the old value of such a slot.</summary>
+    public WasmFunction UnlinkAt(ITypeSymbol slotType)
+    {
+        slotType = D.Types.Canonical(slotType);
+        var k = Types.Key(slotType);
+        if (!_unlinkAt.TryGetValue(k, out var f))
+            _unlinkAt[k] = f = Placeholder("arena.unlink at " + k, new FuncType([I, I], []), Kind.UnlinkAt, null, slotType);
+        return f;
+    }
+
+    /// <summary>(destination, source, count) → whether it was done: references copied over such slots.</summary>
+    public WasmFunction MoveAt() => _moveAt ??= Placeholder("arena.move at", new FuncType([I, I, I], [I]), Kind.MoveAt, null);
+
     // ------------------------------------------------------------------
     // analysis
     // ------------------------------------------------------------------
@@ -267,6 +294,8 @@ internal sealed class Arenas
             foreach (var f in D.Module.Functions)
                 foreach (var ins in f.Body)
                     if (ins.Ref is WasmFunction w && general.TryGetValue(w, out var gs)) gs.General = true;
+            // (a slot whose address is taken is stored through it by code that knows nothing of the object)
+            foreach (var s in _sites.Values) if (s.AddressTaken) s.General = true;
         }
         var nodes = D.Constructed.Where(id => id != 0 && !D.DisplayById.ContainsKey(id) && !D.SyntheticById.ContainsKey(id))
             .Select(id => (id, t: D.TypeById[id])).ToList();
@@ -317,7 +346,9 @@ internal sealed class Arenas
         {
             var hubs = new List<int>();
             siteNodes[s] = hubs;
-            if (s.AddressTaken || s.Values.Count == 0) continue;
+            // (a slot whose address is taken is an edge like any other: a store through the address finds its object,
+            // Rt.ArenaLinkAt)
+            if (s.Values.Count == 0) continue;
             // (an immortal object is never freed: no cycle through it can leak, and it is never an arena's member)
             long tc = sw.ElapsedTicks;
             var containers = ContainersOf(s.Container, s.IsArray);
@@ -428,7 +459,8 @@ internal sealed class Arenas
 
     static readonly (string name, int arity)[] RuntimeMethods =
         [("ArenaLink", 3), ("ArenaUnlink", 3), ("ArenaVisitElement", 1), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
-         ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 3), ("ArenaUnlinkFresh", 3), ("ArenaLinkOwned", 3)];
+         ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 3), ("ArenaUnlinkFresh", 3), ("ArenaLinkOwned", 3),
+         ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3)];
 
     /// <summary>Queues the library's arena runtime for compilation (only when some site is cyclic).</summary>
     public void RequestRuntime()
@@ -453,9 +485,33 @@ internal sealed class Arenas
             linkOwned = RuntimeFn("ArenaLinkOwned", 3);
             pin = RuntimeFn("ArenaPin", 1);
         }
+        // A store by address asks the runtime only for an address in the heap: the statics and the first thread's
+        // stack lie below it, and a slot there is no object's.
+        WasmFunction? linkAt = null, unlinkAt = null, moveAt = null;
+        if (Enabled)
+        {
+            moveAt = RuntimeFn("ArenaMove", 3);
+            linkAt = D.Module.AddFunction("arena.link at", new FuncType([I, I], [I]));
+            var le = new Emitter(linkAt);
+            le.Get(1); le.I32Addr(new LateAddr(() => D.HeapBase)); le.Op(Op.I32LtU);
+            le.If(); le.Get(0); le.Op(Op.Return); le.End();
+            le.Get(0); le.Get(1); le.Call(RuntimeFn("ArenaLinkAt", 2));
+            unlinkAt = D.Module.AddFunction("arena.unlink at", new FuncType([I, I], []));
+            var ue = new Emitter(unlinkAt);
+            ue.Get(1); ue.I32Addr(new LateAddr(() => D.HeapBase)); ue.Op(Op.I32LtU);
+            ue.If(); ue.Get(0); ue.Call(D.Rt.Release); ue.Op(Op.Return); ue.End();
+            ue.Get(0); ue.Get(1); ue.Call(RuntimeFn("ArenaUnlinkAt", 2));
+        }
+        var holdsCyclic = new Dictionary<string, bool>();
+        bool HoldsCyclic(ITypeSymbol slotType)
+        {
+            var k = Types.Key(slotType);
+            if (!holdsCyclic.TryGetValue(k, out var r)) holdsCyclic[k] = r = CycleTypes.Any(id => D.Types.IsSubtype(D.TypeById[id], slotType));
+            return r;
+        }
         foreach (var f in D.Module.Functions)
         {
-            if (f.IsImport || !f.Body.Any(x => x.Op == Op.Call && x.Ref is WasmFunction w && _placeholders.ContainsKey(w))) continue;
+            if (f.IsImport || f == linkAt || f == unlinkAt || !f.Body.Any(x => x.Op == Op.Call && x.Ref is WasmFunction w && _placeholders.ContainsKey(w))) continue;
             var body = new List<Instr>(f.Body.Count + 8);
             foreach (var ins in f.Body)
             {
@@ -511,6 +567,25 @@ internal sealed class Arenas
                             A(Op.End);
                         }
                         else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); x.Ref = D.Rt.Release; body.Add(x); }
+                        break;
+                    case Kind.LinkAt:
+                        // (value, slot) -> value
+                        if (Enabled && HoldsCyclic(ph.pinType!)) { x.Ref = linkAt; body.Add(x); }
+                        else { x.Op = Op.Drop; x.Ref = null; body.Add(x); }
+                        break;
+                    case Kind.UnlinkAt:
+                        // (old, slot) -> ()
+                        if (Enabled && HoldsCyclic(ph.pinType!)) { x.Ref = unlinkAt; body.Add(x); }
+                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); x.Ref = D.Rt.Release; body.Add(x); }
+                        break;
+                    case Kind.MoveAt:
+                        // (destination, source, count) -> done
+                        if (Enabled && AnyArrayCycle) { x.Ref = moveAt; body.Add(x); }
+                        else
+                        {
+                            var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); body.Add(d);
+                            body.Add(new Instr { Op = Op.I32Const, Imm = 0, Pos = ins.Pos });
+                        }
                         break;
                     case Kind.Pin:
                         if (Enabled && CycleTypes.Any(id => D.Types.IsSubtype(D.TypeById[id], ph.pinType!))) { x.Ref = pin; body.Add(x); }

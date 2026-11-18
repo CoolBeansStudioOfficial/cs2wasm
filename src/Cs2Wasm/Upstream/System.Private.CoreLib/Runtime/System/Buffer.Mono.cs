@@ -23,6 +23,8 @@ namespace System
                 // Non-blittable memmove. cs2wasm: the copies count; the overwritten references are released (all
                 // relative to the values before the move, so overlapping ranges count right)
                 int dst = (int)Unsafe.AsPointer(ref destination), src = (int)Unsafe.AsPointer(ref source);
+                // (references into slots a cycle can close through: one by one, as stores: Rt.ArenaMove)
+                if (Cs2Wasm.Runtime.Rt.IsReference<T>() && Cs2Wasm.Runtime.Rt.MoveRefs(dst, src, (int)elementCount)) return;
                 if (!Cs2Wasm.Runtime.Rt.SingleThreaded())
                 {
                     // threads: counted and exchanged with no store able to come in between; the old references, set

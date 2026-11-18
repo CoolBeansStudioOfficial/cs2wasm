@@ -796,6 +796,7 @@ sealed partial class RuntimeGen
         var freeFns = new Dictionary<int, WasmFunction>();
         var visitFns = new Dictionary<int, WasmFunction>();
         var finFns = new Dictionary<int, WasmFunction>();
+        var slotFns = new Dictionary<int, WasmFunction>();
         var visit = ar.RuntimeFn("ArenaVisit", 1);
         foreach (var id in ar.CycleTypes)
         {
@@ -834,6 +835,21 @@ sealed partial class RuntimeGen
             else
                 foreach (var off in ar.CyclicFieldOffsets(t)) { ve.Get(0); ve.I32(off); ve.Op(Op.I32Add); ve.Call(visit); }
             visitFns[id] = v;
+            // whether an offset into the object is one of those slots (a store that has only the slot's address)
+            var sl = D.Module.AddFunction("arena.is_slot " + id, new FuncType([ValType.I32, ValType.I32], [ValType.I32]));
+            var se = new Emitter(sl);
+            if (t is IArrayTypeSymbol sat)
+            {
+                if (ar.HasCyclicElements(t)) { se.Get(1); se.I32(Types.ArrayDataOffset(sat.Rank)); se.Op(Op.I32GeU); }
+                else se.I32(0);
+            }
+            else
+            {
+                var offs = ar.CyclicFieldOffsets(t).ToList();
+                if (offs.Count == 0) se.I32(0);
+                for (int k = 0; k < offs.Count; k++) { se.Get(1); se.I32(offs[k]); se.Op(Op.I32Eq); if (k > 0) se.Op(Op.I32Or); }
+            }
+            slotFns[id] = sl;
         }
         void Dispatch(WasmFunction? fn, Dictionary<int, WasmFunction> per)
         {
@@ -851,6 +867,14 @@ sealed partial class RuntimeGen
             Dispatch(rt.ArenaFreeFnIfMade, freeFns);
             Dispatch(rt.ArenaVisitFnIfMade, visitFns);
             Dispatch(rt.ArenaFinFnIfMade, finFns);
+            if (rt.ArenaIsSlotFnIfMade is { } isSlot)
+            {
+                var e = new Emitter(isSlot);
+                int tid = e.AddLocal(ValType.I32);
+                e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
+                rt.IdSwitch(e, tid, slotFns.Select(x => { var f = x.Value; return (x.Key, (object?)WasmModule.BodyKey(f), (Action)(() => { e.Get(0); e.Get(1); e.Call(f); e.Op(Op.Return); })); }).ToList());
+                e.I32(0);
+            }
             if (rt.ArenaFinTypeIfMade is { } finType) EmitIdTable(finType, D.TypeById.Count, i => (null, finFns.ContainsKey(i) ? 1 : 0));
             if (rt.SccOfIfMade is { } scc) EmitIdTable(scc, D.TypeById.Count, i => (null, ar.SccOf(i)));
         };

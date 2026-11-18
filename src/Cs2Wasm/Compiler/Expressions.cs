@@ -370,7 +370,12 @@ sealed partial class FunctionCompiler
         {
             // section 4.3: a site that can close a cycle links the value into the container's arena (resolved later)
             void PushSlot() { if (site!.IsArray) { E.I32(0); return; } pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } }
+            // A slot the code knows by its address alone (through a `ref`, a span, a struct's own method), not one in
+            // this function's frame or a static: the runtime finds the object it is in (Arenas.LinkAt), so the store
+            // is the one the object's own code would have made.
+            bool byAddress = site == null && pin == null && !frame && initKey == null && !Types.IsImmortalType(t);
             if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : owned ? site.LinkOwned : site.Link); E.Set(val); }
+            else if (byAddress) { E.Get(val); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.LinkAt(t)); E.Set(val); }
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
             EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
             int a = Scratch(ValType.I32);
@@ -390,7 +395,9 @@ sealed partial class FunctionCompiler
             }
             E.Get(old);
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
-            if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink); } else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.Release);
+            if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink); }
+            else if (byAddress) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.UnlinkAt(t)); }
+            else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.Release);
             FreeScratch(ValType.I32, old); FreeScratch(ValType.I32, a);
         }
         else { pushAddr(); E.Get(val); E.Store(Types.StoreOp(t), offset); }

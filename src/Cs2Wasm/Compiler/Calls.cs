@@ -910,6 +910,11 @@ sealed partial class FunctionCompiler
             case "Rt.ArenaClearObject": E.Call(Rt.ArenaClearFn); return Own.None;
             case "Rt.ArenaFreeObject": E.Call(Rt.ArenaFreeFn); return Own.None;
             case "Rt.ArenaVisitObject": E.Call(Rt.ArenaVisitFn); return Own.None;
+            case "Rt.ArenaIsSlot": E.Call(Rt.ArenaIsSlotFn); return Own.None;
+            // (a slot known by its address: Arenas.LinkAt)
+            case "Rt.LinkAt": E.Call(D.Arenas.LinkAt(D.ObjectType)); return Own.None;
+            case "Rt.UnlinkAt": E.Call(D.Arenas.UnlinkAt(D.ObjectType)); return Own.None;
+            case "Rt.MoveRefs": E.Call(D.Arenas.MoveAt()); return Own.None;
             case "Rt.TypeName": E.Call(Rt.TypeNameFn); return Own.Stable;
             case "Rt.IsInstanceOf": E.Call(Rt.IsInst(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Rt.Unreachable": E.Op(Op.Unreachable); return Own.None;

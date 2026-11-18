@@ -11,10 +11,18 @@ using System.Threading.Tasks;
 
 class Tracked
 {
-    public static readonly Dictionary<string, int> Live = new();
-    readonly string _kind;
-    public Tracked(string kind) { _kind = kind; Live[kind] = Live.GetValueOrDefault(kind) + 1; }
-    ~Tracked() { Live[_kind]--; }
+    // (counted with Interlocked: .NET runs finalizers on a thread of their own)
+    public static readonly List<string> Kinds = new();
+    public static readonly int[] Live = new int[64];
+    readonly int _kind;
+    public Tracked(string kind)
+    {
+        int k = Kinds.IndexOf(kind);
+        if (k < 0) { k = Kinds.Count; Kinds.Add(kind); }
+        _kind = k;
+        System.Threading.Interlocked.Increment(ref Live[k]);
+    }
+    ~Tracked() { System.Threading.Interlocked.Decrement(ref Live[_kind]); }
 }
 
 class Node : Tracked
@@ -112,6 +120,6 @@ static class P
     {
         Shapes(); Temporaries(); Tasks();
         for (int i = 0; i < 3; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
-        foreach (var (kind, n) in Tracked.Live.OrderBy(p => p.Key, StringComparer.Ordinal)) Console.WriteLine(kind + " " + n);
+        foreach (var kind in Tracked.Kinds.OrderBy(k => k, StringComparer.Ordinal)) Console.WriteLine(kind + " " + Tracked.Live[Tracked.Kinds.IndexOf(kind)]);
     }
 }

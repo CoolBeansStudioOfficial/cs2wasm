@@ -541,6 +541,10 @@ internal sealed partial class RuntimeFns
     public WasmFunction? ArenaClearFnIfMade => _arenaClear;
     public WasmFunction? ArenaFreeFnIfMade => _arenaFree;
     public WasmFunction? ArenaVisitFnIfMade => _arenaVisit;
+    WasmFunction? _arenaIsSlot;
+    /// <summary>(object, offset) -> whether the word at that offset of the object is a slot a cycle can close through.</summary>
+    public WasmFunction ArenaIsSlotFn => _arenaIsSlot ??= M.AddFunction("rt.arena_is_slot", FT([I, I], [I]));
+    public WasmFunction? ArenaIsSlotFnIfMade => _arenaIsSlot;
     public WasmFunction? SccOfIfMade => _sccOf;
     /// <summary>(array, index, length, size): release and zero elements.</summary>
     public WasmFunction ArrayClear => _arrayClear ??= MakeArrayClear();

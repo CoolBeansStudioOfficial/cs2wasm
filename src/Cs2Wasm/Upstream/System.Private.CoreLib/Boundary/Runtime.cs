@@ -590,17 +590,13 @@ namespace Cs2Wasm.Runtime
         // ------------------------------------------------------------------
         const int KindPlain = 0, KindArena = 1;
 
-        public static int Alloc(int size)
-        {
-            if (SingleThreaded()) return AllocBlock(size, KindPlain);
-            return AllocBlock(size + 8, KindPlain) + 8;
-        }
+        public static int Alloc(int size) => AllocBlock(size + 8, KindPlain) + 8;
 
         /// <summary>Alloc for the first thread's own block of thread statics: before there is one, nothing may read a
         /// thread static, the thread's lists of free blocks among them.</summary>
         public static int AllocFirst(int size)
         {
-            if (SingleThreaded()) return AllocBlock(size, KindPlain);
+            if (SingleThreaded()) return AllocBlock(size + 8, KindPlain) + 8;
             RuntimeLock();
             int a = AllocCore(size + 8, KindPlain) + 8;
             RuntimeUnlock();
@@ -806,8 +802,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>Frees memory Alloc gave (not an object: FreeObject).</summary>
         public static void Free(int addr, int size)
         {
-            if (SingleThreaded()) FreeBlock(addr, size, KindPlain);
-            else FreeBlock(addr - 8, size + 8, KindPlain);
+            FreeBlock(addr - 8, size + 8, KindPlain);
         }
 
         /// <summary>Frees an object's memory (its destruction: the compiler's destroy functions).</summary>
@@ -1170,6 +1165,22 @@ namespace Cs2Wasm.Runtime
         // sixteen bytes before the header then.)
         const int MemberWords = 32;
         static int ArenaPrefix => SingleThreaded() ? 8 : 16;
+        /// <summary>The first word of the block of an object of a cycle-capable type, while it is allocated: no count
+        /// word of an object that starts its block is below -1 (a member's is, and a member never starts its block),
+        /// and memory that is no object has a zero there (Alloc). So a block's first word says what the block is.</summary>
+        const int PrefixMark = -2;
+
+        /// <summary>The object the address is in (a field's, an element's, a struct's inside either), or 0: the stack,
+        /// the statics, memory that is no object.</summary>
+        public static int ObjectOf(int addr)
+        {
+            int b = BlockOf(addr);
+            if (b == 0) return 0;
+            int w = Mem.LoadI32(b);
+            if (w == 0) return 0;
+            if (w == PrefixMark) { int o = b + ArenaPrefix; return Mem.LoadI32(o) == 0 ? 0 : o; }
+            return b;
+        }
 
         /// <summary>One of the object's eight words (k: 4 to 32, the word that many bytes before where they end); 0
         /// while the object has none.</summary>
@@ -1229,6 +1240,7 @@ namespace Cs2Wasm.Runtime
                         if (run != Mem.LoadI32(hotSlot + 2 * Classes * 4))
                         {
                             Mem.StoreI32(hotSlot + Classes * 4, run + s);
+                            Mem.StoreI32(run, PrefixMark);
                             Mem.StoreI32(run + ArenaPrefix, 1);
                             Mem.StoreI32(run + ArenaPrefix + 4, typeId);
                             return run + ArenaPrefix;
@@ -1250,6 +1262,7 @@ namespace Cs2Wasm.Runtime
                                     int nb = bump + s;
                                     Mem.StoreI32(pg + 12, nb + s <= pg + PageSize ? nb : 0);
                                     Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
+                                    Mem.StoreI32(bump, PrefixMark);
                                     Mem.StoreI32(bump + ArenaPrefix, 1);
                                     Mem.StoreI32(bump + ArenaPrefix + 4, typeId);
                                     return bump + ArenaPrefix;
@@ -1260,17 +1273,20 @@ namespace Cs2Wasm.Runtime
                     if (head != 0)
                     {
                         for (int p = head, e = head + s; p != e; p += 8) Mem.StoreI64(p, 0);
+                        Mem.StoreI32(head, PrefixMark);
                         Mem.StoreI32(head + ArenaPrefix, 1);
                         Mem.StoreI32(head + ArenaPrefix + 4, typeId);
                         return head + ArenaPrefix;
                     }
                     head = PageAlloc(s);
+                    Mem.StoreI32(head, PrefixMark);
                     Mem.StoreI32(head + ArenaPrefix, 1);
                     Mem.StoreI32(head + ArenaPrefix + 4, typeId);
                     return head + ArenaPrefix;
                 }
             }
             int a = AllocBlock(size + ArenaPrefix, KindArena) + ArenaPrefix;
+            Mem.StoreI32(a - ArenaPrefix, PrefixMark);
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
             if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x1F) << 24);
@@ -1955,6 +1971,64 @@ namespace Cs2Wasm.Runtime
         {
             if (val != 0 && Mem.LoadI32(val) > 0) Mem.StoreI32(val + 8, Mem.LoadI32(val + 8) | int.MinValue);
             return val;
+        }
+
+        // ------------------------------------------------------------------
+        // A store that has only the slot's address: through a `ref`, a span, a pointer, a struct's own method, an
+        // exchange. Which object the slot is in is the allocator's to say (ObjectOf), and whether the slot is one a
+        // cycle can close through is the object's type's (ArenaIsSlot, generated: the offsets of its sites). Such a
+        // store is then the store the code would have made through the object: nothing about a slot depends on how
+        // it was reached.
+        // ------------------------------------------------------------------
+        [Intrinsic] static extern int ArenaIsSlot(int obj, int offset);
+        [Intrinsic] public static extern int LinkAt(int val, int slot);
+        [Intrinsic] public static extern void UnlinkAt(int old, int slot);
+        [Intrinsic] public static extern bool MoveRefs(int dst, int src, int count);
+        [System.ThreadStatic] static int t_atSlot, t_atOwner;
+
+        static int SlotOwner(int slot)
+        {
+            int c = ObjectOf(slot);
+            if (c == 0 || SccOf(Mem.LoadI32(c + 4)) == 0) return 0;
+            return ArenaIsSlot(c, slot - c) != 0 ? c : 0;
+        }
+
+        /// <summary>ArenaLink for a slot known by its address: the value to store (owned).</summary>
+        public static int ArenaLinkAt(int val, int slot)
+        {
+            int c = SlotOwner(slot);
+            t_atSlot = slot; t_atOwner = c;
+            if (c == 0) return val;
+            return ArenaLink(val, c, TypeInfo.Rank(Mem.LoadI32(c + 4)) != 0 ? 0 : slot);
+        }
+
+        /// <summary>ArenaUnlink for the slot ArenaLinkAt was just called for (or any other): its old value.</summary>
+        public static void ArenaUnlinkAt(int old, int slot)
+        {
+            int c = t_atSlot == slot ? t_atOwner : SlotOwner(slot);
+            t_atSlot = 0;
+            if (c == 0) { if (old != 0) Release(Borrow<object>(old)); return; }
+            ArenaUnlink(old, c, TypeInfo.Rank(Mem.LoadI32(c + 4)) != 0 ? 0 : slot);
+        }
+
+        /// <summary>A block of references copied over slots a cycle can close through (a span's CopyTo into a list's
+        /// array): element by element, as stores. False when the destination is no such slots: the plain way then.</summary>
+        public static bool ArenaMove(int dst, int src, int count)
+        {
+            if (count <= 0 || SlotOwner(dst) == 0) return false;
+            if ((uint)(dst - src) >= (uint)(count << 2)) for (int i = 0; i < count; i++) MoveOne(dst + (i << 2), src + (i << 2));
+            else for (int i = count - 1; i >= 0; i--) MoveOne(dst + (i << 2), src + (i << 2));
+            return true;
+        }
+
+        static void MoveOne(int d, int s)
+        {
+            int v = Mem.LoadI32(s);
+            if (v != 0) Retain(Borrow<object>(v));
+            v = ArenaLinkAt(v, d);
+            int old = Mem.LoadI32(d);
+            Mem.StoreI32(d, v);
+            ArenaUnlinkAt(old, d);
         }
 
         // The generated visitor calls ArenaVisit for each slot of a member that can hold an inside reference
