@@ -3319,8 +3319,7 @@ sealed partial class FunctionCompiler
         int count = E.AddLocal(ValType.I32);
         PushCount(); E.Tee(count); E.I32(size); E.Op(Op.I32Mul); E.I32(7); E.Op(Op.I32Add); E.I32(-8); E.Op(Op.I32And); E.Set(bytes);
         // (more than the stack has left: a trap, as the stack's overflow; the size is the program's own number)
-        E.Get(bytes); E.GGet(D.StackPointer);
-        if (D.ThreadMode && D.StackLo != null) { E.GGet(D.StackLo); E.Op(Op.I32Sub); }
+        E.Get(bytes); E.GGet(D.StackPointer); E.GGet(D.StackLo!); E.Op(Op.I32Sub);
         E.Op(Op.I32GtU);
         E.If(); E.Op(Op.Unreachable); E.End();
         E.GGet(D.StackPointer); E.Get(bytes); E.Op(Op.I32Sub);

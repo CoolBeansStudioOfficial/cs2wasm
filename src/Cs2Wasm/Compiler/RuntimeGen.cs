@@ -1127,6 +1127,7 @@ sealed partial class RuntimeGen
         RestoreStackAtCatches();
         D.Module.Canon = d => d ? D.Rt.CanonF64 : D.Rt.CanonF32;
         D.Module.StackPointer = D.StackPointer;
+        D.Module.StackLo = D.StackLo;
         D.LayoutMemory();
         D.Mark("  finish: D.LayoutMemory");
         EmitInit();

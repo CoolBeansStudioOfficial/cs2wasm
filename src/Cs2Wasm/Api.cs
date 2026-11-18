@@ -47,9 +47,8 @@ public sealed class CompileOptions
     public int MemoryInitialPages { get; init; } = 256;
     public int MemoryMaximumPages { get; init; } = 16384;
     public bool SharedMemory { get; init; } = true;
-    /// <summary>The first thread's stack, in bytes. It lies under the program's data (Driver.LayoutMemory), so a
-    /// megabyte less 64 KiB keeps a small program's data below 2^20, where an address is a byte shorter in the code.</summary>
-    public int StackSize { get; init; } = (1 << 20) - (1 << 16);
+    /// <summary>The first thread's stack, in bytes.</summary>
+    public int StackSize { get; init; } = 1 << 20;
     public bool Optimize { get; init; } = true;
     /// <summary>The tests' build: freed memory is filled with a pattern and never used again, so a use after free
     /// shows (a trap, or output that differs) where it would have read whatever took the block. Costs memory.</summary>

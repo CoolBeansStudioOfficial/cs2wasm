@@ -273,10 +273,13 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     then never freed: step 7 replaces this. Test 119.
   - A1.3 fixed: the weak table's busy mark is per thread.
   - A1.5 fixed: a field returned by reference counts as written after construction.
-  - A1.6 fixed: the first thread's stack lies under the data, so a frame past its end traps at its first write
-    with no check in the code; a program with threads compares each frame with its stack's end; `stackalloc`
-    checks its size. The default stack is 960 KiB (hello world: 28,089 bytes). Worker stacks are still 1 MiB
-    whatever `StackSize` says. Test 120.
+  - A1.6 fixed: a function takes its frame through one small function, `rt.frame`, which traps when the stack has
+    not that much left and clears the frame (`Wasm/Frames.cs`: the last rewrite before a module is encoded, of the
+    twenty-odd bytes each such function began with); `stackalloc` checks its size. For every thread, with the
+    stack where it was and 1 MiB as before. Modules are 1 to 4% smaller for it (hello world: 27,629 bytes; the
+    bench: 333 KB, 341 before) and no slower (bench 0.95x, micro in the baseline tier 2.29x). An earlier form of
+    this fix put the stack under the data and shrank it to keep addresses short: the owner called that a hack, and
+    it is gone. Worker stacks are still 1 MiB whatever `StackSize` says. Test 120.
   - A1.4 open: test 121 (cycles through arrays and far fields, stored while a static holds the container) passes
     in checked mode with no object left; the guess in `ArenaUnlink` is still there and goes with step 7.
 
@@ -316,7 +319,7 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   takes one type out in the micro program (`Link`) and one of 40 in the bench. Trees and lists that are rewired in
   place, and anything that holds its own kind through a `List<T>` (an array site), stay cycle-capable: those need
   the isolated-value rule (a new structure that refers to nothing older, stored into an old one), the
-  back-reference proof, and step 7.2.
+  back-reference proof, and step 7.D.
 - **Found on the way, not fixed:** a reference inside a struct-typed field of a class is stored without any link
   (`StoreToAddressFromStack`, the struct branch), so a cycle through such a field (`class A { (A, int) pair; }`) is
   counted plainly and never freed.
@@ -497,30 +500,87 @@ In the order step 3's numbers give; expected order:
 8. Target: no program in the set slower than NativeAOT's. Faster is welcome, not required. Stop optimizing a
    program once it is at parity and go to the next slowest.
 
-### Step 7. Arenas that end (A3.1, A3.2, SPEC 4.3)
+### Step 7. Cycles: groups (redesign decided 2026-11-18: "redesign first")
 
-Three parts, in this order. The first removes cycles, the second makes the remaining ones cheap, the third makes
-releasing a group cost nothing per object.
+The owner chose to redesign before extending today's machinery to closures, tasks and structs (A1.8). This is the
+design; 7.A to 7.E are its stages, each ending with the suite green.
 
-1. **Prove back references away** (needs the owner's decision, open since 2026-11-16). Where the compiler proves a
-   reference points back at an object that owns the holder (a child's link to its parent) and cannot outlive it,
-   the reference is a borrow, the types are no longer on a cycle, and the child is a plain counted object freed the
-   moment it is dropped. Where the proof fails, the reference stays counted and the types stay cycle-capable. A
-   long-lived parent with children that come and go (a world and its enemies) depends on this part: without it, it
-   is one group that only grows.
-2. **Scope the remaining groups at compile time** from the IR: a group per owning root of a cycle-capable component
-   (the object whose release frees it), members allocated into it at their allocation site. Inside references are
-   not counted, so a store inside a group is a plain store and joining needs no walk.
-3. A store that would link two groups is the one remaining run-time case: keep the merge, record it, and report each
-   such site as a notice so the common shapes can be given a static scope.
-4. **Release without visiting.** A group whose member types have no finalizer and hold no counted reference to
-   anything outside it is released by returning its pages; the compiler knows both facts per type. Apply the same to
-   an owned structure with no cycle (a list of nodes, a parsed tree): allocate it in a region of its root and release
-   the region. Nothing is postponed, so this is within the owner's no-deferred-free rule.
-5. Accepted cost: a dropped part of a live group stays until the group goes. Measure it per program in checked mode
-   (step 1.2) and report it in the build notices, so a group that grows without bound is seen.
-6. Add a latency measure to the bench: the longest single runtime call per program, against NativeAOT's longest GC
-   pause. "No frame-time spikes" is met when no runtime call exceeds a stated bound on the measured set.
+**What is kept from the decisions so far:** no collector, no search for garbage at run time, no list of things to
+free later, no annotation; cycles that can be proven away are (7.E); a part of a group that is let go while the
+group lives may stay until the group goes, when its objects still refer to each other.
+
+**The model.**
+
+- The type graph covers every heap object that holds references: classes, arrays, boxes, closures' display
+  objects, delegates, async and iterator state machines; and every reference slot in them, also inside a struct
+  that is a field or an element. Its strongly connected components are the cycle-capable types, as today.
+- An object of a cycle-capable type is counted like any other object: one count word, every reference to it
+  counted, freed when the count is zero. So everything that is not on a cycle at run time goes at once, in a group
+  or not (a node popped off a list, a child removed from its parent).
+- **A group** is a set of such objects that refer to each other. It has one number of its own: the references to
+  its members from outside it (locals, statics, objects that are not members). When that number is zero and
+  members are left, they are a cycle nothing can reach: they are all destroyed (finalizers first, then each as
+  any object, references among them not counted down).
+- **The rule that needs no walk:** a reference in a slot of object C to object V is *inside* exactly when C and V
+  are of the same component of the type graph; and whenever such a reference is stored, C's and V's groups become
+  one (a union of two records: constant time). So two objects of one component that are in different groups never
+  refer to each other, an object that is in no group yet has only outside references (its count is its group's
+  number the moment it gets one), and joining needs no look at what the objects hold. Today's join walk, owner
+  chains, up-references, slot bits and kill queue all go.
+- A store into a slot is then: the new value's group joined with the container's when the two are of one
+  component, and the reference it had counted as an outside one no longer is; the old value let go as an inside
+  reference when it is of the container's component, as an outside one otherwise. Whether a reference is inside
+  is a fact about the two objects' types, not about how it was stored: nothing has to be remembered per slot.
+
+**The constraint that shapes the rest: the container must be known at every store.** A reference is stored into a
+heap object through its field, but also through a `ref`, a span, a pointer, a struct's own method (`this` is the
+struct inside some object), or a block copy. The code there has the slot's address and nothing else. Counting such a
+store as an outside reference while another path later lets it go as an inside one loses a count; the reverse frees a
+group that is still referred to. Today's runtime has this hole (A1.4 is one face of it). Two ways close it:
+
+- a mark in the stored reference itself (its low bit): safe, but every read of a reference from a field of a
+  cycle-capable type pays a mask;
+- **the allocator can say which object an address is in** (chosen): small blocks already lie in pages of one size
+  (the block is arithmetic on the address); blocks above 2 KiB get the same in larger pages, and blocks above
+  16 KiB a table entry per 16 KiB. Reads cost nothing; a store whose container the code does not know asks the
+  allocator. It also gives threads the paged heap they lack (A3.4) and is what a group needs to keep its members
+  in pages of its own and release them by returning the pages (7.D).
+
+**Stages.**
+
+- **7.A The allocator answers "which object is this address in".** One paged heap for programs with and without
+  threads: small pages (to 2 KiB), medium pages (to 16 KiB), large blocks with a table. `Rt.OwnerOf(address)`:
+  the object, or none for the stack, the statics and memory that is no object. A checked build tests it on every
+  store through an address. The rule threads need for reads that count stays: a block keeps its kind for good.
+- **7.B The group runtime, under the interface the compiler has today** (`Link`, `Unlink`, the count word's
+  sign for a member), for the sites it has today: union of two group records, the group's number, a group's
+  destruction, a finalizer that brings a member back (the destruction is called off: the finalizers ran before
+  anything was let go). A store through an address resolves its container. Tests 016, 017, 082 to 085, 090, 119,
+  121 and the fixed-memory API checks are the measure; test 127's `tree`, `ring`, `cut`, `kept`, `self`, `array`
+  lines must hold or improve.
+- **7.C Every container.** Sites for references inside structs (a field, an element, a box), for display objects'
+  captured variables, delegates' targets, state machines' fields; block copies that say where they copy to;
+  `MemberwiseClone`. Test 127 passes whole and loses its `known-gap` line.
+- **7.D Groups that keep their members together.** Where the compiler sees at an allocation which group the
+  object is for (it is stored into a member before anything else can see it), the object comes from that group's
+  pages. A group whose types have no finalizer and refer to nothing counted outside it is released by returning
+  its pages. The longest single runtime call per program is measured against NativeAOT's longest pause (the
+  bench's latency figure).
+- **7.E Cycles proven away.** A reference back to the object that owns the holder (a child's parent) is a borrow
+  where the compiler proves the holder cannot outlive it: the types leave their component, and such objects are
+  never in a group. A structure built new and attached whole (the isolated-value rule) likewise. Each proof takes
+  types out of the graph; nothing else changes.
+
+**What a program pays.** An object of a cycle-capable type: a few words before its header (its group, its place
+among the members). A store that may join two objects: a look at two types, and a union when their groups differ.
+Counting a member from outside: its count and its group's number. Letting a group go: its members, one after the
+other, at that moment (7.D removes the visit where it can). With threads the group's number is shared state: step 4
+decides which groups more than one thread can touch.
+
+**What it does not do.** A cycle that is let go inside a group that lives on stays until the group goes (a build
+notice names the types, as today). The component that `object` fields make (anything that can hold anything) is one
+component: objects of it stored into each other share a group. Both are measured in 7.B and 7.C before 7.D and 7.E
+are ordered.
 
 ### Step 8. Plugin fixes that do not need the IR (A4.1, A4.5, A4.11)
 
@@ -611,13 +671,13 @@ of each other. Step 5 gates steps 6, 7 and 9. Step 11 can proceed alongside thro
 
 None are open. All three were decided by the owner on 2026-11-18:
 
-1. A large free is handled by a release that does not visit the objects (step 7.4): regions and groups released by
+1. A large free is handled by a release that does not visit the objects (step 7.D): regions and groups released by
    returning their pages. The price is accepted: a member dropped early stays until its region or group goes. This
    supersedes the 2026-11-16 ruling against retention, for regions and groups only; the growth is measured and
-   reported (step 7.5), never hidden.
-2. The back-reference proof goes ahead (step 7.1), with compile-time scoping (step 7.2) for what stays cyclic. The
+   reported (steps 7.B, 7.C), never hidden.
+2. The back-reference proof goes ahead (step 7.E), with compile-time scoping (the groups of step 7) for what stays cyclic. The
    run-time owner-chain counting built on 2026-11-16 (`Runtime.cs`, "Owners") is the fallback where the proof fails,
-   until step 7.2 covers the case; it is removed when nothing reaches it.
+   and goes with step 7.B: the redesign of 2026-11-18 replaces it.
 3. Decided by the owner, 2026-11-18: the bar is **the same speed as NativeAOT, lower memory, no frame-time spikes**.
    Faster is welcome, not required. Step 6's target is therefore "no program in the set slower than NativeAOT's";
    step 6.6 (reuse) is done only if step 3's numbers call for it.

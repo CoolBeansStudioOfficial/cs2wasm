@@ -232,7 +232,6 @@ sealed partial class FunctionCompiler
             _frameSize = (_frameSize + 15) / 16 * 16;
             P(Op.GlobalGet, 0, D.StackPointer); P(Op.LocalTee, _spEntry);
             P(Op.I32Const, _frameSize); P(Op.I32Sub); P(Op.LocalTee, _fb); P(Op.GlobalSet, 0, D.StackPointer);
-            StackLimitCheck(prologue, _fb);
             P(Op.LocalGet, _fb); P(Op.I32Const, 0); P(Op.I32Const, _frameSize); P(Op.MemoryFill);
         }
         else
@@ -406,16 +405,7 @@ sealed partial class FunctionCompiler
 
     readonly List<Slot> _paramSlots = [];
 
-    /// <summary>A thread's stack is a block of the heap: a frame past its end would be other objects, so a program
-    /// with threads compares each new frame with the stack's end (the first thread's stack needs none:
-    /// Driver.LayoutMemory). Past it: a trap, which ends the instance (section 3).</summary>
-    void StackLimitCheck(List<Instr> code, int frameLocal)
-    {
-        if (!D.ThreadMode || D.StackLo == null) return;
-        void P(Op op, long imm = 0, object? r = null) => code.Add(new Instr { Op = op, Imm = imm, Ref = r, Pos = -1 });
-        P(Op.LocalGet, frameLocal); P(Op.GlobalGet, 0, D.StackLo); P(Op.I32LtU);
-        P(Op.If); P(Op.Unreachable); P(Op.End);
-    }
+    // (whether the stack has room for a frame is asked where the frame is taken: Wasm/Frames.cs)
 
     void MarkAddr(IOperation op)
     {

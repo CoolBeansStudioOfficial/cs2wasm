@@ -141,6 +141,8 @@ internal sealed class WasmModule
     /// <summary>The helper that gives a float NaN the bits .NET gives it (double: true), for FloatStores.cs.</summary>
     public Func<bool, WasmFunction>? Canon;
     public WasmGlobal? StackPointer;
+    /// <summary>The lowest address of the running thread's stack (Frames.cs).</summary>
+    public WasmGlobal? StackLo;
     /// <summary>CS2WASM_NO_MERGE=1: identical bodies stay apart (measurement: each site keeps its own name).</summary>
     static readonly bool s_noLoops = Environment.GetEnvironmentVariable("CS2WASM_NO_LOOPS") == "1";
     static readonly bool s_noMerge = Environment.GetEnvironmentVariable("CS2WASM_NO_MERGE") == "1";
@@ -251,6 +253,8 @@ internal sealed class WasmModule
         }
         else if (Canon != null) FloatStores.Run(Functions, Canon);
 
+        // (a frame is taken, checked against the stack's end and cleared by one function: Frames.cs)
+        if (StackPointer != null && StackLo != null) Frames.Run(this, StackPointer, StackLo);
         // Which functions are live: exported, in the table, or called from a live function.
         var live = new HashSet<WasmFunction>();
         var work = new Stack<WasmFunction>();

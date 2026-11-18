@@ -179,7 +179,6 @@ internal sealed partial class Driver
         catch (CompileException ex) { Dynamic = new DynamicLowering(); _dynamicError = ex; }
         Main = main;
         Options = options;
-        DataBase = 16 + (options.StackSize + 15) / 16 * 16;
         _inputs = [main, .. options.AdditionalCompilations];
         Lib = new Library(main);
         Types = new Types(this);
@@ -1376,14 +1375,10 @@ internal sealed partial class Driver
         while (Data.Bytes.Count % 16 != 0) Data.Bytes.Add(0);
         StaticBase = DataBase + Data.Bytes.Count;
         int staticEnd = StaticBase + (_staticSize + 15) / 16 * 16;
-        // The first thread's stack is the lowest thing in memory, under the data: a frame that goes past its end has
-        // an address below zero, which is one past the end of memory, and the first write to it traps (section 3:
-        // stack overflow ends the instance) without any check in the code. So the memory may not reach the top of
-        // the address space, where such an address would be memory again.
-        StackTop = DataBase;
-        HeapBase = staticEnd + 16;
-        int guardPages = (Options.StackSize + 65535) / 65536 + 16;
-        if (Module.MemoryMaxPages > 65536 - guardPages) Module.MemoryMaxPages = 65536 - guardPages;
+        // (the first thread's stack lies above the statics; a frame is taken from it by rt.frame, which traps when
+        // the stack has not that much left: Wasm/Frames.cs)
+        StackTop = staticEnd + Options.StackSize;
+        HeapBase = StackTop + 16;
         // The module says how much memory it needs to start at all: its data, statics and stack, and a first
         // megabyte of heap (a program with large resources needs more than the default; the host reads the number).
         long need = ((long)HeapBase + (1 << 20) + 65535) / 65536;
