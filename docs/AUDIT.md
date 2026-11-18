@@ -258,6 +258,30 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
 
 ## Part B. Plan
 
+### Direction (revised 2026-11-18 with the owner)
+
+What the tool must do, at its core:
+
+1. Any C# in, one WASM module out (not WasmGC).
+2. Plugin support good enough for the Invisible API.
+3. The same speed as NativeAOT or better, lower memory, no frame-time spikes, no runtime.
+4. The same for the self-hosted compiler and Roslyn.
+
+How the plan serves them:
+
+- **The input stays the operation tree.** It keeps what the ownership analysis and the plugin need and IL has
+  already thrown away: captured variables are still locals, async and iterator locals are still locals, `foreach`,
+  `using` and `lock` still have their shape, and every operation maps to the developer's source. IL input was
+  considered and rejected for these reasons.
+- **One mid-level IR with explicit ownership is the centre** (step 5). The optimizer (goal 3), the plugins (goal 2)
+  and self-hosting (goal 4) all work on it. It is the only structural change.
+- **The IR is built from Roslyn's `ControlFlowGraph` for every method**, not only async ones as today, so Roslyn does
+  the flattening of control flow and the compiler's own lowering shrinks to closures, state machines and patterns
+  (goal 1). To be confirmed by step 5.1 before anything depends on it.
+- **Cycles: prove the common ones away, group the rest, release groups without visiting them** (step 7). A dropped
+  part of a live group staying until the group goes is a memory cost, not a spike, and is accepted.
+- **Build time comes from caching the library's IR and analysis summaries**, not from precompiled IL (step 12.4).
+
 The order is by dependency: nothing built on an unsafe base, measure before changing, the IR before what needs it.
 Each step ends with the suite, `tools/bench.mjs` against NativeAOT's WebAssembly build, and a commit.
 
@@ -316,19 +340,28 @@ Each step ends with the suite, `tools/bench.mjs` against NativeAOT's WebAssembly
 
 This is the one structural change; steps 6, 7 and 9 need it.
 
-1. Define the IR: typed, block-structured, values in SSA form; C#-level operations already lowered (no patterns, no
+1. Spike first, a day at most: build Roslyn's `ControlFlowGraph` for every method of the conformance sources and
+   record (a) which constructs it flattens (expected: `?:`, `??`, `?.`, `&&`/`||`, `using`, `lock`, `foreach`,
+   loops, `switch`), (b) which it leaves as operations (expected: patterns, lambdas, `await`, `yield`), (c) where it
+   fails or loses a fact the ownership analysis uses today (a `foreach` element's borrow, a local that is never
+   reassigned), and (d) its cost in build time. If (c) or (d) rules it out, the IR is built from the operation tree
+   directly and the rest of this step is unchanged.
+2. Define the IR: typed, block-structured, values in SSA form; C#-level operations already lowered (no patterns, no
    `foreach`, no closures) but above WASM (field load/store by symbol, array access with its check as a separate
-   operation, call with a resolved target or a slot, `retain`, `release`, `move`, `borrow` as instructions). Every
-   instruction keeps its Roslyn operation and location.
-2. Split `FunctionCompiler` in two: operation tree to IR, IR to stack code. Move one construct family at a time
-   behind a switch that falls back to the old path, with the suite passing at each move; delete the old path at the
-   end.
-3. Move the analyses onto the IR as classes with an input and an immutable result: escape, field borrows, owned
+   operation, call with a resolved target or a slot, `retain`, `release`, `move`, `borrow` as instructions). Captured
+   variables and state-machine locals stay variables in the IR until a late pass gives them their storage, so the
+   ownership analysis sees them as locals. Every instruction keeps its Roslyn operation and location.
+3. Split `FunctionCompiler` in two: operation tree (through the control-flow graph, if 5.1 holds) to IR, IR to stack
+   code. Move one construct family at a time behind a switch that falls back to the old path, with the suite passing
+   at each move; delete the old path at the end. Each refusal site of A5.1 that the control-flow graph flattens goes
+   with its family, with a conformance program.
+4. Move the analyses onto the IR as classes with an input and an immutable result: escape, field borrows, owned
    parameters, fresh stores, arena membership. The string-keyed dictionaries on `Driver` go with them.
-4. Give `WasmFunction` a role enum and the runtime functions typed identities; remove every `Name.StartsWith`.
-5. Keep the WASM passes that are about encoding (locals packing, merging, ordering, data packing); retire those the
+5. Give `WasmFunction` a role enum and the runtime functions typed identities; remove every `Name.StartsWith`.
+6. Keep the WASM passes that are about encoding (locals packing, merging, ordering, data packing); retire those the
    IR passes replace.
-6. Unit tests per pass on small IR inputs.
+7. Unit tests per pass on small IR inputs.
+8. Give the IR a stable serialized form (needed by step 12.4).
 
 ### Step 6. Optimizations on the IR (A2.2, A2.3, A2.4, A2.6)
 
@@ -344,23 +377,33 @@ In the order step 3's numbers give; expected order:
 6. Reuse: a release that frees immediately followed by an allocation of the same size class takes the block
    directly.
 7. Report the removed-count percentage from the build on the step 3 programs, in `docs/measurements`.
-8. Target: no program in the set slower than NativeAOT's; then goal 1's "faster".
+8. Target: no program in the set slower than NativeAOT's. Faster is welcome, not required. Stop optimizing a
+   program once it is at parity and go to the next slowest.
 
 ### Step 7. Arenas that end (A3.1, A3.2, SPEC 4.3)
 
-1. Decide arena scope at compile time from the IR: an arena per owning root of a cycle-capable component (the
-   object whose release frees the group), members allocated into it at their allocation site.
-2. Inside references are not counted (the spec's form), so a store inside an arena is a plain store and joining
-   needs no walk.
-3. A store that would link two arenas is the one remaining run-time case: keep the merge, but record it, and report
-   each such site as a notice so the common shapes can be given a static scope.
-4. Bound the detached-sub-cycle growth: measure it per program in checked mode (step 1.2), and split an arena where
-   the analysis proves a sub-graph has its own owner.
-5. Owner decision needed: whether a large synchronous free counts as a spike (A3.3). If it does, the only form the
-   owner's rules allow is to make frees cheaper (arena-at-once release with no per-member pass when no member has a
-   finalizer).
+Three parts, in this order. The first removes cycles, the second makes the remaining ones cheap, the third makes
+releasing a group cost nothing per object.
+
+1. **Prove back references away** (needs the owner's decision, open since 2026-11-16). Where the compiler proves a
+   reference points back at an object that owns the holder (a child's link to its parent) and cannot outlive it,
+   the reference is a borrow, the types are no longer on a cycle, and the child is a plain counted object freed the
+   moment it is dropped. Where the proof fails, the reference stays counted and the types stay cycle-capable. A
+   long-lived parent with children that come and go (a world and its enemies) depends on this part: without it, it
+   is one group that only grows.
+2. **Scope the remaining groups at compile time** from the IR: a group per owning root of a cycle-capable component
+   (the object whose release frees it), members allocated into it at their allocation site. Inside references are
+   not counted, so a store inside a group is a plain store and joining needs no walk.
+3. A store that would link two groups is the one remaining run-time case: keep the merge, record it, and report each
+   such site as a notice so the common shapes can be given a static scope.
+4. **Release without visiting.** A group whose member types have no finalizer and hold no counted reference to
+   anything outside it is released by returning its pages; the compiler knows both facts per type. Apply the same to
+   an owned structure with no cycle (a list of nodes, a parsed tree): allocate it in a region of its root and release
+   the region. Nothing is postponed, so this is within the owner's no-deferred-free rule.
+5. Accepted cost: a dropped part of a live group stays until the group goes. Measure it per program in checked mode
+   (step 1.2) and report it in the build notices, so a group that grows without bound is seen.
 6. Add a latency measure to the bench: the longest single runtime call per program, against NativeAOT's longest GC
-   pause.
+   pause. "No frame-time spikes" is met when no runtime call exceeds a stated bound on the measured set.
 
 ### Step 8. Plugin fixes that do not need the IR (A4.1, A4.5, A4.11)
 
@@ -405,8 +448,9 @@ In the order step 3's numbers give; expected order:
 
 ### Step 11. Spec conformance (A5)
 
-1. A5.1: work through the 156 refusal sites by frequency in real code (await in conditional expressions first);
-   each fixed site gets a conformance program. The remaining count is reported by the build of the suite.
+1. A5.1: the refusal sites that are control-flow shapes go in step 5.3. Work through the rest by frequency in real
+   code; each fixed site gets a conformance program. Add Roslyn's and dotnet/runtime's own test programs where they
+   fit, to find the sites nobody has hit yet. The remaining count is reported by the build of the suite.
 2. A5.2: a missing capability compiles to a throw of .NET's exception at run time; only platform invoke stays an
    error. A5.3 goes with it.
 3. A5.4: two-pass filters decided per `try` from what its filters can observe, library included.
@@ -425,9 +469,10 @@ In the order step 3's numbers give; expected order:
    conformance program.
 3. Proof 4 as a script: time, size and peak memory of the self-hosted toolchain against NativeAOT's WebAssembly
    build over the fixed set; goal 1 is met when every row is better.
-4. Compiler speed itself (A2.7): cache library analysis between builds (SPEC 7.6 allows it), one static-initializer
-   pass, hashed keys instead of display strings, indexed function lookup. Target: the browser build budget of a few
-   seconds for a small game.
+4. Compiler speed itself (A2.7): cache the library's IR and analysis summaries between builds, keyed by the library
+   version and the compiler flags, so a build parses and binds only the program (SPEC 7.6 allows it); ship that cache
+   in the toolchain download in place of the library sources. Then one static-initializer pass, hashed keys instead
+   of display strings, indexed function lookup. Target: the browser build budget of a few seconds for a small game.
 5. Proof 5 in the browser on stock Godot; a headless path without JS (Wasmtime needs the import surface in a second
    host).
 
@@ -447,9 +492,9 @@ of each other. Step 5 gates steps 6, 7 and 9. Step 11 can proceed alongside thro
 
 ### Open decisions for the owner
 
-1. Whether a large synchronous free counts as a spike (step 7.5).
-2. The back-reference proof for cycles (still open from 2026-11-16) and whether step 7's compile-time scoping
-   replaces it.
+1. Whether a large synchronous free counts as a spike. Step 7.4 removes the per-object cost where the types allow;
+   what is left is a group with finalizers or outside references.
+2. The back-reference proof for cycles (still open from 2026-11-16): step 7.1 cannot start without it.
 3. Decided by the owner, 2026-11-18: the bar is **the same speed as NativeAOT, lower memory, no frame-time spikes**.
    Faster is welcome, not required. Step 6's target is therefore "no program in the set slower than NativeAOT's";
    step 6.6 (reuse) is done only if step 3's numbers call for it.
