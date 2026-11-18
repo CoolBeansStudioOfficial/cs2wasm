@@ -213,8 +213,11 @@ internal sealed class Library
             Func<string, SyntaxTree> parse = f =>
             {
                 var path = Path.Combine(root, f);
-                if (!File.Exists(path)) throw new CompileException($"library source missing: {path}");
-                var text = File.ReadAllText(path);
+                // (read at once: asking first whether it is there is a second trip to the file system for each of
+                // some thousands of files)
+                string text;
+                try { text = File.ReadAllText(path); }
+                catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { throw new CompileException($"library source missing: {path}"); }
                 if (edits.TryGetValue(f, out var es))
                     foreach (var (from, to) in es)
                     {

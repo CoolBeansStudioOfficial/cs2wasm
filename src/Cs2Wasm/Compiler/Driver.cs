@@ -135,7 +135,12 @@ internal sealed partial class Driver
         return off;
     }
     /// <summary>True once the program can start a thread: counts become atomic and the runtime lock is real.</summary>
-    public bool UsesThreads => AllMethods.Any(m => m.Sym.Name == "SpawnCore" && m.Sym.ContainingType?.Name == "Threads" && m.Compiled);
+    /// <summary>CS2WASM_NO_THREADS=1: the module is built for an engine without threads, as .NET's own WebAssembly
+    /// build is: starting a thread throws PlatformNotSupportedException (Threads.SpawnCore), so no other thread can
+    /// ever run, and the program is compiled as one that starts none (plain counts, no locks, every analysis that
+    /// needs a single thread).</summary>
+    internal static readonly bool s_noThreads = Environment.GetEnvironmentVariable("CS2WASM_NO_THREADS") == "1";
+    public bool UsesThreads => !s_noThreads && AllMethods.Any(m => m.Sym.Name == "SpawnCore" && m.Sym.ContainingType?.Name == "Threads" && m.Compiled);
     /// <summary>Section 4.5, decided when compiling: the program is compiled as one that starts threads. Then a
     /// reference read from memory another thread may write is read and counted in one step (rt.load_retain), counts
     /// are atomic, and nothing borrows from such memory; an object is destroyed when its count reaches zero, as
@@ -1283,7 +1288,7 @@ internal sealed partial class Driver
                     mi.Compiled = true;
                     // (the program starts threads: it is compiled as one that does, from the start; nothing more of
                     // this compilation is of use)
-                    if (!ThreadMode && !s_expNoThreadMode && mi.Sym.Name == "SpawnCore" && mi.Sym.ContainingType?.Name == "Threads") throw new ThreadsSeen();
+                    if (!ThreadMode && !s_expNoThreadMode && !s_noThreads && mi.Sym.Name == "SpawnCore" && mi.Sym.ContainingType?.Name == "Threads") throw new ThreadsSeen();
                     Compiling = mi;
                     CurrentFn = mi.Fn;
                     try { if (mi.Compile != null) mi.Compile(); else FunctionCompiler.Compile(this, mi); mi.Fn.Body.TrimExcess(); mi.Fn.Locals.TrimExcess(); }

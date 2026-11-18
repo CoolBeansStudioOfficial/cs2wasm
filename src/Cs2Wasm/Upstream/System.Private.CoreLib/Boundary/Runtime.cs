@@ -347,6 +347,8 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(-4, 0);
         }
 
+        /// <summary>The module is built for an engine without threads (CS2WASM_NO_THREADS): starting one throws.</summary>
+        [Intrinsic] public static extern bool NoThreads();
         /// <summary>No other thread can ever run: the program starts none (known when the whole program is compiled).</summary>
         [Intrinsic] public static extern bool SingleThreaded();
         /// <summary>Threads: the lock of a place that holds a reference (the one a read that counts and a store take),
@@ -2380,6 +2382,8 @@ namespace Cs2Wasm.Runtime
 
         internal static void SpawnCore(System.Threading.Thread t)
         {
+            // (a module built for an engine without threads: as .NET says there)
+            if (Rt.NoThreads()) throw new System.PlatformNotSupportedException("Threads are not supported on this platform.");
             TakeBlocks(out int stack, out int tls);
             t._stack = stack;
             t._tls = tls;

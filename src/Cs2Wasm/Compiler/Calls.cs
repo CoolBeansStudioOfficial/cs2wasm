@@ -895,6 +895,7 @@ sealed partial class FunctionCompiler
             case "Rt.ArenaFinalizeObject": E.Call(Rt.ArenaFinFn); return Own.None;
             case "Rt.ArenaFinType": E.Call(Rt.ArenaFinTypeFn); return Own.None;
             case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
+            case "Rt.NoThreads": E.I32(Driver.s_noThreads ? 1 : 0); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;
             case "Rt.BulkEnter": E.Call(Rt.BulkEnter); return Own.None;
             case "Rt.BulkExit": E.Call(Rt.BulkExit); return Own.None;

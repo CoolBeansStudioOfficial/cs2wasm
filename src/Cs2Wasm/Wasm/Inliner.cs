@@ -53,6 +53,10 @@ static class Inliner
         var candidates = new HashSet<WasmFunction>();
         // (in a loop the call is paid for every time round: a larger body goes in there, and only there)
         var inLoops = new HashSet<WasmFunction>();
+        // (the callees whose frame a trace shows where they are inlined: those an exception can leave, inlined by
+        // the rule for them. The others never were on the stack at a throw, or are marked AggressiveInlining, whose
+        // frames .NET leaves out too)
+        var framed = new HashSet<WasmFunction>();
         foreach (var g in functions)
         {
             // (the null check: it has no frame of its own in a trace, so a copy of it throws from the same frames; in
@@ -60,7 +64,6 @@ static class Inliner
             if (tiny && g.Name == "rt.nonnull" && !g.IsImport && s_loopBody > 0) { inLoops.Add(g); continue; }
             // (a function that does nothing, a lock's in a program without threads: its calls go)
             if (!g.IsImport && g.ForwardTo == null && g.Body.Count == 0 && g.Type.Results.Length == 0 && g.Exports.Count == 0) { candidates.Add(g); continue; }
-            if (g.NoInline && !s_ignoreNoInline) continue;
             if (mayThrow.Contains(g) || !Inlinable(g, mayThrow))
             {
                 // (marked AggressiveInlining: in although it can throw, when it is small; larger in a loop)
@@ -73,11 +76,11 @@ static class Inliner
                     if (hc <= HintedBody) { candidates.Add(g); continue; }
                     if (hc <= 2 * s_loopBody) { inLoops.Add(g); continue; }
                 }
-                if (tiny || s_exp > 0 || s_throwBody <= 0 || Module == null || !InlinableThrowing(g)) continue;
+                if (tiny || s_exp > 0 || s_throwBody <= 0 || Module == null || g.NoInline && !s_ignoreNoInline || !InlinableThrowing(g)) continue;
                 int tc = g.Body.Count + g.Type.Params.Length + 2 * g.Locals.Count + 2;
                 bool one = callers.GetValueOrDefault(g) == 1 && g.Exports.Count == 0 && !g.InTable && !g.TableRoot;
-                if (tc <= s_throwBody || one && g.Body.Count <= s_throwSingle) candidates.Add(g);
-                else if (tc <= s_throwLoop) inLoops.Add(g);
+                if (tc <= s_throwBody || one && g.Body.Count <= s_throwSingle) { candidates.Add(g); framed.Add(g); }
+                else if (tc <= s_throwLoop) { inLoops.Add(g); framed.Add(g); }
                 continue;
             }
             int n = g.Body.Count;
@@ -114,7 +117,7 @@ static class Inliner
                     case Op.Block or Op.If or Op.TryTable: open.Add(false); break;
                     case Op.End when open.Count > 0: if (open[^1]) loops--; open.RemoveAt(open.Count - 1); break;
                 }
-                if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != f && (candidates.Contains(g) || loops > 0 && inLoops.Contains(g))) { Expand(f, g, outBody, ins.Pos, ins.Inl); any = true; }
+                if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != f && (candidates.Contains(g) || loops > 0 && inLoops.Contains(g))) { Expand(f, g, outBody, ins.Pos, ins.Inl, framed.Contains(g)); any = true; }
                 else outBody.Add(ins);
             }
             if (!any) continue;
@@ -194,11 +197,11 @@ static class Inliner
         return depth == 0;
     }
 
-    internal static void Expand(WasmFunction f, WasmFunction g, List<Instr> outBody, int pos, int siteScope = 0)
+    internal static void Expand(WasmFunction f, WasmFunction g, List<Instr> outBody, int pos, int siteScope = 0, bool framed = false)
     {
         // The scope of the copy: the call's own, and inside it the callee's when the callee is a frame of a trace.
         // What the callee had inlined in itself keeps its scopes, inside that one.
-        int scope = g.FrameName != null && Module != null ? Module.InlineScope(siteScope, g, pos) : siteScope;
+        int scope = framed && g.FrameName != null && Module != null ? Module.InlineScope(siteScope, g, pos) : siteScope;
         Dictionary<int, int>? inner = null;
         int Scoped(int own)
         {
