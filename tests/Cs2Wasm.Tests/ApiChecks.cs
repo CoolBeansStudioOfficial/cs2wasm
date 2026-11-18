@@ -176,6 +176,38 @@ static class ApiChecks
             return qo == "frame\n" ? null : "clone output: " + qo + qe;
         });
 
+        Check("plugin: generated code reads and writes private fields through field accessors (a gate, a solver), hooked at a private field's writes", () =>
+        {
+            var src = Header + """
+                namespace Game {
+                class Round {
+                    float _timer = 3f; int _phase; static Round s_current = new Round();
+                    string _label = "round";
+                    public void Tick(float dt) { _timer -= dt; if (_timer <= 0) { _timer = 3f; _phase++; } }
+                    public static Round Current => s_current;
+                    public string Show() => _label + " " + _phase + " " + _timer;
+                }
+                static class Script {
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        for (int i = 0; i < 7; i++) Round.Current.Tick(1f);
+                        Console.WriteLine(Round.Current.Show());
+                    }
+                }
+                }
+                """;
+            var plugin = new PrivatePlugin();
+            var r = Compile(src, new CompileOptions { Plugins = [plugin], Checked = true });
+            if (!r.Success) return Errors(r);
+            if (plugin.Problem != null) return plugin.Problem;
+            var path = Path.Combine(outDir, "api_plugin_private.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            // each phase change: the gate's answer and the timer the solver set; then the program's own line
+            var want = "phase 1 open False timer 3\nphase 2 open True timer 3\nsolved round 2 1.5\n";
+            return o == want ? null : $"output:\n{o}\nwanted:\n{want}\n{e}";
+        });
+
         Check("plugin v3: values that depend on thread scheduling are marked; order-independent parallel work is not (section 7.3)", () =>
         {
             var src = Header + """
@@ -431,6 +463,46 @@ static class ApiChecks
             var frame = script.GetMembers("Frame").OfType<IMethodSymbol>().Single();
             var draw = c.Compilation.GetTypeByMetadataName("Game.Engine")!.GetMembers("Draw").OfType<IMethodSymbol>().Single();
             c.CloneWithSuppressedImports(frame, [draw], "frame_quiet");
+        }
+    }
+
+    /// <summary>What a networking plugin's generated functions need: a gate that reads a private field, a solver that
+    /// writes one, both reached from a hook at the writes of another private field.</summary>
+    sealed class PrivatePlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public int InterfaceVersion => 3;
+        public string Name => "private";
+        public void Run(PluginContext c)
+        {
+            var round = c.Compilation.GetTypeByMetadataName("Game.Round")!;
+            var phase = round.GetMembers("_phase").OfType<IFieldSymbol>().Single();
+            var writes = c.AccessesOf(phase).Where(a => a.Kind != AccessKind.Read).ToList();
+            if (writes.Count != 1 || writes[0].Conditions.Count != 1 || writes[0].Conditions[0].Test.Syntax.ToString() != "_timer <= 0")
+            { Problem = "_phase writes: " + writes.Count; return; }
+            var gen = c.AddSource("""
+                using System;
+                using System.Runtime.CompilerServices;
+                using Game;
+                public static class Generated {
+                    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_phase")] static extern ref int Phase(Round r);
+                    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_timer")] static extern ref float Timer(Round r);
+                    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_label")] static extern ref string Label(Round r);
+                    [UnsafeAccessor(UnsafeAccessorKind.StaticField, Name = "s_current")] static extern ref Round Current(Round? r);
+                    // a gate: whether the others may read the scores yet
+                    static bool Gate(Round r) => r._phase >= 2 && Round.s_current != null;
+                    // a solver: the timer after n ticks of dt
+                    static void Solve(Round r, int n, float dt) { Timer(r) -= n * dt; }
+                    public static void PhaseChanged(object o, int tag)
+                    {
+                        var r = (Round)o;
+                        Console.WriteLine("phase " + Phase(r) + " open " + Gate(r) + " timer " + Timer(r));
+                        if (Phase(r) == 2) { Solve(Current(null), 1, 0.5f); Label(r) = "solved " + Label(r); }
+                    }
+                }
+                """);
+            var hook = gen.GetTypeByMetadataName("Generated")!.GetMembers("PhaseChanged").OfType<IMethodSymbol>().Single();
+            c.InstrumentWrites(phase, hook, tag: 1);
         }
     }
 

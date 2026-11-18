@@ -549,11 +549,32 @@ internal sealed partial class PluginHost
 
     // ---------------- changes ----------------
     int _sources;
+
+    /// <summary>Generated code is part of the program it is generated for: it names the program's internal types and
+    /// its private members as the program's own code does (a gate reads a private field, a solver writes one). Roslyn
+    /// binds a compilation that way when its options say so (BinderFlags.IgnoreAccessibility, which its own
+    /// expression compilers use); the options keep the flag in a property with no public setter. Where it cannot be
+    /// set, generated code reaches private fields through [UnsafeAccessor] and internal types not at all.</summary>
+    static CSharpCompilationOptions IgnoringAccessibility(CSharpCompilationOptions options)
+    {
+        const uint ignoreAccessibility = 1u << 22;
+        try
+        {
+            var prop = typeof(CSharpCompilationOptions).GetProperty("TopLevelBinderFlags", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (prop == null || !prop.PropertyType.IsEnum) return options;
+            // (a copy: the program's own options are not touched)
+            var copy = options.WithAllowUnsafe(!options.AllowUnsafe).WithAllowUnsafe(options.AllowUnsafe);
+            if (ReferenceEquals(copy, options)) return options;
+            prop.SetValue(copy, Enum.ToObject(prop.PropertyType, ignoreAccessibility));
+            return copy;
+        }
+        catch (Exception) { return options; }
+    }
     public Compilation AddSource(string code, string path)
     {
         var tree = CSharpSyntaxTree.ParseText(code, (CSharpParseOptions)D.Main.SyntaxTrees.First().Options, path);
         var comp = CSharpCompilation.Create("cs2wasm.plugin" + (++_sources), [tree], D.Main.References.Append(D.Main.ToMetadataReference()),
-            D.Main.Options.WithOutputKind(OutputKind.DynamicallyLinkedLibrary));
+            IgnoringAccessibility(D.Main.Options.WithOutputKind(OutputKind.DynamicallyLinkedLibrary).WithMetadataImportOptions(MetadataImportOptions.All)));
         foreach (var e in comp.GetDiagnostics()) if (e.Severity == DiagnosticSeverity.Error) D.Diagnostics.Add(e);
         return D.AddInput(comp, _rt);
     }

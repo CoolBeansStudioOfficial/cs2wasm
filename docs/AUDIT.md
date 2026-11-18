@@ -321,6 +321,14 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   (`StoreToAddressFromStack`, the struct branch), so a cycle through such a field (`class A { (A, int) pair; }`) is
   counted plainly and never freed.
 
+- **Step 8.1: done (2026-11-18).** Field `[UnsafeAccessor]` (an instance's, a struct's, a static's field: test 123),
+  and code a plugin adds with `AddSource` is bound ignoring accessibility, so it names the program's internal types
+  and private members directly (API check "generated code reads and writes private fields"). The second rests on
+  setting a non-public property of Roslyn's options by reflection: it is not yet tried in the self-hosted compiler,
+  where field accessors are the way that does not depend on it. Steps 8.2 and 8.3 are still to do.
+- **Step 13.1: done (2026-11-18).** `LICENSE`, `THIRD-PARTY-NOTICES.md`, a README that matches the tree and names
+  what a build needs.
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:

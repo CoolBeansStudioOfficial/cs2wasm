@@ -99,7 +99,41 @@ sealed partial class FunctionCompiler
                 return D.Lib.TypeByMetadataName(tn.Split(',')[0].Trim())!;
             return T.Resolve(p.Type, Map) is IPointerTypeSymbol or { IsReferenceType: true } or { IsValueType: true } ? T.Resolve(p.Type, Map) : p.Type;
         }
-        // 0 constructor, 1 method, 2 static method (field kinds give a reference to the field: not yet)
+        // 0 constructor, 1 method, 2 static method, 3 field, 4 static field
+        if (kind is 3 or 4)
+        {
+            // a reference to the field: `ref T Field(C obj)` (a struct's: `ref T Field(ref S obj)`), `ref T Field(C? unused)`
+            var holder = (INamedTypeSymbol)TypeOfParam(M.Parameters[0]);
+            IFieldSymbol? fld = null;
+            for (INamedTypeSymbol? bt = holder; bt != null && fld == null; bt = bt.BaseType)
+                fld = bt.GetMembers(name).OfType<IFieldSymbol>().FirstOrDefault(f => f.IsStatic == (kind == 4));
+            if (fld == null) throw new CompileException($"[UnsafeAccessor] target {holder}.{name} not found", def.Locations.FirstOrDefault());
+            fld = StorageField(fld);
+            var fo = (INamedTypeSymbol)T.Canonical(fld.ContainingType);
+            var fty = T.Resolve(fld.Type, Map);
+            // (whoever holds the reference can store through it: the field is one whose address is taken)
+            if (Types.IsRef(fty))
+            {
+                D.FieldsAddressTaken.Add(Driver.FieldKey(fo, fld));
+                if (kind == 3 && !fo.IsValueType && D.Arenas.FieldSite(fo, T.FieldIn(fo, fld)) is { } site) site.AddressTaken = true;
+            }
+            if (kind == 3)
+            {
+                E.Get(M.Parameters[0].RefKind != RefKind.None || holder.IsValueType ? _vars[M.Parameters[0]].AddrLocal : _vars[M.Parameters[0]].Local);
+                if (!holder.IsValueType) NullCheckKeep();
+                E.I32(T.FieldIn(fo, fld).Offset); E.Op(Op.I32Add);
+            }
+            else
+            {
+                D.StaticReads.Add(Driver.StaticKey(fo, fld));
+                EmitStaticInitGuardForField(fo);
+                E.I32Addr(D.StaticField(fo, fld, fty));
+            }
+            _retLocal = E.AddLocal(ValType.I32);
+            E.Set(_retLocal);
+            EmitReturnSequence(true);
+            return;
+        }
         if (kind is not (0 or 1 or 2)) throw new CompileException("[UnsafeAccessor] of kind " + kind + " is not supported yet", def.Locations.FirstOrDefault());
         var target = kind == 0 ? (INamedTypeSymbol)T.Resolve(def.ReturnType, Map) : (INamedTypeSymbol)TypeOfParam(M.Parameters[0]);
         var rest = kind == 0 ? M.Parameters.ToList() : M.Parameters.Skip(1).ToList();
