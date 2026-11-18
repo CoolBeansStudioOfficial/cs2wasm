@@ -1559,6 +1559,41 @@ sealed partial class FunctionCompiler
         if (p is Prim.I8 or Prim.U8 or Prim.I16 or Prim.U16 or Prim.Char && result == p) Narrow(p);
     }
 
+    /// <summary>A constant pattern's test, the value (of type `t`; a decimal's address) on the stack: whether it is the
+    /// constant. A NaN constant matches a NaN (a pattern asks as Equals does, not as == does); a decimal is compared
+    /// by its operator.</summary>
+    void EmitEqualsConstant(IOperation cv, ITypeSymbol t)
+    {
+        if (cv.ConstantValue is { HasValue: true, Value: double d } && double.IsNaN(d) || cv.ConstantValue is { HasValue: true, Value: float f } && float.IsNaN(f))
+        {
+            var w = Types.WasmType(t) ?? ValType.F64;
+            if (w is ValType.F64 or ValType.F32)
+            {
+                int x = Scratch(w);
+                E.Tee(x); E.Get(x); E.Op(w == ValType.F64 ? Op.F64Ne : Op.F32Ne);
+                FreeScratch(w, x);
+                return;
+            }
+        }
+        if (IsDecimal(t))
+        {
+            var dec = D.LibType("System.Decimal");
+            int la = Scratch(ValType.I32); E.Set(la);
+            CallWith(DecimalOpFor(BinaryOperatorKind.Equals)!, false, null, () =>
+            {
+                E.Get(la); CopyToTemp(dec);
+                var co = EmitValue(cv);
+                if (cv.Type != null) ConvertTop(TypeOf(cv), dec, ref co);
+                CopyToTemp(dec);
+            }, null, cv.Syntax);
+            FreeScratch(ValType.I32, la);
+            return;
+        }
+        var o = EmitValue(cv);
+        if (cv.Type != null) ConvertTop(TypeOf(cv), t, ref o);
+        EmitCompare(BinaryOperatorKind.Equals, t);
+    }
+
     /// <summary>`> c`, `<= c` and the like on a decimal (its address pushed by `pushLeft`): decimal's own operator.</summary>
     void EmitDecimalRelation(IRelationalPatternOperation rp, Action pushLeft)
     {
@@ -2847,8 +2882,7 @@ sealed partial class FunctionCompiler
                         E.Get(v); NullableHas(vt);
                         E.If(ValType.I32);
                         E.Get(v); NullableVal(vt);
-                        var o0 = EmitValue(cv); if (cv.Type != null) ConvertTop(TypeOf(cv), u0, ref o0);
-                        EmitCompare(BinaryOperatorKind.Equals, u0);
+                        EmitEqualsConstant(cv, u0);
                         E.Else(); E.I32(0); E.End();
                         return;
                     }
@@ -2869,16 +2903,14 @@ sealed partial class FunctionCompiler
                         if (Types.IsString(ct)) { E.Get(v); E.Call(Rt.IsInst(ct)); E.If(ValType.I32); E.Get(v); EmitValue(cv); E.Call(D.StringEquals.Fn); E.Else(); E.I32(0); E.End(); return; }
                         E.Get(v); EmitTypeTest(ct);
                         E.If(ValType.I32);
-                        E.Get(v); E.Load(Types.LoadOp(ct), BoxDataOffset(T, ct));
-                        EmitValue(cv);
-                        EmitCompare(BinaryOperatorKind.Equals, ct);
+                        E.Get(v);
+                        if (Types.IsStruct(ct)) { E.I32(BoxDataOffset(T, ct)); E.Op(Op.I32Add); } else E.Load(Types.LoadOp(ct), BoxDataOffset(T, ct));
+                        EmitEqualsConstant(cv, ct);
                         E.Else(); E.I32(0); E.End();
                         return;
                     }
                     E.Get(v);
-                    var o = EmitValue(cv);
-                    if (cv.Type != null) ConvertTop(TypeOf(cv), vt, ref o);
-                    EmitCompare(BinaryOperatorKind.Equals, vt);
+                    EmitEqualsConstant(cv, vt);
                     return;
                 }
             case IRelationalPatternOperation rp when IsNullable(vt):
