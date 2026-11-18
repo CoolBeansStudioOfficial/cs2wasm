@@ -48,7 +48,12 @@ sealed partial class FunctionCompiler
         if (!D.HasInstrumentation) return false;
         var target = WriteTarget(op);
         var member = HookedMember(target);
-        if (member == null || !D.WriteHooks.TryGetValue(member, out var hooks)) return false;
+        if (member == null) return false;
+        D.WriteHooks.TryGetValue(member, out var hooks);
+        // (the hooks at this write alone: PluginContext.InstrumentWrite)
+        if (D.SiteWriteHooks.Count > 0 && op.Syntax != null && D.SiteWriteHooks.TryGetValue(Driver.SiteKey(op.Syntax), out var here))
+            hooks = hooks == null ? here : [.. hooks, .. here];
+        if (hooks == null) return false;
         var inst = (StripImplicit(target!) as IMemberReferenceOperation)?.Instance;
         bool refRecv = inst != null && !TypeOf(inst).IsValueType;
         bool simple = inst is null or IInstanceReferenceOperation or ILocalReferenceOperation or IParameterReferenceOperation;
@@ -86,6 +91,38 @@ sealed partial class FunctionCompiler
         _captureOp = null;
         foreach (var h in hooks) EmitHookCall(h.Hook, h.Tag, () => { if (!refRecv) E.I32(0); else if (simple) PushReceiver(inst!); else E.Get(recv); });
         return true;
+    }
+
+    IOperation? _hookedValue;
+
+    /// <summary>The expression's value through its hooks (PluginContext.InterceptValue): each is called with the value
+    /// (the first with the expression's own, the next with what the one before returned) and returns the value the
+    /// program goes on with. An ordinary call: its cost is in the code for the optimizer to see.</summary>
+    Own EmitValueHooked(IOperation op, List<ValueHook> hooks)
+    {
+        var t = TypeOf(op);
+        Own Level(int i)
+        {
+            if (i < 0)
+            {
+                var saved = _hookedValue;
+                _hookedValue = op;
+                try { return EmitValue(op); }
+                finally { _hookedValue = saved; }
+            }
+            var h = hooks[i];
+            h.Applied = true;
+            var m = D.CanonicalMethod(h.Hook);
+            return CallWith(m, false, null, () =>
+            {
+                var o = Level(i - 1);
+                // (a struct: the hook gets a copy of its own, as any callee does)
+                if (Types.IsStruct(t)) CopyToTemp(t);
+                else if (Types.IsRef(t)) ToCallSafe(o, t);
+                if (m.Parameters.Length > 1) E.I32(h.Tag);
+            }, null, op.Syntax);
+        }
+        return Level(hooks.Count - 1);
     }
 
     void PushReceiver(IOperation inst)

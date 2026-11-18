@@ -246,6 +246,55 @@ static class ApiChecks
             return erring.Success ? "a plugin's error diagnostic did not fail the build" : null;
         });
 
+        Check("plugin v4: the value of one expression goes through a hook that can replace it (a branch's outcome, a random draw, a stored struct, a string, an awaited answer); a hook at one write of several", () =>
+        {
+            var src = Header + """
+                using System.Threading.Tasks;
+                namespace Game {
+                struct Vec { public float X, Y; public Vec(float x, float y) { X = x; Y = y; } public override string ToString() => X + "," + Y; }
+                static class Rng { static uint s_state = 7; public static int Next(int n) { s_state = s_state * 1103515245 + 12345; return (int)((s_state >> 16) % (uint)n); } }
+                class Enemy {
+                    bool _seesPlayer; float _x; Vec _velocity; int _score; string _name = "enemy";
+                    public void Look(bool sees) { _seesPlayer = sees; }
+                    public void Tick() {
+                        if (_seesPlayer) _x += 10; else _x -= 1;
+                        _velocity = new Vec(_x * 0.123456f, 2.5f);
+                    }
+                    public void Roll() { _score = Rng.Next(6); }
+                    public void Reset() { _score = 0; }
+                    public string Show() => _name + " " + _x + " " + _velocity + " " + _score;
+                    public string Name() => _name + "?";
+                    static async Task<int> AnswerAsync() { await Task.Yield(); return 5; }
+                    public async Task<int> AskAsync() { int a = await AnswerAsync(); return a * 2; }
+                }
+                static class Script {
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        var e = new Enemy();
+                        e.Tick(); e.Look(true); e.Tick(); e.Tick();
+                        e.Roll(); e.Reset(); e.Roll();
+                        Console.WriteLine(e.Show());
+                        Console.WriteLine(e.Name());
+                        Console.WriteLine(e.AskAsync().GetAwaiter().GetResult());
+                    }
+                }
+                }
+                """;
+            var plugin = new ValuePlugin();
+            var r = Compile(src, new CompileOptions { Plugins = [plugin], Checked = true });
+            if (!r.Success) return Errors(r);
+            if (plugin.Problem != null) return plugin.Problem;
+            var path = Path.Combine(outDir, "api_plugin_values.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            // the branch: seen false, then true, then true but told false; the draws replaced by 4; one write marked;
+            // the velocity rounded as it is stored; the name through two hooks in order; the awaited answer plus 100
+            var want = "branch False\nbranch True\nbranch True\ndraw\nmarked 4\ndraw\nmarked 4\nenemy 8 1,2.5 4\nenemy?.!\n210\n";
+            if (o != want) return $"output:\n{o}\nwanted:\n{want}\n{e}";
+            var refused = Compile(src, new CompileOptions { Plugins = [new ValuePlugin { HookTarget = true }] });
+            return !refused.Success && refused.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("was not applied")) ? null : "a value hook on an assignment's target was not refused";
+        });
+
         Check("plugin v3: values that depend on thread scheduling are marked; order-independent parallel work is not (section 7.3)", () =>
         {
             var src = Header + """
@@ -585,6 +634,56 @@ static class ApiChecks
             c.InstrumentReads(n, H("Read"), 3);
             var big = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionStatementSyntax>().Single(s => s.ToString().Contains("\"big\""));
             c.InstrumentBefore(model.GetOperation(big)!, H("Statement"), 4);
+        }
+    }
+
+    /// <summary>The hooks a networking plugin needs at single expressions: a branch's outcome seen and replaced, a draw
+    /// redirected, a stored value rounded, an awaited answer changed, and one write of several marked.</summary>
+    sealed class ValuePlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public bool HookTarget;
+        public int InterfaceVersion => 4;
+        public string Name => "values";
+        public void Run(PluginContext c)
+        {
+            var tree = c.Compilation.SyntaxTrees.Single();
+            var model = c.Compilation.GetSemanticModel(tree);
+            var root = tree.GetRoot();
+            IOperation Op<T>(Func<T, bool> pick) where T : SyntaxNode => model.GetOperation(root.DescendantNodes().OfType<T>().Single(pick))!;
+            var gen = c.AddSource("""
+                using System;
+                using Game;
+                static class Net {
+                    static int s_branches;
+                    public static bool Branch(bool outcome) { Console.WriteLine("branch " + outcome); return ++s_branches == 3 ? false : outcome; }
+                    public static int Draw(int value, int tag) { Console.WriteLine("draw"); return tag; }
+                    public static Vec Round(Vec v) => new Vec(MathF.Round(v.X), v.Y);
+                    public static string Dot(string s) => s + ".";
+                    public static string Bang(string s) => s + "!";
+                    public static int Answer(int a) => a + 100;
+                    public static void Marked(object o, int tag) => Console.WriteLine("marked " + ((Enemy)o)._score);
+                }
+                """);
+            IMethodSymbol H(string name) => gen.GetTypeByMetadataName("Net")!.GetMembers(name).OfType<IMethodSymbol>().Single();
+            var ifs = (Microsoft.CodeAnalysis.Operations.IConditionalOperation)Op<Microsoft.CodeAnalysis.CSharp.Syntax.IfStatementSyntax>(_ => true);
+            c.InterceptValue(ifs.Condition, H("Branch"));
+            var draw = Op<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>(i => i.ToString() == "Rng.Next(6)");
+            c.InterceptValue(draw, H("Draw"), tag: 4);
+            var store = (Microsoft.CodeAnalysis.Operations.ISimpleAssignmentOperation)Op<Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax>(a => a.Left.ToString() == "_velocity");
+            c.InterceptValue(store.Value, H("Round"));
+            var name = Op<Microsoft.CodeAnalysis.CSharp.Syntax.BinaryExpressionSyntax>(b => b.ToString() == "_name + \"?\"");
+            c.InterceptValue(name, H("Dot")); c.InterceptValue(name, H("Bang"));
+            var awaited = Op<Microsoft.CodeAnalysis.CSharp.Syntax.AwaitExpressionSyntax>(a => a.ToString() == "await AnswerAsync()");
+            c.InterceptValue(awaited, H("Answer"));
+            // the draw's write is an interaction; the reset is not: only the first is marked
+            var roll = Op<Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax>(a => a.ToString() == "_score = Rng.Next(6)");
+            c.InstrumentWrite(roll, H("Marked"), tag: 1);
+            if (HookTarget)
+            {
+                var reset = (Microsoft.CodeAnalysis.Operations.ISimpleAssignmentOperation)Op<Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax>(a => a.ToString() == "_score = 0");
+                c.InterceptValue(reset.Target, H("Answer"));
+            }
         }
     }
 

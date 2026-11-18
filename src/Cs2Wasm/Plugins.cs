@@ -11,11 +11,13 @@ namespace Cs2Wasm;
 /// and per-call updates per method; field targets and aliasing; instrumentation of writes, reads and statements;
 /// generated C# added to the program (and exported); clones of a method with chosen imports suppressed; custom
 /// sections and diagnostics. Everything is in Roslyn's terms (operations, symbols, locations), so a plugin reports in
-/// the developer's.
+/// the developer's. Version 4: a hook that receives the value of any one expression and gives the value the program
+/// goes on with (InterceptValue), write hooks at one write (InstrumentWrite), which accesses a hook runs at
+/// (MemberAccess.Instrumentable), and generated code that names the program's private members.
 /// </summary>
 public interface ICompilerPlugin
 {
-    /// <summary>The plugin interface version the plugin was written against (1 to 3).</summary>
+    /// <summary>The plugin interface version the plugin was written against (1 to 4).</summary>
     int InterfaceVersion { get; }
     string Name { get; }
     void Run(PluginContext context);
@@ -95,7 +97,7 @@ public sealed class SchedulingInfo
 
 public sealed class PluginContext
 {
-    public const int InterfaceVersion = 3;
+    public const int InterfaceVersion = 4;
     readonly List<(string, byte[])> _sections = [];
     readonly List<Diagnostic> _diagnostics = [];
     readonly Compiler.PluginHost _host;
@@ -138,6 +140,18 @@ public sealed class PluginContext
     public void InstrumentWrites(ISymbol member, IMethodSymbol hook, int tag = 0, InstrumentPoint point = InstrumentPoint.After) => _host.AddMemberHook(member, hook, tag, point, write: true);
     /// <summary>Calls `hook` after every read of `member`, with the same parameter forms as <see cref="InstrumentWrites"/>.</summary>
     public void InstrumentReads(ISymbol member, IMethodSymbol hook, int tag = 0) => _host.AddMemberHook(member, hook, tag, InstrumentPoint.After, write: false);
+    /// <summary>(Version 4.) Calls `hook` at one write (an assignment, a compound assignment, `++`/`--`, `??=`, of a
+    /// field or property), with the parameter forms and points of <see cref="InstrumentWrites"/>: a plugin that
+    /// classifies each write marks the ones it means and no others.</summary>
+    public void InstrumentWrite(IOperation write, IMethodSymbol hook, int tag = 0, InstrumentPoint point = InstrumentPoint.After) => _host.AddSiteWriteHook(write, hook, tag, point);
+    /// <summary>(Version 4.) The value of one expression goes through `hook` each time it is computed: a static method
+    /// `T Hook(T value)` or `T Hook(T value, int tag)`, T the expression's type; what it returns is the value the
+    /// program goes on with. A branch's condition (the outcome is seen, or replaced by one that was sent), a call's
+    /// result (a random draw, an awaited answer), the value an assignment stores, an argument. Several hooks on one
+    /// expression run in the order they were added, each on the result of the one before. An expression the
+    /// compiler does not compute as a value where it stands (the target of an assignment, a constant folded into
+    /// its use) is refused with an error when the program is built.</summary>
+    public void InterceptValue(IOperation expression, IMethodSymbol hook, int tag = 0) => _host.AddValueHook(expression, hook, tag);
     /// <summary>Calls `hook` (a static method taking () or (int tag)) before a statement runs.</summary>
     public void InstrumentBefore(IOperation statement, IMethodSymbol hook, int tag = 0) => _host.AddStatementHook(statement, hook, tag);
     /// <summary>Compiles a copy of `method`, and of what it calls directly, in which calls to the given imports

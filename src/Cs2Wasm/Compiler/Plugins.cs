@@ -9,6 +9,17 @@ namespace Cs2Wasm.Compiler;
 
 sealed record MemberHook(IMethodSymbol Hook, int Tag, InstrumentPoint Point);
 
+/// <summary>A hook the value of one expression goes through (PluginContext.InterceptValue).</summary>
+sealed class ValueHook
+{
+    public required IMethodSymbol Hook;
+    public required int Tag;
+    public required Location Location;
+    public required string Text;
+    /// <summary>Some compiled code calls it (else the build reports it: the expression is not computed as a value).</summary>
+    public bool Applied;
+}
+
 /// <summary>A clone of methods (section 7.1) in which calls to some imports are suppressed.</summary>
 sealed class CloneSpec
 {
@@ -21,7 +32,9 @@ internal sealed partial class Driver
     public readonly Dictionary<ISymbol, List<MemberHook>> WriteHooks = new(SymbolEqualityComparer.Default);
     public readonly Dictionary<ISymbol, List<MemberHook>> ReadHooks = new(SymbolEqualityComparer.Default);
     public readonly Dictionary<(string path, int start, int length), List<(IMethodSymbol hook, int tag)>> StatementHooks = [];
-    public bool HasInstrumentation => WriteHooks.Count > 0 || ReadHooks.Count > 0 || StatementHooks.Count > 0;
+    public readonly Dictionary<((string path, int start, int length) site, OperationKind kind), List<ValueHook>> ValueHooks = [];
+    public readonly Dictionary<(string path, int start, int length), List<MemberHook>> SiteWriteHooks = [];
+    public bool HasInstrumentation => WriteHooks.Count > 0 || ReadHooks.Count > 0 || StatementHooks.Count > 0 || ValueHooks.Count > 0 || SiteWriteHooks.Count > 0;
     readonly HashSet<ISymbol> _instrumented = new(SymbolEqualityComparer.Default);
     readonly List<CloneSpec> _clones = [];
 
@@ -47,6 +60,9 @@ internal sealed partial class Driver
         }
         Drain(rt); // generated sources and clones
         if (HasInstrumentation) Recompile(rt);
+        foreach (var list in ValueHooks.Values)
+            foreach (var h in list)
+                if (!h.Applied) Report(Diags.Plugin, h.Location, $"the value hook {h.Hook.Name} at '{h.Text}' was not applied: no reachable code computes this expression as a value");
     }
 
     internal void MarkInstrumented(ISymbol member) => _instrumented.Add(RootMember(member));
@@ -592,7 +608,10 @@ internal sealed partial class PluginHost
         var tree = CSharpSyntaxTree.ParseText(code, (CSharpParseOptions)D.Main.SyntaxTrees.First().Options, path);
         var comp = CSharpCompilation.Create("cs2wasm.plugin" + (++_sources), [tree], D.Main.References.Append(D.Main.ToMetadataReference()),
             IgnoringAccessibility(D.Main.Options.WithOutputKind(OutputKind.DynamicallyLinkedLibrary).WithMetadataImportOptions(MetadataImportOptions.All)));
-        foreach (var e in comp.GetDiagnostics()) if (e.Severity == DiagnosticSeverity.Error) D.Diagnostics.Add(e);
+        // (not "inconsistent accessibility", CS0050 to CS0059: generated code is part of the program, and a method of it
+        // that takes one of the program's internal types is as visible as that type needs)
+        foreach (var e in comp.GetDiagnostics())
+            if (e.Severity == DiagnosticSeverity.Error && !(e.Id.Length == 6 && e.Id.StartsWith("CS005", StringComparison.Ordinal))) D.Diagnostics.Add(e);
         return D.AddInput(comp, _rt);
     }
 
@@ -603,6 +622,34 @@ internal sealed partial class PluginHost
         if (!table.TryGetValue(def, out var list)) table[def] = list = [];
         list.Add(new MemberHook(hook, tag, point));
         foreach (var a in AccessesOf(def)) D.MarkInstrumented(a.Method);
+    }
+
+    public void AddSiteWriteHook(IOperation write, IMethodSymbol hook, int tag, InstrumentPoint point)
+    {
+        if (write is not (ISimpleAssignmentOperation or ICompoundAssignmentOperation or IIncrementOrDecrementOperation or ICoalesceAssignmentOperation))
+        { D.Report(Diags.Plugin, write.Syntax.GetLocation(), $"InstrumentWrite: '{write.Syntax}' is not an assignment, a compound assignment, an increment or a ??="); return; }
+        var key = Driver.SiteKey(write.Syntax);
+        if (!D.SiteWriteHooks.TryGetValue(key, out var list)) D.SiteWriteHooks[key] = list = [];
+        list.Add(new MemberHook(hook, tag, point));
+        if (D.ModelFor(write.Syntax.SyntaxTree).GetEnclosingSymbol(write.Syntax.SpanStart) is { } enc) D.MarkInstrumented(enc);
+    }
+
+    public void AddValueHook(IOperation expression, IMethodSymbol hook, int tag)
+    {
+        var loc = expression.Syntax.GetLocation();
+        var t = expression.Type;
+        if (t == null || t.SpecialType == SpecialType.System_Void) { D.Report(Diags.Plugin, loc, $"InterceptValue: '{expression.Syntax}' has no value"); return; }
+        bool shape = hook.IsStatic && !hook.IsGenericMethod && hook.Parameters.Length is 1 or 2 && hook.Parameters[0].RefKind == RefKind.None
+            && (hook.Parameters.Length == 1 || hook.Parameters[1].Type.SpecialType == SpecialType.System_Int32)
+            && SameType(hook.ReturnType, hook.Parameters[0].Type) && SameType(hook.Parameters[0].Type, t);
+        // (the hook is of another compilation than the expression: the same type is another symbol there)
+        static bool SameType(ITypeSymbol a, ITypeSymbol b) =>
+            a.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) == b.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        if (!shape) { D.Report(Diags.Plugin, loc, $"InterceptValue: the hook for '{expression.Syntax}' must be a static method {t} {hook.Name}({t} value) or ({t} value, int tag)"); return; }
+        var key = (Driver.SiteKey(expression.Syntax), expression.Kind);
+        if (!D.ValueHooks.TryGetValue(key, out var list)) D.ValueHooks[key] = list = [];
+        list.Add(new ValueHook { Hook = hook, Tag = tag, Location = loc, Text = expression.Syntax.ToString() });
+        if (D.ModelFor(expression.Syntax.SyntaxTree).GetEnclosingSymbol(expression.Syntax.SpanStart) is { } enc) D.MarkInstrumented(enc);
     }
 
     public void AddStatementHook(IOperation statement, IMethodSymbol hook, int tag)

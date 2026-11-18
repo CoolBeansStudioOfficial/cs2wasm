@@ -56,6 +56,9 @@ sealed partial class FunctionCompiler
 
     Own EmitValue(IOperation op)
     {
+        if (D.ValueHooks.Count > 0 && !ReferenceEquals(op, _hookedValue) && op.Syntax != null && op.Type != null
+            && D.ValueHooks.TryGetValue((Driver.SiteKey(op.Syntax), op.Kind), out var valueHooks))
+            return EmitValueHooked(op, valueHooks);
         int save = E.CurrentPos;
         if (s_countRc && IsCountedPush(op)) E.PendingProbes++;
         // (a value of an immortal type is never counted: Types.IsImmortalType)
