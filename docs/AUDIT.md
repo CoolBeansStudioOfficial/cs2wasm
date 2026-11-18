@@ -603,6 +603,17 @@ decides which groups more than one thread can touch.
 - The block of an address in a page of small blocks is a multiplication by the size's reciprocal kept in the
   page, not a division.
 
+**One thing found while starting 7.B, which changes one sentence of the model (2026-11-18).** "Joining needs no
+look at what the objects hold" is true only if every store of one component's object into another links at once.
+Today a store into an object that nothing else can reach yet is a plain counted store (it cannot close a cycle), and
+that is what makes building a tree or a list of a cycle-capable type cost what building any objects costs. Giving
+it up makes every such object a group member as it is built: by the instructions it takes, about half as much
+again for an object that is allocated, linked and freed (not measured). Keeping it means that the first time such
+an object is stored where a cycle can close, what it holds is linked then: a visit of the structure built so far,
+each object once in its life, at the moment it is attached. 7.B builds the runtime so that both can be measured
+(the compiler emits the plain store or the link; the runtime is the same), and the numbers decide: time on the
+bench's `tree` and `linked_list`, and the longest single runtime call.
+
 **What it does not do.** A cycle that is let go inside a group that lives on stays until the group goes (a build
 notice names the types, as today). The component that `object` fields make (anything that can hold anything) is one
 component: objects of it stored into each other share a group. Both are measured in 7.B and 7.C before 7.D and 7.E
