@@ -32,6 +32,11 @@ internal sealed class Arenas
         public int Offset; // field sites
         public readonly Dictionary<string, ITypeSymbol> Values = [];
         public bool AddressTaken;
+        /// <summary>Some store through this site is into an object that other code may know (Analyze: the site's
+        /// general link is called somewhere). A field without one is only ever stored into objects that nothing else
+        /// can reach yet (FreshStores.cs), and no such store closes a cycle: like a field filled at construction,
+        /// it can be part of a cycle only where some other edge closes it.</summary>
+        public bool General;
         public bool Cyclic;
         public required WasmFunction Link, Unlink;
         /// <summary>The same for a store into an object only the storing code knows (FreshStores.cs).</summary>
@@ -97,6 +102,7 @@ internal sealed class Arenas
         return site;
     }
 
+    static readonly bool s_noFreshSites = Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_SITES") == "1";
     readonly Dictionary<string, bool> _keepsThis = [];
     /// <summary>CS2WASM_IMMUTABLE_EDGES=1 (measurement only: the old, unsound rule).</summary>
     static readonly bool s_immutableEdges = Environment.GetEnvironmentVariable("CS2WASM_IMMUTABLE_EDGES") == "1";
@@ -254,6 +260,14 @@ internal sealed class Arenas
     /// <summary>Builds the type graph from the recorded sites and finds the cycle-capable components.</summary>
     public void Analyze()
     {
+        // which sites have a store into an object that may be known elsewhere
+        {
+            var general = new Dictionary<WasmFunction, Site>();
+            foreach (var s in _sites.Values) { general[s.Link] = s; general[s.LinkOwned] = s; }
+            foreach (var f in D.Module.Functions)
+                foreach (var ins in f.Body)
+                    if (ins.Ref is WasmFunction w && general.TryGetValue(w, out var gs)) gs.General = true;
+        }
         var nodes = D.Constructed.Where(id => id != 0 && !D.DisplayById.ContainsKey(id) && !D.SyntheticById.ContainsKey(id))
             .Select(id => (id, t: D.TypeById[id])).ToList();
         int n = D.TypeById.Count;
@@ -371,7 +385,8 @@ internal sealed class Arenas
                 // (no node has an edge to itself: a type's own cycle goes through a site's node)
                 if (comp.Count < 2) continue;
                 // (a component whose every edge is a field filled at construction: no objects can make that cycle)
-                if (!comp.Any(m => hubSite.TryGetValue(m, out var hs) && !hs.Immutable)) continue;
+                // (nor one whose other edges are fields only ever stored into objects nothing else knows yet)
+                if (!comp.Any(m => hubSite.TryGetValue(m, out var hs) && !hs.Immutable && (hs.IsArray || hs.General || s_noFreshSites))) continue;
                 sccCount++;
                 foreach (var m in comp) scc[m] = sccCount;
             }

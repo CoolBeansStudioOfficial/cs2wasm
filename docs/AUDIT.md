@@ -280,6 +280,47 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   - A1.4 open: test 121 (cycles through arrays and far fields, stored while a static holds the container) passes
     in checked mode with no object left; the guess in `ArenaUnlink` is still there and goes with step 7.
 
+- **Step 3: answered from measurements (2026-11-17 and 2026-11-18); the bench fixes (3.1, 3.2) are still to do.**
+  - Optimizing tier (what a game runs in), `tools/bench.mjs`: 0.95x NativeAOT's time, 32 MB against 71 MB.
+  - Baseline tier (what a short run over many functions stays in: the self-hosted compiler), `tools/micro.mjs
+    --baseline`: 2.32x on 2026-11-18. The engine runs the module as written there, and NativeAOT's module was
+    optimized by LLVM first. Worst: replacing a subtree 38x, `foreach` through an interface 11x, dictionary set and
+    get 4x, allocating and freeing a node 3 to 4x, a walk over a list or tree 1.7x.
+  - The self-hosted compiler on `Console.WriteLine(42)` (2026-11-17, interleaved runs): NativeAOT's WebAssembly
+    build 6.8 s; built without threads 12.6 s (1.86x); threaded 19.7 s on one thread, 8.0 s on 24. In the
+    no-threads profile counting is 2.2 s of 14.6 s; the rest is flat over Roslyn's parser.
+  - So for the self-hosted compiler: code quality in the baseline tier first (about 1.6x), thread mode second (12.6 s
+    to 19.7 s), counting third (about 15%). The order of steps 4 to 7 stands. The build with counting and freeing
+    switched off (3.3 c, d) was not made: the profile already bounds what it could show.
+  - What the generated code showed (`CS2WASM_DUMP`): a walk over a list held by a static counted every node inside
+    an exception region (fixed, below); a store of a new subtree into a new node goes through the cycle machinery
+    (a check, `rt.store_ref`, a release of the old value that is known to be null) because any class that refers to
+    its own type is cycle-capable.
+- **Step 5.1: the spike is done (2026-11-18); the IR is built from the operation tree, not from Roslyn's graph.**
+  Over the conformance sources (1,129 bodies) and the compiler's own (1,360 bodies) `ControlFlowGraph` built for
+  every body with no failure, in 7 to 12% of the time the operation trees take.
+  - (a) Flattened: blocks and declarations, loops, `if`/`?:`, `switch` and `switch` expressions, `try`/`catch`
+    (regions), `?.`, `??`, `??=`, `using`, `lock`, `with`, object and collection initializers, interpolated string
+    handlers, local functions.
+  - (b) Left as operations: patterns, lambdas, `await`, `yield return`, tuples and deconstruction, compound
+    assignment and increments, `dynamic`, collection expressions, ranges.
+  - (c) Lost: `foreach` over an array or a string becomes `IEnumerable.GetEnumerator`, `MoveNext` and `Current`
+    (64 of the conformance loops), and every `foreach` loses the fact that its element borrows from the collection.
+  - Decision: (c) rules the graph out as the IR's source. The IR's own blocks give the same flattening (an
+    `await` inside `?:` is then a block boundary like any other), with `foreach` lowered by the compiler as today.
+- **Step 6, begun (2026-11-18).** A local borrows from a static as from a field (the stores of statics are noted
+  for the scope question): `ll_walk` in the baseline tier 1.68x to 0.99x. Test 122.
+- **Step 7.1, begun (2026-11-18).** A field only ever stored into objects that nothing else can reach yet
+  (`Site.General` false: its general link is called nowhere) closes no cycle, like a field filled at construction:
+  a component made of such edges alone is not cycle-capable (`CS2WASM_NO_FRESH_SITES=1` for the old rule). It
+  takes one type out in the micro program (`Link`) and one of 40 in the bench. Trees and lists that are rewired in
+  place, and anything that holds its own kind through a `List<T>` (an array site), stay cycle-capable: those need
+  the isolated-value rule (a new structure that refers to nothing older, stored into an old one), the
+  back-reference proof, and step 7.2.
+- **Found on the way, not fixed:** a reference inside a struct-typed field of a class is stored without any link
+  (`StoreToAddressFromStack`, the struct branch), so a cycle through such a field (`class A { (A, int) pair; }`) is
+  counted plainly and never freed.
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:
