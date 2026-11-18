@@ -27,3 +27,5 @@ jobs:
           key: cs2wasm-sources-${{ hashFiles('src/Cs2Wasm/Compiler/Library.cs') }}
       - run: dotnet build -c Debug --nologo
       - run: dotnet run --project tests/Cs2Wasm.Tests
+      # (and as shipped: a checked build never uses freed memory again, so only this run reuses it)
+      - run: dotnet run --project tests/Cs2Wasm.Tests --no-build -- --unchecked

@@ -160,41 +160,205 @@ namespace Cs2Wasm.Runtime
         // writes that one word, and none of the page (each of which the next allocation would wait for: the
         // list of the page, its count of blocks in use). The page still counts the block as in use.
         const int PageSize = 16384, PageHead = 24;
-        static int s_cur, s_avail, s_pageMap, s_freePages, s_hot;
+        static int s_cur, s_avail, s_freePages, s_hot;
 
-        static bool IsPage(int addr) => ((Mem.LoadU8(s_pageMap + (int)((uint)addr >> 19)) >> (int)(((uint)addr >> 16) & 7)) & 1) != 0;
+        // ------------------------------------------------------------------
+        // Which block an address is in (docs/AUDIT.md step 7.A). The heap is handed out in granules of 1 KiB: a page
+        // of small blocks is sixteen of them, a block above 2 KiB a run of as many as it needs. A table has a word
+        // per granule (in leaves of 4 MiB of address space, made as the heap's top reaches them):
+        //   0          nothing that holds blocks (the tables, a leaf, memory never handed out)
+        //   page | 1   a page of small blocks (a program without threads)
+        //   start | 2  a block of its own, which starts at `start`
+        //   n << 3 | 3 the first and the last granule of a free run of n granules
+        //   page | 4   a page of small blocks of one kind and size for good (a program with threads)
+        // So a store that has only a slot's address (through a `ref`, a span, a struct's own method) can ask which
+        // object the slot is in: BlockOf.
+        // ------------------------------------------------------------------
+        const int Granule = 1024, GShift = 10, LeafBytes = 16384, RunBins = 24;
+        static int s_mapTop, s_runBins, s_runLo;
 
-        /// <summary>Four empty pages: 64 KB of a freed large block, or of new memory.</summary>
+        static int MapGet(int addr)
+        {
+            int leaf = Mem.LoadI32(s_mapTop + ((int)((uint)addr >> 22) << 2));
+            return leaf == 0 ? 0 : Mem.LoadI32(leaf + ((int)(((uint)addr >> GShift) & 4095) << 2));
+        }
+
+        static void MapSet(int addr, int v) =>
+            Mem.StoreI32(Mem.LoadI32(s_mapTop + ((int)((uint)addr >> 22) << 2)) + ((int)(((uint)addr >> GShift) & 4095) << 2), v);
+
+        static bool IsPage(int addr) => (MapGet(addr) & 7) == 1;
+
+        /// <summary>The block the address is in (its start), or 0: the stack, the statics, memory that holds no block.
+        /// A block: an object (for one of a cycle-capable type, the words before its header first), or memory Alloc
+        /// gave.</summary>
+        public static int BlockOf(int addr)
+        {
+            if (s_top == 0 || (uint)addr >= (uint)s_top || (uint)addr < (uint)s_runLo) return 0;
+            int e = MapGet(addr), k = e & 7;
+            if (k == 2) return e & ~7;
+            if (k == 1 || k == 4)
+            {
+                int pg = e & ~7;
+                int size = (Mem.LoadI32(pg + 20) >> 1) << 3;
+                int off = addr - pg - PageHead;
+                if (off < 0 || size == 0) return 0;
+                return pg + PageHead + (int)((uint)off / (uint)size) * size;
+            }
+            return 0;
+        }
+
+        /// <summary>Makes sure the heap's top has this many bytes (the memory grows; growing allocates too, the
+        /// exception kept for when memory runs out, so the top may have moved when this returns).</summary>
+        static void Reserve(int bytes)
+        {
+            if ((uint)(s_end - s_top) < (uint)bytes)
+            {
+                GrowFor(s_top + bytes - s_end);
+                s_end = Mem.Size() * 65536;
+            }
+        }
+
+        /// <summary>Granules at the heap's top, never used before (clear), with the table's leaves for them.</summary>
+        static int TopTake(int bytes)
+        {
+            while (true)
+            {
+                int a = s_top;
+                int r0 = (int)((uint)a >> 22), r1 = (int)((uint)(a + bytes - 1) >> 22);
+                int missing = -1;
+                for (int r = r0; r <= r1; r++)
+                    if (Mem.LoadI32(s_mapTop + (r << 2)) == 0) { missing = r; break; }
+                if (missing >= 0)
+                {
+                    Reserve(LeafBytes);
+                    if (s_top != a) continue;
+                    s_top = a + LeafBytes;
+                    Mem.StoreI32(s_mapTop + (missing << 2), a);
+                    continue;
+                }
+                Reserve(bytes);
+                if (s_top != a) continue;
+                s_top = a + bytes;
+                return a;
+            }
+        }
+
+        static int RunBin(int n) { int b = 31 - I32Clz(n); return b < RunBins ? b : RunBins - 1; }
+
+        // A free run: [0] zero (a count word that says dead), [4] its granules, [8] next, [12] previous of its size's list.
+        static void RunInsert(int addr, int n)
+        {
+            int slot = s_runBins + (RunBin(n) << 2);
+            int head = Mem.LoadI32(slot);
+            Mem.StoreI32(addr, 0); Mem.StoreI32(addr + 4, n); Mem.StoreI32(addr + 8, head); Mem.StoreI32(addr + 12, 0);
+            if (head != 0) Mem.StoreI32(head + 12, addr);
+            Mem.StoreI32(slot, addr);
+            MapSet(addr, (n << 3) | 3);
+            MapSet(addr + ((n - 1) << GShift), (n << 3) | 3);
+        }
+
+        static void RunUnlink(int r)
+        {
+            int next = Mem.LoadI32(r + 8), prev = Mem.LoadI32(r + 12);
+            if (prev != 0) Mem.StoreI32(prev + 8, next); else Mem.StoreI32(s_runBins + (RunBin(Mem.LoadI32(r + 4)) << 2), next);
+            if (next != 0) Mem.StoreI32(next + 12, prev);
+        }
+
+        /// <summary>A run of n granules: a free one (the first of its size's list that is long enough, the rest of it
+        /// free again), else from the top (clear then). Whoever takes it writes the table's words for it.</summary>
+        static int AllocRun(int n, out bool clear)
+        {
+            clear = false;
+            for (int bin = RunBin(n); bin < RunBins; bin++)
+            {
+                int r = Mem.LoadI32(s_runBins + (bin << 2));
+                while (r != 0)
+                {
+                    int len = Mem.LoadI32(r + 4);
+                    if (len >= n)
+                    {
+                        RunUnlink(r);
+                        if (len > n) RunInsert(r + (n << GShift), len - n);
+                        // (its ends are no free run's any more: a run freed beside it looks at these words. Words
+                        // inside it may still say "free run", left by runs that were joined into this one: whoever
+                        // cuts a run further clears the ends of each piece it keeps)
+                        MapSet(r, 0); MapSet(r + ((n - 1) << GShift), 0);
+                        return r;
+                    }
+                    r = Mem.LoadI32(r + 8);
+                }
+            }
+            clear = true;
+            return TopTake(n << GShift);
+        }
+
+        /// <summary>A run is free again: joined with the free runs before and after it (the heap stays compact,
+        /// section 4.6).</summary>
+        static void FreeRun(int addr, int n)
+        {
+            if ((uint)addr > (uint)s_runLo)
+            {
+                int e = MapGet(addr - Granule);
+                if ((e & 7) == 3) { int len = (int)((uint)e >> 3); int before = addr - (len << GShift); RunUnlink(before); addr = before; n += len; }
+            }
+            int after = addr + (n << GShift);
+            if ((uint)after < (uint)s_top)
+            {
+                int e = MapGet(after);
+                if ((e & 7) == 3) { RunUnlink(after); n += (int)((uint)e >> 3); }
+            }
+            RunInsert(addr, n);
+        }
+
+        /// <summary>A run of n granules at a multiple of `align` granules (a power of two).</summary>
+        static int AllocRunAligned(int n, int align)
+        {
+            int a = AllocRun(n + align - 1, out _);
+            int mask = (align << GShift) - 1;
+            int start = (a + mask) & ~mask;
+            int head = (start - a) >> GShift, tail = align - 1 - head;
+            MapSet(start, 0); MapSet(start + ((n - 1) << GShift), 0);
+            if (head > 0) FreeRun(a, head);
+            if (tail > 0) FreeRun(start + (n << GShift), tail);
+            return start;
+        }
+
+        /// <summary>A block of its own (above 2 KiB): a run of granules, cleared.</summary>
+        static int AllocHuge(int size)
+        {
+            int n = (int)(((uint)size + (Granule - 1)) >> GShift);
+            int a = AllocRun(n, out bool clear);
+            for (int i = 0; i < n; i++) MapSet(a + (i << GShift), a | 2);
+            if (!clear) Mem.Fill(a, 0, size);
+            return a;
+        }
+
+        /// <summary>Four empty pages: 64 KiB at a multiple of 64 KiB.</summary>
         static void NewChunk()
         {
-            int a;
-            int blk = TakeLarge(131072, KindPlain);
-            if (blk != 0)
-            {
-                a = (blk + 65535) & ~65535;
-                if (a - blk >= 16) FreeChunk(blk, a - blk, KindPlain);
-                if (blk + 131072 - (a + 65536) >= 16) FreeChunk(a + 65536, blk + 131072 - (a + 65536), KindPlain);
-            }
-            else
-            {
-                int t0;
-                while (true)
-                {
-                    t0 = s_top;
-                    a = (t0 + 65535) & ~65535;
-                    if (!((uint)a > (uint)s_end - 1u || (uint)s_end - (uint)a < 65536u)) break;
-                    // (growing allocates too, the exception kept for when memory runs out: look again after it)
-                    GrowFor(a + 65536 - s_end);
-                    s_end = Mem.Size() * 65536;
-                    if (s_freePages != 0) return;
-                }
-                s_top = a + 65536;
-                if (a - t0 >= 16) FreeChunk(t0, (a - t0) & ~7, KindPlain);
-            }
-            int bit = s_pageMap + (int)((uint)a >> 19);
-            Mem.StoreU8(bit, Mem.LoadU8(bit) | (1 << (int)(((uint)a >> 16) & 7)));
+            int a = AllocRunAligned(64, 64);
+            for (int i = 0; i < 64; i++) MapSet(a + (i << GShift), (a + (i >> 4) * PageSize) | 1);
             // (the lowest first out: blocks made one after the other go up through memory, page after page)
             for (int p = a + 65536 - PageSize; p != a - PageSize; p -= PageSize) { Mem.StoreI32(p + 4, s_freePages); s_freePages = p; }
+        }
+
+        /// <summary>A page of small blocks of one kind and size for good (a program with threads: a block keeps its
+        /// kind, see below): all its blocks, linked at 8.</summary>
+        static int NewThreadPage(int size, int kind)
+        {
+            int pg = AllocRunAligned(16, 16);
+            for (int i = 0; i < 16; i++) MapSet(pg + (i << GShift), pg | 4);
+            Mem.StoreI32(pg, 0); Mem.StoreI32(pg + 4, 0); Mem.StoreI32(pg + 8, 0); Mem.StoreI32(pg + 12, 0);
+            Mem.StoreI32(pg + 16, kind);
+            Mem.StoreI32(pg + 20, (size >> 3) * 2);
+            int list = 0;
+            for (int b = pg + PageHead + ((PageSize - PageHead) / size - 1) * size; b >= pg + PageHead; b -= size)
+            {
+                Mem.StoreI32(b, 0);
+                Mem.StoreI32(b + 8, list);
+                list = b;
+            }
+            return list;
         }
 
         /// <summary>A small block of the size (a multiple of 8, 16 at least), cleared.</summary>
@@ -311,8 +475,11 @@ namespace Cs2Wasm.Runtime
             s_avail = b; b += Classes * 4;
             // (after the hot blocks, each size's run: its next block, and where the run ends)
             s_hot = b; b += 3 * Classes * 4;
-            s_pageMap = b; b += 8192;
-            s_top = (b + 15) & ~15;
+            // (the free runs by size, and the table's top: a leaf for every 4 MiB of address space)
+            s_runBins = b; b += RunBins * 4;
+            s_mapTop = b; b += 1024 * 4;
+            s_top = (b + Granule - 1) & ~(Granule - 1);
+            s_runLo = s_top;
             s_end = Mem.Size() * 65536;
         }
 
@@ -483,8 +650,8 @@ namespace Cs2Wasm.Runtime
             return h;
         }
 
-        /// <summary>Fills an empty list of the thread's: blocks of the shared list of the kind and size, else new ones
-        /// carved from the heap's top, RefillBytes' worth.</summary>
+        /// <summary>Fills an empty list of the thread's: blocks of the shared list of the kind and size, else a new
+        /// page of them.</summary>
         static void Refill(int slot, int size, int kind)
         {
             int want = Math.Max(1, RefillBytes / size), got = 0, list = 0;
@@ -498,24 +665,7 @@ namespace Cs2Wasm.Runtime
                 Mem.StoreI32(shared, Mem.LoadI32(b + 8));
                 Mem.StoreI32(b + 8, list); list = b; got++;
             }
-            if (got == 0)
-            {
-                int bytes = want * size;
-                int start = 0;
-                if ((uint)(s_end - s_top) < (uint)bytes)
-                {
-                    start = TakeLarge(bytes, kind);
-                    if (start == 0)
-                    {
-                        int need = s_top + bytes - s_end;
-                        GrowFor(need);
-                        s_end = Mem.Size() * 65536;
-                    }
-                }
-                if (start == 0) { start = s_top; s_top += bytes; }
-                for (int i = want - 1; i >= 0; i--) { int b = start + i * size; Mem.StoreI32(b + 8, list); list = b; }
-                got = want;
-            }
+            if (got == 0) list = NewThreadPage(size, kind);
             RuntimeUnlock();
             Mem.StoreI32(slot, list);
         }
@@ -599,134 +749,33 @@ namespace Cs2Wasm.Runtime
             size = (size + 7) & ~7;
             if (size < 16) size = 16;
             // (small blocks: from pages without threads; with them, from the lists by size the threads' caches refill from)
-            if (size <= MaxSmall)
-            {
-                return SingleThreaded() ? PageAlloc(size) : AllocSmallShared(size, kind);
-            }
-            if (size < 0x40000000)
+            if (size <= MaxSmall) return SingleThreaded() ? PageAlloc(size) : AllocSmallShared(size, kind);
+            // A program with threads keeps a freed large block for a block of its kind and size (a block keeps its
+            // kind for good, below), so its sizes are steps; without threads a freed run is any run again.
+            if (!SingleThreaded() && size < 0x40000000)
             {
                 size = RoundLarge(size);
-                int bins = Lists(kind) + Classes * 4;
-                int bin = LargeBin(size);
-                int head = Mem.LoadI32(bins + bin * 4);
+                int slot = Lists(kind) + Classes * 4 + LargeBin(size) * 4;
+                int head = Mem.LoadI32(slot);
                 if (head != 0)
                 {
-                    Mem.StoreI32(bins + bin * 4, Mem.LoadI32(head + 8));
+                    Mem.StoreI32(slot, Mem.LoadI32(head + 8));
                     Mem.Fill(head, 0, size);
                     return head;
                 }
-                // a freed block of a larger size nearby (up to four times): split, the rest freed again
-                int last = bin + 16 < LargeBins ? bin + 16 : LargeBins - 1;
-                for (int i = bin + 1; i <= last; i++)
-                {
-                    int blk = Mem.LoadI32(bins + i * 4);
-                    if (blk == 0) continue;
-                    Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk + 8));
-                    int csize = LargeSize(i);
-                    Mem.Fill(blk, 0, size);
-                    FreeChunk(blk + size, csize - size, kind);
-                    return blk;
-                }
             }
-            if ((uint)(s_end - s_top) < (uint)size)
-            {
-                // freed space first (section 4.6), before the memory grows
-                int blk = TakeLarge(size, kind);
-                if (blk != 0) return blk;
-                int need = s_top + size - s_end;
-                GrowFor(need);
-                s_end = Mem.Size() * 65536;
-            }
-            int a = s_top;
-            s_top += size;
-            return a;
+            return AllocHuge(size);
         }
 
-        /// <summary>A small block in a program with threads: off its kind's list of the size, or cut from the region
-        /// small blocks of the kind are cut from, or from the top.</summary>
+        /// <summary>A small block in a program with threads: off its kind's list of the size, else off a new page of them.</summary>
         static int AllocSmallShared(int size, int kind)
         {
             int slot = Lists(kind) + (size >> 3) * 4;
             int head = Mem.LoadI32(slot);
-            if (head != 0)
-            {
-                Mem.StoreI32(slot, Mem.LoadI32(head + 8));
-                Zero(head, size);
-                return head;
-            }
-            // (addresses compare as unsigned numbers: memory goes on past 2 GB)
-            ref int carve = ref (kind == 0 ? ref s_carve : ref s_carve1);
-            ref int carveEnd = ref (kind == 0 ? ref s_carveEnd : ref s_carveEnd1);
-            if ((uint)(carveEnd - carve) >= (uint)size) { int c = carve; carve = c + size; return c; }
-            if ((uint)(s_end - s_top) < (uint)size)
-            {
-                // Freed space first (section 4.6), before the memory grows: a whole freed large block of the kind
-                // becomes the region small blocks are cut from, one after the other (cutting one small block off a
-                // large one at a time would look for a block at every allocation).
-                int bins = Lists(kind) + Classes * 4;
-                for (int i = 0; i < LargeBins; i++)
-                {
-                    int blk = Mem.LoadI32(bins + i * 4);
-                    if (blk == 0) continue;
-                    Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk + 8));
-                    int csize = LargeSize(i);
-                    if (carveEnd - carve >= 16) FreeCore(carve, (carveEnd - carve) & ~7, kind);
-                    Mem.Fill(blk, 0, csize);
-                    carve = blk + size; carveEnd = blk + csize;
-                    return blk;
-                }
-                int need = s_top + size - s_end;
-                GrowFor(need);
-                s_end = Mem.Size() * 65536;
-            }
-            int a = s_top;
-            s_top += size;
-            return a;
-        }
-
-        // (a freed large block that small blocks are being cut from, for each kind: where the next one starts, and its end)
-        static int s_carve, s_carveEnd, s_carve1, s_carveEnd1;
-
-        /// <summary>The size of the blocks on a large list.</summary>
-        static int LargeSize(int bin) => (8 + (bin & 7)) << ((bin >> 3) + 8);
-
-        /// <summary>A piece of free memory of any size (a multiple of 8): onto the kind's lists, in blocks of their sizes.</summary>
-        static void FreeChunk(int addr, int size, int kind)
-        {
-            int bins = Lists(kind) + Classes * 4;
-            while (size > MaxSmall)
-            {
-                // (the last piece below the top is the top again; not with threads: what was a block's start there
-                // would be the middle of whatever is cut from the top next)
-                if (SingleThreaded() && addr + size == s_top) { Mem.Fill(addr, 0, size); s_top = addr; return; }
-                int bin = LargeBin(size);
-                int csize = LargeSize(bin);
-                Mem.StoreI32(addr, 0);
-                Mem.StoreI32(addr + 8, Mem.LoadI32(bins + bin * 4));
-                Mem.StoreI32(bins + bin * 4, addr);
-                addr += csize; size -= csize;
-            }
-            if (size >= 16) FreeCore(addr, size, kind);
-        }
-
-        /// <summary>A freed large block of the kind that holds size bytes (a multiple of 8), zeroed; what is left of it
-        /// is freed again. 0 if there is none.</summary>
-        static int TakeLarge(int size, int kind)
-        {
-            int bins = Lists(kind) + Classes * 4;
-            int first = size <= MaxSmall ? 0 : LargeBin(RoundLarge(size));
-            for (int i = first; i < LargeBins; i++)
-            {
-                int blk = Mem.LoadI32(bins + i * 4);
-                if (blk == 0) continue;
-                int csize = LargeSize(i);
-                if (csize < size) continue;
-                Mem.StoreI32(bins + i * 4, Mem.LoadI32(blk + 8));
-                Mem.Fill(blk, 0, size);
-                if (csize - size >= 16) FreeChunk(blk + size, csize - size, kind);
-                return blk;
-            }
-            return 0;
+            if (head == 0) head = NewThreadPage(size, kind);
+            Mem.StoreI32(slot, Mem.LoadI32(head + 8));
+            Zero(head, size);
+            return head;
         }
 
         // The objects whose destruction waits for the outermost one to finish (rt.destroy, past a depth of nesting),
@@ -814,6 +863,8 @@ namespace Cs2Wasm.Runtime
             // (its type word too: a borrowed reference used after the free traps at its next dispatch or type test)
             if (Checked() && !ShareCheck() && size >= 8)
             {
+                // (and the table must name this block for its first and its last byte: BlockOf)
+                if (BlockOf(addr) != addr || BlockOf(addr + ((size + 7) & ~7) - 1) != addr) Mem.StoreI32(-4, 0);
                 // (with threads a dead object's count word stays zero: a read that counts relies on it)
                 int whole = (size + 7) & ~7;
                 Mem.StoreI32(addr, SingleThreaded() ? 0x0EAD0000 : 0);
@@ -852,8 +903,14 @@ namespace Cs2Wasm.Runtime
                 Mem.StoreI32(slot, addr);
                 return;
             }
-            // (a large block has its size's step: as it was allocated)
-            FreeChunk(addr, size < 0x40000000 ? RoundLarge(size) : size, kind);
+            if (SingleThreaded()) { FreeRun(addr, (int)(((uint)size + (Granule - 1)) >> GShift)); return; }
+            // (threads: onto its kind's list of its size's step, as it was allocated; a block of a gigabyte or more
+            // is not used again)
+            if (size >= 0x40000000) { Mem.StoreI32(addr, 0); return; }
+            int bin = Lists(kind) + Classes * 4 + LargeBin(RoundLarge(size)) * 4;
+            Mem.StoreI32(addr, 0);
+            Mem.StoreI32(addr + 8, Mem.LoadI32(bin));
+            Mem.StoreI32(bin, addr);
         }
 
         /// <summary>New object: count 1, type id, hash code from a per-instance counter in allocation order (section 7.3).</summary>

@@ -378,6 +378,17 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     element, a struct inside either, a box, a display, a delegate, a state machine. The suite shows the test as a
     known gap at every run until then (`// known-gap:` in a program).
 
+- **Step 7.A: done (2026-11-18).** The heap is handed out in granules of 1 KiB with a table word for each: a page
+  of small blocks, a block of its own, or a free run. `Rt.BlockOf(address)` says which block an address is in, for
+  programs with and without threads (with threads a page keeps its kind and size for good, and a freed large block
+  is kept for one of its size). Without threads a freed run is joined with the free runs beside it, where freed
+  large blocks used to be split and never joined: the bench's memory is 16.0 MB (32.0 MB before; NativeAOT
+  71.3 MB), its time unchanged (0.95x), hello world 27,840 bytes. A checked build asks the table about every block
+  it frees.
+- **The suite runs twice from now on, checked and as shipped** (`--unchecked`; CI does both). A checked build never
+  uses freed memory again, so it cannot see a fault in how memory is reused: the allocator's first version passed
+  it and crashed the bench. The 153 programs pass both ways.
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:
@@ -576,6 +587,21 @@ among the members). A store that may join two objects: a look at two types, and 
 Counting a member from outside: its count and its group's number. Letting a group go: its members, one after the
 other, at that moment (7.D removes the visit where it can). With threads the group's number is shared state: step 4
 decides which groups more than one thread can touch.
+
+**Refinements for speed, taken up when the owner asked whether anything would make the structure faster
+(2026-11-18).** None changes the structure.
+
+- A member keeps the number of inside references to it beside its count, and its group counts the members that
+  have a reference from outside, not the references. Counting a member that outside code already holds then
+  touches the member alone, as for any object; the group is looked at only when a member gets its first outside
+  reference or loses its last.
+- A `ref` to a slot of an object the method itself names (`ref var x = ref a[i]`) knows its container: only a
+  store through a reference that came from elsewhere asks the allocator.
+- "Written only while nothing else can reach the object" is asked of display objects, delegates and state machines
+  as of classes, so most of them are in no component at all.
+- A program with threads locks the group it changes, not the whole runtime.
+- The block of an address in a page of small blocks is a multiplication by the size's reciprocal kept in the
+  page, not a division.
 
 **What it does not do.** A cycle that is let go inside a group that lives on stays until the group goes (a build
 notice names the types, as today). The component that `object` fields make (anything that can hold anything) is one
