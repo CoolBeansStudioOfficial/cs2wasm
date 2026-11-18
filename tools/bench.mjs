@@ -1,10 +1,12 @@
-// Speed, peak memory and size against NativeAOT (SPEC sections 1, 7.6, 10): builds tools/bench with both, runs both,
-// and prints the comparison. Run it after every change that can move speed:
+// Speed, peak memory and size against NativeAOT (SPEC sections 1, 7.6, 10) on the same target: NativeAOT compiled to
+// WebAssembly (NativeAOT-LLVM, tools/bench-naot-wasm, linked by Emscripten) and cs2wasm's module, both run in Node (V8).
+// Builds tools/bench with both, runs both, and prints the comparison. Run it after every change that can move speed:
 //   node tools/bench.mjs [--runs N] [--rebuild-aot] [--json file]
-// The cs2wasm side runs in Node (V8), as the tests do; the times are the best of five in-process repetitions (so the
+// NativeAOT's side needs the Emscripten SDK 3.1.56 (EMSDK, or C:/tools/emsdk).
+// Both sides run in Node (V8), as the tests do; the times are the best of five in-process repetitions (so the
 // engine's optimizing tier has the code), taken as the best over the runs, with the first repetition's beside it.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, statSync, writeFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,13 +19,27 @@ mkdirSync(out, { recursive: true });
 const src = join(root, 'tools', 'bench');
 const newest = Math.max(...readdirSync(src).filter((f) => f.endsWith('.cs') || f.endsWith('.csproj')).map((f) => statSync(join(src, f)).mtimeMs));
 
-// NativeAOT
-const rid = process.platform === 'win32' ? 'win-x64' : process.platform === 'darwin' ? 'osx-arm64' : 'linux-x64';
-const aotExe = join(out, 'aot', process.platform === 'win32' ? 'bench-aot.exe' : 'bench-aot');
-if (args.includes('--rebuild-aot') || !existsSync(aotExe) || statSync(aotExe).mtimeMs < newest) {
-  console.error('publishing the NativeAOT build...');
-  execFileSync('dotnet', ['publish', join(src, 'bench.csproj'), '-c', 'Release', '-r', rid, '-o', join(out, 'aot'), '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
+// NativeAOT, compiled to WebAssembly
+const aotDir = join(out, 'naot-wasm');
+const aotJs = join(aotDir, 'bench-naot.js'), aotWasm = join(aotDir, 'bench-naot.wasm');
+const aotSrc = join(root, 'tools', 'bench-naot-wasm');
+if (args.includes('--rebuild-aot') || !existsSync(aotWasm) || statSync(aotWasm).mtimeMs < newest) {
+  const emsdk = process.env.EMSDK ?? (existsSync('C:/tools/emsdk') ? 'C:/tools/emsdk' : null);
+  if (!emsdk) throw new Error('NativeAOT for WebAssembly links with Emscripten 3.1.56: set EMSDK to its directory');
+  console.error('publishing the NativeAOT build for WebAssembly...');
+  const sub = (d) => { const p = join(emsdk, d); return existsSync(p) ? join(p, readdirSync(p)[0]) : null; };
+  const env = { ...process.env, EMSDK: emsdk, PATH: [emsdk, join(emsdk, 'upstream', 'emscripten'), process.env.PATH].join(process.platform === 'win32' ? ';' : ':') };
+  const py = sub('python'), nd = sub('node');
+  if (py) env.EMSDK_PYTHON = join(py, process.platform === 'win32' ? 'python.exe' : 'bin/python3');
+  if (nd) env.EMSDK_NODE = join(nd, process.platform === 'win32' ? 'node.exe' : 'bin/node');
+  execFileSync('dotnet', ['publish', join(aotSrc, 'bench-naot-wasm.csproj'), '-c', 'Release', '-o', aotDir, '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'], env });
 }
+// (a module's size without its custom sections: names and debugging information are not what runs)
+const codeSize = (file) => {
+  const b = readFileSync(file); let i = 8, n = 8;
+  while (i < b.length) { const id = b[i++]; let size = 0, s = 0, x; do { x = b[i++]; size += (x & 0x7f) * 2 ** s; s += 7; } while (x & 0x80); if (id !== 0) n += size + 2; i += size; }
+  return n;
+};
 
 // cs2wasm
 const cli = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
@@ -51,8 +67,8 @@ function best(into, r) {
 const aot = {}, mod = {};
 let aotPeak = 0, wasmPeak = 0;
 for (let i = 0; i < runs; i++) {
-  const a = spawnSync(aotExe, [], { encoding: 'utf8' });
-  if (a.status !== 0) { console.error(a.stderr); throw new Error('the NativeAOT build failed to run'); }
+  const a = spawnSync(process.execPath, ['-r', join(aotSrc, 'peak.cjs'), aotJs], { encoding: 'utf8', cwd: aotDir });
+  if (a.status !== 0) { console.error(a.stderr); throw new Error('the NativeAOT WebAssembly build failed to run'); }
   best(aot, parse(a.stdout));
   const pk = /peak_bytes=(\d+)/.exec(a.stdout);
   if (pk) aotPeak = Math.max(aotPeak, +pk[1]);
@@ -65,7 +81,7 @@ for (let i = 0; i < runs; i++) {
 
 const ms = (us) => (us / 1000).toFixed(1).padStart(9);
 let logSum = 0, n = 0, bad = 0;
-console.log('benchmark        NativeAOT ms  cs2wasm ms   ratio   cs2wasm first ms');
+console.log('benchmark     NativeAOT wasm ms  cs2wasm ms   ratio   cs2wasm first ms');
 for (const k of Object.keys(aot)) {
   const a = aot[k], w = mod[k];
   if (!w) { console.log(`${k.padEnd(14)} ${ms(a.best)}      (no result from the module)`); bad++; continue; }
@@ -78,8 +94,9 @@ for (const k of Object.keys(aot)) {
 const geo = n ? Math.exp(logSum / n) : 0;
 const mb = (b) => (b / 1048576).toFixed(1) + ' MB';
 console.log(`\ntime, geometric mean: cs2wasm takes ${geo.toFixed(2)}x NativeAOT's (below 1 is faster)`);
-console.log(`peak memory: NativeAOT ${mb(aotPeak)} (working set), cs2wasm ${mb(wasmPeak)} (the module's memory, 16 MB at least)`);
-console.log(`size: NativeAOT ${mb(statSync(aotExe).size)}, cs2wasm ${(statSync(wasm).size / 1024).toFixed(1)} KB; cs2wasm build ${buildMs} ms`);
+console.log(`peak memory (the module's linear memory): NativeAOT ${mb(aotPeak)}, cs2wasm ${mb(wasmPeak)} (16 MB at least)`);
+const kb = (b) => (b / 1024).toFixed(1) + ' KB';
+console.log(`size (module without custom sections): NativeAOT ${kb(codeSize(aotWasm))} + ${kb(statSync(aotJs).size)} of JavaScript, cs2wasm ${kb(codeSize(wasm))}; cs2wasm build ${buildMs} ms`);
 const json = opt('--json', null);
-if (json) writeFileSync(json, JSON.stringify({ aot, cs2wasm: mod, geomean: geo, aotPeak, wasmPeak, aotSize: statSync(aotExe).size, wasmSize: statSync(wasm).size, buildMs }, null, 1));
+if (json) writeFileSync(json, JSON.stringify({ aot, cs2wasm: mod, geomean: geo, aotPeak, wasmPeak, aotSize: codeSize(aotWasm), aotJsSize: statSync(aotJs).size, wasmSize: codeSize(wasm), buildMs }, null, 1));
 process.exit(bad ? 1 : 0);
