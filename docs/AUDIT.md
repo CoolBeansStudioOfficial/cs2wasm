@@ -450,5 +450,17 @@ of each other. Step 5 gates steps 6, 7 and 9. Step 11 can proceed alongside thro
 1. Whether a large synchronous free counts as a spike (step 7.5).
 2. The back-reference proof for cycles (still open from 2026-11-16) and whether step 7's compile-time scoping
    replaces it.
-3. Whether "always faster than NativeAOT" stays a requirement for every program, or becomes "never slower, and
-   faster on the measured set": counting cannot guarantee the first for allocation-heavy code (A2.1).
+3. Decided by the owner, 2026-11-18: the bar is **the same speed as NativeAOT, lower memory, no frame-time spikes**.
+   Faster is welcome, not required. Step 6's target is therefore "no program in the set slower than NativeAOT's";
+   step 6.6 (reuse) is done only if step 3's numbers call for it.
+
+Notes on decisions 1 and 2 (the auditor's recommendation, not decided):
+
+- Decision 1: the alternative to a large synchronous free that the owner's rules allow is a free that does not visit
+  the objects. An arena whose member types have no finalizer and hold no counted reference to anything outside it
+  can be released by returning its pages. The compiler knows both facts per type. The same applies to an owned tree
+  with no cycle (a list of nodes, a parsed document): allocate it in a region of its root and release the region.
+- Decision 2: compile-time scoping does not replace the back-reference proof; they do different jobs. The proof
+  removes the commonest cycle (a child's link to its parent) so the child stays a plain counted object and is freed
+  the moment it is dropped. Scoping makes what is still cyclic cheap. Without the proof, a long-lived parent with
+  children that come and go (a world and its enemies) is one arena that only grows.
