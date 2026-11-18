@@ -444,7 +444,16 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     store does (`Rt.Adopt`, `LinkMembers`): constant time, no visit. Test 131: one child and four through
     `Task.WhenAll` are freed (5 left each before). Suite 157 passed checked and as shipped, 1 known gap; bench
     0.96x, 16.0 MB against 71.3 MB, unchanged.
-  - **What test 127 still leaves, exactly:** children held by two containers of one tree (`root.Children` and
+  - **Closed (2026-11-18): the check at the drop, the owner's choice.** A member left with no reference from
+    outside and no owner, kept only by holds from what it owns, has what it owns gone through once at that store
+    or release: the counted references among them come off, and if none of them is left with any reference, they
+    are destroyed together (`Rt.Dropped`). Otherwise the counts go back, and the top keeps how many of them outside
+    code holds; it is looked at again when that number reaches zero. Chosen over keeping a kind for every slot,
+    which every store would pay for. Its cost is at the drop only: a subtree of 7,381 nodes indexed twice is
+    released in 4.2 ms at worst against 1.9 ms for the same tree indexed once; when something outside still holds
+    a part, the failed check adds about 20% (1.27 against 1.08 ms). Tests 127 (no known gap any more) and 134;
+    suite 161 passed checked and as shipped; bench 0.96x, 16.0 MB against 71.3 MB; hello world 27,943 bytes.
+  - **What test 127 left before that, exactly:** children held by two containers of one tree (`root.Children` and
     `root.Tag = results`). A member that something besides its owner refers to holds its owner, since that other
     holder may be outside the tree; here it is inside, the tree holds itself, and in a group that lives on it
     stays. Not specific to async; freed whenever the group goes (a program without a task on a cycle: at once).

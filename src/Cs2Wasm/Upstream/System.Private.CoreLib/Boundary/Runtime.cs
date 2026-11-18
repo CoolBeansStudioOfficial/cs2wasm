@@ -1583,7 +1583,7 @@ namespace Cs2Wasm.Runtime
                 if (w == 0) continue;
                 PS(w, 24, PL(w, 24) & ~Queued);
                 if (Mem.LoadI32(w) == -2 && PL(w, 4) == 0 && (PL(w, 24) & Dying) == 0
-                    && (Mem.LoadI32(ArenaOf(w) + 12) & ArenaBusy) == 0) ArenaDestroyFrom(w);
+                    && (Mem.LoadI32(ArenaOf(w) + 12) & ArenaBusy) == 0) ArenaDestroyFrom(w, 0);
             }
         }
 
@@ -1592,7 +1592,8 @@ namespace Cs2Wasm.Runtime
         static void Adopt(int v)
         {
             int p = PL(v, 20);
-            if (p == 0) return;
+            // (odd: a top's note, Dropped; and nothing adopts a member that is dying)
+            if (p == 0 || (p & 1) != 0 || (PL(v, 24) & Dying) != 0) return;
             PS(v, 20, 0);
             if (Mem.LoadI32(p) >= -1) return;
             // (as the first container to hold it would have: the ownership turns round where the member owns
@@ -1617,6 +1618,7 @@ namespace Cs2Wasm.Runtime
             int found = s_handSum;
             s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se; s_handSum = ss;
             if (found != 0) return;
+            ClearMark(m);
             ArenaTakeOut(ar, m);
             // (exchanged: other threads count it meanwhile; it has outside references, so one member fewer that does)
             do { c = Atomic.Load32(ref Mem.RefI32(m)); } while (Atomic.CompareExchange32(ref Mem.RefI32(m), c, -c - 2) != c);
@@ -1741,12 +1743,147 @@ namespace Cs2Wasm.Runtime
             if ((fl & Held) == 0) PS(old, 32, 0);
         }
 
+        // ---- The check at the drop (the owner's decision of 2026-11-18) ----
+        // A member that something besides its owner refers to holds its owner (above), since that other may be
+        // outside the tree. When it is inside (a child in its parent's list and in its parent's dictionary), the tree
+        // holds itself: let go, its top has no reference from outside and no owner, and is kept by holds alone.
+        // Counting cannot tell the two apart; one look can. At the store or release that leaves a member so, what it
+        // owns is gone through once: every counted reference among them is taken off, and if none of them is left
+        // with a reference of any kind, nothing outside refers to any of them and they are destroyed together, as
+        // members that die together are. Otherwise the counts are put back, and the top remembers how many of them
+        // outside code holds (the word for another holder, odd): it is looked at again when that number is zero, or
+        // when one of them loses a reference from a member.
+        static int s_trQ, s_trN, s_trCap, s_trial, s_failedTops, s_watch, s_watchHit;
+        const int TrMany = 0x3ffffff0;
+
+        static void TrPush(int m)
+        {
+            if (s_trN == s_trCap)
+            {
+                int cap = s_trCap == 0 ? 256 : s_trCap * 2;
+                int nq = Alloc(cap * 4);
+                if (s_trQ != 0) { Mem.Copy(nq, s_trQ, s_trN * 4); Free(s_trQ, s_trCap * 4); }
+                s_trQ = nq; s_trCap = cap;
+            }
+            Mem.StoreI32(s_trQ + 4 * s_trN, m);
+            s_trN++;
+        }
+
+        /// <summary>The top's note of a check that failed is gone.</summary>
+        static void ClearMark(int m)
+        {
+            if ((PL(m, 20) & 1) == 0) return;
+            PS(m, 20, 0);
+            s_failedTops--;
+        }
+
+        /// <summary>The member above all its owners (itself when it has none); 0 when that is far.</summary>
+        static int Top(int m)
+        {
+            int v = m;
+            for (int k = 0; k < 64; k++)
+            {
+                if ((PL(v, 24) & Owned) == 0) return v;
+                int w = PL(v, 32);
+                if (w == 0 || Mem.LoadI32(w) >= -1) return v;
+                v = w;
+            }
+            return 0;
+        }
+
+        static void TrVisit(int mode)
+        {
+            int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
+            for (int i = 0; i < s_trN; i++)
+            {
+                int m = Mem.LoadI32(s_trQ + 4 * i);
+                s_visitMode = mode; s_visitObj = m; s_visitElem = 0;
+                ArenaVisitObject(m);
+                // (what it holds of its owner is a counted reference too)
+                if (mode != 13 && (PL(m, 24) & Held) != 0)
+                {
+                    int w = PL(m, 32);
+                    if (w != 0 && Mem.LoadI32(w) < -1 && (PL(w, 24) & Dying) != 0) PS(w, 4, PL(w, 4) + (mode == 14 ? -1 : 1));
+                }
+            }
+            s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se;
+        }
+
+        /// <summary>A member left without a reference from outside: when it has no owner and no other container
+        /// holds it, the check. True when it was destroyed, with all it owns.</summary>
+        static bool Dropped(int x)
+        {
+            if (s_destroying != 0 || s_trial != 0) return false;
+            if (Mem.LoadI32(x) != -2 || PL(x, 4) == 0) return false;
+            if ((PL(x, 24) & (Owned | Dying)) != 0) return false;
+            int o = PL(x, 20);
+            if (o != 0 && (o & 1) == 0) return false;
+            int ar = ArenaOf(x);
+            if (Mem.LoadI64(ar + 12) != 0) return false;
+            ClearMark(x);
+            s_trial = 1;
+            // what it owns, and what they own: marked as they are found
+            s_trN = 0;
+            PS(x, 24, PL(x, 24) | Dying);
+            TrPush(x);
+            TrVisit(13);
+            // the counted references among them, off
+            TrVisit(14);
+            int held = 0; bool inside = true;
+            for (int i = 0; i < s_trN; i++)
+            {
+                int m = Mem.LoadI32(s_trQ + 4 * i);
+                if (Mem.LoadI32(m) != -2) held++;
+                if (PL(m, 4) != 0) inside = false;
+            }
+            TrVisit(15);
+            bool dead = inside && held == 0;
+            s_watchHit = 0;
+            if (!dead)
+            {
+                for (int i = 0; i < s_trN; i++) { int m = Mem.LoadI32(s_trQ + 4 * i); PS(m, 24, PL(m, 24) & ~Dying); }
+                PS(x, 20, ((inside ? held : TrMany) << 1) | 1);
+                s_failedTops++;
+                s_trial = 0;
+                return false;
+            }
+            if (s_watch != 0 && Mem.LoadI32(s_watch) < -1 && (PL(s_watch, 24) & Dying) != 0) s_watchHit = 1;
+            // they die together: off the ring, in the list of the dead behind the top
+            int rest = 0;
+            for (int i = 1; i < s_trN; i++)
+            {
+                int m = Mem.LoadI32(s_trQ + 4 * i);
+                ArenaTakeOut(ar, m);
+                PS(m, 12, rest);
+                rest = m;
+            }
+            s_trial = 0;
+            PS(x, 24, PL(x, 24) & ~Dying);
+            ArenaDestroyFrom(x, rest);
+            return true;
+        }
+
+        /// <summary>A member under a top whose check failed got its first reference from outside, or lost its
+        /// last (d): the top's number; at zero the top is looked at again. Returns the top to look at, or 0.</summary>
+        static int TopHeld(int p, int d)
+        {
+            int t = Top(p);
+            if (t == 0) return 0;
+            int o = PL(t, 20);
+            if ((o & 1) == 0) return 0;
+            int n = o >> 1;
+            if (n >= TrMany) return 0;
+            n += d;
+            if (n > 0) { PS(t, 20, (n << 1) | 1); return 0; }
+            return t;
+        }
+
         /// <summary>Retain of an arena member, under the runtime lock: one more outside reference (its first: the
         /// others are counted without the lock, rt.retain; so the count is added to atomically here too).</summary>
         public static void ArenaRetain(int p)
         {
             int old = Atomic.Add32(ref Mem.RefI32(p), -1);
-            if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); }
+            if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); if (s_failedTops != 0) TopHeld(p, 1); }
             if ((uint)PL(p, 24) >= UOne) UpdateHold(p);
         }
 
@@ -1763,7 +1900,14 @@ namespace Cs2Wasm.Runtime
             }
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
             // (no reference of either kind: it goes now, with what only it referred to)
-            if (w == -2 && PL(p, 4) == 0) { ArenaDestroyFrom(p); DrainKills(); return; }
+            if (w == -2 && PL(p, 4) == 0) { ArenaDestroyFrom(p, 0); DrainKills(); return; }
+            // (kept by what it owns alone, or under a top that was: the check at the drop)
+            if (w == -2)
+            {
+                int t = s_failedTops != 0 ? TopHeld(p, -1) : 0;
+                if (t != 0 && t != p && Dropped(t)) { DrainKills(); return; }
+                if (Dropped(p)) { DrainKills(); return; }
+            }
             if ((uint)PL(p, 24) >= UOne) { UpdateHold(p); DrainKills(); }
         }
 
@@ -1940,7 +2084,7 @@ namespace Cs2Wasm.Runtime
                 else if (ow == 0) TakeOwnership(val, container);
                 // (the first other container that holds it is the one to own it next: a later one, a task's
                 // result, a temporary array, is as often gone by then)
-                else if (PL(val, 20) == 0) PS(val, 20, container);
+                else if (PL(val, 20) == 0 || (PL(val, 20) & 1) != 0) { ClearMark(val); PS(val, 20, container); }
             }
             UpdateHold(val);
             return val;
@@ -1998,15 +2142,23 @@ namespace Cs2Wasm.Runtime
                 // (a container replaced by another in the same slot, a list's array by a larger one: what it owned is
                 // the new one's from here on)
                 if (owned && n > 0 && slot != 0) { Handover(old, Mem.LoadI32(slot), container); n = PL(old, 4); }
-                if (n == 0 && co == -2) ArenaDestroyFrom(old);
+                bool gone = false;
+                if (n == 0 && co == -2) ArenaDestroyFrom(old, 0);
                 else
                 {
                     if (PL(old, 32) == 0) Adopt(old);
                     UpdateHold(old);
-                    if (old != container) TryLeave(old);
+                    // (left with what it owns alone, or under a top that a check failed for: the check at the drop)
+                    s_watch = container;
+                    int t = s_failedTops != 0 ? Top(old) : 0;
+                    bool died = t != 0 && t != old && (PL(t, 20) & 1) != 0 && Dropped(t);
+                    if (!died) died = Dropped(old);
+                    gone = died && s_watchHit != 0;
+                    s_watch = 0;
+                    if (!died && old != container) TryLeave(old);
                 }
                 if (s_killN != 0) DrainKills();
-                TryLeave(container);
+                if (!gone) TryLeave(container);
             }
             RuntimeUnlock();
             if (!inside) Release(Borrow<object>(old));
@@ -2100,6 +2252,23 @@ namespace Cs2Wasm.Runtime
             int child = Mem.LoadI32(slot);
             // (4: each reference, counted by the copy, as a store of it)
             if (s_visitMode == 4) { if (child != 0 && slot != s_storeSlot) ArenaLinkCore(child, s_visitArena, slot); return; }
+            // (13 to 15, Dropped: what the member owns; a counted reference to one of them off, and back on)
+            if (s_visitMode >= 13)
+            {
+                if (child == 0 || Mem.LoadI32(child) >= -1) return;
+                int cf = PL(child, 24);
+                if (s_visitMode == 13)
+                {
+                    if (PL(child, 32) == s_visitObj && (cf & (Owned | Dying)) == Owned) { PS(child, 24, cf | Dying); TrPush(child); }
+                    return;
+                }
+                if ((cf & Dying) == 0) return;
+                int ti = s_visitElem != 0 ? -1 : SlotIndex(s_visitObj, slot);
+                int tb = ti >= 0 ? SlotBits(s_visitObj, ti) : -1;
+                if (tb == 0 || tb == 2) return;
+                PS(child, 4, PL(child, 4) + (s_visitMode == 14 ? -1 : 1));
+                return;
+            }
             // (10 to 12, FinPhase: a reference to a member that dies with this one comes off its count, goes back
             // on, is taken out of the slot)
             if (s_visitMode >= 10)
@@ -2249,11 +2418,12 @@ namespace Cs2Wasm.Runtime
         /// with it, one after the other (no recursion: a long chain is a long list). First every one of them gives
         /// up its references to other members (their owners are still there to walk through), then each is destroyed
         /// as any object.</summary>
-        static void ArenaDestroyFrom(int p)
+        static void ArenaDestroyFrom(int p, int rest)
         {
             int ar = ArenaOf(p);
             ArenaTakeOut(ar, p);
-            PS(p, 12, 0);
+            // (rest: members that die with it whatever their counts, Dropped; marked and off the ring already)
+            PS(p, 12, rest);
             PS(p, 24, PL(p, 24) | Dying);
             int dead = p, done = 0;
             bool fin = Mem.LoadI32(ar + 24) != 0;
@@ -2286,7 +2456,7 @@ namespace Cs2Wasm.Runtime
             s_destroying--;
             s_cutOn = cutOn;
             // then as any object: no longer a member (count zero: being destroyed), its finalizer, its other references
-            for (int m = done; m != 0; m = PL(m, 8)) { Mem.StoreI32(m, 0); PS(m, 16, 0); }
+            for (int m = done; m != 0; m = PL(m, 8)) { Mem.StoreI32(m, 0); PS(m, 16, 0); ClearMark(m); }
             // A finalizer stored one of them where the program can reach it: they all live on, with what they
             // refer to, and are never freed (what one of several objects that die together can still reach is
             // not followed: section 4.3's group stays whole).
@@ -2313,7 +2483,7 @@ namespace Cs2Wasm.Runtime
             {
                 // (every member's record word straight at the arena: the merged records they pointed to go now)
                 int m = first;
-                do { ArenaOf(m); Unqueue(m); m = PL(m, 12); } while (m != first);
+                do { ArenaOf(m); Unqueue(m); ClearMark(m); m = PL(m, 12); } while (m != first);
                 int sa = s_visitArena, sm = s_visitMode;
                 bool fin = Mem.LoadI32(ar + 24) != 0;
                 int cutOn = s_cutOn, cutBase = s_cutN;
