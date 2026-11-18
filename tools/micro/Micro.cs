@@ -108,6 +108,25 @@ static class P
     static long BulkAllocOnly() { var a = s_keep; for (int i = 0; i < a.Length; i++) a[i] = new Box(); return a.Length; }
     sealed class Link { public Link? Next; public int Value; }
     static long LinkBuildFree() { Link? head = null; for (int i = 0; i < 100000; i++) head = new Link { Next = head, Value = i }; return head!.Value; }
+    // (tools/bench's dictionary, cut after each of its phases)
+    static long DictBench(int phases)
+    {
+        s_seed = 1;
+        var d = new Dictionary<int, int>();
+        for (int i = 0; i < 200000; i++) d[(int)(Next() % 100000)] = i;
+        long sum = 0;
+        if (phases < 2) return d.Count;
+        for (int i = 0; i < 200000; i++) if (d.TryGetValue((int)(Next() % 150000), out int v)) sum += v;
+        if (phases < 3) return sum;
+        for (int i = 0; i < 50000; i++) d.Remove(i * 2);
+        if (phases < 4) return sum + d.Count;
+        foreach (var kv in d) sum += kv.Key ^ kv.Value;
+        return sum + d.Count;
+    }
+    static long DictB1() => DictBench(1);
+    static long DictB2() => DictBench(2);
+    static long DictB3() => DictBench(3);
+    static long DictB4() => DictBench(4);
     static long Virtual() { long s = 0; object[] os = s_objs; for (int r = 0; r < 20; r++) for (int i = 0; i < os.Length; i++) s += os[i].GetHashCode(); return s; }
     static object[] s_objs = null!;
     sealed class H1 { public override int GetHashCode() => 1; }
@@ -134,7 +153,7 @@ static class P
             ("groupby", GroupBy), ("distinct", Distinct), ("delegate_call", DelegateCall), ("iface_foreach", IfaceForeach), ("split", Split), ("indexof", IndexOf),
             ("sb_append_str", SbAppendStr), ("sb_append_char", SbAppendChar), ("sb_append_int", SbAppendInt), ("hashset_add", HashSetAdd),
             ("dict_set", DictSet), ("dict_get", DictGet), ("dict_str", DictStr), ("dict_str_list", DictStrList), ("list_add", ListAdd), ("upper", Upper),
-            ("ll_build_free", LlBuildFree), ("ll_walk", LlWalk), ("ll_build_rev_free", LlBuildReverseFree), ("ll_reverse", LlReverse), ("bulk_alloc_free", BulkAlloc), ("bulk_replace", BulkAllocOnly), ("link_build_free", LinkBuildFree), ("llb_build", LlB1), ("llb_walk20", LlB2), ("llb_reverse", LlB3), ("llb_xor", LlB4), ("treeb_build", TreeB1), ("treeb_walk", TreeB2), ("treeb_replace", TreeB3), ("tree_build_free", TreeBuildFree), ("tree_walk", TreeWalk), ("tree_replace", TreeReplace), ("virtual3", Virtual),
+            ("ll_build_free", LlBuildFree), ("ll_walk", LlWalk), ("ll_build_rev_free", LlBuildReverseFree), ("ll_reverse", LlReverse), ("dictb_set", DictB1), ("dictb_get", DictB2), ("dictb_remove", DictB3), ("dictb_enum", DictB4), ("bulk_alloc_free", BulkAlloc), ("bulk_replace", BulkAllocOnly), ("link_build_free", LinkBuildFree), ("llb_build", LlB1), ("llb_walk20", LlB2), ("llb_reverse", LlB3), ("llb_xor", LlB4), ("treeb_build", TreeB1), ("treeb_walk", TreeB2), ("treeb_replace", TreeB3), ("tree_build_free", TreeBuildFree), ("tree_walk", TreeWalk), ("tree_replace", TreeReplace), ("virtual3", Virtual),
         };
         long chk = 0;
         foreach (var (name, f) in tests)

@@ -766,6 +766,16 @@ sealed partial class FunctionCompiler
     void EmitLabeledStatements(IReadOnlyList<IOperation> ops, int start, List<int> labeled)
     {
         int n = labeled.Count + 1;
+        // A label whose statements are one or two that end the method (`Return: return ref value;`): a goto to it
+        // from further down is those statements again, not a jump back (which would need the dispatch loop).
+        if (!s_noForwardGoto)
+            for (int k = 0; k < labeled.Count; k++)
+            {
+                int from = labeled[k], to = k + 1 < labeled.Count ? labeled[k + 1] : ops.Count;
+                if (to - from > 2 || !TailStatements(ops, from, to)) continue;
+                for (IOperation? lo = ops[from]; lo is ILabeledOperation lop; lo = lop.Operation)
+                    _gotoTail[lop.Label] = (ops, from, to, _scopes.Count, _temps.Count);
+            }
         if (!s_noForwardGoto && GotosAllForward(ops, start, labeled))
         {
             // Every goto to these labels is before its label (`goto ReturnFound;` out of a loop, the labels at the
@@ -828,16 +838,36 @@ sealed partial class FunctionCompiler
     /// <summary>The labels every goto reaches from before them (EmitLabeledStatements): the block each one ends.</summary>
     readonly Dictionary<ILabelSymbol, Label> _gotoForward = new(SymbolEqualityComparer.Default);
 
+    /// <summary>The labels whose statements a goto from after them repeats (EmitLabeledStatements): the statements,
+    /// and the depths of the scopes and of the temporaries at the label's block.</summary>
+    readonly Dictionary<ILabelSymbol, (IReadOnlyList<IOperation> ops, int from, int to, int scopes, int temps)> _gotoTail = new(SymbolEqualityComparer.Default);
+
+    /// <summary>Statements that only compute and then leave the method: expressions, then a return or a throw.</summary>
+    static bool TailStatements(IReadOnlyList<IOperation> ops, int from, int to)
+    {
+        for (int i = from; i < to; i++)
+        {
+            IOperation op = ops[i];
+            while (op is ILabeledOperation { Operation: { } inner }) op = inner;
+            bool last = i == to - 1;
+            if (last ? op is not (IReturnOperation or IThrowOperation or IExpressionStatementOperation { Operation: IThrowOperation }) : op is not IExpressionStatementOperation) return false;
+            foreach (var d in op.DescendantsAndSelf())
+                if (d is IBranchOperation or ILabeledOperation or IAnonymousFunctionOperation or ILocalFunctionOperation or ILoopOperation or ITryOperation) return false;
+        }
+        return to > from;
+    }
+
     /// <summary>Whether every goto to one of the block's labels is before the label in the text (and so, being in
-    /// the label's scope, in a statement before it: a branch out of a block that ends at the label reaches it).</summary>
-    static bool GotosAllForward(IReadOnlyList<IOperation> ops, int start, List<int> labeled)
+    /// the label's scope, in a statement before it: a branch out of a block that ends at the label reaches it); a
+    /// goto from after a label whose statements it repeats (_gotoTail) does not count.</summary>
+    bool GotosAllForward(IReadOnlyList<IOperation> ops, int start, List<int> labeled)
     {
         var at = new Dictionary<ILabelSymbol, int>(SymbolEqualityComparer.Default);
         foreach (int i in labeled)
             for (IOperation? lo = ops[i]; lo is ILabeledOperation lop; lo = lop.Operation) at[lop.Label] = ops[i].Syntax.SpanStart;
         for (int i = start; i < ops.Count; i++)
             foreach (var d in ops[i].DescendantsAndSelf())
-                if (d is IBranchOperation { BranchKind: BranchKind.GoTo } br && at.TryGetValue(br.Target, out int pos) && br.Syntax.SpanStart >= pos) return false;
+                if (d is IBranchOperation { BranchKind: BranchKind.GoTo } br && at.TryGetValue(br.Target, out int pos) && br.Syntax.SpanStart >= pos && !_gotoTail.ContainsKey(br.Target)) return false;
         return true;
     }
 
@@ -1075,6 +1105,23 @@ sealed partial class FunctionCompiler
     {
         if (!_labels.TryGetValue(br.Target, out var t))
             throw new CompileException("goto to this label is not supported", br.Syntax.GetLocation());
+        if (_gotoTail.TryGetValue(br.Target, out var tail) && br.Syntax.SpanStart >= tail.ops[tail.from].Syntax.SpanStart)
+        {
+            // the label's statements again, as they are at the label: what was declared since (the scopes and
+            // temporaries opened inside the label's block) is released first, as a goto releases it
+            int ti = _ctl.IndexOf(t.ctl);
+            for (int i = _ctl.Count - 1; i > ti; i--)
+                if (_ctl[i].Kind == CtlKind.TryFinally) EmitFinallyInline(i);
+            for (int i = _temps.Count - 1; i >= tail.temps; i--) foreach (var s in _temps[i]) ReleaseSlot(s);
+            for (int i = _scopes.Count - 1; i >= tail.scopes; i--)
+                for (int j = _scopes[i].Owned.Count - 1; j >= 0; j--) ReleaseSlot(_scopes[i].Owned[j]);
+            var savedCtl = _ctl.GetRange(ti + 1, _ctl.Count - ti - 1); _ctl.RemoveRange(ti + 1, savedCtl.Count);
+            var savedScopes = _scopes.GetRange(tail.scopes, _scopes.Count - tail.scopes); _scopes.RemoveRange(tail.scopes, savedScopes.Count);
+            var savedTemps = _temps.GetRange(tail.temps, _temps.Count - tail.temps); _temps.RemoveRange(tail.temps, savedTemps.Count);
+            EmitStatementsPlain(tail.ops, tail.from, tail.to);
+            _temps.AddRange(savedTemps); _scopes.AddRange(savedScopes); _ctl.AddRange(savedCtl);
+            return;
+        }
         if (_gotoForward.TryGetValue(br.Target, out var fwd))
         {
             int fi = _ctl.IndexOf(t.ctl);

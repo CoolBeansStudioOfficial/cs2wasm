@@ -14,7 +14,7 @@ static class NullChecks
     {
         var b = f.Body;
         bool any = false;
-        foreach (var ins in b) if (ins.Op == Op.Call && ReferenceEquals(ins.Ref, nonNull)) { any = true; break; }
+        foreach (var ins in b) if (ins.Op == Op.Call && (ReferenceEquals(ins.Ref, nonNull) || IsThrowNull(ins))) { any = true; break; }
         if (!any) return;
         int n = b.Count;
         // each construct's end
@@ -29,6 +29,8 @@ static class NullChecks
         var known = new HashSet<int>();
         var scopes = new Stack<(HashSet<int> entry, HashSet<int> written, bool isIf)>();
         var remove = new bool[n];
+        var drop = new bool[n]; // (a check written out, taken out: its value is dropped where the test was)
+        int topSource = -1;     // the local a `local.tee` copied the value from
         bool top = false;   // the value on top of the stack is known not to be null
         int topLocal = -1;  // and it is this local's (just read), for the branch patterns
         for (int i = 0; i < n; i++)
@@ -39,7 +41,15 @@ static class NullChecks
                 case Op.LocalGet:
                     top = known.Contains((int)ins.Imm);
                     topLocal = (int)ins.Imm;
+                    topSource = -1;
                     continue;
+                case Op.I32Eqz when i + 4 < n && b[i + 1].Op == Op.If && b[i + 1].Ref == null && IsThrowNull(b[i + 2]) && b[i + 3].Op == Op.Unreachable && b[i + 4].Op == Op.End
+                                    && topLocal >= 0 && i > 0 && b[i - 1].Op is Op.LocalGet or Op.LocalTee:
+                    // the check written out where an array's length or element is read: `x; i32.eqz; if; throw; end`
+                    if (top) { drop[i] = true; for (int k = i; k <= i + 4; k++) remove[k] = true; }
+                    else { known.Add(topLocal); if (topSource >= 0) known.Add(topSource); }
+                    i += 4;
+                    break;
                 case Op.Call when ReferenceEquals(ins.Ref, nonNull):
                     if (top) remove[i] = true;
                     else if (topLocal >= 0) known.Add(topLocal);
@@ -51,6 +61,7 @@ static class NullChecks
                     continue;
                 case Op.LocalTee:
                     if (top) known.Add((int)ins.Imm); else known.Remove((int)ins.Imm);
+                    topSource = topLocal >= 0 && topLocal != (int)ins.Imm && i > 0 && b[i - 1].Op == Op.LocalGet ? topLocal : -1;
                     topLocal = (int)ins.Imm;
                     continue;
                 case Op.LocalSet:
@@ -94,7 +105,13 @@ static class NullChecks
         }
         if (!Array.Exists(remove, x => x)) return;
         var o = new List<Instr>(n);
-        for (int i = 0; i < n; i++) if (!remove[i]) o.Add(b[i]);
+        for (int i = 0; i < n; i++)
+        {
+            if (drop[i]) o.Add(new Instr { Op = Op.Drop, Pos = b[i].Pos });
+            if (!remove[i]) o.Add(b[i]);
+        }
         f.Body = o;
     }
+
+    static bool IsThrowNull(in Instr ins) => ins.Op == Op.Call && ins.Ref is WasmFunction { Name: "Cs2Wasm.Runtime.ThrowHelpers.NullReference()" };
 }
