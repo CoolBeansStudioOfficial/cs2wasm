@@ -378,6 +378,14 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     strings: string is a shared type in every program that has a static string (CultureInfo's, a program's own
     `static readonly string[]`), so every string's count is atomic; deciding that per object rather than per type
     needs the allocation site and the thread that reads a static, not yet done.
+  - **Found by the share check, and fixed: two types' destructions taken for the same code (2026-11-18).** Test 088
+    under `CS2WASM_SHARE_CHECK=1` failed one run in three: a plain count of the thread pool's TaskScheduler on the
+    timer thread, or a hang. The destruction dispatch gives types whose destroy functions are the same code one
+    case (`WasmModule.BodyKey`), and a call was keyed by its callee's order in the module; the per-type count
+    placeholders are in no module, all of order 0, so a continuation's destruction and that of a thread-local type
+    with references at the same offsets shared a case, and the continuation's scheduler was released with the
+    plain count. A callee with no order is now keyed by its name. In the shipped build it was a count that could
+    go wrong when two threads let go of the scheduler at once. 088 under the share check: 40 of 40 runs pass.
 
 - **Step 3: answered from measurements (2026-11-17 and 2026-11-18); the bench fixes (3.1, 3.2) are still to do.**
   - Optimizing tier (what a game runs in), `tools/bench.mjs`: 0.95x NativeAOT's time, 32 MB against 71 MB.

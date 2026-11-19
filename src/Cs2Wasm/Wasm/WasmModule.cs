@@ -611,7 +611,9 @@ internal sealed class WasmModule
             switch (ins.Ref)
             {
                 case null: break;
-                case WasmFunction g: sb.Append(",f").Append(g.Order); break;
+                // (a function not in the module has no order of its own: a placeholder for a type's counts,
+                // TypedCounts.cs, which becomes the atomic or the plain function later, by its type)
+                case WasmFunction g: sb.Append(",f").Append(g.Order); if (g.Order == 0) sb.Append(':').Append(g.Name); break;
                 case ValType vt: sb.Append(",v").Append((int)vt); break;
                 case FuncType ft: sb.Append(",t").Append(string.Join(".", ft.Params)).Append('>').Append(string.Join(".", ft.Results)); break;
                 case int[] arr: sb.Append(",b").Append(string.Join(".", arr)); break;
