@@ -330,32 +330,31 @@ internal sealed partial class Driver
         var all = body.DescendantsAndSelf().ToList();
         if (all.Any(o => o is ILabeledOperation || o is IBranchOperation { BranchKind: BranchKind.GoTo } || o.Kind is OperationKind.YieldReturn or OperationKind.YieldBreak
             || o is IAnonymousFunctionOperation or ILocalFunctionOperation or IAddressOfOperation)) return false;
-        // the locals that may hold the new objects: those of a class type given only isolated values (a fixpoint)
+        // the locals that may hold the new objects: those of a class type given only isolated values (a fixpoint over
+        // each local's values, gathered in one pass over the body)
         var locals = new HashSet<ILocalSymbol>(all.OfType<IVariableDeclaratorOperation>().Select(d => d.Symbol).Where(l => !l.IsRef && l.Type.TypeKind == TypeKind.Class), SymbolEqualityComparer.Default);
-        bool changed = true;
-        while (changed)
+        if (locals.Count > 0)
         {
-            changed = false;
-            foreach (var l in locals.ToList())
+            var values = new Dictionary<ILocalSymbol, List<IOperation>>(SymbolEqualityComparer.Default);
+            foreach (var op in all)
             {
-                bool ok = true;
-                foreach (var op in all)
-                {
-                    IOperation? val = op switch
-                    {
-                        IVariableDeclaratorOperation d when SymbolEqualityComparer.Default.Equals(d.Symbol, l) => d.Initializer?.Value ?? (d.Parent as IVariableDeclarationOperation)?.Initializer?.Value,
-                        ISimpleAssignmentOperation a when a.Target is ILocalReferenceOperation tl && SymbolEqualityComparer.Default.Equals(tl.Local, l) => a.Value,
-                        _ => null,
-                    };
-                    bool assigned = op is ISimpleAssignmentOperation { Target: ILocalReferenceOperation al } && SymbolEqualityComparer.Default.Equals(al.Local, l)
-                        || op is IVariableDeclaratorOperation dd && SymbolEqualityComparer.Default.Equals(dd.Symbol, l) && val != null;
-                    if (assigned && !IsoExpr(val, locals)) { ok = false; break; }
-                    // (any other write: a compound assignment, an out or ref argument, a deconstruction)
-                    if (op is ILocalReferenceOperation lr && SymbolEqualityComparer.Default.Equals(lr.Local, l)
-                        && (lr.Parent is ICompoundAssignmentOperation or ICoalesceAssignmentOperation or IDeconstructionAssignmentOperation || lr.Parent is IArgumentOperation { Parameter.RefKind: not RefKind.None }))
-                    { ok = false; break; }
-                }
-                if (!ok) { locals.Remove(l); changed = true; }
+                ILocalSymbol? l = null; IOperation? val = null;
+                if (op is IVariableDeclaratorOperation d && locals.Contains(d.Symbol)) { l = d.Symbol; val = d.Initializer?.Value ?? (d.Parent as IVariableDeclarationOperation)?.Initializer?.Value; if (val == null) continue; }
+                else if (op is ISimpleAssignmentOperation { Target: ILocalReferenceOperation tl } a && locals.Contains(tl.Local)) { l = tl.Local; val = a.Value; }
+                // (any other write: a compound assignment, an out or ref argument, a deconstruction)
+                else if (op is ILocalReferenceOperation lr && locals.Contains(lr.Local)
+                    && (lr.Parent is ICompoundAssignmentOperation or ICoalesceAssignmentOperation or IDeconstructionAssignmentOperation || lr.Parent is IArgumentOperation { Parameter.RefKind: not RefKind.None }))
+                { locals.Remove(lr.Local); continue; }
+                else continue;
+                if (!values.TryGetValue(l, out var vl)) values[l] = vl = [];
+                vl.Add(val);
+            }
+            bool changed = true;
+            while (changed)
+            {
+                changed = false;
+                foreach (var l in locals.ToList())
+                    if (values.TryGetValue(l, out var vl) && vl.Any(v => !IsoExpr(v, locals))) { locals.Remove(l); changed = true; }
             }
         }
         bool IsNew(IOperation? v) { v = Unconvert(v); return v is ILocalReferenceOperation lr && locals.Contains(lr.Local) || v is IInvocationOperation or IObjectCreationOperation && IsoExpr(v, locals); }

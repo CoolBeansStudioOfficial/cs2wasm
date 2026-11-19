@@ -132,8 +132,34 @@ internal sealed class Sharing
         var k = Types.Key(t);
         if (_mayBeShared.TryGetValue(k, out var r)) return r;
         r = false;
-        foreach (var id in _shared) if (IdIs(id, t)) { r = true; break; }
+        // (the types that may be subtypes of t, by an index, not all of them: asked for every static type a count
+        // has, a test of each shared type was five minutes of the compiler compiling itself)
+        var ix = Index();
+        foreach (var id in ix.Candidates(t)) if (_shared.Contains(id) && IdIs(id, t)) { r = true; break; }
+        if (!r) foreach (var id in ix.Special) if (_shared.Contains(id) && IdIs(id, t)) { r = true; break; }
+        // (and the shared types the index does not list: reached as an exact type without being among the constructed)
+        _sharedUnindexed ??= _shared.Where(id => !_indexed.Contains(id)).ToList();
+        if (!r) foreach (var id in _sharedUnindexed) if (IdIs(id, t)) { r = true; break; }
         return _mayBeShared[k] = r;
+    }
+
+    SubtypeIndex? _index;
+    readonly HashSet<int> _indexed = [];
+    List<int>? _sharedUnindexed;
+    /// <summary>The program's types by what they may be subtypes of (arrays, closures and synthetic types apart).</summary>
+    SubtypeIndex Index()
+    {
+        if (_index != null) return _index;
+        _index = new SubtypeIndex(D.Types);
+        foreach (var id in D.Constructed.Order())
+        {
+            if (id <= 1 || id >= D.TypeById.Count) continue;
+            var t = D.TypeById[id];
+            bool special = D.DisplayById.ContainsKey(id) || D.SyntheticById.ContainsKey(id) || t is IArrayTypeSymbol;
+            _index.Add(id, special ? null : t);
+            _indexed.Add(id);
+        }
+        return _index;
     }
 
     /// <summary>The types another thread can reach (not the closures' and state machines' own, which have no symbol).</summary>
@@ -188,6 +214,7 @@ internal sealed class Sharing
 
     readonly Dictionary<string, List<int>> _topIds = [];
     List<int>? _allIds;
+    HashSet<int>? _allIdSet;
 
     List<int> TopIds(ITypeSymbol t)
     {
@@ -195,7 +222,14 @@ internal sealed class Sharing
         if (_topIds.TryGetValue(k, out var r)) return r;
         _allIds ??= D.Constructed.Where(id => id > 1 && id < D.TypeById.Count && (D.DisplayById.ContainsKey(id) || !D.SyntheticById.ContainsKey(id) || D.TypeById[id] is INamedTypeSymbol { IsAnonymousType: true })).Order().ToList();
         r = [];
-        if (Types.IsRef(t)) foreach (var id in _allIds) if (!Types.IsImmortalType(D.TypeById[id]) || D.DisplayById.ContainsKey(id)) if (IdIs(id, t)) r.Add(id);
+        if (Types.IsRef(t))
+        {
+            // (the candidates by the index, in id order as before)
+            var allowed = _allIdSet ??= [.. _allIds];
+            var ix = Index();
+            foreach (var id in ix.Candidates(t).Concat(ix.Special).Distinct().Order())
+                if (allowed.Contains(id) && (!Types.IsImmortalType(D.TypeById[id]) || D.DisplayById.ContainsKey(id)) && IdIs(id, t)) r.Add(id);
+        }
         return _topIds[k] = r;
     }
 
@@ -268,19 +302,41 @@ internal sealed class Sharing
 
         ITypeSymbol? filter = null;
         string FK(string k) => filter == null ? k : k + " |" + Types.Key(filter);
-        void Push(Src s, string why) => work.Push((s, why, filter));
+        // (the reason a type is reached is kept only to print it, CS2WASM_SHARING_DEBUG: built along every path, it
+        // grows with the path, and over Roslyn's millions of steps that was all the memory there is)
+        void Push(Src s, string why) => work.Push((s, s_debug ? why : "", filter));
+        // A node is visited once per filter it is reached with. Past a few filters it is visited once with none,
+        // which holds whatever any filter would let through (more types taken as reachable, never fewer): over
+        // Roslyn the pairs of a node and a filter were more than the memory holds.
+        const int FiltersPerNode = 4;
+        var filtersSeen = new Dictionary<string, int>();
+        var unfiltered = new HashSet<string>();
+        bool Visit(string key)
+        {
+            if (unfiltered.Contains(key)) return false;
+            if (filter == null) { unfiltered.Add(key); return true; }
+            if (!seenNodes.Add(FK(key))) return false;
+            int c = filtersSeen.GetValueOrDefault(key) + 1;
+            filtersSeen[key] = c;
+            if (c > FiltersPerNode) { filter = null; unfiltered.Add(key); }
+            return true;
+        }
         void Node(string key, ITypeSymbol? declared, string why)
         {
-            if (!seenNodes.Add(FK(key))) return;
+            var saved = filter;
+            if (!Visit(key)) return;
             if (_nodes.TryGetValue(key, out var l) && l.Count > 0) { foreach (var s in l) Push(s, why); }
             else if (declared != null) Push(new Src(K.Top, Type: declared), why + " (nothing recorded)");
+            filter = saved;
         }
         void SiteNode(Arenas.Site s, ITypeSymbol? declared, string why)
         {
-            if (!seenNodes.Add(FK("site " + s.Key))) return;
+            var saved = filter;
+            if (!Visit("site " + s.Key)) return;
             if (s.Sources.Count > 0) foreach (var x in s.Sources) Push(x, why);
             foreach (var id in s.TargetIds) Push(new Src(K.Display, Index: id), why);
             if (s.Sources.Count == 0 && s.TargetIds.Count == 0 && declared != null) Push(new Src(K.Top, Type: declared), why + " (nothing recorded)");
+            filter = saved;
         }
         // what an array of type `a` holds: stores through its own type, and through a wider one (an object[] that is
         // one), of which only its element type's objects
@@ -414,7 +470,7 @@ internal sealed class Sharing
                 case K.Top:
                     if (s_debug && s.Type != null && (Types.IsObject(s.Type) || s.Type is IArrayTypeSymbol { ElementType.SpecialType: SpecialType.System_Object } || Types.FullName(s.Type) == "System.Array") && (filter == null || Types.IsObject(filter) || filter is IArrayTypeSymbol || Types.FullName(filter) == "System.Array"))
                         Console.Error.WriteLine("broad " + Types.Key(s.Type) + " [" + (s.Key ?? "?") + "] via " + (why.Length > 300 ? why[..300] : why));
-                    if (s.Type == null || !seenTops.Add(FK(Types.Key(s.Type)))) break;
+                    if (s.Type == null || !Visit("top " + Types.Key(s.Type))) break;
                     foreach (var id in TopIds(s.Type)) AddType(id, why + " <- any " + Types.Key(s.Type) + (s.Key != null ? " [" + s.Key + "]" : ""));
                     break;
                 case K.Param:

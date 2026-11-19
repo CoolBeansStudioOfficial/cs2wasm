@@ -601,6 +601,7 @@ internal sealed class Arenas
         // a site is cyclic when one of its nodes is on a cycle (then some container and a type it holds are on it)
         foreach (var (s, hubs) in siteNodes)
             s.Cyclic = hubs.Any(h => scc[h] != 0);
+        _cyclicByContainer = null; _cyclicByDisplay = null;
         Enabled = _sites.Values.Any(s => s.Cyclic);
         AnyArrayCycle = Enabled && CycleTypes.Any(id => D.TypeById[id] is IArrayTypeSymbol);
         if (Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1")
@@ -614,10 +615,31 @@ internal sealed class Arenas
     /// <summary>The cyclic field sites whose slots an object of this type has (for the arena visitor).</summary>
     public IEnumerable<int> CyclicFieldOffsets(int id)
     {
-        if (D.DisplayById.ContainsKey(id)) return _sites.Values.Where(s => s.Cyclic && s.ContainerId == id).Select(s => s.Offset).Distinct().Order();
-        var t = D.TypeById[id];
-        return _sites.Values.Where(s => s.Cyclic && !s.IsArray && s.ContainerId < 0 && D.Types.IsSubtype(t, s.Container)).Select(s => s.Offset).Distinct().Order();
+        // (by container, once: asked for every cycle-capable type, a search of all sites for each was most of the
+        // compiler's own build, 17 of its 24 minutes)
+        if (_cyclicByContainer == null)
+        {
+            _cyclicByContainer = [];
+            _cyclicByDisplay = [];
+            foreach (var s in _sites.Values)
+            {
+                if (!s.Cyclic) continue;
+                if (s.ContainerId >= 0) { if (!_cyclicByDisplay.TryGetValue(s.ContainerId, out var dl)) _cyclicByDisplay[s.ContainerId] = dl = []; dl.Add(s.Offset); }
+                else if (!s.IsArray) { var k = Types.Key(D.Types.Canonical(s.Container)); if (!_cyclicByContainer.TryGetValue(k, out var cl)) _cyclicByContainer[k] = cl = []; cl.Add(s.Offset); }
+            }
+        }
+        if (D.DisplayById.ContainsKey(id)) return _cyclicByDisplay!.TryGetValue(id, out var d) ? d.Distinct().Order() : [];
+        // (a field's container is the class that declares it, or a struct for a box's slots: the type or one of its bases)
+        var r = new List<int>();
+        for (var b = D.TypeById[id]; b != null; b = (b as INamedTypeSymbol)?.BaseType is { } bt ? D.Types.Canonical(bt) : null)
+        {
+            if (_cyclicByContainer.TryGetValue(Types.Key(D.Types.Canonical(b)), out var l)) r.AddRange(l);
+            if (b is IArrayTypeSymbol) break;
+        }
+        return r.Distinct().Order();
     }
+    Dictionary<string, List<int>>? _cyclicByContainer;
+    Dictionary<int, List<int>>? _cyclicByDisplay;
 
     /// <summary>Where the references are in an element of the array (offsets), and the element's size: one at 0 in
     /// four bytes for an array of references.</summary>

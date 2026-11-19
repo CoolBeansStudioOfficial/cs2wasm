@@ -1221,11 +1221,15 @@ sealed partial class RuntimeGen
     public void Finish()
     {
         CloseTypeInfo();
+        D.Mark("  finish: CloseTypeInfo");
         if (D.Arenas.Enabled) EmitArenaSupport();
+        D.Mark("  finish: EmitArenaSupport");
         // (what was generated just now stores by address too: its placeholders)
         D.Arenas.Resolve();
+        D.Mark("  finish: Arenas.Resolve");
         EmitFrameObjects();
         EmitOnDestroy();
+        D.Mark("  finish: frame objects, on destroy");
         D.Rt.EmitCctorSupport(D.UsesThreads);
         var ecOwner = "AsyncSupport";
         D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled),
@@ -1234,6 +1238,7 @@ sealed partial class RuntimeGen
         D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
         if (Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1") EmitCountRc();
         D.Module.UsesThreads = D.UsesThreads;
+        D.Mark("  finish: runtime support");
         D.EmitObjectArrayDelegate();
         D.EmitDynamicInvoke();
         D.Mark("  finish: D.EmitDynamicInvoke");
