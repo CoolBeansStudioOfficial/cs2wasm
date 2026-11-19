@@ -132,7 +132,7 @@ static class Fresh
                 {
                     // the counted store's old value: get o; i32.load off; get o; value; i32.store off; call rt.release
                     if (y.Op == Op.LocalGet && c.Op == Op.I32Load && at == j + 1 && !Enumerable.Range((int)c.Imm, 4).Any(written.Contains) && Consumer(b, at) is var (rel, rop) && rop == 0
-                        && b[rel].Op == Op.Call && b[rel].Ref is WasmFunction { Name: "rt.release" } && IsRcStore(b, at + 1, rel, aliases, (int)c.Imm))
+                        && Rc.IsRelease(b[rel]) && IsRcStore(b, at + 1, rel, aliases, (int)c.Imm))
                     {
                         drop.Add(j); drop.Add(at); drop.Add(rel);
                     }

@@ -59,7 +59,9 @@ internal sealed partial class RuntimeFns
             e.I32Addr(waiters); e.Emit(Op.I32AtomicLoad, 0, 2);
             e.If(); e.I32Addr(owner); e.I32(1); e.Emit(Op.MemoryAtomicNotify, 0, 2); e.Op(Op.Drop); e.End();
             // (the group destructions this thread left for when it gives the lock back: Rt.RunDeferredDestroys)
-            if (arenas && D.ThreadMode) e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0).Fn);
+            // (not before the thread has its block of thread statics: AllocFirst makes it under the lock, and the list
+            // is one of them)
+            if (arenas && D.ThreadMode) { e.GGet(D.TlsBase); e.If(); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0).Fn); e.End(); }
             e.End();
         }
         if (s_plainCounts) { EmitLoadRetain(false, arenas); return; }

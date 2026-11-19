@@ -354,6 +354,17 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     while still under the lock (it may be merged or freed by others before the rest runs: test 111 caught that).
     Test 135 is the loop: 150 rounds, every one hung before. `CS2WASM_DEADLOCK_DUMP=1` makes a long wait for the
     runtime lock throw, naming its holder.
+  - **Thread mode's allocator and releases (2026-11-18).** Measured first: tree in thread mode spent 37% in the thread
+    caches' exchange with the shared lists (a flush walked each list to its tail, a refill walked the shared list a
+    block at a time: 2 MB of nodes freed, then built again). A shared list is now a stack of the batches threads gave
+    back whole, so a batch goes either way in a few stores. AllocObject and FreeObject have the one-piece path on the
+    thread's own list that single-thread has on its own. The exact releases (a sealed type's count test and a direct
+    call of its destruction) are written out for the types no other thread can reach, after the sharing is known.
+    The optimizer's count passes (Peephole, LocalsRc, Fresh) knew rt.retain and rt.release by name only and so missed
+    every count of a program with threads (still the per-type placeholders then): they know them all now (Wasm.Rc).
+    `rt.lock_exit` no longer runs the deferred destructions before the thread has its thread statics (AllocFirst:
+    it read a word of memory that was not the list). Thread mode: tree 20.3 to 12.0 ms (7.8 without threads),
+    linked_list 8.8 to 5.8, the rest a little faster; without threads unchanged (0.96x NativeAOT).
 
 - **Step 3: answered from measurements (2026-11-17 and 2026-11-18); the bench fixes (3.1, 3.2) are still to do.**
   - Optimizing tier (what a game runs in), `tools/bench.mjs`: 0.95x NativeAOT's time, 32 MB against 71 MB.

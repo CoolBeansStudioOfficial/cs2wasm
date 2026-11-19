@@ -1287,6 +1287,7 @@ sealed partial class RuntimeGen
         D.Mark("  finish: EmitTypeNames");
         // (every function exists: what another thread can reach is known, and so which counts are atomic)
         D.ResolveSharing();
+        ExpandThreadLocalReleases();
         D.Mark("  finish: sharing");
         // (every function exists: what each can store is known)
         D.ResolveFieldBorrows();
@@ -1382,25 +1383,39 @@ sealed partial class RuntimeGen
     // for "release an object of type T"; when the types are final (EmitDestroyDispatch) each such call becomes the
     // count's test and a direct call of T's destruction.
     readonly Dictionary<int, WasmFunction> _releaseOf = [];
+    readonly Dictionary<int, ITypeSymbol> _releaseOfType = [];
 
     WasmFunction ReleaseOfField(ITypeSymbol t)
     {
         var rt = D.Rt;
-        if (D.ThreadMode) return rt.ReleaseOf(t);
-        if (t is not INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true } || Types.IsImmortalType(t)) return rt.Release;
+        if (t is not INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true } || Types.IsImmortalType(t)) return rt.ReleaseOf(t);
         int id = D.TypeId(D.Types.Canonical(t));
         if (_releaseOf.TryGetValue(id, out var f)) return f;
-        // (as it stands it is a release: what it stays when T's destruction is not in the module)
+        // (as it stands it is a release: what it stays when T's destruction is not in the module, or, with threads,
+        // when another thread can reach a T)
         f = D.Module.AddFunction("rt.release exact " + id, new FuncType([ValType.I32], []));
         var e = new Emitter(f);
-        e.Get(0); e.Call(rt.Release);
+        e.Get(0); e.Call(rt.ReleaseOf(t));
+        _releaseOfType[id] = t;
         return _releaseOf[id] = f;
     }
 
-    void ExpandExactReleases(int maxNesting)
+    const int MaxNesting = 48;
+
+    /// <summary>With threads: once it is known which types another thread can reach (Driver.ResolveSharing), the
+    /// releases of the ones it cannot are written out as without threads, with the plain counts.</summary>
+    public void ExpandThreadLocalReleases()
+    {
+        if (!D.ThreadMode || D.Sharing is not { } sh || D.Rt.ReleasePlainIfMade is not { } plain) return;
+        ExpandExactReleases(MaxNesting, plain, id => !sh.MayBeShared(D.Types.Canonical(_releaseOfType[id])));
+    }
+
+    void ExpandExactReleases(int maxNesting, WasmFunction? release = null, Func<int, bool>? which = null)
     {
         if (_releaseOf.Count == 0) return;
-        var byFn = _releaseOf.ToDictionary(kv => kv.Value, kv => kv.Key);
+        release ??= D.Rt.Release;
+        var byFn = (which == null ? _releaseOf : _releaseOf.Where(kv => which(kv.Key))).ToDictionary(kv => kv.Value, kv => kv.Key);
+        if (byFn.Count == 0) return;
         foreach (var f in D.Module.Functions)
         {
             if (f.IsImport || byFn.ContainsKey(f) || !f.Body.Any(x => x.Op == Op.Call && x.Ref is WasmFunction w && byFn.TryGetValue(w, out int wid) && _destroyFns.ContainsKey(wid) && D.Arenas.SccOf(wid) != 0)) continue;
@@ -1431,7 +1446,7 @@ sealed partial class RuntimeGen
                 Add(Op.LocalGet, t); Add(Op.Call, 0, destroy);
                 Add(Op.GlobalGet, 0, D.DestroyDepth); Add(Op.I32Const, 1); Add(Op.I32Sub); Add(Op.GlobalSet, 0, D.DestroyDepth);
                 Add(Op.Else);
-                Add(Op.LocalGet, t); Add(Op.Call, 0, D.Rt.Release);
+                Add(Op.LocalGet, t); Add(Op.Call, 0, release);
                 Add(Op.End);
                 Add(Op.End);
                 Add(Op.End);
@@ -1447,8 +1462,7 @@ sealed partial class RuntimeGen
         // instead (by its count word: it is dead), and the outermost destruction, when it is done, takes them from the
         // list one by one: the same order of events as far as a program can tell (finalizers run when the count is
         // gone, in some order), and no stack to run out of.
-        const int MaxNesting = 48;
-        ExpandExactReleases(MaxNesting);
+        if (!D.ThreadMode) ExpandExactReleases(MaxNesting);
         if (!D.ThreadMode)
         {
             D.Module.ReleaseFn = D.Rt.Release;

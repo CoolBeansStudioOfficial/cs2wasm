@@ -622,9 +622,12 @@ namespace Cs2Wasm.Runtime
         // Per-thread caches of small blocks (programs with threads): a thread allocates from and frees into its own
         // free lists, one per kind and size class, and takes from or gives back to the shared ones in batches under
         // the runtime lock: when a list is empty, when the thread has freed more than CacheLimit bytes into them, and
-        // when the thread ends.
+        // when the thread ends. A shared list is a stack of such batches, each the list a thread gave back whole
+        // (linked at 8; its first block's word 12 is the next batch), so a batch goes either way in a few stores:
+        // neither side walks a list (a thread that freed a tree of a hundred thousand nodes and builds another
+        // walked them twice, in the cache misses of a list that runs all over memory).
         // ------------------------------------------------------------------
-        const int CacheLimit = 256 * 1024, RefillBytes = 16 * 1024;
+        const int CacheLimit = 256 * 1024;
         [System.ThreadStatic] static int t_heads, t_cached;
 
         static int AllocLocal(int size, int kind)
@@ -651,22 +654,16 @@ namespace Cs2Wasm.Runtime
             return h;
         }
 
-        /// <summary>Fills an empty list of the thread's: blocks of the shared list of the kind and size, else a new
+        /// <summary>Fills an empty list of the thread's: the shared list's top batch of the kind and size, else a new
         /// page of them.</summary>
         static void Refill(int slot, int size, int kind)
         {
-            int want = Math.Max(1, RefillBytes / size), got = 0, list = 0;
             RuntimeLock();
             if (s_top == 0) InitHeap();
             int shared = Lists(kind) + (size >> 3) * 4;
-            while (got < want)
-            {
-                int b = Mem.LoadI32(shared);
-                if (b == 0) break;
-                Mem.StoreI32(shared, Mem.LoadI32(b + 8));
-                Mem.StoreI32(b + 8, list); list = b; got++;
-            }
-            if (got == 0) list = NewThreadPage(size, kind);
+            int list = Mem.LoadI32(shared);
+            if (list != 0) Mem.StoreI32(shared, Mem.LoadI32(list + 12));
+            else list = NewThreadPage(size, kind);
             RuntimeUnlock();
             Mem.StoreI32(slot, list);
         }
@@ -699,10 +696,9 @@ namespace Cs2Wasm.Runtime
                 {
                     int slot = heads + (kind * Classes + c) * 4, b = Mem.LoadI32(slot);
                     if (b == 0) continue;
-                    int tail = b;
-                    while (Mem.LoadI32(tail + 8) != 0) tail = Mem.LoadI32(tail + 8);
+                    // (a batch of its own on the shared stack)
                     int shared = Lists(kind) + c * 4;
-                    Mem.StoreI32(tail + 8, Mem.LoadI32(shared));
+                    Mem.StoreI32(b + 12, Mem.LoadI32(shared));
                     Mem.StoreI32(shared, b);
                     Mem.StoreI32(slot, 0);
                 }
@@ -772,9 +768,13 @@ namespace Cs2Wasm.Runtime
         static int AllocSmallShared(int size, int kind)
         {
             int slot = Lists(kind) + (size >> 3) * 4;
-            int head = Mem.LoadI32(slot);
+            int head = Mem.LoadI32(slot), below = 0;
             if (head == 0) head = NewThreadPage(size, kind);
-            Mem.StoreI32(slot, Mem.LoadI32(head + 8));
+            else below = Mem.LoadI32(head + 12);
+            // (the rest of its batch is the top batch now, over the batches below it)
+            int next = Mem.LoadI32(head + 8);
+            if (next != 0) { Mem.StoreI32(next + 12, below); Mem.StoreI32(slot, next); }
+            else Mem.StoreI32(slot, below);
             Zero(head, size);
             return head;
         }
@@ -826,6 +826,22 @@ namespace Cs2Wasm.Runtime
                     Mem.StoreI32(hotSlot, addr);
                     Mem.StoreI32(addr, 0);
                     if (old != 0) FreeSmallOld(old, s);
+                    return;
+                }
+            }
+            else if (!ShareCheck() && !Checked())
+            {
+                // (threads: onto the thread's own list of the size, as FreeLocal)
+                int s = (size + 7) & ~7, heads = t_heads;
+                if ((uint)(s - 16) <= MaxSmall - 16 && heads != 0)
+                {
+                    int slot = heads + (s >> 3) * 4;
+                    Mem.StoreI32(addr, 0);
+                    Mem.StoreI32(addr + 8, Mem.LoadI32(slot));
+                    Mem.StoreI32(slot, addr);
+                    int cached = t_cached + s;
+                    t_cached = cached;
+                    if (cached > CacheLimit) FlushThreadCache();
                     return;
                 }
             }
@@ -961,6 +977,24 @@ namespace Cs2Wasm.Runtime
                         Mem.StoreI32(run, 1);
                         Mem.StoreI32(run + 4, typeId);
                         return run;
+                    }
+                }
+            }
+            else if (!ShareCheck())
+            {
+                // (threads: the same piece on the thread's own list of the size, AllocLocal)
+                int s = (size + 7) & ~7, heads = t_heads;
+                if ((uint)(s - 16) <= MaxSmall - 16 && heads != 0)
+                {
+                    int slot = heads + (s >> 3) * 4;
+                    int head = Mem.LoadI32(slot);
+                    if (head != 0)
+                    {
+                        Mem.StoreI32(slot, Mem.LoadI32(head + 8));
+                        Mem.StoreI32(head, 1);
+                        Mem.StoreI32(head + 4, typeId);
+                        for (int p = head + 8, e = head + s; p != e; p += 8) Mem.StoreI64(p, 0);
+                        return head;
                     }
                 }
             }

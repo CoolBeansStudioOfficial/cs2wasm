@@ -11,7 +11,7 @@ namespace Cs2Wasm.Wasm;
 /// </summary>
 static partial class Locals
 {
-    static bool IsRt(in Instr i, string name) => i.Op == Op.Call && i.Ref is WasmFunction g && g.Name == name;
+    static bool IsRt(in Instr i, string name) => name == "rt.retain" ? Rc.IsRetain(i) : name == "rt.release" ? Rc.IsRelease(i) : i.Op == Op.Call && i.Ref is WasmFunction g && g.Name == name;
     static readonly bool s_transfers = Environment.GetEnvironmentVariable("CS2WASM_NO_TRANSFERS") != "1";
 
     /// <summary>`p = n; ...; n = something else` (a list walked with the node before it kept, a rotation of variables):

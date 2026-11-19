@@ -1,6 +1,16 @@
 namespace Cs2Wasm.Wasm;
 
 /// <summary>Final cleanup over emitted instructions (section 5): redundant local traffic, dead pushes.</summary>
+/// <summary>The counts' functions by what they do: a retain or a release is rt.retain / rt.release, the plain ones of
+/// a program with threads, or (until the counts are resolved, TypedCounts.cs) a placeholder for a static type's.</summary>
+static class Rc
+{
+    public static bool IsRetain(WasmFunction g) => g.Name is "rt.retain" or "rt.retain_plain" || g.Name.StartsWith("count Retain ", StringComparison.Ordinal);
+    public static bool IsRelease(WasmFunction g) => g.Name is "rt.release" or "rt.release_plain" || g.Name.StartsWith("count Release ", StringComparison.Ordinal);
+    public static bool IsRetain(in Instr i) => i.Op == Op.Call && i.Ref is WasmFunction g && IsRetain(g);
+    public static bool IsRelease(in Instr i) => i.Op == Op.Call && i.Ref is WasmFunction g && IsRelease(g);
+}
+
 static class Peephole
 {
     public static void Run(WasmFunction f)
@@ -19,9 +29,9 @@ static class Peephole
                 }
                 // an immortal object (a string literal): retain gives it back, release does nothing
                 // (and null: a moved local's release, its local cleared, is a release of 0)
-                if (ins.Op == Op.Call && prev.Op == Op.I32Const && (prev.Ref is IAddress { Immortal: true } || prev.Ref == null && prev.Imm == 0) && ins.Ref is WasmFunction { Name: "rt.retain" or "rt.release" } rf)
+                if (ins.Op == Op.Call && prev.Op == Op.I32Const && (prev.Ref is IAddress { Immortal: true } || prev.Ref == null && prev.Imm == 0) && ins.Ref is WasmFunction rf && (Rc.IsRetain(rf) || Rc.IsRelease(rf)))
                 {
-                    if (rf.Name == "rt.release") dst.RemoveAt(dst.Count - 1);
+                    if (Rc.IsRelease(rf)) dst.RemoveAt(dst.Count - 1);
                     continue;
                 }
                 // pure push ; drop  =>  nothing
