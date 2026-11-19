@@ -150,6 +150,216 @@ internal sealed partial class Driver
         return r;
     }
 
+    // ---- Isolated values (docs/AUDIT.md step 7.1) ----
+    // A store into an old object closes a cycle only if the value stored reaches that object. A structure that a call
+    // has just built of objects it made, none of which refers to anything but each other, reaches nothing that existed
+    // before the call, and the object stored into did (C# evaluates the target of `a.F = M()` before M runs). So such
+    // a store closes no cycle, whatever the types say: the site it is at is not made general by it (Arenas.cs). Should
+    // the site be cyclic through other stores, it links as any store does.
+    readonly Dictionary<string, bool> _isoMethods = [];
+    static readonly bool s_noIsolated = Environment.GetEnvironmentVariable("CS2WASM_NO_ISOLATED") == "1";
+
+    /// <summary>The value is a new structure that refers only to objects of its own: null, a `new` whose constructors
+    /// store nothing that refers elsewhere, or a call of a method that returns such a structure (IsoMethod).</summary>
+    internal bool IsolatedValue(IOperation? v) => !s_noIsolated && IsoExpr(v, null);
+
+    static IOperation? Unconvert(IOperation? v)
+    {
+        while (v is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit)) v = c.Operand;
+        return v;
+    }
+
+    bool IsoExpr(IOperation? v, HashSet<ILocalSymbol>? locals)
+    {
+        if (v?.ConstantValue is { HasValue: true, Value: null }) return true;
+        v = Unconvert(v);
+        switch (v)
+        {
+            case ILiteralOperation { ConstantValue.HasValue: true }: return true;
+            case IDefaultValueOperation: return true;
+            case IInvocationOperation inv: return IsoMethod(inv);
+            case IObjectCreationOperation oc: return ClosedNew(oc, locals);
+            case ILocalReferenceOperation lr when locals != null: return locals.Contains(lr.Local);
+            default: return false;
+        }
+    }
+
+    /// <summary>A value type that holds no reference (a parameter of that type brings nothing into a structure).</summary>
+    bool PlainValueType(ITypeSymbol t) =>
+        t.TypeKind != TypeKind.TypeParameter && t.IsValueType && !(Types.IsStruct(t) && Types.LayoutOf(t).HasRefs);
+
+    /// <summary>`new T(...)` whose arguments and every constructor of T and its bases bring nothing in: no reference
+    /// parameter, no reference field set from anything but null or a constant, `this` kept in (CtorsKeepThis); an
+    /// initializer's fields set to isolated values.</summary>
+    bool ClosedNew(IObjectCreationOperation oc, HashSet<ILocalSymbol>? locals)
+    {
+        if (oc.Constructor == null || oc.Type is not INamedTypeSymbol { TypeKind: TypeKind.Class } nt || !CtorsKeepThis(nt)) return false;
+        if (oc.Arguments.Any(a => !PlainValueType(a.Value.Type ?? a.Parameter?.Type ?? D_Object))) return false;
+        if (!ClosedCtors(nt)) return false;
+        if (oc.Initializer != null)
+            foreach (var i in oc.Initializer.Initializers)
+            {
+                if (i is not ISimpleAssignmentOperation { Target: IFieldReferenceOperation { Instance: IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ImplicitReceiver }, Field: var f } } sa) return false;
+                if (Types.IsRef(f.Type) ? !IsoExpr(sa.Value, locals) : !PlainValueType(f.Type)) return false;
+            }
+        return true;
+    }
+
+    ITypeSymbol D_Object => ObjectType;
+
+    readonly Dictionary<string, bool> _closedCtors = [];
+
+    bool ClosedCtors(INamedTypeSymbol t)
+    {
+        t = t.OriginalDefinition;
+        if (t.SpecialType == SpecialType.System_Object) return true;
+        var key = Types.Key(t);
+        if (_closedCtors.TryGetValue(key, out var r)) return r;
+        _closedCtors[key] = false;
+        r = t.BaseType != null && ClosedCtors(t.BaseType) && t.DeclaringSyntaxReferences.Length > 0;
+        // (a reference field may start as null or a constant only, and a struct field must hold no reference)
+        foreach (var m in t.GetMembers())
+        {
+            if (!r) break;
+            if (m is IFieldSymbol { IsStatic: false } f)
+            {
+                if (!Types.IsRef(f.Type) && !PlainValueType(f.Type)) { r = false; break; }
+                foreach (var sr in f.DeclaringSyntaxReferences)
+                    if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is IFieldInitializerOperation fi && !IsoExpr(fi.Value, null)) r = false;
+            }
+            else if (m is IPropertySymbol { IsStatic: false } p && AutoPropertyField(p) is { } pf)
+            {
+                if (!Types.IsRef(pf.Type) && !PlainValueType(pf.Type)) { r = false; break; }
+                foreach (var sr in p.DeclaringSyntaxReferences)
+                    if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is IPropertyInitializerOperation pi && !IsoExpr(pi.Value, null)) r = false;
+            }
+            else if (m is IMethodSymbol { MethodKind: MethodKind.Constructor } c)
+            {
+                if (c.Parameters.Any(p => !PlainValueType(p.Type))) { r = false; break; }
+                foreach (var sr in c.DeclaringSyntaxReferences)
+                {
+                    if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) continue;
+                    foreach (var op in body.DescendantsAndSelf())
+                        if (op is IAssignmentOperation a && a.Target.Type is { } tt && Types.IsRef(tt) && !IsoExpr(a.Value, null)) { r = false; break; }
+                }
+            }
+        }
+        _closedCtors[key] = r;
+        return r;
+    }
+
+    /// <summary>The call returns a new structure of objects it made, which refer only to each other: a static method
+    /// (not one a subclass replaces) with no parameter that can bring a reference in, whose locals that hold its new
+    /// objects are given only isolated values, used only to store into them, to read their plain fields, to compare,
+    /// and to return; that stores into those objects only isolated values and stores them nowhere else; and that
+    /// returns only isolated values. (A call of itself is taken as one while deciding: a structure built by a
+    /// recursion is closed if each level is.)</summary>
+    internal bool IsoMethod(IInvocationOperation inv)
+    {
+        var m = inv.TargetMethod.OriginalDefinition;
+        if (!m.IsStatic || m.IsExtern || m.IsAsync || m.IsIterator || m.ReturnsByRef || m.ReturnsByRefReadonly || m.IsGenericMethod) return false;
+        if (m.ReturnType.TypeKind != TypeKind.Class) return false;
+        if (m.Parameters.Any(p => !PlainValueType(p.Type))) return false;
+        var key = Types.MethodKey(m);
+        if (_isoMethods.TryGetValue(key, out var r)) return r;
+        _isoMethods[key] = true;
+        r = m.DeclaringSyntaxReferences.Length == 1 && ModelFor(m.DeclaringSyntaxReferences[0].SyntaxTree).GetOperation(m.DeclaringSyntaxReferences[0].GetSyntax()) is { } body
+            && IsoBody(body);
+        _isoMethods[key] = r;
+        return r;
+    }
+
+    bool IsoBody(IOperation body)
+    {
+        var all = body.DescendantsAndSelf().ToList();
+        if (all.Any(o => o is ILabeledOperation || o is IBranchOperation { BranchKind: BranchKind.GoTo } || o.Kind is OperationKind.YieldReturn or OperationKind.YieldBreak
+            || o is IAnonymousFunctionOperation or ILocalFunctionOperation or IAddressOfOperation)) return false;
+        // the locals that may hold the new objects: those of a class type given only isolated values (a fixpoint)
+        var locals = new HashSet<ILocalSymbol>(all.OfType<IVariableDeclaratorOperation>().Select(d => d.Symbol).Where(l => !l.IsRef && l.Type.TypeKind == TypeKind.Class), SymbolEqualityComparer.Default);
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            foreach (var l in locals.ToList())
+            {
+                bool ok = true;
+                foreach (var op in all)
+                {
+                    IOperation? val = op switch
+                    {
+                        IVariableDeclaratorOperation d when SymbolEqualityComparer.Default.Equals(d.Symbol, l) => d.Initializer?.Value ?? (d.Parent as IVariableDeclarationOperation)?.Initializer?.Value,
+                        ISimpleAssignmentOperation a when a.Target is ILocalReferenceOperation tl && SymbolEqualityComparer.Default.Equals(tl.Local, l) => a.Value,
+                        _ => null,
+                    };
+                    bool assigned = op is ISimpleAssignmentOperation { Target: ILocalReferenceOperation al } && SymbolEqualityComparer.Default.Equals(al.Local, l)
+                        || op is IVariableDeclaratorOperation dd && SymbolEqualityComparer.Default.Equals(dd.Symbol, l) && val != null;
+                    if (assigned && !IsoExpr(val, locals)) { ok = false; break; }
+                    // (any other write: a compound assignment, an out or ref argument, a deconstruction)
+                    if (op is ILocalReferenceOperation lr && SymbolEqualityComparer.Default.Equals(lr.Local, l)
+                        && (lr.Parent is ICompoundAssignmentOperation or ICoalesceAssignmentOperation or IDeconstructionAssignmentOperation || lr.Parent is IArgumentOperation { Parameter.RefKind: not RefKind.None }))
+                    { ok = false; break; }
+                }
+                if (!ok) { locals.Remove(l); changed = true; }
+            }
+        }
+        bool IsNew(IOperation? v) { v = Unconvert(v); return v is ILocalReferenceOperation lr && locals.Contains(lr.Local) || v is IInvocationOperation or IObjectCreationOperation && IsoExpr(v, locals); }
+        foreach (var op in all)
+        {
+            switch (op)
+            {
+                case IReturnOperation ret:
+                    if (ret.ReturnedValue != null && !IsoExpr(ret.ReturnedValue, locals)) return false;
+                    break;
+                case ILocalReferenceOperation lr when locals.Contains(lr.Local):
+                    {
+                        // its uses: a store target's object (its plain fields read, its fields stored into), a value
+                        // for another such local, a comparison, a return
+                        IOperation use = lr;
+                        while (use.Parent is IConversionOperation { OperatorMethod: null } cv && (cv.Conversion.IsIdentity || cv.Conversion.IsReference)) use = cv;
+                        var p = use.Parent;
+                        switch (p)
+                        {
+                            case IFieldReferenceOperation fr when ReferenceEquals(fr.Instance, use):
+                                // (a reference field of one of them read: the structure would be known to whatever gets it)
+                                if (Types.IsRef(fr.Field.Type) && !(fr.Parent is ISimpleAssignmentOperation sa0 && ReferenceEquals(sa0.Target, fr))) return false;
+                                break;
+                            case ISimpleAssignmentOperation sa when ReferenceEquals(sa.Target, use):
+                                break; // (assigned: checked above)
+                            case ISimpleAssignmentOperation sa when ReferenceEquals(sa.Value, use):
+                                if (!(sa.Target is ILocalReferenceOperation tl && locals.Contains(tl.Local)
+                                    || sa.Target is IFieldReferenceOperation { Instance: var ti } && IsNew(ti))) return false;
+                                break;
+                            case IVariableDeclaratorOperation or IVariableInitializerOperation:
+                                break; // (another such local's initializer: checked above)
+                            case IReturnOperation:
+                                break;
+                            case IBinaryOperation { OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals }:
+                            case IIsPatternOperation { Pattern: IConstantPatternOperation { Value.ConstantValue: { HasValue: true, Value: null } } or INegatedPatternOperation { Pattern: IConstantPatternOperation { Value.ConstantValue: { HasValue: true, Value: null } } } }:
+                                break;
+                            default:
+                                return false;
+                        }
+                        break;
+                    }
+                case IAssignmentOperation a when a.Target.Type is { } tt && Types.IsRef(tt):
+                    {
+                        var target = a.Target;
+                        if (target is ILocalReferenceOperation) break; // (a local: above)
+                        bool intoNew = target is IFieldReferenceOperation { Instance: var inst } && inst != null && IsNew(inst);
+                        if (intoNew) { if (a is not ISimpleAssignmentOperation || !IsoExpr(a.Value, locals)) return false; }
+                        // (stored anywhere else: one of the new objects must not be what is stored)
+                        else if (IsNew(a.Value)) return false;
+                        break;
+                    }
+                case IArgumentOperation arg when IsNew(arg.Value):
+                    // (an argument to a constructor or a method that builds an isolated structure of its own: no
+                    // reference parameter can take it; anything else could keep it)
+                    return false;
+            }
+        }
+        return true;
+    }
+
     /// <summary>The operation is in a loop the local is declared outside of (code later in the text runs before it then).</summary>
     internal static bool InLoopOutsideDeclaration(IOperation at, ILocalSymbol l, IOperation body)
     {

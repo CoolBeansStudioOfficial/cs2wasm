@@ -386,6 +386,19 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     with references at the same offsets shared a case, and the continuation's scheduler was released with the
     plain count. A callee with no order is now keyed by its name. In the shipped build it was a count that could
     go wrong when two threads let go of the scheduler at once. 088 under the share check: 40 of 40 runs pass.
+- **Step 7.1, isolated values (2026-11-19).** A store of a structure that a call has just built of new objects, none
+  of which refers to anything but each other, into an object that existed before the call, closes no cycle: the
+  structure reaches nothing older (C# evaluates the target of `a.F = M()` first). `Driver.IsolatedValue` finds such
+  values: null, a `new` whose constructors bring no reference in, or a call of a static method with no parameter that
+  can bring one in, whose locals holding its new objects get only isolated values and are used only as store targets,
+  for their plain fields, in comparisons and in returns, which stores into its new objects only isolated values and
+  stores them nowhere else (a recursion is taken as closed while it is decided). Such a store links through
+  `Site.LinkIso`, which does not make its site general; on a site that is cyclic through other stores it is the
+  general link. `CS2WASM_NO_ISOLATED=1` turns it off. Test 136: a subtree replaced under a long-lived tree, beside
+  four near misses that must stay cyclic (a structure that refers back, one a static held while it was built, one
+  whose field was handed out, one stored where parent links are), each in a class of its own: only the first class
+  loses its cycle note, and every kind is freed as under .NET. Micro `tree_replace`: 193 us to 21 (NativeAOT 7, which
+  leaves the old subtree to its collector).
 
 - **Step 3: answered from measurements (2026-11-17 and 2026-11-18); the bench fixes (3.1, 3.2) are still to do.**
   - Optimizing tier (what a game runs in), `tools/bench.mjs`: 0.95x NativeAOT's time, 32 MB against 71 MB.

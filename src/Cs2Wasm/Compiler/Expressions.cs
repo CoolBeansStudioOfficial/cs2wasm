@@ -361,7 +361,7 @@ sealed partial class FunctionCompiler
 
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
     void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null,
-                                 Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false, bool fresh = false, bool owned = false)
+                                 Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false, bool fresh = false, bool owned = false, bool iso = false)
     {
         if (Types.IsStruct(t))
         {
@@ -387,7 +387,7 @@ sealed partial class FunctionCompiler
             // this function's frame or a static: the runtime finds the object it is in (Arenas.LinkAt), so the store
             // is the one the object's own code would have made.
             bool byAddress = site == null && pin == null && !frame && initKey == null && !Types.IsImmortalType(t);
-            if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : owned ? site.LinkOwned : site.Link); E.Set(val); }
+            if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : owned ? site.LinkOwned : iso ? site.LinkIso : site.Link); E.Set(val); }
             else if (byAddress) { E.Get(val); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.LinkAt(t)); E.Set(val); }
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
             EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
@@ -2418,7 +2418,7 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null, bool owned = false, string? staticKey = null, bool threadStatic = false, string? structField = null, string? outParam = null, bool viaPointer = false) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null, bool owned = false, string? staticKey = null, bool threadStatic = false, string? structField = null, string? outParam = null, bool viaPointer = false, bool iso = false) : LValue(f, t)
     {
         /// <summary>Sharing.cs: where the value stored here comes from.</summary>
         void Record(List<Sharing.Src>? srcs)
@@ -2466,7 +2466,7 @@ sealed partial class FunctionCompiler
             }
             // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
-                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned);
+                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned, iso: iso);
             if (elements && F.T.NeedsRc(Type)) F.D.NoteFieldWrite(F.E, Driver.ElementsKey);
             return needResult ? Load() : Own.None;
         }
@@ -2687,7 +2687,8 @@ sealed partial class FunctionCompiler
                         return new MemLV(this, t, () => EmitAddressBase(target), site, pub: Publish.Container,
                             initKey: StorageField(field) is IFieldSymbol sf ? InitStoreKey(sf, Owner(field), fr.Instance) : null,
                             fresh: site != null && target.Parent != null && StoresIntoFresh(fr.Instance, target.Parent),
-                            owned: site != null && OwnedLocal(fr.Instance));
+                            owned: site != null && OwnedLocal(fr.Instance),
+                            iso: site != null && target.Parent is ISimpleAssignmentOperation isa && ReferenceEquals(isa.Target, target) && D.IsolatedValue(isa.Value));
                     }
                     // a struct's field, wherever the struct is (Sharing.cs: one node for the field)
                     if (fr.Instance != null && Sh != null)

@@ -50,6 +50,9 @@ internal sealed class Arenas
         /// <summary>The link for a store into an object held in a local that owns it (OwnedLocals in Expressions.cs):
         /// when that local's is the only reference there is, nothing can reach the object and no cycle closes.</summary>
         public WasmFunction LinkOwned = null!;
+        /// <summary>The link for a store of an isolated value (FreshStores.cs): it closes no cycle, so it does not make
+        /// the site general; on a site that is cyclic through other stores it is the general link.</summary>
+        public WasmFunction LinkIso = null!;
 
         /// <summary>Where the values stored here come from (Sharing.cs): the sources given, else the static type.</summary>
         public readonly List<Sharing.Src> Sources = [];
@@ -63,7 +66,7 @@ internal sealed class Arenas
         }
     }
 
-    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh, LinkOwned, LinkAt, UnlinkAt, MoveAt }
+    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh, LinkOwned, LinkAt, UnlinkAt, MoveAt, LinkIso }
 
     readonly Dictionary<string, Site> _sites = [];
     readonly Dictionary<WasmFunction, (Kind kind, Site? site, ITypeSymbol? pinType)> _placeholders = [];
@@ -100,6 +103,7 @@ internal sealed class Arenas
         s.LinkFresh = Placeholder("arena.link fresh " + key, new FuncType([I, I, I], [I]), Kind.LinkFresh, s);
         s.UnlinkFresh = Placeholder("arena.unlink fresh " + key, new FuncType([I, I, I], []), Kind.UnlinkFresh, s);
         s.LinkOwned = Placeholder("arena.link owned " + key, new FuncType([I, I, I], [I]), Kind.LinkOwned, s);
+        s.LinkIso = Placeholder("arena.link isolated " + key, new FuncType([I, I, I], [I]), Kind.LinkIso, s);
         _sites[key] = s;
         return s;
     }
@@ -688,8 +692,9 @@ internal sealed class Arenas
                 var x = ins;
                 switch (ph.kind)
                 {
-                    case Kind.Link or Kind.LinkFresh or Kind.LinkOwned:
+                    case Kind.Link or Kind.LinkFresh or Kind.LinkOwned or Kind.LinkIso:
                         // (value, container) -> value
+                        if (ph.kind == Kind.LinkIso && Enabled && ph.site!.Cyclic) { x.Ref = link; body.Add(x); break; }
                         if (Enabled && ph.site!.Cyclic)
                         {
                             if (ph.kind == Kind.Link || s_noInlineLinks) { x.Ref = ph.kind == Kind.Link ? link : ph.kind == Kind.LinkOwned ? linkOwned : linkFresh; body.Add(x); break; }
