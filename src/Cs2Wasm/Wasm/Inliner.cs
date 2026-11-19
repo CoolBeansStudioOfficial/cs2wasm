@@ -69,7 +69,7 @@ static class Inliner
                 // (marked AggressiveInlining: in although it can throw, when it is small; larger in a loop)
                 // (the count operations: they have no frame of their own in a trace, so a copy throws from the same
                 // frames; in a loop the call would make the engine keep the loop's values in memory)
-                if (tiny && g.FrameName == null && g.Name is "rt.retain" or "rt.release" && s_loopBody > 0 && InlinableHinted(g)) { if (s_rcEverywhere) candidates.Add(g); else inLoops.Add(g); continue; }
+                if (tiny && g.FrameName == null && g.Name is "rt.retain" or "rt.release" or "rt.retain_plain" or "rt.release_plain" && s_loopBody > 0 && InlinableHinted(g)) { if (s_rcEverywhere) candidates.Add(g); else inLoops.Add(g); continue; }
                 if (g.InlineHint && s_exp == 0 && InlinableHinted(g))
                 {
                     int hc = g.Body.Count + g.Type.Params.Length + 2 * g.Locals.Count + 2;

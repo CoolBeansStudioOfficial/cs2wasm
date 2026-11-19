@@ -365,6 +365,19 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     `rt.lock_exit` no longer runs the deferred destructions before the thread has its thread statics (AllocFirst:
     it read a word of memory that was not the list). Thread mode: tree 20.3 to 12.0 ms (7.8 without threads),
     linked_list 8.8 to 5.8, the rest a little faster; without threads unchanged (0.96x NativeAOT).
+  - **The runtime's own types, and a thread's own pages (2026-11-18).** CS2WASM_SHARING_DEBUG named why the
+    program's Dictionary<int, int> and List<int> were shared: the runtime's tables of object marks and weak slots
+    were a Dictionary<int, int> and a Dictionary<int, List<int>> in statics. They are now maps in memory of the
+    runtime's own (IntMap, ObjectMarks.cs), which share no type with the program. A thread now cuts its small blocks
+    from pages that are its own and puts a block it frees back on its page, which counts its blocks out, and is cut
+    again in order once they are all back, as the pages without threads (the lists by thread handed blocks out in
+    the order they were freed: a tree made again after one was freed lay all over memory). A block another thread
+    frees takes the old way. The inliner puts the plain counts into loops as it does rt.retain and rt.release; a
+    list's node is freed in a loop for a type the last compilation found no other thread reaches. Thread mode:
+    dictionary 17.0 to 7.3 ms, word_count 7.0 to 5.0, tree 12.0 to 9.5, linked_list 5.8 to 4.4. What is left is
+    strings: string is a shared type in every program that has a static string (CultureInfo's, a program's own
+    `static readonly string[]`), so every string's count is atomic; deciding that per object rather than per type
+    needs the allocation site and the thread that reads a static, not yet done.
 
 - **Step 3: answered from measurements (2026-11-17 and 2026-11-18); the bench fixes (3.1, 3.2) are still to do.**
   - Optimizing tier (what a game runs in), `tools/bench.mjs`: 0.95x NativeAOT's time, 32 MB against 71 MB.

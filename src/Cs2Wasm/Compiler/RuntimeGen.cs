@@ -610,7 +610,10 @@ sealed partial class RuntimeGen
         // again: a loop, not a call. A list let go at its head is freed node by node in a few instructions each,
         // with no nesting to count and no stack to run out of. (The field is let go of last, after the object's
         // memory is freed: any order C# allows. A tree's node loops on its last such field and nests on the others.)
-        if (clear && free && finalizer == 0 && !D.ThreadMode && FindFinalizer(type) == null
+        // (threads: for a type the last compilation found no other thread can reach, with the plain counts; the next
+        // compilation's own answer must agree, Api.cs, so the loop's plain count is never of a shared object)
+        bool loopCounts = !D.ThreadMode || D.Sharing is { } shr && shr.PriorThreadLocal(type);
+        if (clear && free && finalizer == 0 && loopCounts && FindFinalizer(type) == null
             && type is INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true }
             && l.Fields.LastOrDefault(f => f.Type is INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true } ft && D.ExistingTypeId(D.Types.Canonical(ft)) == id) is { } tail)
         {
@@ -638,7 +641,7 @@ sealed partial class RuntimeGen
             e.Br(top);
             e.End();
             // (a member of a cycle's group, or an object that is never freed: as any release)
-            e.Get(next); e.Call(rt.Release);
+            e.Get(next); e.Call(rt.ReleaseOf(type));
             e.End();
             e.End();
             e.End();

@@ -342,8 +342,22 @@ namespace Cs2Wasm.Runtime
             for (int p = a + 65536 - PageSize; p != a - PageSize; p -= PageSize) { Mem.StoreI32(p + 4, s_freePages); s_freePages = p; }
         }
 
+        /// <summary>A page of small blocks of one kind and size for good, the thread's own (ThreadPage): its blocks are
+        /// cut from it in order ([12]), its freed ones go back onto its list ([0]).</summary>
+        static int NewOwnedPage(int size, int kind)
+        {
+            int pg = AllocRunAligned(16, 16);
+            for (int i = 0; i < 16; i++) MapSet(pg + (i << GShift), pg | 4);
+            Mem.StoreI32(pg, 0); Mem.StoreI32(pg + 4, 0); Mem.StoreI32(pg + 8, ThreadId() + 1);
+            Mem.StoreI32(pg + 12, pg + PageHead);
+            Mem.StoreI32(pg + 16, kind);
+            // (the current page of its size: flagged, as one on the list of pages with freed blocks)
+            Mem.StoreI32(pg + 20, (size >> 3) * 2 + 1);
+            return pg;
+        }
+
         /// <summary>A page of small blocks of one kind and size for good (a program with threads: a block keeps its
-        /// kind, see below): all its blocks, linked at 8.</summary>
+        /// kind, see below): all its blocks, linked at 8; no thread's own.</summary>
         static int NewThreadPage(int size, int kind)
         {
             int pg = AllocRunAligned(16, 16);
@@ -626,8 +640,23 @@ namespace Cs2Wasm.Runtime
         // (linked at 8; its first block's word 12 is the next batch), so a batch goes either way in a few stores:
         // neither side walks a list (a thread that freed a tree of a hundred thousand nodes and builds another
         // walked them twice, in the cache misses of a list that runs all over memory).
+        // A thread's own pages (ThreadPage), as the pages of a program without threads: a thread cuts its small blocks
+        // from pages that are its own, one per kind and size at a time, and a block it frees that is in one of its
+        // pages goes back onto that page's list, so blocks made one after the other lie next to each other however
+        // they were freed before (a list of freed blocks for all of a thread's memory hands them out in the order
+        // they were freed: a list freed in its group's order and made again was walked at a cache miss a node). A
+        // block another thread frees goes the way above, through the freeing thread's list and the shared ones.
+        // A thread's page: [0] its freed blocks (linked at 8), [4] next of the thread's pages of the kind and size
+        // with freed blocks, [8] the thread that owns it, plus one (0: none, the thread ended), [12] the first block
+        // never cut (0: none), [16] kind + 2 * its blocks that are neither on its list nor uncut (wherever they are:
+        // a block another thread freed stays counted until it comes back to the page), [20] size class * 2 + (1:
+        // current or on that list). Only its owner touches [0], [4], [12], [16] and the flag. A page whose blocks
+        // are all back is cut again from its start, in order, as an empty page is without threads.
+        // The thread's table (t_heads): per kind and size, its list of blocks (above), its current page, its pages
+        // with freed blocks.
         // ------------------------------------------------------------------
         const int CacheLimit = 256 * 1024;
+        const int CurTable = 2 * Classes * 4, AvailTable = 4 * Classes * 4, ThreadTable = 6 * Classes * 4;
         [System.ThreadStatic] static int t_heads, t_cached;
 
         static int AllocLocal(int size, int kind)
@@ -636,36 +665,109 @@ namespace Cs2Wasm.Runtime
             if (size < 16) size = 16;
             int heads = t_heads;
             if (heads == 0) heads = InitThreadCache();
-            int slot = heads + (kind * Classes + (size >> 3)) * 4;
-            int b = Mem.LoadI32(slot);
-            if (b == 0) { Refill(slot, size, kind); b = Mem.LoadI32(slot); }
+            int cls = (kind * Classes + (size >> 3)) * 4;
+            int b = PageTake(heads + cls, size, false);
+            if (b != 0) { Zero(b, size); return b; }
+            int slot = heads + cls;
+            b = Mem.LoadI32(slot);
+            if (b == 0)
+            {
+                // (the shared lists' blocks before a new page: what other threads gave back is used again)
+                Refill(slot, size, kind);
+                b = Mem.LoadI32(slot);
+                if (b == 0)
+                {
+                    b = PageTake(heads + cls, size, true);
+                    Zero(b, size);
+                    return b;
+                }
+            }
             Mem.StoreI32(slot, Mem.LoadI32(b + 8));
             Zero(b, size);
             return b;
         }
 
+        /// <summary>A block off the thread's current page of the kind and size (`row`: its entry in the table), else
+        /// off the next of its pages with freed blocks; 0 if there is none (`fresh`: the current page is new).</summary>
+        static int PageTake(int row, int size, bool fresh)
+        {
+            int heads = t_heads, cls = row - heads;
+            while (true)
+            {
+                int pg = Mem.LoadI32(heads + CurTable + cls);
+                if (pg != 0)
+                {
+                    int b = Mem.LoadI32(pg);
+                    if (b != 0) { Mem.StoreI32(pg, Mem.LoadI32(b + 8)); Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 2); return b; }
+                    int bump = Mem.LoadI32(pg + 12);
+                    if (bump != 0)
+                    {
+                        int nb = bump + size;
+                        Mem.StoreI32(pg + 12, nb + size <= pg + PageSize ? nb : 0);
+                        Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 2);
+                        return bump;
+                    }
+                    // (full: off the lists until a block of it is freed)
+                    Mem.StoreI32(pg + 20, Mem.LoadI32(pg + 20) & ~1);
+                    Mem.StoreI32(heads + CurTable + cls, 0);
+                }
+                int next = Mem.LoadI32(heads + AvailTable + cls);
+                if (next == 0) return 0;
+                Mem.StoreI32(heads + AvailTable + cls, Mem.LoadI32(next + 4));
+                Mem.StoreI32(heads + CurTable + cls, next);
+            }
+        }
+
         static int InitThreadCache()
         {
             RuntimeLock();
-            int h = AllocCore(2 * Classes * 4 + 8, KindPlain) + 8;
+            int h = AllocCore(ThreadTable + 8, KindPlain) + 8;
             RuntimeUnlock();
-            Mem.Fill(h, 0, 2 * Classes * 4);
+            Mem.Fill(h, 0, ThreadTable);
             t_heads = h;
             return h;
         }
 
-        /// <summary>Fills an empty list of the thread's: the shared list's top batch of the kind and size, else a new
-        /// page of them.</summary>
+        /// <summary>The thread's own page a small block is in, or 0 (a page another thread owns, or none).</summary>
+        static int OwnPage(int addr)
+        {
+            int e = MapGet(addr);
+            if ((e & 7) != 4) return 0;
+            int pg = e & ~7;
+            return Mem.LoadI32(pg + 8) == ThreadId() + 1 ? pg : 0;
+        }
+
+        /// <summary>A block back onto its page, the thread's own; the page onto the thread's pages with freed blocks
+        /// when it was full.</summary>
+        static void PagePut(int pg, int addr)
+        {
+            Mem.StoreI32(addr, 0);
+            int used = Mem.LoadI32(pg + 16) - 2;
+            Mem.StoreI32(pg + 16, used);
+            // (all its blocks back: cut again from the start, in order)
+            if (used < 2) { Mem.StoreI32(pg, 0); Mem.StoreI32(pg + 12, pg + PageHead); }
+            else { Mem.StoreI32(addr + 8, Mem.LoadI32(pg)); Mem.StoreI32(pg, addr); }
+            int fl = Mem.LoadI32(pg + 20);
+            if ((fl & 1) == 0)
+            {
+                Mem.StoreI32(pg + 20, fl | 1);
+                int row = t_heads + AvailTable + ((used & 1) * Classes + (fl >> 1)) * 4;
+                Mem.StoreI32(pg + 4, Mem.LoadI32(row));
+                Mem.StoreI32(row, pg);
+            }
+        }
+
+        /// <summary>Fills an empty list of the thread's with the shared list's top batch of the kind and size, if there
+        /// is one; else a new page of the thread's own, its current one (AllocLocal takes from it).</summary>
         static void Refill(int slot, int size, int kind)
         {
             RuntimeLock();
             if (s_top == 0) InitHeap();
             int shared = Lists(kind) + (size >> 3) * 4;
             int list = Mem.LoadI32(shared);
-            if (list != 0) Mem.StoreI32(shared, Mem.LoadI32(list + 12));
-            else list = NewThreadPage(size, kind);
+            if (list != 0) { Mem.StoreI32(shared, Mem.LoadI32(list + 12)); Mem.StoreI32(slot, list); }
+            else Mem.StoreI32(slot + CurTable, NewOwnedPage(size, kind));
             RuntimeUnlock();
-            Mem.StoreI32(slot, list);
         }
 
         static void FreeLocal(int addr, int size, int kind)
@@ -674,6 +776,8 @@ namespace Cs2Wasm.Runtime
             if (size < 16) size = 16;
             int heads = t_heads;
             if (heads == 0) heads = InitThreadCache();
+            int own = OwnPage(addr);
+            if (own != 0) { PagePut(own, addr); return; }
             int slot = heads + (kind * Classes + (size >> 3)) * 4;
             // the link is at 8: word 0 (a plain object's count) stays 0, dead, for a reference read just before the free
             Mem.StoreI32(addr, 0);
@@ -683,6 +787,35 @@ namespace Cs2Wasm.Runtime
             int cached = t_cached + size;
             t_cached = cached;
             if (cached > CacheLimit) FlushThreadCache();
+        }
+
+        /// <summary>The thread ends: its pages become no thread's, their freed blocks and those never cut go to the
+        /// shared lists, with the blocks of its list.</summary>
+        internal static void EndThreadCache()
+        {
+            int heads = t_heads;
+            if (heads == 0) return;
+            for (int kind = 0; kind < 2; kind++)
+                for (int c = 2; c < Classes; c++)
+                {
+                    int cls = (kind * Classes + c) * 4, size = c << 3;
+                    int pg = Mem.LoadI32(heads + CurTable + cls);
+                    Mem.StoreI32(heads + CurTable + cls, 0);
+                    while (pg != 0)
+                    {
+                        int list = Mem.LoadI32(heads + cls);
+                        for (int b = Mem.LoadI32(pg); b != 0;) { int next = Mem.LoadI32(b + 8); Mem.StoreI32(b + 8, list); list = b; b = next; }
+                        int bump = Mem.LoadI32(pg + 12);
+                        if (bump != 0) for (int b = bump; b + size <= pg + PageSize; b += size) { Mem.StoreI32(b, 0); Mem.StoreI32(b + 8, list); list = b; }
+                        Mem.StoreI32(heads + cls, list);
+                        Mem.StoreI32(pg, 0); Mem.StoreI32(pg + 12, 0);
+                        Mem.StoreI32(pg + 20, Mem.LoadI32(pg + 20) & ~1);
+                        Atomic.Store32(ref Mem.RefI32(pg + 8), 0);
+                        pg = Mem.LoadI32(heads + AvailTable + cls);
+                        if (pg != 0) Mem.StoreI32(heads + AvailTable + cls, Mem.LoadI32(pg + 4));
+                    }
+                }
+            FlushThreadCache();
         }
 
         /// <summary>Gives the thread's cached blocks back to the shared lists (it has freed much, or it ends).</summary>
@@ -831,10 +964,12 @@ namespace Cs2Wasm.Runtime
             }
             else if (!ShareCheck() && !Checked())
             {
-                // (threads: onto the thread's own list of the size, as FreeLocal)
+                // (threads: back onto its page, the thread's own, as FreeLocal)
                 int s = (size + 7) & ~7, heads = t_heads;
                 if ((uint)(s - 16) <= MaxSmall - 16 && heads != 0)
                 {
+                    int own = OwnPage(addr);
+                    if (own != 0) { PagePut(own, addr); return; }
                     int slot = heads + (s >> 3) * 4;
                     Mem.StoreI32(addr, 0);
                     Mem.StoreI32(addr + 8, Mem.LoadI32(slot));
@@ -982,19 +1117,32 @@ namespace Cs2Wasm.Runtime
             }
             else if (!ShareCheck())
             {
-                // (threads: the same piece on the thread's own list of the size, AllocLocal)
+                // (threads: the same piece on the thread's current page of the size, AllocLocal)
                 int s = (size + 7) & ~7, heads = t_heads;
                 if ((uint)(s - 16) <= MaxSmall - 16 && heads != 0)
                 {
-                    int slot = heads + (s >> 3) * 4;
-                    int head = Mem.LoadI32(slot);
+                    int pg = Mem.LoadI32(heads + CurTable + (s >> 3) * 4);
+                    int head = pg != 0 ? Mem.LoadI32(pg) : 0;
                     if (head != 0)
                     {
-                        Mem.StoreI32(slot, Mem.LoadI32(head + 8));
+                        Mem.StoreI32(pg, Mem.LoadI32(head + 8));
+                        Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 2);
                         Mem.StoreI32(head, 1);
                         Mem.StoreI32(head + 4, typeId);
                         for (int p = head + 8, e = head + s; p != e; p += 8) Mem.StoreI64(p, 0);
                         return head;
+                    }
+                    // (else the next block it never cut, or cut again since: cleared too)
+                    int bump = pg != 0 ? Mem.LoadI32(pg + 12) : 0;
+                    if (bump != 0)
+                    {
+                        int nb = bump + s;
+                        Mem.StoreI32(pg + 12, nb + s <= pg + PageSize ? nb : 0);
+                        Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 2);
+                        Mem.StoreI32(bump, 1);
+                        Mem.StoreI32(bump + 4, typeId);
+                        for (int p = bump + 8, e = bump + s; p != e; p += 8) Mem.StoreI64(p, 0);
+                        return bump;
                     }
                 }
             }
@@ -2960,7 +3108,7 @@ namespace Cs2Wasm.Runtime
                 System.Threading.Thread.SetCurrent(null);
                 // the thread's statics die with it (as .NET's become unreachable)
                 Rt.ReleaseThreadStatics();
-                Rt.FlushThreadCache();
+                Rt.EndThreadCache();
                 GiveBlocks(t._stack, t._tls);
                 WakeAll();
             }
