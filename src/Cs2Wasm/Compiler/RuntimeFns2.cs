@@ -27,8 +27,14 @@ internal sealed partial class RuntimeFns
             // (a thread that may not wait, the engine's, spins on)
             e.I32Addr(owner); e.Emit(Op.I32AtomicLoad, 0, 2); e.GGet(D.ThreadId); e.Op(Op.I32Eq);
             e.If(); e.I32Addr(depth); e.I32Addr(depth); e.Load(Op.I32Load); e.I32(1); e.Op(Op.I32Add); e.Store(Op.I32Store); e.Op(Op.Return); e.End();
+            int tries = e.AddLocal(I);
             var brk = e.Block(); var top = e.Loop();
             e.I32Addr(owner); e.I32(0); e.GGet(D.ThreadId); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Op(Op.I32Eqz); e.BrIf(brk);
+            if (DeadlockDumpOn)
+            {
+                e.Get(tries); e.I32(1); e.Op(Op.I32Add); e.Tee(tries); e.I32(2000000); e.Op(Op.I32GtU);
+                e.If(); e.I32Addr(owner); e.Emit(Op.I32AtomicLoad, 0, 2); e.Call(D.LibMethod("Cs2Wasm.Runtime.Threads", "LockTimeout", 1).Fn); e.End();
+            }
             e.I32(0); e.Set(n);
             { var spin = e.Loop();
               e.I32Addr(owner); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(cur); e.Op(Op.I32Eqz); e.BrIf(top);
@@ -52,6 +58,8 @@ internal sealed partial class RuntimeFns
             e.I32Addr(owner); e.I32(0); e.Emit(Op.I32AtomicStore, 0, 2);
             e.I32Addr(waiters); e.Emit(Op.I32AtomicLoad, 0, 2);
             e.If(); e.I32Addr(owner); e.I32(1); e.Emit(Op.MemoryAtomicNotify, 0, 2); e.Op(Op.Drop); e.End();
+            // (the group destructions this thread left for when it gives the lock back: Rt.RunDeferredDestroys)
+            if (arenas && D.ThreadMode) e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0).Fn);
             e.End();
         }
         if (s_plainCounts) { EmitLoadRetain(false, arenas); return; }
@@ -404,6 +412,8 @@ internal sealed partial class RuntimeFns
     static readonly bool s_allShared = Environment.GetEnvironmentVariable("CS2WASM_ALL_SHARED") == "1";
     /// <summary>CS2WASM_SHARE_CHECK=1 (diagnosis): plain count updates check the object's allocating thread (Rt.ShareCheck).</summary>
     public static readonly bool ShareCheckOn = Environment.GetEnvironmentVariable("CS2WASM_SHARE_CHECK") == "1";
+    /// <summary>CS2WASM_DEADLOCK_DUMP=1 (diagnosis): a long wait for the runtime lock throws, naming its holder (Threads.LockTimeout).</summary>
+    public static readonly bool DeadlockDumpOn = Environment.GetEnvironmentVariable("CS2WASM_DEADLOCK_DUMP") == "1";
 
     WasmFunction? _ecSave, _ecRestore;
     /// <summary>Around an async method's first MoveNext: the caller's AsyncLocal context is put back afterwards.</summary>

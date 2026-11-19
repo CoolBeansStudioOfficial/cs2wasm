@@ -474,7 +474,8 @@ sealed partial class RuntimeGen
         D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "InvalidCast", 2);
         D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeObject", 2);
         D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1);
-        if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); }
+        if (D.ThreadMode && RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareCheckFail", 1);
+        if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0); }
     }
 
     public void Export(string name, MethodInst mi) => _exports.Add((name, mi));

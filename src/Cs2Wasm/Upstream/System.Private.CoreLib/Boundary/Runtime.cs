@@ -487,6 +487,11 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_SHARE_CHECK=1 (diagnosis of section 4.5's sharing): true, and an object's hash word carries
         /// the thread that allocated it in bits 24-30; a plain count update from another thread is reported.</summary>
         [Intrinsic] public static extern bool ShareCheck();
+        /// <summary>CS2WASM_SHARE_CHECK: a plain count of an object another thread made (TypedCounts.cs) names it.</summary>
+        public static void ShareCheckFail(int p)
+        {
+            throw new System.InvalidOperationException("share check: a plain count of " + TypeName(Borrow<object>(p)) + " made by thread " + ((Mem.LoadI32(p + 8) >> 24) & 0x1F) + ", counted on thread " + ThreadId());
+        }
         /// <summary>CompileOptions.Checked (the tests' build): freed memory is filled with a pattern and never used
         /// again, so a reference used after its object was freed reads the pattern (a reference read from it traps
         /// at its use, a number differs from .NET's) where it would have read whatever took the block.</summary>
@@ -1683,22 +1688,24 @@ namespace Cs2Wasm.Runtime
 
         /// <summary>The references noted from `from` on are back in their slots (one to an object that lives on is
         /// counted meanwhile: a finalizer that clears its field releases it, as it does a plain object's).</summary>
-        static void CutsBack(int from, int to)
+        static void CutsBack(int from, int to) => CutsBack(s_cutQ, from, to);
+        static void CutsBack(int q, int from, int to)
         {
             for (int i = from; i < to; i++)
             {
-                int slot = Mem.LoadI32(s_cutQ + 8 * i), v = Mem.LoadI32(s_cutQ + 8 * i + 4);
+                int slot = Mem.LoadI32(q + 8 * i), v = Mem.LoadI32(q + 8 * i + 4);
                 Mem.StoreI32(slot, v);
                 Retain(Borrow<object>(v));
             }
         }
 
         /// <summary>And out again, where the finalizers left them.</summary>
-        static void CutsOut(int from, int to)
+        static void CutsOut(int from, int to) => CutsOut(s_cutQ, from, to);
+        static void CutsOut(int q, int from, int to)
         {
             for (int i = from; i < to; i++)
             {
-                int slot = Mem.LoadI32(s_cutQ + 8 * i), v = Mem.LoadI32(s_cutQ + 8 * i + 4);
+                int slot = Mem.LoadI32(q + 8 * i), v = Mem.LoadI32(q + 8 * i + 4);
                 if (Mem.LoadI32(slot) != v) continue;
                 Mem.StoreI32(slot, 0);
                 Release(Borrow<object>(v));
@@ -2392,6 +2399,7 @@ namespace Cs2Wasm.Runtime
         /// True when one of them was stored where the program can reach it: they are never freed then.</summary>
         static bool FinPhase(int first, int link, int cutBase)
         {
+            // (its own code, not FinPhaseCuts: a program without threads carries none of the deferred destruction)
             int end = link == 12 ? first : 0;
             for (int m = first; m != 0; m = FinNext(m, end, link)) { Mem.StoreI32(m, FinBias); PS(m, 24, PL(m, 24) | Dying); }
             int cutEnd = s_cutN;
@@ -2412,6 +2420,85 @@ namespace Cs2Wasm.Runtime
             s_cutN = cutBase;
             for (int m = first; m != 0; m = FinNext(m, end, link)) Mem.StoreI32(m, 0);
             return false;
+        }
+
+        /// <summary>FinPhase with the cut references in a block (q, from..to). `unlocked`: run after the runtime lock
+        /// was given back (RunDeferredDestroys): the visits take it, the finalizers run without it.</summary>
+        static bool FinPhaseCuts(int first, int link, int q, int from, int to, bool unlocked = true)
+        {
+            int end = link == 12 ? first : 0;
+            for (int m = first; m != 0; m = FinNext(m, end, link)) { Mem.StoreI32(m, FinBias); PS(m, 24, PL(m, 24) | Dying); }
+            CutsBack(q, from, to);
+            for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaFinalizeObject(m);
+            if (unlocked) RuntimeLock();
+            FinVisit(first, link, 10);
+            bool back = false;
+            for (int m = first; m != 0; m = FinNext(m, end, link)) if (Mem.LoadI32(m) != FinBias) { back = true; break; }
+            if (back)
+            {
+                FinVisit(first, link, 11);
+                for (int m = first; m != 0;) { int next = FinNext(m, end, link); Mem.StoreI32(m, -1); m = next; }
+                if (unlocked) RuntimeUnlock();
+                return true;
+            }
+            FinVisit(first, link, 12);
+            if (unlocked) RuntimeUnlock();
+            CutsOut(q, from, to);
+            for (int m = first; m != 0; m = FinNext(m, end, link)) Mem.StoreI32(m, 0);
+            return false;
+        }
+
+        // ---- With threads, a group's destruction ends after the runtime lock is given back ----
+        // Its finalizers run program code, and its releases destroy other objects, whose finalizers do too (a
+        // SafeHandle's takes the wait subsystem's lock, which a thread that holds it may be waiting for the runtime
+        // lock with: a deadlock, seen). .NET runs no finalizer under a lock of its runtime. So what is left of the
+        // destruction once the members are taken out (the finalizers, the clears, the frees) waits in a list of the
+        // thread's own and runs when its outermost RuntimeUnlock gives the lock back; the cut references go with it.
+        [System.ThreadStatic] static int t_defQ, t_defN, t_defCap, t_defRunning;
+        const int DefEntry = 24;
+
+        static void Defer(int first, int link, int ar, bool fin, int cutBase)
+        {
+            int n = s_cutN - cutBase, cuts = 0;
+            if (n > 0) { cuts = Alloc(n * 8); Mem.Copy(cuts, s_cutQ + 8 * cutBase, n * 8); }
+            s_cutN = cutBase;
+            if (t_defN == t_defCap)
+            {
+                int cap = t_defCap == 0 ? 8 : t_defCap * 2;
+                int nq = Alloc(cap * DefEntry);
+                if (t_defQ != 0) { Mem.Copy(nq, t_defQ, t_defN * DefEntry); Free(t_defQ, t_defCap * DefEntry); }
+                t_defQ = nq; t_defCap = cap;
+            }
+            int e = t_defQ + DefEntry * t_defN;
+            Mem.StoreI32(e, first); Mem.StoreI32(e + 4, link); Mem.StoreI32(e + 8, ar); Mem.StoreI32(e + 12, fin ? 1 : 0);
+            Mem.StoreI32(e + 16, cuts); Mem.StoreI32(e + 20, n);
+            t_defN++;
+        }
+
+        /// <summary>Called by the outermost RuntimeUnlock (threads): the destructions this thread left for then.</summary>
+        public static void RunDeferredDestroys()
+        {
+            if (t_defN == 0 || t_defRunning != 0) return;
+            t_defRunning = 1;
+            while (t_defN > 0)
+            {
+                t_defN--;
+                int e = t_defQ + DefEntry * t_defN;
+                int first = Mem.LoadI32(e), link = Mem.LoadI32(e + 4), ar = Mem.LoadI32(e + 8), cuts = Mem.LoadI32(e + 16), n = Mem.LoadI32(e + 20);
+                bool fin = Mem.LoadI32(e + 12) != 0;
+                int end = link == 12 ? first : 0;
+                bool back = fin && FinPhaseCuts(first, link, cuts, 0, n, true);
+                if (cuts != 0) Free(cuts, n * 8);
+                if (!back)
+                {
+                    for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaClearObject(m);
+                    for (int m = first; m != 0;) { int next = FinNext(m, end, link); ArenaFreeObject(m); m = next; }
+                }
+                // (a whole arena whose member came back keeps its record, busy, for the words that name it; a part's
+                // record was dealt with when it was taken out)
+                if (link == 12 && !back) { RuntimeLock(); Free(ar, ArenaRecord); RuntimeUnlock(); }
+            }
+            t_defRunning = 0;
         }
 
         /// <summary>A member without references: it is destroyed, and so is each member that loses its last reference
@@ -2457,6 +2544,10 @@ namespace Cs2Wasm.Runtime
             s_cutOn = cutOn;
             // then as any object: no longer a member (count zero: being destroyed), its finalizer, its other references
             for (int m = done; m != 0; m = PL(m, 8)) { Mem.StoreI32(m, 0); PS(m, 16, 0); ClearMark(m); }
+            // (threads: the rest once the runtime lock is given back, RunDeferredDestroys)
+            // (the members are off the arena's ring already: whether its record goes is known now, and what is left
+            // needs it no more; it may be merged or freed by others before then)
+            if (!SingleThreaded()) { Defer(done, 8, 0, fin, cutBase); ArenaEmpty(ar); return; }
             // A finalizer stored one of them where the program can reach it: they all live on, with what they
             // refer to, and are never freed (what one of several objects that die together can still reach is
             // not followed: section 4.3's group stays whole).
@@ -2493,6 +2584,8 @@ namespace Cs2Wasm.Runtime
                 do { ArenaVisitObject(m); m = PL(m, 12); } while (m != first);
                 s_visitArena = sa; s_visitMode = sm;
                 s_cutOn = cutOn;
+                // (threads: the rest once the runtime lock is given back, RunDeferredDestroys)
+                if (!SingleThreaded()) { Defer(first, 12, ar, fin, cutBase); return; }
                 // (a finalizer stored one of them where the program can reach it: as in ArenaDestroyFrom; the
                 // arena's record stays, busy, for the words of its members that name it)
                 if (fin && FinPhase(first, 12, cutBase)) return;
@@ -2749,6 +2842,10 @@ namespace Cs2Wasm.Runtime
     /// <summary>Worker threads (section 4.5): each runs an instance of the module on the shared memory.</summary>
     public static class Threads
     {
+        // CS2WASM_DEADLOCK_DUMP=1 (a diagnosis, at compile time): a thread that waits seconds for the runtime lock says
+        // which thread holds it and throws, with its stack (RuntimeFns.EmitThreadSupport calls this only then).
+        public static void LockTimeout(int owner) =>
+            throw new System.InvalidOperationException("deadlock dump: thread " + Rt.ThreadId() + " waited for the runtime lock, held by thread " + owner);
         internal const int StackSize = 1 << 20;
         static int s_nextId = 1;
         static int s_spawned;

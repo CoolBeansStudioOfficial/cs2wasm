@@ -342,6 +342,18 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     without threads). The 33 threaded tests pass under the share check. Left: string and List<int> are shared types
     (dictionary, list_sort, word_count), and tree's 20 ms against 8.2: the allocator's thread path and the loop
     that frees a chain, still off in thread mode.
+  - **A deadlock found on the way, older than step 4 (2026-11-18).** Test 102 timed out once in the suite; run in a
+    loop it hung every time, also built with all of step 4 off (about once in five hundred runs of the test as it
+    is). Paused through the inspector protocol: the engine thread held the runtime lock while it freed a group
+    of objects that refer to each other, and one of them, a SafeHandle, ran its finalizer, which takes the wait
+    subsystem's lock; the timer thread held that lock and waited for the runtime lock (a read that counts, of a
+    group's member). .NET runs no finalizer under a lock of its runtime. Now, with threads, a group's
+    destruction takes its members out under the lock and leaves the rest (finalizers, clears, frees) to a list of
+    the thread's own, run when its outermost RuntimeUnlock gives the lock back (`Rt.RunDeferredDestroys`); the
+    references cut for the finalizers go with it, in a block of their own, and a part's arena record is dealt with
+    while still under the lock (it may be merged or freed by others before the rest runs: test 111 caught that).
+    Test 135 is the loop: 150 rounds, every one hung before. `CS2WASM_DEADLOCK_DUMP=1` makes a long wait for the
+    runtime lock throw, naming its holder.
 
 - **Step 3: answered from measurements (2026-11-17 and 2026-11-18); the bench fixes (3.1, 3.2) are still to do.**
   - Optimizing tier (what a game runs in), `tools/bench.mjs`: 0.95x NativeAOT's time, 32 MB against 71 MB.

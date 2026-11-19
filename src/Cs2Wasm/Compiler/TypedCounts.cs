@@ -59,7 +59,7 @@ internal sealed partial class RuntimeFns
             e.If();
             e.Get(0); e.Load(Op.I32Load, 8); e.I32(24); e.Op(Op.I32ShrU); e.I32(0x1F); e.Op(Op.I32And); e.Tee(s);
             e.Get(s); e.GGet(D.ThreadId); e.I32(0x1F); e.Op(Op.I32And); e.Op(Op.I32Ne); e.Op(Op.I32And);
-            e.If(); e.Op(Op.Unreachable); e.End();
+            e.If(); e.Get(0); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareCheckFail", 1).Fn); e.Op(Op.Unreachable); e.End();
             e.End();
         }
         _retainPlain = M.AddFunction("rt.retain_plain", FT([I], [I]));
