@@ -20,6 +20,7 @@ sealed class T2 : Tracked { public T2? Next; public T2() : base(2) { } }
 sealed class T3 : Tracked { public T3? Next; public T3() : base(3) { } }
 sealed class T4 : Tracked { public T4? Next; public T4() : base(4) { } }
 sealed class T5 : Tracked { public T5? Left, Right, Parent; public T5() : base(5) { } }
+sealed class T6 : Tracked { public T6? Next; public T6? Old = Program.s_t6; public T6() : base(6) { } }
 
 static class Program
 {
@@ -28,6 +29,7 @@ static class Program
     static T3? s_a, s_side;
     static T4? s_kept;
     static T5? s_p;
+    internal static T6? s_t6;
 
     // isolated: new objects, each given only new ones
     static T1 Build(int depth)
@@ -51,6 +53,8 @@ static class Program
     // not isolated: its field is handed out
     static T4 Hand() { var n = new T4(); n.Next = new T4(); Keep(n.Next); return n; }
     static void Keep(T4 x) { s_kept = x; }
+    // not isolated: a field initializer refers to an old object
+    static T6 Make6() => new T6();
 
     static void Run()
     {
@@ -85,6 +89,11 @@ static class Program
             s_p.Left = c;
         }
         s_p = null;
+
+        // one whose field initializer refers back: t6 -> n -> t6
+        s_t6 = new T6();
+        s_t6.Next = Make6();
+        s_t6 = null;
     }
 
     [UnmanagedCallersOnly(EntryPoint = "main")]
@@ -93,7 +102,7 @@ static class Program
         Run();
         for (int i = 0; i < 3; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
         // (kind 1: the tree that stays, 31 nodes, and the last Alias pair under it)
-        for (int k = 1; k <= 5; k++) Console.WriteLine("kind " + k + " " + Tracked.Live[k]);
+        for (int k = 1; k <= 6; k++) Console.WriteLine("kind " + k + " " + Tracked.Live[k]);
         Console.WriteLine(s_root!.Left!.Value + " " + s_root.Right!.Next!.Next!.Value);
     }
 }

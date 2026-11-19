@@ -399,6 +399,16 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   whose field was handed out, one stored where parent links are), each in a class of its own: only the first class
   loses its cycle note, and every kind is freed as under .NET. Micro `tree_replace`: 193 us to 21 (NativeAOT 7, which
   leaves the old subtree to its collector).
+- **Step 6.4, in part (2026-11-19): stores into a new object.** A field an object initializer sets (`new T { F = v }`,
+  not `with`) on a new object whose constructors never write F (`Driver.CtorsNeverWrite`) is a plain store: no
+  exchange and no release of an old value; on a site that can close a cycle the link of a store into a new object
+  stays (a constructor's own store can have made the object a group's member: tests 090, 127 and 128 leaked
+  cycles without it). Test 137 covers the fields a constructor, a base constructor or an initializer set, and `with`;
+  it found that a field's initializer was not seen (`GetOperation` of a declarator is not its `= v`), in this and in
+  the isolated values' check of constructors (`MemberInitializer`; test 136 has the near miss now). And `Wasm/Fresh.cs` follows the object its allocation's `local.tee`
+  pushes (it began one instruction later, so whatever took that first push went unseen) and knows a field store whose
+  address is in a local. Micro: `llb_build` 720 us to 642 (a list of 100,000 nodes of a cycle-capable type made and
+  freed), `link_build_free` 297 to 279.
 
 - **Step 3: answered from measurements (2026-11-17 and 2026-11-18); the bench fixes (3.1, 3.2) are still to do.**
   - Optimizing tier (what a game runs in), `tools/bench.mjs`: 0.95x NativeAOT's time, 32 MB against 71 MB.

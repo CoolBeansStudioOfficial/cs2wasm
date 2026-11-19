@@ -96,6 +96,62 @@ internal sealed partial class Driver
         return true;
     }
 
+    readonly Dictionary<string, bool> _ctorsWrite = [];
+
+    /// <summary>The value a field's or a property's declaration gives it (`T f = v;`, `T P { get; } = v;`), or null.</summary>
+    IOperation? MemberInitializer(SyntaxReference sr)
+    {
+        var eq = sr.GetSyntax() switch
+        {
+            VariableDeclaratorSyntax { Initializer: { } i } => i,
+            PropertyDeclarationSyntax { Initializer: { } i } => i,
+            _ => null,
+        };
+        if (eq == null) return null;
+        var op = ModelFor(sr.SyntaxTree).GetOperation(eq);
+        return op switch
+        {
+            IFieldInitializerOperation fi => fi.Value,
+            IPropertyInitializerOperation pi => pi.Value,
+            _ => op,
+        };
+    }
+
+    /// <summary>No constructor of the class or of its bases, and no initializer of the field, gives the field a value:
+    /// it is null when the constructor returns (with CtorsKeepThis, a constructor writes its object's fields only
+    /// by name).</summary>
+    internal bool CtorsNeverWrite(INamedTypeSymbol t, IFieldSymbol field)
+    {
+        var key = Types.Key(t.OriginalDefinition) + "::" + field.Name + "@" + Types.Key(field.ContainingType.OriginalDefinition);
+        if (_ctorsWrite.TryGetValue(key, out var r)) return r;
+        r = CtorsKeepThis(t);
+        var target = field.OriginalDefinition;
+        for (var c = t.OriginalDefinition; r && c != null && c.SpecialType != SpecialType.System_Object; c = c.BaseType?.OriginalDefinition)
+        {
+            if (c.DeclaringSyntaxReferences.Length == 0) { r = false; break; }
+            foreach (var m in c.GetMembers())
+            {
+                if (!r) break;
+                if (m is IFieldSymbol f && SymbolEqualityComparer.Default.Equals(f.OriginalDefinition, target))
+                    foreach (var sr in f.DeclaringSyntaxReferences)
+                        if (MemberInitializer(sr) != null) r = false;
+                // (an auto-property's initializer sets its field)
+                if (m is IPropertySymbol ap && AutoPropertyField(ap) is { } apf && SymbolEqualityComparer.Default.Equals(apf.OriginalDefinition, target))
+                    foreach (var sr in ap.DeclaringSyntaxReferences)
+                        if (MemberInitializer(sr) != null) r = false;
+                if (m is IMethodSymbol { MethodKind: MethodKind.Constructor } ctor)
+                    foreach (var sr in ctor.DeclaringSyntaxReferences)
+                    {
+                        if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) continue;
+                        foreach (var op in body.DescendantsAndSelf())
+                            if (op is IFieldReferenceOperation fr && SymbolEqualityComparer.Default.Equals(fr.Field.OriginalDefinition, target)) { r = false; break; }
+                    }
+            }
+        }
+        _ctorsWrite[key] = r;
+        return r;
+    }
+
     /// <summary>An initializer's assignments keep the new object in: fields, and properties whose setters do.</summary>
     bool InitializerKeepsIn(IObjectOrCollectionInitializerOperation init, INamedTypeSymbol t)
     {
@@ -225,13 +281,13 @@ internal sealed partial class Driver
             {
                 if (!Types.IsRef(f.Type) && !PlainValueType(f.Type)) { r = false; break; }
                 foreach (var sr in f.DeclaringSyntaxReferences)
-                    if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is IFieldInitializerOperation fi && !IsoExpr(fi.Value, null)) r = false;
+                    if (MemberInitializer(sr) is { } fi && !IsoExpr(fi, null)) r = false;
             }
             else if (m is IPropertySymbol { IsStatic: false } p && AutoPropertyField(p) is { } pf)
             {
                 if (!Types.IsRef(pf.Type) && !PlainValueType(pf.Type)) { r = false; break; }
                 foreach (var sr in p.DeclaringSyntaxReferences)
-                    if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is IPropertyInitializerOperation pi && !IsoExpr(pi.Value, null)) r = false;
+                    if (MemberInitializer(sr) is { } pi && !IsoExpr(pi, null)) r = false;
             }
             else if (m is IMethodSymbol { MethodKind: MethodKind.Constructor } c)
             {
@@ -373,6 +429,16 @@ internal sealed partial class Driver
 
 sealed partial class FunctionCompiler
 {
+    /// <summary>`new T(...) { F = v }` (not `with`): F of the new object is null until this store, its constructors
+    /// never set it (CtorsNeverWrite), so the store has no old value.</summary>
+    bool InitializerStoreIntoNull(IFieldReferenceOperation fr, IOperation target)
+    {
+        if (Driver.NoFreshStores || fr.Field.IsStatic || fr.Instance is not IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ImplicitReceiver }) return false;
+        if (target.Parent is not ISimpleAssignmentOperation sa || !ReferenceEquals(sa.Target, target)) return false;
+        if (sa.Parent is not IObjectOrCollectionInitializerOperation { Parent: IObjectCreationOperation { Type: INamedTypeSymbol { TypeKind: TypeKind.Class } nt } }) return false;
+        return D.CtorsNeverWrite(nt, StorageField(fr.Field) as IFieldSymbol ?? fr.Field);
+    }
+
     IOperation? _bodyOp;
     bool? _bodyHasGoto;
 

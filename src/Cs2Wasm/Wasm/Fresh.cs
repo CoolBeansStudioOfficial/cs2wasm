@@ -107,6 +107,8 @@ static class Fresh
     {
         var b = f.Body;
         var drop = new HashSet<int>();
+        var toStore = new HashSet<int>();
+        var toSet = new HashSet<int>();
         for (int i = 0; i + 1 < b.Count; i++)
         {
             if (b[i].Op != Op.Call || b[i].Ref != alloc && b[i].Ref is not WasmFunction { IsObjectAlloc: true }) continue;
@@ -119,7 +121,8 @@ static class Fresh
             if (b[i + 1].Op == Op.LocalTee) pushes.Add(i + 1);
             // (bytes of the object that may have been written; counted from where the store's base is pushed)
             var written = new HashSet<int>();
-            for (int j = i + 2; j < b.Count; j++)
+            // (from the local.tee itself: what takes the object it pushes is followed as any later push of it)
+            for (int j = i + 1; j < b.Count; j++)
             {
                 var y = b[j];
                 if (Effect(y) is null) break; // control flow: stop following
@@ -139,6 +142,37 @@ static class Fresh
                     continue;
                 }
                 if (IsStore(c.Op) && operand == 0) { written.UnionWith(Bytes(c)); continue; }
+                // the same through the field's address in a local: o; i32.const k; i32.add; local.tee a; i32.load;
+                // local.get a; value; i32.store; call rt.release (an exchange, rt.store_ref, written out)
+                if (c.Op == Op.I32Add && operand == 0 && at == j + 2 && b[j + 1].Op == Op.I32Const && at + 2 < b.Count
+                    && b[at + 1].Op == Op.LocalTee && !aliases.Contains((int)b[at + 1].Imm) && b[at + 2].Op == Op.I32Load)
+                {
+                    int addrLocal = (int)b[at + 1].Imm, inner = (int)b[at + 2].Imm, off = (int)b[j + 1].Imm + inner;
+                    if (!Enumerable.Range(off, 4).Any(written.Contains) && Consumer(b, at + 2) is var (rel2, rop2) && rop2 == 0 && Rc.IsRelease(b[rel2])
+                        && IsRcStoreAt(b, at + 3, rel2, addrLocal, inner, aliases))
+                    {
+                        toSet.Add(at + 1); drop.Add(at + 2); drop.Add(rel2);
+                        written.UnionWith(Enumerable.Range(off, 4));
+                        continue;
+                    }
+                    break;
+                }
+                // the same as an exchange: o; i32.const k; i32.add; value; call rt.store_ref; call rt.release
+                // (the old value it returns is null: a plain store, and nothing to release)
+                if (c.Op == Op.I32Add && operand == 0 && at == j + 2 && b[j + 1].Op == Op.I32Const)
+                {
+                    int off = (int)b[j + 1].Imm;
+                    if (!Enumerable.Range(off, 4).Any(written.Contains) && Consumer(b, at) is var (sr, sop) && sop == 0
+                        && b[sr].Op == Op.Call && b[sr].Ref is WasmFunction { Name: "rt.store_ref" or "rt.store_ref_plain" }
+                        && sr + 1 < b.Count && Rc.IsRelease(b[sr + 1]) && Consumer(b, sr) is var (rel2, rop2) && rel2 == sr + 1 && rop2 == 0
+                        && !Enumerable.Range(at + 1, sr - at - 1).Any(k => b[k].Op is Op.LocalGet or Op.LocalSet or Op.LocalTee && aliases.Contains((int)b[k].Imm) || b[k].Op is Op.Call or Op.CallIndirect))
+                    {
+                        toStore.Add(sr); drop.Add(sr + 1);
+                        written.UnionWith(Enumerable.Range(off, 4));
+                        continue;
+                    }
+                    break;
+                }
                 if (c.Op == Op.Call && c.Ref is WasmFunction g && operand == 0 && WritesOf(g) is { } gw) { written.UnionWith(gw); continue; }
                 if (c.Op is Op.LocalSet or Op.LocalTee)
                 {
@@ -155,10 +189,23 @@ static class Fresh
         var nb = new List<Instr>(b.Count);
         for (int i = 0; i < b.Count; i++)
         {
+            if (toSet.Contains(i)) { nb.Add(b[i] with { Op = Op.LocalSet }); continue; }
+            if (toStore.Contains(i)) { nb.Add(b[i] with { Op = Op.I32Store, Imm = 0, Imm2 = 2, Ref = null }); continue; }
             if (!drop.Contains(i)) { nb.Add(b[i]); continue; }
             if (b[i].Pos >= 0 && i + 1 < b.Count && !drop.Contains(i + 1) && b[i + 1].Pos < 0) b[i + 1] = b[i + 1] with { Pos = b[i].Pos };
         }
         f.Body = nb;
+    }
+
+    /// <summary>Between from and rel: `local.get a; value; i32.store off` (a: the field's address) and nothing else that
+    /// refers to the object or to a.</summary>
+    static bool IsRcStoreAt(List<Instr> b, int from, int rel, int addrLocal, int off, HashSet<int> aliases)
+    {
+        if (b[from].Op != Op.LocalGet || b[from].Imm != addrLocal) return false;
+        if (Consumer(b, from) is not var (st, sop) || sop != 0 || b[st].Op != Op.I32Store || b[st].Imm != off || st + 1 != rel) return false;
+        for (int k = from + 1; k < st; k++)
+            if (b[k].Op is Op.LocalGet or Op.LocalSet or Op.LocalTee && (aliases.Contains((int)b[k].Imm) || b[k].Imm == addrLocal) || b[k].Op is Op.Call or Op.CallIndirect) return false;
+        return true;
     }
 
     /// <summary>Between from and rel: `local.get o; value; i32.store off` and nothing else that refers to o.</summary>
