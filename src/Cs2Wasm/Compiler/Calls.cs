@@ -918,6 +918,8 @@ sealed partial class FunctionCompiler
             case "Rt.ArenaFinType": E.Call(Rt.ArenaFinTypeFn); return Own.None;
             case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
             case "Rt.NoThreads": E.I32(Driver.s_noThreads ? 1 : 0); return Own.None;
+            case "Rt.DropStats": E.I32(Environment.GetEnvironmentVariable("CS2WASM_DROP_STATS") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoDropCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;
             case "Rt.BulkEnter": E.Call(Rt.BulkEnter); return Own.None;
             case "Rt.BulkExit": E.Call(Rt.BulkExit); return Own.None;

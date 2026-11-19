@@ -539,6 +539,31 @@ namespace Cs2Wasm.Runtime
 
         /// <summary>The module is built for an engine without threads (CS2WASM_NO_THREADS): starting one throws.</summary>
         [Intrinsic] public static extern bool NoThreads();
+        /// <summary>CS2WASM_NO_DROP_CHECK=1 (a measurement, at compile time: what a let-go structure kept by its own
+        /// holds leaves is not freed): the check at the drop is off.</summary>
+        [Intrinsic] static extern bool NoDropCheck();
+        // CS2WASM_DROP_STATS=1 (a diagnosis, at compile time): the check at the drop counts what it does and says so
+        [Intrinsic] static extern bool DropStats();
+        static long s_dsCalls, s_dsWalked, s_dsDead, s_dsFailInside, s_dsFailHeld, s_dsMax, s_dsFromRelease, s_dsFromUnlink;
+        static int s_dsBuf;
+        static void DsNum(ref int at, string label, long v)
+        {
+            for (int i = 0; i < label.Length; i++) { Mem.StoreU16(s_dsBuf + 2 * at, label[i]); at++; }
+            if (v == 0) { Mem.StoreU16(s_dsBuf + 2 * at, '0'); at++; }
+            int start = at;
+            while (v > 0) { Mem.StoreU16(s_dsBuf + 2 * at, '0' + (int)(v % 10)); at++; v /= 10; }
+            for (int i = start, j = at - 1; i < j; i++, j--) { int a = Mem.LoadU16(s_dsBuf + 2 * i); Mem.StoreU16(s_dsBuf + 2 * i, Mem.LoadU16(s_dsBuf + 2 * j)); Mem.StoreU16(s_dsBuf + 2 * j, a); }
+        }
+        static void DsPrint()
+        {
+            if (s_dsBuf == 0) s_dsBuf = Alloc(1024);
+            int at = 0;
+            DsNum(ref at, "drop checks ", s_dsCalls); DsNum(ref at, " walked ", s_dsWalked); DsNum(ref at, " dead ", s_dsDead);
+            DsNum(ref at, " fail-inside ", s_dsFailInside); DsNum(ref at, " fail-held ", s_dsFailHeld); DsNum(ref at, " max ", s_dsMax);
+            DsNum(ref at, " from-release ", s_dsFromRelease); DsNum(ref at, " from-unlink ", s_dsFromUnlink);
+            Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
+            Engine.Write(s_dsBuf, at);
+        }
         /// <summary>No other thread can ever run: the program starts none (known when the whole program is compiled).</summary>
         [Intrinsic] public static extern bool SingleThreaded();
         /// <summary>Threads: the lock of a place that holds a reference (the one a read that counts and a store take),
@@ -1350,7 +1375,10 @@ namespace Cs2Wasm.Runtime
         // none: it is a plain object but for the word that would point to them). Before the object's header: that
         // pointer, at -4. (With threads the object's count word must not be where a free block has its link, at 8:
         // sixteen bytes before the header then.)
-        const int MemberWords = 32;
+        // (a ninth word, at 36: the note of a check at the drop that failed, Dropped; apart from the word of a container
+        // waiting to own the member, which it once shared: a failed check wiped the waiting owner, so the member stayed
+        // without one and was checked again at its next loss, every time, all it owned gone through each time)
+        const int MemberWords = 40, MarkWord = 36;
         static int ArenaPrefix => SingleThreaded() ? 8 : 16;
         /// <summary>The first word of the block of an object of a cycle-capable type, while it is allocated: no count
         /// word of an object that starts its block is below -1 (a member's is, and a member never starts its block),
@@ -1385,7 +1413,7 @@ namespace Cs2Wasm.Runtime
             {
                 if (value == 0) return;
                 r = Alloc(MemberWords);
-                Mem.StoreI64(r, 0); Mem.StoreI64(r + 8, 0); Mem.StoreI64(r + 16, 0); Mem.StoreI64(r + 24, 0);
+                Mem.StoreI64(r, 0); Mem.StoreI64(r + 8, 0); Mem.StoreI64(r + 16, 0); Mem.StoreI64(r + 24, 0); Mem.StoreI64(r + 32, 0);
                 Mem.StoreI32(obj - 4, r);
             }
             Mem.StoreI32(r + MemberWords - k, value);
@@ -1943,7 +1971,6 @@ namespace Cs2Wasm.Runtime
         // outside code holds (the word for another holder, odd): it is looked at again when that number is zero, or
         // when one of them loses a reference from a member.
         static int s_trQ, s_trN, s_trCap, s_trial, s_failedTops, s_watch, s_watchHit;
-        const int TrMany = 0x3ffffff0;
 
         static void TrPush(int m)
         {
@@ -1961,8 +1988,8 @@ namespace Cs2Wasm.Runtime
         /// <summary>The top's note of a check that failed is gone.</summary>
         static void ClearMark(int m)
         {
-            if ((PL(m, 20) & 1) == 0) return;
-            PS(m, 20, 0);
+            if ((PL(m, MarkWord) & 1) == 0) return;
+            PS(m, MarkWord, 0);
             s_failedTops--;
         }
 
@@ -1978,6 +2005,21 @@ namespace Cs2Wasm.Runtime
                 v = w;
             }
             return 0;
+        }
+
+        /// <summary>The member is the top or one of what it owns, by the owners above it (within a reach of 64).</summary>
+        static bool Under(int m, int top)
+        {
+            int v = m;
+            for (int k = 0; k < 64 && v != 0; k++)
+            {
+                if (v == top) return true;
+                if ((PL(v, 24) & Owned) == 0) return false;
+                int w = PL(v, 32);
+                if (w == 0 || Mem.LoadI32(w) >= -1) return false;
+                v = w;
+            }
+            return false;
         }
 
         static void TrVisit(int mode)
@@ -2002,11 +2044,11 @@ namespace Cs2Wasm.Runtime
         /// holds it, the check. True when it was destroyed, with all it owns.</summary>
         static bool Dropped(int x)
         {
-            if (s_destroying != 0 || s_trial != 0) return false;
+            if (NoDropCheck() || s_destroying != 0 || s_trial != 0) return false;
             if (Mem.LoadI32(x) != -2 || PL(x, 4) == 0) return false;
             if ((PL(x, 24) & (Owned | Dying)) != 0) return false;
-            int o = PL(x, 20);
-            if (o != 0 && (o & 1) == 0) return false;
+            // (a container waiting to own it refers to it: not kept by holds alone)
+            if (PL(x, 20) != 0) return false;
             int ar = ArenaOf(x);
             if (Mem.LoadI64(ar + 12) != 0) return false;
             ClearMark(x);
@@ -2018,20 +2060,29 @@ namespace Cs2Wasm.Runtime
             TrVisit(13);
             // the counted references among them, off
             TrVisit(14);
-            int held = 0; bool inside = true;
+            int held = 0, outside = 0; bool inside = true;
             for (int i = 0; i < s_trN; i++)
             {
                 int m = Mem.LoadI32(s_trQ + 4 * i);
                 if (Mem.LoadI32(m) != -2) held++;
-                if (PL(m, 4) != 0) inside = false;
+                int left = PL(m, 4);
+                if (left != 0) { inside = false; outside += left; }
             }
             TrVisit(15);
             bool dead = inside && held == 0;
+            if (DropStats())
+            {
+                s_dsCalls++; s_dsWalked += s_trN; if (s_trN > s_dsMax) s_dsMax = s_trN;
+                if (dead) s_dsDead++; else if (!inside) s_dsFailInside++; else s_dsFailHeld++;
+                if ((s_dsCalls & 4095) == 0) DsPrint();
+            }
             s_watchHit = 0;
             if (!dead)
             {
                 for (int i = 0; i < s_trN; i++) { int m = Mem.LoadI32(s_trQ + 4 * i); PS(m, 24, PL(m, 24) & ~Dying); }
-                PS(x, 20, ((inside ? held : TrMany) << 1) | 1);
+                // (the note: odd; bit 1 clear, how many of them outside code holds, TopHeld; set, how many references
+                // from members outside what it owns are left into it, NoteOutside)
+                PS(x, MarkWord, inside ? (held << 2) | 1 : (outside << 2) | 3);
                 s_failedTops++;
                 s_trial = 0;
                 return false;
@@ -2058,12 +2109,24 @@ namespace Cs2Wasm.Runtime
         {
             int t = Top(p);
             if (t == 0) return 0;
-            int o = PL(t, 20);
-            if ((o & 1) == 0) return 0;
-            int n = o >> 1;
-            if (n >= TrMany) return 0;
-            n += d;
-            if (n > 0) { PS(t, 20, (n << 1) | 1); return 0; }
+            int o = PL(t, MarkWord);
+            if ((o & 3) != 1) return 0;
+            int n = (o >> 2) + d;
+            if (n > 0) { PS(t, MarkWord, (n << 2) | 1); return 0; }
+            return t;
+        }
+
+        /// <summary>A reference from a member (the container) into what a top owns came (d = 1) or went (-1). When the
+        /// top's check failed because such references from outside what it owns were left, their number; at zero the top
+        /// is looked at again. Returns the top to look at, or 0. (A reference from inside changes nothing.)</summary>
+        static int NoteOutside(int member, int container, int d)
+        {
+            int t = Top(member);
+            if (t == 0) return 0;
+            int o = PL(t, MarkWord);
+            if ((o & 3) != 3 || Under(container, t)) return 0;
+            int n = (o >> 2) + d;
+            if (n > 0) { PS(t, MarkWord, (n << 2) | 3); return 0; }
             return t;
         }
 
@@ -2094,8 +2157,10 @@ namespace Cs2Wasm.Runtime
             if (w == -2)
             {
                 int t = s_failedTops != 0 ? TopHeld(p, -1) : 0;
-                if (t != 0 && t != p && Dropped(t)) { DrainKills(); return; }
-                if (Dropped(p)) { DrainKills(); return; }
+                if (DropStats()) s_dsFromRelease++;
+                if (t != 0 && Dropped(t)) { DrainKills(); return; }
+                // (a top a check failed for: again only when the number of its members outside code holds is zero, TopHeld)
+                if (t != p && (PL(p, MarkWord) & 1) == 0 && Dropped(p)) { DrainKills(); return; }
             }
             if ((uint)PL(p, 24) >= UOne) { UpdateHold(p); DrainKills(); }
         }
@@ -2254,6 +2319,7 @@ namespace Cs2Wasm.Runtime
                 return val;
             }
             PS(val, 4, PL(val, 4) + 1);
+            if (s_failedTops != 0) NoteOutside(val, container, 1);
             if (i >= 0) SetSlotBits(container, i, 1);
             else if (slot == 0 || s_visitElem != 0)
             {
@@ -2273,7 +2339,7 @@ namespace Cs2Wasm.Runtime
                 else if (ow == 0) TakeOwnership(val, container);
                 // (the first other container that holds it is the one to own it next: a later one, a task's
                 // result, a temporary array, is as often gone by then)
-                else if (PL(val, 20) == 0 || (PL(val, 20) & 1) != 0) { ClearMark(val); PS(val, 20, container); }
+                else if (PL(val, 20) == 0) { ClearMark(val); PS(val, 20, container); }
             }
             UpdateHold(val);
             return val;
@@ -2327,6 +2393,7 @@ namespace Cs2Wasm.Runtime
                 PS(old, 4, n);
                 if (slot == 0 && PL(container, 28) > 0) PS(container, 28, PL(container, 28) - 1);
                 bool owned = PL(old, 32) == container && (PL(old, 24) & (Owned | MultMask)) == (Owned | MultOne);
+                bool ownerEdge = PL(old, 32) == container;
                 OwnerLetGo(old, container);
                 // (a container replaced by another in the same slot, a list's array by a larger one: what it owned is
                 // the new one's from here on)
@@ -2340,8 +2407,14 @@ namespace Cs2Wasm.Runtime
                     // (left with what it owns alone, or under a top that a check failed for: the check at the drop)
                     s_watch = container;
                     int t = s_failedTops != 0 ? Top(old) : 0;
-                    bool died = t != 0 && t != old && (PL(t, 20) & 1) != 0 && Dropped(t);
-                    if (!died) died = Dropped(old);
+                    if (DropStats()) s_dsFromUnlink++;
+                    // (a top a check failed for is looked at again only where the look can succeed: when the number of
+                    // references from outside what it owns that were left reaches zero, NoteOutside; when it lost its
+                    // owner. Each look goes through all it owns: a sort over references to a large structure went
+                    // through it at each move)
+                    int back = t != 0 ? NoteOutside(old, container, -1) : 0;
+                    bool died = back != 0 && Dropped(back);
+                    if (!died && back != old && (ownerEdge || (PL(old, MarkWord) & 1) == 0)) died = Dropped(old);
                     gone = died && s_watchHit != 0;
                     s_watch = 0;
                     if (!died && old != container) TryLeave(old);

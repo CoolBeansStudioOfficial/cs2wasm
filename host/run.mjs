@@ -45,7 +45,7 @@ const module = new WebAssembly.Module(bytes);
 const memory = new WebAssembly.Memory({ initial: pages, maximum: maxPages, shared: true });
 let buf = '';
 const flush = () => { if (buf) { writeSync(1, buf); buf = ''; } };
-let threaded = false; // once a worker exists, output is written through at once so it interleaves in order
+let threaded = process.env.CS2WASM_UNBUFFERED === "1"; // once a worker exists (or CS2WASM_UNBUFFERED=1), output is written through at once so it interleaves in order
 const out = {
   mainCanBlock: true, // (a Node process: its main thread may wait)
   write: (s) => { if (threaded) { writeSync(1, s); return; } buf += s; if (buf.length > 65536) flush(); },
