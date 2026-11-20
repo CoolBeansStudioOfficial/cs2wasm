@@ -368,30 +368,8 @@ internal sealed partial class PluginHost
         };
     }
 
-    /// <summary>The branches an operation runs under, outermost first.</summary>
-    static IReadOnlyList<BranchCondition> ConditionsOf(IOperation op, IOperation root)
-    {
-        var list = new List<BranchCondition>();
-        IOperation child = op;
-        for (var p = op.Parent; p != null && !ReferenceEquals(child, root); child = p, p = p.Parent)
-        {
-            switch (p)
-            {
-                case IConditionalOperation c when ReferenceEquals(c.WhenTrue, child): list.Add(new(c.Condition, true)); break;
-                case IConditionalOperation c when ReferenceEquals(c.WhenFalse, child): list.Add(new(c.Condition, false)); break;
-                case IWhileLoopOperation w when ReferenceEquals(w.Body, child) && w.Condition != null: list.Add(new(w.Condition, !w.ConditionIsUntil)); break;
-                case IForLoopOperation f when ReferenceEquals(f.Body, child) && f.Condition != null: list.Add(new(f.Condition, true)); break;
-                case IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } b when ReferenceEquals(b.RightOperand, child): list.Add(new(b.LeftOperand, true)); break;
-                case IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } b when ReferenceEquals(b.RightOperand, child): list.Add(new(b.LeftOperand, false)); break;
-                case ISwitchCaseOperation sc: foreach (var cl in sc.Clauses) list.Add(new(cl, true)); break;
-                case ISwitchExpressionArmOperation arm when !ReferenceEquals(arm.Pattern, child): list.Add(new(arm.Pattern, true)); if (arm.Guard != null && !ReferenceEquals(arm.Guard, child)) list.Add(new(arm.Guard, true)); break;
-                case IConditionalAccessOperation ca when ReferenceEquals(ca.WhenNotNull, child): list.Add(new(ca.Operation, true)); break;
-                case ICatchClauseOperation cc when cc.Filter != null && !ReferenceEquals(cc.Filter, child): list.Add(new(cc.Filter, true)); break;
-            }
-        }
-        list.Reverse();
-        return list;
-    }
+    /// <summary>The branches an operation runs under, outermost first, early returns included (PluginPaths.cs).</summary>
+    static IReadOnlyList<BranchCondition> ConditionsOf(IOperation op, IOperation root) => ConditionsWithin(op, root, stopAtFunctions: false);
 
     // ---------------- def-use ----------------
     readonly Dictionary<IMethodSymbol, DefUse?> _defUse = new(SymbolEqualityComparer.Default);
@@ -670,18 +648,6 @@ internal sealed partial class PluginHost
         if (SymbolEqualityComparer.Default.Equals(a.OriginalDefinition, b.OriginalDefinition)) return true;
         for (var x = a.BaseType; x != null; x = x.BaseType) if (SymbolEqualityComparer.Default.Equals(x.OriginalDefinition, b.OriginalDefinition)) return true;
         return a.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, b.OriginalDefinition));
-    }
-
-    public bool MayAlias(IOperation a, IOperation b)
-    {
-        if (ReferenceEquals(a, b)) return true;
-        var ta = Strip(a).Type; var tb = Strip(b).Type;
-        if (ta == null || tb == null || ta.IsValueType || tb.IsValueType) return false;
-        if (Strip(a) is IObjectCreationOperation or IArrayCreationOperation && Strip(b) is IObjectCreationOperation or IArrayCreationOperation) return false;
-        if (ta.SpecialType == SpecialType.System_Object || tb.SpecialType == SpecialType.System_Object) return true;
-        if (IsSubtype(ta, tb) || IsSubtype(tb, ta)) return true;
-        // unrelated types: only an object of a type that is both
-        return D.ConstructedTypes().Any(c => IsSubtype(c, ta) && IsSubtype(c, tb));
     }
 
     // ---------------- changes ----------------

@@ -15,7 +15,9 @@ namespace Cs2Wasm;
 /// goes on with (InterceptValue), write hooks at one write (InstrumentWrite), which accesses a hook runs at
 /// (MemberAccess.Instrumentable), and generated code that names the program's private members. Version 5: collection
 /// entries as accesses (MemberAccess.IsEntry) with hooks at them (InstrumentEntryWrites, InstrumentEntryReads); a hook
-/// after a statement (InstrumentAfter).
+/// after a statement (InstrumentAfter); conditions with early returns and across calls (CallersOf, PathConditions);
+/// aliasing by where references come from and which new objects a method owns alone (MayAlias, AllocationSites,
+/// IsOwned).
 /// </summary>
 public interface ICompilerPlugin
 {
@@ -139,8 +141,26 @@ public sealed class PluginContext
     public IReadOnlyList<UpdateRule> GetUpdateRules(IMethodSymbol method) => _host.UpdateRules(method);
     /// <summary>The types of the objects a field can refer to: the static types stored into it and their constructed subtypes.</summary>
     public IReadOnlyCollection<ITypeSymbol> PointsTo(IFieldSymbol field) => _host.PointsTo(field);
-    /// <summary>Whether two reference-typed operations can name the same object (false only when it is certain).</summary>
+    /// <summary>Whether two reference-typed operations can name the same object (false only when it is certain). From
+    /// version 5 (every version gets the answer) by where each comes from, through locals: two different `new`s, a
+    /// `new` and a parameter's incoming value in its method, or a `new` its method owns alone (<see cref="IsOwned"/>)
+    /// and anything from outside it, do not; then by type.</summary>
     public bool MayAlias(IOperation a, IOperation b) => _host.MayAlias(a, b);
+    /// <summary>(Version 5.) The `new` expressions whose objects a reference can name (each as an operation, to
+    /// compare by its Syntax), through locals by the method's def-use chains; null when it can name an object made
+    /// elsewhere (a field's, a parameter's, a call's).</summary>
+    public IReadOnlyCollection<IOperation>? AllocationSites(IOperation reference) => _host.AllocationSites(reference);
+    /// <summary>(Version 5.) Whether the object a `new` makes stays its method's own (section 4's single owner): it is
+    /// not stored, captured, returned or handed to code that keeps or returns it (the compiler's escape analysis), so
+    /// no reference from outside the method names it. <see cref="MayAlias"/> uses it.</summary>
+    public bool IsOwned(IOperation creation) => _host.IsOwned(creation);
+    /// <summary>(Version 5.) The calls of a method in reachable source code, each with the conditions it runs under
+    /// (a call of a virtual or interface method counts for every override or implementation).</summary>
+    public IReadOnlyList<CallSite> CallersOf(IMethodSymbol method) => _host.CallersOf(method);
+    /// <summary>(Version 5.) The full condition an operation runs under, across calls: every path of calls from a
+    /// method no source code calls (or from a delegate's invocation, a recursion, or the cut), with the conditions
+    /// along it. The operation runs only when, for some path, all of that path's conditions hold.</summary>
+    public IReadOnlyList<ConditionPath> PathConditions(IOperation operation, int maxDepth = 16, int maxPaths = 1024) => _host.PathConditions(operation, maxDepth, maxPaths);
     /// <summary>(Version 3.) The values that can depend on thread scheduling: marks, members, and a query.</summary>
     public SchedulingInfo Scheduling => _host.Scheduling;
 

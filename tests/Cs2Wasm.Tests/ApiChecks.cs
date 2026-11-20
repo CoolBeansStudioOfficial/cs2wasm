@@ -385,6 +385,59 @@ static class ApiChecks
             return !refused.Success && refused.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("never completes normally")) ? null : "a hook after a return was not refused: " + Errors(refused);
         });
 
+        Check("plugin v5: conditions with early returns and across calls (paths from the export, a virtual call's callers); aliasing by where references come from and which new objects a method owns alone", () =>
+        {
+            var src = Header + """
+                namespace Game {
+                class Unit { public int Hp; }
+                class World {
+                    public bool Paused; public int Tick;
+                    Unit _boss = new Unit();
+                    public void Step(bool input) {
+                        if (Paused) return;
+                        Tick++;
+                        if (input) Fire(_boss);
+                    }
+                    void Fire(Unit u) {
+                        if (u.Hp <= 0) return;
+                        u.Hp -= 1;
+                    }
+                    public virtual void Hit(Unit u) { u.Hp -= 2; }
+                    static Unit? s_kept;
+                    static void Keep(Unit u) { s_kept = u; }
+                    public static int Make() {
+                        var a = new Unit(); var b = new Unit(); var c = a;
+                        c.Hp = 3;
+                        var kept = new Unit(); Keep(kept);
+                        Unit d = b.Hp > 0 ? a : b;
+                        var o = new Unit(); o.Hp = 1;
+                        var k = s_kept;
+                        int h = o.Hp + (k == null ? 0 : 1);
+                        return a.Hp + b.Hp + d.Hp + kept.Hp + h - 2;
+                    }
+                    public int Self(Unit p) { var n = new Unit(); return n == p ? 1 : 0; }
+                }
+                class Arena : World { public override void Hit(Unit u) { u.Hp -= 3; } }
+                static class Script {
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        var w = new World(); w.Step(true); w.Step(false);
+                        World x = new Arena(); x.Hit(new Unit());
+                        Console.WriteLine(World.Make() + " " + w.Tick + " " + w.Self(new Unit()));
+                    }
+                }
+                }
+                """;
+            var plugin = new PathPlugin();
+            var r = Compile(src, new CompileOptions { Plugins = [plugin], Checked = true });
+            if (!r.Success) return Errors(r);
+            if (plugin.Problem != null) return plugin.Problem;
+            var path = Path.Combine(outDir, "api_plugin_paths.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            return o == "3 2 0\n" ? null : $"output:\n{o}\n{e}";
+        });
+
         Check("plugin v4: suppressible imports do nothing while their bit is set, whatever calls them (a virtual method, a delegate, a lambda, an interface); other imports and the program's state go on", () =>
         {
             var src = Header + """
@@ -886,6 +939,61 @@ static class ApiChecks
             c.InstrumentEntryWrites(F("Log"), H("Log"), tag: 5);
             c.InstrumentEntryWrites(F("Cells"), H("Cell"));
             c.InstrumentEntryReads(F("Scores"), H("Read"));
+        }
+    }
+
+    sealed class PathPlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public int InterfaceVersion => 5;
+        public string Name => "paths";
+        public void Run(PluginContext c)
+        {
+            Problem = Check(c);
+        }
+        static string? Check(PluginContext c)
+        {
+            var world = c.Compilation.GetTypeByMetadataName("Game.World")!;
+            var unit = c.Compilation.GetTypeByMetadataName("Game.Unit")!;
+            static string Conds(IEnumerable<BranchCondition> cs) => string.Join(" ", cs.Select(x => x.Test.Syntax + ":" + x.WhenTrue));
+            // an early return is a condition
+            var tick = c.AccessesOf(world.GetMembers("Tick").Single()).Single(a => a.Method.Name == "Step");
+            if (Conds(tick.Conditions) != "Paused:False") return "conditions of Tick++: " + Conds(tick.Conditions);
+            // across calls: from the export through Step to Fire
+            var hit = c.AccessesOf(unit.GetMembers("Hp").Single()).Single(a => a.Method.Name == "Fire" && a.Kind == AccessKind.ReadWrite);
+            var paths = c.PathConditions(hit.Operation);
+            // (Main calls Step twice: two paths)
+            if (paths.Count != 2 || paths.Select(x => x.Calls[0].Call.Syntax.ToString()).Distinct().Count() != 2) return "paths to Fire's write: " + paths.Count;
+            foreach (var p in paths) {
+            if (p.Start != PathStart.Entry || p.Root.Name != "Main" || string.Join(">", p.Calls.Select(s => s.Callee.Name)) != "Step>Fire")
+                return $"path: {p.Start} {p.Root.Name} {string.Join(">", p.Calls.Select(s => s.Callee.Name))}";
+            if (Conds(p.Conditions) != "Paused:False input:True u.Hp <= 0:False") return "path conditions: " + Conds(p.Conditions);
+            }
+            // a virtual call is a call of the override
+            var arenaHit = (IMethodSymbol)c.Compilation.GetTypeByMetadataName("Game.Arena")!.GetMembers("Hit").Single();
+            if (!c.CallersOf(arenaHit).Any(s => s.Caller.Name == "Main" && s.Callee.Name == "Hit")) return "Arena.Hit has no caller";
+            // aliasing
+            var tree = c.Compilation.SyntaxTrees.Single();
+            var model = c.Compilation.GetSemanticModel(tree);
+            var make = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax>().Single(m => m.Identifier.Text == "Make");
+            var ret = make.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ReturnStatementSyntax>().Single();
+            var hst = make.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.LocalDeclarationStatementSyntax>().Single(s => s.ToString().StartsWith("int h"));
+            IOperation L(SyntaxNode within, string name) => model.GetOperation(within.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>().First(i => i.Identifier.Text == name))!;
+            IOperation New(string local) => model.GetOperation(make.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax>().Single(v => v.Identifier.Text == local).Initializer!.Value)!;
+            var (a, b, d, kept) = (L(ret, "a"), L(ret, "b"), L(ret, "d"), L(ret, "kept"));
+            var (o, k) = (L(hst, "o"), L(hst, "k"));
+            if (c.MayAlias(a, b)) return "a and b (two news) alias";
+            if (!c.MayAlias(a, L(make.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionStatementSyntax>().First(s => s.ToString().StartsWith("c.Hp")), "c"))) return "c = a does not alias a";
+            if (!c.MayAlias(d, a) || !c.MayAlias(d, b)) return "d (a or b) does not alias both";
+            if (c.AllocationSites(d)?.Count != 2) return "allocation sites of d: " + c.AllocationSites(d)?.Count;
+            if (c.AllocationSites(k) != null) return "a static's value has allocation sites";
+            if (!c.IsOwned(New("o"))) return "o is not owned";
+            if (c.IsOwned(New("kept"))) return "kept (handed to Keep, which stores it) is owned";
+            if (c.MayAlias(o, k)) return "an owned new and a static's value alias";
+            if (!c.MayAlias(kept, k)) return "kept and the static it was stored in do not alias";
+            var self = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.BinaryExpressionSyntax>().Single(x => x.ToString() == "n == p");
+            if (c.MayAlias(model.GetOperation(self.Left)!, model.GetOperation(self.Right)!)) return "a new and a parameter's incoming value alias";
+            return null;
         }
     }
 

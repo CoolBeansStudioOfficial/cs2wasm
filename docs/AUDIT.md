@@ -531,6 +531,15 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     and not when it is left by a `return`, a `throw` or an exception; a jump statement is refused. In an async
     method or an iterator (compiled from Roslyn's lowered graph) it runs after the statement's last lowered
     operation, and only expression statements and declarations can be hooked there.
+  - Conditions and aliasing (A4.8, version 5): conditions count early returns (`if (c) return;` and a branch that
+    always leaves put the statements after it under `c` false, up to a label). `CallersOf(method)` gives each call
+    with its conditions (a virtual or interface call counts for every override and implementation; a property's
+    accessor, a constructor), and `PathConditions(operation)` every path of calls from a method no source code
+    calls (or from a delegate's invocation, a recursion, the cut) with the conditions along it, outermost first.
+    `MayAlias` follows where references come from through the def-use chains: two different `new`s, a `new` and a
+    parameter's incoming value, or a `new` its method owns alone (`IsOwned`, from the escape analysis: not stored,
+    captured, returned or handed to code that keeps it) and anything from outside do not alias; then types.
+    `AllocationSites(reference)` gives the `new`s a reference can name.
   - Still open: the closed-form solver (A4.6), conditions across
     calls and the ownership-based alias query (A4.8), the list of unsure sites, plugins before the first compile
     (A4.9), and the first slice of the real plugin in the Bazoodle repository (9.4).
