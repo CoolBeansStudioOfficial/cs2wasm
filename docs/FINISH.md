@@ -102,3 +102,10 @@ Each stream is independent of the others' files where marked, so it can run in a
   phase made the check after the finalizers keep the group) and 072_http's out-of-bounds (a compare-exchange into a
   group's slot that did not happen left the offered value owned by the container) found and fixed; tests 149 and
   150 fail before; `tools/stress.mjs` for loaded runs. Details in docs/AUDIT.md.
+- 2026-11-20, stream A: the two self-hosted compilers' profiles side by side (both under the same machine load:
+  cs2wasm 74.5 s, NativeAOT-LLVM 36.4 s). cs2wasm's runtime 31.4 s (arenas 19.9, counts 4.4, allocation 3.6)
+  against NativeAOT's GC and allocation 6.0 s; the same Roslyn methods' own code 2.0x; host file calls 8.0 s against
+  17.7 s. Fixed from it: displays of local functions that are only called live in the frame (c1acced; Roslyn's
+  ParseAnonymousFunctionModifiers allocated one per call, 948 ms against 33), small bodies inlined up to 12
+  instructions and AggressiveInlining ones up to 24 (Hash.Combine, Rt.PL stayed calls), a struct copied into a
+  container no group can hold stores plainly. Micro baseline 1.85x to about 1.75x.
