@@ -295,6 +295,221 @@ static class ApiChecks
             return !refused.Success && refused.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("was not applied")) ? null : "a value hook on an assignment's target was not refused";
         });
 
+        Check("plugin v5: collection entries are accesses (an element stored, a compound store, Remove, TryGetValue, a foreach, an array element, through a local) with their keys, and hooks after them get the receiver and the key; plugins of version 4 do not see them; a hook whose key type differs is refused", () =>
+        {
+            var src = Header + """
+                using System.Collections.Generic;
+                namespace Game {
+                class Player { public string Name; public Player(string n) { Name = n; } public override string ToString() => Name; }
+                class Match {
+                    public Dictionary<Player, int> Scores = new();
+                    public List<int> Log = new();
+                    public int[] Cells = new int[4];
+                    public void Score(Player p, int n) { Scores[p] = n; }
+                    public void Bump(Player p) { Scores[p] += 1; }
+                    public void Drop(Player p) { Scores.Remove(p); }
+                    public int Get(Player p) => Scores.TryGetValue(p, out var v) ? v : -1;
+                    public void Note(int x) { var log = Log; log.Add(x); }
+                    public void Cell(int i) { Cells[i] = i * 10; }
+                    public int Total() { int t = 0; foreach (var kv in Scores) t += kv.Value; return t; }
+                    public static Player Pick(Player a, Player b, bool first) => first ? a : b;
+                }
+                static class Script {
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        var m = new Match(); var a = new Player("a"); var b = new Player("b");
+                        m.Score(a, 3); m.Score(b, 4); m.Bump(a); m.Drop(b); m.Note(7); m.Cell(2);
+                        m.Scores[Match.Pick(a, b, false)] = 9;
+                        Console.WriteLine(m.Get(a) + " " + m.Total() + " " + m.Log.Count + " " + m.Cells[2]);
+                    }
+                }
+                }
+                """;
+            var plugin = new EntryPlugin();
+            var r = Compile(src, new CompileOptions { Plugins = [plugin], Checked = true });
+            if (!r.Success) return Errors(r);
+            if (plugin.Problem != null) return plugin.Problem;
+            var path = Path.Combine(outDir, "api_plugin_entries.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            var want = "write a 3 True\nwrite b 4 True\nwrite a 4 True\nwrite b -1 True\nlog True 5\ncell 2 20 True\nwrite b 9 True\nread\nread\n4 13 1 20\n";
+            if (o != want) return $"output:\n{o}\nwanted:\n{want}\n{e}";
+            var old = new EntryPlugin { Version = 4 };
+            var r4 = Compile(src, new CompileOptions { Plugins = [old] });
+            if (!r4.Success) return Errors(r4);
+            if (old.Problem != null) return "version 4: " + old.Problem;
+            var refused = Compile(src, new CompileOptions { Plugins = [new EntryPlugin { WrongKey = true }] });
+            return !refused.Success && refused.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("the key here is")) ? null : "a hook whose key type differs was not refused: " + Errors(refused);
+        });
+
+        Check("plugin v5: a hook after a statement runs when it completes normally (an if, a loop left by break, a declaration with an await) and not when it returns or throws; a hook after a jump is refused", () =>
+        {
+            var src = Header + """
+                using System.Threading.Tasks;
+                namespace Game {
+                static class Script {
+                    static int s_n;
+                    static void Step(int i) {
+                        if (i == 2) return;
+                        s_n += i;
+                    }
+                    static int Find(int[] xs) {
+                        foreach (var x in xs) { if (x > 2) break; }
+                        try { Throw(); } catch (Exception) { }
+                        return 0;
+                    }
+                    static void Throw() => throw new InvalidOperationException();
+                    static async Task<int> Answer() { await Task.Yield(); return 4; }
+                    static async Task<int> Later() {
+                        int a = await Answer();
+                        return a;
+                    }
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        for (int i = 0; i < 4; i++) Step(i);
+                        Console.WriteLine("n " + s_n);
+                        Find(new[] { 1, 5 }); Find(new[] { 1 });
+                        Console.WriteLine(Later().GetAwaiter().GetResult());
+                    }
+                }
+                }
+                """;
+            var r = Compile(src, new CompileOptions { Plugins = [new AfterPlugin()], Checked = true });
+            if (!r.Success) return Errors(r);
+            var path = Path.Combine(outDir, "api_plugin_after.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            var want = "after 1\nafter 1\nafter 1\nn 4\nafter 3\nafter 3\nafter 5\n4\n";
+            if (o != want) return $"output:\n{o}\nwanted:\n{want}\n{e}";
+            var refused = Compile(src, new CompileOptions { Plugins = [new AfterPlugin { OnJump = true }] });
+            return !refused.Success && refused.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("never completes normally")) ? null : "a hook after a return was not refused: " + Errors(refused);
+        });
+
+        Check("plugin v5: conditions with early returns and across calls (paths from the export, a virtual call's callers); aliasing by where references come from and which new objects a method owns alone", () =>
+        {
+            var src = Header + """
+                namespace Game {
+                class Unit { public int Hp; }
+                class World {
+                    public bool Paused; public int Tick;
+                    Unit _boss = new Unit();
+                    public void Step(bool input) {
+                        if (Paused) return;
+                        Tick++;
+                        if (input) Fire(_boss);
+                    }
+                    void Fire(Unit u) {
+                        if (u.Hp <= 0) return;
+                        u.Hp -= 1;
+                    }
+                    public virtual void Hit(Unit u) { u.Hp -= 2; }
+                    static Unit? s_kept;
+                    static void Keep(Unit u) { s_kept = u; }
+                    public static int Make() {
+                        var a = new Unit(); var b = new Unit(); var c = a;
+                        c.Hp = 3;
+                        var kept = new Unit(); Keep(kept);
+                        Unit d = b.Hp > 0 ? a : b;
+                        var o = new Unit(); o.Hp = 1;
+                        var k = s_kept;
+                        int h = o.Hp + (k == null ? 0 : 1);
+                        return a.Hp + b.Hp + d.Hp + kept.Hp + h - 2;
+                    }
+                    public int Self(Unit p) { var n = new Unit(); return n == p ? 1 : 0; }
+                }
+                class Arena : World { public override void Hit(Unit u) { u.Hp -= 3; } }
+                static class Script {
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        var w = new World(); w.Step(true); w.Step(false);
+                        World x = new Arena(); x.Hit(new Unit());
+                        Console.WriteLine(World.Make() + " " + w.Tick + " " + w.Self(new Unit()));
+                    }
+                }
+                }
+                """;
+            var plugin = new PathPlugin();
+            var r = Compile(src, new CompileOptions { Plugins = [plugin], Checked = true });
+            if (!r.Success) return Errors(r);
+            if (plugin.Problem != null) return plugin.Problem;
+            var path = Path.Combine(outDir, "api_plugin_paths.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            return o == "3 2 0\n" ? null : $"output:\n{o}\n{e}";
+        });
+
+        Check("plugin v5: a plugin that runs before the first compile adds hooks the analyses know; a hook added after it that keeps its receiver is never given an object a caller kept in its frame", () =>
+        {
+            var src = Header + """
+                namespace Game {
+                class Counter { public int N; public void Inc() { N++; } }
+                static class Script {
+                    static int Use() { var c = new Counter(); c.Inc(); c.Inc(); return c.N; }
+                    static int Churn(int d) { var a = new Counter(); a.N = d * 1000; var b = new Counter(); b.N = d; return d == 0 ? a.N + b.N : Churn(d - 1) + a.N - b.N; }
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        int u = Use();
+                        int k = Churn(20);
+                        Console.WriteLine(u + " " + Kept.Last!.N + " " + (k > 0));
+                    }
+                }
+                static class Kept { public static Counter? Last; }
+                }
+                """;
+            foreach (var early in new[] { false, true })
+            {
+                var plugin = new KeepPlugin { Early = early };
+                var r = Compile(src, new CompileOptions { Plugins = [plugin], Checked = true });
+                if (!r.Success) return Errors(r);
+                if (plugin.Problem != null) return plugin.Problem;
+                var path = Path.Combine(outDir, "api_plugin_keep" + (early ? "_early" : "") + ".wasm");
+                File.WriteAllBytes(path, r.Module!);
+                var (o, e, _) = Node(root, path);
+                if (o != "2 2 True\n") return $"{(early ? "before the compile" : "after it")}: output:\n{o}\n{e}";
+            }
+            return null;
+        });
+
+        Check("plugin v5: the unsure sites (a collection handed on, stored, viewed or reached through a mixed local; members and entries by reference; unknown delegates; reflection) and delegate targets where known", () =>
+        {
+            var src = Header + """
+                using System.Collections.Generic;
+                namespace Game {
+                class Team {
+                    public List<int> Members = new();
+                    public int[] Slots = new int[3];
+                    public int Score;
+                    public Action? OnScore;
+                    public Func<int, int> Rule = x => x;
+                    public List<int> Alias = new();
+                    public void Hand() { Fill(Members); }
+                    static void Fill(List<int> l) { l.Add(1); }
+                    public void Share() { Alias = Members; }
+                    public void Bump() { Inc(ref Score); Inc(ref Slots[0]); }
+                    static void Inc(ref int x) { x++; }
+                    public void Fire() { OnScore?.Invoke(); }
+                    public int Local() { Func<int, int> f = x => x + 1; return f(2); }
+                    public int Ruled() => Rule(3);
+                    public object? Reflect() => typeof(Team).GetField("Score")!.GetValue(this);
+                    public Span<int> View() => Slots.AsSpan();
+                    public int Mixed(bool b) { var l = b ? Members : new List<int>(); l.Add(2); return l.Count; }
+                    public int Plain() { Members.Add(3); return Members.Count + Slots[1]; }
+                }
+                static class Script {
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        var t = new Team(); t.Hand(); t.Share(); t.Bump(); t.OnScore = () => Console.WriteLine("scored"); t.Fire();
+                        Console.WriteLine(t.Local() + " " + t.Ruled() + " " + t.Reflect() + " " + t.View().Length + " " + t.Mixed(true) + " " + t.Plain() + " " + t.Score);
+                    }
+                }
+                }
+                """;
+            var plugin = new UnsurePlugin();
+            var r = Compile(src, new CompileOptions { Plugins = [plugin] });
+            if (!r.Success) return Errors(r);
+            return plugin.Problem;
+        });
+
         Check("plugin v4: suppressible imports do nothing while their bit is set, whatever calls them (a virtual method, a delegate, a lambda, an interface); other imports and the program's state go on", () =>
         {
             var src = Header + """
@@ -752,6 +967,185 @@ static class ApiChecks
                 var reset = (Microsoft.CodeAnalysis.Operations.ISimpleAssignmentOperation)Op<Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax>(a => a.ToString() == "_score = 0");
                 c.InterceptValue(reset.Target, H("Answer"));
             }
+        }
+    }
+
+    /// <summary>Per-player state in a dictionary, a list reached through a local, an array: the entries as accesses,
+    /// and hooks at them with the key.</summary>
+    sealed class EntryPlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public int Version = 5;
+        public bool WrongKey;
+        public int InterfaceVersion => Version;
+        public string Name => "entries";
+        public void Run(PluginContext c)
+        {
+            var match = c.Compilation.GetTypeByMetadataName("Game.Match")!;
+            ISymbol F(string n) => match.GetMembers(n).Single();
+            var entries = c.Accesses.Where(a => a.IsEntry).ToList();
+            if (Version < 5) { if (entries.Count > 0 || c.AccessesOf(F("Scores")).Any(a => a.IsEntry)) Problem = "entries seen: " + entries.Count; return; }
+            string Show(MemberAccess a) => a.Method.Name + ":" + a.Kind + ":" + (a.Key?.Syntax.ToString().Replace(" ", "") ?? "-") + (a.Instrumentable ? "" : ":no");
+            string Of(string member) => string.Join(" ", c.AccessesOf(F(member)).Where(a => a.IsEntry).Select(Show).Order());
+            var want = new Dictionary<string, string>
+            {
+                ["Scores"] = "Score:Write:p Bump:ReadWrite:p Drop:Write:p Get:Read:p Total:Read:- Main:Write:Match.Pick(a,b,false)",
+                ["Log"] = "Note:Write:- Main:Read:-",
+                ["Cells"] = "Cell:Write:i Main:Read:2",
+            };
+            foreach (var (member, w) in want)
+                if (Of(member) != string.Join(" ", w.Split(" ").Order())) { Problem = $"entries of {member}: {Of(member)}; wanted {w}"; return; }
+            var gen = c.AddSource("""
+                using System;
+                using Game;
+                static class Entries {
+                    public static void Score(object o, Player key, bool keyed, int tag) => Console.WriteLine("write " + key + " " + (((Match)o).Scores.TryGetValue(key, out var v) ? v : -1) + " " + keyed);
+                    public static void Log(object o, int tag) => Console.WriteLine("log " + (o == null) + " " + tag);
+                    public static void Cell(object o, int key, bool keyed, int tag) => Console.WriteLine("cell " + key + " " + ((Match)o).Cells[key] + " " + keyed);
+                    public static void Read(object o) => Console.WriteLine("read");
+                    public static void Wrong(object o, int key, bool keyed, int tag) { }
+                }
+                """);
+            IMethodSymbol H(string name) => gen.GetTypeByMetadataName("Entries")!.GetMembers(name).OfType<IMethodSymbol>().Single();
+            c.InstrumentEntryWrites(F("Scores"), H(WrongKey ? "Wrong" : "Score"));
+            c.InstrumentEntryWrites(F("Log"), H("Log"), tag: 5);
+            c.InstrumentEntryWrites(F("Cells"), H("Cell"));
+            c.InstrumentEntryReads(F("Scores"), H("Read"));
+        }
+    }
+
+    sealed class PathPlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public int InterfaceVersion => 5;
+        public string Name => "paths";
+        public void Run(PluginContext c)
+        {
+            Problem = Check(c);
+        }
+        static string? Check(PluginContext c)
+        {
+            var world = c.Compilation.GetTypeByMetadataName("Game.World")!;
+            var unit = c.Compilation.GetTypeByMetadataName("Game.Unit")!;
+            static string Conds(IEnumerable<BranchCondition> cs) => string.Join(" ", cs.Select(x => x.Test.Syntax + ":" + x.WhenTrue));
+            // an early return is a condition
+            var tick = c.AccessesOf(world.GetMembers("Tick").Single()).Single(a => a.Method.Name == "Step");
+            if (Conds(tick.Conditions) != "Paused:False") return "conditions of Tick++: " + Conds(tick.Conditions);
+            // across calls: from the export through Step to Fire
+            var hit = c.AccessesOf(unit.GetMembers("Hp").Single()).Single(a => a.Method.Name == "Fire" && a.Kind == AccessKind.ReadWrite);
+            var paths = c.PathConditions(hit.Operation);
+            // (Main calls Step twice: two paths)
+            if (paths.Count != 2 || paths.Select(x => x.Calls[0].Call.Syntax.ToString()).Distinct().Count() != 2) return "paths to Fire's write: " + paths.Count;
+            foreach (var p in paths) {
+            if (p.Start != PathStart.Entry || p.Root.Name != "Main" || string.Join(">", p.Calls.Select(s => s.Callee.Name)) != "Step>Fire")
+                return $"path: {p.Start} {p.Root.Name} {string.Join(">", p.Calls.Select(s => s.Callee.Name))}";
+            if (Conds(p.Conditions) != "Paused:False input:True u.Hp <= 0:False") return "path conditions: " + Conds(p.Conditions);
+            }
+            // a virtual call is a call of the override
+            var arenaHit = (IMethodSymbol)c.Compilation.GetTypeByMetadataName("Game.Arena")!.GetMembers("Hit").Single();
+            if (!c.CallersOf(arenaHit).Any(s => s.Caller.Name == "Main" && s.Callee.Name == "Hit")) return "Arena.Hit has no caller";
+            // aliasing
+            var tree = c.Compilation.SyntaxTrees.Single();
+            var model = c.Compilation.GetSemanticModel(tree);
+            var make = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax>().Single(m => m.Identifier.Text == "Make");
+            var ret = make.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ReturnStatementSyntax>().Single();
+            var hst = make.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.LocalDeclarationStatementSyntax>().Single(s => s.ToString().StartsWith("int h"));
+            IOperation L(SyntaxNode within, string name) => model.GetOperation(within.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>().First(i => i.Identifier.Text == name))!;
+            IOperation New(string local) => model.GetOperation(make.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax>().Single(v => v.Identifier.Text == local).Initializer!.Value)!;
+            var (a, b, d, kept) = (L(ret, "a"), L(ret, "b"), L(ret, "d"), L(ret, "kept"));
+            var (o, k) = (L(hst, "o"), L(hst, "k"));
+            if (c.MayAlias(a, b)) return "a and b (two news) alias";
+            if (!c.MayAlias(a, L(make.DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ExpressionStatementSyntax>().First(s => s.ToString().StartsWith("c.Hp")), "c"))) return "c = a does not alias a";
+            if (!c.MayAlias(d, a) || !c.MayAlias(d, b)) return "d (a or b) does not alias both";
+            if (c.AllocationSites(d)?.Count != 2) return "allocation sites of d: " + c.AllocationSites(d)?.Count;
+            if (c.AllocationSites(k) != null) return "a static's value has allocation sites";
+            if (!c.IsOwned(New("o"))) return "o is not owned";
+            if (c.IsOwned(New("kept"))) return "kept (handed to Keep, which stores it) is owned";
+            if (c.MayAlias(o, k)) return "an owned new and a static's value alias";
+            if (!c.MayAlias(kept, k)) return "kept and the static it was stored in do not alias";
+            var self = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.BinaryExpressionSyntax>().Single(x => x.ToString() == "n == p");
+            if (c.MayAlias(model.GetOperation(self.Left)!, model.GetOperation(self.Right)!)) return "a new and a parameter's incoming value alias";
+            return null;
+        }
+    }
+
+    /// <summary>A hook that keeps the receiver of every write of Counter.N, added before the compile or after it.</summary>
+    sealed class KeepPlugin : ICompilerPluginBeforeCompile
+    {
+        public bool Early;
+        public string? Problem;
+        bool _ranEarly;
+        public int InterfaceVersion => 5;
+        public string Name => "keep";
+        public void RunBeforeCompile(PluginContext c)
+        {
+            if (!c.BeforeCompile) { Problem = "BeforeCompile is false before the compile"; return; }
+            if (!c.ReachableMethods.Any(m => m.Name == "Use") || !c.CallGraph.TryGetValue(c.ReachableMethods.First(m => m.Name == "Use"), out var callees) || !callees.Any(m => m.Name == "Inc"))
+            { Problem = "before the compile: no source methods or calls"; return; }
+            _ranEarly = true;
+            if (Early) Hook(c);
+        }
+        public void Run(PluginContext c)
+        {
+            if (c.BeforeCompile) { Problem = "BeforeCompile is true after the compile"; return; }
+            if (!_ranEarly) { Problem = "RunBeforeCompile did not run"; return; }
+            if (!Early) Hook(c);
+        }
+        static void Hook(PluginContext c)
+        {
+            var n = c.Compilation.GetTypeByMetadataName("Game.Counter")!.GetMembers("N").Single();
+            var gen = c.AddSource("""
+                using Game;
+                static class Keeper { public static void Keep(object o) => Kept.Last = (Counter)o; }
+                """);
+            // (the write in Inc alone: Churn's writes are not kept)
+            var inc = c.AccessesOf(n).Single(a => a.Method.Name == "Inc").Operation.Parent!;
+            c.InstrumentWrite(inc, gen.GetTypeByMetadataName("Keeper")!.GetMembers("Keep").OfType<IMethodSymbol>().Single());
+        }
+    }
+
+    sealed class UnsurePlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public int InterfaceVersion => 5;
+        public string Name => "unsure";
+        public void Run(PluginContext c)
+        {
+            var got = c.UnsureSites.Select(u => u.Kind + ":" + u.Method.Name + ":" + (u.Member?.Name ?? "-")).Distinct().Order().ToList();
+            var want = new[] { "CollectionEscape:Hand:Members", "CollectionEscape:Mixed:Members", "CollectionEscape:Share:Members", "CollectionEscape:View:Slots",
+                "Reference:Bump:Score", "Reference:Bump:Slots", "Reflection:Reflect:-", "UnknownDelegate:Fire:-", "UnknownDelegate:Ruled:-" }.Order().ToList();
+            if (!got.SequenceEqual(want)) { Problem = "unsure sites:\n  " + string.Join("\n  ", c.UnsureSites.Select(u => u.Kind + ":" + u.Method.Name + ":" + (u.Member?.Name ?? "-") + "  " + u.Reason)); return; }
+            var tree = c.Compilation.SyntaxTrees.Single();
+            var model = c.Compilation.GetSemanticModel(tree);
+            var call = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>().Single(i => i.ToString() == "f(2)");
+            var targets = c.DelegateTargets(model.GetOperation(call)!);
+            if (targets is not [{ MethodKind: MethodKind.AnonymousFunction }]) { Problem = "targets of f(2): " + (targets == null ? "unknown" : string.Join(", ", targets)); return; }
+            var rule = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>().Single(i => i.ToString() == "Rule(3)");
+            if (c.DelegateTargets(model.GetOperation(rule)!) != null) Problem = "a field's delegate has known targets";
+        }
+    }
+
+    sealed class AfterPlugin : ICompilerPlugin
+    {
+        public bool OnJump;
+        public int InterfaceVersion => 5;
+        public string Name => "after";
+        public void Run(PluginContext c)
+        {
+            var tree = c.Compilation.SyntaxTrees.Single();
+            var model = c.Compilation.GetSemanticModel(tree);
+            var statements = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.StatementSyntax>().ToList();
+            IOperation S(string text) => model.GetOperation(statements.First(s => s.ToString().StartsWith(text)))!;
+            var gen = c.AddSource("""
+                using System;
+                static class After { public static void Hook(int tag) => Console.WriteLine("after " + tag); }
+                """);
+            var hook = gen.GetTypeByMetadataName("After")!.GetMembers("Hook").OfType<IMethodSymbol>().Single();
+            c.InstrumentAfter(S("if (i == 2)"), hook, 1);
+            c.InstrumentAfter(S("foreach"), hook, 3);
+            c.InstrumentAfter(S("Throw();"), hook, 4);
+            c.InstrumentAfter(S("int a = await"), hook, 5);
+            if (OnJump) c.InstrumentAfter(S("return 0;"), hook, 6);
         }
     }
 

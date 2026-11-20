@@ -9,6 +9,10 @@ namespace Cs2Wasm.Compiler;
 
 sealed record MemberHook(IMethodSymbol Hook, int Tag, InstrumentPoint Point);
 
+/// <summary>A hook at the entry accesses of a collection (PluginContext.InstrumentEntryWrites): Keyed, the form
+/// (object receiver, TKey key, bool keyed, int tag).</summary>
+sealed record EntryHook(IMethodSymbol Hook, int Tag, bool Keyed);
+
 /// <summary>A hook the value of one expression goes through (PluginContext.InterceptValue).</summary>
 sealed class ValueHook
 {
@@ -32,8 +36,15 @@ internal sealed partial class Driver
     public readonly Dictionary<ISymbol, List<MemberHook>> WriteHooks = new(SymbolEqualityComparer.Default);
     public readonly Dictionary<ISymbol, List<MemberHook>> ReadHooks = new(SymbolEqualityComparer.Default);
     public readonly Dictionary<(string path, int start, int length), List<(IMethodSymbol hook, int tag)>> StatementHooks = [];
+    public readonly Dictionary<(string path, int start, int length), List<(IMethodSymbol hook, int tag)>> StatementAfterHooks = [];
     public readonly Dictionary<((string path, int start, int length) site, OperationKind kind), List<ValueHook>> ValueHooks = [];
     public readonly Dictionary<(string path, int start, int length), List<MemberHook>> SiteWriteHooks = [];
+    public readonly Dictionary<ISymbol, List<EntryHook>> EntryWriteHooks = new(SymbolEqualityComparer.Default);
+    public readonly Dictionary<ISymbol, List<EntryHook>> EntryReadHooks = new(SymbolEqualityComparer.Default);
+    /// <summary>Locals of collection type whose every reaching definition is one member (PluginHost.Accesses): the
+    /// member, by the site of the local's reference at an entry access.</summary>
+    public readonly Dictionary<(string path, int start, int length), ISymbol> EntryLocalSites = [];
+    public bool HasEntryHooks => EntryWriteHooks.Count > 0 || EntryReadHooks.Count > 0;
     /// <summary>Imports a plugin made suppressible (PluginContext.SuppressibleImports): the bits of each, by method key.</summary>
     public readonly Dictionary<string, int> SuppressBits = [];
     public int SuppressGroups;
@@ -81,38 +92,72 @@ internal sealed partial class Driver
         }
     }
 
-    public bool HasInstrumentation => WriteHooks.Count > 0 || ReadHooks.Count > 0 || StatementHooks.Count > 0 || ValueHooks.Count > 0 || SiteWriteHooks.Count > 0;
+    public bool HasInstrumentation => WriteHooks.Count > 0 || ReadHooks.Count > 0 || StatementHooks.Count > 0 || StatementAfterHooks.Count > 0 || ValueHooks.Count > 0 || SiteWriteHooks.Count > 0 || HasEntryHooks;
     readonly HashSet<ISymbol> _instrumented = new(SymbolEqualityComparer.Default);
     readonly List<CloneSpec> _clones = [];
 
     public static (string, int, int) SiteKey(SyntaxNode s) => (s.SyntaxTree.FilePath, s.SpanStart, s.Span.Length);
 
-    /// <summary>Runs the embedder's plugin passes after the program is lowered (section 7.1).</summary>
+    /// <summary>Plugins that run before the first compile (ICompilerPluginBeforeCompile, audit A4.9): what they add
+    /// (hooks, sources, clones, suppressed imports) is part of the program from its first compile, so nothing is
+    /// compiled twice and every analysis is computed knowing the hooks.</summary>
+    void RunPluginsBeforeCompile(RuntimeGen rt)
+    {
+        _recordAnalysisUsers = Options.Plugins.Count > 0;
+        if (!Options.Plugins.Any(p => p is ICompilerPluginBeforeCompile)) return;
+        var host = new PluginHost(this, rt) { BeforeCompile = true };
+        foreach (var p in Options.Plugins)
+            if (p is ICompilerPluginBeforeCompile early) RunPlugin(p, host, ctx => early.RunBeforeCompile(ctx));
+    }
+
+    void RunPlugin(ICompilerPlugin p, PluginHost host, Action<PluginContext> run)
+    {
+        if (p.InterfaceVersion is < 1 or > PluginContext.InterfaceVersion)
+        {
+            if (!host.BeforeCompile) // (reported once, after the compile)
+                Report(Diags.Plugin, null, $"plugin '{p.Name}' targets interface version {p.InterfaceVersion}; this compiler provides {PluginContext.InterfaceVersion}");
+            return;
+        }
+        var ctx = new PluginContext(host, p.InterfaceVersion);
+        try { run(ctx); }
+        catch (Exception ex) { Report(Diags.Plugin, null, $"plugin '{p.Name}' failed: {ex.Message}"); return; }
+        foreach (var (name, data) in ctx.Sections) Module.CustomSections.Add(new CustomSection(name, data));
+        Diagnostics.AddRange(ctx.Diagnostics);
+    }
+
+    /// <summary>Runs the embedder's plugin passes after the program is lowered (section 7.1). What they instrument
+    /// now was compiled without its hooks: it is compiled again, and so is every function that used an analysis
+    /// answer the hooks can change (an escape, a fresh or isolated value: PluginHost's hooks may be given a
+    /// reference), with those answers forgotten.</summary>
     void RunPlugins(RuntimeGen rt)
     {
         if (Options.Plugins.Count == 0) return;
+        var before = new HashSet<ISymbol>(_instrumented, SymbolEqualityComparer.Default);
         var host = new PluginHost(this, rt);
-        foreach (var p in Options.Plugins)
-        {
-            if (p.InterfaceVersion is < 1 or > PluginContext.InterfaceVersion)
-            {
-                Report(Diags.Plugin, null, $"plugin '{p.Name}' targets interface version {p.InterfaceVersion}; this compiler provides {PluginContext.InterfaceVersion}");
-                continue;
-            }
-            var ctx = new PluginContext(host);
-            try { p.Run(ctx); }
-            catch (Exception ex) { Report(Diags.Plugin, null, $"plugin '{p.Name}' failed: {ex.Message}"); continue; }
-            foreach (var (name, data) in ctx.Sections) Module.CustomSections.Add(new CustomSection(name, data));
-            Diagnostics.AddRange(ctx.Diagnostics);
-        }
+        foreach (var p in Options.Plugins) RunPlugin(p, host, p.Run);
         Drain(rt); // generated sources and clones
-        if (HasInstrumentation) Recompile(rt);
+        var added = _instrumented.Where(s => !before.Contains(s)).ToHashSet<ISymbol>(SymbolEqualityComparer.Default);
+        if (added.Count > 0) Recompile(rt, added);
         foreach (var list in ValueHooks.Values)
             foreach (var h in list)
                 if (!h.Applied) Report(Diags.Plugin, h.Location, $"the value hook {h.Hook.Name} at '{h.Text}' was not applied: no reachable code computes this expression as a value");
     }
 
     internal void MarkInstrumented(ISymbol member) => _instrumented.Add(RootMember(member));
+
+    /// <summary>Whether a plugin's hook is in the method (or the lambdas in it): a hook may be given what the method
+    /// was passed, its receiver, a value it computes. The escape analysis and the fresh and isolated values take
+    /// such a method as one that lets everything out.</summary>
+    internal bool HooksSee(ISymbol method) => _instrumented.Count > 0 && _instrumented.Contains(RootMember(method));
+    internal bool HooksSeeAny(IEnumerable<ISymbol> methods) => _instrumented.Count > 0 && methods.Any(HooksSee);
+    /// <summary>The function being compiled has a plugin's hooks.</summary>
+    internal bool CompilingInstrumented => _instrumented.Count > 0 && Compiling != null && HooksSee(Compiling.Sym);
+
+    bool _recordAnalysisUsers;
+    /// <summary>The functions that used an answer about another method's body (escape, fresh, isolated, constructors):
+    /// a hook a plugin adds after they were compiled can change it.</summary>
+    readonly HashSet<WasmFunction> _analysisUsers = [];
+    internal void UsedAnalysis() { if (_recordAnalysisUsers && CurrentFn != null) _analysisUsers.Add(CurrentFn); }
 
     static ISymbol RootMember(ISymbol s)
     {
@@ -121,20 +166,36 @@ internal sealed partial class Driver
         return s.OriginalDefinition;
     }
 
-    /// <summary>Methods with instrumented sites are compiled again with their hooks (generic instances, lambdas and
-    /// state machine bodies included; a state machine's kickoff is left alone).</summary>
-    void Recompile(RuntimeGen rt)
+    /// <summary>Methods with sites instrumented after their compile are compiled again with their hooks (generic
+    /// instances, lambdas and state machine bodies included; a state machine's kickoff is left alone), and so is
+    /// every function that used an analysis answer (escape, fresh, isolated) the new hooks can change: the answers
+    /// are forgotten first.</summary>
+    void Recompile(RuntimeGen rt, HashSet<ISymbol> added)
     {
+        var users = _analysisUsers.ToHashSet();
+        _escapes.Clear(); _returnsFresh.Clear(); _ctorsKeepThis.Clear(); _ctorsWrite.Clear(); _isoMethods.Clear(); _closedCtors.Clear();
         foreach (var mi in AllMethods.ToList())
         {
             if (!mi.Compiled || mi.Impl is not (MethodImpl.Body)) continue;
-            if (!_instrumented.Contains(RootMember(mi.Sym))) continue;
+            if (!added.Contains(RootMember(mi.Sym)) && !users.Contains(mi.Fn)) continue;
             bool kickoff = (mi.Sym.IsAsync || mi.Sym.IsIterator || mi.Sym.OriginalDefinition.IsAsync || mi.Sym.OriginalDefinition.IsIterator) && !mi.Key.EndsWith(" MoveNext");
             if (kickoff) continue;
             mi.Fn.Body.Clear(); mi.Fn.Locals.Clear(); mi.Callees.Clear();
             mi.Compiled = false;
             _work.Enqueue(mi);
         }
+        // (static initializers that used such an answer)
+        foreach (var (t, fn, flag, cctor) in _compiledCctors)
+        {
+            if (!users.Contains(fn)) continue;
+            StaticReads.Forget(fn);
+            foreach (var by in ConstructedBy.Values) by.Remove(fn);
+            fn.Body.Clear(); fn.Locals.Clear();
+            CurrentFn = fn;
+            try { FunctionCompiler.CompileStaticInit(this, t, fn, flag, cctor); }
+            catch (CompileException ex) { Report(Diags.Unsupported, ex.Location ?? t.Locations.FirstOrDefault(), ex.Message); }
+        }
+        CurrentFn = null;
         Drain(rt);
     }
 
@@ -171,11 +232,57 @@ internal sealed partial class PluginHost
     public PluginHost(Driver d, RuntimeGen rt) { D = d; _rt = rt; }
 
     public Compilation Main => D.Main;
+    /// <summary>Before the first compile (ICompilerPluginBeforeCompile): the program's reach is not known yet.</summary>
+    public bool BeforeCompile { get; init; }
 
     List<IMethodSymbol>? _reachable;
-    public IReadOnlyList<IMethodSymbol> Reachable => _reachable ??= D.AllMethods
+    public IReadOnlyList<IMethodSymbol> Reachable => _reachable ??= BeforeCompile ? SourceMethods() : D.AllMethods
         .Where(m => m.Impl is MethodImpl.Body or MethodImpl.Synthesized && m.Sym.MethodKind is not MethodKind.AnonymousFunction && m.Clone == null)
         .Select(m => m.Sym).Distinct<IMethodSymbol>(SymbolEqualityComparer.Default).ToList();
+
+    /// <summary>Every method of the program's source with a body (before the compile, in place of the reachable ones).</summary>
+    List<IMethodSymbol> SourceMethods()
+    {
+        var r = new List<IMethodSymbol>();
+        foreach (var comp in D.Inputs)
+            foreach (var tree in comp.SyntaxTrees)
+            {
+                var model = D.ModelFor(tree);
+                foreach (var node in tree.GetRoot().DescendantNodes(n => n is not (BlockSyntax or ArrowExpressionClauseSyntax)))
+                {
+                    ISymbol? s = node switch
+                    {
+                        BaseMethodDeclarationSyntax bm when bm.Body != null || bm.ExpressionBody != null => model.GetDeclaredSymbol(bm),
+                        AccessorDeclarationSyntax a when a.Body != null || a.ExpressionBody != null => model.GetDeclaredSymbol(a),
+                        PropertyDeclarationSyntax { ExpressionBody: not null } p => (model.GetDeclaredSymbol(p) as IPropertySymbol)?.GetMethod,
+                        IndexerDeclarationSyntax { ExpressionBody: not null } ix => (model.GetDeclaredSymbol(ix) as IPropertySymbol)?.GetMethod,
+                        _ => null,
+                    };
+                    if (s is IMethodSymbol m) r.Add(m);
+                }
+            }
+        return r;
+    }
+
+    static IMethodSymbol RootFunction(IMethodSymbol m)
+    {
+        while (m.MethodKind == MethodKind.AnonymousFunction && m.ContainingSymbol is IMethodSymbol c) m = c;
+        return m.OriginalDefinition;
+    }
+
+    /// <summary>The types the program makes; before the compile, every named type of its source.</summary>
+    IEnumerable<ITypeSymbol> KnownTypes()
+    {
+        if (!BeforeCompile) return D.ConstructedTypes();
+        var r = new List<ITypeSymbol>();
+        void Add(INamespaceOrTypeSymbol n)
+        {
+            foreach (var t in n.GetTypeMembers()) { if (t.Locations.Any(l => l.IsInSource)) r.Add(t); Add(t); }
+            if (n is INamespaceSymbol ns) foreach (var c in ns.GetNamespaceMembers()) Add(c);
+        }
+        foreach (var comp in D.Inputs) Add(comp.Assembly.GlobalNamespace);
+        return r;
+    }
 
     Dictionary<IMethodSymbol, IReadOnlyList<IMethodSymbol>>? _graph;
     public IReadOnlyDictionary<IMethodSymbol, IReadOnlyList<IMethodSymbol>> CallGraph
@@ -184,6 +291,22 @@ internal sealed partial class PluginHost
         {
             if (_graph != null) return _graph;
             _graph = new Dictionary<IMethodSymbol, IReadOnlyList<IMethodSymbol>>(SymbolEqualityComparer.Default);
+            if (BeforeCompile)
+            {
+                // (the source's direct calls, by definition, a virtual call to the method it names)
+                BuildCalls();
+                var by = new Dictionary<IMethodSymbol, List<IMethodSymbol>>(SymbolEqualityComparer.Default);
+                foreach (var m in Reachable) by[m.OriginalDefinition] = [];
+                foreach (var (callee, sites) in _sites!)
+                    foreach (var s in sites)
+                    {
+                        var caller = RootFunction(s.Caller);
+                        if (!by.TryGetValue(caller, out var l)) by[caller] = l = [];
+                        if (!l.Contains(callee, SymbolEqualityComparer.Default)) l.Add(callee);
+                    }
+                foreach (var (k, v) in by) _graph[k] = v;
+                return _graph;
+            }
             foreach (var m in D.AllMethods)
             {
                 if (m.Impl is not (MethodImpl.Body or MethodImpl.Synthesized) || m.Clone != null) continue;
@@ -242,7 +365,8 @@ internal sealed partial class PluginHost
     }
 
     // ---------------- member accesses ----------------
-    List<MemberAccess>? _accesses;
+    List<MemberAccess>? _accesses, _memberAccesses;
+    /// <summary>The accesses of members and of their collections' entries (version 5).</summary>
     public IReadOnlyList<MemberAccess> Accesses
     {
         get
@@ -253,8 +377,20 @@ internal sealed partial class PluginHost
             {
                 var body = Body(m);
                 if (body == null) continue;
+                Dictionary<(string, int, int), ISymbol?>? locals = null;
                 foreach (var op in body.DescendantsAndSelf())
                 {
+                    foreach (var site in Entries.Of(op))
+                    {
+                        ISymbol? coll = site.Collection switch
+                        {
+                            IMemberReferenceOperation mr => mr.Member.OriginalDefinition,
+                            ILocalReferenceOperation lr => LocalCollection(m, lr, ref locals),
+                            _ => null,
+                        };
+                        if (coll == null) continue;
+                        _accesses.Add(new MemberAccess(coll, m, site.Operation, site.Kind, ConditionsOf(site.Operation, body)) { IsEntry = true, Key = site.Key, Instrumentable = site.Hookable });
+                    }
                     ISymbol? member = op switch
                     {
                         IFieldReferenceOperation f => f.Field,
@@ -269,6 +405,39 @@ internal sealed partial class PluginHost
             }
             return _accesses;
         }
+    }
+
+    /// <summary>The accesses of members alone (what plugins of versions 1 to 4 see).</summary>
+    public IReadOnlyList<MemberAccess> MemberAccesses => _memberAccesses ??= Accesses.Where(a => !a.IsEntry).ToList();
+
+    /// <summary>The member a local of collection type is, when every definition reaching this reference stores the
+    /// collection one member holds (`var s = Scores;`), by the method's def-use chains; else null.</summary>
+    ISymbol? LocalCollection(IMethodSymbol m, ILocalReferenceOperation lr, ref Dictionary<(string, int, int), ISymbol?>? locals)
+    {
+        if (locals == null)
+        {
+            locals = [];
+            if (DefUse(m) is { } du)
+                foreach (var (use, defs) in du.ReachingDefinitions)
+                {
+                    if (use is not ILocalReferenceOperation || use.Syntax == null) continue;
+                    ISymbol? found = null; bool ok = defs.Count > 0;
+                    foreach (var d in defs)
+                    {
+                        var v = d is ISimpleAssignmentOperation sa ? Strip(sa.Value) : null;
+                        var s = v is IFieldReferenceOperation or IPropertyReferenceOperation { Property.IsIndexer: false } && Entries.IsCollection(v.Type) ? ((IMemberReferenceOperation)v).Member.OriginalDefinition : null;
+                        if (s == null || found != null && !SymbolEqualityComparer.Default.Equals(found, s)) { ok = false; break; }
+                        found = s;
+                    }
+                    var key = Driver.SiteKey(use.Syntax);
+                    // (one syntax, several references in the graph: all must agree)
+                    if (locals.TryGetValue(key, out var prev) && !SymbolEqualityComparer.Default.Equals(prev, ok ? found : null)) locals[key] = null;
+                    else locals[key] = ok ? found : null;
+                }
+        }
+        if (lr.Syntax == null || !locals.TryGetValue(Driver.SiteKey(lr.Syntax), out var r) || r == null) return null;
+        D.EntryLocalSites[Driver.SiteKey(lr.Syntax)] = r;
+        return r;
     }
 
     public IEnumerable<MemberAccess> AccessesOf(ISymbol member)
@@ -311,30 +480,8 @@ internal sealed partial class PluginHost
         };
     }
 
-    /// <summary>The branches an operation runs under, outermost first.</summary>
-    static IReadOnlyList<BranchCondition> ConditionsOf(IOperation op, IOperation root)
-    {
-        var list = new List<BranchCondition>();
-        IOperation child = op;
-        for (var p = op.Parent; p != null && !ReferenceEquals(child, root); child = p, p = p.Parent)
-        {
-            switch (p)
-            {
-                case IConditionalOperation c when ReferenceEquals(c.WhenTrue, child): list.Add(new(c.Condition, true)); break;
-                case IConditionalOperation c when ReferenceEquals(c.WhenFalse, child): list.Add(new(c.Condition, false)); break;
-                case IWhileLoopOperation w when ReferenceEquals(w.Body, child) && w.Condition != null: list.Add(new(w.Condition, !w.ConditionIsUntil)); break;
-                case IForLoopOperation f when ReferenceEquals(f.Body, child) && f.Condition != null: list.Add(new(f.Condition, true)); break;
-                case IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } b when ReferenceEquals(b.RightOperand, child): list.Add(new(b.LeftOperand, true)); break;
-                case IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } b when ReferenceEquals(b.RightOperand, child): list.Add(new(b.LeftOperand, false)); break;
-                case ISwitchCaseOperation sc: foreach (var cl in sc.Clauses) list.Add(new(cl, true)); break;
-                case ISwitchExpressionArmOperation arm when !ReferenceEquals(arm.Pattern, child): list.Add(new(arm.Pattern, true)); if (arm.Guard != null && !ReferenceEquals(arm.Guard, child)) list.Add(new(arm.Guard, true)); break;
-                case IConditionalAccessOperation ca when ReferenceEquals(ca.WhenNotNull, child): list.Add(new(ca.Operation, true)); break;
-                case ICatchClauseOperation cc when cc.Filter != null && !ReferenceEquals(cc.Filter, child): list.Add(new(cc.Filter, true)); break;
-            }
-        }
-        list.Reverse();
-        return list;
-    }
+    /// <summary>The branches an operation runs under, outermost first, early returns included (PluginPaths.cs).</summary>
+    static IReadOnlyList<BranchCondition> ConditionsOf(IOperation op, IOperation root) => ConditionsWithin(op, root, stopAtFunctions: false);
 
     // ---------------- def-use ----------------
     readonly Dictionary<IMethodSymbol, DefUse?> _defUse = new(SymbolEqualityComparer.Default);
@@ -594,7 +741,7 @@ internal sealed partial class PluginHost
         var result = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
         foreach (var a in AccessesOf(field))
         {
-            if (a.Kind == AccessKind.Read) continue;
+            if (a.Kind == AccessKind.Read || a.IsEntry) continue;
             var op = a.Operation;
             while (op.Parent is IConversionOperation { IsImplicit: true }) op = op.Parent;
             if (op.Parent is not IAssignmentOperation asg || !ReferenceEquals(asg.Target, op)) continue;
@@ -603,7 +750,7 @@ internal sealed partial class PluginHost
             result.Add(v.Type);
         }
         foreach (var t in result.ToList())
-            foreach (var c in D.ConstructedTypes())
+            foreach (var c in KnownTypes())
                 if (IsSubtype(c, t)) result.Add(c);
         return result;
     }
@@ -613,18 +760,6 @@ internal sealed partial class PluginHost
         if (SymbolEqualityComparer.Default.Equals(a.OriginalDefinition, b.OriginalDefinition)) return true;
         for (var x = a.BaseType; x != null; x = x.BaseType) if (SymbolEqualityComparer.Default.Equals(x.OriginalDefinition, b.OriginalDefinition)) return true;
         return a.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, b.OriginalDefinition));
-    }
-
-    public bool MayAlias(IOperation a, IOperation b)
-    {
-        if (ReferenceEquals(a, b)) return true;
-        var ta = Strip(a).Type; var tb = Strip(b).Type;
-        if (ta == null || tb == null || ta.IsValueType || tb.IsValueType) return false;
-        if (Strip(a) is IObjectCreationOperation or IArrayCreationOperation && Strip(b) is IObjectCreationOperation or IArrayCreationOperation) return false;
-        if (ta.SpecialType == SpecialType.System_Object || tb.SpecialType == SpecialType.System_Object) return true;
-        if (IsSubtype(ta, tb) || IsSubtype(tb, ta)) return true;
-        // unrelated types: only an object of a type that is both
-        return D.ConstructedTypes().Any(c => IsSubtype(c, ta) && IsSubtype(c, tb));
     }
 
     // ---------------- changes ----------------
@@ -675,6 +810,35 @@ internal sealed partial class PluginHost
         foreach (var a in AccessesOf(def)) D.MarkInstrumented(a.Method);
     }
 
+    public void AddEntryHook(ISymbol member, IMethodSymbol hook, int tag, bool write)
+    {
+        var def = member.OriginalDefinition;
+        string what = write ? "InstrumentEntryWrites" : "InstrumentEntryReads";
+        var ps = hook.Parameters;
+        static bool Is(ITypeSymbol t, SpecialType s) => t.SpecialType == s;
+        bool keyed = ps.Length == 4 && Is(ps[0].Type, SpecialType.System_Object) && Is(ps[2].Type, SpecialType.System_Boolean) && Is(ps[3].Type, SpecialType.System_Int32);
+        bool plain = ps.Length <= 2 && ps.All(p => Is(p.Type, SpecialType.System_Object) || Is(p.Type, SpecialType.System_Int32));
+        if (!hook.IsStatic || hook.IsGenericMethod || ps.Any(p => p.RefKind != RefKind.None) || !keyed && !plain)
+        { D.Report(Diags.Plugin, null, $"{what}: the hook {hook.Name} must be a static method taking (), (int tag), (object receiver), (object receiver, int tag) or (object receiver, TKey key, bool keyed, int tag)"); return; }
+        var sites = AccessesOf(def).Where(a => a.IsEntry && (a.Kind == AccessKind.Read) != write).ToList();
+        if (keyed)
+        {
+            var kt = ps[1].Type;
+            static string Name(ITypeSymbol t) => t.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            if (Types.IsStruct(kt) && kt.TypeKind != TypeKind.Enum)
+            { D.Report(Diags.Plugin, null, $"{what}: the key of {hook.Name} is a struct ({kt}); a key is a reference or a primitive"); return; }
+            bool bad = false;
+            foreach (var a in sites)
+                if (a.Instrumentable && a.Key?.Type is { } t && Name(t) != Name(kt))
+                { D.Report(Diags.Plugin, a.Location, $"{what}: the key here is {t}; the hook {hook.Name} takes {kt}"); bad = true; }
+            if (bad) return;
+        }
+        var table = write ? D.EntryWriteHooks : D.EntryReadHooks;
+        if (!table.TryGetValue(def, out var list)) table[def] = list = [];
+        list.Add(new EntryHook(hook, tag, keyed));
+        foreach (var a in sites) D.MarkInstrumented(a.Method);
+    }
+
     public int Suppressible(IEnumerable<IMethodSymbol> imports)
     {
         if (D.SuppressGroups >= 31) { D.Report(Diags.Plugin, null, "SuppressibleImports: no more than 31 groups"); return 0; }
@@ -715,10 +879,25 @@ internal sealed partial class PluginHost
         if (D.ModelFor(expression.Syntax.SyntaxTree).GetEnclosingSymbol(expression.Syntax.SpanStart) is { } enc) D.MarkInstrumented(enc);
     }
 
-    public void AddStatementHook(IOperation statement, IMethodSymbol hook, int tag)
+    public void AddStatementHook(IOperation statement, IMethodSymbol hook, int tag, bool after = false)
     {
         var key = Driver.SiteKey(statement.Syntax);
-        if (!D.StatementHooks.TryGetValue(key, out var list)) D.StatementHooks[key] = list = [];
+        if (after)
+        {
+            var loc = statement.Syntax.GetLocation();
+            if (!hook.IsStatic || hook.Parameters.Length > 1 || hook.Parameters.Any(p => p.Type.SpecialType != SpecialType.System_Int32 || p.RefKind != RefKind.None))
+            { D.Report(Diags.Plugin, loc, $"InstrumentAfter: the hook {hook.Name} must be a static method taking () or (int tag)"); return; }
+            if (statement is IReturnOperation { Kind: OperationKind.Return or OperationKind.YieldBreak } or IBranchOperation or IExpressionStatementOperation { Operation: IThrowOperation } or IThrowOperation)
+            { D.Report(Diags.Plugin, loc, $"InstrumentAfter: '{statement.Syntax}' never completes normally (it jumps)"); return; }
+            if (statement.Syntax is not StatementSyntax)
+            { D.Report(Diags.Plugin, loc, $"InstrumentAfter: '{statement.Syntax}' is not a statement"); return; }
+            // (an async method or an iterator runs Roslyn's lowered graph, where only these stay statements)
+            if (D.ModelFor(statement.Syntax.SyntaxTree).GetEnclosingSymbol(statement.Syntax.SpanStart) is IMethodSymbol { IsAsync: true } or IMethodSymbol { IsIterator: true }
+                && statement is not (IExpressionStatementOperation or IVariableDeclarationGroupOperation))
+            { D.Report(Diags.Plugin, loc, $"InstrumentAfter: in an async method or an iterator, only an expression statement or a declaration can be hooked after, not '{statement.Syntax}'"); return; }
+        }
+        var table = after ? D.StatementAfterHooks : D.StatementHooks;
+        if (!table.TryGetValue(key, out var list)) table[key] = list = [];
         list.Add((hook, tag));
         var model = D.ModelFor(statement.Syntax.SyntaxTree);
         if (model.GetEnclosingSymbol(statement.Syntax.SpanStart) is { } enc) D.MarkInstrumented(enc);

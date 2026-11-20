@@ -538,10 +538,74 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     code sets around a run, so it holds for virtual calls, delegates, lambdas and the library, and nothing is
     cloned (A4.7). `CloneWithSuppressedImports` stays as it was.
   - Generated code names the program's internal types and private members (step 8.1).
-  - Still open: collection entries as accesses (A4.4: a plugin can hook the key and the store itself, but
-    `Accesses` does not report them), a hook after a statement, the closed-form solver (A4.6), conditions across
-    calls and the ownership-based alias query (A4.8), the list of unsure sites, plugins before the first compile
-    (A4.9), and the first slice of the real plugin in the Bazoodle repository (9.4).
+  - Version 5 (2026-11-19), collection entries (A4.4): `Accesses` reports an access to the entries of a collection
+    a field or property holds (`MemberAccess.IsEntry`, `Key`): an element read or stored, a compound store, a library
+    method that changes it (`Add`, `Remove`, `Clear`, `Sort`, `Array.Fill`, ...) or reads it (`TryGetValue`, `Count`,
+    LINQ, a `foreach`), on the member, on an element of it (`Grid[x][y] = 1` is entry x of Grid), a field of a struct
+    element, or a local whose every reaching definition is the member. `InstrumentEntryWrites` and
+    `InstrumentEntryReads` call a hook after each, with the receiver and the key as the program computed them
+    (`(object receiver, TKey key, bool keyed, int tag)`). One function (`Compiler/Entries.cs`) decides the sites for
+    the analysis and for the code, so they agree. Plugins of versions 1 to 4 see the accesses they saw. A collection
+    handed to the program's own method, or a `ref` to an element, is not followed (the list of unsure sites).
+  - `InstrumentAfter(statement, hook)` (version 5): a hook where a statement's code ends, so it runs when the
+    statement completes normally (an `if` whose branch did not return, a loop left by its condition or a `break`)
+    and not when it is left by a `return`, a `throw` or an exception; a jump statement is refused. In an async
+    method or an iterator (compiled from Roslyn's lowered graph) it runs after the statement's last lowered
+    operation, and only expression statements and declarations can be hooked there.
+  - Conditions and aliasing (A4.8, version 5): conditions count early returns (`if (c) return;` and a branch that
+    always leaves put the statements after it under `c` false, up to a label). `CallersOf(method)` gives each call
+    with its conditions (a virtual or interface call counts for every override and implementation; a property's
+    accessor, a constructor), and `PathConditions(operation)` every path of calls from a method no source code
+    calls (or from a delegate's invocation, a recursion, the cut) with the conditions along it, outermost first.
+    `MayAlias` follows where references come from through the def-use chains: two different `new`s, a `new` and a
+    parameter's incoming value, or a `new` its method owns alone (`IsOwned`, from the escape analysis: not stored,
+    captured, returned or handed to code that keeps it) and anything from outside do not alias; then types.
+    `AllocationSites(reference)` gives the `new`s a reference can name.
+  - Plugins before the first compile (A4.9, version 5): a plugin that implements `ICompilerPluginBeforeCompile`
+    runs before the first drain as well; what it adds there is compiled once, with every analysis knowing its
+    hooks. Before the compile the reach is not known, so it sees every source method with a body, the source's
+    direct calls and every source type. The soundness part: the escape analysis and the fresh, isolated and
+    constructor analyses (`ParamEscape`, frames, `FreshLocalBefore`, `ReturnsFresh`, `IsolatedValue`,
+    `CtorsKeepThis`, `ClosedCtors`, `IsoMethod`, stores into fresh objects) take a method with a hook as one that
+    lets everything out, since a hook may be given its receiver, a value or a key. A hook added after the compile
+    makes the compiler forget those answers and compile again what it instruments and every function (static
+    initializers too) that used one of them. Test: a hook that keeps its receiver was given an object a caller had
+    put in its frame (printed 20 for 2), now in both phases. Not looked at for hooks: the threaded sharing analysis
+    (`Sharing.cs`) and the arena analysis; both run over compiled code that includes the hooks' own bodies, but not
+    over the call edge from an instrumented site to its hook.
+  - The list of unsure sites (version 5, `UnsureSites`): a delegate invoked whose target is not known there
+    (`DelegateTargets` gives the lambdas and methods where the def-use chains know them), reflection (calls into
+    `System.Reflection`, `Activator`, `Type.GetField` and the like, and the compiler's own CW0201 warnings),
+    `dynamic`, a member or an entry used through a reference (`ref`, `out`, `in` arguments, `ref` locals and
+    returns), a collection that leaves where its entries are followed (handed to the program's own method, stored in
+    another place, returned, made a writable span or memory, or reached through a local that is not always the
+    member), and addresses and reinterpreted memory (`&`, `Unsafe`, `MemoryMarshal`). A library method other than
+    the known changing ones (`Entries.cs`) is taken to read a collection it is given.
+  - Still open: the closed-form solver (A4.6) and the first slice of the real plugin in the Bazoodle repository
+    (9.4). What they need:
+    - A4.6, closed forms as a solver. Input: a per-tick method or a loop body, as Roslyn's graph now (the IR's
+      later). Execute the region symbolically: every state variable written (fields of `this` and statics, loop
+      locals, several writes each, in order) becomes an affine expression of the old state vector, `x' = A x + b`,
+      whose coefficients are invariants of the region (constants, parameters such as `dt`, members it does not
+      write); this covers the spawner timer's two writes and velocity/position (`v *= d; p += v * dt` is a
+      triangular A). Known pure functions expand: `Min`, `Max`, `Clamp`, `Abs` into pieces, `Lerp` into its affine
+      form; a program method inlines when it writes nothing and calls only such functions. A branch on the state
+      makes pieces: within one the rule is affine, and the tick a guard flips is solved from the affine-in-n value
+      (for one variable, `n = ceil((limit - x0) / step)`); a guard over a component that is not monotone is
+      reported as not solvable, with the reason. Results are values, not strings: the variables, A and b as
+      operations or constants, the pieces with their guards and flip ticks, and a generated C# method
+      `Advance(ref state, long n)` the plugin can add with `AddSource`. Exactness is part of the result, because
+      behaviour must not differ: integer rules (unchecked, wrapping) are exact through repeated squaring of the
+      affine map (`log n` steps; the geometric sum's division has no inverse mod 2^32, so no formula with
+      `(a^n - 1) / (a - 1)`); floating-point closed forms round differently from running the ticks, so they are
+      marked approximate (a display or a prediction may use them; a simulation must run the ticks or call the
+      per-tick code n times). Tests: the four failing examples in A4.6, each compared with running the ticks.
+    - 9.4, the Invisible API's first slice, in the Bazoodle repository against version 5: classify each write
+      (`Accesses` with entries, `PathConditions` for whether it runs under a value from input, `InterceptValue` on
+      the input reads, `UnsureSites` as unknown), mark the interactions changed (`InstrumentWrite`,
+      `InstrumentEntryWrites` with the player key), one gate (generated C# with `AddSource`, reading private
+      fields, exported for the server), registered from `RunBeforeCompile` so nothing compiles twice; the solved
+      timer waits for A4.6. Each gap it finds is a compiler issue here.
 
 - **Step 11.1, in part (2026-11-18): programs written to use every form, compared with .NET.** Tests 124 to 126
   removed three refusals (`await` in conditional expressions was already handled; lifted compound assignment

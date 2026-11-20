@@ -121,8 +121,9 @@ sealed partial class FunctionCompiler
 
     Own EmitValueCore(IOperation op)
     {
+        if ((_captureOp != null || _entryCaptures.Count > 0) && TryCaptured(op, out var cap)) return cap;
         if (_machine != null && TryPrecomputed(op, out var pre)) return pre;
-        if (_captureOp != null && TryCaptured(op, out var cap)) return cap;
+        if (D.HasEntryHooks && TryInstrumentedEntry(op, () => EmitValueCore(op), out var entry)) return entry;
         if (op.ConstantValue.HasValue && op is not IAssignmentOperation)
             return EmitConstant(op.ConstantValue.Value, op.Type != null ? TypeOf(op) : null);
         if (op.Type is { SpecialType: SpecialType.System_Boolean } && Fold(op) is bool known) { E.I32(known ? 1 : 0); return Own.None; }
