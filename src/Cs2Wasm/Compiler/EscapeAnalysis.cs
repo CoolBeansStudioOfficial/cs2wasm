@@ -274,6 +274,22 @@ internal sealed partial class Driver
     }
 
     internal IEnumerable<(INamedTypeSymbol type, WasmFunction alloc, WasmFunction drop)> FrameObjects => _frameObjects.Values;
+
+    readonly Dictionary<int, (int size, WasmFunction alloc, WasmFunction drop)> _frameDisplays = [];
+
+    /// <summary>The same for a display (a closure's variables) that lives in its function's frame: (frame address) →
+    /// the object; (object or 0) → (), its references released, nothing freed.</summary>
+    internal (WasmFunction alloc, WasmFunction drop) FrameDisplayFns(int typeId, int size)
+    {
+        if (_frameDisplays.TryGetValue(typeId, out var x)) return (x.alloc, x.drop);
+        var alloc = Module.AddFunction("framedisplay.new " + typeId, new FuncType([ValType.I32], [ValType.I32]));
+        var drop = Module.AddFunction("framedisplay.drop " + typeId, new FuncType([ValType.I32], []));
+        _frameDisplays[typeId] = (size, alloc, drop);
+        LibMethod("Cs2Wasm.Runtime.Rt", "InitFrameObject", 3);
+        return (alloc, drop);
+    }
+
+    internal IEnumerable<(int id, int size, WasmFunction alloc, WasmFunction drop)> FrameDisplays => _frameDisplays.Select(kv => (kv.Key, kv.Value.size, kv.Value.alloc, kv.Value.drop));
 }
 
 sealed partial class FunctionCompiler
@@ -360,6 +376,20 @@ sealed partial class RuntimeGen
         {
             int id = D.TypeId(t);
             int size = Math.Max(D.Types.LayoutOf(t).Size, Types.ObjectHeader);
+            bool heap = D.Arenas.Enabled && D.Arenas.CycleTypes.Contains(id);
+            var a = new Emitter(alloc);
+            if (heap) { a.I32(size); a.Tid(id); a.Call(rt.AllocObject); }
+            else { a.Get(0); a.I32(size); a.Tid(id); a.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "InitFrameObject", 3).Fn); }
+            var d = new Emitter(drop);
+            if (heap) { d.Get(0); d.Call(rt.Release); continue; }
+            d.Get(0); d.If();
+            EmitDestroy(d, id, clear: true, free: false);
+            d.End();
+        }
+        // (a display nothing but its own function's local functions knows: no delegate or lambda refers to it, so it
+        // is on no cycle; should the graph say otherwise, it keeps the heap)
+        foreach (var (id, size, alloc, drop) in D.FrameDisplays)
+        {
             bool heap = D.Arenas.Enabled && D.Arenas.CycleTypes.Contains(id);
             var a = new Emitter(alloc);
             if (heap) { a.I32(size); a.Tid(id); a.Call(rt.AllocObject); }
