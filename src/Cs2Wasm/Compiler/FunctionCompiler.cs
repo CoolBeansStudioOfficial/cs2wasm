@@ -1903,6 +1903,9 @@ sealed partial class FunctionCompiler
             // rethrow: the innermost catch's exception
             var c = _ctl.LastOrDefault(x => x.Kind == CtlKind.Catch) ?? throw new CompileException("rethrow outside catch");
             E.Get(c.ExPtrLocal); E.Call(Rt.Retain); E.Op(Op.Drop);
+            // (a rethrow is a first chance too: none of this is left when the program adds no handler, RuntimeGen.Finish)
+            E.Call(Rt.FirstChanceFn);
+            E.If(); E.Get(c.ExPtrLocal); E.Call(Rt.RaiseFirstChanceFn); E.End();
             if (D.UsesFilters) { E.Get(c.ExPtrLocal); E.Call(Rt.FirstPass); }
             E.Get(c.ExnLocal); E.Op(Op.ThrowRef);
             return;
@@ -1911,6 +1914,7 @@ sealed partial class FunctionCompiler
         ToOwned(o);
         int t = Scratch(ValType.I32);
         E.Tee(t); NullCheck();
+        if (_closure == null && Driver.IsHiddenThrower(M)) { E.I32(D.HiddenThrowerIndex(M)); E.GSet(D.ThrowSite); }
         E.Get(t);
         E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "OnThrow", 1).Fn);
         if (D.UsesFilters) { E.Get(t); E.Call(Rt.FirstPass); }

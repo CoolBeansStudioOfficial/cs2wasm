@@ -600,6 +600,24 @@ internal sealed partial class RuntimeFns
     /// <summary>() → 1 when no other thread can ever run (the program starts none); written at the end (RuntimeGen.Finish).</summary>
     public WasmFunction SingleThreadedFn => _singleThreaded ??= M.AddFunction("rt.single_threaded", FT([], [I]));
     public WasmFunction? SingleThreadedIfMade => _singleThreaded;
+    WasmFunction? _firstChance;
+    /// <summary>() → 1 when the program can add a handler to AppDomain.FirstChanceException; written at the end
+    /// (RuntimeGen.Finish), so a program without one has no code for it.</summary>
+    public WasmFunction FirstChanceFn => _firstChance ??= M.AddFunction("rt.first_chance", FT([], [I]));
+    public WasmFunction? FirstChanceIfMade => _firstChance;
+    WasmFunction? _raiseFirstChance;
+    /// <summary>(exception) → (): Rt.RaiseFirstChance when the program can add a handler, else nothing (and never called).</summary>
+    public WasmFunction RaiseFirstChanceFn => _raiseFirstChance ??= M.AddFunction("rt.raise_first_chance", FT([I], []));
+    public WasmFunction? RaiseFirstChanceIfMade => _raiseFirstChance;
+    WasmFunction? _cctorTraces;
+    /// <summary>(inner exception or 0, TypeInitializationException) → (): the traces of a failed static initializer's
+    /// exceptions (Rt.OnInitializerFailed, Rt.OnThrow) in a program that throws; written at the end.</summary>
+    public WasmFunction CctorTracesFn => _cctorTraces ??= M.AddFunction("rt.cctor_traces", FT([I, I], []));
+    public WasmFunction? CctorTracesIfMade => _cctorTraces;
+    WasmFunction? _framesWanted;
+    /// <summary>() → 1 when the program asks a stack frame for its method (Exception.TargetSite...); written at the end.</summary>
+    public WasmFunction FramesWantedFn => _framesWanted ??= M.AddFunction("rt.frames_wanted", FT([], [I]));
+    public WasmFunction? FramesWantedIfMade => _framesWanted;
     WasmFunction? _genericInstances;
     /// <summary>() → [count, (definition id, instance id, n, argument ids...)...] (MakeGenericType); body at the end.</summary>
     public WasmFunction GenericInstancesFn => _genericInstances ??= M.AddFunction("rt.generic_instances", FT([], [I]));

@@ -594,7 +594,51 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   game built in the browser by the self-hosted compiler (`tests/Godot/proof5_hello2d/README.md`, "What stops
   proof 5", items 1 to 4: last tried 2026-11-17 with the self-hosted compiler of that day; not re-tried on today's);
   (2) `StackFrame.GetMethod()` is null in a module (`repro/StackTraceFrames.cs`: .NET prints `A`), a behaviour
-  difference the game's log does not show; (3) a host without JavaScript (Wasmtime) for the `godot.*` imports.
+  difference the game's log does not show (closed 2026-11-20, stream E below); (3) a host without JavaScript
+  (Wasmtime) for the `godot.*` imports.
+
+- **Stream E, behaviour differences (2026-11-20).** What was on record and what a sweep against .NET found, each
+  closed with a test (150 to 153, both modes):
+  - `StackFrame.GetMethod()`, `Exception.TargetSite`, `MethodBase.GetCurrentMethod()`. A program that reaches one
+    (`Meta.FrameMethod`, the manifest's substitution of `StackFrame.GetMethod`) gets a table of frame names and
+    their methods' reflection records (`rt.frame_methods`, Compiler/Reflection.cs): a record for every compiled
+    method a frame can show, of its definition as .NET's frames name it (`Holder<int>.Here`'s frame is
+    `Holder`1[T]`'s), with methods that take a span (no thunk: reflection cannot invoke them, here as in .NET); the
+    program's own get thunks, so a frame's method can be invoked. `GetCurrentMethod` is compiled where it is called,
+    from the function's frame name. A throw in a method traces hide (`[StackTraceHidden]`: `ThrowHelper`'s) notes
+    its method in a global for `TargetSite` (.NET's is the method that threw, hidden or not). None of it is in a
+    program that asks no frame for its method: the notes are taken out at the end of the build (RuntimeGen.Finish).
+  - `AppDomain.FirstChanceException` was never raised. Now raised at each throw and rethrow, before filters, with
+    the domain as sender; the raising code is compiled only for a program that reaches
+    `AppDomain.add_FirstChanceException` (`Rt.RaiseFirstChance`, the switch `rt.first_chance` folded at the end).
+  - `typeof(G<>).ToString()` was `G`1` for the program's generic types (the library's were right): a definition's
+    name now lists its parameters (`ClrName`), its `FullName` still has none.
+  - Two methods with the same code were merged into one function, so a trace through either named one of them, at
+    its lines (`First`/`Second` in test 153). A function that is a frame and can be on the stack when a trace is
+    taken now merges only with one of the same frame name and lines: hello world +24 bytes.
+  - Iterators: the frame is `M(...)+MoveNext()` as in .NET (was `M(...)`); in iterators and async methods a throw,
+    a condition or a returned value that ends a block had no line of its own (a trace showed another method's line).
+  - A static constructor that throws: the `TypeInitializationException` had no trace (thrown without `Rt.OnThrow`),
+    the `.cctor` frame was missing from the inner exception's trace, and that trace ran on to the frame that touched
+    the type instead of ending at the initializer (`rt.cctor_traces`, written at the end of the build only when code
+    that throws is left: hello world has none of its own, but keeps `Rt.OnThrow`; the initializer frames' names and
+    the cut cost it 369 bytes, 27,584 to 27,953 in this worktree's path).
+  - An async method's exception: its trace ran on through the thread pool's frames (`YieldAwaiter.RunAction` ...
+    `Thread.StartCallback`) instead of ending at the method's frame, where .NET's MoveNext takes it
+    (`Rt.OnAsyncCatch`), and the `--- End of stack trace from previous location ---` line was written after an async
+    frame, which .NET leaves out (`StackTrace.ToString`: "Skip EDI boundary for async"; `Exception._asyncTop`).
+  Also checked and equal: exception messages and `ToString` with inner exceptions, `AggregateException`, `throw;`
+  against `throw e;`, `ExceptionDispatchInfo`'s trace, a throw from a `finally`, `Data`, `HResult`, `Source`, filters
+  with side effects (test 152), operators, conversions, indexers, nested generic types and generic methods in traces
+  (test 153). **Open (not closable by cs2wasm alone, recorded):** frames inside .NET's own library and runtime are
+  what its JIT and ReadyToRun inlining and CoreCLR's own helpers leave (`int.Parse` shows
+  `Number.ThrowFormatException`, `Int32.Parse(String)` and nothing between in .NET, cs2wasm every library frame
+  between; a failed static initializer's inner trace ends in .NET with CoreCLR's
+  `InitHelpers.CallClassConstructor(Void* cctor, ...)` frame and a line break, cs2wasm's at the `.cctor` frame): the
+  program's own frames are equal, the library's are not reproducible from source. **Open, a feature of its own:** methods the C# compiler makes have no
+  reflection record: `GetMethod()` of a lambda's or local function's frame is null and `Delegate.Method` of one
+  throws (.NET: `<Main>b__1_0` on `Program+<>c`), and an async method's frame gives its kickoff method where .NET
+  gives `MoveNext` of its state machine.
 
 - **Steps 8.2, 8.3: done (2026-11-18).** `MemberAccess.Instrumentable` says which accesses a hook runs at (not a
   `ref` or `out` argument, a deconstruction's target, an event's handlers); every hook form and failure path of the
