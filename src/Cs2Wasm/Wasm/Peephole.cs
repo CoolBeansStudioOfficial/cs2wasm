@@ -84,11 +84,19 @@ static class Peephole
                     dst[^1] = ins;
                     continue;
                 }
+                // i32.const k ; i64.extend_i32_u (or _s)  =>  i64.const k   (a shift count of a long)
+                if (prev.Op == Op.I32Const && prev.Ref == null && ins.Op is Op.I64ExtendI32U or Op.I64ExtendI32S)
+                {
+                    dst[^1] = prev with { Op = Op.I64Const, Imm = ins.Op == Op.I64ExtendI32U ? (long)(uint)(int)prev.Imm : (long)(int)prev.Imm };
+                    continue;
+                }
                 // i32.eqz ; i32.eqz ; br_if  =>  br_if   (only when followed by a branch/if: value used as condition)
             }
             dst.Add(ins);
         }
         DeadValues(dst);
+        BranchesToOwnEnd(dst);
+        TeeChains(f, dst);
         // Remove instructions after an unconditional transfer until the end of the enclosing block.
         var outList = new List<Instr>(dst.Count);
         for (int i = 0; i < dst.Count; i++)
@@ -109,6 +117,79 @@ static class Peephole
             }
         }
         f.Body = outList;
+    }
+
+    /// <summary>`br 0` as the last instruction of a block or an if (an inlined body's return): the branch goes to where
+    /// the code falls through anyway. (Not a loop's: there `br 0` goes back to its start.)</summary>
+    static void BranchesToOwnEnd(List<Instr> b)
+    {
+        var kinds = new Stack<Op>();
+        bool any = false;
+        var remove = new bool[b.Count];
+        for (int i = 0; i < b.Count; i++)
+        {
+            var op = b[i].Op;
+            if (op is Op.Block or Op.Loop or Op.If or Op.TryTable) kinds.Push(op);
+            else if (op == Op.End && kinds.Count > 0)
+            {
+                var k = kinds.Pop();
+                if (k is Op.Block or Op.If && i > 0 && b[i - 1].Op == Op.Br && b[i - 1].Imm == 0 && !remove[i - 1]) { remove[i - 1] = true; any = true; }
+            }
+        }
+        if (!any) return;
+        int w = 0;
+        for (int i = 0; i < b.Count; i++) if (!remove[i]) b[w++] = b[i];
+        b.RemoveRange(w, b.Count - w);
+    }
+
+    /// <summary>`local.tee a ; local.tee b` (or `local.set b`) where a and b are each written there and nowhere else:
+    /// from that point on they hold the same value on every path, and before it both hold zero, so b is a: its reads
+    /// read a, and its write goes. (Chains of copies a lowering makes: a value kept for a check, for a borrow, for an
+    /// inlined callee's parameter; in the engine's baseline tier each local is a slot in memory.)</summary>
+    static void TeeChains(WasmFunction f, List<Instr> b)
+    {
+        int np = f.Type.Params.Length;
+        int nl = np + f.Locals.Count;
+        var writes = new int[nl];
+        foreach (var ins in b) if (ins.Op is Op.LocalSet or Op.LocalTee && ins.Imm < nl) writes[ins.Imm]++;
+        var alias = new int[nl];
+        for (int i = 0; i < nl; i++) alias[i] = i;
+        bool any = false;
+        var remove = new bool[b.Count];
+        for (int i = 1; i < b.Count; i++)
+        {
+            var a = b[i - 1]; var x = b[i];
+            if (a.Op != Op.LocalTee || x.Op is not (Op.LocalTee or Op.LocalSet)) continue;
+            int ai = (int)a.Imm, xi = (int)x.Imm;
+            // (locals only, not parameters: a parameter holds its argument before any write)
+            if (ai < np || xi < np || ai == xi || writes[ai] != 1 || writes[xi] != 1) continue;
+            if (f.Locals[ai - np] != f.Locals[xi - np]) continue;
+            alias[xi] = alias[ai];
+            remove[i] = true;
+            if (x.Op == Op.LocalSet)
+            {
+                // (the value ends here: the chain's first tee, the one kept, becomes the set)
+                int k = i - 1;
+                while (remove[k]) k--;
+                b[k] = b[k] with { Op = Op.LocalSet };
+            }
+            any = true;
+        }
+        if (!any) return;
+        int wpos = 0;
+        for (int i = 0; i < b.Count; i++)
+        {
+            if (remove[i]) continue;
+            var ins = b[i];
+            if (ins.Op == Op.LocalGet && ins.Imm < nl && alias[ins.Imm] != ins.Imm)
+            {
+                int r = (int)ins.Imm;
+                while (alias[r] != r) r = alias[r];
+                ins = ins with { Imm = r };
+            }
+            b[wpos++] = ins;
+        }
+        b.RemoveRange(wpos, b.Count - wpos);
     }
 
     /// <summary>A value that is computed, with no other effect, only to be dropped further on (an address whose use
