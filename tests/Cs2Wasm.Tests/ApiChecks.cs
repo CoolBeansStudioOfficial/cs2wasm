@@ -470,6 +470,46 @@ static class ApiChecks
             return null;
         });
 
+        Check("plugin v5: the unsure sites (a collection handed on, stored, viewed or reached through a mixed local; members and entries by reference; unknown delegates; reflection) and delegate targets where known", () =>
+        {
+            var src = Header + """
+                using System.Collections.Generic;
+                namespace Game {
+                class Team {
+                    public List<int> Members = new();
+                    public int[] Slots = new int[3];
+                    public int Score;
+                    public Action? OnScore;
+                    public Func<int, int> Rule = x => x;
+                    public List<int> Alias = new();
+                    public void Hand() { Fill(Members); }
+                    static void Fill(List<int> l) { l.Add(1); }
+                    public void Share() { Alias = Members; }
+                    public void Bump() { Inc(ref Score); Inc(ref Slots[0]); }
+                    static void Inc(ref int x) { x++; }
+                    public void Fire() { OnScore?.Invoke(); }
+                    public int Local() { Func<int, int> f = x => x + 1; return f(2); }
+                    public int Ruled() => Rule(3);
+                    public object? Reflect() => typeof(Team).GetField("Score")!.GetValue(this);
+                    public Span<int> View() => Slots.AsSpan();
+                    public int Mixed(bool b) { var l = b ? Members : new List<int>(); l.Add(2); return l.Count; }
+                    public int Plain() { Members.Add(3); return Members.Count + Slots[1]; }
+                }
+                static class Script {
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        var t = new Team(); t.Hand(); t.Share(); t.Bump(); t.OnScore = () => Console.WriteLine("scored"); t.Fire();
+                        Console.WriteLine(t.Local() + " " + t.Ruled() + " " + t.Reflect() + " " + t.View().Length + " " + t.Mixed(true) + " " + t.Plain() + " " + t.Score);
+                    }
+                }
+                }
+                """;
+            var plugin = new UnsurePlugin();
+            var r = Compile(src, new CompileOptions { Plugins = [plugin] });
+            if (!r.Success) return Errors(r);
+            return plugin.Problem;
+        });
+
         Check("plugin v4: suppressible imports do nothing while their bit is set, whatever calls them (a virtual method, a delegate, a lambda, an interface); other imports and the program's state go on", () =>
         {
             var src = Header + """
@@ -1061,6 +1101,27 @@ static class ApiChecks
             // (the write in Inc alone: Churn's writes are not kept)
             var inc = c.AccessesOf(n).Single(a => a.Method.Name == "Inc").Operation.Parent!;
             c.InstrumentWrite(inc, gen.GetTypeByMetadataName("Keeper")!.GetMembers("Keep").OfType<IMethodSymbol>().Single());
+        }
+    }
+
+    sealed class UnsurePlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public int InterfaceVersion => 5;
+        public string Name => "unsure";
+        public void Run(PluginContext c)
+        {
+            var got = c.UnsureSites.Select(u => u.Kind + ":" + u.Method.Name + ":" + (u.Member?.Name ?? "-")).Distinct().Order().ToList();
+            var want = new[] { "CollectionEscape:Hand:Members", "CollectionEscape:Mixed:Members", "CollectionEscape:Share:Members", "CollectionEscape:View:Slots",
+                "Reference:Bump:Score", "Reference:Bump:Slots", "Reflection:Reflect:-", "UnknownDelegate:Fire:-", "UnknownDelegate:Ruled:-" }.Order().ToList();
+            if (!got.SequenceEqual(want)) { Problem = "unsure sites:\n  " + string.Join("\n  ", c.UnsureSites.Select(u => u.Kind + ":" + u.Method.Name + ":" + (u.Member?.Name ?? "-") + "  " + u.Reason)); return; }
+            var tree = c.Compilation.SyntaxTrees.Single();
+            var model = c.Compilation.GetSemanticModel(tree);
+            var call = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>().Single(i => i.ToString() == "f(2)");
+            var targets = c.DelegateTargets(model.GetOperation(call)!);
+            if (targets is not [{ MethodKind: MethodKind.AnonymousFunction }]) { Problem = "targets of f(2): " + (targets == null ? "unknown" : string.Join(", ", targets)); return; }
+            var rule = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax>().Single(i => i.ToString() == "Rule(3)");
+            if (c.DelegateTargets(model.GetOperation(rule)!) != null) Problem = "a field's delegate has known targets";
         }
     }
 

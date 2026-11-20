@@ -17,7 +17,8 @@ namespace Cs2Wasm;
 /// entries as accesses (MemberAccess.IsEntry) with hooks at them (InstrumentEntryWrites, InstrumentEntryReads); a hook
 /// after a statement (InstrumentAfter); conditions with early returns and across calls (CallersOf, PathConditions);
 /// aliasing by where references come from and which new objects a method owns alone (MayAlias, AllocationSites,
-/// IsOwned).
+/// IsOwned); plugins before the first compile (ICompilerPluginBeforeCompile); the list of unsure sites (UnsureSites)
+/// and delegate targets where known (DelegateTargets).
 /// </summary>
 public interface ICompilerPlugin
 {
@@ -176,6 +177,14 @@ public sealed class PluginContext
     /// method no source code calls (or from a delegate's invocation, a recursion, or the cut), with the conditions
     /// along it. The operation runs only when, for some path, all of that path's conditions hold.</summary>
     public IReadOnlyList<ConditionPath> PathConditions(IOperation operation, int maxDepth = 16, int maxPaths = 1024) => _host.PathConditions(operation, maxDepth, maxPaths);
+    /// <summary>(Version 5.) The spots the analyses cannot be sure about (section 7.1): delegates invoked whose target
+    /// is not known there, reflection (the compiler's own CW0201 warnings included), `dynamic`, members and entries
+    /// used through references, collections that leave where their entries are followed, addresses and
+    /// reinterpreted memory. A plugin that must see every read and write treats what they touch as unknown.</summary>
+    public IReadOnlyList<UnsureSite> UnsureSites => _host.UnsureSites;
+    /// <summary>(Version 5.) The lambdas and methods a delegate invocation can run (through locals, by def-use), or
+    /// null when its delegate can be one made elsewhere (then it is an unsure site) or the call is not a delegate's.</summary>
+    public IReadOnlyList<IMethodSymbol>? DelegateTargets(IOperation invocation) => _host.DelegateTargets(invocation);
     /// <summary>(Version 3.) The values that can depend on thread scheduling: marks, members, and a query.</summary>
     public SchedulingInfo Scheduling => _host.Scheduling;
 

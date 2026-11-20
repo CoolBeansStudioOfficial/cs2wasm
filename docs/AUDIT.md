@@ -552,9 +552,39 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     put in its frame (printed 20 for 2), now in both phases. Not looked at for hooks: the threaded sharing analysis
     (`Sharing.cs`) and the arena analysis; both run over compiled code that includes the hooks' own bodies, but not
     over the call edge from an instrumented site to its hook.
-  - Still open: the closed-form solver (A4.6), conditions across
-    calls and the ownership-based alias query (A4.8), the list of unsure sites, plugins before the first compile
-    (A4.9), and the first slice of the real plugin in the Bazoodle repository (9.4).
+  - The list of unsure sites (version 5, `UnsureSites`): a delegate invoked whose target is not known there
+    (`DelegateTargets` gives the lambdas and methods where the def-use chains know them), reflection (calls into
+    `System.Reflection`, `Activator`, `Type.GetField` and the like, and the compiler's own CW0201 warnings),
+    `dynamic`, a member or an entry used through a reference (`ref`, `out`, `in` arguments, `ref` locals and
+    returns), a collection that leaves where its entries are followed (handed to the program's own method, stored in
+    another place, returned, made a writable span or memory, or reached through a local that is not always the
+    member), and addresses and reinterpreted memory (`&`, `Unsafe`, `MemoryMarshal`). A library method other than
+    the known changing ones (`Entries.cs`) is taken to read a collection it is given.
+  - Still open: the closed-form solver (A4.6) and the first slice of the real plugin in the Bazoodle repository
+    (9.4). What they need:
+    - A4.6, closed forms as a solver. Input: a per-tick method or a loop body, as Roslyn's graph now (the IR's
+      later). Execute the region symbolically: every state variable written (fields of `this` and statics, loop
+      locals, several writes each, in order) becomes an affine expression of the old state vector, `x' = A x + b`,
+      whose coefficients are invariants of the region (constants, parameters such as `dt`, members it does not
+      write); this covers the spawner timer's two writes and velocity/position (`v *= d; p += v * dt` is a
+      triangular A). Known pure functions expand: `Min`, `Max`, `Clamp`, `Abs` into pieces, `Lerp` into its affine
+      form; a program method inlines when it writes nothing and calls only such functions. A branch on the state
+      makes pieces: within one the rule is affine, and the tick a guard flips is solved from the affine-in-n value
+      (for one variable, `n = ceil((limit - x0) / step)`); a guard over a component that is not monotone is
+      reported as not solvable, with the reason. Results are values, not strings: the variables, A and b as
+      operations or constants, the pieces with their guards and flip ticks, and a generated C# method
+      `Advance(ref state, long n)` the plugin can add with `AddSource`. Exactness is part of the result, because
+      behaviour must not differ: integer rules (unchecked, wrapping) are exact through repeated squaring of the
+      affine map (`log n` steps; the geometric sum's division has no inverse mod 2^32, so no formula with
+      `(a^n - 1) / (a - 1)`); floating-point closed forms round differently from running the ticks, so they are
+      marked approximate (a display or a prediction may use them; a simulation must run the ticks or call the
+      per-tick code n times). Tests: the four failing examples in A4.6, each compared with running the ticks.
+    - 9.4, the Invisible API's first slice, in the Bazoodle repository against version 5: classify each write
+      (`Accesses` with entries, `PathConditions` for whether it runs under a value from input, `InterceptValue` on
+      the input reads, `UnsureSites` as unknown), mark the interactions changed (`InstrumentWrite`,
+      `InstrumentEntryWrites` with the player key), one gate (generated C# with `AddSource`, reading private
+      fields, exported for the server), registered from `RunBeforeCompile` so nothing compiles twice; the solved
+      timer waits for A4.6. Each gap it finds is a compiler issue here.
 
 - **Step 11.1, in part (2026-11-18): programs written to use every form, compared with .NET.** Tests 124 to 126
   removed three refusals (`await` in conditional expressions was already handled; lifted compound assignment

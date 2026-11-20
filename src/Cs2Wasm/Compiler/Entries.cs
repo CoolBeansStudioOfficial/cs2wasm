@@ -157,7 +157,9 @@ static class Entries
                     {
                         var a = inv.Arguments[i];
                         if (a.Parameter?.RefKind is RefKind.Ref or RefKind.Out || !IsCollection(Strip(a.Value).Type) || !Base(a.Value, null, out var ac, out var ak)) continue;
-                        bool subject = inv.Instance == null && i == 0;
+                        // (the collection a static, an extension or another object's method works on: Array.Sort(a),
+                        // rng.Shuffle(a))
+                        bool subject = i == 0 && (inv.Instance == null || !IsCollection(Entries.Strip(inv.Instance).Type));
                         bool w = subject && mut || CopiesInto(m, a);
                         yield return new EntrySite(ac, op, subject && (m.IsExtensionMethod || m.IsStatic) ? KeyArgument(inv) : ak, w ? AccessKind.Write : AccessKind.Read, true);
                     }
