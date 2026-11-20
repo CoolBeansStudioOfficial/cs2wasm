@@ -26,6 +26,9 @@ internal sealed partial class Driver
         t = t.OriginalDefinition;
         if (t.SpecialType == SpecialType.System_Object) return true;
         if (t.TypeKind != TypeKind.Class) return false;
+        // (a plugin's hook in a constructor may be given `this`: PluginContext)
+        if (HooksSeeAny(t.InstanceConstructors)) return false;
+        UsedAnalysis();
         var key = Types.Key(t);
         if (_ctorsKeepThis.TryGetValue(key, out var r)) return r;
         _ctorsKeepThis[key] = false;
@@ -61,7 +64,7 @@ internal sealed partial class Driver
     /// use of it before `end` keeps it in (a field read or written, a call that does not keep its argument).</summary>
     internal bool FreshLocalBefore(IOperation body, ILocalSymbol l, int end)
     {
-        if (l.IsRef || l.Type.TypeKind != TypeKind.Class) return false;
+        if (l.IsRef || l.Type.TypeKind != TypeKind.Class || CompilingInstrumented) return false;
         var decl = l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
         if (decl is not VariableDeclaratorSyntax || ModelFor(decl.SyntaxTree).GetOperation(decl) is not IVariableDeclaratorOperation vd) return false;
         var init = vd.Initializer?.Value ?? (vd.Parent as IVariableDeclarationOperation)?.Initializer?.Value;
@@ -122,6 +125,7 @@ internal sealed partial class Driver
     /// by name).</summary>
     internal bool CtorsNeverWrite(INamedTypeSymbol t, IFieldSymbol field)
     {
+        UsedAnalysis();
         var key = Types.Key(t.OriginalDefinition) + "::" + field.Name + "@" + Types.Key(field.ContainingType.OriginalDefinition);
         if (_ctorsWrite.TryGetValue(key, out var r)) return r;
         r = CtorsKeepThis(t);
@@ -178,7 +182,8 @@ internal sealed partial class Driver
         if (m.IsAbstract || m.IsExtern || m.IsAsync || m.IsIterator || m.ReturnsByRef || m.ReturnsByRefReadonly) return false;
         if (inv.IsVirtual && (m.IsVirtual || m.IsOverride) && !m.IsSealed && !m.ContainingType.IsSealed) return false;
         if (m.ContainingType.TypeKind == TypeKind.Interface) return false;
-        if (m.ReturnType.TypeKind != TypeKind.Class) return false;
+        if (m.ReturnType.TypeKind != TypeKind.Class || HooksSee(m)) return false;
+        UsedAnalysis();
         var key = Types.MethodKey(m);
         if (_returnsFresh.TryGetValue(key, out var r)) return r;
         _returnsFresh[key] = false; // (while deciding: a call of itself is not one)
@@ -217,7 +222,7 @@ internal sealed partial class Driver
 
     /// <summary>The value is a new structure that refers only to objects of its own: null, a `new` whose constructors
     /// store nothing that refers elsewhere, or a call of a method that returns such a structure (IsoMethod).</summary>
-    internal bool IsolatedValue(IOperation? v) => !s_noIsolated && IsoExpr(v, null);
+    internal bool IsolatedValue(IOperation? v) => !s_noIsolated && !CompilingInstrumented && IsoExpr(v, null);
 
     static IOperation? Unconvert(IOperation? v)
     {
@@ -269,6 +274,8 @@ internal sealed partial class Driver
     {
         t = t.OriginalDefinition;
         if (t.SpecialType == SpecialType.System_Object) return true;
+        if (HooksSeeAny(t.InstanceConstructors)) return false;
+        UsedAnalysis();
         var key = Types.Key(t);
         if (_closedCtors.TryGetValue(key, out var r)) return r;
         _closedCtors[key] = false;
@@ -316,6 +323,8 @@ internal sealed partial class Driver
         if (!m.IsStatic || m.IsExtern || m.IsAsync || m.IsIterator || m.ReturnsByRef || m.ReturnsByRefReadonly || m.IsGenericMethod) return false;
         if (m.ReturnType.TypeKind != TypeKind.Class) return false;
         if (m.Parameters.Any(p => !PlainValueType(p.Type))) return false;
+        if (HooksSee(m)) return false;
+        UsedAnalysis();
         var key = Types.MethodKey(m);
         if (_isoMethods.TryGetValue(key, out var r)) return r;
         _isoMethods[key] = true;
@@ -445,7 +454,7 @@ sealed partial class FunctionCompiler
     /// local that holds an object only this method knows up to here.</summary>
     bool StoresIntoFresh(IOperation? instance, IOperation at)
     {
-        if (Driver.NoFreshStores || instance == null || _closure != null || _machine != null) return false;
+        if (Driver.NoFreshStores || instance == null || _closure != null || _machine != null || D.CompilingInstrumented) return false;
         while (instance is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } c) instance = c.Operand;
         if (instance is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ImplicitReceiver, Type: INamedTypeSymbol { TypeKind: TypeKind.Class } nt })
             return D.CtorsKeepThis(nt);

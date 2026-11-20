@@ -27,6 +27,19 @@ public interface ICompilerPlugin
     void Run(PluginContext context);
 }
 
+/// <summary>(Version 5.) A plugin that also runs before the program's first compile (audit A4.9). What it adds there
+/// (hooks, sources, clones, suppressed imports) is compiled once, with every analysis knowing the hooks; a hook added
+/// in Run instead makes the compiler compile again what it instruments and what relied on an answer it changes. Before
+/// the compile the program's reach is not known: <see cref="PluginContext.ReachableMethods"/> and
+/// <see cref="PluginContext.Accesses"/> cover every method of the program's source with a body, the call graph is
+/// the source's direct calls (by definition), and the types an alias or a field may have are every type of the
+/// source, any library type taken as possible. A program that starts threads is compiled again from the start, so
+/// RunBeforeCompile can run more than once in one build. Run is still called after the compile.</summary>
+public interface ICompilerPluginBeforeCompile : ICompilerPlugin
+{
+    void RunBeforeCompile(PluginContext context);
+}
+
 public enum AccessKind { Read, Write, ReadWrite }
 
 /// <summary>A branch an operation runs under: <see cref="Test"/> evaluated to <see cref="WhenTrue"/>. For a switch
@@ -119,6 +132,8 @@ public sealed class PluginContext
 
     internal PluginContext(Compiler.PluginHost host, int version = InterfaceVersion) { _host = host; _version = version; }
 
+    /// <summary>(Version 5.) Whether this is ICompilerPluginBeforeCompile.RunBeforeCompile, before the first compile.</summary>
+    public bool BeforeCompile => _host.BeforeCompile;
     /// <summary>The program's main compilation (the embedder may read the same one).</summary>
     public Compilation Compilation => _host.Main;
     /// <summary>Every method instance that the roots reach, as concrete (constructed) symbols.</summary>

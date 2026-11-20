@@ -98,32 +98,66 @@ internal sealed partial class Driver
 
     public static (string, int, int) SiteKey(SyntaxNode s) => (s.SyntaxTree.FilePath, s.SpanStart, s.Span.Length);
 
-    /// <summary>Runs the embedder's plugin passes after the program is lowered (section 7.1).</summary>
+    /// <summary>Plugins that run before the first compile (ICompilerPluginBeforeCompile, audit A4.9): what they add
+    /// (hooks, sources, clones, suppressed imports) is part of the program from its first compile, so nothing is
+    /// compiled twice and every analysis is computed knowing the hooks.</summary>
+    void RunPluginsBeforeCompile(RuntimeGen rt)
+    {
+        _recordAnalysisUsers = Options.Plugins.Count > 0;
+        if (!Options.Plugins.Any(p => p is ICompilerPluginBeforeCompile)) return;
+        var host = new PluginHost(this, rt) { BeforeCompile = true };
+        foreach (var p in Options.Plugins)
+            if (p is ICompilerPluginBeforeCompile early) RunPlugin(p, host, ctx => early.RunBeforeCompile(ctx));
+    }
+
+    void RunPlugin(ICompilerPlugin p, PluginHost host, Action<PluginContext> run)
+    {
+        if (p.InterfaceVersion is < 1 or > PluginContext.InterfaceVersion)
+        {
+            if (!host.BeforeCompile) // (reported once, after the compile)
+                Report(Diags.Plugin, null, $"plugin '{p.Name}' targets interface version {p.InterfaceVersion}; this compiler provides {PluginContext.InterfaceVersion}");
+            return;
+        }
+        var ctx = new PluginContext(host, p.InterfaceVersion);
+        try { run(ctx); }
+        catch (Exception ex) { Report(Diags.Plugin, null, $"plugin '{p.Name}' failed: {ex.Message}"); return; }
+        foreach (var (name, data) in ctx.Sections) Module.CustomSections.Add(new CustomSection(name, data));
+        Diagnostics.AddRange(ctx.Diagnostics);
+    }
+
+    /// <summary>Runs the embedder's plugin passes after the program is lowered (section 7.1). What they instrument
+    /// now was compiled without its hooks: it is compiled again, and so is every function that used an analysis
+    /// answer the hooks can change (an escape, a fresh or isolated value: PluginHost's hooks may be given a
+    /// reference), with those answers forgotten.</summary>
     void RunPlugins(RuntimeGen rt)
     {
         if (Options.Plugins.Count == 0) return;
+        var before = new HashSet<ISymbol>(_instrumented, SymbolEqualityComparer.Default);
         var host = new PluginHost(this, rt);
-        foreach (var p in Options.Plugins)
-        {
-            if (p.InterfaceVersion is < 1 or > PluginContext.InterfaceVersion)
-            {
-                Report(Diags.Plugin, null, $"plugin '{p.Name}' targets interface version {p.InterfaceVersion}; this compiler provides {PluginContext.InterfaceVersion}");
-                continue;
-            }
-            var ctx = new PluginContext(host, p.InterfaceVersion);
-            try { p.Run(ctx); }
-            catch (Exception ex) { Report(Diags.Plugin, null, $"plugin '{p.Name}' failed: {ex.Message}"); continue; }
-            foreach (var (name, data) in ctx.Sections) Module.CustomSections.Add(new CustomSection(name, data));
-            Diagnostics.AddRange(ctx.Diagnostics);
-        }
+        foreach (var p in Options.Plugins) RunPlugin(p, host, p.Run);
         Drain(rt); // generated sources and clones
-        if (HasInstrumentation) Recompile(rt);
+        var added = _instrumented.Where(s => !before.Contains(s)).ToHashSet<ISymbol>(SymbolEqualityComparer.Default);
+        if (added.Count > 0) Recompile(rt, added);
         foreach (var list in ValueHooks.Values)
             foreach (var h in list)
                 if (!h.Applied) Report(Diags.Plugin, h.Location, $"the value hook {h.Hook.Name} at '{h.Text}' was not applied: no reachable code computes this expression as a value");
     }
 
     internal void MarkInstrumented(ISymbol member) => _instrumented.Add(RootMember(member));
+
+    /// <summary>Whether a plugin's hook is in the method (or the lambdas in it): a hook may be given what the method
+    /// was passed, its receiver, a value it computes. The escape analysis and the fresh and isolated values take
+    /// such a method as one that lets everything out.</summary>
+    internal bool HooksSee(ISymbol method) => _instrumented.Count > 0 && _instrumented.Contains(RootMember(method));
+    internal bool HooksSeeAny(IEnumerable<ISymbol> methods) => _instrumented.Count > 0 && methods.Any(HooksSee);
+    /// <summary>The function being compiled has a plugin's hooks.</summary>
+    internal bool CompilingInstrumented => _instrumented.Count > 0 && Compiling != null && HooksSee(Compiling.Sym);
+
+    bool _recordAnalysisUsers;
+    /// <summary>The functions that used an answer about another method's body (escape, fresh, isolated, constructors):
+    /// a hook a plugin adds after they were compiled can change it.</summary>
+    readonly HashSet<WasmFunction> _analysisUsers = [];
+    internal void UsedAnalysis() { if (_recordAnalysisUsers && CurrentFn != null) _analysisUsers.Add(CurrentFn); }
 
     static ISymbol RootMember(ISymbol s)
     {
@@ -132,20 +166,36 @@ internal sealed partial class Driver
         return s.OriginalDefinition;
     }
 
-    /// <summary>Methods with instrumented sites are compiled again with their hooks (generic instances, lambdas and
-    /// state machine bodies included; a state machine's kickoff is left alone).</summary>
-    void Recompile(RuntimeGen rt)
+    /// <summary>Methods with sites instrumented after their compile are compiled again with their hooks (generic
+    /// instances, lambdas and state machine bodies included; a state machine's kickoff is left alone), and so is
+    /// every function that used an analysis answer (escape, fresh, isolated) the new hooks can change: the answers
+    /// are forgotten first.</summary>
+    void Recompile(RuntimeGen rt, HashSet<ISymbol> added)
     {
+        var users = _analysisUsers.ToHashSet();
+        _escapes.Clear(); _returnsFresh.Clear(); _ctorsKeepThis.Clear(); _ctorsWrite.Clear(); _isoMethods.Clear(); _closedCtors.Clear();
         foreach (var mi in AllMethods.ToList())
         {
             if (!mi.Compiled || mi.Impl is not (MethodImpl.Body)) continue;
-            if (!_instrumented.Contains(RootMember(mi.Sym))) continue;
+            if (!added.Contains(RootMember(mi.Sym)) && !users.Contains(mi.Fn)) continue;
             bool kickoff = (mi.Sym.IsAsync || mi.Sym.IsIterator || mi.Sym.OriginalDefinition.IsAsync || mi.Sym.OriginalDefinition.IsIterator) && !mi.Key.EndsWith(" MoveNext");
             if (kickoff) continue;
             mi.Fn.Body.Clear(); mi.Fn.Locals.Clear(); mi.Callees.Clear();
             mi.Compiled = false;
             _work.Enqueue(mi);
         }
+        // (static initializers that used such an answer)
+        foreach (var (t, fn, flag, cctor) in _compiledCctors)
+        {
+            if (!users.Contains(fn)) continue;
+            StaticReads.Forget(fn);
+            foreach (var by in ConstructedBy.Values) by.Remove(fn);
+            fn.Body.Clear(); fn.Locals.Clear();
+            CurrentFn = fn;
+            try { FunctionCompiler.CompileStaticInit(this, t, fn, flag, cctor); }
+            catch (CompileException ex) { Report(Diags.Unsupported, ex.Location ?? t.Locations.FirstOrDefault(), ex.Message); }
+        }
+        CurrentFn = null;
         Drain(rt);
     }
 
@@ -182,11 +232,57 @@ internal sealed partial class PluginHost
     public PluginHost(Driver d, RuntimeGen rt) { D = d; _rt = rt; }
 
     public Compilation Main => D.Main;
+    /// <summary>Before the first compile (ICompilerPluginBeforeCompile): the program's reach is not known yet.</summary>
+    public bool BeforeCompile { get; init; }
 
     List<IMethodSymbol>? _reachable;
-    public IReadOnlyList<IMethodSymbol> Reachable => _reachable ??= D.AllMethods
+    public IReadOnlyList<IMethodSymbol> Reachable => _reachable ??= BeforeCompile ? SourceMethods() : D.AllMethods
         .Where(m => m.Impl is MethodImpl.Body or MethodImpl.Synthesized && m.Sym.MethodKind is not MethodKind.AnonymousFunction && m.Clone == null)
         .Select(m => m.Sym).Distinct<IMethodSymbol>(SymbolEqualityComparer.Default).ToList();
+
+    /// <summary>Every method of the program's source with a body (before the compile, in place of the reachable ones).</summary>
+    List<IMethodSymbol> SourceMethods()
+    {
+        var r = new List<IMethodSymbol>();
+        foreach (var comp in D.Inputs)
+            foreach (var tree in comp.SyntaxTrees)
+            {
+                var model = D.ModelFor(tree);
+                foreach (var node in tree.GetRoot().DescendantNodes(n => n is not (BlockSyntax or ArrowExpressionClauseSyntax)))
+                {
+                    ISymbol? s = node switch
+                    {
+                        BaseMethodDeclarationSyntax bm when bm.Body != null || bm.ExpressionBody != null => model.GetDeclaredSymbol(bm),
+                        AccessorDeclarationSyntax a when a.Body != null || a.ExpressionBody != null => model.GetDeclaredSymbol(a),
+                        PropertyDeclarationSyntax { ExpressionBody: not null } p => (model.GetDeclaredSymbol(p) as IPropertySymbol)?.GetMethod,
+                        IndexerDeclarationSyntax { ExpressionBody: not null } ix => (model.GetDeclaredSymbol(ix) as IPropertySymbol)?.GetMethod,
+                        _ => null,
+                    };
+                    if (s is IMethodSymbol m) r.Add(m);
+                }
+            }
+        return r;
+    }
+
+    static IMethodSymbol RootFunction(IMethodSymbol m)
+    {
+        while (m.MethodKind == MethodKind.AnonymousFunction && m.ContainingSymbol is IMethodSymbol c) m = c;
+        return m.OriginalDefinition;
+    }
+
+    /// <summary>The types the program makes; before the compile, every named type of its source.</summary>
+    IEnumerable<ITypeSymbol> KnownTypes()
+    {
+        if (!BeforeCompile) return D.ConstructedTypes();
+        var r = new List<ITypeSymbol>();
+        void Add(INamespaceOrTypeSymbol n)
+        {
+            foreach (var t in n.GetTypeMembers()) { if (t.Locations.Any(l => l.IsInSource)) r.Add(t); Add(t); }
+            if (n is INamespaceSymbol ns) foreach (var c in ns.GetNamespaceMembers()) Add(c);
+        }
+        foreach (var comp in D.Inputs) Add(comp.Assembly.GlobalNamespace);
+        return r;
+    }
 
     Dictionary<IMethodSymbol, IReadOnlyList<IMethodSymbol>>? _graph;
     public IReadOnlyDictionary<IMethodSymbol, IReadOnlyList<IMethodSymbol>> CallGraph
@@ -195,6 +291,22 @@ internal sealed partial class PluginHost
         {
             if (_graph != null) return _graph;
             _graph = new Dictionary<IMethodSymbol, IReadOnlyList<IMethodSymbol>>(SymbolEqualityComparer.Default);
+            if (BeforeCompile)
+            {
+                // (the source's direct calls, by definition, a virtual call to the method it names)
+                BuildCalls();
+                var by = new Dictionary<IMethodSymbol, List<IMethodSymbol>>(SymbolEqualityComparer.Default);
+                foreach (var m in Reachable) by[m.OriginalDefinition] = [];
+                foreach (var (callee, sites) in _sites!)
+                    foreach (var s in sites)
+                    {
+                        var caller = RootFunction(s.Caller);
+                        if (!by.TryGetValue(caller, out var l)) by[caller] = l = [];
+                        if (!l.Contains(callee, SymbolEqualityComparer.Default)) l.Add(callee);
+                    }
+                foreach (var (k, v) in by) _graph[k] = v;
+                return _graph;
+            }
             foreach (var m in D.AllMethods)
             {
                 if (m.Impl is not (MethodImpl.Body or MethodImpl.Synthesized) || m.Clone != null) continue;
@@ -638,7 +750,7 @@ internal sealed partial class PluginHost
             result.Add(v.Type);
         }
         foreach (var t in result.ToList())
-            foreach (var c in D.ConstructedTypes())
+            foreach (var c in KnownTypes())
                 if (IsSubtype(c, t)) result.Add(c);
         return result;
     }

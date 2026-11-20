@@ -438,6 +438,38 @@ static class ApiChecks
             return o == "3 2 0\n" ? null : $"output:\n{o}\n{e}";
         });
 
+        Check("plugin v5: a plugin that runs before the first compile adds hooks the analyses know; a hook added after it that keeps its receiver is never given an object a caller kept in its frame", () =>
+        {
+            var src = Header + """
+                namespace Game {
+                class Counter { public int N; public void Inc() { N++; } }
+                static class Script {
+                    static int Use() { var c = new Counter(); c.Inc(); c.Inc(); return c.N; }
+                    static int Churn(int d) { var a = new Counter(); a.N = d * 1000; var b = new Counter(); b.N = d; return d == 0 ? a.N + b.N : Churn(d - 1) + a.N - b.N; }
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        int u = Use();
+                        int k = Churn(20);
+                        Console.WriteLine(u + " " + Kept.Last!.N + " " + (k > 0));
+                    }
+                }
+                static class Kept { public static Counter? Last; }
+                }
+                """;
+            foreach (var early in new[] { false, true })
+            {
+                var plugin = new KeepPlugin { Early = early };
+                var r = Compile(src, new CompileOptions { Plugins = [plugin], Checked = true });
+                if (!r.Success) return Errors(r);
+                if (plugin.Problem != null) return plugin.Problem;
+                var path = Path.Combine(outDir, "api_plugin_keep" + (early ? "_early" : "") + ".wasm");
+                File.WriteAllBytes(path, r.Module!);
+                var (o, e, _) = Node(root, path);
+                if (o != "2 2 True\n") return $"{(early ? "before the compile" : "after it")}: output:\n{o}\n{e}";
+            }
+            return null;
+        });
+
         Check("plugin v4: suppressible imports do nothing while their bit is set, whatever calls them (a virtual method, a delegate, a lambda, an interface); other imports and the program's state go on", () =>
         {
             var src = Header + """
@@ -994,6 +1026,41 @@ static class ApiChecks
             var self = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.BinaryExpressionSyntax>().Single(x => x.ToString() == "n == p");
             if (c.MayAlias(model.GetOperation(self.Left)!, model.GetOperation(self.Right)!)) return "a new and a parameter's incoming value alias";
             return null;
+        }
+    }
+
+    /// <summary>A hook that keeps the receiver of every write of Counter.N, added before the compile or after it.</summary>
+    sealed class KeepPlugin : ICompilerPluginBeforeCompile
+    {
+        public bool Early;
+        public string? Problem;
+        bool _ranEarly;
+        public int InterfaceVersion => 5;
+        public string Name => "keep";
+        public void RunBeforeCompile(PluginContext c)
+        {
+            if (!c.BeforeCompile) { Problem = "BeforeCompile is false before the compile"; return; }
+            if (!c.ReachableMethods.Any(m => m.Name == "Use") || !c.CallGraph.TryGetValue(c.ReachableMethods.First(m => m.Name == "Use"), out var callees) || !callees.Any(m => m.Name == "Inc"))
+            { Problem = "before the compile: no source methods or calls"; return; }
+            _ranEarly = true;
+            if (Early) Hook(c);
+        }
+        public void Run(PluginContext c)
+        {
+            if (c.BeforeCompile) { Problem = "BeforeCompile is true after the compile"; return; }
+            if (!_ranEarly) { Problem = "RunBeforeCompile did not run"; return; }
+            if (!Early) Hook(c);
+        }
+        static void Hook(PluginContext c)
+        {
+            var n = c.Compilation.GetTypeByMetadataName("Game.Counter")!.GetMembers("N").Single();
+            var gen = c.AddSource("""
+                using Game;
+                static class Keeper { public static void Keep(object o) => Kept.Last = (Counter)o; }
+                """);
+            // (the write in Inc alone: Churn's writes are not kept)
+            var inc = c.AccessesOf(n).Single(a => a.Method.Name == "Inc").Operation.Parent!;
+            c.InstrumentWrite(inc, gen.GetTypeByMetadataName("Keeper")!.GetMembers("Keep").OfType<IMethodSymbol>().Single());
         }
     }
 

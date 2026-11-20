@@ -31,6 +31,9 @@ internal sealed partial class Driver
     internal Esc ParamEscape(IMethodSymbol m, int index, INamedTypeSymbol? exact)
     {
         var def = CanonicalMethod(m).OriginalDefinition;
+        // (a plugin's hook in the method may be given what it was passed: PluginContext)
+        if (HooksSee(def)) return Esc.Yes;
+        UsedAnalysis();
         var key = Types.MethodKey(def) + "#" + index + "#" + (index < 0 && exact != null ? Types.Key(exact) : "");
         if (_escapes.TryGetValue(key, out var r)) return r;
         _escapes[key] = Esc.Yes; // (a recursive use, while deciding: assumed to escape)
@@ -284,7 +287,7 @@ sealed partial class FunctionCompiler
 
     void FindFrameObjects(IOperation body)
     {
-        if (M.IsAsync || M.IsIterator || M.OriginalDefinition.IsIterator || _machine != null) return;
+        if (M.IsAsync || M.IsIterator || M.OriginalDefinition.IsIterator || _machine != null || D.CompilingInstrumented) return;
         var nested = body.Descendants().Where(o => o is IAnonymousFunctionOperation or ILocalFunctionOperation).SelectMany(o => o.DescendantsAndSelf()).ToHashSet();
         List<(ILocalSymbol local, IObjectCreationOperation oc)>? candidates = null;
         foreach (var op in body.Descendants())

@@ -1152,6 +1152,7 @@ internal sealed partial class Driver
         rt.Prepare();
         FindRoots(rt);
         Mark("program diagnostics, roots");
+        RunPluginsBeforeCompile(rt);
         Drain(rt);
         Mark("compile (first drain)");
         RunPlugins(rt);

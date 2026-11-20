@@ -540,6 +540,18 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     parameter's incoming value, or a `new` its method owns alone (`IsOwned`, from the escape analysis: not stored,
     captured, returned or handed to code that keeps it) and anything from outside do not alias; then types.
     `AllocationSites(reference)` gives the `new`s a reference can name.
+  - Plugins before the first compile (A4.9, version 5): a plugin that implements `ICompilerPluginBeforeCompile`
+    runs before the first drain as well; what it adds there is compiled once, with every analysis knowing its
+    hooks. Before the compile the reach is not known, so it sees every source method with a body, the source's
+    direct calls and every source type. The soundness part: the escape analysis and the fresh, isolated and
+    constructor analyses (`ParamEscape`, frames, `FreshLocalBefore`, `ReturnsFresh`, `IsolatedValue`,
+    `CtorsKeepThis`, `ClosedCtors`, `IsoMethod`, stores into fresh objects) take a method with a hook as one that
+    lets everything out, since a hook may be given its receiver, a value or a key. A hook added after the compile
+    makes the compiler forget those answers and compile again what it instruments and every function (static
+    initializers too) that used one of them. Test: a hook that keeps its receiver was given an object a caller had
+    put in its frame (printed 20 for 2), now in both phases. Not looked at for hooks: the threaded sharing analysis
+    (`Sharing.cs`) and the arena analysis; both run over compiled code that includes the hooks' own bodies, but not
+    over the call edge from an instrumented site to its hook.
   - Still open: the closed-form solver (A4.6), conditions across
     calls and the ownership-based alias query (A4.8), the list of unsure sites, plugins before the first compile
     (A4.9), and the first slice of the real plugin in the Bazoodle repository (9.4).

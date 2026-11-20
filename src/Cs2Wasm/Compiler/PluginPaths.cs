@@ -143,7 +143,7 @@ internal sealed partial class PluginHost
             for (var b = m.OverriddenMethod; b != null; b = b.OverriddenMethod) Base(m, b);
             foreach (var x in m.ExplicitInterfaceImplementations) Base(m, x);
         }
-        foreach (var t in D.ConstructedTypes().OfType<INamedTypeSymbol>())
+        foreach (var t in KnownTypes().OfType<INamedTypeSymbol>())
             foreach (var i in t.AllInterfaces)
                 foreach (var im in i.GetMembers().OfType<IMethodSymbol>())
                     if (t.FindImplementationForInterfaceMember(im) is IMethodSymbol impl) Base(impl.OriginalDefinition, im);
@@ -348,7 +348,9 @@ internal sealed partial class PluginHost
         if (ta == null || tb == null || ta.IsValueType || tb.IsValueType) return false;
         if (ta.SpecialType == SpecialType.System_Object || tb.SpecialType == SpecialType.System_Object) return true;
         if (IsSubtype(ta, tb) || IsSubtype(tb, ta)) return true;
-        return D.ConstructedTypes().Any(c => IsSubtype(c, ta) && IsSubtype(c, tb));
+        if (KnownTypes().Any(c => IsSubtype(c, ta) && IsSubtype(c, tb))) return true;
+        // (before the compile: a library type may be both, when both are the library's)
+        return BeforeCompile && !InSource(ta) && !InSource(tb);
     }
 
     /// <summary>Whether two references can name the same object (false only when it is certain): by where each comes
