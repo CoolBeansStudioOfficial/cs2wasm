@@ -4,7 +4,8 @@
 // tables, reflection records, blobs). For the size of large programs (the self-hosted compiler).
 // The module must carry a name section for every function: build it with CS2WASM_NAMES=1.
 // usage: node tools/size-report.mjs module.wasm [--rsp <the build's .rsp, to find its resources>] [--top N]
-//        [--group <prefix>] (types under one namespace prefix, by type)
+//        [--group <prefix>] (types under one namespace prefix, by type) [--packed] (the data is packed: for a module
+//        without names, where rt.unpack_data cannot be seen)
 import { readFileSync, existsSync } from 'node:fs';
 
 const args = process.argv.slice(2);
@@ -92,7 +93,7 @@ for (const [s, n] of [...fns].sort((x, y) => y[0] - x[0]).slice(0, top)) console
 
 // ---- data ----
 let raw = Buffer.concat(data);
-const packed = [...names.values()].includes('rt.unpack_data');
+const packed = [...names.values()].includes('rt.unpack_data') || args.includes('--packed');
 if (packed) {
   // DataCompression: (literal count, literals, match length - 4, distance)..., a last literal run
   const o = [], q = { i: 0 };

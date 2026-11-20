@@ -1792,8 +1792,9 @@ sealed partial class RuntimeGen
                 if (D.TypeById[i] is not INamedTypeSymbol nt || nt.IsUnboundGenericType || nt.TypeArguments.Length > 0 && nt.TypeArguments.Any(a => a is ITypeParameterSymbol)) continue;
                 var asm = nt.ContainingAssembly;
                 if (asm == null || !SymbolEqualityComparer.Default.Equals(asm, corlib) && !programs.Contains(asm)) continue;
-                relocs.Add((blob.Count, D.StringLiteral(Driver.ClrName(nt))));
-                blob.AddRange(new byte[4]);
+                // (a name made when first asked for: minus its length, TypeInfo.GetTypeByName)
+                if (_lazyNames.Contains(i)) blob.AddRange(BitConverter.GetBytes(-Driver.ClrName(nt).Length));
+                else { relocs.Add((blob.Count, D.StringLiteral(Driver.ClrName(nt)))); blob.AddRange(new byte[4]); }
                 blob.AddRange(BitConverter.GetBytes(ext));
                 count++;
             }
@@ -1834,21 +1835,43 @@ sealed partial class RuntimeGen
     static readonly bool s_noLazyNames = Environment.GetEnvironmentVariable("CS2WASM_NO_LAZY_NAMES") == "1";
     /// <summary>CS2WASM_ALL_LAZY_NAMES=1: made when first asked for in any program (for tests: small ones keep their names).</summary>
     static readonly bool s_allLazyNames = Environment.GetEnvironmentVariable("CS2WASM_ALL_LAZY_NAMES") == "1";
+    /// <summary>The types whose full names are made when first asked for (EmitFullNames).</summary>
+    readonly HashSet<int> _lazyNames = [];
+
     void EmitFullNames(int n, Func<int, string> full)
     {
         var plan = new List<(int i, int ext, List<(int ext, string? lit)> pieces)>();
         long saved = 0;
+        // the strings the pieces already use (each is one literal, however many names use it)
+        var used = new HashSet<string>();
+        static int LiteralSize(string t) => (18 + 2 * t.Length + 7) & ~7;
         if (D.LazyTypeNames && !s_noLazyNames)
             for (int ext = 0; ext < n; ext++)
             {
                 int i = D.IntId(ext);
                 if (i <= 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i)) continue;
-                if (D.TypeById[i] is not INamedTypeSymbol t) continue;
-                var targs = Driver.AllTypeArgs(t);
-                if (targs.Count == 0 || SymbolEqualityComparer.Default.Equals(t, t.OriginalDefinition)) continue;
+                // (a generic instance, or an array or pointer of one: the types whose names repeat other names)
+                List<ITypeSymbol> targs;
+                switch (D.TypeById[i])
+                {
+                    case INamedTypeSymbol t when !SymbolEqualityComparer.Default.Equals(t, t.OriginalDefinition): targs = Driver.AllTypeArgs(t); break;
+                    case IArrayTypeSymbol arr: targs = [arr.ElementType]; break;
+                    case IPointerTypeSymbol pt: targs = [pt.PointedAtType]; break;
+                    default: continue;
+                }
+                if (targs.Count == 0) continue;
                 string name = full(i);
                 var pieces = new List<(int ext, string? lit)>();
                 int at = 0, ids = 0;
+                // text between arguments, cut after each '[' and ',': the parts are a definition's name with its
+                // bracket, shared by all its instances, and the separators
+                void Text(int from, int to)
+                {
+                    int st = from;
+                    for (int q = from; q < to; q++)
+                        if (name[q] is '[' or ',') { pieces.Add((-1, name[st..(q + 1)])); st = q + 1; }
+                    if (st < to) pieces.Add((-1, name[st..to]));
+                }
                 // the arguments in the order their names are written; one the module does not number (or whose
                 // name is not found) is looked into: its own arguments
                 void Find(ITypeSymbol a)
@@ -1856,7 +1879,7 @@ sealed partial class RuntimeGen
                     if (D.ExistingTypeId(D.Types.Canonical(a)) is int ai && D.ExtId(ai) is > 0 and var ae && full(ai) is { Length: >= 8 } an
                         && name.IndexOf(an, at, StringComparison.Ordinal) is >= 0 and var k)
                     {
-                        if (k > at) pieces.Add((-1, name[at..k]));
+                        if (k > at) Text(at, k);
                         pieces.Add((ae, null));
                         at = k + an.Length; ids++;
                         return;
@@ -1870,13 +1893,15 @@ sealed partial class RuntimeGen
                 }
                 foreach (var a in targs) Find(a);
                 if (ids == 0) continue;
-                if (at < name.Length) pieces.Add((-1, name[at..]));
+                if (at < name.Length) Text(at, name.Length);
                 // (two pieces or more, none empty: what rt.lazy_type_name joins is then a new string, never one of them)
                 if (pieces.Count < 2 || string.Concat(pieces.Select(p => p.lit ?? full(D.IntId(p.ext)))) != name) continue;
-                int cost = 8 + 4 * pieces.Count + pieces.Where(p => p.lit != null).Sum(p => 8 + 2 * p.lit!.Length) / 4;
-                if (cost >= 18 + 2 * name.Length) continue;
+                var fresh = pieces.Where(p => p.lit != null && !used.Contains(p.lit)).Select(p => p.lit!).Distinct().ToList();
+                int cost = 8 + 4 * pieces.Count + fresh.Sum(LiteralSize);
+                if (cost >= LiteralSize(name)) continue;
+                used.UnionWith(fresh);
                 plan.Add((i, ext, pieces));
-                saved += 18 + 2 * name.Length - cost;
+                saved += LiteralSize(name) - cost;
             }
         // (a program with few such names keeps them: rt.lazy_type_name would cost more than it saves)
         if (saved < (s_allLazyNames ? 1 : 8192)) plan.Clear();
@@ -1897,6 +1922,7 @@ sealed partial class RuntimeGen
             var rec = (DataAddr)D.DataBlob(bytes, 4, relocs);
             // (the table's entry: the record's address with its low bit set; a string's address is a multiple of 8)
             byId[i] = new DataAddr(D, rec.Chunk) { Plus = 1 };
+            _lazyNames.Add(i);
         }
         var entry = D.Module.AddFunction("rt.type_name_entry", new FuncType([ValType.I32], [ValType.I32]));
         table = EmitIdTable(entry, n, i => (byId.TryGetValue(i, out var r) ? r : D.StringLiteral(full(i)), 0));
