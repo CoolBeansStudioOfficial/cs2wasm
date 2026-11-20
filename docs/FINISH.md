@@ -30,7 +30,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | missing | pass |
 | 3 | Invisible API slice (9.4) in the Bazoodle repository | not started | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
-| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's | no check | check exists, worst frame not above NativeAOT's |
+| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 31.9 ms vs 4.3 ms (AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Hello world size (test 145) | 27,501 B | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.45 s vs 4.6 s | < 4.6 s |
 | 4 | Same: peak memory | 470 MB vs 239 MB | < 239 MB |
@@ -69,7 +69,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 | D. Proof 5 in the browser | game built by today's self-hosted compiler in the browser | host/web, tools/proof5.mjs, tests/Godot | to start |
 | E. Behaviour gaps | `StackFrame.GetMethod()`, `FirstChanceException` | CoreLib Boundary, stack trace code | to start |
 | F. Plugins | A4.6 closed-form solver with its tests | Compiler/Plugins (new solver file), tests | to start |
-| G. Spikes | frame-time check against NativeAOT | tools (new), bench programs | to start |
+| G. Spikes | frame-time check against NativeAOT | tools/frames.mjs, tools/frames, tools/frames-naot-wasm | check landed; tree scene waits on 7.E (A) |
 | H. Flakes | test 139 leak under load, 072_http | Runtime.cs (read first), tests | to start |
 
 9.4 (the Invisible API slice) lives in the Bazoodle repository: started once F lands, from that repository.
@@ -77,3 +77,8 @@ Each stream is independent of the others' files where marked, so it can run in a
 ## Log
 
 - 2026-11-20: plan written. Self-hosted no threads 12.45 s / 470 MB / 64 MB against 4.6 s / 239 MB / 129 MB.
+- 2026-11-20 (G): spikes check `tools/frames.mjs`, five frame loops against NativeAOT-LLVM. Worst frame cs2wasm vs
+  NativeAOT: churn 8.6 / 23.1 ms, collections 0.31 / 2.56, strings 0.15 / 0.36, bigdrop (150k objects dropped in one
+  frame) 2.8 / 17.5, tree 31.9 / 4.3; peak memory 16 MB against 59 to 71 MB (tree 32). tree's spike is its rebuild:
+  a scene tree with children lists is cycle-capable by type, so building it is arena links (15 ms against ~1 ms);
+  the fix is 7.E in the compiler (stream A). churn's median is 3.4x NativeAOT's (speed, open).
