@@ -93,32 +93,13 @@ namespace System.Threading
             // (with no other thread the lock is free or ours)
             if (Rt.SingleThreaded()) return TryTake(obj);
             long end = millisecondsTimeout < 0 ? long.MaxValue : Engine.MonotonicNs() + (long)millisecondsTimeout * 1000000;
-            long noted = Engine.MonotonicNs() + 20_000_000_000L;
             while (true)
             {
                 int g = Atomic.Load32(ref Threads.s_generation);
                 if (TryTake(obj)) return true;
                 if (millisecondsTimeout == 0 || Engine.MonotonicNs() >= end) return false;
-                // (CS2WASM_MONITOR_DEBUG: a wait of more than 20 s says who holds the lock, for a program that hangs)
-                if (Engine.MonotonicNs() > noted) { noted = long.MaxValue; NoteLongWait(obj); }
                 Threads.WaitGenerationHolding(g);
             }
-        }
-
-        static unsafe void Say(string s)
-        {
-            s = string.Concat(s, "\n");
-            fixed (char* p = s) Engine.Write((int)p, s.Length);
-        }
-
-        static void NoteLongWait(object obj)
-        {
-            if (Environment.GetEnvironmentVariable("CS2WASM_MONITOR_DEBUG") == null) return;
-            Rt.RuntimeLock();
-            int e = Find(Rt.AddressOf(obj), false);
-            int owner = e == 0 ? -1 : Mem.LoadI32(e + 4), depth = e == 0 ? -1 : Mem.LoadI32(e + 8), waiters = e == 0 ? -1 : Mem.LoadI32(e + 12);
-            Rt.RuntimeUnlock();
-            Say($"[monitor] thread {Rt.ThreadId()} waits 20 s for a lock of {obj.GetType()} at {Rt.AddressOf(obj)}: owner {owner}, depth {depth}, waiters {waiters}");
         }
 
         public static void Enter(object obj)
@@ -143,10 +124,7 @@ namespace System.Threading
             int e = Find(Rt.AddressOf(obj), false);
             if (e == 0 || Mem.LoadI32(e + 4) != me)
             {
-                int owner = e == 0 ? -1 : Mem.LoadI32(e + 4);
                 Rt.RuntimeUnlock();
-                if (Environment.GetEnvironmentVariable("CS2WASM_MONITOR_DEBUG") != null)
-                    Say($"[monitor] thread {me} exits a lock of {obj.GetType()} at {Rt.AddressOf(obj)} it does not hold: owner {owner}");
                 throw new SynchronizationLockException();
             }
             int depth = Mem.LoadI32(e + 8) - 1;

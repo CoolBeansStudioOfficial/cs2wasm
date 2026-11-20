@@ -86,6 +86,14 @@ foreach (var (name, sources, symbols) in programs.Where((p, i) => (filter == nul
     }
     var wasmPath = Path.Combine(outDir, name + ".wasm");
     File.WriteAllBytes(wasmPath, result.Module!);
+    // `// size-limit: n` in a program: as shipped, its module must stay below n bytes (a size goal the suite holds:
+    // a runtime change once grew Console.WriteLine(42) sixfold and nothing failed)
+    if (!checkedBuild && src.Contains("// size-limit:") && int.Parse(src[(src.IndexOf("// size-limit:") + 14)..].Split('\n')[0].Trim()) is int limit
+        && result.Module!.Length >= limit)
+    {
+        Fail(name, $"{result.Module!.Length} bytes, the limit is below {limit}");
+        continue;
+    }
     if (result.SourceMap != null) File.WriteAllText(wasmPath + ".map", result.SourceMap);
 
     string expected;
