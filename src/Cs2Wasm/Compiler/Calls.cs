@@ -1089,6 +1089,17 @@ sealed partial class FunctionCompiler
             case "Rt.TlsSize": E.I32Addr(new LateAddr(() => D.TlsSize)); return Own.None;
             case "Rt.RuntimeLock": E.Call(Rt.LockEnter); return Own.None;
             case "Rt.RuntimeUnlock": E.Call(Rt.LockExit); return Own.None;
+            case "Rt.RuntimeLockHeld":
+                if (D.ThreadMode) { E.I32Addr(D.StaticAddress("rt.lock.owner", 4, 4)); E.Emit(Op.I32AtomicLoad, 0, 2); E.GGet(D.ThreadId); E.Op(Op.I32Eq); }
+                else E.I32(0);
+                return Own.None;
+            case "Rt.ThreadMode": E.I32(D.ThreadMode ? 1 : 0); return Own.None;
+            case "Rt.DeadlockDump": E.I32(RuntimeFns.DeadlockDumpOn ? 1 : 0); return Own.None;
+            // (address) -> the word of its place's lock (rt.ref_lock's table)
+            case "Rt.PlaceLockWord":
+                E.I32(2); E.Op(Op.I32ShrU); E.I32(63); E.Op(Op.I32And); E.I32(6); E.Op(Op.I32Shl);
+                E.I32Addr(D.StaticAddress("rt.ref.locks", 64 * 64, 64)); E.Op(Op.I32Add);
+                return Own.None;
             case "Rt.Rethrow":
                 E.Call(Rt.Retain);
                 if (D.UsesFilters) { int rx = E.AddLocal(ValType.I32); E.Tee(rx); E.Call(Rt.FirstPass); E.Get(rx); }
