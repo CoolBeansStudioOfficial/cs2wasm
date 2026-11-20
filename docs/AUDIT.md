@@ -211,7 +211,7 @@ control-flow graph are never called (`tests/Cs2Wasm.Tests/ApiChecks.cs:390-479`)
 | A5.14 | Export parameter types unchecked; diagnostics without locations | `Driver.cs:1344-1346`; CW0101 throw sites that pass no location |
 | A5.15 | Hand-written code beyond the runtime boundary | 63 modified Mono runtime files; 18 `edit` lines on non-boundary upstream files (`CoreLib manifest.txt:40-56`); `ManagedZLib.cs`, `EnumFormat.cs`, `TextScan.cs` |
 | A5.16 | No Wasmtime path; no check that self-hosted output equals .NET-hosted output | host needs JS imports and workers; `ApiChecks.cs:101` compares same-host only |
-| A5.17 | Proof 4 and proof 5 not met | self-host: traps, 1 GiB, hang on more than one core (`proof5_hello2d/README.md:85-100`); browser build of the game fails; hello world 23-30 s in the browser |
+| A5.17 | Proof 4 and proof 5 not met | self-host: traps, 1 GiB, hang on more than one core (`proof5_hello2d/README.md`, "What stops proof 5"); browser build of the game fails; hello world 23-30 s in the browser. Proof 5's engine half met 2026-11-19 (step 12.5 status) |
 
 ### A6. Structure
 
@@ -501,6 +501,23 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   gives for it (18 edits, 3 replaced files, in four libraries), and System.Private.CoreLib's runtime half file by
   file: 63 changed (lines added and removed, and the comments marked cs2wasm that say why), 47 as upstream, 1
   cs2wasm's own.
+
+- **Step 12.5, the engine's half: done (2026-11-19); the build in the browser: open.** The game
+  (`tests/Godot/proof5_hello2d`, two C# scripts on a `CharacterBody2D` and a `Label`) compiled by the .NET-hosted
+  cs2wasmc (3,449,802 bytes) plays in a browser in the **stock** Godot 4.7.2 web template (the build without threads,
+  `v4.7.2.stable.official.ed1daf0bf`; the eight stock `web_*.zip`, taken by range requests from the official
+  `Godot_v4.7.2-stable_export_templates.tpz`, replaced the mislabeled copies in the editor's template folder), through
+  the JS bridge (`host/godot-bridge.mjs`, `host/web/godot-web.mjs`, `host/web/godot/*.gd`). Its engine-call log equals
+  stock Godot .NET's on the desktop line for line: 1,667 lines with the fixed input, 1,669 with the key that makes
+  the script throw (`node tools/proof5.mjs check --module tests/out/proof5/game-net.wasm [--panic]`, headless Chrome
+  157); the same in the Claude app's browser pane (Chrome 156) with `node tools/proof5.mjs serve --build` and
+  `?module=prebuilt.wasm&drive=1`, the page comparing its log with the oracle's itself; played by keys it moves and
+  jumps (`--play`). The headless check without a browser is `node tools/proof5.mjs stub [--panic]`: the same module
+  on Node with the oracle's answers replayed, equal too. The oracle, run again, gave the same bytes. Open: (1) the
+  game built in the browser by the self-hosted compiler (`tests/Godot/proof5_hello2d/README.md`, "What stops
+  proof 5", items 1 to 4: last tried 2026-11-17 with the self-hosted compiler of that day; not re-tried on today's);
+  (2) `StackFrame.GetMethod()` is null in a module (`repro/StackTraceFrames.cs`: .NET prints `A`), a behaviour
+  difference the game's log does not show; (3) a host without JavaScript (Wasmtime) for the `godot.*` imports.
 
 - **Steps 8.2, 8.3: done (2026-11-18).** `MemberAccess.Instrumentable` says which accesses a hook runs at (not a
   `ref` or `out` argument, a deconstruction's target, an event's handlers); every hook form and failure path of the

@@ -9,6 +9,7 @@
 import { runModule } from './host/web/run-module.mjs';
 import { webImports, memoryLimits } from './host/web/cs2wasm-web.mjs';
 import { attachGame } from './host/web/godot-web.mjs';
+import { comparable } from './host/godot-bridge.mjs';
 
 const params = new URLSearchParams(location.search);
 const result = (window.proof5 = { state: 'starting', build: null, log: null, error: null, output: '' });
@@ -91,7 +92,20 @@ async function play(wasm) {
   result.log = game.log;
   result.calls = game.bridge.calls;
   result.rounds = game.backend.round;
+  // stock Godot .NET's log of the same input (the site has a copy): the verdict on the page, for a person watching
+  // (check/browser.mjs compares again on its own side)
+  const oracle = await fetch(drive === 'panic' ? 'oracle-calls-panic.txt' : 'oracle-calls.txt');
+  if (oracle.ok) {
+    const expected = (await oracle.text()).replaceAll('\r\n', '\n').split('\n');
+    if (expected.at(-1) === '') expected.pop();
+    let first = -1;
+    for (let i = 0; i < Math.max(expected.length, game.log.length) && first < 0; i++) if (comparable(expected[i] ?? '') !== comparable(game.log[i] ?? '')) first = i;
+    result.equal = first < 0;
+    print(first < 0 ? `the engine-call log (${game.log.length} lines) equals stock Godot .NET's\n`
+      : `the engine-call log DIFFERS from stock Godot .NET's at line ${first + 1}:\n  stock  ${expected[first]}\n  module ${game.log[first]}\n`);
+  }
   status('done');
+  if (result.equal !== undefined) document.getElementById('status').textContent = `done: the engine calls ${result.equal ? 'equal' : 'DIFFER from'} stock Godot .NET's`;
 }
 
 try {

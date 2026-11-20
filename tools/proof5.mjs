@@ -8,6 +8,10 @@
 //                                            and everything the page serves (tests/out/proof5/site)
 //   node tools/proof5.mjs check              server + headless browser: builds the game in the browser with the
 //                                            self-hosted compiler, plays the fixed frames, compares the log
+//                                            (--module tests/out/proof5/game-net.wasm: the module the .NET-hosted
+//                                            compiler built, no build in the page)
+//   node tools/proof5.mjs serve [--build] [--port n]   the site for a browser, with game-net.wasm as the page's
+//                                            module (--build: web --no-toolchain first); stays up
 // Environment: CS2WASM_GODOT_EDITOR (the stock editor's console executable), CS2WASM_CACHE, CS2WASM_SELF (the
 // self-hosted compiler, default tests/out/self2/cs2wasm.wasm here or in the main checkout), CS2WASM_BROWSER.
 import { mkdirSync } from 'node:fs';
@@ -33,8 +37,21 @@ async function main() {
     process.exit(await (await import('../tests/Godot/proof5_hello2d/check/web.mjs')).web(rest));
   } else if (step === 'check') {
     process.exit(await (await import('../tests/Godot/proof5_hello2d/check/browser.mjs')).check(rest));
+  } else if (step === 'serve') {
+    // the site served for a person's browser, with the game's module built by the .NET-hosted cs2wasmc (the web
+    // step's game-net.wasm) in place of the build in the page: --build runs `web --no-toolchain` first
+    const { web, site } = await import('../tests/Godot/proof5_hello2d/check/web.mjs');
+    const { serve } = await import('../host/web/server.mjs');
+    const { cpSync, existsSync } = await import('node:fs');
+    if (rest.includes('--build') && await web(['--no-toolchain']) !== 0) process.exit(1);
+    const module = join(outDir, 'game-net.wasm');
+    if (!existsSync(join(site, 'godot', 'index.wasm')) || !existsSync(module)) { console.error('serve: no site: node tools/proof5.mjs serve --build'); process.exit(1); }
+    cpSync(module, join(site, 'prebuilt.wasm'));
+    const i = rest.indexOf('--port');
+    const s = await serve(site, i >= 0 ? +rest[i + 1] : 8085);
+    console.log(`serve: ${site} at ${s.url}\n  ${s.url}?module=prebuilt.wasm&drive=1      the fixed input (stock Godot's log in proof5.log)\n  ${s.url}?module=prebuilt.wasm              played by the keyboard`);
   } else {
-    console.error('usage: node tools/proof5.mjs oracle|stub|web|check');
+    console.error('usage: node tools/proof5.mjs oracle|stub|web|check|serve');
     process.exit(2);
   }
 }
