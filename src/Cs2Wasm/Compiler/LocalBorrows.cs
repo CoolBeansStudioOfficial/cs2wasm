@@ -71,7 +71,9 @@ sealed partial class FunctionCompiler
                 r = new BorrowLocal
                 {
                     Keys = string.Join("\n", keys),
-                    Marker = D.Module.AddFunction("borrow? " + (keys.Count == 0 ? "" : string.Join("|", keys)), new FuncType([ValType.I32], [ValType.I32])),
+                    // (in the module from its first use, EmitBorrowMark: a local all of whose values are owned has no
+                    // placeholder, which a checked build's validator would find empty)
+                    Marker = new WasmFunction("borrow? " + (keys.Count == 0 ? "" : string.Join("|", keys)), new FuncType([ValType.I32], [ValType.I32])),
                 };
         }
         _borrowLocals[l] = r;
@@ -152,6 +154,7 @@ sealed partial class FunctionCompiler
     void EmitBorrowMark(Var v, BorrowLocal wb, Own o)
     {
         if (o == Own.Owned) return;
+        if (!wb.Registered) { wb.Marker.Order = D.Module.Functions.Count; D.Module.Functions.Add(wb.Marker); }
         E.Call(wb.Marker);
         if (D.ThreadMode) D.ThreadLocalBorrows.Add(wb.Marker);
         if (!wb.Registered) { wb.Registered = true; D.FieldBorrows.Add((E.Fn, v.Local, wb.Keys, wb.Marker)); }

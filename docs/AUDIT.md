@@ -493,6 +493,21 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   atomic exchange (the place's lock is taken before the runtime lock elsewhere: not inside it). Not enough: 24
   threads still do not end; a checked build of the compiler (freed memory never used again) is to say where.
   Also seen: 072_http once out of bounds in a worker in a checked suite run, then 366 runs passing.
+  Then, found with a checked build of the compiler (a node of Roslyn's read after it was freed) and two small
+  programs that reproduce it (test 139: sixteen threads storing into the same slots of shared objects, a shared
+  array of structs among them, as Roslyn's node cache does; 14 runs in 40 failed before):
+  - Any store into a slot that can close a cycle, in an object another thread may reach, is one step under the
+    runtime lock (`Site.StoreLock`, `Arenas.StoreLockAt` for stores by address and a struct's copy): its link sets
+    the slot's bits, its unlink reads them, and two threads' stores of one slot between them left them saying the
+    other's value. Not a store into an object the last compilation found no other thread reaches.
+  - An object whose destruction begins while its thread holds the runtime lock waits in the thread's list until
+    the lock is given back (rt.destroy, rt.lock_exit): its finalizer runs program code, as with the groups before.
+  - The finalizers' phase of a group destroyed later puts the cut references back while the lock is still held, at
+    the deferral (`FinPrepare`): put back afterwards, one could be to an object another thread had freed.
+  - A placeholder for a local's borrow was made in the module before its first use: a local whose every value was
+    owned left one with no body, which only a checked build's validator saw.
+  Test 139: 40 runs of 40 pass checked.
+  `node tools/suite.mjs` runs the suite in shards side by side, both modes: 7 minutes instead of 25.
   Separately, and older: a program with threads whose cycle-capable objects are made on many threads at once gets
   slower with each thread (a list of 3,000 trees of 200 nodes, made in a PLINQ query: 2.9 s on one thread, 10.7 on
   four, 21.7 on 24; the same with the compiler of 2026-11-17): every arena operation takes the one runtime lock.

@@ -398,8 +398,12 @@ sealed partial class FunctionCompiler
                 FreeScratch(vt, val);
                 return;
             }
+            // (threads: a general store into an object another thread may reach is one step, StoreLock; not one into
+            // an object the last compilation found no other thread reaches: Api.cs compiles again should that change)
+            bool storeLock = site != null && D.ThreadMode && !fresh && !owned && !(D.Sharing is { } shs && shs.PriorThreadLocal(site.Container));
+            if (storeLock) E.Call(site!.StoreLock);
             if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : owned ? site.LinkOwned : iso ? site.LinkIso : site.Link); E.Set(val); }
-            else if (byAddress) { E.Get(val); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.LinkAt(t)); E.Set(val); }
+            else if (byAddress) { if (D.ThreadMode) E.Call(D.Arenas.StoreLockAt(t, true)); E.Get(val); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.LinkAt(t)); E.Set(val); }
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
             EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
             int a = Scratch(ValType.I32);
@@ -420,8 +424,8 @@ sealed partial class FunctionCompiler
             }
             E.Get(old);
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
-            if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink); }
-            else if (byAddress) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.UnlinkAt(t)); }
+            if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink); if (storeLock) E.Call(site.StoreUnlock); }
+            else if (byAddress) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.UnlinkAt(t)); if (D.ThreadMode) E.Call(D.Arenas.StoreLockAt(t, false)); }
             else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.ReleaseOf(t));
             FreeScratch(ValType.I32, old); FreeScratch(ValType.I32, a);
         }

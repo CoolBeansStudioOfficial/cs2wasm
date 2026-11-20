@@ -78,8 +78,9 @@ sealed partial class FunctionCompiler
     {
         var o = EmitValue(init);
         ConvertTop(TypeOf(init), v.Type, ref o);
-        var marker = D.Module.AddFunction("borrow? " + key, new FuncType([ValType.I32], [ValType.I32]));
+        // (an owned value: no placeholder, none in the module either: a checked build's validator would find it empty)
         if (o == Own.Owned) { E.Set(v.Local); return; }
+        var marker = D.Module.AddFunction("borrow? " + key, new FuncType([ValType.I32], [ValType.I32]));
         E.Call(marker);
         E.Set(v.Local);
         if (D.ThreadMode) D.ThreadLocalBorrows.Add(marker);

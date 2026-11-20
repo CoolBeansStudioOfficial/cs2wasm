@@ -62,6 +62,22 @@ internal sealed partial class RuntimeFns
             // (not before the thread has its block of thread statics: AllocFirst makes it under the lock, and the list
             // is one of them)
             if (arenas && D.ThreadMode) { e.GGet(D.TlsBase); e.If(); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0).Fn); e.End(); }
+            // (and the objects whose destruction began while it was held, rt.destroy: their finalizers run program code,
+            // which must not run under the runtime lock; not inside a destruction, whose own loop takes them)
+            if (D.ThreadMode)
+            {
+                int q = e.AddLocal(I);
+                e.GGet(D.TlsBase); e.GGet(D.DestroyDepth); e.Op(Op.I32Eqz); e.Op(Op.I32And);
+                e.If();
+                var exit = e.Block(); var top = e.Loop();
+                e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0).Fn); e.Tee(q); e.Op(Op.I32Eqz); e.BrIf(exit);
+                e.I32(1); e.GSet(D.DestroyDepth);
+                e.Get(q); e.Call(D.Rt.Destroy);
+                e.I32(0); e.GSet(D.DestroyDepth);
+                e.Br(top);
+                e.End(); e.End();
+                e.End();
+            }
             e.End();
         }
         if (s_plainCounts) { EmitLoadRetain(false, arenas); return; }

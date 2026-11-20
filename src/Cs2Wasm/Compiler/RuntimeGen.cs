@@ -211,7 +211,8 @@ internal sealed partial class RuntimeFns
                 if (init) { e.Get(dst); Value(); e.Store(Op.I32Store, o); }
                 else if (shared && Types.IsImmortalType(f.Type)) { Addr(dst); Value(); e.Call(StoreRef); e.Call(Release); }
                 // (as EmitStoreFieldsAt: the slot may be one a cycle can close through)
-                else if (shared) { Value(); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type)); }
+                // (one step under the runtime lock where the slot can hold a cycle-capable object: Arenas.StoreLockAt)
+                else if (shared) { Value(); e.Call(D.Arenas.StoreLockAt(f.Type, true)); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type)); e.Call(D.Arenas.StoreLockAt(f.Type, false)); }
                 else { Value(); e.Set(tmp); e.Get(dst); e.Load(Op.I32Load, o); e.Get(dst); e.Get(tmp); e.Store(Op.I32Store, o); e.Call(Release); }
             }
             else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitCopyFieldsThreads(e, dst, src, o, f.Type, init, shared, move, tmp);
@@ -1509,6 +1510,14 @@ sealed partial class RuntimeGen
             // count word stays zero, which is what a read that counts takes for "not this one", rt.load_retain)
             var pend = D.ThreadMode ? D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1).Fn : null;
             var nextPending = D.ThreadMode ? D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0).Fn : null;
+            // (threads: one released while this thread holds the runtime lock waits until it gives the lock back,
+            // rt.lock_exit: a finalizer runs program code, and a SafeHandle's takes the wait subsystem's lock, which
+            // a thread waiting for the runtime lock may hold)
+            if (pend != null && D.UsesThreads)
+            {
+                w.I32Addr(D.StaticAddress("rt.lock.owner", 4, 4)); w.Emit(Op.I32AtomicLoad, 0, 2); w.GGet(D.ThreadId); w.Op(Op.I32Eq);
+                w.If(); w.Get(0); w.Call(pend); w.Op(Op.Return); w.End();
+            }
             w.GGet(D.DestroyDepth); w.I32(MaxNesting); w.Op(Op.I32GeU);
             w.If();
             if (pend != null) { w.Get(0); w.Call(pend); }

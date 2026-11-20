@@ -53,6 +53,10 @@ internal sealed class Arenas
         /// <summary>The link for a store of an isolated value (FreshStores.cs): it closes no cycle, so it does not make
         /// the site general; on a site that is cyclic through other stores it is the general link.</summary>
         public WasmFunction LinkIso = null!;
+        /// <summary>Threads: around a store's link, exchange and unlink, the runtime lock (on a site that can close a
+        /// cycle, in an object another thread may reach): the slot's bits say what it holds, and two threads' stores
+        /// into one slot, each linked before its exchange and unlinked after, left them saying the other's value.</summary>
+        public WasmFunction StoreLock = null!, StoreUnlock = null!;
 
         /// <summary>Where the values stored here come from (Sharing.cs): the sources given, else the static type.</summary>
         public readonly List<Sharing.Src> Sources = [];
@@ -66,7 +70,7 @@ internal sealed class Arenas
         }
     }
 
-    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh, LinkOwned, LinkAt, UnlinkAt, MoveAt, LinkIso }
+    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh, LinkOwned, LinkAt, UnlinkAt, MoveAt, LinkIso, StoreLock, StoreUnlock }
 
     readonly Dictionary<string, Site> _sites = [];
     readonly Dictionary<WasmFunction, (Kind kind, Site? site, ITypeSymbol? pinType)> _placeholders = [];
@@ -104,6 +108,8 @@ internal sealed class Arenas
         s.UnlinkFresh = Placeholder("arena.unlink fresh " + key, new FuncType([I, I, I], []), Kind.UnlinkFresh, s);
         s.LinkOwned = Placeholder("arena.link owned " + key, new FuncType([I, I, I], [I]), Kind.LinkOwned, s);
         s.LinkIso = Placeholder("arena.link isolated " + key, new FuncType([I, I, I], [I]), Kind.LinkIso, s);
+        s.StoreLock = Placeholder("arena.store lock " + key, new FuncType([], []), Kind.StoreLock, s);
+        s.StoreUnlock = Placeholder("arena.store unlock " + key, new FuncType([], []), Kind.StoreUnlock, s);
         _sites[key] = s;
         return s;
     }
@@ -300,6 +306,18 @@ internal sealed class Arenas
     }
 
     /// <summary>(old value, slot address): the old value of such a slot.</summary>
+    /// <summary>Threads: the runtime lock around a store by address (its link, exchange and unlink), where the slot can
+    /// hold an object of a cycle-capable type (Site.StoreLock says why); nothing elsewhere.</summary>
+    public WasmFunction StoreLockAt(ITypeSymbol slotType, bool enter)
+    {
+        slotType = D.Types.Canonical(slotType);
+        var k = (enter ? "lock " : "unlock ") + Types.Key(slotType);
+        if (!_storeLockAt.TryGetValue(k, out var f))
+            _storeLockAt[k] = f = Placeholder("arena.store " + k, new FuncType([], []), enter ? Kind.StoreLock : Kind.StoreUnlock, null, slotType);
+        return f;
+    }
+    readonly Dictionary<string, WasmFunction> _storeLockAt = [];
+
     public WasmFunction UnlinkAt(ITypeSymbol slotType)
     {
         slotType = D.Types.Canonical(slotType);
@@ -787,6 +805,9 @@ internal sealed class Arenas
                         break;
                     case Kind.Pin:
                         if (Enabled && CycleTypes.Any(id => IdIs(id, ph.pinType!))) { x.Ref = pin; body.Add(x); }
+                        break;
+                    case Kind.StoreLock or Kind.StoreUnlock:
+                        if (Enabled && D.ThreadMode && (ph.site != null ? ph.site.Cyclic : HoldsCyclic(ph.pinType!))) { x.Ref = ph.kind == Kind.StoreLock ? D.Rt.LockEnter : D.Rt.LockExit; body.Add(x); }
                         break;
                 }
             }

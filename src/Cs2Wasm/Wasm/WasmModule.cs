@@ -94,7 +94,13 @@ internal sealed class WasmModule
         foreach (var f in Functions)
         {
             if (f.IsImport || f.ForwardTo != null) continue;
-            if (Validator.Check(f, Globals) is { } problem && n++ < 60) ValidationProblems.Add($"invalid code ({when}): {problem}");
+            if (Validator.Check(f, Globals) is { } problem && n++ < 60)
+            {
+                ValidationProblems.Add($"invalid code ({when}): {problem}");
+                // (CS2WASM_DUMP_INVALID=name: the body of such a function, to see what was made)
+                if (Environment.GetEnvironmentVariable("CS2WASM_DUMP_INVALID") is { } di && (f.FrameName ?? f.Name).Contains(di))
+                    for (int i = 0; i < f.Body.Count; i++) Console.Error.WriteLine($"  {i}: {f.Body[i]}");
+            }
         }
     }
 

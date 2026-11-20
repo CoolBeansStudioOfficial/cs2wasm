@@ -2682,11 +2682,11 @@ namespace Cs2Wasm.Runtime
 
         /// <summary>FinPhase with the cut references in a block (q, from..to). `unlocked`: run after the runtime lock
         /// was given back (RunDeferredDestroys): the visits take it, the finalizers run without it.</summary>
-        static bool FinPhaseCuts(int first, int link, int q, int from, int to, bool unlocked = true)
+        static bool FinPhaseCuts(int first, int link, int q, int from, int to, bool unlocked = true, bool prepared = false)
         {
             int end = link == 12 ? first : 0;
-            for (int m = first; m != 0; m = FinNext(m, end, link)) { Mem.StoreI32(m, FinBias); PS(m, 24, PL(m, 24) | Dying); }
-            CutsBack(q, from, to);
+            // (prepared: done already, under the lock, FinPrepare)
+            if (!prepared) FinPrepare(first, link, q, from, to);
             for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaFinalizeObject(m);
             if (unlocked) RuntimeLock();
             FinVisit(first, link, 10);
@@ -2704,6 +2704,16 @@ namespace Cs2Wasm.Runtime
             CutsOut(q, from, to);
             for (int m = first; m != 0; m = FinNext(m, end, link)) Mem.StoreI32(m, 0);
             return false;
+        }
+
+        /// <summary>The finalizer phase's first steps: the members marked dying, under the bias, and the cut references
+        /// put back counted. With threads, at the deferral, under the runtime lock: a reference put back later, outside
+        /// it, may be to an object another thread has freed meanwhile (seen: test 139).</summary>
+        static void FinPrepare(int first, int link, int q, int from, int to)
+        {
+            int end = link == 12 ? first : 0;
+            for (int m = first; m != 0; m = FinNext(m, end, link)) { Mem.StoreI32(m, FinBias); PS(m, 24, PL(m, 24) | Dying); }
+            CutsBack(q, from, to);
         }
 
         // ---- With threads, a group's destruction ends after the runtime lock is given back ----
@@ -2728,6 +2738,8 @@ namespace Cs2Wasm.Runtime
                 t_defQ = nq; t_defCap = cap;
             }
             int e = t_defQ + DefEntry * t_defN;
+            // (the references the finalizers see, put back now, while the lock is held)
+            if (fin) FinPrepare(first, link, cuts, 0, n);
             Mem.StoreI32(e, first); Mem.StoreI32(e + 4, link); Mem.StoreI32(e + 8, ar); Mem.StoreI32(e + 12, fin ? 1 : 0);
             Mem.StoreI32(e + 16, cuts); Mem.StoreI32(e + 20, n);
             t_defN++;
@@ -2745,7 +2757,7 @@ namespace Cs2Wasm.Runtime
                 int first = Mem.LoadI32(e), link = Mem.LoadI32(e + 4), ar = Mem.LoadI32(e + 8), cuts = Mem.LoadI32(e + 16), n = Mem.LoadI32(e + 20);
                 bool fin = Mem.LoadI32(e + 12) != 0;
                 int end = link == 12 ? first : 0;
-                bool back = fin && FinPhaseCuts(first, link, cuts, 0, n, true);
+                bool back = fin && FinPhaseCuts(first, link, cuts, 0, n, true, prepared: true);
                 if (cuts != 0) Free(cuts, n * 8);
                 if (!back)
                 {
