@@ -217,12 +217,37 @@ static class Inliner
         }
         int np = g.Type.Params.Length;
         int baseF = f.Type.Params.Length;
+        // The last arguments that are a constant or a read of a local, of parameters the callee never writes: not put
+        // into a local of their own; each read of the parameter is the argument itself (a constant folds with what
+        // uses it; the caller's local cannot change inside the copy, which writes only its own). The others go into
+        // locals, as a call's arguments would.
+        var written = new bool[np];
+        foreach (var ins in g.Body) if (ins.Op is Op.LocalSet or Op.LocalTee && ins.Imm < np) written[ins.Imm] = true;
+        var subst = new Instr?[np];
+        int direct = 0;
+        for (int i = np - 1; i >= 0; i--)
+        {
+            int at = outBody.Count - 1 - direct;
+            if (at < 0 || written[i]) break;
+            var a = outBody[at];
+            if (a.Op is not (Op.I32Const or Op.I64Const or Op.F32Const or Op.F64Const or Op.LocalGet)) break;
+            subst[i] = a;
+            direct++;
+        }
+        if (direct > 0) outBody.RemoveRange(outBody.Count - direct, direct);
         var map = new int[np + g.Locals.Count];
-        for (int i = 0; i < np; i++) { f.Locals.Add(g.Type.Params[i]); map[i] = baseF + f.Locals.Count - 1; }
+        for (int i = 0; i < np; i++) { if (subst[i] != null) { map[i] = -1; continue; } f.Locals.Add(g.Type.Params[i]); map[i] = baseF + f.Locals.Count - 1; }
         for (int i = 0; i < g.Locals.Count; i++) { f.Locals.Add(g.Locals[i]); map[np + i] = baseF + f.Locals.Count - 1; }
         void Add(Op op, long imm = 0, object? r = null) => outBody.Add(new Instr { Op = op, Imm = imm, Ref = r, Pos = pos, Inl = siteScope });
+        // a read of a parameter whose argument went in directly: the argument
+        Instr Mapped(Instr ins)
+        {
+            if (ins.Op == Op.LocalGet && ins.Imm < np && subst[ins.Imm] is { } a) return a with { Pos = ins.Pos, Inl = ins.Inl };
+            if (ins.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee) ins.Imm = map[(int)ins.Imm];
+            return ins;
+        }
         // arguments: last on top of the stack
-        for (int i = np - 1; i >= 0; i--) Add(Op.LocalSet, map[i]);
+        for (int i = np - 1; i >= 0; i--) if (subst[i] == null) Add(Op.LocalSet, map[i]);
         // the callee's locals start at zero, as on a call
         for (int i = 0; i < g.Locals.Count; i++)
         {
@@ -242,12 +267,11 @@ static class Inliner
         {
             for (int k = 0; k < g.Body.Count - 1; k++)
             {
-                var ins = g.Body[k];
-                if (ins.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee) ins.Imm = map[(int)ins.Imm];
-                ins.Inl = Scoped(ins.Inl);
+                var ins = Mapped(g.Body[k]);
+                ins.Inl = Scoped(g.Body[k].Inl);
                 outBody.Add(ins);
             }
-            if (g.Body[^1].Op != Op.Return) { var last = g.Body[^1]; if (last.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee) last.Imm = map[(int)last.Imm]; last.Inl = Scoped(last.Inl); outBody.Add(last); }
+            if (g.Body[^1].Op != Op.Return) { var last = Mapped(g.Body[^1]); last.Inl = Scoped(g.Body[^1].Inl); outBody.Add(last); }
             return;
         }
         object? bt = g.Type.Results.Length switch { 0 => null, 1 => g.Type.Results[0], _ => new FuncType([], g.Type.Results) };
@@ -258,7 +282,7 @@ static class Inliner
             var ins = src;
             switch (ins.Op)
             {
-                case Op.LocalGet or Op.LocalSet or Op.LocalTee: ins.Imm = map[(int)ins.Imm]; break;
+                case Op.LocalGet or Op.LocalSet or Op.LocalTee: ins = Mapped(ins); break;
                 case Op.Block or Op.Loop or Op.If or Op.TryTable: depth++; break;
                 case Op.End: depth--; break;
                 case Op.Return: ins.Op = Op.Br; ins.Imm = depth; break;

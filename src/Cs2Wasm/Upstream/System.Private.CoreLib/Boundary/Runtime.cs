@@ -1423,7 +1423,7 @@ namespace Cs2Wasm.Runtime
 
         /// <summary>One of the object's eight words (k: 4 to 32, the word that many bytes before where they end); 0
         /// while the object has none.</summary>
-        static int PL(int obj, int k)
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static int PL(int obj, int k)
         {
             int r = Mem.LoadI32(obj - 4);
             return r == 0 ? 0 : Mem.LoadI32(r + MemberWords - k);
