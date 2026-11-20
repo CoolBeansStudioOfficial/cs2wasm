@@ -163,7 +163,7 @@ internal sealed partial class RuntimeFns
     /// <summary>EmitExchangeFields for a destination that may be a slot of an object a cycle can close through (a
     /// struct that is a field of a class): each reference is stored as a store by address is (Arenas.LinkAt: the
     /// runtime finds the object the slot is in), so it counts as the store through the object would.</summary>
-    void EmitStoreFieldsAt(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, int tmp)
+    void EmitStoreFieldsAt(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, int tmp, ITypeSymbol? container = null)
     {
         foreach (var f in D.Types.LayoutOf(t).Fields)
         {
@@ -172,11 +172,11 @@ internal sealed partial class RuntimeFns
             {
                 void Slot() { e.Get(dst); if (o != 0) { e.I32(o); e.Op(Op.I32Add); } }
                 if (Types.IsImmortalType(f.Type)) { Slot(); e.Get(src); e.Load(Op.I32Load, o); e.Call(StoreRef); e.Call(Release); continue; }
-                e.Get(src); e.Load(Op.I32Load, o); Slot(); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp);
+                e.Get(src); e.Load(Op.I32Load, o); Slot(); e.Call(D.Arenas.LinkAt(f.Type, container)); e.Set(tmp);
                 Slot(); e.Get(tmp); e.Call(StoreRef);
-                Slot(); e.Call(D.Arenas.UnlinkAt(f.Type));
+                Slot(); e.Call(D.Arenas.UnlinkAt(f.Type, container));
             }
-            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitStoreFieldsAt(e, dst, src, o, f.Type, tmp);
+            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitStoreFieldsAt(e, dst, src, o, f.Type, tmp, container);
         }
     }
 
@@ -199,7 +199,7 @@ internal sealed partial class RuntimeFns
     /// into memory nobody else has yet (init), exchanged under the place's lock into memory others may see (shared),
     /// or over a value of this thread's own (neither); the old reference is released. Everything else is copied as
     /// bytes. `move`: the source is this thread's own and gives its counts up (it is cleared by the caller).</summary>
-    void EmitCopyFieldsThreads(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, bool init, bool shared, bool move, int tmp, bool locked = true)
+    void EmitCopyFieldsThreads(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, bool init, bool shared, bool move, int tmp, bool locked = true, ITypeSymbol? container = null)
     {
         foreach (var f in D.Types.LayoutOf(t).Fields)
         {
@@ -214,11 +214,11 @@ internal sealed partial class RuntimeFns
                 // (one step under the runtime lock where the slot can hold a cycle-capable object: Arenas.StoreLockAt)
                 // (not `locked`: into an object of a class the last compilation found no other thread reaches, as a
                 // field's store, Expressions.StoreToAddressFromStack)
-                else if (shared && !locked) { Value(); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type)); }
-                else if (shared) { int took = e.AddLocal(I); Value(); Addr(dst); e.Call(D.Arenas.StoreLockAt(f.Type, true)); e.Set(took); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type)); e.Get(took); e.Call(D.Arenas.StoreLockAt(f.Type, false)); }
+                else if (shared && !locked) { Value(); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type, container)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type, container)); }
+                else if (shared) { int took = e.AddLocal(I); Value(); Addr(dst); e.Call(D.Arenas.StoreLockAt(f.Type, true)); e.Set(took); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type, container)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type, container)); e.Get(took); e.Call(D.Arenas.StoreLockAt(f.Type, false)); }
                 else { Value(); e.Set(tmp); e.Get(dst); e.Load(Op.I32Load, o); e.Get(dst); e.Get(tmp); e.Store(Op.I32Store, o); e.Call(Release); }
             }
-            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitCopyFieldsThreads(e, dst, src, o, f.Type, init, shared, move, tmp, locked);
+            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitCopyFieldsThreads(e, dst, src, o, f.Type, init, shared, move, tmp, locked, container);
             else
             {
                 int size = D.Types.StorageOf(f.Type).size;
@@ -263,20 +263,21 @@ internal sealed partial class RuntimeFns
     /// <summary>(dst, src): a move over a value: the old contents released, then as MoveInit. Into memory that is not
     /// the frame (shared), each reference is exchanged into place and the old one released (rt.store_ref: another
     /// thread's store or compare-and-swap of the same slot cannot make it released twice).</summary>
-    public WasmFunction MoveAssign(ITypeSymbol t, bool shared = true, bool locked = true)
+    public WasmFunction MoveAssign(ITypeSymbol t, bool shared = true, bool locked = true, ITypeSymbol? container = null)
     {
         t = D.Types.Canonical(t);
         locked |= !shared || !D.ThreadMode;
-        return Cached((shared ? locked ? "rt.move_assign " : "rt.move_assign_own " : "rt.move_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
+        if (!shared) container = null; else if (container != null) container = D.Types.Canonical(container);
+        return Cached((shared ? locked ? "rt.move_assign " : "rt.move_assign_own " : "rt.move_assign_frame ") + Types.Key(t) + (container != null ? " in " + Types.Key(container) : ""), FT([I, I], []), e =>
         {
             int size = D.Types.StorageOf(t).size;
             if (D.ThreadMode && shared && D.Types.LayoutOf(t).HasRefs)
             {
-                EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared: true, move: true, e.AddLocal(I), locked);
+                EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared: true, move: true, e.AddLocal(I), locked, container);
                 e.Get(1); e.I32(0); e.I32(size); e.Op(Op.MemoryFill);
                 return;
             }
-            if (shared) EmitStoreFieldsAt(e, 0, 1, 0, t, e.AddLocal(I));
+            if (shared) EmitStoreFieldsAt(e, 0, 1, 0, t, e.AddLocal(I), container);
             else { e.Get(0); e.Call(ReleaseStruct(t)); }
             e.Get(0); e.Get(1); e.I32(size); e.Op(Op.MemoryCopy);
             e.Get(1); e.I32(0); e.I32(size); e.Op(Op.MemoryFill);
@@ -286,15 +287,16 @@ internal sealed partial class RuntimeFns
 
     /// <summary>(dst, src): assignment: take new counts, release old contents, copy (into memory that is not the
     /// frame, the references exchanged: MoveAssign).</summary>
-    public WasmFunction CopyAssign(ITypeSymbol t, bool shared = true, bool locked = true)
+    public WasmFunction CopyAssign(ITypeSymbol t, bool shared = true, bool locked = true, ITypeSymbol? container = null)
     {
         t = D.Types.Canonical(t);
         locked |= !shared || !D.ThreadMode;
-        return Cached((shared ? locked ? "rt.copy_assign " : "rt.copy_assign_own " : "rt.copy_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
+        if (!shared) container = null; else if (container != null) container = D.Types.Canonical(container);
+        return Cached((shared ? locked ? "rt.copy_assign " : "rt.copy_assign_own " : "rt.copy_assign_frame ") + Types.Key(t) + (container != null ? " in " + Types.Key(container) : ""), FT([I, I], []), e =>
         {
-            if (D.ThreadMode && D.Types.LayoutOf(t).HasRefs) { EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared, move: false, e.AddLocal(I), locked); return; }
+            if (D.ThreadMode && D.Types.LayoutOf(t).HasRefs) { EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared, move: false, e.AddLocal(I), locked, container); return; }
             e.Get(1); e.Call(RetainStruct(t));
-            if (shared) EmitStoreFieldsAt(e, 0, 1, 0, t, e.AddLocal(I));
+            if (shared) EmitStoreFieldsAt(e, 0, 1, 0, t, e.AddLocal(I), container);
             else { e.Get(0); e.Call(ReleaseStruct(t)); }
             e.Get(0); e.Get(1); e.I32(D.Types.StorageOf(t).size); e.Op(Op.MemoryCopy);
             if (D.Types.LayoutOf(t).HasRefs) NoteStructCopy(e.Fn, t);

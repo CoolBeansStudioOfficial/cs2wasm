@@ -374,7 +374,8 @@ sealed partial class FunctionCompiler
             // reaches, the stores of its references take no runtime lock, as a reference field's: StoreLock below)
             bool locked = !(structContainer != null && D.ThreadMode && D.Sharing is { } shs0 && shs0.PriorThreadLocal(structContainer));
             // (a fresh temporary's counts are taken: the old value released, no new counts)
-            E.Get(src); if (move) E.Call(D.Rt.MoveAssign(t, shared: !frame, locked)); else CopyStructAssign(t, shared: !frame, locked);
+            // (the container's type, where known: a container that is never a group's member takes plain stores)
+            E.Get(src); if (move) E.Call(D.Rt.MoveAssign(t, shared: !frame, locked, structContainer)); else CopyStructAssign(t, shared: !frame, locked, structContainer);
             FreeScratch(ValType.I32, src);
             return;
         }
@@ -447,9 +448,9 @@ sealed partial class FunctionCompiler
         E.I32(T.StorageOf(t).size); E.Op(Op.MemoryCopy);
     }
 
-    void CopyStructAssign(ITypeSymbol t, bool shared = true, bool locked = true)
+    void CopyStructAssign(ITypeSymbol t, bool shared = true, bool locked = true, ITypeSymbol? container = null)
     {
-        if (T.LayoutOf(t).HasRefs) { E.Call(Rt.CopyAssign(t, shared, locked)); return; }
+        if (T.LayoutOf(t).HasRefs) { E.Call(Rt.CopyAssign(t, shared, locked, container)); return; }
         E.I32(T.StorageOf(t).size); E.Op(Op.MemoryCopy);
     }
 

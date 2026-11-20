@@ -296,15 +296,23 @@ internal sealed class Arenas
     WasmFunction? _moveAt;
 
     /// <summary>(value, slot address) → value: a store of a reference into a slot the code knows by its address
-    /// alone (through a `ref`, a span, a struct's own method). The runtime finds the object the slot is in.</summary>
-    public WasmFunction LinkAt(ITypeSymbol slotType)
+    /// alone (through a `ref`, a span, a struct's own method). The runtime finds the object the slot is in.
+    /// `container`, where known, is the static type of the object the slot is in (a class whose struct field holds it, an array of structs): a container no object of
+    /// a cycle-capable type can be is never a group's member, and the store is plain, as a site's that is not
+    /// cyclic.</summary>
+    public WasmFunction LinkAt(ITypeSymbol slotType, ITypeSymbol? container = null)
     {
         slotType = D.Types.Canonical(slotType);
-        var k = Types.Key(slotType);
+        if (container != null) container = D.Types.Canonical(container);
+        var k = Types.Key(slotType) + (container != null ? " in " + Types.Key(container) : "");
         if (!_linkAt.TryGetValue(k, out var f))
+        {
             _linkAt[k] = f = Placeholder("arena.link at " + k, new FuncType([I, I], [I]), Kind.LinkAt, null, slotType);
+            if (container != null) _atContainer[f] = container;
+        }
         return f;
     }
+    readonly Dictionary<WasmFunction, ITypeSymbol> _atContainer = [];
 
     /// <summary>(old value, slot address): the old value of such a slot.</summary>
     /// <summary>Threads: the runtime lock around a store by address (its link, exchange and unlink), where the slot can
@@ -320,12 +328,16 @@ internal sealed class Arenas
     }
     readonly Dictionary<string, WasmFunction> _storeLockAt = [];
 
-    public WasmFunction UnlinkAt(ITypeSymbol slotType)
+    public WasmFunction UnlinkAt(ITypeSymbol slotType, ITypeSymbol? container = null)
     {
         slotType = D.Types.Canonical(slotType);
-        var k = Types.Key(slotType);
+        if (container != null) container = D.Types.Canonical(container);
+        var k = Types.Key(slotType) + (container != null ? " in " + Types.Key(container) : "");
         if (!_unlinkAt.TryGetValue(k, out var f))
+        {
             _unlinkAt[k] = f = Placeholder("arena.unlink at " + k, new FuncType([I, I], []), Kind.UnlinkAt, null, slotType);
+            if (container != null) _atContainer[f] = container;
+        }
         return f;
     }
 
@@ -724,6 +736,9 @@ internal sealed class Arenas
             if (!holdsCyclic.TryGetValue(k, out var r)) holdsCyclic[k] = r = CycleTypes.Any(id => IdIs(id, slotType));
             return r;
         }
+        // (a store by address whose container is known: also that the container can be a group's member)
+        bool AtCyclic(WasmFunction ph, ITypeSymbol slotType) =>
+            HoldsCyclic(slotType) && (!_atContainer.TryGetValue(ph, out var c) || HoldsCyclic(c));
         foreach (var f in D.Module.Functions)
         {
             if (f.IsImport || f == linkAt || f == unlinkAt || !f.Body.Any(x => x.Op == Op.Call && x.Ref is WasmFunction w && _placeholders.ContainsKey(w))) continue;
@@ -788,12 +803,12 @@ internal sealed class Arenas
                         break;
                     case Kind.LinkAt:
                         // (value, slot) -> value
-                        if (Enabled && HoldsCyclic(ph.pinType!)) { x.Ref = linkAt; body.Add(x); }
+                        if (Enabled && AtCyclic(w, ph.pinType!)) { x.Ref = linkAt; body.Add(x); }
                         else { x.Op = Op.Drop; x.Ref = null; body.Add(x); }
                         break;
                     case Kind.UnlinkAt:
                         // (old, slot) -> ()
-                        if (Enabled && HoldsCyclic(ph.pinType!)) { x.Ref = unlinkAt; body.Add(x); }
+                        if (Enabled && AtCyclic(w, ph.pinType!)) { x.Ref = unlinkAt; body.Add(x); }
                         else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); x.Ref = D.Rt.Release; body.Add(x); }
                         break;
                     case Kind.MoveAt:
