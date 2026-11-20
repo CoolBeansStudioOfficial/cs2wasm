@@ -101,4 +101,84 @@ static class DataCompression
         e.End();
         e.End();
     }
+
+    /// <summary>The expander for packed bytes larger than the room they can land in: (window, dst, end), the packed
+    /// bytes read through `window` bytes of memory at the first argument, refilled from the segment (memory.init) when
+    /// fewer than 16 are left (a token's numbers are at most 15 bytes) or a run of literals reaches the window's end.
+    /// A match that does not overlap what it copies is one memory.copy.</summary>
+    public static void EmitStreamDecoder(Emitter e, DataSegment seg, int window, int total)
+    {
+        const int src = 0, dst = 1, end = 2;
+        int n = e.AddLocal(ValType.I32), off = e.AddLocal(ValType.I32), sh = e.AddLocal(ValType.I32), by = e.AddLocal(ValType.I32),
+            win = e.AddLocal(ValType.I32), lim = e.AddLocal(ValType.I32), at = e.AddLocal(ValType.I32), c = e.AddLocal(ValType.I32);
+        // win: the window's address; at: the segment offset at win; lim: the end of what the window holds
+        e.Get(src); e.Set(win);
+        e.I32(0); e.Set(at);
+        e.Get(win); e.I32(Math.Min(window, total)); e.Op(Op.I32Add); e.Set(lim);
+        e.Get(win); e.I32(0); e.I32(Math.Min(window, total)); e.Emit(Op.MemoryInit, 0, 0, seg);
+        void Refill()
+        {
+            // at += src - win; c = min(window, total - at); the window holds segment[at, at + c)
+            e.Get(at); e.Get(src); e.Get(win); e.Op(Op.I32Sub); e.Op(Op.I32Add); e.Set(at);
+            e.I32(total); e.Get(at); e.Op(Op.I32Sub); e.Tee(c); e.I32(window); e.Get(c); e.I32(window); e.Op(Op.I32LtU); e.Op(Op.Select); e.Set(c);
+            e.Get(win); e.Get(at); e.Get(c); e.Emit(Op.MemoryInit, 0, 0, seg);
+            e.Get(win); e.Set(src);
+            e.Get(win); e.Get(c); e.Op(Op.I32Add); e.Set(lim);
+        }
+        void Ensure()
+        {
+            // fewer than 16 bytes left in the window, and more in the segment
+            e.Get(lim); e.Get(src); e.Op(Op.I32Sub); e.I32(16); e.Op(Op.I32LtU);
+            e.Get(at); e.Get(lim); e.Get(win); e.Op(Op.I32Sub); e.Op(Op.I32Add); e.I32(total); e.Op(Op.I32LtU);
+            e.Op(Op.I32And);
+            e.If(); Refill(); e.End();
+        }
+        void Varint(int into)
+        {
+            e.I32(0); e.Set(into); e.I32(0); e.Set(sh);
+            var l = e.Loop();
+            e.Get(src); e.Load(Op.I32Load8U); e.Set(by);
+            e.Get(src); e.I32(1); e.Op(Op.I32Add); e.Set(src);
+            e.Get(into); e.Get(by); e.I32(0x7F); e.Op(Op.I32And); e.Get(sh); e.Op(Op.I32Shl); e.Op(Op.I32Or); e.Set(into);
+            e.Get(sh); e.I32(7); e.Op(Op.I32Add); e.Set(sh);
+            e.Get(by); e.I32(0x80); e.Op(Op.I32And); e.BrIf(l);
+            e.End();
+        }
+        var exit = e.Block();
+        var top = e.Loop();
+        Ensure();
+        Varint(n);
+        // the literals, as much of them as the window holds at a time
+        var litsDone = e.Block();
+        var lits = e.Loop();
+        e.Get(n); e.Op(Op.I32Eqz); e.BrIf(litsDone);
+        e.Get(src); e.Get(lim); e.Op(Op.I32GeU); e.If(); Refill(); e.End();
+        e.Get(lim); e.Get(src); e.Op(Op.I32Sub); e.Tee(c); e.Get(n); e.Get(c); e.Get(n); e.Op(Op.I32LtU); e.Op(Op.Select); e.Set(c);
+        e.Get(dst); e.Get(src); e.Get(c); e.Emit(Op.MemoryCopy);
+        e.Get(src); e.Get(c); e.Op(Op.I32Add); e.Set(src);
+        e.Get(dst); e.Get(c); e.Op(Op.I32Add); e.Set(dst);
+        e.Get(n); e.Get(c); e.Op(Op.I32Sub); e.Set(n);
+        e.Br(lits);
+        e.End(); e.End();
+        e.Get(dst); e.Get(end); e.Op(Op.I32GeU); e.BrIf(exit);
+        Ensure();
+        Varint(n);
+        Varint(off);
+        e.Get(n); e.I32(MinMatch); e.Op(Op.I32Add); e.Set(n);
+        e.Get(off); e.Get(n); e.Op(Op.I32GeU);
+        e.If();
+        e.Get(dst); e.Get(dst); e.Get(off); e.Op(Op.I32Sub); e.Get(n); e.Emit(Op.MemoryCopy);
+        e.Get(dst); e.Get(n); e.Op(Op.I32Add); e.Set(dst);
+        e.Else();
+        // byte by byte: the match overlaps what it copies
+        var copy = e.Loop();
+        e.Get(dst); e.Get(dst); e.Get(off); e.Op(Op.I32Sub); e.Load(Op.I32Load8U); e.Store(Op.I32Store8);
+        e.Get(dst); e.I32(1); e.Op(Op.I32Add); e.Set(dst);
+        e.Get(n); e.I32(1); e.Op(Op.I32Sub); e.Tee(n); e.BrIf(copy);
+        e.End();
+        e.End();
+        e.Br(top);
+        e.End();
+        e.End();
+    }
 }

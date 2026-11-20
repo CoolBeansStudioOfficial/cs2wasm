@@ -1765,7 +1765,7 @@ sealed partial class RuntimeGen
             if (D.DisplayById.TryGetValue(i, out var sd)) return D.RoslynDisplayName(sd, false) ?? "<>c__DisplayClass";
             return ShortName(D.TypeById[i]);
         }
-        EmitIdTable(D.Rt.TypeNameById, n, i => (D.StringLiteral(Full(i)), 0));
+        EmitFullNames(n, Full);
         EmitIdTable(D.Rt.TypeShortNameById, n, i => (D.StringLiteral(Short(i)), 0));
         EmitIdTable(D.Rt.TypeFlagsById, n, i => (null, i == 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) ? 0 : Flags(D.TypeById[i])));
         if (D.Rt.ProgramTypesIfMade is { } ptf)
@@ -1825,6 +1825,149 @@ sealed partial class RuntimeGen
         EmitTypeInfo();
     }
 
+    /// <summary>rt.type_name_by_id: every type's full name (Type.FullName, Object.ToString). A generic instance's
+    /// name repeats its arguments' names, theirs again inside them (Roslyn's run to a thousand characters: 12 of the
+    /// self-hosted compiler's 64 MB were these names), so such a name is kept as how to make it: pieces that joined
+    /// are the name, each a string or a type whose own full name it is (an argument's, found in the name in order);
+    /// rt.lazy_type_name joins them the first time the name is asked for and keeps it in the table. The pieces are
+    /// checked here against the name the table would hold.</summary>
+    static readonly bool s_noLazyNames = Environment.GetEnvironmentVariable("CS2WASM_NO_LAZY_NAMES") == "1";
+    /// <summary>CS2WASM_ALL_LAZY_NAMES=1: made when first asked for in any program (for tests: small ones keep their names).</summary>
+    static readonly bool s_allLazyNames = Environment.GetEnvironmentVariable("CS2WASM_ALL_LAZY_NAMES") == "1";
+    void EmitFullNames(int n, Func<int, string> full)
+    {
+        var plan = new List<(int i, int ext, List<(int ext, string? lit)> pieces)>();
+        long saved = 0;
+        if (D.LazyTypeNames && !s_noLazyNames)
+            for (int ext = 0; ext < n; ext++)
+            {
+                int i = D.IntId(ext);
+                if (i <= 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i)) continue;
+                if (D.TypeById[i] is not INamedTypeSymbol t) continue;
+                var targs = Driver.AllTypeArgs(t);
+                if (targs.Count == 0 || SymbolEqualityComparer.Default.Equals(t, t.OriginalDefinition)) continue;
+                string name = full(i);
+                var pieces = new List<(int ext, string? lit)>();
+                int at = 0, ids = 0;
+                // the arguments in the order their names are written; one the module does not number (or whose
+                // name is not found) is looked into: its own arguments
+                void Find(ITypeSymbol a)
+                {
+                    if (D.ExistingTypeId(D.Types.Canonical(a)) is int ai && D.ExtId(ai) is > 0 and var ae && full(ai) is { Length: >= 8 } an
+                        && name.IndexOf(an, at, StringComparison.Ordinal) is >= 0 and var k)
+                    {
+                        if (k > at) pieces.Add((-1, name[at..k]));
+                        pieces.Add((ae, null));
+                        at = k + an.Length; ids++;
+                        return;
+                    }
+                    switch (a)
+                    {
+                        case INamedTypeSymbol na: foreach (var x in Driver.AllTypeArgs(na)) Find(x); break;
+                        case IArrayTypeSymbol arr: Find(arr.ElementType); break;
+                        case IPointerTypeSymbol ptr: Find(ptr.PointedAtType); break;
+                    }
+                }
+                foreach (var a in targs) Find(a);
+                if (ids == 0) continue;
+                if (at < name.Length) pieces.Add((-1, name[at..]));
+                // (two pieces or more, none empty: what rt.lazy_type_name joins is then a new string, never one of them)
+                if (pieces.Count < 2 || string.Concat(pieces.Select(p => p.lit ?? full(D.IntId(p.ext)))) != name) continue;
+                int cost = 8 + 4 * pieces.Count + pieces.Where(p => p.lit != null).Sum(p => 8 + 2 * p.lit!.Length) / 4;
+                if (cost >= 18 + 2 * name.Length) continue;
+                plan.Add((i, ext, pieces));
+                saved += 18 + 2 * name.Length - cost;
+            }
+        // (a program with few such names keeps them: rt.lazy_type_name would cost more than it saves)
+        if (saved < (s_allLazyNames ? 1 : 8192)) plan.Clear();
+        if (Environment.GetEnvironmentVariable("CS2WASM_STATS") != null) Console.Error.WriteLine($"  type names made when asked for: {plan.Count}, about {saved} bytes of data saved");
+        if (plan.Count == 0) { EmitIdTable(D.Rt.TypeNameById, n, i => (D.StringLiteral(full(i)), 0)); return; }
+        IAddress? table = null;
+        var byId = new Dictionary<int, IAddress>();
+        foreach (var (i, ext, pieces) in plan)
+        {
+            // [the table's slot, the count of pieces, the pieces]
+            var bytes = new byte[8 + 4 * pieces.Count];
+            BitConverter.GetBytes(pieces.Count).CopyTo(bytes, 4);
+            int slot = 4 * ext;
+            var relocs = new List<(int, IAddress)> { (0, new LateAddr(() => table!.Address + slot)) };
+            for (int k = 0; k < pieces.Count; k++)
+                if (pieces[k].lit is { } lit) relocs.Add((8 + 4 * k, D.StringLiteral(lit)));
+                else BitConverter.GetBytes(pieces[k].ext << 1 | 1).CopyTo(bytes, 8 + 4 * k);
+            var rec = (DataAddr)D.DataBlob(bytes, 4, relocs);
+            // (the table's entry: the record's address with its low bit set; a string's address is a multiple of 8)
+            byId[i] = new DataAddr(D, rec.Chunk) { Plus = 1 };
+        }
+        var entry = D.Module.AddFunction("rt.type_name_entry", new FuncType([ValType.I32], [ValType.I32]));
+        table = EmitIdTable(entry, n, i => (byId.TryGetValue(i, out var r) ? r : D.StringLiteral(full(i)), 0));
+        var lazy = D.Module.AddFunction("rt.lazy_type_name", new FuncType([ValType.I32], [ValType.I32]));
+        var e = new Emitter(D.Rt.TypeNameById);
+        int v = e.AddLocal(ValType.I32);
+        e.Get(0); e.Call(entry); e.Tee(v); e.I32(1); e.Op(Op.I32And);
+        e.If(ValType.I32);
+        e.Get(v); e.I32(1); e.Op(Op.I32Xor); e.Call(lazy);
+        e.Else();
+        e.Get(v);
+        e.End();
+        EmitLazyTypeName(lazy);
+    }
+
+    /// <summary>rt.lazy_type_name(rec): joins a record's pieces (EmitFullNames) into a new string, makes it immortal
+    /// (count -1, hash 0: a literal's header) and puts it in the table's slot, which held rec | 1; a thread that made
+    /// it second frees its own and returns the first one's. (.NET keeps a type's name as long as the type: for good.)</summary>
+    void EmitLazyTypeName(WasmFunction fn)
+    {
+        var e = new Emitter(fn);
+        int n = e.AddLocal(ValType.I32), k = e.AddLocal(ValType.I32), a = e.AddLocal(ValType.I32), len = e.AddLocal(ValType.I32),
+            s = e.AddLocal(ValType.I32), dst = e.AddLocal(ValType.I32), was = e.AddLocal(ValType.I32);
+        // piece k's string: (rec + 8 + 4k) is a string's address, or (type id << 1) | 1
+        void Piece()
+        {
+            e.Get(0); e.Get(k); e.I32(2); e.Op(Op.I32Shl); e.Op(Op.I32Add); e.Load(Op.I32Load, 8); e.Tee(a);
+            e.I32(1); e.Op(Op.I32And);
+            e.If(); e.Get(a); e.I32(1); e.Op(Op.I32ShrU); e.Call(D.Rt.TypeNameById); e.Set(a); e.End();
+        }
+        e.Get(0); e.Load(Op.I32Load, 4); e.Set(n);
+        // the length
+        e.I32(0); e.Set(k); e.I32(0); e.Set(len);
+        var b1 = e.Block(); var l1 = e.Loop();
+        e.Get(k); e.Get(n); e.Op(Op.I32GeU); e.BrIf(b1);
+        Piece();
+        e.Get(len); e.Get(a); e.Load(Op.I32Load, 12); e.Op(Op.I32Add); e.Set(len);
+        e.Get(k); e.I32(1); e.Op(Op.I32Add); e.Set(k); e.Br(l1);
+        e.End(); e.End();
+        // the string (Rt.AllocString: zeroed, so the terminator is there)
+        e.Get(len); e.I32(1); e.Op(Op.I32Shl); e.I32(18); e.Op(Op.I32Add); e.I32(1);
+        e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocObject", 2).Fn); e.Tee(s);
+        e.Get(len); e.Store(Op.I32Store, 12);
+        e.Get(s); e.I32(16); e.Op(Op.I32Add); e.Set(dst);
+        e.I32(0); e.Set(k);
+        var b2 = e.Block(); var l2 = e.Loop();
+        e.Get(k); e.Get(n); e.Op(Op.I32GeU); e.BrIf(b2);
+        Piece();
+        e.Get(dst); e.Get(a); e.I32(16); e.Op(Op.I32Add); e.Get(a); e.Load(Op.I32Load, 12); e.I32(1); e.Op(Op.I32Shl); e.Emit(Op.MemoryCopy);
+        e.Get(dst); e.Get(a); e.Load(Op.I32Load, 12); e.I32(1); e.Op(Op.I32Shl); e.Op(Op.I32Add); e.Set(dst);
+        e.Get(k); e.I32(1); e.Op(Op.I32Add); e.Set(k); e.Br(l2);
+        e.End(); e.End();
+        // (no other thread has it yet)
+        e.Get(s); e.I32(-1); e.Store(Op.I32Store);
+        e.Get(s); e.I32(0); e.Store(Op.I32Store, 8);
+        // into the slot, unless another thread was first
+        if (D.UsesThreads) { e.Get(0); e.Load(Op.I32Load); e.Get(0); e.I32(1); e.Op(Op.I32Or); e.Get(s); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Set(was); }
+        else
+        {
+            // (no other thread: the slot still holds rec | 1)
+            e.Get(0); e.Load(Op.I32Load); e.Get(s); e.Store(Op.I32Store); e.Get(0); e.I32(1); e.Op(Op.I32Or); e.Set(was);
+        }
+        e.Get(was); e.Get(0); e.I32(1); e.Op(Op.I32Or); e.Op(Op.I32Eq);
+        e.If(ValType.I32);
+        e.Get(s);
+        e.Else();
+        e.Get(s); e.I32(1); e.Store(Op.I32Store); e.Get(s); e.Call(D.Rt.Release);
+        e.Get(was);
+        e.End();
+    }
+
     static string ShortName(ITypeSymbol t) => t switch
     {
         IArrayTypeSymbol a => ShortName(a.ElementType) + "[" + new string(',', a.Rank - 1) + "]",
@@ -1844,7 +1987,7 @@ sealed partial class RuntimeGen
         return f;
     }
 
-    void EmitIdTable(WasmFunction fn, int nInternal, Func<int, (IAddress? addr, int value)> entryOfInternal, Action<Emitter>? byRef = null)
+    IAddress EmitIdTable(WasmFunction fn, int nInternal, Func<int, (IAddress? addr, int value)> entryOfInternal, Action<Emitter>? byRef = null)
     {
         int n = D.TypeCount;
         (IAddress?, int) entry(int ext) => entryOfInternal(D.IntId(ext));
@@ -1879,7 +2022,11 @@ sealed partial class RuntimeGen
         if (a0 != null) e.I32Addr(a0); else e.I32(v0);
         if (byRef != null) e.End();
         e.End();
+        return table;
     }
+
+    /// <summary>CS2WASM_PACK_WINDOW=n: packed data always read through a window of n bytes (for tests).</summary>
+    static readonly int s_packWindow = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_PACK_WINDOW"), out var w) ? w : 0;
 
     void EmitInit()
     {
@@ -1890,7 +2037,7 @@ sealed partial class RuntimeGen
             var raw = D.Data.Bytes.ToArray();
             var packed = Environment.GetEnvironmentVariable("CS2WASM_NO_PACK") == "1" ? raw : DataCompression.Compress(raw);
             // (the packed bytes land at the heap's start, are expanded into place, and the heap is zero again)
-            if (packed.Length + 160 < raw.Length && (long)D.HeapBase + packed.Length <= (long)D.Module.MemoryMinPages * 65536)
+            if (packed.Length + 160 < raw.Length && (long)D.HeapBase + packed.Length <= (long)D.Module.MemoryMinPages * 65536 && s_packWindow == 0)
             {
                 D.Data.Bytes.Clear(); D.Data.Bytes.AddRange(packed);
                 var dec = D.Module.AddFunction("rt.unpack_data", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
@@ -1898,6 +2045,18 @@ sealed partial class RuntimeGen
                 e.I32(D.HeapBase); e.I32(0); e.I32(packed.Length); e.Emit(Op.MemoryInit, 0, 0, D.Data);
                 e.I32(D.HeapBase); e.I32(D.DataBase); e.I32(D.DataBase + raw.Length); e.Call(dec);
                 e.I32(D.HeapBase); e.I32(0); e.I32(packed.Length); e.Emit(Op.MemoryFill);
+            }
+            else if (packed.Length + 160 < raw.Length && (long)D.Module.MemoryMinPages * 65536 - D.HeapBase is >= 65536 and var room)
+            {
+                // (more packed bytes than the start's memory has room for above the heap's start (a large program's
+                // data: the self-hosted compiler's library sources and type tables): they are read through a window
+                // there, refilled from the segment as the expansion goes)
+                int window = (int)Math.Min(room, s_packWindow > 0 ? s_packWindow : 1 << 20);
+                D.Data.Bytes.Clear(); D.Data.Bytes.AddRange(packed);
+                var dec = D.Module.AddFunction("rt.unpack_data", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
+                DataCompression.EmitStreamDecoder(new Emitter(dec), D.Data, window, packed.Length);
+                e.I32(D.HeapBase); e.I32(D.DataBase); e.I32(D.DataBase + raw.Length); e.Call(dec);
+                e.I32(D.HeapBase); e.I32(0); e.I32(window); e.Emit(Op.MemoryFill);
             }
             else { e.I32(D.DataBase); e.I32(0); e.I32(D.Data.Bytes.Count); e.Emit(Op.MemoryInit, 0, 0, D.Data); }
         }

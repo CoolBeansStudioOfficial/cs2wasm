@@ -939,7 +939,7 @@ sealed partial class FunctionCompiler
             case "Rt.LinkAt": E.Call(D.Arenas.LinkAt(D.ObjectType)); return Own.None;
             case "Rt.UnlinkAt": E.Call(D.Arenas.UnlinkAt(D.ObjectType)); return Own.None;
             case "Rt.MoveRefs": E.Call(D.Arenas.MoveAt()); return Own.None;
-            case "Rt.TypeName": E.Call(Rt.TypeNameFn); return Own.Stable;
+            case "Rt.TypeName": D.WantLazyTypeNames(); E.Call(Rt.TypeNameFn); return Own.Stable;
             case "Rt.IsInstanceOf": E.Call(Rt.IsInst(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Rt.Unreachable": E.Op(Op.Unreachable); return Own.None;
             case "Rt.F64Bits": E.Op(Op.I64ReinterpretF64); return Own.None;
@@ -1005,9 +1005,9 @@ sealed partial class FunctionCompiler
             case "ArrayHelpers.ClearElements": case "Cs2WasmArrays.ClearElements": E.Call(Rt.ArrayClear); return Own.None;
             case "EnumFormat.Info": E.Call(Rt.EnumInfo); return Own.None;
             case "EnumFormat.InfoOfId": case "TypeInfo.EnumInfo": E.Call(Rt.EnumInfoId); return Own.None;
-            case "Type.FullNameOf": E.Call(Rt.TypeNameById); return Own.Stable;
+            case "Type.FullNameOf": D.WantLazyTypeNames(); E.Call(Rt.TypeNameById); return Own.Stable;
             // Cs2Wasm.Runtime.TypeInfo (TypeInfo.cs): tables by type id
-            case "TypeInfo.FullName": E.Call(Rt.TypeNameById); return Own.Stable;
+            case "TypeInfo.FullName": D.WantLazyTypeNames(); E.Call(Rt.TypeNameById); return Own.Stable;
             case "TypeInfo.NameTable": E.Call(Rt.TypeNameTableFn); return Own.None;
             case "TypeInfo.ProgramTypes": E.Call(Rt.ProgramTypesFn); return Own.None;
             case "TypeInfo.Instances": E.Call(Rt.GenericInstancesFn); return Own.None;

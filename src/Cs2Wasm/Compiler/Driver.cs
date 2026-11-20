@@ -63,7 +63,9 @@ sealed class DataChunk
 sealed class DataAddr(Driver d, DataChunk chunk) : IAddress
 {
     public DataChunk Chunk => chunk;
-    public int Address => d.ChunkAddress(chunk);
+    public int Address => d.ChunkAddress(chunk) + Plus;
+    /// <summary>Added to the address: a tag in its low bits (RuntimeGen.EmitFullNames).</summary>
+    public int Plus { get; init; }
     /// <summary>A string literal: an immortal object (its count is -1; retain and release leave it as it is).</summary>
     public bool Immortal { get; init; }
 }
@@ -411,6 +413,16 @@ internal sealed partial class Driver
         _literals[s] = a;
         _literalBytes += Data.Bytes.Count - off;
         return a;
+    }
+
+    /// <summary>Code asks for type names: a generic instance's full name may be made when first asked for rather
+    /// than kept in the data (RuntimeGen.EmitFullNames), in a string from Rt.AllocObject.</summary>
+    public bool LazyTypeNames;
+    public void WantLazyTypeNames()
+    {
+        if (LazyTypeNames || Environment.GetEnvironmentVariable("CS2WASM_NO_LAZY_NAMES") == "1") return;
+        LibMethod("Cs2Wasm.Runtime.Rt", "AllocObject", 2);
+        LazyTypeNames = true;
     }
 
     public IAddress DataBlob(byte[] bytes, int align)
