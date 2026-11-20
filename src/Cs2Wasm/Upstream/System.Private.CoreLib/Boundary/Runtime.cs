@@ -177,7 +177,7 @@ namespace Cs2Wasm.Runtime
         const int Granule = 1024, GShift = 10, LeafBytes = 16384, RunBins = 24;
         static int s_mapTop, s_runBins, s_runLo;
 
-        static int MapGet(int addr)
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static int MapGet(int addr)
         {
             int leaf = Mem.LoadI32(s_mapTop + ((int)((uint)addr >> 22) << 2));
             return leaf == 0 ? 0 : Mem.LoadI32(leaf + ((int)(((uint)addr >> GShift) & 4095) << 2));
@@ -186,7 +186,7 @@ namespace Cs2Wasm.Runtime
         static void MapSet(int addr, int v) =>
             Mem.StoreI32(Mem.LoadI32(s_mapTop + ((int)((uint)addr >> 22) << 2)) + ((int)(((uint)addr >> GShift) & 4095) << 2), v);
 
-        static bool IsPage(int addr) => (MapGet(addr) & 7) == 1;
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static bool IsPage(int addr) => (MapGet(addr) & 7) == 1;
 
         /// <summary>The block the address is in (its start), or 0: the stack, the statics, memory that holds no block.
         /// A block: an object (for one of a cycle-capable type, the words before its header first), or memory Alloc

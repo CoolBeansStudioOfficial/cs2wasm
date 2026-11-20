@@ -92,10 +92,15 @@ static class Inliner
             if (tiny)
             {
                 if (leaf && n <= 4 && g.Locals.Count == 0 && g.Type.Params.Length <= 2) candidates.Add(g);
+                // (marked AggressiveInlining, and small now that what it called went into it)
+                else if (g.InlineHint && copy <= HintedBody) candidates.Add(g);
                 else if (leaf && copy <= s_loopBody && StraightLine(g)) inLoops.Add(g);
                 continue;
             }
             if (copy <= (s_exp > 0 ? s_exp : SmallBody) || single && n <= (leaf ? SingleCallerBody : SingleCallerCalling)) candidates.Add(g);
+            // (marked AggressiveInlining: as for one that can throw, above; it was left to the size rules alone)
+            else if (g.InlineHint && s_exp == 0 && copy <= HintedBody) candidates.Add(g);
+            else if (g.InlineHint && s_exp == 0 && copy <= 2 * s_loopBody) inLoops.Add(g);
             else if (leaf && copy <= s_loopBody && StraightLine(g)) inLoops.Add(g);
         }
         if (candidates.Count == 0 && inLoops.Count == 0) return changed;
