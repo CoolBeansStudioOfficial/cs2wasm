@@ -1,9 +1,11 @@
 // Runs one built module many times, several at once, and counts its distinct outputs: for rare failures that show
 // only under load (test 139's leak, 072_http's out of bounds).
 //   node tools/stress.mjs <module.wasm> [--runs n] [--par k] [--expect "text"] [-- extra host args]
+// A run that exits with an error has its output and whole stderr appended to <module.wasm>.fail.txt.
 // Prints each distinct output (stdout, stderr's last lines, exit code) with how often it came; exit code 1 when any
 // run differed from --expect (or, without it, when there was more than one distinct output).
 import { spawn } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,6 +34,8 @@ function one() {
       const o = out.trim();
       const key = `${o}${code ? ` [exit ${code}] ${err.trim().split(/\r?\n/).slice(-6).join(' | ')}` : ''}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
+      // (the whole of a failed run's stderr, next to the module)
+      if (code) appendFileSync(wasm + '.fail.txt', `==== run ${finished}, exit ${code}\n${out}\n---- stderr\n${err}\n`);
       if (expect != null ? (o !== expect || code !== 0) : false) { bad++; process.stdout.write(`run ${finished}: ${key}\n`); }
       if (finished % 25 === 0) process.stdout.write(`(${finished}/${runs}, ${bad} bad, ${((Date.now() - t0) / 1000).toFixed(0)} s)\n`);
       done(one());

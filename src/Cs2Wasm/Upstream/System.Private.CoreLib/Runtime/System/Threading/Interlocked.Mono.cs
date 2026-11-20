@@ -41,13 +41,22 @@ namespace System.Threading
             // counts wrong: freed objects still in use, seen as the compiler compiling itself on 24 threads). The
             // exchange is an atomic one, not under the place's lock (that lock is taken before the runtime lock,
             // below); a read that counts still finds the old value counted: its count passes to the result.
+            // The link only once the exchange happened: linked before, an exchange that did not happen was taken back
+            // as an unlink of the new value with the bits of the value the slot kept, which left the new value owned
+            // by the container and counted inside it (a task's continuation added as the task completed: the
+            // continuation kept the freed task as its owner, 072_http's rare out-of-bounds read). Under the runtime
+            // lock nothing else reads or changes the slot's bits in between.
             if (Rt.InArenaSlot(ad))
             {
                 Rt.RuntimeLock();
-                v = Rt.LinkAt(v, ad);
                 int was = Atomic.CompareExchange32(ref slot, c, v);
                 if (was != 0) Rt.Retain(Rt.Borrow<object>(was)); // the result's count
-                Rt.UnlinkAt(was == c ? was : v, ad);
+                if (was == c)
+                {
+                    Rt.LinkAt(v, ad);
+                    Rt.UnlinkAt(was, ad);
+                }
+                else if (v != 0) Rt.Release(Rt.Borrow<object>(v)); // the slot's count, not taken
                 Rt.RuntimeUnlock();
                 return Rt.Take<object>(was);
             }
