@@ -568,7 +568,7 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] static extern bool NoDropCheck();
         // CS2WASM_DROP_STATS=1 (a diagnosis, at compile time): the check at the drop counts what it does and says so
         [Intrinsic] static extern bool DropStats();
-        static long s_dsCalls, s_dsWalked, s_dsDead, s_dsFailInside, s_dsFailHeld, s_dsMax, s_dsFromRelease, s_dsFromUnlink;
+        static long s_dsCalls, s_dsWalked, s_dsDead, s_dsFailInside, s_dsFailHeld, s_dsMax, s_dsFromRelease, s_dsFromUnlink, s_dsTops, s_dsTopHops, s_dsTopMarked, s_dsTopFar;
         static int s_dsBuf;
         static void DsNum(ref int at, string label, long v)
         {
@@ -585,6 +585,7 @@ namespace Cs2Wasm.Runtime
             DsNum(ref at, "drop checks ", s_dsCalls); DsNum(ref at, " walked ", s_dsWalked); DsNum(ref at, " dead ", s_dsDead);
             DsNum(ref at, " fail-inside ", s_dsFailInside); DsNum(ref at, " fail-held ", s_dsFailHeld); DsNum(ref at, " max ", s_dsMax);
             DsNum(ref at, " from-release ", s_dsFromRelease); DsNum(ref at, " from-unlink ", s_dsFromUnlink);
+            DsNum(ref at, " tops ", s_dsTops); DsNum(ref at, " top-hops ", s_dsTopHops); DsNum(ref at, " top-marked ", s_dsTopMarked); DsNum(ref at, " top-far ", s_dsTopFar);
             Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
             Engine.Write(s_dsBuf, at);
         }
@@ -2009,11 +2010,12 @@ namespace Cs2Wasm.Runtime
             s_trN++;
         }
 
-        /// <summary>The top's note of a check that failed is gone.</summary>
+        /// <summary>The top's note of a check that failed is gone. (It stays noted as a member that may be under such a
+        /// top, 2: it can be, a top of its own under another's, and counted in that one's numbers.)</summary>
         static void ClearMark(int m)
         {
             if ((PL(m, MarkWord) & 1) == 0) return;
-            PS(m, MarkWord, 0);
+            PS(m, MarkWord, 2);
             s_failedTops--;
         }
 
@@ -2021,13 +2023,16 @@ namespace Cs2Wasm.Runtime
         static int Top(int m)
         {
             int v = m;
+            if (DropStats()) s_dsTops++;
             for (int k = 0; k < 64; k++)
             {
-                if ((PL(v, 24) & Owned) == 0) return v;
+                if (DropStats()) s_dsTopHops++;
+                if ((PL(v, 24) & Owned) == 0) { if (DropStats() && (PL(v, MarkWord) & 1) != 0) s_dsTopMarked++; return v; }
                 int w = PL(v, 32);
-                if (w == 0 || Mem.LoadI32(w) >= -1) return v;
+                if (w == 0 || Mem.LoadI32(w) >= -1) { if (DropStats() && (PL(v, MarkWord) & 1) != 0) s_dsTopMarked++; return v; }
                 v = w;
             }
+            if (DropStats()) s_dsTopFar++;
             return 0;
         }
 
@@ -2103,7 +2108,11 @@ namespace Cs2Wasm.Runtime
             s_watchHit = 0;
             if (!dead)
             {
-                for (int i = 0; i < s_trN; i++) { int m = Mem.LoadI32(s_trQ + 4 * i); PS(m, 24, PL(m, 24) & ~Dying); }
+                // (and each member under it noted as one: a note of 2, which no check reads as a top's; TopHeld and
+                // NoteOutside look for the top of a noted member only. A member that comes under the top later is in
+                // none of its numbers, so what it does changes none of them: the walk up for every count of every
+                // member, most of them under no such top, was a seventh of the self-hosted compiler's time)
+                for (int i = 0; i < s_trN; i++) { int m = Mem.LoadI32(s_trQ + 4 * i); PS(m, 24, PL(m, 24) & ~Dying); if (m != x && PL(m, MarkWord) == 0) PS(m, MarkWord, 2); }
                 // (the note: odd; bit 1 clear, how many of them outside code holds, TopHeld; set, how many references
                 // from members outside what it owns are left into it, NoteOutside)
                 PS(x, MarkWord, inside ? (held << 2) | 1 : (outside << 2) | 3);
@@ -2131,6 +2140,7 @@ namespace Cs2Wasm.Runtime
         /// last (d): the top's number; at zero the top is looked at again. Returns the top to look at, or 0.</summary>
         static int TopHeld(int p, int d)
         {
+            if (PL(p, MarkWord) == 0) return 0;
             int t = Top(p);
             if (t == 0) return 0;
             int o = PL(t, MarkWord);
@@ -2145,6 +2155,7 @@ namespace Cs2Wasm.Runtime
         /// is looked at again. Returns the top to look at, or 0. (A reference from inside changes nothing.)</summary>
         static int NoteOutside(int member, int container, int d)
         {
+            if (PL(member, MarkWord) == 0) return 0;
             int t = Top(member);
             if (t == 0) return 0;
             int o = PL(t, MarkWord);
