@@ -90,6 +90,18 @@ internal sealed partial class Driver
     readonly List<Compilation> _inputs;
     public IReadOnlyList<Compilation> Inputs => _inputs;
     public bool IsInput(SyntaxTree t) => _inputs.Any(c => c.ContainsSyntaxTree(t));
+    /// <summary>The input compilation's own symbol for a type of it seen through another compilation that references
+    /// it (a plugin's generated source sees the program's types as retargeted symbols, whose members' parameters are
+    /// not the ones the program's operation trees name); null when the type is the input's own or not an input's.</summary>
+    public INamedTypeSymbol? InputType(INamedTypeSymbol def)
+    {
+        var asm = def.ContainingAssembly;
+        if (asm == null) return null;
+        foreach (var c in _inputs) if (SymbolEqualityComparer.Default.Equals(c.Assembly, asm)) return null;
+        foreach (var c in _inputs)
+            if (c.Assembly.Name == asm.Name && c.Assembly.GetTypeByMetadataName(Types.FullName(def)) is { } t) return t;
+        return null;
+    }
     /// <summary>Every type the program constructs (allocated objects' types).</summary>
     public IEnumerable<ITypeSymbol> ConstructedTypes() => Constructed.Where(id => id > 0 && id < TypeById.Count && !DisplayById.ContainsKey(id) && !SyntheticById.ContainsKey(id)).Select(id => TypeById[id]);
     public readonly Library Lib;

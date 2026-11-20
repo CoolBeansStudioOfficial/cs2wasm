@@ -12,6 +12,8 @@ static class ApiChecks
         var results = new List<(string, string?)>();
         void Check(string name, Func<string?> f)
         {
+            // (CS2WASM_API_FILTER: only the checks whose name contains it)
+            if (Environment.GetEnvironmentVariable("CS2WASM_API_FILTER") is { Length: > 0 } only && !name.Contains(only, StringComparison.Ordinal)) return;
             try { results.Add((name, f())); }
             catch (Exception ex) { results.Add((name, ex.ToString())); }
         }
@@ -551,6 +553,70 @@ static class ApiChecks
             // sounds and spawns left out, the move made, the state advanced, and loud again afterwards
             var quiet = "[engine] game.move(10)\nquiet 1 0\n[engine] game.play(1)\n[engine] game.spawn(7)\n[engine] game.play(2)\n[engine] game.spawn(1)\n[engine] game.move(20)\n";
             return qo == quiet ? null : $"quiet output:\n{qo}\nwanted:\n{quiet}\n{qe}";
+        });
+
+        Check("plugin v6: the closed-form solver (A4.6): the spawner timer's two writes, velocity and position coupled, Lerp as a call, piecewise Clamp and Min, wrapping integers by repeated squaring, a loop body; each Advance compared with running the ticks; a guard that is not monotone and a product of two state values not solved, with the reason", () =>
+        {
+            var src = Header + """
+                namespace Game {
+                class Spawner {
+                    float _timer = 1.5f; float _interval = 1.5f; public int Spawned;
+                    public void Tick(float dt) { _timer -= dt; if (_timer <= 0) { _timer += _interval; Spawned++; } }
+                    public double[] Values() => new double[] { _timer, Spawned };
+                }
+                class Ticker {
+                    int _left = 7; int _period = 7; public long Fired;
+                    public void Tick() { _left--; if (_left <= 0) { _left += _period; Fired++; } }
+                    public string State() => _left + " " + Fired;
+                }
+                class Body {
+                    float _v = 8; float _p; float _damping = 0.5f;
+                    public void Tick(float dt) { _v *= _damping; _p += _v * dt; }
+                    public double[] Values() => new double[] { _v, _p };
+                }
+                class Follow {
+                    float _x; float _y = 64; float _target = 100; float _rate = 0.5f;
+                    static float Lerp(float a, float b, float t) => a + (b - a) * t;
+                    float Target => _target;
+                    public void Tick() { _x = Lerp(_x, Target, _rate); _y = float.Lerp(_y, _target, 0.25f); }
+                    public double[] Values() => new double[] { _x, _y };
+                }
+                class Health {
+                    int _hp = 50; int _max; int _shield;
+                    public Health(int max) { _max = max; }
+                    public void Tick(int regen) { _hp = Math.Clamp(_hp + regen, 0, _max); _shield = Math.Min(_shield + 3, 20); }
+                    public string State() => _hp + " " + _shield;
+                }
+                class Mixer {
+                    int _a = 1; int _b = 2; long _c = 3;
+                    public void Tick() { _a = _a * 1103515245 + _b; _b += 12345; _c = _c * 6364136223846793005L + 1442695040888963407L; }
+                    public string State() => _a + " " + _b + " " + _c;
+                }
+                class Bouncer {
+                    float _v = 4; float _p; public int Hits;
+                    public void Tick() { _v *= 0.5f; _p += _v; if (_p > 7) Hits++; }
+                }
+                class Square { int _x = 3; public void Tick() { _x = _x * _x; } }
+                static class Script {
+                    public static int Sum(int k) { int s = 0; for (int i = 0; i < k; i++) { s += i * 3 + 1; } return s; }
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() { Console.WriteLine(Sum(4)); }
+                }
+                }
+                """;
+            var plugin = new SolverPlugin();
+            var r = Compile(src, new CompileOptions { Plugins = [plugin], Checked = true });
+            if (plugin.Problem != null) return plugin.Problem;
+            if (!r.Success) return Errors(r) + "\n" + plugin.Generated;
+            var path = Path.Combine(outDir, "api_plugin_solver.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var psi = new ProcessStartInfo("node", [Path.Combine(root, "host", "run.mjs"), path, "solver_check"]) { RedirectStandardOutput = true, RedirectStandardError = true };
+            using var pr = Process.Start(psi)!;
+            var o = pr.StandardOutput.ReadToEnd().Replace("\r\n", "\n"); var e = pr.StandardError.ReadToEnd(); pr.WaitForExit();
+            var lines = o.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            int want = 7 * SolverPlugin.Counts.Length + 2;
+            if (lines.Length != want || lines.Any(l => !l.EndsWith(" ok"))) return $"solver check output ({lines.Length} lines, wanted {want} ending in ok):\n{o}\n{e}";
+            return null;
         });
 
         Check("what the sandbox lacks builds with a warning and throws PlatformNotSupportedException where the program reaches it (section 8); the rest of the program runs", () =>
@@ -1146,6 +1212,88 @@ static class ApiChecks
             c.InstrumentAfter(S("Throw();"), hook, 4);
             c.InstrumentAfter(S("int a = await"), hook, 5);
             if (OnJump) c.InstrumentAfter(S("return 0;"), hook, 6);
+        }
+    }
+
+    /// <summary>The closed-form solver (version 6) on the four examples of audit A4.6 and the rest: each generated
+    /// Advance is added and compared, in the module, with running the ticks.</summary>
+    sealed class SolverPlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public string Generated = "";
+        public static readonly long[] Counts = [0, 1, 2, 5, 6, 7, 13, 100, 1000];
+        public int InterfaceVersion => 6;
+        public string Name => "solver";
+        void Fail(string m) { Problem ??= m; }
+        public void Run(PluginContext c)
+        {
+            INamedTypeSymbol T(string n) => c.Compilation.GetTypeByMetadataName("Game." + n)!;
+            ClosedForm S(string n) => c.Solve(T(n).GetMembers("Tick").OfType<IMethodSymbol>().Single());
+            var spawner = S("Spawner"); var ticker = S("Ticker"); var body = S("Body"); var follow = S("Follow");
+            var health = S("Health"); var mixer = S("Mixer"); var bouncer = S("Bouncer"); var square = S("Square");
+            var sum = T("Script").GetMembers("Sum").OfType<IMethodSymbol>().Single();
+            var forSyntax = sum.DeclaringSyntaxReferences[0].GetSyntax().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.ForStatementSyntax>().Single();
+            var loop = c.Solve(c.Compilation.GetSemanticModel(forSyntax.SyntaxTree).GetOperation(forSyntax)!);
+            var solved = new (string, ClosedForm)[] { ("Spawner", spawner), ("Ticker", ticker), ("Body", body), ("Follow", follow), ("Health", health), ("Mixer", mixer), ("Loop", loop) };
+            foreach (var (n, f) in solved) if (!f.Solved) { Fail(n + " not solved: " + f.Reason + " at " + f.ReasonAt?.Syntax); return; }
+            // what the values say
+            if (spawner.Exact || spawner.Pieces.Count != 2 || spawner.Variables.Count != 2 || !spawner.Pieces.All(p => p.Flips.Count == 1 && p.Flips[0].Kind == SolverFlipKind.Steps))
+                Fail("spawner: " + spawner);
+            if (!ticker.Exact || ticker.Pieces.Count != 2) Fail("ticker: " + ticker);
+            if (body.Exact || body.Pieces.Count != 1 || body.Pieces[0].A[1][0].IsZero || !body.Pieces[0].A[0][1].IsZero) Fail("body: " + body);
+            if (follow.Exact || follow.Pieces.Count != 1 || follow.Pieces[0].A[0][0].ToString() != "1 - _rate" || follow.Pieces[0].A[1][1].ToString() != "0.75") Fail("follow: " + follow);
+            if (!health.Exact || health.Pieces.Count != 7 || health.Pieces.Count(p => p.Throws) != 1) Fail("health: " + health);
+            if (!mixer.Exact || mixer.Pieces.Count != 1) Fail("mixer: " + mixer);
+            if (!loop.Exact || !loop.IsLoop || loop.Variables.Count != 2 || string.Join(",", loop.Parameters) != "ref int @s,ref int @i") Fail("loop: " + loop + " / " + string.Join(",", loop.Parameters));
+            if (bouncer.Solved || bouncer.Reason?.Contains("not monotone") != true) Fail("bouncer: " + bouncer);
+            if (square.Solved || square.Reason?.Contains("product of two values") != true) Fail("square: " + square);
+            if (Problem != null) return;
+            var sb = new StringBuilder("using System;\nusing System.Runtime.InteropServices;\n");
+            foreach (var (n, f) in solved) sb.Append(f.GenerateAdvance(n + "Advance"));
+            sb.Append("""
+                static class SolverCheck
+                {
+                    static readonly long[] s_counts = { 0, 1, 2, 5, 6, 7, 13, 100, 1000 };
+                    static void Near(string what, long n, double[] a, double[] b)
+                    {
+                        bool ok = a.Length == b.Length;
+                        for (int i = 0; ok && i < a.Length; i++) ok = Math.Abs(a[i] - b[i]) <= 1e-4 * Math.Max(1, Math.Abs(a[i]));
+                        Console.WriteLine(what + " " + n + (ok ? " ok" : " differs: ticks " + string.Join(",", a) + " closed form " + string.Join(",", b)));
+                    }
+                    static void Same(string what, long n, string a, string b) => Console.WriteLine(what + " " + n + (a == b ? " ok" : " differs: ticks " + a + " closed form " + b));
+                    [UnmanagedCallersOnly(EntryPoint = "solver_check")]
+                    static void Check()
+                    {
+                        foreach (long n in s_counts)
+                        {
+                            { var a = new Game.Spawner(); var b = new Game.Spawner(); for (long i = 0; i < n; i++) a.Tick(0.25f); SpawnerAdvance.Advance(b, 0.25f, n); Near("spawner", n, a.Values(), b.Values()); }
+                            { var a = new Game.Ticker(); var b = new Game.Ticker(); for (long i = 0; i < n; i++) a.Tick(); TickerAdvance.Advance(b, n); Same("ticker", n, a.State(), b.State()); }
+                            { var a = new Game.Body(); var b = new Game.Body(); for (long i = 0; i < n; i++) a.Tick(0.25f); BodyAdvance.Advance(b, 0.25f, n); Near("body", n, a.Values(), b.Values()); }
+                            { var a = new Game.Follow(); var b = new Game.Follow(); for (long i = 0; i < n; i++) a.Tick(); FollowAdvance.Advance(b, n); Near("follow", n, a.Values(), b.Values()); }
+                            {
+                                int regen = n % 2 == 0 ? 9 : -9;
+                                var a = new Game.Health(100); var b = new Game.Health(100); for (long i = 0; i < n; i++) a.Tick(regen); HealthAdvance.Advance(b, regen, n); Same("health", n, a.State(), b.State());
+                            }
+                            { var a = new Game.Mixer(); var b = new Game.Mixer(); for (long i = 0; i < n; i++) a.Tick(); MixerAdvance.Advance(b, n); Same("mixer", n, a.State(), b.State()); }
+                            {
+                                int s1 = 0, i1 = 0; for (long t = 0; t < n; t++) { s1 += i1 * 3 + 1; i1++; }
+                                int s2 = 0, i2 = 0; LoopAdvance.Advance(ref s2, ref i2, n);
+                                Same("loop", n, s1 + " " + i1, s2 + " " + i2);
+                            }
+                        }
+                        { var a = new Game.Mixer(); var b = new Game.Mixer(); for (int i = 0; i < 1000000; i++) a.Tick(); MixerAdvance.Advance(b, 1000000); Same("mixer", 1000000, a.State(), b.State()); }
+                        {
+                            string ta, tb;
+                            var a = new Game.Health(-1); var b = new Game.Health(-1);
+                            try { for (int i = 0; i < 3; i++) a.Tick(5); ta = "no throw"; } catch (ArgumentException) { ta = "ArgumentException " + a.State(); }
+                            try { HealthAdvance.Advance(b, 5, 3); tb = "no throw"; } catch (ArgumentException) { tb = "ArgumentException " + b.State(); }
+                            Same("health throws", 3, ta, tb);
+                        }
+                    }
+                }
+                """);
+            Generated = sb.ToString();
+            c.AddSource(Generated, "solver.g.cs");
         }
     }
 

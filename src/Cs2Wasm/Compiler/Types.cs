@@ -281,7 +281,7 @@ internal sealed class Types
         else
         {
             var def = n.OriginalDefinition;
-            var lib = _d.Lib.FindType(def) ?? def;
+            var lib = _d.Lib.FindType(def) ?? _d.InputType(def) ?? def;
             result = n.Arity > 0 ? lib.Construct(n.TypeArguments.Select(Canonical).ToArray()) : lib;
         }
         lock (_canon) _canon[key] = result;
