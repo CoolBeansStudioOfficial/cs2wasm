@@ -530,6 +530,13 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   Still open: more threads make it slower, not faster (every arena operation takes the one runtime lock; the work
   item below). Tools for such hunts: tools/stacks.mjs (every thread's stack under --inspect), CS2WASM_WATCHDOG=1 (the
   pool's counts every 5 s), CS2WASM_DEADLOCK_DUMP=1 (a wait of 20 s for the runtime lock says who holds it).
+  **Code quality for the baseline tier, 2026-11-20** (where the self-hosted compiler runs): `tools/micro.mjs
+  --baseline` 2.18x to 1.85x NativeAOT's time (null checks taken out again on the final bodies and the rest written
+  out in loops and what they call; AggressiveInlining honoured for methods no exception leaves; tee chains, constant
+  arguments of inlined calls; the walk to a member's top only for members under a failed check). The no-threads
+  self-hosted compiler on Console.WriteLine(42): 16.0 s to 12.45 s, against 4.6 s for NativeAOT-LLVM's build of it
+  (2.7x). Its profile is flat now: the arena machinery about a quarter of the program's time (stores into slots of
+  Roslyn's cycle-capable types: proving them away is step 7.2's), counting about a tenth, the host's file calls 6%.
   **Open (2026-11-20): test 139 leaks two nodes about one run in 45 under heavy load** (15 runs at once, checked;
   none in 107 runs at lighter load): the same rate before and after the TopHeld change below, so older. Not found yet.
   **Build cost, measured 2026-11-20 (tools/measure-build.ps1: wall time, peak memory of every process a build
