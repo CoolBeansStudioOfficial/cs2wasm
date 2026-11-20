@@ -250,6 +250,7 @@ export async function web(args) {
 
   // 4. the page and the browser host
   for (const f of ['index.html', 'main.mjs']) cpSync(join(project, 'web', f), join(site, f));
+  for (const f of ['oracle-calls.txt', 'oracle-calls-panic.txt']) cpSync(join(project, f), join(site, f)); // (the page compares with them too)
   rmSync(join(site, 'host'), { recursive: true, force: true });
   mkdirSync(join(site, 'host', 'web'), { recursive: true });
   cpSync(join(root, 'host', 'godot-bridge.mjs'), join(site, 'host', 'godot-bridge.mjs'));

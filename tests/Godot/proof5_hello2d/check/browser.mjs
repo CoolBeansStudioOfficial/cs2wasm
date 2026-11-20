@@ -62,6 +62,7 @@ export async function check(args) {
   if (!existsSync(join(site, 'index.html')) || !existsSync(join(site, 'godot', 'index.wasm'))) { console.error('check: no site: node tools/proof5.mjs web'); return 1; }
   // (the page's copies of host files are the tree's: a site made before an edit would test the old ones)
   for (const f of ['index.html', 'main.mjs']) cpSync(join(project, 'web', f), join(site, f));
+  for (const f of ['oracle-calls.txt', 'oracle-calls-panic.txt']) cpSync(join(project, f), join(site, f)); // (the page compares with them too)
   cpSync(join(root, 'host', 'godot-bridge.mjs'), join(site, 'host', 'godot-bridge.mjs'));
   for (const f of ['cs2wasm-web.mjs', 'debuginfo.mjs', 'godot-web.mjs', 'module-worker.mjs', 'run-module.mjs', 'vfs.mjs']) cpSync(join(root, 'host', 'web', f), join(site, 'host', 'web', f));
   // host/web/debuginfo.mjs is host/engine.mjs's reader of the debug sections: the two must not drift

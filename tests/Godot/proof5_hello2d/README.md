@@ -1,19 +1,28 @@
 # Proof 5: hello2d in C#, built in the browser, played in the engine
 
-SPEC section 10, proof 5. **Not met yet.** What is here, what was run, and what stops it (measured 2026-11-17, Windows
-11, 24 cores, Node 24.19, Chrome 157 headless):
+SPEC section 10, proof 5. **Met for the game compiled by the .NET-hosted cs2wasmc and played in a browser on the stock
+Godot 4.7.2 web template (2026-11-19); not met for the build in the browser.** What is here, what was run, and what
+stops the rest (measured 2026-11-17 and, rows marked 11-19, 2026-11-19; Windows 11, 24 cores, Node 24.19, Chrome 157
+headless):
 
 | Step | Command | Result |
 |---|---|---|
-| The game under stock Godot 4.7.2 .NET (the oracle) | `node tools/proof5.mjs oracle` | `oracle-calls.txt`, 1,667 lines; run again, the same bytes |
-| Compiled by the .NET-hosted cs2wasmc, on a replayed engine | `node tools/proof5.mjs stub` (also in `dotnet run --project tests/Cs2Wasm.Tests`: `godot_proof5_hello2d`) | 3,740,445 bytes in 32 s; its 1,667 log lines equal the oracle's |
-| The same module played in the engine in a browser | `node tools/proof5.mjs check --module tests/out/proof5/game-net.wasm` | 1,667 log lines equal the oracle's (**the engine was not a stock template**: below) |
-| ... and by the keyboard | `... check --module tests/out/proof5/game-net.wasm --play shot.png` | right arrow for 1 s then Space: the HUD goes from `jumps: 0 position: (576, 548)` to `jumps: 1 position: (896, 548)` |
+| The game under stock Godot 4.7.2 .NET (the oracle) | `node tools/proof5.mjs oracle` | `oracle-calls.txt`, 1,667 lines, and `oracle-calls-panic.txt`, 1,669; run again (11-19), the same bytes |
+| Compiled by the .NET-hosted cs2wasmc, on a replayed engine | `node tools/proof5.mjs stub` (also in `dotnet run --project tests/Cs2Wasm.Tests`: `godot_proof5_hello2d`) | 11-19: 3,449,802 bytes; its 1,667 log lines equal the oracle's; with `--panic` its 1,669 too |
+| The same module played in the engine in a browser, **stock web template** | `node tools/proof5.mjs check --module tests/out/proof5/game-net.wasm` (`--panic`: with the key that throws) | 11-19: the engine says `v4.7.2.stable.official.ed1daf0bf`; 1,667 log lines (1,666 engine calls) equal the oracle's; with `--panic` 1,669 equal, the exception's stack in the page's output. Also in the built-in browser pane of the Claude app (Chrome 156): `node tools/proof5.mjs serve`, `?module=prebuilt.wasm&drive=1`, the page's own comparison "the engine calls equal stock Godot .NET's" |
+| ... and by the keyboard | `... check --module tests/out/proof5/game-net.wasm --play shot.png`; or `serve` and `?module=prebuilt.wasm` in a browser | 11-19: right arrow for 1 s then Space: the HUD goes from `jumps: 0 position: (576, 548)` to `jumps: 1 position: (901, 548)` (real time: the position depends on the key's timing) |
 | A console program built in the browser by the self-hosted compiler | `node tools/proof5.mjs check --game hello` | 27,805 bytes in 23 to 30 s (five runs), 17,139,958 bytes downloaded; the same bytes as the self-hosted compiler under Node writes; run in the page it writes `42` |
 | **The game built in the browser** | `node tools/proof5.mjs check` | **fails** 3 s in: the self-hosted compiler traps (`repro/SelfHostRefSafety.cs`) |
-| The script throws (key P) | `node tools/proof5.mjs stub --panic` | **fails** at line 1575: `GD.PushError` throws in the module (`repro/pusherror`) |
+| The script throws (key P) | `node tools/proof5.mjs stub --panic` | 11-19: passes (it failed on 2026-11-17: `GD.PushError` threw in the module, `repro/pusherror`) |
 
-`node tools/proof5.mjs web` makes what the page serves (`tests/out/proof5/site`) and must run before `check`.
+`node tools/proof5.mjs web` makes what the page serves (`tests/out/proof5/site`) and must run before `check`
+(`web --no-toolchain` when only the engine's part is wanted: no self-hosted compiler needed).
+`node tools/proof5.mjs serve --build` does `web --no-toolchain` and serves the site with `game-net.wasm` as the page's
+module, for a browser (`.claude/launch.json` entry `proof5` in a local checkout: `serve --port 8085`). The page compares
+its log with the oracle's itself after the fixed input and says so in its status line.
+
+At exit the stock engine prints `ERROR: Pages in use exist at exit in PagedAllocator: N16WorkerThreadPool5GroupE`; that
+is the stock web template's own message on `quit()` in the build without threads, after the last engine call.
 
 ## The game
 
@@ -98,21 +107,22 @@ code; and `repro/Hello.cs` with `-r GodotSharp.dll`): 355 s and 380 s on one cor
 4. **With more than one core the self-hosted compiler did not end** on a program with GodotSharp under Node: told 4
    cores (limit raised), 163 s of processor time in 9.5 minutes and no output after "program diagnostics"; told 24,
    831 s of processor time in 6 minutes, no end. Told one core it ends. The page tells it one.
-5. **No stock web export template on this machine, and the stock editor with .NET refuses a web export.** The
-   `web_*.zip` files in `%APPDATA%/Godot/export_templates/4.7.2.stable.mono` are copies of the macOS, Android and iOS
-   archives (same sizes; `web_nothreads_release.zip` starts with `macos_template.app/`). The stock editor says
-   "Exporting to Web is currently not supported in Godot 4 when using C#/.NET" for any project. So `web` has the stock
-   editor write the pack (`--export-pack`), and takes the engine's files from the archive
-   `CS2WASM_GODOT_WEB_TEMPLATE` names. The runs above used
-   `bazoodle/godot/bin/godot.web.template_release.wasm32.nothreads.zip`: a local build that reports
-   `v4.7.2.stable.custom_build.ed1daf0bf` (the stock release's commit), from a tree whose local changes, if any, were
-   not examined. **That is not the stock template the proof asks for.** With a stock `web_nothreads_release.zip` of
-   4.7.2 in place nothing else changes.
-6. **`GD.PushError` throws `NullReferenceException` in the module** (stock GodotSharp reads
-   `new StackTrace(skip, true).GetFrame(0)`), so an exception that escapes a script callback is not reported and its
-   `ProjectSettings.localize_path` call is missing from the log (`repro/pusherror`). A console program with
-   `new StackTrace(0, true)` does not build at all: `error CW0101: type char[] is used at run time but has no number
-   (in Cs2Wasm.Runtime.Rt.CaptureTrace)` (`repro/StackTraceFrames.cs`).
+5. **Solved 2026-11-19: no stock web export template on this machine.** The `web_*.zip` files in
+   `%APPDATA%/Godot/export_templates/4.7.2.stable.mono` were copies of the macOS, Android and iOS archives; they are
+   replaced by the eight `templates/web_*.zip` of the official `Godot_v4.7.2-stable_export_templates.tpz`
+   (github.com/godotengine/godot, release 4.7.2-stable), taken out of it by HTTP range requests and checked against
+   the archive's CRCs (`web_nothreads_release.zip` 10,245,903 bytes: `godot.wasm` 39,514,754). The engine in the page
+   now reports `v4.7.2.stable.official.ed1daf0bf`. The runs of 2026-11-17 used a local build
+   (`bazoodle/godot/bin/godot.web.template_release.wasm32.nothreads.zip`, `custom_build`); the logs were the same.
+   Still so: the stock editor with .NET refuses a web export ("Exporting to Web is currently not supported in Godot 4
+   when using C#/.NET"), so `web` has it write the pack (`--export-pack`) and puts the template's files beside it
+   (`CS2WASM_GODOT_WEB_TEMPLATE` names another archive).
+6. **Mostly solved by 2026-11-19: `GD.PushError` and `StackTrace`.** `stub --panic` and `check --panic` pass, and
+   `repro/StackTraceFrames.cs` builds and runs (it needs `[UnmanagedCallersOnly(EntryPoint = "main")]` on `Main` to
+   run under `host/run.mjs`). Still different from .NET: it prints `True`, `True`, an empty line, `True`, where .NET
+   prints `A` on the third: `StackFrame.GetMethod()` is null in the module. The game's log does not show it
+   (`ExceptionUtils` reads the file and line), but it is a behaviour difference to fix (library or runtime side, not
+   this proof's files).
 
 Also found: an export leaves out of a scene a property that neither the node's class nor the script standing there
 declares (the scene's `Speed = 320.0` was gone from the pack while `metadata/...` stayed), hence the metadata.
