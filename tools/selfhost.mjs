@@ -65,7 +65,8 @@ ${pluginTypes.map((t) => `        Cs2Wasm.Cli.KnownPlugins.Add(new global::${t}(
 for (const f of walk(join(src, 'Godot')).filter((f) => f.endsWith('.cs')).sort()) lines.push('--resource', `godot/${rel(f).slice(6)}=${f}`);
 for (const f of walk(join(src, 'Upstream')).filter((f) => f.endsWith('.cs') || f.endsWith('manifest.txt')).sort()) lines.push('--resource', `upstream/${rel(f).slice(9)}=${f}`);
 // Roslyn: the assemblies beside the .NET build of cs2wasmc
-const bin = join(root, 'tests', 'out', 'up', 'bin');
+// (CS2WASM_ROSLYN_DIR to take them from elsewhere)
+const bin = process.env.CS2WASM_ROSLYN_DIR ?? join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0');
 lines.push('-r', join(bin, 'Microsoft.CodeAnalysis.dll'), '-r', join(bin, 'Microsoft.CodeAnalysis.CSharp.dll'));
 // (a compiler's memory: 4 GiB at most, all a 32-bit module can have. A program with a large library needs more than
 // the 1 GiB a module gets by default)
