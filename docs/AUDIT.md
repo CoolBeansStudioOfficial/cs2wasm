@@ -168,7 +168,7 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
 **A4.6 Closed forms are too weak. [read]**
 - Source: one affine rule per symbol with exactly one write, outside branches, no calls
   (`Compiler/Plugins.cs:428-509`); loops found by block ordinal. Fails the design's own examples: the spawner timer
-  (two writes), velocity/position (coupled), `Lerp` (a call), piecewise solving. The formula is a string.
+  (two writes), velocity/position (coupled), `Lerp` (a call), piecewise solving. The formula is a string. **Done: the solver, version 6 (2026-11-20), Step 9.**
 
 **A4.7 Suppressed clones leak effects and cannot be called. [read]**
 - Source: virtual calls go to the unsuppressed stub before the clone test (`Calls.cs:564`); lambdas are not cloned;
@@ -627,31 +627,52 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     another place, returned, made a writable span or memory, or reached through a local that is not always the
     member), and addresses and reinterpreted memory (`&`, `Unsafe`, `MemoryMarshal`). A library method other than
     the known changing ones (`Entries.cs`) is taken to read a collection it is given.
-  - Still open: the closed-form solver (A4.6) and the first slice of the real plugin in the Bazoodle repository
-    (9.4). What they need:
-    - A4.6, closed forms as a solver. Input: a per-tick method or a loop body, as Roslyn's graph now (the IR's
-      later). Execute the region symbolically: every state variable written (fields of `this` and statics, loop
-      locals, several writes each, in order) becomes an affine expression of the old state vector, `x' = A x + b`,
-      whose coefficients are invariants of the region (constants, parameters such as `dt`, members it does not
-      write); this covers the spawner timer's two writes and velocity/position (`v *= d; p += v * dt` is a
-      triangular A). Known pure functions expand: `Min`, `Max`, `Clamp`, `Abs` into pieces, `Lerp` into its affine
-      form; a program method inlines when it writes nothing and calls only such functions. A branch on the state
-      makes pieces: within one the rule is affine, and the tick a guard flips is solved from the affine-in-n value
-      (for one variable, `n = ceil((limit - x0) / step)`); a guard over a component that is not monotone is
-      reported as not solvable, with the reason. Results are values, not strings: the variables, A and b as
-      operations or constants, the pieces with their guards and flip ticks, and a generated C# method
-      `Advance(ref state, long n)` the plugin can add with `AddSource`. Exactness is part of the result, because
-      behaviour must not differ: integer rules (unchecked, wrapping) are exact through repeated squaring of the
-      affine map (`log n` steps; the geometric sum's division has no inverse mod 2^32, so no formula with
-      `(a^n - 1) / (a - 1)`); floating-point closed forms round differently from running the ticks, so they are
-      marked approximate (a display or a prediction may use them; a simulation must run the ticks or call the
-      per-tick code n times). Tests: the four failing examples in A4.6, each compared with running the ticks.
-    - 9.4, the Invisible API's first slice, in the Bazoodle repository against version 5: classify each write
+  - The closed-form solver (A4.6, version 6, 2026-11-20): `PluginContext.Solve(method)` for a per-tick method,
+    `Solve(loop)` for a `for`, `while` or `do` body (a `for`'s increments included, its condition left out);
+    `Compiler/Solver.cs`, the public types in `src/Cs2Wasm/PluginSolver.cs`. Symbolic execution over Roslyn's
+    operation tree: each state variable written (fields and auto-properties of `this`, statics, a loop's outer
+    locals; int, long, float, double; several writes in order) becomes `x' = A x + b` with coefficients that are
+    polynomials in the region's invariants (constants, parameters, members it does not write, and expressions of
+    them it cannot split: a division, a shift, a pure Math call), each invariant carrying the C# that computes it
+    as the program does. `Math.Min`, `Max`, `Abs`, `Clamp` become pieces (Clamp with bounds the wrong way round and
+    `Abs` of the smallest integer become pieces that throw: the generated code runs that tick itself, so it throws
+    as the program does); `Single.Lerp`/`Double.Lerp` their affine form (`a*(1-t) + b*t`, as .NET computes it); a
+    program method or property getter that writes nothing is expanded; `if`, `?:`, `&&`, `||`, early `return` and
+    `continue` make pieces with guards (a guard seen again on a path is not split again). For each guard of each
+    piece, how its value moves under that piece: by a fixed step each tick (`c(A - I) = 0`, step `c·b`), or so from
+    the first tick on (a clamp's bound), or neither: then not solved, "not monotone in the number of ticks", with
+    the guard and the piece. Not solved, with the reason and the operation: a product of two state values, an
+    integer division of the state, a widening of a state int to long (not affine modulo 2^64), a float state value
+    converted to an integer, checked arithmetic, a call it cannot expand, a write of another object, a loop inside,
+    a loop body that can throw, more than 64 pieces. Results are values: the variables, each piece's guards (the
+    comparison as two affine sides, or an invariant condition), rows (A and b as `SolverTerm`s: monomials of
+    `SolverAtom`s with their symbols and operations), and flips (kind and step); `GenerateAdvance(className)` is C#
+    with `Advance(receiver, the tick's arguments, long n)` (for a loop: the state locals by `ref`, the invariant
+    locals, n) that the plugin adds with `AddSource`. The generated code: invariants once; then, per stretch in one
+    piece, the ticks until a guard flips (integers: the first tick a wrapping arithmetic progression crosses the
+    other side, segment by segment between wraps, exact; floating point: `ceil` of the real crossing, adjusted
+    against the double sum) and the piece's map to that power (a translation `x + k b`, a constant, or repeated
+    squaring of the affine map: `log k` steps in long arithmetic, which wraps as the program wraps, so exact; no
+    `(a^n - 1)/(a - 1)`). `Exact`: every variable is an integer and every guard an integer comparison or an exact
+    invariant; floating-point closed forms compute in double and are marked approximate. Cost: one stretch per
+    guard flip (a sawtooth timer is one per period), and for an integer guard one step per wrap before it flips.
+    Test (API check "plugin v6"): the spawner timer (two writes and a branch, float), the same timer in integers,
+    velocity/position (triangular A), Lerp as a program method (through a property) and `Single.Lerp`, health
+    with `Math.Clamp` and a shield with `Math.Min` (7 pieces, one throwing), coupled wrapping int and long LCGs,
+    and a `for` body; each Advance against running the ticks for n in 0..1000 (and 10^6 for the LCGs), exact
+    where `Exact`, within 1e-4 otherwise, and the Clamp that throws against the ticks that throw; a guard that is
+    not monotone and `x = x * x` reported unsolved with their reasons. Found on the way: generated code that calls
+    a program method with parameters did not compile (the plugin's compilation sees the program's types as
+    retargeted symbols, whose parameters are not the ones the operation trees name); `Types.Canonical` now maps
+    such a type to the input's own (`Driver.InputType`).
+  - Still open: the first slice of the real plugin in the Bazoodle repository (9.4). What it needs:
+    - 9.4, the Invisible API's first slice, in the Bazoodle repository against version 6: classify each write
       (`Accesses` with entries, `PathConditions` for whether it runs under a value from input, `InterceptValue` on
       the input reads, `UnsureSites` as unknown), mark the interactions changed (`InstrumentWrite`,
       `InstrumentEntryWrites` with the player key), one gate (generated C# with `AddSource`, reading private
-      fields, exported for the server), registered from `RunBeforeCompile` so nothing compiles twice; the solved
-      timer waits for A4.6. Each gap it finds is a compiler issue here.
+      fields, exported for the server), registered from `RunBeforeCompile` so nothing compiles twice, and the
+      solved timer (`Solve` and its Advance; an approximate closed form only for display or prediction). Each gap
+      it finds is a compiler issue here.
 
 - **Step 11.1, in part (2026-11-18): programs written to use every form, compared with .NET.** Tests 124 to 126
   removed three refusals (`await` in conditional expressions was already handled; lifted compound assignment

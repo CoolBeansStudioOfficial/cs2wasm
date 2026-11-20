@@ -27,7 +27,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 180/180 | all pass, no `known-gap` |
 | 1 | Behaviour differences on record (AUDIT open items) | `StackFrame.GetMethod()` null; `FirstChanceException` maybe not raised | none |
 | 2 | Leaks: test 139 under load, 127, 131 | 139: 2 nodes in ~1 run of 45 | none in 200 loaded runs |
-| 3 | Closed-form solver (A4.6), its four examples against running the ticks | missing | pass |
+| 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4) in the Bazoodle repository | not started | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's | no check | check exists, worst frame not above NativeAOT's |
@@ -68,7 +68,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 | C. Threads scale | per-group locks for arena operations, runtime scratch per thread | Boundary/Runtime.cs (arena locking), RuntimeGen | to start (touches Runtime.cs: after A's runtime edits or coordinated) |
 | D. Proof 5 in the browser | game built by today's self-hosted compiler in the browser | host/web, tools/proof5.mjs, tests/Godot | to start |
 | E. Behaviour gaps | `StackFrame.GetMethod()`, `FirstChanceException` | CoreLib Boundary, stack trace code | to start |
-| F. Plugins | A4.6 closed-form solver with its tests | Compiler/Plugins (new solver file), tests | to start |
+| F. Plugins | A4.6 closed-form solver with its tests | Compiler/Solver.cs, PluginSolver.cs, tests | done 2026-11-20 (version 6) |
 | G. Spikes | frame-time check against NativeAOT | tools (new), bench programs | to start |
 | H. Flakes | test 139 leak under load, 072_http | Runtime.cs (read first), tests | to start |
 
@@ -77,3 +77,8 @@ Each stream is independent of the others' files where marked, so it can run in a
 ## Log
 
 - 2026-11-20: plan written. Self-hosted no threads 12.45 s / 470 MB / 64 MB against 4.6 s / 239 MB / 129 MB.
+- 2026-11-20: stream F done. Plugin interface version 6: `PluginContext.Solve` (per-tick method or loop body) gives
+  the piecewise affine map, guards with how they flip, exactness, and `GenerateAdvance` (repeated squaring; integers
+  exact, floating point marked approximate). The four A4.6 examples, integer LCGs, a loop, a throwing Clamp, each
+  against running the ticks; two unsolvable cases with reasons. Fixed on the way: generated code calling a program
+  method with parameters (`Driver.InputType`). Suite 180/180 checked and as shipped.
