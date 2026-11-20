@@ -591,6 +591,24 @@ namespace Cs2Wasm.Runtime
         }
         /// <summary>No other thread can ever run: the program starts none (known when the whole program is compiled).</summary>
         [Intrinsic] public static extern bool SingleThreaded();
+        /// <summary>Whether the program can add a handler to AppDomain.FirstChanceException (a constant at the end of
+        /// the build: Compiler/RuntimeGen.cs).</summary>
+        [Intrinsic] public static extern bool FirstChanceWanted();
+        /// <summary>RaiseFirstChance, when the program can add a handler (its body is written at the end).</summary>
+        [Intrinsic] public static extern void FirstChance(object ex);
+        /// <summary>Whether the program asks frames for their methods (a constant at the end of the build).</summary>
+        [Intrinsic] public static extern bool FramesWanted();
+        /// <summary>The hidden method a throw noted (Compiler/Filters.cs: ThrowSite), 0 for none; clears the note.</summary>
+        [Intrinsic] public static extern int TakeThrowSite();
+        /// <summary>The hidden throwers' record entries, by note - 1 (Compiler/Reflection.cs).</summary>
+        [Intrinsic] public static extern int ThrowSites();
+
+        /// <summary>A throw or rethrow, before any filter or catch runs: AppDomain.FirstChanceException's handlers
+        /// (compiled only for a program that reaches AppDomain.add_FirstChanceException).</summary>
+        public static void RaiseFirstChance(object ex)
+        {
+            if (ex is Exception e) AppContext.OnFirstChanceException(e, AppDomain.CurrentDomain);
+        }
         /// <summary>Threads: the lock of a place that holds a reference (the one a read that counts and a store take),
         /// for an exchange written by hand (Interlocked); 0 and nothing without threads.</summary>
         [Intrinsic] public static extern int RefLock(ref int place);
@@ -631,6 +649,9 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int DelegateArity(System.Delegate d);
         /// <summary>The reflection record entry of the method a method-group delegate's function calls; 0 if none.</summary>
         [Intrinsic] public static extern int DelegateMethodEntry(int fn);
+        /// <summary>The table of stack frame names and their methods' reflection record entries ([count, (name, entry)...]:
+        /// a constructor's entry + 1), kept when the program asks a frame for its method (Compiler/Reflection.cs).</summary>
+        [Intrinsic] public static extern int FrameMethods();
         /// <summary>Takes a count of every reference an object holds (its fields, its box's value, its elements): after
         /// its bytes were copied into a new object (MemberwiseClone).</summary>
         [Intrinsic] public static extern void RetainContents(object o);
@@ -3011,10 +3032,16 @@ namespace Cs2Wasm.Runtime
                 e._fullTrace = null; e._stackTraceString = null;
                 e._throwDepth = Engine.StackDepth();
                 if (HasRoom(TraceRoom)) CaptureTrace(e);
-                return;
             }
-            CaptureTrace(e);
-            e._throwDepth = Engine.StackDepth();
+            else
+            {
+                CaptureTrace(e);
+                e._throwDepth = Engine.StackDepth();
+            }
+            // (Exception.TargetSite: the method that threw, if traces hide it)
+            e._asyncTop = false;
+            if (FramesWanted()) e._throwSite = TakeThrowSite();
+            if (FirstChanceWanted()) FirstChance(e);
         }
 
         /// <summary>What taking a trace allocates at most (its buffer, its string, a thread's refill), with a margin.</summary>
@@ -3055,18 +3082,47 @@ namespace Cs2Wasm.Runtime
         }
 
         /// <summary>A catch clause took the exception: its trace runs from the throw to the catching frame, as in .NET.</summary>
-        public static void OnCatch(object ex)
+        public static void OnCatch(object ex) => CutTrace(ex, 1);
+
+        /// <summary>A type's static initializer failed: the runtime took the exception below the frame that touched
+        /// the type, so its trace ends at the initializer's frame (.cctor), as in .NET: it is the trace of the
+        /// TypeInitializationException thrown for it (taken first) that its own ends with, cut off.</summary>
+        public static void OnInitializerFailed(object inner, object wrapper)
+        {
+            // (the frames below the initializer are the wrapper's: the same stack, taken just after; by address, as
+            // a program that only throws has no string searching of its own)
+            var e = inner as Exception; var w = wrapper as Exception;
+            string? full = e?._fullTrace, outer = w?._fullTrace;
+            if (full == null || outer == null || outer.Length == 0) return;
+            int end = full.Length - outer.Length - 1;
+            if (end > 0 && Mem.LoadU16(StringData(full) + 2 * end) == 10) e!._stackTraceString = Prefix(full, end);
+        }
+
+        static string Prefix(string s, int n)
+        {
+            int a = AllocString(n);
+            Mem.Copy(a + 16, StringData(s), n * 2);
+            return Take<string>(a);
+        }
+
+        /// <summary>An async method's MoveNext took the exception (to fault its task): the trace ends at its frame.</summary>
+        public static void OnAsyncCatch(object ex)
+        {
+            CutTrace(ex, 1);
+            if (ex is Exception e) e._asyncTop = true;
+        }
+
+        static void CutTrace(object ex, int catching)
         {
             if (ex is not Exception e || e._fullTrace == null) return;
-            int keep = e._throwDepth - Engine.StackDepth() + 1;
+            int keep = e._throwDepth - Engine.StackDepth() + catching;
             string full = e._fullTrace;
-            int pos = 0;
-            for (int i = 0; i < keep && pos >= 0; i++)
-            {
-                pos = full.IndexOf((char)10, pos);
-                if (pos >= 0) pos++;
-            }
-            e._stackTraceString = keep <= 0 ? null : pos < 0 ? full : full.Substring(0, pos - 1);
+            if (keep <= 0) { e._stackTraceString = null; return; }
+            // (the first `keep` lines; by hand: a program that only throws has no string searching of its own)
+            int end = 0, lines = 0;
+            for (int d = StringData(full); end < full.Length; end++)
+                if (Mem.LoadU16(d + 2 * end) == 10 && ++lines == keep) break;
+            e._stackTraceString = end >= full.Length ? full : Prefix(full, end);
         }
 
         /// <summary>An item of a string.Format the compiler lowered (FormatLowering.cs): as string.Format formats it without a provider.</summary>

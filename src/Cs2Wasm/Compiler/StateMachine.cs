@@ -108,7 +108,8 @@ sealed partial class FunctionCompiler
             Body = body,
             Cfg = nested ? NestedCfg(def, syntax) : null,
         };
-        info.MoveNext.FrameName = Driver.FrameName(M);
+        // (.NET's traces name an iterator's frame "M(...)+MoveNext()", an async method's "M(...)")
+        info.MoveNext.FrameName = Driver.FrameName(M) + (IsIteratorM(M) && !IsAsyncM(M) ? "+MoveNext()" : "");
         var ret = T.Resolve(M.ReturnType, Map);
         info.DeclaredReturn = ret;
         if (info.IsIterator)
@@ -740,6 +741,8 @@ sealed partial class FunctionCompiler
             }
             EmitStatement(op);
         }
+        // (the branch's value has its own line: a throw's, a condition's, a returned value's)
+        if (b.BranchValue != null && D.Position(b.BranchValue.Syntax) is var bp && bp >= 0) E.CurrentPos = bp;
         if (b.BranchValue != null && ContainsAwait(b.BranchValue))
         {
             // (the segment's first action is of the operation it starts in: the branch value's only when it starts there)
@@ -930,7 +933,8 @@ sealed partial class FunctionCompiler
             foreach (var (kind, region) in chain) EmitHandlerEntry(kind, region, ex, retain: false);
             E.End();
         }
-        // nothing handles it
+        // nothing handles it: an async method's MoveNext takes it (its trace ends here, as .NET's catch in MoveNext)
+        if (info.IsAsync) { E.Get(ex); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "OnAsyncCatch", 1).Fn); }
         if (info.AsyncIterator)
         {
             SetState(-1);

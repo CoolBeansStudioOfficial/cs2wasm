@@ -611,8 +611,21 @@ internal sealed partial class Driver
             };
         }
         if (mi.Impl is MethodImpl.Body or MethodImpl.Synthesized or MethodImpl.Missing) _work.Enqueue(mi);
+        // a program that throws: a failed static initializer's exceptions get their traces (rt.cctor_traces); one
+        // that does not throw has no exception an initializer could fail with
+        if (CctorTraceHelper == null && m.Name == "OnThrow" && m.ContainingType is { Name: "Rt" } && Types.FullName(m.ContainingType) == "Cs2Wasm.Runtime.Rt")
+            CctorTraceHelper = (mi, LibMethod("Cs2Wasm.Runtime.Rt", "OnInitializerFailed", 2));
+        // a program that can add a FirstChanceException handler: throws raise it (Rt.RaiseFirstChance, RuntimeGen.Finish)
+        if (FirstChanceRaiser == null && m.Name == "add_FirstChanceException" && m.ContainingType is { Name: "AppDomain", ContainingNamespace.Name: "System" })
+            FirstChanceRaiser = LibMethod("Cs2Wasm.Runtime.Rt", "RaiseFirstChance", 1);
         return mi;
     }
+
+    /// <summary>Rt.OnThrow and Rt.OnInitializerFailed, once something throws.</summary>
+    public (MethodInst onThrow, MethodInst onInitFailed)? CctorTraceHelper;
+
+    /// <summary>Rt.RaiseFirstChance, once something reaches AppDomain.add_FirstChanceException.</summary>
+    public MethodInst? FirstChanceRaiser;
 
     readonly Dictionary<string, bool> _returnsThis = [];
 
@@ -776,6 +789,8 @@ internal sealed partial class Driver
             "System.Object" => m.Name == "GetType",
             // new T() for a T known at compile time (LazyInitializer and friends call it directly)
             "System.Activator" => m.Name == "CreateInstance" && m.IsGenericMethod && m.Parameters.Length == 0,
+            // the calling method, known where the call is compiled (the frame of its function, Meta.FrameMethod)
+            "System.Reflection.MethodBase" => m.Name == "GetCurrentMethod",
             _ => false,
         };
     }
@@ -1035,6 +1050,8 @@ internal sealed partial class Driver
         var sym = cctor ?? t.StaticConstructors.FirstOrDefault();
         var fn = Module.AddFunction("static init " + key, new FuncType([], []));
         var body = Module.AddFunction("static init body " + key, new FuncType([], []));
+        // (the initializer is a frame of traces: "T..cctor()")
+        if (sym != null && !IsHiddenFrame(sym)) { body.FrameName = FrameName(sym); body.ProgramCode = !IsLibrary(t); }
         {
             // an exception from the initializer: TypeInitializationException now and at every later access (-2)
             var saved = StaticAddress("tie:" + key, 4, 4);
@@ -1050,6 +1067,9 @@ internal sealed partial class Driver
                 f.Get(1); f.Get(2); f.Get(3);
                 f.Call(LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "TypeInitFailed", 2).Fn);
                 f.Store(Op.I32Store);
+                // (the inner exception's trace ends at the initializer; the wrapper's starts where the type was
+                // touched: rt.cctor_traces, written at the end)
+                f.Get(3); f.Get(1); f.Load(Op.I32Load); f.Call(Rt.CctorTracesFn);
                 f.Get(3); f.Call(Rt.Release);
                 f.Get(0); f.Call(Rt.CctorFail);
                 f.Get(1); f.Load(Op.I32Load); f.Call(Rt.Retain); f.Emit(Op.Throw, 0, 0, ExceptionTag);
@@ -1057,7 +1077,7 @@ internal sealed partial class Driver
                 _cctorCheck = Module.AddFunction("rt.cctor_check", new FuncType([ValType.I32, ValType.I32], []));
                 var c = new Emitter(_cctorCheck);
                 c.Get(0); c.Load(Op.I32Load); c.I32(-2); c.Op(Op.I32Eq);
-                c.If(); c.Get(1); c.Load(Op.I32Load); c.Call(Rt.Retain); c.Emit(Op.Throw, 0, 0, ExceptionTag); c.End();
+                c.If(); c.I32(0); c.Get(1); c.Load(Op.I32Load); c.Call(Rt.CctorTracesFn); c.Get(1); c.Load(Op.I32Load); c.Call(Rt.Retain); c.Emit(Op.Throw, 0, 0, ExceptionTag); c.End();
             }
             e.I32Addr(flag); e.Call(Rt.CctorEnter);
             e.If();

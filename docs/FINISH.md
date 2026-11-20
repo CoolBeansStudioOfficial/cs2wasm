@@ -25,13 +25,13 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | # | Check | Now | Goal |
 |---|---|---|---|
 | 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 180/180 | all pass, no `known-gap` |
-| 1 | Behaviour differences on record (AUDIT open items) | `StackFrame.GetMethod()` null; `FirstChanceException` maybe not raised | none |
+| 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (tests 150-153); open: reflection on compiler-made methods (lambdas, state machines); .NET's own library frames (not reproducible from source) | none |
 | 2 | Leaks: test 139 under load, 127, 131 | 139: 2 nodes in ~1 run of 45 | none in 200 loaded runs |
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | missing | pass |
 | 3 | Invisible API slice (9.4) in the Bazoodle repository | not started | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's | no check | check exists, worst frame not above NativeAOT's |
-| 4 | Hello world size (test 145) | 27,501 B | < 28,383 B |
+| 4 | Hello world size (test 145) | 27,501 B (about 27,908 with stream E) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.45 s vs 4.6 s | < 4.6 s |
 | 4 | Same: peak memory | 470 MB vs 239 MB | < 239 MB |
 | 4 | Same: module size | 64 MB vs 129 MB | met; cut what is waste (breakdown first) |
@@ -67,7 +67,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 | B. Self-hosted size | breakdown of the 64 MB by namespace and kind; cut waste | tools (new), then what it finds | to start |
 | C. Threads scale | per-group locks for arena operations, runtime scratch per thread | Boundary/Runtime.cs (arena locking), RuntimeGen | to start (touches Runtime.cs: after A's runtime edits or coordinated) |
 | D. Proof 5 in the browser | game built by today's self-hosted compiler in the browser | host/web, tools/proof5.mjs, tests/Godot | to start |
-| E. Behaviour gaps | `StackFrame.GetMethod()`, `FirstChanceException` | CoreLib Boundary, stack trace code | to start |
+| E. Behaviour gaps | `StackFrame.GetMethod()`, `FirstChanceException`, the sweep's trace differences | CoreLib Boundary, stack trace code | done 2026-11-20 but for compiler-made methods' records (a feature of its own) |
 | F. Plugins | A4.6 closed-form solver with its tests | Compiler/Plugins (new solver file), tests | to start |
 | G. Spikes | frame-time check against NativeAOT | tools (new), bench programs | to start |
 | H. Flakes | test 139 leak under load, 072_http | Runtime.cs (read first), tests | to start |
@@ -77,3 +77,8 @@ Each stream is independent of the others' files where marked, so it can run in a
 ## Log
 
 - 2026-11-20: plan written. Self-hosted no threads 12.45 s / 470 MB / 64 MB against 4.6 s / 239 MB / 129 MB.
+- 2026-11-20, stream E: frames' methods (`StackFrame.GetMethod`, `TargetSite` through `[StackTraceHidden]` throwers,
+  `GetCurrentMethod`), `AppDomain.FirstChanceException`, and six trace differences a sweep against .NET found
+  (generic definitions' names, merged identical methods, iterator frames and lines in state machines, failed static
+  initializers, async traces): tests 150 to 153. Hello world 27,574 to 27,981 bytes measured at one path (+407: the
+  static initializers' traces 369, the unmerged frames 24), in the main checkout about 27,908. docs/AUDIT.md, stream E.

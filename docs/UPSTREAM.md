@@ -22,6 +22,8 @@ for cs2wasm's features, as the IL trimmer fixes them), and the files under `Boun
 - replaced: `src/libraries/System.Private.CoreLib/src/System/TimeZoneInfo.Unix.NonAndroid.cs  # no time zone database: the local zone has the engine clock's offset (Boundary/TimeZoneInfo.Cs2Wasm.cs)`
 - edit: `src/libraries/System.Private.CoreLib/src/System/Enum.cs`: `#define RARE_ENUMS` becomes `#undef RARE_ENUMS`
   - why: C# declares no enums over float, double, char or nint (as for NativeAOT): no code for them
+- edit: `src/libraries/System.Private.CoreLib/src/System/AppContext.cs`: `private static void OnFirstChanceException(Exception e, object? sender)` becomes `internal static void OnFirstChanceException(Exception e, object? sender)`
+  - why: AppDomain.FirstChanceException: raised by the runtime's throw (Boundary/Runtime.cs, Rt.RaiseFirstChance)
 - edit: `src/libraries/System.Private.CoreLib/src/System/Environment.Variables.Unix.cs`: `return Utf8StringMarshaller.ConvertToManaged(Interop.Sys.GetEnv(variable));` becomes `EnsureEnvironmentCached();`
   - why: environment variables are the host's (section 8): the block is read once, on the first read, from the host (Boundary/Interop.Env.cs), as getenv would give it
 - edit: `src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs`: `_allTlsBuckets.Add(tlsBuckets, null);` becomes `(nothing)`
@@ -91,12 +93,12 @@ Mono's runtime-specific files (`src/mono/System.Private.CoreLib/src`), which cs2
   - cs2wasm: the copies FastCopy does not do, by element type id (Cs2WasmArrays.GetBoxed/SetBoxed): references
   - cs2wasm: one-dimensional arrays of a type the program makes arrays of (TypeInfo.ArrayOf)
   - (and 2 more comments marked cs2wasm in the file)
-- `System/MulticastDelegate.Mono.cs`: 6 lines added, 260 removed
-  - cs2wasm: Mono's runtime half of MulticastDelegate. Combining, removing and listing are Delegate's
-- `System/Threading/Monitor.Mono.cs`: 168 lines added, 94 removed
+- `System/Threading/Monitor.Mono.cs`: 196 lines added, 92 removed
   - cs2wasm: Mono's runtime half of Monitor. An object's lock state lives in a table in linear memory keyed by the
   - object's address (cs2wasm's object header has no sync word), under the runtime lock. A thread that has to wait
   - sleeps on the runtime's generation counter (Cs2Wasm.Runtime.Threads), which every exit and pulse bumps; the engine
+- `System/MulticastDelegate.Mono.cs`: 6 lines added, 260 removed
+  - cs2wasm: Mono's runtime half of MulticastDelegate. Combining, removing and listing are Delegate's
 - `System/Threading/Thread.Mono.cs`: 67 lines added, 143 removed
   - cs2wasm: Mono's runtime half of Thread, over cs2wasm's threads (section 4.5): a thread is a worker instance of the
   - module on the shared memory, started by the engine's thread_spawn import (Cs2Wasm.Runtime.Threads). Mono's internal
@@ -180,6 +182,11 @@ Mono's runtime-specific files (`src/mono/System.Private.CoreLib/src`), which cs2
   - cs2wasm: traces are text (Exception.StackTrace), not frames: a StackTrace of the current thread has
 - `System/Buffer.Mono.cs`: 35 lines added, 9 removed
   - Non-blittable memmove. cs2wasm: the copies count; the overwritten references are released (all
+- `System/Exception.Mono.cs`: 31 lines added, 12 removed
+  - cs2wasm: the fields the shared Exception.cs uses, and the stack trace as text. The trace is captured when the
+  - catching frame (_stackTraceString), as .NET reports it (Cs2Wasm.Runtime.Rt.OnThrow/OnCatch).
+  - cs2wasm: the method that threw, which a trace leaves out when it is hidden (ThrowHelper's), as .NET's
+  - cs2wasm: traces are text (Boundary/Runtime.cs): ExceptionDispatchInfo keeps the trace so far, and a
 - `System/Reflection/Emit/DynamicMethod.Mono.cs`: 35 lines added, 8 removed
   - cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
   - cs2wasm: the arguments checked and converted as for any method, then the interpreter
@@ -199,10 +206,6 @@ Mono's runtime-specific files (`src/mono/System.Private.CoreLib/src`), which cs2
   - cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
   - cs2wasm: kept for the engine to read; there is no process to exit
   - cs2wasm: the host's (Boundary/Interop.Env.cs)
-- `System/Exception.Mono.cs`: 21 lines added, 12 removed
-  - cs2wasm: the fields the shared Exception.cs uses, and the stack trace as text. The trace is captured when the
-  - catching frame (_stackTraceString), as .NET reports it (Cs2Wasm.Runtime.Rt.OnThrow/OnCatch).
-  - cs2wasm: traces are text (Boundary/Runtime.cs): ExceptionDispatchInfo keeps the trace so far, and a
 - `System/Reflection/RuntimeEventInfo.cs`: 27 lines added, 6 removed
   - cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw
   - cs2wasm: an event is its accessors from the compiler's metadata (RuntimeType.GetEvents_internal pairs them)

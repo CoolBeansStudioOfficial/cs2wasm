@@ -35,9 +35,11 @@ substitute	method	System.Reflection.Emit.AssemblyBuilder	System.Void EnsureDynam
 substitute	method	System.Reflection.Emit.DynamicMethod	System.Reflection.Module GetDynamicMethodsModule()	=>Cs2Wasm.Runtime.Rt.DynamicMethodsModule
 substitute	method	System.Exception	System.String GetStackTrace()	=>Cs2Wasm.Runtime.Rt.StackTraceOf
 substitute	method	System.Diagnostics.StackTrace	System.String ToString(System.Diagnostics.StackTrace/TraceFormat)	=>Cs2Wasm.Runtime.Rt.EmptyTrace
+substitute	method	System.Diagnostics.StackFrame	System.Reflection.MethodBase GetMethod()	=>Cs2Wasm.Runtime.Meta.FrameMethodOf
 substitute	method	System.Enum	System.Boolean AreSorted(TStorage[])	true
 substitute	method	System.RuntimeTypeHandle	System.RuntimeType GetTypeByName(System.String,System.Boolean,System.Boolean,System.Threading.StackCrawlMark&)	=>Cs2Wasm.Runtime.TypeInfo.GetTypeByName
 edit	src/libraries/System.Private.CoreLib/src/System/Enum.cs	#define RARE_ENUMS	#undef RARE_ENUMS
+edit	src/libraries/System.Private.CoreLib/src/System/AppContext.cs	private static void OnFirstChanceException(Exception e, object? sender)	internal static void OnFirstChanceException(Exception e, object? sender)
 edit	src/libraries/System.Private.CoreLib/src/System/Environment.Variables.Unix.cs	return Utf8StringMarshaller.ConvertToManaged(Interop.Sys.GetEnv(variable));	EnsureEnvironmentCached();
 substitute	method	System.Gen2GcCallback	System.Void Register(System.Func`2,System.Object)	
 substitute	method	System.Gen2GcCallback	System.Void Register(System.Func`1)	

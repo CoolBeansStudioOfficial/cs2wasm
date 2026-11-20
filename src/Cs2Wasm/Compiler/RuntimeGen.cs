@@ -1279,6 +1279,54 @@ sealed partial class RuntimeGen
                 if (hit) ConstBranches.Run(fn);
             }
         }
+        // AppDomain.FirstChanceException: raised at throws only when the program can add a handler (before pruning,
+        // so what raising it reaches goes too)
+        if (D.Rt.FirstChanceIfMade is { } fc)
+        {
+            bool want = D.FirstChanceRaiser != null;
+            fc.Body.Clear(); new Emitter(fc).I32(want ? 1 : 0);
+            if (D.Rt.RaiseFirstChanceIfMade is { } rf)
+            {
+                rf.Body.Clear();
+                if (want) { var e = new Emitter(rf); e.Get(0); e.Call(D.FirstChanceRaiser!.Fn); }
+            }
+            foreach (var fn in D.Module.Functions)
+            {
+                bool hit = false;
+                for (int i = 0; i < fn.Body.Count; i++)
+                    if (fn.Body[i].Op == Op.Call && fn.Body[i].Ref == fc) { fn.Body[i] = new Instr { Op = Op.I32Const, Imm = want ? 1 : 0, Pos = fn.Body[i].Pos }; hit = true; }
+                if (hit) ConstBranches.Run(fn);
+            }
+        }
+        // Exception.TargetSite of a hidden method's throw: noted only when frames are asked for their methods
+        {
+            bool frames = D.FramesAsked;
+            if (D.Rt.FramesWantedIfMade is { } fw)
+            {
+                fw.Body.Clear(); new Emitter(fw).I32(frames ? 1 : 0);
+                foreach (var fn in D.Module.Functions)
+                {
+                    bool hit = false;
+                    for (int i = 0; i < fn.Body.Count; i++)
+                        if (fn.Body[i].Op == Op.Call && fn.Body[i].Ref == fw) { fn.Body[i] = new Instr { Op = Op.I32Const, Imm = frames ? 1 : 0, Pos = fn.Body[i].Pos }; hit = true; }
+                    if (hit) ConstBranches.Run(fn);
+                }
+            }
+            if (!frames && D.ThrowSiteIfMade is { } ts)
+            {
+                bool used = false;
+                foreach (var fn in D.Module.Functions)
+                {
+                    for (int i = fn.Body.Count - 1; i >= 0; i--)
+                    {
+                        if (fn.Body[i].Ref != ts) continue;
+                        if (fn.Body[i].Op == Op.GlobalSet && i > 0 && fn.Body[i - 1].Op == Op.I32Const && fn.Body[i - 1].Ref == null) { fn.Body.RemoveRange(i - 1, 2); i--; }
+                        else used = true;
+                    }
+                }
+                if (!used) D.Module.Globals.Remove(ts);
+            }
+        }
         // (every function but the dispatch tables below exists now)
         PruneConstructed();
         D.Mark("  finish: PruneConstructed");
@@ -1323,6 +1371,18 @@ sealed partial class RuntimeGen
         D.LayoutMemory();
         D.Mark("  finish: D.LayoutMemory");
         EmitInit();
+        // a failed static initializer's traces, in a program where code that throws is left (every function exists
+        // now: a program whose throws all went has no exception an initializer could fail with)
+        if (D.Rt.CctorTracesIfMade is { } ct)
+        {
+            ct.Body.Clear();
+            if (D.CctorTraceHelper is var (onThrow, onInit) && D.Module.LiveFunctions().Contains(onThrow.Fn))
+            {
+                var e = new Emitter(ct);
+                e.Get(1); e.Call(onThrow.Fn);
+                e.Get(0); e.If(); e.Get(0); e.Get(1); e.Call(onInit.Fn); e.End();
+            }
+        }
     }
 
     /// <summary>An exception leaves the frames between the throw and the catch without running their ends, so the
@@ -1938,12 +1998,10 @@ internal sealed partial class Driver
             case IPointerTypeSymbol p: return ClrName(p.PointedAtType) + "*";
             case INamedTypeSymbol n:
                 {
-                    var sb = new StringBuilder();
-                    if (n.ContainingType != null) sb.Append(ClrName(n.ContainingType.OriginalDefinition)).Append('+');
-                    else if (n.ContainingNamespace is { IsGlobalNamespace: false } ns) sb.Append(ns.ToDisplayString()).Append('.');
-                    sb.Append(n.MetadataName);
+                    var sb = new StringBuilder(ClrPath(n));
+                    // (a generic definition names its parameters, as its ToString does: "G`1[T]")
                     var args = AllTypeArgs(n);
-                    if (args.Count > 0 && !SymbolEqualityComparer.Default.Equals(n, n.OriginalDefinition))
+                    if (args.Count > 0)
                         sb.Append('[').Append(string.Join(",", args.Select(a => "[" + ClrName(a) + "]"))).Append(']');
                     var s = sb.ToString();
                     // reference assembly names for type arguments use assembly-qualified names in .NET; keep the readable form
@@ -1951,6 +2009,13 @@ internal sealed partial class Driver
                 }
             default: return t.ToDisplayString();
         }
+    }
+
+    /// <summary>A type's name with its namespace and the types around it, without type arguments ("Ns.Outer`1+Inner").</summary>
+    public static string ClrPath(INamedTypeSymbol n)
+    {
+        if (n.ContainingType != null) return ClrPath(n.ContainingType.OriginalDefinition) + "+" + n.MetadataName;
+        return n.ContainingNamespace is { IsGlobalNamespace: false } ns ? ns.ToDisplayString() + "." + n.MetadataName : n.MetadataName;
     }
 
     internal static List<ITypeSymbol> AllTypeArgs(INamedTypeSymbol n)

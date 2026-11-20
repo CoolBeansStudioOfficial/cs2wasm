@@ -215,12 +215,16 @@ sealed class Manifest
             // cs2wasm's stack traces are text captured at the throw (Boundary/Runtime.cs): no frames to format
             sb.AppendLine("substitute	method	System.Exception	System.String GetStackTrace()	=>Cs2Wasm.Runtime.Rt.StackTraceOf");
             sb.AppendLine("substitute	method	System.Diagnostics.StackTrace	System.String ToString(System.Diagnostics.StackTrace/TraceFormat)	=>Cs2Wasm.Runtime.Rt.EmptyTrace");
+            // a frame's method: from the compiler's table of frame names, kept when the program asks (Compiler/Reflection.cs)
+            sb.AppendLine("substitute	method	System.Diagnostics.StackFrame	System.Reflection.MethodBase GetMethod()	=>Cs2Wasm.Runtime.Meta.FrameMethodOf");
             // the compiler's enum tables are sorted by unsigned value already (Enum.Mono.cs): no sorting code
             sb.AppendLine("substitute	method	System.Enum	System.Boolean AreSorted(TStorage[])	true");
             // Type.GetType(name): the program is whole, its types' names are a table (Boundary/TypeInfo.cs)
             sb.AppendLine("substitute	method	System.RuntimeTypeHandle	System.RuntimeType GetTypeByName(System.String,System.Boolean,System.Boolean,System.Threading.StackCrawlMark&)	=>Cs2Wasm.Runtime.TypeInfo.GetTypeByName");
             // C# declares no enums over float, double, char or nint (as for NativeAOT): no code for them
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Enum.cs	#define RARE_ENUMS	#undef RARE_ENUMS");
+            // AppDomain.FirstChanceException: raised by the runtime's throw (Boundary/Runtime.cs, Rt.RaiseFirstChance)
+            sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/AppContext.cs	private static void OnFirstChanceException(Exception e, object? sender)	internal static void OnFirstChanceException(Exception e, object? sender)");
             // environment variables are the host's (section 8): the block is read once, on the first read, from the host
             // (Boundary/Interop.Env.cs), as getenv would give it
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Environment.Variables.Unix.cs	return Utf8StringMarshaller.ConvertToManaged(Interop.Sys.GetEnv(variable));	EnsureEnvironmentCached();");

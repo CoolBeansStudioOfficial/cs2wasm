@@ -105,7 +105,7 @@ internal sealed partial class Driver
         var scope = ScopeOf(decl, v is IParameterSymbol);
         if (scope == null || !names.EnvOrdinal.TryGetValue(scope, out int co)) return null;
         var shortName = "<>c__DisplayClass" + names.MethodOrdinal + "_" + co;
-        return full ? ClrName(outer.ContainingType.OriginalDefinition) + "+" + shortName : shortName;
+        return full ? ClrPath(outer.ContainingType.OriginalDefinition) + "+" + shortName : shortName;
     }
 
     /// <summary>The frame name of a lambda or local function, as the C# compiler names its method.</summary>

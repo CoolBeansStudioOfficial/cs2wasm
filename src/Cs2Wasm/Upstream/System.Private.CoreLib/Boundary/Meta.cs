@@ -80,6 +80,38 @@ namespace Cs2Wasm.Runtime
         public const int ByRef = 0x40000000, ParamOut = 0x20000000, ParamIn = 0x10000000;
         public const int FStatic = 1, FPublic = 2, FVirtual = 4, FAbstract = 8, FReadOnly = 16, FPrivate = 32, FFamily = 64, FAssembly = 128;
 
+        /// <summary>StackFrame.GetMethod (manifest substitution): the method of the frame's name.</summary>
+        public static MethodBase? FrameMethodOf(System.Diagnostics.StackFrame frame) => FrameMethod(frame._cs2wasmName);
+
+        /// <summary>The method a stack frame of this name ("Program.A(Int32 x)") runs, from the compiler's table of the
+        /// frames' methods (Rt.FrameMethods); null for a frame whose method has no record (a lambda's).</summary>
+        public static MethodBase? FrameMethod(string? name)
+        {
+            if (name == null) return null;
+            int t = Rt.FrameMethods();
+            if (t == 0) return null;
+            int n = I(t, 0);
+            for (int i = 0; i < n; i++)
+            {
+                if (S(I(t, 1 + 2 * i)) == name) return MethodOfEntry(I(t, 2 + 2 * i));
+            }
+            return null;
+        }
+
+        /// <summary>The method a throw's note names (Exception._throwSite), from Rt.ThrowSites.</summary>
+        public static MethodBase? ThrowSiteMethod(int note)
+        {
+            int t = Rt.ThrowSites();
+            return t == 0 || note > I(t, 0) ? null : MethodOfEntry(I(t, note));
+        }
+
+        static MethodBase? MethodOfEntry(int e)
+        {
+            if (e == 0) return null;
+            if ((e & 1) != 0) return new RuntimeConstructorInfo(e, TypeAt(I(e - 1, 7)));
+            return new RuntimeMethodInfo(e, S(I(e, 0)), TypeAt(I(e, 9)));
+        }
+
         public static int I(int addr, int index) => Mem.LoadI32(addr + 4 * index);
         public static string S(int addr) => addr == 0 ? "" : Rt.Borrow<string>(addr);
         public static RuntimeType TypeAt(int id) => id == -1 ? (RuntimeType)typeof(void) : TypeInfo.Type(id);

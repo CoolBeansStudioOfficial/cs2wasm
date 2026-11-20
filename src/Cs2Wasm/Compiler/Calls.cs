@@ -712,6 +712,12 @@ sealed partial class FunctionCompiler
                     FreeScratch(ValType.I32, t1); FreeScratch(ValType.I32, t2);
                     return Own.None;
                 }
+            case "System.Reflection.MethodBase.GetCurrentMethod":
+                // the method whose code this is, as its stack frame names it (null for what has no record, as a
+                // frame's method: a lambda's, a local function's)
+                E.I32Addr(D.StringLiteral(E.Fn.FrameName ?? Driver.FrameName(OuterMethod)));
+                E.Call(D.LibMethod("Cs2Wasm.Runtime.Meta", "FrameMethod", 1).Fn);
+                return Own.Owned;
             case "System.Activator.CreateInstance":
                 {
                     var t = Arg(0);
@@ -917,6 +923,11 @@ sealed partial class FunctionCompiler
             case "Rt.ArenaFinalizeObject": E.Call(Rt.ArenaFinFn); return Own.None;
             case "Rt.ArenaFinType": E.Call(Rt.ArenaFinTypeFn); return Own.None;
             case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
+            case "Rt.FirstChanceWanted": E.Call(Rt.FirstChanceFn); return Own.None;
+            case "Rt.FirstChance": E.Call(Rt.RaiseFirstChanceFn); return Own.None;
+            case "Rt.FramesWanted": E.Call(Rt.FramesWantedFn); return Own.None;
+            case "Rt.TakeThrowSite": E.GGet(D.ThrowSite); E.I32(0); E.GSet(D.ThrowSite); return Own.None;
+            case "Rt.ThrowSites": E.Call(D.ThrowSitesFn); return Own.None;
             case "Rt.NoThreads": E.I32(Driver.s_noThreads ? 1 : 0); return Own.None;
             case "Rt.DropStats": E.I32(Environment.GetEnvironmentVariable("CS2WASM_DROP_STATS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDropCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
@@ -931,6 +942,7 @@ sealed partial class FunctionCompiler
             case "Rt.DynamicInvokeRaw": E.Call(D.DynamicInvokeFn); return Own.Owned;
             case "Rt.DelegateArity": E.Call(D.DelegateArityFn); return Own.None;
             case "Rt.DelegateMethodEntry": E.Call(D.DelegateMethodFn); return Own.None;
+            case "Rt.FrameMethods": E.Call(D.FrameMethodsFn); return Own.None;
             case "Rt.ArenaClearObject": E.Call(Rt.ArenaClearFn); return Own.None;
             case "Rt.ArenaFreeObject": E.Call(Rt.ArenaFreeFn); return Own.None;
             case "Rt.ArenaVisitObject": E.Call(Rt.ArenaVisitFn); return Own.None;
