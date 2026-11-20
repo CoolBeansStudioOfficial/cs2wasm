@@ -36,6 +36,7 @@ internal sealed partial class Driver
     public readonly Dictionary<ISymbol, List<MemberHook>> WriteHooks = new(SymbolEqualityComparer.Default);
     public readonly Dictionary<ISymbol, List<MemberHook>> ReadHooks = new(SymbolEqualityComparer.Default);
     public readonly Dictionary<(string path, int start, int length), List<(IMethodSymbol hook, int tag)>> StatementHooks = [];
+    public readonly Dictionary<(string path, int start, int length), List<(IMethodSymbol hook, int tag)>> StatementAfterHooks = [];
     public readonly Dictionary<((string path, int start, int length) site, OperationKind kind), List<ValueHook>> ValueHooks = [];
     public readonly Dictionary<(string path, int start, int length), List<MemberHook>> SiteWriteHooks = [];
     public readonly Dictionary<ISymbol, List<EntryHook>> EntryWriteHooks = new(SymbolEqualityComparer.Default);
@@ -91,7 +92,7 @@ internal sealed partial class Driver
         }
     }
 
-    public bool HasInstrumentation => WriteHooks.Count > 0 || ReadHooks.Count > 0 || StatementHooks.Count > 0 || ValueHooks.Count > 0 || SiteWriteHooks.Count > 0 || HasEntryHooks;
+    public bool HasInstrumentation => WriteHooks.Count > 0 || ReadHooks.Count > 0 || StatementHooks.Count > 0 || StatementAfterHooks.Count > 0 || ValueHooks.Count > 0 || SiteWriteHooks.Count > 0 || HasEntryHooks;
     readonly HashSet<ISymbol> _instrumented = new(SymbolEqualityComparer.Default);
     readonly List<CloneSpec> _clones = [];
 
@@ -800,10 +801,25 @@ internal sealed partial class PluginHost
         if (D.ModelFor(expression.Syntax.SyntaxTree).GetEnclosingSymbol(expression.Syntax.SpanStart) is { } enc) D.MarkInstrumented(enc);
     }
 
-    public void AddStatementHook(IOperation statement, IMethodSymbol hook, int tag)
+    public void AddStatementHook(IOperation statement, IMethodSymbol hook, int tag, bool after = false)
     {
         var key = Driver.SiteKey(statement.Syntax);
-        if (!D.StatementHooks.TryGetValue(key, out var list)) D.StatementHooks[key] = list = [];
+        if (after)
+        {
+            var loc = statement.Syntax.GetLocation();
+            if (!hook.IsStatic || hook.Parameters.Length > 1 || hook.Parameters.Any(p => p.Type.SpecialType != SpecialType.System_Int32 || p.RefKind != RefKind.None))
+            { D.Report(Diags.Plugin, loc, $"InstrumentAfter: the hook {hook.Name} must be a static method taking () or (int tag)"); return; }
+            if (statement is IReturnOperation { Kind: OperationKind.Return or OperationKind.YieldBreak } or IBranchOperation or IExpressionStatementOperation { Operation: IThrowOperation } or IThrowOperation)
+            { D.Report(Diags.Plugin, loc, $"InstrumentAfter: '{statement.Syntax}' never completes normally (it jumps)"); return; }
+            if (statement.Syntax is not StatementSyntax)
+            { D.Report(Diags.Plugin, loc, $"InstrumentAfter: '{statement.Syntax}' is not a statement"); return; }
+            // (an async method or an iterator runs Roslyn's lowered graph, where only these stay statements)
+            if (D.ModelFor(statement.Syntax.SyntaxTree).GetEnclosingSymbol(statement.Syntax.SpanStart) is IMethodSymbol { IsAsync: true } or IMethodSymbol { IsIterator: true }
+                && statement is not (IExpressionStatementOperation or IVariableDeclarationGroupOperation))
+            { D.Report(Diags.Plugin, loc, $"InstrumentAfter: in an async method or an iterator, only an expression statement or a declaration can be hooked after, not '{statement.Syntax}'"); return; }
+        }
+        var table = after ? D.StatementAfterHooks : D.StatementHooks;
+        if (!table.TryGetValue(key, out var list)) table[key] = list = [];
         list.Add((hook, tag));
         var model = D.ModelFor(statement.Syntax.SyntaxTree);
         if (model.GetEnclosingSymbol(statement.Syntax.SpanStart) is { } enc) D.MarkInstrumented(enc);

@@ -342,6 +342,49 @@ static class ApiChecks
             return !refused.Success && refused.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("the key here is")) ? null : "a hook whose key type differs was not refused: " + Errors(refused);
         });
 
+        Check("plugin v5: a hook after a statement runs when it completes normally (an if, a loop left by break, a declaration with an await) and not when it returns or throws; a hook after a jump is refused", () =>
+        {
+            var src = Header + """
+                using System.Threading.Tasks;
+                namespace Game {
+                static class Script {
+                    static int s_n;
+                    static void Step(int i) {
+                        if (i == 2) return;
+                        s_n += i;
+                    }
+                    static int Find(int[] xs) {
+                        foreach (var x in xs) { if (x > 2) break; }
+                        try { Throw(); } catch (Exception) { }
+                        return 0;
+                    }
+                    static void Throw() => throw new InvalidOperationException();
+                    static async Task<int> Answer() { await Task.Yield(); return 4; }
+                    static async Task<int> Later() {
+                        int a = await Answer();
+                        return a;
+                    }
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        for (int i = 0; i < 4; i++) Step(i);
+                        Console.WriteLine("n " + s_n);
+                        Find(new[] { 1, 5 }); Find(new[] { 1 });
+                        Console.WriteLine(Later().GetAwaiter().GetResult());
+                    }
+                }
+                }
+                """;
+            var r = Compile(src, new CompileOptions { Plugins = [new AfterPlugin()], Checked = true });
+            if (!r.Success) return Errors(r);
+            var path = Path.Combine(outDir, "api_plugin_after.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            var want = "after 1\nafter 1\nafter 1\nn 4\nafter 3\nafter 3\nafter 5\n4\n";
+            if (o != want) return $"output:\n{o}\nwanted:\n{want}\n{e}";
+            var refused = Compile(src, new CompileOptions { Plugins = [new AfterPlugin { OnJump = true }] });
+            return !refused.Success && refused.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("never completes normally")) ? null : "a hook after a return was not refused: " + Errors(refused);
+        });
+
         Check("plugin v4: suppressible imports do nothing while their bit is set, whatever calls them (a virtual method, a delegate, a lambda, an interface); other imports and the program's state go on", () =>
         {
             var src = Header + """
@@ -843,6 +886,30 @@ static class ApiChecks
             c.InstrumentEntryWrites(F("Log"), H("Log"), tag: 5);
             c.InstrumentEntryWrites(F("Cells"), H("Cell"));
             c.InstrumentEntryReads(F("Scores"), H("Read"));
+        }
+    }
+
+    sealed class AfterPlugin : ICompilerPlugin
+    {
+        public bool OnJump;
+        public int InterfaceVersion => 5;
+        public string Name => "after";
+        public void Run(PluginContext c)
+        {
+            var tree = c.Compilation.SyntaxTrees.Single();
+            var model = c.Compilation.GetSemanticModel(tree);
+            var statements = tree.GetRoot().DescendantNodes().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.StatementSyntax>().ToList();
+            IOperation S(string text) => model.GetOperation(statements.First(s => s.ToString().StartsWith(text)))!;
+            var gen = c.AddSource("""
+                using System;
+                static class After { public static void Hook(int tag) => Console.WriteLine("after " + tag); }
+                """);
+            var hook = gen.GetTypeByMetadataName("After")!.GetMembers("Hook").OfType<IMethodSymbol>().Single();
+            c.InstrumentAfter(S("if (i == 2)"), hook, 1);
+            c.InstrumentAfter(S("foreach"), hook, 3);
+            c.InstrumentAfter(S("Throw();"), hook, 4);
+            c.InstrumentAfter(S("int a = await"), hook, 5);
+            if (OnJump) c.InstrumentAfter(S("return 0;"), hook, 6);
         }
     }
 

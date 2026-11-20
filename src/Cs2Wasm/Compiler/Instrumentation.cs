@@ -257,14 +257,44 @@ sealed partial class FunctionCompiler
         foreach (var _ in mi.Fn.Type.Results) E.Op(Op.Drop);
     }
 
-    void EmitStatementHooks(IOperation op)
+    static SyntaxNode? StatementOf(SyntaxNode? s)
+    {
+        while (s != null && s is not Microsoft.CodeAnalysis.CSharp.Syntax.StatementSyntax) s = s.Parent;
+        return s;
+    }
+
+    Dictionary<SyntaxNode, IOperation>? _lastOfStatement;
+    /// <summary>The last of the graph's operations (block order) that come from a statement.</summary>
+    IOperation? LastOfStatement(SyntaxNode statement)
+    {
+        if (_lastOfStatement == null)
+        {
+            _lastOfStatement = [];
+            foreach (var b in _cfg!.Blocks)
+                foreach (var o in b.Operations)
+                    if (StatementOf(o.Syntax) is { } s) _lastOfStatement[s] = o;
+        }
+        return _lastOfStatement.GetValueOrDefault(statement);
+    }
+
+    /// <summary>The hooks before a statement, or after it (PluginContext.InstrumentAfter: emitted where the statement's
+    /// code ends, which control reaches only when it completes normally).</summary>
+    void EmitStatementHooks(IOperation op, bool after = false)
     {
         // (a foreach over an entry-hooked collection: its read hooks, as the loop begins)
-        if (op is IForEachLoopOperation && D.EntryReadHooks.Count > 0 && EntryHooksAt(op) is { } reads)
+        if (!after && op is IForEachLoopOperation && D.EntryReadHooks.Count > 0 && EntryHooksAt(op) is { } reads)
             foreach (var (s, h) in reads) EmitEntryHookCall(h, s, null, null);
-        if (D.StatementHooks.Count == 0 || op.Syntax == null) return;
-        if (!D.StatementHooks.TryGetValue(Driver.SiteKey(op.Syntax), out var hooks)
-            && !(_machine != null && op.Syntax.Parent != null && D.StatementHooks.TryGetValue(Driver.SiteKey(op.Syntax.Parent), out hooks)))
+        var table = after ? D.StatementAfterHooks : D.StatementHooks;
+        if (table.Count == 0 || op.Syntax == null) return;
+        List<(IMethodSymbol hook, int tag)>? hooks;
+        if (after && _machine != null && _cfg != null)
+        {
+            // (a state machine runs the lowered graph: a statement is the graph's operations from it, and ends after
+            // its last; PluginHost.AddStatementHook lets only expression statements and declarations be hooked there)
+            if (StatementOf(op.Syntax) is not { } st || !table.TryGetValue(Driver.SiteKey(st), out hooks) || !ReferenceEquals(LastOfStatement(st), op)) return;
+        }
+        else if (!table.TryGetValue(Driver.SiteKey(op.Syntax), out hooks)
+            && !(!after && _machine != null && op.Syntax.Parent != null && table.TryGetValue(Driver.SiteKey(op.Syntax.Parent), out hooks)))
             return;
         foreach (var (hook, tag) in hooks) EmitHookCall(hook, tag, null);
     }

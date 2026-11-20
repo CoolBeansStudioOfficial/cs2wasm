@@ -526,7 +526,12 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     (`(object receiver, TKey key, bool keyed, int tag)`). One function (`Compiler/Entries.cs`) decides the sites for
     the analysis and for the code, so they agree. Plugins of versions 1 to 4 see the accesses they saw. A collection
     handed to the program's own method, or a `ref` to an element, is not followed (the list of unsure sites).
-  - Still open: a hook after a statement, the closed-form solver (A4.6), conditions across
+  - `InstrumentAfter(statement, hook)` (version 5): a hook where a statement's code ends, so it runs when the
+    statement completes normally (an `if` whose branch did not return, a loop left by its condition or a `break`)
+    and not when it is left by a `return`, a `throw` or an exception; a jump statement is refused. In an async
+    method or an iterator (compiled from Roslyn's lowered graph) it runs after the statement's last lowered
+    operation, and only expression statements and declarations can be hooked there.
+  - Still open: the closed-form solver (A4.6), conditions across
     calls and the ownership-based alias query (A4.8), the list of unsure sites, plugins before the first compile
     (A4.9), and the first slice of the real plugin in the Bazoodle repository (9.4).
 

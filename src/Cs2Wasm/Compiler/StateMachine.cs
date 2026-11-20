@@ -722,7 +722,7 @@ sealed partial class FunctionCompiler
             if (ContainsAwait(op))
             {
                 if (!EmitAwaitPlan(op, b, i, startAction)) return; // suspended
-                if (op is IAwaitOperation) { _precomputed.Remove(op); continue; } // value discarded
+                if (op is IAwaitOperation) { _precomputed.Remove(op); EmitStatementHooks(op, after: true); continue; } // value discarded
             }
             if (op is IReturnOperation { Kind: OperationKind.YieldReturn } yr)
             {

@@ -14,7 +14,8 @@ namespace Cs2Wasm;
 /// the developer's. Version 4: a hook that receives the value of any one expression and gives the value the program
 /// goes on with (InterceptValue), write hooks at one write (InstrumentWrite), which accesses a hook runs at
 /// (MemberAccess.Instrumentable), and generated code that names the program's private members. Version 5: collection
-/// entries as accesses (MemberAccess.IsEntry) with hooks at them (InstrumentEntryWrites, InstrumentEntryReads).
+/// entries as accesses (MemberAccess.IsEntry) with hooks at them (InstrumentEntryWrites, InstrumentEntryReads); a hook
+/// after a statement (InstrumentAfter).
 /// </summary>
 public interface ICompilerPlugin
 {
@@ -180,6 +181,12 @@ public sealed class PluginContext
     public void InterceptValue(IOperation expression, IMethodSymbol hook, int tag = 0) => _host.AddValueHook(expression, hook, tag);
     /// <summary>Calls `hook` (a static method taking () or (int tag)) before a statement runs.</summary>
     public void InstrumentBefore(IOperation statement, IMethodSymbol hook, int tag = 0) => _host.AddStatementHook(statement, hook, tag);
+    /// <summary>(Version 5.) Calls `hook` (a static method taking () or (int tag)) after a statement, each time it
+    /// completes normally: control reaches its end (a loop's after the loop ends, by its condition or a `break`; an
+    /// `if` whose branch returned does not). Not when it is left by a `return`, a `throw`, an exception or a jump out,
+    /// so a jump statement itself (`return`, `throw`, `break`, `continue`, `goto`, `yield break`) is refused. An
+    /// `await` or `yield return` inside is not an end: the hook runs when the statement finishes after it resumes.</summary>
+    public void InstrumentAfter(IOperation statement, IMethodSymbol hook, int tag = 0) => _host.AddStatementHook(statement, hook, tag, after: true);
     /// <summary>Compiles a copy of `method`, and of what it calls directly, in which calls to the given imports
     /// (boundary methods) do nothing and return defaults; the copy is exported as `exportName`.</summary>
     public void CloneWithSuppressedImports(IMethodSymbol method, IEnumerable<IMethodSymbol> suppressedImports, string exportName) => _host.Clone(method, suppressedImports, exportName);

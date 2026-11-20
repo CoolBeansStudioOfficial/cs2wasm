@@ -659,7 +659,7 @@ sealed partial class FunctionCompiler
         int save = E.CurrentPos;
         if (op.Syntax is not BlockSyntax) E.CurrentPos = D.Position(op.Syntax) is var p && p >= 0 ? p : save;
         _stmts.Add((op, _temps.Count));
-        try { EmitStatementHooks(op); EmitStatementCore(op); }
+        try { EmitStatementHooks(op); EmitStatementCore(op); EmitStatementHooks(op, after: true); }
         catch (CompileException ex) when (ex.Location == null) { throw new CompileException(ex.Message, op.Syntax.GetLocation()); }
         _stmts.RemoveAt(_stmts.Count - 1);
         E.CurrentPos = save;
