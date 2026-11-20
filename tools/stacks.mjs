@@ -44,6 +44,6 @@ await sleep(+(process.env.PAUSE_MS ?? 3000));
 for (const s of sessions) {
   console.log(`== ${s.title} (${s.path.length ? 'depth ' + s.path.length : 'main'})`);
   if (!s.frames) { console.log('   (did not pause: a wait with no limit, a host call, the engine, or idle)'); continue; }
-  for (const f of s.frames.slice(0, depth)) console.log('   ' + (f.functionName || '(anonymous)'));
+  for (const f of s.frames.slice(0, depth)) console.log('   ' + (f.functionName || '(anonymous)') + (f.url && !f.url.startsWith('wasm') ? '  ' + f.url.split('/').pop() + ':' + (f.location.lineNumber + 1) : ''));
 }
 process.exit(0);

@@ -66,6 +66,7 @@ for (const imp of WebAssembly.Module.imports(module)) {
 }
 // (a module with threads: a worker is made ready now, so its first thread starts at once)
 if (WebAssembly.Module.exports(module).some((x) => x.name === '__thread_entry')) imports.cs2wasm.__prewarm();
+if (process.env.CS2WASM_PREWORKERS && WebAssembly.Module.exports(module).some((x) => x.name === '__thread_entry')) imports.cs2wasm.__makePool(+process.env.CS2WASM_PREWORKERS);
 startIo(module, memory);
 const t0 = performance.now();
 const instance = new WebAssembly.Instance(module, imports);

@@ -7,6 +7,7 @@ const { module, memory, args } = workerData;
 globalThis.__cs2wasmFs = workerData.fs; // (the process's file system state: fs.mjs)
 globalThis.__cs2wasmIo = workerData.io; // (and its I/O worker's: http.mjs)
 globalThis.__cs2wasmArgs = workerData.argv; // (and its command line)
+if (workerData.pool) globalThis.__cs2wasmPool = workerData.pool; // (CS2WASM_PREWORKERS: engine.mjs)
 const out = {
   write: (s) => writeSync(1, s),
   error: (type, message, stack) => parentPort.postMessage({ unhandled: `Unhandled exception. ${type}: ${message}${stack ? '\n' + stack : ''}\n` }),
@@ -36,4 +37,9 @@ function run(args) {
   }
 }
 // A worker made ahead of its thread (engine.mjs: thread_spawn keeps one ready) waits here for the thread's start.
-if (args) run(args); else parentPort.once('message', (m) => run(m.args));
+if (workerData.slot !== undefined) {
+  // (one of the main thread's workers made up front: it waits for a thread to start, CS2WASM_PREWORKERS)
+  const c = new Int32Array(workerData.pool), at = workerData.slot * 5;
+  while (Atomics.load(c, at) !== 1) Atomics.wait(c, at, Atomics.load(c, at), 50);
+  run([c[at + 1], c[at + 2], c[at + 3], c[at + 4]]);
+} else if (args) run(args); else parentPort.once('message', (m) => run(m.args));

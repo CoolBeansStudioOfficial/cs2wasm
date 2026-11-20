@@ -200,7 +200,25 @@ export function threadImports(module, memory, out, onSpawn) {
     return w;
   };
   const makeSpare = () => { spare = make(null); spare.unref(); };
+  // CS2WASM_PREWORKERS=n (a diagnosis): the main thread makes n workers up front, and a thread started from any thread
+  // takes one of them (a word of state and four of arguments each, in memory every thread shares): so every worker
+  // is the main thread's, which a debugger reaches (Node's inspector does not reach a worker's workers; tools/stacks.mjs)
+  const pool = globalThis.__cs2wasmPool;
+  const takePooled = (args) => {
+    const c = new Int32Array(pool);
+    for (let i = 0; i < c.length / 5; i++)
+      if (Atomics.compareExchange(c, i * 5, 0, 2) === 0) {
+        for (let j = 0; j < 4; j++) c[i * 5 + 1 + j] = args[j];
+        Atomics.store(c, i * 5, 1); Atomics.notify(c, i * 5);
+        return true;
+      }
+    return false;
+  };
   return {
+    __makePool: (n) => {
+      globalThis.__cs2wasmPool = new SharedArrayBuffer(n * 5 * 4);
+      for (let i = 0; i < n; i++) { const w = new Worker(new URL('./worker.mjs', import.meta.url), { workerData: { module, memory, args: null, slot: i, pool: globalThis.__cs2wasmPool, fs: fsShared(), io: ioShared(), argv: globalThis.__cs2wasmArgs } }); w.unref(); }
+    },
     // (CS2WASM_PROCESSORS: the cores the module is told it has)
     // (not an import: the host calls it once, before the program starts, when the module has threads)
     __prewarm: makeSpare,
@@ -209,6 +227,7 @@ export function threadImports(module, memory, out, onSpawn) {
       if (process.env.CS2WASM_TRACE_THREADS) process.stderr.write(`[thread_spawn id=${id} background=${background}]
 `);
       onSpawn?.();
+      if (globalThis.__cs2wasmPool && takePooled([sp, tls, id, arg])) return 0;
       let w = spare;
       spare = null;
       if (w) { if (!background) w.ref(); w.postMessage({ args: [sp, tls, id, arg] }); }
