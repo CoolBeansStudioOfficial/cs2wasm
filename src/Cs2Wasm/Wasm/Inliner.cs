@@ -13,7 +13,7 @@ static class Inliner
     const int SingleCallerBody = 120; // a function with one call site and no other use is inlined up to this size
     const int SingleCallerCalling = 100; // the same for one that calls functions
     const int LoopBody = 24;      // a straight-line body that calls nothing, at a call site inside a loop
-    const int HintedBody = 16;    // a method marked AggressiveInlining, at every call site
+    static readonly int HintedBody = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_HINTED_BODY"), out var hb) ? hb : 24;    // a method marked AggressiveInlining, at every call site (24: the runtime's word reads, PL, at every site; hello world 45 bytes smaller than at 16)
     // A callee an exception can leave (it checks an index, calls what may throw): inlined too, and a stack trace
     // still shows its frame, from the table of inlined calls (WasmModule.InlineScopes). An engine's baseline tier
     // runs the module as it is written, every call a call: what a short run over a great many functions gets.

@@ -31,7 +31,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Invisible API slice (9.4) in the Bazoodle repository | not started | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's | no check | check exists, worst frame not above NativeAOT's |
-| 4 | Hello world size (test 145) | 27,501 B | < 28,383 B |
+| 4 | Hello world size (test 145) | 27,456 B | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.45 s vs 4.6 s | < 4.6 s |
 | 4 | Same: peak memory | 470 MB vs 239 MB | < 239 MB |
 | 4 | Same: module size | 64 MB vs 129 MB | met; cut what is waste (breakdown first) |
@@ -56,6 +56,22 @@ releases. So the two levers, in order:
 
 Memory: the arena's member words (40 bytes per member) and the counts' words are per object; fewer cycle-capable
 objects shrinks both. Then the allocator's waste by size class (measure).
+
+**Found 2026-11-20 (CS2WASM_ARENA_DEBUG on the self-hosted build): lever 1 is not a matter of proving a few hot
+sites.** One cycle group holds 19,847 types, `System.Object` among them, and with it the parser (LanguageParser),
+red nodes, symbols, binders, bound nodes, syntax trees; green nodes are a second group of 268, joined by their
+child arrays (`ArrayElement<GreenNode>[]`). What joins the big group are slots of type `object` (or an interface)
+that are stored a value whose static type is `object`: a task's state and continuation, AsyncLocal's maps, timers'
+state, a list or array of objects, a dictionary keyed by object (`wide site` lines; 100 of them in test 088 alone).
+Each such slot can hold anything, so everything that has one is on a cycle with everything. The type of a slot
+cannot tell these apart; what can is where the values come from (the allocation sites and parameters that reach
+the store, as `Sharing.cs` already follows for threads). That is the structural piece: value sources per site
+instead of static types. Tried and without effect: a field that is only cleared after construction counted as
+set at construction (the hubs are written for real, or are not private).
+Also: a struct copied into a container that cannot be a group's member now stores plainly (8ed3739), but
+Roslyn's `BlendedNode` copies go into `SyntaxParser`, which is in the big group; methods marked AggressiveInlining
+are inlined everywhere up to 24 (was 16), which takes the runtime's word read (`Rt.PL`, 2.8% of the profile as a
+call) into every caller.
 
 ## Work streams
 

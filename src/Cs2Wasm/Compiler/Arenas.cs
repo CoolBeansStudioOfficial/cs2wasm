@@ -138,7 +138,9 @@ internal sealed class Arenas
         s.AddValue(D.Types.Canonical(slotType));
     }
 
-    static readonly bool s_noFreshSites = Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_SITES") == "1";
+    static readonly bool s_arenaDebug = Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1";
+    List<(Site, int)>? _wide;
+    static readonly bool s_noFreshSites =Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_SITES") == "1";
     readonly Dictionary<string, bool> _keepsThis = [];
     /// <summary>CS2WASM_IMMUTABLE_EDGES=1 (measurement only: the old, unsound rule).</summary>
     static readonly bool s_immutableEdges = Environment.GetEnvironmentVariable("CS2WASM_IMMUTABLE_EDGES") == "1";
@@ -549,6 +551,8 @@ internal sealed class Arenas
             if (s.TargetIds.Count > 0) targets = [.. targets.Concat(s.TargetIds.Order()).Distinct()];
             targTicks += sw.ElapsedTicks - tc;
             if (targets.Count == 0) continue;
+            // (CS2WASM_ARENA_DEBUG: the sites that join thousands of types, an object slot's, the hubs of a large group)
+            if (targets.Count > 1000 && s_arenaDebug) (_wide ??= []).Add((s, targets.Count));
             int Hub(IEnumerable<int> to) { int h = adj.Count; adj.Add([.. to]); hubs.Add(h); hubSite[h] = s; return h; }
             HashSet<int>? targetSet = null;
             long t0 = sw.ElapsedTicks;
@@ -641,6 +645,8 @@ internal sealed class Arenas
             foreach (var g in CycleTypes.GroupBy(id => _scc[id]))
                 Console.Error.WriteLine($"arena group {g.Key}: " + string.Join(", ", g.Select(id => Types.Key(D.TypeById[id]))));
             foreach (var s in _sites.Values.Where(s => s.Cyclic)) Console.Error.WriteLine("cyclic site " + s.Key);
+            foreach (var (s, c) in _wide ?? [])
+                Console.Error.WriteLine($"wide site {s.Key} cyclic={s.Cyclic} general={s.General} targets={c} values: {string.Join(", ", s.Values.Keys.Take(8))}");
         }
     }
 
