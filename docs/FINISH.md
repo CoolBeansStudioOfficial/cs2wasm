@@ -31,7 +31,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Invisible API slice (9.4) in the Bazoodle repository | not started | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's | no check | check exists, worst frame not above NativeAOT's |
-| 4 | Hello world size (test 145) | 27,422 B before stream E (E adds about 400) | < 28,383 B |
+| 4 | Hello world size (test 145) | 27,825 B | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.45 s vs 4.6 s | < 4.6 s |
 | 4 | Same: peak memory | 470 MB vs 239 MB | < 239 MB |
 | 4 | Same: module size | 42.7 MB vs 129 MB (was 64.0; `tools/size-report.mjs`) | met; next waste: code (36.2 MB) |
@@ -112,7 +112,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 - 2026-11-20, stream E: frames' methods (`StackFrame.GetMethod`, `TargetSite` through `[StackTraceHidden]` throwers,
   `GetCurrentMethod`), `AppDomain.FirstChanceException`, and six trace differences a sweep against .NET found
   (generic definitions' names, merged identical methods, iterator frames and lines in state machines, failed static
-  initializers, async traces): tests 150 to 153. Hello world 27,574 to 27,981 bytes measured at one path (+407: the
+  initializers, async traces): tests 151 to 154. Hello world 27,574 to 27,981 bytes measured at one path (+407: the
   static initializers' traces 369, the unmerged frames 24), in the main checkout about 27,908. docs/AUDIT.md, stream E.
 - 2026-11-20 (stream B): `tools/size-report.mjs` (sections; code by kind, namespace, type and source method; data
   expanded and split into literals, resources, tables). The 64.0 MB were code 36.1, data 23.3 (12.5 of it the full
