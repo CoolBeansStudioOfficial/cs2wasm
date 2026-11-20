@@ -245,6 +245,19 @@ internal sealed class WasmModule
                     try { foreach (var f in Functions) if (!f.IsImport && LoopLoads.Run(f)) { Peephole.Run(f); Locals.Run(f); } }
                     finally { Locals.MayThrow = null; }
                 }
+                // (and the null checks once more, on the final bodies: the passes since the first round made the shapes it
+                // knows of checks it did not see then, a loop's second and third check of a local that does not change)
+                if (Functions.FirstOrDefault(f => f.Name == "rt.nonnull") is { } nn2 && Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_CHECKS") != "1")
+                {
+                    foreach (var f in Functions) if (!f.IsImport) { int before = f.Body.Count; NullChecks.Run(f, nn2); if (f.Body.Count != before) Peephole.Run(f); }
+                    // the checks left, written out where they are (CS2WASM_NO_NONNULL_INLINE=1: as calls, for measuring)
+                    if (Environment.GetEnvironmentVariable("CS2WASM_NO_NONNULL_INLINE") != "1" && Functions.FirstOrDefault(f => f.Name == "Cs2Wasm.Runtime.ThrowHelpers.NullReference()") is { } thr)
+                    {
+                        // (in loops, and in what loops call, to two calls deep: CS2WASM_NONNULL_DEPTH)
+                        var hot = NullChecks.CalledFromLoops(Functions, int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_NONNULL_DEPTH"), out var dd) ? dd : 2);
+                        foreach (var f in Functions) if (!f.IsImport && f != nn2) NullChecks.Expand(f, nn2, thr, hot.Contains(f));
+                    }
+                }
             }
             else if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
                 foreach (var f in Functions) if (!f.IsImport && SmallBlocks.Run(f)) Peephole.Run(f);
