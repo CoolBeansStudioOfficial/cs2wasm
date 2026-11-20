@@ -36,6 +36,8 @@ for cs2wasm's features, as the IL trimmer fixes them), and the files under `Boun
   - why: a spin lock spins while its thread holds references it borrowed: its pauses are no safe points (Threads.SpinPause)
 - edit: `src/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs`: `Thread.Yield();` becomes `Cs2Wasm.Runtime.Threads.SpinPause(0);`
   - why: a spin lock spins while its thread holds references it borrowed: its pauses are no safe points (Threads.SpinPause)
+- edit: `src/libraries/System.Private.CoreLib/src/System/Threading/PortableThreadPool.cs`: `private const short DefaultMaxWorkerThreadCount = 10;` becomes `private const short DefaultMaxWorkerThreadCount = 1023;`
+  - why: the thread pool's limit is a 32-bit target's (1023), not the browser's 10: a browser's workers are a fixed pool made up front, cs2wasm's hosts start a thread when one is asked for; with 10 (or as many as there are processors, if more) threads blocked on work queued behind them, the pool could add none (PLINQ's producers waiting for one whose task was not running: the self-hosted compiler on 12 threads waited forever)
 - edit: `src/libraries/System.Private.CoreLib/src/System/Collections/Generic/Dictionary.cs`: `#if TARGET_64BIT` becomes `#if true`
   - why: a hash table picks its bucket by two multiplications (upstream does so on 64-bit targets only; a division otherwise)
 - edit: `src/libraries/System.Private.CoreLib/src/System/Collections/Generic/HashSet.cs`: `#if TARGET_64BIT` becomes `#if true`
@@ -117,7 +119,7 @@ Mono's runtime-specific files (`src/mono/System.Private.CoreLib/src`), which cs2
   - cs2wasm: this assembly's manifest resource of the name (case-sensitive, as the runtime's), from
   - cs2wasm: the types visible outside the assembly, in GetTypes' order
   - (and 3 more comments marked cs2wasm in the file)
-- `System/Threading/Interlocked.Mono.cs`: 68 lines added, 63 removed
+- `System/Threading/Interlocked.Mono.cs`: 95 lines added, 63 removed
   - cs2wasm: Mono's internal calls of Interlocked, as the threads proposal's atomic instructions (Cs2Wasm.Runtime.Atomic).
 - `System/Diagnostics/StackTrace.Mono.cs`: 66 lines added, 15 removed
   - cs2wasm: Mono's internal calls are implemented over cs2wasm's runtime; those it has no equivalent for yet throw

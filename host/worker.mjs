@@ -17,12 +17,17 @@ for (const imp of WebAssembly.Module.imports(module)) {
   imports[imp.module] ??= {};
   imports[imp.module][imp.name] ??= () => 0;
 }
+const trace = process.env.CS2WASM_TRACE_THREADS ? (m) => writeSync(2, `[worker ${m}]
+`) : () => {};
+trace('instantiating');
 const instance = new WebAssembly.Instance(module, imports);
+trace('instantiated');
 function run(args) {
+  trace(`run thread ${args[2]}`);
   // (the memory may have grown since it was sent to this worker: growing it by nothing makes this thread's instance see
   // its current size, which bulk memory operations check against)
   memory.grow(0);
-  try { instance.exports.__thread_entry(...args); }
+  try { instance.exports.__thread_entry(...args); trace(`thread ${args[2]} ended`); }
   catch (e) {
     // the engine thread may be busy in a wait and never see a message: report here and end the process
     writeSync(2, `worker failed: ${e && e.stack || e}

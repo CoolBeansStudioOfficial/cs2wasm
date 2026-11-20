@@ -234,6 +234,11 @@ sealed class Manifest
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(1);\tCs2Wasm.Runtime.Threads.SpinPause(1);");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(0);\tCs2Wasm.Runtime.Threads.SpinPause(0);");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Yield();\tCs2Wasm.Runtime.Threads.SpinPause(0);");
+            // the thread pool's limit is a 32-bit target's (1023), not the browser's 10: a browser's workers are a fixed
+            // pool made up front, cs2wasm's hosts start a thread when one is asked for; with 10 (or as many as there are
+            // processors, if more) threads blocked on work queued behind them, the pool could add none (PLINQ's producers
+            // waiting for one whose task was not running: the self-hosted compiler on 12 threads waited forever)
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/PortableThreadPool.cs\tprivate const short DefaultMaxWorkerThreadCount = 10;\tprivate const short DefaultMaxWorkerThreadCount = 1023;");
             // a hash table picks its bucket by two multiplications (upstream does so on 64-bit targets only; a division otherwise)
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Collections/Generic/Dictionary.cs\t#if TARGET_64BIT\t#if true");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Collections/Generic/HashSet.cs\t#if TARGET_64BIT\t#if true");
