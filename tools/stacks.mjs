@@ -43,6 +43,7 @@ for (const s of sessions) { send(s, 'Debugger.enable').then(() => send(s, 'Debug
 await sleep(+(process.env.PAUSE_MS ?? 3000));
 for (const s of sessions) {
   console.log(`== ${s.title} (${s.path.length ? 'depth ' + s.path.length : 'main'})`);
+  if (process.env.STACKS_RAW && s.frames && !s.frames.some((f) => (f.url || '').startsWith('wasm'))) console.log(JSON.stringify(s.frames.slice(0, 3).map((f) => ({ n: f.functionName, u: f.url, l: f.location, sc: f.scopeChain.map((c) => c.type) }))));
   if (!s.frames) { console.log('   (did not pause: a wait with no limit, a host call, the engine, or idle)'); continue; }
   for (const f of s.frames.slice(0, depth)) console.log('   ' + (f.functionName || '(anonymous)') + (f.url && !f.url.startsWith('wasm') ? '  ' + f.url.split('/').pop() + ':' + (f.location.lineNumber + 1) : ''));
 }

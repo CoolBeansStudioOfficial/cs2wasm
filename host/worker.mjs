@@ -1,13 +1,14 @@
-// A worker thread: a new instance of the module on the shared memory, started at __thread_entry (section 4.5).
+// A worker thread: a new instance of the module on the shared memory, started at __thread_entry (section 4.5). Made by
+// the thread starter (host/spawner.mjs), with its thread's start or ready for the next one.
 import { workerData, parentPort } from 'node:worker_threads';
 import { writeSync } from 'node:fs';
 import { cs2wasmImports, threadImports } from './engine.mjs';
 
-const { module, memory, args } = workerData;
+const { module, memory } = workerData;
 globalThis.__cs2wasmFs = workerData.fs; // (the process's file system state: fs.mjs)
 globalThis.__cs2wasmIo = workerData.io; // (and its I/O worker's: http.mjs)
 globalThis.__cs2wasmArgs = workerData.argv; // (and its command line)
-if (workerData.pool) globalThis.__cs2wasmPool = workerData.pool; // (CS2WASM_PREWORKERS: engine.mjs)
+globalThis.__cs2wasmRing = workerData.ring; // (and the thread starter's requests: engine.mjs)
 const out = {
   write: (s) => writeSync(1, s),
   error: (type, message, stack) => parentPort.postMessage({ unhandled: `Unhandled exception. ${type}: ${message}${stack ? '\n' + stack : ''}\n` }),
@@ -18,12 +19,9 @@ for (const imp of WebAssembly.Module.imports(module)) {
   imports[imp.module] ??= {};
   imports[imp.module][imp.name] ??= () => 0;
 }
-const trace = process.env.CS2WASM_TRACE_THREADS ? (m) => writeSync(2, `[worker ${m}]
-`) : () => {};
-trace('instantiating');
+const trace = process.env.CS2WASM_TRACE_THREADS ? (m) => writeSync(2, `[worker ${m}]\n`) : () => {};
 const instance = new WebAssembly.Instance(module, imports);
-trace('instantiated');
-function run(args) {
+function run({ args, background }) {
   trace(`run thread ${args[2]}`);
   // (the memory may have grown since it was sent to this worker: growing it by nothing makes this thread's instance see
   // its current size, which bulk memory operations check against)
@@ -31,15 +29,11 @@ function run(args) {
   try { instance.exports.__thread_entry(...args); trace(`thread ${args[2]} ended`); }
   catch (e) {
     // the engine thread may be busy in a wait and never see a message: report here and end the process
-    writeSync(2, `worker failed: ${e && e.stack || e}
-`);
+    writeSync(2, `worker failed: ${e && e.stack || e}\n`);
     process.kill(process.pid);
   }
+  // (one fewer thread that keeps the process alive: engine.mjs, __mainReturned)
+  if (!background) { const c = new Int32Array(workerData.ring); Atomics.sub(c, 1, 1); Atomics.notify(c, 1); }
 }
-// A worker made ahead of its thread (engine.mjs: thread_spawn keeps one ready) waits here for the thread's start.
-if (workerData.slot !== undefined) {
-  // (one of the main thread's workers made up front: it waits for a thread to start, CS2WASM_PREWORKERS)
-  const c = new Int32Array(workerData.pool), at = workerData.slot * 5;
-  while (Atomics.load(c, at) !== 1) Atomics.wait(c, at, Atomics.load(c, at), 50);
-  run([c[at + 1], c[at + 2], c[at + 3], c[at + 4]]);
-} else if (args) run(args); else parentPort.once('message', (m) => run(m.args));
+// A worker made ahead of its thread (the starter keeps one ready) waits here for the thread's start.
+if (workerData.start) run(workerData.start); else parentPort.once('message', run);

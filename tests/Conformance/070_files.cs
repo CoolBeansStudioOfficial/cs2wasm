@@ -13,7 +13,8 @@ static class Program
     [UnmanagedCallersOnly(EntryPoint = "main")]
     static void Main()
     {
-        const string dir = "cs2wasm-070-files";
+        // (a directory of its own: the suite runs the program checked and as shipped at once, and .NET beside them)
+        string dir = "cs2wasm-070-files-" + Guid.NewGuid().ToString("N");
         if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         Directory.CreateDirectory(dir);
         Directory.CreateDirectory(Path.Combine(dir, "sub"));

@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { availableParallelism } from 'node:os';
+import { writeSync } from 'node:fs';
 import { fsImports, fsShared } from './fs.mjs';
 import { httpImports, ioShared } from './http.mjs';
 // Reference implementation of the engine imports cs2wasm's library calls (module "cs2wasm").
@@ -187,53 +188,60 @@ export function cs2wasmImports(module, getMemory, out) {
   };
 }
 
-/** thread_spawn for Node: a worker_threads Worker per thread, sharing the module and memory. */
+/** thread_spawn for Node: a worker_threads Worker per thread, sharing the module and memory, each started by the
+ * thread starter (host/spawner.mjs: the main thread's worker whose event loop is never busy), whichever thread asks. */
 export function threadImports(module, memory, out, onSpawn) {
-  // A worker takes tens of milliseconds to start (a new engine instance, this file and its imports, the module's
-  // instance): one is kept ready, made when the first thread starts and again each time it is taken, so a thread
-  // started now and then (a timer's, a pool's first) runs at once. A burst of starts makes the others as before.
-  let spare = null;
-  const make = (args) => {
-    const w = new Worker(new URL('./worker.mjs', import.meta.url), { workerData: { module, memory, args, fs: fsShared(), io: ioShared(), argv: globalThis.__cs2wasmArgs } });
-    w.on('message', (m) => { if (m.unhandled) { process.stderr.write(m.unhandled); process.exit(3); } });
-    w.on('error', (e) => { process.stderr.write(String(e && e.stack || e) + '\n'); process.exit(4); });
-    return w;
-  };
-  const makeSpare = () => { spare = make(null); spare.unref(); };
-  // CS2WASM_PREWORKERS=n (a diagnosis): the main thread makes n workers up front, and a thread started from any thread
-  // takes one of them (a word of state and four of arguments each, in memory every thread shares): so every worker
-  // is the main thread's, which a debugger reaches (Node's inspector does not reach a worker's workers; tools/stacks.mjs)
-  const pool = globalThis.__cs2wasmPool;
-  const takePooled = (args) => {
-    const c = new Int32Array(pool);
-    for (let i = 0; i < c.length / 5; i++)
-      if (Atomics.compareExchange(c, i * 5, 0, 2) === 0) {
-        for (let j = 0; j < 4; j++) c[i * 5 + 1 + j] = args[j];
-        Atomics.store(c, i * 5, 1); Atomics.notify(c, i * 5);
-        return true;
-      }
-    return false;
+  const RingSlots = 64;
+  // the main thread makes the ring and the starter (at the first thread, or __prewarm); a worker has them from its start
+  let spawner = null;
+  const ring = () => {
+    if (!globalThis.__cs2wasmRing) {
+      globalThis.__cs2wasmRing = new SharedArrayBuffer((2 + RingSlots * 6) * 4);
+      spawner = new Worker(new URL('./spawner.mjs', import.meta.url), { workerData: { module, memory, fs: fsShared(), io: ioShared(), argv: globalThis.__cs2wasmArgs, ring: globalThis.__cs2wasmRing } });
+      spawner.on('message', (m) => {
+        if (m.unhandled) { process.stderr.write(m.unhandled); process.exit(3); }
+        if (m.error) { process.stderr.write(m.error + '\n'); process.exit(4); }
+      });
+      spawner.unref();
+    }
+    return new Int32Array(globalThis.__cs2wasmRing);
   };
   return {
-    __makePool: (n) => {
-      globalThis.__cs2wasmPool = new SharedArrayBuffer(n * 5 * 4);
-      for (let i = 0; i < n; i++) { const w = new Worker(new URL('./worker.mjs', import.meta.url), { workerData: { module, memory, args: null, slot: i, pool: globalThis.__cs2wasmPool, fs: fsShared(), io: ioShared(), argv: globalThis.__cs2wasmArgs } }); w.unref(); }
+    // (not an import: the host calls it once, before the program starts, when the module has threads: the starter and
+    // its spare worker are made now, so the first thread starts at once)
+    __prewarm: () => { ring(); },
+    // (not an import: the host calls it when the program's entry returned; while threads that keep the process alive
+    // run, the starter keeps it, as .NET's process lasts while a foreground thread runs)
+    __mainReturned: () => {
+      if (!globalThis.__cs2wasmRing) return;
+      const c = ring();
+      const watch = () => {
+        const n = Atomics.load(c, 1);
+        if (n <= 0) { spawner?.unref(); return; }
+        spawner?.ref();
+        Atomics.waitAsync(c, 1, n).value.then(watch);
+      };
+      watch();
     },
     // (CS2WASM_PROCESSORS: the cores the module is told it has)
-    // (not an import: the host calls it once, before the program starts, when the module has threads)
-    __prewarm: makeSpare,
     processor_count: () => +(process.env.CS2WASM_PROCESSORS || availableParallelism()),
     thread_spawn: (sp, tls, id, arg, background) => {
-      if (process.env.CS2WASM_TRACE_THREADS) process.stderr.write(`[thread_spawn id=${id} background=${background}]
-`);
+      if (process.env.CS2WASM_TRACE_THREADS) writeSync(2, `[thread_spawn id=${id} background=${background}]\n`);
       onSpawn?.();
-      if (globalThis.__cs2wasmPool && takePooled([sp, tls, id, arg])) return 0;
-      let w = spare;
-      spare = null;
-      if (w) { if (!background) w.ref(); w.postMessage({ args: [sp, tls, id, arg] }); }
-      else { w = make([sp, tls, id, arg]); if (background) w.unref(); } // background threads do not keep the process alive, as in .NET
-      makeSpare();
-      return 0;
+      const c = ring();
+      if (!background) Atomics.add(c, 1, 1);
+      // a free slot (all taken: the starter is behind, try again shortly)
+      for (;;) {
+        for (let i = 0; i < RingSlots; i++) {
+          const at = 2 + i * 6;
+          if (Atomics.compareExchange(c, at, 0, 2) !== 0) continue;
+          c[at + 1] = sp; c[at + 2] = tls; c[at + 3] = id; c[at + 4] = arg; c[at + 5] = background ? 1 : 0;
+          Atomics.store(c, at, 1);
+          Atomics.add(c, 0, 1); Atomics.notify(c, 0);
+          return 0;
+        }
+        Atomics.wait(c, 0, Atomics.load(c, 0), 1);
+      }
     },
   };
 }

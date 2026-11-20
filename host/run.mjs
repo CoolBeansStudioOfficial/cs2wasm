@@ -66,7 +66,6 @@ for (const imp of WebAssembly.Module.imports(module)) {
 }
 // (a module with threads: a worker is made ready now, so its first thread starts at once)
 if (WebAssembly.Module.exports(module).some((x) => x.name === '__thread_entry')) imports.cs2wasm.__prewarm();
-if (process.env.CS2WASM_PREWORKERS && WebAssembly.Module.exports(module).some((x) => x.name === '__thread_entry')) imports.cs2wasm.__makePool(+process.env.CS2WASM_PREWORKERS);
 startIo(module, memory);
 const t0 = performance.now();
 const instance = new WebAssembly.Instance(module, imports);
@@ -77,6 +76,8 @@ const fn = instance.exports[entry];
 if (!fn) { console.error(`no export '${entry}'`); process.exit(2); }
 let r;
 try { r = fn(); } finally { flush(); }
+// (the process lasts while a thread that is not a background one runs, as in .NET)
+imports.cs2wasm.__mainReturned?.();
 if (process.env.CS2WASM_HOST_TIMES) { process.stderr.write(`[host] ${entry} returned at ${performance.now().toFixed(0)} ms
 `); process.on('exit', () => process.stderr.write(`[host] exit at ${performance.now().toFixed(0)} ms
 `)); }

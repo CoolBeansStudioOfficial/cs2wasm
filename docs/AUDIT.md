@@ -514,6 +514,22 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   in address order), with the runtime's scratch state per thread; until then a program that shares cycle-capable
   objects among many threads is serialized on them.
   `node tools/suite.mjs` runs the suite in shards side by side, both modes: 7 minutes instead of 25.
+  **Then (2026-11-20): the threaded self-hosted compiler ends on any number of threads.** Hello world: 23 s on one
+  thread, 25 on four, 64 on twelve, 70 on twenty-four (it did not end on eight or more). Found on the way, each with a
+  test that failed before:
+  - A thread's new page of small blocks walked, under the runtime lock, a run of exactly a page left free for each page
+    before it (quadratic; half the pages' memory lost): now an aligned window of a free run or of the heap's top.
+  - The thread pool's limit was the browser's 10 threads (TARGET_BROWSER): pool threads blocked on work queued behind
+    them waited forever (test 142). Now a 32-bit target's 1023.
+  - Monitor.Pulse could be taken by the thread that pulsed and then waited (test 144): a queue of waiters now.
+  - Two types whose static initializers use each other, started by two threads at once, waited forever (test 146):
+    a thread follows the owners of the initializers waited for, as .NET does.
+  - The cause of the hang on twelve threads: a Node worker started by another worker needs its parent's event loop,
+    which a thread running the module never gives back; PLINQ's producers started that way never ran. Every thread is
+    now started by host/spawner.mjs, a worker of the main thread that runs no module code.
+  Still open: more threads make it slower, not faster (every arena operation takes the one runtime lock; the work
+  item below). Tools for such hunts: tools/stacks.mjs (every thread's stack under --inspect), CS2WASM_WATCHDOG=1 (the
+  pool's counts every 5 s), CS2WASM_DEADLOCK_DUMP=1 (a wait of 20 s for the runtime lock says who holds it).
   Separately, and older: a program with threads whose cycle-capable objects are made on many threads at once gets
   slower with each thread (a list of 3,000 trees of 200 nodes, made in a PLINQ query: 2.9 s on one thread, 10.7 on
   four, 21.7 on 24; the same with the compiler of 2026-11-17): every arena operation takes the one runtime lock.

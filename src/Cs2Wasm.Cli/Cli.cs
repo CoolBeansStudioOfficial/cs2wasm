@@ -26,6 +26,16 @@ public static class Cli
 
     public static int Run(string[] args)
     {
+        // CS2WASM_WATCHDOG=1 (a diagnosis of a build that hangs): the thread pool's counts every 5 s
+        if (Environment.GetEnvironmentVariable("CS2WASM_WATCHDOG") == "1")
+            new Thread(() =>
+            {
+                for (int s = 5; ; s += 5)
+                {
+                    Thread.Sleep(5000);
+                    Console.Error.WriteLine($"[watchdog {s} s] pool threads {ThreadPool.ThreadCount}, pending {ThreadPool.PendingWorkItemCount}, completed {ThreadPool.CompletedWorkItemCount}");
+                }
+            }) { IsBackground = true }.Start();
         args = Expand(args);
         var plugins = new List<ICompilerPlugin>();
         var inputs = new List<string>();
