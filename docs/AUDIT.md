@@ -530,6 +530,10 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   Still open: more threads make it slower, not faster (every arena operation takes the one runtime lock; the work
   item below). Tools for such hunts: tools/stacks.mjs (every thread's stack under --inspect), CS2WASM_WATCHDOG=1 (the
   pool's counts every 5 s), CS2WASM_DEADLOCK_DUMP=1 (a wait of 20 s for the runtime lock says who holds it).
+  **Build cost, measured 2026-11-20 (tools/measure-build.ps1: wall time, peak memory of every process a build
+  starts), the compiler with Roslyn:** `dotnet build` to IL 9 s, 0.73 GB; NativeAOT-LLVM published to WebAssembly
+  80 s, 8.7 GB summed (ilc 2.8 GB, Emscripten's clang and wasm-ld the rest), a 129 MB module; cs2wasm 18 to 20
+  minutes near 14 GB (one build ran out of 14 GB). cs2wasm is slower and heavier to build than NativeAOT-LLVM.
   Separately, and older: a program with threads whose cycle-capable objects are made on many threads at once gets
   slower with each thread (a list of 3,000 trees of 200 nodes, made in a PLINQ query: 2.9 s on one thread, 10.7 on
   four, 21.7 on 24; the same with the compiler of 2026-11-17): every arena operation takes the one runtime lock.
