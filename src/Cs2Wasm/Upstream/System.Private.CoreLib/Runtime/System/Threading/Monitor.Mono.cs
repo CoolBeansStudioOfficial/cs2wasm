@@ -14,7 +14,10 @@ namespace System.Threading
 {
     public static partial class Monitor
     {
-        // entry: [0] object address, [4] owner thread id, [8] depth, [12] waiters, [16] pending pulses
+        // entry: [0] object address, [4] owner thread id, [8] depth, [12] first waiter, [16] last waiter. A waiter is a
+        // record of its own, [0] the next, [4] pulsed: a pulse goes to the waiter that has waited longest, as .NET's
+        // (a count of pulses any later wait could take let a thread that pulsed and then waited take its own pulse, and
+        // the thread it was for wait on: PLINQ's ordered merge, its consumer and a producer on one lock, waited forever)
         const int EntrySize = 20;
         static int s_table, s_cap, s_used;
 
@@ -90,13 +93,32 @@ namespace System.Threading
             // (with no other thread the lock is free or ours)
             if (Rt.SingleThreaded()) return TryTake(obj);
             long end = millisecondsTimeout < 0 ? long.MaxValue : Engine.MonotonicNs() + (long)millisecondsTimeout * 1000000;
+            long noted = Engine.MonotonicNs() + 20_000_000_000L;
             while (true)
             {
                 int g = Atomic.Load32(ref Threads.s_generation);
                 if (TryTake(obj)) return true;
                 if (millisecondsTimeout == 0 || Engine.MonotonicNs() >= end) return false;
+                // (CS2WASM_MONITOR_DEBUG: a wait of more than 20 s says who holds the lock, for a program that hangs)
+                if (Engine.MonotonicNs() > noted) { noted = long.MaxValue; NoteLongWait(obj); }
                 Threads.WaitGenerationHolding(g);
             }
+        }
+
+        static unsafe void Say(string s)
+        {
+            s = string.Concat(s, "\n");
+            fixed (char* p = s) Engine.Write((int)p, s.Length);
+        }
+
+        static void NoteLongWait(object obj)
+        {
+            if (Environment.GetEnvironmentVariable("CS2WASM_MONITOR_DEBUG") == null) return;
+            Rt.RuntimeLock();
+            int e = Find(Rt.AddressOf(obj), false);
+            int owner = e == 0 ? -1 : Mem.LoadI32(e + 4), depth = e == 0 ? -1 : Mem.LoadI32(e + 8), waiters = e == 0 ? -1 : Mem.LoadI32(e + 12);
+            Rt.RuntimeUnlock();
+            Say($"[monitor] thread {Rt.ThreadId()} waits 20 s for a lock of {obj.GetType()} at {Rt.AddressOf(obj)}: owner {owner}, depth {depth}, waiters {waiters}");
         }
 
         public static void Enter(object obj)
@@ -121,7 +143,10 @@ namespace System.Threading
             int e = Find(Rt.AddressOf(obj), false);
             if (e == 0 || Mem.LoadI32(e + 4) != me)
             {
+                int owner = e == 0 ? -1 : Mem.LoadI32(e + 4);
                 Rt.RuntimeUnlock();
+                if (Environment.GetEnvironmentVariable("CS2WASM_MONITOR_DEBUG") != null)
+                    Say($"[monitor] thread {me} exits a lock of {obj.GetType()} at {Rt.AddressOf(obj)} it does not hold: owner {owner}");
                 throw new SynchronizationLockException();
             }
             int depth = Mem.LoadI32(e + 8) - 1;
@@ -183,11 +208,16 @@ namespace System.Threading
                 Rt.RuntimeUnlock();
                 throw new SynchronizationLockException();
             }
-            // release the lock entirely, and wait for a pulse
+            // release the lock entirely, and wait for a pulse: at the end of the waiters
             int depth = Mem.LoadI32(e + 8);
             Mem.StoreI32(e + 4, 0);
             Mem.StoreI32(e + 8, 0);
-            Mem.StoreI32(e + 12, Mem.LoadI32(e + 12) + 1);
+            int node = Rt.Alloc(8);
+            Mem.StoreI32(node, 0);
+            Mem.StoreI32(node + 4, 0);
+            int last = Mem.LoadI32(e + 16);
+            if (last == 0) Mem.StoreI32(e + 12, node); else Mem.StoreI32(last, node);
+            Mem.StoreI32(e + 16, node);
             Rt.RuntimeUnlock();
             Threads.WakeAll();
             long end = millisecondsTimeout < 0 ? long.MaxValue : Engine.MonotonicNs() + (long)millisecondsTimeout * 1000000;
@@ -196,15 +226,15 @@ namespace System.Threading
             {
                 int g = Atomic.Load32(ref Threads.s_generation);
                 Rt.RuntimeLock();
-                e = Find(key, false);
-                int pulses = Mem.LoadI32(e + 16);
-                if (pulses > 0) { Mem.StoreI32(e + 16, pulses - 1); signaled = true; }
+                signaled = Mem.LoadI32(node + 4) != 0;
                 bool done = signaled || Engine.MonotonicNs() >= end;
-                if (done) Mem.StoreI32(e + 12, Mem.LoadI32(e + 12) - 1);
+                // (the time is up: out of the waiters, so no pulse goes to it)
+                if (!signaled && done) Unqueue(Find(key, false), node);
                 Rt.RuntimeUnlock();
                 if (done) break;
                 Threads.WaitGeneration(g);
             }
+            Rt.Free(node, 8);
             // take the lock back, at the depth it had
             Take(obj, -1);
             Rt.RuntimeLock();
@@ -228,10 +258,32 @@ namespace System.Threading
                 Rt.RuntimeUnlock();
                 throw new SynchronizationLockException();
             }
-            int waiters = Mem.LoadI32(e + 12), pulses = Mem.LoadI32(e + 16);
-            if (pulses < waiters) Mem.StoreI32(e + 16, all ? waiters : pulses + 1);
+            // the waiter that has waited longest (all of them), out of the waiters, pulsed
+            do
+            {
+                int first = Mem.LoadI32(e + 12);
+                if (first == 0) break;
+                int next = Mem.LoadI32(first);
+                Mem.StoreI32(e + 12, next);
+                if (next == 0) Mem.StoreI32(e + 16, 0);
+                Mem.StoreI32(first + 4, 1);
+            } while (all);
             Rt.RuntimeUnlock();
             Threads.WakeAll();
+        }
+
+        /// <summary>A waiter out of the entry's waiters (under the runtime lock).</summary>
+        static void Unqueue(int e, int node)
+        {
+            int prev = 0;
+            for (int w = Mem.LoadI32(e + 12); w != 0; prev = w, w = Mem.LoadI32(w))
+            {
+                if (w != node) continue;
+                int next = Mem.LoadI32(w);
+                if (prev == 0) Mem.StoreI32(e + 12, next); else Mem.StoreI32(prev, next);
+                if (Mem.LoadI32(e + 16) == w) Mem.StoreI32(e + 16, prev);
+                return;
+            }
         }
 
         private static void ReliableEnterTimeout(object obj, int timeout, ref bool lockTaken)
