@@ -32,7 +32,7 @@ internal sealed partial class RuntimeFns
             e.I32Addr(owner); e.I32(0); e.GGet(D.ThreadId); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Op(Op.I32Eqz); e.BrIf(brk);
             if (DeadlockDumpOn)
             {
-                e.Get(tries); e.I32(1); e.Op(Op.I32Add); e.Tee(tries); e.I32(2000000); e.Op(Op.I32GtU);
+                e.Get(tries); e.I32(1); e.Op(Op.I32Add); e.Tee(tries); e.I32(20000); e.Op(Op.I32GtU);
                 e.If(); e.I32Addr(owner); e.Emit(Op.I32AtomicLoad, 0, 2); e.Call(D.LibMethod("Cs2Wasm.Runtime.Threads", "LockTimeout", 1).Fn); e.End();
             }
             e.I32(0); e.Set(n);
@@ -451,6 +451,10 @@ internal sealed partial class RuntimeFns
     public WasmFunction CctorEnter => _cctorEnter ??= M.AddFunction("rt.cctor_enter", FT([I], [I]));
     public WasmFunction CctorExit => _cctorExit ??= M.AddFunction("rt.cctor_exit", FT([I], []));
 
+    /// <summary>Thread ids rt.cctor_enter notes waits for (beyond them a wait is not followed: a deadlock among
+    /// initializers of threads made later than the 4096th is not seen).</summary>
+    const int CctorWaitThreads = 4096;
+
     public void EmitCctorSupport(bool threads)
     {
         if (_cctorEnter != null)
@@ -463,17 +467,39 @@ internal sealed partial class RuntimeFns
             }
             else
             {
-                int s = e.AddLocal(I);
+                // A thread that waits for another's initializer notes which (rt.cctor.waits, a word per thread id),
+                // and before it waits follows the owners: the owner of the one it waits for, what that owner waits
+                // for, and so on. Back at itself, waiting would never end (two types whose initializers use each
+                // other, started by two threads at once): it goes on without waiting, the other type's statics as
+                // they are so far, as .NET does (and as one thread does for its own initializers).
+                int s = e.AddLocal(I), o = e.AddLocal(I), k = e.AddLocal(I), w = e.AddLocal(I), noted = e.AddLocal(I);
+                var waits = D.StaticAddress("rt.cctor.waits", CctorWaitThreads * 4, 4);
+                void Slot(int tid) { e.I32Addr(waits); e.Get(tid); e.I32(2); e.Op(Op.I32Shl); e.Op(Op.I32Add); }
+                void Me() { e.I32Addr(waits); e.GGet(D.ThreadId); e.I32(2); e.Op(Op.I32Shl); e.Op(Op.I32Add); }
+                void Unnote() { e.Get(noted); e.If(); Me(); e.I32(0); e.Emit(Op.I32AtomicStore, 0, 2); e.End(); }
                 var top = e.Loop();
                 e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(s); e.I32(0); e.Op(Op.I32LtS);
                 e.Get(s); e.GGet(D.ThreadId); e.Op(Op.I32Eq); e.Op(Op.I32Or);
-                e.If(); e.I32(0); e.Op(Op.Return); e.End();
+                e.If(); Unnote(); e.I32(0); e.Op(Op.Return); e.End();
                 e.Get(s); e.Op(Op.I32Eqz);
                 e.If();
                 e.Get(0); e.I32(0); e.GGet(D.ThreadId); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Op(Op.I32Eqz);
-                e.If(); e.I32(1); e.Op(Op.Return); e.End();
+                e.If(); Unnote(); e.I32(1); e.Op(Op.Return); e.End();
                 e.Else();
-                // another thread runs it: workers sleep on the word, the engine thread spins
+                // another thread (s) runs it: note the wait, then follow the owners
+                e.GGet(D.ThreadId); e.I32(CctorWaitThreads); e.Op(Op.I32LtU);
+                e.If(); Me(); e.Get(0); e.Emit(Op.I32AtomicStore, 0, 2); e.I32(1); e.Set(noted); e.End();
+                e.Get(s); e.Set(o); e.I32(0); e.Set(k);
+                { var chainDone = e.Block(); var chain = e.Loop();
+                  e.Get(o); e.GGet(D.ThreadId); e.Op(Op.I32Eq);
+                  e.If(); Unnote(); e.I32(0); e.Op(Op.Return); e.End();
+                  e.Get(o); e.I32(1); e.Op(Op.I32LtS); e.Get(o); e.I32(CctorWaitThreads); e.Op(Op.I32GeU); e.Op(Op.I32Or);
+                  e.Get(k); e.I32(64); e.Op(Op.I32GeU); e.Op(Op.I32Or); e.BrIf(chainDone);
+                  Slot(o); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(w); e.Op(Op.I32Eqz); e.BrIf(chainDone);
+                  e.Get(w); e.Emit(Op.I32AtomicLoad, 0, 2); e.Set(o);
+                  e.Get(k); e.I32(1); e.Op(Op.I32Add); e.Set(k);
+                  e.Br(chain); e.End(); e.End(); }
+                // workers sleep on the word, the engine thread spins
                 e.GGet(D.ThreadId); e.I32(1); e.Op(Op.I32Ne);
                 e.If(); e.Get(0); e.Get(s); e.I64(1000000); e.Emit(Op.MemoryAtomicWait32, 0, 2); e.Op(Op.Drop); e.End();
                 e.End();
