@@ -362,15 +362,19 @@ sealed partial class FunctionCompiler
 
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
     void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null,
-                                 Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false, bool fresh = false, bool owned = false, bool iso = false, bool initNull = false)
+                                 Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false, bool fresh = false, bool owned = false, bool iso = false, bool initNull = false,
+                                 ITypeSymbol? structContainer = null)
     {
         if (Types.IsStruct(t))
         {
             bool move = TakeFresh(t);
             int src = Scratch(ValType.I32); E.Set(src);
             pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); }
+            // (threads: into an object of a class, or an array of a type, the last compilation found no other thread
+            // reaches, the stores of its references take no runtime lock, as a reference field's: StoreLock below)
+            bool locked = !(structContainer != null && D.ThreadMode && D.Sharing is { } shs0 && shs0.PriorThreadLocal(structContainer));
             // (a fresh temporary's counts are taken: the old value released, no new counts)
-            E.Get(src); if (move) E.Call(D.Rt.MoveAssign(t, shared: !frame)); else CopyStructAssign(t, shared: !frame);
+            E.Get(src); if (move) E.Call(D.Rt.MoveAssign(t, shared: !frame, locked)); else CopyStructAssign(t, shared: !frame, locked);
             FreeScratch(ValType.I32, src);
             return;
         }
@@ -443,9 +447,9 @@ sealed partial class FunctionCompiler
         E.I32(T.StorageOf(t).size); E.Op(Op.MemoryCopy);
     }
 
-    void CopyStructAssign(ITypeSymbol t, bool shared = true)
+    void CopyStructAssign(ITypeSymbol t, bool shared = true, bool locked = true)
     {
-        if (T.LayoutOf(t).HasRefs) { E.Call(Rt.CopyAssign(t, shared)); return; }
+        if (T.LayoutOf(t).HasRefs) { E.Call(Rt.CopyAssign(t, shared, locked)); return; }
         E.I32(T.StorageOf(t).size); E.Op(Op.MemoryCopy);
     }
 
@@ -806,7 +810,8 @@ sealed partial class FunctionCompiler
         else if (Owner(f).IsValueType && Types.IsRef(ft)) Sh?.Add(Sharing.StructFieldNode(T.Canonical(Owner(f)), f), srcs ?? [TopSrc(valueType)]);
         var pub = f.IsStatic ? (IsThreadStatic(f) ? Publish.None : Publish.Always) : f.ContainingType.IsValueType ? Publish.Unknown : Publish.Container;
         StoreToAddressFromStack(() => E.Get(a), off, ft, o, site, () => E.Get(a), pin, pub, () => E.Get(a),
-            initializer && !f.IsStatic ? InitStoreKey(f, Owner(f), null) : null);
+            initializer && !f.IsStatic ? InitStoreKey(f, Owner(f), null) : null,
+            structContainer: !f.IsStatic && !Owner(f).IsValueType && Types.IsStruct(ft) ? Owner(f) : null);
     }
 
     bool IsDirectAutoProperty(IPropertySymbol p, IOperation? instance)
@@ -2436,7 +2441,7 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null, bool owned = false, string? staticKey = null, bool threadStatic = false, string? structField = null, string? outParam = null, bool viaPointer = false, bool iso = false, bool initNull = false) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null, bool owned = false, string? staticKey = null, bool threadStatic = false, string? structField = null, string? outParam = null, bool viaPointer = false, bool iso = false, bool initNull = false, ITypeSymbol? structContainer = null) : LValue(f, t)
     {
         /// <summary>Sharing.cs: where the value stored here comes from.</summary>
         void Record(List<Sharing.Src>? srcs)
@@ -2484,7 +2489,7 @@ sealed partial class FunctionCompiler
             }
             // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
-                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned, iso: iso, initNull: initNull);
+                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned, iso: iso, initNull: initNull, structContainer: structContainer);
             if (elements && F.T.NeedsRc(Type)) F.D.NoteFieldWrite(F.E, Driver.ElementsKey);
             return needResult ? Load() : Own.None;
         }
@@ -2730,7 +2735,14 @@ sealed partial class FunctionCompiler
             return new MemLV(this, t, () => EmitAddressBase(target), elements: true, outParam: Sharing.OutNode(opk, rp.Parameter.Ordinal));
         // (a ref made from a pointer: Unsafe.AsRef(void*))
         bool viaPointer = target is IInvocationOperation { TargetMethod: { Name: "AsRef", Parameters: [{ Type: IPointerTypeSymbol }] } };
-        return new MemLV(this, t, () => EmitAddressBase(target), elements: true, viaPointer: viaPointer);
+        // (a struct into a class's field or an array's element: the object it goes into, by type, StoreToAddressFromStack)
+        ITypeSymbol? structContainer = !Types.IsStruct(t) ? null : target switch
+        {
+            IFieldReferenceOperation { Field.IsStatic: false, Instance: { } fi } fr2 when !TypeOf(fi).IsValueType => Owner(fr2.Field),
+            IArrayElementReferenceOperation ae2 when TypeOf(ae2.ArrayReference) is IArrayTypeSymbol at2 => at2,
+            _ => null,
+        };
+        return new MemLV(this, t, () => EmitAddressBase(target), elements: true, viaPointer: viaPointer, structContainer: structContainer);
     }
 
     // =====================================================================

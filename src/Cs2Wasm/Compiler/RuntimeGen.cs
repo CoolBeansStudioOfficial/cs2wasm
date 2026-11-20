@@ -199,7 +199,7 @@ internal sealed partial class RuntimeFns
     /// into memory nobody else has yet (init), exchanged under the place's lock into memory others may see (shared),
     /// or over a value of this thread's own (neither); the old reference is released. Everything else is copied as
     /// bytes. `move`: the source is this thread's own and gives its counts up (it is cleared by the caller).</summary>
-    void EmitCopyFieldsThreads(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, bool init, bool shared, bool move, int tmp)
+    void EmitCopyFieldsThreads(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, bool init, bool shared, bool move, int tmp, bool locked = true)
     {
         foreach (var f in D.Types.LayoutOf(t).Fields)
         {
@@ -212,10 +212,13 @@ internal sealed partial class RuntimeFns
                 else if (shared && Types.IsImmortalType(f.Type)) { Addr(dst); Value(); e.Call(StoreRef); e.Call(Release); }
                 // (as EmitStoreFieldsAt: the slot may be one a cycle can close through)
                 // (one step under the runtime lock where the slot can hold a cycle-capable object: Arenas.StoreLockAt)
+                // (not `locked`: into an object of a class the last compilation found no other thread reaches, as a
+                // field's store, Expressions.StoreToAddressFromStack)
+                else if (shared && !locked) { Value(); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type)); }
                 else if (shared) { int took = e.AddLocal(I); Value(); Addr(dst); e.Call(D.Arenas.StoreLockAt(f.Type, true)); e.Set(took); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type)); e.Get(took); e.Call(D.Arenas.StoreLockAt(f.Type, false)); }
                 else { Value(); e.Set(tmp); e.Get(dst); e.Load(Op.I32Load, o); e.Get(dst); e.Get(tmp); e.Store(Op.I32Store, o); e.Call(Release); }
             }
-            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitCopyFieldsThreads(e, dst, src, o, f.Type, init, shared, move, tmp);
+            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitCopyFieldsThreads(e, dst, src, o, f.Type, init, shared, move, tmp, locked);
             else
             {
                 int size = D.Types.StorageOf(f.Type).size;
@@ -260,15 +263,16 @@ internal sealed partial class RuntimeFns
     /// <summary>(dst, src): a move over a value: the old contents released, then as MoveInit. Into memory that is not
     /// the frame (shared), each reference is exchanged into place and the old one released (rt.store_ref: another
     /// thread's store or compare-and-swap of the same slot cannot make it released twice).</summary>
-    public WasmFunction MoveAssign(ITypeSymbol t, bool shared = true)
+    public WasmFunction MoveAssign(ITypeSymbol t, bool shared = true, bool locked = true)
     {
         t = D.Types.Canonical(t);
-        return Cached((shared ? "rt.move_assign " : "rt.move_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
+        locked |= !shared || !D.ThreadMode;
+        return Cached((shared ? locked ? "rt.move_assign " : "rt.move_assign_own " : "rt.move_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
         {
             int size = D.Types.StorageOf(t).size;
             if (D.ThreadMode && shared && D.Types.LayoutOf(t).HasRefs)
             {
-                EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared: true, move: true, e.AddLocal(I));
+                EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared: true, move: true, e.AddLocal(I), locked);
                 e.Get(1); e.I32(0); e.I32(size); e.Op(Op.MemoryFill);
                 return;
             }
@@ -282,12 +286,13 @@ internal sealed partial class RuntimeFns
 
     /// <summary>(dst, src): assignment: take new counts, release old contents, copy (into memory that is not the
     /// frame, the references exchanged: MoveAssign).</summary>
-    public WasmFunction CopyAssign(ITypeSymbol t, bool shared = true)
+    public WasmFunction CopyAssign(ITypeSymbol t, bool shared = true, bool locked = true)
     {
         t = D.Types.Canonical(t);
-        return Cached((shared ? "rt.copy_assign " : "rt.copy_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
+        locked |= !shared || !D.ThreadMode;
+        return Cached((shared ? locked ? "rt.copy_assign " : "rt.copy_assign_own " : "rt.copy_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
         {
-            if (D.ThreadMode && D.Types.LayoutOf(t).HasRefs) { EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared, move: false, e.AddLocal(I)); return; }
+            if (D.ThreadMode && D.Types.LayoutOf(t).HasRefs) { EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared, move: false, e.AddLocal(I), locked); return; }
             e.Get(1); e.Call(RetainStruct(t));
             if (shared) EmitStoreFieldsAt(e, 0, 1, 0, t, e.AddLocal(I));
             else { e.Get(0); e.Call(ReleaseStruct(t)); }

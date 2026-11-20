@@ -313,14 +313,38 @@ namespace Cs2Wasm.Runtime
         /// <summary>A run of n granules at a multiple of `align` granules (a power of two).</summary>
         static int AllocRunAligned(int n, int align)
         {
-            int a = AllocRun(n + align - 1, out _);
+            // A free run with an aligned window of n granules in it, else the heap's top made aligned. (Taking n +
+            // align - 1 granules and giving back what lies before and after the window left, between two pages cut
+            // one after the other at the top, a run of exactly a page at a page's boundary, which a request for n +
+            // align - 1 never takes: one more such run for each page, every later page walking all of them under the
+            // runtime lock, and half the memory of the pages lost.)
             int mask = (align << GShift) - 1;
-            int start = (a + mask) & ~mask;
-            int head = (start - a) >> GShift, tail = align - 1 - head;
-            MapSet(start, 0); MapSet(start + ((n - 1) << GShift), 0);
-            if (head > 0) FreeRun(a, head);
-            if (tail > 0) FreeRun(start + (n << GShift), tail);
-            return start;
+            for (int bin = RunBin(n); bin < RunBins; bin++)
+                for (int r = Mem.LoadI32(s_runBins + (bin << 2)); r != 0; r = Mem.LoadI32(r + 8))
+                {
+                    int len = Mem.LoadI32(r + 4);
+                    int start = (r + mask) & ~mask, head = (start - r) >> GShift;
+                    if (head + n > len) continue;
+                    // (r is a whole free run: what lies around it is not free, so the pieces left need no joining)
+                    RunUnlink(r);
+                    int tail = len - head - n;
+                    MapSet(start, 0); MapSet(start + ((n - 1) << GShift), 0);
+                    if (head > 0) RunInsert(r, head);
+                    if (tail > 0) RunInsert(start + (n << GShift), tail);
+                    return start;
+                }
+            while (true)
+            {
+                int a = s_top;
+                int pad = (((a + mask) & ~mask) - a) >> GShift;
+                int b = TopTake((pad + n) << GShift);
+                // (the top moved while it was taken, for the table's leaf: whatever is around the window is given back)
+                int start = (b + mask) & ~mask, head = (start - b) >> GShift, tail = pad - head;
+                if (tail < 0) { FreeRun(b, pad + n); continue; }
+                if (head > 0) FreeRun(b, head);
+                if (tail > 0) FreeRun(start + (n << GShift), tail);
+                return start;
+            }
         }
 
         /// <summary>A block of its own (above 2 KiB): a run of granules, cleared.</summary>

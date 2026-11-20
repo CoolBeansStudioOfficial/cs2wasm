@@ -12,14 +12,15 @@ using Microsoft.CodeAnalysis;
 
 var root = FindRoot();
 var dir = Path.Combine(root, "tests", "Conformance");
-var outDir = Path.Combine(root, "tests", "out");
+// (the conformance programs are built checked: a use after free shows; --unchecked builds them as shipped)
+bool checkedBuild = !args.Contains("--unchecked");
+// (as shipped into a folder of its own: tools/suite.mjs runs both modes at once, and they wrote the same files)
+var outDir = checkedBuild ? Path.Combine(root, "tests", "out") : Path.Combine(root, "tests", "out", "shipped");
 Directory.CreateDirectory(outDir);
 string? filter = args.FirstOrDefault(a => !a.StartsWith("--") && !a.Contains('/'));
 int shardK = 0, shardN = 1;
 if (Array.IndexOf(args, "--shard") is int si and >= 0 && si + 1 < args.Length && args[si + 1].Split('/') is [var sk, var sn]) { shardK = int.Parse(sk); shardN = int.Parse(sn); }
 bool verbose = args.Contains("--verbose");
-// (the conformance programs are built checked: a use after free shows; --unchecked builds them as shipped)
-bool checkedBuild = !args.Contains("--unchecked");
 // programs: each file in tests/Conformance, and each folder in tests/Godot (its files plus the upstream GodotSharp
 // sources it lists in godot-sources.txt, from $CS2WASM_GODOTSHARP or ../bazoodle/godot/modules/mono/glue/GodotSharp/GodotSharp)
 var programs = new List<(string name, List<(string path, string text)> sources, string[] symbols)>();
