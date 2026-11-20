@@ -108,8 +108,9 @@ internal sealed class Arenas
         s.UnlinkFresh = Placeholder("arena.unlink fresh " + key, new FuncType([I, I, I], []), Kind.UnlinkFresh, s);
         s.LinkOwned = Placeholder("arena.link owned " + key, new FuncType([I, I, I], [I]), Kind.LinkOwned, s);
         s.LinkIso = Placeholder("arena.link isolated " + key, new FuncType([I, I, I], [I]), Kind.LinkIso, s);
-        s.StoreLock = Placeholder("arena.store lock " + key, new FuncType([], []), Kind.StoreLock, s);
-        s.StoreUnlock = Placeholder("arena.store unlock " + key, new FuncType([], []), Kind.StoreUnlock, s);
+        // (container) -> whether it took the lock; (that) -> ()
+        s.StoreLock = Placeholder("arena.store lock " + key, new FuncType([I], [I]), Kind.StoreLock, s);
+        s.StoreUnlock = Placeholder("arena.store unlock " + key, new FuncType([I], []), Kind.StoreUnlock, s);
         _sites[key] = s;
         return s;
     }
@@ -313,7 +314,8 @@ internal sealed class Arenas
         slotType = D.Types.Canonical(slotType);
         var k = (enter ? "lock " : "unlock ") + Types.Key(slotType);
         if (!_storeLockAt.TryGetValue(k, out var f))
-            _storeLockAt[k] = f = Placeholder("arena.store " + k, new FuncType([], []), enter ? Kind.StoreLock : Kind.StoreUnlock, null, slotType);
+            // (slot address) -> whether it took the lock; (that) -> ()
+            _storeLockAt[k] = f = Placeholder("arena.store " + k, enter ? new FuncType([I], [I]) : new FuncType([I], []), enter ? Kind.StoreLock : Kind.StoreUnlock, null, slotType);
         return f;
     }
     readonly Dictionary<string, WasmFunction> _storeLockAt = [];
@@ -807,7 +809,12 @@ internal sealed class Arenas
                         if (Enabled && CycleTypes.Any(id => IdIs(id, ph.pinType!))) { x.Ref = pin; body.Add(x); }
                         break;
                     case Kind.StoreLock or Kind.StoreUnlock:
-                        if (Enabled && D.ThreadMode && (ph.site != null ? ph.site.Cyclic : HoldsCyclic(ph.pinType!))) { x.Ref = ph.kind == Kind.StoreLock ? D.Rt.LockEnter : D.Rt.LockExit; body.Add(x); }
+                        // (only while the container is a group's member: the race is over its slots' bits, which a
+                        // plain object has none of, Rt.StoreLockIf)
+                        if (Enabled && D.ThreadMode && (ph.site != null ? ph.site.Cyclic : HoldsCyclic(ph.pinType!)))
+                            x.Ref = ph.kind == Kind.StoreUnlock ? RuntimeFn("StoreUnlockIf", 1) : ph.site != null ? RuntimeFn("StoreLockIf", 1) : RuntimeFn("StoreLockAtIf", 1);
+                        else { body.Add(x with { Op = Op.Drop, Ref = null }); if (ph.kind == Kind.StoreLock) body.Add(x with { Op = Op.I32Const, Imm = 0, Ref = null }); break; }
+                        body.Add(x);
                         break;
                 }
             }

@@ -506,7 +506,13 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     the deferral (`FinPrepare`): put back afterwards, one could be to an object another thread had freed.
   - A placeholder for a local's borrow was made in the module before its first use: a local whose every value was
     owned left one with no body, which only a checked build's validator saw.
-  Test 139: 40 runs of 40 pass checked.
+  Test 139: 40 runs of 40 pass checked, 30 of 30 as shipped. The price: every such store takes the one runtime
+  lock, also into a plain object (unlocked, another thread can make the container a member mid-store and link the
+  old value, which the plain unlink then leaves counted: two nodes leaked in 320,000). The threaded self-hosted
+  compiler: 73 s on one thread, and on 24 it is all waiting for that lock. **Open, the next structural piece:** the
+  runtime lock replaced by one per group for arena operations (a store, a link, a join lock the groups they touch,
+  in address order), with the runtime's scratch state per thread; until then a program that shares cycle-capable
+  objects among many threads is serialized on them.
   `node tools/suite.mjs` runs the suite in shards side by side, both modes: 7 minutes instead of 25.
   Separately, and older: a program with threads whose cycle-capable objects are made on many threads at once gets
   slower with each thread (a list of 3,000 trees of 200 nodes, made in a PLINQ query: 2.9 s on one thread, 10.7 on

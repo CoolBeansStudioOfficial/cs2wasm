@@ -212,7 +212,7 @@ internal sealed partial class RuntimeFns
                 else if (shared && Types.IsImmortalType(f.Type)) { Addr(dst); Value(); e.Call(StoreRef); e.Call(Release); }
                 // (as EmitStoreFieldsAt: the slot may be one a cycle can close through)
                 // (one step under the runtime lock where the slot can hold a cycle-capable object: Arenas.StoreLockAt)
-                else if (shared) { Value(); e.Call(D.Arenas.StoreLockAt(f.Type, true)); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type)); e.Call(D.Arenas.StoreLockAt(f.Type, false)); }
+                else if (shared) { int took = e.AddLocal(I); Value(); Addr(dst); e.Call(D.Arenas.StoreLockAt(f.Type, true)); e.Set(took); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type)); e.Get(took); e.Call(D.Arenas.StoreLockAt(f.Type, false)); }
                 else { Value(); e.Set(tmp); e.Get(dst); e.Load(Op.I32Load, o); e.Get(dst); e.Get(tmp); e.Store(Op.I32Store, o); e.Call(Release); }
             }
             else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitCopyFieldsThreads(e, dst, src, o, f.Type, init, shared, move, tmp);
@@ -477,6 +477,8 @@ sealed partial class RuntimeGen
         D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1);
         if (D.ThreadMode && RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareCheckFail", 1);
         if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0); }
+        // (the stores into slots that can close a cycle, Arenas.Resolve: the runtime lock while the container is a member)
+        if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockAtIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreUnlockIf", 1); }
     }
 
     public void Export(string name, MethodInst mi) => _exports.Add((name, mi));

@@ -2449,6 +2449,28 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern bool MoveRefs(int dst, int src, int count);
         [System.ThreadStatic] static int t_atSlot, t_atOwner;
 
+        /// <summary>Threads: a store into a slot of the container that can close a cycle is one step (link, exchange,
+        /// unlink) under the runtime lock: 1 when the lock was taken. Also while the container is a plain object: another
+        /// thread can make it a group's member in the middle of the store, and link the slot's old value, which a plain
+        /// unlink then leaves counted (test 139, as shipped: two nodes of 320,000 never freed). A protocol that lets a
+        /// plain container's store go without the lock is still to do (docs/AUDIT.md).</summary>
+        public static int StoreLockIf(int container)
+        {
+            if (container == 0) return 0;
+            RuntimeLock();
+            return 1;
+        }
+
+        /// <summary>The same for a slot known by its address (a slot of an object of a cycle-capable type).</summary>
+        public static int StoreLockAtIf(int slot)
+        {
+            if (SlotOwner(slot) == 0) return 0;
+            RuntimeLock();
+            return 1;
+        }
+
+        public static void StoreUnlockIf(int took) { if (took != 0) RuntimeUnlock(); }
+
         /// <summary>The address is a slot of an object of a cycle-capable type (an arena's member, or one that can be).</summary>
         public static bool InArenaSlot(int slot) => SlotOwner(slot) != 0;
 
