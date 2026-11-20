@@ -34,7 +34,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | Hello world size (test 145) | 27,501 B | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.45 s vs 4.6 s | < 4.6 s |
 | 4 | Same: peak memory | 470 MB vs 239 MB | < 239 MB |
-| 4 | Same: module size | 64 MB vs 129 MB | met; cut what is waste (breakdown first) |
+| 4 | Same: module size | 42.7 MB vs 129 MB (was 64.0; `tools/size-report.mjs`) | met; next waste: code (36.2 MB) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 23 s on 1, 64 s on 12 | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | not re-tried since 11-17 | plays, log equals the oracle's |
 | - | 072_http's rare out-of-bounds | open | found or not seen in 500 runs |
@@ -64,7 +64,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 | Stream | Items | Files | State |
 |---|---|---|---|
 | A. Self-hosted speed and memory | 7.E proof on the hot sites; baseline-tier code quality | Compiler/Arenas.cs, Driver, Wasm/* | here, in progress |
-| B. Self-hosted size | breakdown of the 64 MB by namespace and kind; cut waste | tools (new), then what it finds | to start |
+| B. Self-hosted size | breakdown of the 64 MB by namespace and kind; cut waste | tools/size-report.mjs, RuntimeGen (names, packing), Driver (data) | first pass done (64.0 to 42.7 MB); code next |
 | C. Threads scale | per-group locks for arena operations, runtime scratch per thread | Boundary/Runtime.cs (arena locking), RuntimeGen | to start (touches Runtime.cs: after A's runtime edits or coordinated) |
 | D. Proof 5 in the browser | game built by today's self-hosted compiler in the browser | host/web, tools/proof5.mjs, tests/Godot | to start |
 | E. Behaviour gaps | `StackFrame.GetMethod()`, `FirstChanceException` | CoreLib Boundary, stack trace code | to start |
@@ -77,3 +77,13 @@ Each stream is independent of the others' files where marked, so it can run in a
 ## Log
 
 - 2026-11-20: plan written. Self-hosted no threads 12.45 s / 470 MB / 64 MB against 4.6 s / 239 MB / 129 MB.
+- 2026-11-20 (stream B): `tools/size-report.mjs` (sections; code by kind, namespace, type and source method; data
+  expanded and split into literals, resources, tables). The 64.0 MB were code 36.1, data 23.3 (12.5 of it the full
+  names of 37,841 generic instances, eager `Type.FullName` literals; 4.0 the library sources; the data was not packed
+  because packed it did not fit the start's first megabyte of heap), frames 1.2. Now: generic instances' and arrays'
+  names made when first asked for (38,412 of them; the Type.GetType table keeps their lengths), id lists shared,
+  packed data expanded through a 1 MB window, dead chunks of a pinned layout zeroed. Self-hosted compiler (no
+  threads, shipped) 63,966,970 to 42,664,712 bytes (data 23.3 to 2.8 MB in the module, 20.9 to 12.8 MB expanded);
+  its hello world byte-identical, time unchanged (14.2 s, interleaved). Hello world 27,541 B (unchanged), bench
+  372,676 to 372,166 B (0.91x, 16.0 MB vs 71.3), test 036 528,820 to 512,342 B. Suite 179/179 checked and as
+  shipped. Left: code, 36.2 MB (generic instantiations 14.9, System.Linq 7.6, dispatch stubs 2.0; AUDIT).
