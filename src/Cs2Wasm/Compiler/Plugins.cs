@@ -9,6 +9,10 @@ namespace Cs2Wasm.Compiler;
 
 sealed record MemberHook(IMethodSymbol Hook, int Tag, InstrumentPoint Point);
 
+/// <summary>A hook at the entry accesses of a collection (PluginContext.InstrumentEntryWrites): Keyed, the form
+/// (object receiver, TKey key, bool keyed, int tag).</summary>
+sealed record EntryHook(IMethodSymbol Hook, int Tag, bool Keyed);
+
 /// <summary>A hook the value of one expression goes through (PluginContext.InterceptValue).</summary>
 sealed class ValueHook
 {
@@ -34,6 +38,12 @@ internal sealed partial class Driver
     public readonly Dictionary<(string path, int start, int length), List<(IMethodSymbol hook, int tag)>> StatementHooks = [];
     public readonly Dictionary<((string path, int start, int length) site, OperationKind kind), List<ValueHook>> ValueHooks = [];
     public readonly Dictionary<(string path, int start, int length), List<MemberHook>> SiteWriteHooks = [];
+    public readonly Dictionary<ISymbol, List<EntryHook>> EntryWriteHooks = new(SymbolEqualityComparer.Default);
+    public readonly Dictionary<ISymbol, List<EntryHook>> EntryReadHooks = new(SymbolEqualityComparer.Default);
+    /// <summary>Locals of collection type whose every reaching definition is one member (PluginHost.Accesses): the
+    /// member, by the site of the local's reference at an entry access.</summary>
+    public readonly Dictionary<(string path, int start, int length), ISymbol> EntryLocalSites = [];
+    public bool HasEntryHooks => EntryWriteHooks.Count > 0 || EntryReadHooks.Count > 0;
     /// <summary>Imports a plugin made suppressible (PluginContext.SuppressibleImports): the bits of each, by method key.</summary>
     public readonly Dictionary<string, int> SuppressBits = [];
     public int SuppressGroups;
@@ -81,7 +91,7 @@ internal sealed partial class Driver
         }
     }
 
-    public bool HasInstrumentation => WriteHooks.Count > 0 || ReadHooks.Count > 0 || StatementHooks.Count > 0 || ValueHooks.Count > 0 || SiteWriteHooks.Count > 0;
+    public bool HasInstrumentation => WriteHooks.Count > 0 || ReadHooks.Count > 0 || StatementHooks.Count > 0 || ValueHooks.Count > 0 || SiteWriteHooks.Count > 0 || HasEntryHooks;
     readonly HashSet<ISymbol> _instrumented = new(SymbolEqualityComparer.Default);
     readonly List<CloneSpec> _clones = [];
 
@@ -99,7 +109,7 @@ internal sealed partial class Driver
                 Report(Diags.Plugin, null, $"plugin '{p.Name}' targets interface version {p.InterfaceVersion}; this compiler provides {PluginContext.InterfaceVersion}");
                 continue;
             }
-            var ctx = new PluginContext(host);
+            var ctx = new PluginContext(host, p.InterfaceVersion);
             try { p.Run(ctx); }
             catch (Exception ex) { Report(Diags.Plugin, null, $"plugin '{p.Name}' failed: {ex.Message}"); continue; }
             foreach (var (name, data) in ctx.Sections) Module.CustomSections.Add(new CustomSection(name, data));
@@ -242,7 +252,8 @@ internal sealed partial class PluginHost
     }
 
     // ---------------- member accesses ----------------
-    List<MemberAccess>? _accesses;
+    List<MemberAccess>? _accesses, _memberAccesses;
+    /// <summary>The accesses of members and of their collections' entries (version 5).</summary>
     public IReadOnlyList<MemberAccess> Accesses
     {
         get
@@ -253,8 +264,20 @@ internal sealed partial class PluginHost
             {
                 var body = Body(m);
                 if (body == null) continue;
+                Dictionary<(string, int, int), ISymbol?>? locals = null;
                 foreach (var op in body.DescendantsAndSelf())
                 {
+                    foreach (var site in Entries.Of(op))
+                    {
+                        ISymbol? coll = site.Collection switch
+                        {
+                            IMemberReferenceOperation mr => mr.Member.OriginalDefinition,
+                            ILocalReferenceOperation lr => LocalCollection(m, lr, ref locals),
+                            _ => null,
+                        };
+                        if (coll == null) continue;
+                        _accesses.Add(new MemberAccess(coll, m, site.Operation, site.Kind, ConditionsOf(site.Operation, body)) { IsEntry = true, Key = site.Key, Instrumentable = site.Hookable });
+                    }
                     ISymbol? member = op switch
                     {
                         IFieldReferenceOperation f => f.Field,
@@ -269,6 +292,39 @@ internal sealed partial class PluginHost
             }
             return _accesses;
         }
+    }
+
+    /// <summary>The accesses of members alone (what plugins of versions 1 to 4 see).</summary>
+    public IReadOnlyList<MemberAccess> MemberAccesses => _memberAccesses ??= Accesses.Where(a => !a.IsEntry).ToList();
+
+    /// <summary>The member a local of collection type is, when every definition reaching this reference stores the
+    /// collection one member holds (`var s = Scores;`), by the method's def-use chains; else null.</summary>
+    ISymbol? LocalCollection(IMethodSymbol m, ILocalReferenceOperation lr, ref Dictionary<(string, int, int), ISymbol?>? locals)
+    {
+        if (locals == null)
+        {
+            locals = [];
+            if (DefUse(m) is { } du)
+                foreach (var (use, defs) in du.ReachingDefinitions)
+                {
+                    if (use is not ILocalReferenceOperation || use.Syntax == null) continue;
+                    ISymbol? found = null; bool ok = defs.Count > 0;
+                    foreach (var d in defs)
+                    {
+                        var v = d is ISimpleAssignmentOperation sa ? Strip(sa.Value) : null;
+                        var s = v is IFieldReferenceOperation or IPropertyReferenceOperation { Property.IsIndexer: false } && Entries.IsCollection(v.Type) ? ((IMemberReferenceOperation)v).Member.OriginalDefinition : null;
+                        if (s == null || found != null && !SymbolEqualityComparer.Default.Equals(found, s)) { ok = false; break; }
+                        found = s;
+                    }
+                    var key = Driver.SiteKey(use.Syntax);
+                    // (one syntax, several references in the graph: all must agree)
+                    if (locals.TryGetValue(key, out var prev) && !SymbolEqualityComparer.Default.Equals(prev, ok ? found : null)) locals[key] = null;
+                    else locals[key] = ok ? found : null;
+                }
+        }
+        if (lr.Syntax == null || !locals.TryGetValue(Driver.SiteKey(lr.Syntax), out var r) || r == null) return null;
+        D.EntryLocalSites[Driver.SiteKey(lr.Syntax)] = r;
+        return r;
     }
 
     public IEnumerable<MemberAccess> AccessesOf(ISymbol member)
@@ -594,7 +650,7 @@ internal sealed partial class PluginHost
         var result = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
         foreach (var a in AccessesOf(field))
         {
-            if (a.Kind == AccessKind.Read) continue;
+            if (a.Kind == AccessKind.Read || a.IsEntry) continue;
             var op = a.Operation;
             while (op.Parent is IConversionOperation { IsImplicit: true }) op = op.Parent;
             if (op.Parent is not IAssignmentOperation asg || !ReferenceEquals(asg.Target, op)) continue;
@@ -673,6 +729,35 @@ internal sealed partial class PluginHost
         if (!table.TryGetValue(def, out var list)) table[def] = list = [];
         list.Add(new MemberHook(hook, tag, point));
         foreach (var a in AccessesOf(def)) D.MarkInstrumented(a.Method);
+    }
+
+    public void AddEntryHook(ISymbol member, IMethodSymbol hook, int tag, bool write)
+    {
+        var def = member.OriginalDefinition;
+        string what = write ? "InstrumentEntryWrites" : "InstrumentEntryReads";
+        var ps = hook.Parameters;
+        static bool Is(ITypeSymbol t, SpecialType s) => t.SpecialType == s;
+        bool keyed = ps.Length == 4 && Is(ps[0].Type, SpecialType.System_Object) && Is(ps[2].Type, SpecialType.System_Boolean) && Is(ps[3].Type, SpecialType.System_Int32);
+        bool plain = ps.Length <= 2 && ps.All(p => Is(p.Type, SpecialType.System_Object) || Is(p.Type, SpecialType.System_Int32));
+        if (!hook.IsStatic || hook.IsGenericMethod || ps.Any(p => p.RefKind != RefKind.None) || !keyed && !plain)
+        { D.Report(Diags.Plugin, null, $"{what}: the hook {hook.Name} must be a static method taking (), (int tag), (object receiver), (object receiver, int tag) or (object receiver, TKey key, bool keyed, int tag)"); return; }
+        var sites = AccessesOf(def).Where(a => a.IsEntry && (a.Kind == AccessKind.Read) != write).ToList();
+        if (keyed)
+        {
+            var kt = ps[1].Type;
+            static string Name(ITypeSymbol t) => t.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            if (Types.IsStruct(kt) && kt.TypeKind != TypeKind.Enum)
+            { D.Report(Diags.Plugin, null, $"{what}: the key of {hook.Name} is a struct ({kt}); a key is a reference or a primitive"); return; }
+            bool bad = false;
+            foreach (var a in sites)
+                if (a.Instrumentable && a.Key?.Type is { } t && Name(t) != Name(kt))
+                { D.Report(Diags.Plugin, a.Location, $"{what}: the key here is {t}; the hook {hook.Name} takes {kt}"); bad = true; }
+            if (bad) return;
+        }
+        var table = write ? D.EntryWriteHooks : D.EntryReadHooks;
+        if (!table.TryGetValue(def, out var list)) table[def] = list = [];
+        list.Add(new EntryHook(hook, tag, keyed));
+        foreach (var a in sites) D.MarkInstrumented(a.Method);
     }
 
     public int Suppressible(IEnumerable<IMethodSymbol> imports)

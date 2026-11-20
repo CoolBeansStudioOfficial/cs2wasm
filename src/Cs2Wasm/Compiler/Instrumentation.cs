@@ -34,6 +34,7 @@ sealed partial class FunctionCompiler
     bool TryCaptured(IOperation op, out Own own)
     {
         own = default;
+        if (_entryCaptures.Count > 0 && _entryCaptures.Remove(op, out var cap)) { own = CaptureEntryValue(op, cap); return true; }
         if (_captureOp == null || !ReferenceEquals(op, _captureOp)) return false;
         _captureOp = null;
         own = EmitValueCore(op);
@@ -46,6 +47,7 @@ sealed partial class FunctionCompiler
     {
         result = Own.None;
         if (!D.HasInstrumentation) return false;
+        if (D.HasEntryHooks && !ReferenceEquals(op, _entryOp) && TryInstrumentedEntry(op, () => TryInstrumentedWrite(op, emit, out var inner) ? inner : emit(), out result)) return true;
         var target = WriteTarget(op);
         var member = HookedMember(target);
         if (member == null) return false;
@@ -131,8 +133,135 @@ sealed partial class FunctionCompiler
         if (o == Own.Owned) { int t = TempRef(TypeOf(inst)); E.Tee(t); }
     }
 
+    // ---------------- collection entries (PluginContext.InstrumentEntryWrites) ----------------
+    /// <summary>A value an entry hook is given (the key, a receiver that is not a local), kept as the program computes it.</summary>
+    sealed class EntryCapture { public int Local = -1; public bool Done; }
+    readonly Dictionary<IOperation, EntryCapture> _entryCaptures = new(ReferenceEqualityComparer.Instance);
+    /// <summary>The entry operation being compiled with its hooks (it is compiled once more, without).</summary>
+    IOperation? _entryOp;
+
+    static bool SimpleReceiver(IOperation inst) => StripImplicit(inst) is IInstanceReferenceOperation or ILocalReferenceOperation or IParameterReferenceOperation;
+
+    /// <summary>The value is computed where it stands and kept for the hook: a reference counted until the statement
+    /// ends (the hook runs after the operation, which may have let go of its own), a number in a local.</summary>
+    Own CaptureEntryValue(IOperation op, EntryCapture cap)
+    {
+        var t = TypeOf(op);
+        var own = EmitValueCore(op);
+        if (Types.IsRef(t))
+        {
+            if (D.ThreadMode) own = CountedLoad(own);
+            if (own is Own.Stable or Own.Unstable && !Types.IsImmortalType(t)) { E.Call(Rt.RetainOf(t)); own = Own.Owned; }
+            if (own == Own.Owned) { cap.Local = TempRef(t); E.Tee(cap.Local); own = Own.Stable; }
+            else { cap.Local = E.AddLocal(ValType.I32); E.Tee(cap.Local); }
+        }
+        else { cap.Local = E.AddLocal(Types.WasmType(t) ?? ValType.I32); E.Tee(cap.Local); }
+        cap.Done = true;
+        return own;
+    }
+
+    ISymbol? EntryMember(IOperation coll) => coll switch
+    {
+        IMemberReferenceOperation mr => mr.Member.OriginalDefinition,
+        ILocalReferenceOperation { Syntax: { } s } when D.EntryLocalSites.TryGetValue(Driver.SiteKey(s), out var m) => m,
+        _ => null,
+    };
+
+    List<(EntrySite site, EntryHook hook)>? EntryHooksAt(IOperation op)
+    {
+        List<(EntrySite, EntryHook)>? at = null;
+        // (not in the plugins' own code: a hook that reads the collection would call itself)
+        if (op.Syntax != null && D.PluginTrees.Contains(op.Syntax.SyntaxTree)) return null;
+        foreach (var s in Entries.Of(op))
+        {
+            if (!s.Hookable || EntryMember(s.Collection) is not { } member) continue;
+            var table = s.Kind == AccessKind.Read ? D.EntryReadHooks : D.EntryWriteHooks;
+            if (!table.TryGetValue(member, out var hooks)) continue;
+            foreach (var h in hooks) (at ??= []).Add((s, h));
+        }
+        return at;
+    }
+
+    /// <summary>Hooks after an entry access (Entries.Of): `emit` produces the operation; its key and a receiver that
+    /// is not a local are kept as it computes them, and the hooks are called after it with its value left under them.</summary>
+    bool TryInstrumentedEntry(IOperation op, Func<Own> emit, out Own result)
+    {
+        result = Own.None;
+        if (ReferenceEquals(op, _entryOp) || EntryHooksAt(op) is not { } at) return false;
+        var mine = new List<IOperation>();
+        EntryCapture? Capture(IOperation o)
+        {
+            if (_entryCaptures.TryGetValue(o, out var c)) return c;
+            c = new EntryCapture();
+            _entryCaptures[o] = c; mine.Add(o);
+            return c;
+        }
+        var keys = new EntryCapture?[at.Count];
+        var recvs = new EntryCapture?[at.Count];
+        for (int i = 0; i < at.Count; i++)
+        {
+            var (s, h) = at[i];
+            if (h.Keyed && s.Key is { ConstantValue.HasValue: false } k) keys[i] = Capture(k);
+            if ((s.Collection as IMemberReferenceOperation)?.Instance is { } inst && !TypeOf(inst).IsValueType && !SimpleReceiver(inst)
+                && h.Hook.Parameters.Any(p => p.Type.SpecialType == SpecialType.System_Object)) recvs[i] = Capture(inst);
+        }
+        var saved = _entryOp;
+        _entryOp = op;
+        try { result = emit(); }
+        finally
+        {
+            _entryOp = saved;
+            foreach (var o in mine) _entryCaptures.Remove(o);
+        }
+        for (int i = 0; i < at.Count; i++)
+        {
+            if (keys[i] is { Done: false } || recvs[i] is { Done: false })
+                throw new CompileException("an entry hook's key or receiver is not computed as a value where it stands: " + op.Syntax, op.Syntax.GetLocation());
+            EmitEntryHookCall(at[i].hook, at[i].site, keys[i], recvs[i]);
+        }
+        return true;
+    }
+
+    void EmitEntryHookCall(EntryHook h, EntrySite s, EntryCapture? key, EntryCapture? recv)
+    {
+        var mi = D.Method(D.CanonicalMethod(h.Hook));
+        Inst?.Callees.Add(mi);
+        var inst = (s.Collection as IMemberReferenceOperation)?.Instance;
+        void Receiver()
+        {
+            if (inst == null || TypeOf(inst).IsValueType) E.I32(0);
+            else if (recv != null) E.Get(recv.Local);
+            else if (SimpleReceiver(inst)) PushReceiver(StripImplicit(inst));
+            else E.I32(0);
+        }
+        var ps = h.Hook.Parameters;
+        if (h.Keyed)
+        {
+            Receiver();
+            if (s.Key == null)
+                switch (Types.WasmType(ps[1].Type) ?? ValType.I32) { case ValType.I64: E.I64(0); break; case ValType.F32: E.F32(0); break; case ValType.F64: E.F64(0); break; default: E.I32(0); break; }
+            else if (key != null) E.Get(key.Local);
+            else
+            {
+                var kt = TypeOf(s.Key);
+                if (EmitConstant(s.Key.ConstantValue.Value, kt) == Own.Owned) E.Tee(TempRef(kt));
+            }
+            E.I32(s.Key != null ? 1 : 0);
+            E.I32(h.Tag);
+        }
+        else
+            foreach (var p in ps)
+                if (p.Type.SpecialType == SpecialType.System_Int32) E.I32(h.Tag);
+                else Receiver();
+        E.Call(mi.Fn);
+        foreach (var _ in mi.Fn.Type.Results) E.Op(Op.Drop);
+    }
+
     void EmitStatementHooks(IOperation op)
     {
+        // (a foreach over an entry-hooked collection: its read hooks, as the loop begins)
+        if (op is IForEachLoopOperation && D.EntryReadHooks.Count > 0 && EntryHooksAt(op) is { } reads)
+            foreach (var (s, h) in reads) EmitEntryHookCall(h, s, null, null);
         if (D.StatementHooks.Count == 0 || op.Syntax == null) return;
         if (!D.StatementHooks.TryGetValue(Driver.SiteKey(op.Syntax), out var hooks)
             && !(_machine != null && op.Syntax.Parent != null && D.StatementHooks.TryGetValue(Driver.SiteKey(op.Syntax.Parent), out hooks)))

@@ -13,11 +13,12 @@ namespace Cs2Wasm;
 /// sections and diagnostics. Everything is in Roslyn's terms (operations, symbols, locations), so a plugin reports in
 /// the developer's. Version 4: a hook that receives the value of any one expression and gives the value the program
 /// goes on with (InterceptValue), write hooks at one write (InstrumentWrite), which accesses a hook runs at
-/// (MemberAccess.Instrumentable), and generated code that names the program's private members.
+/// (MemberAccess.Instrumentable), and generated code that names the program's private members. Version 5: collection
+/// entries as accesses (MemberAccess.IsEntry) with hooks at them (InstrumentEntryWrites, InstrumentEntryReads).
 /// </summary>
 public interface ICompilerPlugin
 {
-    /// <summary>The plugin interface version the plugin was written against (1 to 4).</summary>
+    /// <summary>The plugin interface version the plugin was written against (1 to 5).</summary>
     int InterfaceVersion { get; }
     string Name { get; }
     void Run(PluginContext context);
@@ -39,6 +40,16 @@ public sealed record MemberAccess(ISymbol Member, IMethodSymbol Method, IOperati
     /// event's handlers added or removed. A plugin that must see every write treats such a member as one it cannot
     /// follow.</summary>
     public bool Instrumentable { get; init; } = true;
+    /// <summary>(Version 5.) An access to the entries of the collection the member holds, not to the member: an
+    /// element read or written (`Scores[p] = 1`, `Cells[i].X = 3`), a library method that changes it (`Add`, `Remove`,
+    /// `Clear`, `Sort`, `Array.Fill`: a write) or reads it (`TryGetValue`, `Count`, `Contains`, LINQ, a `foreach`: a
+    /// read), on the member itself, on an element of it (`Grid[x][y] = 1` is entry x of Grid), or on a local whose
+    /// every reaching definition is the member (the collection the member held when the local was set).
+    /// <see cref="MemberAccess.Operation"/> is the assignment, the call, the element, the loop.</summary>
+    public bool IsEntry { get; init; }
+    /// <summary>(Version 5.) For an entry access, the one entry it names: the index or key (a set's item); null for
+    /// the whole collection or an entry it does not name (an append, a clear, a sort, a count, an iteration).</summary>
+    public IOperation? Key { get; init; }
 }
 
 /// <summary>Reaching definitions over a method's control-flow graph: for each read of a local or parameter, the
@@ -97,12 +108,13 @@ public sealed class SchedulingInfo
 
 public sealed class PluginContext
 {
-    public const int InterfaceVersion = 4;
+    public const int InterfaceVersion = 5;
     readonly List<(string, byte[])> _sections = [];
     readonly List<Diagnostic> _diagnostics = [];
     readonly Compiler.PluginHost _host;
+    readonly int _version;
 
-    internal PluginContext(Compiler.PluginHost host) { _host = host; }
+    internal PluginContext(Compiler.PluginHost host, int version = InterfaceVersion) { _host = host; _version = version; }
 
     /// <summary>The program's main compilation (the embedder may read the same one).</summary>
     public Compilation Compilation => _host.Main;
@@ -112,10 +124,12 @@ public sealed class PluginContext
     public IReadOnlyDictionary<IMethodSymbol, IReadOnlyList<IMethodSymbol>> CallGraph => _host.CallGraph;
 
     // ---------------- analyses ----------------
-    /// <summary>Every read and write of fields, properties and events in reachable source methods.</summary>
-    public IReadOnlyList<MemberAccess> Accesses => _host.Accesses;
-    /// <summary>The reads and writes of one member (its definition: generic instantiations included).</summary>
-    public IEnumerable<MemberAccess> AccessesOf(ISymbol member) => _host.AccessesOf(member);
+    /// <summary>Every read and write of fields, properties and events in reachable source methods; from version 5 also
+    /// of the entries of the collections they hold (<see cref="MemberAccess.IsEntry"/>).</summary>
+    public IReadOnlyList<MemberAccess> Accesses => _version >= 5 ? _host.Accesses : _host.MemberAccesses;
+    /// <summary>The reads and writes of one member (its definition: generic instantiations included), from version 5
+    /// with those of its collection's entries.</summary>
+    public IEnumerable<MemberAccess> AccessesOf(ISymbol member) => _host.AccessesOf(member).Where(a => _version >= 5 || !a.IsEntry);
     /// <summary>The method's control-flow graph (Roslyn's lowering of its body), or null without a body in source.</summary>
     public ControlFlowGraph? GetControlFlowGraph(IMethodSymbol method) => _host.Graph(method);
     /// <summary>Reaching definitions of the method's locals and parameters over its control-flow graph.</summary>
@@ -140,6 +154,18 @@ public sealed class PluginContext
     public void InstrumentWrites(ISymbol member, IMethodSymbol hook, int tag = 0, InstrumentPoint point = InstrumentPoint.After) => _host.AddMemberHook(member, hook, tag, point, write: true);
     /// <summary>Calls `hook` after every read of `member`, with the same parameter forms as <see cref="InstrumentWrites"/>.</summary>
     public void InstrumentReads(ISymbol member, IMethodSymbol hook, int tag = 0) => _host.AddMemberHook(member, hook, tag, InstrumentPoint.After, write: false);
+    /// <summary>(Version 5.) Calls `hook` after every entry write of the collection `member` holds (the accesses with
+    /// <see cref="MemberAccess.IsEntry"/>, a write or read-write, and <see cref="MemberAccess.Instrumentable"/>): an
+    /// element stored, a library method that changes it. The hook is a static method taking (), (int tag), (object
+    /// receiver), (object receiver, int tag), or (object receiver, TKey key, bool keyed, int tag): the receiver is the
+    /// object whose member holds the collection (null for a static member, a struct, or a collection reached through a
+    /// local), the key the entry the access names (<see cref="MemberAccess.Key"/>, computed once, as the program
+    /// computes it) and keyed false where it names none (the key is then the default). TKey is the key's type at every
+    /// keyed site, a reference type or a primitive (a struct key is refused).</summary>
+    public void InstrumentEntryWrites(ISymbol member, IMethodSymbol hook, int tag = 0) => _host.AddEntryHook(member, hook, tag, write: true);
+    /// <summary>(Version 5.) Calls `hook` after every entry read of the collection `member` holds (as a `foreach`
+    /// begins, before the collection is computed), with the forms of <see cref="InstrumentEntryWrites"/>.</summary>
+    public void InstrumentEntryReads(ISymbol member, IMethodSymbol hook, int tag = 0) => _host.AddEntryHook(member, hook, tag, write: false);
     /// <summary>(Version 4.) Calls `hook` at one write (an assignment, a compound assignment, `++`/`--`, `??=`, of a
     /// field or property), with the parameter forms and points of <see cref="InstrumentWrites"/>: a plugin that
     /// classifies each write marks the ones it means and no others.</summary>

@@ -517,8 +517,16 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     code sets around a run, so it holds for virtual calls, delegates, lambdas and the library, and nothing is
     cloned (A4.7). `CloneWithSuppressedImports` stays as it was.
   - Generated code names the program's internal types and private members (step 8.1).
-  - Still open: collection entries as accesses (A4.4: a plugin can hook the key and the store itself, but
-    `Accesses` does not report them), a hook after a statement, the closed-form solver (A4.6), conditions across
+  - Version 5 (2026-11-19), collection entries (A4.4): `Accesses` reports an access to the entries of a collection
+    a field or property holds (`MemberAccess.IsEntry`, `Key`): an element read or stored, a compound store, a library
+    method that changes it (`Add`, `Remove`, `Clear`, `Sort`, `Array.Fill`, ...) or reads it (`TryGetValue`, `Count`,
+    LINQ, a `foreach`), on the member, on an element of it (`Grid[x][y] = 1` is entry x of Grid), a field of a struct
+    element, or a local whose every reaching definition is the member. `InstrumentEntryWrites` and
+    `InstrumentEntryReads` call a hook after each, with the receiver and the key as the program computed them
+    (`(object receiver, TKey key, bool keyed, int tag)`). One function (`Compiler/Entries.cs`) decides the sites for
+    the analysis and for the code, so they agree. Plugins of versions 1 to 4 see the accesses they saw. A collection
+    handed to the program's own method, or a `ref` to an element, is not followed (the list of unsure sites).
+  - Still open: a hook after a statement, the closed-form solver (A4.6), conditions across
     calls and the ownership-based alias query (A4.8), the list of unsure sites, plugins before the first compile
     (A4.9), and the first slice of the real plugin in the Bazoodle repository (9.4).
 

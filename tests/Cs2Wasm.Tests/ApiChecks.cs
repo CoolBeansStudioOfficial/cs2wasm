@@ -295,6 +295,53 @@ static class ApiChecks
             return !refused.Success && refused.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("was not applied")) ? null : "a value hook on an assignment's target was not refused";
         });
 
+        Check("plugin v5: collection entries are accesses (an element stored, a compound store, Remove, TryGetValue, a foreach, an array element, through a local) with their keys, and hooks after them get the receiver and the key; plugins of version 4 do not see them; a hook whose key type differs is refused", () =>
+        {
+            var src = Header + """
+                using System.Collections.Generic;
+                namespace Game {
+                class Player { public string Name; public Player(string n) { Name = n; } public override string ToString() => Name; }
+                class Match {
+                    public Dictionary<Player, int> Scores = new();
+                    public List<int> Log = new();
+                    public int[] Cells = new int[4];
+                    public void Score(Player p, int n) { Scores[p] = n; }
+                    public void Bump(Player p) { Scores[p] += 1; }
+                    public void Drop(Player p) { Scores.Remove(p); }
+                    public int Get(Player p) => Scores.TryGetValue(p, out var v) ? v : -1;
+                    public void Note(int x) { var log = Log; log.Add(x); }
+                    public void Cell(int i) { Cells[i] = i * 10; }
+                    public int Total() { int t = 0; foreach (var kv in Scores) t += kv.Value; return t; }
+                    public static Player Pick(Player a, Player b, bool first) => first ? a : b;
+                }
+                static class Script {
+                    [UnmanagedCallersOnly(EntryPoint = "main")]
+                    static void Main() {
+                        var m = new Match(); var a = new Player("a"); var b = new Player("b");
+                        m.Score(a, 3); m.Score(b, 4); m.Bump(a); m.Drop(b); m.Note(7); m.Cell(2);
+                        m.Scores[Match.Pick(a, b, false)] = 9;
+                        Console.WriteLine(m.Get(a) + " " + m.Total() + " " + m.Log.Count + " " + m.Cells[2]);
+                    }
+                }
+                }
+                """;
+            var plugin = new EntryPlugin();
+            var r = Compile(src, new CompileOptions { Plugins = [plugin], Checked = true });
+            if (!r.Success) return Errors(r);
+            if (plugin.Problem != null) return plugin.Problem;
+            var path = Path.Combine(outDir, "api_plugin_entries.wasm");
+            File.WriteAllBytes(path, r.Module!);
+            var (o, e, _) = Node(root, path);
+            var want = "write a 3 True\nwrite b 4 True\nwrite a 4 True\nwrite b -1 True\nlog True 5\ncell 2 20 True\nwrite b 9 True\nread\nread\n4 13 1 20\n";
+            if (o != want) return $"output:\n{o}\nwanted:\n{want}\n{e}";
+            var old = new EntryPlugin { Version = 4 };
+            var r4 = Compile(src, new CompileOptions { Plugins = [old] });
+            if (!r4.Success) return Errors(r4);
+            if (old.Problem != null) return "version 4: " + old.Problem;
+            var refused = Compile(src, new CompileOptions { Plugins = [new EntryPlugin { WrongKey = true }] });
+            return !refused.Success && refused.Diagnostics.Any(d => d.Id == "CW0300" && d.GetMessage().Contains("the key here is")) ? null : "a hook whose key type differs was not refused: " + Errors(refused);
+        });
+
         Check("plugin v4: suppressible imports do nothing while their bit is set, whatever calls them (a virtual method, a delegate, a lambda, an interface); other imports and the program's state go on", () =>
         {
             var src = Header + """
@@ -752,6 +799,50 @@ static class ApiChecks
                 var reset = (Microsoft.CodeAnalysis.Operations.ISimpleAssignmentOperation)Op<Microsoft.CodeAnalysis.CSharp.Syntax.AssignmentExpressionSyntax>(a => a.ToString() == "_score = 0");
                 c.InterceptValue(reset.Target, H("Answer"));
             }
+        }
+    }
+
+    /// <summary>Per-player state in a dictionary, a list reached through a local, an array: the entries as accesses,
+    /// and hooks at them with the key.</summary>
+    sealed class EntryPlugin : ICompilerPlugin
+    {
+        public string? Problem;
+        public int Version = 5;
+        public bool WrongKey;
+        public int InterfaceVersion => Version;
+        public string Name => "entries";
+        public void Run(PluginContext c)
+        {
+            var match = c.Compilation.GetTypeByMetadataName("Game.Match")!;
+            ISymbol F(string n) => match.GetMembers(n).Single();
+            var entries = c.Accesses.Where(a => a.IsEntry).ToList();
+            if (Version < 5) { if (entries.Count > 0 || c.AccessesOf(F("Scores")).Any(a => a.IsEntry)) Problem = "entries seen: " + entries.Count; return; }
+            string Show(MemberAccess a) => a.Method.Name + ":" + a.Kind + ":" + (a.Key?.Syntax.ToString().Replace(" ", "") ?? "-") + (a.Instrumentable ? "" : ":no");
+            string Of(string member) => string.Join(" ", c.AccessesOf(F(member)).Where(a => a.IsEntry).Select(Show).Order());
+            var want = new Dictionary<string, string>
+            {
+                ["Scores"] = "Score:Write:p Bump:ReadWrite:p Drop:Write:p Get:Read:p Total:Read:- Main:Write:Match.Pick(a,b,false)",
+                ["Log"] = "Note:Write:- Main:Read:-",
+                ["Cells"] = "Cell:Write:i Main:Read:2",
+            };
+            foreach (var (member, w) in want)
+                if (Of(member) != string.Join(" ", w.Split(" ").Order())) { Problem = $"entries of {member}: {Of(member)}; wanted {w}"; return; }
+            var gen = c.AddSource("""
+                using System;
+                using Game;
+                static class Entries {
+                    public static void Score(object o, Player key, bool keyed, int tag) => Console.WriteLine("write " + key + " " + (((Match)o).Scores.TryGetValue(key, out var v) ? v : -1) + " " + keyed);
+                    public static void Log(object o, int tag) => Console.WriteLine("log " + (o == null) + " " + tag);
+                    public static void Cell(object o, int key, bool keyed, int tag) => Console.WriteLine("cell " + key + " " + ((Match)o).Cells[key] + " " + keyed);
+                    public static void Read(object o) => Console.WriteLine("read");
+                    public static void Wrong(object o, int key, bool keyed, int tag) { }
+                }
+                """);
+            IMethodSymbol H(string name) => gen.GetTypeByMetadataName("Entries")!.GetMembers(name).OfType<IMethodSymbol>().Single();
+            c.InstrumentEntryWrites(F("Scores"), H(WrongKey ? "Wrong" : "Score"));
+            c.InstrumentEntryWrites(F("Log"), H("Log"), tag: 5);
+            c.InstrumentEntryWrites(F("Cells"), H("Cell"));
+            c.InstrumentEntryReads(F("Scores"), H("Read"));
         }
     }
 
