@@ -1277,6 +1277,12 @@ sealed partial class RuntimeGen
         AssignTypeIds();
         D.Mark("  finish: AssignTypeIds");
         _emitScc?.Invoke();
+        // (a program with no cycle-capable type: no object is a member, no slot an arena's: Rt.InArenaSlot asks anyway)
+        if (_emitScc == null)
+        {
+            if (D.Rt.SccOfIfMade is { } scc0 && scc0.Body.Count == 0) new Emitter(scc0).I32(0);
+            if (D.Rt.ArenaIsSlotFnIfMade is { } is0 && is0.Body.Count == 0) new Emitter(is0).I32(0);
+        }
         D.Rt.EmitArrayDispatch();
         D.EmitReflectionTables();
         D.Mark("  finish: D.EmitReflectionTables");

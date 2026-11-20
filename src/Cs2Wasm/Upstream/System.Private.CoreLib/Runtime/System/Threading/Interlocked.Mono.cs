@@ -34,8 +34,24 @@ namespace System.Threading
                 return Rt.Take<object>(was);
             }
             if (v != 0) Rt.Retain(value!); // the count the slot takes if the exchange happens
-            // (linked as the store it may be, before it: taken back as a slot's old value is if it does not happen)
             int ad = (int)Unsafe.AsPointer(ref slot);
+            // A slot of an object of a cycle-capable type: the link, the exchange and the unlink are one step under
+            // the runtime lock, which every arena operation takes (the slot's bits say what it holds: two threads'
+            // exchanges of one slot, each linked before it and unlinked after, left them saying another's, and its
+            // counts wrong: freed objects still in use, seen as the compiler compiling itself on 24 threads). The
+            // exchange is an atomic one, not under the place's lock (that lock is taken before the runtime lock,
+            // below); a read that counts still finds the old value counted: its count passes to the result.
+            if (Rt.InArenaSlot(ad))
+            {
+                Rt.RuntimeLock();
+                v = Rt.LinkAt(v, ad);
+                int was = Atomic.CompareExchange32(ref slot, c, v);
+                if (was != 0) Rt.Retain(Rt.Borrow<object>(was)); // the result's count
+                Rt.UnlinkAt(was == c ? was : v, ad);
+                Rt.RuntimeUnlock();
+                return Rt.Take<object>(was);
+            }
+            // (linked as the store it may be, before it: taken back as a slot's old value is if it does not happen)
             v = Rt.LinkAt(v, ad);
             // under the place's lock: a read that counts (rt.load_retain) sees the old value still counted, or the new
             int held = Rt.RefLock(ref slot);
@@ -74,6 +90,17 @@ namespace System.Threading
                 return Rt.Take<object>(was);
             }
             int ad = (int)Unsafe.AsPointer(ref slot);
+            // (a slot of an object of a cycle-capable type: one step under the runtime lock, as CompareExchange)
+            if (Rt.InArenaSlot(ad))
+            {
+                Rt.RuntimeLock();
+                v = Rt.LinkAt(v, ad);
+                int was = Atomic.Exchange32(ref slot, v);
+                if (was != 0) Rt.Retain(Rt.Borrow<object>(was)); // the result's count
+                Rt.UnlinkAt(was, ad);
+                Rt.RuntimeUnlock();
+                return Rt.Take<object>(was);
+            }
             v = Rt.LinkAt(v, ad);
             int held = Rt.RefLock(ref slot);
             int old = slot;

@@ -2449,6 +2449,9 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern bool MoveRefs(int dst, int src, int count);
         [System.ThreadStatic] static int t_atSlot, t_atOwner;
 
+        /// <summary>The address is a slot of an object of a cycle-capable type (an arena's member, or one that can be).</summary>
+        public static bool InArenaSlot(int slot) => SlotOwner(slot) != 0;
+
         static int SlotOwner(int slot)
         {
             int c = ObjectOf(slot);
