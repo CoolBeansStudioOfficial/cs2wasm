@@ -492,7 +492,8 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   its bits saying the other's value and its counts wrong; now the three are one step under the runtime lock, with an
   atomic exchange (the place's lock is taken before the runtime lock elsewhere: not inside it). Not enough: 24
   threads still do not end; a checked build of the compiler (freed memory never used again) is to say where.
-  Also seen: 072_http once out of bounds in a worker in a checked suite run, then 366 runs passing.
+  Also seen: 072_http once out of bounds in a worker in a checked suite run, then 366 runs passing (found and fixed
+  2026-11-20: a compare-exchange that did not happen, below).
   Then, found with a checked build of the compiler (a node of Roslyn's read after it was freed) and two small
   programs that reproduce it (test 139: sixteen threads storing into the same slots of shared objects, a shared
   array of structs among them, as Roslyn's node cache does; 14 runs in 40 failed before):
@@ -537,8 +538,34 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   self-hosted compiler on Console.WriteLine(42): 16.0 s to 12.45 s, against 4.6 s for NativeAOT-LLVM's build of it
   (2.7x). Its profile is flat now: the arena machinery about a quarter of the program's time (stores into slots of
   Roslyn's cycle-capable types: proving them away is step 7.2's), counting about a tenth, the host's file calls 6%.
-  **Open (2026-11-20): test 139 leaks two nodes about one run in 45 under heavy load** (15 runs at once, checked;
-  none in 107 runs at lighter load): the same rate before and after the TopHeld change below, so older. Not found yet.
+  **Then (2026-11-20): test 139's leak under load and 072_http's rare out-of-bounds, both found and fixed**, each
+  with a test that fails before (`tools/stress.mjs` runs one module many times at once and counts its outputs; a
+  failed run's whole stderr goes next to the module):
+  - Test 139 leaked a thread's anchor node and its last node, about one run in 45 at 15 runs at once. The two were
+    consistent with each other; the anchor had one outside count nothing held. Its source: a node that had died alone
+    was kept for good. A group's members whose finalizers run after the runtime lock is given back
+    (`Rt.RunDeferredDestroys`) carry the count `FinBias` meanwhile, and the check after the finalizers reads any count
+    above it as a reference a finalizer stored somewhere, and keeps the group with every reference it held put back
+    counted (the dead node's to the anchor). A read that counts with no lock (`rt.load_retain`) counts the object a
+    place held when it read it and gives the count back once the place says it is out of date: on a node in that
+    window, such a count was taken for a finalizer's store. Now a count word with `FinBias` in it is counted only
+    under the runtime lock, where that check runs, and only if the place still holds the object
+    (`EmitLoadRetainLockFree`). With `CS2WASM_LOCKED_LOADS=1` the leak was gone before (0 in 300), which pointed
+    there. Test 149 (writers replacing nodes that refer to an anchor in slots readers read) failed in most loaded
+    runs before; none in 200 now. Test 139: none in 400 loaded runs, checked and as shipped.
+  - 072_http: a group's member kept as its owner a member that had been freed, and the next store into it read the
+    freed member's words (checked: out of bounds in `Rt.OnChain`, from `Adopt` or `LinkMembers`; as shipped: freed
+    memory read silently). Its source: `Interlocked.CompareExchange` of a reference into a slot of a group's member
+    linked the new value before the exchange, and when the exchange did not happen took it back as an unlink of the
+    new value with the slot bits of the value the slot kept. When those said "not linked" (a sentinel from a static
+    readonly field), the unlink was a plain release: the new value stayed owned by the container and counted inside
+    it. `Task.AddTaskContinuation` does exactly that when the task completes as the continuation is added (the
+    slot holds the completion sentinel): the continuation then named the task as its owner after the task was freed.
+    The HTTP pump completes operations on its own thread, hence the race. Now the link (and the old value's unlink)
+    happens only when the exchange did; otherwise the count taken for the slot is given back. Test 150 (failing
+    compare-exchanges over a sentinel) failed every checked run before. A loop of 20 streamed GETs of 300 KB in reads
+    of 256 bytes crashed in up to half the loaded runs before, none of 200 per mode now; 072_http, none in 600
+    loaded runs per mode (it failed about one in 1,000 before).
   **Build cost, measured 2026-11-20 (tools/measure-build.ps1: wall time, peak memory of every process a build
   starts), the compiler with Roslyn:** `dotnet build` to IL 9 s, 0.73 GB; NativeAOT-LLVM published to WebAssembly
   80 s, 8.7 GB summed (ilc 2.8 GB, Emscripten's clang and wasm-ld the rest), a 129 MB module; cs2wasm 18 to 20

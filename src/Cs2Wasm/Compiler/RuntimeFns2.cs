@@ -375,6 +375,9 @@ internal sealed partial class RuntimeFns
     /// thread holds; and had it been freed before, the store that let it go came before that count, so this second
     /// read sees it). Another: the count is given back and the read starts again. A store is the value's write, then
     /// the old value's release (rt.store_ref), in that order.</summary>
+    /// <summary>Rt.FinBias: the count of a group's member while the finalizers of the group run.</summary>
+    const int FinBias = 0x10000000;
+
     void EmitLoadRetainLockFree(Emitter e, bool arenas)
     {
         int p = e.AddLocal(I), r = e.AddLocal(I);
@@ -384,6 +387,25 @@ internal sealed partial class RuntimeFns
         var counted = e.Block(); var count = e.Loop();
         e.Get(p); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
         e.If();
+        if (arenas)
+        {
+            // (a group's member whose finalizer phase is under way, Rt.FinPrepare: its count is FinBias, and the check
+            // after the finalizers, under the runtime lock, reads any count above it as a reference the program can
+            // reach, and keeps the group for good with all it refers to. A count taken here on an out-of-date reference,
+            // given back once the place says so, was such a count: test 139 leaked a node and the one it referred to,
+            // about one run in 45 under load. So under the runtime lock, and only if the place still holds the object.)
+            e.Get(r); e.I32(FinBias); e.Op(Op.I32And);
+            e.If();
+            e.Call(LockEnter);
+            e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(p);
+            e.If();
+            e.Get(p); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(FinBias); e.Op(Op.I32And);
+            e.If(); e.Get(p); e.Call(Retain); e.Op(Op.Drop); e.Call(LockExit); e.Get(p); e.Op(Op.Return); e.End();
+            e.End();
+            e.Call(LockExit);
+            e.Br(again);
+            e.End();
+        }
         e.Get(p); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(counted);
         e.Br(count);
         e.End();

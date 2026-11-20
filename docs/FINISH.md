@@ -26,7 +26,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 |---|---|---|---|
 | 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 180/180 | all pass, no `known-gap` |
 | 1 | Behaviour differences on record (AUDIT open items) | `StackFrame.GetMethod()` null; `FirstChanceException` maybe not raised | none |
-| 2 | Leaks: test 139 under load, 127, 131 | 139: 2 nodes in ~1 run of 45 | none in 200 loaded runs |
+| 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20) | none in 200 loaded runs |
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4) in the Bazoodle repository | not started | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
@@ -37,7 +37,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | Same: module size | 64 MB vs 129 MB | met; cut what is waste (breakdown first) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 23 s on 1, 64 s on 12 | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | not re-tried since 11-17 | plays, log equals the oracle's |
-| - | 072_http's rare out-of-bounds | open | found or not seen in 500 runs |
+| - | 072_http's rare out-of-bounds | found and fixed 2026-11-20: none in 600 loaded runs per mode (was ~1 in 1,000) | found or not seen in 500 runs |
 
 ## Where the self-hosted compiler's gap is (measured 2026-11-20)
 
@@ -86,7 +86,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 | E. Behaviour gaps | `StackFrame.GetMethod()`, `FirstChanceException` | CoreLib Boundary, stack trace code | to start |
 | F. Plugins | A4.6 closed-form solver with its tests | Compiler/Solver.cs, PluginSolver.cs, tests | done 2026-11-20 (version 6) |
 | G. Spikes | frame-time check against NativeAOT | tools (new), bench programs | to start |
-| H. Flakes | test 139 leak under load, 072_http | Runtime.cs (read first), tests | to start |
+| H. Flakes | test 139 leak under load, 072_http | Runtime.cs (read first), tests | done: both found and fixed (tests 149, 150) |
 
 9.4 (the Invisible API slice) lives in the Bazoodle repository: started once F lands, from that repository.
 
@@ -98,3 +98,7 @@ Each stream is independent of the others' files where marked, so it can run in a
   exact, floating point marked approximate). The four A4.6 examples, integer LCGs, a loop, a throwing Clamp, each
   against running the ticks; two unsolvable cases with reasons. Fixed on the way: generated code calling a program
   method with parameters (`Driver.InputType`). Suite 180/180 checked and as shipped.
+- 2026-11-20, stream H: test 139's leak (a lock-free counted read of a member in its group's deferred finalizer
+  phase made the check after the finalizers keep the group) and 072_http's out-of-bounds (a compare-exchange into a
+  group's slot that did not happen left the offered value owned by the container) found and fixed; tests 149 and
+  150 fail before; `tools/stress.mjs` for loaded runs. Details in docs/AUDIT.md.
