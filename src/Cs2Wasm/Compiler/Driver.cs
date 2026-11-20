@@ -57,13 +57,18 @@ sealed class DataChunk
     public int Offset, Length, Align;
     public string? Owner;
     public int Final = -1;
+    /// <summary>Its address was taken as a number before the final layout (it may be in another chunk's bytes, where
+    /// no relocation says so): live whatever refers to it.</summary>
+    public bool Taken;
     public List<(int at, IAddress target)>? Relocs;
 }
 
 sealed class DataAddr(Driver d, DataChunk chunk) : IAddress
 {
     public DataChunk Chunk => chunk;
-    public int Address => d.ChunkAddress(chunk);
+    public int Address => d.ChunkAddress(chunk) + Plus;
+    /// <summary>Added to the address: a tag in its low bits (RuntimeGen.EmitFullNames).</summary>
+    public int Plus { get; init; }
     /// <summary>A string literal: an immortal object (its count is -1; retain and release leave it as it is).</summary>
     public bool Immortal { get; init; }
 }
@@ -425,6 +430,16 @@ internal sealed partial class Driver
         return a;
     }
 
+    /// <summary>Code asks for type names: a generic instance's full name may be made when first asked for rather
+    /// than kept in the data (RuntimeGen.EmitFullNames), in a string from Rt.AllocObject.</summary>
+    public bool LazyTypeNames;
+    public void WantLazyTypeNames()
+    {
+        if (LazyTypeNames || Environment.GetEnvironmentVariable("CS2WASM_NO_LAZY_NAMES") == "1") return;
+        LibMethod("Cs2Wasm.Runtime.Rt", "AllocObject", 2);
+        LazyTypeNames = true;
+    }
+
     public IAddress DataBlob(byte[] bytes, int align)
     {
         Align(align);
@@ -464,6 +479,7 @@ internal sealed partial class Driver
     /// <summary>A chunk's address; taken before the final layout, it pins the data where it is.</summary>
     public int ChunkAddress(DataChunk c)
     {
+        if (!_dataFinal) c.Taken = true;
         if (!_dataFinal && !_dataPinned)
         {
             _dataPinned = true;
@@ -483,6 +499,7 @@ internal sealed partial class Driver
         foreach (var f in liveFns)
             foreach (var ins in f.Body)
                 if (ins.Ref is DataAddr da) Mark(da.Chunk);
+        foreach (var c in _chunks) if (c.Taken) Mark(c);
         while (work.Count > 0)
         {
             var c = work.Pop();
@@ -497,6 +514,11 @@ internal sealed partial class Driver
                 Console.Error.WriteLine($"    {g.Sum(c => c.Length),7} {g.Key}");
         }
         var old = Data.Bytes.ToArray();
+        // (pinned, nothing moves: the chunks nothing live refers to are zero, which the packed data keeps in a few bytes)
+        if (_dataPinned)
+            foreach (var c in _chunks)
+                if (!live.Contains(c))
+                    for (int i = 0; i < c.Length; i++) Data.Bytes[c.Offset + i] = 0;
         if (!_dataPinned)
         {
             var bytes = new List<byte>();

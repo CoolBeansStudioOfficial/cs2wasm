@@ -144,10 +144,15 @@ sealed partial class RuntimeGen
     {
         int n = D.TypeCount;
         bool Real(int i) => i > 0 && !D.IsSymbolless(i);
+        // (an id list is read only: types with the same list share one, the empty one above all)
+        var lists = new Dictionary<string, IAddress>();
         IAddress Ids(IEnumerable<ITypeSymbol> types)
         {
             var ids = types.Select(x => D.ExtId(D.TypeId(D.Types.Canonical(x)))).ToList();
-            return D.DataBlob([.. BitConverter.GetBytes(ids.Count), .. ids.SelectMany(BitConverter.GetBytes)], 4);
+            var key = string.Join(",", ids);
+            if (!lists.TryGetValue(key, out var a))
+                lists[key] = a = D.DataBlob([.. BitConverter.GetBytes(ids.Count), .. ids.SelectMany(BitConverter.GetBytes)], 4);
+            return a;
         }
         foreach (var (kind, fn) in D.Rt.TypeInfoFns)
         {

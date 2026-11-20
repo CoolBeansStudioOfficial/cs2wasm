@@ -836,6 +836,47 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     holder may be outside the tree; here it is inside, the tree holds itself, and in a group that lives on it
     stays. Not specific to async; freed whenever the group goes (a program without a task on a cycle: at once).
 
+- **Self-hosted compiler's size (stream B of docs/FINISH.md, 2026-11-20): 63,966,970 to 42,664,712 bytes.**
+  `tools/size-report.mjs module.wasm [--packed]` (names from a `CS2WASM_NAMES=1` build) splits a module: its
+  sections; code by kind (methods, generic instantiations, specialized copies, dispatch stubs, lambdas, arena and
+  counting functions, static initializers), by namespace, by type, by source method with its instantiations; data
+  expanded and split into string literals, manifest resources (found by content from the build's .rsp) and the rest.
+  What the 64 MB were: code 36.1 MB, data 23.3 MB, stack-trace frames 1.2 MB. Of the data, 13.8 MB string literals,
+  12.5 MB of them the full names of 37,841 generic instances (`Type.FullName` of every type the module numbers, each
+  repeating its arguments' names: Roslyn's run to 1,300 characters); 4.0 MB the library sources the compiler
+  compiles (needed); 5.5 MB type tables and reflection records. The data was not packed: packing (SPEC 5) needed the
+  packed bytes to fit the first megabyte of heap. Fixed, behaviour unchanged:
+  - A generic instance's (or an array's or pointer's of one) full name is kept as pieces whose join is the name:
+    strings (a definition's part up to its bracket, shared by every instance, and separators) and type ids (an
+    argument whose own entry is its name, found in the name in order; one with no id is looked into). Each record is
+    checked at compile time against the name. `rt.lazy_type_name` joins them the first time the name is asked for,
+    makes the string immortal (a literal's header) and puts it in the table's slot (a compare-exchange with threads;
+    the loser frees its own). .NET keeps a type's name as long as the type, so nothing is kept that .NET frees. A
+    program saving under 8 KB keeps its literals (`CS2WASM_ALL_LAZY_NAMES=1` forces it; `CS2WASM_NO_LAZY_NAMES=1`
+    turns it off). The Type.GetType table stores minus such a name's length and makes the name only for a lookup of
+    that length (`TypeInfo.GetTypeByName`). Self-hosted compiler: 38,412 names, expanded data 20.9 to 12.8 MB.
+  - Packed data that does not fit the start's memory is expanded through a window of up to 1 MB at the heap's start,
+    refilled from the segment with memory.init (`DataCompression.EmitStreamDecoder`; a match that does not overlap
+    what it copies is one memory.copy). Small programs keep the old expander byte for byte. Self-hosted compiler: 2.8
+    MB of data in the module. `CS2WASM_PACK_WINDOW=n` forces a window (the suite passes with 4096).
+  - Type tables' id lists (interfaces, generic arguments, nested types, constraints) are shared between types with
+    the same list.
+  - A layout that reflection pinned (an address taken as a number before the final layout) no longer keeps dead
+    chunks' bytes: they are zero (packed to almost nothing), and a chunk whose address was taken counts as live.
+  Hello world 27,541 bytes before and after; bench 372,676 to 372,166 bytes (0.91x NativeAOT, 16.0 MB vs 71.3 MB);
+  test 036 528,820 to 512,342. The self-hosted compiler's hello world is byte-identical to the old one's, in the same
+  time (14.2 s against 14.3 s, interleaved). Suite 179 passed checked and as shipped (also with lazy names and a
+  4 KB window forced everywhere; 088's timer line and 135's WhenAny race fail under heavy load, before as after).
+  **What is left is code, 36.2 MB:** generic instantiations 14.9 MB (81,417 functions), other methods 11.3, specialized
+  copies (constant arguments) 2.7, dispatch stubs 2.0 (a binary search per stub; IEnumerator.MoveNext's is 115 KB),
+  lambdas 1.4, arena machinery 1.1 (per-type dispatch: rt.retain_contents 274 KB, rt.destroy_now 188 KB,
+  rt.arena_clear 173 KB), counting and destroy functions 1.0, static initializers 0.6. By namespace: Roslyn's C#
+  8.3 MB, System.Linq 7.6 (one set of Select/Where iterator classes per instantiation, with ToArray, ToList, Fill,
+  Contains... each), System.Collections.Generic 2.9. Byte-identical bodies left after merging: 0.5 MB (kept apart
+  by their frames). The levers there: sharing code between instantiations over reference types (as .NET's
+  canonical forms do), and which virtual overrides of the Linq iterators a call can reach. Also left in the data:
+  3,476 full names (1 MB) the cast-failure helpers keep (`rt.throw_cast`, one literal per target type).
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:

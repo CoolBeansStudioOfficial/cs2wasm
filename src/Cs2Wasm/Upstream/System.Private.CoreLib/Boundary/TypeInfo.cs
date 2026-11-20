@@ -51,7 +51,8 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern object? Invoke(int thunk, object? target, object?[]? args);
         /// <summary>[count, ids...]: all the interfaces the type implements.</summary>
         [Intrinsic] public static extern int Interfaces(int id);
-        /// <summary>[count, (full name, type id)...]: the program's and CoreLib's named types (Type.GetType).</summary>
+        /// <summary>[count, (full name, type id)...]: the program's and CoreLib's named types (Type.GetType); a name made
+        /// when first asked for (FullName) is minus its length.</summary>
         [Intrinsic] public static extern int NameTable();
         /// <summary>[count, ids...]: the program's own types, in the order the C# compiler writes them (Assembly.GetTypes).</summary>
         [Intrinsic] public static extern int ProgramTypes();
@@ -107,7 +108,11 @@ namespace Cs2Wasm.Runtime
             int t = NameTable(), n = Mem.LoadI32(t);
             for (int i = 0; i < n; i++)
             {
-                string s = Rt.Take<string>(Mem.LoadI32(t + 4 + 8 * i));
+                // (a name the module makes when first asked for is minus its length here: made only for a name as
+                // long as the one looked for)
+                int np = Mem.LoadI32(t + 4 + 8 * i);
+                if (np < 0 && -np != name.Length) continue;
+                string s = np < 0 ? FullName(Mem.LoadI32(t + 8 + 8 * i)) : Rt.Borrow<string>(np);
                 if (string.Equals(s, name, ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                     return RuntimeType.FromId(Mem.LoadI32(t + 8 + 8 * i));
             }
