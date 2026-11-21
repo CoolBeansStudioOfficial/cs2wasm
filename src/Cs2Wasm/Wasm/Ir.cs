@@ -148,6 +148,9 @@ internal sealed class WasmFunction
     public string? FrameName;
     /// <summary>Compiled from the program's own code (named in the name section; the library's frames are named in cs2wasm.frames).</summary>
     public bool ProgramCode;
+    /// <summary>A body shared by methods whose frame names differ (ShareConstants.cs): no frame of its own, its place
+    /// (lines, inlined calls) shown in the frame of the stub that called it (cs2wasm.frames lists these).</summary>
+    public bool LendsLines;
     /// <summary>The variables in the function's frame on the shadow stack (offset from the frame's base, size), for
     /// FrameSlots.cs; null: no frame, or one that pass must leave alone.</summary>
     public List<(int off, int size)>? FrameSlots;

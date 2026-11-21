@@ -48,7 +48,7 @@ export function debugInfo(module) {
     }
   }
   // frames: a bit per function index, set for .NET frames
-  const frames = [];
+  const frames = [], lenders = new Set();
   for (const sec of WebAssembly.Module.customSections(module, 'cs2wasm.frames')) {
     const b = unpackSection(new Uint8Array(sec)), p = { i: 0 };
     const n = readU32(b, p);
@@ -66,6 +66,9 @@ export function debugInfo(module) {
       names[idx] = type + '.' + method + '(' + ps.join(', ') + ')';
     }
     for (let k = 0; k < n; k++) frames.push(visible[k] ? names[k] : null);
+    // (then the functions that lend their lines to the frame that calls them: a body shared by methods whose frame
+    // names differ, each method's frame a stub that calls it; absent in older modules)
+    if (p.i < b.length) { let at = 0; for (let k = readU32(b, p); k > 0; k--) lenders.add(at += readU32(b, p)); }
   }
   // lines: files, then (offset delta, line delta << 1 | file changes[, file])
   const files = [], lines = [];
@@ -104,12 +107,15 @@ export function debugInfo(module) {
   }
   // The frames a stack trace shows for one frame of the engine's (a function and a code offset in it), innermost
   // first: the methods inlined at that offset, each where the code or its inlined call is, then the function itself
-  // (if it is a .NET frame) at the outermost inlined call, or at the offset when nothing is inlined there.
-  const framesAt = (index, offset) => {
+  // (if it is a .NET frame) at the outermost inlined call, or at the offset when nothing is inlined there. `walk`
+  // carries a lender's place to the frame that called it (one object per stack walked, innermost frame first).
+  const framesAt = (index, offset, walk) => {
     const out = [];
-    let loc = lineAt(offset);
+    let loc = walk?.lent !== undefined ? walk.lent : lineAt(offset);
+    if (walk) walk.lent = undefined;
     for (let s = inlineOf.get(offset) ?? -1; s >= 0; s = scopes[s].parent) { out.push({ name: scopes[s].name, loc }); loc = scopes[s].call; }
-    if (frames[index]) out.push({ name: frames[index], loc });
+    if (lenders.has(index) && walk) walk.lent = loc;
+    else if (frames[index]) out.push({ name: frames[index], loc });
     return out;
   };
   return { frames, lineAt, names, framesAt };
