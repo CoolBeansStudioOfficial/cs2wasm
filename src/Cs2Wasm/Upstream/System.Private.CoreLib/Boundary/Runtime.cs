@@ -1078,6 +1078,7 @@ namespace Cs2Wasm.Runtime
             TOther = 7, TOddBlocks = 8, TOddBytes = 9, TMemberWords = 10, TArenaRecords = 11, TFreePageList = 12, TRunLeft = 13,
             THugeObj = 14, THugeArena = 15, TLeafGran = 16, TMwLive = 17, TBadTags = 18, TObjects = 19, TWords = 24, THashed = 34, THugeBins = 40, TCount = 56;
         static int s_ms, s_msRec, s_msGrows;
+        static bool s_msFinal;
         static int MsClsAt(int c) => s_ms + c * MsCls * 4;
         static int MsTotAt(int k) => s_ms + Classes * MsCls * 4 + k * 4;
         static int MsTypeAt(int i) => s_ms + Classes * MsCls * 4 + TCount * 4 + i * 20;
@@ -1177,6 +1178,12 @@ namespace Cs2Wasm.Runtime
                     if ((r & 2) != 0) MsAdd(MsTotAt(THugeArena), n);
                     // (memory that is no object, by its size: 16, 64, 256, 1024 KB and above)
                     if (r == 0) { int bin = n < 16 ? 0 : n < 64 ? 1 : n < 256 ? 2 : n < 1024 ? 3 : 4; MsAdd(MsTotAt(THugeBins + bin), 1); MsAdd(MsTotAt(THugeBins + 5 + bin), n); }
+                    if (r == 0 && n >= 16 && s_msFinal)
+                    {
+                        MsText("memstats block "); MsNum(n); MsText(" KB:");
+                        for (int i = 0; i < 12; i++) { MsText(" "); MsNum(Mem.LoadI32(a + 4 * i)); }
+                        MsEnd();
+                    }
                     a += n << GShift;
                 }
                 else if (k == 3)
@@ -1295,6 +1302,7 @@ namespace Cs2Wasm.Runtime
         {
             if (!MemStatsOn() || s_ms == 0) return;
             if (s_msGrows > 0) MsFull("at-last-growth");
+            s_msFinal = true;
             MsWalk();
             MsFull("now");
         }

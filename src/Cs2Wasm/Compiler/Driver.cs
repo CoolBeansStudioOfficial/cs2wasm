@@ -450,7 +450,26 @@ internal sealed partial class Driver
         if (_blobs != null) { var k = Compiling != null ? Display(Compiling.Sym) : "(tables)"; _blobs.TryGetValue(k, out int n); _blobs[k] = n + bytes.Length; }
         var addr = new DataAddr(this, NewChunk(off, align));
         if (_blobs != null) addr.Chunk.Owner = Compiling != null ? Display(Compiling.Sym) : "(tables)";
+        if (s_dataDump != null) lock (s_dataDump)
+            {
+                var fr = new System.Diagnostics.StackTrace(1, false);
+                var m = fr.GetFrame(0)?.GetMethod();
+                if (m?.Name == "DataBlob") m = fr.GetFrame(1)?.GetMethod();
+                var k = m == null ? "?" : m.DeclaringType?.Name + "." + m.Name;
+                s_dataDump.TryGetValue(k, out long n); s_dataDump[k] = n + bytes.Length;
+            }
         return addr;
+    }
+
+    /// <summary>CS2WASM_DATA_DUMP=<file> (a diagnosis): the data's bytes by the compiler method that made each blob,
+    /// written when the process ends.</summary>
+    static readonly Dictionary<string, long>? s_dataDump = MakeDataDump();
+    static Dictionary<string, long>? MakeDataDump()
+    {
+        if (Environment.GetEnvironmentVariable("CS2WASM_DATA_DUMP") is not { Length: > 0 } path) return null;
+        var d = new Dictionary<string, long>();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => { lock (d) File.WriteAllLines(path, d.OrderByDescending(x => x.Value).Select(x => x.Value + "\t" + x.Key)); };
+        return d;
     }
 
     /// <summary>Writes a value into a blob made earlier (its bytes are still in the data being built).</summary>
