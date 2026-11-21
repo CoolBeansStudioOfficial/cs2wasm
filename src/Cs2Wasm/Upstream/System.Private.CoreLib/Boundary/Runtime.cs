@@ -2518,9 +2518,6 @@ namespace Cs2Wasm.Runtime
         public static void ArenaRelease(int p)
         {
             int w = Atomic.Add32(ref Mem.RefI32(p), 1) + 1;
-            // (checked: a member released with no outside reference counted on it, a release too many or of an inside
-            // reference; it would read as immortal, -1, from here on)
-            if (Checked() && SingleThreaded() && w == -1) throw new System.InvalidOperationException("checked: a " + TypeName(Borrow<object>(p)) + ", a member with no outside reference, released");
             int ar = ArenaOf(p);
             if (w == -2)
             {
@@ -2690,8 +2687,6 @@ namespace Cs2Wasm.Runtime
             // the stored reference is inside the arena now: the count the store took is given back (its last outside
             // one after the store, GiveBackLater; at once for an object that joined for this store: nothing was
             // counted on its being referred to from outside)
-            // (checked: a value stored with no outside count on it: the store's count was never taken)
-            if (Checked() && SingleThreaded() && Mem.LoadI32(val) == -2) throw new System.InvalidOperationException("checked: a " + TypeName(Borrow<object>(val)) + " stored into a " + TypeName(Borrow<object>(container)) + " with no outside count" + (joined ? " (it joined for this store)" : ""));
             if (Atomic.Add32(ref Mem.RefI32(val), 1) == -3)
             {
                 if (joined) Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);

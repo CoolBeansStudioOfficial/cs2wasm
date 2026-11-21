@@ -30,8 +30,19 @@ static class Probe
         var compilation = CSharpCompilation.Create("GodotSharp", trees, references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true, nullableContextOptions: NullableContextOptions.Enable));
         Console.WriteLine($"probe: {files.Count} files parsed");
+        // (a fifth argument: "nodes", only walk the syntax; "loop", the trees by index, no LINQ)
+        string mode = args.Length > 5 ? args[5] : "";
         int bodies = 0, done = 0;
-        foreach (var tree in trees.Skip(first).Take(count))
+        if (mode == "nodes")
+        {
+            for (int i = first; i < trees.Count && i < first + (long)count; i++)
+                foreach (var node in trees[i].GetRoot().DescendantNodes()) bodies++;
+            Console.WriteLine($"probe: done, {bodies} nodes");
+            return;
+        }
+        IEnumerable<SyntaxTree> chosen = trees.Skip(first).Take(count);
+        if (mode == "loop") { var list = new List<SyntaxTree>(); for (int i = first; i < trees.Count && i < first + (long)count; i++) list.Add(trees[i]); chosen = list; }
+        foreach (var tree in chosen)
         {
             var model = compilation.GetSemanticModel(tree);
             foreach (var node in tree.GetRoot().DescendantNodes())
