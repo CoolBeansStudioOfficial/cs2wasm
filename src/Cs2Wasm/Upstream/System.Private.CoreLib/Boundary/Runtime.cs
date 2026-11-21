@@ -149,6 +149,18 @@ namespace Cs2Wasm.Runtime
         // the link is the second word, so a block of 8 bytes can be free (a cycle-capable object's side words; an
         // object of 12, with no fields, takes 12); with threads it is at 8, clear of a dead object's count word that a
         // reference read without a lock looks at (and of its type word), so 16 at least.
+        /// <summary>A small block's size for a request: steps of 4 bytes up to 128, of 8 up to 256, then eight sizes per
+        /// doubling (32 to 512, 64 to 1024, 128 to 2048). Every size its own class is a page partly used: 380 classes
+        /// above 512 bytes held 3.4 MB of the self-hosted compiler's blocks in 7.8 MB of pages. (A size above MaxSmall:
+        /// a multiple of 4, the large blocks round it themselves.) A multiple of 8 stays one.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static int RoundSmall(int n)
+        {
+            if (n <= 128 || n > MaxSmall) return (n + 3) & ~3;
+            if (n <= 256) return (n + 7) & ~7;
+            int step = 1 << (28 - I32Clz(n - 1));
+            return (n + step - 1) & ~(step - 1);
+        }
         static int FreeLink => SingleThreaded() ? 4 : 8;
         static int MinBlock => SingleThreaded() ? 8 : 16;
         static int s_top, s_end, s_table, s_hash;
@@ -791,7 +803,7 @@ namespace Cs2Wasm.Runtime
 
         static int AllocLocal(int size, int kind)
         {
-            size = (size + 3) & ~3;
+            size = RoundSmall(size);
             if (size < 16) size = 16;
             int heads = t_heads;
             if (heads == 0) heads = InitThreadCache();
@@ -902,7 +914,7 @@ namespace Cs2Wasm.Runtime
 
         static void FreeLocal(int addr, int size, int kind)
         {
-            size = (size + 3) & ~3;
+            size = RoundSmall(size);
             if (size < 16) size = 16;
             int heads = t_heads;
             if (heads == 0) heads = InitThreadCache();
@@ -1233,7 +1245,7 @@ namespace Cs2Wasm.Runtime
         static int AllocCore(int size, int kind)
         {
             if (s_top == 0) InitHeap();
-            size = (size + 3) & ~3;
+            size = RoundSmall(size);
             if (size < MinBlock) size = MinBlock;
             // (small blocks: from pages without threads; with them, from the lists by size the threads' caches refill from)
             if (size <= MaxSmall) return SingleThreaded() ? PageAlloc(size) : AllocSmallShared(size, kind);
@@ -1307,7 +1319,7 @@ namespace Cs2Wasm.Runtime
             // calls): the block is kept aside for the next allocation of its size; the one that was there goes on.
             if (SingleThreaded() && !ShareCheck() && !Checked())
             {
-                int s = (size + 3) & ~3;
+                int s = RoundSmall(size);
                 if ((uint)s <= MaxSmall)
                 {
                     if (s < MinBlock) s = MinBlock;
@@ -1322,7 +1334,7 @@ namespace Cs2Wasm.Runtime
             else if (!ShareCheck() && !Checked())
             {
                 // (threads: back onto its page, the thread's own, as FreeLocal)
-                int s = (size + 3) & ~3, heads = t_heads;
+                int s = RoundSmall(size), heads = t_heads;
                 if ((uint)(s - 16) <= MaxSmall - 16 && heads != 0)
                 {
                     int own = OwnPage(addr);
@@ -1372,9 +1384,9 @@ namespace Cs2Wasm.Runtime
             if (Checked() && !ShareCheck() && size >= 8)
             {
                 // (and the table must name this block for its first and its last byte: BlockOf)
-                if (BlockOf(addr) != addr || BlockOf(addr + ((size + 3) & ~3) - 1) != addr) Mem.StoreI32(-4, 0);
+                if (BlockOf(addr) != addr || BlockOf(addr + RoundSmall(size) - 1) != addr) Mem.StoreI32(-4, 0);
                 // (with threads a dead object's count word stays zero: a read that counts relies on it)
-                int whole = (size + 3) & ~3;
+                int whole = RoundSmall(size);
                 Mem.StoreI32(addr, SingleThreaded() ? 0x0EAD0000 : 0);
                 Mem.StoreI32(addr + 4, 0x7EAD0000);
                 if (whole > 8) Mem.Fill(addr + 8, 0xDD, whole - 8);
@@ -1389,7 +1401,7 @@ namespace Cs2Wasm.Runtime
 
         static void FreeCore(int addr, int size, int kind)
         {
-            size = (size + 3) & ~3;
+            size = RoundSmall(size);
             if (size < MinBlock) size = MinBlock;
             if (size <= MaxSmall)
             {
@@ -1449,7 +1461,7 @@ namespace Cs2Wasm.Runtime
             // object's identity hash is made when it is first asked for: HashOf.)
             if (SingleThreaded())
             {
-                int s = (size + 3) & ~3, hot = s_hot;
+                int s = RoundSmall(size), hot = s_hot;
                 if ((uint)s <= MaxSmall && hot != 0)
                 {
                     int hotSlot = hot + (s >> 2) * 4;
@@ -1476,7 +1488,7 @@ namespace Cs2Wasm.Runtime
             else if (!ShareCheck())
             {
                 // (threads: the same piece on the thread's current page of the size, AllocLocal)
-                int s = (size + 3) & ~3, heads = t_heads;
+                int s = RoundSmall(size), heads = t_heads;
                 if ((uint)(s - 16) <= MaxSmall - 16 && heads != 0)
                 {
                     int pg = Mem.LoadI32(heads + CurTable + (s >> 2) * 4);
@@ -1513,7 +1525,7 @@ namespace Cs2Wasm.Runtime
             // and given its header. (An object's identity hash is made when it is first asked for: HashOf.)
             if (SingleThreaded())
             {
-                int s = (size + 3) & ~3;
+                int s = RoundSmall(size);
                 if (s <= MaxSmall && s_table != 0)
                 {
                     int hotSlot = s_hot + (s >> 2) * 4;
@@ -1797,7 +1809,7 @@ namespace Cs2Wasm.Runtime
             // (the usual case in one piece, as AllocObject: a freed block of the size, cleared, its header set)
             if (SingleThreaded())
             {
-                int s = (size + ArenaPrefix + 3) & ~3;
+                int s = RoundSmall(size + ArenaPrefix);
                 if (s <= MaxSmall && s_table != 0)
                 {
                     int hotSlot = s_hot + (s >> 2) * 4;
@@ -1873,7 +1885,7 @@ namespace Cs2Wasm.Runtime
             // (the usual case in one small piece, as FreeObject)
             if (SingleThreaded() && !ShareCheck() && !Checked())
             {
-                int s = (size + ArenaPrefix + 3) & ~3;
+                int s = RoundSmall(size + ArenaPrefix);
                 if ((uint)s <= MaxSmall)
                 {
                     int blk = addr - ArenaPrefix;
