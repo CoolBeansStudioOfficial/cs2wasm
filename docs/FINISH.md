@@ -97,6 +97,20 @@ Each stream is independent of the others' files where marked, so it can run in a
 | G. Spikes | frame-time check against NativeAOT | tools (new), bench programs | to start |
 | H. Flakes | test 139 leak under load, 072_http | Runtime.cs (read first), tests | done: both found and fixed (tests 149, 150) |
 
+**Second fan-out (2026-11-20), for requirement 4's self-hosted compiler** (each in its own session and worktree):
+
+| Stream | Items | Files | State |
+|---|---|---|---|
+| I. Value sources everywhere | record sources precisely at every store, argument and return (boxed generics, conversions, interface results, conditionals), also without threads; then `Sharing.SiteTypeIds` on by default where it narrows | Compiler/Expressions.cs, Calls.cs, Sharing.cs | to start |
+| J. Owned arrays | an array filled while only its maker knows it and then kept by a new object's readonly field is a node of its own in the type graph (Roslyn's green nodes' child arrays against its builders' arrays) | Compiler/Arenas.cs, FreshStores.cs | to start |
+| K. Baseline-tier code quality | from the side-by-side profile: counted reads whose count can sink to the one path that keeps the value, static-initializer checks, constant-length bounds checks, frame setup, small calls left | Wasm/*, Compiler where a pass needs a fact | to start |
+| L. Self-hosted memory | where the 470 MB against 239 go (member words, counts, allocator waste by size class, pages held) and the structural cuts | Boundary/Runtime.cs allocator (after C merges) | to start |
+
+Tools for them: `tools/profcompare.mjs` (two profiles by category and by Roslyn method), `tools/profsize.mjs` (self
+time by callee size), `tools/profcallers.mjs`, `tools/selfhost-ab.sh` (interleaved self-hosted builds against
+NativeAOT-LLVM's), `tools/roslyn-parse-probe.cs` (a small program over Roslyn's parser: compiles in about 2 minutes,
+with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out/heavy.sh`.
+
 9.4 (the Invisible API slice) lives in the Bazoodle repository: started once F lands, from that repository.
 
 ## Log
