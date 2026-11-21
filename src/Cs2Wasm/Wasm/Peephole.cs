@@ -187,8 +187,22 @@ static class Peephole
             o.Add(ins);
         }
         if (o.Count > 0 && o[^1].Op == Op.Return) o.RemoveAt(o.Count - 1);
-        f.Body = o;
+        // (`call thrower; unreachable` at the end of a block or an if that yields nothing: the call leaves nothing,
+        // the block's end needs nothing, and the thrower never returns. The function's own end is left as it is.)
+        var kinds = new Stack<bool>();
+        var t = new List<Instr>(o.Count);
+        foreach (var ins in o)
+        {
+            if (ins.Op is Op.Block or Op.Loop or Op.If or Op.TryTable) kinds.Push(ins.Op is Op.Block or Op.If && ins.Ref == null || ins.Op == Op.Loop && ins.Ref == null);
+            else if (ins.Op == Op.Else) { if (t.Count >= 2 && kinds.Count > 0 && kinds.Peek() && ThrowerEnd(t)) t.RemoveAt(t.Count - 1); }
+            else if (ins.Op == Op.End && kinds.Count > 0) { if (kinds.Pop() && ThrowerEnd(t)) t.RemoveAt(t.Count - 1); }
+            t.Add(ins);
+        }
+        f.Body = t;
     }
+
+    static bool ThrowerEnd(List<Instr> t) => t[^1].Op == Op.Unreachable && t.Count >= 2 && t[^2].Op == Op.Call && t[^2].Ref is WasmFunction { Type.Results.Length: 0 } g
+        && g.Name.StartsWith("Cs2Wasm.Runtime.ThrowHelpers.", StringComparison.Ordinal);
 
     /// <summary>`br 0` as the last instruction of a block or an if (an inlined body's return): the branch goes to where
     /// the code falls through anyway. (Not a loop's: there `br 0` goes back to its start.)</summary>
