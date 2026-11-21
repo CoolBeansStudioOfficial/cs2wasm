@@ -602,6 +602,14 @@ namespace Cs2Wasm.Runtime
             while (v > 0) { Mem.StoreU16(s_dsBuf + 2 * at, '0' + (int)(v % 10)); at++; v /= 10; }
             for (int i = start, j = at - 1; i < j; i++, j--) { int a = Mem.LoadU16(s_dsBuf + 2 * i); Mem.StoreU16(s_dsBuf + 2 * i, Mem.LoadU16(s_dsBuf + 2 * j)); Mem.StoreU16(s_dsBuf + 2 * j, a); }
         }
+        /// <summary>Checked builds' diagnoses: a line on the console, then the trap shows the whole stack.</summary>
+        static void ChkSay(string text)
+        {
+            int b = Alloc(2 * text.Length + 2);
+            for (int i = 0; i < text.Length; i++) Mem.StoreU16(b + 2 * i, text[i]);
+            Mem.StoreU16(b + 2 * text.Length, 10);
+            Engine.Write(b, text.Length + 1);
+        }
         static void DsPrint()
         {
             if (s_dsBuf == 0) s_dsBuf = Alloc(1024);
@@ -2042,6 +2050,7 @@ namespace Cs2Wasm.Runtime
             {
                 s_linkN--;
                 int o = Mem.LoadI32(s_linkQ + 4 * s_linkN);
+                if (o == 0) continue;
                 // (still a member: nothing ran in between)
                 int sa = s_visitArena, sm = s_visitMode, so = s_visitObj;
                 s_visitArena = o; s_visitMode = 4; s_visitObj = o;
@@ -2588,6 +2597,9 @@ namespace Cs2Wasm.Runtime
         public static void ArenaRelease(int p)
         {
             int w = Atomic.Add32(ref Mem.RefI32(p), 1) + 1;
+            // (checked: a member released with no outside reference counted on it, a release too many or of an inside
+            // reference; it would read as immortal, -1, from here on)
+            if (Checked() && SingleThreaded() && w == -1) { ChkSay("checked: a " + TypeName(Borrow<object>(p)) + ", a member with no outside reference, released"); Mem.StoreI32(-4, 0); }
             int ar = ArenaOf(p);
             if (w == -2)
             {
@@ -2757,6 +2769,8 @@ namespace Cs2Wasm.Runtime
             // the stored reference is inside the arena now: the count the store took is given back (its last outside
             // one after the store, GiveBackLater; at once for an object that joined for this store: nothing was
             // counted on its being referred to from outside)
+            // (checked: a value stored with no outside count on it: the store's count was never taken)
+            if (Checked() && SingleThreaded() && Mem.LoadI32(val) == -2) { ChkSay("checked: a " + TypeName(Borrow<object>(val)) + " stored into a " + TypeName(Borrow<object>(container)) + " with no outside count" + (joined ? " (it joined for this store)" : "")); Mem.StoreI32(-4, 0); }
             if (Atomic.Add32(ref Mem.RefI32(val), 1) == -3)
             {
                 if (joined) Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
@@ -3095,8 +3109,13 @@ namespace Cs2Wasm.Runtime
             if (!ThreadMode()) RuntimeLock(); else mk = LinkLock(0, obj, true);
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj;
             s_visitArena = obj; s_visitMode = 4; s_visitObj = obj;
+            int queued = s_linkN;
             ArenaVisitObject(obj);
             s_visitArena = sa; s_visitMode = sm; s_visitObj = so;
+            // (the copy joined an arena at the first of its slots that links: its slots are all linked by this visit,
+            // so not again as a member that joined with slots already holding references, which gave each store's count
+            // back twice and freed what the copy and the original still held: test 180)
+            for (int q = queued; q < s_linkN; q++) if (Mem.LoadI32(s_linkQ + 4 * q) == obj) Mem.StoreI32(s_linkQ + 4 * q, 0);
             ArenaLinkJoined();
             DrainKills();
             if (!ThreadMode()) RuntimeUnlock(); else GroupUnlock(mk);
