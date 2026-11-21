@@ -129,9 +129,8 @@ namespace System
             if (destinationIndex < 0)
                 throw new ArgumentOutOfRangeException(nameof(destinationIndex), SR.ArgumentOutOfRange_NeedNonNegNum);
 
-            var src = sourceArray;
-            var dst = destinationArray;
-            if (FastCopy(ObjectHandleOnStack.Create(ref src), sourceIndex, ObjectHandleOnStack.Create(ref dst), destinationIndex, length))
+            // cs2wasm: the arrays themselves, not handles to local copies (a count taken and let go for each)
+            if (FastCopy(sourceArray, sourceIndex, destinationArray, destinationIndex, length))
                 return;
 
             CopySlow(sourceArray, sourceIndex, destinationArray, destinationIndex, length, reliable);
@@ -402,15 +401,15 @@ namespace System
         [Intrinsic] // when dimension is `0` constant
         public int GetLength(int dimension)
         {
-            object arr = this;
-            return GetLengthInternal(ObjectHandleOnStack.Create(ref arr), dimension);
+            // cs2wasm: the array itself, not a handle to a local copy of `this` (a count taken and let go per call)
+            return GetLengthOf(this, dimension);
         }
 
         [Intrinsic] // when dimension is `0` constant
         public int GetLowerBound(int dimension)
         {
-            object arr = this;
-            return GetLowerBoundInternal(ObjectHandleOnStack.Create(ref arr), dimension);
+            // cs2wasm: what GetLowerBoundInternal answers, without a handle to a local copy of `this`
+            return GetLowerBoundInternal(default, dimension);
         }
 
         [Intrinsic]
@@ -452,9 +451,11 @@ namespace System
         => false;
 
         internal static bool FastCopy(ObjectHandleOnStack source, int source_idx, ObjectHandleOnStack dest, int dest_idx, int length)
+            => FastCopy(Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(source), source_idx, Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(dest), dest_idx, length);
+
+        internal static bool FastCopy(Array src, int source_idx, Array dst, int dest_idx, int length)
         {
             // cs2wasm: arrays of one type, or both of counted references (covariance is not checked yet)
-            Array src = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(source), dst = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(dest);
             int size = Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(src);
             bool same = Cs2Wasm.Runtime.Rt.TypeId(src) == Cs2Wasm.Runtime.Rt.TypeId(dst)
                 || (Cs2Wasm.Runtime.Cs2WasmArrays.HasCountedElements(src) && Cs2Wasm.Runtime.Cs2WasmArrays.HasCountedElements(dst) && size == Cs2Wasm.Runtime.Cs2WasmArrays.ElementSize(dst) && size == 4);
@@ -489,9 +490,10 @@ namespace System
             return true;
         }
 
-        private static int GetLengthInternal(ObjectHandleOnStack arr, int dimension)
+        private static int GetLengthInternal(ObjectHandleOnStack arr, int dimension) => GetLengthOf(Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(arr), dimension);
+
+        private static int GetLengthOf(Array a, int dimension)
         {
-            Array a = Cs2Wasm.Runtime.Cs2WasmArrays.Handle<Array>(arr);
             return Cs2Wasm.Runtime.Cs2WasmArrays.RankOf(a) == 1 ? a.Length : Cs2Wasm.Runtime.Mem.LoadI32(Cs2Wasm.Runtime.Rt.AddressOf(a) + 16 + 4 * dimension);
         }
 

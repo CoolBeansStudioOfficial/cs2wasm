@@ -1149,6 +1149,11 @@ sealed partial class FunctionCompiler
             }
         }
         EndTemps();
+        // (a body returning a field's value borrowed, Driver.BorrowableReturns: nothing may be let go after the value was
+        // read, a destruction's code could store over the field and free it before the caller looks at it)
+        if (hasValue && Inst is { ReturnsBorrowed: true, BorrowedKind: Own.Unstable } && _closure == null
+            && (_temps.Any(t => t.Count > 0) || _scopes.Any(s => s.Owned.Count > 0) || _paramSlots.Count > 0 || _ctl.Any(c => c.Kind == CtlKind.TryFinally)))
+            throw new CompileException($"internal: {M.ToDisplayString()} returns a field borrowed but lets go of counts after reading it");
         // run finally blocks and release everything live
         for (int i = _ctl.Count - 1; i >= 0; i--)
             if (_ctl[i].Kind == CtlKind.TryFinally) EmitFinallyInline(i);
