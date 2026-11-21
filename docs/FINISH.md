@@ -347,3 +347,11 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   Suite 197 passed checked and as shipped (rebased on 3be4326). docs/AUDIT.md.
 - 2026-11-21, main 480a101 (stream N, K round 3), 3 interleaved rounds against NativeAOT-LLVM: self-hosted compiler
   10.7-11.4 s / 306.0 MB / 44.0 MB against 5.44 s / 322.2 MB / 129 MB: time 2.0x, memory 0.95x, size 0.34x.
+- 2026-11-21, stream N round 2: holds kept once made, designed (docs/AUDIT.md) and measured: 90% fewer hold changes
+  in the self-hosted compiler, its time within the noise, its peak memory 12% more, unexplained; so an experiment
+  (`CS2WASM_STALE_HOLDS=1`), not the default. The counters showed where the arena time is instead: 55 million first
+  and last outside references through the slow path and 25 million walks to a top. In by default: marks of the
+  kind of failed check a member is under (walks 25.3 to 19.6 million), and the first and last outside reference's
+  usual case without a call (65% and 62% of them). Self-hosted 10.47 to 10.27 s against NativeAOT-LLVM's 5.38,
+  memory the same. Suite 197/197 both modes. Left: the slow first and last references (a member that is under a
+  failed check of the held kind, or whose hold changes), and what lifts the 2.0x is no longer one arena path.
