@@ -1395,6 +1395,66 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     (3 interleaved rounds; NativeAOT-LLVM 5.38 s), the same peak memory, byte-identical output; suite 197 passed
     checked and as shipped.
 
+- **Steps 5 and 6: the IR optimizer, design and spike (2026-11-21, branch `claude/ir-optimizer-spike`).** The design
+  is under step 5 ("Design"). The spike asked the cheapest form of the question first: an SSA view over the final
+  bodies (`Wasm/Ssa/`: the control flow per instruction with exception edges, reaching definitions, and module-wide
+  summaries of what a call can do: drop a reference, store, never return), with two passes behind switches, run
+  before the counts' fast paths are written out, without threads:
+  - *Count pairs across blocks and calls* (`CountPairs.cs`, `CS2WASM_IR_PAIRS=1`): a `retain; local.set t` whose
+    count is t's until t's release, with nothing in that region that can lower any count (a release, a reference
+    store, a destruction, an arena operation, call_indirect, an import, or a call of anything that reaches one) and
+    every read of t reached by that definition alone, loses both calls; t's reads read a fresh local, and t is set to
+    zero where a release that other definitions also reach is left (a join, the cleanup handler). Exact: whatever held
+    the value at the retain still holds it at the release, so the release never reached zero, ran no destruction and
+    could not throw. `CS2WASM_IR_PAIRS_THROW=1` also lets the region pass a call that never returns and the cleanup
+    handler (objects then freed slightly earlier during unwinding: not exact, measured only).
+  - *Loads reused* (`LoadReuse.cs`, `CS2WASM_IR_GVN=1`): `local.get x; load off` available on every path (no write
+    of x, no store, no call of a function that can store; rt.retain ends only offsets below 16, rt.nonnull and calls
+    that never return nothing) reads a local the earlier loads of the key wrote.
+  - `CS2WASM_IR_STATS=1` prints what each found and why it left the rest; `CS2WASM_IR_STRIP_RC=1` (measurement, it
+    leaks) removes every rt.release of program code, the bound on what fewer releases can give.
+  Measured (the machine loaded 60-99% by other sessions throughout: medians moved 2x between rounds, so the
+  minimum of 15 interleaved rounds is the figure used; counts are exact):
+  - Count pairs, parser bench (`tools/roslyn-parse-bench.cs`): of 7,227 retains into a local, 6 removed exactly, 118
+    with the throw rule. Rejected: 6,836 for a call in the region that can drop references (rt.store_ref 3,189, the
+    null checks' throwing paths 1,924, 772 left with the throw rule, GreenNode.GetSlot's dispatch, releases of other locals,
+    SyntaxListPool.Free, the allocator's arena entry, Array.Copy, Monitor.Enter), 133 for a read other definitions
+    reach, 75 for an exception leaving without a handler. Run: **43 of 23,013,976 count operations** (12,640,135
+    retains to 12,640,092). bench: 6 of 632. Nothing measurable in time.
+  - Loads reused: parser bench 2,542 of 28,900 loads from a local's address (856 in Roslyn's code, 594 functions,
+    the most 13 in one; CoreLib's span parsing has the most), bench 601 of 5,141. Parser bench, minimum of 15 rounds:
+    Liftoff 301 to 270 ms, tiered 121 to 117 (medians 588 against 612 and 262 against 261: inside the noise); bench
+    0.93x against 0.91x and 1.02x for main in the rounds around it, module 334.7 to 333.7 KB.
+  - The bound, all releases of program code gone (nothing they would free is freed): parser bench minimum 301 to 214
+    ms under Liftoff, 121 to 106 tiered (-29%, -12%).
+  - What the counts left are, by the compiler code that asked for them (`CS2WASM_COUNT_RC=1`, parser bench, 53.3
+    million count calls of which 23.0 million changed a count): the struct helpers' field counts 21% (a
+    CancellationToken's, nearly always null; SyntaxNodeOrToken's), releases of owned locals and temporaries at the
+    end of their scope 19.5%, the final passes' own (inlined bodies' counts) 15%, retains for a call's argument whose
+    source the call might rewrite (ToCallSafe) 9.4%, reference stores into fields 6.5% (and their releases), owned
+    returns 4.8%, switch expressions' results 4.7%, owned locals 4.4%, copy and move assignment of structs 5.1%.
+  **Why the WASM-level view finds nothing:** what keeps a pair alive is always a question the stack code cannot
+  answer. "Can this reference store's release of the old value free the borrowed object?" needs the static type of
+  the store's field and what a release of that type can destroy (typed releases); "does this call rewrite the place
+  the argument was read from?" needs the callee's field write set; "is this struct's reference null?" needs the
+  struct's fields as values. Each is a fact the front end has (types, field symbols, the callee's body) and the
+  instruction lists have lost. The loads are the same story at a smaller scale: the hot loop's repeated loads are of
+  statics behind a type initializer's check (a call on one path) and of fields across calls that store elsewhere.
+  **Recommendation: no-go** for an optimizer over the WASM instruction lists (both passes stay off, behind their
+  switches, as measurement tools), and **no-go for building step 5's IR as the speed lever now**. The IR is the right
+  home for these facts (the design stands for when step 5 is done for structure, A6), but the counts it could remove
+  are bounded: the categories an ownership IR addresses (struct copies 21%, call-safe retains 9.4%, owned returns and
+  switch results 9.5%) are about 40% of the count calls, and removing all releases (an upper bound that also removes
+  the frees, which stay real work) gave the parser bench 12% in the optimizing tier, the tier that carries the
+  self-hosted compiler's hot code (stream K round 4): at most about 5% of the self-hosted compiler's time for a rewrite of
+  FunctionCompiler and every analysis. The same facts can be given to the analyses that already decide the counts,
+  on the operation tree, one at a time, each measured by the count causes above: (1) typed releases (what a release
+  of static type T can destroy; the lever the parked `claude/k2-throw-only-wip` already found), which unblocks
+  borrows across reference stores and releases; (2) per-callee field write sets for the call-safe retains; (3) a
+  struct value whose reference fields are known null or borrowed (CancellationToken's default) copied without
+  counts; (4) borrowed-return variants (step 6.5). The parallel work in FieldBorrows/LocalBorrows is that route.
+  Suite and the self-hosted compiler with the spike's passes on: below.
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:
@@ -1499,6 +1559,54 @@ This is the one structural change; steps 6, 7 and 9 need it.
    IR passes replace.
 7. Unit tests per pass on small IR inputs.
 8. Give the IR a stable serialized form (needed by step 12.4).
+
+**Design (2026-11-21).** What 5.2 to 5.8 build, fixed before any code depends on it. The spike that tested it is in
+the Progress section ("Steps 5 and 6: the IR optimizer, design and spike").
+
+- **Shape.** Per method a tree of structured regions that mirror WASM's (a sequence, `block` with its label, `loop`,
+  `if`/`else`, `try` with its catches), with instructions as leaves. Values are SSA: every instruction that produces
+  a value defines a new one, a C# local is a sequence of values, and where control merges (a region's end, a loop's
+  head, a catch's entry) the merged values are parameters of that point (block arguments, no free-floating phi
+  nodes). Structured, because the input (the operation tree after the compiler's lowering) and the output (WASM) are
+  both structured: no relooper, and IR to stack code stays a walk. Basic blocks are the straight runs between region
+  boundaries; a dataflow is one pass over an acyclic region and a fixpoint per loop. Exception edges are explicit:
+  an instruction that can throw names the catch it goes to (the innermost `try`), so the cleanup handlers are code
+  the passes see, not a convention.
+- **Types and ownership.** Each value has its WASM type and its C# static type (or a runtime word's kind). A
+  reference value carries its ownership: *owned* (holds a count), *borrowed from* a value or a place (field, element,
+  static) with the region it is valid in, *fresh* (made here, nothing else refers to it), *immortal*.
+- **Instructions.** WASM's arithmetic; `load F of v` and `store F of v := w` by field symbol (offset, type, whether
+  it can be written after construction), a reference store with the old value's release as its own instruction;
+  `elem v[i]` with `boundscheck v, i` and `nullcheck v` as separate instructions (each with its exception and source
+  position); `call target(args)` with a resolved target, `callvirt slot`, `callindirect`; `alloc T`; `retain v`,
+  `release v`, `move v` (the count goes with the value, the source is dead), `borrow v from o` (no code: v valid while
+  o lives and the place is not written); `throw`; struct values as aggregates whose copy states its references'
+  counts (so a struct copy can be a borrow too: today 21% of the parser bench's count calls are struct helpers'
+  field counts, CancellationToken's and SyntaxNodeOrToken's). Every instruction keeps its Roslyn operation (plugins'
+  queries, diagnostics), its source position (`Instr.Pos`) and its inline scope (`Instr.Inl`).
+- **Where it sits.** operation tree, plugins as today (rewrites and hooks, on operations) → lowering to IR (patterns,
+  `foreach`, closures, state machines: today's lowering, writing IR) → analyses on the IR, each an input and an
+  immutable result (escape, field and local borrows, owned parameters, fresh stores, arena membership, thread
+  escape) → optimizations (step 6) → counts placed (retain/release become calls or their fast paths: RcFastPaths
+  becomes this lowering) → IR to stack code → the WASM passes about encoding (locals packed and coalesced, the final
+  tidy, identical bodies merged, data packed, frames).
+- **What it replaces.** FunctionCompiler's direct writing of `Instr`; the WASM passes that are about meaning and
+  re-derive what the front end knew: Inliner, NullChecks, Loops, LoopLoads, InitChecks, ConstBranches and
+  ConstLocals, Fresh, LocalsRc's count rules, NoReturn (a fact of the call), SmallBlocks. Kept: Peephole's encoding
+  rules, Locals (packing, Coalesce), FinalTidy, MergeIdenticalBodies, DataCompression, Frames, FloatStores.
+- **Traces stay exact.** The rules every pass keeps: (1) an instruction that can throw keeps its position and inline
+  scope; no two of them change order, and none moves across a store or a call either way; (2) a check goes only
+  when an equal check of the same value dominates it with nothing between that changes the value, so the first check
+  on every path stays and throws where it did; (3) a retain/release pair goes only when nothing between can lower
+  the value's count, so the release never reached zero (it ran no destruction and could not throw) and nothing is
+  freed at another moment; (4) inlining records the scope (cs2wasm.inline) as today; a hoisted instruction is one
+  that cannot fail (a load from a checked reference, as LoopLoads proves now), never a check or a call; (5) bodies
+  are merged only at the encoding level, under today's rule.
+- **Plugins are unaffected.** The interface (versions 1 to 7) works on operations and Roslyn's control-flow graph
+  and runs before lowering; its hooks are calls in the operations, which the IR keeps as calls of unknown effect
+  (they may store and drop), so no read or write a hook observes is removed or moved across it. Generated sources
+  are compiled as the program is. The IR is not exposed (step 9.1's IR interface is not needed: version 7 met the
+  Invisible API's slice on operations); one can be added on top later without changing this.
 
 ### Step 6. Optimizations on the IR (A2.2, A2.3, A2.4, A2.6)
 
