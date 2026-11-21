@@ -1070,6 +1070,9 @@ sealed partial class RuntimeGen
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
             D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
+        // CS2WASM_MEMSTATS=1: the heap's report, which the host prints at the end (Runtime.cs, MemStatsReport)
+        if (Environment.GetEnvironmentVariable("CS2WASM_MEMSTATS") == "1")
+            Export("cs2wasm_memstats", D.LibMethod("Cs2Wasm.Runtime.Rt", "MemStatsReport", 0));
         // host operations (the host's fetch: section 8): the host finishes them through this export
         // a worker instance starts here: its own stack, thread-local block and id, then the thread's delegate
         if (D.UsesThreads)

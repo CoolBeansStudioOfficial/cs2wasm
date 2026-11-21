@@ -231,6 +231,8 @@ sealed partial class FunctionCompiler
     }
 
     static readonly bool s_thisByValue = Environment.GetEnvironmentVariable("CS2WASM_NO_THIS_BY_VALUE") != "1";
+    /// <summary>CS2WASM_MEMSTATS=1 (a diagnosis): the runtime reports where its heap's memory is (Runtime.cs, MemStatsReport).</summary>
+    static readonly bool MemStats = Environment.GetEnvironmentVariable("CS2WASM_MEMSTATS") == "1";
 
     int _refPoolLast => -1;
 
@@ -929,6 +931,9 @@ sealed partial class FunctionCompiler
             case "Rt.TakeThrowSite": E.GGet(D.ThrowSite); E.I32(0); E.GSet(D.ThrowSite); return Own.None;
             case "Rt.ThrowSites": E.Call(D.ThrowSitesFn); return Own.None;
             case "Rt.NoThreads": E.I32(Driver.s_noThreads ? 1 : 0); return Own.None;
+            case "Rt.MemStatsGrow": if (MemStats) E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "MsGrow", 0).Fn); return Own.None;
+            case "Rt.MemStatsRecord": if (MemStats) E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "MsRecord", 1).Fn); else E.Op(Op.Drop); return Own.None;
+            case "Rt.MemStatsOn": E.I32(MemStats ? 1 : 0); return Own.None;
             case "Rt.DropStats": E.I32(Environment.GetEnvironmentVariable("CS2WASM_DROP_STATS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDropCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;
