@@ -1293,6 +1293,50 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     Cheaper there needs a different bookkeeping of holds (one that does not flip with every local reference), which
     is a design question for step 7, not a fast path.
 
+- **Holds kept once made (stream N round 2, design, 2026-11-21).** What costs now is the hold. A member X with an
+  up-reference below it (u > 0: a red node's parent link, uncounted since its parent's list keeps it) that something
+  other than its owner refers to (its `others`: inside references not its owner's, plus outside ones) holds its
+  owner A with a counted reference, so that whatever X keeps alive through its up-reference stays (a child held from
+  outside keeps its parent, as in .NET). The runtime keeps that exact: Held exactly when wanted. So a red node's first
+  outside reference (a local, an iterator's state) makes it hold its owner, and its last lets go; and up the chain
+  where the owner's own wanting changes. In a parse of 400 classes that is 0.8 million real changes, each a call and
+  a few words, for nodes that are in their parent's list the whole time.
+  - The change: **a member that is owned keeps a hold once made.** UpdateHold sets Held when it is wanted (as now) and
+    clears it only when the member is not owned (as now: its owner is gone or let it go, and the hold is put right at
+    once, OwnerLetGo then UpdateHold, with Adopt). An owned member whose `others` fall to zero keeps holding: a stale
+    hold. HoldSettled says the same. So a red node holds its owner from its first outside reference until it is let go
+    or dies; its later first and last references change one word, its count. The invariant is now one way: wanted
+    implies Held (what safety needs: nothing an up-reference relies on is freed); Held without being wanted is
+    allowed on owned members only.
+  - Why nothing is freed too early: Held is set whenever it is wanted, exactly as before; a stale hold only adds a
+    count to an owner. Destruction still releases a dying member's hold (ArenaDestroyFrom).
+  - Why nothing is kept too long, by the ways a structure becomes garbage (S, with its top t, the member of S that is
+    not owned by a member of S; a stale hold is always from a member to its owner, so inside S):
+    1. t loses its last support itself (its owner's slot, its last outside reference): as now, t is destroyed if
+       nothing inside refers to it, else the check at the drop runs on it (DropCandidate: not owned, no outside
+       reference, some inside one), whose trial counts holds as references inside the set, stale or not, and
+       destroys S. Before, a cascade of let-go holds could have brought t's inside count to zero and destroyed it by
+       count; now the check does, with the same result.
+    2. t lost its support earlier, the check failed and noted t, and S's last support goes later (a member's last
+       outside reference: TopHeld; a reference into S from a member outside it: NoteOutside): as now, the note's
+       number reaches zero and the check runs again. Stale holds are not support: the trial subtracts them.
+    3. **t's owner is destroyed**, and t has inside references left only from stale holds of what it owns: the
+       destruction cuts the owner's slot (mode 0 of ArenaVisit), t survives the cut with a count above zero, and
+       nothing looked at it again. This is the case the eager holds covered by themselves (holds were never stale, so
+       a member that survived had real support). Now: a member that survives a destruction's cut with no outside
+       reference is put on a list, and when the destruction is done (as DrainKills does for the killed) each is
+       checked at the drop. And the survivor's hold on its dying owner is let go there (UpdateHold, now not owned):
+       an owner that is dying needs no support.
+    Every other way a member loses its owner is followed by the check already (ArenaUnlinkOld: Dropped(old)), keeps a
+    counted reference to it (TakeOwnership's turn: the value's slot still holds it), or moves the owner and its holds
+    together (Handover).
+  - Cost moved, not made: what dies is found by the check at the drop (a trial over S) where it was found by counts
+    falling (a cascade over S): about the same visits, once per structure that dies, instead of two words per first
+    or last outside reference of every member. The failing checks stay what they are (they are notes of real support).
+  - Kept apart: with threads the old way (a group's holds are changed under its lock; the stale-hold rule needs the
+    survivors' list per thread, not done). `CS2WASM_EAGER_HOLDS=1` (at compile time) is the old way without threads
+    too.
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:

@@ -596,6 +596,12 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] static extern bool NoDropCheck();
         // CS2WASM_DROP_STATS=1 (a diagnosis, at compile time): the check at the drop counts what it does and says so
         [Intrinsic] static extern bool DropStats();
+        /// <summary>CS2WASM_EAGER_HOLDS=1 (at compile time): a hold is let go as soon as it is not wanted, the way before
+        /// stale holds (docs/AUDIT.md, holds kept once made).</summary>
+        [Intrinsic] static extern bool EagerHolds();
+        /// <summary>An owned member keeps a hold once made (without threads; UpdateHold).</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static bool StickyHolds() => !ThreadMode() && !EagerHolds();
         static long s_dsCalls, s_dsWalked, s_dsDead, s_dsFailInside, s_dsFailHeld, s_dsMax, s_dsFromRelease, s_dsFromUnlink, s_dsTops, s_dsTopHops, s_dsTopMarked, s_dsTopFar;
         static int s_dsBuf;
         static void DsNum(ref int at, string label, long v)
@@ -2178,6 +2184,10 @@ namespace Cs2Wasm.Runtime
                 int others = PL(v, 4) - ((fl & MultMask) >> 3) + (-c - 2);
                 bool want = (uint)fl >= UOne && others > 0;
                 if (want == ((fl & Held) != 0)) return;
+                // (a stale hold: an owned member keeps the hold it made, unless its owner is dying. Wanted still means
+                // held; what a stale hold keeps is found by the check at the drop when its structure is let go: its top's
+                // own loss of support, a note's number at zero, or a destruction's survivor, below)
+                if (!want && (fl & Owned) != 0 && StickyHolds() && (PL(w, 24) & Dying) == 0) return;
                 if (DropStats()) { OpStat(first ? 24 : 25); first = false; }
                 if (want)
                 {
@@ -2207,7 +2217,10 @@ namespace Cs2Wasm.Runtime
             if (c >= -1) return true;
             int fl = Mem.LoadI32(v - 24);
             if ((fl & Dying) != 0 || Mem.LoadI32(v - 20) == 0) return true;
-            return ((uint)fl >= UOne && Mem.LoadI32(v - 4) - ((fl & MultMask) >> 3) + (-c - 2) > 0) == ((fl & Held) != 0);
+            bool want = (uint)fl >= UOne && Mem.LoadI32(v - 4) - ((fl & MultMask) >> 3) + (-c - 2) > 0;
+            if (want == ((fl & Held) != 0)) return true;
+            // (a stale hold an owned member keeps, UpdateHold)
+            return !want && (fl & Owned) != 0 && StickyHolds() && (Mem.LoadI32(Mem.LoadI32(v - 20) - 24) & Dying) == 0;
         }
 
         /// <summary>A member no reference of either kind refers to, found while another change is under way: destroyed
@@ -2224,6 +2237,12 @@ namespace Cs2Wasm.Runtime
                 s_visitDead = w;
                 return;
             }
+            KillPush(w);
+            PS(w, 24, fl | Queued);
+        }
+
+        static void KillPush(int w)
+        {
             if (s_killN == s_killCap)
             {
                 int cap = s_killCap == 0 ? 16 : s_killCap * 2;
@@ -2233,7 +2252,6 @@ namespace Cs2Wasm.Runtime
             }
             Mem.StoreI32(s_killQ + 4 * s_killN, w);
             s_killN++;
-            PS(w, 24, fl | Queued);
         }
 
         /// <summary>A member that is destroyed while it waits in the list: taken off it.</summary>
@@ -2247,6 +2265,9 @@ namespace Cs2Wasm.Runtime
 
         static void DrainKills()
         {
+            // (a destruction under way finishes first: its caller drains the list after it, and a check at the drop
+            // does not run during one)
+            if (s_destroying != 0) return;
             while (s_killN > 0)
             {
                 s_killN--;
@@ -2256,7 +2277,19 @@ namespace Cs2Wasm.Runtime
                 PS(w, 24, PL(w, 24) & ~Queued);
                 if (Mem.LoadI32(w) == -2 && PL(w, 4) == 0 && (PL(w, 24) & Dying) == 0
                     && (Mem.LoadI32(ArenaOf(w) + 12) & ArenaBusy) == 0) ArenaDestroyFrom(w, 0);
+                // (a destruction's survivor, QueueCheck: kept by what it owns alone? A top whose check failed is looked at
+                // again by its note's number)
+                else if (StickyHolds() && (PLM(w) & 1) == 0 && DropCandidate(w)) Dropped(w);
             }
+        }
+
+        /// <summary>A member to check at the drop once the operation under way is done (a destruction's survivor).</summary>
+        static void QueueCheck(int w)
+        {
+            int fl = PL(w, 24);
+            if ((fl & (Dying | Queued)) != 0) return;
+            KillPush(w);
+            PS(w, 24, fl | Queued);
         }
 
         /// <summary>A member without an owner whose reference a container still holds counted: that container owns it
@@ -3191,6 +3224,9 @@ namespace Cs2Wasm.Runtime
             if (left == 0 && Mem.LoadI32(child) == -2) { Kill(child); return; }
             if (PL(child, 20) == 0) Adopt(child);
             UpdateHold(child);
+            // (a survivor of the cut that nothing outside refers to may be kept by stale holds of what it owns alone:
+            // checked at the drop when the destruction is done, DrainKills)
+            if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
         }
 
         /// <summary>A copy of an object (MemberwiseClone) has counted each reference it holds: those in slots that can
