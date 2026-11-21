@@ -22,6 +22,7 @@ static class Inliner
     static readonly int s_throwBody = Env("CS2WASM_INLINE_THROWING", 0);         // at every call site (0: off, the default: see below)
     static readonly int s_throwSingle = Env("CS2WASM_INLINE_THROWING_SINGLE", 60); // into its one caller
     static readonly int s_throwLoop = Env("CS2WASM_INLINE_THROWING_LOOP", 24);   // at a call site inside a loop
+    static readonly bool s_rcInLoops = Environment.GetEnvironmentVariable("CS2WASM_RC_IN_LOOPS") != "0";
     static readonly bool s_rcEverywhere = Environment.GetEnvironmentVariable("CS2WASM_INLINE_RC") == "1";
     static readonly bool s_ignoreNoInline = Environment.GetEnvironmentVariable("CS2WASM_IGNORE_NOINLINE") == "1";
     static int Env(string name, int dflt) => int.TryParse(Environment.GetEnvironmentVariable(name), out var v) ? v : dflt;
@@ -73,7 +74,7 @@ static class Inliner
                 // (marked AggressiveInlining: in although it can throw, when it is small; larger in a loop)
                 // (the count operations: they have no frame of their own in a trace, so a copy throws from the same
                 // frames; in a loop the call would make the engine keep the loop's values in memory)
-                if (tiny && g.FrameName == null && g.Name is "rt.retain" or "rt.release" or "rt.retain_plain" or "rt.release_plain" && s_loopBody > 0 && InlinableHinted(g)) { if (s_rcEverywhere) candidates.Add(g); else inLoops.Add(g); continue; }
+                if (tiny && s_rcInLoops && g.FrameName == null && g.Name is "rt.retain" or "rt.release" or "rt.retain_plain" or "rt.release_plain" && s_loopBody > 0 && InlinableHinted(g)) { if (s_rcEverywhere) candidates.Add(g); else inLoops.Add(g); continue; }
                 if (g.InlineHint && s_exp == 0 && InlinableHinted(g))
                 {
                     int hc = g.Body.Count + g.Type.Params.Length + 2 * g.Locals.Count + 2;
