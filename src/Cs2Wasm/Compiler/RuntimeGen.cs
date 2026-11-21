@@ -918,6 +918,8 @@ sealed partial class RuntimeGen
                         if (leaves.Count == 0) se.I32(0);
                         se.Op(Op.I32And);
                     }
+                    // (2 for an array's element, so that the store by address knows it has no slot bits: Rt.SlotOwner)
+                    se.I32(1); se.Op(Op.I32Shl);
                 }
                 else se.I32(0);
                 // Array.Copy and Array.Clear do not know the element's type: for an array of structs they come here,

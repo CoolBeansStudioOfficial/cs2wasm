@@ -2992,31 +2992,56 @@ namespace Cs2Wasm.Runtime
         /// <summary>The address is a slot of an object of a cycle-capable type (an arena's member, or one that can be).</summary>
         public static bool InArenaSlot(int slot) => SlotOwner(slot) != 0;
 
+        /// <summary>The object of a cycle-capable type the address is a slot of (t_slotArray: an array's element), or 0.
+        /// (ObjectOf, BlockOf and MapGet written out: each store by address asks, and each was a call)</summary>
         static int SlotOwner(int slot)
         {
-            int c = ObjectOf(slot);
-            if (c == 0 || SccOf(Mem.LoadI32(c + 4)) == 0) return 0;
-            return ArenaIsSlot(c, slot - c) != 0 ? c : 0;
+            t_slotArray = false;
+            if (s_top == 0 || (uint)slot >= (uint)s_top || (uint)slot < (uint)s_runLo) return 0;
+            int leaf = Mem.LoadI32(s_mapTop + ((int)((uint)slot >> 22) << 2));
+            if (leaf == 0) return 0;
+            int e = Mem.LoadI32(leaf + ((int)(((uint)slot >> GShift) & 4095) << 2)), k = e & 7, b;
+            if (k == 2) b = e & ~7;
+            else if (k == 1 || k == 4)
+            {
+                int pg = e & ~7;
+                int size = (Mem.LoadI32(pg + 20) >> 1) << 2;
+                int off = slot - pg - PageHead;
+                if (off < 0 || size == 0) return 0;
+                b = pg + PageHead + (int)((uint)off / (uint)size) * size;
+            }
+            else return 0;
+            if (b == 0) return 0;
+            int w = Mem.LoadI32(b);
+            if (w == 0) return 0;
+            int c = b;
+            if (w <= PrefixMark) { c = b + ArenaPrefix; if (Mem.LoadI32(c) == 0) return 0; }
+            if (SccOf(Mem.LoadI32(c + 4)) == 0) return 0;
+            int kind = ArenaIsSlot(c, slot - c);
+            t_slotArray = kind == 2;
+            return kind != 0 ? c : 0;
         }
+        [System.ThreadStatic] static bool t_slotArray, t_atArray;
 
         /// <summary>ArenaLink for a slot known by its address: the value to store (owned).</summary>
         public static int ArenaLinkAt(int val, int slot)
         {
             OpStat(18);
             int c = SlotOwner(slot);
-            t_atSlot = slot; t_atOwner = c;
+            t_atSlot = slot; t_atOwner = c; t_atArray = t_slotArray;
             if (c == 0) return val;
-            return ArenaLink(val, c, TypeInfo.Rank(Mem.LoadI32(c + 4)) != 0 ? 0 : slot);
+            return ArenaLink(val, c, t_slotArray ? 0 : slot);
         }
 
         /// <summary>ArenaUnlink for the slot ArenaLinkAt was just called for (or any other): its old value.</summary>
         public static void ArenaUnlinkAt(int old, int slot)
         {
             OpStat(19);
-            int c = t_atSlot == slot ? t_atOwner : SlotOwner(slot);
+            int c; bool array;
+            if (t_atSlot == slot) { c = t_atOwner; array = t_atArray; } else { c = SlotOwner(slot); array = t_slotArray; }
             t_atSlot = 0;
             if (c == 0) { if (old != 0) Release(Borrow<object>(old)); return; }
-            ArenaUnlink(old, c, TypeInfo.Rank(Mem.LoadI32(c + 4)) != 0 ? 0 : slot);
+            ArenaUnlink(old, c, array ? 0 : slot);
         }
 
         /// <summary>A block of references copied over slots a cycle can close through (a span's CopyTo into a list's
