@@ -231,6 +231,8 @@ sealed partial class FunctionCompiler
     }
 
     static readonly bool s_thisByValue = Environment.GetEnvironmentVariable("CS2WASM_NO_THIS_BY_VALUE") != "1";
+    /// <summary>CS2WASM_MEMSTATS=1 (a diagnosis): the runtime reports where its heap's memory is (Runtime.cs, MemStatsReport).</summary>
+    static readonly bool MemStats = Environment.GetEnvironmentVariable("CS2WASM_MEMSTATS") == "1";
 
     int _refPoolLast => -1;
 
@@ -325,6 +327,23 @@ sealed partial class FunctionCompiler
                 if (convs[i] is { } cm && byParam[i] != null) { var cs = new List<Sharing.Src>(1); AddRet(cm, false, cs); RecordParam(m, m.Parameters[i], cs); }
             RecordRefWrite(m, byParam);
         }
+        ArenaRefWrite(m, byParam);
+    }
+
+    /// <summary>Interlocked.Exchange and CompareExchange, Volatile.Write: their own store through the `ref` names no
+    /// site (Rt.LinkAt), so the call says what it puts in a slot of the ref's type (RefStores.cs).</summary>
+    void ArenaRefWrite(IMethodSymbol m, IOperation?[] byParam)
+    {
+        if (m.ContainingType is not { } ct || m.MethodKind == MethodKind.FunctionPointerSignature || Types.FullName(ct.OriginalDefinition) is not ("System.Threading.Interlocked" or "System.Threading.Volatile")) return;
+        int loc = -1, val = -1;
+        for (int i = 0; i < m.Parameters.Length; i++)
+        {
+            var p = m.Parameters[i];
+            if (p.RefKind == RefKind.Ref && Types.IsRef(T.Canonical(p.Type)) && loc < 0) loc = i;
+            else if (p.RefKind == RefKind.None && p.Name is "value" && Types.IsRef(T.Canonical(p.Type))) val = i;
+        }
+        if (loc < 0) return;
+        D.Arenas.RefStore(T.Canonical(m.Parameters[loc].Type), val >= 0 && byParam[val] is { } v ? TypeOf(v) : null);
     }
 
     void PushConvertedArg(IParameterSymbol p, IOperation value, IMethodSymbol conversion)
@@ -347,6 +366,8 @@ sealed partial class FunctionCompiler
         // (where the callee's parameter's value comes from: Sharing.cs)
         if (Sh != null && p.ContainingSymbol is IMethodSymbol pm && p.RefKind == RefKind.None && Types.IsRef(pt))
             RecordParam(pm, p, value != null ? FlowSrcs(value) : p.HasExplicitDefaultValue && p.ExplicitDefaultValue is string ? [new Sharing.Src(Sharing.K.Exact, Type: D.Main.GetSpecialType(SpecialType.System_String))] : []);
+        else if (Sh != null && p.ContainingSymbol is IMethodSymbol rpm && p.RefKind != RefKind.None && Types.IsRef(pt))
+            RecordRefIn(rpm, p, value);
         if (value == null)
         {
             // default argument
@@ -358,6 +379,13 @@ sealed partial class FunctionCompiler
         {
             if (Sh != null && p.RefKind is RefKind.Ref or RefKind.Out) RecordOutArg(p, value);
             else if (Sh != null) _preciseAddr = true; // (read only)
+            if (Sh != null)
+            {
+                _addrUse = RefUseOf(p);
+                // (a struct's place to an intrinsic that remakes refs, Unsafe.As<S, object>(ref s): its references
+                // may be stored through refs of other types, any object of their types)
+                if (_addrUse == null && Types.IsStruct(pt) && T.LayoutOf(pt).HasRefs && D.IsIntrinsic(D.MethodTarget((IMethodSymbol)p.ContainingSymbol))) StructLeavesAnything(pt);
+            }
             EmitAddress(value);
             return;
         }
@@ -544,13 +572,15 @@ sealed partial class FunctionCompiler
         finally { _consume = savedConsume; }
         // (a call whose arguments' sources were all recorded: Sharing.cs)
         bool certified = Sh != null && AllRecorded(m, rec0);
+        bool certifiedRefs = Sh != null && AllRefsRecorded(m, rec0);
         if (_recorded.Count > rec0) _recorded.RemoveRange(rec0, _recorded.Count - rec0);
         // (the callee owns them now)
         if (cc != null) foreach (var tl in cc.Temps) { E.I32(0); E.Set(tl); }
         _wantRefReturnAddress = wantAddress;
         _certifyCall = certified;
+        _certifyRefs = certifiedRefs;
         try { return EmitCallInstr(m, dispatch, syntax, sretOff, consts, cc?.Moved ?? 0, stableRecv, thisByValue); }
-        finally { _certifyCall = false; }
+        finally { _certifyCall = _certifyRefs = false; }
     }
 
     /// <summary>Arguments are already on the stack (not for struct-returning methods unless the destination was pushed first).</summary>
@@ -679,7 +709,7 @@ sealed partial class FunctionCompiler
                     // As<T>(object): the same object; As<TFrom, TTo>(ref TFrom): the same address
                     if (m.Parameters[0].RefKind == RefKind.None) return Own.Unstable;
                     // (a store through the TTo ref is one into the TFrom slot: Sharing.cs)
-                    if (m.TypeArguments.Length == 2) Sh?.RefAlias(Arg(0), Arg(1));
+                    if (m.TypeArguments.Length == 2) { Sh?.RefAlias(Arg(0), Arg(1)); if (!InRefWriter) D.Arenas.RefAlias(Arg(0), Arg(1)); }
                     // a float's bits read as something else (BitConverter, BitCast): a NaN becomes the canonical NaN
                     // first, so its payload never shows (section 7.3)
                     if (m.TypeArguments.Length == 2 && Types.PrimOf(Arg(0)) is Prim.F32 or Prim.F64 && Types.PrimOf(Arg(1)) is not (Prim.F32 or Prim.F64))
@@ -929,6 +959,9 @@ sealed partial class FunctionCompiler
             case "Rt.TakeThrowSite": E.GGet(D.ThrowSite); E.I32(0); E.GSet(D.ThrowSite); return Own.None;
             case "Rt.ThrowSites": E.Call(D.ThrowSitesFn); return Own.None;
             case "Rt.NoThreads": E.I32(Driver.s_noThreads ? 1 : 0); return Own.None;
+            case "Rt.MemStatsGrow": if (MemStats) E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "MsGrow", 0).Fn); return Own.None;
+            case "Rt.MemStatsRecord": if (MemStats) E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "MsRecord", 1).Fn); else E.Op(Op.Drop); return Own.None;
+            case "Rt.MemStatsOn": E.I32(MemStats ? 1 : 0); return Own.None;
             case "Rt.DropStats": E.I32(Environment.GetEnvironmentVariable("CS2WASM_DROP_STATS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDropCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;

@@ -10,8 +10,9 @@ namespace Cs2Wasm.Compiler;
 sealed record MemberHook(IMethodSymbol Hook, int Tag, InstrumentPoint Point);
 
 /// <summary>A hook at the entry accesses of a collection (PluginContext.InstrumentEntryWrites): Keyed, the form
-/// (object receiver, TKey key, bool keyed, int tag).</summary>
-sealed record EntryHook(IMethodSymbol Hook, int Tag, bool Keyed);
+/// (object receiver, TKey key, bool keyed, int tag). Site: the one access it runs at (InstrumentEntryWrite, version 7),
+/// or null for every entry access of the member.</summary>
+sealed record EntryHook(IMethodSymbol Hook, int Tag, bool Keyed, (string path, int start, int length)? Site = null);
 
 /// <summary>A hook the value of one expression goes through (PluginContext.InterceptValue).</summary>
 sealed class ValueHook
@@ -170,6 +171,9 @@ internal sealed partial class Driver
     /// instances, lambdas and state machine bodies included; a state machine's kickoff is left alone), and so is
     /// every function that used an analysis answer (escape, fresh, isolated) the new hooks can change: the answers
     /// are forgotten first.</summary>
+    /// <summary>How many functions Recompile compiled again (CompileResult.RecompiledFunctions).</summary>
+    public int RecompiledFunctions;
+
     void Recompile(RuntimeGen rt, HashSet<ISymbol> added)
     {
         var users = _analysisUsers.ToHashSet();
@@ -182,12 +186,14 @@ internal sealed partial class Driver
             if (kickoff) continue;
             mi.Fn.Body.Clear(); mi.Fn.Locals.Clear(); mi.Callees.Clear();
             mi.Compiled = false;
+            RecompiledFunctions++;
             _work.Enqueue(mi);
         }
         // (static initializers that used such an answer)
         foreach (var (t, fn, flag, cctor) in _compiledCctors)
         {
             if (!users.Contains(fn)) continue;
+            RecompiledFunctions++;
             StaticReads.Forget(fn);
             foreach (var by in ConstructedBy.Values) by.Remove(fn);
             fn.Body.Clear(); fn.Locals.Clear();
@@ -810,10 +816,12 @@ internal sealed partial class PluginHost
         foreach (var a in AccessesOf(def)) D.MarkInstrumented(a.Method);
     }
 
-    public void AddEntryHook(ISymbol member, IMethodSymbol hook, int tag, bool write)
+    public void AddEntryHook(ISymbol member, IMethodSymbol hook, int tag, bool write, MemberAccess? at = null)
     {
         var def = member.OriginalDefinition;
-        string what = write ? "InstrumentEntryWrites" : "InstrumentEntryReads";
+        string what = at != null ? "InstrumentEntryWrite" : write ? "InstrumentEntryWrites" : "InstrumentEntryReads";
+        if (at != null && (!at.IsEntry || at.Kind == AccessKind.Read || !at.Instrumentable))
+        { D.Report(Diags.Plugin, at.Location, $"{what}: '{at.Operation.Syntax}' is not an entry write a hook can run at (an entry access, a write or read-write, instrumentable)"); return; }
         var ps = hook.Parameters;
         static bool Is(ITypeSymbol t, SpecialType s) => t.SpecialType == s;
         bool keyed = ps.Length == 4 && Is(ps[0].Type, SpecialType.System_Object) && Is(ps[2].Type, SpecialType.System_Boolean) && Is(ps[3].Type, SpecialType.System_Int32);
@@ -821,6 +829,13 @@ internal sealed partial class PluginHost
         if (!hook.IsStatic || hook.IsGenericMethod || ps.Any(p => p.RefKind != RefKind.None) || !keyed && !plain)
         { D.Report(Diags.Plugin, null, $"{what}: the hook {hook.Name} must be a static method taking (), (int tag), (object receiver), (object receiver, int tag) or (object receiver, TKey key, bool keyed, int tag)"); return; }
         var sites = AccessesOf(def).Where(a => a.IsEntry && (a.Kind == AccessKind.Read) != write).ToList();
+        (string, int, int)? site = null;
+        if (at != null)
+        {
+            site = Driver.SiteKey(at.Operation.Syntax);
+            sites = sites.Where(a => Driver.SiteKey(a.Operation.Syntax) == site).ToList();
+            if (sites.Count == 0) { D.Report(Diags.Plugin, at.Location, $"{what}: '{at.Operation.Syntax}' is not an entry write of {member.Name}"); return; }
+        }
         if (keyed)
         {
             var kt = ps[1].Type;
@@ -835,7 +850,7 @@ internal sealed partial class PluginHost
         }
         var table = write ? D.EntryWriteHooks : D.EntryReadHooks;
         if (!table.TryGetValue(def, out var list)) table[def] = list = [];
-        list.Add(new EntryHook(hook, tag, keyed));
+        list.Add(new EntryHook(hook, tag, keyed, site));
         foreach (var a in sites) D.MarkInstrumented(a.Method);
     }
 

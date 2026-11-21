@@ -20,11 +20,12 @@ namespace Cs2Wasm;
 /// IsOwned); plugins before the first compile (ICompilerPluginBeforeCompile); the list of unsure sites (UnsureSites)
 /// and delegate targets where known (DelegateTargets). Version 6: the closed-form solver (Solve, audit A4.6): a per-tick
 /// method or a loop body as a piecewise affine map of its state with the ticks its guards flip at, and generated C#
-/// that advances the state n ticks at once.
+/// that advances the state n ticks at once. Version 7: a hook at one entry write (InstrumentEntryWrite), so a plugin
+/// that classifies each write marks the entry writes it means and no others (the Invisible API's slice, docs/FINISH.md 9.4).
 /// </summary>
 public interface ICompilerPlugin
 {
-    /// <summary>The plugin interface version the plugin was written against (1 to 6).</summary>
+    /// <summary>The plugin interface version the plugin was written against (1 to 7).</summary>
     int InterfaceVersion { get; }
     string Name { get; }
     void Run(PluginContext context);
@@ -127,7 +128,7 @@ public sealed class SchedulingInfo
 
 public sealed class PluginContext
 {
-    public const int InterfaceVersion = 6;
+    public const int InterfaceVersion = 7;
     readonly List<(string, byte[])> _sections = [];
     readonly List<Diagnostic> _diagnostics = [];
     readonly Compiler.PluginHost _host;
@@ -231,6 +232,13 @@ public sealed class PluginContext
     /// <summary>(Version 5.) Calls `hook` after every entry read of the collection `member` holds (as a `foreach`
     /// begins, before the collection is computed), with the forms of <see cref="InstrumentEntryWrites"/>.</summary>
     public void InstrumentEntryReads(ISymbol member, IMethodSymbol hook, int tag = 0) => _host.AddEntryHook(member, hook, tag, write: false);
+    /// <summary>(Version 7.) Calls `hook` after one entry write: <paramref name="access"/> is an access of
+    /// <see cref="Accesses"/> with <see cref="MemberAccess.IsEntry"/>, a write or read-write, and
+    /// <see cref="MemberAccess.Instrumentable"/>; the hook's forms are those of <see cref="InstrumentEntryWrites"/>, the
+    /// key's type checked at this site alone. What <see cref="InstrumentWrite"/> is to InstrumentWrites: a plugin that
+    /// classifies each write marks the entry writes it means (a player's input) and not the others of the same
+    /// collection (a tick's deterministic ones).</summary>
+    public void InstrumentEntryWrite(MemberAccess access, IMethodSymbol hook, int tag = 0) => _host.AddEntryHook(access.Member, hook, tag, write: true, at: access);
     /// <summary>(Version 4.) Calls `hook` at one write (an assignment, a compound assignment, `++`/`--`, `??=`, of a
     /// field or property), with the parameter forms and points of <see cref="InstrumentWrites"/>: a plugin that
     /// classifies each write marks the ones it means and no others.</summary>

@@ -139,6 +139,45 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
 (`Runtime.cs:412-414, 697`). The self-hosted compiler reaches the 1 GiB limit on a real input
 (`tests/Godot/proof5_hello2d/README.md:95-97`).
 
+**A3.5 Frame-time spikes against NativeAOT-LLVM: the check, and what it found (2026-11-20). [run]**
+- The check: `node tools/frames.mjs` (programs `tools/frames/Frames.cs`, NativeAOT side `tools/frames-naot-wasm`).
+  Five game-like frame loops, each its own Node process for each side, 1,000 warm-up frames then 6,000 timed
+  frames (Stopwatch inside the module); median, p99, p99.9, worst frame and peak memory, each the lowest over the
+  runs (default 3); checksums compared; exit 1 when a scene's worst frame or p99.9 is above NativeAOT's.
+  `--worst N` prints the slowest frames by number (what a frame number does is fixed: the tree's rebuild is every
+  500th, bigdrop's drop every 400th).
+- First result (3 runs, machine shared with other sessions), worst frame cs2wasm against NativeAOT:
+  churn 8.6 ms vs 23.1 ms, collections 0.31 vs 2.56, strings 0.15 vs 0.36, **tree 31.9 vs 4.3**, bigdrop 2.8 vs 17.5
+  (the drop of 150,000 acyclic objects with their arrays in one frame: the cascade free costs less than
+  NativeAOT's collections). Peak memory 16 MB against 59 to 71 MB everywhere but tree (32 MB).
+- **tree is the one that spikes, and not because of a cascade.** Its worst frames are the full rebuilds (every
+  500th): ~15 ms to build 19,531 entities and ~4 to 20 ms to free the old tree (bigger after 500 frames of moves).
+  NativeAOT builds the same tree in ~1 ms. `Entity` is cycle-capable even without its `Parent` field
+  (`Entity -> List<Entity> -> Entity[] -> Entity`), so every store of the build is an arena link (ArenaLink,
+  LinkMembers, ArenaJoin, ArenaMerge, ArenaArrayCopy on each list growth) and every member gets its 40-byte words:
+  without `Parent` the build is still 6 to 9 ms. Its median frame is 23x NativeAOT's for the same reason: the walk's
+  `foreach` over children counts each child from outside, and a child with an up-reference then holds its owner
+  (UpdateHold, TopHeld along the chain) and lets it go at the release.
+- Not a leak: memory grows between rebuilds because the moves enlarge the tree (reachable entities 76k, 136k, 226k
+  at 1,000, 3,000, 6,000 frames without the rebuild, memory 32, 48, 64 MB in step); a re-parent that sets `Parent`
+  before or after the `Add` frees the same.
+- The structural fix is the compiler's, not the runtime's: a tree whose nodes own their children lists must stop
+  being a run-time group while it is built and walked (7.E: a structure built new and attached whole; the walk's
+  loop variable a borrow of the list it iterates). That is stream A's work in Compiler/Arenas.cs; this check is
+  its measure.
+- churn's median frame is 3.4x NativeAOT's (0.28 vs 0.08 ms; p99 and beyond are better): speed, not spikes;
+  not looked into yet.
+- Done on the walk (same day): the `foreach` over `e.Children` retained the list and each child, and a member
+  counted from outside walks its owner chain (UpdateHold, TopHeld). The loop's element borrow was refused because the
+  recursive call's summary said it stores array elements: through the changed-list MoveNext call (only throws; now
+  marked as a throw path, its stores the throw helper's, checked against MoveNext's source), through Rt.OnThrow's trace
+  buffer and string (fresh memory: its element key left out, its fields kept), and through Rt.FreeObjectArena
+  (the allocator's, as Rt.FreeObject already was). The list is now held through the field's borrow placeholders, as
+  a temporary is. Median 0.76 to 0.14 ms; the rebuild spike stays (29.9 ms vs 3.8 ms on a quiet machine).
+- List.Add of an isolated value does not help here: array sites always count as general in Arenas.Analyze, and the
+  scene's children refer to their parent. Streams I and J take more types out of the cycle graph; tree is measured
+  again after they merge.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
@@ -597,6 +636,23 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   difference the game's log does not show (closed 2026-11-20, stream E below); (3) a host without JavaScript
   (Wasmtime) for the `godot.*` imports.
 
+- **Stream I, value sources for the arenas (2026-11-21).** `Sharing.SiteTypeIds` on by default in every program: a
+  class field's targets in the cycle graph are the types its values come from (followed through parameters,
+  results, slots, `ref` parameters, struct fields), intersected with the static types' answer; computed once per
+  strongly connected component of the source graph (SharingFlow.cs). Soundness rules: array elements stay as their
+  static types say (the runtime's raw copies, Array.Copy, `Array.SetValue`, `Buffer.Memmove`, put references there
+  that no recorded store says); a slot takes the stores through refs of its type only if its address may be kept
+  (an escape analysis of `ref` parameters: a ref local, a ref return, a span, a pointer, an unknown callee);
+  `Unsafe.As` of a struct's place makes its references any object; reflection's writes apply. Fixed on the way:
+  `FieldInfo.SetValue` into a class field stored past the arena protocol and its edge was not in the graph (test 171's
+  reflection case leaked before this branch). Open (runtime): `MemberwiseClone` of a cycle-capable object leaks with
+  its cycle (the clone's copied slots are not linked; `tests/out/si/clone/c.cs` in the stream's worktree: .NET -1,
+  cs2wasm 2). Measured: test 088 437 to 388 cycle types; the self-hosted compiler (main with J) 20,717 to 20,636 in
+  its largest group, no change in time (14.24 s against 14.29 s). The bound with every source known
+  (`CS2WASM_FLOW_OPTIMISTIC=1`, unsound) is 20,555: hub `object` slots keep ~3,800 types under a context-insensitive
+  flow, and typed edges join the rest. Next for that group: context (call sites or containers' allocation sites),
+  or the typed-edge proofs of 7.E.
+
 - **Stream E, behaviour differences (2026-11-20).** What was on record and what a sweep against .NET found, each
   closed with a test (150 to 153, both modes):
   - `StackFrame.GetMethod()`, `Exception.TargetSite`, `MethodBase.GetCurrentMethod()`. A program that reaches one
@@ -736,14 +792,40 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     a program method with parameters did not compile (the plugin's compilation sees the program's types as
     retargeted symbols, whose parameters are not the ones the operation trees name); `Types.Canonical` now maps
     such a type to the input's own (`Driver.InputType`).
-  - Still open: the first slice of the real plugin in the Bazoodle repository (9.4). What it needs:
-    - 9.4, the Invisible API's first slice, in the Bazoodle repository against version 6: classify each write
-      (`Accesses` with entries, `PathConditions` for whether it runs under a value from input, `InterceptValue` on
-      the input reads, `UnsureSites` as unknown), mark the interactions changed (`InstrumentWrite`,
-      `InstrumentEntryWrites` with the player key), one gate (generated C# with `AddSource`, reading private
-      fields, exported for the server), registered from `RunBeforeCompile` so nothing compiles twice, and the
-      solved timer (`Solve` and its Advance; an approximate closed form only for display or prediction). Each gap
-      it finds is a compiler issue here.
+  - The Invisible API's first slice (9.4, stream M, 2026-11-20), as a standalone sample in this repository (the
+    owner's decision): `samples/invisible-api` (game `Game/Arena.cs`, plugin `Plugin/InvisiblePlugin.cs` against
+    version 7, `driver.mjs`, `script.txt`), checked by `tests/Cs2Wasm.Tests/InvisibleCheck.cs` ("invisible-api
+    slice", both modes). The plugin, all from `RunBeforeCompile`: classifies each write of the game's state
+    (`Accesses` with entries; `PathConditions`, each path's conditions tested for a dependence on the input exports'
+    parameters through the arguments along the path and the locals' writes; tick only; unknown for a member an
+    unsure site touches or a write no hook follows), intercepts every read of the input exports' parameters (the
+    server's input log, and one action replaced), marks the writes under input (`InstrumentWrite`) and the entry
+    writes under input with the player key (`InstrumentEntryWrite`), generates one gate with `AddSource` (fire
+    accepted now: `TryFire`'s own early-return condition rewritten over a receiver, `!(self._cooldown > 0 ||
+    self._hp <= 0)`, reading private fields; exported with a view of a player's private state), and solves the wave
+    timer (`Solve`, exact, `GenerateAdvance`: a prediction on a copy, a catch-up of the live timer). The check plays
+    the script with the driver and under .NET (the game without the plugin; the server's answers from the private
+    state by reflection and by running the ticks): the game's output, gate answers against whether the fire
+    happened, views, predictions up to 1,000 ticks and a 100-tick catch-up equal; every member or entry an input
+    changed is marked but for the unknown ones; no tick marks anything; the classification equals
+    `expected-writes.txt`; `CompileResult.RecompiledFunctions` is 0. A missing mark fails it (tried both ways).
+    Gaps it found:
+    - Fixed: a hook at one entry write (version 7, `PluginContext.InstrumentEntryWrite(MemberAccess, hook, tag)`;
+      `EntryHook.Site`, filtered in `FunctionCompiler.EntryHooksAt`). `InstrumentEntryWrites` hooks every entry
+      write of a member, so the tick's deterministic `_coins[id] += 2` was marked with the inputs' writes; the
+      per-site form is to it what `InstrumentWrite` is to `InstrumentWrites`. Older plugins unchanged.
+    - Fixed: nothing showed whether a plugin made the compiler compile again; `CompileResult.RecompiledFunctions`
+      (functions `Driver.Recompile` compiled a second time, static initializers included).
+    - Open: whether a value depends on an input. `PathConditions` gives the conditions, not what they depend on;
+      the plugin follows parameters to the arguments of the calls on the path and locals to their writes itself,
+      over syntax and flow-insensitively, because `GetDefUse` keys the control-flow graph's operations, not the
+      tree's that `Accesses` and `BranchCondition` give (an `out var` from `TryGetValue` is followed by hand). A
+      query `DependsOn(operation, path, sources)` over the def-use chains, with calls on the path, would replace it.
+    - Open: a condition as C# over a receiver. The gate rewrites the condition's implicit `this` reads to
+      `self.Name` itself; the solver's `SolverAtom.Code` does this for invariants, a `ConditionCode(test, receiver)`
+      would give it for any condition (calls, properties and locals included, or a refusal).
+    - Open, small: field initializers (`int _hp = 10`) are not writes in `Accesses`; their values are the program's,
+      so a server knows them, but a plugin that must list every write reads them from the syntax.
 
 - **Step 11.1, in part (2026-11-18): programs written to use every form, compared with .NET.** Tests 124 to 126
   removed three refusals (`await` in conditional expressions was already handled; lifted compound assignment
@@ -876,6 +958,185 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   by their frames). The levers there: sharing code between instantiations over reference types (as .NET's
   canonical forms do), and which virtual overrides of the Linq iterators a call can reach. Also left in the data:
   3,476 full names (1 MB) the cast-failure helpers keep (`rt.throw_cast`, one literal per target type).
+- **Baseline-tier code quality (stream K of docs/FINISH.md, 2026-11-20).** Measured first, side by side with a
+  NativeAOT-LLVM build of the same sources (main de9e598; the old `naot-wasm-measure` was built from an older compiler
+  whose Driver does other work), both profiled with `node --no-wasm-lazy-compilation --cpu-prof`: with lazy
+  compilation a sample can wait 5-40 ms while a function is compiled on its first call and the wait is charged to
+  whatever runs next (5 s of a 25 s profile; "2.8 s in SwitchExpressionBinder under Driver.ParamEscape" and
+  "1.3 s in ImmutableArray.Builder.ToImmutable" were that, 3 ms and nothing in the eager profile). Unprofiled times
+  are the same either way. Profiled, hello world: code 11.8 s against 4.1 s (the methods found on both sides 1.84x),
+  runtime 11.7 s (arenas about two thirds) against GC and allocation 1.8 s, host 4.0 (1.7 of it the eager compile)
+  against 2.1; by area, Roslyn's parser and lexer 5.3 s against 2.4, the rest of Roslyn 2.5 against 0.8, CoreLib 0.8
+  against 0.3, dispatch stubs 0.6. Changes, each with a test or the suite's and its measurement:
+  - `rt.array_clear` clears up to 256 bytes word by word: `memory.fill` is a call into the engine in the baseline
+    tier, and Roslyn's `SyntaxListBuilder.Clear` clears its whole array at every reuse (403 ms of the function's own
+    time).
+  - A returned struct is made in the caller's destination: `return new S(..)` and `return F(..)` of the return type,
+    outside every `try`, construct into the struct-return address as a declaration's value is made in its local, so
+    such a method (`ImmutableArray<T>.Builder.ToImmutable`, and the many like it) has no frame temporary, no exception
+    region to release it on the way out and no copy (`CS2WASM_NO_DIRECT_RETURN=1`: the old way).
+  - `x = default` and `new S()` with nothing to run, into any struct place: copied from zeros nothing writes
+    (`SyntaxParser.MoveToNextToken`'s `_currentNode = default`, a 72-byte frame temporary cleared, copied and released
+    before; `CS2WASM_NO_ZERO_DEFAULT=1`).
+  - Borrows: an element of an array a static holds borrows as an element of a stable array does (no threads: the
+    static's key and the elements' key); a type's static initializer's own stores of its statics do not break a borrow
+    of one of them (the borrow began with a read after the check that runs the initializer, so the initializer has run
+    or is running further up the stack: what it stores next, it stores after the borrow's scope). 152 borrows in the
+    parser probe, 138 before. `SyntaxNodeCache.TryGetNode`'s `var e = s_cache[i]` still counts: its call of
+    `IsCacheEquivalent` reaches element stores (`GreenNode.GetSlot` of a token throws, and the message is built with
+    `string.Concat`, number formatting, `Memmove`), and `[]` is every element store of the program; what that needs is
+    which arrays a store can write, not a pass. `CS2WASM_REACH_WHY=fn>>store:key` lists what a function reaches that
+    stores a key.
+  - Inliner, second round (the final bodies, now run up to three times): a leaf of the program or the library up to
+    the first round's 12 instructions goes in at every site (`Hash.Combine`, 5 instructions, was too large in the
+    first round only for the local traffic it had then). And fast paths: a function of the shape `test; if { .. }
+    end; value` whose test is whether a value read from memory is made yet (a field that is null, a type's
+    initializer flag not set) and whose test and value are pure and short (8 instructions), called from 3 places or
+    more, has the test and the value copied to its call sites and the call itself left on the other path: what is left
+    out runs in the function's own frame, so a trace is the same (`SyntaxParser.CurrentToken`, `_currentToken ??
+    FetchCurrentToken()`, from 874 sites; `Array.Empty<T>()`, `ArrayPool<T>.Shared`, `Encoding.UTF8`). A first try took
+    any test, and `StringBuilder.Append(string)`'s `value != null`, which holds most of the time, made micro 2% slower.
+    `CS2WASM_TINY_BODY`, `CS2WASM_FAST_PATH`, `CS2WASM_FAST_PATH_CALLERS` (0: off), `CS2WASM_INLINE_DEBUG=1`.
+  - Constant locals (`ConstBranches.ConstLocals`): a local given a constant at the function's top level before
+    anything reads it, and never written otherwise, is that constant at every read; a block whose body is a constant
+    is the constant; `const; const; compare` folds. `switch (Unsafe.SizeOf<T>())` in a generic method then folds to
+    its arm: Roslyn's `SegmentedArray<T>.SegmentShift` and `OffsetMask` were two calls each per probe of
+    `StringTable.FindSharedEntry`'s loop (10x NativeAOT's time there) and are constants at the site now
+    (`CS2WASM_NO_CONST_LOCALS=1`).
+  - Tried and reverted: dispatch stubs through a `br_table` on the type id instead of halving the stretches
+    (`GreenNode.GetSlot`: 256 stretches over 1,118 ids). V8's baseline tier compiles a `br_table` as a binary search
+    over its index range, wider than the stretches' count: no faster for GetSlot, and interface stubs got slower (micro
+    `iface_foreach` 1.21x, `iter_select_where` 1.21x, `virtual3` 1.18x).
+  Measured: micro in the baseline tier (`--liftoff-only`, 5 interleaved rounds, best of each) 1.876x to 1.847x
+  NativeAOT's time (geometric mean 0.985 of before: `sb_append_int` 0.80, `distinct` 0.93, `hashset_add` 0.95);
+  the parser bench (`tools/roslyn-parse-bench.cs`: 400 classes parsed and walked, baseline tier, interleaved) 375 to 350.5 ms, median of 8 rounds (best 363 to 347, faster in every round); the self-hosted
+  compiler (no threads, the same sources built by each compiler) 77,718,084 to 77,170,647 bytes, hello world on one thread 13.7-14.5 s to 13.3-13.6 s in the five interleaved rounds where the machine was quiet (NativeAOT-LLVM 5.0-5.1 s: 2.74x to 2.65x; median 3% less wall time, 1% less processor time; loaded rounds moved 15% either way and are left out), build time unchanged within the noise (675 s and 641 s). Hello
+  world 27,868 to 27,745 bytes. Suite 188 passed checked and as shipped (rebased on main: 188 passed both ways, 088 once failing on a temporary file another shard held, then passing alone twice).
+  Left, in the order the profile gives: the arena machinery (streams I and J), counting calls (rt.retain and
+  rt.release 1.7 s profiled; inlining them everywhere was measured before, no gain), `rt.frame` (0.35 s; a call per
+  function with a frame, kept for size), struct helpers (`rt.copy_assign` and its retains 0.4 s), dispatch stubs (a
+  call through a binary search: inlined vtable calls need the table and its analysis buckets), and the parser's own
+  code at 2.2x, flat.
+
+- **Self-hosted compiler's memory (stream L of docs/FINISH.md, 2026-11-20): 568.9 MB to 482.9 MB.**
+  - The report: `CS2WASM_MEMSTATS=1` at compile time. The runtime goes through the heap at every growth of the memory
+    (the table's word per granule, each page's blocks: a block's first word says what it is) and prints a line;
+    the export `cs2wasm_memstats` (host/run.mjs calls it at the end) prints the last growth's state and the end's in
+    full: pages and blocks per size class (in use, objects, cycle-capable, members), large blocks, free runs, empty
+    pages, members and which of their words are used, arena records, the 60 types with the most bytes. Its records
+    are made at the heap's start, so it allocates nothing while it looks; its hooks are intrinsics the compiler
+    emits only when asked (`if (MemStatsOn())` around a call still cost hello world 430 bytes). A diagnosis, not a
+    walk the program does: nothing is compiled in without the variable.
+  - Found (hello world, no threads): the heap only grows, and at its peak holds the objects .NET's heap holds after a
+    full collection at the same point of the compilation (dotnet-dump of the .NET-hosted compiler: 4.74 million
+    objects, by type the same counts): what cs2wasm frees, it frees when .NET could, and the gap is layout. The
+    allocator is not where it goes: 4 MB held free in pages of small blocks, 1 MB in free runs, about 1.5 MB in the
+    granule rounding of large blocks. Where it went: 3.7 million arena members each had a block of 48 bytes of words
+    (175 MB) and an 8-byte prefix (30 MB), and almost every cycle-capable object was a member, so the words being
+    made only when first written saved nothing; objects 204 MB small and 86 MB large (String 110 MB, the library
+    sources mostly); 36 MB of data below the heap.
+  - Cut 1: the words are in the member's block, before its header. A word is one load (was two, the pointer first).
+  - Cut 2: of the nine words, two are rare: the container waiting to own the member (6% of members) and the note of
+    a failed check at the drop (5%). They are in 8 bytes of their own, made when one is first written and freed with
+    the member (or when it leaves its group); the block's first word, the tag that says a block holds a
+    cycle-capable object, is PrefixMark less their address (below -1 either way, so ObjectOf still knows the block).
+    The owner took the waiting container's place. A member: 56 bytes to 32. With threads 40: the group's lock word
+    (stream C's, which another thread reads without the group's lock: KeyStripe) is the second word of the block,
+    and the count word stays clear of a free block's link.
+  - Cut 3: the table StackFrame.GetMethod looks frames up in (rt.frame_methods) kept each name as a string literal:
+    57,000 in the self-hosted compiler, about 12.5 MB of its memory. One blob of UTF-8 names now (compared with the
+    frame's string as decoded code points); data 35.7 to 29.2 MB.
+  - Measured, interleaved (`tools/selfhost-ab.sh` prints each run's peak now), 4 rounds: main 199572c 14.6 s /
+    568.9 MB; stream L 14.0 s / 482.9 MB; NativeAOT-LLVM 5.5 s / 322.2 MB (its peak.cjs, the same measure as
+    tools/bench.mjs takes of both). micro --baseline 1.87x on both; bench 0.95x on both, 16.0 MB (the 16 MB floor);
+    hello world 27,812 bytes unchanged; programs with arenas about 2 KB smaller. Suite 187/187 checked and as
+    shipped. The threaded self-hosted build (layout of thread mode: tag, lock word, seven words) compiles hello
+    world right on 1 and 12 threads; under the same load as stream C's last threaded build, 611 MB against 666.
+  - **What is left above NativeAOT's 322 MB is per object:** 32 bytes before each of 3.7 million members (120 MB:
+    streams I and J take types out of the cycle graph), a 12-byte header against NativeAOT's 8 (the hash word),
+    29 MB of data (19 MB type tables, reflection records and the frame names, 4.7 MB string literals, 4.1 MB the
+    library sources), and the memory's growth by an eighth
+    (about 30 MB above the heap's top at the end).
+
+- **Owned arrays (stream J of docs/FINISH.md, 2026-11-20): Roslyn's green nodes out of the cycle graph.** The type
+  graph has one node per array type. Roslyn's `ArrayElement<GreenNode>[]` is both the children a syntax list keeps
+  (made, filled, handed to its constructor, never written again) and its builders' arrays (written all the time,
+  held by no node); an array type's element site is always one that closes cycles, so the 268 green types were one
+  group through it (its only closing site: `CS2WASM_ARENA_DEBUG` now prints each component's `closing site` lines).
+  - The rule (Compiler/OwnedArrays.cs): a field is *sealed* when every array it can hold is never written once there.
+    A greatest fixpoint over carriers, each assumed until a use is found that does not fit: fields (every value
+    stored is sealed, every read only reads: elements by value, the length, Array.Copy's source, a parameter that
+    only reads); parameters that only read, and those whose every caller passes a sealed array (no virtual, interface,
+    delegate or reflective way in; no primary constructor, attribute or record); locals that alias sealed arrays;
+    *fresh* arrays (a local declared from `new T[n]`, a collection expression or a call that returns a fresh array)
+    whose uses before their one hand-off are element writes and reads, the length, Array.Copy/Clear/Fill into them,
+    or a *writing* callee (one that writes into its parameter and keeps it nowhere: not in a lambda, not async, every
+    override of a virtual one), all textually before the hand-off with no goto or yield and no loop around the
+    hand-off that the declaration is outside of. A struct element is used by value only in the uses listed (a
+    mutating method, an await, a deconstruction, a pattern on it in place fail). Every compiled body, field and
+    static initializer is indexed by the identifiers it names (and target-typed `new(` and constructor initializers),
+    so every reference of a carrier is seen. Why it is sound: ordered by when each object stops being only its
+    maker's, every element stored into a fresh array was a value already let out (earlier), and nothing stores into
+    a sealed array afterwards, so its element edges all point back in time, as a readonly field's do.
+  - In the graph (Arenas.SealOwnedArrays, after a first pass of the components): only fields on a cyclic component
+    whose closing site is an array type's elements are asked; a sealed field's hubs lead to a node of its own per
+    array type whose element hubs are copies with no site (they close nothing). If that node is still on a cycle
+    closed elsewhere, it is joined back to its array type both ways and the components found again: such arrays are
+    members as before. `CS2WASM_NO_OWNED_ARRAYS=1` turns it off; `owned arrays:` debug lines give each carrier's
+    verdict and the use that failed it.
+  - Reflection: a constructor reflection can call gets any array (test 176). In the self-hosted build every program
+    constructor could be called: asking frames for their MethodBase gives every program method a record and an
+    invoke thunk (stream E), and two things asked, the compiler's own CS2WASM_STATS/COUNT_RC aids (Wasm/Emitter.cs)
+    and Exception.SetCurrentStackTrace through .NET's `StackTrace.ToString(TraceFormat, StringBuilder)`, which reads
+    each frame's MethodBase; and Roslyn's analyzer loading (`Assembly.GetTypes`, then `Activator.CreateInstance(type)`)
+    kept every constructor of every program type. Now: the aids read names from the trace text; that overload is
+    substituted as `ToString(TraceFormat)` already was (`Rt.TraceTextInto`: SetCurrentStackTrace writes the trace with
+    its lines, as .NET does; it wrote the names without lines before, test 177); CreateInstance(Type) and (Type,
+    bool) keep only parameterless constructors (all they run); and the analysis counts as callable only members with
+    an invoke thunk (`Reflection.ThunkedMembers`), not every member with a record.
+  - Measured. Parse probe (tools/roslyn-parse-probe.cs): cycle types 907 to 639, its green group of 271 gone, output
+    the same. Self-hosted compiler, named no-threads builds, `Console.WriteLine(42)`, interleaved 3 rounds
+    (tools/selfhost-ab.sh): main 14.80 s, the reflection part alone 14.08 s, with the rule 11.93 s, NativeAOT-LLVM 5.93 s
+    (2.50x to 2.01x). Profiled run: library ready 11.6 to 8.8 s, compile 3.26 to 3.13 s; memory 470 to 295 MB; arena
+    self time 3.52 to 1.76 s (21.7% to 13.0%; ArenaRelease 704 to 346 ms, ArenaUnlinkOld 403 to 139, ArenaLink 347 to
+    141). Cycle types 39,351 to 39,064 (reflection part) to 38,796; no group holds a green node, a syntax list or
+    `ArrayElement<GreenNode>[]`. Module (named) 78.5 to 72.7 MB (the thunks) to 72.6 MB. The self-hosted compilers'
+    hello worlds are byte-identical. The analysis: 1.5 s of the self-host build, 3,432 fields asked, two sealed
+    (the other, SharedArrayPoolPartitions' partitions, joined back: its arrays are on a cycle through their elements).
+    Hello world (test 145) unchanged. Suite 190 passed checked and as shipped.
+  - Found on the way, fixed 2026-11-21 (below, stores by address): a store through a span alone
+    (`items.AsSpan()[0] = v`) recorded no value at the array type's site, so a cycle made only that way was in no
+    group and was never freed.
+  - Left: what still joins Roslyn's big group (20,844 types) is the `object` and interface slots of stream I's
+    finding; red nodes' child arrays (`SyntaxList.WithManyChildren._children`) are written lazily after the node is
+    shared (by design) and stay edges.
+
+- **Stores by address in the type graph (2026-11-21; Compiler/RefStores.cs).** A store through a `ref` (a span's
+  element, MemoryMarshal.GetArrayDataReference, Unsafe.Add, a ref local or parameter, Interlocked's location) or a
+  pointer names no site: the runtime finds the slot's object (Rt.ArenaLinkAt), but the type graph had no edge for it,
+  so a cycle closed only that way was in no group and never freed (test 178: 50 of each of six kinds left before).
+  Now each such store records its value's type against its slot type (Interlocked's and Volatile's at their callers,
+  Calls.ArenaRefWrite), and before the graph:
+  - a `ref T` can point into any T[]'s elements without any element's address being taken (a span), so every array
+    type of element type T the program makes holds those values (its site made if no code stores into it);
+  - a `ref` into a class's field comes only from that field's address taken by name, which already gives the site
+    its declared type; a readonly one is then no field filled at construction alone (`Unsafe.AsRef(in f) = v`);
+  - Unsafe.As<TFrom, TTo>(ref): stores through TTo refs land in TFrom slots (directed; a struct's reference slots for
+    a struct). Interlocked's and Volatile's own reinterpretations are not counted: their callers record the store
+    under the slot's own type. Raw memory seen as references can land in any slot, unless every such
+    reinterpretation in its method is only read (RuntimeHelpers.Box) or it is GetArrayDataReference<T>'s (a T[]'s
+    own elements);
+  - a pointer store lands anywhere a value of its type fits (a value of a wider static type: anything of the slot's
+    type), except the runtime's own (Cs2WasmArrays.SetBoxed for Array.SetValue and Array.Copy across element types,
+    TypeInfo.Set for a QCall handle, Meta.CopyBack for a reflective call's by-ref arguments), which land in arrays'
+    elements or slots whose address was taken. (The first form of that rule added only values narrower than the
+    slot: an object stored by Array.SetValue reached no Node[]; unsound, caught while measuring.)
+  Self-hosted compiler: 5,739 slot types recorded, 498 array sites given values, 21 readonly fields made edges,
+  nothing lands anywhere; groups and cycle types the same with and without (61, 38,881), the green group stays out;
+  hello world 10.68 s against 10.74 s without (noise), the same peak memory, output byte-identical; 0.4 s of the
+  build. Parse probe unchanged (639 cycle types). Suite 193 passed checked and as shipped.
+  `CS2WASM_NO_REF_STORES=1` turns it off; `by address:` debug lines name each pointer store and reinterpretation.
+  Not covered: Unsafe.As<T>(object) (an object seen as another class): the type graph trusts static types there.
 
 ### Direction (revised 2026-11-18 with the owner)
 
@@ -1169,6 +1430,7 @@ So nothing is replaced. What was wrong with the runtime is narrower, and it is w
    results as IR or C# the plugin can emit, not strings.
 4. Write the Invisible API plugin's first slice in the Bazoodle repository against version 4 (classification,
    "mark changed", one gate, one solved timer) as the acceptance test; each gap it finds is a compiler issue.
+   Done 2026-11-20 as `samples/invisible-api` in this repository (the owner's decision), against version 7 (above).
 5. Keep versions 1 to 3 running through an adapter over the IR.
 
 ### Step 10. Configuration and reentrancy (A6.1, A6.2, A5.10)

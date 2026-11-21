@@ -1,0 +1,42 @@
+# The scripted session the check plays (driver.mjs; tests/Cs2Wasm.Tests/InvisibleCheck.cs plays it under .NET too).
+join 1
+join 2
+join 9
+dump
+view 1
+# 1 claims its cell, 9 stands on the same cell and finds it taken; 2 moves right and down
+input 1 32
+input 9 32
+input 2 5
+tick
+dump
+# 1 fires at 9 (same column): accepted; again at once: refused by the cooldown
+input 1 16
+view 9
+input 1 16
+tick 2
+input 1 16
+tick
+input 1 17
+view 1
+tick 3
+dump
+predict 1
+predict 15
+predict 40
+predict 1000
+# the server replaces 2's next action (it sent "left") with "up and claim"
+override 40
+input 2 2
+tick 12
+dump
+predict 26
+# the server catches the timer up by 100 ticks at once
+advance 100
+dump
+input 9 48
+input 2 0
+tick 30
+dump
+view 2
+predict 7

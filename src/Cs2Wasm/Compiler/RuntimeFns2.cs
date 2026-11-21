@@ -773,7 +773,23 @@ internal sealed partial class RuntimeFns
             return f;
         }
         e.Get(0); e.Get(a); e.Get(2); e.Call(ArrayReleaseRange);
-        e.Get(a); e.I32(0); e.Get(2); e.Get(3); e.Op(Op.I32Mul); e.Op(Op.MemoryFill);
+        // (a few words one by one: memory.fill is a call into the engine, slower than the stores; a list builder
+        // clears its whole array every time it is reused, most often a handful of words)
+        int nb = e.AddLocal(I), stop = e.AddLocal(I);
+        e.Get(2); e.Get(3); e.Op(Op.I32Mul); e.Tee(nb);
+        e.I32(256); e.Op(Op.I32LeU); e.Get(nb); e.I32(3); e.Op(Op.I32And); e.Op(Op.I32Eqz); e.Op(Op.I32And);
+        e.If();
+        {
+            e.Get(a); e.Get(nb); e.Op(Op.I32Add); e.Set(stop);
+            var done = e.Block(); var next = e.Loop();
+            e.Get(a); e.Get(stop); e.Op(Op.I32GeU); e.BrIf(done);
+            e.Get(a); e.I32(0); e.Store(Op.I32Store);
+            e.Get(a); e.I32(4); e.Op(Op.I32Add); e.Set(a); e.Br(next);
+            e.End(); e.End();
+        }
+        e.Else();
+        e.Get(a); e.I32(0); e.Get(nb); e.Op(Op.MemoryFill);
+        e.End();
         return f;
     }
 

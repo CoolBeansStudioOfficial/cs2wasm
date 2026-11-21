@@ -23,17 +23,32 @@ namespace Cs2Wasm.Compiler;
 /// CS2WASM_SHARE_CHECK=1 makes the counts of objects found thread-local check, at run time, that they are counted by
 /// the thread that made them.
 /// </summary>
-internal sealed class Sharing
+internal sealed partial class Sharing
 {
-    public enum K : byte { Exact, Top, Param, Ret, Node, Elem, Display }
+    public enum K : byte { Exact, Top, Param, Ret, Node, Elem, Display, RefParam }
     /// <summary>A source of reference values. Exact: an object of Type (Index: a closure's or state machine's type id
     /// for Display). Top: any object of Type or a subtype. Param: method Key's parameter Index (declared Type). Ret:
     /// method Key's result (declared Type; Index 1: a virtual call, its implementations' too). Node: what the slot
-    /// Key holds (declared Type). Elem: an element of an array of static type Type.</summary>
+    /// Key holds (declared Type). Elem: an element of an array of static type Type. RefParam: what method Key's
+    /// `ref`, `in` or `out` parameter Index points at (the places its callers pass, what is stored through it).</summary>
     public readonly record struct Src(K Kind, string? Key = null, int Index = 0, ITypeSymbol? Type = null);
 
     /// <summary>Marks a call instruction (Instr.Imm2) whose arguments' sources were all recorded.</summary>
     public const long Certified = 1L << 62;
+    /// <summary>Marks a call instruction whose `ref`, `in` and `out` arguments' places were all recorded (RefInNode).</summary>
+    public const long CertifiedRefs = 1L << 61;
+
+    /// <summary>Takes the marks off again, once nothing asks for them.</summary>
+    public static void ClearCertified(WasmModule m)
+    {
+        foreach (var f in m.Functions)
+        {
+            if (f.IsImport) continue;
+            var b = f.Body;
+            for (int i = 0; i < b.Count; i++)
+                if (b[i].Op == Op.Call && (b[i].Imm2 & (Certified | CertifiedRefs)) != 0) b[i] = b[i] with { Imm2 = b[i].Imm2 & ~(Certified | CertifiedRefs) };
+        }
+    }
 
     readonly Driver D;
     public Sharing(Driver d) { D = d; }
@@ -74,12 +89,86 @@ internal sealed class Sharing
     /// <summary>A node for the array an element is read from.</summary>
     public string NewArrayNode() => "arr " + _arrayNodes++;
 
+    /// <summary>A `ref`, `in` or `out` parameter of reference type ("method-key ordinal", a body compiled from source):
+    /// whether the body keeps or remakes a ref of the place (Dirty), and the parameters it passes it on to.</summary>
+    public readonly Dictionary<string, (bool Dirty, HashSet<string> To)> RefParamUse = [];
+    HashSet<string>? _refDirty;
+
+    /// <summary>Whether a store through some ref of the slot's type, not through its own field, can land in the slot:
+    /// its address went somewhere that may keep a ref of it, directly or through the parameters it is passed on to.</summary>
+    public bool RefsReach(Arenas.Site s)
+    {
+        if (!s.AddressTaken) return false;
+        if (s.RefDirty) return true;
+        RefDirtySet();
+        foreach (var u in s.RefUses) if (_refDirty!.Contains(u)) return true;
+        return false;
+    }
+
+    /// <summary>The nodes of statics and struct fields whose address is taken: where it went (as a site's RefUses;
+    /// Dirty: anywhere).</summary>
+    readonly Dictionary<string, (bool Dirty, HashSet<string> Uses)> _nodeAddr = [];
+    public void NoteNodeAddress(string node, string? use)
+    {
+        if (!_nodeAddr.TryGetValue(node, out var a)) a = (false, []);
+        if (use == null) a.Dirty = true; else if (use.Length > 0) a.Uses.Add(use);
+        _nodeAddr[node] = a;
+    }
+
+    /// <summary>The same as RefsReach for a node of _nodes: a static's, a struct field's (its address taken somewhere
+    /// a ref of it may be kept), an out parameter's (its body keeps a ref of the parameter: a store through that one).</summary>
+    public bool NodeRefsReach(string node)
+    {
+        if (node.StartsWith("o ")) { RefDirtySet(); return !RefParamUse.ContainsKey(node[2..]) || _refDirty!.Contains(node[2..]); }
+        if (!_nodeAddr.TryGetValue(node, out var a)) return false;
+        if (a.Dirty) return true;
+        RefDirtySet();
+        foreach (var u in a.Uses) if (_refDirty!.Contains(u)) return true;
+        return false;
+    }
+
+    void RefDirtySet()
+    {
+        if (_refDirty == null)
+        {
+            // (dirty: a parameter whose body keeps a ref, or that has no body seen; and every one passing to such a one)
+            var users = new Dictionary<string, List<string>>();
+            var dirty = new HashSet<string>();
+            var work = new Queue<string>();
+            foreach (var (k, (d, to)) in RefParamUse)
+            {
+                if (d && dirty.Add(k)) work.Enqueue(k);
+                foreach (var t in to)
+                {
+                    if (!users.TryGetValue(t, out var l)) users[t] = l = [];
+                    l.Add(k);
+                    if (!RefParamUse.ContainsKey(t) && dirty.Add(t)) work.Enqueue(t);
+                }
+            }
+            foreach (var site in D.Arenas.AllSites)
+                foreach (var t in site.RefUses)
+                    if (!RefParamUse.ContainsKey(t) && dirty.Add(t)) work.Enqueue(t);
+            foreach (var (_, a) in _nodeAddr)
+                foreach (var t in a.Uses)
+                    if (!RefParamUse.ContainsKey(t) && dirty.Add(t)) work.Enqueue(t);
+            while (work.Count > 0)
+            {
+                var x = work.Dequeue();
+                if (users.TryGetValue(x, out var l)) foreach (var u in l) if (dirty.Add(u)) work.Enqueue(u);
+            }
+            _refDirty = dirty;
+        }
+    }
+
     readonly List<Action> _reflectWrites = [];
+    bool _reflectApplied;
     /// <summary>A store reflection can make (FieldInfo.SetValue): applied if the program can call SetValue.</summary>
     public void ReflectWrite(Action a) => _reflectWrites.Add(a);
 
     /// <summary>What a method stores through its `out` or `ref` parameter.</summary>
     public static string OutNode(string m, int i) => "o " + m + " " + i;
+    /// <summary>What the places passed to a method's `ref`, `in` or `out` parameter hold (the callers' arguments).</summary>
+    public static string RefInNode(string m, int i) => "ri " + m + " " + i;
     /// <summary>A field of a struct, wherever the struct is (in a local, an object, an element, a box, a static).</summary>
     public static string StructFieldNode(ITypeSymbol structType, ISymbol field) => "sf " + Types.Key(structType) + "::" + field.Name;
 
@@ -104,10 +193,12 @@ internal sealed class Sharing
     }
 
     /// <summary>A store through an address the code does not know the object of (a `ref`, a span's element).</summary>
-    public void RefStore(ITypeSymbol slotType, IEnumerable<Src> srcs)
+    public void RefStore(ITypeSymbol slotType, IEnumerable<Src> srcs, string? where = null)
     {
         if (!Types.IsRef(slotType)) return;
         var ct = D.Types.Canonical(slotType);
+        if (s_flowRefs && (Types.IsObject(ct) || ct.TypeKind == TypeKind.Interface))
+            Console.Error.WriteLine($"ref-store {Types.Key(ct)} in {where}: " + string.Join("; ", srcs.Select(x => x.Kind + " " + x.Key + " " + (x.Type != null ? Types.Key(x.Type) : ""))));
         _refTypes.TryAdd(RefNode(ct), ct);
         Add(RefNode(ct), srcs);
     }
@@ -244,8 +335,8 @@ internal sealed class Sharing
         if (s_off) return;
         var sw = System.Diagnostics.Stopwatch.StartNew();
         // (reflection stores into fields only through FieldInfo.SetValue)
-        if (D.AllMethods.Any(m => m.Compiled && m.Sym.Name is "SetValue" or "SetValueDirect" && m.Sym.ContainingType?.Name is "RuntimeFieldInfo" or "FieldInfo"))
-            foreach (var a in _reflectWrites) a();
+        if (!_reflectApplied && D.AllMethods.Any(m => m.Compiled && m.Sym.Name is "SetValue" or "SetValueDirect" && m.Sym.ContainingType?.Name is "RuntimeFieldInfo" or "FieldInfo"))
+        { _reflectApplied = true; foreach (var a in _reflectWrites) a(); }
         // which methods' parameters are known: every call to them marked, none from elsewhere
         var uncertified = new HashSet<string>();
         var stubOf = new Dictionary<WasmFunction, VirtualStub>();
@@ -493,6 +584,9 @@ internal sealed class Sharing
                     if (s.Key!.StartsWith("site ")) { var site = D.Arenas.SiteByKey(s.Key[5..]); if (site != null) SiteNode(site, s.Type, why); else if (s.Type != null) Push(new Src(K.Top, Type: s.Type), why + " (no store seen)"); }
                     else Node(s.Key, s.Type, why);
                     break;
+                case K.RefParam:
+                    if (s.Type != null) Push(new Src(K.Top, Type: s.Type), why + " <- " + s.Key + " #" + s.Index + " (a ref parameter)");
+                    break;
                 case K.Elem:
                     {
                         // an element of the arrays the expression can be (any of the static type's, if that is unknown)
@@ -566,6 +660,7 @@ internal sealed class Sharing
                     }
                 case K.Node: Node(s.Key!, s.Type); break;
                 case K.Elem: Top(s.Type is IArrayTypeSymbol et ? D.Types.Canonical(et.ElementType) : null); break;
+                case K.RefParam: Top(s.Type); break;
             }
         }
         return _arrayIds[start] = r;
@@ -574,7 +669,16 @@ internal sealed class Sharing
     // ---- for the arenas: what a slot can hold, by where its values come from rather than by their static types ----
 
     static readonly bool s_flowDebug = Environment.GetEnvironmentVariable("CS2WASM_FLOW_DEBUG") == "1";
+    /// <summary>CS2WASM_FLOW_REFS=1: each store through a ref of type object or an interface, where, of what.</summary>
+    static readonly bool s_flowRefs = Environment.GetEnvironmentVariable("CS2WASM_FLOW_REFS") == "1";
+    /// <summary>CS2WASM_FLOW_OPTIMISTIC=1 (a measurement, unsound: it leaks cycles): any object of a wide type is taken
+    /// as nothing, to see how far the groups could shrink were every source known.</summary>
+    static readonly bool s_flowOptimistic = Environment.GetEnvironmentVariable("CS2WASM_FLOW_OPTIMISTIC") == "1";
+    /// <summary>The measurement narrows arrays' elements too.</summary>
+    public static bool OptimisticFlow => s_flowOptimistic;
     HashSet<string>? _flowUncertified;
+    /// <summary>Methods some call of which did not record its `ref` arguments' places (or that are called from elsewhere).</summary>
+    HashSet<string>? _flowUncertifiedRefs;
     Dictionary<string, List<string>>? _flowImpls;
     Dictionary<string, List<Src>>? _flowStubParams;
 
@@ -583,10 +687,14 @@ internal sealed class Sharing
     void PrepareFlow()
     {
         if (_flowUncertified != null) return;
+        // (reflection's stores into statics and structs' fields, if the program can make them: as Analyze does)
+        if (!_reflectApplied && D.AllMethods.Any(m => m.Compiled && m.Sym.Name is "SetValue" or "SetValueDirect" && m.Sym.ContainingType?.Name is "RuntimeFieldInfo" or "FieldInfo"))
+        { _reflectApplied = true; foreach (var a in _reflectWrites) a(); }
         var keyOf = new Dictionary<WasmFunction, string>();
         foreach (var mi in D.AllMethods) keyOf.TryAdd(mi.Fn, Types.MethodKey(mi.Sym));
         string? KeyOf(WasmFunction f) => keyOf.TryGetValue(f, out var k) ? k : null;
         var uncertified = new HashSet<string>();
+        var uncertifiedRefs = new HashSet<string>();
         var stubOf = new Dictionary<WasmFunction, VirtualStub>();
         foreach (var s in D.Stubs.Values) stubOf[s.Fn] = s;
         foreach (var f in D.Module.Functions)
@@ -597,13 +705,17 @@ internal sealed class Sharing
             foreach (var ins in f.Body)
             {
                 if (ins.Ref is not WasmFunction g) continue;
-                if (ins.Op == Op.Call && ((ins.Imm2 & Certified) != 0 || inStub)) continue;
-                if (ins.Op == Op.Call && self != null && KeyOf(g) == self) continue;
-                if (KeyOf(g) is { } k) uncertified.Add(k);
-                else if (stubOf.TryGetValue(g, out var st)) uncertified.Add(Types.MethodKey(D.MethodTarget(st.Slot)));
+                if (ins.Op == Op.Call && (inStub || self != null && KeyOf(g) == self)) continue;
+                bool byValue = ins.Op == Op.Call && (ins.Imm2 & Certified) != 0, byRef = ins.Op == Op.Call && (ins.Imm2 & CertifiedRefs) != 0;
+                if (byValue && byRef) continue;
+                string? k = KeyOf(g) ?? (stubOf.TryGetValue(g, out var st) ? Types.MethodKey(D.MethodTarget(st.Slot)) : null);
+                if (k == null) continue;
+                if (!byValue) uncertified.Add(k);
+                if (!byRef) uncertifiedRefs.Add(k);
             }
         }
         foreach (var f in D.Module.Functions) if ((f.Exports.Count > 0 || f.TableRoot || f.InTable) && KeyOf(f) is { } ek) uncertified.Add(ek);
+        uncertifiedRefs.UnionWith(uncertified);
         var impls = new Dictionary<string, List<string>>();
         var stubParams = new Dictionary<string, List<Src>>();
         foreach (var s in D.Stubs.Values)
@@ -618,34 +730,57 @@ internal sealed class Sharing
                 l.Add(ik);
                 for (int i = 0; i < s.Slot.Parameters.Length; i++)
                 {
-                    var pk = ParamNode(ik, i);
+                    bool byRef = s.Slot.Parameters[i].RefKind != RefKind.None;
+                    var pk = byRef ? RefInNode(ik, i) : ParamNode(ik, i);
                     if (!stubParams.TryGetValue(pk, out var pl)) stubParams[pk] = pl = [];
-                    pl.Add(new Src(K.Param, slotKey, i, s.Slot.Parameters[i].Type));
+                    pl.Add(new Src(byRef ? K.RefParam : K.Param, slotKey, i, s.Slot.Parameters[i].Type));
                 }
             }
         }
-        _flowUncertified = uncertified; _flowImpls = impls; _flowStubParams = stubParams;
+        _flowUncertified = uncertified; _flowUncertifiedRefs = uncertifiedRefs; _flowImpls = impls; _flowStubParams = stubParams;
     }
 
-    /// <summary>The type ids a site's slots can hold, from the sources of what is stored there, followed through
-    /// parameters, results and the slots values are read from; null when that is no narrower than the static types
-    /// (any object, or more than `cap` types). The same rules as Analyze: a parameter of a method called from
-    /// elsewhere, a result without a body, a slot with nothing recorded is any object of its declared type; stores
-    /// through a ref of the slot's type count; an element read is any object of the element type.</summary>
-    public HashSet<int>? SiteTypeIds(Arenas.Site site, int cap)
+    /// <summary>SiteTypeIds as a walk from one site (CS2WASM_FLOW_DEBUG: it prints each source that makes the site
+    /// any object, with the path to it; the answer must be SiteTypeIds').</summary>
+    HashSet<int>? SiteTypeIdsWalk(Arenas.Site site, int cap)
     {
-        if (site.SlotType == null) return null;
-        PrepareFlow();
         var uncertified = _flowUncertified!;
         var r = new HashSet<int>();
         var seen = new HashSet<string>();
-        var work = new Stack<Src>();
+        var work = new Stack<(Src s, int from)>();
         bool wide = false;
         Src cur = default;
+        var causes = s_flowDebug ? new HashSet<string>() : null;
+        // (CS2WASM_FLOW_DEBUG: the sources walked, each with the one it was reached from, to print a cause's path)
+        var trail = s_flowDebug ? new List<(Src s, int from)>() : null;
+        int curIx = -1;
+        void Push(Src x) => work.Push((x, curIx));
+        string Path()
+        {
+            var sb = new System.Text.StringBuilder();
+            for (int i = curIx, n = 0; i >= 0 && n < 12; i = trail![i].from, n++)
+            {
+                var x = trail![i].s;
+                sb.Append(" <- ").Append(x.Kind).Append(' ').Append(x.Key);
+                if (x.Kind is K.Param or K.RefParam) sb.Append(" #").Append(x.Index);
+            }
+            return sb.ToString();
+        }
         void Top(ITypeSymbol? t)
         {
             if (t == null) return;
-            if (Types.IsObject(t)) { wide = true; if (s_flowDebug) Console.Error.WriteLine($"wide-by {site.Key}: {cur.Kind} {cur.Key} #{cur.Index} {(cur.Type != null ? Types.Key(cur.Type) : "")} of {site.Sources.Count}: " + string.Join("; ", site.Sources.Take(6).Select(x => x.Kind + " " + x.Key + " " + (x.Type != null ? Types.Key(x.Type) : "")))); return; }
+            if (s_flowOptimistic && (Types.IsObject(t) || t.TypeKind == TypeKind.Interface || TopIds(t).Count > 50)) return;
+            if (Types.IsObject(t))
+            {
+                wide = true;
+                // (CS2WASM_FLOW_DEBUG: every source that makes the site any object, once each)
+                if (s_flowDebug && causes!.Add($"{cur.Kind} {cur.Key} #{cur.Index} {(cur.Type != null ? Types.Key(cur.Type) : "")}"))
+                {
+                    Console.Error.WriteLine($"wide-by {site.Key}: {cur.Kind} {cur.Key} #{cur.Index} {(cur.Type != null ? Types.Key(cur.Type) : "")}");
+                    if (causes.Count <= 3) Console.Error.WriteLine("  path" + Path());
+                }
+                return;
+            }
             if (!seen.Add("top " + Types.Key(t))) return;
             foreach (var id in TopIds(t)) r.Add(id);
         }
@@ -653,16 +788,17 @@ internal sealed class Sharing
         {
             if (!seen.Add(key)) return;
             bool any = false;
-            if (_nodes.TryGetValue(key, out var l) && l.Count > 0) { foreach (var x in l) work.Push(x); any = true; }
-            if (_flowStubParams!.TryGetValue(key, out var sp)) { foreach (var x in sp) work.Push(x); any = true; }
+            if (_nodes.TryGetValue(key, out var l)) { foreach (var x in l) Push(x); any = true; }
+            if (_flowStubParams!.TryGetValue(key, out var sp)) { foreach (var x in sp) Push(x); any = true; }
             if (!any) Top(declared);
         }
         void SiteSources(Arenas.Site s, ITypeSymbol? declared)
         {
             if (!seen.Add("site " + s.Key)) return;
-            foreach (var x in s.Sources) work.Push(x);
+            foreach (var x in s.Sources) Push(x);
             foreach (var id in s.TargetIds) r.Add(id);
             if (s.Sources.Count == 0 && s.TargetIds.Count == 0) Top(declared);
+            if (s.DeclaredType != null && RefsReach(s)) Refs(s.DeclaredType);
         }
         void Refs(ITypeSymbol t)
         {
@@ -670,17 +806,17 @@ internal sealed class Sharing
             if (_nodes.ContainsKey(k)) Node(k, null);
             if (_refAliases.TryGetValue(k, out var al)) foreach (var a in al) if (_nodes.ContainsKey(a)) Node(a, null);
         }
-        var slotType = D.Types.Canonical(site.SlotType);
+        var slotType = D.Types.Canonical(site.DeclaredType);
         SiteSources(site, slotType);
-        Refs(slotType);
         // (an array's element is stored also through a wider array type that it is: an object[] that is a string[])
         if (site.IsArray)
             foreach (var other in D.Arenas.AllSites)
                 if (other.IsArray && other != site && D.Types.IsSubtype(site.Container, other.Container)) SiteSources(other, null);
-        while (work.Count > 0 && !wide && r.Count <= cap)
+        while (work.Count > 0 && (!wide || s_flowDebug) && (r.Count <= cap || s_flowDebug))
         {
-            var s = work.Pop();
+            var (s, from) = work.Pop();
             cur = s;
+            if (trail != null) { trail.Add((s, from)); curIx = trail.Count - 1; }
             switch (s.Kind)
             {
                 case K.Exact:
@@ -704,10 +840,20 @@ internal sealed class Sharing
                     }
                 case K.Node:
                     if (s.Key!.StartsWith("site ")) { if (D.Arenas.SiteByKey(s.Key[5..]) is { } os) SiteSources(os, s.Type); else Top(s.Type); }
-                    else { Node(s.Key, s.Type); if (s.Type != null) Refs(s.Type); }
+                    else { Node(s.Key, s.Type); if (s.Type != null && NodeRefsReach(s.Key)) Refs(s.Type); }
                     break;
                 case K.Elem:
                     Top(s.Type is IArrayTypeSymbol et ? D.Types.Canonical(et.ElementType) : null);
+                    break;
+                case K.RefParam:
+                    // (the places the callers pass, and what the method and those it passes the ref to store there)
+                    if (_flowUncertifiedRefs!.Contains(s.Key!)) Top(s.Type);
+                    else
+                    {
+                        Node(RefInNode(s.Key!, s.Index), null);
+                        Node(OutNode(s.Key!, s.Index), null);
+                        if (s.Type != null && NodeRefsReach(OutNode(s.Key!, s.Index))) Refs(s.Type);
+                    }
                     break;
             }
         }
@@ -781,6 +927,20 @@ sealed partial class FunctionCompiler
                 }
         }
         return _writtenParams.Contains(p.OriginalDefinition);
+    }
+
+    HashSet<ISymbol>? _refReassigned;
+    /// <summary>A `ref` parameter made to point elsewhere in the body (`p = ref x`).</summary>
+    bool RefReassigned(IParameterSymbol p)
+    {
+        if (_refReassigned == null)
+        {
+            _refReassigned = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+            if (_sharingBody != null)
+                foreach (var op in _sharingBody.DescendantsAndSelf())
+                    if (op is ISimpleAssignmentOperation { IsRef: true, Target: IParameterReferenceOperation tp }) _refReassigned.Add(tp.Parameter.OriginalDefinition);
+        }
+        return _sharingBody == null || _refReassigned.Contains(p.OriginalDefinition);
     }
 
     Dictionary<ISymbol, List<IOperation>?>? _localSources;
@@ -997,6 +1157,10 @@ sealed partial class FunctionCompiler
                 && SymbolEqualityComparer.Default.Equals(lps.ContainingSymbol, M) && !IsCaptured(lps) && !ParamWritten(lps):
                 r.Add(new Sharing.Src(Sharing.K.Node, Sharing.LambdaNode(M, lps.Ordinal), Type: t));
                 return;
+            case IParameterReferenceOperation { Parameter: { RefKind: not RefKind.None } rps } when SharingKey is { } rkey
+                && SymbolEqualityComparer.Default.Equals(rps.ContainingSymbol?.OriginalDefinition, M.OriginalDefinition) && !RefReassigned(rps):
+                r.Add(new Sharing.Src(Sharing.K.RefParam, rkey, rps.Ordinal, t));
+                return;
             case IParameterReferenceOperation pr:
                 {
                     var key = SharingKey;
@@ -1007,6 +1171,10 @@ sealed partial class FunctionCompiler
                     else r.Add(TopAt(t, v));
                     return;
                 }
+            // (Unsafe.Add(ref x, n) and its kin: a ref into the place x names, an element of the same array or span)
+            case IInvocationOperation uadd when SamePlaceRef(uadd) is { } basePlace:
+                FlowSrcsInto(basePlace, r, depth + 1);
+                return;
             // Interlocked.Exchange and CompareExchange, Volatile.Read: what the place held
             case IInvocationOperation { TargetMethod.ContainingType: { } ict } xinv when Types.FullName(ict.OriginalDefinition) is "System.Threading.Interlocked" or "System.Threading.Volatile"
                 && xinv.TargetMethod.Name is "Exchange" or "CompareExchange" or "Read" && xinv.Arguments.Length > 0 && xinv.Arguments[0].Parameter?.RefKind is RefKind.Ref or RefKind.RefReadOnlyParameter or RefKind.In:
@@ -1059,6 +1227,8 @@ sealed partial class FunctionCompiler
 
     void FieldSrc(IFieldSymbol f, INamedTypeSymbol owner, ITypeSymbol t, List<Sharing.Src> r)
     {
+        // (a ref field's value is what the place it points at holds: any slot of its type)
+        if (f.RefKind != RefKind.None) { r.Add(TopSrc(t)); return; }
         if (f.IsStatic) { r.Add(new Sharing.Src(Sharing.K.Node, Sharing.StaticNode(Driver.StaticKey(T.Canonical(owner), f)), Type: t)); return; }
         if (owner.IsValueType) { r.Add(new Sharing.Src(Sharing.K.Node, Sharing.StructFieldNode(T.Canonical(owner), f), Type: t)); return; }
         var co = T.Canonical(owner);
@@ -1093,6 +1263,31 @@ sealed partial class FunctionCompiler
         var key = Types.MethodKey(D.MethodTarget(m));
         Sh.Add(Sharing.ParamNode(key, p.Ordinal), srcs);
         _recorded.Add((key, p.Ordinal));
+    }
+
+    /// <summary>A `ref`, `in` or `out` argument's place: what it holds, as the callee's parameter's (RefInNode).</summary>
+    internal void RecordRefIn(IMethodSymbol m, IParameterSymbol p, IOperation? place)
+    {
+        if (Sh == null || p.RefKind == RefKind.None || m.ContainingType == null || m.MethodKind == MethodKind.FunctionPointerSignature || !Types.IsRef(T.Canonical(p.Type))) return;
+        var key = Types.MethodKey(D.MethodTarget(m));
+        // (a new variable, a discard: nothing in it before the callee stores there)
+        if (place is not (null or IDeclarationExpressionOperation or IDiscardOperation)) Sh.Add(Sharing.RefInNode(key, p.Ordinal), FlowSrcs(place));
+        _recorded.Add((key, -1 - p.Ordinal));
+    }
+
+    /// <summary>Whether every reference parameter of m passed by `ref`, `in` or `out` had its place recorded since `from`.</summary>
+    bool AllRefsRecorded(IMethodSymbol m, int from)
+    {
+        if (m.ContainingType == null) return false;
+        var key = Types.MethodKey(D.MethodTarget(m));
+        foreach (var p in m.Parameters)
+        {
+            if (p.RefKind == RefKind.None || !Types.IsRef(T.Canonical(p.Type))) continue;
+            bool found = false;
+            for (int i = from; i < _recorded.Count && !found; i++) found = _recorded[i].ord == -1 - p.Ordinal && _recorded[i].key == key;
+            if (!found) return false;
+        }
+        return true;
     }
 
     /// <summary>Whether every reference parameter of m passed by value had its argument recorded since `from`.</summary>
@@ -1146,6 +1341,12 @@ sealed partial class FunctionCompiler
         // AsPointer makes a pointer of it: what is stored through a ref made from a pointer can land there)
         bool intrinsic = D.IsIntrinsic(callee);
         if (intrinsic && callee.Name == "AsPointer") AttachTo(place, pt, [new Sharing.Src(Sharing.K.Node, Sharing.PtrNode(pt))]);
+        // (Unsafe.Copy<T>(ref T, void*): what a pointer of the type points at; (void*, ref T): what the place holds, there)
+        if (intrinsic && callee.Name == "Copy" && Types.FullName(callee.ContainingType) == "System.Runtime.CompilerServices.Unsafe")
+        {
+            if (p.Ordinal == 0) AttachTo(place, pt, [new Sharing.Src(Sharing.K.Node, Sharing.PtrNode(pt))]);
+            else Sh.Add(Sharing.PtrNode(pt), FlowSrcs(place));
+        }
         bool opaque = !refWriter && !intrinsic && (callee.IsExtern || callee.IsAbstract || callee.IsVirtual || callee.IsOverride || callee.ContainingType.TypeKind == TypeKind.Interface);
         _preciseAddr = !opaque;
         // (Interlocked's and Volatile's stores: their value, recorded by RecordRefWrite)
@@ -1156,13 +1357,106 @@ sealed partial class FunctionCompiler
         AttachTo(place, pt, srcs);
     }
 
+    /// <summary>Where an address passed to this `ref`, `in` or `out` parameter goes: "" when nowhere a ref of it can
+    /// be kept (Interlocked's and Volatile's, the comparisons of refs), the parameter ("method-key ordinal") of a body
+    /// the compiler sees into, null when anywhere (a virtual or interface method, a delegate, a local function, an
+    /// extern, an intrinsic that remakes refs).</summary>
+    string? _addrUse;
+    internal string? RefUseOf(IParameterSymbol p)
+    {
+        if (p.ContainingSymbol is not IMethodSymbol { ContainingType: not null } pm || pm.MethodKind is MethodKind.FunctionPointerSignature or MethodKind.LocalFunction or MethodKind.AnonymousFunction or MethodKind.DelegateInvoke) return null;
+        var callee = D.MethodTarget(pm);
+        if (Types.FullName(callee.ContainingType.OriginalDefinition) is "System.Threading.Interlocked" or "System.Threading.Volatile") return "";
+        if (D.IsIntrinsic(callee)) return callee.Name is "AreSame" or "IsAddressGreaterThan" or "IsAddressLessThan" or "ByteOffset" or "SkipInit" ? "" : null;
+        if (callee.IsExtern || callee.IsAbstract || callee.IsVirtual || callee.IsOverride || callee.ContainingType.TypeKind == TypeKind.Interface) return null;
+        return Types.MethodKey(callee) + " " + p.Ordinal;
+    }
+
+    /// <summary>Every reference field of the struct (and of the structs in it) may hold any object of its type.</summary>
+    void StructLeavesAnything(ITypeSymbol st, int depth = 0)
+    {
+        if (Sh == null || depth > 8) return;
+        var ct = T.Canonical(st);
+        foreach (var f in T.LayoutOf(ct).Fields)
+        {
+            if (Types.IsRef(f.Type)) Sh.Add(Sharing.StructFieldNode(ct, f.Symbol), TopSrc(f.Type));
+            else if (Types.IsStruct(f.Type) && T.LayoutOf(f.Type).HasRefs) StructLeavesAnything(f.Type, depth + 1);
+        }
+    }
+
+    /// <summary>The body's `ref` parameters of reference type: whether it keeps or remakes a ref of one (a ref local,
+    /// a ref return, a ref assignment, an address), and where it passes each (RefParamUse).</summary>
+    void RecordRefParamUses(string key, IOperation body)
+    {
+        if (Sh == null) return;
+        Dictionary<int, (bool dirty, HashSet<string> to)>? uses = null;
+        foreach (var p in M.Parameters)
+            if (p.RefKind != RefKind.None && Types.IsRef(T.Resolve(p.Type, Map))) (uses ??= [])[p.Ordinal] = (false, []);
+        if (uses == null) return;
+        foreach (var op in body.DescendantsAndSelf())
+        {
+            if (op is not IParameterReferenceOperation { Parameter: var ps } pr || ps.RefKind == RefKind.None
+                || !SymbolEqualityComparer.Default.Equals(ps.ContainingSymbol?.OriginalDefinition, M.OriginalDefinition) || !uses.TryGetValue(ps.Ordinal, out var u)) continue;
+            IOperation at = pr;
+            while (at.Parent is IConversionOperation { Conversion.IsIdentity: true } or IParenthesizedOperation) at = at.Parent;
+            switch (at.Parent)
+            {
+                case IArgumentOperation { Parameter: { RefKind: not RefKind.None } ap }:
+                    {
+                        // (the parameter as the callee sees it, in this body's terms)
+                        string? to = at.Parent.Parent is IInvocationOperation inv && inv.IsVirtual && (inv.TargetMethod.IsVirtual || inv.TargetMethod.IsAbstract || inv.TargetMethod.IsOverride)
+                            ? null : at.Parent.Parent is IInvocationOperation or IObjectCreationOperation ? RefUseOf(ap.ContainingSymbol is IMethodSymbol am ? SubstMethod(am).Parameters[ap.Ordinal] : ap) : null;
+                        if (to == null) u.dirty = true; else if (to.Length > 0) u.to.Add(to);
+                        break;
+                    }
+                case IArgumentOperation: break; // (by value: what it holds)
+                case ISimpleAssignmentOperation { IsRef: true } ra when !ReferenceEquals(ra.Target, at): u.dirty = true; break;
+                case IReturnOperation when M.ReturnsByRef || M.ReturnsByRefReadonly: u.dirty = true; break;
+                case IVariableInitializerOperation { Parent: IVariableDeclaratorOperation { Symbol.IsRef: true } }: u.dirty = true; break;
+                case IConditionalOperation { IsRef: true }: u.dirty = true; break;
+                case IAddressOfOperation: u.dirty = true; break;
+                case ITupleOperation or IDeconstructionAssignmentOperation: u.dirty = true; break;
+                case null: u.dirty = true; break;
+                default:
+                    if (at.Parent.Kind is OperationKind.None or OperationKind.Invalid) u.dirty = true;
+                    break; // (a read of what it holds, or a store into it: recorded as the out node's)
+            }
+            uses[ps.Ordinal] = u;
+        }
+        foreach (var (ord, (d, to)) in uses)
+        {
+            var k = key + " " + ord;
+            if (Sh.RefParamUse.TryGetValue(k, out var old)) { old.To.UnionWith(to); Sh.RefParamUse[k] = (old.Dirty || d, old.To); }
+            else Sh.RefParamUse[k] = (d, to);
+        }
+    }
+
+    /// <summary>Unsafe.Add, AddByteOffset, Subtract, SubtractByteOffset of a `ref T`, to a `ref T`: the ref argument
+    /// (the result points into the same place: an element of the same array, span or inline array).</summary>
+    static IOperation? SamePlaceRef(IInvocationOperation inv)
+    {
+        var m = inv.TargetMethod;
+        if (!m.ReturnsByRef || inv.Arguments.Length == 0 || Types.FullName(m.ContainingType) != "System.Runtime.CompilerServices.Unsafe") return null;
+        var a0 = inv.Arguments[0];
+        if (a0.Parameter is not { RefKind: RefKind.Ref } p0) return null;
+        // (Unsafe.As<TFrom, TTo>(ref TFrom), TFrom a reference: the same slot, seen as another type: what is stored
+        // through it is there. Of a struct, a reference stored through it lands in one of the struct's fields)
+        if (m.Name == "As" && inv.Arguments.Length == 1 && m.TypeArguments.Length == 2) return m.TypeArguments[0].IsReferenceType ? a0.Value : null;
+        if (m.Name is not ("Add" or "AddByteOffset" or "Subtract" or "SubtractByteOffset") || inv.Arguments.Length != 2 || !SymbolEqualityComparer.Default.Equals(p0.Type, m.ReturnType)) return null;
+        return a0.Value;
+    }
+
     /// <summary>Values stored into the place an expression names (a field, an element, a static, a parameter's).</summary>
     void AttachTo(IOperation place, ITypeSymbol pt, List<Sharing.Src> srcs)
     {
         if (Sh == null) return;
         while (place is IConversionOperation { Conversion.IsIdentity: true } c) place = c.Operand;
+        while (place is IInvocationOperation ui && SamePlaceRef(ui) is { } inner) place = inner;
         switch (place)
         {
+            // (through a ref field: into the place it points at, a store through a ref)
+            case IFieldReferenceOperation { Field.RefKind: not RefKind.None }:
+                break;
             case IFieldReferenceOperation { Field.IsStatic: true } sf:
                 Sh.Static(Driver.StaticKey(T.Canonical(Owner(sf.Field)), StorageField(sf.Field)), pt, IsThreadStatic(StorageField(sf.Field)), srcs);
                 return;
@@ -1185,16 +1479,17 @@ sealed partial class FunctionCompiler
             case IParameterReferenceOperation { Parameter.RefKind: RefKind.None }:
                 return;
         }
-        Sh.RefStore(pt, srcs);
+        Sh.RefStore(pt, srcs, place.Kind + " " + DebugText(place) + " in " + M.ToDisplayString());
     }
 
-    bool _certifyCall;
+    bool _certifyCall, _certifyRefs;
 
     void MarkCertified()
     {
-        if (!_certifyCall) return;
-        _certifyCall = false;
+        long bits = (_certifyCall ? Sharing.Certified : 0) | (_certifyRefs ? Sharing.CertifiedRefs : 0);
+        _certifyCall = _certifyRefs = false;
+        if (bits == 0) return;
         var b = E.Fn.Body;
-        if (b.Count > 0 && b[^1].Op == Op.Call) b[^1] = b[^1] with { Imm2 = b[^1].Imm2 | Sharing.Certified };
+        if (b.Count > 0 && b[^1].Op == Op.Call) b[^1] = b[^1] with { Imm2 = b[^1].Imm2 | bits };
     }
 }

@@ -363,7 +363,7 @@ sealed partial class FunctionCompiler
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
     void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null,
                                  Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false, bool fresh = false, bool owned = false, bool iso = false, bool initNull = false,
-                                 ITypeSymbol? structContainer = null)
+                                 ITypeSymbol? structContainer = null, ITypeSymbol? valueType = null, bool viaPointer = false)
     {
         if (Types.IsStruct(t))
         {
@@ -410,7 +410,13 @@ sealed partial class FunctionCompiler
             int took = storeLock || byAddress && D.ThreadMode ? Scratch(ValType.I32) : -1;
             if (storeLock) { pushContainer!(); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(site!.StoreLock); E.Set(took); }
             if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : owned ? site.LinkOwned : iso ? site.LinkIso : site.Link); E.Set(val); }
-            else if (byAddress) { if (D.ThreadMode) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.StoreLockAt(t, true)); E.Set(took); } E.Get(val); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.LinkAt(t)); E.Set(val); }
+            else if (byAddress)
+            {
+                // (the type graph learns what this store can put where: RefStores.cs)
+                D.Arenas.RefStore(t, valueType, viaPointer);
+                if (D.ThreadMode) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.StoreLockAt(t, true)); E.Set(took); }
+                E.Get(val); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.LinkAt(t)); E.Set(val);
+            }
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
             EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
             int a = Scratch(ValType.I32);
@@ -557,19 +563,32 @@ sealed partial class FunctionCompiler
         // (Sharing.cs: stores through this address are recorded where they are made)
         bool precise = _preciseAddr;
         _preciseAddr = false;
+        // (where the address goes: a `ref` parameter that keeps no ref of it, or anywhere: Sharing.RefUseOf)
+        string? use = _addrUse;
+        _addrUse = null;
         List<Sharing.Src>? none = precise ? [] : null;
         switch (op)
         {
             case IFieldReferenceOperation { Field.IsStatic: true } sf when Types.IsRef(TypeOf(sf)):
                 D.FieldsAddressTaken.Add(Driver.FieldKey(Owner(sf.Field), StorageField(sf.Field)));
+                Sh?.NoteNodeAddress(Sharing.StaticNode(Driver.StaticKey(T.Canonical(Owner(sf.Field)), StorageField(sf.Field))), use);
                 if (!precise) Sh?.Static(Driver.StaticKey(T.Canonical(Owner(sf.Field)), StorageField(sf.Field)), TypeOf(sf), IsThreadStatic(StorageField(sf.Field)), [TopSrc(TypeOf(sf))]);
                 break;
             case IFieldReferenceOperation { Field.IsStatic: false } f when f.Instance != null && !TypeOf(f.Instance).IsValueType && Types.IsRef(TypeOf(f)):
                 D.FieldsAddressTaken.Add(Driver.FieldKey(Owner(f.Field), StorageField(f.Field)));
-                if (D.Arenas.FieldSite(Owner(f.Field), T.FieldIn(Owner(f.Field), StorageField(f.Field))) is { } s) { s.AddressTaken = true; s.AddValue(T.Canonical(TypeOf(f)), none); }
+                if (D.Arenas.FieldSite(Owner(f.Field), T.FieldIn(Owner(f.Field), StorageField(f.Field))) is { } s)
+                {
+                    s.AddressTaken = true;
+                    if (use == null) s.RefDirty = true; else if (use.Length > 0) s.RefUses.Add(use);
+                    s.AddValue(T.Canonical(TypeOf(f)), none);
+                }
+                break;
+            // (a struct's field, wherever the struct is: Sharing.StructFieldNode)
+            case IFieldReferenceOperation { Field.IsStatic: false } sff when sff.Instance != null && TypeOf(sff.Instance).IsValueType && Types.IsRef(TypeOf(sff)):
+                Sh?.NoteNodeAddress(Sharing.StructFieldNode(T.Canonical(Owner(sff.Field)), StorageField(sff.Field)), use);
                 break;
             case IArrayElementReferenceOperation ae when TypeOf(ae.ArrayReference) is IArrayTypeSymbol at:
-                if (D.Arenas.ArraySite(at) is { } a) { a.AddressTaken = true; a.AddValue(T.Canonical(at.ElementType), none); }
+                if (D.Arenas.ArraySite(at) is { } a) { a.AddressTaken = true; a.RefDirty = true; a.AddValue(T.Canonical(at.ElementType), none); }
                 break;
         }
     }
@@ -788,13 +807,27 @@ sealed partial class FunctionCompiler
         var ft = T.Resolve(f.Type, Map);
         EmitStoreFieldFrom(f, recv, value.Type != null ? TypeOf(value) : ft, srcs: Sh != null ? FlowSrcs(value) : null, produce: () =>
         {
-            if (Types.IsStruct(ft) && IsDirectStructProducer(value))
+            // `f = default`: copied from zeros of the program's that nothing writes (the store reads its value
+            // and copies it; a temporary would be the function's frame, cleared, then released at the statement's end)
+            if (Types.IsStruct(ft) && !s_noZeroDefault && IsZeroStruct(value) && Types.Key(T.Canonical(TypeOf(value))) == Types.Key(T.Canonical(ft)))
             {
-                // construct into a temp, then copy (field may be read by the constructor arguments)
-                return EmitValue(value);
+                int size = T.StorageOf(ft).size;
+                E.I32Addr(D.StaticAddress("zeros:" + size, size, 8));
+                return Own.None;
             }
             return EmitValue(value);
         }, initializer: initializer);
+    }
+
+    static readonly bool s_noZeroDefault = Environment.GetEnvironmentVariable("CS2WASM_NO_ZERO_DEFAULT") == "1";
+
+    /// <summary>A struct value that is all zeros, made with no code of its own: `default`, `new S()` with no
+    /// constructor or initializer that runs.</summary>
+    static bool IsZeroStruct(IOperation v)
+    {
+        while (v is IConversionOperation { Conversion.IsIdentity: true } c) v = c.Operand;
+        return v is IDefaultValueOperation
+            || v is IObjectCreationOperation { Initializer: null, Constructor: { IsImplicitlyDeclared: true, Parameters.Length: 0 } ctor } && !HasInstanceFieldInitializers(ctor.ContainingType);
     }
 
     /// <summary>A [ThreadStatic] field; or, in a program with threads, a static field of the runtime marked [Intrinsic]
@@ -918,6 +951,7 @@ sealed partial class FunctionCompiler
             while (ar is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } ac) ar = ac.Operand;
             if (D.ThreadMode && ar is IFieldReferenceOperation { Instance: { } fi } && !UnsharedContainer(TypeOf(fi))) return Own.Unstable;
             if (IsStableBase(ar)) _lastFieldLoad = (E.Fn.Body.Count, Driver.ElementsKey);
+            else if (StaticArrayKey(ar) is { } sak) _lastFieldLoad = (E.Fn.Body.Count, sak + "\n" + Driver.ElementsKey);
             else if (ar is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ai } afr && IsStableBase(ai) && afr.Field.ContainingType.TypeKind == TypeKind.Class
                 && !(ai is IParameterReferenceOperation && TypeOf(ai).IsValueType))
             {
@@ -2067,6 +2101,13 @@ sealed partial class FunctionCompiler
         var lv = LValueOf(target);
         lv.Note(StaticValueType(sa.Value), sa.Value);
         lv.Prepare();
+        // (`x = default`: from zeros, as EmitStoreField)
+        if (Types.IsStruct(tt) && !s_noZeroDefault && IsZeroStruct(sa.Value) && sa.Value.Type != null && Types.Key(T.Canonical(TypeOf(sa.Value))) == Types.Key(T.Canonical(tt)))
+        {
+            int size = T.StorageOf(tt).size;
+            E.I32Addr(D.StaticAddress("zeros:" + size, size, 8));
+            return lv.Store(Own.None, needResult);
+        }
         Own o = Types.IsStruct(tt) ? EmitValue(sa.Value) : EmitValueAs(sa.Value, tt);
         if (Types.IsStruct(tt) && sa.Value.Type != null) ConvertTop(TypeOf(sa.Value), tt, ref o);
         return lv.Store(o, needResult);
@@ -2454,7 +2495,7 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null, bool owned = false, string? staticKey = null, bool threadStatic = false, string? structField = null, string? outParam = null, bool viaPointer = false, bool iso = false, bool initNull = false, ITypeSymbol? structContainer = null) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null, bool owned = false, string? staticKey = null, bool threadStatic = false, string? structField = null, string? outParam = null, bool viaPointer = false, bool iso = false, bool initNull = false, ITypeSymbol? structContainer = null, IOperation? attachPlace = null) : LValue(f, t)
     {
         /// <summary>Sharing.cs: where the value stored here comes from.</summary>
         void Record(List<Sharing.Src>? srcs)
@@ -2466,12 +2507,17 @@ sealed partial class FunctionCompiler
             else if (structField != null) sh.Add(structField, srcs);
             else if (outParam != null) sh.Add(outParam, srcs);
             else if (viaPointer) { if (Types.IsRef(Type)) sh.Add(Sharing.PtrNode(F.T.Canonical(Type)), srcs); }
-            else if (!F.InRefWriter) sh.RefStore(Type, srcs);
+            // (Unsafe.Add(ref x, n) = v: into the place x names)
+            else if (attachPlace != null) F.AttachTo(attachPlace, Type, srcs);
+            else if (!F.InRefWriter) sh.RefStore(Type, srcs, F.M.ToDisplayString());
         }
         int _addr = -1, _off;
+        /// <summary>The static type of the value stored (NoteValue), for a store by address (RefStores.cs).</summary>
+        ITypeSymbol? _valueType;
         public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
         public override void NoteValue(ITypeSymbol? vt, IOperation? value)
         {
+            _valueType = vt;
             var srcs = F.Sh != null && value != null ? F.FlowSrcs(value) : null;
             site?.AddValue(vt, srcs);
             Record(srcs);
@@ -2502,7 +2548,8 @@ sealed partial class FunctionCompiler
             }
             // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
-                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned, iso: iso, initNull: initNull, structContainer: structContainer);
+                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned, iso: iso, initNull: initNull, structContainer: structContainer,
+                valueType: _valueType, viaPointer: viaPointer);
             if (elements && F.T.NeedsRc(Type)) F.D.NoteFieldWrite(F.E, Driver.ElementsKey);
             return needResult ? Load() : Own.None;
         }
@@ -2755,7 +2802,9 @@ sealed partial class FunctionCompiler
             IArrayElementReferenceOperation ae2 when TypeOf(ae2.ArrayReference) is IArrayTypeSymbol at2 => at2,
             _ => null,
         };
-        return new MemLV(this, t, () => EmitAddressBase(target), elements: true, viaPointer: viaPointer, structContainer: structContainer);
+        IOperation? samePlace = null;
+        for (var u = target; u is IInvocationOperation ui && SamePlaceRef(ui) is { } inner; u = inner) samePlace = inner;
+        return new MemLV(this, t, () => EmitAddressBase(target), elements: true, viaPointer: viaPointer, structContainer: structContainer, attachPlace: Sh != null ? samePlace : null);
     }
 
     // =====================================================================

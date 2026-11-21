@@ -25,6 +25,10 @@ internal sealed partial class Driver
         if (storage is IFieldSymbol f) _borrowFields.TryAdd(key, f);
         if (type != null) _borrowFieldTypes.TryAdd(key, type);
     }
+    /// <summary>Whether a borrow key names a static field.</summary>
+    internal bool IsStaticKey(string key) => _borrowFields.TryGetValue(key, out var f) && f.IsStatic;
+    /// <summary>The name of the function a type's static initializer's code is in, before the type's key.</summary>
+    internal const string StaticInitBodyPrefix = "static init body ";
     /// <summary>The type of the field a borrow key names, in the instance the key is of.</summary>
     readonly Dictionary<string, ITypeSymbol> _borrowFieldTypes = [];
 

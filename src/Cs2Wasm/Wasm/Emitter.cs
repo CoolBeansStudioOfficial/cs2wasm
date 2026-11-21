@@ -55,8 +55,7 @@ internal sealed class Emitter
 
     static int RcCause()
     {
-        var frames = new System.Diagnostics.StackTrace(2, false).GetFrames();
-        var key = string.Join(" <- ", frames.Select(fr => fr.GetMethod()).Where(m => m != null && m.DeclaringType?.Name is not "Emitter").Take(3).Select(m => m!.Name));
+        var key = string.Join(" <- ", CallerNames().Take(3));
         lock (s_rcCauseIds)
         {
             if (!s_rcCauseIds.TryGetValue(key, out int id)) { s_rcCauseIds[key] = id = RcCauses.Count + 1; RcCauses.Add(key); }
@@ -64,12 +63,34 @@ internal sealed class Emitter
         }
     }
 
+    /// <summary>The names of the methods that called into the emitter, innermost first (Emitter's own left out). From
+    /// the trace's text, not the frames' MethodBase: asking frames for their methods gives every method of the
+    /// program a reflection record and an invoke thunk (Reflection.cs, FramesAsked), in the self-hosted compiler too,
+    /// and then every constructor is one reflection can call.</summary>
+    static List<string> CallerNames()
+    {
+        var r = new List<string>();
+        foreach (var line in new System.Diagnostics.StackTrace(1, false).ToString().Split('\n'))
+        {
+            var t = line.Trim();
+            if (!t.StartsWith("at ")) continue;
+            int paren = t.IndexOf('(');
+            var full = paren > 0 ? t[3..paren] : t[3..];
+            // (a generic method's arguments: "M[T]")
+            if (full.EndsWith(']') && full.LastIndexOf('[') is int gb and > 0) full = full[..gb];
+            int dot = full.LastIndexOf('.');
+            if (dot <= 0) continue;
+            var type = full[..dot];
+            type = type[(Math.Max(type.LastIndexOf('.'), type.LastIndexOf('+')) + 1)..];
+            if (type == "Emitter") continue;
+            r.Add(full[(dot + 1)..]);
+        }
+        return r;
+    }
+
     static void NoteRcSite(string what)
     {
-        var frames = new System.Diagnostics.StackTrace(2, false).GetFrames();
-        var names = frames.Select(fr => fr.GetMethod()).Where(m => m != null && m.DeclaringType?.Name is not "Emitter")
-            .Take(2).Select(m => m!.Name);
-        var key = what[3..] + " <- " + string.Join(" <- ", names);
+        var key = what[3..] + " <- " + string.Join(" <- ", CallerNames().Take(2));
         lock (RcSites!) RcSites[key] = RcSites.GetValueOrDefault(key) + 1;
     }
     public void Op(Op op) => Emit(op);

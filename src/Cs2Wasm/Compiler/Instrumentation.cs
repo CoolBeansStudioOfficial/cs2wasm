@@ -177,7 +177,8 @@ sealed partial class FunctionCompiler
             if (!s.Hookable || EntryMember(s.Collection) is not { } member) continue;
             var table = s.Kind == AccessKind.Read ? D.EntryReadHooks : D.EntryWriteHooks;
             if (!table.TryGetValue(member, out var hooks)) continue;
-            foreach (var h in hooks) (at ??= []).Add((s, h));
+            foreach (var h in hooks)
+                if (h.Site is not { } only || s.Operation.Syntax is { } sx && Driver.SiteKey(sx) == only) (at ??= []).Add((s, h));
         }
         return at;
     }

@@ -59,6 +59,20 @@ static class Peephole
                     dst[^1] = dst[^1] with { Imm = r };
                     continue;
                 }
+                // const ; const ; compare  =>  const   (a switch on a constant local: ConstBranches.ConstLocals)
+                if (prev.Op == Op.I32Const && prev.Ref == null && dst.Count > 1 && dst[^2].Op == Op.I32Const && dst[^2].Ref == null
+                    && ins.Op >= Op.I32Eq && ins.Op <= Op.I32GeU)
+                {
+                    int x = (int)dst[^2].Imm, y = (int)prev.Imm;
+                    bool r = ins.Op switch
+                    {
+                        Op.I32Eq => x == y, Op.I32Ne => x != y, Op.I32LtS => x < y, Op.I32LtU => (uint)x < (uint)y, Op.I32GtS => x > y,
+                        Op.I32GtU => (uint)x > (uint)y, Op.I32LeS => x <= y, Op.I32LeU => (uint)x <= (uint)y, Op.I32GeS => x >= y, _ => (uint)x >= (uint)y,
+                    };
+                    dst.RemoveAt(dst.Count - 1);
+                    dst[^1] = dst[^1] with { Imm = r ? 1 : 0 };
+                    continue;
+                }
                 // a division by a constant that is neither 0 nor -1 cannot fail: the instruction, not the checked helper
                 if (ins.Op == Op.Call && ins.Ref is WasmFunction { Name: var dn } && dn.StartsWith("rt.", StringComparison.Ordinal) && dn.Length == 10
                     && (dn.StartsWith("rt.div_", StringComparison.Ordinal) || dn.StartsWith("rt.rem_", StringComparison.Ordinal))

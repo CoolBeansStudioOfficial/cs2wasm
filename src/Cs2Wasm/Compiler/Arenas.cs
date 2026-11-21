@@ -16,7 +16,7 @@ namespace Cs2Wasm.Compiler;
 /// never pay. Sites are emitted as calls to placeholder functions and resolved here once the graph is known.
 /// See docs/STATUS.md (section 4) for the run-time half.
 /// </summary>
-internal sealed class Arenas
+internal sealed partial class Arenas
 {
     readonly Driver D;
     public Arenas(Driver d) { D = d; }
@@ -30,10 +30,22 @@ internal sealed class Arenas
         /// form a cycle through such fields alone (the later object would have to exist before the earlier is done).</summary>
         public bool Immutable;
         public int Offset; // field sites
+        /// <summary>A field site's field (or the property that owns its storage).</summary>
+        public ISymbol? Member;
         /// <summary>The slot's declared type (an array's element type): what a release of its old value counts.</summary>
         public ITypeSymbol? SlotType;
+        /// <summary>A struct's reference inside a class's object or a box (AddStructSites): its field's type.</summary>
+        public ITypeSymbol? LeafType;
+        /// <summary>The type of what the slot holds, for Sharing.SiteTypeIds.</summary>
+        public ITypeSymbol? DeclaredType => SlotType ?? LeafType;
         public readonly Dictionary<string, ITypeSymbol> Values = [];
         public bool AddressTaken;
+        /// <summary>The slot's address went where a ref of it may be kept or made into another (a ref local, a ref
+        /// return, a span, a pointer, a call the compiler does not see into): a store through any ref of the slot's
+        /// type can land here (Sharing.SiteTypeIds). Else its address went only to the `ref` parameters in RefUses
+        /// ("method-key ordinal", Sharing.RefParamUse), or to Interlocked's and Volatile's.</summary>
+        public bool RefDirty;
+        public readonly HashSet<string> RefUses = [];
         /// <summary>Some store through this site is into an object that other code may know (Analyze: the site's
         /// general link is called somewhere). A field without one is only ever stored into objects that nothing else
         /// can reach yet (FreshStores.cs), and no such store closes a cycle: like a field filled at construction,
@@ -124,6 +136,7 @@ internal sealed class Arenas
         // whose items refer to their parent. Only a cycle made of such edges alone cannot exist: Analyze)
         var site = Get("f " + Types.Key(owner) + " " + slot.Offset, owner, false, slot.Offset);
         site.SlotType ??= D.Types.Canonical(slot.Type);
+        site.Member ??= slot.Symbol;
         site.Immutable = ImmutableEdge(owner, slot);
         return site;
     }
@@ -135,10 +148,17 @@ internal sealed class Arenas
         owner = D.Types.Canonical(owner);
         var s = Get("f " + Types.Key(owner) + " " + offset, owner, false, offset);
         s.AddressTaken = true;
+        s.RefDirty = true;
         s.AddValue(D.Types.Canonical(slotType));
     }
 
-    static readonly bool s_arenaSources = Environment.GetEnvironmentVariable("CS2WASM_ARENA_SOURCES") == "1";
+    /// <summary>CS2WASM_ARENA_SOURCES=0: a field's targets are the subtypes of what its stores' static types are, not
+    /// narrowed by where the values come from (to compare).</summary>
+    static readonly bool s_arenaSources = Environment.GetEnvironmentVariable("CS2WASM_ARENA_SOURCES") != "0";
+    /// <summary>Sources are recorded for the type graph (Sharing.SiteTypeIds), also in a program without threads.</summary>
+    public static bool SourcesOn => s_arenaSources;
+    /// <summary>More types than this from a site's sources: no narrower than its static types' (CS2WASM_FLOW_CAP).</summary>
+    static readonly int s_flowCap = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_FLOW_CAP"), out var fc) && fc > 0 ? fc : 2000;
     static readonly bool s_arenaDebug =Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1";
     List<(Site, int)>? _wide;
     static readonly bool s_noFreshSites =Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_SITES") == "1";
@@ -419,6 +439,25 @@ internal sealed class Arenas
 
     static readonly bool s_noStructSites = Environment.GetEnvironmentVariable("CS2WASM_NO_STRUCT_SITES") == "1";
 
+    /// <summary>RefLeaves, each with where its values come from (Sharing.cs): what the struct's field holds wherever
+    /// the struct is (Sharing.StructFieldNode: every store into that field of any such struct is recorded there).
+    /// Null, any object of the leaf's type, inside an inline array (its elements past the first have no field).</summary>
+    IEnumerable<(int off, ITypeSymbol type, List<Sharing.Src>? srcs)> RefLeafSources(ITypeSymbol structType, int baseOff, bool inline = false)
+    {
+        var st = D.Types.Canonical(structType);
+        inline |= Types.InlineArrayLength(st) != null;
+        foreach (var f in D.Types.LayoutOf(st).Fields)
+        {
+            if (Types.IsRef(f.Type))
+            {
+                if (Types.IsImmortalType(f.Type)) continue;
+                yield return (baseOff + f.Offset, f.Type, D.Sharing == null || inline ? null : [new Sharing.Src(Sharing.K.Node, Sharing.StructFieldNode(st, f.Symbol), Type: D.Types.Canonical(f.Type))]);
+            }
+            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs)
+                foreach (var x in RefLeafSources(f.Type, baseOff + f.Offset, inline)) yield return x;
+        }
+    }
+
     /// <summary>A reference inside a struct that is a field of a class is a slot of the class's object like any other
     /// (a tuple field, a nullable struct, a struct of the program's): a site at its offset, for whatever its type can
     /// hold. Nothing records the stores (a struct is copied whole, and written through its own methods): the
@@ -447,10 +486,11 @@ internal sealed class Arenas
             {
                 var bt = D.Types.Canonical(t);
                 if (!Types.IsStruct(bt) || !D.Types.LayoutOf(bt).HasRefs) continue;
-                foreach (var (off, lt) in RefLeaves(bt, FunctionCompilerHelpers.BoxDataOffset(D.Types, bt)))
+                foreach (var (off, lt, srcs) in RefLeafSources(bt, FunctionCompilerHelpers.BoxDataOffset(D.Types, bt)))
                 {
                     var s = Get("f " + Types.Key(bt) + " " + off, bt, false, off);
-                    s.AddValue(lt);
+                    s.LeafType ??= D.Types.Canonical(lt);
+                    s.AddValue(lt, srcs);
                     s.General = true;
                 }
                 continue;
@@ -460,21 +500,31 @@ internal sealed class Arenas
             foreach (var f in D.Types.LayoutOf(ct).Fields)
             {
                 if (!Types.IsStruct(f.Type) || !D.Types.LayoutOf(f.Type).HasRefs) continue;
-                foreach (var (off, lt) in RefLeaves(f.Type, f.Offset))
+                foreach (var (off, lt, srcs) in RefLeafSources(f.Type, f.Offset))
                 {
                     var s = Get("f " + Types.Key(ct) + " " + off, ct, false, off);
-                    s.AddValue(lt);
+                    s.LeafType ??= D.Types.Canonical(lt);
+                    s.AddValue(lt, srcs);
                     s.General = true;
                 }
             }
         }
     }
 
+    readonly List<(Site site, ITypeSymbol type)> _reflectStores = [];
+    /// <summary>A field reflection can store into (FieldInfo.SetValue, Reflection.cs): any object of its type, if the
+    /// program can call SetValue.</summary>
+    public void ReflectStore(Site s, ITypeSymbol fieldType) => _reflectStores.Add((s, D.Types.Canonical(fieldType)));
+
     /// <summary>Builds the type graph from the recorded sites and finds the cycle-capable components.</summary>
     public void Analyze()
     {
         AddStructSites();
         AddDisplaySites();
+        if (_reflectStores.Count > 0 && D.AllMethods.Any(m => m.Compiled && m.Sym.Name is "SetValue" or "SetValueDirect" && m.Sym.ContainingType?.Name is "RuntimeFieldInfo" or "FieldInfo"))
+            foreach (var (s, t) in _reflectStores) { s.AddValue(t); s.General = true; }
+        // (what stores by address can put where: RefStores.cs)
+        AddRefStores();
         // which sites have a store into an object that may be known elsewhere
         {
             var general = new Dictionary<WasmFunction, Site>();
@@ -550,8 +600,10 @@ internal sealed class Arenas
             if (containers.Count == 0) continue;
             var targets = s.Values.Count == 1 ? TargetsOf(s.Values.Values.First()) : s.Values.Values.SelectMany(TargetsOf).Distinct().ToList();
             if (s.TargetIds.Count > 0) targets = [.. targets.Concat(s.TargetIds.Order()).Distinct()];
-            // (CS2WASM_ARENA_SOURCES=1: what the slot holds by where its values come from, when that is narrower)
-            if (s_arenaSources && D.Sharing is { } shf && targets.Count > 8 && shf.SiteTypeIds(s, 2000) is { } refined)
+            // (what a class's field holds by where its values come from, when that is
+            // narrower. Not an array's elements: references also arrive there by the runtime's own copies, Array.Copy,
+            // SetValue and Buffer.Memmove's, which no recorded store says)
+            if (SourcesOn && (!s.IsArray || Sharing.OptimisticFlow) && s.ContainerId < 0 && D.Sharing is { } shf && targets.Count > 8 && shf.SiteTypeIds(s, s_flowCap) is { } refined)
             {
                 var keep = new HashSet<int>(targets);
                 var narrowed = refined.Where(keep.Contains).Order().ToList();
@@ -587,7 +639,45 @@ internal sealed class Arenas
         int total = adj.Count;
         D.Mark($"    arenas: graph ({_sites.Count} sites, {total} nodes, {edges} edges; containers {contTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms, targets {targTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms, array sites {arrayTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms, field sites {fieldTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms of it)");
 
-        // Tarjan's strongly connected components (iterative)
+        var scc = Components(adj, hubSite);
+        // (owned arrays: the fields whose arrays are never written once there lead to arrays of their own, OwnedArrays.cs)
+        if (!Driver.NoOwnedArrays && SealOwnedArrays(adj, hubSite, siteNodes, ref scc, n)) total = adj.Count;
+        D.Mark("    arenas: components");
+        // (numbered by their smallest type id: the numbers do not depend on the order the search met them)
+        var renumber = new Dictionary<int, int>();
+        foreach (var g in Enumerable.Range(0, n).Where(id => scc[id] != 0).GroupBy(id => scc[id]).OrderBy(g => g.Min()))
+            renumber[g.Key] = renumber.Count + 1;
+        for (int i = 0; i < total; i++) if (scc[i] != 0) scc[i] = renumber.GetValueOrDefault(scc[i], -1);
+        _scc = scc[..n];
+        for (int id = 0; id < n; id++) if (_scc[id] != 0) CycleTypes.Add(id);
+        // The program's own classes among them are told to the programmer (section 4.3; as Lobster reports cycles, but
+        // when building): nothing looks for a let-go part of such a group at run time, so where that matters the
+        // cycle is the programmer's to break.
+        foreach (var id in CycleTypes)
+            if (D.TypeById[id] is INamedTypeSymbol { TypeKind: TypeKind.Class, IsImplicitlyDeclared: false } nt && !D.IsLibrary(nt)
+                && nt.Locations.FirstOrDefault(l => l.IsInSource) is { } at && nt.CanBeReferencedByName)
+                D.Report(Diags.CyclePossible, at, nt.ToDisplayString());
+        // a site is cyclic when one of its nodes is on a cycle (then some container and a type it holds are on it)
+        foreach (var (s, hubs) in siteNodes)
+            s.Cyclic = hubs.Any(h => scc[h] != 0);
+        _cyclicByContainer = null; _cyclicByDisplay = null;
+        Enabled = _sites.Values.Any(s => s.Cyclic);
+        AnyArrayCycle = Enabled && CycleTypes.Any(id => D.TypeById[id] is IArrayTypeSymbol);
+        if (Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1")
+        {
+            foreach (var g in CycleTypes.GroupBy(id => _scc[id]))
+                Console.Error.WriteLine($"arena group {g.Key}: " + string.Join(", ", g.Select(id => Types.Key(D.TypeById[id]))));
+            foreach (var s in _sites.Values.Where(s => s.Cyclic)) Console.Error.WriteLine("cyclic site " + s.Key);
+            foreach (var (s, c) in _wide ?? [])
+                Console.Error.WriteLine($"wide site {s.Key} cyclic={s.Cyclic} general={s.General} targets={c} values: {string.Join(", ", s.Values.Keys.Take(8))}");
+        }
+    }
+
+    /// <summary>Tarjan's strongly connected components of the type graph (iterative): a component's number for each node
+    /// on a cycle that some store can close, 0 for the others.</summary>
+    int[] Components(List<List<int>> adj, Dictionary<int, Site> hubSite)
+    {
+        int total = adj.Count;
         var scc = new int[total];
         var index = new int[total]; var low = new int[total]; var onStack = new bool[total];
         Array.Fill(index, -1);
@@ -625,38 +715,15 @@ internal sealed class Arenas
                 // (nor one whose other edges are fields only ever stored into objects nothing else knows yet)
                 if (!comp.Any(m => hubSite.TryGetValue(m, out var hs) && !hs.Immutable && (hs.IsArray || hs.General || s_noFreshSites))) continue;
                 sccCount++;
+                // (CS2WASM_ARENA_DEBUG: what makes the component cycle-capable: its sites that are neither filled at
+                // construction nor only stored into new objects)
+                if (s_arenaDebug)
+                    foreach (var hs in comp.Where(m => hubSite.ContainsKey(m)).Select(m => hubSite[m]).Distinct().Where(hs => !hs.Immutable && (hs.IsArray || hs.General)).Take(40))
+                        Console.Error.WriteLine($"closing site (component of {comp.Count} nodes) {hs.Key} array={hs.IsArray} general={hs.General}");
                 foreach (var m in comp) scc[m] = sccCount;
             }
         }
-        D.Mark("    arenas: components");
-        // (numbered by their smallest type id: the numbers do not depend on the order the search met them)
-        var renumber = new Dictionary<int, int>();
-        foreach (var g in Enumerable.Range(0, n).Where(id => scc[id] != 0).GroupBy(id => scc[id]).OrderBy(g => g.Min()))
-            renumber[g.Key] = renumber.Count + 1;
-        for (int i = 0; i < total; i++) if (scc[i] != 0) scc[i] = renumber.GetValueOrDefault(scc[i], -1);
-        _scc = scc[..n];
-        for (int id = 0; id < n; id++) if (_scc[id] != 0) CycleTypes.Add(id);
-        // The program's own classes among them are told to the programmer (section 4.3; as Lobster reports cycles, but
-        // when building): nothing looks for a let-go part of such a group at run time, so where that matters the
-        // cycle is the programmer's to break.
-        foreach (var id in CycleTypes)
-            if (D.TypeById[id] is INamedTypeSymbol { TypeKind: TypeKind.Class, IsImplicitlyDeclared: false } nt && !D.IsLibrary(nt)
-                && nt.Locations.FirstOrDefault(l => l.IsInSource) is { } at && nt.CanBeReferencedByName)
-                D.Report(Diags.CyclePossible, at, nt.ToDisplayString());
-        // a site is cyclic when one of its nodes is on a cycle (then some container and a type it holds are on it)
-        foreach (var (s, hubs) in siteNodes)
-            s.Cyclic = hubs.Any(h => scc[h] != 0);
-        _cyclicByContainer = null; _cyclicByDisplay = null;
-        Enabled = _sites.Values.Any(s => s.Cyclic);
-        AnyArrayCycle = Enabled && CycleTypes.Any(id => D.TypeById[id] is IArrayTypeSymbol);
-        if (Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1")
-        {
-            foreach (var g in CycleTypes.GroupBy(id => _scc[id]))
-                Console.Error.WriteLine($"arena group {g.Key}: " + string.Join(", ", g.Select(id => Types.Key(D.TypeById[id]))));
-            foreach (var s in _sites.Values.Where(s => s.Cyclic)) Console.Error.WriteLine("cyclic site " + s.Key);
-            foreach (var (s, c) in _wide ?? [])
-                Console.Error.WriteLine($"wide site {s.Key} cyclic={s.Cyclic} general={s.General} targets={c} values: {string.Join(", ", s.Values.Keys.Take(8))}");
-        }
+        return scc;
     }
 
     /// <summary>The cyclic field sites whose slots an object of this type has (for the arena visitor).</summary>

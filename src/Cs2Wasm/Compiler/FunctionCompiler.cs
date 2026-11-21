@@ -164,7 +164,16 @@ sealed partial class FunctionCompiler
         var (body, syntax) = GetBody(def);
         Driver.BindTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
         _sharingBody = body;
-        if (Sh != null && SharingKey is { } shk) Sh.BodyRets.Add(shk);
+        if (Sh != null && SharingKey is { } shk)
+        {
+            Sh.BodyRets.Add(shk);
+            RecordRefParamUses(shk, body);
+            // Buffer.Memmove<T>(ref T destination, ref T source, n) moves references as bytes (Rt.MoveRefs): what the
+            // destination's places get is what the source's hold
+            if (M.Name == "Memmove" && M.Parameters.Length == 3 && Types.FullName(M.ContainingType) == "System.Buffer"
+                && M.Parameters[0].RefKind == RefKind.Ref && M.Parameters[1].RefKind == RefKind.Ref && T.Resolve(M.Parameters[1].Type, Map) is var mt && Types.IsRef(mt))
+                Sh.Add(Sharing.OutNode(shk, 0), new Sharing.Src(Sharing.K.RefParam, shk, 1, mt));
+        }
         E.CurrentPos = D.Position(syntax);
         PreScan(body);
         SetupOwnedParams();
@@ -272,7 +281,7 @@ sealed partial class FunctionCompiler
         }
         else body.InsertRange(0, prologue);
         for (int i = 0; i < body.Count; i++) if (ReferenceEquals(body[i].Ref, FrameMarker)) body[i] = body[i] with { Ref = null };
-        E.Fn.Body.RemoveAll(i => i.Op == Op.Nop && i.Ref is not Driver.WriteMark);
+        E.Fn.Body.RemoveAll(i => i.Op == Op.Nop && i.Ref is not (Driver.WriteMark or Driver.ThrowPath));
     }
 
     readonly List<Instr> _entryCode = [];
@@ -1097,7 +1106,14 @@ sealed partial class FunctionCompiler
             {
                 var rt = T.Resolve(M.ReturnType, Map);
                 if (_closure?.ReturnType is { } crt) rt = crt;
-                if (Types.IsStruct(rt))
+                if (Types.IsStruct(rt) && DirectStructReturn(value, rt))
+                {
+                    // `return new S(..)`, `return F(..)`: made in the caller's destination (as a declaration's value is
+                    // made in its local), with no temporary of this function's own to hold it and release on the way out
+                    EmitStructInto(value, () => E.Get(_structRetLocal));
+                    hasValue = false;
+                }
+                else if (Types.IsStruct(rt))
                 {
                     // init-copy into the caller's destination
                     EmitValueAs(value, rt);
@@ -1125,6 +1141,19 @@ sealed partial class FunctionCompiler
             if (_ctl[i].Kind == CtlKind.TryFinally) EmitFinallyInline(i);
         EmitReturnSequence(hasValue);
     }
+
+    /// <summary>Whether a returned struct can be made straight in the caller's destination: a constructor's or a call's
+    /// value of the return type itself, outside every `try` (a handler of this function's runs while the value is
+    /// half made, or a `catch` returns another value into the same place: the temporary keeps those apart).</summary>
+    bool DirectStructReturn(IOperation value, ITypeSymbol rt)
+    {
+        if (s_noDirectReturn || _closure != null || _machine != null || _structRetLocal < 0 || !IsDirectStructProducer(value)) return false;
+        foreach (var c in _ctl) if (c.Kind is CtlKind.TryFinally or CtlKind.Catch) return false;
+        var v = value;
+        while (v is IConversionOperation { Conversion.IsIdentity: true } cv) v = cv.Operand;
+        return Types.Key(T.Canonical(TypeOf(v))) == Types.Key(T.Canonical(rt));
+    }
+    static readonly bool s_noDirectReturn = Environment.GetEnvironmentVariable("CS2WASM_NO_DIRECT_RETURN") == "1";
 
     void EmitReturnSequence(bool hasValue)
     {
@@ -1326,6 +1355,14 @@ sealed partial class FunctionCompiler
             var o = EmitValue(coll);
             int list = E.AddLocal(ValType.I32);
             if (o == Own.Owned) { E.Set(list); AddOwned(new Slot { Local = list, Type = collType }); }
+            else if (o == Own.Unstable && !D.ThreadMode && _lastFieldLoad is var (fat, fkey) && fat == E.Fn.Body.Count)
+            {
+                // a field of a stable object (`foreach (var c in node.Children)`): the field keeps the list for the
+                // loop unless something the loop runs stores that field (FieldBorrows.cs decides, as for a temporary)
+                var (retain, release) = D.NewFieldBorrow(E.Fn, fkey);
+                E.Call(retain); E.Set(list);
+                AddOwned(new Slot { Local = list, Type = collType, ReleaseMarker = release });
+            }
             else { if (o == Own.Unstable || o == Own.Stable && !IsStableBase(coll)) { E.Call(Rt.Retain); E.Set(list); AddOwned(new Slot { Local = list, Type = collType }); } else E.Set(list); }
             EndTemps();
             E.Get(list); NullCheck();
@@ -1352,6 +1389,11 @@ sealed partial class FunctionCompiler
                     if (f.Symbol.Name == "_list") { E.Get(list); E.Call(Rt.Retain); E.Op(Op.Drop); }
                 }
                 CallWith(D.CanonicalMethod(lMoveNext), false, () => { E.Get(_fb); E.I32(tmp); E.Op(Op.I32Add); }, () => { }, null, fe.Syntax);
+                // (a call that only throws: what it stores is what the throwing function stores, so a borrow across
+                // a call of the function this loop is in survives it; FieldBorrows.StoresOf)
+                if (MoveNextThrows(lEnum, lMoveNext) is { } throws && E.Body[^1].Op == Op.Call && E.Body[^1].Ref is WasmFunction called
+                    && called.Name.Contains("MoveNext"))
+                { E.Emit(Op.Nop, 0, 0, new Driver.ThrowPath(throws)); E.Body[^1] = E.Body[^1] with { Pos = -1 }; }
                 E.Op(Op.Drop);
                 EndTemps();
             }
@@ -1559,6 +1601,30 @@ sealed partial class FunctionCompiler
         var names = T.LayoutOf(en).Fields.Select(f => f.Symbol.Name).ToHashSet();
         if (!names.Contains("_list") || !names.Contains("_index") || !names.Contains("_version")) return null;
         return (items, size, version, elem, en, moveNext);
+    }
+
+    /// <summary>The function a List's enumerator's MoveNext throws by when the list's version is not the one the
+    /// enumerator took, when the source says so: MoveNext starts with `var localList = _list;` and then
+    /// `if (_version != _list._version) ThrowHelper.X();`, so on such a list nothing else of it runs. Null when the
+    /// source is not so.</summary>
+    WasmFunction? MoveNextThrows(INamedTypeSymbol enumType, IMethodSymbol moveNext)
+    {
+        var def = moveNext.OriginalDefinition;
+        if (def.DeclaringSyntaxReferences.Length != 1
+            || D.ModelFor(def.DeclaringSyntaxReferences[0].SyntaxTree).GetOperation(def.DeclaringSyntaxReferences[0].GetSyntax()) is not IMethodBodyOperation { BlockBody: { Operations.Length: >= 2 } mn })
+            return null;
+        // (the local: a field read, nothing that stores or calls)
+        if (mn.Operations[0] is not IVariableDeclarationGroupOperation { Declarations: [{ Declarators: [{ Initializer.Value: IFieldReferenceOperation { Instance: IInstanceReferenceOperation } }] }] })
+            return null;
+        if (mn.Operations[1] is not IConditionalOperation { WhenFalse: null, WhenTrue: var then,
+                Condition: IBinaryOperation { OperatorKind: BinaryOperatorKind.NotEquals,
+                    LeftOperand: IFieldReferenceOperation { Field.Name: "_version", Instance: IInstanceReferenceOperation },
+                    RightOperand: IFieldReferenceOperation { Field.Name: "_version", Instance: IFieldReferenceOperation { Instance: IInstanceReferenceOperation } } } })
+            return null;
+        var call = then is IBlockOperation { Operations: [IExpressionStatementOperation e1] } ? e1.Operation : (then as IExpressionStatementOperation)?.Operation;
+        if (call is not IInvocationOperation { Instance: null, Arguments.Length: 0, TargetMethod: { IsStatic: true, ReturnsVoid: true } helper }
+            || helper.ContainingType.Name != "ThrowHelper" || !helper.Name.StartsWith("Throw", StringComparison.Ordinal)) return null;
+        return D.Method(helper).Fn;
     }
 
     void AssignLoopVariable(IForEachLoopOperation fe, ITypeSymbol valueType, Func<Own> produce, IOperation? conversion = null, bool borrowElement = false, string? borrowKeys = null)
