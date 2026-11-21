@@ -86,6 +86,9 @@ internal sealed class WasmModule
     /// <summary>Type-check every function (Validator) in Encode: a checked build (CompileOptions.Checked) and
     /// CS2WASM_VALIDATE=1. The problems found are the build's errors (ValidationProblems).</summary>
     public bool ValidateAlways;
+    /// <summary>Whether a trace shows the line of a source position (the program's own files; .NET shows none for the
+    /// library's frames). Null: every position counts.</summary>
+    public Func<int, bool>? PosShown;
     public readonly List<string> ValidationProblems = [];
 
     void Validate(string when)
@@ -289,6 +292,17 @@ internal sealed class WasmModule
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_NORETURN") != "1") NoReturn.Run(Functions);
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
+            if (Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1") ShareConstants.Stats(Functions, ComputeMayThrow(), PosShown, Environment.GetEnvironmentVariable("CS2WASM_SHARE_LEND") == "1");
+            // (bodies that differ only in constants and in which of such bodies they call: one, the constants its last
+            // parameters, ShareConstants.cs)
+            if (Environment.GetEnvironmentVariable("CS2WASM_SHARE") != "0")
+            {
+                // (first the groups of one frame name; then, over what is left, those whose names differ: their members
+                // stay frames, which would keep a group of one name from going to its shared body directly)
+                int n = ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, false, (name, t) => AddFunction(name, t));
+                int n2 = Environment.GetEnvironmentVariable("CS2WASM_SHARE_LEND") == "0" ? 0 : ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, true, (name, t) => AddFunction(name, t));
+                if (Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1") Console.Error.WriteLine($"share: {n} functions now call a shared body, then {n2} lend");
+            }
             AfterOptimize?.Invoke(Functions.Where(f => !f.IsImport));
             if (validate) Validate("after optimization");
         }
