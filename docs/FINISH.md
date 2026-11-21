@@ -240,7 +240,7 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   13.0% of the profile); cycle types 39,351 to 38,796; module (named) 78.5 to 72.6 MB; its output byte-identical.
   The analysis takes 1.5 s of the self-host build (3,432 fields asked). Tests 175 (the shape and eleven near misses,
   with a `// cycles:` marker in the runner: exactly these classes are CW0202), 176, 177. Suite 190 passed checked
-  and as shipped. Found, not fixed: a store through a span alone records no value at the array's site (AUDIT).
+  and as shipped. Found: a store through a span alone recorded no value at the array's site (fixed 2026-11-21, below).
 - 2026-11-21, main 3810a98 (streams C, G, H, J, K, L, M merged), interleaved against NativeAOT-LLVM, 3 rounds: self-hosted
   compiler 12.0-12.8 s / 344 MB / 44.0 MB against 6.2-6.5 s / 322 MB / 129 MB. Time 2.0x (2.7x this morning), memory
   1.07x (1.8x), size 0.34x.
@@ -267,3 +267,9 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   would split it is an analysis that tells callers apart (per call site, or per allocation site of the container),
   or proofs on typed edges (7.E). CS2WASM_FLOW_CAUSES=1 prints, for each site that stays wide, one source that
   makes it so and the path to it.
+- 2026-11-21, stores by address (follow-up of stream J): a cycle closed only by a store through a span's element,
+  MemoryMarshal's reference, Unsafe.Add, a reinterpreted ref, Interlocked through a span or a readonly field written
+  through Unsafe.AsRef was in no group and never freed (test 178, 50 of each left). Each store by address now records
+  its value against its slot type, and every array type of that element type holds it (Compiler/RefStores.cs, AUDIT).
+  Self-hosted compiler (main 3810a98, before stream I): groups and cycle types unchanged (61, 38,881), time the same (10.68 s against 10.74),
+  output byte-identical. Suite 193 passed checked and as shipped.

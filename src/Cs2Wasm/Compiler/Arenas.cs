@@ -523,6 +523,8 @@ internal sealed partial class Arenas
         AddDisplaySites();
         if (_reflectStores.Count > 0 && D.AllMethods.Any(m => m.Compiled && m.Sym.Name is "SetValue" or "SetValueDirect" && m.Sym.ContainingType?.Name is "RuntimeFieldInfo" or "FieldInfo"))
             foreach (var (s, t) in _reflectStores) { s.AddValue(t); s.General = true; }
+        // (what stores by address can put where: RefStores.cs)
+        AddRefStores();
         // which sites have a store into an object that may be known elsewhere
         {
             var general = new Dictionary<WasmFunction, Site>();
