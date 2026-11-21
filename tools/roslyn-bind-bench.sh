@@ -4,7 +4,9 @@
 # built by cs2wasm and by NativeAOT-LLVM and timed interleaved in Node with V8's normal tiering. Git Bash on Windows.
 # usage: bash tools/roslyn-bind-bench.sh build [name [cs2wasmc]]   cs2wasm's build to tests/out/bindbench/<name>.wasm
 #                                                                (default name: bb; cs2wasmc: this checkout's Release build)
-#        bash tools/roslyn-bind-bench.sh build-naot             NativeAOT-LLVM's build (EMSDK or C:/tools/emsdk; once)
+#        bash tools/roslyn-bind-bench.sh build-at <commit>...    a past commit's compiler built, then the bench by it
+#                                                                as p-<commit> (to compare a change with its parent)
+#        bash tools/roslyn-bind-bench.sh build-naot          NativeAOT-LLVM's build (EMSDK or C:/tools/emsdk; once)
 #        bash tools/roslyn-bind-bench.sh time [name...]         ROUNDS (default 5) interleaved rounds: each cs2wasm
 #                                                                build named, then NativeAOT-LLVM's; BODIES (default 400)
 # Each line: the build, its wall time in ms, its exit code, then the program's own phases (parse, declare, bind).
@@ -32,9 +34,24 @@ build)
   s=$(date +%s%N)
   CS2WASM_NO_THREADS=1 DOTNET_GCHeapHardLimit=${HEAP:-0x300000000} "$cli" "$SRC/Bench.cs" "$SRC/Cs2WasmMain.cs" \
     -r "$BIN/Microsoft.CodeAnalysis.dll" -r "$BIN/Microsoft.CodeAnalysis.CSharp.dll" -o "$(cygpath -m "$OUT")/$name.wasm" $CS2WASMC_ARGS
-  # (a module runs with the host of the checkout whose compiler built it: <checkout>/src/Cs2Wasm.Cli/bin/Release/net11.0)
-  echo "$(cd "$(dirname "$cli")/../../../../.." && pwd -W 2>/dev/null || pwd)/host/run.mjs" > "$OUT/$name.host"
+  # (a module runs with the host of the checkout whose compiler built it: <checkout>/src/Cs2Wasm.Cli/bin/Release/net11.0;
+  # kept relative to this checkout when inside it, so that tests/out/bindbench can be copied to another machine)
+  h="$(cd "$(dirname "$cli")/../../../../.." && pwd)/host/run.mjs"
+  echo "${h#$ROOT/}" > "$OUT/$name.host"
   echo "built $name.wasm in $(( ($(date +%s%N)-s)/1000000 )) ms, $(stat -c %s "$OUT/$name.wasm") bytes"
+  ;;
+build-at)
+  # a past commit's compiler (its src, host and build files from git, built in tests/out/bindbench/c-<commit>), then
+  # the bench built by it as p-<commit>
+  for c in "$@"; do
+    D=$OUT/c-$c
+    if [ ! -f "$D/src/Cs2Wasm.Cli/bin/Release/net11.0/cs2wasmc.exe" ]; then
+      mkdir -p "$D"
+      git -C "$ROOT" archive "$c" src host Directory.Build.props global.json | tar -x -C "$D"
+      (cd "$D" && dotnet build src/Cs2Wasm.Cli -c Release -v q -nologo 2>&1 | grep -E " error |rror\(s\)" || true)
+    fi
+    [ -f "$OUT/p-$c.wasm" ] || bash "$0" build "p-$c" "$D/src/Cs2Wasm.Cli/bin/Release/net11.0/cs2wasmc.exe" 2>&1 | grep -v "^cs2wasm: "
+  done
   ;;
 build-naot)
   EMSDK=${EMSDK:-C:/tools/emsdk}; export EMSDK
@@ -52,7 +69,8 @@ time)
   for r in $(seq 1 ${ROUNDS:-5}); do
     for b in "$@"; do
       s=$(date +%s%N)
-      host=$(cat "$OUT/$b.host" 2>/dev/null || echo "$ROOTW/host/run.mjs")
+      host=$(cat "$OUT/$b.host" 2>/dev/null || echo "host/run.mjs")
+      case $host in /*|?:*) ;; *) host=$ROOTW/$host ;; esac
       CS2WASM_PROCESSORS=1 CS2WASM_FS_ROOT=C:/ node "$host" "$(cygpath -m "$OUT")/$b.wasm" main -- "$(nodrive "$UP")" "$(nodrive "$RT")" ${BODIES:-400} > $T 2>&1 && rc=0 || rc=$?
       echo "$b $(( ($(date +%s%N)-s)/1000000 )) ms rc=$rc $(head -1 $T)"
       [ $r = 1 ] && grep '^check\|rror' $T | head -3
@@ -66,5 +84,5 @@ time)
   done
   rm -f $T
   ;;
-*) echo "usage: $0 build [name [cs2wasmc]] | build-naot | time [name...]"; exit 2 ;;
+*) echo "usage: $0 build [name [cs2wasmc]] | build-at <commit>... | build-naot | time [name...]"; exit 2 ;;
 esac
