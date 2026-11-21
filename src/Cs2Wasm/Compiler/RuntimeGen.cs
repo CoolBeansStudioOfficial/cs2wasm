@@ -215,7 +215,14 @@ internal sealed partial class RuntimeFns
                 // (not `locked`: into an object of a class the last compilation found no other thread reaches, as a
                 // field's store, Expressions.StoreToAddressFromStack)
                 else if (shared && !locked) { Value(); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type, container)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type, container)); }
-                else if (shared) { int took = e.AddLocal(I); Value(); Addr(dst); e.Call(D.Arenas.StoreLockAt(f.Type, true)); e.Set(took); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type, container)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type, container)); e.Get(took); e.Call(D.Arenas.StoreLockAt(f.Type, false)); }
+                else if (shared)
+                {
+                    // (in a store's region, 1, the exchange is the region's: Rt.RegionExchange)
+                    int took = e.AddLocal(I); Value(); Addr(dst); e.Call(D.Arenas.StoreLockAt(f.Type, true)); e.Set(took); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type, container)); e.Set(tmp);
+                    e.Get(took); e.I32(1); e.Op(Op.I32Eq);
+                    e.If(ValType.I32); Addr(dst); e.Get(tmp); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "RegionExchange", 2).Fn); e.Else(); Addr(dst); e.Get(tmp); e.Call(StoreRef); e.End();
+                    Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type, container)); e.Get(took); e.Call(D.Arenas.StoreLockAt(f.Type, false));
+                }
                 else { Value(); e.Set(tmp); e.Get(dst); e.Load(Op.I32Load, o); e.Get(dst); e.Get(tmp); e.Store(Op.I32Store, o); e.Call(Release); }
             }
             else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitCopyFieldsThreads(e, dst, src, o, f.Type, init, shared, move, tmp, locked, container);
@@ -485,7 +492,10 @@ sealed partial class RuntimeGen
         if (D.ThreadMode && RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareCheckFail", 1);
         if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0); }
         // (the stores into slots that can close a cycle, Arenas.Resolve: the runtime lock while the container is a member)
-        if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockAtIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreUnlockIf", 1); }
+        if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockIf", 2); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockAtIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreUnlockIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "RegionExchange", 2); D.LibMethod("Cs2Wasm.Runtime.Rt", "LocksHeld", 0);
+            // (the counts' slow paths, rt.retain and rt.release and rt.load_retain: asked for here, with the program, not when
+            // those are written)
+            D.LibMethod("Cs2Wasm.Runtime.Rt", "ArenaRetainSlow", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "ArenaReleaseSlow", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "LoadRetainSlow", 1); }
     }
 
     public void Export(string name, MethodInst mi) => _exports.Add((name, mi));
@@ -1245,7 +1255,7 @@ sealed partial class RuntimeGen
         D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled),
                            D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled));
         D.Rt.EmitFinalizerHold(D.UsesThreads);
-        D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
+        D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetainSlow", 1), () => D.Arenas.RuntimeFn("ArenaReleaseSlow", 1), D.Arenas.Enabled);
         if (Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1") EmitCountRc();
         D.Module.UsesThreads = D.UsesThreads;
         D.Mark("  finish: runtime support");
@@ -1585,6 +1595,8 @@ sealed partial class RuntimeGen
             if (pend != null && D.UsesThreads)
             {
                 w.I32Addr(D.StaticAddress("rt.lock.owner", 4, 4)); w.Emit(Op.I32AtomicLoad, 0, 2); w.GGet(D.ThreadId); w.Op(Op.I32Eq);
+                // (or a group's lock: Rt.LocksHeld, GroupLocks.cs)
+                if (D.Arenas.Enabled) { w.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "LocksHeld", 0).Fn); w.Op(Op.I32Or); }
                 w.If(); w.Get(0); w.Call(pend); w.Op(Op.Return); w.End();
             }
             w.GGet(D.DestroyDepth); w.I32(MaxNesting); w.Op(Op.I32GeU);

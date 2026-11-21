@@ -5,7 +5,10 @@ using System;
 
 namespace Cs2Wasm.Runtime
 {
-    [AttributeUsage(AttributeTargets.Method)]
+    /// <summary>On a method: emitted inline by the compiler. On a static field: a [ThreadStatic] one in a program
+    /// with threads, a plain static in one without (the arena machinery's scratch state, each thread's own once groups
+    /// are locked apart, GroupLocks.cs).</summary>
+    [AttributeUsage(AttributeTargets.Method | AttributeTargets.Field)]
     public sealed class IntrinsicAttribute : Attribute { }
 
     /// <summary>Marks a library method that is a WASM import of the engine (module, name).</summary>
@@ -70,7 +73,7 @@ namespace Cs2Wasm.Runtime
         [Import("cs2wasm", "utc_offset_minutes")] public static extern int UtcOffsetMinutes(double utcMs);
     }
 
-    public static class Rt
+    public static partial class Rt
     {
         /// <summary>A string constant pattern on a span of chars (`span is "abc"`, `switch (span) { case "abc": }`): the
         /// span's characters equal the string's (C#: MemoryExtensions.SequenceEqual).</summary>
@@ -662,6 +665,52 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int TlsSize();
         [Intrinsic] public static extern void RuntimeLock();
         [Intrinsic] public static extern void RuntimeUnlock();
+        /// <summary>The runtime lock is this thread's (threads; false without).</summary>
+        [Intrinsic] public static extern bool RuntimeLockHeld();
+        /// <summary>The program is compiled for threads (Driver.ThreadMode): known when each method is compiled, so a
+        /// branch on it is taken out before what it calls is compiled (Folding.KnownBool). The group locks' code
+        /// (GroupLocks.cs) is behind it: a program without threads compiles none of it.</summary>
+        [Intrinsic] public static extern bool ThreadMode();
+        /// <summary>CS2WASM_DEADLOCK_DUMP=1 at compile time: a long wait for a lock throws, naming its holder.</summary>
+        [Intrinsic] static extern bool DeadlockDump();
+
+        // The heap's lock (threads): the allocator's shared lists and pages, apart from the runtime lock, which code
+        // that holds a group's lock may not take (GroupLocks.cs: the runtime lock comes before any group's). Taken
+        // last of all locks: nothing is counted or destroyed while it is held. Reentrant (an allocation that fails
+        // makes its exception under it).
+        static int s_heapOwner, s_heapDepth, s_heapWaiters;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static void HeapLock() { if (!ThreadMode()) RuntimeLock(); else HeapLockMt(); }
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static void HeapUnlock() { if (!ThreadMode()) RuntimeUnlock(); else HeapUnlockMt(); }
+
+        static void HeapLockMt()
+        {
+            int me = ThreadId();
+            if (Atomic.Load32(ref s_heapOwner) == me) { s_heapDepth++; return; }
+            int n = 0;
+            while (true)
+            {
+                int cur = Atomic.Load32(ref s_heapOwner);
+                if (cur == 0) { if (Atomic.CompareExchange32(ref s_heapOwner, 0, me) == 0) break; continue; }
+                if (++n < 200) continue;
+                if (Threads.MayBlock())
+                {
+                    Atomic.Add32(ref s_heapWaiters, 1);
+                    Atomic.Wait32(ref s_heapOwner, cur, 1000000);
+                    Atomic.Add32(ref s_heapWaiters, -1);
+                }
+            }
+            s_heapDepth = 1;
+        }
+
+        static void HeapUnlockMt()
+        {
+            if (--s_heapDepth != 0) return;
+            Atomic.Store32(ref s_heapOwner, 0);
+            if (Atomic.Load32(ref s_heapWaiters) != 0) Atomic.Notify(ref s_heapOwner, 1);
+        }
 
         /// <summary>Bytes from the heap's start to its top (freed blocks included).</summary>
         public static long HeapUsed() => s_top == 0 ? 0 : (long)(uint)s_top - HeapBase();
@@ -687,9 +736,9 @@ namespace Cs2Wasm.Runtime
         public static int AllocFirst(int size)
         {
             if (SingleThreaded()) return AllocBlock(size + 8, KindPlain) + 8;
-            RuntimeLock();
+            HeapLock();
             int a = AllocCore(size + 8, KindPlain) + 8;
-            RuntimeUnlock();
+            HeapUnlock();
             return a;
         }
 
@@ -697,9 +746,9 @@ namespace Cs2Wasm.Runtime
         {
             // threads: small blocks come from the thread's own free lists, without the runtime lock
             if (!SingleThreaded() && size <= MaxSmall) return AllocLocal(size, kind);
-            RuntimeLock();
+            HeapLock();
             int a = AllocCore(size, kind);
-            RuntimeUnlock();
+            HeapUnlock();
             return a;
         }
 
@@ -791,9 +840,9 @@ namespace Cs2Wasm.Runtime
 
         static int InitThreadCache()
         {
-            RuntimeLock();
+            HeapLock();
             int h = AllocCore(ThreadTable + 8, KindPlain) + 8;
-            RuntimeUnlock();
+            HeapUnlock();
             Mem.Fill(h, 0, ThreadTable);
             t_heads = h;
             return h;
@@ -832,13 +881,13 @@ namespace Cs2Wasm.Runtime
         /// is one; else a new page of the thread's own, its current one (AllocLocal takes from it).</summary>
         static void Refill(int slot, int size, int kind)
         {
-            RuntimeLock();
+            HeapLock();
             if (s_top == 0) InitHeap();
             int shared = Lists(kind) + (size >> 3) * 4;
             int list = Mem.LoadI32(shared);
             if (list != 0) { Mem.StoreI32(shared, Mem.LoadI32(list + 12)); Mem.StoreI32(slot, list); }
             else Mem.StoreI32(slot + CurTable, NewOwnedPage(size, kind));
-            RuntimeUnlock();
+            HeapUnlock();
         }
 
         static void FreeLocal(int addr, int size, int kind)
@@ -894,7 +943,7 @@ namespace Cs2Wasm.Runtime
         {
             int heads = t_heads;
             if (heads == 0) return;
-            RuntimeLock();
+            HeapLock();
             for (int kind = 0; kind < 2; kind++)
                 for (int c = 2; c < Classes; c++)
                 {
@@ -906,7 +955,7 @@ namespace Cs2Wasm.Runtime
                     Mem.StoreI32(shared, b);
                     Mem.StoreI32(slot, 0);
                 }
-            RuntimeUnlock();
+            HeapUnlock();
             t_cached = 0;
         }
 
@@ -1096,9 +1145,9 @@ namespace Cs2Wasm.Runtime
             }
             if (ShareCheck() && size >= 8) { Mem.StoreI32(addr, 0x0EAD0000 | (ThreadId() & 0xFFFF)); Mem.StoreI32(addr + 4, 0x7EAD0000); return; }
             if (!SingleThreaded() && size <= MaxSmall) { FreeLocal(addr, size, kind); return; }
-            RuntimeLock();
+            HeapLock();
             FreeCore(addr, size, kind);
-            RuntimeUnlock();
+            HeapUnlock();
         }
 
         static void FreeCore(int addr, int size, int kind)
@@ -1460,7 +1509,9 @@ namespace Cs2Wasm.Runtime
                 if (value == 0) return;
                 r = Alloc(MemberWords);
                 Mem.StoreI64(r, 0); Mem.StoreI64(r + 8, 0); Mem.StoreI64(r + 16, 0); Mem.StoreI64(r + 24, 0); Mem.StoreI64(r + 32, 0);
-                Mem.StoreI32(obj - 4, r);
+                // (threads: another thread may read the words of an object of a group it does not hold, KeyStripe:
+                // the block whole before its address)
+                if (!ThreadMode()) Mem.StoreI32(obj - 4, r); else Atomic.Store32(ref Mem.RefI32(obj - 4), r);
             }
             Mem.StoreI32(r + MemberWords - k, value);
         }
@@ -1614,12 +1665,23 @@ namespace Cs2Wasm.Runtime
             return ar;
         }
 
+        /// <summary>Threads: a new arena for a plain object that joins it, of the stripe that object is locked by.</summary>
+        static int NewArenaFor(int obj)
+        {
+            int ar = NewArena();
+            if (ThreadMode()) Mem.StoreI32(ar + 28, HashStripe(obj));
+            return ar;
+        }
+
         /// <summary>A plain object (count c > 0) becomes a member: its count is its outside count.</summary>
         static void ArenaJoin(int ar, int obj)
         {
             // (exchanged, not stored: another thread that holds a reference may be counting it, without the lock, as
             // the plain object it is until here; its exchange then fails and it counts the member)
             int c;
+            // (threads: the group's stripe first, GroupLocks.cs, while the object is still plain and so locked by its
+            // own: a thread that sees it a member then finds the stripe this thread holds, and waits)
+            if (ThreadMode()) PS(obj, LockWord, Mem.LoadI32(ar + 28) + 1);
             do { c = Atomic.Load32(ref Mem.RefI32(obj)); } while (Atomic.CompareExchange32(ref Mem.RefI32(obj), c, -(c + 2)) != c);
             PS(obj, 16, ar);
             PS(obj, 4, 0);
@@ -1657,7 +1719,7 @@ namespace Cs2Wasm.Runtime
         }
 
         // (the objects that joined an arena and whose slots are still to be linked)
-        static int s_linkQ, s_linkN, s_linkCap;
+        [Intrinsic] static int s_linkQ, s_linkN, s_linkCap;
 
         /// <summary>Links what the objects that just joined an arena hold in their slots, and what those hold, in turn
         /// (a list, not a nest: a long chain joins without a deep stack).</summary>
@@ -1680,6 +1742,12 @@ namespace Cs2Wasm.Runtime
         {
             if (Mem.LoadI32(a + 8) < Mem.LoadI32(b + 8)) { int t = a; a = b; b = t; }
             int ha = Mem.LoadI32(a + 4), hb = Mem.LoadI32(b + 4);
+            // (threads: b's members take a's stripe; this thread holds both)
+            if (ThreadMode() && hb != 0 && Mem.LoadI32(a + 28) != Mem.LoadI32(b + 28))
+            {
+                int sw = Mem.LoadI32(a + 28) + 1, m = hb;
+                do { PS(m, LockWord, sw); m = PL(m, 12); } while (m != hb);
+            }
             if (hb != 0)
             {
                 if (ha == 0) Mem.StoreI32(a + 4, hb);
@@ -1720,7 +1788,7 @@ namespace Cs2Wasm.Runtime
         const int Owned = 1, Held = 2, Dying = 4, MultOne = 8, MultMask = 0x78, Queued = 0x80, Elems = 0x100, UOne = 0x200, UShift = 9;
         const int ChainMax = 8;
         [System.ThreadStatic] static int t_prevSlot, t_prevBits;
-        static int s_visitObj, s_visitElem, s_destroying, s_killQ, s_killN, s_killCap, s_storeSlot;
+        [Intrinsic] static int s_visitObj, s_visitElem, s_destroying, s_killQ, s_killN, s_killCap, s_storeSlot;
 
         static int SlotIndex(int container, int slot)
         {
@@ -1881,9 +1949,13 @@ namespace Cs2Wasm.Runtime
             if (found != 0) return;
             ClearMark(m);
             ArenaTakeOut(ar, m);
+            // (threads: its words cleared but kept, before it is a plain object, which a thread that holds no lock of
+            // this group may then lock and join to another: KeyStripe reads the words of objects it does not hold.
+            // Not its lock word: until the exchange below it is a member of this group, which a thread must wait for)
+            if (ThreadMode()) { int r = Mem.LoadI32(m - 4); Mem.StoreI32(r + 4, 0); Mem.StoreI64(r + 8, 0); Mem.StoreI64(r + 16, 0); Mem.StoreI64(r + 24, 0); Mem.StoreI64(r + 32, 0); }
             // (exchanged: other threads count it meanwhile; it has outside references, so one member fewer that does)
             do { c = Atomic.Load32(ref Mem.RefI32(m)); } while (Atomic.CompareExchange32(ref Mem.RefI32(m), c, -c - 2) != c);
-            MemberWordsFree(m);
+            if (!ThreadMode()) MemberWordsFree(m);
             int total = Mem.LoadI32(ar) - 1;
             Mem.StoreI32(ar, total);
             if (total != 0) return;
@@ -1921,12 +1993,12 @@ namespace Cs2Wasm.Runtime
             if ((PL(val, 28) & 0x55555555) != 0 && (PL(val, 24) & Elems) == 0) Reevaluate(val);
         }
 
-        static int s_handFrom, s_handSum;
+        [Intrinsic] static int s_handFrom, s_handSum;
 
         // The references that members with finalizers among them gave up as they died: (slot, value) pairs. .NET
         // runs a finalizer while everything its object refers to is still there, so the references are put back
         // for the finalizers of all that die together, and taken out again after.
-        static int s_cutQ, s_cutN, s_cutCap, s_cutOn;
+        [Intrinsic] static int s_cutQ, s_cutN, s_cutCap, s_cutOn;
 
         static void NoteCut(int slot, int value)
         {
@@ -1977,7 +2049,9 @@ namespace Cs2Wasm.Runtime
         /// references that pass it being all that its items have above them.</summary>
         static void Handover(int from, int to, int owner)
         {
-            if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || PL(to, 32) != owner || PL(to, 16) != PL(from, 16)) return;
+            // (threads: read only in a group this thread holds)
+            if (!ThreadMode()) { if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || PL(to, 32) != owner || PL(to, 16) != PL(from, 16)) return; }
+            else if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || !GroupHeld(to) || PL(to, 32) != owner || PL(to, 16) != PL(from, 16)) return;
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem, sf = s_handFrom, ss = s_handSum;
             s_visitArena = PL(from, 16); s_handFrom = from; s_handSum = 0; s_visitElem = 0;
             s_visitMode = 6; s_visitObj = from;
@@ -2016,7 +2090,9 @@ namespace Cs2Wasm.Runtime
         // members that die together are. Otherwise the counts are put back, and the top remembers how many of them
         // outside code holds (the word for another holder, odd): it is looked at again when that number is zero, or
         // when one of them loses a reference from a member.
-        static int s_trQ, s_trN, s_trCap, s_trial, s_failedTops, s_watch, s_watchHit;
+        [Intrinsic] static int s_trQ, s_trN, s_trCap, s_trial, s_watch, s_watchHit;
+        // (every group's: threads count it atomically)
+        static int s_failedTops;
 
         static void TrPush(int m)
         {
@@ -2037,7 +2113,7 @@ namespace Cs2Wasm.Runtime
         {
             if ((PL(m, MarkWord) & 1) == 0) return;
             PS(m, MarkWord, 2);
-            s_failedTops--;
+            if (!ThreadMode()) s_failedTops--; else Atomic.Add32(ref s_failedTops, -1);
         }
 
         /// <summary>The member above all its owners (itself when it has none); 0 when that is far.</summary>
@@ -2137,7 +2213,7 @@ namespace Cs2Wasm.Runtime
                 // (the note: odd; bit 1 clear, how many of them outside code holds, TopHeld; set, how many references
                 // from members outside what it owns are left into it, NoteOutside)
                 PS(x, MarkWord, inside ? (held << 2) | 1 : (outside << 2) | 3);
-                s_failedTops++;
+                if (!ThreadMode()) s_failedTops++; else Atomic.Add32(ref s_failedTops, 1);
                 s_trial = 0;
                 return false;
             }
@@ -2229,6 +2305,8 @@ namespace Cs2Wasm.Runtime
         public static int ArenaLink(int val, int container, int slot)
         {
             if (container == 0) return val;
+            // (threads: a store's region is locked at its link, which knows the value: StoreLockIf, GroupLocks.cs)
+            if (ThreadMode() && t_regionC == container) RegionLock(container, val, true);
             // Nothing to link, and nothing of the container's to change: no lock. The value is null, or its own class
             // cannot be on a cycle with the container's (the site can store others that can: a list of nodes takes a
             // leaf), so the reference is a plain counted one whatever becomes of the two; and the slot is one whose
@@ -2243,7 +2321,9 @@ namespace Cs2Wasm.Runtime
                 if (cw < -1 && SlotBits(container, i0) == 0) { t_prevSlot = slot; t_prevBits = 0; return val; }
             }
             if (t_backN != 0) AfterStore();
-            RuntimeLock();
+            int mk = -1;
+            if (!ThreadMode()) RuntimeLock();
+            else if (t_regionC != container || t_regionMk < 0) mk = LinkLock(val, container);
             // (what the slot's bits said of the value it held: for the ArenaUnlink that follows the store)
             int i = Mem.LoadI32(container) < -1 ? SlotIndex(container, slot) : -1;
             t_prevSlot = slot;
@@ -2263,7 +2343,7 @@ namespace Cs2Wasm.Runtime
             if (s_linkN != 0) ArenaLinkJoined();
             s_storeSlot = outer;
             if (s_killN != 0) DrainKills();
-            RuntimeUnlock();
+            if (!ThreadMode()) RuntimeUnlock(); else if (mk >= 0) GroupUnlock(mk);
             return r;
         }
 
@@ -2310,7 +2390,7 @@ namespace Cs2Wasm.Runtime
             if (ra != 0 && (Mem.LoadI32(ra + 12) & ArenaBusy) != 0) return val;
             if (rv != 0 && (Mem.LoadI32(rv + 12) & ArenaBusy) != 0) return val;
             int ar = ra;
-            if (ar == 0) { ar = rv != 0 ? rv : NewArena(); ArenaJoin(ar, container); }
+            if (ar == 0) { ar = rv != 0 ? rv : ThreadMode() ? NewArenaFor(container) : NewArena(); ArenaJoin(ar, container); }
             cv = Mem.LoadI32(val); // val may be the container itself
             if (cv > 0) ArenaJoin(ar, val);
             else
@@ -2342,6 +2422,12 @@ namespace Cs2Wasm.Runtime
 
         static void AfterStore()
         {
+            // (threads: each as any release, which locks its group: it may no longer be a member by now)
+            if (ThreadMode())
+            {
+                while (t_backN > 0) { t_backN--; Release(Borrow<object>(Mem.LoadI32(t_backQ + 4 * t_backN))); }
+                return;
+            }
             RuntimeLock();
             while (t_backN > 0)
             {
@@ -2425,18 +2511,28 @@ namespace Cs2Wasm.Runtime
             if (bits == 0) { Release(Borrow<object>(old)); return; }
             // (never linked: a plain counted reference, see ArenaLink)
             if (!CanLink(old, container)) { Release(Borrow<object>(old)); return; }
-            RuntimeLock();
+            int mk = -1;
+            if (!ThreadMode()) RuntimeLock();
+            else
+            {
+                // (the container's group: an old value of another is no inside reference, and is read nothing of)
+                if (t_regionC == container) RegionLock(container, old, false);
+                if (t_regionC != container || t_regionMk < 0) { mk = t_lkN; LockGroupOf(container, false); }
+            }
             int co = Mem.LoadI32(old), cc = Mem.LoadI32(container);
             if (bits == 2)
             {
                 // (an up-reference: never counted)
                 if (co < -1 && cc < -1) { UpPath(container, old, -1); DrainKills(); }
-                RuntimeUnlock();
+                if (!ThreadMode()) RuntimeUnlock(); else if (mk >= 0) GroupUnlock(mk);
                 return;
             }
             // an inside reference: both are members of one arena (they were linked when it was stored), the arena is
             // not being destroyed (its members' inside references are cut first), and it was counted as one
-            bool inside = co < -1 && cc < -1 && PL(old, 4) != 0;
+            bool inside;
+            // (threads: an old value of a group this thread does not hold is of another arena; nothing of it is read)
+            if (ThreadMode()) inside = co < -1 && cc < -1 && GroupHeld(old) && PL(old, 4) != 0;
+            else inside = co < -1 && cc < -1 && PL(old, 4) != 0;
             if (inside)
             {
                 int ar = PL(old, 16);
@@ -2478,7 +2574,7 @@ namespace Cs2Wasm.Runtime
                 if (s_killN != 0) DrainKills();
                 if (!gone) TryLeave(container);
             }
-            RuntimeUnlock();
+            if (!ThreadMode()) RuntimeUnlock(); else if (mk >= 0) GroupUnlock(mk);
             if (!inside) Release(Borrow<object>(old));
         }
 
@@ -2506,26 +2602,26 @@ namespace Cs2Wasm.Runtime
         [System.ThreadStatic] static int t_atSlot, t_atOwner;
 
         /// <summary>Threads: a store into a slot of the container that can close a cycle is one step (link, exchange,
-        /// unlink) under the runtime lock: 1 when the lock was taken. Also while the container is a plain object: another
+        /// unlink) with the container's group locked, and the slot's place (GroupLocks.cs, the store's region): 1 for
+        /// such a region. Also while the container is a plain object: another
         /// thread can make it a group's member in the middle of the store, and link the slot's old value, which a plain
         /// unlink then leaves counted (test 139, as shipped: two nodes of 320,000 never freed). A protocol that lets a
         /// plain container's store go without the lock is still to do (docs/AUDIT.md).</summary>
-        public static int StoreLockIf(int container)
+        public static int StoreLockIf(int container, int slot)
         {
             if (container == 0) return 0;
-            RuntimeLock();
-            return 1;
+            return RegionEnter(container, slot);
         }
 
         /// <summary>The same for a slot known by its address (a slot of an object of a cycle-capable type).</summary>
         public static int StoreLockAtIf(int slot)
         {
-            if (SlotOwner(slot) == 0) return 0;
-            RuntimeLock();
-            return 1;
+            int c = SlotOwner(slot);
+            if (c == 0) return 0;
+            return RegionEnter(c, slot);
         }
 
-        public static void StoreUnlockIf(int took) { if (took != 0) RuntimeUnlock(); }
+        public static void StoreUnlockIf(int took) => RegionExit(took);
 
         /// <summary>The address is a slot of an object of a cycle-capable type (an arena's member, or one that can be).</summary>
         public static bool InArenaSlot(int slot) => SlotOwner(slot) != 0;
@@ -2580,7 +2676,7 @@ namespace Cs2Wasm.Runtime
         // (taken out; a member that loses its last dies too), 1 the same when all of them die anyway (taken out
         // only), 4 a copied or joining object's slots (linked as the stores they stand for), 5 a member that got
         // an owner (Reevaluate).
-        static int s_visitArena, s_visitMode, s_visitDead;
+        [Intrinsic] static int s_visitArena, s_visitMode, s_visitDead;
 
         public static void ArenaVisitElement(int slot)
         {
@@ -2595,10 +2691,13 @@ namespace Cs2Wasm.Runtime
             int child = Mem.LoadI32(slot);
             // (4: each reference, counted by the copy, as a store of it)
             if (s_visitMode == 4) { if (child != 0 && slot != s_storeSlot) ArenaLinkCore(child, s_visitArena, slot); return; }
+            // (16: LinkWalk, threads)
+            if (ThreadMode() && s_visitMode == 16) { WalkVisit(child); return; }
             // (13 to 15, Dropped: what the member owns; a counted reference to one of them off, and back on)
             if (s_visitMode >= 13)
             {
                 if (child == 0 || Mem.LoadI32(child) >= -1) return;
+                if (ThreadMode() && !GroupHeld(child)) return;
                 int cf = PL(child, 24);
                 if (s_visitMode == 13)
                 {
@@ -2623,6 +2722,8 @@ namespace Cs2Wasm.Runtime
                 return;
             }
             if (child == 0 || Mem.LoadI32(child) >= -1) return;
+            // (threads: one of a group this thread does not hold is of another arena; nothing of it is read)
+            if (ThreadMode() && !GroupHeld(child)) return;
             if (s_visitMode == 1) { if (ArenaOf(child) == s_visitArena) { if (s_cutOn != 0) NoteCut(slot, child); Mem.StoreI32(slot, 0); } return; }
             if (s_visitMode == 8) { if (ArenaOf(child) == s_visitArena) s_handSum++; return; }
             int obj = s_visitObj;
@@ -2677,14 +2778,15 @@ namespace Cs2Wasm.Runtime
         /// close a cycle are linked, as the stores they stand for would have been.</summary>
         public static void ArenaLinkContents(int obj)
         {
-            RuntimeLock();
+            int mk = -1;
+            if (!ThreadMode()) RuntimeLock(); else mk = LinkLock(0, obj, true);
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj;
             s_visitArena = obj; s_visitMode = 4; s_visitObj = obj;
             ArenaVisitObject(obj);
             s_visitArena = sa; s_visitMode = sm; s_visitObj = so;
             ArenaLinkJoined();
             DrainKills();
-            RuntimeUnlock();
+            if (!ThreadMode()) RuntimeUnlock(); else GroupUnlock(mk);
             if (t_backN != 0) AfterStore();
         }
 
@@ -3283,6 +3385,8 @@ namespace Cs2Wasm.Runtime
             // (a module built for an engine without threads: as .NET says there)
             if (Rt.NoThreads()) throw new System.PlatformNotSupportedException("Threads are not supported on this platform.");
             TakeBlocks(out int stack, out int tls);
+            // (the groups' locks: before the first thread that may take one starts)
+            if (Rt.ThreadMode()) Rt.InitGroupLocks();
             t._stack = stack;
             t._tls = tls;
             Rt.Share(t); // the worker reaches it, and through it the delegate and what it captured
@@ -3309,6 +3413,7 @@ namespace Cs2Wasm.Runtime
                 System.Threading.Thread.SetCurrent(null);
                 // the thread's statics die with it (as .NET's become unreachable)
                 Rt.ReleaseThreadStatics();
+                if (Rt.ThreadMode()) Rt.EndGroupLocks();
                 Rt.EndThreadCache();
                 GiveBlocks(t._stack, t._tls);
                 WakeAll();

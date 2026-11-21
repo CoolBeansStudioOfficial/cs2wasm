@@ -113,10 +113,8 @@ internal sealed partial class RuntimeFns
                 e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(done);
                 e.Br(top);
                 e.End();
-                e.Call(LockEnter);
-                e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(-1); e.Op(Op.I32LtS);
-                e.If(); e.Get(0); e.Call(retainSlow()); e.Call(LockExit); e.Br(done); e.End();
-                e.Call(LockExit);
+                // (under the group's lock, Rt.ArenaRetainSlow: 0 when it was no member by then)
+                e.Get(0); e.Call(retainSlow()); e.BrIf(done);
                 e.Br(top);
             }
             e.End(); e.End();
@@ -144,10 +142,8 @@ internal sealed partial class RuntimeFns
                 e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(done);
                 e.Br(top);
                 e.End();
-                e.Call(LockEnter);
-                e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(-1); e.Op(Op.I32LtS);
-                e.If(); e.Get(0); e.Call(releaseSlow()); e.Call(LockExit); e.Br(done); e.End();
-                e.Call(LockExit);
+                // (under the group's lock, Rt.ArenaReleaseSlow: 0 when it was no member by then)
+                e.Get(0); e.Call(releaseSlow()); e.BrIf(done);
                 e.Br(top);
             }
             e.End(); e.End();
@@ -302,12 +298,7 @@ internal sealed partial class RuntimeFns
                 e.Get(r); e.I32(-2); e.Op(Op.I32Eq);
                 e.If();
                 EmitRefUnlock(e, s);
-                e.Call(LockEnter);
-                EmitRefLock(e, 0, s);
-                e.Get(0); e.Load(Op.I32Load); e.Tee(p); e.If(); e.Get(p); e.Call(Retain); e.Op(Op.Drop); e.End();
-                EmitRefUnlock(e, s);
-                e.Call(LockExit);
-                e.Get(p); e.Op(Op.Return);
+                e.Get(0); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "LoadRetainSlow", 1).Fn); e.Op(Op.Return);
                 e.End();
             }
             e.End(); e.End();
@@ -424,16 +415,8 @@ internal sealed partial class RuntimeFns
             e.Get(p); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(counted);
             e.Br(count);
             e.End();
-            // a member's first outside reference: under the runtime lock, where members are freed, so what the place
-            // holds then, if it is a member, is alive
-            e.Call(LockEnter);
-            e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(p);
-            e.If();
-            e.Get(p); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(-1); e.Op(Op.I32LtS);
-            e.If(); e.Get(p); e.Call(Retain); e.Op(Op.Drop); e.Call(LockExit); e.Get(p); e.Op(Op.Return); e.End();
-            e.End();
-            e.Call(LockExit);
-            e.Br(again);
+            // a member's first outside reference: under its group's lock, where its members are freed (Rt.LoadRetainSlow)
+            e.Get(0); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "LoadRetainSlow", 1).Fn); e.Op(Op.Return);
         }
         else e.Br(again);
         e.End(); e.End();

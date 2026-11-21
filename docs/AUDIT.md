@@ -528,7 +528,7 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   - The cause of the hang on twelve threads: a Node worker started by another worker needs its parent's event loop,
     which a thread running the module never gives back; PLINQ's producers started that way never ran. Every thread is
     now started by host/spawner.mjs, a worker of the main thread that runs no module code.
-  Still open: more threads make it slower, not faster (every arena operation takes the one runtime lock; the work
+  Was open (done by stream C, "Per-group locks" below): more threads make it slower, not faster (every arena operation takes the one runtime lock; the work
   item below). Tools for such hunts: tools/stacks.mjs (every thread's stack under --inspect), CS2WASM_WATCHDOG=1 (the
   pool's counts every 5 s), CS2WASM_DEADLOCK_DUMP=1 (a wait of 20 s for the runtime lock says who holds it).
   **Code quality for the baseline tier, 2026-11-20** (where the self-hosted compiler runs): `tools/micro.mjs
@@ -1250,3 +1250,43 @@ What was agreed for decisions 1 and 2:
   removes the commonest cycle (a child's link to its parent) so the child stays a plain counted object and is freed
   the moment it is dropped. Scoping makes what is still cyclic cheap. Without the proof, a long-lived parent with
   children that come and go (a world and its enemies) is one arena that only grows.
+
+- **Per-group locks for arena operations (stream C, 2026-11-20).** Measured first: a PLINQ query making 3,000 trees of
+  200 nodes (tools/bench-threads/plinq_trees.cs) took 0.65 s on one thread, 4.9 on four, 9.1 on 24; on four threads
+  one thread did all the work while the others slept in the runtime lock's wait, every handover a wake-up (not cache
+  lines: the lock's words on lines of their own changed nothing). Now (Boundary/GroupLocks.cs):
+  - A lock is one of 256 stripes, each word on its own cache line. A group's stripe is in each member's lock word (the
+    first of its member words, unused before) and in its record (+28); an object that is no member is a group of its
+    own, of the stripe its address gives. Whoever changes an object's lock word, or its count between plain and
+    member, holds the stripe it had and the one it gets (a join writes the word before the count; a member that
+    leaves keeps it until the count says plain; a merge restripes the smaller arena's members), so a stripe this
+    thread holds, read in an object's lock word, means the object's words are its to read (GroupHeld); every read of
+    another object's words in the machinery checks that first (the visits, the unlink's old value, Handover).
+  - An operation locks its stripes lowest first and verifies them (the object may have moved meanwhile). A join's
+    objects (the container and the value when plain, what their slots hold, and so on: ArenaLinkJoined) are found
+    under the locks before anything changes (LinkLock: each object found has its stripe tried; a try that fails gives
+    all back and the next attempt takes it in order; eight attempts, then every stripe). Not walked: a link that
+    joins nothing (a finalizer's stores into its dying structure walked all of it at each store: test 133, 98 s).
+  - A store's region (StoreLockIf, now with the slot's address) locks at its link, which knows the value; its slot's
+    place lock is tried after the stripes (given back and waited for without them when busy), and the exchange is an
+    atomic one (Rt.RegionExchange). Order: runtime lock, places, stripes, heap. The allocator's lists have a lock of
+    their own (HeapLock), since code holding stripes allocates and the runtime lock's holders (Monitor) count.
+  - A release that needs a stripe below those the thread holds waits for its locks to go (QueueRelease); the
+    destructions wait as under the runtime lock (rt.destroy checks Rt.LocksHeld, AfterLocks runs them); a store's
+    give-back still waits for its unlink. The kill list is the thread's own: drained before its locks go.
+  - The arena scratch (visit state, kill, link, cut and trial lists) is per thread with threads: statics marked
+    [Intrinsic] are thread statics in thread mode, plain ones without. All of it is behind Rt.ThreadMode, which
+    Folding.KnownBool folds when each method is compiled: Rt.SingleThreaded resolves only at the end, after what a
+    branch calls is compiled (that alone grew hello world by 527 bytes, through Interlocked's thread path).
+  - Found on the way: AfterLocks looped forever inside a destroy function (rt.lock_exit leaves pending destructions
+    to the destruction's loop there); a give-back run at a link's unlock, before its store was written; ArenaRetain
+    left kills in the thread's list for good (another thread's ops skip a queued member).
+  - Measured interleaved holding a heavy.sh slot, main before against now. Trees: 0.60, 3.2, 6.5, 7.0 s on 1, 4, 12,
+    24 threads against 0.79, 0.46, 0.45, 0.44. Self-hosted compiler (threaded) on hello world: 16.3, 23.6, 37.7, 39.4
+    against 18.7, 17.0, 26.6, 26.7; its output byte-identical to the .NET-hosted compiler's. Its profile on 12
+    threads: StripeWait and StripeUnlock (the wake-up) on one stripe, the lexer cache's, the syntax node cache's
+    and BlendedNode copies' stores and counts: Roslyn's types are one group, which locks per group cannot split
+    (stream A's value sources per site, the back-reference proof). A waiter spins 2,048 times before it sleeps
+    (test 139 on 16 threads: 830 to 700 ms). One thread: 15% slower than the one lock (the stripes' bookkeeping).
+    No-threads builds: hello world byte-identical; micro and bench the same code (function type order and line
+    numbers differ). Suite 187/187 checked and as shipped (070_files failed once in a run beside another session's, its fixed directory shared; passes alone); test 139 200/200 under tools/stress.mjs, 8 at once.
