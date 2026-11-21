@@ -382,6 +382,7 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   delegate's Invoke only the targets of its own constructed type or variance's (test 187), a switch expression of
   borrowed arms is borrowed, `f ??= v` breaks no borrow, multi-statement bodies return fields borrowed, Array's
   GetLength/GetLowerBound/Copy without counted handle copies. Parser bench 61.2 to 59.8 million calls, 25.7 to 24.1
-  million counts changed (6% fewer); the self-hosted compiler on the homelab, the three quiet rounds of six: main
+  million counts changed (6% fewer); the self-hosted compiler 930.8 to 915.2 million calls, 348.3 to 337.7 million
+  counts changed (3.0% fewer); its time on the homelab, the three quiet rounds of six: main
   10.24 s, branch 9.94 s, NativeAOT-LLVM 4.28 s (2.39x to 2.32x; the homelab, shared with other sessions, loaded in
   the other rounds). Hello world 27,297 to 27,339 bytes. docs/AUDIT.md, "Fewer count operations".

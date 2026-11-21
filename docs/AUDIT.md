@@ -1189,6 +1189,11 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     5.7% fewer); its time within this machine's noise (another session's heavy runs: medians 316 against 311 ms in the
     baseline tier, 6 interleaved rounds). Hello world 27,297 to 27,339 bytes. Suite 198/198 checked and as shipped on
     b2340ac.
+  - The self-hosted compiler (0a968c8, named, no threads), hello world: 930.8 to 915.2 million calls, 348.3 to 337.7
+    million counts changed (3.0% fewer), 887.4 to 871.9 million count operations with the struct helpers'. Its time
+    on the homelab (shared with other sessions; 6 interleaved rounds, the first three quiet): main 10.47, 9.93, 10.32 s,
+    the branch 10.08, 9.96, 9.76 s, NativeAOT-LLVM 4.30, 4.18, 4.38 s (2.39x to 2.32x); the three loaded rounds even.
+    Module 70,235,738 to 70,355,112 bytes, peak memory the same (306.0 MB).
   - Left, by size: the array clears of struct elements (a runtime matter: the zero-skipping range release, or knowing
     the builder's count), struct copies into fields (moves where the source dies), receivers that are fields of a
     struct `this` (`SyntaxListBuilder<T>.Add` forwarding to its `_builder`: a struct's field can be overwritten by
