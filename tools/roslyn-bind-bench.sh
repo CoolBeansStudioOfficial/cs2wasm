@@ -11,6 +11,17 @@
 #                                                                build named, then NativeAOT-LLVM's; BODIES (default 400)
 # Each line: the build, its wall time in ms, its exit code, then the program's own phases (parse, declare, bind).
 # cs2wasm's build has no threads (CS2WASM_NO_THREADS=1), as NativeAOT-LLVM's browser-wasm, and runs told one processor.
+# Heavy: run builds and timings on the homelab (tools/homelab.sh); NativeAOT's build needs emsdk (this machine only,
+# a small build) and its tests/out/bindbench/naot can be copied there.
+# Cost (homelab, 2026-11-21): cs2wasm's build 2.2-4 min, 18-23 MB; NativeAOT's 53 s; a run 6.5 s against 3.0 s.
+# How it tracked the self-hosted compiler (homelab, 5 interleaved rounds, BODIES=400; docs/FINISH.md's Log for the
+# self-hosted side): main 2.17x NativeAOT (self-hosted 1.98x); stream J (fd83e75 to 95ceb64) -23% (-20%); stream N
+# (a85d88f to 3be4326) -2.5% (-5%); N round 2 (480a101 to 96ed1d7) -3% (-2%); K round 4 (05e8cd0 to 1191d18) 0 to -1%
+# (-1.5 to -2.3%: below what it resolves); K round 3 (3be4326 to 480a101) +4 to +6% where the self-hosted compiler was
+# unchanged: round 2's inlining still shows in the parse phase here, and the 10 MB less code to compile that took it
+# back there does not (this module is a quarter the size). So: a change it shows above about 3% in the same direction
+# as the bind phase is likely real; a parse-phase gain from inlining needs the self-hosted compiler to confirm.
+# Rounds move 3% with the machine's load; compare medians from one interleaved run only.
 set -e
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
