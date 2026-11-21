@@ -32,8 +32,8 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Hello world size (test 145) | 27,825 B | < 28,383 B |
-| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.45 s vs 4.6 s | < 4.6 s |
-| 4 | Same: peak memory | 470 MB vs 239 MB | < 239 MB |
+| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 11.9 s vs 5.9 s (named builds, interleaved, stream J; main's 14.8 s in the same run; was 12.45 vs 4.6 on a quieter machine) | below NativeAOT's |
+| 4 | Same: peak memory | 295 MB vs 239 MB (stream J; was 470) | < 239 MB |
 | 4 | Same: module size | 42.7 MB vs 129 MB (was 64.0; `tools/size-report.mjs`) | met; next waste: code (36.2 MB) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | not re-tried since 11-17 | plays, log equals the oracle's |
@@ -102,7 +102,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 | Stream | Items | Files | State |
 |---|---|---|---|
 | I. Value sources everywhere | record sources precisely at every store, argument and return (boxed generics, conversions, interface results, conditionals), also without threads; then `Sharing.SiteTypeIds` on by default where it narrows | Compiler/Expressions.cs, Calls.cs, Sharing.cs | to start |
-| J. Owned arrays | an array filled while only its maker knows it and then kept by a new object's readonly field is a node of its own in the type graph (Roslyn's green nodes' child arrays against its builders' arrays) | Compiler/Arenas.cs, FreshStores.cs | to start |
+| J. Owned arrays | an array filled while only its maker knows it and then kept by a new object's readonly field is a node of its own in the type graph (Roslyn's green nodes' child arrays against its builders' arrays) | Compiler/OwnedArrays.cs (new), Arenas.cs | done 2026-11-20: green nodes out of the cycle graph (268 types); self-hosted 14.1 to 11.9 s, 470 to 295 MB |
 | K. Baseline-tier code quality | from the side-by-side profile: counted reads whose count can sink to the one path that keeps the value, static-initializer checks, constant-length bounds checks, frame setup, small calls left | Wasm/*, Compiler where a pass needs a fact | to start |
 | L. Self-hosted memory | where the 470 MB against 239 go (member words, counts, allocator waste by size class, pages held) and the structural cuts | Boundary/Runtime.cs allocator (after C merges) | to start |
 
@@ -170,3 +170,24 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   On a quiet machine (heavy lock), worst frame cs2wasm vs NativeAOT: churn 0.90 / 1.96 ms, collections 0.34 / 1.54,
   strings 0.16 / 0.32, bigdrop 1.83 / 9.62, tree 29.9 / 3.8 (the rebuild: streams I and J take types out of the
   cycle graph; measure again after they merge). bench 0.82x.
+- 2026-11-20, stream J: owned arrays (Compiler/OwnedArrays.cs). A field whose arrays are filled while only their
+  maker knows them and never written once handed over is *sealed*: in the type graph it leads to a node of its own
+  for the array type, whose element edges close no cycle; arrays of that type held elsewhere (the builders') keep
+  the type's node. Proven over every compiled body (a fixpoint over fields, parameters, locals, writing callees and
+  fresh returns; any other use, a write through a span, Array.Copy into it, a ref to an element, a lambda that
+  writes later, an override that keeps it, a caller passing a builder's array, reflection that can call the
+  constructor, keeps the field an edge). Roslyn's `SyntaxList.WithManyChildrenBase.children` is sealed: the green
+  group (268 types, `ArrayElement<GreenNode>[]`) is gone, no group holds a green node. In the self-hosted build it
+  first was not, because reflection could call every program constructor: asking frames for their MethodBase gives
+  every program method a record and an invoke thunk, and the compiler's own CS2WASM_STATS aid and
+  Exception.SetCurrentStackTrace (through .NET's StackTrace text, which reads each frame's MethodBase) asked; and
+  Activator.CreateInstance(Type) on unknown types kept all constructors of the program's types. Now the aids read
+  names from the trace text, that StackTrace overload is substituted as its sibling is (it now writes lines as
+  .NET does: test 177), CreateInstance(Type) keeps parameterless constructors only, and the analysis asks for an
+  invoke thunk, not a record. Self-hosted compiler, named no-threads builds, hello world, interleaved 3 rounds
+  against NativeAOT-LLVM: main 14.8 s, the reflection part alone 14.1 s, with the rule 11.9 s, NativeAOT 5.9 s
+  (2.50x to 2.01x); library ready 11.6 to 8.8 s; memory 470 to 295 MB; arena self time 3.52 to 1.76 s (21.7% to
+  13.0% of the profile); cycle types 39,351 to 38,796; module (named) 78.5 to 72.6 MB; its output byte-identical.
+  The analysis takes 1.5 s of the self-host build (3,432 fields asked). Tests 175 (the shape and eleven near misses,
+  with a `// cycles:` marker in the runner: exactly these classes are CW0202), 176, 177. Suite 190 passed checked
+  and as shipped. Found, not fixed: a store through a span alone records no value at the array's site (AUDIT).

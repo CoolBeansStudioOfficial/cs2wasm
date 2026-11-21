@@ -916,6 +916,60 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   canonical forms do), and which virtual overrides of the Linq iterators a call can reach. Also left in the data:
   3,476 full names (1 MB) the cast-failure helpers keep (`rt.throw_cast`, one literal per target type).
 
+- **Owned arrays (stream J of docs/FINISH.md, 2026-11-20): Roslyn's green nodes out of the cycle graph.** The type
+  graph has one node per array type. Roslyn's `ArrayElement<GreenNode>[]` is both the children a syntax list keeps
+  (made, filled, handed to its constructor, never written again) and its builders' arrays (written all the time,
+  held by no node); an array type's element site is always one that closes cycles, so the 268 green types were one
+  group through it (its only closing site: `CS2WASM_ARENA_DEBUG` now prints each component's `closing site` lines).
+  - The rule (Compiler/OwnedArrays.cs): a field is *sealed* when every array it can hold is never written once there.
+    A greatest fixpoint over carriers, each assumed until a use is found that does not fit: fields (every value
+    stored is sealed, every read only reads: elements by value, the length, Array.Copy's source, a parameter that
+    only reads); parameters that only read, and those whose every caller passes a sealed array (no virtual, interface,
+    delegate or reflective way in; no primary constructor, attribute or record); locals that alias sealed arrays;
+    *fresh* arrays (a local declared from `new T[n]`, a collection expression or a call that returns a fresh array)
+    whose uses before their one hand-off are element writes and reads, the length, Array.Copy/Clear/Fill into them,
+    or a *writing* callee (one that writes into its parameter and keeps it nowhere: not in a lambda, not async, every
+    override of a virtual one), all textually before the hand-off with no goto or yield and no loop around the
+    hand-off that the declaration is outside of. A struct element is used by value only in the uses listed (a
+    mutating method, an await, a deconstruction, a pattern on it in place fail). Every compiled body, field and
+    static initializer is indexed by the identifiers it names (and target-typed `new(` and constructor initializers),
+    so every reference of a carrier is seen. Why it is sound: ordered by when each object stops being only its
+    maker's, every element stored into a fresh array was a value already let out (earlier), and nothing stores into
+    a sealed array afterwards, so its element edges all point back in time, as a readonly field's do.
+  - In the graph (Arenas.SealOwnedArrays, after a first pass of the components): only fields on a cyclic component
+    whose closing site is an array type's elements are asked; a sealed field's hubs lead to a node of its own per
+    array type whose element hubs are copies with no site (they close nothing). If that node is still on a cycle
+    closed elsewhere, it is joined back to its array type both ways and the components found again: such arrays are
+    members as before. `CS2WASM_NO_OWNED_ARRAYS=1` turns it off; `owned arrays:` debug lines give each carrier's
+    verdict and the use that failed it.
+  - Reflection: a constructor reflection can call gets any array (test 176). In the self-hosted build every program
+    constructor could be called: asking frames for their MethodBase gives every program method a record and an
+    invoke thunk (stream E), and two things asked, the compiler's own CS2WASM_STATS/COUNT_RC aids (Wasm/Emitter.cs)
+    and Exception.SetCurrentStackTrace through .NET's `StackTrace.ToString(TraceFormat, StringBuilder)`, which reads
+    each frame's MethodBase; and Roslyn's analyzer loading (`Assembly.GetTypes`, then `Activator.CreateInstance(type)`)
+    kept every constructor of every program type. Now: the aids read names from the trace text; that overload is
+    substituted as `ToString(TraceFormat)` already was (`Rt.TraceTextInto`: SetCurrentStackTrace writes the trace with
+    its lines, as .NET does; it wrote the names without lines before, test 177); CreateInstance(Type) and (Type,
+    bool) keep only parameterless constructors (all they run); and the analysis counts as callable only members with
+    an invoke thunk (`Reflection.ThunkedMembers`), not every member with a record.
+  - Measured. Parse probe (tools/roslyn-parse-probe.cs): cycle types 907 to 639, its green group of 271 gone, output
+    the same. Self-hosted compiler, named no-threads builds, `Console.WriteLine(42)`, interleaved 3 rounds
+    (tools/selfhost-ab.sh): main 14.80 s, the reflection part alone 14.08 s, with the rule 11.93 s, NativeAOT-LLVM 5.93 s
+    (2.50x to 2.01x). Profiled run: library ready 11.6 to 8.8 s, compile 3.26 to 3.13 s; memory 470 to 295 MB; arena
+    self time 3.52 to 1.76 s (21.7% to 13.0%; ArenaRelease 704 to 346 ms, ArenaUnlinkOld 403 to 139, ArenaLink 347 to
+    141). Cycle types 39,351 to 39,064 (reflection part) to 38,796; no group holds a green node, a syntax list or
+    `ArrayElement<GreenNode>[]`. Module (named) 78.5 to 72.7 MB (the thunks) to 72.6 MB. The self-hosted compilers'
+    hello worlds are byte-identical. The analysis: 1.5 s of the self-host build, 3,432 fields asked, two sealed
+    (the other, SharedArrayPoolPartitions' partitions, joined back: its arrays are on a cycle through their elements).
+    Hello world (test 145) unchanged. Suite 190 passed checked and as shipped.
+  - Found, not fixed: a store through a span alone (`items.AsSpan()[0] = v`) records no value at the array type's
+    site, so a cycle made only that way is not in the type graph (the store asks `HoldsCyclic` of the slot type,
+    false), with or without this rule: such a cycle would not be freed. Test 175's D case stores through an element
+    too so that it tests the rule.
+  - Left: what still joins Roslyn's big group (20,844 types) is the `object` and interface slots of stream I's
+    finding; red nodes' child arrays (`SyntaxList.WithManyChildren._children`) are written lazily after the node is
+    shared (by design) and stay edges.
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:
