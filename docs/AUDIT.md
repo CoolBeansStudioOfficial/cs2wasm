@@ -940,6 +940,39 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     `root.Tag = results`). A member that something besides its owner refers to holds its owner, since that other
     holder may be outside the tree; here it is inside, the tree holds itself, and in a group that lives on it
     stays. Not specific to async; freed whenever the group goes (a program without a task on a cycle: at once).
+  - **Closed (2026-11-21): test 127's intermittent `async 5` / `pending 1` (about 1 run in 8 of its tasks under
+    load), a garbage structure with two tops.** Found with `CS2WASM_ARENA_REPORT=1` (at compile time: GC.Collect
+    prints each arena left, the members referred to from outside or under a failed check, who refers to each such
+    top, and a log of the last checks, owner losses, adoptions and queued checks). What was left: the pending
+    TaskCompletionSource is a top that owns, through its continuation and the lambda's closure, the root and the
+    array Task.WhenAll returned; one task result is a top of its own (no owner, nothing outside refers to it),
+    because its task let it go while the one container noted to own it next (Owners) was gone too, so the WhenAll
+    array that still holds it does not own it. The array refers to the result, the result's `Parent` to the root:
+    each tree refers into the other, and each check, over what its top owns, failed by the other's reference. Why
+    timing: whether a result's task dies before or after the noted container, and whether the TaskCompletionSource's
+    last reference goes while the method's other locals still hold the root (then its check fails by them).
+    Fixed, in `Rt.Dropped`: the trial takes in, with what they own, the other tops that what it owns refers to
+    directly when no code refers to them and nothing owns them. What the top owns is gone through first; then the
+    tops taken in, and the tops those refer to. The trial stops taking in at the first member under a top taken in
+    that code refers to (the set cannot die then): a live structure that small ones refer into is not gone through
+    at each of their checks, which made the self-hosted compiler run past 300 s when every reference to an owned
+    member walked to its top (`Top`) and took in what that top owned. The trial is exact for any set (every counted
+    reference among its members off, none left is the proof), so taking in is never wrong; it only finds more. If
+    that fails by a reference from outside, the check is made again by what the top owns alone (the first part of
+    the same list, not gone through again), whose numbers the note keeps; if it fails only by members code still
+    holds, all of them are what the top owns, and that is the note (held kind), so the last of them let go looks
+    again, now with the other top. Not covered: two tops that refer only to members under each other, not to the
+    tops. Test 187 (the WhenAll shape, with a pending TaskCompletionSource keeping
+    the group: 4 results and the root left on every run before). `CS2WASM_NO_TAKE_IN=1` (at compile time) is the
+    old check. Tried and left out: checking a member at the end of a destruction that left it with inside
+    references alone (QueueCheck without stale holds): it found nothing more here, and test 133 then leaked 4,937
+    nodes, since every check that fails leaves a note whose numbers are kept by references coming and going, not
+    by owners changing; more failed checks, more numbers that go stale. That staleness is open: a top whose
+    structure gains or loses members by an adoption or a handover keeps the number it had. One case of it, known:
+    a note of the outside kind counts the references from outside the top's tree; when a member that refers into
+    the tree is adopted into it (Adopt, TakeOwnership), its reference is inside from then on, but the note's number
+    still counts it, so the last outside reference let go does not bring the number to zero and the check is not
+    made again.
 
 - **Self-hosted compiler's size (stream B of docs/FINISH.md, 2026-11-20): 63,966,970 to 42,664,712 bytes.**
   `tools/size-report.mjs module.wasm [--packed]` (names from a `CS2WASM_NAMES=1` build) splits a module: its
