@@ -1073,6 +1073,31 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   own time 1.50 s to 0.92 s in the profile (taken on a busier machine: 20.4 s total against 13.1). Hello world 27,745
   to 27,912 bytes. Suite 195 passed checked and as shipped (rebased on main 5f7c98d).
 
+- **Stream K, round 3 (2026-11-21), on main 26150c1: size back, speed kept.** Each of round 2's pieces measured on
+  the self-hosted compiler itself, a build with it off against main, interleaved (6, 8 and 10 rounds; then 12 with the
+  machine's load checked under 30% before each): the count fast paths were within 1% either way for 8.7 MB of the
+  module's 82.3 MB; frames in place within the noise for 0.8 MB; the zero-skipping range releases within the noise, no
+  size there, 98 bytes of hello world. The parser bench's 4% and 2.8% are taken back by the engine: it compiles the
+  larger module too, and the self-hosted compiler runs over far more code than the bench. All three are off by default
+  now (`CS2WASM_RC_FAST=1`, `CS2WASM_FRAME_INLINE=64`, `CS2WASM_ZERO_SKIP=1` to measure them). Added, each fewer bytes
+  and the same meaning, a final tidy on the finished bodies (`Peephole.FinalTidy`): `i32.const 0; i32.ne` and
+  `i32.eqz; i32.eqz` before an if or br_if, `local.set x; local.get x` left by the passes after the peephole, a pure
+  push dropped at once, `i32.const k; i32.add` (k >= 0) before a load, or before a store whose value is one push, as
+  the memory instruction's offset, and a body's last `return`. Tried and dropped: `call ThrowHelpers.X; unreachable`
+  at a block's end without the unreachable. Fewer bytes, but in the baseline tier the code after the block then merges
+  with the throwing arm's state (register moves): micro 6% slower (1.059 against 1.005 with every other step). Also
+  dropped: count fast paths without their own null test (a null's count word at address 0 reads zero, so it takes the
+  call; nulls are released often: micro 2.3% slower).
+  Result: hello world 28,288 to 27,580 bytes on 26150c1 (27,869 to 27,194 on 3be4326, after stream N); the self-hosted
+  compiler's module (named, no threads) 82,343,265 to 72,442,968 bytes, its time the same within the noise (12 rounds
+  with the load checked: 10.53 s against 10.47 s for main without the count fast paths, processor time 20.59 against
+  20.64 s; main itself within 1% of that build; NativeAOT-LLVM 5.17 s). Suite 197 passed checked and as shipped on the branch rebased on 3be4326.
+  The profile of main (loaded machine, eager): the arena operations (stream N) and the counts' calls (0.66 s) the
+  largest shares, dispatch stubs 0.48 s, `SyntaxNodeCache.TryGetNode` 1.4x NativeAOT's time; the parked borrow work
+  (`claude/k2-throw-only-wip`) still waits for typed releases. Lesson for these measurements: the parser bench and micro
+  overstate what inlining buys, and the self-hosted compiler's own timing needs a quiet machine (a check of the load
+  before each round) to resolve 2%.
+
 - **Self-hosted compiler's memory (stream L of docs/FINISH.md, 2026-11-20): 568.9 MB to 482.9 MB.**
   - The report: `CS2WASM_MEMSTATS=1` at compile time. The runtime goes through the heap at every growth of the memory
     (the table's word per granule, each page's blocks: a block's first word says what it is) and prints a line;
