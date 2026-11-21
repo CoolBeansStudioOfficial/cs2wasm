@@ -947,7 +947,9 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   - Measured, interleaved (`tools/selfhost-ab.sh` prints each run's peak now), 4 rounds: main 199572c 14.6 s /
     568.9 MB; stream L 14.0 s / 482.9 MB; NativeAOT-LLVM 5.5 s / 322.2 MB (its peak.cjs, the same measure as
     tools/bench.mjs takes of both). micro --baseline 1.87x on both; bench 0.95x on both, 16.0 MB (the 16 MB floor);
-    hello world 27,812 bytes unchanged; programs with arenas about 2 KB smaller.
+    hello world 27,812 bytes unchanged; programs with arenas about 2 KB smaller. Suite 187/187 checked and as
+    shipped. The threaded self-hosted build (layout of thread mode: tag, lock word, seven words) compiles hello
+    world right on 1 and 12 threads; under the same load as stream C's last threaded build, 611 MB against 666.
   - **What is left above NativeAOT's 322 MB is per object:** 32 bytes before each of 3.7 million members (120 MB:
     streams I and J take types out of the cycle graph), a 12-byte header against NativeAOT's 8 (the hash word),
     29 MB of data (19 MB type tables, reflection records and the frame names, 4.7 MB string literals, 4.1 MB the

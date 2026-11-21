@@ -188,4 +188,5 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   points to (a member 56 bytes to 32; threads: 40, with the group's lock word); frame names in UTF-8 in one blob
   (data 35.7 to 29.2 MB). Interleaved (`tools/selfhost-ab.sh`, now with each run's peak), 4 rounds: main 199572c
   14.6 s / 568.9 MB, stream L 14.0 s / 482.9 MB, NativeAOT-LLVM 5.5 s / 322.2 MB. micro --baseline 1.87x both;
-  bench 0.95x both, 16.0 MB (its floor); hello world 27,812 B unchanged; arena programs about 2 KB smaller.
+  bench 0.95x both, 16.0 MB (its floor); hello world 27,812 B unchanged; arena programs about 2 KB smaller. Suite
+  187/187 checked and as shipped. The threaded self-hosted build compiles hello world right on 1 and 12 threads.
