@@ -145,6 +145,12 @@ namespace Cs2Wasm.Runtime
         // ------------------------------------------------------------------
         const int MaxSmall = 2048;
         const int Classes = MaxSmall / 4 + 1;
+        // Where a free small block links to the next (its first word is zero), and the smallest block: without threads
+        // the link is the second word, so a block of 8 bytes can be free (a cycle-capable object's side words; an
+        // object of 12, with no fields, takes 12); with threads it is at 8, clear of a dead object's count word that a
+        // reference read without a lock looks at (and of its type word), so 16 at least.
+        static int FreeLink => SingleThreaded() ? 4 : 8;
+        static int MinBlock => SingleThreaded() ? 8 : 16;
         static int s_top, s_end, s_table, s_hash;
 
         // ------------------------------------------------------------------
@@ -421,7 +427,7 @@ namespace Cs2Wasm.Runtime
                     int head = Mem.LoadI32(pg);
                     if (head != 0)
                     {
-                        Mem.StoreI32(pg, Mem.LoadI32(head + 8));
+                        Mem.StoreI32(pg, Mem.LoadI32(head + FreeLink));
                         Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
                         Zero(head, size);
                         return head;
@@ -442,7 +448,7 @@ namespace Cs2Wasm.Runtime
                 // a block of the size that is in no page
                 int oddSlot = s_table + c * 4;
                 int odd = Mem.LoadI32(oddSlot);
-                if (odd != 0) { Mem.StoreI32(oddSlot, Mem.LoadI32(odd + 8)); Zero(odd, size); return odd; }
+                if (odd != 0) { Mem.StoreI32(oddSlot, Mem.LoadI32(odd + FreeLink)); Zero(odd, size); return odd; }
                 // a page of the size with freed blocks; else an empty page
                 int availSlot = s_avail + c * 4;
                 int q = Mem.LoadI32(availSlot);
@@ -478,7 +484,7 @@ namespace Cs2Wasm.Runtime
         {
             int pg = addr & ~(PageSize - 1);
             Mem.StoreI32(addr, 0);
-            Mem.StoreI32(addr + 8, Mem.LoadI32(pg));
+            Mem.StoreI32(addr + FreeLink, Mem.LoadI32(pg));
             Mem.StoreI32(pg, addr);
             int used = Mem.LoadI32(pg + 16) - 1;
             Mem.StoreI32(pg + 16, used);
@@ -1101,7 +1107,7 @@ namespace Cs2Wasm.Runtime
             // (small blocks in no page, on the old lists)
             for (int kind = 0; kind < 2; kind++)
                 for (int c = 4; c < Classes; c++)
-                    for (int b = Mem.LoadI32(Lists(kind) + c * 4); b != 0; b = Mem.LoadI32(b + 8))
+                    for (int b = Mem.LoadI32(Lists(kind) + c * 4); b != 0; b = Mem.LoadI32(b + FreeLink))
                         if (SingleThreaded()) { MsAdd(MsTotAt(TOddBlocks), 1); MsAdd(MsTotAt(TOddBytes), c << 3); }
                         else break;
             Mem.StoreI32(MsTotAt(TArenaRecords), s_msRec);
@@ -1228,7 +1234,7 @@ namespace Cs2Wasm.Runtime
         {
             if (s_top == 0) InitHeap();
             size = (size + 3) & ~3;
-            if (size < 16) size = 16;
+            if (size < MinBlock) size = MinBlock;
             // (small blocks: from pages without threads; with them, from the lists by size the threads' caches refill from)
             if (size <= MaxSmall) return SingleThreaded() ? PageAlloc(size) : AllocSmallShared(size, kind);
             // A program with threads keeps a freed large block for a block of its kind and size (a block keeps its
@@ -1240,7 +1246,7 @@ namespace Cs2Wasm.Runtime
                 int head = Mem.LoadI32(slot);
                 if (head != 0)
                 {
-                    Mem.StoreI32(slot, Mem.LoadI32(head + 8));
+                    Mem.StoreI32(slot, Mem.LoadI32(head + FreeLink));
                     Mem.Fill(head, 0, size);
                     return head;
                 }
@@ -1304,7 +1310,7 @@ namespace Cs2Wasm.Runtime
                 int s = (size + 3) & ~3;
                 if ((uint)s <= MaxSmall)
                 {
-                    if (s < 16) s = 16;
+                    if (s < MinBlock) s = MinBlock;
                     int hotSlot = s_hot + (s >> 2) * 4;
                     int old = Mem.LoadI32(hotSlot);
                     Mem.StoreI32(hotSlot, addr);
@@ -1345,7 +1351,7 @@ namespace Cs2Wasm.Runtime
                 int used = Mem.LoadI32(pg + 16) - 1;
                 if (used != 0 && (Mem.LoadI32(pg + 20) & 1) != 0)
                 {
-                    Mem.StoreI32(addr + 8, Mem.LoadI32(pg));
+                    Mem.StoreI32(addr + FreeLink, Mem.LoadI32(pg));
                     Mem.StoreI32(pg, addr);
                     Mem.StoreI32(pg + 16, used);
                     return;
@@ -1355,7 +1361,7 @@ namespace Cs2Wasm.Runtime
             }
             int slot = Lists(KindPlain) + (size >> 2) * 4;
             Mem.StoreI32(addr, 0);
-            Mem.StoreI32(addr + 8, Mem.LoadI32(slot));
+            Mem.StoreI32(addr + FreeLink, Mem.LoadI32(slot));
             Mem.StoreI32(slot, addr);
         }
 
@@ -1384,7 +1390,7 @@ namespace Cs2Wasm.Runtime
         static void FreeCore(int addr, int size, int kind)
         {
             size = (size + 3) & ~3;
-            if (size < 16) size = 16;
+            if (size < MinBlock) size = MinBlock;
             if (size <= MaxSmall)
             {
                 if (SingleThreaded())
@@ -1401,7 +1407,7 @@ namespace Cs2Wasm.Runtime
                 // the link is at 8: word 0 (an object's count) stays 0, dead, for a reference read just before the free
                 int slot = Lists(kind) + (size >> 2) * 4;
                 Mem.StoreI32(addr, 0);
-                Mem.StoreI32(addr + 8, Mem.LoadI32(slot));
+                Mem.StoreI32(addr + FreeLink, Mem.LoadI32(slot));
                 Mem.StoreI32(slot, addr);
                 return;
             }
@@ -1521,7 +1527,7 @@ namespace Cs2Wasm.Runtime
                             head = Mem.LoadI32(pg);
                             if (head != 0)
                             {
-                                Mem.StoreI32(pg, Mem.LoadI32(head + 8));
+                                Mem.StoreI32(pg, Mem.LoadI32(head + FreeLink));
                                 Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
                             }
                             else
@@ -1547,7 +1553,7 @@ namespace Cs2Wasm.Runtime
                         for (int p = head + 8, e = head + (s & ~7); p != e; p += 8) Mem.StoreI64(p, 0); if ((s & 4) != 0) Mem.StoreI32(head + s - 4, 0);
                         return head;
                     }
-                    if (s >= 16)
+                    if (s >= MinBlock)
                     {
                         head = PageAlloc(s);
                         Mem.StoreI32(head, 1);
@@ -1754,7 +1760,8 @@ namespace Cs2Wasm.Runtime
         {
             int w = Side(obj);
             if (w != 0) return w;
-            w = Alloc(SideWords);
+            // (without threads a block of their own, of 8 bytes: nothing asks which object an address in it is in)
+            w = SingleThreaded() ? AllocBlock(SideWords, KindPlain) : Alloc(SideWords);
             Mem.StoreI64(w, 0);
             Mem.StoreI32(obj - ArenaPrefix, PrefixMark - w);
             return w;
@@ -1773,7 +1780,7 @@ namespace Cs2Wasm.Runtime
             int w = Side(obj);
             if (w == 0) return;
             Mem.StoreI32(obj - ArenaPrefix, PrefixMark);
-            Free(w, SideWords);
+            if (SingleThreaded()) FreeBlock(w, SideWords, KindPlain); else Free(w, SideWords);
         }
 
         [Intrinsic] static extern int SccOf(int typeId);
@@ -1814,7 +1821,7 @@ namespace Cs2Wasm.Runtime
                             head = Mem.LoadI32(pg);
                             if (head != 0)
                             {
-                                Mem.StoreI32(pg, Mem.LoadI32(head + 8));
+                                Mem.StoreI32(pg, Mem.LoadI32(head + FreeLink));
                                 Mem.StoreI32(pg + 16, Mem.LoadI32(pg + 16) + 1);
                             }
                             else
