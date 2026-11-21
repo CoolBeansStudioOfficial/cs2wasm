@@ -31,7 +31,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Hello world size (test 145) | 28,120 B (stream L round 2: the allocator's rounded-size entries; 27,744 before) | < 28,383 B |
+| 4 | Hello world size (test 145) | 27,868 B (main 26150c1 with K round 2 and L round 3; 28,287 with L round 2, 27,869 before it) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 10.7 s vs 5.3 s, 2.0x (main 26150c1 with K and L round 2; interleaved, 3 rounds; 2.7x on 2026-11-20 morning) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main 26150c1, same run). Met, thinly: the heap top is 1 MiB under the next growth step | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 53.9 MB vs 129 MB (main 26150c1; 44.0 at 3810a98: K's inlining) | met; next waste: code (36.2 MB) |
@@ -299,6 +299,17 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   10.6-10.8 s / 306.0 MB / 53.9 MB against 5.1-5.6 s / 322.2 MB / 129 MB: time 2.0x, memory 0.95x (met), size 0.42x.
   Then ae57217: stream D's two premature-free fixes (a borrow temporary unwound as a counted one; MemberwiseClone
   linking twice); the Godot probe binds all of GodotSharp clean under --checked.
+- 2026-11-21, stream L round 3 (branch claude/stream-l3-memory, on 26150c1): what round 2 cost a program that barely
+  allocates, taken back: hello world 28,287 to 27,868 bytes (27,869 before round 2), the self-hosted compiler still
+  306.0 MB (interleaved, 3 rounds, against main's build: the same peak, 11.5-13.3 s against 11.5-13.9 s; NativeAOT-LLVM
+  5.5-6.3 s, 322.2 MB). The wider size steps above 128 bytes only for a program that constructs 1,000 types or more
+  (Rt.WideSizes, a constant written at the end of the build as rt.single_threaded is, its dead branches removed): a
+  small program rounds to 4 bytes in two instructions and has no RoundSmall. Round 2's second entries (AllocObjectC,
+  FreeObjectC, sizes rounded at compile time: 431 bytes) taken out; the fast paths call RoundSmall only above 128
+  bytes; blocks cleared from their end down before the header is written. micro --baseline 1.71x/1.75x against
+  main's 1.78x/1.75x; bench 0.95x/0.97x against 0.97x/0.94x, 16.0 MB. Suite 195/195 checked, as shipped 194/195:
+  085 once, where .NET's own run (the expected output) had left 96 objects uncollected under load (cs2wasm's
+  "gone" is right; 400 of 400 loaded runs).
 - 2026-11-21, stream D done: proof 5 met in the browser. `node tools/proof5.mjs toolchain` (cs2wasm without threads,
   Godot's source generators compiled in, their sources fetched into the cache at stock commit ed1daf0bf; 55.2 MB, 14
   min), `web`, `check`: the game built in headless Chrome in 220.9 s (18.2 MB downloaded, 2,160 MB of memory at the
