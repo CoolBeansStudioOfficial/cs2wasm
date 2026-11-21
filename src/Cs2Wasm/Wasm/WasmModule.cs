@@ -294,6 +294,7 @@ internal sealed class WasmModule
         }
         else if (Canon != null) FloatStores.Run(Functions, Canon);
 
+        if (optimize && Environment.GetEnvironmentVariable("CS2WASM_NO_FINAL_TIDY") != "1") foreach (var f in Functions) if (!f.IsImport && f.ForwardTo == null) Peephole.FinalTidy(f);
         // (a frame is taken, checked against the stack's end and cleared by one function: Frames.cs)
         if (StackPointer != null && StackLo != null) Frames.Run(this, StackPointer, StackLo);
         // Which functions are live: exported, in the table, or called from a live function.

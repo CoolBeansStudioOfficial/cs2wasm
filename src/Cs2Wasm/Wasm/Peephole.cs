@@ -133,6 +133,29 @@ static class Peephole
         f.Body = outList;
     }
 
+    /// <summary>The last tidying, on the final bodies (WasmModule, before frames are taken): `i32.const 0 ; i32.ne`
+    /// before an `if` or a `br_if`, which test for non-zero themselves; `local.set x ; local.get x` that the passes
+    /// after Run left; a `return` that is the body's last instruction, where the function's end returns the same
+    /// values. Each is fewer bytes and the same meaning.</summary>
+    public static void FinalTidy(WasmFunction f)
+    {
+        var b = f.Body;
+        var o = new List<Instr>(b.Count);
+        foreach (var ins in b)
+        {
+            if (ins.Op is Op.If or Op.BrIf && o.Count >= 2 && o[^1].Op == Op.I32Ne && o[^2].Op == Op.I32Const && o[^2].Imm == 0 && o[^2].Ref == null)
+            {
+                o.RemoveRange(o.Count - 2, 2);
+                o.Add(ins);
+                continue;
+            }
+            if (ins.Op == Op.LocalGet && o.Count > 0 && o[^1].Op == Op.LocalSet && o[^1].Imm == ins.Imm) { o[^1] = o[^1] with { Op = Op.LocalTee }; continue; }
+            o.Add(ins);
+        }
+        if (o.Count > 0 && o[^1].Op == Op.Return) o.RemoveAt(o.Count - 1);
+        f.Body = o;
+    }
+
     /// <summary>`br 0` as the last instruction of a block or an if (an inlined body's return): the branch goes to where
     /// the code falls through anyway. (Not a loop's: there `br 0` goes back to its start.)</summary>
     static void BranchesToOwnEnd(List<Instr> b)
