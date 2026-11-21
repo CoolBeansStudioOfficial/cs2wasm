@@ -5,7 +5,13 @@ namespace Cs2Wasm.Wasm;
 /// <summary>
 /// Functions whose bodies differ only in some i32 constants (the type ids, static addresses and table indices of a
 /// generic method's instantiations over reference types) and in which member of such a group they call: one body for
-/// the group, the differing constants its last parameters. (Step one: the measurement, CS2WASM_SHARE_STATS=1.)
+/// the group, the differing constants its last parameters; the members become stubs that pass theirs. Traces stay
+/// exact: a group of one frame name keeps it on the shared body (the stubs are hidden, and direct calls go to the
+/// shared body); a group whose names differ (a second pass, over what the first left) keeps each member as its frame,
+/// a stub every call goes through, and the shared body lends its place (lines, inlined calls) to the stub's frame
+/// (cs2wasm.frames lists such bodies; host/engine.mjs). Positions in the library's files are not compared: a trace
+/// shows no lines there. CS2WASM_SHARE=0 turns it off, CS2WASM_SHARE_LEND=0 the second pass, CS2WASM_SHARE_STATS=1
+/// prints what is shared.
 /// </summary>
 static class ShareConstants
 {

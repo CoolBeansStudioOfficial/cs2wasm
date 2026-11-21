@@ -295,7 +295,7 @@ internal sealed class WasmModule
             if (Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1") ShareConstants.Stats(Functions, ComputeMayThrow(), PosShown, Environment.GetEnvironmentVariable("CS2WASM_SHARE_LEND") == "1");
             // (bodies that differ only in constants and in which of such bodies they call: one, the constants its last
             // parameters, ShareConstants.cs)
-            if (Environment.GetEnvironmentVariable("CS2WASM_SHARE") == "1")
+            if (Environment.GetEnvironmentVariable("CS2WASM_SHARE") != "0")
             {
                 // (first the groups of one frame name; then, over what is left, those whose names differ: their members
                 // stay frames, which would keep a group of one name from going to its shared body directly)
