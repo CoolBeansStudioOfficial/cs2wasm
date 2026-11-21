@@ -86,6 +86,9 @@ internal sealed class WasmModule
     /// <summary>Type-check every function (Validator) in Encode: a checked build (CompileOptions.Checked) and
     /// CS2WASM_VALIDATE=1. The problems found are the build's errors (ValidationProblems).</summary>
     public bool ValidateAlways;
+    /// <summary>Whether a trace shows the line of a source position (the program's own files; .NET shows none for the
+    /// library's frames). Null: every position counts.</summary>
+    public Func<int, bool>? PosShown;
     public readonly List<string> ValidationProblems = [];
 
     void Validate(string when)
@@ -289,6 +292,14 @@ internal sealed class WasmModule
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_NORETURN") != "1") NoReturn.Run(Functions);
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
+            if (Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1") ShareConstants.Stats(Functions, ComputeMayThrow(), PosShown);
+            // (bodies that differ only in constants and in which of such bodies they call: one, the constants its last
+            // parameters, ShareConstants.cs)
+            if (Environment.GetEnvironmentVariable("CS2WASM_SHARE") == "1")
+            {
+                int n = ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, (name, t) => AddFunction(name, t));
+                if (Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1") Console.Error.WriteLine($"share: {n} functions now call a shared body");
+            }
             AfterOptimize?.Invoke(Functions.Where(f => !f.IsImport));
             if (validate) Validate("after optimization");
         }
