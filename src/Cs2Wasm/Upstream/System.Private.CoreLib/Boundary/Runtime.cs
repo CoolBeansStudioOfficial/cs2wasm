@@ -1038,12 +1038,15 @@ namespace Cs2Wasm.Runtime
             t_cached = 0;
         }
 
-        /// <summary>Grows the memory by at least need bytes: by an eighth of its size, 16 MiB at least, when the maximum
-        /// allows (growing a shared memory is slow; growing it by a page at a time, for every refill, slower still).</summary>
+        /// <summary>Grows the memory by at least need bytes: by 16 MiB (more if needed), and a shared memory (a program
+        /// with threads) by an eighth of its size, 16 MiB at least, when the maximum allows (growing a shared memory is
+        /// slow; growing it by a page at a time, for every refill, slower still). A memory that is not shared grows in
+        /// about 0.2 ms at any size in V8: what an eighth saves there is a few calls, and what it costs is up to an eighth
+        /// of the memory committed and never used (the self-hosted compiler: 33 MB at its last growth).</summary>
         static void GrowFor(int need)
         {
             int pages = (need + 65535) / 65536;
-            int more = Math.Max(pages, Math.Max(Mem.Size() / 8, 256));
+            int more = Math.Max(pages, SingleThreaded() ? 256 : Math.Max(Mem.Size() / 8, 256));
             if (Mem.Grow(more) < 0 && Mem.Grow(pages) < 0) ThrowHelpers.OutOfMemory();
             // (with room again: the exception a later failure throws is made now, while it can be)
             s_end = Mem.Size() * 65536;
