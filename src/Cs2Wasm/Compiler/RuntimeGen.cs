@@ -594,7 +594,7 @@ sealed partial class RuntimeGen
                     else if (Types.IsStruct(t) && D.Types.LayoutOf(t).HasRefs) { e.Get(0); e.I32(off); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(t)); }
                 }
             }
-            if (free) { e.Get(0); e.I32(disp.Size); e.Call(rt.Free); }
+            if (free) { e.Get(0); e.I32(disp.AllocSize); e.Call(rt.Free); }
             return;
         }
         var type = D.TypeById[id];

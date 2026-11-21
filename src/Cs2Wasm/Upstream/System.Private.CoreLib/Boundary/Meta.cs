@@ -90,19 +90,26 @@ namespace Cs2Wasm.Runtime
             if (name == null) return null;
             int t = Rt.FrameMethods();
             if (t == 0) return null;
-            int n = I(t, 0), names = I(t, 1);
-            for (int i = 0; i < n; i++)
+            // (by the prefix of a group of names, then the rest of each of its names)
+            int groups = I(t, 0), names = I(t, 1), entries = 2 + 3 * groups;
+            for (int g = 0; g < groups; g++)
             {
-                if (Utf8Equals(names + I(t, 2 + 2 * i), name)) return MethodOfEntry(I(t, 3 + 2 * i));
+                int prefix = names + I(t, 2 + 3 * g), plen = I(prefix, 0);
+                if (plen > name.Length || !Utf8At(prefix, name, 0)) continue;
+                for (int i = I(t, 3 + 3 * g), end = i + I(t, 4 + 3 * g); i < end; i++)
+                {
+                    int rest = names + I(t, entries + 2 * i);
+                    if (plen + I(rest, 0) == name.Length && Utf8At(rest, name, plen)) return MethodOfEntry(I(t, entries + 2 * i + 1));
+                }
             }
             return null;
         }
 
-        /// <summary>Whether a name of the table ([UTF-16 length, byte length, UTF-8 bytes]) is the string.</summary>
-        static bool Utf8Equals(int at, string s)
+        /// <summary>Whether a name of the table ([UTF-16 length, byte length, UTF-8 bytes]) is the string's chars from
+        /// `start` on (as many as the name has; the caller knows there are that many).</summary>
+        static bool Utf8At(int at, string s, int start)
         {
-            if (I(at, 0) != s.Length) return false;
-            int p = at + 8, end = p + I(at, 1), k = 0;
+            int p = at + 8, end = p + I(at, 1), k = start;
             while (p < end)
             {
                 int b = Mem.LoadU8(p), cp, extra;
@@ -118,7 +125,7 @@ namespace Cs2Wasm.Runtime
                 }
                 else if (s[k++] != cp) return false;
             }
-            return k == s.Length;
+            return true;
         }
 
         /// <summary>The method a throw's note names (Exception._throwSite), from Rt.ThrowSites.</summary>
