@@ -2757,8 +2757,14 @@ namespace Cs2Wasm.Runtime
             // or a member's that holds no linked reference: `field = null` over null). (Under the lock, each such
             // store of twenty-four parsing threads stopped the rest: of a million stores that took it, 991,000
             // were a null into a member's field.)
-            // (threads: also a pinned container's, which never joins: GroupLocks.cs, PinnedPlain)
-            if (val == 0 || !CanLink(val, container) || ThreadMode() && PinnedPlain(container))
+            // (threads: nor into a pinned container, which never joins: GroupLocks.cs, PinnedPlain)
+            if (ThreadMode() && val != 0 && PinnedPlain(container))
+            {
+                int ip = SlotIndex(container, slot);
+                t_prevSlot = slot; t_prevBits = slot != 0 && ip >= 0 ? 0 : -1;
+                return val;
+            }
+            if (val == 0 || !CanLink(val, container))
             {
                 int i0 = SlotIndex(container, slot), cw = Mem.LoadI32(container);
                 if (i0 < 0 || cw > 0) { OpStat(1); t_prevSlot = slot; t_prevBits = slot != 0 && i0 >= 0 ? 0 : -1; return val; }
@@ -2777,9 +2783,9 @@ namespace Cs2Wasm.Runtime
             int outer = s_storeSlot;
             s_storeSlot = slot;
             int r = val;
-            bool over = ThreadMode() && t_linkOver != 0;
-            if (ThreadMode()) t_linkOver = 0;
-            if (val != 0 && !over)
+            // (threads: a value LinkLock left out is linked to nothing, GroupLocks.cs)
+            if (ThreadMode() && t_linkOver != 0) { t_linkOver = 0; val = 0; }
+            if (val != 0)
             {
                 // (the usual case: both are members of one arena already, which is not being destroyed or merged)
                 int ar = Mem.LoadI32(container) < -1 && Mem.LoadI32(val) < -1 ? PL(container, 16) : 0;
@@ -2966,7 +2972,8 @@ namespace Cs2Wasm.Runtime
             OpStat(7);
             if (bits == 0) { OpStat(8); Release(Borrow<object>(old)); return; }
             // (never linked: a plain counted reference, see ArenaLink)
-            if (!CanLink(old, container) || ThreadMode() && PinnedPlain(container)) { OpStat(8); Release(Borrow<object>(old)); return; }
+            if (!CanLink(old, container)) { OpStat(8); Release(Borrow<object>(old)); return; }
+            if (ThreadMode() && PinnedPlain(container)) { Release(Borrow<object>(old)); return; }
             int mk = -1;
             if (!ThreadMode()) RuntimeLock();
             else
