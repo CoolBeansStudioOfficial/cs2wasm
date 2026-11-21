@@ -1,9 +1,17 @@
 # Proof 5: hello2d in C#, built in the browser, played in the engine
 
-SPEC section 10, proof 5. **Met for the game compiled by the .NET-hosted cs2wasmc and played in a browser on the stock
-Godot 4.7.2 web template (2026-11-19); not met for the build in the browser.** What is here, what was run, and what
-stops the rest (measured 2026-11-17 and, rows marked 11-19, 2026-11-19; Windows 11, 24 cores, Node 24.19, Chrome 157
-headless):
+SPEC section 10, proof 5. **Met (2026-11-21): the game's C# sources built in a browser page by the self-hosted
+compiler, played in stock Godot 4.7.2's web template, its engine-call log equal to stock Godot .NET's.** Also met since
+2026-11-19 for the game compiled by the .NET-hosted cs2wasmc. Windows 11, 24 cores, Node 24.19, Chrome 157 headless;
+rows marked 11-19 and 11-17 are from those days.
+
+The build in the browser, three commands (the first two only when the compiler or the game's project changed):
+
+```
+node tools/proof5.mjs toolchain     # the self-hosted compiler the page runs, Godot's source generators in it: 14 min
+node tools/proof5.mjs web           # what the page serves: tests/out/proof5/site
+node tools/proof5.mjs check         # headless Chrome: build the game in the page, play the fixed input, compare
+```
 
 | Step | Command | Result |
 |---|---|---|
@@ -11,8 +19,10 @@ headless):
 | Compiled by the .NET-hosted cs2wasmc, on a replayed engine | `node tools/proof5.mjs stub` (also in `dotnet run --project tests/Cs2Wasm.Tests`: `godot_proof5_hello2d`) | 11-19: 3,449,802 bytes; its 1,667 log lines equal the oracle's; with `--panic` its 1,669 too |
 | The same module played in the engine in a browser, **stock web template** | `node tools/proof5.mjs check --module tests/out/proof5/game-net.wasm` (`--panic`: with the key that throws) | 11-19: the engine says `v4.7.2.stable.official.ed1daf0bf`; 1,667 log lines (1,666 engine calls) equal the oracle's; with `--panic` 1,669 equal, the exception's stack in the page's output. Also in the built-in browser pane of the Claude app (Chrome 156): `node tools/proof5.mjs serve`, `?module=prebuilt.wasm&drive=1`, the page's own comparison "the engine calls equal stock Godot .NET's" |
 | ... and by the keyboard | `... check --module tests/out/proof5/game-net.wasm --play shot.png`; or `serve` and `?module=prebuilt.wasm` in a browser | 11-19: right arrow for 1 s then Space: the HUD goes from `jumps: 0 position: (576, 548)` to `jumps: 1 position: (901, 548)` (real time: the position depends on the key's timing) |
-| A console program built in the browser by the self-hosted compiler | `node tools/proof5.mjs check --game hello` | 27,805 bytes in 23 to 30 s (five runs), 17,139,958 bytes downloaded; the same bytes as the self-hosted compiler under Node writes; run in the page it writes `42` |
-| **The game built in the browser** | `node tools/proof5.mjs check` | **fails** 3 s in: the self-hosted compiler traps (`repro/SelfHostRefSafety.cs`) |
+| The toolchain | `node tools/proof5.mjs toolchain` | 55,170,538 bytes (9,290,612 Brotli) in 14.0 min: cs2wasm without threads (as NativeAOT-LLVM's browser-wasm build, the page tells it one core either way), Godot's source generators compiled in (SPEC 7.1), their sources fetched into the cache at the stock commit GodotSharp's come from |
+| The game built by the toolchain under Node, on a replayed engine | `node check/selfgame.mjs` then `node tools/proof5.mjs stub --module tests/out/proof5/game-self.wasm` | 4,525,251 bytes in 292 s (one core); its 1,667 log lines equal the oracle's; with `--panic` 1,669 |
+| **The game built in the browser** | `node tools/proof5.mjs check` (`--panic`) | **passes**: 4,525,050 bytes built in the page in 220.9 s (220.4 s of it the build; 18,190,769 bytes downloaded, the compiler's memory 2,160 MB at the end), played in the stock web template: 1,667 log lines equal the oracle's; with `--panic` 1,669 |
+| A console program built in the browser by the self-hosted compiler | `node tools/proof5.mjs check --game hello` | 11-17: 27,805 bytes in 23 to 30 s (five runs), 17,139,958 bytes downloaded; the same bytes as the self-hosted compiler under Node writes; run in the page it writes `42` |
 | The script throws (key P) | `node tools/proof5.mjs stub --panic` | 11-19: passes (it failed on 2026-11-17: `GD.PushError` threw in the module, `repro/pusherror`) |
 
 `node tools/proof5.mjs web` makes what the page serves (`tests/out/proof5/site`) and must run before `check`
@@ -75,7 +85,7 @@ thread that wrote them); `run-module.mjs` and `module-worker.mjs` (a module with
 pool of workers made beforehand for its threads: a blocked worker cannot start another). Not there: HTTP
 (`cs2wasm.http_*` throws), a cache of the downloads between visits, writes from worker threads.
 
-Measured for `repro/Hello.cs` (`check --game hello`): the browser downloads **17,139,958 bytes** to build
+Measured 2026-11-17 for `repro/Hello.cs` (`check --game hello`): the browser downloads **17,139,958 bytes** to build
 (`cs2wasm.wasm` 8,243,308 and `library.pack` 8,896,298, both Brotli quality 9; 59,964,726 and 85,215,870 bytes
 unpacked; plus the program's sources). `library.pack` is the 4,896 files the self-hosted compiler opened when it built
 a program that references GodotSharp: 72.2 MB of sources from the cache (the .NET library's, 3,633 files, 46.6 MB;
@@ -84,30 +94,44 @@ GodotSharp's, 1,086 files, 25.6 MB), 6.5 MB of reference assemblies, GodotSharp.
 0.2 to 0.3 s; the browser reports 0.0 s to compile the compiler's module, which it compiles lazily). The compiler's
 memory at the end: 395 MB (444 MB told four cores). The game's own sources are 28,897 bytes in 15 files.
 
-**The game's build time in the browser is unmeasured: the build does not complete.** The nearest measurements, under
-Node, of the self-hosted compiler on a program that uses GodotSharp (`repro/pusherror`, one script, no generated
-code; and `repro/Hello.cs` with `-r GodotSharp.dll`): 355 s and 380 s on one core, 2.6 GiB of memory at the end
-(41,536 pages). The .NET-hosted compiler builds the game in 32 s.
+The game (2026-11-21, `check`): the browser downloads **18,190,769 bytes** to build (`cs2wasm.wasm` 9,290,612 and
+`library.pack` 8,896,298 Brotli; 55,170,538 and 85,215,870 bytes unpacked; the game's sources 3,859 bytes in 3 files:
+the two scripts and `sources.json`). The page gives the toolchain the .NET-hosted compiler's arguments (`-r
+GodotSharp.dll -a Godot.SourceGenerators.dll --property GodotProjectDir=/game/ ...`): the generators run in the page,
+so an edit to a script's members is followed. The build itself takes 220.4 s on one core (Node: 292 s; the .NET-hosted
+compiler: 32 s; nearly all of it is GodotSharp's 1,086 source files, which every program that references it compiles);
+the compiler's memory at the end is 2,160 MB of the 4 GiB its module may have. The module differs from the one the
+same toolchain writes under Node (`game-self.wasm`) in the line table (the page's paths are `/game/...`) and, with the
+paths mapped to the page's (`--pathmap`, `GodotProjectDir=/game/`), still in 67 bytes of its data section and the code
+that addresses it: not looked into (the library's paths differ too, `/cache` and `/ref` in the page). Both modules'
+logs equal the oracle's.
 
-## What stops proof 5
+## What stopped proof 5, and what did it
 
-1. **The self-hosted compiler traps on the code Godot's generators write for every script.** A call that passes a ref
-   struct and has an `out` argument (`base.InvokeGodotClassMethod(method, args, out ret)`) ends the build with
-   `RuntimeError: operation does not support unaligned accesses` in a worker thread, in
-   `RefSafetyAnalysis.EscapeValue.Deconstruct` (called from `<CheckInvocationArgMixingWithUpdatedRules>g__inferDeclarationExpressionValEscape`,
-   `CheckInvocationArgMixing`, `VisitArguments`, `VisitCall`). Under Node and in the browser alike.
-   `repro/SelfHostRefSafety.cs` is 30 lines without Godot. No change of the game's code avoids it.
-2. **The self-hosted compiler cannot run Godot's source generators** (`-a Godot.SourceGenerators.dll` needs an
-   assembly loader; SPEC 7.1 has such code compiled into the toolchain module). Here the generators' output for the
-   two scripts is written by the .NET-hosted compiler (`CS2WASM_GENERATED`) and served as sources, so an edit in the
-   browser that changes a script's members would not be followed.
-3. **The self-hosted compiler at `tests/out/self2` has 1 GiB of memory at most**, and a program with GodotSharp ends
-   with `OutOfMemoryException` there. `check/raise-memory.mjs` writes a copy with the limit in its memory import
-   raised to 4 GiB (the site serves that copy); `cs2wasmc --max-pages` at the toolchain's build is the proper way.
-4. **With more than one core the self-hosted compiler did not end** on a program with GodotSharp under Node: told 4
-   cores (limit raised), 163 s of processor time in 9.5 minutes and no output after "program diagnostics"; told 24,
-   831 s of processor time in 6 minutes, no end. Told one core it ends. The page tells it one.
-5. **Solved 2026-11-19: no stock web export template on this machine.** The `web_*.zip` files in
+Tried again 2026-11-20 and 21 with that day's self-hosted compiler:
+
+1. **The trap in Roslyn's ref-safety analysis** (`repro/SelfHostRefSafety.cs`, 2026-11-17): gone; the repro builds and
+   prints `True`.
+2. **Godot's source generators in the toolchain**: compiled in (`tools/selfhost.mjs --generators`, SPEC 7.1) with what
+   Godot's build writes beside them (`toolchain/Common.Constants.cs`); `node tools/proof5.mjs toolchain` does both.
+3. **1 GiB of memory**: `tools/selfhost.mjs` builds every toolchain with `--max-pages 65536` (4 GiB); the site's copy
+   needs no raising any more (`check/raise-memory.mjs` stays for older modules).
+4. **More than one core**: the threaded toolchain (with stream C's per-group locks) now ends on `Hello.cs -r
+   GodotSharp.dll` told one core (758 s, where it spun for 5.5 hours on 2026-11-20) and told four (624 s). The page
+   runs the toolchain without threads, as NativeAOT-LLVM's browser-wasm build has none.
+5. **The self-hosted compiler freed memory still in use** on every program with `-r GodotSharp.dll` (found 2026-11-20:
+   a cycle of `SyntaxList` parents, then `SimpleSyntaxReference` where a syntax node was due: type confusion).
+   `repro/RoslynGodotProbe.cs` (Roslyn compiled `--checked` by cs2wasmc, binding every body of GodotSharp's sources)
+   showed it in 16 s, where the toolchain takes 15 minutes to build. Two causes, both fixed on main (2026-11-21), each
+   with a conformance test:
+   - a temporary that borrows from a field shared its local with counted temporaries, and the handler for an
+     exception on its way out released the borrowed value as a counted one (`Delegate.DelegateBinding.Invoke` in test
+     057; test 179);
+   - `MemberwiseClone` of an object of a cycle-capable type linked each of its slots twice, so each store's count was
+     given back twice (Roslyn's `BoundExpression.WithSuppression`; test 180).
+   Checked builds now trap, with the whole stack, at a member released with no outside count and at a store of a value
+   with none: the two ways a member's count went to the immortal mark.
+6. **Solved 2026-11-19: no stock web export template on this machine.** The `web_*.zip` files in
    `%APPDATA%/Godot/export_templates/4.7.2.stable.mono` were copies of the macOS, Android and iOS archives; they are
    replaced by the eight `templates/web_*.zip` of the official `Godot_v4.7.2-stable_export_templates.tpz`
    (github.com/godotengine/godot, release 4.7.2-stable), taken out of it by HTTP range requests and checked against
@@ -117,12 +141,14 @@ code; and `repro/Hello.cs` with `-r GodotSharp.dll`): 355 s and 380 s on one cor
    Still so: the stock editor with .NET refuses a web export ("Exporting to Web is currently not supported in Godot 4
    when using C#/.NET"), so `web` has it write the pack (`--export-pack`) and puts the template's files beside it
    (`CS2WASM_GODOT_WEB_TEMPLATE` names another archive).
-6. **Mostly solved by 2026-11-19: `GD.PushError` and `StackTrace`.** `stub --panic` and `check --panic` pass, and
-   `repro/StackTraceFrames.cs` builds and runs (it needs `[UnmanagedCallersOnly(EntryPoint = "main")]` on `Main` to
-   run under `host/run.mjs`). Still different from .NET: it prints `True`, `True`, an empty line, `True`, where .NET
-   prints `A` on the third: `StackFrame.GetMethod()` is null in the module. The game's log does not show it
-   (`ExceptionUtils` reads the file and line), but it is a behaviour difference to fix (library or runtime side, not
-   this proof's files).
+7. **`GD.PushError` and `StackTrace`** (2026-11-19): `stub --panic` and `check --panic` pass; `StackFrame.GetMethod()`
+   was null in a module then (stream E's).
+
+Still open: the self-hosted compiler's output on a program with GodotSharp is not the same bytes from one toolchain
+build to another (no threads, and threaded told one core: data sections differ) nor across core counts (threaded, one
+core against four: code and data differ by a byte); for `Console.WriteLine(42)` it was. The build in the page takes
+3.7 minutes, nearly all of it compiling GodotSharp's sources again: the self-hosted compiler's speed (FINISH.md stream
+A) and a compiled library the page could keep between builds are what would bring it down.
 
 Also found: an export leaves out of a scene a property that neither the node's class nor the script standing there
 declares (the scene's `Speed = 320.0` was gone from the pack while `metadata/...` stayed), hence the metadata.
@@ -131,10 +157,11 @@ declares (the scene's `Speed = 320.0` was gone from the pack while `metadata/...
 
 - `Character.cs`, `Hud.cs`, `main.tscn`, `project.godot`, `driver.gd`, `Proof5.csproj`, `Oracle/`: the Godot project.
 - `oracle-calls.txt`, `oracle-calls-panic.txt`: stock Godot's logs.
-- `check/`: the steps of `tools/proof5.mjs` (`stub.mjs`, `web.mjs`, `browser.mjs`), the self-hosted compiler under
+- `check/`: the steps of `tools/proof5.mjs` (`toolchain.mjs`, `stub.mjs`, `web.mjs`, `browser.mjs`), the self-hosted compiler under
   Node from any shell (`self.mjs`, with `--trace-files`), `raise-memory.mjs`.
 - `web/`: the page.
-- `repro/`: the gaps' programs. `repro/Hello.cs` is the smallest program, for timing.
+- `repro/`: the gaps' programs. `repro/Hello.cs` is the smallest program, for timing; `repro/RoslynGodotProbe.cs` binds GodotSharp's sources with Roslyn compiled by cs2wasm.
+- `toolchain/Common.Constants.cs`: what Godot's build writes beside its source generators.
 
-Environment: `CS2WASM_GODOT_EDITOR`, `CS2WASM_GODOT_WEB_TEMPLATE`, `CS2WASM_CACHE`, `CS2WASM_SELF`,
+Environment: `CS2WASM_GODOT_EDITOR`, `CS2WASM_GODOT_WEB_TEMPLATE`, `CS2WASM_GODOT_GENERATORS`, `CS2WASM_CACHE`, `CS2WASM_SELF`,
 `CS2WASM_REFERENCE_DIR`, `CS2WASM_BROWSER`.

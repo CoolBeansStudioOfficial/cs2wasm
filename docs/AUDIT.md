@@ -250,7 +250,7 @@ control-flow graph are never called (`tests/Cs2Wasm.Tests/ApiChecks.cs:390-479`)
 | A5.14 | Export parameter types unchecked; diagnostics without locations | `Driver.cs:1344-1346`; CW0101 throw sites that pass no location |
 | A5.15 | Hand-written code beyond the runtime boundary | 63 modified Mono runtime files; 18 `edit` lines on non-boundary upstream files (`CoreLib manifest.txt:40-56`); `ManagedZLib.cs`, `EnumFormat.cs`, `TextScan.cs` |
 | A5.16 | No Wasmtime path; no check that self-hosted output equals .NET-hosted output | host needs JS imports and workers; `ApiChecks.cs:101` compares same-host only |
-| A5.17 | Proof 4 and proof 5 not met | self-host: traps, 1 GiB, hang on more than one core (`proof5_hello2d/README.md`, "What stops proof 5"); browser build of the game fails; hello world 23-30 s in the browser. Proof 5's engine half met 2026-11-19 (step 12.5 status) |
+| A5.17 | Proof 4 and proof 5 not met | self-host: traps, 1 GiB, hang on more than one core (`proof5_hello2d/README.md`, "What stops proof 5"); browser build of the game fails; hello world 23-30 s in the browser. Proof 5's engine half met 2026-11-19 (step 12.5 status); **2026-11-21: proof 5 met in the browser** (stream D below): the game built in headless Chrome by the self-hosted compiler, its log equal to the oracle's; the threaded toolchain ends on GodotSharp on 1 and 4 cores |
 
 ### A6. Structure
 
@@ -635,6 +635,29 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   (2) `StackFrame.GetMethod()` is null in a module (`repro/StackTraceFrames.cs`: .NET prints `A`), a behaviour
   difference the game's log does not show (closed 2026-11-20, stream E below); (3) a host without JavaScript
   (Wasmtime) for the `godot.*` imports.
+
+- **Stream D, proof 5 in the browser (2026-11-21).** Met: `node tools/proof5.mjs toolchain` (new: cs2wasm built by
+  `tools/selfhost.mjs` without threads, Godot's source generators compiled in, SPEC 7.1; their sources fetched into the
+  cache's sparse checkout at stock commit ed1daf0bf, and `toolchain/Common.Constants.cs` for what Godot's build writes
+  beside them; 55.2 MB, 14 min), `web`, `check`: built in headless Chrome 157 in 220.9 s on one core (Node 292 s;
+  .NET-hosted 32 s), 18.2 MB downloaded, 2,160 MB of memory at the end; played in the stock 4.7.2 web template, 1,667
+  log lines equal to stock Godot .NET's, 1,669 with `--panic`. The page passes the .NET-hosted compiler's arguments
+  (`-a Godot.SourceGenerators.dll`): no pregenerated sources. What stopped it (tried 2026-11-20 with that day's
+  compiler): the ref-safety trap of 11-17 was gone; every program with `-r GodotSharp.dll` hit a premature free
+  (a cycle of SyntaxList parents, SimpleSyntaxReference where a node was due). `repro/RoslynGodotProbe.cs` (Roslyn
+  compiled `--checked` by cs2wasmc, binding all of GodotSharp's bodies) reproduced it in 16 s against a 15-minute
+  toolchain build. Checked-only instrumentation named a BoundLambda freed while its BoundBlock still named it as
+  owner, the block's count word -1 (the immortal mark: one release too many). Two causes, on main as ae57217:
+  (1) a field borrow's temporary took its local from the pool counted temporaries use, and the exception handler,
+  which releases every slot as its own kind, released the borrowed value (test 057's DelegateBinding.Invoke; test
+  179); (2) MemberwiseClone of a cycle-capable object linked each slot twice: the copy's join queued it for
+  ArenaLinkJoined after ArenaLinkContents had linked its slots (BoundExpression.WithSuppression; test 180). Checked
+  builds trap at a member released with no outside count and at a store of a value with none. Blocker 2 of 11-17
+  (more cores never ending): the threaded toolchain with stream C's per-group locks ends on Hello -r GodotSharp told
+  one core (758 s; it spun 5.5 hours on 11-20) and four (624 s). Open: the self-hosted output on a GodotSharp program
+  is not the same bytes across toolchain builds (no threads against threaded, one core: data) or core counts (one
+  against four: code and data, a byte); the page's build against Node's with paths mapped: 67 bytes of data, not
+  looked into. host/README.md (new): the hosts and the embedders' rule, never start a thread from a busy worker.
 
 - **Stream I, value sources for the arenas (2026-11-21).** `Sharing.SiteTypeIds` on by default in every program: a
   class field's targets in the cycle graph are the types its values come from (followed through parameters,

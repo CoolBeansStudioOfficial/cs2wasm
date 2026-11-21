@@ -2,6 +2,9 @@
 //   node tools/proof5.mjs oracle [dir]       the game under stock Godot 4.7.2 .NET on the desktop: its engine-call logs
 //                                            (oracle-calls.txt and oracle-calls-panic.txt, default in
 //                                            tests/Godot/proof5_hello2d)
+//   node tools/proof5.mjs toolchain          the self-hosted compiler the page runs: cs2wasm compiled by the .NET-hosted
+//                                            cs2wasmc, without threads, with Godot's source generators compiled in
+//                                            (tests/out/proof5/toolchain.wasm; 15 to 30 min)
 //   node tools/proof5.mjs stub               the game compiled by the .NET-hosted cs2wasmc, run on the Node stub
 //                                            engine replaying the oracle's answers; the calls must be the oracle's
 //   node tools/proof5.mjs web                the web variant of the Godot project, exported with the stock templates,
@@ -31,6 +34,8 @@ async function main() {
         { env: { ...process.env, CS2WASM_CALL_LOG: out, CS2WASM_GODOT_API: api } });
       console.log(`oracle: stock Godot exited ${status}; log at ${out}`);
     }
+  } else if (step === 'toolchain') {
+    process.exit(await (await import('../tests/Godot/proof5_hello2d/check/toolchain.mjs')).toolchain(rest));
   } else if (step === 'stub') {
     process.exit(await (await import('../tests/Godot/proof5_hello2d/check/stub.mjs')).stub(rest));
   } else if (step === 'web') {

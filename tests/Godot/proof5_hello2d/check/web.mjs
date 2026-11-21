@@ -129,8 +129,8 @@ progressive_web_app/enabled=false
 
 /** The files the self-hosted compiler asks its host for when a program references GodotSharp (a run under Node,
  * traced). The program is the smallest one (repro/Hello.cs): with the reference the compiler loads GodotSharp's
- * sources and asks about every library file it may read. (The game itself would be the program to trace, but the
- * self-hosted compiler does not get through it yet: see the README.) Also leaves hello-self.wasm, the same program
+ * sources and asks about every library file it may read; the game's build reads the same files (its generators read
+ * none). Also leaves hello-self.wasm, the same program
  * built without the reference, to compare a build in the browser with. */
 function trace(file, compiler) {
   rmSync(file, { force: true });
