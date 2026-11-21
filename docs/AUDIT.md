@@ -139,6 +139,45 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
 (`Runtime.cs:412-414, 697`). The self-hosted compiler reaches the 1 GiB limit on a real input
 (`tests/Godot/proof5_hello2d/README.md:95-97`).
 
+**A3.5 Frame-time spikes against NativeAOT-LLVM: the check, and what it found (2026-11-20). [run]**
+- The check: `node tools/frames.mjs` (programs `tools/frames/Frames.cs`, NativeAOT side `tools/frames-naot-wasm`).
+  Five game-like frame loops, each its own Node process for each side, 1,000 warm-up frames then 6,000 timed
+  frames (Stopwatch inside the module); median, p99, p99.9, worst frame and peak memory, each the lowest over the
+  runs (default 3); checksums compared; exit 1 when a scene's worst frame or p99.9 is above NativeAOT's.
+  `--worst N` prints the slowest frames by number (what a frame number does is fixed: the tree's rebuild is every
+  500th, bigdrop's drop every 400th).
+- First result (3 runs, machine shared with other sessions), worst frame cs2wasm against NativeAOT:
+  churn 8.6 ms vs 23.1 ms, collections 0.31 vs 2.56, strings 0.15 vs 0.36, **tree 31.9 vs 4.3**, bigdrop 2.8 vs 17.5
+  (the drop of 150,000 acyclic objects with their arrays in one frame: the cascade free costs less than
+  NativeAOT's collections). Peak memory 16 MB against 59 to 71 MB everywhere but tree (32 MB).
+- **tree is the one that spikes, and not because of a cascade.** Its worst frames are the full rebuilds (every
+  500th): ~15 ms to build 19,531 entities and ~4 to 20 ms to free the old tree (bigger after 500 frames of moves).
+  NativeAOT builds the same tree in ~1 ms. `Entity` is cycle-capable even without its `Parent` field
+  (`Entity -> List<Entity> -> Entity[] -> Entity`), so every store of the build is an arena link (ArenaLink,
+  LinkMembers, ArenaJoin, ArenaMerge, ArenaArrayCopy on each list growth) and every member gets its 40-byte words:
+  without `Parent` the build is still 6 to 9 ms. Its median frame is 23x NativeAOT's for the same reason: the walk's
+  `foreach` over children counts each child from outside, and a child with an up-reference then holds its owner
+  (UpdateHold, TopHeld along the chain) and lets it go at the release.
+- Not a leak: memory grows between rebuilds because the moves enlarge the tree (reachable entities 76k, 136k, 226k
+  at 1,000, 3,000, 6,000 frames without the rebuild, memory 32, 48, 64 MB in step); a re-parent that sets `Parent`
+  before or after the `Add` frees the same.
+- The structural fix is the compiler's, not the runtime's: a tree whose nodes own their children lists must stop
+  being a run-time group while it is built and walked (7.E: a structure built new and attached whole; the walk's
+  loop variable a borrow of the list it iterates). That is stream A's work in Compiler/Arenas.cs; this check is
+  its measure.
+- churn's median frame is 3.4x NativeAOT's (0.28 vs 0.08 ms; p99 and beyond are better): speed, not spikes;
+  not looked into yet.
+- Done on the walk (same day): the `foreach` over `e.Children` retained the list and each child, and a member
+  counted from outside walks its owner chain (UpdateHold, TopHeld). The loop's element borrow was refused because the
+  recursive call's summary said it stores array elements: through the changed-list MoveNext call (only throws; now
+  marked as a throw path, its stores the throw helper's, checked against MoveNext's source), through Rt.OnThrow's trace
+  buffer and string (fresh memory: its element key left out, its fields kept), and through Rt.FreeObjectArena
+  (the allocator's, as Rt.FreeObject already was). The list is now held through the field's borrow placeholders, as
+  a temporary is. Median 0.76 to 0.14 ms; the rebuild spike stays (29.9 ms vs 3.8 ms on a quiet machine).
+- List.Add of an isolated value does not help here: array sites always count as general in Arenas.Analyze, and the
+  scene's children refer to their parent. Streams I and J take more types out of the cycle graph; tree is measured
+  again after they merge.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**

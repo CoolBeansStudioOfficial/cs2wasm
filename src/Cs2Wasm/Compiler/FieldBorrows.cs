@@ -189,6 +189,16 @@ internal sealed partial class Driver
     /// broken only by a store that runs while the borrowing local is live (section 4.1, retroactive owners). Taken out
     /// again once the borrows are decided.</summary>
     internal sealed class WriteMark(string key) { public readonly string Key = key; }
+
+    /// <summary>Right after a call that can only throw, by a path known at compile time (a List's MoveNext on a list
+    /// that was changed: EmitForEach): the stores the call can make are those of the function that throws, `Throws`.
+    /// A no-op instruction, taken out with the write marks.</summary>
+    internal sealed class ThrowPath(WasmFunction throws) { public readonly WasmFunction Throws = throws; }
+
+    /// <summary>The function whose stores the call at `i` can make: what it calls, or the throwing function of a call
+    /// marked ThrowPath.</summary>
+    internal static WasmFunction? StoresOf(List<Instr> b, int i) =>
+        b[i].Ref is not WasmFunction g ? null : i + 1 < b.Count && b[i + 1].Op == Op.Nop && b[i + 1].Ref is ThrowPath tp ? tp.Throws : g;
     readonly Dictionary<string, WriteMark> _writeMarks = [];
     readonly Dictionary<WasmFunction, HashSet<string>> _unplacedWrites = [];
 
@@ -206,7 +216,7 @@ internal sealed partial class Driver
         foreach (var f in Module.Functions)
         {
             if (f.IsImport) continue;
-            f.Body.RemoveAll(x => x.Op == Op.Nop && x.Ref is WriteMark);
+            f.Body.RemoveAll(x => x.Op == Op.Nop && x.Ref is WriteMark or ThrowPath);
             // (and the indirect calls' buckets: bodies that differ only there are the same code)
             var b = f.Body;
             for (int i = 0; i < b.Count; i++) if (b[i].Op == Op.CallIndirect && b[i].Imm2 != 0) b[i] = b[i] with { Imm2 = 0 };
@@ -280,7 +290,7 @@ internal sealed partial class Driver
             // (not a cycle link's call: it sits between an element store's address and the store itself)
             if (simple && at >= 0 && !(b[at].Ref is WasmFunction lf && (lf.Name.StartsWith("Cs2Wasm.Runtime.Rt.Arena") || lf.Name.StartsWith("arena.")))
                 && !UseCanFollow(b, at, local, def, Rt.Release)) return false;
-            if (s_borrowDebug) Console.Error.WriteLine($"  refused {fn.Name} local {local}: {k} stored by {what}");
+            if (s_borrowDebug) Console.Error.WriteLine($"  refused {fn.Name} local {local}: {k} stored by {what}{(at >= 0 && b[at].Ref is WasmFunction wg ? StoreChain(wg, k) : "")}");
             return true;
         }
         if (_unplacedWrites.TryGetValue(fn, out var u) && keys.Any(u.Contains)) return Why(-1, "the function (unplaced)", "");
@@ -293,10 +303,32 @@ internal sealed partial class Driver
                 if (ReferenceEquals(ins.Ref, ScopeEnd)) { if (ins.Imm == local) return false; }
                 else if (ins.Ref is WriteMark wm && Array.IndexOf(keys, wm.Key) >= 0) { if (Why(i, "the function itself", wm.Key)) return true; }
             }
-            else if (ins.Op == Op.Call && ins.Ref is WasmFunction g) { foreach (var k in keys) if (summary.Has(g, k)) { if (Why(i, "a call of " + g.Name, k)) return true; break; } }
+            else if (ins.Op == Op.Call && StoresOf(b, i) is { } g) { foreach (var k in keys) if (summary.Has(g, k)) { if (Why(i, "a call of " + g.Name, k)) return true; break; } }
             else if (ins.Op == Op.CallIndirect) { foreach (var k in keys) if (summary.HasIndirect(k, ins)) { if (Why(i, "an indirect call", k)) return true; break; } }
         }
         return false;
+    }
+
+    /// <summary>CS2WASM_BORROW=1 (diagnosis): the shortest chain of direct calls from the function to one that stores
+    /// the key itself, as the reason a borrow was refused.</summary>
+    string StoreChain(WasmFunction from, string key)
+    {
+        var parent = new Dictionary<WasmFunction, WasmFunction?> { [from] = null };
+        var work = new Queue<WasmFunction>(); work.Enqueue(from);
+        while (work.Count > 0)
+        {
+            var f = work.Dequeue();
+            if (FieldWrites.TryGetValue(f, out var w) && w.Contains(key))
+            {
+                var chain = new List<string>();
+                for (WasmFunction? x = f; x != null; x = parent[x]) chain.Add(x.Name);
+                chain.Reverse();
+                return "\n     chain: " + string.Join("\n       -> ", chain);
+            }
+            for (int i = 0; i < f.Body.Count; i++)
+                if (f.Body[i].Op == Op.Call && StoresOf(f.Body, i) is { } g && !StoreSummary.Internal(g) && !(key == ElementsKey && g.Name.StartsWith("Cs2Wasm.Runtime.Rt.OnThrow(", StringComparison.Ordinal)) && parent.TryAdd(g, f)) work.Enqueue(g);
+        }
+        return "\n     chain: (through an indirect call)";
     }
 
     /// <summary>Whether a read of the local can run after the instruction at `at`, in the local's scope (it began at
@@ -491,7 +523,7 @@ internal sealed partial class Driver
                     {
                         var ins = b[k];
                         if (ins.Op == Op.Nop) { if (ins.Ref is WriteMark wm && !ReferenceEquals(wm, ScopeEnd) && Array.IndexOf(live, wm.Key) >= 0) ok = false; }
-                        else if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != retain) { foreach (var key in tkeys!) if (summary!.Has(g, key)) { ok = false; break; } }
+                        else if (ins.Op == Op.Call && StoresOf(b, k) is { } g && g != retain) { foreach (var key in tkeys!) if (summary!.Has(g, key)) { ok = false; break; } }
                         else if (ins.Op == Op.CallIndirect) { foreach (var key in tkeys!) if (summary!.HasIndirect(key, ins)) { ok = false; break; } }
                     }
             }
@@ -661,6 +693,9 @@ internal sealed partial class Driver
     /// function in the table (one node stands for them).</summary>
     sealed class StoreSummary
     {
+        static readonly string[] s_internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.FreeObject(", "Cs2Wasm.Runtime.Rt.FreeObjectArena(", "Cs2Wasm.Runtime.Rt.FreeBlock(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks."];
+        public static bool Internal(WasmFunction f) => s_internals.Any(p => f.Name.StartsWith(p, StringComparison.Ordinal));
+
         readonly Dictionary<string, int> _key = [];
         readonly Dictionary<WasmFunction, int> _node = [];
         readonly ulong[][] _bits;
@@ -676,9 +711,8 @@ internal sealed partial class Driver
             // what writes only memory no program code can reach: the runtime's throw helpers (bounds, null and cast
             // checks: the exception they make), the allocator (fresh or freed blocks), the arenas' and the marks'
             // own tables (a finalizer a release runs still counts: it is compiled code the destroy path calls)
-            string[] internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.FreeObject(", "Cs2Wasm.Runtime.Rt.FreeBlock(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks."];
             var skip = new bool[n];
-            for (int i = 0; i < fns.Count; i++) skip[i] = internals.Any(p => fns[i].Name.StartsWith(p, StringComparison.Ordinal));
+            for (int i = 0; i < fns.Count; i++) skip[i] = Internal(fns[i]);
             var edges = new List<int>[n];
             for (int i = 0; i < n; i++) edges[i] = [];
             _bits = new ulong[n][];
@@ -686,9 +720,10 @@ internal sealed partial class Driver
             for (int i = 0; i < fns.Count; i++)
             {
                 var f = fns[i];
-                foreach (var ins in f.Body)
+                for (int j = 0; j < f.Body.Count; j++)
                 {
-                    if (ins.Op == Op.Call && ins.Ref is WasmFunction g && _node.TryGetValue(g, out int gi) && !skip[gi] && gi != i) edges[i].Add(gi);
+                    var ins = f.Body[j];
+                    if (ins.Op == Op.Call && StoresOf(f.Body, j) is { } g && _node.TryGetValue(g, out int gi) && !skip[gi] && gi != i) edges[i].Add(gi);
                     else if (ins.Op == Op.CallIndirect) edges[i].Add(ins.Imm2 > 0 && ins.Imm2 < d._bucketFns.Count ? table + (int)ins.Imm2 : table);
                     else if (ins.Op == Op.I32Const && ins.Ref is WasmFunction t && _node.TryGetValue(t, out int ti)) edges[table].Add(ti);
                 }
@@ -700,6 +735,29 @@ internal sealed partial class Driver
             for (int bk = 1; bk < d._bucketFns.Count; bk++)
                 foreach (var t in d.IndirectTargets(new Instr { Op = Op.CallIndirect, Imm2 = bk }))
                     if (_node.TryGetValue(t, out int ti)) edges[table + bk].Add(ti);
+            // A throw's trace (Rt.OnThrow): it writes the exception's fields, and elements only of the buffer and the
+            // string it makes, which nothing else refers to. So its elements key is left out: a borrow of an element
+            // across a call that may throw survives it (a function's walk of its list, calling itself), and one of
+            // the exception's trace fields does not. Its stores, with everything it calls, become its own.
+            if (_key.TryGetValue(ElementsKey, out int ek))
+                for (int i = 0; i < fns.Count; i++)
+                {
+                    if (!fns[i].Name.StartsWith("Cs2Wasm.Runtime.Rt.OnThrow(", StringComparison.Ordinal)) continue;
+                    var seen = new HashSet<int> { i };
+                    var work = new Stack<int>(); work.Push(i);
+                    var acc = new ulong[words];
+                    bool indirect = false;
+                    while (work.Count > 0 && !indirect)
+                    {
+                        int v = work.Pop();
+                        for (int k = 0; k < words; k++) acc[k] |= _bits[v][k];
+                        foreach (var t in edges[v]) { if (t >= table) { indirect = true; break; } if (seen.Add(t)) work.Push(t); }
+                    }
+                    if (indirect) continue;
+                    acc[ek >> 6] &= ~(1UL << (ek & 63));
+                    _bits[i] = acc;
+                    edges[i].Clear();
+                }
             // Tarjan, iterative: components come out callees first
             var index = new int[n]; var low = new int[n]; var on = new bool[n];
             Array.Fill(index, -1);

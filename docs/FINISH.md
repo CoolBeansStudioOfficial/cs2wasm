@@ -30,7 +30,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4) in the Bazoodle repository | not started | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
-| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's | no check | check exists, worst frame not above NativeAOT's |
+| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Hello world size (test 145) | 27,825 B | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.45 s vs 4.6 s | < 4.6 s |
 | 4 | Same: peak memory | 470 MB vs 239 MB | < 239 MB |
@@ -94,7 +94,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 | D. Proof 5 in the browser | game built by today's self-hosted compiler in the browser | host/web, tools/proof5.mjs, tests/Godot | to start |
 | E. Behaviour gaps | `StackFrame.GetMethod()`, `FirstChanceException`, the sweep's trace differences | CoreLib Boundary, stack trace code | done 2026-11-20 but for compiler-made methods' records (a feature of its own) |
 | F. Plugins | A4.6 closed-form solver with its tests | Compiler/Solver.cs, PluginSolver.cs, tests | done 2026-11-20 (version 6) |
-| G. Spikes | frame-time check against NativeAOT | tools (new), bench programs | to start |
+| G. Spikes | frame-time check against NativeAOT | tools/frames.mjs, tools/frames, tools/frames-naot-wasm | done: check, foreach borrows; tree scene's rebuild left to I and J |
 | H. Flakes | test 139 leak under load, 072_http | Runtime.cs (read first), tests | done: both found and fixed (tests 149, 150) |
 
 **Second fan-out (2026-11-20), for requirement 4's self-hosted compiler** (each in its own session and worktree):
@@ -159,3 +159,14 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   (the lexer's and the node cache's stores, BlendedNode copies), which no lock per group can split; one thread is
   15% slower than with the one lock (the stripes' bookkeeping). Suite 187/187 checked and as shipped (070_files failed once in a run beside another session's, its fixed directory shared; passes alone); test 139 200
   of 200 under stress (8 at once).
+- 2026-11-20 (G): spikes check `tools/frames.mjs`, five frame loops against NativeAOT-LLVM. Worst frame cs2wasm vs
+  NativeAOT: churn 8.6 / 23.1 ms, collections 0.31 / 2.56, strings 0.15 / 0.36, bigdrop (150k objects dropped in one
+  frame) 2.8 / 17.5, tree 31.9 / 4.3; peak memory 16 MB against 59 to 71 MB (tree 32). tree's spike is its rebuild:
+  a scene tree with children lists is cycle-capable by type, so building it is arena links (15 ms against ~1 ms);
+  the fix is 7.E in the compiler (stream A). churn's median is 3.4x NativeAOT's (speed, open).
+- 2026-11-20 (G): a `foreach` over a `List<T>` in a field of a stable object borrows the list, and its loop variable
+  keeps its borrow across a recursive call (the changed-list MoveNext call and a throw's trace no longer count as
+  element stores; Rt.FreeObjectArena is the allocator's). tree's median frame 0.76 to 0.14 ms (NativeAOT 0.03).
+  On a quiet machine (heavy lock), worst frame cs2wasm vs NativeAOT: churn 0.90 / 1.96 ms, collections 0.34 / 1.54,
+  strings 0.16 / 0.32, bigdrop 1.83 / 9.62, tree 29.9 / 3.8 (the rebuild: streams I and J take types out of the
+  cycle graph; measure again after they merge). bench 0.82x.
