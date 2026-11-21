@@ -812,7 +812,10 @@ internal sealed partial class Arenas
         var cl = _cycleIndex.Candidates(slotType);
         // (a type of the slot type's own list is a subtype of it without asking: SubtypeIndex.IsExact)
         if (cl.Count > 0 && _cycleIndex.IsExact(cl)) return true;
+        // (no array is a subtype of most slot types: Types.ArraysMayBe, once)
+        bool arrays = D.Types.ArraysMayBe(slotType);
         foreach (var id in cl == _cycleIndex.All ? cl : cl.Concat(_cycleIndex.Special))
+            if (!(!arrays && !D.DisplayById.ContainsKey(id) && D.TypeById[id] is IArrayTypeSymbol))
             if (byTypeOnly ? D.Types.IsSubtype(D.TypeById[id], slotType) : IdIs(id, slotType)) return true;
         return false;
     }
