@@ -1605,9 +1605,74 @@ namespace Cs2Wasm.Runtime
             return a;
         }
 
+        // CompileOptions.Checked, no threads: what freed a cycle-capable object, kept in its freed block (never reused
+        // then), so an owner chain that reaches it names it (ChainFreed). 1 Dropped's structure, 2 a member destroyed
+        // from its counts, 3 a whole arena; 0 anything else. s_chkTop: the type of the member the destruction began at.
+        static int s_chkTag, s_chkTop, s_chkLivedOn;
+
+        /// <summary>Checked, no threads (a diagnosis, a walk of the arena): no member that lives on names one of the
+        /// dying (the list from `done` by word 8) as its owner (word 32) or as the container to own it next (word 20).</summary>
+        static void CheckOrphans(int ar, int done, int p, int rest)
+        {
+            int first = Mem.LoadI32(ar + 4);
+            if (first == 0) return;
+            int x = first;
+            do
+            {
+                int ow = PL(x, 32), nx = PL(x, 20);
+                for (int m = done; m != 0; m = PL(m, 8))
+                {
+                    if (m != ow && m != nx) continue;
+                    int fl = PL(x, 24);
+                    // what the dying one's slots say of x
+                    int bitsOf = -9;
+                    for (int i = 0; i < 16; i++) if (Mem.LoadI32(m + 12 + 4 * i) == x) { bitsOf = SlotBits(m, i); break; }
+                    throw new System.InvalidOperationException("checked: a " + TypeName(Borrow<object>(x)) + " lives on and names a dying " + TypeName(Borrow<object>(m))
+                        + (m == ow ? " as its owner" : " as the container to own it next") + " (flags 0x" + fl.ToString("x") + ": owned " + (fl & Owned) + ", held " + ((fl & Held) >> 1)
+                        + ", mult " + ((fl & MultMask) >> 3) + ", u " + ((uint)fl >> UShift) + "; inside count " + PL(x, 4) + ", count word " + Mem.LoadI32(x)
+                        + "; the dying one's slot bits for it " + bitsOf + ") in the destruction of a " + TypeName(Borrow<object>(p)) + (rest != 0 ? " (a dropped structure)" : " (from the counts)"));
+                }
+                x = PL(x, 12);
+            } while (x != first);
+        }
+
+        static string Describe(int x)
+        {
+            int fl = PL(x, 24);
+            return "flags 0x" + fl.ToString("x") + " (owned " + (fl & Owned) + ", held " + ((fl & Held) >> 1) + ", dying " + ((fl & Dying) >> 2) + ", mult " + ((fl & MultMask) >> 3) + ", u " + ((uint)fl >> UShift)
+                + "), inside count " + PL(x, 4) + ", count word " + Mem.LoadI32(x) + ", at " + x + " (members kept by a finalizer so far: " + s_chkLivedOn + ")" + ", next owner " + PL(x, 20) + ", mark " + PL(x, MarkWord);
+        }
+
+        static void CheckLive(int m, int p, int rest, string what)
+        {
+            if (Mem.LoadI32(m - 4) != 0x7EAD0000) return;
+            throw new System.InvalidOperationException("checked: a member " + what + ": a freed " + TypeInfo.FullName(Mem.LoadI32(m + 8)) + " (freed with "
+                + FreeTag(m) + ") in the destruction of a " + TypeName(Borrow<object>(p)) + (rest != 0 ? " (a dropped structure)" : " (from the counts)"));
+        }
+
+        static string FreeTag(int v) => (Mem.LoadI32(v + 12) switch { 1 => "a dropped structure", 2 => "a destruction from the counts", 3 => "a whole arena", _ => "a plain free" })
+            + " that began at a " + TypeInfo.FullName(Mem.LoadI32(v + 16));
+
+        static void ChainFreed(int from, int target, int v, int k, int prev)
+        {
+            string tag = Mem.LoadI32(v + 12) switch { 1 => "a dropped structure", 2 => "a destruction from the counts", 3 => "a whole arena", _ => "a plain free" };
+            throw new System.InvalidOperationException("checked: the owner chain of a " + TypeName(Borrow<object>(from)) + " (looking for a "
+                + TypeName(Borrow<object>(target)) + ") reaches, " + k + " steps up, a freed " + TypeInfo.FullName(Mem.LoadI32(v + 8))
+                + ", freed with " + tag + " that began at a " + TypeInfo.FullName(Mem.LoadI32(v + 16)) + "; the member below it, a " + TypeName(Borrow<object>(prev)) + ", " + Describe(prev));
+        }
+
         /// <summary>Frees such an object (the destroy functions of cycle-capable types).</summary>
         public static void FreeObjectArena(int addr, int size)
         {
+            if (Checked() && SingleThreaded() && size >= 20)
+            {
+                int type = Mem.LoadI32(addr + 4);
+                Mem.StoreI32(addr, 0);
+                MemberWordsFree(addr);
+                FreeBlock(addr - ArenaPrefix, size + ArenaPrefix, KindArena);
+                Mem.StoreI32(addr + 8, type); Mem.StoreI32(addr + 12, s_chkTag); Mem.StoreI32(addr + 16, s_chkTop);
+                return;
+            }
             // (its count word reads as dead from here on, wherever the block goes)
             Mem.StoreI32(addr, 0);
             MemberWordsFree(addr);
@@ -1806,10 +1871,12 @@ namespace Cs2Wasm.Runtime
         /// <summary>The target is the member itself or one of its owners (ChainMax steps up).</summary>
         static bool OnChain(int from, int target)
         {
-            int v = from;
+            int v = from, prev = 0;
             for (int k = 0; k <= ChainMax; k++)
             {
                 if (v == target) return true;
+                if (Checked() && SingleThreaded() && Mem.LoadI32(v - 4) == 0x7EAD0000) ChainFreed(from, target, v, k, prev);
+                prev = v;
                 v = PL(v, 32);
                 if (v == 0) return false;
             }
@@ -2275,6 +2342,10 @@ namespace Cs2Wasm.Runtime
         public static void ArenaRelease(int p)
         {
             int w = Atomic.Add32(ref Mem.RefI32(p), 1) + 1;
+            // (checked: a member released with no outside reference counted on it: a release too many, or of a
+            // reference that was an inside one. It would read as immortal (-1) from here on)
+            if (Checked() && SingleThreaded() && w == -1)
+                throw new System.InvalidOperationException("checked: a " + TypeName(Borrow<object>(p)) + ", a member with no outside reference, released (" + Describe(p) + ")");
             int ar = ArenaOf(p);
             if (w == -2)
             {
@@ -2444,6 +2515,10 @@ namespace Cs2Wasm.Runtime
             // the stored reference is inside the arena now: the count the store took is given back (its last outside
             // one after the store, GiveBackLater; at once for an object that joined for this store: nothing was
             // counted on its being referred to from outside)
+            // (checked: a value stored with no outside count on it: the store's count was never taken)
+            if (Checked() && SingleThreaded() && Mem.LoadI32(val) == -2)
+                throw new System.InvalidOperationException("checked: a " + TypeName(Borrow<object>(val)) + " stored into a " + TypeName(Borrow<object>(container))
+                    + " with no outside count (" + Describe(val) + (joined ? "; it joined for this store" : "") + ")");
             if (Atomic.Add32(ref Mem.RefI32(val), 1) == -3)
             {
                 if (joined) Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
@@ -2849,7 +2924,7 @@ namespace Cs2Wasm.Runtime
             if (back)
             {
                 FinVisit(first, link, 11);
-                for (int m = first; m != 0;) { int next = FinNext(m, end, link); Mem.StoreI32(m, -1); m = next; }
+                for (int m = first; m != 0;) { int next = FinNext(m, end, link); Mem.StoreI32(m, -1); if (Checked()) s_chkLivedOn++; m = next; }
                 s_cutN = cutBase;
                 return true;
             }
@@ -2875,7 +2950,7 @@ namespace Cs2Wasm.Runtime
             if (back)
             {
                 FinVisit(first, link, 11);
-                for (int m = first; m != 0;) { int next = FinNext(m, end, link); Mem.StoreI32(m, -1); m = next; }
+                for (int m = first; m != 0;) { int next = FinNext(m, end, link); Mem.StoreI32(m, -1); if (Checked()) s_chkLivedOn++; m = next; }
                 if (unlocked) RuntimeUnlock();
                 return true;
             }
@@ -2970,6 +3045,7 @@ namespace Cs2Wasm.Runtime
             while (dead != 0)
             {
                 int m = dead;
+                if (Checked() && SingleThreaded()) CheckLive(m, p, rest, "destroyed again");
                 dead = PL(m, 12);
                 Unqueue(m);
                 int sa = s_visitArena, sm = s_visitMode, sd = s_visitDead, so = s_visitObj, se = s_visitElem;
@@ -3002,13 +3078,18 @@ namespace Cs2Wasm.Runtime
             // refer to, and are never freed (what one of several objects that die together can still reach is
             // not followed: section 4.3's group stays whole).
             if (fin && FinPhase(done, 8, cutBase)) { ArenaEmpty(ar); return; }
+            if (Checked() && SingleThreaded()) for (int m = done; m != 0; m = PL(m, 8)) CheckLive(m, p, rest, "freed while it died");
+            if (Checked() && SingleThreaded() && Mem.LoadI32(ar + 8) < 4096) CheckOrphans(ar, done, p, rest);
             for (int m = done; m != 0; m = PL(m, 8)) ArenaClearObject(m);
+            int chkTag = s_chkTag, chkTop = s_chkTop;
+            if (Checked()) { s_chkTag = rest != 0 ? 1 : 2; s_chkTop = Mem.LoadI32(p + 4); }
             for (int m = done; m != 0;)
             {
                 int next = PL(m, 8);
                 ArenaFreeObject(m);
                 m = next;
             }
+            s_chkTag = chkTag; s_chkTop = chkTop;
             ArenaEmpty(ar);
         }
 
@@ -3039,15 +3120,19 @@ namespace Cs2Wasm.Runtime
                 // (a finalizer stored one of them where the program can reach it: as in ArenaDestroyFrom; the
                 // arena's record stays, busy, for the words of its members that name it)
                 if (fin && FinPhase(first, 12, cutBase)) return;
+                if (Checked() && SingleThreaded()) { m = first; do { CheckLive(m, first, 0, "of a freed arena freed before"); m = PL(m, 12); } while (m != first); }
                 m = first;
                 do { ArenaClearObject(m); m = PL(m, 12); } while (m != first);
                 m = first;
+                int chkTag = s_chkTag, chkTop = s_chkTop;
+                if (Checked()) { s_chkTag = 3; s_chkTop = Mem.LoadI32(first + 4); }
                 do
                 {
                     int next = PL(m, 12);
                     ArenaFreeObject(m);
                     m = next;
                 } while (m != first);
+                s_chkTag = chkTag; s_chkTop = chkTop;
             }
             Free(ar, ArenaRecord);
         }
