@@ -303,6 +303,7 @@ internal sealed class WasmModule
                 int n2 = Environment.GetEnvironmentVariable("CS2WASM_SHARE_LEND") == "0" ? 0 : ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, true, (name, t) => AddFunction(name, t));
                 if (Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1") Console.Error.WriteLine($"share: {n} functions now call a shared body, then {n2} lend");
             }
+            if (Environment.GetEnvironmentVariable("CS2WASM_SHARE_WHY") == "1") ShareConstants.Why(Functions);
             AfterOptimize?.Invoke(Functions.Where(f => !f.IsImport));
             if (validate) Validate("after optimization");
         }
@@ -457,7 +458,7 @@ internal sealed class WasmModule
             }
             body.Byte(0x0B);
             if (s_sizes != null) s_sizes.Add((body.Length, f.FrameName ?? f.Name));
-            if (s_dump != null && (f.FrameName ?? f.Name).Contains(s_dump)) { Console.Error.WriteLine($"== {f.FrameName ?? f.Name} ({body.Length} bytes)"); foreach (var ins in f.Body) Console.Error.WriteLine("  " + ins); }
+            if (s_dump != null && (f.FrameName ?? f.Name).Contains(s_dump)) { Console.Error.WriteLine($"== {f.FrameName ?? f.Name} [{f.Name}] ({body.Length} bytes)"); foreach (var ins in f.Body) Console.Error.WriteLine("  " + ins); }
             code.U32(body.Length);
             int start = code.Length;
             foreach (var (off, pos) in bodyLines) relLines.Add(new LineEntry(start + off, pos));

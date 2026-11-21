@@ -307,6 +307,101 @@ static class ShareConstants
         return true;
     }
 
+    /// <summary>CS2WASM_SHARE_WHY=1 (after sharing): families of functions (names with their type arguments taken
+    /// out, one signature) that still have several bodies, and for a pair of them the first instruction that differs.</summary>
+    public static void Why(List<WasmFunction> fns)
+    {
+        static string Strip(string n)
+        {
+            var sb = new StringBuilder(); int d = 0;
+            foreach (var c in n.Split('(')[0]) { if (c == '<') { if (d++ == 0) sb.Append("<>"); } else if (c == '>') d--; else if (d == 0) sb.Append(c); }
+            return sb.ToString();
+        }
+        var fam = new Dictionary<string, List<WasmFunction>>();
+        foreach (var f in fns)
+        {
+            if (f.IsImport || f.Body.Count == 0 || f.ForwardTo != null || !f.Name.Contains('<') || f.Name.StartsWith("shared ")) continue;
+            // (a stub: a call of a shared body)
+            if (f.Body.Count > 0 && f.Body[^1].Op == Op.Call && f.Body[^1].Ref is WasmFunction s && s.Name.StartsWith("shared ")) continue;
+            var k = Strip(f.Name) + " | " + string.Join(",", f.Type.Params) + ">" + string.Join(",", f.Type.Results);
+            if (!fam.TryGetValue(k, out var l)) fam[k] = l = [];
+            l.Add(f);
+        }
+        var reasons = new Dictionary<string, (int n, long bytes, string ex)>();
+        foreach (var (k, l) in fam)
+        {
+            if (l.Count < 2) continue;
+            long extra = l.Sum(f => (long)f.Body.Count) - l.Max(f => f.Body.Count);
+            var a = l[0]; var b = l.FirstOrDefault(x => x != a && x.Body.Count == a.Body.Count) ?? l[1];
+            string why;
+            if (a.Body.Count != b.Body.Count) why = "length";
+            else if (!a.Locals.SequenceEqual(b.Locals)) why = "locals";
+            else
+            {
+                why = "same?";
+                for (int i = 0; i < a.Body.Count; i++)
+                {
+                    var x = a.Body[i]; var y = b.Body[i];
+                    if (x.Op != y.Op) { why = "op " + x.Op + "/" + y.Op; break; }
+                    if (x.Op == Op.I32Const) continue;
+                    if (x.Imm != y.Imm || x.Imm2 != y.Imm2) { why = "imm " + x.Op; break; }
+                    if (x.Ref is TryTableInfo ta && y.Ref is TryTableInfo tb)
+                    {
+                        string TK(TryTableInfo t) => t.BlockType + string.Concat(t.Catches.Select(cc => ":" + cc.Kind + cc.Tag?.Name + cc.Label));
+                        if (TK(ta) != TK(tb)) { why = "trytable"; break; }
+                    }
+                    else if (!ReferenceEquals(x.Ref, y.Ref) && !(x.Ref != null && x.Ref.Equals(y.Ref)))
+                    {
+                        why = x.Ref is WasmFunction g && y.Ref is WasmFunction h ? "call " + Strip(g.Name).Split(' ')[0] + " / " + Strip(h.Name).Split(' ')[0] : "ref " + x.Op; break;
+                    }
+                    if (x.Inl != y.Inl) { why = "inl"; break; }
+                    if (x.Pos != y.Pos) { why = "pos"; break; }
+                }
+                if (why == "same?" && a.FrameName != b.FrameName) why = "frame";
+            }
+            var cat = why.StartsWith("call ") ? "call" : why.StartsWith("op") ? "op" : why;
+            var e = reasons.GetValueOrDefault(cat);
+            reasons[cat] = (e.n + 1, e.bytes + extra, e.ex ?? (k + "  [" + why + "]  " + a.Name + "  ~  " + b.Name));
+            var e2 = reasons.GetValueOrDefault("  " + why);
+            reasons["  " + why] = (e2.n + 1, e2.bytes + extra, e2.ex ?? (a.Name + "  ~  " + b.Name));
+        }
+        foreach (var (r, (n, bytes, ex)) in reasons.Where(kv => !kv.Key.StartsWith("  ")).OrderByDescending(kv => kv.Value.bytes))
+            Console.Error.WriteLine($"why: {r,-10} {n,6} families {bytes,9} instructions   e.g. {ex}");
+        foreach (var (r, (n, bytes, ex)) in reasons.Where(kv => kv.Key.StartsWith("  ")).OrderByDescending(kv => kv.Value.bytes).Take(40))
+            Console.Error.WriteLine($"why: {r,-60} {n,6} {bytes,9}   e.g. {ex}");
+        static string Last(string n) { var h = n.Split(' '); var s = h[0]; int i = s.LastIndexOf('.'); return (h.Length > 1 && h[0] is "virtual" or "interface" or "rt.isinst" or "static" ? h[0] + " " : "") + (i >= 0 ? s[(i + 1)..] : s); }
+        // per family, the calls one member makes that the other does not (and the reverse), summed over families
+        static Dictionary<string, int> Calls(WasmFunction f)
+        {
+            var d = new Dictionary<string, int>();
+            foreach (var ins in f.Body)
+            {
+                string? k = ins.Ref is WasmFunction g && ins.Op == Op.Call ? Last(Strip(g.Name)) : ins.Op is Op.CallIndirect ? "call_indirect" : ins.Op is Op.TryTable ? "try_table" : null;
+                if (k != null) d[k] = d.GetValueOrDefault(k) + 1;
+            }
+            return d;
+        }
+        var callDiff = new Dictionary<string, (int fams, long bytes, string ex)>();
+        foreach (var (k, l) in fam)
+        {
+            if (l.Count < 2) continue;
+            var ca = l.Select(Calls).ToList();
+            var seen = new HashSet<string>();
+            for (int i = 0; i < l.Count; i++)
+                for (int j = 0; j < l.Count; j++)
+                {
+                    if (i == j) continue;
+                    foreach (var (c, n) in ca[i]) if (ca[j].GetValueOrDefault(c) < n && seen.Add(c))
+                    {
+                        var e = callDiff.GetValueOrDefault(c);
+                        callDiff[c] = (e.fams + 1, e.bytes + l.Sum(f => (long)f.Body.Count) - l.Max(f => f.Body.Count), e.ex ?? (l[i].Name + "  ~  " + l[j].Name));
+                    }
+                }
+        }
+        foreach (var (c, (n, bytes, ex)) in callDiff.OrderByDescending(kv => kv.Value.bytes).Take(40))
+            Console.Error.WriteLine($"why-calls: {c,-70} {n,6} {bytes,9}   e.g. {ex}");
+    }
+
     /// <summary>Whether sharing saves more than it costs: the bodies but one, against a stub per member and the values
     /// pushed at the calls.</summary>
     static bool Pays(Plan pl, Dictionary<WasmFunction, int> calls)
