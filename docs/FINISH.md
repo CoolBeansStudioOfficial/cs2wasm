@@ -35,7 +35,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.45 s vs 4.6 s | < 4.6 s |
 | 4 | Same: peak memory | 470 MB vs 239 MB | < 239 MB |
 | 4 | Same: module size | 42.7 MB vs 129 MB (was 64.0; `tools/size-report.mjs`) | met; next waste: code (36.2 MB) |
-| 5 | Threaded self-hosted compiler: more threads not slower | 23 s on 1, 64 s on 12 | faster with threads |
+| 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | not re-tried since 11-17 | plays, log equals the oracle's |
 | - | 072_http's rare out-of-bounds | found and fixed 2026-11-20: none in 600 loaded runs per mode (was ~1 in 1,000) | found or not seen in 500 runs |
 
@@ -90,7 +90,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 |---|---|---|---|
 | A. Self-hosted speed and memory | 7.E proof on the hot sites; baseline-tier code quality | Compiler/Arenas.cs, Driver, Wasm/* | here, in progress |
 | B. Self-hosted size | breakdown of the 64 MB by namespace and kind; cut waste | tools/size-report.mjs, RuntimeGen (names, packing), Driver (data) | first pass done (64.0 to 42.7 MB); code next |
-| C. Threads scale | per-group locks for arena operations, runtime scratch per thread | Boundary/Runtime.cs (arena locking), RuntimeGen | to start (touches Runtime.cs: after A's runtime edits or coordinated) |
+| C. Threads scale | per-group locks for arena operations, runtime scratch per thread | Boundary/GroupLocks.cs, Runtime.cs (arena locking), RuntimeGen | done: groups lock apart (PLINQ trees scale); the self-hosted compiler waits on its one giant group: A's structural piece (value sources per site) |
 | D. Proof 5 in the browser | game built by today's self-hosted compiler in the browser | host/web, tools/proof5.mjs, tests/Godot | to start |
 | E. Behaviour gaps | `StackFrame.GetMethod()`, `FirstChanceException`, the sweep's trace differences | CoreLib Boundary, stack trace code | done 2026-11-20 but for compiler-made methods' records (a feature of its own) |
 | F. Plugins | A4.6 closed-form solver with its tests | Compiler/Solver.cs, PluginSolver.cs, tests | done 2026-11-20 (version 6) |
@@ -147,3 +147,15 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   its hello world byte-identical, time unchanged (14.2 s, interleaved). Hello world 27,541 B (unchanged), bench
   372,676 to 372,166 B (0.91x, 16.0 MB vs 71.3), test 036 528,820 to 512,342 B. Suite 179/179 checked and as
   shipped. Left: code, 36.2 MB (generic instantiations 14.9, System.Linq 7.6, dispatch stubs 2.0; AUDIT).
+- 2026-11-20, stream C: per-group locks for arena operations (Boundary/GroupLocks.cs). A store's link, unlink and
+  exchange, a member's first and last outside reference, a join, a merge and the drop check lock the groups they
+  touch (256 stripes, lowest first, verified), not the runtime lock; a join's objects are found under the locks
+  before anything changes; the arena scratch is per thread; the allocator has a lock of its own. Programs without
+  threads compile none of it (Rt.ThreadMode): hello world byte-identical, micro and bench the same code. Measured
+  interleaved, holding a heavy.sh slot, main before against now: the PLINQ tree program
+  (tools/bench-threads/plinq_trees.cs) 0.60 / 3.2 / 6.5 / 7.0 s on 1 / 4 / 12 / 24 threads against 0.79 / 0.46 /
+  0.45 / 0.44; the threaded self-hosted compiler on hello world 16.3 / 23.6 / 37.7 / 39.4 s against 18.7 / 17.0 /
+  26.6 / 26.7. Left: the compiler still waits on more than 4 threads, on one stripe: Roslyn's types are one group
+  (the lexer's and the node cache's stores, BlendedNode copies), which no lock per group can split; one thread is
+  15% slower than with the one lock (the stripes' bookkeeping). Suite 187/187 checked and as shipped (070_files failed once in a run beside another session's, its fixed directory shared; passes alone); test 139 200
+  of 200 under stress (8 at once).
