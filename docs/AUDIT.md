@@ -1098,6 +1098,46 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   overstate what inlining buys, and the self-hosted compiler's own timing needs a quiet machine (a check of the load
   before each round) to resolve 2%.
 
+- **Stream K, round 4 (2026-11-21), on main 480a101: where the self-hosted compiler's time goes, and denser code.**
+  Measured with V8's own switches on the self-hosted compiler and NativeAOT-LLVM's build of the same sources (hello
+  world, one thread, interleaved, the machine's load checked before each round):
+  - Compiling is not the large piece. A run compiles 30,000 of the module's 168,600 functions with Liftoff, lazily
+    (NativeAOT's: 16,500 of 89,300); compiling every function eagerly adds only 0.5 s (11.2 s against 10.7). Tier-up
+    to the optimizing compiler carries the hot code: `--liftoff-only` takes 17.2 s against 10.7 (NativeAOT's 7.0
+    against 5.4); `--no-wasm-tier-up` changes neither (it does not turn the dynamic tiering off). So the
+    baseline-tier proxies (micro `--baseline`, the parser bench) measure what most functions run in but not the hot
+    paths, which is why inlining that pays there was within the noise on the compiler, and the optimizing tier's
+    bench has to be checked as well.
+  - Code density: our code section is 38.9 MB in 168,500 functions against NativeAOT's 21.7 MB in 89,300 (its 129 MB
+    file is mostly data); per KB of code 21.9 locals against 10.2, 57 calls against 23.6, 26.7 ifs against 0.3, 2.9
+    try_tables against 0. Liftoff makes 5.2 bytes of machine code per byte of ours (54.5 MB for the 10.4 MB a run
+    compiles), 2.9 per byte of NativeAOT's (18.0 MB for 6.2). The static calls: rt.release 20.6% of them, rt.retain
+    5.5%, null checks 8.6% (written out and as calls), the arena operations and frames most of the rest.
+  Changes, each measured on the self-hosted compiler (10 to 12 interleaved rounds) and on the bench:
+  - Locals coalesced on the final bodies (`Locals.Coalesce`, after every other pass, since the passes before read a
+    local written once as one value): locals of one type never live at once share one, parameters included once
+    they are dead (interference from each write against what is live after it, and among what is live at the entry;
+    exception edges included). Locals in the parser bench 51,280 to 26,561 (p99 per function 39 to 12); micro in the
+    baseline tier 0.923; the self-hosted compiler 1.5% to 2.3% faster in calm rounds (faster in 18 of 20), the
+    machine code a run compiles 54.5 to 52.2 MB. Hello world 27,194 to 27,142 bytes. `CS2WASM_NO_COALESCE`,
+    `CS2WASM_NO_PARAM_REUSE`.
+  - The counts in loops: the whole of rt.retain and rt.release went into every loop (62,500 copies of rt.release in
+    the compiler, each with its calls of rt.destroy and Rt.ArenaRelease, 6.5 MB). Without them the compiler was the
+    same (wall 0.5% either way, processor time 2.2% less) but the bench lost 3% (0.94x to 0.97x NativeAOT: tree and
+    linked_list free nodes in their loops). Now their fast path is written out in loops (`RcFastPaths`, default
+    `loops`): a retain or release that moves a count above zero in place, the last reference's release as rt.release
+    does it (count cleared, rt.destroy called), anything else the call. Bench 0.94x again, its module 343.7 to 334.0
+    KB; the compiler the same speed (wall +0.2%, processor time -0.3%, 10 calm rounds) at 72.3 to 70.1 MB. Hello world
+    27,142 to 27,297 bytes (loops of the runtime's own functions get the path too). `CS2WASM_RC_IN_LOOPS=1` for the
+    whole functions, `CS2WASM_RC_FAST=0` for none.
+  - Measured and kept as they are: null checks written out (as calls instead: the compiler 4.9% slower).
+  - Not done, measured: 1.0 MB of the code is byte-identical bodies (12,458 functions; 1.3 MB counting calls of
+    identical functions), kept apart for their frames in traces; the rest of the 1.8x code is generic instantiations
+    over reference types not shared (a compiler change, not a pass).
+  Result: the self-hosted compiler 72,430,423 to 70,080,934 bytes (named, no threads), 1% to 2% faster (processor time
+  2.5% less against main in the last round, where the machine's wall times wandered); bench 0.94x NativeAOT as
+  before; hello world 27,194 to 27,297 bytes. Suite 198 passed checked and as shipped (rebased on 05e8cd0), bench 0.94x there.
+
 - **Self-hosted compiler's memory (stream L of docs/FINISH.md, 2026-11-20): 568.9 MB to 482.9 MB.**
   - The report: `CS2WASM_MEMSTATS=1` at compile time. The runtime goes through the heap at every growth of the memory
     (the table's word per granule, each page's blocks: a block's first word says what it is) and prints a line;
