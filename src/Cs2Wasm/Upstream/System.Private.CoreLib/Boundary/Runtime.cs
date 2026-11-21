@@ -2777,7 +2777,9 @@ namespace Cs2Wasm.Runtime
             int outer = s_storeSlot;
             s_storeSlot = slot;
             int r = val;
-            if (val != 0)
+            bool over = ThreadMode() && t_linkOver != 0;
+            if (ThreadMode()) t_linkOver = 0;
+            if (val != 0 && !over)
             {
                 // (the usual case: both are members of one arena already, which is not being destroyed or merged)
                 int ar = Mem.LoadI32(container) < -1 && Mem.LoadI32(val) < -1 ? PL(container, 16) : 0;

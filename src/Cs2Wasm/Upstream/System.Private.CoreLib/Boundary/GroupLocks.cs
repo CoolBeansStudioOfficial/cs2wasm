@@ -315,7 +315,7 @@ namespace Cs2Wasm.Runtime
             while (true)
             {
                 if (link) LinkLock(val, container);
-                else LockGroupOf(container, false);
+                else { LockGroupOf(container, false); t_linkOver = 0; }
                 if (Atomic.CompareExchange32(ref Mem.RefI32(place), 0, 1) == 0) break;
                 ReleaseTo(mark);
                 while (Atomic.Load32(ref Mem.RefI32(place)) != 0) { }
@@ -346,10 +346,15 @@ namespace Cs2Wasm.Runtime
         // finds is tried, read only once its lock is held. A try that fails gives every lock back, and the next
         // attempt takes that stripe in order with the first two.
 
+        // (LinkLock left the value out: a member into a plain container, whose words it did not lock; ArenaLink links
+        // nothing then, for the value may have left its group meanwhile, TryLeave, and be plain by now)
+        [ThreadStatic] static int t_linkOver;
+
         /// <summary>Locks what a link of val into container may touch; returns the mark to give it back to.</summary>
         static int LinkLock(int val, int container, bool contents = false)
         {
             int mark = t_lkN;
+            t_linkOver = 0;
             // (no other thread yet: every object is this thread's, StripeMine; the two counted as held, no walk)
             if (s_stripes == 0)
             {
@@ -394,7 +399,7 @@ namespace Cs2Wasm.Runtime
                 {
                     // (nothing joins a group unless the value or the container is a plain object: no walk then)
                     bool join = contents || val != 0 && (Atomic.Load32(ref Mem.RefI32(val)) > 0 || Atomic.Load32(ref Mem.RefI32(container)) > 0) && MayJoin(val, container);
-                    if (!join || LinkWalk(val, container, contents)) return mark;
+                    if (!join || LinkWalk(val, container, contents)) { t_linkOver = over != 0 ? 1 : 0; return mark; }
                 }
                 ReleaseTo(mark);
             }
