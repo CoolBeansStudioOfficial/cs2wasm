@@ -2433,7 +2433,11 @@ sealed partial class FunctionCompiler
     {
         var tt = TypeOf(cas.Target);
         if (!Types.IsRef(tt) && !IsNullable(tt)) throw new CompileException("??= on this type is not supported", cas.Syntax.GetLocation());
-        var lv = LValueOf(cas.Target);
+        // (the store runs only where the place holds null: Driver.BorrowWrites; the write is noted with the place)
+        var savedNullOnly = Driver.NullOnlyStoreIn;
+        if (Types.IsRef(tt) && cas.Target is IFieldReferenceOperation { Field.IsVolatile: false }) Driver.NullOnlyStoreIn = E.Fn;
+        LValue lv;
+        try { lv = LValueOf(cas.Target); } finally { Driver.NullOnlyStoreIn = savedNullOnly; }
         lv.Note(StaticValueType(cas.Value), cas.Value);
         lv.Prepare();
         lv.Load();
@@ -3422,21 +3426,36 @@ sealed partial class FunctionCompiler
         int v = BindValue(se.Value, vt);
         var wt = Types.WasmType(rt) ?? ValType.I32;
         var done = E.Block(wt);
+        bool isRef = Types.IsRef(rt);
+        // section 4.1, as a conditional's: the value is borrowed when every arm's is (an arm's temporaries are the
+        // statement's, so what it borrows from lives as long); owned when one arm's is, the borrowed arms' then counted
+        var arms = new List<(Own o, int end)>();
         foreach (var arm in se.Arms)
         {
             EmitPattern(arm.Pattern, v, vt);
             if (arm.Guard != null) { E.If(ValType.I32); EmitCondition(arm.Guard); E.Else(); E.I32(0); E.End(); }
             E.If();
             var o = EmitValueAs(arm.Value, rt);
-            if (Types.IsRef(rt)) ToOwned(o, rt);
+            if (isRef && (s_noSwitchBorrows || D.ThreadMode)) { ToOwned(o, rt); o = Own.Owned; }
+            if (isRef) arms.Add((o, E.Fn.Body.Count));
             E.Br(done);
             E.End();
         }
         E.Call(Rt.ThrowSwitch);
         E.Op(Op.Unreachable);
         E.End();
-        return Types.IsRef(rt) ? Own.Owned : Own.None;
+        if (!isRef) return Own.None;
+        var joined = Own.None;
+        foreach (var (o, _) in arms) joined = JoinOwn(joined, o);
+        if (joined == Own.Owned)
+            for (int i = arms.Count - 1; i >= 0; i--)
+                if (arms[i].o is Own.Stable or Own.Unstable) E.Fn.Body.Insert(arms[i].end, new Instr { Op = Op.Call, Ref = Rt.RetainOf(rt), Pos = E.CurrentPos });
+        _lastFieldLoad = null;
+        return joined;
     }
+
+    /// <summary>CS2WASM_NO_SWITCH_BORROWS=1: every reference arm of a switch expression counted, as before.</summary>
+    static readonly bool s_noSwitchBorrows = Environment.GetEnvironmentVariable("CS2WASM_NO_SWITCH_BORROWS") == "1";
 
     // =====================================================================
     // pointers (no public IOperation kind: read the syntax)
