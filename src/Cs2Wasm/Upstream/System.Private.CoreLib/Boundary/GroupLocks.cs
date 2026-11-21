@@ -359,9 +359,15 @@ namespace Cs2Wasm.Runtime
             }
             // (a value that cannot be on a cycle with the container is linked to nothing: CanLink; read nothing of)
             if (val != 0 && !CanLink(val, container)) val = 0;
+            // (a member stored into a plain object stays a counted reference, the container plain: ArenaLinkCore. Only
+            // the container's lock then, which keeps it plain meanwhile; nothing of the value is read. Checked again
+            // under it: a container that became a member meanwhile is linked as any)
+            int over = 0;
+            if (!contents && val != 0 && Atomic.Load32(ref Mem.RefI32(container)) > 0 && Atomic.Load32(ref Mem.RefI32(val)) < -1) { over = val; val = 0; }
             t_missN = 0;
             for (int attempt = 0; attempt < 8; attempt++)
             {
+                if (attempt > 0 && over != 0 && Atomic.Load32(ref Mem.RefI32(container)) <= 0) { val = over; over = 0; }
                 int sa = val != 0 ? KeyStripe(val) : -1, sb = container != 0 ? KeyStripe(container) : -1;
                 if (t_missN == 0)
                 {
@@ -383,7 +389,8 @@ namespace Cs2Wasm.Runtime
                     }
                     for (int i = 0; i < t_missN; i++) StripeLock(Mem.LoadI32(t_missQ + 4 * i), true);
                 }
-                if ((val == 0 || KeyStripe(val) == sa) && (container == 0 || KeyStripe(container) == sb))
+                if ((val == 0 || KeyStripe(val) == sa) && (container == 0 || KeyStripe(container) == sb)
+                    && (over == 0 || Atomic.Load32(ref Mem.RefI32(container)) > 0))
                 {
                     // (nothing joins a group unless the value or the container is a plain object: no walk then)
                     bool join = contents || val != 0 && (Atomic.Load32(ref Mem.RefI32(val)) > 0 || Atomic.Load32(ref Mem.RefI32(container)) > 0) && MayJoin(val, container);
@@ -392,6 +399,7 @@ namespace Cs2Wasm.Runtime
                 ReleaseTo(mark);
             }
             // (a structure that keeps changing under the walk: every stripe, which nothing can miss)
+            if (over != 0) val = over;
             LockAllGroups();
             LinkWalk(val, container, contents);
             return mark;

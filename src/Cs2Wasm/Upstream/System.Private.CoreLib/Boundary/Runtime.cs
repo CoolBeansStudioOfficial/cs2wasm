@@ -2824,6 +2824,12 @@ namespace Cs2Wasm.Runtime
         {
             int cv = Mem.LoadI32(val), ca = Mem.LoadI32(container);
             if (cv == -1 || cv == 0 || ca == -1 || ca == 0) return val; // immortal, or being destroyed
+            // (threads: a member stored into a plain object stays a counted reference, and the container plain. No
+            // member refers to a plain object of a cycle-capable class, which joins as it is stored, so no cycle can
+            // close through it until a member comes to refer to it, and it joins then, its slots linked as it does.
+            // Joined here, every thread's own lexer and parser became members of the one group of Roslyn's shared
+            // tokens, each store into them under that group's lock: GroupLocks.cs, LinkLock)
+            if (ThreadMode() && ca > 0 && cv < -1) return val;
             int g = SccOf(Mem.LoadI32(val + 4));
             if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return val;
             // (one whose finalizer is running, or that waits for the others': a counted reference, FinPhase)
