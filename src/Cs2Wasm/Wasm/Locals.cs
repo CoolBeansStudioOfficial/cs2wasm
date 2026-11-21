@@ -29,6 +29,7 @@ static partial class Locals
     }
 
     static readonly bool s_noCoalesce = Environment.GetEnvironmentVariable("CS2WASM_NO_COALESCE") == "1";
+    static readonly bool s_noParamReuse = Environment.GetEnvironmentVariable("CS2WASM_NO_PARAM_REUSE") == "1";
 
     /// <summary>Locals of one type whose values are never live at once share one local: x and y interfere when one is
     /// written where the other is live after the write, and every local live at the function's entry (it holds its
@@ -39,7 +40,7 @@ static partial class Locals
     static void Coalesce(WasmFunction f)
     {
         int np = f.Type.Params.Length, nl = np + f.Locals.Count;
-        if (f.Locals.Count < 2) return;
+        if (f.Locals.Count < 1 || f.Locals.Count < 2 && np == 0) return;
         var fl = Analyze(f);
         var b = f.Body;
         int w = fl.Words;
@@ -63,17 +64,21 @@ static partial class Locals
             if (b[i].Op is Op.LocalSet or Op.LocalTee && b[i].Imm < nl) Edge((int)b[i].Imm, fl.LiveOut[i]);
         var entry = fl.LiveIn[0];
         for (int x = 0; x < nl; x++) if (Has(entry, x)) Edge(x, entry);
-        // (each local's class: the first local of its type it joined; parameters stay themselves)
+        // (a parameter is written at the entry, with its argument: against every local live there)
+        for (int x = 0; x < np; x++) Edge(x, entry);
+        // (each local's class: the first local, or parameter, of its type it joined; a parameter stays itself)
         var rep = new int[nl];
         for (int i = 0; i < nl; i++) rep[i] = i;
         var members = new Dictionary<int, List<int>>();
+        if (!s_noParamReuse) for (int x = 0; x < np; x++) members[x] = [x];
+        ValType TypeOf(int i) => i < np ? f.Type.Params[i] : f.Locals[i - np];
         bool any = false;
         for (int x = np; x < nl; x++)
         {
             var t = f.Locals[x - np];
             foreach (var (r, list) in members)
             {
-                if (f.Locals[r - np] != t) continue;
+                if (TypeOf(r) != t) continue;
                 bool ok = true;
                 foreach (var m in list) if (Has(inter[x], m)) { ok = false; break; }
                 if (!ok) continue;
