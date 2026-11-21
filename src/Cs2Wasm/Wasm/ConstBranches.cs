@@ -68,6 +68,62 @@ static class ConstBranches
         }
     }
 
+    /// <summary>A local that is given a constant once, at the function's top level, before anything reads it, and never
+    /// written again holds that constant wherever it is read: its reads become the constant (and the compares and
+    /// branches on it fold, ConstBranches and Peephole). `switch (Unsafe.SizeOf&lt;T&gt;())` in a generic method is such a
+    /// local once T is known (Roslyn's SegmentedArray: SegmentShift, OffsetMask). A block whose whole body is a
+    /// constant is the constant. Returns whether the function changed.</summary>
+    public static bool ConstLocals(WasmFunction f)
+    {
+        var b = f.Body;
+        bool changed = false;
+        for (int i = 0; i + 2 < b.Count; i++)
+            if (b[i].Op == Op.Block && b[i].Ref is ValType.I32 && b[i + 1].Op == Op.I32Const && b[i + 1].Ref == null && b[i + 2].Op == Op.End)
+            {
+                b.RemoveAt(i + 2); b.RemoveAt(i);
+                changed = true;
+            }
+        int np = f.Type.Params.Length, nl = np + f.Locals.Count;
+        // (an inlined callee's locals are set to zero where it went in: a constant too, before the one it is given)
+        var writes = new int[nl];
+        var defs = new int[nl];
+        var firstRead = new int[nl];
+        Array.Fill(firstRead, int.MaxValue);
+        var lastDef = new int[nl];
+        Array.Fill(lastDef, -1);
+        int depth = 0;
+        for (int i = 0; i < b.Count; i++)
+        {
+            var ins = b[i];
+            switch (ins.Op)
+            {
+                case Op.Block or Op.Loop or Op.If or Op.TryTable: depth++; break;
+                case Op.End: depth--; break;
+                case Op.LocalGet when ins.Imm < nl: if (firstRead[ins.Imm] == int.MaxValue) firstRead[ins.Imm] = i; break;
+                case Op.LocalSet or Op.LocalTee when ins.Imm < nl:
+                    writes[ins.Imm]++;
+                    if (ins.Op == Op.LocalSet && depth == 0 && i > 0 && b[i - 1].Op == Op.I32Const && b[i - 1].Ref == null && firstRead[ins.Imm] == int.MaxValue)
+                    { defs[ins.Imm]++; lastDef[ins.Imm] = i; }
+                    break;
+            }
+        }
+        var value = new long?[nl];
+        bool any = false;
+        for (int l = np; l < nl; l++)
+            if (writes[l] > 0 && writes[l] == defs[l] && f.Locals[l - np] == ValType.I32) { value[l] = b[lastDef[l] - 1].Imm; any = true; }
+        if (!any) return changed;
+        var o = new List<Instr>(b.Count);
+        for (int i = 0; i < b.Count; i++)
+        {
+            var ins = b[i];
+            if (ins.Op == Op.LocalSet && ins.Imm < nl && value[ins.Imm] != null) { o.RemoveAt(o.Count - 1); continue; }
+            if (ins.Op == Op.LocalGet && ins.Imm < nl && value[ins.Imm] is long v) { o.Add(ins with { Op = Op.I32Const, Imm = v, Ref = null }); continue; }
+            o.Add(ins);
+        }
+        f.Body = o;
+        return true;
+    }
+
     /// <summary>The block at k without its block, when no branch inside targets it (outer targets come one closer):
     /// what follows a return in it is then plainly dead.</summary>
     static void Unwrap(List<Instr> b, int k)
