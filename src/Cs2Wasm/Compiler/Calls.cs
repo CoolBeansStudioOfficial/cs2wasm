@@ -953,6 +953,7 @@ sealed partial class FunctionCompiler
             case "Rt.ArenaFinalizeObject": E.Call(Rt.ArenaFinFn); return Own.None;
             case "Rt.ArenaFinType": E.Call(Rt.ArenaFinTypeFn); return Own.None;
             case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
+            case "Rt.WideSizes": E.Call(Rt.WideSizesFn); return Own.None;
             case "Rt.FirstChanceWanted": E.Call(Rt.FirstChanceFn); return Own.None;
             case "Rt.FirstChance": E.Call(Rt.RaiseFirstChanceFn); return Own.None;
             case "Rt.FramesWanted": E.Call(Rt.FramesWantedFn); return Own.None;
