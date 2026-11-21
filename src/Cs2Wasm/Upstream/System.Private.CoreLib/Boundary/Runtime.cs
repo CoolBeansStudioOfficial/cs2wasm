@@ -3011,10 +3011,19 @@ namespace Cs2Wasm.Runtime
             else if (k == 1 || k == 4)
             {
                 int pg = e & ~7;
-                int size = (Mem.LoadI32(pg + 20) >> 1) << 2;
+                int units = Mem.LoadI32(pg + 20) >> 1, size = units << 2;
                 int off = slot - pg - PageHead;
                 if (off < 0 || size == 0) return 0;
-                b = pg + PageHead + (int)((uint)off / (uint)size) * size;
+                // (without threads, the block's index by a multiplication: off is below a page, 2^14, and size at most
+                // MaxSmall, so off * ceil(2^32 / size) / 2^32 is within 2^-18 above off / size, whose fraction is at
+                // least 2^-11 below the next integer: the floor is the same. A division was most of this function)
+                if (!ThreadMode() && units <= MaxSmall / 4)
+                {
+                    if (s_recip == 0) RecipInit();
+                    uint m = (uint)Mem.LoadI32(s_recip + 4 * units);
+                    b = pg + PageHead + (int)(((ulong)(uint)off * m) >> 32) * size;
+                }
+                else b = pg + PageHead + (int)((uint)off / (uint)size) * size;
             }
             else return 0;
             if (b == 0) return 0;
@@ -3028,6 +3037,15 @@ namespace Cs2Wasm.Runtime
             return kind != 0 ? c : 0;
         }
         [System.ThreadStatic] static bool t_slotArray, t_atArray;
+        // (ceil(2^32 / (4 k)) for each block size 4 k of a page, SlotOwner; made the first time, without threads)
+        static int s_recip;
+        static void RecipInit()
+        {
+            int t = Alloc(4 * (MaxSmall / 4 + 1));
+            Mem.StoreI32(t, 0);
+            for (int k = 1; k <= MaxSmall / 4; k++) Mem.StoreI32(t + 4 * k, (int)(0xFFFFFFFFu / (uint)(4 * k) + 1));
+            s_recip = t;
+        }
 
         /// <summary>ArenaLink for a slot known by its address: the value to store (owned).</summary>
         public static int ArenaLinkAt(int val, int slot)
@@ -3047,7 +3065,9 @@ namespace Cs2Wasm.Runtime
             if (t_atSlot == slot) { c = t_atOwner; array = t_atArray; } else { c = SlotOwner(slot); array = t_slotArray; }
             t_atSlot = 0;
             if (c == 0) { if (old != 0) Release(Borrow<object>(old)); return; }
-            ArenaUnlink(old, c, array ? 0 : slot);
+            // (ArenaUnlink's two steps, one call fewer)
+            ArenaUnlinkOld(old, c, array ? 0 : slot);
+            if (t_backN != 0) AfterStore();
         }
 
         /// <summary>A block of references copied over slots a cycle can close through (a span's CopyTo into a list's
