@@ -755,9 +755,13 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   the target is not a `<>c`); the generated classes' own members (`GetMethods()` of `<>c`, a display class's
   fields but for expression trees') are not listed; a generic type's or method's generated class is reported as
   its definition where .NET reports a delegate's method on the constructed class; the emulation leaves out the
-  scopes of lowering's other temporaries (a lambda inside `??`, `?.`, an interpolated string with a handler, named
-  arguments out of order is numbered after its scope's other functions in Roslyn), goto statements' effect on
-  merging, variant interfaces, and lambdas in field initializers (Roslyn compiles one per constructor).
+  scopes of lowering's other temporaries (a lambda inside `??`, `?.`, named arguments out of order is numbered after
+  its scope's other functions in Roslyn), goto statements' effect on merging, variant interfaces, C# 14 extension
+  blocks' members. Handled besides: interpolated strings built by a handler (a scope), params collections (none),
+  initializers' lambdas (numbered in each constructor, after the body's own), primary constructors' parameters
+  (`this` captured), expression trees' lambdas (numbered, no method, their parameters no environment's). The check
+  over the whole suite (debug and release) finds no difference left; it compares names per class, so two lambdas
+  of one class with their numbers swapped would not show: test 156 prints them in order.
 
 - **Steps 8.2, 8.3: done (2026-11-18).** `MemberAccess.Instrumentable` says which accesses a hook runs at (not a
   `ref` or `out` argument, a deconstruction's target, an event's handlers); every hook form and failure path of the
