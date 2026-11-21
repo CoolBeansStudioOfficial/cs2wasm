@@ -1813,10 +1813,12 @@ sealed partial class RuntimeGen
             var cl = index.Candidates(target);
             IEnumerable<int> candidates = cl == index.All ? cl : cl.Concat(index.Special);
             var targetKey = Types.Key(target);
+            // (no array is one of most targets: told once, Types.ArraysMayBe, not by a test per array)
+            bool arraysMayBe = D.Types.ArraysMayBe(target);
             var ids = candidates.Where(id => D.SyntheticById.TryGetValue(id, out var syn)
                     ? syn.Interfaces.Any(i => Types.Key(i) == targetKey) || Types.IsObject(target)
                       || id < D.TypeById.Count && D.TypeById[id] is { } st && Types.Key(st) == targetKey
-                    : !D.DisplayById.ContainsKey(id) && D.Types.IsSubtype(D.TypeById[id], target)).ToList();
+                    : !D.DisplayById.ContainsKey(id) && !(D.TypeById[id] is IArrayTypeSymbol && !arraysMayBe) && D.Types.IsSubtype(D.TypeById[id], target)).ToList();
             e.Get(0); e.Op(Op.I32Eqz); e.If(); e.I32(0); e.Op(Op.Return); e.End();
             if (ids.Count == 0) { e.I32(0); continue; }
             int tid = e.AddLocal(ValType.I32);

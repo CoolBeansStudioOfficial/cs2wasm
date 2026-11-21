@@ -318,8 +318,11 @@ internal sealed partial class Sharing
             // (the candidates by the index, in id order as before)
             var allowed = _allIdSet ??= [.. _allIds];
             var ix = Index();
+            // (no array is a subtype of most types: Types.ArraysMayBe, once, not a test per array)
+            bool arrays = D.Types.ArraysMayBe(t);
             foreach (var id in ix.Candidates(t).Concat(ix.Special).Distinct().Order())
-                if (allowed.Contains(id) && (!Types.IsImmortalType(D.TypeById[id]) || D.DisplayById.ContainsKey(id)) && IdIs(id, t)) r.Add(id);
+                if (allowed.Contains(id) && (!Types.IsImmortalType(D.TypeById[id]) || D.DisplayById.ContainsKey(id))
+                    && !(!arrays && !D.DisplayById.ContainsKey(id) && D.TypeById[id] is IArrayTypeSymbol) && IdIs(id, t)) r.Add(id);
         }
         return _topIds[k] = r;
     }

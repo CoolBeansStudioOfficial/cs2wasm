@@ -49,14 +49,15 @@ static class RcFastPaths
         WasmFunction? destroy = s_loopsOnly ? DestroyOf(release) : null;
         var fns = m.Functions.Where(f => !f.IsImport).ToList();
         var hot = s_everywhere || s_loopsOnly ? fns.ToHashSet() : NullChecks.CalledFromLoops(fns, s_depth);
-        foreach (var f in fns)
+        // (each function by itself: on several threads, WasmModule.EachFunction)
+        m.EachFunction(f =>
         {
-            if (f == retain || f == release) continue;
+            if (f == retain || f == release) return;
             if (!s_loopsOnly && (!hot.Contains(f) || f.Body.Count > s_maxBody || f.Name.StartsWith("rt.", StringComparison.Ordinal) || f.Name.StartsWith("Cs2Wasm.Runtime.", StringComparison.Ordinal)
-                || !s_destroys && f.Name.StartsWith("destroy ", StringComparison.Ordinal))) continue;
+                || !s_destroys && f.Name.StartsWith("destroy ", StringComparison.Ordinal))) return;
             bool any = false;
             foreach (var ins in f.Body) if (ins.Op == Op.Call && (ReferenceEquals(ins.Ref, retain) || ReferenceEquals(ins.Ref, release))) { any = true; break; }
-            if (!any) continue;
+            if (!any) return;
             int np = f.Type.Params.Length;
             int p = -1, c = -1;
             int Local() { f.Locals.Add(ValType.I32); return np + f.Locals.Count - 1; }
@@ -97,6 +98,6 @@ static class RcFastPaths
             }
             if (s_debug) Console.Error.WriteLine($"rc fast {o.Count - f.Body.Count} {f.Body.Count} {f.Name}");
             f.Body = o;
-        }
+        });
     }
 }

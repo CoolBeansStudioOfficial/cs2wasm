@@ -553,8 +553,10 @@ internal sealed partial class Arenas
             var r = new List<(int id, ITypeSymbol t)>();
             // (only an array is a subtype of an array type: the arrays are among the special ones)
             var cl = target is IArrayTypeSymbol ? [] : subs.Candidates(target);
+            // (the special ones are the arrays: none is a subtype of most targets, Types.ArraysMayBe)
+            bool arrays = D.Types.ArraysMayBe(target);
             foreach (var id in cl == subs.All ? cl : cl.Concat(subs.Special))
-                if (D.Types.IsSubtype(D.TypeById[id], target)) r.Add((id, D.TypeById[id]));
+                if (!(D.TypeById[id] is IArrayTypeSymbol && !arrays) && D.Types.IsSubtype(D.TypeById[id], target)) r.Add((id, D.TypeById[id]));
             return subtypes[key] = r;
         }
         D.Mark("    arenas: subtype index");

@@ -173,6 +173,56 @@ internal sealed class WasmModule
     /// <summary>CS2WASM_TIMES=1: the encoder's own steps, milliseconds since the last.</summary>
     void Step(string what) { if (!s_times) return; Console.Error.WriteLine($"      {_encClock.ElapsedMilliseconds,6} ms  encode: {what}"); _encClock.Restart(); }
 
+    /// <summary>CS2WASM_SERIAL_PASSES=1: the passes that look at one function at a time run on this thread alone.</summary>
+    static readonly bool s_serialPasses = Environment.GetEnvironmentVariable("CS2WASM_SERIAL_PASSES") == "1";
+    /// <summary>From how many functions such a pass runs on several threads (CS2WASM_PARALLEL_FROM; 1 to check that a
+    /// small program's module is the same either way).</summary>
+    static readonly int s_parallelFrom = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_PARALLEL_FROM"), out var pf) && pf > 0 ? pf : 4096;
+
+    /// <summary>Runs a pass over every function that is not an import, on several threads. Only for a pass that reads
+    /// and writes the one function it is given (its body and locals), and of the others no more than what no pass
+    /// changes (their names, types, whether they are imports): then each function ends the same whatever order the
+    /// functions are done in, and the module is the one a loop over them in order makes. Locals' per-thread settings
+    /// (Locals.MayThrow, Threads, StackPointer) are this thread's on each. An exception is the one the loop in order
+    /// would have met first.</summary>
+    internal void EachFunction(Action<WasmFunction> pass)
+    {
+        var fns = Functions;
+        int n = fns.Count;
+        if (s_serialPasses || n < s_parallelFrom || Environment.ProcessorCount < 2)
+        {
+            foreach (var f in fns) if (!f.IsImport) pass(f);
+            return;
+        }
+        var mayThrow = Locals.MayThrow; bool threads = Locals.Threads; var sp = Locals.StackPointer;
+        const int Chunk = 512;
+        int next = 0;
+        var failures = new System.Collections.Concurrent.ConcurrentDictionary<int, Exception>();
+        int workers = Math.Min(Environment.ProcessorCount, 16);
+        Parallel.For(0, workers, new ParallelOptions { MaxDegreeOfParallelism = workers }, _ =>
+        {
+            var (m0, t0, s0) = (Locals.MayThrow, Locals.Threads, Locals.StackPointer);
+            Locals.MayThrow = mayThrow; Locals.Threads = threads; Locals.StackPointer = sp;
+            try
+            {
+                while (true)
+                {
+                    int start = Interlocked.Add(ref next, Chunk) - Chunk;
+                    if (start >= n) break;
+                    for (int i = start; i < Math.Min(n, start + Chunk); i++)
+                    {
+                        var f = fns[i];
+                        if (f.IsImport) continue;
+                        try { pass(f); }
+                        catch (Exception ex) { failures.TryAdd(i, ex); break; }
+                    }
+                }
+            }
+            finally { Locals.MayThrow = m0; Locals.Threads = t0; Locals.StackPointer = s0; }
+        });
+        if (!failures.IsEmpty) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failures[failures.Keys.Min()]).Throw();
+    }
+
     public Encoded Encode(bool optimize)
     {
         _encClock.Restart();
@@ -189,9 +239,9 @@ internal sealed class WasmModule
             Inliner.Module = this;
             Inliner.Run(Functions, ComputeMayThrow());
             Step("inline");
-            foreach (var f in Functions) if (!f.IsImport) { ConstBranches.Run(f); Peephole.Run(f); }
+            EachFunction(f => { ConstBranches.Run(f); Peephole.Run(f); });
             Step("const branches, peephole");
-            if (!s_noInitChecks) foreach (var f in Functions) if (!f.IsImport) InitChecks.Run(f);
+            if (!s_noInitChecks) EachFunction(f => InitChecks.Run(f));
             if (Functions.FirstOrDefault(f => f.Name == "rt.nonnull") is { } nonNull && Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_CHECKS") != "1")
                 foreach (var f in Functions) if (!f.IsImport) NullChecks.Run(f, nonNull);
             Step("init checks, null checks");
@@ -270,7 +320,7 @@ internal sealed class WasmModule
                 if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
                 {
                     Locals.MayThrow = mayThrow;
-                    try { foreach (var f in Functions) if (!f.IsImport && SmallBlocks.Run(f)) { Peephole.Run(f); Locals.Run(f); } }
+                    try { EachFunction(f => { if (SmallBlocks.Run(f)) { Peephole.Run(f); Locals.Run(f); } }); }
                     finally { Locals.MayThrow = null; }
                 }
                 Step("small blocks");
@@ -302,7 +352,7 @@ internal sealed class WasmModule
             // (the counts' common case written out in code that runs often: RcFastPaths.cs)
             RcFastPaths.Run(this, UsesThreads);
             Step("count fast paths");
-            if (Environment.GetEnvironmentVariable("CS2WASM_NO_IF_CONVERT") != "1") foreach (var f in Functions) if (!f.IsImport) IfConvert.Run(f);
+            if (Environment.GetEnvironmentVariable("CS2WASM_NO_IF_CONVERT") != "1") EachFunction(f => IfConvert.Run(f));
             Step("if convert");
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_COPIES") != "1") SmallBlocks.Variable(this);
             Step("small copies");
@@ -317,10 +367,10 @@ internal sealed class WasmModule
         }
         else if (Canon != null) FloatStores.Run(Functions, Canon);
 
-        if (optimize && Environment.GetEnvironmentVariable("CS2WASM_NO_FINAL_TIDY") != "1") foreach (var f in Functions) if (!f.IsImport && f.ForwardTo == null) Peephole.FinalTidy(f);
+        if (optimize && Environment.GetEnvironmentVariable("CS2WASM_NO_FINAL_TIDY") != "1") EachFunction(f => { if (f.ForwardTo == null) Peephole.FinalTidy(f); });
         Step("final tidy");
         // (locals that are never live at once share one: Locals.Coalesce)
-        if (optimize) foreach (var f in Functions) if (!f.IsImport && f.ForwardTo == null) Locals.Final(f);
+        if (optimize) EachFunction(f => { if (f.ForwardTo == null) Locals.Final(f); });
         Step("locals final");
         // (a frame is taken, checked against the stack's end and cleared by one function: Frames.cs)
         if (StackPointer != null && StackLo != null) Frames.Run(this, StackPointer, StackLo);
