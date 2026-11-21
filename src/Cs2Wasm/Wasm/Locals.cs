@@ -19,6 +19,75 @@ static partial class Locals
         Renumber(f);
     }
 
+    /// <summary>On the final bodies (WasmModule, after every other pass: those before read a local written once as one
+    /// value), Coalesce and the renumbering.</summary>
+    public static void Final(WasmFunction f)
+    {
+        if (s_noCoalesce || f.IsImport || f.Body.Count == 0) return;
+        Coalesce(f);
+        Renumber(f);
+    }
+
+    static readonly bool s_noCoalesce = Environment.GetEnvironmentVariable("CS2WASM_NO_COALESCE") == "1";
+
+    /// <summary>Locals of one type whose values are never live at once share one local: x and y interfere when one is
+    /// written where the other is live after the write, and every local live at the function's entry (it holds its
+    /// zero from there) interferes with every other such. Each local in turn takes the first one of its type it does not
+    /// interfere with. In the engine's baseline tier every local is a slot of the frame, cleared at each call: fewer
+    /// locals, a shorter prologue and a smaller frame (the compiler's temporaries and inlined bodies' locals are many and
+    /// short-lived).</summary>
+    static void Coalesce(WasmFunction f)
+    {
+        int np = f.Type.Params.Length, nl = np + f.Locals.Count;
+        if (f.Locals.Count < 2) return;
+        var fl = Analyze(f);
+        var b = f.Body;
+        int w = fl.Words;
+        var inter = new ulong[nl][];
+        for (int i = 0; i < nl; i++) inter[i] = new ulong[w];
+        void Edge(int x, ulong[] live)
+        {
+            for (int k = 0; k < w; k++)
+            {
+                ulong bits = live[k];
+                while (bits != 0)
+                {
+                    int t = System.Numerics.BitOperations.TrailingZeroCount(bits); bits &= bits - 1;
+                    int y = k * 64 + t;
+                    if (y == x || y >= nl) continue;
+                    Set(inter[x], y); Set(inter[y], x);
+                }
+            }
+        }
+        for (int i = 0; i < b.Count; i++)
+            if (b[i].Op is Op.LocalSet or Op.LocalTee && b[i].Imm < nl) Edge((int)b[i].Imm, fl.LiveOut[i]);
+        var entry = fl.LiveIn[0];
+        for (int x = 0; x < nl; x++) if (Has(entry, x)) Edge(x, entry);
+        // (each local's class: the first local of its type it joined; parameters stay themselves)
+        var rep = new int[nl];
+        for (int i = 0; i < nl; i++) rep[i] = i;
+        var members = new Dictionary<int, List<int>>();
+        bool any = false;
+        for (int x = np; x < nl; x++)
+        {
+            var t = f.Locals[x - np];
+            foreach (var (r, list) in members)
+            {
+                if (f.Locals[r - np] != t) continue;
+                bool ok = true;
+                foreach (var m in list) if (Has(inter[x], m)) { ok = false; break; }
+                if (!ok) continue;
+                list.Add(x); rep[x] = r; any = true;
+                break;
+            }
+            if (rep[x] == x) members[x] = [x];
+        }
+        if (!any) return;
+        for (int i = 0; i < b.Count; i++)
+            if (b[i].Op is Op.LocalGet or Op.LocalSet or Op.LocalTee && b[i].Imm < nl && rep[b[i].Imm] != b[i].Imm)
+                b[i] = b[i] with { Imm = rep[b[i].Imm] };
+    }
+
     sealed class Flow
     {
         public int N, Words;
