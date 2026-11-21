@@ -363,7 +363,7 @@ sealed partial class FunctionCompiler
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
     void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null,
                                  Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false, bool fresh = false, bool owned = false, bool iso = false, bool initNull = false,
-                                 ITypeSymbol? structContainer = null)
+                                 ITypeSymbol? structContainer = null, ITypeSymbol? valueType = null, bool viaPointer = false)
     {
         if (Types.IsStruct(t))
         {
@@ -410,7 +410,13 @@ sealed partial class FunctionCompiler
             int took = storeLock || byAddress && D.ThreadMode ? Scratch(ValType.I32) : -1;
             if (storeLock) { pushContainer!(); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(site!.StoreLock); E.Set(took); }
             if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : owned ? site.LinkOwned : iso ? site.LinkIso : site.Link); E.Set(val); }
-            else if (byAddress) { if (D.ThreadMode) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.StoreLockAt(t, true)); E.Set(took); } E.Get(val); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.LinkAt(t)); E.Set(val); }
+            else if (byAddress)
+            {
+                // (the type graph learns what this store can put where: RefStores.cs)
+                D.Arenas.RefStore(t, valueType, viaPointer);
+                if (D.ThreadMode) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.StoreLockAt(t, true)); E.Set(took); }
+                E.Get(val); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.LinkAt(t)); E.Set(val);
+            }
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
             EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
             int a = Scratch(ValType.I32);
@@ -2506,9 +2512,12 @@ sealed partial class FunctionCompiler
             else if (!F.InRefWriter) sh.RefStore(Type, srcs, F.M.ToDisplayString());
         }
         int _addr = -1, _off;
+        /// <summary>The static type of the value stored (NoteValue), for a store by address (RefStores.cs).</summary>
+        ITypeSymbol? _valueType;
         public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
         public override void NoteValue(ITypeSymbol? vt, IOperation? value)
         {
+            _valueType = vt;
             var srcs = F.Sh != null && value != null ? F.FlowSrcs(value) : null;
             site?.AddValue(vt, srcs);
             Record(srcs);
@@ -2539,7 +2548,8 @@ sealed partial class FunctionCompiler
             }
             // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
-                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned, iso: iso, initNull: initNull, structContainer: structContainer);
+                pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned, iso: iso, initNull: initNull, structContainer: structContainer,
+                valueType: _valueType, viaPointer: viaPointer);
             if (elements && F.T.NeedsRc(Type)) F.D.NoteFieldWrite(F.E, Driver.ElementsKey);
             return needResult ? Load() : Own.None;
         }

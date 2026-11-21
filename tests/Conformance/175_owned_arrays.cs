@@ -156,8 +156,8 @@ class CHolder
     }
 }
 
-// D: written through a span of the field's array (its maker stores elements too: a store through a span alone
-// records no value at the array's site, a gap of the type graph's own, docs/AUDIT.md)
+// D: written through a span of the field's array (its maker stores elements too; a store through a span alone is
+// test 178's)
 class DItem { public DHolder? Back; }
 class DHolder
 {
