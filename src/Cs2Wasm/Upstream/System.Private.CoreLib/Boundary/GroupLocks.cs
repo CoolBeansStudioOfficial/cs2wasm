@@ -122,7 +122,7 @@ namespace Cs2Wasm.Runtime
             {
                 int cur = Atomic.Load32(ref Mem.RefI32(w));
                 if (cur == 0) { if (Atomic.CompareExchange32(ref Mem.RefI32(w), 0, me) == 0) return; continue; }
-                if (++n < 128) continue;
+                if (++n < 2048) continue;
                 if (DeadlockDump() && n > 200000) Threads.LockTimeout(cur);
                 if (Threads.MayBlock())
                 {
