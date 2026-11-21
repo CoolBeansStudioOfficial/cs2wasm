@@ -1076,25 +1076,25 @@ namespace Cs2Wasm.Runtime
         const int MsCls = 6, MsTypes = 16384;
         const int TPages = 0, TEmptyPages = 1, THuge = 2, THugeGran = 3, TFreeRuns = 4, TFreeGran = 5, TFreeMax = 6,
             TOther = 7, TOddBlocks = 8, TOddBytes = 9, TMemberWords = 10, TArenaRecords = 11, TFreePageList = 12, TRunLeft = 13,
-            THugeObj = 14, THugeArena = 15, TLeafGran = 16, TMwLive = 17, TBadTags = 18, TObjects = 19, TWords = 24, THashed = 34, TCount = 40;
+            THugeObj = 14, THugeArena = 15, TLeafGran = 16, TMwLive = 17, TBadTags = 18, TObjects = 19, TWords = 24, THashed = 34, THugeBins = 40, TCount = 56;
         static int s_ms, s_msRec, s_msGrows;
         static int MsClsAt(int c) => s_ms + c * MsCls * 4;
         static int MsTotAt(int k) => s_ms + Classes * MsCls * 4 + k * 4;
-        static int MsTypeAt(int i) => s_ms + Classes * MsCls * 4 + TCount * 4 + i * 12;
+        static int MsTypeAt(int i) => s_ms + Classes * MsCls * 4 + TCount * 4 + i * 20;
         static int MsBuf => MsTypeAt(MsTypes);
-        const int MsArea = Classes * MsCls * 4 + TCount * 4 + MsTypes * 12 + 2048;
+        const int MsArea = Classes * MsCls * 4 + TCount * 4 + MsTypes * 20 + 2048;
         static int s_msAt;
 
         static void MsAdd(int addr, int v) => Mem.StoreI32(addr, Mem.LoadI32(addr) + v);
 
-        static void MsType(int typeId, int bytes)
+        static void MsType(int typeId, int bytes, int cyc, int hashed)
         {
             int i = (int)((uint)(typeId * -1640531535) >> 18) & (MsTypes - 1);
             for (int n = 0; n < MsTypes; n++, i = (i + 1) & (MsTypes - 1))
             {
                 int e = MsTypeAt(i), k = Mem.LoadI32(e);
                 if (k == 0) { Mem.StoreI32(e, typeId + 1); k = typeId + 1; }
-                if (k == typeId + 1) { MsAdd(e + 4, bytes); MsAdd(e + 8, 1); return; }
+                if (k == typeId + 1) { MsAdd(e + 4, bytes); MsAdd(e + 8, 1); MsAdd(e + 12, cyc); MsAdd(e + 16, hashed); return; }
             }
         }
 
@@ -1105,7 +1105,7 @@ namespace Cs2Wasm.Runtime
             int w = Mem.LoadI32(b);
             if (w == 0) return 0;
             int o = w <= PrefixMark ? b + ArenaPrefix : b;
-            MsType(Mem.LoadI32(o + 4), bytes);
+            MsType(Mem.LoadI32(o + 4), bytes, w <= PrefixMark ? 1 : 0, (Mem.LoadI32(o + 8) & 0x1FFFFFFF) != 0 ? 1 : 0);
             MsAdd(MsTotAt(TObjects), 1);
             {
                 // (the header's third word: an identity hash made, pinned, marked, finalized)
@@ -1175,6 +1175,8 @@ namespace Cs2Wasm.Runtime
                     int r = MsObject(a, n << GShift);
                     if (r != 0) MsAdd(MsTotAt(THugeObj), n);
                     if ((r & 2) != 0) MsAdd(MsTotAt(THugeArena), n);
+                    // (memory that is no object, by its size: 16, 64, 256, 1024 KB and above)
+                    if (r == 0) { int bin = n < 16 ? 0 : n < 64 ? 1 : n < 256 ? 2 : n < 1024 ? 3 : 4; MsAdd(MsTotAt(THugeBins + bin), 1); MsAdd(MsTotAt(THugeBins + 5 + bin), n); }
                     a += n << GShift;
                 }
                 else if (k == 3)
@@ -1255,6 +1257,9 @@ namespace Cs2Wasm.Runtime
             MsText(" pinned "); MsNum(MsTot(THashed + 1)); MsText(" marked "); MsNum(MsTot(THashed + 2)); MsText(" finalized "); MsNum(MsTot(THashed + 3));
             MsText(" | identity hashes asked "); MsNum(s_msHashCalls); MsText(", made "); MsNum(s_msHashFirst);
             MsEnd();
+            MsText("memstats "); MsText(what); MsText(" huge blocks that are no object, by size (count/KB):");
+            for (int i = 0; i < 5; i++) { MsText(" "); MsNum(MsTot(THugeBins + i)); MsText("/"); MsNum(MsTot(THugeBins + 5 + i)); }
+            MsEnd();
             MsText("memstats "); MsText(what); MsText(" class: size pages in-use objects cycle-capable with-words empty | live KB, held free KB"); MsEnd();
             for (int c = 4; c < Classes; c++)
             {
@@ -1277,7 +1282,7 @@ namespace Cs2Wasm.Runtime
                 }
                 if (best < 0) break;
                 int id = Mem.LoadI32(best) - 1;
-                MsText("memstats "); MsText(what); MsText(" type "); MsKb("", bb); MsText(" "); MsNum(Mem.LoadI32(best + 8)); MsText(" ");
+                MsText("memstats "); MsText(what); MsText(" type "); MsKb("", bb); MsText(" "); MsNum(Mem.LoadI32(best + 8)); MsText(" "); MsNum(Mem.LoadI32(best + 12)); MsText(" "); MsNum(Mem.LoadI32(best + 16)); MsText(" ");
                 MsText(TypeInfo.FullName(id) ?? "?");
                 MsEnd();
                 Mem.StoreI32(best, -Mem.LoadI32(best));
