@@ -1667,6 +1667,7 @@ sealed partial class FunctionCompiler
         E.Get(target); E.Store(Op.I32Store, DelegateTarget);
         E.Get(obj); E.I32Fn(D.Module, fn); E.Store(Op.I32Store, DelegateFn);
         D.NoteIndirectTarget(Driver.DelegateBucket(dt), fn);
+        D.NoteDelegateTarget(T.Canonical(dt), fn);
         E.Get(obj);
         FreeScratch(ValType.I32, obj); FreeScratch(ValType.I32, target);
     }
@@ -1786,7 +1787,7 @@ sealed partial class FunctionCompiler
             E.Get(_thisLocal); E.Load(Op.I32Load, DelegateTarget);
             for (int i = 0; i < nParams; i++) E.Get(firstParam + i);
             E.Get(_thisLocal); E.Load(Op.I32Load, DelegateFn);
-            E.Emit(Op.CallIndirect, 0, D.IndirectBucket(Driver.DelegateBucket(M.ContainingType)), sig);
+            E.Emit(Op.CallIndirect, 0, D.DelegateCallBucket(T.Canonical(M.ContainingType)), sig);
             E.Op(Op.Return);
         }
         E.End();
@@ -1804,7 +1805,7 @@ sealed partial class FunctionCompiler
         E.Get(d); E.Load(Op.I32Load, DelegateTarget);
         for (int i = 0; i < nParams; i++) E.Get(firstParam + i);
         E.Get(d); E.Load(Op.I32Load, DelegateFn);
-        E.Emit(Op.CallIndirect, 0, D.IndirectBucket(Driver.DelegateBucket(M.ContainingType)), sig);
+        E.Emit(Op.CallIndirect, 0, D.DelegateCallBucket(T.Canonical(M.ContainingType)), sig);
         if (res >= 0) E.Set(res);
         E.Get(i0); E.I32(1); E.Op(Op.I32Add); E.Set(i0);
         E.Br(top);

@@ -275,6 +275,64 @@ internal sealed partial class Driver
         lock (_bucketIds) _bucketFns[id].Add(f);
     }
 
+    // A delegate's Invoke of one constructed type reaches the functions delegates of a type it can be converted from
+    // were made with: the same type, or another instance of its definition whose type arguments variance allows
+    // (`Action<object>` held as an `Action<string>`), not every instance of the definition (an `Action<Diagnostic>`'s
+    // lambda is never run by `Action<AssemblyLoadContext>.Invoke`).
+    static readonly bool s_noDelegateTypes = Environment.GetEnvironmentVariable("CS2WASM_NO_DELEGATE_TYPES") == "1";
+    readonly Dictionary<string, List<(INamedTypeSymbol type, WasmFunction fn)>> _delegateTargets = [];
+    readonly Dictionary<int, INamedTypeSymbol> _delegateBuckets = [];
+    readonly Dictionary<int, List<WasmFunction>> _delegateBucketFns = [];
+
+    /// <summary>A delegate of type dt made with fn (beside NoteIndirectTarget's bucket of its definition).</summary>
+    internal void NoteDelegateTarget(ITypeSymbol dt, WasmFunction fn)
+    {
+        if (dt is not INamedTypeSymbol nt) return;
+        lock (_bucketIds)
+        {
+            var key = Types.Key(nt.OriginalDefinition);
+            if (!_delegateTargets.TryGetValue(key, out var l)) _delegateTargets[key] = l = [];
+            l.Add((nt, fn));
+        }
+    }
+
+    /// <summary>The bucket of an Invoke's indirect call on delegates of the constructed type dt.</summary>
+    internal int DelegateCallBucket(ITypeSymbol dt)
+    {
+        if (s_noDelegateTypes || dt is not INamedTypeSymbol nt || !nt.IsGenericType) return IndirectBucket(DelegateBucket(dt));
+        int id = IndirectBucket("dc:" + Types.Key(nt));
+        lock (_bucketIds) _delegateBuckets[id] = nt;
+        return id;
+    }
+
+    /// <summary>Whether a delegate made as `from` can be invoked through `to`'s Invoke: one definition, each type
+    /// argument the same, or (a variant parameter's, reference types) convertible the way its variance allows; the
+    /// containing types' arguments the same. Unsure: true.</summary>
+    bool DelegateConvertible(INamedTypeSymbol from, INamedTypeSymbol to)
+    {
+        if (!SymbolEqualityComparer.Default.Equals(from.OriginalDefinition, to.OriginalDefinition)) return false;
+        if (Types.Key(from) == Types.Key(to)) return true;
+        for (INamedTypeSymbol? a = from.ContainingType, b = to.ContainingType; a != null || b != null; a = a?.ContainingType, b = b?.ContainingType)
+            if (a == null || b == null || Types.Key(a) != Types.Key(b)) return false;
+        var ps = from.OriginalDefinition.TypeParameters;
+        if (ps.Length != from.TypeArguments.Length || ps.Length != to.TypeArguments.Length) return true;
+        for (int i = 0; i < ps.Length; i++)
+        {
+            ITypeSymbol f = from.TypeArguments[i], t = to.TypeArguments[i];
+            if (Types.Key(f) == Types.Key(t)) continue;
+            if (f is ITypeParameterSymbol || t is ITypeParameterSymbol) return true;
+            // (variance converts only between reference types)
+            if (!f.IsReferenceType || !t.IsReferenceType) return false;
+            switch (ps[i].Variance)
+            {
+                case VarianceKind.Out: if (!Types.IsSubtype(f, t)) return false; break;
+                case VarianceKind.In: if (!Types.IsSubtype(t, f)) return false; break;
+                default: return false;
+            }
+        }
+        return true;
+    }
+
     List<WasmFunction>? _tableFns;
     /// <summary>Every function some code can put in the table (an unbucketed indirect call reaches them all).</summary>
     List<WasmFunction> TableFns()
@@ -308,7 +366,19 @@ internal sealed partial class Driver
         if (b <= 0 || b >= _bucketFns.Count) return TableFns();
         var key = _bucketKeys[b];
         if (key == FilterBucket) return _bucketFns[b];
-        return _bucketFns[b].Concat(TableFns().Where(f => f.TableRoot)).Concat(_objectArrayThunks.Values.Select(t => t.Fn));
+        IEnumerable<WasmFunction> own = _bucketFns[b];
+        if (_delegateBuckets.TryGetValue(b, out var to))
+        {
+            if (!_delegateBucketFns.TryGetValue(b, out var fns))
+            {
+                fns = [];
+                if (_delegateTargets.TryGetValue(Types.Key(to.OriginalDefinition), out var made))
+                    foreach (var (from, fn) in made) if (DelegateConvertible(from, to)) fns.Add(fn);
+                _delegateBucketFns[b] = fns;
+            }
+            own = fns;
+        }
+        return own.Concat(TableFns().Where(f => f.TableRoot)).Concat(_objectArrayThunks.Values.Select(t => t.Fn));
     }
 
     /// <summary>Whether a store of one of the keys may run while the local is in scope (section 4.1: a variable
@@ -442,7 +512,7 @@ internal sealed partial class Driver
         var work = new Queue<WasmFunction>(); work.Enqueue(root);
         string r = " (no chain found)";
         int steps = 0;
-        while (work.Count > 0 && steps++ < 200000)
+        while (work.Count > 0 && steps++ < 20000)
         {
             var f = work.Dequeue();
             if (BorrowWrites.TryGetValue(f, out var fw) && fw.Contains(key))
