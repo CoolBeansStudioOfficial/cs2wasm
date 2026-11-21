@@ -31,9 +31,9 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Hello world size (test 145) | 27,825 B | < 28,383 B |
+| 4 | Hello world size (test 145) | 28,120 B (stream L round 2: the allocator's rounded-size entries; 27,744 before) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.5 s vs 6.3 s, 2.0x (main 3810a98 with J, K, L, M; interleaved, `tools/selfhost-ab.sh`, 3 rounds; was 2.7x this morning) | < NativeAOT-LLVM |
-| 4 | Same: peak memory | 344 MB vs 322 MB, 1.07x (same run; main before J and L 568.9 MB) | < NativeAOT-LLVM's, same measure |
+| 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (stream L round 2, interleaved, 3 rounds; main 6a346d8 344.2 MB). Thin: the heap's top is 290.8 MiB, 1.0 MiB under the memory's growth step (an eighth) to 328 MiB | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 44.0 MB vs 129 MB (no threads, shipped, main 3810a98) | met; next waste: code (36.2 MB) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | not re-tried since 11-17 | plays, log equals the oracle's |
@@ -54,12 +54,12 @@ releases. So the two levers, in order:
 2. **Code quality in the baseline tier** (where the compiler runs): calls and instructions per operation. IR
    passes where the WASM passes cannot see (steps 5 and 6), driven by the hot functions of the profile.
 
-Memory (measured 2026-11-20, stream L, `CS2WASM_MEMSTATS=1`): the heap only grows and at its peak holds the same
-objects as .NET's after a full collection (4.7 million, type by type); the allocator holds 4 MB free. What is left
-above NativeAOT-LLVM's 322 MB is per object: 32 bytes of arena words before each of the 3.7 million members (was 56),
-a 12-byte header (NativeAOT's is 8), 29 MB of data (type tables, records, the frame names; 4.7 MB literals), the
-memory's growth step (an eighth). Fewer cycle-capable objects (streams I, J) is the lever: each one that stops
-being one saves 32 bytes.
+Memory (stream L, `CS2WASM_MEMSTATS=1`, 2026-11-21): the heap only grows and at its peak holds the same objects as
+.NET's after a full collection (4.6 million, type by type). Below NativeAOT-LLVM's 322 MB now (306 MB), by a thin
+margin: the heap's top (290.8 MiB) is 1.0 MiB under the step at which the memory grows by an eighth, so a megabyte more
+of live objects is 344 MB again. Per object, what is left against NativeAOT: the 12-byte header (its is 8: 4.6 million
+times 4 bytes, about 18 MB), 32 bytes before each of 0.54 million arena members (17 MB; side words of 8 bytes for
+half of them), 13 MB of data below the heap.
 
 **Found 2026-11-20 (CS2WASM_ARENA_DEBUG on the self-hosted build): lever 1 is not a matter of proving a few hot
 sites.** One cycle group holds 19,847 types, `System.Object` among them, and with it the parser (LanguageParser),
@@ -107,8 +107,8 @@ Each stream is independent of the others' files where marked, so it can run in a
 |---|---|---|---|
 | I. Value sources everywhere | record sources precisely at every store, argument and return (boxed generics, conversions, interface results, conditionals), also without threads; then `Sharing.SiteTypeIds` on by default where it narrows | Compiler/Expressions.cs, Calls.cs, Sharing.cs | done 2026-11-21: on by default, sound (test 171), but the self-hosted compiler's group only 20,717 to 20,636 types; its bound with every source known is 20,555 (Log) |
 | J. Owned arrays | an array filled while only its maker knows it and then kept by a new object's readonly field is a node of its own in the type graph (Roslyn's green nodes' child arrays against its builders' arrays) | Compiler/OwnedArrays.cs (new), Arenas.cs | done 2026-11-20: green nodes out of the cycle graph (268 types); self-hosted 14.1 to 11.9 s, 470 to 295 MB |
-| K. Baseline-tier code quality | from the side-by-side profile: counted reads whose count can sink to the one path that keeps the value, static-initializer checks, constant-length bounds checks, frame setup, small calls left | Wasm/*, Compiler where a pass needs a fact | done 2026-11-20: six changes (Log); micro 1.876x to 1.847x, self-hosted 2.74x to 2.65x NativeAOT (quiet rounds); TryGetNode's count needs per-array element stores (left) |
-| L. Self-hosted memory | where the 470 MB against 239 go (member words, counts, allocator waste by size class, pages held) and the structural cuts | Boundary/Runtime.cs allocator (after C merges) | first pass done: report `CS2WASM_MEMSTATS=1`; 568.9 to 482.9 MB (members' words inline, sparse words aside, frame names in UTF-8); the rest is per object (Log) |
+| K. Baseline-tier code quality | from the side-by-side profile: counted reads whose count can sink to the one path that keeps the value, static-initializer checks, constant-length bounds checks, frame setup, small calls left | Wasm/*, Compiler where a pass needs a fact | done 2026-11-20: six changes (Log); micro 1.876x to 1.847x, self-hosted 2.74x to 2.65x NativeAOT (quiet rounds). Round 2 done 2026-11-21: count fast paths, frames in place, zero-skipping range releases; self-hosted 2.04x to 1.98x. Left: typed releases for borrows (branch claude/k2-throw-only-wip), dispatch stubs |
+| L. Self-hosted memory | where the 470 MB against 239 go (member words, counts, allocator waste by size class, pages held) and the structural cuts | Boundary/Runtime.cs allocator (after C merges) | first pass done: report `CS2WASM_MEMSTATS=1`; 568.9 to 482.9 MB (members' words inline, sparse words aside, frame names in UTF-8); the rest is per object (Log); round 2 (2026-11-21): 344.2 to 306.0 MB, size steps of 4 bytes, wider above 256, rounded at compile time |
 
 Tools for them: `tools/profcompare.mjs` (two profiles by category and by Roslyn method), `tools/profsize.mjs` (self
 time by callee size), `tools/profcallers.mjs`, `tools/selfhost-ab.sh` (interleaved self-hosted builds against
@@ -273,3 +273,25 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   its value against its slot type, and every array type of that element type holds it (Compiler/RefStores.cs, AUDIT).
   Self-hosted compiler (main 3810a98, before stream I): groups and cycle types unchanged (61, 38,881), time the same (10.68 s against 10.74),
   output byte-identical. Suite 193 passed checked and as shipped.
+- 2026-11-21, stream K round 2 (on main 3810a98): profiled against NativeAOT-LLVM of the same sources (13.1 s against
+  5.9 s, eager; the count functions' own time 1.36 s, the largest share left in reach). Kept: the counts' common case
+  written out in the functions a loop calls three deep (`Wasm/RcFastPaths.cs`, no threads; parser bench 4%, micro
+  0.972; the whole functions inlined everywhere were 7% at twice the size), frames up to 64 bytes taken in place there
+  (parser bench 2.8%), range releases skipping all-zero elements. Self-hosted compiler 10.26 to 9.94 s on a quiet
+  machine, 8 interleaved rounds, faster in each (2.04x to 1.98x NativeAOT-LLVM), 72.1 to 81.2 MB. Hello world 27,745 to
+  27,912 bytes. Suite 195 passed checked and as shipped (rebased on 5f7c98d). Dropped: struct helpers inlined (no gain). Parked: borrows
+  across throw-only stores (branch claude/k2-throw-only-wip), which pay only with typed releases. docs/AUDIT.md.
+- 2026-11-21, stream L round 2 (branch claude/stream-l2-memory, on 6a346d8): self-hosted compiler 344.2 MB to
+  306.0 MB against NativeAOT-LLVM's 322.2 MB, time unchanged (interleaved, 3 rounds: main 10.6-11.1 s, L 10.7-11.1 s,
+  NativeAOT 4.9-5.5 s). With J's green nodes out of the cycle graph the report showed 4.6 million objects, 0.54
+  million members, and what the size classes cost: blocks rounded to 8 bytes (an object whose fields need 4 took 4
+  more: Roslyn's 36-byte tokens 40), and 380 classes above 512 bytes holding 3.4 MB of blocks in 7.8 MB of pages.
+  Cut: small sizes in steps of 4 bytes to 128, 8 to 256, eight per doubling above (a class with an 8-byte field a
+  multiple of 8, so its block is at one); the smallest block 8 bytes without threads (side words in 8 bytes, an
+  object of 12 in 12); a constant size rounded at compile time (Rt.AllocObjectC / FreeObjectC: the rounding in the
+  hot path had cost the allocation micro benchmarks 10 to 26% in the baseline tier). micro --baseline 1.83x/1.82x
+  against main's 1.87x/1.87x; bench 0.95x/0.96x against 0.95x/0.95x, 16.0 MB both; hello world 27,744 to 28,120 B.
+  Suite 192/192 checked and as shipped (in one run of five 070_files and 127 failed in both modes: 127's async leak
+  is the intermittent one on main; 070's directory name is the same in every run, the host's random seed being a
+  constant, so its checked and shipped runs collide when they overlap, main's too). The report itself: a page on the
+  empty list keeps a stale header (read as a size class out of its table, a trap in the self-hosted build).

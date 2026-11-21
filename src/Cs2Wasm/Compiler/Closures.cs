@@ -16,6 +16,11 @@ internal sealed class Display
     /// <summary>Compiler slots of state machines (state, current value, awaiters, spills), released with the object.</summary>
     public readonly Dictionary<string, (int offset, ITypeSymbol type)> ExtraSlots = [];
     public int Size = 16;
+    /// <summary>The largest alignment a slot needs (8: the object is allocated at a multiple of 8, AllocSize).</summary>
+    public int MaxAlign = 4;
+    /// <summary>The size it is allocated and freed with: a multiple of 8 when a slot needs 8-byte alignment (the
+    /// allocator hands out blocks at a multiple of 4 otherwise).</summary>
+    public int AllocSize => MaxAlign >= 8 ? (Size + 7) & ~7 : Size;
     public Display? Parent;
     public int TypeId;
     internal object? Owner;   // the FunctionCompiler that allocates it
@@ -240,6 +245,7 @@ sealed partial class FunctionCompiler
         var t = type ?? T.Resolve(sym switch { ILocalSymbol l => l.Type, IParameterSymbol p => p.Type, _ => throw new CompileException("capture") }, Map);
         var (size, align) = T.StorageOf(t);
         d.Size = (d.Size + align - 1) / align * align;
+        d.MaxAlign = Math.Max(d.MaxAlign, align);
         d.Slots[sym] = (d.Size, t);
         d.Vars.Add(sym);
         d.Size += size;
@@ -306,7 +312,7 @@ sealed partial class FunctionCompiler
         {
             // release the previous iteration's display, allocate a fresh one
             E.Get(d.Local); E.Call(Rt.Release);
-            E.I32(d.Size); E.Tid(d.TypeId); E.Call(Rt.AllocObject); E.Set(d.Local);
+            E.I32(d.AllocSize); E.Tid(d.TypeId); E.Call(Rt.AllocObject); E.Set(d.Local);
         }
         E.Get(d.Local); PushDisplayPtr(d.Parent, retain: true); E.Store(Op.I32Store, 12);
         if (key == s_fnKey)

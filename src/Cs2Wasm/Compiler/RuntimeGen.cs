@@ -314,6 +314,8 @@ internal sealed partial class RuntimeFns
     public WasmFunction ReleaseRange(ITypeSymbol et) => Range(et, release: true);
     public WasmFunction RetainRange(ITypeSymbol et) => Range(et, release: false);
 
+    static readonly bool s_noZeroSkip = Environment.GetEnvironmentVariable("CS2WASM_NO_ZERO_SKIP") == "1";
+
     WasmFunction Range(ITypeSymbol et, bool release)
     {
         et = D.Types.Canonical(et);
@@ -325,6 +327,18 @@ internal sealed partial class RuntimeFns
             e.Get(0); e.Get(1); e.I32(size); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(end);
             var brk = e.Block(); var top = e.Loop();
             e.Get(0); e.Get(end); e.Op(Op.I32GeU); e.BrIf(brk);
+            // (an element that is all zeros holds nothing to count: eight bytes of them passed at once. A list
+            // builder's array is cleared whole at every reuse, and past its count it is all nulls)
+            if (release && !s_noZeroSkip && size is 4 or 8)
+            {
+                var skip = e.Block();
+                if (size == 4) { e.Get(0); e.I32(8); e.Op(Op.I32Add); e.Get(end); e.Op(Op.I32GtU); e.BrIf(skip); }
+                e.Get(0); e.Load(Op.I64Load); e.Op(Op.I64Eqz); e.Op(Op.I32Eqz); e.BrIf(skip);
+                e.Get(0); e.I32(8); e.Op(Op.I32Add); e.Set(0);
+                e.Br(top);
+                e.End();
+                if (size == 4) { e.Get(0); e.Load(Op.I32Load); e.Op(Op.I32Eqz); e.If(); e.Get(0); e.I32(4); e.Op(Op.I32Add); e.Set(0); e.Br(top); e.End(); }
+            }
             if (Types.IsRef(et))
             {
                 e.Get(0); e.Load(Op.I32Load);
@@ -488,6 +502,9 @@ sealed partial class RuntimeGen
         D.LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1);
         D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "InvalidCast", 2);
         D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeObject", 2);
+        // (the two for a size already rounded: SizeAllocations)
+        D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocObjectC", 2);
+        D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeObjectC", 2);
         D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1);
         if (D.ThreadMode && RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareCheckFail", 1);
         if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0); }
@@ -594,7 +611,7 @@ sealed partial class RuntimeGen
                     else if (Types.IsStruct(t) && D.Types.LayoutOf(t).HasRefs) { e.Get(0); e.I32(off); e.Op(Op.I32Add); e.Call(rt.ReleaseStruct(t)); }
                 }
             }
-            if (free) { e.Get(0); e.I32(disp.Size); e.Call(rt.Free); }
+            if (free) { e.Get(0); e.I32(disp.AllocSize); e.Call(rt.Free); }
             return;
         }
         var type = D.TypeById[id];
@@ -1241,6 +1258,64 @@ sealed partial class RuntimeGen
         };
     }
 
+    /// <summary>The allocator's size for a request, as Rt.RoundSmall gives it at run time (steps of 4 to 128 bytes, 8 to
+    /// 256, eight per doubling to 2048; a multiple of 4 above).</summary>
+    public static int RoundSmall(int n)
+    {
+        if (n <= 128 || n > 2048) return (n + 3) & ~3;
+        if (n <= 256) return (n + 7) & ~7;
+        int step = 1 << (28 - System.Numerics.BitOperations.LeadingZeroCount((uint)(n - 1)));
+        return (n + step - 1) & ~(step - 1);
+    }
+
+    /// <summary>A call that makes or frees an object of a size known here (a constant argument) goes to the entry that
+    /// takes the size already rounded (Rt.AllocObjectC, FreeObjectC and the arena's two): the allocator's hot path does
+    /// no rounding. (Its sizes are in steps that widen with the size: computing them at every allocation cost the
+    /// baseline tier a tenth on the allocation micro benchmarks.)</summary>
+    void SizeAllocations()
+    {
+        var alloc = D.Rt.AllocObject;
+        var allocC = D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocObjectC", 2).Fn;
+        var free = D.Rt.Free;
+        var freeC = D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeObjectC", 2).Fn;
+        var plain = D.Module.Functions.FirstOrDefault(f => f.Name == alloc.Name + " [plain]");
+        WasmFunction? allocArena = null, allocArenaC = null, freeArena = null, freeArenaC = null;
+        if (D.Arenas.Enabled)
+        {
+            allocArena = D.Arenas.RuntimeFn("AllocObjectArena", 2); allocArenaC = D.Arenas.RuntimeFn("AllocObjectArenaC", 2);
+            freeArena = D.Arenas.RuntimeFn("FreeObjectArena", 2); freeArenaC = D.Arenas.RuntimeFn("FreeObjectArenaC", 2);
+            allocArenaC.IsObjectAlloc = true;
+        }
+        allocC.IsObjectAlloc = true;
+        int prefix = D.ThreadMode ? 40 : 32;
+        foreach (var f in D.Module.Functions)
+        {
+            if (f.IsImport || f == alloc || f == plain || f == allocArena || f == free || f == freeArena) continue;
+            var b = f.Body;
+            for (int i = 2; i < b.Count; i++)
+            {
+                if (b[i].Op != Op.Call || b[i].Ref is not WasmFunction to) continue;
+                // (size, type id) -> object: the size is the constant before the type's
+                if ((to == alloc || to == plain || to == allocArena) && b[i - 1].Op == Op.I32Const && b[i - 1].Ref is TypeIdRef
+                    && b[i - 2].Op == Op.I32Const && b[i - 2].Ref == null)
+                {
+                    // (a type that may be cycle-capable, by an id only known at run time, keeps the asking entry)
+                    if (to == alloc && D.Arenas.Enabled) continue;
+                    int n = (int)b[i - 2].Imm;
+                    if (to == allocArena) { b[i - 2] = b[i - 2] with { Imm = RoundSmall(n + prefix) }; b[i] = b[i] with { Ref = allocArenaC }; }
+                    else { b[i - 2] = b[i - 2] with { Imm = RoundSmall(n) }; b[i] = b[i] with { Ref = allocC }; }
+                }
+                // (address, size) -> nothing
+                else if ((to == free || to == freeArena) && b[i - 1].Op == Op.I32Const && b[i - 1].Ref == null)
+                {
+                    int n = (int)b[i - 1].Imm;
+                    if (to == freeArena) { b[i - 1] = b[i - 1] with { Imm = RoundSmall(n + prefix) }; b[i] = b[i] with { Ref = freeArenaC }; }
+                    else { b[i - 1] = b[i - 1] with { Imm = RoundSmall(n) }; b[i] = b[i] with { Ref = freeC }; }
+                }
+            }
+        }
+    }
+
     public void Finish()
     {
         CloseTypeInfo();
@@ -1383,6 +1458,7 @@ sealed partial class RuntimeGen
         D.Module.Canon = d => d ? D.Rt.CanonF64 : D.Rt.CanonF32;
         D.Module.StackPointer = D.StackPointer;
         D.Module.StackLo = D.StackLo;
+        SizeAllocations();
         D.LayoutMemory();
         D.Mark("  finish: D.LayoutMemory");
         EmitInit();

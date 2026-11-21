@@ -541,6 +541,9 @@ internal sealed class Types
             if (l.Fields.Count == 0 && offset == 0) offset = 1; // empty struct is one byte, as in .NET
             offset = (offset + l.Align - 1) / l.Align * l.Align;
         }
+        // (a class whose fields need 8-byte alignment is a multiple of 8 bytes, so the allocator, which hands out
+        // blocks of sizes in steps of 4, gives it a block at a multiple of 8; the others are multiples of 4)
+        if (t.TypeKind is TypeKind.Class or TypeKind.Delegate && l.Fields.Any(f => StorageOf(f.Type).align >= 8)) offset = (offset + 7) & ~7;
         l.Size = offset;
         return l;
     }
