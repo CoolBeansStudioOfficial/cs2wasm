@@ -370,4 +370,4 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   theirs per function set, twice the locals and calls per KB). Locals coalesced on the final bodies (locals per KB
   of the parser bench 23.8 to 12.4; the compiler 1.5-2.3% faster); counts in loops by their fast path instead of the
   whole functions (the bench's 0.94x kept, the compiler 72.3 to 70.1 MB). Hello world 27,194 to 27,297 bytes. Suite
-  197 passed checked and as shipped. docs/AUDIT.md, stream K round 4.
+  198 passed checked and as shipped (rebased on 05e8cd0). docs/AUDIT.md, stream K round 4.
