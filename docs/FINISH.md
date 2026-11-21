@@ -32,9 +32,9 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Hello world size (test 145) | 27,825 B | < 28,383 B |
-| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 11.9 s vs 5.9 s (named builds, interleaved, stream J; main's 14.8 s in the same run; was 12.45 vs 4.6 on a quieter machine) | below NativeAOT's |
-| 4 | Same: peak memory | stream J alone 295 MB, stream L alone 482.9 MB (main before both 568.9); NativeAOT-LLVM 322.2 MB peak by `tools/selfhost-ab.sh` (the 239 MB first noted was not its linear memory); to measure with J, K, L merged | < NativeAOT-LLVM's, same measure |
-| 4 | Same: module size | 42.7 MB vs 129 MB (was 64.0; `tools/size-report.mjs`) | met; next waste: code (36.2 MB) |
+| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.5 s vs 6.3 s, 2.0x (main 3810a98 with J, K, L, M; interleaved, `tools/selfhost-ab.sh`, 3 rounds; was 2.7x this morning) | < NativeAOT-LLVM |
+| 4 | Same: peak memory | 344 MB vs 322 MB, 1.07x (same run; main before J and L 568.9 MB) | < NativeAOT-LLVM's, same measure |
+| 4 | Same: module size | 44.0 MB vs 129 MB (no threads, shipped, main 3810a98) | met; next waste: code (36.2 MB) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | not re-tried since 11-17 | plays, log equals the oracle's |
 | - | 072_http's rare out-of-bounds | found and fixed 2026-11-20: none in 600 loaded runs per mode (was ~1 in 1,000) | found or not seen in 500 runs |
@@ -241,3 +241,6 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   The analysis takes 1.5 s of the self-host build (3,432 fields asked). Tests 175 (the shape and eleven near misses,
   with a `// cycles:` marker in the runner: exactly these classes are CW0202), 176, 177. Suite 190 passed checked
   and as shipped. Found, not fixed: a store through a span alone records no value at the array's site (AUDIT).
+- 2026-11-21, main 3810a98 (streams C, G, H, J, K, L, M merged), interleaved against NativeAOT-LLVM, 3 rounds: self-hosted
+  compiler 12.0-12.8 s / 344 MB / 44.0 MB against 6.2-6.5 s / 322 MB / 129 MB. Time 2.0x (2.7x this morning), memory
+  1.07x (1.8x), size 0.34x.
