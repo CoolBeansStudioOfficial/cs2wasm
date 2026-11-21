@@ -22,7 +22,9 @@ static class Inliner
     static readonly int s_throwBody = Env("CS2WASM_INLINE_THROWING", 0);         // at every call site (0: off, the default: see below)
     static readonly int s_throwSingle = Env("CS2WASM_INLINE_THROWING_SINGLE", 60); // into its one caller
     static readonly int s_throwLoop = Env("CS2WASM_INLINE_THROWING_LOOP", 24);   // at a call site inside a loop
-    static readonly bool s_rcInLoops = Environment.GetEnvironmentVariable("CS2WASM_RC_IN_LOOPS") != "0";
+    // (CS2WASM_RC_IN_LOOPS=1: rt.retain and rt.release whole in loops. Off: on the self-hosted compiler 0.5% of wall time either
+    // way and 2% less processor time without, 6.5 MB of its 72.3 less code; the optimizing tier inlines them where it matters)
+    static readonly bool s_rcInLoops = Environment.GetEnvironmentVariable("CS2WASM_RC_IN_LOOPS") == "1";
     static readonly bool s_rcEverywhere = Environment.GetEnvironmentVariable("CS2WASM_INLINE_RC") == "1";
     static readonly bool s_ignoreNoInline = Environment.GetEnvironmentVariable("CS2WASM_IGNORE_NOINLINE") == "1";
     static int Env(string name, int dflt) => int.TryParse(Environment.GetEnvironmentVariable(name), out var v) ? v : dflt;
