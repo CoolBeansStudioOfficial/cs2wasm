@@ -793,8 +793,12 @@ internal sealed partial class Driver
             for (int i = 0; i < fns.Count; i++) skip[i] = Internal(fns[i]);
             var edges = new List<int>[n];
             for (int i = 0; i < n; i++) edges[i] = [];
+            // (a function that stores none of the keys shares one empty set, and a component whose stores are one
+            // other's shares that one's: the sets are only read once made. Each function had a set of its own, twice,
+            // nearly a gigabyte for the compiler compiling itself)
+            var none = new ulong[words];
             _bits = new ulong[n][];
-            for (int i = 0; i < n; i++) _bits[i] = new ulong[words];
+            for (int i = 0; i < n; i++) _bits[i] = none;
             for (int i = 0; i < fns.Count; i++)
             {
                 var f = fns[i];
@@ -816,7 +820,10 @@ internal sealed partial class Driver
                 if (d.FieldWrites.TryGetValue(f, out var w))
                     foreach (var k in w)
                         if (_key.TryGetValue(k, out int ki) && !(ownStatics != null && k.StartsWith(ownStatics, StringComparison.Ordinal) && d.IsStaticKey(k)))
+                        {
+                            if (ReferenceEquals(_bits[i], none)) _bits[i] = new ulong[words];
                             _bits[i][ki >> 6] |= 1UL << (ki & 63);
+                        }
             }
             for (int bk = 1; bk < d._bucketFns.Count; bk++)
                 foreach (var t in d.IndirectTargets(new Instr { Op = Op.CallIndirect, Imm2 = bk }))
@@ -869,13 +876,22 @@ internal sealed partial class Driver
                     var comp = new List<int>();
                     int x;
                     do { x = stack.Pop(); on[x] = false; comp.Add(x); } while (x != v);
-                    var acc = new ulong[words];
+                    // (the union of the members' sets and their callees': one of them as it is while it is the only one
+                    // that is not empty, a new set once a second one adds to it)
+                    ulong[]? acc = null; bool own = false;
+                    void Union(ulong[] a)
+                    {
+                        if (ReferenceEquals(a, none) || ReferenceEquals(a, acc)) return;
+                        if (acc == null) { acc = a; return; }
+                        if (!own) { acc = (ulong[])acc.Clone(); own = true; }
+                        for (int k = 0; k < words; k++) acc[k] |= a[k];
+                    }
                     foreach (var c in comp)
                     {
-                        for (int k = 0; k < words; k++) acc[k] |= _bits[c][k];
-                        foreach (var t in edges[c]) if (!on[t]) for (int k = 0; k < words; k++) acc[k] |= _bits[t][k];
+                        Union(_bits[c]);
+                        foreach (var t in edges[c]) if (!on[t]) Union(_bits[t]);
                     }
-                    foreach (var c in comp) _bits[c] = acc;
+                    foreach (var c in comp) _bits[c] = acc ?? none;
                 }
             }
         }
