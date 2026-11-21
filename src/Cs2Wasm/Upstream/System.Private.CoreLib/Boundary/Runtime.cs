@@ -2112,6 +2112,7 @@ namespace Cs2Wasm.Runtime
         [System.ThreadStatic] static int t_prevSlot, t_prevBits;
         [Intrinsic] static int s_visitObj, s_visitElem, s_destroying, s_killQ, s_killN, s_killCap, s_storeSlot;
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static int SlotIndex(int container, int slot)
         {
             if (slot == 0) return -1;
@@ -2271,6 +2272,11 @@ namespace Cs2Wasm.Runtime
             // what is above the container, a parent it referred to before it was in the parent's list)
             TakeOwnership(v, p);
         }
+
+        /// <summary>TryLeave's first tests, where it is asked after an unlink: a member with outside references that no
+        /// member refers to and whose slots hold no linked reference.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static bool LeaveCandidate(int m) => Mem.LoadI32(m) < -2 && Mem.LoadI32(m - 4) == 0 && Mem.LoadI32(m - 28) == 0;
 
         /// <summary>A member that no member refers to and that refers to none (a list's array after Clear, held by a
         /// static): a plain object again, so what it once held is not kept in one unit with it. With it gone, an arena
@@ -2620,7 +2626,7 @@ namespace Cs2Wasm.Runtime
         {
             OpStat(14);
             int old = Atomic.Add32(ref Mem.RefI32(p), -1);
-            if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); if (s_failedTops != 0) TopHeld(p, 1); }
+            if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); if (s_failedTops != 0 && PLM(p) != 0) TopHeld(p, 1); }
             if ((uint)PL(p, 24) >= UOne && !HoldSettled(p)) UpdateHold(p);
         }
 
@@ -2645,7 +2651,7 @@ namespace Cs2Wasm.Runtime
             // (kept by what it owns alone, or under a top that was: the check at the drop)
             if (w == -2)
             {
-                int t = s_failedTops != 0 ? TopHeld(p, -1) : 0;
+                int t = s_failedTops != 0 && PLM(p) != 0 ? TopHeld(p, -1) : 0;
                 if (DropStats()) s_dsFromRelease++;
                 if (t != 0 && Dropped(t)) { DrainKills(); return; }
                 // (a top a check failed for: again only when the number of its members outside code holds is zero, TopHeld)
@@ -2822,7 +2828,7 @@ namespace Cs2Wasm.Runtime
                 return val;
             }
             PS(val, 4, PL(val, 4) + 1);
-            if (s_failedTops != 0) NoteOutside(val, container, 1);
+            if (s_failedTops != 0 && PLM(val) != 0) NoteOutside(val, container, 1);
             if (i >= 0) SetSlotBits(container, i, 1);
             else if (slot == 0 || s_visitElem != 0)
             {
@@ -2930,15 +2936,15 @@ namespace Cs2Wasm.Runtime
                     // through it at each move)
                     // (NoteOutside looks at the member's note before it walks to the top: most members have none. The
                     // walk to the top here first, to see it was not far, was a million walks of six hops a parse)
-                    int back = s_failedTops != 0 ? NoteOutside(old, container, -1) : 0;
+                    int back = s_failedTops != 0 && PLM(old) != 0 ? NoteOutside(old, container, -1) : 0;
                     bool died = back != 0 && Dropped(back);
                     if (!died && back != old && (ownerEdge || (PLM(old) & 1) == 0) && DropCandidate(old)) died = Dropped(old);
                     gone = died && s_watchHit != 0;
                     s_watch = 0;
-                    if (!died && old != container) TryLeave(old);
+                    if (!died && old != container && LeaveCandidate(old)) TryLeave(old);
                 }
                 if (s_killN != 0) DrainKills();
-                if (!gone) TryLeave(container);
+                if (!gone && LeaveCandidate(container)) TryLeave(container);
             }
             if (!ThreadMode()) RuntimeUnlock(); else if (mk >= 0) GroupUnlock(mk);
             if (!inside) Release(Borrow<object>(old));
