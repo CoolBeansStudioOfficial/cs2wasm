@@ -47,7 +47,7 @@ build-at)
     D=$OUT/c-$c
     if [ ! -f "$D/src/Cs2Wasm.Cli/bin/Release/net11.0/cs2wasmc.exe" ]; then
       mkdir -p "$D"
-      git -C "$ROOT" archive "$c" src host Directory.Build.props global.json | tar -x -C "$D"
+      git -C "$ROOTW" archive "$c" src host Directory.Build.props global.json | tar -x -C "$D"
       (cd "$D" && dotnet build src/Cs2Wasm.Cli -c Release -v q -nologo 2>&1 | grep -E " error |rror\(s\)" || true)
     fi
     [ -f "$OUT/p-$c.wasm" ] || bash "$0" build "p-$c" "$D/src/Cs2Wasm.Cli/bin/Release/net11.0/cs2wasmc.exe" 2>&1 | grep -v "^cs2wasm: "
