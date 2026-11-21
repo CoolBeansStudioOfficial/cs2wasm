@@ -18,11 +18,13 @@ namespace Cs2Wasm;
 /// after a statement (InstrumentAfter); conditions with early returns and across calls (CallersOf, PathConditions);
 /// aliasing by where references come from and which new objects a method owns alone (MayAlias, AllocationSites,
 /// IsOwned); plugins before the first compile (ICompilerPluginBeforeCompile); the list of unsure sites (UnsureSites)
-/// and delegate targets where known (DelegateTargets).
+/// and delegate targets where known (DelegateTargets). Version 6: the closed-form solver (Solve, audit A4.6): a per-tick
+/// method or a loop body as a piecewise affine map of its state with the ticks its guards flip at, and generated C#
+/// that advances the state n ticks at once.
 /// </summary>
 public interface ICompilerPlugin
 {
-    /// <summary>The plugin interface version the plugin was written against (1 to 5).</summary>
+    /// <summary>The plugin interface version the plugin was written against (1 to 6).</summary>
     int InterfaceVersion { get; }
     string Name { get; }
     void Run(PluginContext context);
@@ -125,7 +127,7 @@ public sealed class SchedulingInfo
 
 public sealed class PluginContext
 {
-    public const int InterfaceVersion = 5;
+    public const int InterfaceVersion = 6;
     readonly List<(string, byte[])> _sections = [];
     readonly List<Diagnostic> _diagnostics = [];
     readonly Compiler.PluginHost _host;
@@ -185,6 +187,24 @@ public sealed class PluginContext
     /// <summary>(Version 5.) The lambdas and methods a delegate invocation can run (through locals, by def-use), or
     /// null when its delegate can be one made elsewhere (then it is an unsure site) or the call is not a delegate's.</summary>
     public IReadOnlyList<IMethodSymbol>? DelegateTargets(IOperation invocation) => _host.DelegateTargets(invocation);
+    /// <summary>(Version 6.) The closed form of a per-tick method (audit A4.6): executes its body symbolically, as called
+    /// n times with the same arguments. Every state variable it writes (fields and auto-properties of `this`, static
+    /// ones; int, long, float, double), several writes in order included, becomes an affine function of the old state
+    /// vector, x' = A x + b, with coefficients made of invariants (constants, parameters, members it does not write).
+    /// Math's Min, Max, Abs and Clamp become pieces, Single.Lerp and Double.Lerp their affine form, other pure Math
+    /// functions of invariants invariants; the program's methods that write nothing are expanded. A branch on the state
+    /// makes pieces with guards; for each guard, how its value moves under its piece (a fixed step each tick: it flips
+    /// at n = ceil((limit - x0) / step)); a guard that is not monotone in the number of ticks, a product of two state
+    /// values, a call it cannot expand: not solved, with the reason and where. <see cref="ClosedForm.Exact"/> says
+    /// whether the generated Advance (<see cref="ClosedForm.GenerateAdvance"/>, added with <see cref="AddSource"/>)
+    /// gives exactly the state running the ticks gives (integers, wrapping included) or approximately (floating
+    /// point). Usable before the compile too.</summary>
+    public ClosedForm Solve(IMethodSymbol tick) => _host.Solve(tick);
+    /// <summary>(Version 6.) The closed form of a loop's body (a `for`, `while` or `do` loop, its condition left out;
+    /// a `for` loop's increments included): the state is the locals declared outside it and the members it writes,
+    /// the invariants what it only reads. The generated Advance takes the receiver if it is needed, the state locals
+    /// by `ref`, then the invariant locals and parameters (<see cref="ClosedForm.Parameters"/>), then n.</summary>
+    public ClosedForm Solve(IOperation loop) => _host.Solve(loop);
     /// <summary>(Version 3.) The values that can depend on thread scheduling: marks, members, and a query.</summary>
     public SchedulingInfo Scheduling => _host.Scheduling;
 

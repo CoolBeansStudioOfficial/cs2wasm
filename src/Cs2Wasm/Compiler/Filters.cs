@@ -32,6 +32,25 @@ internal sealed partial class Driver
     public WasmGlobal EhChain => _ehChain ??= AddGlobal("__eh_chain");
     public WasmGlobal EhRecord => _ehRecord ??= AddGlobal("__eh_record");
     public WasmGlobal EhClause => _ehClause ??= AddGlobal("__eh_clause");
+    // Exception.TargetSite of a throw in a method traces hide ([StackTraceHidden]: ThrowHelper's): such a throw notes
+    // its method (its place in HiddenThrowers, + 1) here for Rt.OnThrow; none of it is left unless frames are asked
+    // for their methods (RuntimeGen.Finish)
+    WasmGlobal? _throwSite;
+    public WasmGlobal ThrowSite => _throwSite ??= AddGlobal("__throw_site");
+    public WasmGlobal? ThrowSiteIfMade => _throwSite;
+    public readonly List<IMethodSymbol> HiddenThrowers = [];
+    readonly Dictionary<string, int> _hiddenThrowerIndex = [];
+    public int HiddenThrowerIndex(IMethodSymbol m)
+    {
+        var def = m.OriginalDefinition;
+        var key = Types.MethodKey(def);
+        if (!_hiddenThrowerIndex.TryGetValue(key, out int k)) { HiddenThrowers.Add(def); _hiddenThrowerIndex[key] = k = HiddenThrowers.Count; }
+        return k;
+    }
+    /// <summary>A method whose throws note it for TargetSite: one traces leave out that is the program's or the
+    /// library's own (not the runtime's, whose throws stand for the code that called it).</summary>
+    public static bool IsHiddenThrower(IMethodSymbol m) => IsHiddenFrame(m) && m.MethodKind != MethodKind.DelegateInvoke
+        && !(m.ContainingNamespace?.ToDisplayString() ?? "").StartsWith("Cs2Wasm.Runtime", StringComparison.Ordinal);
     WasmGlobal AddGlobal(string name) { var g = new WasmGlobal(name, ValType.I32, true, 0); Module.Globals.Add(g); return g; }
     public static readonly FuncType FilterTestType = new([ValType.I32, ValType.I32], [ValType.I32]);
 }

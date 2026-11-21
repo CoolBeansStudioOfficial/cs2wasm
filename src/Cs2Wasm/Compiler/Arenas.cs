@@ -108,8 +108,8 @@ internal sealed class Arenas
         s.UnlinkFresh = Placeholder("arena.unlink fresh " + key, new FuncType([I, I, I], []), Kind.UnlinkFresh, s);
         s.LinkOwned = Placeholder("arena.link owned " + key, new FuncType([I, I, I], [I]), Kind.LinkOwned, s);
         s.LinkIso = Placeholder("arena.link isolated " + key, new FuncType([I, I, I], [I]), Kind.LinkIso, s);
-        // (container) -> whether it took the lock; (that) -> ()
-        s.StoreLock = Placeholder("arena.store lock " + key, new FuncType([I], [I]), Kind.StoreLock, s);
+        // (container, slot address) -> whether it took the lock (1: a store's region, Rt.StoreLockIf); (that) -> ()
+        s.StoreLock = Placeholder("arena.store lock " + key, new FuncType([I, I], [I]), Kind.StoreLock, s);
         s.StoreUnlock = Placeholder("arena.store unlock " + key, new FuncType([I], []), Kind.StoreUnlock, s);
         _sites[key] = s;
         return s;
@@ -138,7 +138,10 @@ internal sealed class Arenas
         s.AddValue(D.Types.Canonical(slotType));
     }
 
-    static readonly bool s_noFreshSites = Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_SITES") == "1";
+    static readonly bool s_arenaSources = Environment.GetEnvironmentVariable("CS2WASM_ARENA_SOURCES") == "1";
+    static readonly bool s_arenaDebug =Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1";
+    List<(Site, int)>? _wide;
+    static readonly bool s_noFreshSites =Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_SITES") == "1";
     readonly Dictionary<string, bool> _keepsThis = [];
     /// <summary>CS2WASM_IMMUTABLE_EDGES=1 (measurement only: the old, unsound rule).</summary>
     static readonly bool s_immutableEdges = Environment.GetEnvironmentVariable("CS2WASM_IMMUTABLE_EDGES") == "1";
@@ -296,15 +299,23 @@ internal sealed class Arenas
     WasmFunction? _moveAt;
 
     /// <summary>(value, slot address) → value: a store of a reference into a slot the code knows by its address
-    /// alone (through a `ref`, a span, a struct's own method). The runtime finds the object the slot is in.</summary>
-    public WasmFunction LinkAt(ITypeSymbol slotType)
+    /// alone (through a `ref`, a span, a struct's own method). The runtime finds the object the slot is in.
+    /// `container`, where known, is the static type of the object the slot is in (a class whose struct field holds it, an array of structs): a container no object of
+    /// a cycle-capable type can be is never a group's member, and the store is plain, as a site's that is not
+    /// cyclic.</summary>
+    public WasmFunction LinkAt(ITypeSymbol slotType, ITypeSymbol? container = null)
     {
         slotType = D.Types.Canonical(slotType);
-        var k = Types.Key(slotType);
+        if (container != null) container = D.Types.Canonical(container);
+        var k = Types.Key(slotType) + (container != null ? " in " + Types.Key(container) : "");
         if (!_linkAt.TryGetValue(k, out var f))
+        {
             _linkAt[k] = f = Placeholder("arena.link at " + k, new FuncType([I, I], [I]), Kind.LinkAt, null, slotType);
+            if (container != null) _atContainer[f] = container;
+        }
         return f;
     }
+    readonly Dictionary<WasmFunction, ITypeSymbol> _atContainer = [];
 
     /// <summary>(old value, slot address): the old value of such a slot.</summary>
     /// <summary>Threads: the runtime lock around a store by address (its link, exchange and unlink), where the slot can
@@ -320,12 +331,16 @@ internal sealed class Arenas
     }
     readonly Dictionary<string, WasmFunction> _storeLockAt = [];
 
-    public WasmFunction UnlinkAt(ITypeSymbol slotType)
+    public WasmFunction UnlinkAt(ITypeSymbol slotType, ITypeSymbol? container = null)
     {
         slotType = D.Types.Canonical(slotType);
-        var k = Types.Key(slotType);
+        if (container != null) container = D.Types.Canonical(container);
+        var k = Types.Key(slotType) + (container != null ? " in " + Types.Key(container) : "");
         if (!_unlinkAt.TryGetValue(k, out var f))
+        {
             _unlinkAt[k] = f = Placeholder("arena.unlink at " + k, new FuncType([I, I], []), Kind.UnlinkAt, null, slotType);
+            if (container != null) _atContainer[f] = container;
+        }
         return f;
     }
 
@@ -535,8 +550,18 @@ internal sealed class Arenas
             if (containers.Count == 0) continue;
             var targets = s.Values.Count == 1 ? TargetsOf(s.Values.Values.First()) : s.Values.Values.SelectMany(TargetsOf).Distinct().ToList();
             if (s.TargetIds.Count > 0) targets = [.. targets.Concat(s.TargetIds.Order()).Distinct()];
+            // (CS2WASM_ARENA_SOURCES=1: what the slot holds by where its values come from, when that is narrower)
+            if (s_arenaSources && D.Sharing is { } shf && targets.Count > 8 && shf.SiteTypeIds(s, 2000) is { } refined)
+            {
+                var keep = new HashSet<int>(targets);
+                var narrowed = refined.Where(keep.Contains).Order().ToList();
+                if (s_arenaDebug && narrowed.Count < targets.Count) Console.Error.WriteLine($"narrowed site {s.Key}: {targets.Count} to {narrowed.Count}");
+                targets = narrowed;
+            }
             targTicks += sw.ElapsedTicks - tc;
             if (targets.Count == 0) continue;
+            // (CS2WASM_ARENA_DEBUG: the sites that join thousands of types, an object slot's, the hubs of a large group)
+            if (targets.Count > 1000 && s_arenaDebug) (_wide ??= []).Add((s, targets.Count));
             int Hub(IEnumerable<int> to) { int h = adj.Count; adj.Add([.. to]); hubs.Add(h); hubSite[h] = s; return h; }
             HashSet<int>? targetSet = null;
             long t0 = sw.ElapsedTicks;
@@ -629,6 +654,8 @@ internal sealed class Arenas
             foreach (var g in CycleTypes.GroupBy(id => _scc[id]))
                 Console.Error.WriteLine($"arena group {g.Key}: " + string.Join(", ", g.Select(id => Types.Key(D.TypeById[id]))));
             foreach (var s in _sites.Values.Where(s => s.Cyclic)) Console.Error.WriteLine("cyclic site " + s.Key);
+            foreach (var (s, c) in _wide ?? [])
+                Console.Error.WriteLine($"wide site {s.Key} cyclic={s.Cyclic} general={s.General} targets={c} values: {string.Join(", ", s.Values.Keys.Take(8))}");
         }
     }
 
@@ -724,6 +751,9 @@ internal sealed class Arenas
             if (!holdsCyclic.TryGetValue(k, out var r)) holdsCyclic[k] = r = CycleTypes.Any(id => IdIs(id, slotType));
             return r;
         }
+        // (a store by address whose container is known: also that the container can be a group's member)
+        bool AtCyclic(WasmFunction ph, ITypeSymbol slotType) =>
+            HoldsCyclic(slotType) && (!_atContainer.TryGetValue(ph, out var c) || HoldsCyclic(c));
         foreach (var f in D.Module.Functions)
         {
             if (f.IsImport || f == linkAt || f == unlinkAt || !f.Body.Any(x => x.Op == Op.Call && x.Ref is WasmFunction w && _placeholders.ContainsKey(w))) continue;
@@ -788,12 +818,12 @@ internal sealed class Arenas
                         break;
                     case Kind.LinkAt:
                         // (value, slot) -> value
-                        if (Enabled && HoldsCyclic(ph.pinType!)) { x.Ref = linkAt; body.Add(x); }
+                        if (Enabled && AtCyclic(w, ph.pinType!)) { x.Ref = linkAt; body.Add(x); }
                         else { x.Op = Op.Drop; x.Ref = null; body.Add(x); }
                         break;
                     case Kind.UnlinkAt:
                         // (old, slot) -> ()
-                        if (Enabled && HoldsCyclic(ph.pinType!)) { x.Ref = unlinkAt; body.Add(x); }
+                        if (Enabled && AtCyclic(w, ph.pinType!)) { x.Ref = unlinkAt; body.Add(x); }
                         else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); x.Ref = D.Rt.Release; body.Add(x); }
                         break;
                     case Kind.MoveAt:
@@ -812,8 +842,14 @@ internal sealed class Arenas
                         // (only while the container is a group's member: the race is over its slots' bits, which a
                         // plain object has none of, Rt.StoreLockIf)
                         if (Enabled && D.ThreadMode && (ph.site != null ? ph.site.Cyclic : HoldsCyclic(ph.pinType!)))
-                            x.Ref = ph.kind == Kind.StoreUnlock ? RuntimeFn("StoreUnlockIf", 1) : ph.site != null ? RuntimeFn("StoreLockIf", 1) : RuntimeFn("StoreLockAtIf", 1);
-                        else { body.Add(x with { Op = Op.Drop, Ref = null }); if (ph.kind == Kind.StoreLock) body.Add(x with { Op = Op.I32Const, Imm = 0, Ref = null }); break; }
+                            x.Ref = ph.kind == Kind.StoreUnlock ? RuntimeFn("StoreUnlockIf", 1) : ph.site != null ? RuntimeFn("StoreLockIf", 2) : RuntimeFn("StoreLockAtIf", 1);
+                        else
+                        {
+                            body.Add(x with { Op = Op.Drop, Ref = null });
+                            if (ph.kind == Kind.StoreLock && ph.site != null) body.Add(x with { Op = Op.Drop, Ref = null });
+                            if (ph.kind == Kind.StoreLock) body.Add(x with { Op = Op.I32Const, Imm = 0, Ref = null });
+                            break;
+                        }
                         body.Add(x);
                         break;
                 }

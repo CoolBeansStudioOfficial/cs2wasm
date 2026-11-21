@@ -182,6 +182,8 @@ sealed partial class FunctionCompiler
             // invariant globalization (section 7.4)
             case "Invariant" when owner is "System.Globalization.GlobalizationMode" or "System.Globalization.GlobalizationMode.Settings": return true;
             case "UseNls" when owner == "System.Globalization.GlobalizationMode": return false;
+            // the runtime's code for threads (Rt.ThreadMode)
+            case "ThreadMode" when owner == "Cs2Wasm.Runtime.Rt": return D.ThreadMode;
         }
         if (!def.IsStatic || !D.IsLibrary(def)) return null;
         IMethodSymbol? body = def switch

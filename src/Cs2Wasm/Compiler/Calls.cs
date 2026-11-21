@@ -712,6 +712,12 @@ sealed partial class FunctionCompiler
                     FreeScratch(ValType.I32, t1); FreeScratch(ValType.I32, t2);
                     return Own.None;
                 }
+            case "System.Reflection.MethodBase.GetCurrentMethod":
+                // the method whose code this is, as its stack frame names it (null for what has no record, as a
+                // frame's method: a lambda's, a local function's)
+                E.I32Addr(D.StringLiteral(E.Fn.FrameName ?? Driver.FrameName(OuterMethod)));
+                E.Call(D.LibMethod("Cs2Wasm.Runtime.Meta", "FrameMethod", 1).Fn);
+                return Own.Owned;
             case "System.Activator.CreateInstance":
                 {
                     var t = Arg(0);
@@ -917,6 +923,11 @@ sealed partial class FunctionCompiler
             case "Rt.ArenaFinalizeObject": E.Call(Rt.ArenaFinFn); return Own.None;
             case "Rt.ArenaFinType": E.Call(Rt.ArenaFinTypeFn); return Own.None;
             case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
+            case "Rt.FirstChanceWanted": E.Call(Rt.FirstChanceFn); return Own.None;
+            case "Rt.FirstChance": E.Call(Rt.RaiseFirstChanceFn); return Own.None;
+            case "Rt.FramesWanted": E.Call(Rt.FramesWantedFn); return Own.None;
+            case "Rt.TakeThrowSite": E.GGet(D.ThrowSite); E.I32(0); E.GSet(D.ThrowSite); return Own.None;
+            case "Rt.ThrowSites": E.Call(D.ThrowSitesFn); return Own.None;
             case "Rt.NoThreads": E.I32(Driver.s_noThreads ? 1 : 0); return Own.None;
             case "Rt.DropStats": E.I32(Environment.GetEnvironmentVariable("CS2WASM_DROP_STATS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDropCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
@@ -931,6 +942,7 @@ sealed partial class FunctionCompiler
             case "Rt.DynamicInvokeRaw": E.Call(D.DynamicInvokeFn); return Own.Owned;
             case "Rt.DelegateArity": E.Call(D.DelegateArityFn); return Own.None;
             case "Rt.DelegateMethodEntry": E.Call(D.DelegateMethodFn); return Own.None;
+            case "Rt.FrameMethods": E.Call(D.FrameMethodsFn); return Own.None;
             case "Rt.ArenaClearObject": E.Call(Rt.ArenaClearFn); return Own.None;
             case "Rt.ArenaFreeObject": E.Call(Rt.ArenaFreeFn); return Own.None;
             case "Rt.ArenaVisitObject": E.Call(Rt.ArenaVisitFn); return Own.None;
@@ -939,7 +951,7 @@ sealed partial class FunctionCompiler
             case "Rt.LinkAt": E.Call(D.Arenas.LinkAt(D.ObjectType)); return Own.None;
             case "Rt.UnlinkAt": E.Call(D.Arenas.UnlinkAt(D.ObjectType)); return Own.None;
             case "Rt.MoveRefs": E.Call(D.Arenas.MoveAt()); return Own.None;
-            case "Rt.TypeName": E.Call(Rt.TypeNameFn); return Own.Stable;
+            case "Rt.TypeName": D.WantLazyTypeNames(); E.Call(Rt.TypeNameFn); return Own.Stable;
             case "Rt.IsInstanceOf": E.Call(Rt.IsInst(T.Canonical(m.TypeArguments[0]))); return Own.None;
             case "Rt.Unreachable": E.Op(Op.Unreachable); return Own.None;
             case "Rt.F64Bits": E.Op(Op.I64ReinterpretF64); return Own.None;
@@ -1005,9 +1017,9 @@ sealed partial class FunctionCompiler
             case "ArrayHelpers.ClearElements": case "Cs2WasmArrays.ClearElements": E.Call(Rt.ArrayClear); return Own.None;
             case "EnumFormat.Info": E.Call(Rt.EnumInfo); return Own.None;
             case "EnumFormat.InfoOfId": case "TypeInfo.EnumInfo": E.Call(Rt.EnumInfoId); return Own.None;
-            case "Type.FullNameOf": E.Call(Rt.TypeNameById); return Own.Stable;
+            case "Type.FullNameOf": D.WantLazyTypeNames(); E.Call(Rt.TypeNameById); return Own.Stable;
             // Cs2Wasm.Runtime.TypeInfo (TypeInfo.cs): tables by type id
-            case "TypeInfo.FullName": E.Call(Rt.TypeNameById); return Own.Stable;
+            case "TypeInfo.FullName": D.WantLazyTypeNames(); E.Call(Rt.TypeNameById); return Own.Stable;
             case "TypeInfo.NameTable": E.Call(Rt.TypeNameTableFn); return Own.None;
             case "TypeInfo.ProgramTypes": E.Call(Rt.ProgramTypesFn); return Own.None;
             case "TypeInfo.Instances": E.Call(Rt.GenericInstancesFn); return Own.None;
@@ -1077,6 +1089,17 @@ sealed partial class FunctionCompiler
             case "Rt.TlsSize": E.I32Addr(new LateAddr(() => D.TlsSize)); return Own.None;
             case "Rt.RuntimeLock": E.Call(Rt.LockEnter); return Own.None;
             case "Rt.RuntimeUnlock": E.Call(Rt.LockExit); return Own.None;
+            case "Rt.RuntimeLockHeld":
+                if (D.ThreadMode) { E.I32Addr(D.StaticAddress("rt.lock.owner", 4, 4)); E.Emit(Op.I32AtomicLoad, 0, 2); E.GGet(D.ThreadId); E.Op(Op.I32Eq); }
+                else E.I32(0);
+                return Own.None;
+            case "Rt.ThreadMode": E.I32(D.ThreadMode ? 1 : 0); return Own.None;
+            case "Rt.DeadlockDump": E.I32(RuntimeFns.DeadlockDumpOn ? 1 : 0); return Own.None;
+            // (address) -> the word of its place's lock (rt.ref_lock's table)
+            case "Rt.PlaceLockWord":
+                E.I32(2); E.Op(Op.I32ShrU); E.I32(63); E.Op(Op.I32And); E.I32(6); E.Op(Op.I32Shl);
+                E.I32Addr(D.StaticAddress("rt.ref.locks", 64 * 64, 64)); E.Op(Op.I32Add);
+                return Own.None;
             case "Rt.Rethrow":
                 E.Call(Rt.Retain);
                 if (D.UsesFilters) { int rx = E.AddLocal(ValType.I32); E.Tee(rx); E.Call(Rt.FirstPass); E.Get(rx); }

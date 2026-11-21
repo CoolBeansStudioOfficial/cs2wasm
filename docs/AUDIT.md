@@ -168,7 +168,7 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
 **A4.6 Closed forms are too weak. [read]**
 - Source: one affine rule per symbol with exactly one write, outside branches, no calls
   (`Compiler/Plugins.cs:428-509`); loops found by block ordinal. Fails the design's own examples: the spawner timer
-  (two writes), velocity/position (coupled), `Lerp` (a call), piecewise solving. The formula is a string.
+  (two writes), velocity/position (coupled), `Lerp` (a call), piecewise solving. The formula is a string. **Done: the solver, version 6 (2026-11-20), Step 9.**
 
 **A4.7 Suppressed clones leak effects and cannot be called. [read]**
 - Source: virtual calls go to the unsuppressed stub before the clone test (`Calls.cs:564`); lambdas are not cloned;
@@ -492,7 +492,8 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   its bits saying the other's value and its counts wrong; now the three are one step under the runtime lock, with an
   atomic exchange (the place's lock is taken before the runtime lock elsewhere: not inside it). Not enough: 24
   threads still do not end; a checked build of the compiler (freed memory never used again) is to say where.
-  Also seen: 072_http once out of bounds in a worker in a checked suite run, then 366 runs passing.
+  Also seen: 072_http once out of bounds in a worker in a checked suite run, then 366 runs passing (found and fixed
+  2026-11-20: a compare-exchange that did not happen, below).
   Then, found with a checked build of the compiler (a node of Roslyn's read after it was freed) and two small
   programs that reproduce it (test 139: sixteen threads storing into the same slots of shared objects, a shared
   array of structs among them, as Roslyn's node cache does; 14 runs in 40 failed before):
@@ -527,7 +528,7 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   - The cause of the hang on twelve threads: a Node worker started by another worker needs its parent's event loop,
     which a thread running the module never gives back; PLINQ's producers started that way never ran. Every thread is
     now started by host/spawner.mjs, a worker of the main thread that runs no module code.
-  Still open: more threads make it slower, not faster (every arena operation takes the one runtime lock; the work
+  Was open (done by stream C, "Per-group locks" below): more threads make it slower, not faster (every arena operation takes the one runtime lock; the work
   item below). Tools for such hunts: tools/stacks.mjs (every thread's stack under --inspect), CS2WASM_WATCHDOG=1 (the
   pool's counts every 5 s), CS2WASM_DEADLOCK_DUMP=1 (a wait of 20 s for the runtime lock says who holds it).
   **Code quality for the baseline tier, 2026-11-20** (where the self-hosted compiler runs): `tools/micro.mjs
@@ -537,8 +538,34 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   self-hosted compiler on Console.WriteLine(42): 16.0 s to 12.45 s, against 4.6 s for NativeAOT-LLVM's build of it
   (2.7x). Its profile is flat now: the arena machinery about a quarter of the program's time (stores into slots of
   Roslyn's cycle-capable types: proving them away is step 7.2's), counting about a tenth, the host's file calls 6%.
-  **Open (2026-11-20): test 139 leaks two nodes about one run in 45 under heavy load** (15 runs at once, checked;
-  none in 107 runs at lighter load): the same rate before and after the TopHeld change below, so older. Not found yet.
+  **Then (2026-11-20): test 139's leak under load and 072_http's rare out-of-bounds, both found and fixed**, each
+  with a test that fails before (`tools/stress.mjs` runs one module many times at once and counts its outputs; a
+  failed run's whole stderr goes next to the module):
+  - Test 139 leaked a thread's anchor node and its last node, about one run in 45 at 15 runs at once. The two were
+    consistent with each other; the anchor had one outside count nothing held. Its source: a node that had died alone
+    was kept for good. A group's members whose finalizers run after the runtime lock is given back
+    (`Rt.RunDeferredDestroys`) carry the count `FinBias` meanwhile, and the check after the finalizers reads any count
+    above it as a reference a finalizer stored somewhere, and keeps the group with every reference it held put back
+    counted (the dead node's to the anchor). A read that counts with no lock (`rt.load_retain`) counts the object a
+    place held when it read it and gives the count back once the place says it is out of date: on a node in that
+    window, such a count was taken for a finalizer's store. Now a count word with `FinBias` in it is counted only
+    under the runtime lock, where that check runs, and only if the place still holds the object
+    (`EmitLoadRetainLockFree`). With `CS2WASM_LOCKED_LOADS=1` the leak was gone before (0 in 300), which pointed
+    there. Test 149 (writers replacing nodes that refer to an anchor in slots readers read) failed in most loaded
+    runs before; none in 200 now. Test 139: none in 400 loaded runs, checked and as shipped.
+  - 072_http: a group's member kept as its owner a member that had been freed, and the next store into it read the
+    freed member's words (checked: out of bounds in `Rt.OnChain`, from `Adopt` or `LinkMembers`; as shipped: freed
+    memory read silently). Its source: `Interlocked.CompareExchange` of a reference into a slot of a group's member
+    linked the new value before the exchange, and when the exchange did not happen took it back as an unlink of the
+    new value with the slot bits of the value the slot kept. When those said "not linked" (a sentinel from a static
+    readonly field), the unlink was a plain release: the new value stayed owned by the container and counted inside
+    it. `Task.AddTaskContinuation` does exactly that when the task completes as the continuation is added (the
+    slot holds the completion sentinel): the continuation then named the task as its owner after the task was freed.
+    The HTTP pump completes operations on its own thread, hence the race. Now the link (and the old value's unlink)
+    happens only when the exchange did; otherwise the count taken for the slot is given back. Test 150 (failing
+    compare-exchanges over a sentinel) failed every checked run before. A loop of 20 streamed GETs of 300 KB in reads
+    of 256 bytes crashed in up to half the loaded runs before, none of 200 per mode now; 072_http, none in 600
+    loaded runs per mode (it failed about one in 1,000 before).
   **Build cost, measured 2026-11-20 (tools/measure-build.ps1: wall time, peak memory of every process a build
   starts), the compiler with Roslyn:** `dotnet build` to IL 9 s, 0.73 GB; NativeAOT-LLVM published to WebAssembly
   80 s, 8.7 GB summed (ilc 2.8 GB, Emscripten's clang and wasm-ld the rest), a 129 MB module; cs2wasm 18 to 20
@@ -567,7 +594,51 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   game built in the browser by the self-hosted compiler (`tests/Godot/proof5_hello2d/README.md`, "What stops
   proof 5", items 1 to 4: last tried 2026-11-17 with the self-hosted compiler of that day; not re-tried on today's);
   (2) `StackFrame.GetMethod()` is null in a module (`repro/StackTraceFrames.cs`: .NET prints `A`), a behaviour
-  difference the game's log does not show; (3) a host without JavaScript (Wasmtime) for the `godot.*` imports.
+  difference the game's log does not show (closed 2026-11-20, stream E below); (3) a host without JavaScript
+  (Wasmtime) for the `godot.*` imports.
+
+- **Stream E, behaviour differences (2026-11-20).** What was on record and what a sweep against .NET found, each
+  closed with a test (150 to 153, both modes):
+  - `StackFrame.GetMethod()`, `Exception.TargetSite`, `MethodBase.GetCurrentMethod()`. A program that reaches one
+    (`Meta.FrameMethod`, the manifest's substitution of `StackFrame.GetMethod`) gets a table of frame names and
+    their methods' reflection records (`rt.frame_methods`, Compiler/Reflection.cs): a record for every compiled
+    method a frame can show, of its definition as .NET's frames name it (`Holder<int>.Here`'s frame is
+    `Holder`1[T]`'s), with methods that take a span (no thunk: reflection cannot invoke them, here as in .NET); the
+    program's own get thunks, so a frame's method can be invoked. `GetCurrentMethod` is compiled where it is called,
+    from the function's frame name. A throw in a method traces hide (`[StackTraceHidden]`: `ThrowHelper`'s) notes
+    its method in a global for `TargetSite` (.NET's is the method that threw, hidden or not). None of it is in a
+    program that asks no frame for its method: the notes are taken out at the end of the build (RuntimeGen.Finish).
+  - `AppDomain.FirstChanceException` was never raised. Now raised at each throw and rethrow, before filters, with
+    the domain as sender; the raising code is compiled only for a program that reaches
+    `AppDomain.add_FirstChanceException` (`Rt.RaiseFirstChance`, the switch `rt.first_chance` folded at the end).
+  - `typeof(G<>).ToString()` was `G`1` for the program's generic types (the library's were right): a definition's
+    name now lists its parameters (`ClrName`), its `FullName` still has none.
+  - Two methods with the same code were merged into one function, so a trace through either named one of them, at
+    its lines (`First`/`Second` in test 153). A function that is a frame and can be on the stack when a trace is
+    taken now merges only with one of the same frame name and lines: hello world +24 bytes.
+  - Iterators: the frame is `M(...)+MoveNext()` as in .NET (was `M(...)`); in iterators and async methods a throw,
+    a condition or a returned value that ends a block had no line of its own (a trace showed another method's line).
+  - A static constructor that throws: the `TypeInitializationException` had no trace (thrown without `Rt.OnThrow`),
+    the `.cctor` frame was missing from the inner exception's trace, and that trace ran on to the frame that touched
+    the type instead of ending at the initializer (`rt.cctor_traces`, written at the end of the build only when code
+    that throws is left: hello world has none of its own, but keeps `Rt.OnThrow`; the initializer frames' names and
+    the cut cost it 369 bytes, 27,584 to 27,953 in this worktree's path).
+  - An async method's exception: its trace ran on through the thread pool's frames (`YieldAwaiter.RunAction` ...
+    `Thread.StartCallback`) instead of ending at the method's frame, where .NET's MoveNext takes it
+    (`Rt.OnAsyncCatch`), and the `--- End of stack trace from previous location ---` line was written after an async
+    frame, which .NET leaves out (`StackTrace.ToString`: "Skip EDI boundary for async"; `Exception._asyncTop`).
+  Also checked and equal: exception messages and `ToString` with inner exceptions, `AggregateException`, `throw;`
+  against `throw e;`, `ExceptionDispatchInfo`'s trace, a throw from a `finally`, `Data`, `HResult`, `Source`, filters
+  with side effects (test 152), operators, conversions, indexers, nested generic types and generic methods in traces
+  (test 153). **Open (not closable by cs2wasm alone, recorded):** frames inside .NET's own library and runtime are
+  what its JIT and ReadyToRun inlining and CoreCLR's own helpers leave (`int.Parse` shows
+  `Number.ThrowFormatException`, `Int32.Parse(String)` and nothing between in .NET, cs2wasm every library frame
+  between; a failed static initializer's inner trace ends in .NET with CoreCLR's
+  `InitHelpers.CallClassConstructor(Void* cctor, ...)` frame and a line break, cs2wasm's at the `.cctor` frame): the
+  program's own frames are equal, the library's are not reproducible from source. **Open, a feature of its own:** methods the C# compiler makes have no
+  reflection record: `GetMethod()` of a lambda's or local function's frame is null and `Delegate.Method` of one
+  throws (.NET: `<Main>b__1_0` on `Program+<>c`), and an async method's frame gives its kickoff method where .NET
+  gives `MoveNext` of its state machine.
 
 - **Steps 8.2, 8.3: done (2026-11-18).** `MemberAccess.Instrumentable` says which accesses a hook runs at (not a
   `ref` or `out` argument, a deconstruction's target, an event's handlers); every hook form and failure path of the
@@ -627,31 +698,52 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     another place, returned, made a writable span or memory, or reached through a local that is not always the
     member), and addresses and reinterpreted memory (`&`, `Unsafe`, `MemoryMarshal`). A library method other than
     the known changing ones (`Entries.cs`) is taken to read a collection it is given.
-  - Still open: the closed-form solver (A4.6) and the first slice of the real plugin in the Bazoodle repository
-    (9.4). What they need:
-    - A4.6, closed forms as a solver. Input: a per-tick method or a loop body, as Roslyn's graph now (the IR's
-      later). Execute the region symbolically: every state variable written (fields of `this` and statics, loop
-      locals, several writes each, in order) becomes an affine expression of the old state vector, `x' = A x + b`,
-      whose coefficients are invariants of the region (constants, parameters such as `dt`, members it does not
-      write); this covers the spawner timer's two writes and velocity/position (`v *= d; p += v * dt` is a
-      triangular A). Known pure functions expand: `Min`, `Max`, `Clamp`, `Abs` into pieces, `Lerp` into its affine
-      form; a program method inlines when it writes nothing and calls only such functions. A branch on the state
-      makes pieces: within one the rule is affine, and the tick a guard flips is solved from the affine-in-n value
-      (for one variable, `n = ceil((limit - x0) / step)`); a guard over a component that is not monotone is
-      reported as not solvable, with the reason. Results are values, not strings: the variables, A and b as
-      operations or constants, the pieces with their guards and flip ticks, and a generated C# method
-      `Advance(ref state, long n)` the plugin can add with `AddSource`. Exactness is part of the result, because
-      behaviour must not differ: integer rules (unchecked, wrapping) are exact through repeated squaring of the
-      affine map (`log n` steps; the geometric sum's division has no inverse mod 2^32, so no formula with
-      `(a^n - 1) / (a - 1)`); floating-point closed forms round differently from running the ticks, so they are
-      marked approximate (a display or a prediction may use them; a simulation must run the ticks or call the
-      per-tick code n times). Tests: the four failing examples in A4.6, each compared with running the ticks.
-    - 9.4, the Invisible API's first slice, in the Bazoodle repository against version 5: classify each write
+  - The closed-form solver (A4.6, version 6, 2026-11-20): `PluginContext.Solve(method)` for a per-tick method,
+    `Solve(loop)` for a `for`, `while` or `do` body (a `for`'s increments included, its condition left out);
+    `Compiler/Solver.cs`, the public types in `src/Cs2Wasm/PluginSolver.cs`. Symbolic execution over Roslyn's
+    operation tree: each state variable written (fields and auto-properties of `this`, statics, a loop's outer
+    locals; int, long, float, double; several writes in order) becomes `x' = A x + b` with coefficients that are
+    polynomials in the region's invariants (constants, parameters, members it does not write, and expressions of
+    them it cannot split: a division, a shift, a pure Math call), each invariant carrying the C# that computes it
+    as the program does. `Math.Min`, `Max`, `Abs`, `Clamp` become pieces (Clamp with bounds the wrong way round and
+    `Abs` of the smallest integer become pieces that throw: the generated code runs that tick itself, so it throws
+    as the program does); `Single.Lerp`/`Double.Lerp` their affine form (`a*(1-t) + b*t`, as .NET computes it); a
+    program method or property getter that writes nothing is expanded; `if`, `?:`, `&&`, `||`, early `return` and
+    `continue` make pieces with guards (a guard seen again on a path is not split again). For each guard of each
+    piece, how its value moves under that piece: by a fixed step each tick (`c(A - I) = 0`, step `c·b`), or so from
+    the first tick on (a clamp's bound), or neither: then not solved, "not monotone in the number of ticks", with
+    the guard and the piece. Not solved, with the reason and the operation: a product of two state values, an
+    integer division of the state, a widening of a state int to long (not affine modulo 2^64), a float state value
+    converted to an integer, checked arithmetic, a call it cannot expand, a write of another object, a loop inside,
+    a loop body that can throw, more than 64 pieces. Results are values: the variables, each piece's guards (the
+    comparison as two affine sides, or an invariant condition), rows (A and b as `SolverTerm`s: monomials of
+    `SolverAtom`s with their symbols and operations), and flips (kind and step); `GenerateAdvance(className)` is C#
+    with `Advance(receiver, the tick's arguments, long n)` (for a loop: the state locals by `ref`, the invariant
+    locals, n) that the plugin adds with `AddSource`. The generated code: invariants once; then, per stretch in one
+    piece, the ticks until a guard flips (integers: the first tick a wrapping arithmetic progression crosses the
+    other side, segment by segment between wraps, exact; floating point: `ceil` of the real crossing, adjusted
+    against the double sum) and the piece's map to that power (a translation `x + k b`, a constant, or repeated
+    squaring of the affine map: `log k` steps in long arithmetic, which wraps as the program wraps, so exact; no
+    `(a^n - 1)/(a - 1)`). `Exact`: every variable is an integer and every guard an integer comparison or an exact
+    invariant; floating-point closed forms compute in double and are marked approximate. Cost: one stretch per
+    guard flip (a sawtooth timer is one per period), and for an integer guard one step per wrap before it flips.
+    Test (API check "plugin v6"): the spawner timer (two writes and a branch, float), the same timer in integers,
+    velocity/position (triangular A), Lerp as a program method (through a property) and `Single.Lerp`, health
+    with `Math.Clamp` and a shield with `Math.Min` (7 pieces, one throwing), coupled wrapping int and long LCGs,
+    and a `for` body; each Advance against running the ticks for n in 0..1000 (and 10^6 for the LCGs), exact
+    where `Exact`, within 1e-4 otherwise, and the Clamp that throws against the ticks that throw; a guard that is
+    not monotone and `x = x * x` reported unsolved with their reasons. Found on the way: generated code that calls
+    a program method with parameters did not compile (the plugin's compilation sees the program's types as
+    retargeted symbols, whose parameters are not the ones the operation trees name); `Types.Canonical` now maps
+    such a type to the input's own (`Driver.InputType`).
+  - Still open: the first slice of the real plugin in the Bazoodle repository (9.4). What it needs:
+    - 9.4, the Invisible API's first slice, in the Bazoodle repository against version 6: classify each write
       (`Accesses` with entries, `PathConditions` for whether it runs under a value from input, `InterceptValue` on
       the input reads, `UnsureSites` as unknown), mark the interactions changed (`InstrumentWrite`,
       `InstrumentEntryWrites` with the player key), one gate (generated C# with `AddSource`, reading private
-      fields, exported for the server), registered from `RunBeforeCompile` so nothing compiles twice; the solved
-      timer waits for A4.6. Each gap it finds is a compiler issue here.
+      fields, exported for the server), registered from `RunBeforeCompile` so nothing compiles twice, and the
+      solved timer (`Solve` and its Advance; an approximate closed form only for display or prediction). Each gap
+      it finds is a compiler issue here.
 
 - **Step 11.1, in part (2026-11-18): programs written to use every form, compared with .NET.** Tests 124 to 126
   removed three refusals (`await` in conditional expressions was already handled; lifted compound assignment
@@ -743,6 +835,47 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     `root.Tag = results`). A member that something besides its owner refers to holds its owner, since that other
     holder may be outside the tree; here it is inside, the tree holds itself, and in a group that lives on it
     stays. Not specific to async; freed whenever the group goes (a program without a task on a cycle: at once).
+
+- **Self-hosted compiler's size (stream B of docs/FINISH.md, 2026-11-20): 63,966,970 to 42,664,712 bytes.**
+  `tools/size-report.mjs module.wasm [--packed]` (names from a `CS2WASM_NAMES=1` build) splits a module: its
+  sections; code by kind (methods, generic instantiations, specialized copies, dispatch stubs, lambdas, arena and
+  counting functions, static initializers), by namespace, by type, by source method with its instantiations; data
+  expanded and split into string literals, manifest resources (found by content from the build's .rsp) and the rest.
+  What the 64 MB were: code 36.1 MB, data 23.3 MB, stack-trace frames 1.2 MB. Of the data, 13.8 MB string literals,
+  12.5 MB of them the full names of 37,841 generic instances (`Type.FullName` of every type the module numbers, each
+  repeating its arguments' names: Roslyn's run to 1,300 characters); 4.0 MB the library sources the compiler
+  compiles (needed); 5.5 MB type tables and reflection records. The data was not packed: packing (SPEC 5) needed the
+  packed bytes to fit the first megabyte of heap. Fixed, behaviour unchanged:
+  - A generic instance's (or an array's or pointer's of one) full name is kept as pieces whose join is the name:
+    strings (a definition's part up to its bracket, shared by every instance, and separators) and type ids (an
+    argument whose own entry is its name, found in the name in order; one with no id is looked into). Each record is
+    checked at compile time against the name. `rt.lazy_type_name` joins them the first time the name is asked for,
+    makes the string immortal (a literal's header) and puts it in the table's slot (a compare-exchange with threads;
+    the loser frees its own). .NET keeps a type's name as long as the type, so nothing is kept that .NET frees. A
+    program saving under 8 KB keeps its literals (`CS2WASM_ALL_LAZY_NAMES=1` forces it; `CS2WASM_NO_LAZY_NAMES=1`
+    turns it off). The Type.GetType table stores minus such a name's length and makes the name only for a lookup of
+    that length (`TypeInfo.GetTypeByName`). Self-hosted compiler: 38,412 names, expanded data 20.9 to 12.8 MB.
+  - Packed data that does not fit the start's memory is expanded through a window of up to 1 MB at the heap's start,
+    refilled from the segment with memory.init (`DataCompression.EmitStreamDecoder`; a match that does not overlap
+    what it copies is one memory.copy). Small programs keep the old expander byte for byte. Self-hosted compiler: 2.8
+    MB of data in the module. `CS2WASM_PACK_WINDOW=n` forces a window (the suite passes with 4096).
+  - Type tables' id lists (interfaces, generic arguments, nested types, constraints) are shared between types with
+    the same list.
+  - A layout that reflection pinned (an address taken as a number before the final layout) no longer keeps dead
+    chunks' bytes: they are zero (packed to almost nothing), and a chunk whose address was taken counts as live.
+  Hello world 27,541 bytes before and after; bench 372,676 to 372,166 bytes (0.91x NativeAOT, 16.0 MB vs 71.3 MB);
+  test 036 528,820 to 512,342. The self-hosted compiler's hello world is byte-identical to the old one's, in the same
+  time (14.2 s against 14.3 s, interleaved). Suite 179 passed checked and as shipped (also with lazy names and a
+  4 KB window forced everywhere; 088's timer line and 135's WhenAny race fail under heavy load, before as after).
+  **What is left is code, 36.2 MB:** generic instantiations 14.9 MB (81,417 functions), other methods 11.3, specialized
+  copies (constant arguments) 2.7, dispatch stubs 2.0 (a binary search per stub; IEnumerator.MoveNext's is 115 KB),
+  lambdas 1.4, arena machinery 1.1 (per-type dispatch: rt.retain_contents 274 KB, rt.destroy_now 188 KB,
+  rt.arena_clear 173 KB), counting and destroy functions 1.0, static initializers 0.6. By namespace: Roslyn's C#
+  8.3 MB, System.Linq 7.6 (one set of Select/Where iterator classes per instantiation, with ToArray, ToList, Fill,
+  Contains... each), System.Collections.Generic 2.9. Byte-identical bodies left after merging: 0.5 MB (kept apart
+  by their frames). The levers there: sharing code between instantiations over reference types (as .NET's
+  canonical forms do), and which virtual overrides of the Linq iterators a call can reach. Also left in the data:
+  3,476 full names (1 MB) the cast-failure helpers keep (`rt.throw_cast`, one literal per target type).
 
 ### Direction (revised 2026-11-18 with the owner)
 
@@ -1117,3 +1250,43 @@ What was agreed for decisions 1 and 2:
   removes the commonest cycle (a child's link to its parent) so the child stays a plain counted object and is freed
   the moment it is dropped. Scoping makes what is still cyclic cheap. Without the proof, a long-lived parent with
   children that come and go (a world and its enemies) is one arena that only grows.
+
+- **Per-group locks for arena operations (stream C, 2026-11-20).** Measured first: a PLINQ query making 3,000 trees of
+  200 nodes (tools/bench-threads/plinq_trees.cs) took 0.65 s on one thread, 4.9 on four, 9.1 on 24; on four threads
+  one thread did all the work while the others slept in the runtime lock's wait, every handover a wake-up (not cache
+  lines: the lock's words on lines of their own changed nothing). Now (Boundary/GroupLocks.cs):
+  - A lock is one of 256 stripes, each word on its own cache line. A group's stripe is in each member's lock word (the
+    first of its member words, unused before) and in its record (+28); an object that is no member is a group of its
+    own, of the stripe its address gives. Whoever changes an object's lock word, or its count between plain and
+    member, holds the stripe it had and the one it gets (a join writes the word before the count; a member that
+    leaves keeps it until the count says plain; a merge restripes the smaller arena's members), so a stripe this
+    thread holds, read in an object's lock word, means the object's words are its to read (GroupHeld); every read of
+    another object's words in the machinery checks that first (the visits, the unlink's old value, Handover).
+  - An operation locks its stripes lowest first and verifies them (the object may have moved meanwhile). A join's
+    objects (the container and the value when plain, what their slots hold, and so on: ArenaLinkJoined) are found
+    under the locks before anything changes (LinkLock: each object found has its stripe tried; a try that fails gives
+    all back and the next attempt takes it in order; eight attempts, then every stripe). Not walked: a link that
+    joins nothing (a finalizer's stores into its dying structure walked all of it at each store: test 133, 98 s).
+  - A store's region (StoreLockIf, now with the slot's address) locks at its link, which knows the value; its slot's
+    place lock is tried after the stripes (given back and waited for without them when busy), and the exchange is an
+    atomic one (Rt.RegionExchange). Order: runtime lock, places, stripes, heap. The allocator's lists have a lock of
+    their own (HeapLock), since code holding stripes allocates and the runtime lock's holders (Monitor) count.
+  - A release that needs a stripe below those the thread holds waits for its locks to go (QueueRelease); the
+    destructions wait as under the runtime lock (rt.destroy checks Rt.LocksHeld, AfterLocks runs them); a store's
+    give-back still waits for its unlink. The kill list is the thread's own: drained before its locks go.
+  - The arena scratch (visit state, kill, link, cut and trial lists) is per thread with threads: statics marked
+    [Intrinsic] are thread statics in thread mode, plain ones without. All of it is behind Rt.ThreadMode, which
+    Folding.KnownBool folds when each method is compiled: Rt.SingleThreaded resolves only at the end, after what a
+    branch calls is compiled (that alone grew hello world by 527 bytes, through Interlocked's thread path).
+  - Found on the way: AfterLocks looped forever inside a destroy function (rt.lock_exit leaves pending destructions
+    to the destruction's loop there); a give-back run at a link's unlock, before its store was written; ArenaRetain
+    left kills in the thread's list for good (another thread's ops skip a queued member).
+  - Measured interleaved holding a heavy.sh slot, main before against now. Trees: 0.60, 3.2, 6.5, 7.0 s on 1, 4, 12,
+    24 threads against 0.79, 0.46, 0.45, 0.44. Self-hosted compiler (threaded) on hello world: 16.3, 23.6, 37.7, 39.4
+    against 18.7, 17.0, 26.6, 26.7; its output byte-identical to the .NET-hosted compiler's. Its profile on 12
+    threads: StripeWait and StripeUnlock (the wake-up) on one stripe, the lexer cache's, the syntax node cache's
+    and BlendedNode copies' stores and counts: Roslyn's types are one group, which locks per group cannot split
+    (stream A's value sources per site, the back-reference proof). A waiter spins 2,048 times before it sleeps
+    (test 139 on 16 threads: 830 to 700 ms). One thread: 15% slower than the one lock (the stripes' bookkeeping).
+    No-threads builds: hello world byte-identical; micro and bench the same code (function type order and line
+    numbers differ). Suite 187/187 checked and as shipped (070_files failed once in a run beside another session's, its fixed directory shared; passes alone); test 139 200/200 under tools/stress.mjs, 8 at once.

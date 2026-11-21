@@ -20,7 +20,16 @@ static class Check
             .Where(f => (exclude == null || !string.Equals(Path.GetFullPath(f), Path.GetFullPath(exclude), StringComparison.OrdinalIgnoreCase))
                 && (excludeAlso == null || !string.Equals(Path.GetFullPath(f), Path.GetFullPath(excludeAlso), StringComparison.OrdinalIgnoreCase))));
         var po = new CSharpParseOptions(LanguageVersion.Preview, preprocessorSymbols: defines);
-        var trees = files.AsParallel().AsOrdered().Select(f => CSharpSyntaxTree.ParseText(File.ReadAllText(f), po, f)).ToList();
+        // (the manifest's exact edits, as the compiler applies them: Compiler/Library.cs)
+        var edits = lines.Where(l => l.StartsWith("edit	")).Select(l => l.Split('	')).Where(p => p.Length >= 4)
+            .GroupBy(p => Path.GetFullPath(Path.Combine(baseDir, p[1]))).ToDictionary(g => g.Key, g => g.Select(p => (p[2], p[3])).ToList(), StringComparer.OrdinalIgnoreCase);
+        string Text(string f)
+        {
+            var text = File.ReadAllText(f);
+            if (edits.TryGetValue(Path.GetFullPath(f), out var es)) foreach (var (from, to) in es) text = text.Replace(from, to);
+            return text;
+        }
+        var trees = files.AsParallel().AsOrdered().Select(f => CSharpSyntaxTree.ParseText(Text(f), po, f)).ToList();
         var refs = Libraries.All.TakeWhile(l => l != lib).Where(built.ContainsKey).Select(l => (MetadataReference)built[l].ToMetadataReference()).ToList();
         return CSharpCompilation.Create(lib, trees, refs,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, allowUnsafe: true,

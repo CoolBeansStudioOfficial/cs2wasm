@@ -35,20 +35,29 @@ namespace System.Threading
             }
             if (v != 0) Rt.Retain(value!); // the count the slot takes if the exchange happens
             int ad = (int)Unsafe.AsPointer(ref slot);
-            // A slot of an object of a cycle-capable type: the link, the exchange and the unlink are one step under
-            // the runtime lock, which every arena operation takes (the slot's bits say what it holds: two threads'
-            // exchanges of one slot, each linked before it and unlinked after, left them saying another's, and its
-            // counts wrong: freed objects still in use, seen as the compiler compiling itself on 24 threads). The
-            // exchange is an atomic one, not under the place's lock (that lock is taken before the runtime lock,
-            // below); a read that counts still finds the old value counted: its count passes to the result.
-            if (Rt.InArenaSlot(ad))
+            // A slot of an object of a cycle-capable type: the link, the exchange and the unlink are one step, a
+            // store's region (the container's group and the value's locked throughout, and the slot's place:
+            // Rt.StoreLockAtIf, Rt.RegionCompareExchange; the slot's bits say what it holds: two threads' exchanges of
+            // one slot, each linked before it and unlinked after, left them saying another's, and its counts wrong:
+            // freed objects still in use, seen as the compiler compiling itself on 24 threads). The exchange is an
+            // atomic one; a read that counts still finds the old value counted: its count passes to the result.
+            // The link only once the exchange happened: linked before, an exchange that did not happen was taken back
+            // as an unlink of the new value with the bits of the value the slot kept, which left the new value owned
+            // by the container and counted inside it (a task's continuation added as the task completed: the
+            // continuation kept the freed task as its owner, 072_http's rare out-of-bounds read). In the region
+            // nothing else reads or changes the slot's bits in between.
+            if (Rt.ThreadMode() && Rt.InArenaSlot(ad))
             {
-                Rt.RuntimeLock();
-                v = Rt.LinkAt(v, ad);
-                int was = Atomic.CompareExchange32(ref slot, c, v);
+                int took = Rt.StoreLockAtIf(ad);
+                int was = Rt.RegionCompareExchange(ad, c, v);
                 if (was != 0) Rt.Retain(Rt.Borrow<object>(was)); // the result's count
-                Rt.UnlinkAt(was == c ? was : v, ad);
-                Rt.RuntimeUnlock();
+                if (was == c)
+                {
+                    Rt.LinkAt(v, ad);
+                    Rt.UnlinkAt(was, ad);
+                }
+                else if (v != 0) Rt.Release(Rt.Borrow<object>(v)); // the slot's count, not taken
+                Rt.StoreUnlockIf(took);
                 return Rt.Take<object>(was);
             }
             // (linked as the store it may be, before it: taken back as a slot's old value is if it does not happen)
@@ -90,15 +99,15 @@ namespace System.Threading
                 return Rt.Take<object>(was);
             }
             int ad = (int)Unsafe.AsPointer(ref slot);
-            // (a slot of an object of a cycle-capable type: one step under the runtime lock, as CompareExchange)
-            if (Rt.InArenaSlot(ad))
+            // (a slot of an object of a cycle-capable type: one step, a store's region, as CompareExchange)
+            if (Rt.ThreadMode() && Rt.InArenaSlot(ad))
             {
-                Rt.RuntimeLock();
+                int took = Rt.StoreLockAtIf(ad);
                 v = Rt.LinkAt(v, ad);
-                int was = Atomic.Exchange32(ref slot, v);
+                int was = Rt.RegionExchange(ad, v);
                 if (was != 0) Rt.Retain(Rt.Borrow<object>(was)); // the result's count
                 Rt.UnlinkAt(was, ad);
-                Rt.RuntimeUnlock();
+                Rt.StoreUnlockIf(took);
                 return Rt.Take<object>(was);
             }
             v = Rt.LinkAt(v, ad);

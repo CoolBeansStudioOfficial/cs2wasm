@@ -42,6 +42,15 @@ internal sealed partial class Driver
     readonly Dictionary<string, WasmFunction> _reflThunks = [];
     WasmFunction? _metaOf;
     public WasmFunction MetaOf => _metaOf ??= Module.AddFunction("rt.meta_of", new FuncType([ValType.I32], [ValType.I32]));
+    // StackFrame.GetMethod, Exception.TargetSite, MethodBase.GetCurrentMethod (Meta.FrameMethod): the frame names of
+    // the compiled methods, each with its record's entry; asked for only by code that reaches them
+    WasmFunction? _frameMethods;
+    public WasmFunction FrameMethodsFn => _frameMethods ??= Module.AddFunction("rt.frame_methods", new FuncType([], [ValType.I32]));
+    readonly Dictionary<string, int> _frameEntries = [];
+    WasmFunction? _throwSites;
+    public WasmFunction ThrowSitesFn => _throwSites ??= Module.AddFunction("rt.throw_sites", new FuncType([], [ValType.I32]));
+    /// <summary>Whether code asks frames (or a throw) for their methods: their records are kept.</summary>
+    public bool FramesAsked => _frameMethods != null || _throwSites != null;
     public static readonly FuncType ThunkType = new([ValType.I32, ValType.I32], [ValType.I32]);
 
     static readonly HashSet<string> s_reflectNames = ["GetMethod", "GetMethods", "GetProperty", "GetProperties", "GetField", "GetFields", "GetEvent", "GetEvents",
@@ -189,13 +198,38 @@ internal sealed partial class Driver
                 foreach (var em in en.GetMembers(qi.Name).OfType<IMethodSymbol>())
                     if (em.IsGenericMethod && em.Arity == qi.Arity)
                         try { keep.KeepInstance(en, em.Construct([.. qi.TypeArguments])); } catch (ArgumentException) { }
-        if (keep.Types.Count == 0) return;
+        if (keep.Types.Count == 0 && !FramesAsked) return;
         _reflect = keep;
         // thunks for the kept members (compiled in the next round)
         foreach (var (t, all, names, ctors) in keep.Types.Values.ToList())
             foreach (var m in KeptMembers(t, all, names, ctors))
                 // (a generic method definition, or a member of a generic type definition, has no code: no thunk)
-                if ((m is not IMethodSymbol { IsGenericMethod: true } gd || !IsMethodDefinition(gd)) && !OfOpenType(m)) ThunkFor(m);
+                if ((m is not IMethodSymbol { IsGenericMethod: true } gd || !IsMethodDefinition(gd)) && !OfOpenType(m) && Thunkable(m)) ThunkFor(m);
+        // a frame's method: a record for each compiled method a frame can show, of its definition (as .NET's frames
+        // name it: Holder<int>.M's frame is Holder`1[T]'s M), without a thunk (what invokes a member has its own)
+        var programFrames = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+        if (FramesAsked)
+        {
+            // (the hidden methods that throw, for TargetSite)
+            foreach (var h in HiddenThrowers)
+                if (h.ContainingType is { } hc && h.MethodKind is MethodKind.Ordinary or MethodKind.Constructor or MethodKind.PropertyGet or MethodKind.PropertySet)
+                    keep.Keep(hc.OriginalDefinition, h.Name, ctors: h.MethodKind == MethodKind.Constructor);
+            foreach (var mi in AllMethods.ToList())
+            {
+                if (!mi.Compiled || mi.Fn.FrameName == null || mi.Sym.MethodKind is not (MethodKind.Ordinary or MethodKind.Constructor or MethodKind.PropertyGet
+                    or MethodKind.PropertySet or MethodKind.EventAdd or MethodKind.EventRemove or MethodKind.UserDefinedOperator or MethodKind.Conversion or MethodKind.ExplicitInterfaceImplementation)) continue;
+                var def = mi.Sym.OriginalDefinition;
+                if (def.ReducedFrom != null) def = def.ReducedFrom;
+                if (def.ContainingType is not { } ct || ct.IsAnonymousType || IsHiddenFrame(def)) continue;
+                keep.Keep(ct.OriginalDefinition, def.Name, ctors: def.MethodKind == MethodKind.Constructor);
+                // (the program's own can be invoked, as any member reflection finds)
+                if (!IsLibrary(def)) programFrames.Add(ct.OriginalDefinition);
+            }
+        }
+        foreach (var t in programFrames)
+            if (keep.Types.TryGetValue(Compiler.Types.Key(t), out var k))
+                foreach (var m in KeptMembers(t, k.all, k.names, k.ctors))
+                    if (!IsLibrary(m) && (m is not IMethodSymbol { IsGenericMethod: true } gd || !IsMethodDefinition(gd)) && !OfOpenType(m) && Thunkable(m)) ThunkFor(m);
     }
 
     bool _assemblyTypes;
@@ -378,13 +412,13 @@ internal sealed partial class Driver
                         if (ev.AddMethod is { } ea) yield return ea;
                         if (ev.RemoveMethod is { } er) yield return er;
                         break;
-                    case IMethodSymbol { MethodKind: MethodKind.Ordinary, IsGenericMethod: true, IsAbstract: false } gm when gm.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !gm.ReturnType.IsRefLikeType && !gm.ReturnsByRef && !gm.ReturnsByRefReadonly && !gm.IsExtern:
+                    case IMethodSymbol { MethodKind: MethodKind.Ordinary, IsGenericMethod: true, IsAbstract: false } gm when Recordable(gm):
                         // a generic method definition (invoked only through its instances)
                         yield return gm;
                         if (_reflect != null && _reflect.GenericInstances.TryGetValue(Compiler.Types.Key(t), out var insts))
                             foreach (var inst in insts) if (SymbolEqualityComparer.Default.Equals(inst.OriginalDefinition, gm.OriginalDefinition)) yield return inst;
                         break;
-                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke or MethodKind.EventAdd or MethodKind.EventRemove or MethodKind.UserDefinedOperator or MethodKind.Conversion } ms when !ms.IsGenericMethod && (!ms.IsAbstract || !ms.IsStatic && SymbolEqualityComparer.Default.Equals(x, t)) && ms.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !ms.ReturnType.IsRefLikeType && !ms.ReturnsByRef && !ms.ReturnsByRefReadonly && !ms.IsExtern:
+                    case IMethodSymbol { MethodKind: MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.DelegateInvoke or MethodKind.EventAdd or MethodKind.EventRemove or MethodKind.UserDefinedOperator or MethodKind.Conversion } ms when !ms.IsGenericMethod && (!ms.IsAbstract || !ms.IsStatic && SymbolEqualityComparer.Default.Equals(x, t)) && Recordable(ms):
                         yield return ms; break;
                     case IMethodSymbol { MethodKind: MethodKind.Constructor } cs when SymbolEqualityComparer.Default.Equals(x, t) && cs.Parameters.All(p => !p.Type.IsRefLikeType && p.Type is not IPointerTypeSymbol) && !t.IsAbstract && !t.IsRefLikeType:
                         yield return cs; break;
@@ -401,6 +435,13 @@ internal sealed partial class Driver
             }
         }
     }
+
+    /// <summary>Whether a method has a record: one that takes or returns a by-ref-like value (a span) only when frames
+    /// are asked for their methods (it has no thunk: reflection cannot box a span, in .NET as here).</summary>
+    bool Recordable(IMethodSymbol m) => m.Parameters.All(p => (!p.Type.IsRefLikeType || FramesAsked) && p.Type is not IPointerTypeSymbol)
+        && (!m.ReturnType.IsRefLikeType || FramesAsked) && !m.ReturnsByRef && !m.ReturnsByRefReadonly && !m.IsExtern;
+
+    static bool Thunkable(ISymbol m) => m is not IMethodSymbol ms || ms.Parameters.All(p => !p.Type.IsRefLikeType) && !ms.ReturnType.IsRefLikeType;
 
     string ThunkKey(ISymbol m) => m switch { IMethodSymbol ms => Types.MethodKey(CanonicalMethod(ms)), IFieldSymbol f => "F:" + Types.Key(Types.Canonical(f.ContainingType)) + "::" + f.Name, _ => m.ToDisplayString() };
 
@@ -468,15 +509,18 @@ internal sealed partial class Driver
     internal void EmitReflectionTables()
     {
         PatchDisplayFields();
+        if (_metaOf == null && !FramesAsked) return;
+        var records = new Dictionary<int, IAddress>();
+        if (_reflect != null)
+            foreach (var (t, all, names, ctors) in _reflect.Types.Values)
+            {
+                int id = TypeId(t);
+                records[id] = TypeRecord(t, KeptMembers(t, all, names, ctors).ToList());
+            }
+        EmitFrameMethods();
         if (_metaOf == null) return;
         var e = new Emitter(_metaOf);
         if (_reflect == null) { e.I32(0); return; }
-        var records = new Dictionary<int, IAddress>();
-        foreach (var (t, all, names, ctors) in _reflect.Types.Values)
-        {
-            int id = TypeId(t);
-            records[id] = TypeRecord(t, KeptMembers(t, all, names, ctors).ToList());
-        }
         int tid = e.AddLocal(ValType.I32);
         e.Get(0); e.Set(tid);
         foreach (var (id, addr) in records)
@@ -488,6 +532,26 @@ internal sealed partial class Driver
     }
 
     int ExtTypeId(ITypeSymbol t) => ExtId(TypeId(t));
+
+    /// <summary>A record's member a frame can name: its entry (a constructor's + 1) under its frame name, the record
+    /// of the type that declares it first.</summary>
+    void NoteFrameEntry(INamedTypeSymbol record, IMethodSymbol m, int entry)
+    {
+        if (!FramesAsked) return;
+        var name = FrameName(m);
+        if (SymbolEqualityComparer.Default.Equals(record.OriginalDefinition, m.ContainingType.OriginalDefinition)) _frameEntries[name] = entry;
+        else _frameEntries.TryAdd(name, entry);
+    }
+
+    /// <summary>rt.frame_methods: [count, (frame name, entry)...] (Meta.FrameMethod).</summary>
+    void EmitFrameMethods()
+    {
+        if (_frameMethods != null)
+            new Emitter(_frameMethods).I32Addr(Ints([_frameEntries.Count, .. _frameEntries.SelectMany(x => new[] { Str(x.Key), x.Value })]));
+        // [count, entry of each hidden thrower by its note - 1]
+        if (_throwSites != null)
+            new Emitter(_throwSites).I32Addr(Ints([HiddenThrowers.Count, .. HiddenThrowers.Select(h => _frameEntries.GetValueOrDefault(FrameName(h)))]));
+    }
 
     // a member's metadata token: one per definition (List<int>.Add and List<T>.Add share it, as in metadata)
     readonly Dictionary<string, int> _tokens = [];
@@ -704,6 +768,7 @@ internal sealed partial class Driver
         var methods = new List<int>(); int nm = 0;
         var methodSyms = new List<IMethodSymbol>();
         var ctors = new List<int>(); int nc = 0;
+        var ctorSyms = new List<IMethodSymbol>();
         var seenProps = new HashSet<string>();
         foreach (var m in members)
         {
@@ -723,6 +788,7 @@ internal sealed partial class Driver
                         ctors.Add(ExtTypeId(c.ContainingType));
                         ctors.Add(Defaults(c));
                         ctors.Add(Token(0x06000000, c));
+                        ctorSyms.Add(c);
                         nc++;
                         break;
                     }
@@ -753,7 +819,7 @@ internal sealed partial class Driver
         var methodsBlob = (DataAddr)Ints(methods);
         int mBase = methodsBlob.Address;
         int EntryAt(int j) => mBase + 4 * 13 * j;
-        for (int i = 0; i < methodSyms.Count; i++) NoteMethodEntry(t, methodSyms[i], EntryAt(i));
+        for (int i = 0; i < methodSyms.Count; i++) { NoteMethodEntry(t, methodSyms[i], EntryAt(i)); NoteFrameEntry(t, methodSyms[i], EntryAt(i)); }
         for (int i = 0; i < methodSyms.Count; i++)
         {
             var ms = methodSyms[i];
@@ -774,7 +840,9 @@ internal sealed partial class Driver
             PatchData(methodsBlob, (i * 13 + 10) * 4, Ints(g).Address);
         }
         var (ta, tb) = Attrs(t);
-        var rec = new[] { nf, Ints(fields).Address, np, Ints(props).Address, nm, mBase, nc, Ints(ctors).Address, ta, tb,
+        int cBase = Ints(ctors).Address;
+        for (int i = 0; i < ctorSyms.Count; i++) NoteFrameEntry(t, ctorSyms[i], cBase + 4 * 10 * i + 1);
+        var rec = new[] { nf, Ints(fields).Address, np, Ints(props).Address, nm, mBase, nc, cBase, ta, tb,
             t.BaseType != null ? ExtTypeId(t.BaseType) + 1 : 0, t.Interfaces.Length, Ints(t.AllInterfaces.Select(i => ExtTypeId(i))).Address };
         return Ints(rec);
     }

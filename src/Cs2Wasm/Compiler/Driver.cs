@@ -57,13 +57,18 @@ sealed class DataChunk
     public int Offset, Length, Align;
     public string? Owner;
     public int Final = -1;
+    /// <summary>Its address was taken as a number before the final layout (it may be in another chunk's bytes, where
+    /// no relocation says so): live whatever refers to it.</summary>
+    public bool Taken;
     public List<(int at, IAddress target)>? Relocs;
 }
 
 sealed class DataAddr(Driver d, DataChunk chunk) : IAddress
 {
     public DataChunk Chunk => chunk;
-    public int Address => d.ChunkAddress(chunk);
+    public int Address => d.ChunkAddress(chunk) + Plus;
+    /// <summary>Added to the address: a tag in its low bits (RuntimeGen.EmitFullNames).</summary>
+    public int Plus { get; init; }
     /// <summary>A string literal: an immortal object (its count is -1; retain and release leave it as it is).</summary>
     public bool Immortal { get; init; }
 }
@@ -90,6 +95,18 @@ internal sealed partial class Driver
     readonly List<Compilation> _inputs;
     public IReadOnlyList<Compilation> Inputs => _inputs;
     public bool IsInput(SyntaxTree t) => _inputs.Any(c => c.ContainsSyntaxTree(t));
+    /// <summary>The input compilation's own symbol for a type of it seen through another compilation that references
+    /// it (a plugin's generated source sees the program's types as retargeted symbols, whose members' parameters are
+    /// not the ones the program's operation trees name); null when the type is the input's own or not an input's.</summary>
+    public INamedTypeSymbol? InputType(INamedTypeSymbol def)
+    {
+        var asm = def.ContainingAssembly;
+        if (asm == null) return null;
+        foreach (var c in _inputs) if (SymbolEqualityComparer.Default.Equals(c.Assembly, asm)) return null;
+        foreach (var c in _inputs)
+            if (c.Assembly.Name == asm.Name && c.Assembly.GetTypeByMetadataName(Types.FullName(def)) is { } t) return t;
+        return null;
+    }
     /// <summary>Every type the program constructs (allocated objects' types).</summary>
     public IEnumerable<ITypeSymbol> ConstructedTypes() => Constructed.Where(id => id > 0 && id < TypeById.Count && !DisplayById.ContainsKey(id) && !SyntheticById.ContainsKey(id)).Select(id => TypeById[id]);
     public readonly Library Lib;
@@ -413,6 +430,16 @@ internal sealed partial class Driver
         return a;
     }
 
+    /// <summary>Code asks for type names: a generic instance's full name may be made when first asked for rather
+    /// than kept in the data (RuntimeGen.EmitFullNames), in a string from Rt.AllocObject.</summary>
+    public bool LazyTypeNames;
+    public void WantLazyTypeNames()
+    {
+        if (LazyTypeNames || Environment.GetEnvironmentVariable("CS2WASM_NO_LAZY_NAMES") == "1") return;
+        LibMethod("Cs2Wasm.Runtime.Rt", "AllocObject", 2);
+        LazyTypeNames = true;
+    }
+
     public IAddress DataBlob(byte[] bytes, int align)
     {
         Align(align);
@@ -452,6 +479,7 @@ internal sealed partial class Driver
     /// <summary>A chunk's address; taken before the final layout, it pins the data where it is.</summary>
     public int ChunkAddress(DataChunk c)
     {
+        if (!_dataFinal) c.Taken = true;
         if (!_dataFinal && !_dataPinned)
         {
             _dataPinned = true;
@@ -471,6 +499,7 @@ internal sealed partial class Driver
         foreach (var f in liveFns)
             foreach (var ins in f.Body)
                 if (ins.Ref is DataAddr da) Mark(da.Chunk);
+        foreach (var c in _chunks) if (c.Taken) Mark(c);
         while (work.Count > 0)
         {
             var c = work.Pop();
@@ -485,6 +514,11 @@ internal sealed partial class Driver
                 Console.Error.WriteLine($"    {g.Sum(c => c.Length),7} {g.Key}");
         }
         var old = Data.Bytes.ToArray();
+        // (pinned, nothing moves: the chunks nothing live refers to are zero, which the packed data keeps in a few bytes)
+        if (_dataPinned)
+            foreach (var c in _chunks)
+                if (!live.Contains(c))
+                    for (int i = 0; i < c.Length; i++) Data.Bytes[c.Offset + i] = 0;
         if (!_dataPinned)
         {
             var bytes = new List<byte>();
@@ -611,8 +645,21 @@ internal sealed partial class Driver
             };
         }
         if (mi.Impl is MethodImpl.Body or MethodImpl.Synthesized or MethodImpl.Missing) _work.Enqueue(mi);
+        // a program that throws: a failed static initializer's exceptions get their traces (rt.cctor_traces); one
+        // that does not throw has no exception an initializer could fail with
+        if (CctorTraceHelper == null && m.Name == "OnThrow" && m.ContainingType is { Name: "Rt" } && Types.FullName(m.ContainingType) == "Cs2Wasm.Runtime.Rt")
+            CctorTraceHelper = (mi, LibMethod("Cs2Wasm.Runtime.Rt", "OnInitializerFailed", 2));
+        // a program that can add a FirstChanceException handler: throws raise it (Rt.RaiseFirstChance, RuntimeGen.Finish)
+        if (FirstChanceRaiser == null && m.Name == "add_FirstChanceException" && m.ContainingType is { Name: "AppDomain", ContainingNamespace.Name: "System" })
+            FirstChanceRaiser = LibMethod("Cs2Wasm.Runtime.Rt", "RaiseFirstChance", 1);
         return mi;
     }
+
+    /// <summary>Rt.OnThrow and Rt.OnInitializerFailed, once something throws.</summary>
+    public (MethodInst onThrow, MethodInst onInitFailed)? CctorTraceHelper;
+
+    /// <summary>Rt.RaiseFirstChance, once something reaches AppDomain.add_FirstChanceException.</summary>
+    public MethodInst? FirstChanceRaiser;
 
     readonly Dictionary<string, bool> _returnsThis = [];
 
@@ -776,6 +823,8 @@ internal sealed partial class Driver
             "System.Object" => m.Name == "GetType",
             // new T() for a T known at compile time (LazyInitializer and friends call it directly)
             "System.Activator" => m.Name == "CreateInstance" && m.IsGenericMethod && m.Parameters.Length == 0,
+            // the calling method, known where the call is compiled (the frame of its function, Meta.FrameMethod)
+            "System.Reflection.MethodBase" => m.Name == "GetCurrentMethod",
             _ => false,
         };
     }
@@ -1035,6 +1084,8 @@ internal sealed partial class Driver
         var sym = cctor ?? t.StaticConstructors.FirstOrDefault();
         var fn = Module.AddFunction("static init " + key, new FuncType([], []));
         var body = Module.AddFunction("static init body " + key, new FuncType([], []));
+        // (the initializer is a frame of traces: "T..cctor()")
+        if (sym != null && !IsHiddenFrame(sym)) { body.FrameName = FrameName(sym); body.ProgramCode = !IsLibrary(t); }
         {
             // an exception from the initializer: TypeInitializationException now and at every later access (-2)
             var saved = StaticAddress("tie:" + key, 4, 4);
@@ -1050,6 +1101,9 @@ internal sealed partial class Driver
                 f.Get(1); f.Get(2); f.Get(3);
                 f.Call(LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "TypeInitFailed", 2).Fn);
                 f.Store(Op.I32Store);
+                // (the inner exception's trace ends at the initializer; the wrapper's starts where the type was
+                // touched: rt.cctor_traces, written at the end)
+                f.Get(3); f.Get(1); f.Load(Op.I32Load); f.Call(Rt.CctorTracesFn);
                 f.Get(3); f.Call(Rt.Release);
                 f.Get(0); f.Call(Rt.CctorFail);
                 f.Get(1); f.Load(Op.I32Load); f.Call(Rt.Retain); f.Emit(Op.Throw, 0, 0, ExceptionTag);
@@ -1057,7 +1111,7 @@ internal sealed partial class Driver
                 _cctorCheck = Module.AddFunction("rt.cctor_check", new FuncType([ValType.I32, ValType.I32], []));
                 var c = new Emitter(_cctorCheck);
                 c.Get(0); c.Load(Op.I32Load); c.I32(-2); c.Op(Op.I32Eq);
-                c.If(); c.Get(1); c.Load(Op.I32Load); c.Call(Rt.Retain); c.Emit(Op.Throw, 0, 0, ExceptionTag); c.End();
+                c.If(); c.I32(0); c.Get(1); c.Load(Op.I32Load); c.Call(Rt.CctorTracesFn); c.Get(1); c.Load(Op.I32Load); c.Call(Rt.Retain); c.Emit(Op.Throw, 0, 0, ExceptionTag); c.End();
             }
             e.I32Addr(flag); e.Call(Rt.CctorEnter);
             e.If();

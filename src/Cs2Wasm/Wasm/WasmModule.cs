@@ -499,10 +499,19 @@ internal sealed class WasmModule
         {
             var seen = new Dictionary<string, WasmFunction>();
             bool changed = false;
+            // (a function that is a frame of a trace, and can be on the stack when one is taken, keeps its own name
+            // and lines: two methods with the same code are two frames in .NET)
+            var may = ComputeMayThrow();
             foreach (var f in Functions)
             {
                 if (f.IsImport || f.ForwardTo != null || f.Exports.Count > 0 || f.InTable) continue;
                 var key = BodyKey(f);
+                if (f.FrameName != null && may.Contains(f))
+                {
+                    var sb = new StringBuilder(key).Append('#').Append(f.FrameName);
+                    foreach (var ins in f.Body) if (ins.Pos >= 0) sb.Append('@').Append(ins.Pos);
+                    key = sb.ToString();
+                }
                 if (seen.TryGetValue(key, out var other)) { f.ForwardTo = other; changed = true; }
                 else seen[key] = f;
             }

@@ -571,6 +571,152 @@ internal sealed class Sharing
         return _arrayIds[start] = r;
     }
 
+    // ---- for the arenas: what a slot can hold, by where its values come from rather than by their static types ----
+
+    static readonly bool s_flowDebug = Environment.GetEnvironmentVariable("CS2WASM_FLOW_DEBUG") == "1";
+    HashSet<string>? _flowUncertified;
+    Dictionary<string, List<string>>? _flowImpls;
+    Dictionary<string, List<Src>>? _flowStubParams;
+
+    /// <summary>Which methods' parameters are known (every call marked), and the dispatch stubs' implementations, as
+    /// Analyze finds them; once, for SiteTypeIds, which runs before Analyze.</summary>
+    void PrepareFlow()
+    {
+        if (_flowUncertified != null) return;
+        var keyOf = new Dictionary<WasmFunction, string>();
+        foreach (var mi in D.AllMethods) keyOf.TryAdd(mi.Fn, Types.MethodKey(mi.Sym));
+        string? KeyOf(WasmFunction f) => keyOf.TryGetValue(f, out var k) ? k : null;
+        var uncertified = new HashSet<string>();
+        var stubOf = new Dictionary<WasmFunction, VirtualStub>();
+        foreach (var s in D.Stubs.Values) stubOf[s.Fn] = s;
+        foreach (var f in D.Module.Functions)
+        {
+            if (f.IsImport) continue;
+            bool inStub = stubOf.ContainsKey(f);
+            var self = KeyOf(f);
+            foreach (var ins in f.Body)
+            {
+                if (ins.Ref is not WasmFunction g) continue;
+                if (ins.Op == Op.Call && ((ins.Imm2 & Certified) != 0 || inStub)) continue;
+                if (ins.Op == Op.Call && self != null && KeyOf(g) == self) continue;
+                if (KeyOf(g) is { } k) uncertified.Add(k);
+                else if (stubOf.TryGetValue(g, out var st)) uncertified.Add(Types.MethodKey(D.MethodTarget(st.Slot)));
+            }
+        }
+        foreach (var f in D.Module.Functions) if ((f.Exports.Count > 0 || f.TableRoot || f.InTable) && KeyOf(f) is { } ek) uncertified.Add(ek);
+        var impls = new Dictionary<string, List<string>>();
+        var stubParams = new Dictionary<string, List<Src>>();
+        foreach (var s in D.Stubs.Values)
+        {
+            var slotKey = Types.MethodKey(D.MethodTarget(s.Slot));
+            if (!impls.TryGetValue(slotKey, out var l)) impls[slotKey] = l = [];
+            foreach (var c in s.Cases.Values)
+            {
+                if (c.impl == null) continue;
+                var ik = Types.MethodKey(c.impl.Sym);
+                if (ik == slotKey) continue;
+                l.Add(ik);
+                for (int i = 0; i < s.Slot.Parameters.Length; i++)
+                {
+                    var pk = ParamNode(ik, i);
+                    if (!stubParams.TryGetValue(pk, out var pl)) stubParams[pk] = pl = [];
+                    pl.Add(new Src(K.Param, slotKey, i, s.Slot.Parameters[i].Type));
+                }
+            }
+        }
+        _flowUncertified = uncertified; _flowImpls = impls; _flowStubParams = stubParams;
+    }
+
+    /// <summary>The type ids a site's slots can hold, from the sources of what is stored there, followed through
+    /// parameters, results and the slots values are read from; null when that is no narrower than the static types
+    /// (any object, or more than `cap` types). The same rules as Analyze: a parameter of a method called from
+    /// elsewhere, a result without a body, a slot with nothing recorded is any object of its declared type; stores
+    /// through a ref of the slot's type count; an element read is any object of the element type.</summary>
+    public HashSet<int>? SiteTypeIds(Arenas.Site site, int cap)
+    {
+        if (site.SlotType == null) return null;
+        PrepareFlow();
+        var uncertified = _flowUncertified!;
+        var r = new HashSet<int>();
+        var seen = new HashSet<string>();
+        var work = new Stack<Src>();
+        bool wide = false;
+        Src cur = default;
+        void Top(ITypeSymbol? t)
+        {
+            if (t == null) return;
+            if (Types.IsObject(t)) { wide = true; if (s_flowDebug) Console.Error.WriteLine($"wide-by {site.Key}: {cur.Kind} {cur.Key} #{cur.Index} {(cur.Type != null ? Types.Key(cur.Type) : "")} of {site.Sources.Count}: " + string.Join("; ", site.Sources.Take(6).Select(x => x.Kind + " " + x.Key + " " + (x.Type != null ? Types.Key(x.Type) : "")))); return; }
+            if (!seen.Add("top " + Types.Key(t))) return;
+            foreach (var id in TopIds(t)) r.Add(id);
+        }
+        void Node(string key, ITypeSymbol? declared)
+        {
+            if (!seen.Add(key)) return;
+            bool any = false;
+            if (_nodes.TryGetValue(key, out var l) && l.Count > 0) { foreach (var x in l) work.Push(x); any = true; }
+            if (_flowStubParams!.TryGetValue(key, out var sp)) { foreach (var x in sp) work.Push(x); any = true; }
+            if (!any) Top(declared);
+        }
+        void SiteSources(Arenas.Site s, ITypeSymbol? declared)
+        {
+            if (!seen.Add("site " + s.Key)) return;
+            foreach (var x in s.Sources) work.Push(x);
+            foreach (var id in s.TargetIds) r.Add(id);
+            if (s.Sources.Count == 0 && s.TargetIds.Count == 0) Top(declared);
+        }
+        void Refs(ITypeSymbol t)
+        {
+            var k = RefNode(D.Types.Canonical(t));
+            if (_nodes.ContainsKey(k)) Node(k, null);
+            if (_refAliases.TryGetValue(k, out var al)) foreach (var a in al) if (_nodes.ContainsKey(a)) Node(a, null);
+        }
+        var slotType = D.Types.Canonical(site.SlotType);
+        SiteSources(site, slotType);
+        Refs(slotType);
+        // (an array's element is stored also through a wider array type that it is: an object[] that is a string[])
+        if (site.IsArray)
+            foreach (var other in D.Arenas.AllSites)
+                if (other.IsArray && other != site && D.Types.IsSubtype(site.Container, other.Container)) SiteSources(other, null);
+        while (work.Count > 0 && !wide && r.Count <= cap)
+        {
+            var s = work.Pop();
+            cur = s;
+            switch (s.Kind)
+            {
+                case K.Exact:
+                    if (s.Type != null && D.ExistingTypeId(D.Types.Canonical(s.Type)) is int eid and > 0 && !Types.IsImmortalType(s.Type)) r.Add(eid);
+                    else if (s.Type != null && Types.IsRef(s.Type)) Top(s.Type);
+                    break;
+                case K.Display: r.Add(s.Index); break;
+                case K.Top: Top(s.Type); break;
+                case K.Param:
+                    if (uncertified.Contains(s.Key!)) Top(s.Type); else Node(ParamNode(s.Key!, s.Index), s.Type);
+                    break;
+                case K.Ret:
+                    {
+                        bool dispatched = s.Index == 1 && _flowImpls!.TryGetValue(s.Key!, out var impls) && impls.Count > 0;
+                        var keys = new List<string> { s.Key! };
+                        if (dispatched) keys.AddRange(_flowImpls![s.Key!]);
+                        foreach (var k in keys)
+                            if (BodyRets.Contains(k)) Node(RetNode(k), s.Type);
+                            else if (!(dispatched && k == s.Key)) Top(s.Type);
+                        break;
+                    }
+                case K.Node:
+                    if (s.Key!.StartsWith("site ")) { if (D.Arenas.SiteByKey(s.Key[5..]) is { } os) SiteSources(os, s.Type); else Top(s.Type); }
+                    else { Node(s.Key, s.Type); if (s.Type != null) Refs(s.Type); }
+                    break;
+                case K.Elem:
+                    Top(s.Type is IArrayTypeSymbol et ? D.Types.Canonical(et.ElementType) : null);
+                    break;
+            }
+        }
+        if (wide || r.Count > cap) return null;
+        // (a slot holds objects of its declared type only, whatever was stored through a wider one)
+        r.RemoveWhere(id => !IdIs(id, slotType));
+        return r;
+    }
+
     ITypeSymbol? RefTypeOf(string refNodeKey) => _refTypes.TryGetValue(refNodeKey, out var t) ? t : null;
 
     readonly Dictionary<string, ITypeSymbol> _refTypes = [];

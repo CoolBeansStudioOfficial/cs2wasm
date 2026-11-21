@@ -20,6 +20,7 @@ internal sealed class Display
     public int TypeId;
     internal object? Owner;   // the FunctionCompiler that allocates it
     internal int Local = -1;  // wasm local in the owner holding the pointer
+    internal int FrameOffset = -1;  // where it lives in the owner's frame, when it does (FrameDisplaysAllowed)
     public string Name = "";
 }
 
@@ -203,7 +204,29 @@ sealed partial class FunctionCompiler
         // local function environments
         foreach (var lf in nested.OfType<ILocalFunctionOperation>())
             _lfEnvs[lf.Symbol.OriginalDefinition] = EnclosingDisplayForPosition(lf, body);
+        _frameDisplays = FrameDisplaysAllowed(body, nested, filters.Count);
     }
+
+    /// <summary>The displays live in the frame (as Roslyn's own compiler makes a struct of them): every function nested
+    /// in the body is a local function that is only called, never made a delegate, never an iterator or async (whose
+    /// machines would keep the display past the call), and nothing else can keep a display: then each is known only
+    /// to calls made while its function runs. CS2WASM_NO_FRAME_DISPLAYS=1 keeps them on the heap.</summary>
+    bool FrameDisplaysAllowed(IOperation body, List<IOperation> nested, int filters)
+    {
+        if (s_noFrameDisplays || filters > 0 || _machine != null || M.IsAsync || M.IsIterator || M.OriginalDefinition.IsIterator || D.CompilingInstrumented) return false;
+        var lfs = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+        foreach (var n in nested)
+        {
+            if (n is not ILocalFunctionOperation lf || lf.Symbol.IsAsync || lf.Symbol.IsIterator) return false;
+            lfs.Add(lf.Symbol.OriginalDefinition);
+        }
+        // (a local function named other than by a call: a delegate made of it)
+        foreach (var op in body.Descendants())
+            if (op is IMethodReferenceOperation mr && lfs.Contains(mr.Method.OriginalDefinition)) return false;
+        return true;
+    }
+    bool _frameDisplays;
+    static readonly bool s_noFrameDisplays = Environment.GetEnvironmentVariable("CS2WASM_NO_FRAME_DISPLAYS") == "1";
 
     ISymbol SelfSymbol() => M;
 
@@ -268,13 +291,27 @@ sealed partial class FunctionCompiler
         if (!_displays.TryGetValue(key, out var d)) return;
         d.TypeId = D.DisplayTypeId(d);
         if (d.Local < 0) d.Local = E.AddLocal(ValType.I32);
-        // release the previous iteration's display, allocate a fresh one
-        E.Get(d.Local); E.Call(Rt.Release);
-        E.I32(d.Size); E.Tid(d.TypeId); E.Call(Rt.AllocObject); E.Set(d.Local);
+        WasmFunction? drop = null;
+        if (_frameDisplays)
+        {
+            // (in the frame: the previous iteration's references released, the same bytes made a fresh object)
+            var (alloc, dr) = D.FrameDisplayFns(d.TypeId, d.Size);
+            drop = dr;
+            if (d.FrameOffset < 0) d.FrameOffset = AllocFrameBytes(d.Size, 8);
+            if (key != s_fnKey) { E.Get(d.Local); E.Call(drop); }
+            E.Get(_fb); if (d.FrameOffset != 0) { E.I32(d.FrameOffset); E.Op(Op.I32Add); }
+            E.Call(alloc); E.Set(d.Local);
+        }
+        else
+        {
+            // release the previous iteration's display, allocate a fresh one
+            E.Get(d.Local); E.Call(Rt.Release);
+            E.I32(d.Size); E.Tid(d.TypeId); E.Call(Rt.AllocObject); E.Set(d.Local);
+        }
         E.Get(d.Local); PushDisplayPtr(d.Parent, retain: true); E.Store(Op.I32Store, 12);
         if (key == s_fnKey)
         {
-            AddOwned(new Slot { Local = d.Local, Type = D.ObjectType });
+            AddOwned(new Slot { Local = d.Local, Type = D.ObjectType, ReleaseMarker = drop });
             // copy captured parameters and `this` in
             foreach (var v in d.Vars)
             {
@@ -294,7 +331,7 @@ sealed partial class FunctionCompiler
                 }
             }
         }
-        else AddOwned(new Slot { Local = d.Local, Type = D.ObjectType });
+        else AddOwned(new Slot { Local = d.Local, Type = D.ObjectType, ReleaseMarker = drop });
         _activeDisplays.Add(d);
     }
 

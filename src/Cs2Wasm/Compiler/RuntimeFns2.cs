@@ -113,10 +113,8 @@ internal sealed partial class RuntimeFns
                 e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(done);
                 e.Br(top);
                 e.End();
-                e.Call(LockEnter);
-                e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(-1); e.Op(Op.I32LtS);
-                e.If(); e.Get(0); e.Call(retainSlow()); e.Call(LockExit); e.Br(done); e.End();
-                e.Call(LockExit);
+                // (under the group's lock, Rt.ArenaRetainSlow: 0 when it was no member by then)
+                e.Get(0); e.Call(retainSlow()); e.BrIf(done);
                 e.Br(top);
             }
             e.End(); e.End();
@@ -144,10 +142,8 @@ internal sealed partial class RuntimeFns
                 e.Get(0); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(done);
                 e.Br(top);
                 e.End();
-                e.Call(LockEnter);
-                e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(-1); e.Op(Op.I32LtS);
-                e.If(); e.Get(0); e.Call(releaseSlow()); e.Call(LockExit); e.Br(done); e.End();
-                e.Call(LockExit);
+                // (under the group's lock, Rt.ArenaReleaseSlow: 0 when it was no member by then)
+                e.Get(0); e.Call(releaseSlow()); e.BrIf(done);
                 e.Br(top);
             }
             e.End(); e.End();
@@ -302,12 +298,7 @@ internal sealed partial class RuntimeFns
                 e.Get(r); e.I32(-2); e.Op(Op.I32Eq);
                 e.If();
                 EmitRefUnlock(e, s);
-                e.Call(LockEnter);
-                EmitRefLock(e, 0, s);
-                e.Get(0); e.Load(Op.I32Load); e.Tee(p); e.If(); e.Get(p); e.Call(Retain); e.Op(Op.Drop); e.End();
-                EmitRefUnlock(e, s);
-                e.Call(LockExit);
-                e.Get(p); e.Op(Op.Return);
+                e.Get(0); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "LoadRetainSlow", 1).Fn); e.Op(Op.Return);
                 e.End();
             }
             e.End(); e.End();
@@ -375,6 +366,9 @@ internal sealed partial class RuntimeFns
     /// thread holds; and had it been freed before, the store that let it go came before that count, so this second
     /// read sees it). Another: the count is given back and the read starts again. A store is the value's write, then
     /// the old value's release (rt.store_ref), in that order.</summary>
+    /// <summary>Rt.FinBias: the count of a group's member while the finalizers of the group run.</summary>
+    const int FinBias = 0x10000000;
+
     void EmitLoadRetainLockFree(Emitter e, bool arenas)
     {
         int p = e.AddLocal(I), r = e.AddLocal(I);
@@ -384,6 +378,25 @@ internal sealed partial class RuntimeFns
         var counted = e.Block(); var count = e.Loop();
         e.Get(p); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(r); e.I32(0); e.Op(Op.I32GtS);
         e.If();
+        if (arenas)
+        {
+            // (a group's member whose finalizer phase is under way, Rt.FinPrepare: its count is FinBias, and the check
+            // after the finalizers, under the runtime lock, reads any count above it as a reference the program can
+            // reach, and keeps the group for good with all it refers to. A count taken here on an out-of-date reference,
+            // given back once the place says so, was such a count: test 139 leaked a node and the one it referred to,
+            // about one run in 45 under load. So under the runtime lock, and only if the place still holds the object.)
+            e.Get(r); e.I32(FinBias); e.Op(Op.I32And);
+            e.If();
+            e.Call(LockEnter);
+            e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(p);
+            e.If();
+            e.Get(p); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(FinBias); e.Op(Op.I32And);
+            e.If(); e.Get(p); e.Call(Retain); e.Op(Op.Drop); e.Call(LockExit); e.Get(p); e.Op(Op.Return); e.End();
+            e.End();
+            e.Call(LockExit);
+            e.Br(again);
+            e.End();
+        }
         e.Get(p); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(counted);
         e.Br(count);
         e.End();
@@ -402,16 +415,8 @@ internal sealed partial class RuntimeFns
             e.Get(p); e.Get(r); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Get(r); e.Op(Op.I32Eq); e.BrIf(counted);
             e.Br(count);
             e.End();
-            // a member's first outside reference: under the runtime lock, where members are freed, so what the place
-            // holds then, if it is a member, is alive
-            e.Call(LockEnter);
-            e.Get(0); e.Emit(Op.I32AtomicLoad, 0, 2); e.Tee(p);
-            e.If();
-            e.Get(p); e.Emit(Op.I32AtomicLoad, 0, 2); e.I32(-1); e.Op(Op.I32LtS);
-            e.If(); e.Get(p); e.Call(Retain); e.Op(Op.Drop); e.Call(LockExit); e.Get(p); e.Op(Op.Return); e.End();
-            e.End();
-            e.Call(LockExit);
-            e.Br(again);
+            // a member's first outside reference: under its group's lock, where its members are freed (Rt.LoadRetainSlow)
+            e.Get(0); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "LoadRetainSlow", 1).Fn); e.Op(Op.Return);
         }
         else e.Br(again);
         e.End(); e.End();
@@ -578,6 +583,24 @@ internal sealed partial class RuntimeFns
     /// <summary>() → 1 when no other thread can ever run (the program starts none); written at the end (RuntimeGen.Finish).</summary>
     public WasmFunction SingleThreadedFn => _singleThreaded ??= M.AddFunction("rt.single_threaded", FT([], [I]));
     public WasmFunction? SingleThreadedIfMade => _singleThreaded;
+    WasmFunction? _firstChance;
+    /// <summary>() → 1 when the program can add a handler to AppDomain.FirstChanceException; written at the end
+    /// (RuntimeGen.Finish), so a program without one has no code for it.</summary>
+    public WasmFunction FirstChanceFn => _firstChance ??= M.AddFunction("rt.first_chance", FT([], [I]));
+    public WasmFunction? FirstChanceIfMade => _firstChance;
+    WasmFunction? _raiseFirstChance;
+    /// <summary>(exception) → (): Rt.RaiseFirstChance when the program can add a handler, else nothing (and never called).</summary>
+    public WasmFunction RaiseFirstChanceFn => _raiseFirstChance ??= M.AddFunction("rt.raise_first_chance", FT([I], []));
+    public WasmFunction? RaiseFirstChanceIfMade => _raiseFirstChance;
+    WasmFunction? _cctorTraces;
+    /// <summary>(inner exception or 0, TypeInitializationException) → (): the traces of a failed static initializer's
+    /// exceptions (Rt.OnInitializerFailed, Rt.OnThrow) in a program that throws; written at the end.</summary>
+    public WasmFunction CctorTracesFn => _cctorTraces ??= M.AddFunction("rt.cctor_traces", FT([I, I], []));
+    public WasmFunction? CctorTracesIfMade => _cctorTraces;
+    WasmFunction? _framesWanted;
+    /// <summary>() → 1 when the program asks a stack frame for its method (Exception.TargetSite...); written at the end.</summary>
+    public WasmFunction FramesWantedFn => _framesWanted ??= M.AddFunction("rt.frames_wanted", FT([], [I]));
+    public WasmFunction? FramesWantedIfMade => _framesWanted;
     WasmFunction? _genericInstances;
     /// <summary>() → [count, (definition id, instance id, n, argument ids...)...] (MakeGenericType); body at the end.</summary>
     public WasmFunction GenericInstancesFn => _genericInstances ??= M.AddFunction("rt.generic_instances", FT([], [I]));

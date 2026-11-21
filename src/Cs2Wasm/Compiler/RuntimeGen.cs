@@ -163,7 +163,7 @@ internal sealed partial class RuntimeFns
     /// <summary>EmitExchangeFields for a destination that may be a slot of an object a cycle can close through (a
     /// struct that is a field of a class): each reference is stored as a store by address is (Arenas.LinkAt: the
     /// runtime finds the object the slot is in), so it counts as the store through the object would.</summary>
-    void EmitStoreFieldsAt(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, int tmp)
+    void EmitStoreFieldsAt(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, int tmp, ITypeSymbol? container = null)
     {
         foreach (var f in D.Types.LayoutOf(t).Fields)
         {
@@ -172,11 +172,11 @@ internal sealed partial class RuntimeFns
             {
                 void Slot() { e.Get(dst); if (o != 0) { e.I32(o); e.Op(Op.I32Add); } }
                 if (Types.IsImmortalType(f.Type)) { Slot(); e.Get(src); e.Load(Op.I32Load, o); e.Call(StoreRef); e.Call(Release); continue; }
-                e.Get(src); e.Load(Op.I32Load, o); Slot(); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp);
+                e.Get(src); e.Load(Op.I32Load, o); Slot(); e.Call(D.Arenas.LinkAt(f.Type, container)); e.Set(tmp);
                 Slot(); e.Get(tmp); e.Call(StoreRef);
-                Slot(); e.Call(D.Arenas.UnlinkAt(f.Type));
+                Slot(); e.Call(D.Arenas.UnlinkAt(f.Type, container));
             }
-            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitStoreFieldsAt(e, dst, src, o, f.Type, tmp);
+            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitStoreFieldsAt(e, dst, src, o, f.Type, tmp, container);
         }
     }
 
@@ -199,7 +199,7 @@ internal sealed partial class RuntimeFns
     /// into memory nobody else has yet (init), exchanged under the place's lock into memory others may see (shared),
     /// or over a value of this thread's own (neither); the old reference is released. Everything else is copied as
     /// bytes. `move`: the source is this thread's own and gives its counts up (it is cleared by the caller).</summary>
-    void EmitCopyFieldsThreads(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, bool init, bool shared, bool move, int tmp, bool locked = true)
+    void EmitCopyFieldsThreads(Emitter e, int dst, int src, int baseOff, ITypeSymbol t, bool init, bool shared, bool move, int tmp, bool locked = true, ITypeSymbol? container = null)
     {
         foreach (var f in D.Types.LayoutOf(t).Fields)
         {
@@ -214,11 +214,18 @@ internal sealed partial class RuntimeFns
                 // (one step under the runtime lock where the slot can hold a cycle-capable object: Arenas.StoreLockAt)
                 // (not `locked`: into an object of a class the last compilation found no other thread reaches, as a
                 // field's store, Expressions.StoreToAddressFromStack)
-                else if (shared && !locked) { Value(); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type)); }
-                else if (shared) { int took = e.AddLocal(I); Value(); Addr(dst); e.Call(D.Arenas.StoreLockAt(f.Type, true)); e.Set(took); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type)); e.Get(took); e.Call(D.Arenas.StoreLockAt(f.Type, false)); }
+                else if (shared && !locked) { Value(); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type, container)); e.Set(tmp); Addr(dst); e.Get(tmp); e.Call(StoreRef); Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type, container)); }
+                else if (shared)
+                {
+                    // (in a store's region, 1, the exchange is the region's: Rt.RegionExchange)
+                    int took = e.AddLocal(I); Value(); Addr(dst); e.Call(D.Arenas.StoreLockAt(f.Type, true)); e.Set(took); Addr(dst); e.Call(D.Arenas.LinkAt(f.Type, container)); e.Set(tmp);
+                    e.Get(took); e.I32(1); e.Op(Op.I32Eq);
+                    e.If(ValType.I32); Addr(dst); e.Get(tmp); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "RegionExchange", 2).Fn); e.Else(); Addr(dst); e.Get(tmp); e.Call(StoreRef); e.End();
+                    Addr(dst); e.Call(D.Arenas.UnlinkAt(f.Type, container)); e.Get(took); e.Call(D.Arenas.StoreLockAt(f.Type, false));
+                }
                 else { Value(); e.Set(tmp); e.Get(dst); e.Load(Op.I32Load, o); e.Get(dst); e.Get(tmp); e.Store(Op.I32Store, o); e.Call(Release); }
             }
-            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitCopyFieldsThreads(e, dst, src, o, f.Type, init, shared, move, tmp, locked);
+            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs) EmitCopyFieldsThreads(e, dst, src, o, f.Type, init, shared, move, tmp, locked, container);
             else
             {
                 int size = D.Types.StorageOf(f.Type).size;
@@ -263,20 +270,21 @@ internal sealed partial class RuntimeFns
     /// <summary>(dst, src): a move over a value: the old contents released, then as MoveInit. Into memory that is not
     /// the frame (shared), each reference is exchanged into place and the old one released (rt.store_ref: another
     /// thread's store or compare-and-swap of the same slot cannot make it released twice).</summary>
-    public WasmFunction MoveAssign(ITypeSymbol t, bool shared = true, bool locked = true)
+    public WasmFunction MoveAssign(ITypeSymbol t, bool shared = true, bool locked = true, ITypeSymbol? container = null)
     {
         t = D.Types.Canonical(t);
         locked |= !shared || !D.ThreadMode;
-        return Cached((shared ? locked ? "rt.move_assign " : "rt.move_assign_own " : "rt.move_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
+        if (!shared) container = null; else if (container != null) container = D.Types.Canonical(container);
+        return Cached((shared ? locked ? "rt.move_assign " : "rt.move_assign_own " : "rt.move_assign_frame ") + Types.Key(t) + (container != null ? " in " + Types.Key(container) : ""), FT([I, I], []), e =>
         {
             int size = D.Types.StorageOf(t).size;
             if (D.ThreadMode && shared && D.Types.LayoutOf(t).HasRefs)
             {
-                EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared: true, move: true, e.AddLocal(I), locked);
+                EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared: true, move: true, e.AddLocal(I), locked, container);
                 e.Get(1); e.I32(0); e.I32(size); e.Op(Op.MemoryFill);
                 return;
             }
-            if (shared) EmitStoreFieldsAt(e, 0, 1, 0, t, e.AddLocal(I));
+            if (shared) EmitStoreFieldsAt(e, 0, 1, 0, t, e.AddLocal(I), container);
             else { e.Get(0); e.Call(ReleaseStruct(t)); }
             e.Get(0); e.Get(1); e.I32(size); e.Op(Op.MemoryCopy);
             e.Get(1); e.I32(0); e.I32(size); e.Op(Op.MemoryFill);
@@ -286,15 +294,16 @@ internal sealed partial class RuntimeFns
 
     /// <summary>(dst, src): assignment: take new counts, release old contents, copy (into memory that is not the
     /// frame, the references exchanged: MoveAssign).</summary>
-    public WasmFunction CopyAssign(ITypeSymbol t, bool shared = true, bool locked = true)
+    public WasmFunction CopyAssign(ITypeSymbol t, bool shared = true, bool locked = true, ITypeSymbol? container = null)
     {
         t = D.Types.Canonical(t);
         locked |= !shared || !D.ThreadMode;
-        return Cached((shared ? locked ? "rt.copy_assign " : "rt.copy_assign_own " : "rt.copy_assign_frame ") + Types.Key(t), FT([I, I], []), e =>
+        if (!shared) container = null; else if (container != null) container = D.Types.Canonical(container);
+        return Cached((shared ? locked ? "rt.copy_assign " : "rt.copy_assign_own " : "rt.copy_assign_frame ") + Types.Key(t) + (container != null ? " in " + Types.Key(container) : ""), FT([I, I], []), e =>
         {
-            if (D.ThreadMode && D.Types.LayoutOf(t).HasRefs) { EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared, move: false, e.AddLocal(I), locked); return; }
+            if (D.ThreadMode && D.Types.LayoutOf(t).HasRefs) { EmitCopyFieldsThreads(e, 0, 1, 0, t, init: false, shared, move: false, e.AddLocal(I), locked, container); return; }
             e.Get(1); e.Call(RetainStruct(t));
-            if (shared) EmitStoreFieldsAt(e, 0, 1, 0, t, e.AddLocal(I));
+            if (shared) EmitStoreFieldsAt(e, 0, 1, 0, t, e.AddLocal(I), container);
             else { e.Get(0); e.Call(ReleaseStruct(t)); }
             e.Get(0); e.Get(1); e.I32(D.Types.StorageOf(t).size); e.Op(Op.MemoryCopy);
             if (D.Types.LayoutOf(t).HasRefs) NoteStructCopy(e.Fn, t);
@@ -483,7 +492,10 @@ sealed partial class RuntimeGen
         if (D.ThreadMode && RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareCheckFail", 1);
         if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0); }
         // (the stores into slots that can close a cycle, Arenas.Resolve: the runtime lock while the container is a member)
-        if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockAtIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreUnlockIf", 1); }
+        if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockIf", 2); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockAtIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreUnlockIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "RegionExchange", 2); D.LibMethod("Cs2Wasm.Runtime.Rt", "LocksHeld", 0);
+            // (the counts' slow paths, rt.retain and rt.release and rt.load_retain: asked for here, with the program, not when
+            // those are written)
+            D.LibMethod("Cs2Wasm.Runtime.Rt", "ArenaRetainSlow", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "ArenaReleaseSlow", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "LoadRetainSlow", 1); }
     }
 
     public void Export(string name, MethodInst mi) => _exports.Add((name, mi));
@@ -1243,7 +1255,7 @@ sealed partial class RuntimeGen
         D.Rt.EmitEcSupport(D.AllMethods.FirstOrDefault(m => m.Sym.Name == "SaveContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled),
                            D.AllMethods.FirstOrDefault(m => m.Sym.Name == "RestoreContext" && m.Sym.ContainingType?.Name == ecOwner && m.Compiled));
         D.Rt.EmitFinalizerHold(D.UsesThreads);
-        D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetain", 1), () => D.Arenas.RuntimeFn("ArenaRelease", 1), D.Arenas.Enabled);
+        D.Rt.EmitThreadSupport(D.UsesThreads, () => D.Arenas.RuntimeFn("ArenaRetainSlow", 1), () => D.Arenas.RuntimeFn("ArenaReleaseSlow", 1), D.Arenas.Enabled);
         if (Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1") EmitCountRc();
         D.Module.UsesThreads = D.UsesThreads;
         D.Mark("  finish: runtime support");
@@ -1277,6 +1289,54 @@ sealed partial class RuntimeGen
                 for (int i = 0; i < fn.Body.Count; i++)
                     if (fn.Body[i].Op == Op.Call && fn.Body[i].Ref == st) { fn.Body[i] = new Instr { Op = Op.I32Const, Imm = single ? 1 : 0, Pos = fn.Body[i].Pos }; hit = true; }
                 if (hit) ConstBranches.Run(fn);
+            }
+        }
+        // AppDomain.FirstChanceException: raised at throws only when the program can add a handler (before pruning,
+        // so what raising it reaches goes too)
+        if (D.Rt.FirstChanceIfMade is { } fc)
+        {
+            bool want = D.FirstChanceRaiser != null;
+            fc.Body.Clear(); new Emitter(fc).I32(want ? 1 : 0);
+            if (D.Rt.RaiseFirstChanceIfMade is { } rf)
+            {
+                rf.Body.Clear();
+                if (want) { var e = new Emitter(rf); e.Get(0); e.Call(D.FirstChanceRaiser!.Fn); }
+            }
+            foreach (var fn in D.Module.Functions)
+            {
+                bool hit = false;
+                for (int i = 0; i < fn.Body.Count; i++)
+                    if (fn.Body[i].Op == Op.Call && fn.Body[i].Ref == fc) { fn.Body[i] = new Instr { Op = Op.I32Const, Imm = want ? 1 : 0, Pos = fn.Body[i].Pos }; hit = true; }
+                if (hit) ConstBranches.Run(fn);
+            }
+        }
+        // Exception.TargetSite of a hidden method's throw: noted only when frames are asked for their methods
+        {
+            bool frames = D.FramesAsked;
+            if (D.Rt.FramesWantedIfMade is { } fw)
+            {
+                fw.Body.Clear(); new Emitter(fw).I32(frames ? 1 : 0);
+                foreach (var fn in D.Module.Functions)
+                {
+                    bool hit = false;
+                    for (int i = 0; i < fn.Body.Count; i++)
+                        if (fn.Body[i].Op == Op.Call && fn.Body[i].Ref == fw) { fn.Body[i] = new Instr { Op = Op.I32Const, Imm = frames ? 1 : 0, Pos = fn.Body[i].Pos }; hit = true; }
+                    if (hit) ConstBranches.Run(fn);
+                }
+            }
+            if (!frames && D.ThrowSiteIfMade is { } ts)
+            {
+                bool used = false;
+                foreach (var fn in D.Module.Functions)
+                {
+                    for (int i = fn.Body.Count - 1; i >= 0; i--)
+                    {
+                        if (fn.Body[i].Ref != ts) continue;
+                        if (fn.Body[i].Op == Op.GlobalSet && i > 0 && fn.Body[i - 1].Op == Op.I32Const && fn.Body[i - 1].Ref == null) { fn.Body.RemoveRange(i - 1, 2); i--; }
+                        else used = true;
+                    }
+                }
+                if (!used) D.Module.Globals.Remove(ts);
             }
         }
         // (every function but the dispatch tables below exists now)
@@ -1323,6 +1383,18 @@ sealed partial class RuntimeGen
         D.LayoutMemory();
         D.Mark("  finish: D.LayoutMemory");
         EmitInit();
+        // a failed static initializer's traces, in a program where code that throws is left (every function exists
+        // now: a program whose throws all went has no exception an initializer could fail with)
+        if (D.Rt.CctorTracesIfMade is { } ct)
+        {
+            ct.Body.Clear();
+            if (D.CctorTraceHelper is var (onThrow, onInit) && D.Module.LiveFunctions().Contains(onThrow.Fn))
+            {
+                var e = new Emitter(ct);
+                e.Get(1); e.Call(onThrow.Fn);
+                e.Get(0); e.If(); e.Get(0); e.Get(1); e.Call(onInit.Fn); e.End();
+            }
+        }
     }
 
     /// <summary>An exception leaves the frames between the throw and the catch without running their ends, so the
@@ -1523,6 +1595,8 @@ sealed partial class RuntimeGen
             if (pend != null && D.UsesThreads)
             {
                 w.I32Addr(D.StaticAddress("rt.lock.owner", 4, 4)); w.Emit(Op.I32AtomicLoad, 0, 2); w.GGet(D.ThreadId); w.Op(Op.I32Eq);
+                // (or a group's lock: Rt.LocksHeld, GroupLocks.cs)
+                if (D.Arenas.Enabled) { w.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "LocksHeld", 0).Fn); w.Op(Op.I32Or); }
                 w.If(); w.Get(0); w.Call(pend); w.Op(Op.Return); w.End();
             }
             w.GGet(D.DestroyDepth); w.I32(MaxNesting); w.Op(Op.I32GeU);
@@ -1765,7 +1839,7 @@ sealed partial class RuntimeGen
             if (D.DisplayById.TryGetValue(i, out var sd)) return D.RoslynDisplayName(sd, false) ?? "<>c__DisplayClass";
             return ShortName(D.TypeById[i]);
         }
-        EmitIdTable(D.Rt.TypeNameById, n, i => (D.StringLiteral(Full(i)), 0));
+        EmitFullNames(n, Full);
         EmitIdTable(D.Rt.TypeShortNameById, n, i => (D.StringLiteral(Short(i)), 0));
         EmitIdTable(D.Rt.TypeFlagsById, n, i => (null, i == 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) ? 0 : Flags(D.TypeById[i])));
         if (D.Rt.ProgramTypesIfMade is { } ptf)
@@ -1792,8 +1866,9 @@ sealed partial class RuntimeGen
                 if (D.TypeById[i] is not INamedTypeSymbol nt || nt.IsUnboundGenericType || nt.TypeArguments.Length > 0 && nt.TypeArguments.Any(a => a is ITypeParameterSymbol)) continue;
                 var asm = nt.ContainingAssembly;
                 if (asm == null || !SymbolEqualityComparer.Default.Equals(asm, corlib) && !programs.Contains(asm)) continue;
-                relocs.Add((blob.Count, D.StringLiteral(Driver.ClrName(nt))));
-                blob.AddRange(new byte[4]);
+                // (a name made when first asked for: minus its length, TypeInfo.GetTypeByName)
+                if (_lazyNames.Contains(i)) blob.AddRange(BitConverter.GetBytes(-Driver.ClrName(nt).Length));
+                else { relocs.Add((blob.Count, D.StringLiteral(Driver.ClrName(nt)))); blob.AddRange(new byte[4]); }
                 blob.AddRange(BitConverter.GetBytes(ext));
                 count++;
             }
@@ -1825,6 +1900,174 @@ sealed partial class RuntimeGen
         EmitTypeInfo();
     }
 
+    /// <summary>rt.type_name_by_id: every type's full name (Type.FullName, Object.ToString). A generic instance's
+    /// name repeats its arguments' names, theirs again inside them (Roslyn's run to a thousand characters: 12 of the
+    /// self-hosted compiler's 64 MB were these names), so such a name is kept as how to make it: pieces that joined
+    /// are the name, each a string or a type whose own full name it is (an argument's, found in the name in order);
+    /// rt.lazy_type_name joins them the first time the name is asked for and keeps it in the table. The pieces are
+    /// checked here against the name the table would hold.</summary>
+    static readonly bool s_noLazyNames = Environment.GetEnvironmentVariable("CS2WASM_NO_LAZY_NAMES") == "1";
+    /// <summary>CS2WASM_ALL_LAZY_NAMES=1: made when first asked for in any program (for tests: small ones keep their names).</summary>
+    static readonly bool s_allLazyNames = Environment.GetEnvironmentVariable("CS2WASM_ALL_LAZY_NAMES") == "1";
+    /// <summary>The types whose full names are made when first asked for (EmitFullNames).</summary>
+    readonly HashSet<int> _lazyNames = [];
+
+    void EmitFullNames(int n, Func<int, string> full)
+    {
+        var plan = new List<(int i, int ext, List<(int ext, string? lit)> pieces)>();
+        long saved = 0;
+        // the strings the pieces already use (each is one literal, however many names use it)
+        var used = new HashSet<string>();
+        static int LiteralSize(string t) => (18 + 2 * t.Length + 7) & ~7;
+        if (D.LazyTypeNames && !s_noLazyNames)
+            for (int ext = 0; ext < n; ext++)
+            {
+                int i = D.IntId(ext);
+                if (i <= 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i)) continue;
+                // (a generic instance, or an array or pointer of one: the types whose names repeat other names)
+                List<ITypeSymbol> targs;
+                switch (D.TypeById[i])
+                {
+                    case INamedTypeSymbol t when !SymbolEqualityComparer.Default.Equals(t, t.OriginalDefinition): targs = Driver.AllTypeArgs(t); break;
+                    case IArrayTypeSymbol arr: targs = [arr.ElementType]; break;
+                    case IPointerTypeSymbol pt: targs = [pt.PointedAtType]; break;
+                    default: continue;
+                }
+                if (targs.Count == 0) continue;
+                string name = full(i);
+                var pieces = new List<(int ext, string? lit)>();
+                int at = 0, ids = 0;
+                // text between arguments, cut after each '[' and ',': the parts are a definition's name with its
+                // bracket, shared by all its instances, and the separators
+                void Text(int from, int to)
+                {
+                    int st = from;
+                    for (int q = from; q < to; q++)
+                        if (name[q] is '[' or ',') { pieces.Add((-1, name[st..(q + 1)])); st = q + 1; }
+                    if (st < to) pieces.Add((-1, name[st..to]));
+                }
+                // the arguments in the order their names are written; one the module does not number (or whose
+                // name is not found) is looked into: its own arguments
+                void Find(ITypeSymbol a)
+                {
+                    if (D.ExistingTypeId(D.Types.Canonical(a)) is int ai && D.ExtId(ai) is > 0 and var ae && full(ai) is { Length: >= 8 } an
+                        && name.IndexOf(an, at, StringComparison.Ordinal) is >= 0 and var k)
+                    {
+                        if (k > at) Text(at, k);
+                        pieces.Add((ae, null));
+                        at = k + an.Length; ids++;
+                        return;
+                    }
+                    switch (a)
+                    {
+                        case INamedTypeSymbol na: foreach (var x in Driver.AllTypeArgs(na)) Find(x); break;
+                        case IArrayTypeSymbol arr: Find(arr.ElementType); break;
+                        case IPointerTypeSymbol ptr: Find(ptr.PointedAtType); break;
+                    }
+                }
+                foreach (var a in targs) Find(a);
+                if (ids == 0) continue;
+                if (at < name.Length) Text(at, name.Length);
+                // (two pieces or more, none empty: what rt.lazy_type_name joins is then a new string, never one of them)
+                if (pieces.Count < 2 || string.Concat(pieces.Select(p => p.lit ?? full(D.IntId(p.ext)))) != name) continue;
+                var fresh = pieces.Where(p => p.lit != null && !used.Contains(p.lit)).Select(p => p.lit!).Distinct().ToList();
+                int cost = 8 + 4 * pieces.Count + fresh.Sum(LiteralSize);
+                if (cost >= LiteralSize(name)) continue;
+                used.UnionWith(fresh);
+                plan.Add((i, ext, pieces));
+                saved += LiteralSize(name) - cost;
+            }
+        // (a program with few such names keeps them: rt.lazy_type_name would cost more than it saves)
+        if (saved < (s_allLazyNames ? 1 : 8192)) plan.Clear();
+        if (Environment.GetEnvironmentVariable("CS2WASM_STATS") != null) Console.Error.WriteLine($"  type names made when asked for: {plan.Count}, about {saved} bytes of data saved");
+        if (plan.Count == 0) { EmitIdTable(D.Rt.TypeNameById, n, i => (D.StringLiteral(full(i)), 0)); return; }
+        IAddress? table = null;
+        var byId = new Dictionary<int, IAddress>();
+        foreach (var (i, ext, pieces) in plan)
+        {
+            // [the table's slot, the count of pieces, the pieces]
+            var bytes = new byte[8 + 4 * pieces.Count];
+            BitConverter.GetBytes(pieces.Count).CopyTo(bytes, 4);
+            int slot = 4 * ext;
+            var relocs = new List<(int, IAddress)> { (0, new LateAddr(() => table!.Address + slot)) };
+            for (int k = 0; k < pieces.Count; k++)
+                if (pieces[k].lit is { } lit) relocs.Add((8 + 4 * k, D.StringLiteral(lit)));
+                else BitConverter.GetBytes(pieces[k].ext << 1 | 1).CopyTo(bytes, 8 + 4 * k);
+            var rec = (DataAddr)D.DataBlob(bytes, 4, relocs);
+            // (the table's entry: the record's address with its low bit set; a string's address is a multiple of 8)
+            byId[i] = new DataAddr(D, rec.Chunk) { Plus = 1 };
+            _lazyNames.Add(i);
+        }
+        var entry = D.Module.AddFunction("rt.type_name_entry", new FuncType([ValType.I32], [ValType.I32]));
+        table = EmitIdTable(entry, n, i => (byId.TryGetValue(i, out var r) ? r : D.StringLiteral(full(i)), 0));
+        var lazy = D.Module.AddFunction("rt.lazy_type_name", new FuncType([ValType.I32], [ValType.I32]));
+        var e = new Emitter(D.Rt.TypeNameById);
+        int v = e.AddLocal(ValType.I32);
+        e.Get(0); e.Call(entry); e.Tee(v); e.I32(1); e.Op(Op.I32And);
+        e.If(ValType.I32);
+        e.Get(v); e.I32(1); e.Op(Op.I32Xor); e.Call(lazy);
+        e.Else();
+        e.Get(v);
+        e.End();
+        EmitLazyTypeName(lazy);
+    }
+
+    /// <summary>rt.lazy_type_name(rec): joins a record's pieces (EmitFullNames) into a new string, makes it immortal
+    /// (count -1, hash 0: a literal's header) and puts it in the table's slot, which held rec | 1; a thread that made
+    /// it second frees its own and returns the first one's. (.NET keeps a type's name as long as the type: for good.)</summary>
+    void EmitLazyTypeName(WasmFunction fn)
+    {
+        var e = new Emitter(fn);
+        int n = e.AddLocal(ValType.I32), k = e.AddLocal(ValType.I32), a = e.AddLocal(ValType.I32), len = e.AddLocal(ValType.I32),
+            s = e.AddLocal(ValType.I32), dst = e.AddLocal(ValType.I32), was = e.AddLocal(ValType.I32);
+        // piece k's string: (rec + 8 + 4k) is a string's address, or (type id << 1) | 1
+        void Piece()
+        {
+            e.Get(0); e.Get(k); e.I32(2); e.Op(Op.I32Shl); e.Op(Op.I32Add); e.Load(Op.I32Load, 8); e.Tee(a);
+            e.I32(1); e.Op(Op.I32And);
+            e.If(); e.Get(a); e.I32(1); e.Op(Op.I32ShrU); e.Call(D.Rt.TypeNameById); e.Set(a); e.End();
+        }
+        e.Get(0); e.Load(Op.I32Load, 4); e.Set(n);
+        // the length
+        e.I32(0); e.Set(k); e.I32(0); e.Set(len);
+        var b1 = e.Block(); var l1 = e.Loop();
+        e.Get(k); e.Get(n); e.Op(Op.I32GeU); e.BrIf(b1);
+        Piece();
+        e.Get(len); e.Get(a); e.Load(Op.I32Load, 12); e.Op(Op.I32Add); e.Set(len);
+        e.Get(k); e.I32(1); e.Op(Op.I32Add); e.Set(k); e.Br(l1);
+        e.End(); e.End();
+        // the string (Rt.AllocString: zeroed, so the terminator is there)
+        e.Get(len); e.I32(1); e.Op(Op.I32Shl); e.I32(18); e.Op(Op.I32Add); e.I32(1);
+        e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocObject", 2).Fn); e.Tee(s);
+        e.Get(len); e.Store(Op.I32Store, 12);
+        e.Get(s); e.I32(16); e.Op(Op.I32Add); e.Set(dst);
+        e.I32(0); e.Set(k);
+        var b2 = e.Block(); var l2 = e.Loop();
+        e.Get(k); e.Get(n); e.Op(Op.I32GeU); e.BrIf(b2);
+        Piece();
+        e.Get(dst); e.Get(a); e.I32(16); e.Op(Op.I32Add); e.Get(a); e.Load(Op.I32Load, 12); e.I32(1); e.Op(Op.I32Shl); e.Emit(Op.MemoryCopy);
+        e.Get(dst); e.Get(a); e.Load(Op.I32Load, 12); e.I32(1); e.Op(Op.I32Shl); e.Op(Op.I32Add); e.Set(dst);
+        e.Get(k); e.I32(1); e.Op(Op.I32Add); e.Set(k); e.Br(l2);
+        e.End(); e.End();
+        // (no other thread has it yet)
+        e.Get(s); e.I32(-1); e.Store(Op.I32Store);
+        e.Get(s); e.I32(0); e.Store(Op.I32Store, 8);
+        // into the slot, unless another thread was first
+        if (D.UsesThreads) { e.Get(0); e.Load(Op.I32Load); e.Get(0); e.I32(1); e.Op(Op.I32Or); e.Get(s); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.Set(was); }
+        else
+        {
+            // (no other thread: the slot still holds rec | 1)
+            e.Get(0); e.Load(Op.I32Load); e.Get(s); e.Store(Op.I32Store); e.Get(0); e.I32(1); e.Op(Op.I32Or); e.Set(was);
+        }
+        e.Get(was); e.Get(0); e.I32(1); e.Op(Op.I32Or); e.Op(Op.I32Eq);
+        e.If(ValType.I32);
+        e.Get(s);
+        e.Else();
+        e.Get(s); e.I32(1); e.Store(Op.I32Store); e.Get(s); e.Call(D.Rt.Release);
+        e.Get(was);
+        e.End();
+    }
+
     static string ShortName(ITypeSymbol t) => t switch
     {
         IArrayTypeSymbol a => ShortName(a.ElementType) + "[" + new string(',', a.Rank - 1) + "]",
@@ -1844,7 +2087,7 @@ sealed partial class RuntimeGen
         return f;
     }
 
-    void EmitIdTable(WasmFunction fn, int nInternal, Func<int, (IAddress? addr, int value)> entryOfInternal, Action<Emitter>? byRef = null)
+    IAddress EmitIdTable(WasmFunction fn, int nInternal, Func<int, (IAddress? addr, int value)> entryOfInternal, Action<Emitter>? byRef = null)
     {
         int n = D.TypeCount;
         (IAddress?, int) entry(int ext) => entryOfInternal(D.IntId(ext));
@@ -1879,7 +2122,11 @@ sealed partial class RuntimeGen
         if (a0 != null) e.I32Addr(a0); else e.I32(v0);
         if (byRef != null) e.End();
         e.End();
+        return table;
     }
+
+    /// <summary>CS2WASM_PACK_WINDOW=n: packed data always read through a window of n bytes (for tests).</summary>
+    static readonly int s_packWindow = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_PACK_WINDOW"), out var w) ? w : 0;
 
     void EmitInit()
     {
@@ -1890,7 +2137,7 @@ sealed partial class RuntimeGen
             var raw = D.Data.Bytes.ToArray();
             var packed = Environment.GetEnvironmentVariable("CS2WASM_NO_PACK") == "1" ? raw : DataCompression.Compress(raw);
             // (the packed bytes land at the heap's start, are expanded into place, and the heap is zero again)
-            if (packed.Length + 160 < raw.Length && (long)D.HeapBase + packed.Length <= (long)D.Module.MemoryMinPages * 65536)
+            if (packed.Length + 160 < raw.Length && (long)D.HeapBase + packed.Length <= (long)D.Module.MemoryMinPages * 65536 && s_packWindow == 0)
             {
                 D.Data.Bytes.Clear(); D.Data.Bytes.AddRange(packed);
                 var dec = D.Module.AddFunction("rt.unpack_data", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
@@ -1898,6 +2145,18 @@ sealed partial class RuntimeGen
                 e.I32(D.HeapBase); e.I32(0); e.I32(packed.Length); e.Emit(Op.MemoryInit, 0, 0, D.Data);
                 e.I32(D.HeapBase); e.I32(D.DataBase); e.I32(D.DataBase + raw.Length); e.Call(dec);
                 e.I32(D.HeapBase); e.I32(0); e.I32(packed.Length); e.Emit(Op.MemoryFill);
+            }
+            else if (packed.Length + 160 < raw.Length && (long)D.Module.MemoryMinPages * 65536 - D.HeapBase is >= 65536 and var room)
+            {
+                // (more packed bytes than the start's memory has room for above the heap's start (a large program's
+                // data: the self-hosted compiler's library sources and type tables): they are read through a window
+                // there, refilled from the segment as the expansion goes)
+                int window = (int)Math.Min(room, s_packWindow > 0 ? s_packWindow : 1 << 20);
+                D.Data.Bytes.Clear(); D.Data.Bytes.AddRange(packed);
+                var dec = D.Module.AddFunction("rt.unpack_data", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
+                DataCompression.EmitStreamDecoder(new Emitter(dec), D.Data, window, packed.Length);
+                e.I32(D.HeapBase); e.I32(D.DataBase); e.I32(D.DataBase + raw.Length); e.Call(dec);
+                e.I32(D.HeapBase); e.I32(0); e.I32(window); e.Emit(Op.MemoryFill);
             }
             else { e.I32(D.DataBase); e.I32(0); e.I32(D.Data.Bytes.Count); e.Emit(Op.MemoryInit, 0, 0, D.Data); }
         }
@@ -1938,12 +2197,10 @@ internal sealed partial class Driver
             case IPointerTypeSymbol p: return ClrName(p.PointedAtType) + "*";
             case INamedTypeSymbol n:
                 {
-                    var sb = new StringBuilder();
-                    if (n.ContainingType != null) sb.Append(ClrName(n.ContainingType.OriginalDefinition)).Append('+');
-                    else if (n.ContainingNamespace is { IsGlobalNamespace: false } ns) sb.Append(ns.ToDisplayString()).Append('.');
-                    sb.Append(n.MetadataName);
+                    var sb = new StringBuilder(ClrPath(n));
+                    // (a generic definition names its parameters, as its ToString does: "G`1[T]")
                     var args = AllTypeArgs(n);
-                    if (args.Count > 0 && !SymbolEqualityComparer.Default.Equals(n, n.OriginalDefinition))
+                    if (args.Count > 0)
                         sb.Append('[').Append(string.Join(",", args.Select(a => "[" + ClrName(a) + "]"))).Append(']');
                     var s = sb.ToString();
                     // reference assembly names for type arguments use assembly-qualified names in .NET; keep the readable form
@@ -1951,6 +2208,13 @@ internal sealed partial class Driver
                 }
             default: return t.ToDisplayString();
         }
+    }
+
+    /// <summary>A type's name with its namespace and the types around it, without type arguments ("Ns.Outer`1+Inner").</summary>
+    public static string ClrPath(INamedTypeSymbol n)
+    {
+        if (n.ContainingType != null) return ClrPath(n.ContainingType.OriginalDefinition) + "+" + n.MetadataName;
+        return n.ContainingNamespace is { IsGlobalNamespace: false } ns ? ns.ToDisplayString() + "." + n.MetadataName : n.MetadataName;
     }
 
     internal static List<ITypeSymbol> AllTypeArgs(INamedTypeSymbol n)

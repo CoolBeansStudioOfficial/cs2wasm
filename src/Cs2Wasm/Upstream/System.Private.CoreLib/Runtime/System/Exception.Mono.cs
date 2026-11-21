@@ -44,6 +44,11 @@ namespace System
         internal MonoStackFrame[]? foreignExceptionsFrames;
         internal string? _fullTrace;
         internal int _throwDepth;
+        // the method that threw when traces hide it ([StackTraceHidden]), as a note of Rt.TakeThrowSite; 0 otherwise
+        internal int _throwSite;
+        // the trace ends at an async method's frame (its MoveNext took the exception: Rt.OnAsyncCatch), and so did
+        // the one ExceptionDispatchInfo captured: .NET writes no "End of stack trace" line after an async frame
+        internal bool _asyncTop, _capturedAsync;
 
         private bool HasBeenThrown => _fullTrace != null || _stackTraceString != null;
 
@@ -52,6 +57,9 @@ namespace System
             [RequiresUnreferencedCode("Metadata for the method might be incomplete or removed")]
             get
             {
+                // cs2wasm: the method that threw, which a trace leaves out when it is hidden (ThrowHelper's), as .NET's
+                if (_throwSite != 0 && Cs2Wasm.Runtime.Meta.ThrowSiteMethod(_throwSite) is { } hidden)
+                    return hidden;
                 StackTrace st = new StackTrace(this, true);
                 if (st.FrameCount > 0)
                     return st.GetFrame(0)?.GetMethod();
@@ -67,6 +75,7 @@ namespace System
         internal DispatchState CaptureDispatchState()
         {
             _capturedTrace = StackTrace;
+            _capturedAsync = _asyncTop;
             return default;
         }
 
@@ -109,7 +118,8 @@ namespace System
         internal void RestoreDispatchState(in DispatchState state)
         {
             if (_capturedTrace is { Length: > 0 } t)
-                _remoteStackTraceString = t + Environment.NewLineConst + SR.Exception_EndStackTraceFromPreviousThrow + Environment.NewLineConst;
+                _remoteStackTraceString = _capturedAsync ? t + Environment.NewLineConst
+                    : t + Environment.NewLineConst + SR.Exception_EndStackTraceFromPreviousThrow + Environment.NewLineConst;
             _stackTraceString = null;
             _fullTrace = null;
         }

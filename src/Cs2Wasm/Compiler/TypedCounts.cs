@@ -77,7 +77,7 @@ internal sealed partial class RuntimeFns
                 e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Sub); e.Store(Op.I32Store);
                 e.Else();
                 e.Get(r); e.I32(-2); e.Op(Op.I32Eq);
-                e.If(); e.Call(LockEnter); e.Get(0); e.Call(retainSlow()); e.Call(LockExit); e.End();
+                e.If(); e.Get(0); e.Call(retainSlow()); e.Op(Op.Drop); e.End();
                 e.End();
             }
             e.End();
@@ -107,7 +107,7 @@ internal sealed partial class RuntimeFns
                 e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Store(Op.I32Store);
                 e.Else();
                 e.Get(r); e.I32(-1); e.Op(Op.I32LtS);
-                e.If(); e.Call(LockEnter); e.Get(0); e.Call(releaseSlow()); e.Call(LockExit); e.End();
+                e.If(); e.Get(0); e.Call(releaseSlow()); e.Op(Op.Drop); e.End();
                 e.End();
             }
             e.End();

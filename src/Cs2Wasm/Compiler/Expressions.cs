@@ -374,7 +374,8 @@ sealed partial class FunctionCompiler
             // reaches, the stores of its references take no runtime lock, as a reference field's: StoreLock below)
             bool locked = !(structContainer != null && D.ThreadMode && D.Sharing is { } shs0 && shs0.PriorThreadLocal(structContainer));
             // (a fresh temporary's counts are taken: the old value released, no new counts)
-            E.Get(src); if (move) E.Call(D.Rt.MoveAssign(t, shared: !frame, locked)); else CopyStructAssign(t, shared: !frame, locked);
+            // (the container's type, where known: a container that is never a group's member takes plain stores)
+            E.Get(src); if (move) E.Call(D.Rt.MoveAssign(t, shared: !frame, locked, structContainer)); else CopyStructAssign(t, shared: !frame, locked, structContainer);
             FreeScratch(ValType.I32, src);
             return;
         }
@@ -407,7 +408,7 @@ sealed partial class FunctionCompiler
             // an object the last compilation found no other thread reaches: Api.cs compiles again should that change)
             bool storeLock = site != null && D.ThreadMode && !fresh && !owned && !(D.Sharing is { } shs && shs.PriorThreadLocal(site.Container));
             int took = storeLock || byAddress && D.ThreadMode ? Scratch(ValType.I32) : -1;
-            if (storeLock) { pushContainer!(); E.Call(site!.StoreLock); E.Set(took); }
+            if (storeLock) { pushContainer!(); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(site!.StoreLock); E.Set(took); }
             if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : owned ? site.LinkOwned : iso ? site.LinkIso : site.Link); E.Set(val); }
             else if (byAddress) { if (D.ThreadMode) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.StoreLockAt(t, true)); E.Set(took); } E.Get(val); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.LinkAt(t)); E.Set(val); }
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
@@ -426,7 +427,17 @@ sealed partial class FunctionCompiler
                 // (an exchange: rt.store_ref)
                 pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); }
                 // (into an object no other thread can reach: a plain exchange, TypedCounts.cs)
-                E.Get(val); E.Call(site != null && !site.IsArray ? Rt.StoreRefOf(site.Container) : site != null ? Rt.StoreRefOf(site.Container) : Rt.StoreRef); E.Set(old);
+                var storeRef = site != null && !site.IsArray ? Rt.StoreRefOf(site.Container) : site != null ? Rt.StoreRefOf(site.Container) : Rt.StoreRef;
+                if (took >= 0)
+                {
+                    // (in a store's region, 1, the exchange is the region's, which holds the place: Rt.RegionExchange)
+                    E.Set(a);
+                    E.Get(took); E.I32(1); E.Op(Op.I32Eq);
+                    E.If(ValType.I32); E.Get(a); E.Get(val); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "RegionExchange", 2).Fn);
+                    E.Else(); E.Get(a); E.Get(val); E.Call(storeRef); E.End();
+                }
+                else { E.Get(val); E.Call(storeRef); }
+                E.Set(old);
             }
             E.Get(old);
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
@@ -447,9 +458,9 @@ sealed partial class FunctionCompiler
         E.I32(T.StorageOf(t).size); E.Op(Op.MemoryCopy);
     }
 
-    void CopyStructAssign(ITypeSymbol t, bool shared = true, bool locked = true)
+    void CopyStructAssign(ITypeSymbol t, bool shared = true, bool locked = true, ITypeSymbol? container = null)
     {
-        if (T.LayoutOf(t).HasRefs) { E.Call(Rt.CopyAssign(t, shared, locked)); return; }
+        if (T.LayoutOf(t).HasRefs) { E.Call(Rt.CopyAssign(t, shared, locked, container)); return; }
         E.I32(T.StorageOf(t).size); E.Op(Op.MemoryCopy);
     }
 
@@ -786,7 +797,9 @@ sealed partial class FunctionCompiler
         }, initializer: initializer);
     }
 
-    static bool IsThreadStatic(ISymbol f) => f.GetAttributes().Any(a => a.AttributeClass?.Name == "ThreadStaticAttribute");
+    /// <summary>A [ThreadStatic] field; or, in a program with threads, a static field of the runtime marked [Intrinsic]
+    /// (its scratch state that each thread keeps for itself once threads exist, a plain static without).</summary>
+    bool IsThreadStatic(ISymbol f) => f.GetAttributes().Any(a => a.AttributeClass?.Name is "ThreadStaticAttribute" || D.ThreadMode && a.AttributeClass?.Name is "IntrinsicAttribute");
 
     void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce, bool initializer = false, List<Sharing.Src>? srcs = null)
     {

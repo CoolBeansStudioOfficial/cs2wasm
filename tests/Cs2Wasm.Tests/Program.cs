@@ -100,6 +100,8 @@ foreach (var (name, sources, symbols) in programs.Where((p, i) => (filter == nul
     try { expected = RunDotNet(comp); }
     catch (Exception ex) { Fail(name, ".NET run failed: " + ex); continue; }
     var (actual, stderr, code) = RunNode(wasmPath);
+    // (--keep: both outputs beside the module, to compare whole)
+    if (args.Contains("--keep")) { File.WriteAllText(wasmPath + ".expected.txt", expected); File.WriteAllText(wasmPath + ".actual.txt", actual); }
     // `// known-gap: what` in a program: its difference from .NET is one the project knows and has not closed
     // (docs/AUDIT.md). It is shown at every run and is no failure; the day the program passes, the marker must go.
     string? gap = src.Contains("// known-gap:") ? src[(src.IndexOf("// known-gap:") + 13)..].Split('\n')[0].Trim() : null;
