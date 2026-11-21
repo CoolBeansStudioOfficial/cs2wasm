@@ -278,6 +278,9 @@ internal sealed class WasmModule
                     {
                         // (in loops, and in what loops call, to two calls deep: CS2WASM_NONNULL_DEPTH)
                         var hot = NullChecks.CalledFromLoops(Functions, int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_NONNULL_DEPTH"), out var dd) ? dd : 2);
+                        // (a generic family's members alike: one hot, all, so that they stay one body: ShareConstants)
+                        var hotFamilies = hot.Where(f => f.Family != null).Select(f => f.Family!).ToHashSet();
+                        if (hotFamilies.Count > 0) foreach (var f in Functions) if (f.Family != null && hotFamilies.Contains(f.Family)) hot.Add(f);
                         foreach (var f in Functions) if (!f.IsImport && f != nn2) NullChecks.Expand(f, nn2, thr, hot.Contains(f));
                     }
                 }
