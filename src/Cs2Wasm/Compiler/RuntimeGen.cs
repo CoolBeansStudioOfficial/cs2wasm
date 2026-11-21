@@ -918,6 +918,8 @@ sealed partial class RuntimeGen
                         if (leaves.Count == 0) se.I32(0);
                         se.Op(Op.I32And);
                     }
+                    // (2 for an array's element, so that the store by address knows it has no slot bits: Rt.SlotOwner)
+                    se.I32(1); se.Op(Op.I32Shl);
                 }
                 else se.I32(0);
                 // Array.Copy and Array.Clear do not know the element's type: for an array of structs they come here,
@@ -1049,7 +1051,22 @@ sealed partial class RuntimeGen
                 var e = new Emitter(isSlot);
                 int tid = e.AddLocal(ValType.I32);
                 e.Get(0); e.Load(Op.I32Load, 4); e.Set(tid);
-                rt.IdSwitch(e, tid, slotFns.Select(x => { var f = x.Value; return (x.Key, (object?)WasmModule.BodyKey(f), (Action)(() => { e.Get(0); e.Get(1); e.Call(f); e.Op(Op.Return); })); }).ToList());
+                // (each type's test written into its case, not called: a store by address asks for every slot, and the
+                // tests are a few comparisons. Their locals, one at most, are the dispatcher's)
+                int extra = slotFns.Values.Count == 0 ? 0 : slotFns.Values.Max(f => f.Locals.Count);
+                int firstLocal = 2 + isSlot.Locals.Count;
+                for (int k = 0; k < extra; k++) e.AddLocal(ValType.I32);
+                rt.IdSwitch(e, tid, slotFns.Select(x => { var f = x.Value; return (x.Key, (object?)WasmModule.BodyKey(f), (Action)(() =>
+                {
+                    if (f.Locals.Any(l => l != ValType.I32)) { e.Get(0); e.Get(1); e.Call(f); e.Op(Op.Return); return; }
+                    foreach (var ins in f.Body)
+                    {
+                        var c = ins;
+                        if (c.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee && c.Imm >= 2) c.Imm = firstLocal + (c.Imm - 2);
+                        isSlot.Body.Add(c);
+                    }
+                    e.Op(Op.Return);
+                })); }).ToList());
                 e.I32(0);
             }
             if (rt.ArenaFinTypeIfMade is { } finType) EmitIdTable(finType, D.TypeById.Count, i => (null, finFns.ContainsKey(i) ? 1 : 0));

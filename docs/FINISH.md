@@ -109,6 +109,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 | J. Owned arrays | an array filled while only its maker knows it and then kept by a new object's readonly field is a node of its own in the type graph (Roslyn's green nodes' child arrays against its builders' arrays) | Compiler/OwnedArrays.cs (new), Arenas.cs | done 2026-11-20: green nodes out of the cycle graph (268 types); self-hosted 14.1 to 11.9 s, 470 to 295 MB |
 | K. Baseline-tier code quality | from the side-by-side profile: counted reads whose count can sink to the one path that keeps the value, static-initializer checks, constant-length bounds checks, frame setup, small calls left | Wasm/*, Compiler where a pass needs a fact | done 2026-11-20: six changes (Log); micro 1.876x to 1.847x, self-hosted 2.74x to 2.65x NativeAOT (quiet rounds). Round 2 done 2026-11-21: count fast paths, frames in place, zero-skipping range releases; self-hosted 2.04x to 1.98x. Left: typed releases for borrows (branch claude/k2-throw-only-wip), dispatch stubs |
 | L. Self-hosted memory | where the 470 MB against 239 go (member words, counts, allocator waste by size class, pages held) and the structural cuts | Boundary/Runtime.cs allocator (after C merges) | first pass done: report `CS2WASM_MEMSTATS=1`; 568.9 to 482.9 MB (members' words inline, sparse words aside, frame names in UTF-8); the rest is per object (Log); round 2 (2026-11-21): 344.2 to 306.0 MB, size steps of 4 bytes, wider above 256, rounded at compile time |
+| N. Arena operations | the runtime share of the self-hosted compiler (arena operations on red nodes and symbols): their usual cases without calls | Boundary/Runtime.cs (arenas), RuntimeGen (the slot test) | first pass done 2026-11-21: arena self time 2.08 to 1.64 s of a profiled run, self-hosted 11.09 to 10.54 s (5%); what is left is real work (Log) |
 
 Tools for them: `tools/profcompare.mjs` (two profiles by category and by Roslyn method), `tools/profsize.mjs` (self
 time by callee size), `tools/profcallers.mjs`, `tools/selfhost-ab.sh` (interleaved self-hosted builds against
@@ -318,3 +319,21 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   tests/Godot/proof5_hello2d/repro/RoslynGodotProbe.cs. The threaded toolchain no longer hangs on GodotSharp: 758 s
   told one core, 624 s told four. Open: the self-hosted output on a GodotSharp program differs by build and by core
   count (data, and code by a byte). host/README.md: the embedders' rule, never start a thread from a busy worker.
+- 2026-11-21, stream N: arena operations without the calls their usual cases made (Boundary/Runtime.cs). Measured
+  first (CS2WASM_DROP_STATS=1 now counts each arena path): in a parse of 400 classes 96% of links are stores by
+  address (struct copies through `ref`, iterators' state), 6.3 million UpdateHold calls of which 5.5 million end at
+  its first look, a walk to the top before every inside unlink only to see it was not far, and every helper of a
+  store by address a call in the baseline tier. Now: UpdateHold's first look where it is asked (HoldSettled); ArenaOf,
+  PLM, Dropped's, TryLeave's, NoteOutside's and TopHeld's first tests where they are asked; that walk gone; SlotOwner
+  with ObjectOf, BlockOf and MapGet written out and the block found by a multiplication (exact for every offset and
+  block size, checked for all); the per-type slot tests written into the slot test's cases, which also say an
+  array's element (no TypeInfo.Rank per store); rt.scc_of inlined. tools/arena-bench.cs (red nodes' shape) 63 to
+  48 ms, tools/roslyn-parse-bench.cs 262 to 229 ms under Liftoff; the self-hosted compiler, named no-threads
+  builds, hello world, interleaved: 11.09 to 10.54 s (NativeAOT-LLVM 5.27 s), arena self time 2.08 to 1.64 s of a
+  profiled run; a later round 11.63 to 11.26 s on a busier machine; output byte-identical, memory the same; micro
+  --baseline 1.73x. Tried and left out: first and last outside references written out in ArenaRetain and
+  ArenaRelease (they apply to 3% in a parse: red nodes have side words, a waiting container's, or a hold that
+  really changes). What is left is real work, not calls: red nodes have up-references below them (their parent
+  links), so a node's first and last reference from outside changes its hold on its owner, up the chain
+  (0.8 million changes a parse), and the failing checks at the drop (30,000 a parse, walking 260,000 members).
+  Test 185. Suite 197 passed checked and as shipped.
