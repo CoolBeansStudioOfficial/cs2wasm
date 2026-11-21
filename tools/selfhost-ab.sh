@@ -6,7 +6,9 @@
 cd /c/Users/Levi/Documents/GitHub/cs2wasm
 W=/Users/Levi/Documents/GitHub/cs2wasm/tests/out/self2
 D=${DIR:-$W}
-REF=$(ls -d "/c/Program Files/dotnet/packs/Microsoft.NETCore.App.Ref/"*/ref/net11.0 | tail -1)
+# (the reference pack of the .NET that DOTNET_ROOT names, else the default install)
+DN=${DOTNET_ROOT:-/c/Program Files/dotnet}; DN=$(cygpath -u "$DN" 2>/dev/null || echo "$DN")
+REF=$(ls -d "$DN/packs/Microsoft.NETCore.App.Ref/"*/ref/net11.0 | tail -1)
 T=$(mktemp)
 for r in $(seq 1 ${ROUNDS:-3}); do
   for b in "$@"; do
