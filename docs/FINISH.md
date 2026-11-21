@@ -36,7 +36,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main 26150c1, same run). Met, thinly: the heap top is 1 MiB under the next growth step | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 53.9 MB vs 129 MB (main 26150c1; 44.0 at 3810a98: K's inlining) | met; next waste: code (36.2 MB) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock | faster with threads |
-| 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | not re-tried since 11-17 | plays, log equals the oracle's |
+| 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | met 2026-11-21: `node tools/proof5.mjs toolchain`, `web`, `check`: built in headless Chrome in 220.9 s, its 1,667 log lines (1,669 with `--panic`) equal stock Godot .NET's | plays, log equals the oracle's |
 | - | 072_http's rare out-of-bounds | found and fixed 2026-11-20: none in 600 loaded runs per mode (was ~1 in 1,000) | found or not seen in 500 runs |
 
 ## Where the self-hosted compiler's gap is (measured 2026-11-20)
@@ -95,7 +95,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 | A. Self-hosted speed and memory | 7.E proof on the hot sites; baseline-tier code quality | Compiler/Arenas.cs, Driver, Wasm/* | here, in progress |
 | B. Self-hosted size | breakdown of the 64 MB by namespace and kind; cut waste | tools/size-report.mjs, RuntimeGen (names, packing), Driver (data) | first pass done (64.0 to 42.7 MB); code next |
 | C. Threads scale | per-group locks for arena operations, runtime scratch per thread | Boundary/GroupLocks.cs, Runtime.cs (arena locking), RuntimeGen | done: groups lock apart (PLINQ trees scale); the self-hosted compiler waits on its one giant group: A's structural piece (value sources per site) |
-| D. Proof 5 in the browser | game built by today's self-hosted compiler in the browser | host/web, tools/proof5.mjs, tests/Godot | to start |
+| D. Proof 5 in the browser | game built by today's self-hosted compiler in the browser | host/web, tools/proof5.mjs, tests/Godot | done 2026-11-21 (two premature frees fixed on the way, tests 179 and 180) |
 | E. Behaviour gaps | `StackFrame.GetMethod()`, `FirstChanceException`, the sweep's trace differences | CoreLib Boundary, stack trace code | done 2026-11-20 but for compiler-made methods' records (a feature of its own) |
 | F. Plugins | A4.6 closed-form solver with its tests | Compiler/Solver.cs, PluginSolver.cs, tests | done 2026-11-20 (version 6) |
 | G. Spikes | frame-time check against NativeAOT | tools/frames.mjs, tools/frames, tools/frames-naot-wasm | done: check, foreach borrows; tree scene's rebuild left to I and J |
@@ -299,3 +299,11 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   10.6-10.8 s / 306.0 MB / 53.9 MB against 5.1-5.6 s / 322.2 MB / 129 MB: time 2.0x, memory 0.95x (met), size 0.42x.
   Then ae57217: stream D's two premature-free fixes (a borrow temporary unwound as a counted one; MemberwiseClone
   linking twice); the Godot probe binds all of GodotSharp clean under --checked.
+- 2026-11-21, stream D done: proof 5 met in the browser. `node tools/proof5.mjs toolchain` (cs2wasm without threads,
+  Godot's source generators compiled in, their sources fetched into the cache at stock commit ed1daf0bf; 55.2 MB, 14
+  min), `web`, `check`: the game built in headless Chrome in 220.9 s (18.2 MB downloaded, 2,160 MB of memory at the
+  end), played in the stock 4.7.2 web template, 1,667 log lines equal to stock Godot .NET's (1,669 with `--panic`).
+  What stopped it on 11-20: two premature frees (tests 179, 180, on main as ae57217), found with
+  tests/Godot/proof5_hello2d/repro/RoslynGodotProbe.cs. The threaded toolchain no longer hangs on GodotSharp: 758 s
+  told one core, 624 s told four. Open: the self-hosted output on a GodotSharp program differs by build and by core
+  count (data, and code by a byte). host/README.md: the embedders' rule, never start a thread from a busy worker.

@@ -30,12 +30,13 @@ export function run(cmd, args, opts = {}) {
   return r.status;
 }
 
-/** The self-hosted compiler (SPEC section 9): CS2WASM_SELF, or tests/out/self2/cs2wasm.wasm here or, from a git
- * worktree, in the main checkout. */
+/** The self-hosted compiler (SPEC section 9): CS2WASM_SELF, or the toolchain `node tools/proof5.mjs toolchain` makes
+ * (tests/out/proof5/toolchain.wasm, Godot's source generators compiled in), or tests/out/self2/cs2wasm.wasm here or,
+ * from a git worktree, in the main checkout (without the generators: the game does not build with it). */
 export function selfHosted() {
-  const candidates = [process.env.CS2WASM_SELF, join(root, 'tests', 'out', 'self2', 'cs2wasm.wasm'), join(root, '..', '..', '..', 'tests', 'out', 'self2', 'cs2wasm.wasm')];
+  const candidates = [process.env.CS2WASM_SELF, join(outDir, 'toolchain.wasm'), join(root, 'tests', 'out', 'self2', 'cs2wasm.wasm'), join(root, '..', '..', '..', 'tests', 'out', 'self2', 'cs2wasm.wasm')];
   const found = candidates.find((p) => p && existsSync(p));
-  if (!found) throw new Error('no self-hosted compiler: set CS2WASM_SELF (tools/selfhost.mjs builds one)');
+  if (!found) throw new Error('no self-hosted compiler: node tools/proof5.mjs toolchain (or set CS2WASM_SELF)');
   return resolve(found);
 }
 
