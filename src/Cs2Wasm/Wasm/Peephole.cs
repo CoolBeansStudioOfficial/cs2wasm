@@ -135,7 +135,7 @@ static class Peephole
 
     /// <summary>The last tidying, on the final bodies (WasmModule, before frames are taken): `i32.const 0 ; i32.ne`
     /// before an `if` or a `br_if`, which test for non-zero themselves; `local.set x ; local.get x` that the passes
-    /// after Run left; a `return` that is the body's last instruction, where the function's end returns the same
+    /// after Run left; `i32.const k ; i32.add` before a load (its offset); a `return` that is the body's last instruction, where the function's end returns the same
     /// values. Each is fewer bytes and the same meaning.</summary>
     public static void FinalTidy(WasmFunction f)
     {
@@ -150,6 +150,16 @@ static class Peephole
                 continue;
             }
             if (ins.Op == Op.LocalGet && o.Count > 0 && o[^1].Op == Op.LocalSet && o[^1].Imm == ins.Imm) { o[^1] = o[^1] with { Op = Op.LocalTee }; continue; }
+            // an address plus a constant, loaded from: the constant is the load's offset (a field of an object; an
+            // address that wrapped round the 4 GiB end would be no object's)
+            if (ins.Op is >= Op.I32Load and <= Op.I64Load32U && o.Count >= 2 && o[^1].Op == Op.I32Add && o[^2].Op == Op.I32Const && o[^2].Ref == null
+                && o[^2].Imm >= 0 && o[^2].Imm + ins.Imm < int.MaxValue)
+            {
+                long k = o[^2].Imm;
+                o.RemoveRange(o.Count - 2, 2);
+                o.Add(ins with { Imm = ins.Imm + k });
+                continue;
+            }
             o.Add(ins);
         }
         if (o.Count > 0 && o[^1].Op == Op.Return) o.RemoveAt(o.Count - 1);
