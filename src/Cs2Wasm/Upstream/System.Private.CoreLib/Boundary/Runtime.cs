@@ -2060,6 +2060,8 @@ namespace Cs2Wasm.Runtime
         /// (a list, not a nest: a long chain joins without a deep stack).</summary>
         static void ArenaLinkJoined()
         {
+            int jv = s_joinVisit;
+            s_joinVisit = 1;
             while (s_linkN > 0)
             {
                 s_linkN--;
@@ -2072,6 +2074,31 @@ namespace Cs2Wasm.Runtime
                 ArenaVisitObject(o);
                 s_visitArena = sa; s_visitMode = sm; s_visitObj = so;
             }
+            s_joinVisit = jv;
+            if (jv != 0) return;
+            // (the members whose slot was left to a waiting owner, LinkMembers: what is above them now)
+            while (s_reevN > 0)
+            {
+                s_reevN--;
+                int o = Mem.LoadI32(s_reevQ + 4 * s_reevN);
+                if (Mem.LoadI32(o) < -1 && (PL(o, 24) & Dying) == 0 && PL(o, 20) != 0) Reevaluate(o);
+            }
+        }
+
+        // (ArenaLinkJoined's visits, and the members to Reevaluate after them)
+        [Intrinsic] static int s_joinVisit, s_reevQ, s_reevN, s_reevCap;
+
+        static void ReevaluateLater(int m)
+        {
+            if (s_reevN == s_reevCap)
+            {
+                int cap = s_reevCap == 0 ? 16 : s_reevCap * 2;
+                int nq = Alloc(cap * 4);
+                if (s_reevQ != 0) { Mem.Copy(nq, s_reevQ, s_reevN * 4); Free(s_reevQ, s_reevCap * 4); }
+                s_reevQ = nq; s_reevCap = cap;
+            }
+            Mem.StoreI32(s_reevQ + 4 * s_reevN, m);
+            s_reevN++;
         }
 
         /// <summary>The smaller arena becomes part of the larger; returns the survivor.</summary>
@@ -2727,6 +2754,8 @@ namespace Cs2Wasm.Runtime
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
             // (no reference of either kind: it goes now, with what only it referred to)
             if (w == -2 && PL(p, 4) == 0) { ArenaDestroyFrom(p, 0); DrainKills(); return; }
+            // (one without an owner whose first container waits for it, LinkMembers: that container owns it now)
+            if (w == -2 && PL(p, 20) == 0 && Side(p) != 0 && PLW(p) != 0) { Adopt(p); if (s_killN != 0) DrainKills(); }
             // (kept by what it owns alone, or under a top that was: the check at the drop)
             if (w == -2)
             {
@@ -2889,10 +2918,11 @@ namespace Cs2Wasm.Runtime
             // counted on its being referred to from outside)
             // (checked: a value stored with no outside count on it: the store's count was never taken)
             if (Checked() && SingleThreaded() && Mem.LoadI32(val) == -2) { ChkSay("checked: a " + TypeName(Borrow<object>(val)) + " stored into a " + TypeName(Borrow<object>(container)) + " with no outside count" + (joined ? " (it joined for this store)" : "")); Mem.StoreI32(-4, 0); }
+            bool later = false;
             if (Atomic.Add32(ref Mem.RefI32(val), 1) == -3)
             {
                 if (joined) Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
-                else { Atomic.Add32(ref Mem.RefI32(val), -1); GiveBackLater(val); }
+                else { Atomic.Add32(ref Mem.RefI32(val), -1); GiveBackLater(val); later = true; }
             }
             int i = s_visitElem != 0 ? -1 : SlotIndex(container, slot);
             if (i >= 0 && OnChain(container, val))
@@ -2923,6 +2953,20 @@ namespace Cs2Wasm.Runtime
                     // (one more of its owner's references; more than can be told apart: no owner, as if let go)
                     if ((fl & MultMask) == MultMask) { fl &= ~(Owned | MultMask); PS(val, 24, fl); if ((fl & Held) == 0) PS(val, 20, 0); }
                     else PS(val, 24, fl + MultOne);
+                }
+                // A reference a plain object's slot took while it was plain, linked now that the object joins (its
+                // slots, ArenaLinkJoined), to a member without an owner that code still holds from outside: which of
+                // the containers that hold it is its owner is not told by this one being linked first. A tree built
+                // from the leaves up (a node's children made, each with its parent in a field, before the node is put
+                // in its own parent's list) links each child's parent field before the node's list is the node's: the
+                // node was owned by its first child, every node, and turned round when it was put in its list. So the
+                // container waits (as a later container does), and owns it if nothing else has when code lets it go
+                // (ArenaRelease, Adopt). The container's slot is looked at again when the links are done: a member the
+                // value owns may be above it by then (Reevaluate), the child's parent field an up-reference.
+                else if (ow == 0 && s_joinVisit != 0 && Mem.LoadI32(val) < (later ? -3 : -2) && val != container)
+                {
+                    if (PLW(val) == 0) { ClearMark(val); PSW(val, container); }
+                    ReevaluateLater(container);
                 }
                 else if (ow == 0) TakeOwnership(val, container);
                 // (the first other container that holds it is the one to own it next: a later one, a task's
