@@ -53,17 +53,26 @@ static class ShareConstants
         bool framed = f.FrameName != null && mayThrow.Contains(f) && !s_ignoreFrames;
         if (framed) { sb.Append("#F"); if (!lend) sb.Append(f.FrameName); }
         if (f.Exports.Count > 0) sb.Append("#export").Append(f.Order);
+        // (an instantiation of a generic definition: one of its family may call another function of the same
+        // signature at a place, through the table, the callee's index a hidden parameter)
+        bool fam = f.Family != null && s_indirect;
+        if (fam) sb.Append("#fam").Append(f.Family);
         foreach (var ins in f.Body)
         {
             sb.Append(';').Append((int)ins.Op);
             if (ins.Op == Op.I32Const) { sb.Append('k'); continue; }
-            sb.Append(',').Append(ins.Imm).Append(',').Append(ins.Imm2);
+            // (a call's second immediate is a hint to the passes before this one, the exact type of a release's
+            // object: nothing reads it now)
+            sb.Append(',').Append(ins.Imm).Append(',').Append(ins.Op == Op.Call ? 0 : ins.Imm2);
             if (ins.Inl != 0) sb.Append('@').Append(ins.Inl);
             if (ins.Probes != 0) sb.Append('r').Append(ins.Probes);
             if (framed && !s_ignorePos && ins.Pos >= 0 && (posShown == null || posShown(ins.Pos))) sb.Append('p').Append(ins.Pos);
             switch (ins.Ref)
             {
                 case null: break;
+                case WasmFunction g when ins.Op == Op.Call && fam:
+                    sb.Append(",C").Append(string.Join(".", g.Type.Params)).Append('>').Append(string.Join(".", g.Type.Results));
+                    break;
                 case WasmFunction g when ins.Op == Op.Call:
                     sb.Append(",c").Append(cls.TryGetValue(g, out int c) ? c : -1 - g.Order);
                     if (!cls.ContainsKey(g)) sb.Append(':').Append(g.Name);
@@ -82,6 +91,8 @@ static class ShareConstants
         return sb.ToString();
     }
 
+    /// <summary>CS2WASM_SHARE_INDIRECT=0: members of a family share only when they call members of one shared group.</summary>
+    static readonly bool s_indirect = Environment.GetEnvironmentVariable("CS2WASM_SHARE_INDIRECT") != "0";
     static readonly bool s_ignoreFrames = Environment.GetEnvironmentVariable("CS2WASM_SHARE_IGNORE_FRAMES") == "1";
     static readonly bool s_ignorePos = Environment.GetEnvironmentVariable("CS2WASM_SHARE_IGNORE_POS") == "1";
 
@@ -133,6 +144,7 @@ static class ShareConstants
         public Dictionary<int, int> ConstSlot = [];     // body position of a differing constant: its slot
         public Dictionary<int, int[]> CallSlots = [];   // body position of a differing call: per callee slot, own slot, or -1 - constant
         public Dictionary<int, Instr[]> CallConsts = []; // body position: the callee slots whose value is the same for every member
+        public Dictionary<int, int> IndirectSlot = [];  // body position of a call whose callee differs (no shared group): the slot of the callees' table indices
         public WasmFunction? Shared;
         public bool Dead;
         public bool Framed; // the members are frames of a trace
@@ -140,7 +152,7 @@ static class ShareConstants
     }
 
     /// <summary>Shares the groups (WasmModule, on the final bodies). Returns the number of members made stubs.</summary>
-    public static int Run(List<WasmFunction> fns, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown, bool lend, Func<string, FuncType, WasmFunction> add)
+    public static int Run(List<WasmFunction> fns, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown, bool lend, Func<string, FuncType, WasmFunction> add, Func<WasmFunction, int> tableSlot)
     {
         var groups = Groups(fns, mayThrow, posShown, lend, out _);
         var plans = new Dictionary<WasmFunction, Plan>();
@@ -154,22 +166,29 @@ static class ShareConstants
             foreach (var m in g) plans[m] = pl;
         }
         var all = plans.Values.Distinct().ToList();
-        // the slots, to a fixpoint: a differing call needs its callee group's values for each member's callee
-        bool changed = true;
-        for (int round = 0; changed && round < 30; round++)
-        {
-            changed = false;
-            foreach (var pl in all)
-            {
-                if (pl.Dead) continue;
-                int before = pl.Columns.Count;
-                if (!Slots(pl, plans)) { pl.Dead = true; changed = true; continue; }
-                if (pl.Columns.Count != before) changed = true;
-            }
-        }
         var calls = new Dictionary<WasmFunction, int>();
         foreach (var f in fns) if (!f.IsImport) foreach (var ins in f.Body) if (ins.Op == Op.Call && ins.Ref is WasmFunction cg) calls[cg] = calls.GetValueOrDefault(cg) + 1;
-        foreach (var pl in all) if (!pl.Dead && (pl.Columns.Count > MaxSlots || !Pays(pl, calls))) pl.Dead = true;
+        // (a family's group that called a group given up calls it through the table instead: the slots again, until
+        // no group is given up)
+        for (int outer = 0; outer < 8; outer++)
+        {
+            // the slots, to a fixpoint: a differing call needs its callee group's values for each member's callee
+            bool changed = true;
+            for (int round = 0; changed && round < 30; round++)
+            {
+                changed = false;
+                foreach (var pl in all)
+                {
+                    if (pl.Dead) continue;
+                    int before = pl.Columns.Count;
+                    if (!Slots(pl, plans)) { pl.Dead = true; changed = true; continue; }
+                    if (pl.Columns.Count != before) changed = true;
+                }
+            }
+            bool died = false;
+            foreach (var pl in all) if (!pl.Dead && (pl.Columns.Count > MaxSlots || !Pays(pl, calls))) { pl.Dead = true; died = true; }
+            if (!died || !s_indirect) break;
+        }
         // (a group that calls members of an unshared group at differing places is not shared either)
         for (bool again = true; again;)
         {
@@ -180,6 +199,18 @@ static class ShareConstants
                 foreach (var i in pl.CallSlots.Keys)
                     if (!plans.TryGetValue((WasmFunction)pl.Members[0].Body[i].Ref!, out var cp) || cp.Dead) { pl.Dead = true; again = true; break; }
             }
+        }
+        // (the callees called through the table: now in it)
+        foreach (var pl in all)
+        {
+            if (pl.Dead) continue;
+            foreach (var col in pl.Columns) Place(col);
+            foreach (var cc in pl.CallConsts.Values) Place(cc);
+        }
+        void Place(Instr[] col)
+        {
+            for (int j = 0; j < col.Length; j++)
+                if (col[j].Op == Op.I32Const && col[j].Ref is WasmFunction t && col[j].Imm == -1) col[j] = col[j] with { Imm = tableSlot(t) };
         }
         foreach (var pl in all)
         {
@@ -202,6 +233,12 @@ static class ShareConstants
                 var ins = r.Body[i];
                 if (ins.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee && ins.Imm >= np) ins = ins with { Imm = ins.Imm + k };
                 if (pl.ConstSlot.TryGetValue(i, out int slot)) { b.Add(ins with { Op = Op.LocalGet, Imm = np + slot, Ref = null }); continue; }
+                if (pl.IndirectSlot.TryGetValue(i, out int islot))
+                {
+                    b.Add(new Instr { Op = Op.LocalGet, Imm = np + islot, Pos = ins.Pos, Inl = ins.Inl });
+                    b.Add(ins with { Op = Op.CallIndirect, Imm = 0, Imm2 = 0, Ref = ((WasmFunction)ins.Ref!).Type });
+                    continue;
+                }
                 if (pl.CallSlots.TryGetValue(i, out var map))
                 {
                     var callee = plans[(WasmFunction)ins.Ref!];
@@ -274,7 +311,7 @@ static class ShareConstants
             if (!keyOf.TryGetValue(key, out int s)) { keyOf[key] = s = cols.Count; cols.Add(col); }
             return s;
         }
-        var constSlot = new Dictionary<int, int>(); var callSlots = new Dictionary<int, int[]>(); var callConsts = new Dictionary<int, Instr[]>();
+        var constSlot = new Dictionary<int, int>(); var callSlots = new Dictionary<int, int[]>(); var callConsts = new Dictionary<int, Instr[]>(); var indirect = new Dictionary<int, int>();
         for (int i = 0; i < r.Body.Count; i++)
         {
             var ri = r.Body[i];
@@ -287,11 +324,17 @@ static class ShareConstants
             {
                 var targets = g.Select(m => (WasmFunction)m.Body[i].Ref!).ToArray();
                 if (targets.All(t => ReferenceEquals(t, targets[0]))) continue;
-                if (!plans.TryGetValue(targets[0], out var cp) || cp.Dead || targets.Any(t => !plans.TryGetValue(t, out var tp) || tp != cp)) return false;
-                // (a frame that lends is called through its stub, which differs here)
-                if (cp.Lend) return false;
-                // (the group calling itself: each member itself, its slots passed on as they are)
-                if (cp == pl && Enumerable.Range(0, g.Count).Any(m => !ReferenceEquals(targets[m], g[m]))) return false;
+                // (a frame that lends is called through its stub, which differs here; the group calling itself: each
+                // member itself, its slots passed on as they are)
+                if (!plans.TryGetValue(targets[0], out var cp) || cp.Dead || targets.Any(t => !plans.TryGetValue(t, out var tp) || tp != cp)
+                    || cp.Lend || cp == pl && Enumerable.Range(0, g.Count).Any(m => !ReferenceEquals(targets[m], g[m])))
+                {
+                    // (a family's members calling functions that are not one shared group, of one signature: through
+                    // the table, each member's callee's index a slot)
+                    if (!s_indirect || r.Family == null || targets.Any(t => !t.Type.Equals(targets[0].Type))) return false;
+                    indirect[i] = SlotOf([.. targets.Select(t => new Instr { Op = Op.I32Const, Imm = -1, Ref = t, Pos = ri.Pos })]);
+                    continue;
+                }
                 var map = new int[cp.Columns.Count];
                 var consts = new List<Instr>();
                 for (int c = 0; c < cp.Columns.Count; c++)
@@ -303,7 +346,7 @@ static class ShareConstants
                 callSlots[i] = map; callConsts[i] = [.. consts];
             }
         }
-        pl.Columns = cols; pl.ConstSlot = constSlot; pl.CallSlots = callSlots; pl.CallConsts = callConsts;
+        pl.Columns = cols; pl.ConstSlot = constSlot; pl.CallSlots = callSlots; pl.CallConsts = callConsts; pl.IndirectSlot = indirect;
         return true;
     }
 
@@ -320,7 +363,7 @@ static class ShareConstants
         var fam = new Dictionary<string, List<WasmFunction>>();
         foreach (var f in fns)
         {
-            if (f.IsImport || f.Body.Count == 0 || f.ForwardTo != null || !f.Name.Contains('<') || f.Name.StartsWith("shared ")) continue;
+            if (f.IsImport || f.Body.Count == 0 || f.ForwardTo != null || !f.RefFamily || f.Name.StartsWith("shared ")) continue;
             // (a stub: a call of a shared body)
             if (f.Body.Count > 0 && f.Body[^1].Op == Op.Call && f.Body[^1].Ref is WasmFunction s && s.Name.StartsWith("shared ")) continue;
             var k = Strip(f.Name) + " | " + string.Join(",", f.Type.Params) + ">" + string.Join(",", f.Type.Results);
@@ -344,12 +387,13 @@ static class ShareConstants
                     var x = a.Body[i]; var y = b.Body[i];
                     if (x.Op != y.Op) { why = "op " + x.Op + "/" + y.Op; break; }
                     if (x.Op == Op.I32Const) continue;
-                    if (x.Imm != y.Imm || x.Imm2 != y.Imm2) { why = "imm " + x.Op; break; }
+                    if (x.Imm != y.Imm || x.Op != Op.Call && x.Imm2 != y.Imm2) { why = "imm " + x.Op; break; }
                     if (x.Ref is TryTableInfo ta && y.Ref is TryTableInfo tb)
                     {
                         string TK(TryTableInfo t) => t.BlockType + string.Concat(t.Catches.Select(cc => ":" + cc.Kind + cc.Tag?.Name + cc.Label));
                         if (TK(ta) != TK(tb)) { why = "trytable"; break; }
                     }
+                    else if (x.Op == Op.Call && x.Ref is WasmFunction cx && y.Ref is WasmFunction cy && cx.Type.Equals(cy.Type) && s_indirect) { }
                     else if (!ReferenceEquals(x.Ref, y.Ref) && !(x.Ref != null && x.Ref.Equals(y.Ref)))
                     {
                         why = x.Ref is WasmFunction g && y.Ref is WasmFunction h ? "call " + Strip(g.Name).Split(' ')[0] + " / " + Strip(h.Name).Split(' ')[0] : "ref " + x.Op; break;

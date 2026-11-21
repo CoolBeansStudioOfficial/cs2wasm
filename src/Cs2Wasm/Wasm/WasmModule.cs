@@ -299,8 +299,8 @@ internal sealed class WasmModule
             {
                 // (first the groups of one frame name; then, over what is left, those whose names differ: their members
                 // stay frames, which would keep a group of one name from going to its shared body directly)
-                int n = ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, false, (name, t) => AddFunction(name, t));
-                int n2 = Environment.GetEnvironmentVariable("CS2WASM_SHARE_LEND") == "0" ? 0 : ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, true, (name, t) => AddFunction(name, t));
+                int n = ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, false, (name, t) => AddFunction(name, t), TableSlot);
+                int n2 = Environment.GetEnvironmentVariable("CS2WASM_SHARE_LEND") == "0" ? 0 : ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, true, (name, t) => AddFunction(name, t), TableSlot);
                 if (Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1") Console.Error.WriteLine($"share: {n} functions now call a shared body, then {n2} lend");
             }
             if (Environment.GetEnvironmentVariable("CS2WASM_SHARE_WHY") == "1") ShareConstants.Why(Functions);

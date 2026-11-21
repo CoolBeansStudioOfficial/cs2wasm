@@ -146,6 +146,13 @@ internal sealed class WasmFunction
     public WasmFunction? ForwardTo;
     /// <summary>The frame as .NET's StackTrace prints it; null for compiler-internal functions (hidden from traces).</summary>
     public string? FrameName;
+    /// <summary>Shared generic code (ShareConstants.cs): the generic definition this function is an instantiation of
+    /// (null for code that is not generic). Members of one family whose bodies differ only in constants and in which
+    /// functions of one signature they call get one body: the type-specific values (type ids, statics, the callees'
+    /// table indices) its hidden parameters, as .NET's shared code over __Canon takes its generic dictionary.</summary>
+    public string? Family;
+    /// <summary>Every type argument of the instantiation is a reference type (CS2WASM_SHARE_WHY reports only these).</summary>
+    public bool RefFamily;
     /// <summary>Compiled from the program's own code (named in the name section; the library's frames are named in cs2wasm.frames).</summary>
     public bool ProgramCode;
     /// <summary>A body shared by methods whose frame names differ (ShareConstants.cs): no frame of its own, its place
