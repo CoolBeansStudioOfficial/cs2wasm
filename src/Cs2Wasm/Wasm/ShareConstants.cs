@@ -11,7 +11,7 @@ static class ShareConstants
 {
     /// <summary>The groups (partition refinement: a function's key masks its i32 constants and names each call by the
     /// callee's group, until the groups stop splitting).</summary>
-    public static List<List<WasmFunction>> Groups(List<WasmFunction> fns, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown, out Dictionary<WasmFunction, int> cls)
+    public static List<List<WasmFunction>> Groups(List<WasmFunction> fns, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown, bool lend, out Dictionary<WasmFunction, int> cls)
     {
         var live = fns.Where(f => !f.IsImport && f.ForwardTo == null && f.Body.Count > 0).ToList();
         cls = [];
@@ -23,7 +23,7 @@ static class ShareConstants
             var next = new Dictionary<WasmFunction, int>();
             foreach (var f in live)
             {
-                var k = Key(f, cls, mayThrow, posShown);
+                var k = Key(f, cls, mayThrow, posShown, lend);
                 if (!keys.TryGetValue(k, out int id)) keys[k] = id = keys.Count;
                 next[f] = id;
             }
@@ -36,7 +36,7 @@ static class ShareConstants
         return byCls.Values.Where(l => l.Count > 1).ToList();
     }
 
-    static string Key(WasmFunction f, Dictionary<WasmFunction, int> cls, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown)
+    static string Key(WasmFunction f, Dictionary<WasmFunction, int> cls, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown, bool lend)
     {
         var sb = new StringBuilder();
         foreach (var p in f.Type.Params) sb.Append((char)p);
@@ -45,7 +45,7 @@ static class ShareConstants
         // (a frame of a trace keeps its name and lines: the members share the lines a trace shows; their names too,
         // unless their frames lend: then each member stays a frame, a stub calling the shared body)
         bool framed = f.FrameName != null && mayThrow.Contains(f) && !s_ignoreFrames;
-        if (framed) { sb.Append("#F"); if (!s_lend) sb.Append(f.FrameName); }
+        if (framed) { sb.Append("#F"); if (!lend) sb.Append(f.FrameName); }
         if (f.Exports.Count > 0) sb.Append("#export").Append(f.Order);
         foreach (var ins in f.Body)
         {
@@ -77,15 +77,14 @@ static class ShareConstants
     }
 
     static readonly bool s_ignoreFrames = Environment.GetEnvironmentVariable("CS2WASM_SHARE_IGNORE_FRAMES") == "1";
-    static readonly bool s_lend = Environment.GetEnvironmentVariable("CS2WASM_SHARE_LEND") != "0";
     static readonly bool s_ignorePos = Environment.GetEnvironmentVariable("CS2WASM_SHARE_IGNORE_POS") == "1";
 
     static bool SameConst(in Instr a, in Instr b) => a.Imm == b.Imm && (ReferenceEquals(a.Ref, b.Ref) || a.Ref != null && a.Ref.Equals(b.Ref));
 
     /// <summary>The measurement: per group, the constants that differ and the calls whose callee differs.</summary>
-    public static void Stats(List<WasmFunction> fns, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown)
+    public static void Stats(List<WasmFunction> fns, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown, bool lend)
     {
-        var groups = Groups(fns, mayThrow, posShown, out var cls);
+        var groups = Groups(fns, mayThrow, posShown, lend, out var cls);
         var callers = new Dictionary<WasmFunction, int>();
         foreach (var f in fns) if (!f.IsImport) foreach (var ins in f.Body) if (ins.Op == Op.Call && ins.Ref is WasmFunction g) callers[g] = callers.GetValueOrDefault(g) + 1;
         long saved = 0, members = 0, siteCost = 0;
@@ -135,9 +134,9 @@ static class ShareConstants
     }
 
     /// <summary>Shares the groups (WasmModule, on the final bodies). Returns the number of members made stubs.</summary>
-    public static int Run(List<WasmFunction> fns, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown, Func<string, FuncType, WasmFunction> add)
+    public static int Run(List<WasmFunction> fns, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown, bool lend, Func<string, FuncType, WasmFunction> add)
     {
-        var groups = Groups(fns, mayThrow, posShown, out _);
+        var groups = Groups(fns, mayThrow, posShown, lend, out _);
         var plans = new Dictionary<WasmFunction, Plan>();
         foreach (var g in groups)
         {
@@ -218,9 +217,10 @@ static class ShareConstants
         }
         // every other direct call of a member: its values and the shared body
         var stubsOf = new HashSet<WasmFunction>(all.Where(p => !p.Dead).SelectMany(p => p.Members));
+        var sharedNow = new HashSet<WasmFunction>(all.Where(p => !p.Dead).Select(p => p.Shared!));
         foreach (var f in fns)
         {
-            if (f.IsImport || f.Body.Count == 0 || stubsOf.Contains(f) || f.Name.StartsWith("shared ", StringComparison.Ordinal)) continue;
+            if (f.IsImport || f.Body.Count == 0 || stubsOf.Contains(f) || sharedNow.Contains(f)) continue;
             List<Instr>? o = null;
             for (int i = 0; i < f.Body.Count; i++)
             {
