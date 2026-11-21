@@ -1,0 +1,25 @@
+Player.Id in Player..ctor (line 24): Input; from join; part of a new object
+Player._x in Player..ctor (line 24): Input; from join; part of a new object
+Player._y in Player..ctor (line 24): Input; from join; part of a new object
+Player._vx in Player.Steer (line 30): InputGated, marked; from input under !_players.TryGetValue(id, out var p) || !p.Alive
+Player._vy in Player.Steer (line 30): InputGated, marked; from input under !_players.TryGetValue(id, out var p) || !p.Alive
+Player._cooldown in Player.TryFire (line 36): InputGated, marked; from input under !_players.TryGetValue(id, out var p) || !p.Alive and (action & 16) != 0
+Player._shots in Player.TryFire (line 37): InputGated, marked; from input under !_players.TryGetValue(id, out var p) || !p.Alive and (action & 16) != 0
+Player._hp in Player.Hit (line 43): Unknown; an unsure site touches the member
+Player._hp in Player.Hit (line 44): Unknown; an unsure site touches the member
+Player._x in Player.Step (line 50): Tick; from tick only
+Player._y in Player.Step (line 51): Tick; from tick only
+Player._cooldown in Player.Step (line 52): Tick; from tick only
+Spawner._ms in Spawner.Tick (line 70): Tick; from tick only
+Spawner._ms in Spawner.Tick (line 73): Tick; from tick only
+Spawner._waves in Spawner.Tick (line 74): Tick; from tick only
+World._players[id] in World.Join (line 94): Input, marked; from join
+World._coins[id] in World.Join (line 95): Input, marked; from join
+World._owner[cell] in World.Claim (line 114): InputGated, marked; from input under !_players.TryGetValue(id, out var p) || !p.Alive and (action & 32) != 0 and _owner[cell] != 0
+World._coins[id] in World.Claim (line 115): InputGated, marked; from input under !_players.TryGetValue(id, out var p) || !p.Alive and (action & 32) != 0 and _owner[cell] != 0
+World._tick in World.Step (line 120): Tick; from tick only
+World._coins[id] in World.Step (line 126): Tick; from tick only
+unknown: Player._hp: Reference in Hit, _hp: passed as a ref argument
+gate: !(self._cooldown > 0 || self._hp <= 0)
+input reads: join.id, input.id, input.action
+timer: 2 pieces, exact True

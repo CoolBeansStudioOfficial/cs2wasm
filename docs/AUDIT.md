@@ -775,14 +775,40 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     a program method with parameters did not compile (the plugin's compilation sees the program's types as
     retargeted symbols, whose parameters are not the ones the operation trees name); `Types.Canonical` now maps
     such a type to the input's own (`Driver.InputType`).
-  - Still open: the first slice of the real plugin in the Bazoodle repository (9.4). What it needs:
-    - 9.4, the Invisible API's first slice, in the Bazoodle repository against version 6: classify each write
-      (`Accesses` with entries, `PathConditions` for whether it runs under a value from input, `InterceptValue` on
-      the input reads, `UnsureSites` as unknown), mark the interactions changed (`InstrumentWrite`,
-      `InstrumentEntryWrites` with the player key), one gate (generated C# with `AddSource`, reading private
-      fields, exported for the server), registered from `RunBeforeCompile` so nothing compiles twice, and the
-      solved timer (`Solve` and its Advance; an approximate closed form only for display or prediction). Each gap
-      it finds is a compiler issue here.
+  - The Invisible API's first slice (9.4, stream M, 2026-11-20), as a standalone sample in this repository (the
+    owner's decision): `samples/invisible-api` (game `Game/Arena.cs`, plugin `Plugin/InvisiblePlugin.cs` against
+    version 7, `driver.mjs`, `script.txt`), checked by `tests/Cs2Wasm.Tests/InvisibleCheck.cs` ("invisible-api
+    slice", both modes). The plugin, all from `RunBeforeCompile`: classifies each write of the game's state
+    (`Accesses` with entries; `PathConditions`, each path's conditions tested for a dependence on the input exports'
+    parameters through the arguments along the path and the locals' writes; tick only; unknown for a member an
+    unsure site touches or a write no hook follows), intercepts every read of the input exports' parameters (the
+    server's input log, and one action replaced), marks the writes under input (`InstrumentWrite`) and the entry
+    writes under input with the player key (`InstrumentEntryWrite`), generates one gate with `AddSource` (fire
+    accepted now: `TryFire`'s own early-return condition rewritten over a receiver, `!(self._cooldown > 0 ||
+    self._hp <= 0)`, reading private fields; exported with a view of a player's private state), and solves the wave
+    timer (`Solve`, exact, `GenerateAdvance`: a prediction on a copy, a catch-up of the live timer). The check plays
+    the script with the driver and under .NET (the game without the plugin; the server's answers from the private
+    state by reflection and by running the ticks): the game's output, gate answers against whether the fire
+    happened, views, predictions up to 1,000 ticks and a 100-tick catch-up equal; every member or entry an input
+    changed is marked but for the unknown ones; no tick marks anything; the classification equals
+    `expected-writes.txt`; `CompileResult.RecompiledFunctions` is 0. A missing mark fails it (tried both ways).
+    Gaps it found:
+    - Fixed: a hook at one entry write (version 7, `PluginContext.InstrumentEntryWrite(MemberAccess, hook, tag)`;
+      `EntryHook.Site`, filtered in `FunctionCompiler.EntryHooksAt`). `InstrumentEntryWrites` hooks every entry
+      write of a member, so the tick's deterministic `_coins[id] += 2` was marked with the inputs' writes; the
+      per-site form is to it what `InstrumentWrite` is to `InstrumentWrites`. Older plugins unchanged.
+    - Fixed: nothing showed whether a plugin made the compiler compile again; `CompileResult.RecompiledFunctions`
+      (functions `Driver.Recompile` compiled a second time, static initializers included).
+    - Open: whether a value depends on an input. `PathConditions` gives the conditions, not what they depend on;
+      the plugin follows parameters to the arguments of the calls on the path and locals to their writes itself,
+      over syntax and flow-insensitively, because `GetDefUse` keys the control-flow graph's operations, not the
+      tree's that `Accesses` and `BranchCondition` give (an `out var` from `TryGetValue` is followed by hand). A
+      query `DependsOn(operation, path, sources)` over the def-use chains, with calls on the path, would replace it.
+    - Open: a condition as C# over a receiver. The gate rewrites the condition's implicit `this` reads to
+      `self.Name` itself; the solver's `SolverAtom.Code` does this for invariants, a `ConditionCode(test, receiver)`
+      would give it for any condition (calls, properties and locals included, or a refusal).
+    - Open, small: field initializers (`int _hp = 10`) are not writes in `Accesses`; their values are the program's,
+      so a server knows them, but a plugin that must list every write reads them from the syntax.
 
 - **Step 11.1, in part (2026-11-18): programs written to use every form, compared with .NET.** Tests 124 to 126
   removed three refusals (`await` in conditional expressions was already handled; lifted compound assignment
@@ -1307,6 +1333,7 @@ So nothing is replaced. What was wrong with the runtime is narrower, and it is w
    results as IR or C# the plugin can emit, not strings.
 4. Write the Invisible API plugin's first slice in the Bazoodle repository against version 4 (classification,
    "mark changed", one gate, one solved timer) as the acceptance test; each gap it finds is a compiler issue.
+   Done 2026-11-20 as `samples/invisible-api` in this repository (the owner's decision), against version 7 (above).
 5. Keep versions 1 to 3 running through an adapter over the IR.
 
 ### Step 10. Configuration and reentrancy (A6.1, A6.2, A5.10)
