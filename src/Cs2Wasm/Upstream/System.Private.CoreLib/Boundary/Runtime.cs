@@ -2995,7 +2995,13 @@ namespace Cs2Wasm.Runtime
                 if (slot == 0 && PL(container, 28) > 0) PS(container, 28, PL(container, 28) - 1);
                 bool owned = PL(old, 20) == container && (PL(old, 24) & (Owned | MultMask)) == (Owned | MultOne);
                 bool ownerEdge = PL(old, 20) == container;
-                OwnerLetGo(old, container);
+                // (one destroyed here keeps its owner while it is: the up-references from it and from what it owns are
+                // taken off the u of the members above it as each goes, UpPath walking the owners. Let go first, they
+                // stayed on the container and its owners for good: a list's array that kept them refused its Handover
+                // when the list grew, and the items it still held stayed with it until the whole group went. In the
+                // scene tree of tools/frames.mjs, a subtree replaced under a node that later took more children: a
+                // third of the group.)
+                if (n != 0 || co != -2) OwnerLetGo(old, container);
                 // (a container replaced by another in the same slot, a list's array by a larger one: what it owned is
                 // the new one's from here on)
                 if (owned && n > 0 && slot != 0) { Handover(old, Mem.LoadI32(slot), container); n = PL(old, 4); }
@@ -3266,8 +3272,9 @@ namespace Cs2Wasm.Runtime
             if (i >= 0) SetSlotBits(obj, i, 0);
             int left = PL(child, 4) - 1;
             PS(child, 4, left);
-            OwnerLetGo(child, obj);
+            // (one that dies with it keeps its owner, as the first of them does: ArenaUnlinkOld)
             if (left == 0 && Mem.LoadI32(child) == -2) { Kill(child); return; }
+            OwnerLetGo(child, obj);
             if (PL(child, 20) == 0) Adopt(child);
             UpdateHold(child);
             // (a survivor of the cut that nothing outside refers to may be kept by stale holds of what it owns alone:
@@ -3527,13 +3534,40 @@ namespace Cs2Wasm.Runtime
             if ((flags & ArenaBusy) != 0) return;
             Mem.StoreI32(ar + 12, flags | ArenaBusy);
             int first = Mem.LoadI32(ar + 4);
-            if (first != 0)
+            bool fin0 = Mem.LoadI32(ar + 24) != 0;
+            if (first != 0 && !fin0 && SingleThreaded())
+            {
+                // No member has a finalizer: three passes, none of which reads another member. Each member's count
+                // word is zero first (being destroyed), so releasing it is nothing (rt.release does nothing at zero):
+                // a member's references to the others, which the visit below takes out of their slots one by one,
+                // then need no visit and are left to the clear, which releases the rest of what each holds as it would.
+                // (The visit read every member a member refers to, its count and its record: a cache miss each, in a
+                // group freed whole, the scene tree of tools/frames.mjs, 31,000 entities in 7 to 10 ms.)
+                // The ring is walked once, into a list: the walk is a chain of loads each waiting for the one before (a
+                // member's next is in the member), and the ring of a group that has lived a while is in no order in
+                // memory, so each step is a miss. The clear and the free then go down the list, where the loads of one
+                // member do not wait for another's.
+                int n = Mem.LoadI32(ar + 8), cap = n > 0 ? n : 16;
+                int list = Alloc(cap * 4), k = 0;
+                int m = first;
+                do
+                {
+                    ArenaOf(m); Unqueue(m); ClearMark(m); Mem.StoreI32(m, 0);
+                    if (k == cap) { int nl = Alloc(cap * 8); Mem.Copy(nl, list, cap * 4); Free(list, cap * 4); list = nl; cap *= 2; }
+                    Mem.StoreI32(list + 4 * k, m); k++;
+                    m = PL(m, 12);
+                } while (m != first);
+                for (int i = 0; i < k; i++) ArenaClearObject(Mem.LoadI32(list + 4 * i));
+                for (int i = 0; i < k; i++) ArenaFreeObject(Mem.LoadI32(list + 4 * i));
+                Free(list, cap * 4);
+            }
+            else if (first != 0)
             {
                 // (every member's record word straight at the arena: the merged records they pointed to go now)
                 int m = first;
                 do { ArenaOf(m); Unqueue(m); ClearMark(m); m = PL(m, 12); } while (m != first);
                 int sa = s_visitArena, sm = s_visitMode;
-                bool fin = Mem.LoadI32(ar + 24) != 0;
+                bool fin = fin0;
                 int cutOn = s_cutOn, cutBase = s_cutN;
                 s_cutOn = fin ? 1 : 0;
                 s_visitArena = ar; s_visitMode = 1;
