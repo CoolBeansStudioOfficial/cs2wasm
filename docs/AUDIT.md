@@ -1138,6 +1138,64 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   2.5% less against main in the last round, where the machine's wall times wandered); bench 0.94x NativeAOT as
   before; hello world 27,194 to 27,297 bytes. Suite 198 passed checked and as shipped (rebased on 05e8cd0), bench 0.94x there.
 
+- **Fewer count operations (2026-11-21, branch claude/rc-fewer-counts, on main ec13733): where the counts come from.**
+  - The measure: `CS2WASM_COUNT_RC=1` now keeps each count call's cause apart from a release's exact-type hint
+    (`Instr.Cause`; before, the cause sat in Imm2, which ExpandLeafReleases reads as the hint: the measure could
+    miscompile), charges a temporary's or a variable's release to the code that made the slot, names unproven borrows
+    (with why a temporary's borrow failed and through which chain), stores' old values and inlined runtime counts, and
+    counts the struct helpers' calls; `tools/rccauses.mjs run.txt [sites.txt]` sums a run by cause, the helpers'
+    own counts charged to their callers. Build with `CS2WASM_RC_FAST=0` (the fast paths in loops hide calls).
+  - The self-hosted compiler (named, no threads, main), hello world: 931 million calls of rt.retain and rt.release
+    (348 million changed a count), 887 million count operations with the struct helpers'. By kind: clearing arrays of
+    one-reference structs element by element (rt.release_range calling rt.release_struct: Roslyn's
+    InternalSyntax.SyntaxListBuilder.Clear clears its whole array at every reuse) 15.6%; struct copies into fields
+    (rt.copy_assign: the blender's BlendedNode, Cursor, tuples) 8.3%; declared locals' releases at their scope's end
+    6.3% (their retains 1.9%); arguments' temporaries 4.6% (call results passed on, and retained fields 1.2%); a call's
+    receiver held in a temporary 4.4% release, 3.1% retain; stores' old values 4.1% + 3.3% (by address); retains of
+    stored values 3.6%; returns of a borrowed value 3.0%; struct results of calls held to the statement's end 2.5%;
+    **unproven borrows** of a receiver 2.5% + 2.5%, of an argument 0.8% + ..., of a declared local 0.8%; destroy
+    functions' field releases 1.7% + 1.1%. The parser bench's ranking is the same shape (61.2 million calls).
+  - Why the receivers' borrows failed, in the parser bench: half of them through a destruction: a release can run
+    `~AssemblyLoadContext`, which raises its Unloading event (`Action<AssemblyLoadContext>.Invoke`), and a delegate's
+    call reached every function reflection can make a delegate of, reflection thunks among them, which reach the
+    whole program. Now an indirect call reaches only the functions of its own wasm type (a call_indirect traps on any
+    other before it runs): `IndirectTargets` filters by type and the store summary has a node per bucket and type.
+    The parser bench's calls 61.2 to 60.15 million, counts changed 25.67 to 24.53 million (4.4% fewer).
+    `CS2WASM_NO_INDIRECT_TYPES=1` for the old way. In the self-hosted compiler it changed nothing (930.8 against
+    931.0 million calls): there the same finalizer's `Action<AssemblyLoadContext>.Invoke` reached a lambda of
+    CSharpCompilation's (another `Action<>`, of the same wasm type), and through a `Func<,>` the parser's lambdas.
+  - So a delegate's Invoke now reaches the targets of delegates made as its own constructed type, or as another
+    instance of its definition that variance converts to it (`Action<object>` invoked as an `Action<string>`), not
+    every instance of the definition (`Driver.DelegateCallBucket`, `DelegateConvertible`; unsure cases, type
+    parameters, take the target). Test 187: borrows across variant invocations whose targets free the borrowed
+    object (fails with variance left out). `CS2WASM_NO_DELEGATE_TYPES=1`. Parser bench 59.97 to 59.84 million calls.
+    What still blocks the parser's receivers is the context-insensitive call graph itself: a virtual getter on the
+    current token (`ContextualKind`) reaches SyntaxParser.ReInitialize somewhere below.
+  - A switch expression whose arms are all borrowed is borrowed (as a conditional is; an owned arm makes the others
+    counted, after the fact). Alone it moves the counts to the consumer (the parser's GetSlot bodies are
+    `return index switch {...}`: counted at the return instead); `CS2WASM_NO_SWITCH_BORROWS=1`.
+  - A store that runs only where its field holds null (`f ??= v`) breaks no borrow (it lets go of nothing; what v's
+    own code stores is seen as before): `Driver.BorrowWrites`, FieldWrites without those stores (InitOnlyFields
+    still sees them). `CS2WASM_NO_NULL_ONLY=1`.
+  - A method returns a field borrowed also when its body is several statements that let go of nothing once a
+    return has read its value (`Driver.BorrowableReturns`: no counted local, no parameter written, no closure, returns
+    only inside blocks, ifs and while/do/for loops, the last statement a return; nulls allowed among several
+    returns): `_f ??= Make(); return _f;` (LexerCache.TokenMap), loops that fill a field and return it. Checked where the borrowed form is compiled (a
+    release on its way out is a compile error, not a premature free). `CS2WASM_NO_RETURN_FIELD_BODIES=1`.
+  - Array.GetLength, GetLowerBound and Array.Copy at the boundary without a handle to a local copy of the array
+    (`object arr = this; ObjectHandleOnStack.Create(ref arr)`: an address-taken local, so counted: 3.4 million pairs
+    for GetLowerBound alone in the self-hosted compiler, from Array.Clear).
+  - The parser bench after all of them: 59.97 million calls (from 61.22), 24.20 million counts changed (from 25.67,
+    5.7% fewer); its time within this machine's noise (another session's heavy runs: medians 316 against 311 ms in the
+    baseline tier, 6 interleaved rounds). Hello world 27,297 to 27,339 bytes. Suite 198/198 checked and as shipped on
+    b2340ac.
+  - Left, by size: the array clears of struct elements (a runtime matter: the zero-skipping range release, or knowing
+    the builder's count), struct copies into fields (moves where the source dies), receivers that are fields of a
+    struct `this` (`SyntaxListBuilder<T>.Add` forwarding to its `_builder`: a struct's field can be overwritten by
+    whole-struct copies, which note no field key), borrowed returns through user-defined conversions
+    (`return _lexedTokens[i];` through `ArrayElement<T>`'s implicit operator: FetchCurrentToken, PeekToken), and
+    virtual methods whose every override returns a field (GreenNode.GetSlot).
+
 - **Self-hosted compiler's memory (stream L of docs/FINISH.md, 2026-11-20): 568.9 MB to 482.9 MB.**
   - The report: `CS2WASM_MEMSTATS=1` at compile time. The runtime goes through the heap at every growth of the memory
     (the table's word per granule, each page's blocks: a block's first word says what it is) and prints a line;

@@ -374,3 +374,14 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
 - 2026-11-21, main 1191d18 (K round 4, N round 2, D's KnownNull fix; self-hosted output now equals the .NET-hosted
   compiler's), 3 interleaved rounds: self-hosted compiler 10.2-10.3 s / 306.0 MB / 41.8 MB against 5.1-5.3 s / 322.2 MB /
   129 MB: time 1.98x, memory 0.95x, size 0.32x.
+- 2026-11-21, fewer count operations (branch claude/rc-fewer-counts, on ec13733): where the counts come from, measured
+  (CS2WASM_COUNT_RC by cause, `tools/rccauses.mjs`): the self-hosted compiler runs 931 million retain and release calls
+  on hello world; by kind, array clears of one-reference structs element by element 15.6%, struct copies into fields
+  8.3%, declared locals' scope ends 6.3%, arguments' and receivers' temporaries 4.6% and 4.4%, stores' old values
+  7.4%, unproven borrows of receivers 5.0%. Changes: an indirect call reaches only functions of its own wasm type, a
+  delegate's Invoke only the targets of its own constructed type or variance's (test 187), a switch expression of
+  borrowed arms is borrowed, `f ??= v` breaks no borrow, multi-statement bodies return fields borrowed, Array's
+  GetLength/GetLowerBound/Copy without counted handle copies. Parser bench 61.2 to 59.8 million calls, 25.7 to 24.1
+  million counts changed (6% fewer); the self-hosted compiler on the homelab, the three quiet rounds of six: main
+  10.24 s, branch 9.94 s, NativeAOT-LLVM 4.28 s (2.39x to 2.32x; the homelab, shared with other sessions, loaded in
+  the other rounds). Hello world 27,297 to 27,339 bytes. docs/AUDIT.md, "Fewer count operations".
