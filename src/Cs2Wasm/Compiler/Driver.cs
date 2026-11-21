@@ -442,7 +442,7 @@ internal sealed partial class Driver
         LazyTypeNames = true;
     }
 
-    public IAddress DataBlob(byte[] bytes, int align)
+    public IAddress DataBlob(byte[] bytes, int align, [System.Runtime.CompilerServices.CallerMemberName] string caller = "")
     {
         Align(align);
         int off = Data.Bytes.Count;
@@ -450,14 +450,7 @@ internal sealed partial class Driver
         if (_blobs != null) { var k = Compiling != null ? Display(Compiling.Sym) : "(tables)"; _blobs.TryGetValue(k, out int n); _blobs[k] = n + bytes.Length; }
         var addr = new DataAddr(this, NewChunk(off, align));
         if (_blobs != null) addr.Chunk.Owner = Compiling != null ? Display(Compiling.Sym) : "(tables)";
-        if (s_dataDump != null) lock (s_dataDump)
-            {
-                var fr = new System.Diagnostics.StackTrace(1, false);
-                var m = fr.GetFrame(0)?.GetMethod();
-                if (m?.Name == "DataBlob") m = fr.GetFrame(1)?.GetMethod();
-                var k = m == null ? "?" : m.DeclaringType?.Name + "." + m.Name;
-                s_dataDump.TryGetValue(k, out long n); s_dataDump[k] = n + bytes.Length;
-            }
+        if (s_dataDump != null) lock (s_dataDump) { s_dataDump.TryGetValue(caller, out long n); s_dataDump[caller] = n + bytes.Length; }
         return addr;
     }
 
@@ -480,9 +473,9 @@ internal sealed partial class Driver
     }
 
     /// <summary>A blob with addresses in it: each (byte offset, target) is written when the layout is final.</summary>
-    public IAddress DataBlob(byte[] bytes, int align, List<(int at, IAddress target)> relocs)
+    public IAddress DataBlob(byte[] bytes, int align, List<(int at, IAddress target)> relocs, [System.Runtime.CompilerServices.CallerMemberName] string caller = "")
     {
-        var a = (DataAddr)DataBlob(bytes, align);
+        var a = (DataAddr)DataBlob(bytes, align, caller);
         a.Chunk.Relocs = relocs;
         return a;
     }
