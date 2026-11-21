@@ -14,6 +14,9 @@ internal static class Frames
     public static void Run(WasmModule m, WasmGlobal sp, WasmGlobal lo)
     {
         WasmFunction? frame = null;
+        // (in code that runs often, a small frame is taken where it is: RcFastPaths' reasoning, the call costs more than
+        // the check, the move and a few stores)
+        var hot = s_inlineMax > 0 ? NullChecks.CalledFromLoops(m.Functions.Where(f => !f.IsImport), 3) : [];
         foreach (var f in m.Functions.ToList())
         {
             if (f.IsImport) continue;
@@ -40,14 +43,34 @@ internal static class Frames
                     && (b[i + 1].Op == Op.I64Const || b[i + 1].Op == Op.I32Const && b[i + 1].Ref == null) && b[i + 1].Imm == 0
                     && b[i + 2].Op is Op.I64Store or Op.I32Store && b[i + 2].Imm >= 0 && b[i + 2].Imm < n)
                     i += 3;
-            frame ??= Make(m, sp, lo);
             int pos = b[0].Pos;
-            var start = new List<Instr>
+            List<Instr> start;
+            if (n <= s_inlineMax && n % 8 == 0 && hot.Contains(f))
             {
-                new() { Op = Op.I32Const, Imm = n, Pos = pos },
-                new() { Op = Op.Call, Ref = frame, Pos = pos },
-                new() { Op = Op.LocalSet, Imm = fb, Pos = pos },
-            };
+                // more than the stack has left: the end of the instance (as rt.frame); then the frame, cleared
+                start = [
+                    new() { Op = Op.GlobalGet, Ref = sp, Pos = pos }, new() { Op = Op.GlobalGet, Ref = lo, Pos = pos }, new() { Op = Op.I32Sub, Pos = pos },
+                    new() { Op = Op.I32Const, Imm = n, Pos = pos }, new() { Op = Op.I32LtU, Pos = pos },
+                    new() { Op = Op.If, Pos = pos }, new() { Op = Op.Unreachable, Pos = pos }, new() { Op = Op.End, Pos = pos },
+                    new() { Op = Op.GlobalGet, Ref = sp, Pos = pos }, new() { Op = Op.I32Const, Imm = n, Pos = pos }, new() { Op = Op.I32Sub, Pos = pos },
+                    new() { Op = Op.LocalTee, Imm = fb, Pos = pos }, new() { Op = Op.GlobalSet, Ref = sp, Pos = pos },
+                ];
+                for (int k = 0; k < n; k += 8)
+                {
+                    start.Add(new() { Op = Op.LocalGet, Imm = fb, Pos = pos });
+                    start.Add(new() { Op = Op.I64Const, Imm = 0, Pos = pos });
+                    start.Add(new() { Op = Op.I64Store, Imm = k, Imm2 = 3, Pos = pos });
+                }
+            }
+            else
+            {
+                frame ??= Make(m, sp, lo);
+                start = [
+                    new() { Op = Op.I32Const, Imm = n, Pos = pos },
+                    new() { Op = Op.Call, Ref = frame, Pos = pos },
+                    new() { Op = Op.LocalSet, Imm = fb, Pos = pos },
+                ];
+            }
             // (the stack pointer as it was, where the function puts it back from a local of its own)
             if (entry >= 0 && Reads(b, i, entry))
             {
@@ -60,6 +83,8 @@ internal static class Frames
             b.InsertRange(0, start);
         }
     }
+
+    static readonly int s_inlineMax = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_FRAME_INLINE"), out var fi) ? fi : 64;
 
     static bool Reads(List<Instr> b, int from, int local)
     {
