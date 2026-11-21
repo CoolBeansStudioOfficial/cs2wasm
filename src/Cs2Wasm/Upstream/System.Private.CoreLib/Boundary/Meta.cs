@@ -90,12 +90,35 @@ namespace Cs2Wasm.Runtime
             if (name == null) return null;
             int t = Rt.FrameMethods();
             if (t == 0) return null;
-            int n = I(t, 0);
+            int n = I(t, 0), names = I(t, 1);
             for (int i = 0; i < n; i++)
             {
-                if (S(I(t, 1 + 2 * i)) == name) return MethodOfEntry(I(t, 2 + 2 * i));
+                if (Utf8Equals(names + I(t, 2 + 2 * i), name)) return MethodOfEntry(I(t, 3 + 2 * i));
             }
             return null;
+        }
+
+        /// <summary>Whether a name of the table ([UTF-16 length, byte length, UTF-8 bytes]) is the string.</summary>
+        static bool Utf8Equals(int at, string s)
+        {
+            if (I(at, 0) != s.Length) return false;
+            int p = at + 8, end = p + I(at, 1), k = 0;
+            while (p < end)
+            {
+                int b = Mem.LoadU8(p), cp, extra;
+                if (b < 0x80) { if (s[k++] != b) return false; p++; continue; }
+                if (b >= 0xF0) { cp = b & 7; extra = 3; } else if (b >= 0xE0) { cp = b & 15; extra = 2; } else { cp = b & 31; extra = 1; }
+                for (int j = 1; j <= extra; j++) cp = (cp << 6) | (Mem.LoadU8(p + j) & 63);
+                p += extra + 1;
+                if (cp >= 0x10000)
+                {
+                    cp -= 0x10000;
+                    if (s[k] != (char)(0xD800 + (cp >> 10)) || s[k + 1] != (char)(0xDC00 + (cp & 0x3FF))) return false;
+                    k += 2;
+                }
+                else if (s[k++] != cp) return false;
+            }
+            return k == s.Length;
         }
 
         /// <summary>The method a throw's note names (Exception._throwSite), from Rt.ThrowSites.</summary>

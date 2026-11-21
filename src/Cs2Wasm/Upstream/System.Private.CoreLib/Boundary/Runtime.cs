@@ -519,6 +519,7 @@ namespace Cs2Wasm.Runtime
             // (the free runs by size, and the table's top: a leaf for every 4 MiB of address space)
             s_runBins = b; b += RunBins * 4;
             s_mapTop = b; b += 1024 * 4;
+            if (MemStatsOn()) { s_ms = b; b += MsArea; }
             s_top = (b + Granule - 1) & ~(Granule - 1);
             s_runLo = s_top;
             s_end = Mem.Size() * 65536;
@@ -968,7 +969,229 @@ namespace Cs2Wasm.Runtime
             if (Mem.Grow(more) < 0 && Mem.Grow(pages) < 0) ThrowHelpers.OutOfMemory();
             // (with room again: the exception a later failure throws is made now, while it can be)
             s_end = Mem.Size() * 65536;
+            MemStatsGrow();
             ThrowHelpers.ReserveOutOfMemory();
+        }
+
+        // ------------------------------------------------------------------
+        // CS2WASM_MEMSTATS=1 (a diagnosis, at compile time): where the heap's memory is. At every growth of the memory
+        // the heap is gone through (the table's words, each page's blocks) and a line says what it holds; the export
+        // cs2wasm_memstats (the host calls it at the end when it is there) prints the last growth's state in full,
+        // by size class and by type, and then the state at the end. Its records are made in the heap's start, before
+        // the first block (InitHeap), so the report allocates nothing while it looks.
+        //   per class (MsCls words): pages, blocks in use, of them objects, of them cycle-capable objects, of those with
+        //   member words, empty pages of the class (none in use);
+        //   totals (MsTot): below; types: an open table of (type id + 1, bytes, blocks).
+        // ------------------------------------------------------------------
+        [Intrinsic] static extern bool MemStatsOn();
+        /// <summary>CS2WASM_MEMSTATS=1: a call of MsGrow; else nothing (not even the call's code: a branch on a
+        /// constant still made the module bigger).</summary>
+        [Intrinsic] static extern void MemStatsGrow();
+        /// <summary>CS2WASM_MEMSTATS=1: a call of MsRecord with the argument; else nothing.</summary>
+        [Intrinsic] static extern void MemStatsRecord(int delta);
+        public static void MsGrow() { MsWalk(); MsLine("grow"); }
+        public static void MsRecord(int delta) => s_msRec += delta;
+        const int MsCls = 6, MsTypes = 16384;
+        const int TPages = 0, TEmptyPages = 1, THuge = 2, THugeGran = 3, TFreeRuns = 4, TFreeGran = 5, TFreeMax = 6,
+            TOther = 7, TOddBlocks = 8, TOddBytes = 9, TMemberWords = 10, TArenaRecords = 11, TFreePageList = 12, TRunLeft = 13,
+            THugeObj = 14, THugeArena = 15, TLeafGran = 16, TMwLive = 17, TPageWords = 18, TWords = 24, TCount = 40;
+        static int s_ms, s_msRec, s_msGrows;
+        static int MsClsAt(int c) => s_ms + c * MsCls * 4;
+        static int MsTotAt(int k) => s_ms + Classes * MsCls * 4 + k * 4;
+        static int MsTypeAt(int i) => s_ms + Classes * MsCls * 4 + TCount * 4 + i * 12;
+        static int MsBuf => MsTypeAt(MsTypes);
+        const int MsArea = Classes * MsCls * 4 + TCount * 4 + MsTypes * 12 + 2048;
+        static int s_msAt;
+
+        static void MsAdd(int addr, int v) => Mem.StoreI32(addr, Mem.LoadI32(addr) + v);
+
+        static void MsType(int typeId, int bytes)
+        {
+            int i = (int)((uint)(typeId * -1640531535) >> 18) & (MsTypes - 1);
+            for (int n = 0; n < MsTypes; n++, i = (i + 1) & (MsTypes - 1))
+            {
+                int e = MsTypeAt(i), k = Mem.LoadI32(e);
+                if (k == 0) { Mem.StoreI32(e, typeId + 1); k = typeId + 1; }
+                if (k == typeId + 1) { MsAdd(e + 4, bytes); MsAdd(e + 8, 1); return; }
+            }
+        }
+
+        /// <summary>An object at a block's start (its first word: a count, or the mark before a cycle-capable one's
+        /// words), tallied by type; whether it is one.</summary>
+        static int MsObject(int b, int bytes)
+        {
+            int w = Mem.LoadI32(b);
+            if (w == 0) return 0;
+            int o = w <= PrefixMark ? b + ArenaPrefix : b;
+            MsType(Mem.LoadI32(o + 4), bytes);
+            if (w > PrefixMark) return 1;
+            if (Mem.LoadI32(o - 16) == 0) return 3;
+            MsAdd(MsTotAt(TMemberWords), 1);
+            // (which of the nine words are in use)
+            for (int k = 4; k <= 28; k += 4) if (Mem.LoadI32(o - k) != 0) MsAdd(MsTotAt(TWords + k / 4), 1);
+            if (PLW(o) != 0) MsAdd(MsTotAt(TWords + 8), 1);
+            if (PLM(o) != 0) MsAdd(MsTotAt(TWords + 9), 1);
+            return 7;
+        }
+
+        static void MsWalk()
+        {
+            if (s_ms == 0) return;
+            Mem.Fill(s_ms, 0, MsArea - 2048);
+            int top = s_top;
+            // (the blocks of each size's run that were never handed out: counted in use by their page)
+            for (int c = 2; c < Classes; c++)
+            {
+                int next = Mem.LoadI32(s_hot + (Classes + c) * 4), end = Mem.LoadI32(s_hot + (2 * Classes + c) * 4);
+                if (next != end) { MsAdd(MsClsAt(c) + 4, -(end - next) / (c << 3)); MsAdd(MsTotAt(TRunLeft), end - next); }
+            }
+            for (int p = s_freePages; p != 0; p = Mem.LoadI32(p + 4)) MsAdd(MsTotAt(TFreePageList), 1);
+            for (int a = s_runLo; (uint)a < (uint)top;)
+            {
+                int e = MapGet(a), k = e & 7;
+                if (k == 1 || k == 4)
+                {
+                    int pg = e & ~7;
+                    if (pg != a) { a += Granule; continue; }
+                    int fl = Mem.LoadI32(pg + 20), c = fl >> 1, size = c << 3;
+                    int used = k == 1 ? Mem.LoadI32(pg + 16) : Mem.LoadI32(pg + 16) >> 1;
+                    int row = MsClsAt(c);
+                    MsAdd(MsTotAt(TPages), 1);
+                    if (size == 0) { MsAdd(MsTotAt(TEmptyPages), 1); a += PageSize; continue; }
+                    MsAdd(row, 1);
+                    MsAdd(row + 4, used);
+                    if (used == 0) { MsAdd(row + 20, 1); MsAdd(MsTotAt(TEmptyPages), 1); }
+                    int bump = Mem.LoadI32(pg + 12), last = bump != 0 ? bump : pg + PageSize;
+                    for (int b = pg + PageHead; b + size <= last; b += size)
+                    {
+                        int r = MsObject(b, size);
+                        if (r != 0) MsAdd(row + 8, 1);
+                        if ((r & 2) != 0) MsAdd(row + 12, 1);
+                        if ((r & 4) != 0) MsAdd(row + 16, 1);
+                    }
+                    a += PageSize;
+                }
+                else if (k == 2)
+                {
+                    int n = 0;
+                    while ((uint)(a + (n << GShift)) < (uint)top && MapGet(a + (n << GShift)) == e) n++;
+                    MsAdd(MsTotAt(THuge), 1); MsAdd(MsTotAt(THugeGran), n);
+                    int r = MsObject(a, n << GShift);
+                    if (r != 0) MsAdd(MsTotAt(THugeObj), n);
+                    if ((r & 2) != 0) MsAdd(MsTotAt(THugeArena), n);
+                    a += n << GShift;
+                }
+                else if (k == 3)
+                {
+                    int n = (int)((uint)e >> 3);
+                    MsAdd(MsTotAt(TFreeRuns), 1); MsAdd(MsTotAt(TFreeGran), n);
+                    if (n > Mem.LoadI32(MsTotAt(TFreeMax))) Mem.StoreI32(MsTotAt(TFreeMax), n);
+                    a += n << GShift;
+                }
+                else { MsAdd(MsTotAt(TOther), 1); a += Granule; }
+            }
+            // (small blocks in no page, on the old lists)
+            for (int kind = 0; kind < 2; kind++)
+                for (int c = 2; c < Classes; c++)
+                    for (int b = Mem.LoadI32(Lists(kind) + c * 4); b != 0; b = Mem.LoadI32(b + 8))
+                        if (SingleThreaded()) { MsAdd(MsTotAt(TOddBlocks), 1); MsAdd(MsTotAt(TOddBytes), c << 3); }
+                        else break;
+            Mem.StoreI32(MsTotAt(TArenaRecords), s_msRec);
+        }
+
+        static void MsText(string s)
+        {
+            for (int i = 0; i < s.Length && s_msAt < 1000; i++) { Mem.StoreU16(MsBuf + 2 * s_msAt, s[i]); s_msAt++; }
+        }
+
+        static void MsNum(long v)
+        {
+            if (v < 0) { Mem.StoreU16(MsBuf + 2 * s_msAt, '-'); s_msAt++; v = -v; }
+            int start = s_msAt;
+            do { Mem.StoreU16(MsBuf + 2 * s_msAt, '0' + (int)(v % 10)); s_msAt++; v /= 10; } while (v > 0);
+            for (int i = start, j = s_msAt - 1; i < j; i++, j--) { int t = Mem.LoadU16(MsBuf + 2 * i); Mem.StoreU16(MsBuf + 2 * i, Mem.LoadU16(MsBuf + 2 * j)); Mem.StoreU16(MsBuf + 2 * j, t); }
+        }
+
+        static void MsKb(string label, long bytes) { MsText(label); MsNum((bytes + 512) >> 10); MsText(" KB"); }
+
+        static void MsEnd() { Mem.StoreU16(MsBuf + 2 * s_msAt, 10); Engine.Write(MsBuf, s_msAt + 1); s_msAt = 0; }
+
+        static long MsTot(int k) => Mem.LoadI32(MsTotAt(k));
+
+        /// <summary>The totals of the last walk, one line.</summary>
+        static void MsLine(string what)
+        {
+            long live = 0, held = 0, objects = 0;
+            for (int c = 2; c < Classes; c++)
+            {
+                int row = MsClsAt(c), pages = Mem.LoadI32(row);
+                if (pages == 0) continue;
+                int size = c << 3, cap = (PageSize - PageHead) / size;
+                live += (long)Mem.LoadI32(row + 4) * size;
+                objects += (long)Mem.LoadI32(row + 8) * size;
+                held += (long)pages * PageSize - (long)Mem.LoadI32(row + 4) * size;
+            }
+            s_msGrows++;
+            MsText("memstats "); MsText(what); MsKb(" memory ", (long)Mem.Size() * 65536); MsKb(" top ", (long)(uint)s_top);
+            MsKb(" base ", HeapBase()); MsKb(" small-live ", live); MsKb(" (objects ", objects); MsText(")");
+            MsKb(" small-held-free ", held); MsKb(" empty-pages ", MsTot(TEmptyPages) * PageSize);
+            MsKb(" huge ", MsTot(THugeGran) << GShift); MsKb(" free-runs ", MsTot(TFreeGran) << GShift);
+            MsText(" members "); MsNum(MsTot(TMemberWords));
+            MsEnd();
+        }
+
+        static void MsFull(string what)
+        {
+            MsLine(what);
+            MsText("memstats "); MsText(what); MsText(": pages "); MsNum(MsTot(TPages)); MsText(" (empty "); MsNum(MsTot(TEmptyPages));
+            MsText(", on the empty list "); MsNum(MsTot(TFreePageList)); MsText(")"); MsKb(" run-left ", MsTot(TRunLeft));
+            MsText(" huge blocks "); MsNum(MsTot(THuge)); MsKb(" ", MsTot(THugeGran) << GShift); MsKb(" (objects ", MsTot(THugeObj) << GShift);
+            MsKb(", cycle-capable ", MsTot(THugeArena) << GShift); MsText(")");
+            MsText(" free runs "); MsNum(MsTot(TFreeRuns)); MsKb(" largest ", MsTot(TFreeMax) << GShift);
+            MsText(" other granules "); MsNum(MsTot(TOther)); MsText(" odd blocks "); MsNum(MsTot(TOddBlocks)); MsKb(" ", MsTot(TOddBytes));
+            MsText(" member words "); MsNum(MsTot(TMemberWords)); MsText(" arena records "); MsNum(MsTot(TArenaRecords));
+            MsEnd();
+            MsText("memstats "); MsText(what); MsText(" members with word k (and side words) not zero:");
+            for (int k = 4; k <= 28; k += 4) { MsText(" "); MsNum(k); MsText(":"); MsNum(MsTot(TWords + k / 4)); }
+            MsText(" waiting:"); MsNum(MsTot(TWords + 8)); MsText(" note:"); MsNum(MsTot(TWords + 9));
+            MsEnd();
+            MsText("memstats "); MsText(what); MsText(" class: size pages in-use objects cycle-capable with-words empty | live KB, held free KB"); MsEnd();
+            for (int c = 2; c < Classes; c++)
+            {
+                int row = MsClsAt(c), pages = Mem.LoadI32(row);
+                if (pages == 0) continue;
+                int size = c << 3;
+                MsText("memstats "); MsText(what); MsText(" class "); MsNum(size);
+                for (int i = 0; i < MsCls; i++) { MsText(" "); MsNum(Mem.LoadI32(row + 4 * i)); }
+                MsKb(" | ", (long)Mem.LoadI32(row + 4) * size); MsKb(" ", (long)pages * PageSize - (long)Mem.LoadI32(row + 4) * size);
+                MsEnd();
+            }
+            // the types with the most bytes
+            for (int n = 0; n < 60; n++)
+            {
+                int best = -1; long bb = 0;
+                for (int i = 0; i < MsTypes; i++)
+                {
+                    int e = MsTypeAt(i);
+                    if (Mem.LoadI32(e) > 0 && (uint)Mem.LoadI32(e + 4) > bb) { bb = (uint)Mem.LoadI32(e + 4); best = e; }
+                }
+                if (best < 0) break;
+                int id = Mem.LoadI32(best) - 1;
+                MsText("memstats "); MsText(what); MsText(" type "); MsKb("", bb); MsText(" "); MsNum(Mem.LoadI32(best + 8)); MsText(" ");
+                MsText(TypeInfo.FullName(id) ?? "?");
+                MsEnd();
+                Mem.StoreI32(best, -Mem.LoadI32(best));
+            }
+            for (int i = 0; i < MsTypes; i++) { int e = MsTypeAt(i); if (Mem.LoadI32(e) < 0) Mem.StoreI32(e, -Mem.LoadI32(e)); }
+        }
+
+        /// <summary>The export cs2wasm_memstats: the last growth's state (still in the records), then the state now.</summary>
+        public static void MemStatsReport()
+        {
+            if (!MemStatsOn() || s_ms == 0) return;
+            if (s_msGrows > 0) MsFull("at-last-growth");
+            MsWalk();
+            MsFull("now");
         }
 
         // Blocks above MaxSmall: their sizes are rounded up to one of eight steps per power of two (an eighth more at
@@ -1434,8 +1657,8 @@ namespace Cs2Wasm.Runtime
         // ------------------------------------------------------------------
         // Arenas (section 4.3). Compiled into a module only when the compiler found a store that can close a cycle.
         //
-        // An object of a cycle-capable type is allocated with 32 bytes before its header (AllocObjectArena):
-        //   [-32] its owner, [-28] its slots' bits, [-24] flags and u, [-20] a container waiting to own it (Owners, below),
+        // An object of a cycle-capable type is allocated with 32 bytes before its header (AllocObjectArena: a tag, seven words):
+        //   [-32] its tag (its side words: a waiting container and a note, below), [-28] its slots' bits, [-24] flags and u, [-20] its owner,
         //   [-16] its arena's record (0: none yet), [-12] next member, [-8] previous member (a ring),
         //   [-4] inside count: the references to it from slots of members of its arena.
         // It starts as a plain counted object. A store that can close a cycle puts the container and the value in one
@@ -1465,19 +1688,27 @@ namespace Cs2Wasm.Runtime
         const int SharedCount = 0x40000000;
         // (record word 24: not zero when a member has a finalizer)
         const int ArenaRecord = 32;
-        // The eight words of an object of a cycle-capable type (below) are apart from it, in a block of their own
-        // made when the first of them is written (an object that never meets a store that can close a cycle has
-        // none: it is a plain object but for the word that would point to them). Before the object's header: that
-        // pointer, at -4. (With threads the object's count word must not be where a free block has its link, at 8:
-        // sixteen bytes before the header then.)
-        // (a ninth word, at 36: the note of a check at the drop that failed, Dropped; apart from the word of a container
-        // waiting to own the member, which it once shared: a failed check wiped the waiting owner, so the member stayed
-        // without one and was checked again at its next loss, every time, all it owned gone through each time)
-        const int MemberWords = 40, MarkWord = 36;
-        static int ArenaPrefix => SingleThreaded() ? 8 : 16;
-        /// <summary>The first word of the block of an object of a cycle-capable type, while it is allocated: no count
-        /// word of an object that starts its block is below -1 (a member's is, and a member never starts its block),
-        /// and memory that is no object has a zero there (Alloc). So a block's first word says what the block is.</summary>
+        // The words of an object of a cycle-capable type (below) are before its header, in the block with it: the block
+        // is [0] the tag, [4] to [28] seven words (word k at k bytes before the header), [32] the object. The tag is
+        // PrefixMark less the address of the member's side words, a block of their own for two words few members ever
+        // write (0: none): [0] the container waiting to own it (Owners), [4] the note of a check at the drop that failed
+        // (Dropped). So a block's first word is below -1 for such an object and for no other.
+        // (The words were once a block of their own, made when the first was written, with a pointer to it before the
+        // header: 56 bytes for a member, where nearly every object of such a type meets a store that closes a cycle:
+        // Roslyn's 3.7 million members had 205 MB of the self-hosted compiler's 555, and every word was two loads. Of
+        // those members 6% had a waiting container and 5% a note: 32 bytes and the few side words now.)
+        // (the note is apart from the word of a container waiting to own the member, which it once shared: a failed check
+        // wiped the waiting owner, so the member stayed without one and was checked again at its next loss, every time,
+        // all it owned gone through each time)
+        // (With threads the object's count word must not be where a free block has its link, at 8: it is at 40, after
+        // the tag and the lock word, LockWord, which another thread reads without the group's lock: KeyStripe.)
+        // (threads: one more word, at 36, the member's lock word: GroupLocks)
+        static int ArenaPrefix => ThreadMode() ? 40 : 32;
+        const int SideWords = 8;
+        /// <summary>The tag of a cycle-capable object without side words (the first word of its block, while it is
+        /// allocated): no count word of an object that starts its block is below -1 (a member's is, and a member never
+        /// starts its block), and memory that is no object has a zero there (Alloc). So a block's first word says what
+        /// the block is.</summary>
         const int PrefixMark = -2;
 
         /// <summary>The object the address is in (a field's, an element's, a struct's inside either), or 0: the stack,
@@ -1488,41 +1719,52 @@ namespace Cs2Wasm.Runtime
             if (b == 0) return 0;
             int w = Mem.LoadI32(b);
             if (w == 0) return 0;
-            if (w == PrefixMark) { int o = b + ArenaPrefix; return Mem.LoadI32(o) == 0 ? 0 : o; }
+            if (w <= PrefixMark) { int o = b + ArenaPrefix; return Mem.LoadI32(o) == 0 ? 0 : o; }
             return b;
         }
 
-        /// <summary>One of the object's eight words (k: 4 to 32, the word that many bytes before where they end); 0
-        /// while the object has none.</summary>
-        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static int PL(int obj, int k)
+        /// <summary>One of the object's seven words (k: 4 to 28, the word that many bytes before its header); 0 until
+        /// it is written (the block is cleared when the object is made).</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static int PL(int obj, int k) => Mem.LoadI32(obj - k);
+
+        /// <summary>Sets one of the object's seven words.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static void PS(int obj, int k, int value) => Mem.StoreI32(obj - k, value);
+
+        /// <summary>The member's side words, or 0.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static int Side(int obj) => PrefixMark - Mem.LoadI32(obj - ArenaPrefix);
+
+        /// <summary>The container waiting to own the member (Owners), 0 for none.</summary>
+        static int PLW(int obj) { int w = Side(obj); return w == 0 ? 0 : Mem.LoadI32(w); }
+        /// <summary>The note of a check at the drop that failed (Dropped), 0 for none.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static int PLM(int obj) { int w = Side(obj); return w == 0 ? 0 : Mem.LoadI32(w + 4); }
+        static void PSW(int obj, int value) { int w = value == 0 ? Side(obj) : SideOf(obj); if (w != 0) Mem.StoreI32(w, value); }
+        static void PSM(int obj, int value) { int w = value == 0 ? Side(obj) : SideOf(obj); if (w != 0) Mem.StoreI32(w + 4, value); }
+
+        /// <summary>The member's side words, made (cleared) if it has none.</summary>
+        static int SideOf(int obj)
         {
-            int r = Mem.LoadI32(obj - 4);
-            return r == 0 ? 0 : Mem.LoadI32(r + MemberWords - k);
+            int w = Side(obj);
+            if (w != 0) return w;
+            w = Alloc(SideWords);
+            Mem.StoreI64(w, 0);
+            Mem.StoreI32(obj - ArenaPrefix, PrefixMark - w);
+            return w;
         }
 
-        /// <summary>Sets one of the object's eight words; the words are made for the first that is not zero.</summary>
-        static void PS(int obj, int k, int value)
-        {
-            int r = Mem.LoadI32(obj - 4);
-            if (r == 0)
-            {
-                if (value == 0) return;
-                r = Alloc(MemberWords);
-                Mem.StoreI64(r, 0); Mem.StoreI64(r + 8, 0); Mem.StoreI64(r + 16, 0); Mem.StoreI64(r + 24, 0); Mem.StoreI64(r + 32, 0);
-                // (threads: another thread may read the words of an object of a group it does not hold, KeyStripe:
-                // the block whole before its address)
-                if (!ThreadMode()) Mem.StoreI32(obj - 4, r); else Atomic.Store32(ref Mem.RefI32(obj - 4), r);
-            }
-            Mem.StoreI32(r + MemberWords - k, value);
-        }
-
-        /// <summary>The object's eight words are all zero again: their block goes.</summary>
+        /// <summary>The object's words are all zero again (it left its arena), its side words gone.</summary>
         static void MemberWordsFree(int obj)
         {
-            int r = Mem.LoadI32(obj - 4);
-            if (r == 0) return;
-            Mem.StoreI32(obj - 4, 0);
-            Free(r, MemberWords);
+            SideFree(obj);
+            Mem.StoreI32(obj - 28, 0);
+            Mem.StoreI64(obj - 24, 0); Mem.StoreI64(obj - 16, 0); Mem.StoreI64(obj - 8, 0);
+        }
+
+        static void SideFree(int obj)
+        {
+            int w = Side(obj);
+            if (w == 0) return;
+            Mem.StoreI32(obj - ArenaPrefix, PrefixMark);
+            Free(w, SideWords);
         }
 
         [Intrinsic] static extern int SccOf(int typeId);
@@ -1610,7 +1852,8 @@ namespace Cs2Wasm.Runtime
         {
             // (its count word reads as dead from here on, wherever the block goes)
             Mem.StoreI32(addr, 0);
-            MemberWordsFree(addr);
+            // (its words need no clearing, a block is cleared when it is allocated; its side words go)
+            SideFree(addr);
             // (the usual case in one small piece, as FreeObject)
             if (SingleThreaded() && !ShareCheck() && !Checked())
             {
@@ -1653,14 +1896,14 @@ namespace Cs2Wasm.Runtime
                 Mem.StoreI32(ar + 20, n);
                 int f = Mem.LoadI32(ar + 16);
                 if (n != 0 || f == 0) return;
-                Free(ar, ArenaRecord);
+                { MemStatsRecord(-1); Free(ar, ArenaRecord); }
                 ar = f;
             }
         }
 
         static int NewArena()
         {
-            int ar = Alloc(ArenaRecord);
+            int ar = Alloc(ArenaRecord); MemStatsRecord(1);
             Mem.StoreI64(ar, 0); Mem.StoreI64(ar + 8, 0); Mem.StoreI64(ar + 16, 0); Mem.StoreI64(ar + 24, 0);
             return ar;
         }
@@ -1765,7 +2008,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(a + 24, Mem.LoadI32(a + 24) | Mem.LoadI32(b + 24));
             // (b's members still point to b: b points to a, for as long as one of them does)
             Mem.StoreI32(b, 0); Mem.StoreI32(b + 4, 0); Mem.StoreI32(b + 8, 0);
-            if (Mem.LoadI32(b + 20) == 0) Free(b, ArenaRecord);
+            if (Mem.LoadI32(b + 20) == 0) { MemStatsRecord(-1); Free(b, ArenaRecord); }
             else { Mem.StoreI32(b + 16, a); Mem.StoreI32(a + 20, Mem.LoadI32(a + 20) + 1); }
             return a;
         }
@@ -1810,7 +2053,7 @@ namespace Cs2Wasm.Runtime
             for (int k = 0; k <= ChainMax; k++)
             {
                 if (v == target) return true;
-                v = PL(v, 32);
+                v = PL(v, 20);
                 if (v == 0) return false;
             }
             return false;
@@ -1824,12 +2067,12 @@ namespace Cs2Wasm.Runtime
             for (int k = 0; k <= ChainMax && v != target && v != 0; k++)
             {
                 PS(v, 24, PL(v, 24) + d * UOne);
-                v = PL(v, 32);
+                v = PL(v, 20);
             }
             v = from;
             for (int k = 0; k <= ChainMax && v != target && v != 0; k++)
             {
-                int next = PL(v, 32);
+                int next = PL(v, 20);
                 UpdateHold(v);
                 v = next;
             }
@@ -1845,7 +2088,7 @@ namespace Cs2Wasm.Runtime
                 if (c >= -1) return;
                 int fl = PL(v, 24);
                 if ((fl & Dying) != 0) return;
-                int w = PL(v, 32);
+                int w = PL(v, 20);
                 if (w == 0) return;
                 int others = PL(v, 4) - ((fl & MultMask) >> 3) + (-c - 2);
                 bool want = (uint)fl >= UOne && others > 0;
@@ -1859,7 +2102,7 @@ namespace Cs2Wasm.Runtime
                 }
                 fl &= ~Held;
                 PS(v, 24, fl);
-                if ((fl & Owned) == 0) { PS(v, 32, 0); Adopt(v); }
+                if ((fl & Owned) == 0) { PS(v, 20, 0); Adopt(v); }
                 int n = PL(w, 4) - 1;
                 PS(w, 4, n);
                 if (n == 0 && Mem.LoadI32(w) == -2) { Kill(w); return; }
@@ -1920,10 +2163,10 @@ namespace Cs2Wasm.Runtime
         /// from now on (unless the member is above it).</summary>
         static void Adopt(int v)
         {
-            int p = PL(v, 20);
+            int p = PLW(v);
             // (odd: a top's note, Dropped; and nothing adopts a member that is dying)
             if (p == 0 || (p & 1) != 0 || (PL(v, 24) & Dying) != 0) return;
-            PS(v, 20, 0);
+            PSW(v, 0);
             if (Mem.LoadI32(p) >= -1) return;
             // (as the first container to hold it would have: the ownership turns round where the member owns
             // what is above the container, a parent it referred to before it was in the parent's list)
@@ -1937,7 +2180,7 @@ namespace Cs2Wasm.Runtime
         {
             int c = Mem.LoadI32(m);
             if (c >= -2 || PL(m, 4) != 0 || PL(m, 28) != 0 || s_destroying != 0) return;
-            if ((PL(m, 24) & ~Elems) != 0 || PL(m, 32) != 0) return;
+            if ((PL(m, 24) & ~Elems) != 0 || PL(m, 20) != 0) return;
             int ar = ArenaOf(m);
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
             // (its own slots, read once: none holds a member of the arena, whatever the counts say)
@@ -1952,7 +2195,7 @@ namespace Cs2Wasm.Runtime
             // (threads: its words cleared but kept, before it is a plain object, which a thread that holds no lock of
             // this group may then lock and join to another: KeyStripe reads the words of objects it does not hold.
             // Not its lock word: until the exchange below it is a member of this group, which a thread must wait for)
-            if (ThreadMode()) { int r = Mem.LoadI32(m - 4); Mem.StoreI32(r + 4, 0); Mem.StoreI64(r + 8, 0); Mem.StoreI64(r + 16, 0); Mem.StoreI64(r + 24, 0); Mem.StoreI64(r + 32, 0); }
+            if (ThreadMode()) { int w = Side(m); if (w != 0) Mem.StoreI64(w, 0); Mem.StoreI32(m - 28, 0); Mem.StoreI64(m - 24, 0); Mem.StoreI64(m - 16, 0); Mem.StoreI64(m - 8, 0); }
             // (exchanged: other threads count it meanwhile; it has outside references, so one member fewer that does)
             do { c = Atomic.Load32(ref Mem.RefI32(m)); } while (Atomic.CompareExchange32(ref Mem.RefI32(m), c, -c - 2) != c);
             if (!ThreadMode()) MemberWordsFree(m);
@@ -1981,13 +2224,13 @@ namespace Cs2Wasm.Runtime
             if (OnChain(container, val))
             {
                 int x = container;
-                for (int k = 0; k <= ChainMax && PL(x, 32) != val; k++) x = PL(x, 32);
+                for (int k = 0; k <= ChainMax && PL(x, 20) != val; k++) x = PL(x, 20);
                 int xf = PL(x, 24);
-                if (PL(x, 32) != val || (uint)xf >= UOne || (xf & Held) != 0) return;
+                if (PL(x, 20) != val || (uint)xf >= UOne || (xf & Held) != 0) return;
                 PS(x, 24, xf & ~(Owned | MultMask));
-                PS(x, 32, 0);
+                PS(x, 20, 0);
             }
-            PS(val, 32, container);
+            PS(val, 20, container);
             PS(val, 24, PL(val, 24) | Owned | MultOne);
             // (only a counted reference in one of its own slots can become an up-reference)
             if ((PL(val, 28) & 0x55555555) != 0 && (PL(val, 24) & Elems) == 0) Reevaluate(val);
@@ -2050,8 +2293,8 @@ namespace Cs2Wasm.Runtime
         static void Handover(int from, int to, int owner)
         {
             // (threads: read only in a group this thread holds)
-            if (!ThreadMode()) { if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || PL(to, 32) != owner || PL(to, 16) != PL(from, 16)) return; }
-            else if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || !GroupHeld(to) || PL(to, 32) != owner || PL(to, 16) != PL(from, 16)) return;
+            if (!ThreadMode()) { if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || PL(to, 20) != owner || PL(to, 16) != PL(from, 16)) return; }
+            else if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || !GroupHeld(to) || PL(to, 20) != owner || PL(to, 16) != PL(from, 16)) return;
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem, sf = s_handFrom, ss = s_handSum;
             s_visitArena = PL(from, 16); s_handFrom = from; s_handSum = 0; s_visitElem = 0;
             s_visitMode = 6; s_visitObj = from;
@@ -2069,15 +2312,15 @@ namespace Cs2Wasm.Runtime
         /// references fewer; with the last, the member has no owner (unless it holds it: then until it lets go).</summary>
         static void OwnerLetGo(int old, int container)
         {
-            if (PL(old, 20) == container) PS(old, 20, 0);
-            if (PL(old, 32) != container) return;
+            if (PLW(old) == container) PSW(old, 0);
+            if (PL(old, 20) != container) return;
             int fl = PL(old, 24);
             if ((fl & Owned) == 0) return;
             fl -= MultOne;
             if ((fl & MultMask) != 0) { PS(old, 24, fl); return; }
             fl &= ~Owned;
             PS(old, 24, fl);
-            if ((fl & Held) == 0) PS(old, 32, 0);
+            if ((fl & Held) == 0) PS(old, 20, 0);
         }
 
         // ---- The check at the drop (the owner's decision of 2026-11-18) ----
@@ -2111,8 +2354,8 @@ namespace Cs2Wasm.Runtime
         /// top, 2: it can be, a top of its own under another's, and counted in that one's numbers.)</summary>
         static void ClearMark(int m)
         {
-            if ((PL(m, MarkWord) & 1) == 0) return;
-            PS(m, MarkWord, 2);
+            if ((PLM(m) & 1) == 0) return;
+            PSM(m, 2);
             if (!ThreadMode()) s_failedTops--; else Atomic.Add32(ref s_failedTops, -1);
         }
 
@@ -2124,9 +2367,9 @@ namespace Cs2Wasm.Runtime
             for (int k = 0; k < 64; k++)
             {
                 if (DropStats()) s_dsTopHops++;
-                if ((PL(v, 24) & Owned) == 0) { if (DropStats() && (PL(v, MarkWord) & 1) != 0) s_dsTopMarked++; return v; }
-                int w = PL(v, 32);
-                if (w == 0 || Mem.LoadI32(w) >= -1) { if (DropStats() && (PL(v, MarkWord) & 1) != 0) s_dsTopMarked++; return v; }
+                if ((PL(v, 24) & Owned) == 0) { if (DropStats() && (PLM(v) & 1) != 0) s_dsTopMarked++; return v; }
+                int w = PL(v, 20);
+                if (w == 0 || Mem.LoadI32(w) >= -1) { if (DropStats() && (PLM(v) & 1) != 0) s_dsTopMarked++; return v; }
                 v = w;
             }
             if (DropStats()) s_dsTopFar++;
@@ -2141,7 +2384,7 @@ namespace Cs2Wasm.Runtime
             {
                 if (v == top) return true;
                 if ((PL(v, 24) & Owned) == 0) return false;
-                int w = PL(v, 32);
+                int w = PL(v, 20);
                 if (w == 0 || Mem.LoadI32(w) >= -1) return false;
                 v = w;
             }
@@ -2159,7 +2402,7 @@ namespace Cs2Wasm.Runtime
                 // (what it holds of its owner is a counted reference too)
                 if (mode != 13 && (PL(m, 24) & Held) != 0)
                 {
-                    int w = PL(m, 32);
+                    int w = PL(m, 20);
                     if (w != 0 && Mem.LoadI32(w) < -1 && (PL(w, 24) & Dying) != 0) PS(w, 4, PL(w, 4) + (mode == 14 ? -1 : 1));
                 }
             }
@@ -2174,7 +2417,7 @@ namespace Cs2Wasm.Runtime
             if (Mem.LoadI32(x) != -2 || PL(x, 4) == 0) return false;
             if ((PL(x, 24) & (Owned | Dying)) != 0) return false;
             // (a container waiting to own it refers to it: not kept by holds alone)
-            if (PL(x, 20) != 0) return false;
+            if (PLW(x) != 0) return false;
             int ar = ArenaOf(x);
             if (Mem.LoadI64(ar + 12) != 0) return false;
             ClearMark(x);
@@ -2209,10 +2452,10 @@ namespace Cs2Wasm.Runtime
                 // NoteOutside look for the top of a noted member only. A member that comes under the top later is in
                 // none of its numbers, so what it does changes none of them: the walk up for every count of every
                 // member, most of them under no such top, was a seventh of the self-hosted compiler's time)
-                for (int i = 0; i < s_trN; i++) { int m = Mem.LoadI32(s_trQ + 4 * i); PS(m, 24, PL(m, 24) & ~Dying); if (m != x && PL(m, MarkWord) == 0) PS(m, MarkWord, 2); }
+                for (int i = 0; i < s_trN; i++) { int m = Mem.LoadI32(s_trQ + 4 * i); PS(m, 24, PL(m, 24) & ~Dying); if (m != x && PLM(m) == 0) PSM(m, 2); }
                 // (the note: odd; bit 1 clear, how many of them outside code holds, TopHeld; set, how many references
                 // from members outside what it owns are left into it, NoteOutside)
-                PS(x, MarkWord, inside ? (held << 2) | 1 : (outside << 2) | 3);
+                PSM(x, inside ? (held << 2) | 1 : (outside << 2) | 3);
                 if (!ThreadMode()) s_failedTops++; else Atomic.Add32(ref s_failedTops, 1);
                 s_trial = 0;
                 return false;
@@ -2237,13 +2480,13 @@ namespace Cs2Wasm.Runtime
         /// last (d): the top's number; at zero the top is looked at again. Returns the top to look at, or 0.</summary>
         static int TopHeld(int p, int d)
         {
-            if (PL(p, MarkWord) == 0) return 0;
+            if (PLM(p) == 0) return 0;
             int t = Top(p);
             if (t == 0) return 0;
-            int o = PL(t, MarkWord);
+            int o = PLM(t);
             if ((o & 3) != 1) return 0;
             int n = (o >> 2) + d;
-            if (n > 0) { PS(t, MarkWord, (n << 2) | 1); return 0; }
+            if (n > 0) { PSM(t, (n << 2) | 1); return 0; }
             return t;
         }
 
@@ -2252,13 +2495,13 @@ namespace Cs2Wasm.Runtime
         /// is looked at again. Returns the top to look at, or 0. (A reference from inside changes nothing.)</summary>
         static int NoteOutside(int member, int container, int d)
         {
-            if (PL(member, MarkWord) == 0) return 0;
+            if (PLM(member) == 0) return 0;
             int t = Top(member);
             if (t == 0) return 0;
-            int o = PL(t, MarkWord);
+            int o = PLM(t);
             if ((o & 3) != 3 || Under(container, t)) return 0;
             int n = (o >> 2) + d;
-            if (n > 0) { PS(t, MarkWord, (n << 2) | 3); return 0; }
+            if (n > 0) { PSM(t, (n << 2) | 3); return 0; }
             return t;
         }
 
@@ -2292,7 +2535,7 @@ namespace Cs2Wasm.Runtime
                 if (DropStats()) s_dsFromRelease++;
                 if (t != 0 && Dropped(t)) { DrainKills(); return; }
                 // (a top a check failed for: again only when the number of its members outside code holds is zero, TopHeld)
-                if (t != p && (PL(p, MarkWord) & 1) == 0 && Dropped(p)) { DrainKills(); return; }
+                if (t != p && (PLM(p) & 1) == 0 && Dropped(p)) { DrainKills(); return; }
             }
             if ((uint)PL(p, 24) >= UOne) { UpdateHold(p); DrainKills(); }
         }
@@ -2470,18 +2713,18 @@ namespace Cs2Wasm.Runtime
             }
             if (val != container)
             {
-                int ow = PL(val, 32);
+                int ow = PL(val, 20);
                 int fl = PL(val, 24);
                 if (ow == container && (fl & Owned) != 0)
                 {
                     // (one more of its owner's references; more than can be told apart: no owner, as if let go)
-                    if ((fl & MultMask) == MultMask) { fl &= ~(Owned | MultMask); PS(val, 24, fl); if ((fl & Held) == 0) PS(val, 32, 0); }
+                    if ((fl & MultMask) == MultMask) { fl &= ~(Owned | MultMask); PS(val, 24, fl); if ((fl & Held) == 0) PS(val, 20, 0); }
                     else PS(val, 24, fl + MultOne);
                 }
                 else if (ow == 0) TakeOwnership(val, container);
                 // (the first other container that holds it is the one to own it next: a later one, a task's
                 // result, a temporary array, is as often gone by then)
-                else if (PL(val, 20) == 0) { ClearMark(val); PS(val, 20, container); }
+                else if (PLW(val) == 0) { ClearMark(val); PSW(val, container); }
             }
             UpdateHold(val);
             return val;
@@ -2544,8 +2787,8 @@ namespace Cs2Wasm.Runtime
                 int n = PL(old, 4) - 1;
                 PS(old, 4, n);
                 if (slot == 0 && PL(container, 28) > 0) PS(container, 28, PL(container, 28) - 1);
-                bool owned = PL(old, 32) == container && (PL(old, 24) & (Owned | MultMask)) == (Owned | MultOne);
-                bool ownerEdge = PL(old, 32) == container;
+                bool owned = PL(old, 20) == container && (PL(old, 24) & (Owned | MultMask)) == (Owned | MultOne);
+                bool ownerEdge = PL(old, 20) == container;
                 OwnerLetGo(old, container);
                 // (a container replaced by another in the same slot, a list's array by a larger one: what it owned is
                 // the new one's from here on)
@@ -2554,7 +2797,7 @@ namespace Cs2Wasm.Runtime
                 if (n == 0 && co == -2) ArenaDestroyFrom(old, 0);
                 else
                 {
-                    if (PL(old, 32) == 0) Adopt(old);
+                    if (PL(old, 20) == 0) Adopt(old);
                     UpdateHold(old);
                     // (left with what it owns alone, or under a top that a check failed for: the check at the drop)
                     s_watch = container;
@@ -2566,7 +2809,7 @@ namespace Cs2Wasm.Runtime
                     // through it at each move)
                     int back = t != 0 ? NoteOutside(old, container, -1) : 0;
                     bool died = back != 0 && Dropped(back);
-                    if (!died && back != old && (ownerEdge || (PL(old, MarkWord) & 1) == 0)) died = Dropped(old);
+                    if (!died && back != old && (ownerEdge || (PLM(old) & 1) == 0)) died = Dropped(old);
                     gone = died && s_watchHit != 0;
                     s_watch = 0;
                     if (!died && old != container) TryLeave(old);
@@ -2701,7 +2944,7 @@ namespace Cs2Wasm.Runtime
                 int cf = PL(child, 24);
                 if (s_visitMode == 13)
                 {
-                    if (PL(child, 32) == s_visitObj && (cf & (Owned | Dying)) == Owned) { PS(child, 24, cf | Dying); TrPush(child); }
+                    if (PL(child, 20) == s_visitObj && (cf & (Owned | Dying)) == Owned) { PS(child, 24, cf | Dying); TrPush(child); }
                     return;
                 }
                 if ((cf & Dying) == 0) return;
@@ -2732,14 +2975,14 @@ namespace Cs2Wasm.Runtime
                 // Handover: 6 what the old container's own items have above them, in all; 7 an item of the new
                 // container that the old one owns changes owner
                 int cf = PL(child, 24);
-                if (PL(child, 32) != s_handFrom || (cf & Owned) == 0) return;
+                if (PL(child, 20) != s_handFrom || (cf & Owned) == 0) return;
                 int uc = (int)((uint)cf >> UShift);
                 if (s_visitMode == 6) { s_handSum += uc; return; }
                 // (what it held of the old container, it holds of the new)
                 if ((cf & Held) != 0) { PS(s_handFrom, 4, PL(s_handFrom, 4) - 1); PS(obj, 4, PL(obj, 4) + 1); }
                 PS(child, 24, (cf & ~MultMask) | MultOne);
-                PS(child, 32, obj);
-                if (PL(child, 20) == obj) PS(child, 20, 0);
+                PS(child, 20, obj);
+                if (PLW(child) == obj) PSW(child, 0);
                 PS(obj, 24, PL(obj, 24) + uc * UOne);
                 PS(s_handFrom, 24, PL(s_handFrom, 24) - uc * UOne);
                 return;
@@ -2749,11 +2992,11 @@ namespace Cs2Wasm.Runtime
             if (s_visitMode == 5)
             {
                 // a counted reference of the member's own to a member on its chain: an up-reference from now on
-                if (bits != 1 || PL(child, 32) == obj || !OnChain(obj, child)) return;
+                if (bits != 1 || PL(child, 20) == obj || !OnChain(obj, child)) return;
                 if (PL(child, 4) + (-Mem.LoadI32(child) - 2) <= 1) return;
                 PS(child, 4, PL(child, 4) - 1);
                 SetSlotBits(obj, i, 2);
-                if (PL(child, 20) == obj) PS(child, 20, 0);
+                if (PLW(child) == obj) PSW(child, 0);
                 UpPath(obj, child, 1);
                 UpdateHold(child);
                 return;
@@ -2770,7 +3013,7 @@ namespace Cs2Wasm.Runtime
             PS(child, 4, left);
             OwnerLetGo(child, obj);
             if (left == 0 && Mem.LoadI32(child) == -2) { Kill(child); return; }
-            if (PL(child, 32) == 0) Adopt(child);
+            if (PL(child, 20) == 0) Adopt(child);
             UpdateHold(child);
         }
 
@@ -2809,7 +3052,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>The arena's record goes with its last member.</summary>
         static void ArenaEmpty(int ar)
         {
-            if (Mem.LoadI32(ar + 8) == 0 && Mem.LoadI32(ar) == 0 && (Mem.LoadI32(ar + 12) & ArenaBusy) == 0) Free(ar, ArenaRecord);
+            if (Mem.LoadI32(ar + 8) == 0 && Mem.LoadI32(ar) == 0 && (Mem.LoadI32(ar + 12) & ArenaBusy) == 0) { MemStatsRecord(-1); Free(ar, ArenaRecord); }
         }
 
         // While the finalizers of members that die together run, every reference to one of them is counted, from
@@ -2946,7 +3189,7 @@ namespace Cs2Wasm.Runtime
                 }
                 // (a whole arena whose member came back keeps its record, busy, for the words that name it; a part's
                 // record was dealt with when it was taken out)
-                if (link == 12 && !back) { RuntimeLock(); Free(ar, ArenaRecord); RuntimeUnlock(); }
+                if (link == 12 && !back) { RuntimeLock(); { MemStatsRecord(-1); Free(ar, ArenaRecord); } RuntimeUnlock(); }
             }
             t_defRunning = 0;
         }
@@ -2978,7 +3221,7 @@ namespace Cs2Wasm.Runtime
                 int fl = PL(m, 24);
                 if ((fl & Held) != 0)
                 {
-                    int w = PL(m, 32);
+                    int w = PL(m, 20);
                     PS(m, 24, fl & ~Held);
                     int n = PL(w, 4) - 1;
                     PS(w, 4, n);
@@ -3049,7 +3292,7 @@ namespace Cs2Wasm.Runtime
                     m = next;
                 } while (m != first);
             }
-            Free(ar, ArenaRecord);
+            { MemStatsRecord(-1); Free(ar, ArenaRecord); }
         }
 
         /// <summary>Array.Copy into an array whose elements can close a cycle: element by element, as stores.</summary>

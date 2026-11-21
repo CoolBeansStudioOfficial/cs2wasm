@@ -22,7 +22,7 @@ namespace Cs2Wasm.Runtime
         // Nothing of the program runs while a stripe is held: a destruction waits in the thread's lists, run when
         // its last stripe goes (AfterLocks), as with the runtime lock.
         // ------------------------------------------------------------------
-        const int Stripes = 256, StripeBytes = 64, LockWord = 40;
+        const int Stripes = 256, StripeBytes = 64, LockWord = 36;
         // (the table: made before the first thread starts, Threads.SpawnCore; until then one thread runs and no
         // stripe is taken, though the thread's count of what it holds is kept)
         static int s_stripes;
@@ -54,8 +54,9 @@ namespace Cs2Wasm.Runtime
         {
             if (Atomic.Load32(ref Mem.RefI32(x)) < -1)
             {
-                int r = Mem.LoadI32(x - 4);
-                if (r != 0) { int s = Mem.LoadI32(r) - 1; if (s >= 0) return s & (Stripes - 1); }
+                // (the lock word is in the member's block, before its header: 0 until it joins a group)
+                int s = Mem.LoadI32(x - LockWord) - 1;
+                if (s >= 0) return s & (Stripes - 1);
             }
             return HashStripe(x);
         }

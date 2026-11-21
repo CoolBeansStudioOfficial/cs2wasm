@@ -102,5 +102,7 @@ if (instance.exports.cs2wasm_rc_counts) { // (a module built with CS2WASM_COUNT_
 `);
   }
 }
+// (a module built with CS2WASM_MEMSTATS=1: where its heap's memory is, at its last growth and now)
+if (instance.exports.cs2wasm_memstats) { try { instance.exports.cs2wasm_memstats(); } finally { flush(); } }
 if (r !== undefined && process.env.CS2WASM_PRINT_RESULT) console.log(`=> ${r}`);
 if (process.env.CS2WASM_PRINT_MEMORY) console.error(`memory: ${memory.buffer.byteLength / 65536} pages`);

@@ -1455,6 +1455,7 @@ internal sealed partial class Driver
         // the stack has not that much left: Wasm/Frames.cs)
         StackTop = staticEnd + Options.StackSize;
         HeapBase = StackTop + 16;
+        if (_times) Console.Error.WriteLine($"  memory layout: data {DataBase}+{Data.Bytes.Count} bytes, statics {_staticSize} bytes, stack {Options.StackSize} bytes, heap from {HeapBase}");
         // The module says how much memory it needs to start at all: its data, statics and stack, and a first
         // megabyte of heap (a program with large resources needs more than the default; the host reads the number).
         long need = ((long)HeapBase + (1 << 20) + 65535) / 65536;

@@ -543,11 +543,32 @@ internal sealed partial class Driver
         else _frameEntries.TryAdd(name, entry);
     }
 
-    /// <summary>rt.frame_methods: [count, (frame name, entry)...] (Meta.FrameMethod).</summary>
+    /// <summary>rt.frame_methods: [count, names, (name offset, entry)...] (Meta.FrameMethod).</summary>
     void EmitFrameMethods()
     {
+        // [count, the names, (a name's offset in them, entry)...]; the names in UTF-8, each [its UTF-16 length, its
+        // bytes' length, the bytes] at a multiple of 4 (they were string literals: the self-hosted compiler's 57,000
+        // frame names were 12.5 MB of its memory, as objects of UTF-16 with a header each)
         if (_frameMethods != null)
-            new Emitter(_frameMethods).I32Addr(Ints([_frameEntries.Count, .. _frameEntries.SelectMany(x => new[] { Str(x.Key), x.Value })]));
+        {
+            var names = new List<byte>();
+            var words = new byte[8 + 8 * _frameEntries.Count];
+            BitConverter.GetBytes(_frameEntries.Count).CopyTo(words, 0);
+            int i = 0;
+            foreach (var (name, entry) in _frameEntries)
+            {
+                while (names.Count % 4 != 0) names.Add(0);
+                BitConverter.GetBytes(names.Count).CopyTo(words, 8 + 8 * i);
+                BitConverter.GetBytes(entry).CopyTo(words, 12 + 8 * i);
+                var utf8 = System.Text.Encoding.UTF8.GetBytes(name);
+                names.AddRange(BitConverter.GetBytes(name.Length));
+                names.AddRange(BitConverter.GetBytes(utf8.Length));
+                names.AddRange(utf8);
+                i++;
+            }
+            var blob = DataBlob(names.Count == 0 ? new byte[4] : names.ToArray(), 4);
+            new Emitter(_frameMethods).I32Addr(DataBlob(words, 4, [(4, blob)]));
+        }
         // [count, entry of each hidden thrower by its note - 1]
         if (_throwSites != null)
             new Emitter(_throwSites).I32Addr(Ints([HiddenThrowers.Count, .. HiddenThrowers.Select(h => _frameEntries.GetValueOrDefault(FrameName(h)))]));
