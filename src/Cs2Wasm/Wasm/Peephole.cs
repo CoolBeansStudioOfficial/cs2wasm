@@ -133,6 +133,67 @@ static class Peephole
         f.Body = outList;
     }
 
+    /// <summary>The last tidying, on the final bodies (WasmModule, before frames are taken): `i32.const 0 ; i32.ne`
+    /// before an `if` or a `br_if`, which test for non-zero themselves; `local.set x ; local.get x` that the passes
+    /// after Run left; `i32.const k ; i32.add` before a load (its offset); a `return` that is the body's last instruction, where the function's end returns the same
+    /// values. Each is fewer bytes and the same meaning.</summary>
+    static readonly bool s_tidyOffsets = Environment.GetEnvironmentVariable("CS2WASM_TIDY_OFFSETS") != "0";
+
+    public static void FinalTidy(WasmFunction f)
+    {
+        var b = f.Body;
+        var o = new List<Instr>(b.Count);
+        foreach (var ins in b)
+        {
+            if (ins.Op is Op.If or Op.BrIf && o.Count >= 2 && o[^1].Op == Op.I32Ne && o[^2].Op == Op.I32Const && o[^2].Imm == 0 && o[^2].Ref == null)
+            {
+                o.RemoveRange(o.Count - 2, 2);
+                o.Add(ins);
+                continue;
+            }
+            // (`i32.eqz; i32.eqz` before a branch on it: the value's own truth)
+            if (ins.Op is Op.If or Op.BrIf && o.Count >= 2 && o[^1].Op == Op.I32Eqz && o[^2].Op == Op.I32Eqz)
+            {
+                o.RemoveRange(o.Count - 2, 2);
+                o.Add(ins);
+                continue;
+            }
+            // (a pure push dropped at once)
+            if (ins.Op == Op.Drop && o.Count > 0 && o[^1].Op is Op.LocalGet or Op.GlobalGet or Op.I32Const or Op.I64Const or Op.F32Const or Op.F64Const)
+            {
+                o.RemoveAt(o.Count - 1);
+                continue;
+            }
+            if (ins.Op == Op.LocalGet && o.Count > 0 && o[^1].Op == Op.LocalSet && o[^1].Imm == ins.Imm) { o[^1] = o[^1] with { Op = Op.LocalTee }; continue; }
+            // an address plus a constant, loaded from: the constant is the load's offset (a field of an object; an
+            // address that wrapped round the 4 GiB end would be no object's)
+            if (s_tidyOffsets && ins.Op is >= Op.I32Load and <= Op.I64Load32U && o.Count >= 2 && o[^1].Op == Op.I32Add && o[^2].Op == Op.I32Const && o[^2].Ref == null
+                && o[^2].Imm >= 0 && o[^2].Imm + ins.Imm < int.MaxValue)
+            {
+                long k = o[^2].Imm;
+                o.RemoveRange(o.Count - 2, 2);
+                o.Add(ins with { Imm = ins.Imm + k });
+                continue;
+            }
+            // the same for a store whose value is one push (a local, a constant, a global)
+            if (s_tidyOffsets && ins.Op is >= Op.I32Store and <= Op.I64Store32 && o.Count >= 3 && o[^1].Op is Op.LocalGet or Op.GlobalGet or Op.I32Const or Op.I64Const or Op.F32Const or Op.F64Const
+                && o[^2].Op == Op.I32Add && o[^3].Op == Op.I32Const && o[^3].Ref == null && o[^3].Imm >= 0 && o[^3].Imm + ins.Imm < int.MaxValue)
+            {
+                long k = o[^3].Imm;
+                var v = o[^1];
+                o.RemoveRange(o.Count - 3, 3);
+                o.Add(v);
+                o.Add(ins with { Imm = ins.Imm + k });
+                continue;
+            }
+            o.Add(ins);
+        }
+        if (o.Count > 0 && o[^1].Op == Op.Return) o.RemoveAt(o.Count - 1);
+        // (not `call thrower; unreachable` at a block's end without its unreachable: fewer bytes, but in the engine's
+        // baseline tier the code after the block then merges with the throwing arm's state: micro 6% slower)
+        f.Body = o;
+    }
+
     /// <summary>`br 0` as the last instruction of a block or an if (an inlined body's return): the branch goes to where
     /// the code falls through anyway. (Not a loop's: there `br 0` goes back to its start.)</summary>
     static void BranchesToOwnEnd(List<Instr> b)

@@ -14,8 +14,8 @@ internal static class Frames
     public static void Run(WasmModule m, WasmGlobal sp, WasmGlobal lo)
     {
         WasmFunction? frame = null;
-        // (in code that runs often, a small frame is taken where it is: RcFastPaths' reasoning, the call costs more than
-        // the check, the move and a few stores)
+        // (CS2WASM_FRAME_INLINE=n: in code that runs often, a frame of up to n bytes taken where it is. Off by default:
+        // 2.8% on the parser bench, the self-hosted compiler unchanged within the noise, its module 0.8 MB larger)
         var hot = s_inlineMax > 0 ? NullChecks.CalledFromLoops(m.Functions.Where(f => !f.IsImport), 3) : [];
         foreach (var f in m.Functions.ToList())
         {
@@ -84,7 +84,7 @@ internal static class Frames
         }
     }
 
-    static readonly int s_inlineMax = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_FRAME_INLINE"), out var fi) ? fi : 64;
+    static readonly int s_inlineMax = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_FRAME_INLINE"), out var fi) ? fi : 0;
 
     static bool Reads(List<Instr> b, int from, int local)
     {
