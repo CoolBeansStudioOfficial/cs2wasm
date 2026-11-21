@@ -15,7 +15,10 @@ static class RcFastPaths
 {
     static readonly bool s_debug = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_DEBUG") == "1";
     static readonly bool s_destroys = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_DESTROY") == "1";
-    static readonly string? s_mode = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST");
+    // (default "loops": the counts inside loops, of every function, with a release of the last reference written out as
+    // rt.release does it; the optimizing tier's bench needs that much in loops that free, the self-hosted compiler no
+    // more. "1": also every count of the hot functions; "0": none)
+    static readonly string s_mode = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST") is { Length: > 0 } rm ? rm : "loops";
     // ("1": the hot functions' every count; "loops": only the counts inside loops, where the Inliner otherwise puts the
     // whole function, CS2WASM_RC_IN_LOOPS=0)
     static readonly bool s_off = s_mode is not ("1" or "loops");
@@ -24,18 +27,33 @@ static class RcFastPaths
     static readonly int s_depth = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_DEPTH"), out var d) ? d : 3;
     static readonly int s_maxBody = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_MAXBODY"), out var mb) ? mb : int.MaxValue;
 
+    /// <summary>The function rt.release calls when the count is 1, after storing 0 into it: found in its body as
+    /// `local.get 0; i32.const 0; i32.store; local.get 0; call d`, else null (then the call stays for that case).</summary>
+    static WasmFunction? DestroyOf(WasmFunction release)
+    {
+        var b = release.Body;
+        for (int i = 0; i + 4 < b.Count; i++)
+            if (b[i].Op == Op.LocalGet && b[i].Imm == 0 && b[i + 1].Op == Op.I32Const && b[i + 1].Imm == 0 && b[i + 2].Op == Op.I32Store && b[i + 2].Imm == 0
+                && b[i + 3].Op == Op.LocalGet && b[i + 3].Imm == 0 && b[i + 4].Op == Op.Call && b[i + 4].Ref is WasmFunction d && d.Name == "rt.destroy")
+                return d;
+        return null;
+    }
+
     public static void Run(WasmModule m, bool threads)
     {
         if (s_off || threads) return;
         var retain = m.Functions.FirstOrDefault(f => f.Name == "rt.retain" && !f.IsImport);
         var release = m.Functions.FirstOrDefault(f => f.Name == "rt.release" && !f.IsImport);
         if (retain == null || release == null) return;
+        // (what rt.release calls for the last reference, when it is that shape: its count word set to 0, then this)
+        WasmFunction? destroy = s_loopsOnly ? DestroyOf(release) : null;
         var fns = m.Functions.Where(f => !f.IsImport).ToList();
         var hot = s_everywhere || s_loopsOnly ? fns.ToHashSet() : NullChecks.CalledFromLoops(fns, s_depth);
         foreach (var f in fns)
         {
-            if (!hot.Contains(f) || f.Body.Count > s_maxBody || f == retain || f == release || f.Name.StartsWith("rt.", StringComparison.Ordinal) || f.Name.StartsWith("Cs2Wasm.Runtime.", StringComparison.Ordinal)
-                || !s_destroys && f.Name.StartsWith("destroy ", StringComparison.Ordinal)) continue;
+            if (f == retain || f == release) continue;
+            if (!s_loopsOnly && (!hot.Contains(f) || f.Body.Count > s_maxBody || f.Name.StartsWith("rt.", StringComparison.Ordinal) || f.Name.StartsWith("Cs2Wasm.Runtime.", StringComparison.Ordinal)
+                || !s_destroys && f.Name.StartsWith("destroy ", StringComparison.Ordinal))) continue;
             bool any = false;
             foreach (var ins in f.Body) if (ins.Op == Op.Call && (ReferenceEquals(ins.Ref, retain) || ReferenceEquals(ins.Ref, release))) { any = true; break; }
             if (!any) continue;
@@ -61,7 +79,18 @@ static class RcFastPaths
                 A(Op.If);
                 A(Op.LocalGet, p); A(Op.LocalGet, c); A(Op.I32Const, 1); A(isRetain ? Op.I32Add : Op.I32Sub); A(Op.I32Store, 0, 2);
                 A(Op.Else);
-                A(Op.LocalGet, p); o.Add(ins); if (isRetain) A(Op.Drop);
+                // (a release of the last reference, as rt.release does it: the count cleared, the object destroyed)
+                if (isRelease && destroy != null)
+                {
+                    A(Op.LocalGet, c); A(Op.I32Const, 1); A(Op.I32Eq);
+                    A(Op.If);
+                    A(Op.LocalGet, p); A(Op.I32Const, 0); A(Op.I32Store, 0, 2);
+                    A(Op.LocalGet, p); o.Add(new Instr { Op = Op.Call, Ref = destroy, Pos = ins.Pos, Inl = ins.Inl });
+                    A(Op.Else);
+                    A(Op.LocalGet, p); o.Add(ins);
+                    A(Op.End);
+                }
+                else { A(Op.LocalGet, p); o.Add(ins); if (isRetain) A(Op.Drop); }
                 A(Op.End);
                 A(Op.End);
                 if (isRetain) A(Op.LocalGet, p);
