@@ -2390,6 +2390,12 @@ internal sealed partial class Driver
         Mark("emit start");
         ApplySuppression();
         Module.ValidateAlways = Options.Checked;
+        {
+            // (a trace shows lines in the program's own files only: below, cs2wasm.lines)
+            var shownFiles = Inputs.SelectMany(c => c.SyntaxTrees).Select(t => t.FilePath).ToHashSet();
+            var shown = new Dictionary<int, bool>();
+            Module.PosShown = p => { if (!shown.TryGetValue(PositionAt(p).File, out bool s)) shown[PositionAt(p).File] = s = shownFiles.Contains(Files[PositionAt(p).File]); return s; };
+        }
         var enc = Module.Encode(Options.Optimize);
         foreach (var problem in Module.ValidationProblems) Report(Diags.Unsupported, null, "internal error: " + problem);
         Mark("encode (final pass)");
@@ -2427,6 +2433,9 @@ internal sealed partial class Driver
         }
         fr.U32(strings.Count); foreach (var s in strings) fr.Name(s);
         fr.Bytes(framesW.ToArray());
+        // (then the bodies that lend their place to the frame that calls them, by index, as deltas: ShareConstants.cs)
+        var lenders = enc.FunctionOrder.Where(f => f.LendsLines && onStack.Contains(f)).Select(f => f.Index).Order().ToList();
+        if (lenders.Count > 0) { fr.U32(lenders.Count); int last = 0; foreach (var i in lenders) { fr.U32(i - last); last = i; } }
         // lines: code offset -> file and line, for the program's own files (.NET shows no file and line for the
         // library's frames). Files first, then entries in offset order: offset delta, (line delta << 1 | file
         // changes), and the new file's index when it changes.

@@ -1200,6 +1200,28 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     whole-struct copies, which note no field key), borrowed returns through user-defined conversions
     (`return _lexedTokens[i];` through `ArrayElement<T>`'s implicit operator: FetchCurrentToken, PeekToken), and
     virtual methods whose every override returns a field (GreenNode.GetSlot).
+- **Stream K, round 5 (2026-11-21), on main 1191d18: shared bodies, and what TurboFan refuses to inline.**
+  Round 4 left the rest of the 1.8x code as generic instantiations over reference types, each a body of its own.
+  - Shared bodies (`Wasm/ShareConstants.cs`, on by default; `CS2WASM_SHARE=0` off, `CS2WASM_SHARE_LEND=0` without the
+    second pass, `CS2WASM_SHARE_STATS=1` prints the groups). The groups come by partition refinement: a function's key
+    masks its i32 constants and names each call by the callee's group, until the groups stop splitting; so functions
+    identical except for i32 constants and for which member of such a group they call share one body. The constants
+    that differ become the shared body's trailing parameters; each member becomes a stub passing its own.
+  - Traces stay exact. Pass 1 takes only groups whose members have one frame name: the shared body keeps that name,
+    the stubs are hidden and direct calls go straight to the shared body. Pass 2, over what pass 1 left, takes groups
+    whose names differ: each member stays a frame, a stub every call goes through, and the shared body lends its
+    place (lines and inlined calls) to the frame of the stub that called it, through a new trailing list in the
+    cs2wasm.frames section that host/engine.mjs and host/web read. Positions in the library's files are not compared
+    (a trace shows no lines there). Pass 1 runs first because lending groups had kept one-name groups from their
+    shared body (the self-hosted compiler lost 4.5 MB to that). `tools/k5/lend.cs` throws through 35 library paths
+    that call back into user code; its output is the same with sharing on and off.
+  - Result: the self-hosted compiler's module 70.2 to 56.8 MB, wall time 1.0% less than the same compiler with
+    sharing off (12 interleaved rounds); hello world 27,297 to 27,067 bytes; bench.mjs 0.94x NativeAOT unchanged.
+    Suite 198/198 checked and as shipped (rebased on 23d5188).
+  - TurboFan inlining diagnosed (`tools/k5/tinl.mjs` over `--trace-wasm-inlining`, both compilers): with the inlining
+    budgets x4 ours runs 5.6% faster, NativeAOT-LLVM's 3%. Most inlines refused for budget are calls of rt.release
+    (6,768) and rt.retain (2,160). Conclusion: the budget is spent on counts; the lever is fewer count calls (borrows,
+    counts elided at compile time), not larger budgets or inlining by hand.
 
 - **Self-hosted compiler's memory (stream L of docs/FINISH.md, 2026-11-20): 568.9 MB to 482.9 MB.**
   - The report: `CS2WASM_MEMSTATS=1` at compile time. The runtime goes through the heap at every growth of the memory

@@ -43,11 +43,11 @@ export function webImports(module, getMemory, out, options = {}) {
     Error.stackTraceLimit = Infinity;
     const stack = new Error().stack ?? '';
     Error.stackTraceLimit = saved;
-    const result = [];
+    const result = [], walk = {};
     for (const line of stack.split('\n')) {
       const m = /wasm-function\[(\d+)\]:0x([0-9a-f]+)/.exec(line);
       if (!m) continue;
-      result.push(...info().framesAt(+m[1], parseInt(m[2], 16)));
+      result.push(...info().framesAt(+m[1], parseInt(m[2], 16), walk));
     }
     return result;
   };
