@@ -32,9 +32,9 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Hello world size (test 145) | 27,868 B (main 26150c1 with K round 2 and L round 3; 28,287 with L round 2, 27,869 before it) | < 28,383 B |
-| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 10.96 s vs 5.44 s, 2.0x (main 480a101 with N and K round 3; interleaved, 3 rounds; 2.7x on 2026-11-20 morning) | < NativeAOT-LLVM |
-| 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main 480a101, same run). Met, thinly: the heap top is 1 MiB under the next growth step | < NativeAOT-LLVM's, same measure |
-| 4 | Same: module size | 44.0 MB vs 129 MB (main 480a101, shipped; K round 3 took back round 2's inlining) | met; next waste: code (36.2 MB) |
+| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 10.24 s vs 5.18 s, 1.98x (main 1191d18 with K round 4, N round 2, D's fixes; interleaved, 3 rounds; 2.7x on 2026-11-20 morning) | < NativeAOT-LLVM |
+| 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main 1191d18, same run). Met, thinly: the heap top is 1 MiB under the next growth step | < NativeAOT-LLVM's, same measure |
+| 4 | Same: module size | 41.8 MB vs 129 MB (main 1191d18, shipped) | met; next waste: code (36.2 MB) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | met 2026-11-21: `node tools/proof5.mjs toolchain`, `web`, `check`: built in headless Chrome in 220.9 s, its 1,667 log lines (1,669 with `--panic`) equal stock Godot .NET's | plays, log equals the oracle's |
 | 5 | Self-hosted output equals the .NET-hosted compiler's, on 1 and 4 cores (`node tools/selfdet.mjs [--self t.wasm] [--cores 1,4] <program.cs> [-r x.dll]`) | met 2026-11-21: 021_threads and the GodotSharp Hello (4,060,330 B) byte-identical, no-threads toolchain and threaded on 1 and 4 cores | byte-identical |
@@ -371,3 +371,6 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   of the parser bench 23.8 to 12.4; the compiler 1.5-2.3% faster); counts in loops by their fast path instead of the
   whole functions (the bench's 0.94x kept, the compiler 72.3 to 70.1 MB). Hello world 27,194 to 27,297 bytes. Suite
   198 passed checked and as shipped (rebased on 05e8cd0). docs/AUDIT.md, stream K round 4.
+- 2026-11-21, main 1191d18 (K round 4, N round 2, D's KnownNull fix; self-hosted output now equals the .NET-hosted
+  compiler's), 3 interleaved rounds: self-hosted compiler 10.2-10.3 s / 306.0 MB / 41.8 MB against 5.1-5.3 s / 322.2 MB /
+  129 MB: time 1.98x, memory 0.95x, size 0.32x.
