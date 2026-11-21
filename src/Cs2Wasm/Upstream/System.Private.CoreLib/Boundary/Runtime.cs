@@ -3672,7 +3672,7 @@ namespace Cs2Wasm.Runtime
             // refers to it, so no element closes a cycle, and each is a plain counted store, as ArenaLinkOwned's. The
             // array's elements are linked when it is stored where a cycle can close: ArenaJoin links what a joining
             // object holds)
-            if (src != dst && Mem.LoadI32(dst) == 1)
+            if (src != dst && !ThreadMode() && Mem.LoadI32(dst) == 1)
             {
                 for (int k = 0; k < length; k++)
                 {
