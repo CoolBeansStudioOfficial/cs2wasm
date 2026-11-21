@@ -821,6 +821,13 @@ internal sealed partial class Arenas
         // (a store by address whose container is known: also that the container can be a group's member)
         bool AtCyclic(WasmFunction ph, ITypeSymbol slotType) =>
             HoldsCyclic(slotType) && (!_atContainer.TryGetValue(ph, out var c) || HoldsCyclic(c));
+        // (a pin's answer per placeholder, once: it was asked again at every call, of every cycle-capable type)
+        var pinsCyclic = new Dictionary<WasmFunction, bool>();
+        bool PinsCyclic(WasmFunction ph, ITypeSymbol pinType)
+        {
+            if (!pinsCyclic.TryGetValue(ph, out var r)) pinsCyclic[ph] = r = CycleTypes.Any(id => IdIs(id, pinType));
+            return r;
+        }
         foreach (var f in D.Module.Functions)
         {
             if (f.IsImport || f == linkAt || f == unlinkAt || !f.Body.Any(x => x.Op == Op.Call && x.Ref is WasmFunction w && _placeholders.ContainsKey(w))) continue;
@@ -903,7 +910,7 @@ internal sealed partial class Arenas
                         }
                         break;
                     case Kind.Pin:
-                        if (Enabled && CycleTypes.Any(id => IdIs(id, ph.pinType!))) { x.Ref = pin; body.Add(x); }
+                        if (Enabled && PinsCyclic(w, ph.pinType!)) { x.Ref = pin; body.Add(x); }
                         break;
                     case Kind.StoreLock or Kind.StoreUnlock:
                         // (only while the container is a group's member: the race is over its slots' bits, which a

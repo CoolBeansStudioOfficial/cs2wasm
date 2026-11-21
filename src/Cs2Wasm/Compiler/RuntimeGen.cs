@@ -1426,6 +1426,7 @@ sealed partial class RuntimeGen
         D.Mark("  finish: sharing");
         // (every function exists: what each can store is known)
         D.ResolveFieldBorrows();
+        D.Mark("  finish: field borrows (then init stores)");
         D.ResolveInitStores();
         D.Mark("  finish: D.ResolveFieldBorrows");
         // (the floats stored to memory get the NaN of .NET on the final bodies: FloatStores.cs)
@@ -1808,9 +1809,10 @@ sealed partial class RuntimeGen
             if (Types.IsObject(target)) { e.Get(0); e.I32(0); e.Op(Op.I32Ne); continue; }
             var cl = index.Candidates(target);
             IEnumerable<int> candidates = cl == index.All ? cl : cl.Concat(index.Special);
+            var targetKey = Types.Key(target);
             var ids = candidates.Where(id => D.SyntheticById.TryGetValue(id, out var syn)
-                    ? syn.Interfaces.Any(i => Types.Key(i) == Types.Key(target)) || Types.IsObject(target)
-                      || id < D.TypeById.Count && D.TypeById[id] is { } st && Types.Key(st) == Types.Key(target)
+                    ? syn.Interfaces.Any(i => Types.Key(i) == targetKey) || Types.IsObject(target)
+                      || id < D.TypeById.Count && D.TypeById[id] is { } st && Types.Key(st) == targetKey
                     : !D.DisplayById.ContainsKey(id) && D.Types.IsSubtype(D.TypeById[id], target)).ToList();
             e.Get(0); e.Op(Op.I32Eqz); e.If(); e.I32(0); e.Op(Op.Return); e.End();
             if (ids.Count == 0) { e.I32(0); continue; }

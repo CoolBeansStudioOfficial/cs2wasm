@@ -288,7 +288,11 @@ internal sealed class Types
         return result;
     }
 
-    public static string FullName(ITypeSymbol t) => t is INamedTypeSymbol n && n.ContainingType == null ? Ns(n.ContainingNamespace) + n.MetadataName : Key(t.OriginalDefinition);
+    // (remembered per symbol, as Key is: asked on every subtype test, and each answer was a new string built from the
+    // namespaces up)
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ITypeSymbol, string> s_fullNames = new();
+    public static string FullName(ITypeSymbol t) => s_fullNames.TryGetValue(t, out var s) ? s : s_fullNames.GetValue(t, FullNameOf);
+    static string FullNameOf(ITypeSymbol t) => t is INamedTypeSymbol n && n.ContainingType == null ? Ns(n.ContainingNamespace) + n.MetadataName : Key(t.OriginalDefinition);
 
     // ---------------- classification ----------------
     public static Prim PrimOf(ITypeSymbol t)

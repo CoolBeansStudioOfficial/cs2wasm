@@ -168,8 +168,14 @@ internal sealed class WasmModule
     static readonly bool s_noConstLocals = Environment.GetEnvironmentVariable("CS2WASM_NO_CONST_LOCALS") == "1";
     static readonly bool s_noInitChecks = Environment.GetEnvironmentVariable("CS2WASM_NO_INIT_CHECKS") == "1";
 
+    static readonly bool s_times = Environment.GetEnvironmentVariable("CS2WASM_TIMES") == "1";
+    readonly System.Diagnostics.Stopwatch _encClock = new();
+    /// <summary>CS2WASM_TIMES=1: the encoder's own steps, milliseconds since the last.</summary>
+    void Step(string what) { if (!s_times) return; Console.Error.WriteLine($"      {_encClock.ElapsedMilliseconds,6} ms  encode: {what}"); _encClock.Restart(); }
+
     public Encoded Encode(bool optimize)
     {
+        _encClock.Restart();
         foreach (var f in Functions) ResolveForwards(f);
         bool validate = ValidateAlways || Environment.GetEnvironmentVariable("CS2WASM_VALIDATE") == "1";
         if (validate) Validate("before optimization");
@@ -178,13 +184,17 @@ internal sealed class WasmModule
             ForwardPureForwarders();
             // (identical bodies first: a merged function's call sites count as its callers)
             if (!s_noMerge) MergeIdenticalBodies();
+            Step("forwarders, merge");
             foreach (var f in Functions) ResolveForwards(f);
             Inliner.Module = this;
             Inliner.Run(Functions, ComputeMayThrow());
+            Step("inline");
             foreach (var f in Functions) if (!f.IsImport) { ConstBranches.Run(f); Peephole.Run(f); }
+            Step("const branches, peephole");
             if (!s_noInitChecks) foreach (var f in Functions) if (!f.IsImport) InitChecks.Run(f);
             if (Functions.FirstOrDefault(f => f.Name == "rt.nonnull") is { } nonNull && Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_CHECKS") != "1")
                 foreach (var f in Functions) if (!f.IsImport) NullChecks.Run(f, nonNull);
+            Step("init checks, null checks");
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_LOCALS") != "1")
             {
                 Locals.MayThrow = ComputeMayThrow();
@@ -206,8 +216,10 @@ internal sealed class WasmModule
                     }
                 }
                 finally { Locals.MayThrow = null; }
+                Step("locals, frames, const locals, loops");
                 if (Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH") != "1")
                     Fresh.Run(Functions, Functions.FirstOrDefault(f => f.Name.StartsWith("Cs2Wasm.Runtime.Rt.AllocObject(")));
+                Step("fresh");
                 // Once more: a getter is a load and a return only after the passes above took its local traffic out, and
                 // small enough to inline only then. The functions it went into are cleaned again.
                 var mayThrow = ComputeMayThrow();
@@ -230,6 +242,7 @@ internal sealed class WasmModule
                     again.UnionWith(more);
                 }
                 again.UnionWith(leafExpanded);
+                Step("leaf releases, inline again");
                 {
                     var nn = Functions.FirstOrDefault(f => f.Name == "rt.nonnull");
                     Locals.MayThrow = mayThrow;
@@ -249,8 +262,10 @@ internal sealed class WasmModule
                     }
                     finally { Locals.MayThrow = null; }
                 }
+                Step("frames, locals again");
                 // (the checks of a type's initialization that the inlined bodies brought next to the caller's own)
                 if (!s_noInitChecks) foreach (var f in Functions) if (!f.IsImport) { if (again.Contains(f)) ConstBranches.Run(f); if (InitChecks.Run(f)) Peephole.Run(f); }
+                Step("init checks again");
                 // the copies and fills of constant size that are left become loads and stores
                 if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
                 {
@@ -258,6 +273,7 @@ internal sealed class WasmModule
                     try { foreach (var f in Functions) if (!f.IsImport && SmallBlocks.Run(f)) { Peephole.Run(f); Locals.Run(f); } }
                     finally { Locals.MayThrow = null; }
                 }
+                Step("small blocks");
                 // the loads a loop repeats (on the final bodies: the structs are in locals, the small helpers inlined)
                 if (Environment.GetEnvironmentVariable("CS2WASM_NO_LOOP_LOADS") != "1")
                 {
@@ -265,6 +281,7 @@ internal sealed class WasmModule
                     try { foreach (var f in Functions) if (!f.IsImport && LoopLoads.Run(f)) { Peephole.Run(f); Locals.Run(f); } }
                     finally { Locals.MayThrow = null; }
                 }
+                Step("loop loads");
                 // (and the null checks once more, on the final bodies: the passes since the first round made the shapes it
                 // knows of checks it did not see then, a loop's second and third check of a local that does not change)
                 if (Functions.FirstOrDefault(f => f.Name == "rt.nonnull") is { } nn2 && Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_CHECKS") != "1")
@@ -281,24 +298,33 @@ internal sealed class WasmModule
             }
             else if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
                 foreach (var f in Functions) if (!f.IsImport && SmallBlocks.Run(f)) Peephole.Run(f);
+            Step("null checks again");
             // (the counts' common case written out in code that runs often: RcFastPaths.cs)
             RcFastPaths.Run(this, UsesThreads);
+            Step("count fast paths");
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_IF_CONVERT") != "1") foreach (var f in Functions) if (!f.IsImport) IfConvert.Run(f);
+            Step("if convert");
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_COPIES") != "1") SmallBlocks.Variable(this);
+            Step("small copies");
             if (Canon != null) FloatStores.Run(Functions, Canon);
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_NORETURN") != "1") NoReturn.Run(Functions);
+            Step("float stores, no return");
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
             AfterOptimize?.Invoke(Functions.Where(f => !f.IsImport));
+            Step("merge, forwards");
             if (validate) Validate("after optimization");
         }
         else if (Canon != null) FloatStores.Run(Functions, Canon);
 
         if (optimize && Environment.GetEnvironmentVariable("CS2WASM_NO_FINAL_TIDY") != "1") foreach (var f in Functions) if (!f.IsImport && f.ForwardTo == null) Peephole.FinalTidy(f);
+        Step("final tidy");
         // (locals that are never live at once share one: Locals.Coalesce)
         if (optimize) foreach (var f in Functions) if (!f.IsImport && f.ForwardTo == null) Locals.Final(f);
+        Step("locals final");
         // (a frame is taken, checked against the stack's end and cleared by one function: Frames.cs)
         if (StackPointer != null && StackLo != null) Frames.Run(this, StackPointer, StackLo);
+        Step("frames");
         // Which functions are live: exported, in the table, or called from a live function.
         var live = new HashSet<WasmFunction>();
         var work = new Stack<WasmFunction>();
@@ -418,6 +444,7 @@ internal sealed class WasmModule
             });
         if (Data.Count > 0) Section(w, 12, s => s.U32(Data.Count));
 
+        Step("live, indices, sections");
         // Code section: encode bodies, remembering source positions.
         var result = new Encoded { FunctionOrder = imports.Concat(defined).ToList() };
         if (Environment.GetEnvironmentVariable("CS2WASM_INDEX") is { Length: > 0 } wantIdx) foreach (var x in wantIdx.Split(",")) if (int.TryParse(x, out int ix) && ix < result.FunctionOrder.Count) Console.Error.WriteLine($"function {ix}: {result.FunctionOrder.First(f => f.Index == ix || result.FunctionOrder.IndexOf(f) == ix).Name}");
@@ -458,6 +485,7 @@ internal sealed class WasmModule
         w.Byte(10); w.U32(code.Length);
         int codeStart = w.Length;
         w.Bytes(code.ToArray());
+        Step("code");
         foreach (var l in relLines) result.Lines.Add(new LineEntry(codeStart + l.Offset, l.Pos));
         foreach (var (off, scope) in relInlines) result.Inlines.Add((codeStart + off, scope));
 
