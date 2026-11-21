@@ -165,6 +165,7 @@ internal sealed class WasmModule
         return _inlineScopeIds[(parent, fn, pos)] = InlineScopes.Count - 1;
     }
 
+    static readonly bool s_noConstLocals = Environment.GetEnvironmentVariable("CS2WASM_NO_CONST_LOCALS") == "1";
     static readonly bool s_noInitChecks = Environment.GetEnvironmentVariable("CS2WASM_NO_INIT_CHECKS") == "1";
 
     public Encoded Encode(bool optimize)
@@ -197,6 +198,9 @@ internal sealed class WasmModule
                         if (f.IsImport) continue;
                         if (Locals.PromoteFrame(f)) Peephole.Run(f);
                         Locals.Run(f);
+                        // (the constants a generic method's locals hold once its type arguments are known and
+                        // Unsafe.SizeOf<T> went in: the compares on them fold, and the second round can inline what is left)
+                        if (!s_noConstLocals && ConstBranches.ConstLocals(f)) { Peephole.Run(f); ConstBranches.Run(f); Peephole.Run(f); Locals.Run(f); }
                         // (the index checks a loop's own condition has made: on the tidied body, where they are told)
                         if (!s_noLoops && Loops.Run(f, loopNonNull)) { Peephole.Run(f); Locals.Run(f); }
                     }
@@ -208,7 +212,23 @@ internal sealed class WasmModule
                 // small enough to inline only then. The functions it went into are cleaned again.
                 var mayThrow = ComputeMayThrow();
                 var leafExpanded = ExpandLeafReleases();
-                var again = Inliner.Run(Functions, mayThrow, tiny: true);
+                var again = Inliner.Run(Functions, mayThrow, tiny: true, fastPaths: true);
+                // (twice: what went into a function the first time may itself call one small enough now, a getter that
+                // forwards to a helper whose body folded to a constant once what it called went in: Unsafe.SizeOf<T>,
+                // merged with another function that returns the same constant, is inlined only in this round, and
+                // a switch on it then folds, ConstLocals; the helper may throw no more)
+                for (int round = 0, n = again.Count; round < 2 && n > 0; round++)
+                {
+                    if (!s_noConstLocals)
+                    {
+                        bool folded = false;
+                        foreach (var f in again) if (ConstBranches.ConstLocals(f)) { Peephole.Run(f); ConstBranches.Run(f); Peephole.Run(f); folded = true; }
+                        if (folded) mayThrow = ComputeMayThrow();
+                    }
+                    var more = Inliner.Run(Functions, mayThrow, tiny: true);
+                    n = more.Count;
+                    again.UnionWith(more);
+                }
                 again.UnionWith(leafExpanded);
                 {
                     var nn = Functions.FirstOrDefault(f => f.Name == "rt.nonnull");

@@ -1091,7 +1091,14 @@ sealed partial class FunctionCompiler
             {
                 var rt = T.Resolve(M.ReturnType, Map);
                 if (_closure?.ReturnType is { } crt) rt = crt;
-                if (Types.IsStruct(rt))
+                if (Types.IsStruct(rt) && DirectStructReturn(value, rt))
+                {
+                    // `return new S(..)`, `return F(..)`: made in the caller's destination (as a declaration's value is
+                    // made in its local), with no temporary of this function's own to hold it and release on the way out
+                    EmitStructInto(value, () => E.Get(_structRetLocal));
+                    hasValue = false;
+                }
+                else if (Types.IsStruct(rt))
                 {
                     // init-copy into the caller's destination
                     EmitValueAs(value, rt);
@@ -1119,6 +1126,19 @@ sealed partial class FunctionCompiler
             if (_ctl[i].Kind == CtlKind.TryFinally) EmitFinallyInline(i);
         EmitReturnSequence(hasValue);
     }
+
+    /// <summary>Whether a returned struct can be made straight in the caller's destination: a constructor's or a call's
+    /// value of the return type itself, outside every `try` (a handler of this function's runs while the value is
+    /// half made, or a `catch` returns another value into the same place: the temporary keeps those apart).</summary>
+    bool DirectStructReturn(IOperation value, ITypeSymbol rt)
+    {
+        if (s_noDirectReturn || _closure != null || _machine != null || _structRetLocal < 0 || !IsDirectStructProducer(value)) return false;
+        foreach (var c in _ctl) if (c.Kind is CtlKind.TryFinally or CtlKind.Catch) return false;
+        var v = value;
+        while (v is IConversionOperation { Conversion.IsIdentity: true } cv) v = cv.Operand;
+        return Types.Key(T.Canonical(TypeOf(v))) == Types.Key(T.Canonical(rt));
+    }
+    static readonly bool s_noDirectReturn = Environment.GetEnvironmentVariable("CS2WASM_NO_DIRECT_RETURN") == "1";
 
     void EmitReturnSequence(bool hasValue)
     {

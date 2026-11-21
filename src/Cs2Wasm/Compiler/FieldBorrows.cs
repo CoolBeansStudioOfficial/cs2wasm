@@ -42,6 +42,8 @@ sealed partial class FunctionCompiler
             while (ar is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } ac) ar = ac.Operand;
             if (tm && ar is IFieldReferenceOperation { Instance: { } fi } && !UnsharedContainer(TypeOf(fi))) return null;
             if (IsStableBase(ar)) return Driver.ElementsKey;
+            // (an array a static holds, `var e = s_cache[i]`: the static's key too; no other thread can store it)
+            if (StaticArrayKey(ar) is { } sak) return sak + "\n" + Driver.ElementsKey;
             if (ar is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ai } afr && IsStableBase(ai) && afr.Field.ContainingType.TypeKind == TypeKind.Class
                 && !(ai is IParameterReferenceOperation && TypeOf(ai).IsValueType))
             {
@@ -70,6 +72,17 @@ sealed partial class FunctionCompiler
         }
         var key = Driver.FieldKey(Owner(fr.Field), StorageField(fr.Field));
         D.NoteBorrowField(key, StorageField(fr.Field), T.Resolve(fr.Field.Type, Map));
+        return key;
+    }
+
+    /// <summary>The key of the static an array is read from, when its elements can be borrowed like a stable array's
+    /// (no threads: a static is any thread's to store), else null.</summary>
+    string? StaticArrayKey(IOperation ar)
+    {
+        if (D.ThreadMode || ar is not IFieldReferenceOperation { Field: { IsStatic: true, IsVolatile: false } sf } sfr
+            || !Types.IsRef(T.Resolve(sf.Type, Map)) || IsThreadStatic(StorageField(sf))) return null;
+        var key = Driver.FieldKey(Owner(sfr.Field), StorageField(sfr.Field));
+        D.NoteBorrowField(key, StorageField(sfr.Field), T.Resolve(sf.Type, Map));
         return key;
     }
 
@@ -616,6 +629,8 @@ internal sealed partial class Driver
     {
         if (Environment.GetEnvironmentVariable("CS2WASM_REACH_WHY") is not { } spec || !spec.Contains(">>")) return;
         var parts = spec.Split(">>");
+        bool store = parts[1].StartsWith("store:");
+        int found = 0;
         var root = Module.Functions.FirstOrDefault(f => f.Name.Contains(parts[0]));
         if (root == null) { Console.Error.WriteLine("reach: no function " + parts[0]); return; }
         var parent = new Dictionary<WasmFunction, WasmFunction?> { [root] = null };
@@ -623,15 +638,18 @@ internal sealed partial class Driver
         while (work.Count > 0)
         {
             var f = work.Dequeue();
-            if (f != root && f.Name.Contains(parts[1]))
+            // ("store:key": the first function that stores the key)
+            if (f != root && (parts[1].StartsWith("store:") ? FieldWrites.TryGetValue(f, out var fw) && fw.Contains(parts[1][6..]) : f.Name.Contains(parts[1])))
             {
                 var chain = new List<string>();
                 for (WasmFunction? x = f; x != null; x = parent[x]) chain.Add(x.Name);
                 chain.Reverse();
                 Console.Error.WriteLine("reach: " + string.Join("\n   -> ", chain));
-                return;
+                // (a store: every storing function the root reaches, not past one)
+                if (!store || ++found >= 25) return;
+                continue;
             }
-            void Add(WasmFunction g) { if (parent.TryAdd(g, f)) work.Enqueue(g); }
+            void Add(WasmFunction g) { if (!(store && StoreSummary.Internal(g)) && parent.TryAdd(g, f)) work.Enqueue(g); }
             if (f.ForwardTo != null) Add(f.ForwardTo);
             bool held = false; // (a finalizer's call from a destroy function is left out, as ReachesSafePoint does)
             foreach (var ins in f.Body)
@@ -693,7 +711,8 @@ internal sealed partial class Driver
     /// function in the table (one node stands for them).</summary>
     sealed class StoreSummary
     {
-        static readonly string[] s_internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.FreeObject(", "Cs2Wasm.Runtime.Rt.FreeObjectArena(", "Cs2Wasm.Runtime.Rt.FreeBlock(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks."];
+        // (Rt.StringOf, Rt.Prefix: a string they make, its characters)
+        static readonly string[] s_internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.StringOf(", "Cs2Wasm.Runtime.Rt.Prefix(", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.FreeObject(", "Cs2Wasm.Runtime.Rt.FreeObjectArena(", "Cs2Wasm.Runtime.Rt.FreeBlock(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks."];
         public static bool Internal(WasmFunction f) => s_internals.Any(p => f.Name.StartsWith(p, StringComparison.Ordinal));
 
         readonly Dictionary<string, int> _key = [];
@@ -729,8 +748,16 @@ internal sealed partial class Driver
                 }
                 if (f.InTable || f.TableRoot) edges[table].Add(i);
                 if (f.ForwardTo != null && _node.TryGetValue(f.ForwardTo, out int fi)) edges[i].Add(fi);
+                // (a type's static initializer's own stores of the type's statics: no borrow of one of them sees them.
+                // A borrow of a static began with a read of it, after the check that runs the initializer: from
+                // then on the initializer has run, or is running further up this thread's stack (a check meanwhile
+                // returns at once: Rt.CctorEnter), and whatever it stores next it stores after the borrow's scope.
+                // Not what it calls: a helper that stores a static can be called again later.)
+                string? ownStatics = f.Name.StartsWith(Driver.StaticInitBodyPrefix, StringComparison.Ordinal) ? f.Name[Driver.StaticInitBodyPrefix.Length..] + "::" : null;
                 if (d.FieldWrites.TryGetValue(f, out var w))
-                    foreach (var k in w) if (_key.TryGetValue(k, out int ki)) _bits[i][ki >> 6] |= 1UL << (ki & 63);
+                    foreach (var k in w)
+                        if (_key.TryGetValue(k, out int ki) && !(ownStatics != null && k.StartsWith(ownStatics, StringComparison.Ordinal) && d.IsStaticKey(k)))
+                            _bits[i][ki >> 6] |= 1UL << (ki & 63);
             }
             for (int bk = 1; bk < d._bucketFns.Count; bk++)
                 foreach (var t in d.IndirectTargets(new Instr { Op = Op.CallIndirect, Imm2 = bk }))

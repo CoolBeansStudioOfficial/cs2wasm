@@ -915,6 +915,65 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   by their frames). The levers there: sharing code between instantiations over reference types (as .NET's
   canonical forms do), and which virtual overrides of the Linq iterators a call can reach. Also left in the data:
   3,476 full names (1 MB) the cast-failure helpers keep (`rt.throw_cast`, one literal per target type).
+- **Baseline-tier code quality (stream K of docs/FINISH.md, 2026-11-20).** Measured first, side by side with a
+  NativeAOT-LLVM build of the same sources (main de9e598; the old `naot-wasm-measure` was built from an older compiler
+  whose Driver does other work), both profiled with `node --no-wasm-lazy-compilation --cpu-prof`: with lazy
+  compilation a sample can wait 5-40 ms while a function is compiled on its first call and the wait is charged to
+  whatever runs next (5 s of a 25 s profile; "2.8 s in SwitchExpressionBinder under Driver.ParamEscape" and
+  "1.3 s in ImmutableArray.Builder.ToImmutable" were that, 3 ms and nothing in the eager profile). Unprofiled times
+  are the same either way. Profiled, hello world: code 11.8 s against 4.1 s (the methods found on both sides 1.84x),
+  runtime 11.7 s (arenas about two thirds) against GC and allocation 1.8 s, host 4.0 (1.7 of it the eager compile)
+  against 2.1; by area, Roslyn's parser and lexer 5.3 s against 2.4, the rest of Roslyn 2.5 against 0.8, CoreLib 0.8
+  against 0.3, dispatch stubs 0.6. Changes, each with a test or the suite's and its measurement:
+  - `rt.array_clear` clears up to 256 bytes word by word: `memory.fill` is a call into the engine in the baseline
+    tier, and Roslyn's `SyntaxListBuilder.Clear` clears its whole array at every reuse (403 ms of the function's own
+    time).
+  - A returned struct is made in the caller's destination: `return new S(..)` and `return F(..)` of the return type,
+    outside every `try`, construct into the struct-return address as a declaration's value is made in its local, so
+    such a method (`ImmutableArray<T>.Builder.ToImmutable`, and the many like it) has no frame temporary, no exception
+    region to release it on the way out and no copy (`CS2WASM_NO_DIRECT_RETURN=1`: the old way).
+  - `x = default` and `new S()` with nothing to run, into any struct place: copied from zeros nothing writes
+    (`SyntaxParser.MoveToNextToken`'s `_currentNode = default`, a 72-byte frame temporary cleared, copied and released
+    before; `CS2WASM_NO_ZERO_DEFAULT=1`).
+  - Borrows: an element of an array a static holds borrows as an element of a stable array does (no threads: the
+    static's key and the elements' key); a type's static initializer's own stores of its statics do not break a borrow
+    of one of them (the borrow began with a read after the check that runs the initializer, so the initializer has run
+    or is running further up the stack: what it stores next, it stores after the borrow's scope). 152 borrows in the
+    parser probe, 138 before. `SyntaxNodeCache.TryGetNode`'s `var e = s_cache[i]` still counts: its call of
+    `IsCacheEquivalent` reaches element stores (`GreenNode.GetSlot` of a token throws, and the message is built with
+    `string.Concat`, number formatting, `Memmove`), and `[]` is every element store of the program; what that needs is
+    which arrays a store can write, not a pass. `CS2WASM_REACH_WHY=fn>>store:key` lists what a function reaches that
+    stores a key.
+  - Inliner, second round (the final bodies, now run up to three times): a leaf of the program or the library up to
+    the first round's 12 instructions goes in at every site (`Hash.Combine`, 5 instructions, was too large in the
+    first round only for the local traffic it had then). And fast paths: a function of the shape `test; if { .. }
+    end; value` whose test is whether a value read from memory is made yet (a field that is null, a type's
+    initializer flag not set) and whose test and value are pure and short (8 instructions), called from 3 places or
+    more, has the test and the value copied to its call sites and the call itself left on the other path: what is left
+    out runs in the function's own frame, so a trace is the same (`SyntaxParser.CurrentToken`, `_currentToken ??
+    FetchCurrentToken()`, from 874 sites; `Array.Empty<T>()`, `ArrayPool<T>.Shared`, `Encoding.UTF8`). A first try took
+    any test, and `StringBuilder.Append(string)`'s `value != null`, which holds most of the time, made micro 2% slower.
+    `CS2WASM_TINY_BODY`, `CS2WASM_FAST_PATH`, `CS2WASM_FAST_PATH_CALLERS` (0: off), `CS2WASM_INLINE_DEBUG=1`.
+  - Constant locals (`ConstBranches.ConstLocals`): a local given a constant at the function's top level before
+    anything reads it, and never written otherwise, is that constant at every read; a block whose body is a constant
+    is the constant; `const; const; compare` folds. `switch (Unsafe.SizeOf<T>())` in a generic method then folds to
+    its arm: Roslyn's `SegmentedArray<T>.SegmentShift` and `OffsetMask` were two calls each per probe of
+    `StringTable.FindSharedEntry`'s loop (10x NativeAOT's time there) and are constants at the site now
+    (`CS2WASM_NO_CONST_LOCALS=1`).
+  - Tried and reverted: dispatch stubs through a `br_table` on the type id instead of halving the stretches
+    (`GreenNode.GetSlot`: 256 stretches over 1,118 ids). V8's baseline tier compiles a `br_table` as a binary search
+    over its index range, wider than the stretches' count: no faster for GetSlot, and interface stubs got slower (micro
+    `iface_foreach` 1.21x, `iter_select_where` 1.21x, `virtual3` 1.18x).
+  Measured: micro in the baseline tier (`--liftoff-only`, 5 interleaved rounds, best of each) 1.876x to 1.847x
+  NativeAOT's time (geometric mean 0.985 of before: `sb_append_int` 0.80, `distinct` 0.93, `hashset_add` 0.95);
+  the parser bench (`tools/roslyn-parse-bench.cs`: 400 classes parsed and walked, baseline tier, interleaved) 375 to 350.5 ms, median of 8 rounds (best 363 to 347, faster in every round); the self-hosted
+  compiler (no threads, the same sources built by each compiler) 77,718,084 to 77,170,647 bytes, hello world on one thread 13.7-14.5 s to 13.3-13.6 s in the five interleaved rounds where the machine was quiet (NativeAOT-LLVM 5.0-5.1 s: 2.74x to 2.65x; median 3% less wall time, 1% less processor time; loaded rounds moved 15% either way and are left out), build time unchanged within the noise (675 s and 641 s). Hello
+  world 27,868 to 27,745 bytes. Suite 188 passed checked and as shipped (rebased on main: 188 passed both ways, 088 once failing on a temporary file another shard held, then passing alone twice).
+  Left, in the order the profile gives: the arena machinery (streams I and J), counting calls (rt.retain and
+  rt.release 1.7 s profiled; inlining them everywhere was measured before, no gain), `rt.frame` (0.35 s; a call per
+  function with a frame, kept for size), struct helpers (`rt.copy_assign` and its retains 0.4 s), dispatch stubs (a
+  call through a binary search: inlined vtable calls need the table and its analysis buckets), and the parser's own
+  code at 2.2x, flat.
 
 ### Direction (revised 2026-11-18 with the owner)
 

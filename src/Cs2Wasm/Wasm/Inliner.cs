@@ -10,6 +10,8 @@ namespace Cs2Wasm.Wasm;
 static class Inliner
 {
     static readonly int SmallBody = Env("CS2WASM_SMALL_BODY", 12);     // instructions of the inlined copy; inlined at every call site (12: a call costs more than that in the baseline tier; hello world 34 bytes smaller than at 7, at 16 it grows by 1.6 KB)
+    static readonly bool s_inlineDebug = Environment.GetEnvironmentVariable("CS2WASM_INLINE_DEBUG") == "1";
+    static readonly int s_tinyBody = Env("CS2WASM_TINY_BODY", 12); // a leaf in the second round (the final bodies), at every call site
     const int SingleCallerBody = 120; // a function with one call site and no other use is inlined up to this size
     const int SingleCallerCalling = 100; // the same for one that calls functions
     const int LoopBody = 24;      // a straight-line body that calls nothing, at a call site inside a loop
@@ -32,15 +34,17 @@ static class Inliner
     static readonly int s_exp = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_EXP_INLINE"), out var x) ? x : 0;
 
     /// <summary>Returns the functions it changed.</summary>
-    public static HashSet<WasmFunction> Run(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow, bool tiny = false)
+    /// <summary>fastPaths (second round, once): the fast paths of FastPathIf go in too (once only: the call each leaves
+    /// on its other path is a call of the same function).</summary>
+    public static HashSet<WasmFunction> Run(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow, bool tiny = false, bool fastPaths = false)
     {
-        if (s_exp > 0) { for (int round = 0; round < 3; round++) RunOnce(functions, [], false); return []; }
-        return RunOnce(functions, mayThrow, tiny);
+        if (s_exp > 0) { for (int round = 0; round < 3; round++) RunOnce(functions, [], false, false); return []; }
+        return RunOnce(functions, mayThrow, tiny, fastPaths);
     }
 
     /// <summary>tiny: only bodies of a few instructions that call nothing and have no locals (a getter once its local
     /// traffic is gone): their copy is no larger than the call.</summary>
-    static HashSet<WasmFunction> RunOnce(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow, bool tiny)
+    static HashSet<WasmFunction> RunOnce(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow, bool tiny, bool fastPaths)
     {
         var changed = new HashSet<WasmFunction>();
         var callers = new Dictionary<WasmFunction, int>();
@@ -92,6 +96,8 @@ static class Inliner
             if (tiny)
             {
                 if (leaf && n <= 4 && g.Locals.Count == 0 && g.Type.Params.Length <= 2) candidates.Add(g);
+                // (a leaf the first round found too large only for the local traffic it had then: Hash.Combine)
+                else if (leaf && copy <= s_tinyBody && ProgramCode(g)) { candidates.Add(g); if (s_inlineDebug) Console.Error.WriteLine($"tiny inline {copy} {callers.GetValueOrDefault(g)} {g.Name}"); }
                 // (marked AggressiveInlining, and small now that what it called went into it)
                 else if (g.InlineHint && copy <= HintedBody) candidates.Add(g);
                 else if (leaf && copy <= s_loopBody && StraightLine(g)) inLoops.Add(g);
@@ -103,12 +109,24 @@ static class Inliner
             else if (g.InlineHint && s_exp == 0 && copy <= 2 * s_loopBody) inLoops.Add(g);
             else if (leaf && copy <= s_loopBody && StraightLine(g)) inLoops.Add(g);
         }
-        if (candidates.Count == 0 && inLoops.Count == 0) return changed;
+        // (the second round: a function whose result is ready without a call most of the time, a getter that makes
+        // its value once, `_x ?? Make()`: that test goes in, and the call stays for the other case)
+        var fast = new Dictionary<WasmFunction, int>();
+        if (tiny && fastPaths && s_fastPath > 0)
+            foreach (var g in functions)
+                // (where it is called from more than a couple of places: a getter used once or twice, at a start, is
+                // left a call; the parser's current token is read from hundreds)
+                if (!candidates.Contains(g) && !inLoops.Contains(g) && callers.GetValueOrDefault(g) >= s_fastPathCallers && FastPathIf(g) is int at)
+                {
+                    fast[g] = at;
+                    if (s_inlineDebug) Console.Error.WriteLine($"fast path {at} {g.Body.Count} {callers.GetValueOrDefault(g)} {g.Name}");
+                }
+        if (candidates.Count == 0 && inLoops.Count == 0 && fast.Count == 0) return changed;
         foreach (var f in functions)
         {
             if (f.IsImport) continue;
             bool any = false;
-            foreach (var ins in f.Body) if (ins.Op == Op.Call && ins.Ref is WasmFunction g && (candidates.Contains(g) || inLoops.Contains(g)) && g != f) { any = true; break; }
+            foreach (var ins in f.Body) if (ins.Op == Op.Call && ins.Ref is WasmFunction g && (candidates.Contains(g) || inLoops.Contains(g) || fast.ContainsKey(g)) && g != f) { any = true; break; }
             if (!any) continue;
             var outBody = new List<Instr>(f.Body.Count + 32);
             var open = new List<bool>(); // the blocks open here: whether each is a loop
@@ -123,6 +141,7 @@ static class Inliner
                     case Op.End when open.Count > 0: if (open[^1]) loops--; open.RemoveAt(open.Count - 1); break;
                 }
                 if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != f && (candidates.Contains(g) || loops > 0 && inLoops.Contains(g))) { Expand(f, g, outBody, ins.Pos, ins.Inl, framed.Contains(g)); any = true; }
+                else if (ins.Op == Op.Call && ins.Ref is WasmFunction h && h != f && fast.TryGetValue(h, out int ifAt)) { ExpandFastPath(f, h, ifAt, outBody, ins); any = true; }
                 else outBody.Add(ins);
             }
             if (!any) continue;
@@ -180,6 +199,113 @@ static class Inliner
             if ((int)ins.Op >= 0xFE00) return false;
         }
         return true;
+    }
+
+    /// <summary>A method of the program or the library, not one of the runtime's helpers or a dispatch stub (those
+    /// have rules of their own: the passes after this one know the counts and the stores by their calls).</summary>
+    static bool ProgramCode(WasmFunction g) => !(g.Name.StartsWith("rt.", StringComparison.Ordinal) || g.Name.StartsWith("Cs2Wasm.Runtime.", StringComparison.Ordinal)
+        || g.Name.StartsWith("virtual ", StringComparison.Ordinal) || g.Name.StartsWith("interface ", StringComparison.Ordinal)
+        || g.Name.StartsWith("arena.", StringComparison.Ordinal) || g.Name.StartsWith("destroy ", StringComparison.Ordinal) || g.Name.StartsWith("static init", StringComparison.Ordinal));
+
+    static readonly int s_fastPath = Env("CS2WASM_FAST_PATH", 8);
+    static readonly int s_fastPathCallers = Env("CS2WASM_FAST_PATH_CALLERS", 3); // the instructions of a fast path's test and value together (0: none)
+
+    /// <summary>Whether an instruction computes without an effect, and cannot trap: a local's or a global's read or
+    /// write, a load, a constant, arithmetic but division (a module's own checks throw before a division by zero).</summary>
+    static bool Pure(in Instr ins) => ins.Op switch
+    {
+        Op.LocalGet or Op.LocalSet or Op.LocalTee or Op.GlobalGet or Op.Drop or Op.Select => true,
+        Op.Nop => ins.Ref == null,
+        >= Op.I32Load and <= Op.I64Load32U => true,
+        >= Op.I32Const and <= Op.F64Const => true,
+        Op.I32DivS or Op.I32DivU or Op.I32RemS or Op.I32RemU or Op.I64DivS or Op.I64DivU or Op.I64RemS or Op.I64RemU => false,
+        >= Op.I32TruncF32S and <= Op.I32TruncF64U or >= Op.I64TruncF32S and <= Op.I64TruncF64U => false,
+        >= Op.I32Eqz and <= Op.I64Extend32S => true,
+        _ => false,
+    };
+
+    /// <summary>A function of the shape `test; if { anything } end; value; return`, where the test and the value are
+    /// pure (Pure) and short, and the test is whether a value read from memory is made yet: the index of its `if`,
+    /// else null. At a call site the test and the value go in, and the
+    /// `if` calls the function itself (which runs its test again, as nothing was changed meanwhile): what is left out
+    /// of the caller runs in the function's own frame, so a trace is the same. Program and library methods only, not
+    /// marked NoInlining.</summary>
+    static int? FastPathIf(WasmFunction g)
+    {
+        if (g.IsImport || g.ForwardTo != null || g.NoInline || g.Type.Results.Length != 1 || !ProgramCode(g) || g.Name.StartsWith("borrow?", StringComparison.Ordinal)) return null;
+        var b = g.Body;
+        int at = 0;
+        while (at < b.Count && Pure(b[at])) at++;
+        if (at == 0 || at >= b.Count || b[at].Op != Op.If || b[at].Ref != null) return null;
+        // (the test is of a value read from memory that is not made yet: a field that is null, `_x ?? Make()`, or a
+        // type's initializer that has not run. A test of anything else may well hold most of the time, Append's
+        // `value != null`, and then the copy is only more work before the same call)
+        static bool IsLoad(Op op) => op >= Op.I32Load && op <= Op.I64Load32U;
+        bool lazy = at >= 2 && b[at - 1].Op == Op.I32Eqz && IsLoad(b[at - 2].Op)
+            || at >= 3 && b[at - 1].Op == Op.I32Ne && b[at - 2].Op == Op.I32Const && b[at - 2].Imm == -1 && IsLoad(b[at - 3].Op);
+        if (!lazy) return null;
+        // the `if`'s end (no `else`)
+        int depth = 0, end = -1;
+        for (int k = at; k < b.Count; k++)
+        {
+            var op = b[k].Op;
+            if (op is Op.Block or Op.Loop or Op.If or Op.TryTable) depth++;
+            else if (op == Op.Else && depth == 1) return null;
+            else if (op == Op.End && --depth == 0) { end = k; break; }
+        }
+        if (end < 0) return null;
+        int last = b.Count;
+        if (b[^1].Op == Op.Return) last--;
+        for (int k = end + 1; k < last; k++) if (!Pure(b[k])) return null;
+        if (at + (last - end - 1) > s_fastPath || last == end + 1) return null;
+        return at;
+    }
+
+    /// <summary>The call of a function with a fast path (FastPathIf) becomes the path: its arguments in locals of the
+    /// caller, the test; when it holds, the call itself, its result the block's; else the value.</summary>
+    static void ExpandFastPath(WasmFunction f, WasmFunction g, int ifAt, List<Instr> outBody, Instr call)
+    {
+        int np = g.Type.Params.Length, baseF = f.Type.Params.Length;
+        var map = new int[np + g.Locals.Count];
+        for (int i = 0; i < np; i++) { f.Locals.Add(g.Type.Params[i]); map[i] = baseF + f.Locals.Count - 1; }
+        for (int i = 0; i < g.Locals.Count; i++) { f.Locals.Add(g.Locals[i]); map[np + i] = baseF + f.Locals.Count - 1; }
+        void Add(Op op, long imm = 0, object? r = null) => outBody.Add(new Instr { Op = op, Imm = imm, Ref = r, Pos = call.Pos, Inl = call.Inl });
+        void Copy(Instr ins)
+        {
+            if (ins.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee) ins.Imm = map[(int)ins.Imm];
+            ins.Pos = call.Pos; ins.Inl = call.Inl;
+            outBody.Add(ins);
+        }
+        for (int i = np - 1; i >= 0; i--) Add(Op.LocalSet, map[i]);
+        for (int i = 0; i < g.Locals.Count; i++)
+        {
+            switch (g.Locals[i])
+            {
+                case ValType.I32: Add(Op.I32Const, 0); break;
+                case ValType.I64: Add(Op.I64Const, 0); break;
+                case ValType.F32: Add(Op.F32Const, 0); break;
+                case ValType.F64: Add(Op.F64Const, 0); break;
+                default: continue;
+            }
+            Add(Op.LocalSet, map[np + i]);
+        }
+        var b = g.Body;
+        Add(Op.Block, 0, g.Type.Results[0]);
+        for (int k = 0; k < ifAt; k++) Copy(b[k]);
+        Add(Op.If);
+        for (int i = 0; i < np; i++) Add(Op.LocalGet, map[i]);
+        outBody.Add(call);
+        Add(Op.Br, 1);
+        Add(Op.End);
+        int depth = 0, end = ifAt;
+        for (; end < b.Count; end++)
+        {
+            if (b[end].Op is Op.Block or Op.Loop or Op.If or Op.TryTable) depth++;
+            else if (b[end].Op == Op.End && --depth == 0) break;
+        }
+        int last = b[^1].Op == Op.Return ? b.Count - 1 : b.Count;
+        for (int k = end + 1; k < last; k++) Copy(b[k]);
+        Add(Op.End);
     }
 
     /// <summary>No return but possibly a last one, and no branch out of the body.</summary>
