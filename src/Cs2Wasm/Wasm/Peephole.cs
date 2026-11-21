@@ -160,6 +160,17 @@ static class Peephole
                 o.Add(ins with { Imm = ins.Imm + k });
                 continue;
             }
+            // the same for a store whose value is one push (a local, a constant, a global)
+            if (ins.Op is >= Op.I32Store and <= Op.I64Store32 && o.Count >= 3 && o[^1].Op is Op.LocalGet or Op.GlobalGet or Op.I32Const or Op.I64Const or Op.F32Const or Op.F64Const
+                && o[^2].Op == Op.I32Add && o[^3].Op == Op.I32Const && o[^3].Ref == null && o[^3].Imm >= 0 && o[^3].Imm + ins.Imm < int.MaxValue)
+            {
+                long k = o[^3].Imm;
+                var v = o[^1];
+                o.RemoveRange(o.Count - 3, 3);
+                o.Add(v);
+                o.Add(ins with { Imm = ins.Imm + k });
+                continue;
+            }
             o.Add(ins);
         }
         if (o.Count > 0 && o[^1].Op == Op.Return) o.RemoveAt(o.Count - 1);
