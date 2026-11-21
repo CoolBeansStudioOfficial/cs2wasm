@@ -25,7 +25,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | # | Check | Now | Goal |
 |---|---|---|---|
 | 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 180/180 | all pass, no `known-gap` |
-| 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (stream E's tests); open: reflection on compiler-made methods (lambdas, state machines); .NET's own library frames (not reproducible from source) | none |
+| 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (stream E's tests); reflection on compiler-made methods closed 2026-11-21 (tests 155, 156: names with Roslyn's ordinals, declaring classes, attributes, MoveNext); open: a capture-free lambda's `Delegate.Target` (`<>c` in .NET), the generated classes' own member lists, generic generated classes as constructed types; .NET's own library frames (not reproducible from source) | none |
 | 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20) | none in 200 loaded runs |
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
@@ -97,7 +97,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 | B. Self-hosted size | breakdown of the 64 MB by namespace and kind; cut waste | tools/size-report.mjs, RuntimeGen (names, packing), Driver (data) | first pass done (64.0 to 42.7 MB); code next |
 | C. Threads scale | per-group locks for arena operations, runtime scratch per thread | Boundary/GroupLocks.cs, Runtime.cs (arena locking), RuntimeGen | done: groups lock apart (PLINQ trees scale); the self-hosted compiler waits on its one giant group: A's structural piece (value sources per site) |
 | D. Proof 5 in the browser | game built by today's self-hosted compiler in the browser | host/web, tools/proof5.mjs, tests/Godot | done 2026-11-21 (two premature frees fixed on the way, tests 179 and 180) |
-| E. Behaviour gaps | `StackFrame.GetMethod()`, `FirstChanceException`, the sweep's trace differences | CoreLib Boundary, stack trace code | done 2026-11-20 but for compiler-made methods' records (a feature of its own) |
+| E. Behaviour gaps | `StackFrame.GetMethod()`, `FirstChanceException`, the sweep's trace differences | CoreLib Boundary, stack trace code | done 2026-11-20; compiler-made methods' records done 2026-11-21 (tests 155, 156) |
 | F. Plugins | A4.6 closed-form solver with its tests | Compiler/Solver.cs, PluginSolver.cs, tests | done 2026-11-20 (version 6) |
 | G. Spikes | frame-time check against NativeAOT | tools/frames.mjs, tools/frames, tools/frames-naot-wasm | done: check, foreach borrows; tree scene's rebuild left to I and J |
 | H. Flakes | test 139 leak under load, 072_http | Runtime.cs (read first), tests | done: both found and fixed (tests 149, 150) |
@@ -139,6 +139,14 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   ParseAnonymousFunctionModifiers allocated one per call, 948 ms against 33), small bodies inlined up to 12
   instructions and AggressiveInlining ones up to 24 (Hash.Combine, Rt.PL stayed calls), a struct copied into a
   container no group can hold stores plainly. Micro baseline 1.85x to about 1.75x.
+- 2026-11-21: reflection on what the C# compiler makes. Lambdas', local functions' and state machines' names now
+  follow Roslyn's closure conversion with its ordinals (scope tree, environments, merging in release builds; checked
+  against Roslyn's own output with `CS2WASM_CHECK_NAMES=1`), and they have records: `Delegate.Method`, a frame's
+  `GetMethod`, `TargetSite` and `GetCurrentMethod` give `<Main>b__9_0` on `Program+<>c`, `MoveNext` on
+  `Program+<Numbers>d__5`, with parameters and `[CompilerGenerated]`; kickoff methods carry
+  `[AsyncStateMachine(typeof(...))]` / `[IteratorStateMachine]`, `[DebuggerStepThrough]`. TargetSite through
+  `ExceptionDispatchInfo.Throw` fixed. Tests 155, 156; hello world 27,297 B unchanged. Left: a capture-free lambda's
+  `Target` (AUDIT).
 - 2026-11-20, stream E: frames' methods (`StackFrame.GetMethod`, `TargetSite` through `[StackTraceHidden]` throwers,
   `GetCurrentMethod`), `AppDomain.FirstChanceException`, and six trace differences a sweep against .NET found
   (generic definitions' names, merged identical methods, iterator frames and lines in state machines, failed static

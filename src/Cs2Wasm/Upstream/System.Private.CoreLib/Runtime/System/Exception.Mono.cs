@@ -71,11 +71,16 @@ namespace System
         // cs2wasm: traces are text (Boundary/Runtime.cs): ExceptionDispatchInfo keeps the trace so far, and a
         // throw of the captured exception shows it before its own, as .NET's does
         internal string? _capturedTrace;
+        // (a throw of the captured exception keeps the method that threw it first: its TargetSite, as .NET's, whose
+        // restored trace starts there)
+        internal int _capturedSite;
+        internal bool _dispatching;
 
         internal DispatchState CaptureDispatchState()
         {
             _capturedTrace = StackTrace;
             _capturedAsync = _asyncTop;
+            _capturedSite = _throwSite;
             return default;
         }
 
@@ -120,6 +125,7 @@ namespace System
             if (_capturedTrace is { Length: > 0 } t)
                 _remoteStackTraceString = _capturedAsync ? t + Environment.NewLineConst
                     : t + Environment.NewLineConst + SR.Exception_EndStackTraceFromPreviousThrow + Environment.NewLineConst;
+            if (_capturedTrace is { Length: > 0 }) _dispatching = true;
             _stackTraceString = null;
             _fullTrace = null;
         }

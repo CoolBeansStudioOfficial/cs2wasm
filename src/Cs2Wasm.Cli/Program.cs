@@ -4,6 +4,8 @@ using Cs2Wasm;
 // --plugin file.dll (SPEC section 7.1: on the .NET runtime a plugin is an assembly passed in process): the assembly's
 // plugin passes become known to the command line, and are chosen as if named one by one
 args = Cli.Expand(args);
+// (Roslyn's emit, for CS2WASM_CHECK_NAMES: not in the self-hosted compiler, which compiles Cli.cs but not this file)
+Cs2WasmCompiler.EmitForNamesCheck = (c, s) => c.Emit(s).Success;
 for (int i = 0; i + 1 < args.Length; i++)
 {
     if (args[i] != "--plugin" || !File.Exists(args[i + 1])) continue;

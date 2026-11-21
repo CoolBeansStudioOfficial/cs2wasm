@@ -84,7 +84,8 @@ namespace Cs2Wasm.Runtime
         public static MethodBase? FrameMethodOf(System.Diagnostics.StackFrame frame) => FrameMethod(frame._cs2wasmName);
 
         /// <summary>The method a stack frame of this name ("Program.A(Int32 x)") runs, from the compiler's table of the
-        /// frames' methods (Rt.FrameMethods); null for a frame whose method has no record (a lambda's).</summary>
+        /// frames' methods (Rt.FrameMethods; a lambda's and a state machine's MoveNext have theirs too, as the C#
+        /// compiler names them: Compiler/GeneratedReflection.cs); null for a frame whose method has no record.</summary>
         public static MethodBase? FrameMethod(string? name)
         {
             if (name == null) return null;

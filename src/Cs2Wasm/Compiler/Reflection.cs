@@ -80,6 +80,7 @@ internal sealed partial class Driver
     /// <summary>Finds the reflection the program does (FinishExports, before the last compile round).</summary>
     internal void AnalyzeReflection()
     {
+        CheckGeneratedNames();
         var keep = new ReflectionKeep();
         bool wantsDelegateMethod = false;
         var delegateRefs = new List<IMethodSymbol>();
@@ -216,6 +217,7 @@ internal sealed partial class Driver
                 foreach (var em in en.GetMembers(qi.Name).OfType<IMethodSymbol>())
                     if (em.IsGenericMethod && em.Arity == qi.Arity)
                         try { keep.KeepInstance(en, em.Construct([.. qi.TypeArguments])); } catch (ArgumentException) { }
+        _wantsDelegateMethod = wantsDelegateMethod;
         if (keep.Types.Count == 0 && !FramesAsked) return;
         _reflect = keep;
         // thunks for the kept members (compiled in the next round)
@@ -509,6 +511,7 @@ internal sealed partial class Driver
     internal void RequestAttributeFactories()
     {
         if (_assemblyAttributes) foreach (var a in KeptAttributes(Inputs[0].Assembly)) AttributeFactory(a);
+        RequestGeneratedAttributeFactories();
         if (_reflect == null) return;
         foreach (var (t, all, names, ctors) in _reflect.Types.Values)
         {
@@ -534,7 +537,7 @@ internal sealed partial class Driver
     internal void EmitReflectionTables()
     {
         PatchDisplayFields();
-        if (_metaOf == null && !FramesAsked) return;
+        if (_metaOf == null && !WantsGenerated) return;
         var records = new Dictionary<int, IAddress>();
         if (_reflect != null)
             foreach (var (t, all, names, ctors) in _reflect.Types.Values)
@@ -542,10 +545,12 @@ internal sealed partial class Driver
                 int id = TypeId(t);
                 records[id] = TypeRecord(t, KeptMembers(t, all, names, ctors).ToList());
             }
+        // (what the C# compiler makes: after the types' records, a frame of MoveNext is its own, not the kickoff's)
+        if (WantsGenerated) { GeneratedTypeRecords(records); EmitGeneratedMethods(); }
         EmitFrameMethods();
         if (_metaOf == null) return;
         var e = new Emitter(_metaOf);
-        if (_reflect == null) { e.I32(0); return; }
+        if (records.Count == 0) { e.I32(0); return; }
         int tid = e.AddLocal(ValType.I32);
         e.Get(0); e.Set(tid);
         foreach (var (id, addr) in records)
@@ -757,6 +762,7 @@ internal sealed partial class Driver
             {
                 yield return m.ContainingType;
                 foreach (var a in KeptAttributes(m is IMethodSymbol { AssociatedSymbol: IPropertySymbol pp } ? pp : m)) yield return a.AttributeClass!;
+                foreach (var a in GeneratedAttributeClasses(m)) yield return a;
                 switch (m)
                 {
                     case IFieldSymbol f: yield return f.Type; break;
@@ -797,7 +803,17 @@ internal sealed partial class Driver
             ints.Add(ExtTypeId(a.AttributeClass!));
             ints.Add(RootSlot(AttributeFactory(a)) + 1);
         }
-        return (list.Count, Ints(ints).Address);
+        // (and those the C# compiler adds: an iterator's or async method's state machine)
+        int n = list.Count;
+        foreach (var (attr, typeArg) in StateMachineAttributes(s))
+        {
+            if (typeArg != null && !_machineIds.ContainsKey(((IMethodSymbol)s).OriginalDefinition)) continue;
+            if (!_genAttrFactories.TryGetValue(GenAttrKey(attr, typeArg?.Invoke()), out var gf) || gf.Body.Count == 0) continue;
+            ints.Add(ExtTypeId(LibType(attr)));
+            ints.Add(RootSlot(gf) + 1);
+            n++;
+        }
+        return (n, Ints(ints).Address);
     }
 
     const int FStatic = 1, FPublic = 2, FVirtual = 4, FAbstract = 8, FReadOnly = 16, FPrivate = 32, FFamily = 64, FAssembly = 128;
