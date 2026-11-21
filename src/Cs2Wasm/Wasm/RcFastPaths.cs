@@ -15,7 +15,11 @@ static class RcFastPaths
 {
     static readonly bool s_debug = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_DEBUG") == "1";
     static readonly bool s_destroys = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_DESTROY") == "1";
-    static readonly bool s_off = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST") != "1";
+    static readonly string? s_mode = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST");
+    // ("1": the hot functions' every count; "loops": only the counts inside loops, where the Inliner otherwise puts the
+    // whole function, CS2WASM_RC_IN_LOOPS=0)
+    static readonly bool s_off = s_mode is not ("1" or "loops");
+    static readonly bool s_loopsOnly = s_mode == "loops";
     static readonly bool s_everywhere = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_ALL") == "1";
     static readonly int s_depth = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_DEPTH"), out var d) ? d : 3;
     static readonly int s_maxBody = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_MAXBODY"), out var mb) ? mb : int.MaxValue;
@@ -27,7 +31,7 @@ static class RcFastPaths
         var release = m.Functions.FirstOrDefault(f => f.Name == "rt.release" && !f.IsImport);
         if (retain == null || release == null) return;
         var fns = m.Functions.Where(f => !f.IsImport).ToList();
-        var hot = s_everywhere ? fns.ToHashSet() : NullChecks.CalledFromLoops(fns, s_depth);
+        var hot = s_everywhere || s_loopsOnly ? fns.ToHashSet() : NullChecks.CalledFromLoops(fns, s_depth);
         foreach (var f in fns)
         {
             if (!hot.Contains(f) || f.Body.Count > s_maxBody || f == retain || f == release || f.Name.StartsWith("rt.", StringComparison.Ordinal) || f.Name.StartsWith("Cs2Wasm.Runtime.", StringComparison.Ordinal)
@@ -39,10 +43,13 @@ static class RcFastPaths
             int p = -1, c = -1;
             int Local() { f.Locals.Add(ValType.I32); return np + f.Locals.Count - 1; }
             var o = new List<Instr>(f.Body.Count + 64);
+            var open = new Stack<bool>(); int loops = 0;
             foreach (var ins in f.Body)
             {
+                if (ins.Op is Op.Block or Op.Loop or Op.If or Op.TryTable) { open.Push(ins.Op == Op.Loop); if (ins.Op == Op.Loop) loops++; }
+                else if (ins.Op == Op.End && open.Count > 0 && open.Pop()) loops--;
                 bool isRetain = ReferenceEquals(ins.Ref, retain), isRelease = ReferenceEquals(ins.Ref, release);
-                if (ins.Op != Op.Call || !isRetain && !isRelease) { o.Add(ins); continue; }
+                if (ins.Op != Op.Call || !isRetain && !isRelease || s_loopsOnly && loops == 0) { o.Add(ins); continue; }
                 if (p < 0) { p = Local(); c = Local(); }
                 void A(Op op, long imm = 0, long imm2 = 0) => o.Add(new Instr { Op = op, Imm = imm, Imm2 = imm2, Pos = ins.Pos, Inl = ins.Inl });
                 // p = the object; when it is one and its count is above the fast path's bound: the count changed in place
