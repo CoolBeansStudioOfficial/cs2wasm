@@ -964,7 +964,7 @@ sealed partial class FunctionCompiler
             case "Rt.MemStatsRecord": if (MemStats) E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "MsRecord", 1).Fn); else E.Op(Op.Drop); return Own.None;
             case "Rt.MemStatsOn": E.I32(MemStats ? 1 : 0); return Own.None;
             case "Rt.DropStats": E.I32(Environment.GetEnvironmentVariable("CS2WASM_DROP_STATS") == "1" ? 1 : 0); return Own.None;
-            case "Rt.EagerHolds": E.I32(Environment.GetEnvironmentVariable("CS2WASM_EAGER_HOLDS") == "1" ? 1 : 0); return Own.None;
+            case "Rt.StaleHolds": E.I32(Environment.GetEnvironmentVariable("CS2WASM_STALE_HOLDS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDropCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;
             case "Rt.BulkEnter": E.Call(Rt.BulkEnter); return Own.None;

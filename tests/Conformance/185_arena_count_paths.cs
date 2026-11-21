@@ -142,6 +142,28 @@ static class P
         s_root = root;
     }
 
+    // (a member held from outside when its subtree was let go, so the check failed; then taken out of that subtree
+    // and put elsewhere, then let go: the subtree it left must go then)
+    static Doubly? s_moved, s_elsewhere;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void MovedAway()
+    {
+        var root = new Doubly();
+        for (int i = 0; i < 4; i++) { var c = root.Add(i); for (int j = 0; j < 3; j++) c.Add(j).Add(0); }
+        var sub = root.Kids[1];
+        s_moved = sub.Kids[2];
+        root.Kids.RemoveAt(1);
+        root.ById.Remove(1);
+        sub.Owner = null;
+        s_elsewhere = new Doubly();
+        s_elsewhere.Kids.Add(s_moved);
+        sub.Kids.RemoveAt(2);
+        sub.ById.Remove(2);
+        s_moved.Owner = s_elsewhere;
+        GC.KeepAlive(root);
+    }
+
     [UnmanagedCallersOnly(EntryPoint = "main")]
     static void Main()
     {
@@ -157,5 +179,12 @@ static class P
         Console.WriteLine(s_root!.Kids.Count);
         s_root = null;
         Tracked.Report("all let go");
+        MovedAway();
+        Tracked.Report("a held member moved away from a let-go subtree");
+        Console.WriteLine(s_moved!.Kids.Count);
+        s_moved = null;
+        Tracked.Report("and let go");
+        s_elsewhere = null;
+        Tracked.Report("its new place let go");
     }
 }

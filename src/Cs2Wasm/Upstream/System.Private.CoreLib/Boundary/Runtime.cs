@@ -596,12 +596,22 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] static extern bool NoDropCheck();
         // CS2WASM_DROP_STATS=1 (a diagnosis, at compile time): the check at the drop counts what it does and says so
         [Intrinsic] static extern bool DropStats();
-        /// <summary>CS2WASM_EAGER_HOLDS=1 (at compile time): a hold is let go as soon as it is not wanted, the way before
-        /// stale holds (docs/AUDIT.md, holds kept once made).</summary>
-        [Intrinsic] static extern bool EagerHolds();
-        /// <summary>An owned member keeps a hold once made (without threads; UpdateHold).</summary>
+        /// <summary>CS2WASM_STALE_HOLDS=1 (at compile time, an experiment): an owned member keeps a hold once made, without
+        /// threads (docs/AUDIT.md, holds kept once made: 90% fewer hold changes in the self-hosted compiler, its time the
+        /// same, its peak memory 12% more, which is unexplained, so not the default).</summary>
+        [Intrinsic] static extern bool StaleHolds();
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-        static bool StickyHolds() => !ThreadMode() && !EagerHolds();
+        static bool StickyHolds() => !ThreadMode() && StaleHolds();
+
+        // A member under a top whose check at the drop failed has a mark in its note word (even; a top's own note is odd):
+        // 2 if that check failed for members held from outside (the top's number counts them, TopHeld walks to it), 4 if
+        // for references from outside what it owns (NoteOutside walks to it). A walk only for the kind whose number is
+        // kept: in the self-hosted compiler 26 million walks to a top, most for marks of checks of the other kind.
+        const int MarkHeld = 2, MarkOutside = 4;
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static bool HeldMarked(int note) => (note & (1 | MarkHeld)) != 0;
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static bool OutsideMarked(int note) => (note & (1 | MarkOutside)) != 0;
         static long s_dsCalls, s_dsWalked, s_dsDead, s_dsFailInside, s_dsFailHeld, s_dsMax, s_dsFromRelease, s_dsFromUnlink, s_dsTops, s_dsTopHops, s_dsTopMarked, s_dsTopFar;
         static int s_dsBuf;
         static void DsNum(ref int at, string label, long v)
@@ -622,8 +632,8 @@ namespace Cs2Wasm.Runtime
         }
         // (and, with it, how often each path of the arena operations runs: OpStat's numbers, printed with DsPrint)
         static int s_opStats;
-        const int OpN = 26;
-        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up";
+        const int OpN = 28;
+        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast";
         // (a constant test where it is asked, so that without the diagnosis nothing is left of it, not even a call)
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static void OpStat(int k) { if (DropStats()) OpStatCount(k); }
@@ -2498,7 +2508,7 @@ namespace Cs2Wasm.Runtime
         static void ClearMark(int m)
         {
             if ((PLM(m) & 1) == 0) return;
-            PSM(m, 2);
+            PSM(m, MarkHeld | MarkOutside);
             if (!ThreadMode()) s_failedTops--; else Atomic.Add32(ref s_failedTops, -1);
         }
 
@@ -2600,7 +2610,7 @@ namespace Cs2Wasm.Runtime
                 // NoteOutside look for the top of a noted member only. A member that comes under the top later is in
                 // none of its numbers, so what it does changes none of them: the walk up for every count of every
                 // member, most of them under no such top, was a seventh of the self-hosted compiler's time)
-                for (int i = 0; i < s_trN; i++) { int m = Mem.LoadI32(s_trQ + 4 * i); PS(m, 24, PL(m, 24) & ~Dying); if (m != x && PLM(m) == 0) PSM(m, 2); }
+                for (int i = 0; i < s_trN; i++) { int m = Mem.LoadI32(s_trQ + 4 * i); PS(m, 24, PL(m, 24) & ~Dying); if (m != x && (PLM(m) & 1) == 0) PSM(m, PLM(m) | (inside ? MarkHeld : MarkOutside)); }
                 // (the note: odd; bit 1 clear, how many of them outside code holds, TopHeld; set, how many references
                 // from members outside what it owns are left into it, NoteOutside)
                 PSM(x, inside ? (held << 2) | 1 : (outside << 2) | 3);
@@ -2628,7 +2638,7 @@ namespace Cs2Wasm.Runtime
         /// last (d): the top's number; at zero the top is looked at again. Returns the top to look at, or 0.</summary>
         static int TopHeld(int p, int d)
         {
-            if (PLM(p) == 0) return 0;
+            if (!HeldMarked(PLM(p))) return 0;
             int t = Top(p);
             if (t == 0) return 0;
             int o = PLM(t);
@@ -2643,7 +2653,7 @@ namespace Cs2Wasm.Runtime
         /// is looked at again. Returns the top to look at, or 0. (A reference from inside changes nothing.)</summary>
         static int NoteOutside(int member, int container, int d)
         {
-            if (PLM(member) == 0) return 0;
+            if (!OutsideMarked(PLM(member))) return 0;
             int t = Top(member);
             if (t == 0) return 0;
             int o = PLM(t);
@@ -2658,8 +2668,24 @@ namespace Cs2Wasm.Runtime
         public static void ArenaRetain(int p)
         {
             OpStat(14);
+            // (without threads, its usual case first, with no call: the member's first outside reference (count -2), its
+            // record not merged into another (ArenaOf would follow it), under no top whose number of held members is
+            // kept (TopHeld has nothing to do), and its hold settled: with no up-reference below it, or holding its owner
+            // already, as one more outside reference wants (UpdateHold has nothing to do))
+            if (!ThreadMode())
+            {
+                int ar0 = PL(p, 16), fl0 = PL(p, 24);
+                if (Mem.LoadI32(p) == -2 && Mem.LoadI32(ar0 + 16) == 0 && (s_failedTops == 0 || !HeldMarked(PLM(p)))
+                    && ((uint)fl0 < UOne ? (fl0 & Held) == 0 : (fl0 & Held) != 0 && PL(p, 4) - ((fl0 & MultMask) >> 3) + 1 > 0))
+                {
+                    Mem.StoreI32(p, -3);
+                    Mem.StoreI32(ar0, Mem.LoadI32(ar0) + 1);
+                    OpStat(26);
+                    return;
+                }
+            }
             int old = Atomic.Add32(ref Mem.RefI32(p), -1);
-            if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); if (s_failedTops != 0 && PLM(p) != 0) TopHeld(p, 1); }
+            if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); if (s_failedTops != 0 && HeldMarked(PLM(p))) TopHeld(p, 1); }
             if ((uint)PL(p, 24) >= UOne && !HoldSettled(p)) UpdateHold(p);
         }
 
@@ -2667,6 +2693,26 @@ namespace Cs2Wasm.Runtime
         public static void ArenaRelease(int p)
         {
             OpStat(15);
+            // (without threads, its usual case first, with no call: the member's last outside reference goes (count -3),
+            // its record not merged, other members of the arena still referred to from outside (the arena lives), the
+            // arena not busy, the member still referred to from inside (it lives), owned and not dying (the check at the
+            // drop is not for it), under no top whose number of held members is kept (TopHeld), and its hold settled:
+            // with no up-reference below it and not holding, or holding while others than its owner still refer to it
+            // from inside (UpdateHold))
+            if (!ThreadMode() && !Checked())
+            {
+                int ar0 = PL(p, 16), fl0 = PL(p, 24), total0 = Mem.LoadI32(ar0) - 1, in0 = PL(p, 4);
+                if (Mem.LoadI32(p) == -3 && Mem.LoadI32(ar0 + 16) == 0 && total0 != 0 && (Mem.LoadI32(ar0 + 12) & ArenaBusy) == 0 && in0 != 0
+                    && (fl0 & (Owned | Dying)) == Owned && (s_failedTops == 0 || !HeldMarked(PLM(p)))
+                    && ((uint)fl0 < UOne ? (fl0 & Held) == 0 : ((fl0 & Held) != 0) == (in0 - ((fl0 & MultMask) >> 3) > 0)))
+                {
+                    Mem.StoreI32(p, -2);
+                    Mem.StoreI32(ar0, total0);
+                    if (DropStats()) s_dsFromRelease++;
+                    OpStat(27);
+                    return;
+                }
+            }
             int w = Atomic.Add32(ref Mem.RefI32(p), 1) + 1;
             // (checked: a member released with no outside reference counted on it, a release too many or of an inside
             // reference; it would read as immortal, -1, from here on)
@@ -2684,7 +2730,7 @@ namespace Cs2Wasm.Runtime
             // (kept by what it owns alone, or under a top that was: the check at the drop)
             if (w == -2)
             {
-                int t = s_failedTops != 0 && PLM(p) != 0 ? TopHeld(p, -1) : 0;
+                int t = s_failedTops != 0 && HeldMarked(PLM(p)) ? TopHeld(p, -1) : 0;
                 if (DropStats()) s_dsFromRelease++;
                 if (t != 0 && Dropped(t)) { DrainKills(); return; }
                 // (a top a check failed for: again only when the number of its members outside code holds is zero, TopHeld)
@@ -2861,7 +2907,7 @@ namespace Cs2Wasm.Runtime
                 return val;
             }
             PS(val, 4, PL(val, 4) + 1);
-            if (s_failedTops != 0 && PLM(val) != 0) NoteOutside(val, container, 1);
+            if (s_failedTops != 0 && OutsideMarked(PLM(val))) NoteOutside(val, container, 1);
             if (i >= 0) SetSlotBits(container, i, 1);
             else if (slot == 0 || s_visitElem != 0)
             {
@@ -2969,7 +3015,7 @@ namespace Cs2Wasm.Runtime
                     // through it at each move)
                     // (NoteOutside looks at the member's note before it walks to the top: most members have none. The
                     // walk to the top here first, to see it was not far, was a million walks of six hops a parse)
-                    int back = s_failedTops != 0 && PLM(old) != 0 ? NoteOutside(old, container, -1) : 0;
+                    int back = s_failedTops != 0 && OutsideMarked(PLM(old)) ? NoteOutside(old, container, -1) : 0;
                     bool died = back != 0 && Dropped(back);
                     if (!died && back != old && (ownerEdge || (PLM(old) & 1) == 0) && DropCandidate(old)) died = Dropped(old);
                     gone = died && s_watchHit != 0;

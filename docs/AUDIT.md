@@ -1334,8 +1334,26 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     falling (a cascade over S): about the same visits, once per structure that dies, instead of two words per first
     or last outside reference of every member. The failing checks stay what they are (they are notes of real support).
   - Kept apart: with threads the old way (a group's holds are changed under its lock; the stale-hold rule needs the
-    survivors' list per thread, not done). `CS2WASM_EAGER_HOLDS=1` (at compile time) is the old way without threads
-    too.
+    survivors' list per thread, not done).
+  - **Measured, and not the default** (`CS2WASM_STALE_HOLDS=1` turns it on, without threads). The suite passes with it
+    in both modes, the cycle tests and test 185 included (a case added: a held member moved out of a let-go subtree,
+    then let go). In the self-hosted compiler (hello world, counters on, `CS2WASM_DROP_STATS=1`) hold changes fall
+    from 2.59 million to 0.25 million and those up the chain from 0.43 million to 0.01 million, but its time moves
+    within the noise (10.47 against 10.25 s, interleaved, NativeAOT-LLVM 5.23 s) and **its peak memory rises 12%**
+    (4,669 to 5,252 pages: 1,500 destructions fewer, 3,800 members fewer leaving their arena), which this
+    design's argument above does not account for: some structure that died by counts falling is kept, by a path the
+    cases above miss. Holds were not where the time is: the counters say the self-hosted compiler makes 27 million
+    first and 28 million last outside references through the slow path, and 25 million walks to a top (102 million
+    hops) for members under a failed check, against 2.6 million hold changes.
+  - **What went in instead (default):** (1) a mark of the kind of failed check a member is under (MarkHeld: the
+    check failed for members held from outside, whose number TopHeld keeps; MarkOutside: for references from outside
+    what the top owns, NoteOutside's): a walk to the top only for the kind whose number is kept (25.3 to 19.6 million
+    walks, 102 to 66 million hops). (2) ArenaRetain's and ArenaRelease's usual case first, with no call, without
+    threads: the record not merged, no held mark, the hold settled as UpdateHold would leave it, and for a last
+    reference the arena still referred to from outside, the member still from inside, owned and not dying (65% of
+    first and 62% of last outside references; in the parse 79% and 80%). Self-hosted compiler 10.47 to 10.27 s
+    (3 interleaved rounds; NativeAOT-LLVM 5.38 s), the same peak memory, byte-identical output; suite 197 passed
+    checked and as shipped.
 
 ### Direction (revised 2026-11-18 with the owner)
 
