@@ -916,6 +916,44 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   canonical forms do), and which virtual overrides of the Linq iterators a call can reach. Also left in the data:
   3,476 full names (1 MB) the cast-failure helpers keep (`rt.throw_cast`, one literal per target type).
 
+- **Self-hosted compiler's memory (stream L of docs/FINISH.md, 2026-11-20): 568.9 MB to 482.9 MB.**
+  - The report: `CS2WASM_MEMSTATS=1` at compile time. The runtime goes through the heap at every growth of the memory
+    (the table's word per granule, each page's blocks: a block's first word says what it is) and prints a line;
+    the export `cs2wasm_memstats` (host/run.mjs calls it at the end) prints the last growth's state and the end's in
+    full: pages and blocks per size class (in use, objects, cycle-capable, members), large blocks, free runs, empty
+    pages, members and which of their words are used, arena records, the 60 types with the most bytes. Its records
+    are made at the heap's start, so it allocates nothing while it looks; its hooks are intrinsics the compiler
+    emits only when asked (`if (MemStatsOn())` around a call still cost hello world 430 bytes). A diagnosis, not a
+    walk the program does: nothing is compiled in without the variable.
+  - Found (hello world, no threads): the heap only grows, and at its peak holds the objects .NET's heap holds after a
+    full collection at the same point of the compilation (dotnet-dump of the .NET-hosted compiler: 4.74 million
+    objects, by type the same counts): what cs2wasm frees, it frees when .NET could, and the gap is layout. The
+    allocator is not where it goes: 4 MB held free in pages of small blocks, 1 MB in free runs, about 1.5 MB in the
+    granule rounding of large blocks. Where it went: 3.7 million arena members each had a block of 48 bytes of words
+    (175 MB) and an 8-byte prefix (30 MB), and almost every cycle-capable object was a member, so the words being
+    made only when first written saved nothing; objects 204 MB small and 86 MB large (String 110 MB, the library
+    sources mostly); 36 MB of data below the heap.
+  - Cut 1: the words are in the member's block, before its header. A word is one load (was two, the pointer first).
+  - Cut 2: of the nine words, two are rare: the container waiting to own the member (6% of members) and the note of
+    a failed check at the drop (5%). They are in 8 bytes of their own, made when one is first written and freed with
+    the member (or when it leaves its group); the block's first word, the tag that says a block holds a
+    cycle-capable object, is PrefixMark less their address (below -1 either way, so ObjectOf still knows the block).
+    The owner took the waiting container's place. A member: 56 bytes to 32. With threads 40: the group's lock word
+    (stream C's, which another thread reads without the group's lock: KeyStripe) is the second word of the block,
+    and the count word stays clear of a free block's link.
+  - Cut 3: the table StackFrame.GetMethod looks frames up in (rt.frame_methods) kept each name as a string literal:
+    57,000 in the self-hosted compiler, about 12.5 MB of its memory. One blob of UTF-8 names now (compared with the
+    frame's string as decoded code points); data 35.7 to 29.2 MB.
+  - Measured, interleaved (`tools/selfhost-ab.sh` prints each run's peak now), 4 rounds: main 199572c 14.6 s /
+    568.9 MB; stream L 14.0 s / 482.9 MB; NativeAOT-LLVM 5.5 s / 322.2 MB (its peak.cjs, the same measure as
+    tools/bench.mjs takes of both). micro --baseline 1.87x on both; bench 0.95x on both, 16.0 MB (the 16 MB floor);
+    hello world 27,812 bytes unchanged; programs with arenas about 2 KB smaller.
+  - **What is left above NativeAOT's 322 MB is per object:** 32 bytes before each of 3.7 million members (120 MB:
+    streams I and J take types out of the cycle graph), a 12-byte header against NativeAOT's 8 (the hash word),
+    29 MB of data (19 MB type tables, reflection records and the frame names, 4.7 MB string literals, 4.1 MB the
+    library sources), and the memory's growth by an eighth
+    (about 30 MB above the heap's top at the end).
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:
