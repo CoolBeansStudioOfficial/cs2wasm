@@ -212,7 +212,7 @@ internal sealed class WasmModule
                 // small enough to inline only then. The functions it went into are cleaned again.
                 var mayThrow = ComputeMayThrow();
                 var leafExpanded = ExpandLeafReleases();
-                var again = Inliner.Run(Functions, mayThrow, tiny: true);
+                var again = Inliner.Run(Functions, mayThrow, tiny: true, fastPaths: true);
                 // (twice: what went into a function the first time may itself call one small enough now, a getter that
                 // forwards to a helper whose body folded to a constant once what it called went in: Unsafe.SizeOf<T>,
                 // merged with another function that returns the same constant, is inlined only in this round, and

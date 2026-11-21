@@ -34,15 +34,17 @@ static class Inliner
     static readonly int s_exp = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_EXP_INLINE"), out var x) ? x : 0;
 
     /// <summary>Returns the functions it changed.</summary>
-    public static HashSet<WasmFunction> Run(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow, bool tiny = false)
+    /// <summary>fastPaths (second round, once): the fast paths of FastPathIf go in too (once only: the call each leaves
+    /// on its other path is a call of the same function).</summary>
+    public static HashSet<WasmFunction> Run(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow, bool tiny = false, bool fastPaths = false)
     {
-        if (s_exp > 0) { for (int round = 0; round < 3; round++) RunOnce(functions, [], false); return []; }
-        return RunOnce(functions, mayThrow, tiny);
+        if (s_exp > 0) { for (int round = 0; round < 3; round++) RunOnce(functions, [], false, false); return []; }
+        return RunOnce(functions, mayThrow, tiny, fastPaths);
     }
 
     /// <summary>tiny: only bodies of a few instructions that call nothing and have no locals (a getter once its local
     /// traffic is gone): their copy is no larger than the call.</summary>
-    static HashSet<WasmFunction> RunOnce(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow, bool tiny)
+    static HashSet<WasmFunction> RunOnce(List<WasmFunction> functions, HashSet<WasmFunction> mayThrow, bool tiny, bool fastPaths)
     {
         var changed = new HashSet<WasmFunction>();
         var callers = new Dictionary<WasmFunction, int>();
@@ -110,7 +112,7 @@ static class Inliner
         // (the second round: a function whose result is ready without a call most of the time, a getter that makes
         // its value once, `_x ?? Make()`: that test goes in, and the call stays for the other case)
         var fast = new Dictionary<WasmFunction, int>();
-        if (tiny && s_fastPath > 0)
+        if (tiny && fastPaths && s_fastPath > 0)
             foreach (var g in functions)
                 // (where it is called from more than a couple of places: a getter used once or twice, at a start, is
                 // left a call; the parser's current token is read from hundreds)
@@ -223,7 +225,8 @@ static class Inliner
     };
 
     /// <summary>A function of the shape `test; if { anything } end; value; return`, where the test and the value are
-    /// pure (Pure) and short: the index of its `if`, else null. At a call site the test and the value go in, and the
+    /// pure (Pure) and short, and the test is whether a value read from memory is made yet: the index of its `if`,
+    /// else null. At a call site the test and the value go in, and the
     /// `if` calls the function itself (which runs its test again, as nothing was changed meanwhile): what is left out
     /// of the caller runs in the function's own frame, so a trace is the same. Program and library methods only, not
     /// marked NoInlining.</summary>
@@ -234,6 +237,13 @@ static class Inliner
         int at = 0;
         while (at < b.Count && Pure(b[at])) at++;
         if (at == 0 || at >= b.Count || b[at].Op != Op.If || b[at].Ref != null) return null;
+        // (the test is of a value read from memory that is not made yet: a field that is null, `_x ?? Make()`, or a
+        // type's initializer that has not run. A test of anything else may well hold most of the time, Append's
+        // `value != null`, and then the copy is only more work before the same call)
+        static bool IsLoad(Op op) => op >= Op.I32Load && op <= Op.I64Load32U;
+        bool lazy = at >= 2 && b[at - 1].Op == Op.I32Eqz && IsLoad(b[at - 2].Op)
+            || at >= 3 && b[at - 1].Op == Op.I32Ne && b[at - 2].Op == Op.I32Const && b[at - 2].Imm == -1 && IsLoad(b[at - 3].Op);
+        if (!lazy) return null;
         // the `if`'s end (no `else`)
         int depth = 0, end = -1;
         for (int k = at; k < b.Count; k++)
