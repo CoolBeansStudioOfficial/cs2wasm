@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- tools/roslyn-bind-bench compiled by NativeAOT to WebAssembly (NativeAOT-LLVM, browser-wasm, linked by Emscripten
+       with the host's files visible through tools/selfhost-naot-wasm/pre.js), as tools/selfhost-naot-wasm builds the
+       compiler itself: the side tools/roslyn-bind-bench.sh compares cs2wasm's build with. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+    <PublishTrimmed>true</PublishTrimmed>
+    <SelfContained>true</SelfContained>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Optimize>true</Optimize>
+    <AssemblyName>bind-bench-naot</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <MSBuildEnableWorkloadResolver>false</MSBuildEnableWorkloadResolver>
+    <NoWarn>$(NoWarn);IL2026;IL2104;IL3053;IL3000;IL3002</NoWarn>
+    <EmccExtraArgs>-lnodefs.js -sFORCE_FILESYSTEM=1 --pre-js $(MSBuildProjectDirectory)/../selfhost-naot-wasm/pre.js -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=16MB -sINITIAL_MEMORY=256MB</EmccExtraArgs>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Bench.cs" />
+    <Compile Include="NaotMain.cs" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.12.0" />
+    <PackageReference Include="Microsoft.DotNet.ILCompiler.LLVM" Version="10.0.0-*" />
+    <PackageReference Include="runtime.$(NETCoreSdkPortableRuntimeIdentifier).Microsoft.DotNet.ILCompiler.LLVM" Version="10.0.0-*" />
+  </ItemGroup>
+</Project>
