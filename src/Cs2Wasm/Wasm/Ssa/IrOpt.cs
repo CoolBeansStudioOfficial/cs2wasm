@@ -25,10 +25,11 @@ static class IrOpt
         && !f.Name.StartsWith("destroy ", StringComparison.Ordinal) && !f.Name.StartsWith("framedisplay.", StringComparison.Ordinal)
         && !f.Name.StartsWith("arena.", StringComparison.Ordinal);
 
-    public static void Run(List<WasmFunction> fns, HashSet<WasmFunction> mayThrow, bool threads)
+    public static void Run(List<WasmFunction> fns, Func<HashSet<WasmFunction>> mayThrowOf, bool threads)
     {
         if (threads || !s_pairs && !s_gvn && !s_strip) return;
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        var mayThrow = mayThrowOf();
         var e = Effects.Compute(fns, mayThrow);
         if (s_strip)
         {

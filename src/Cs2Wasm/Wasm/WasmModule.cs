@@ -282,7 +282,7 @@ internal sealed class WasmModule
             else if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
                 foreach (var f in Functions) if (!f.IsImport && SmallBlocks.Run(f)) Peephole.Run(f);
             // (the IR optimizer's spike on the final bodies, off by default: Ssa/IrOpt.cs)
-            Ssa.IrOpt.Run(Functions, ComputeMayThrow(), UsesThreads);
+            Ssa.IrOpt.Run(Functions, ComputeMayThrow, UsesThreads);
             // (the counts' common case written out in code that runs often: RcFastPaths.cs)
             RcFastPaths.Run(this, UsesThreads);
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_IF_CONVERT") != "1") foreach (var f in Functions) if (!f.IsImport) IfConvert.Run(f);
