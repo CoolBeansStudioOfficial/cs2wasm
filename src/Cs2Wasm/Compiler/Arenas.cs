@@ -138,7 +138,8 @@ internal sealed class Arenas
         s.AddValue(D.Types.Canonical(slotType));
     }
 
-    static readonly bool s_arenaDebug = Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1";
+    static readonly bool s_arenaSources = Environment.GetEnvironmentVariable("CS2WASM_ARENA_SOURCES") == "1";
+    static readonly bool s_arenaDebug =Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1";
     List<(Site, int)>? _wide;
     static readonly bool s_noFreshSites =Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_SITES") == "1";
     readonly Dictionary<string, bool> _keepsThis = [];
@@ -549,6 +550,14 @@ internal sealed class Arenas
             if (containers.Count == 0) continue;
             var targets = s.Values.Count == 1 ? TargetsOf(s.Values.Values.First()) : s.Values.Values.SelectMany(TargetsOf).Distinct().ToList();
             if (s.TargetIds.Count > 0) targets = [.. targets.Concat(s.TargetIds.Order()).Distinct()];
+            // (CS2WASM_ARENA_SOURCES=1: what the slot holds by where its values come from, when that is narrower)
+            if (s_arenaSources && D.Sharing is { } shf && targets.Count > 8 && shf.SiteTypeIds(s, 2000) is { } refined)
+            {
+                var keep = new HashSet<int>(targets);
+                var narrowed = refined.Where(keep.Contains).Order().ToList();
+                if (s_arenaDebug && narrowed.Count < targets.Count) Console.Error.WriteLine($"narrowed site {s.Key}: {targets.Count} to {narrowed.Count}");
+                targets = narrowed;
+            }
             targTicks += sw.ElapsedTicks - tc;
             if (targets.Count == 0) continue;
             // (CS2WASM_ARENA_DEBUG: the sites that join thousands of types, an object slot's, the hubs of a large group)

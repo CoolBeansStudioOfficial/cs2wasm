@@ -72,6 +72,15 @@ Also: a struct copied into a container that cannot be a group's member now store
 Roslyn's `BlendedNode` copies go into `SyntaxParser`, which is in the big group; methods marked AggressiveInlining
 are inlined everywhere up to 24 (was 16), which takes the runtime's word read (`Rt.PL`, 2.8% of the profile as a
 call) into every caller.
+**Tried the same day: value sources per site** (`Sharing.SiteTypeIds`, `CS2WASM_ARENA_SOURCES=1`, off by default; a
+program with threads only, where the sources are recorded). Each site's targets narrowed to the types its recorded
+sources lead to, followed through parameters, results and slots: in test 088, 30 sites narrow (a task's
+continuation list 35 types to 4, a thread start's 35 to 2), but every wide `object` slot stays wide and the groups
+do not change (876 cycle types either way). Followed far enough, each reaches a value recorded as any object: a
+caller further up passes an `object` whose source the recorder does not know (a boxed generic value, a conversion,
+an interface call's result). So the walk is right but the recording is too coarse: what this lever needs is sources
+recorded precisely at every store, argument and return (and recorded without threads too), which is work across
+the whole front end, not a pass of its own.
 
 ## Work streams
 
