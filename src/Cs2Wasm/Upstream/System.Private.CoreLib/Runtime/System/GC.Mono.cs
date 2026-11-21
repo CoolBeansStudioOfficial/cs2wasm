@@ -87,6 +87,8 @@ namespace System
 
         public static void Collect()
         {
+            // (CS2WASM_ARENA_REPORT=1: what arenas are left, a diagnosis)
+            if (Cs2Wasm.Runtime.Rt.ArenaReportOn()) Cs2Wasm.Runtime.Rt.ArenaReportNow();
             InternalCollect(MaxGeneration);
         }
 
