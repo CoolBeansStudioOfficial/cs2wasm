@@ -1017,6 +1017,38 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   function with a frame, kept for size), struct helpers (`rt.copy_assign` and its retains 0.4 s), dispatch stubs (a
   call through a binary search: inlined vtable calls need the table and its analysis buckets), and the parser's own
   code at 2.2x, flat.
+- **Stream K, round 2 (2026-11-21), on main 3810a98 (green nodes out of the cycle graph).** Profiled again against a
+  NativeAOT-LLVM build of the same sources, both eager: hello world 13.1 s against 5.9 s; code 7.2 against 3.0 (the
+  methods found on both sides 1.40x), runtime 4.7 s, of it the count functions' own time 1.36 s (rt.release 0.64,
+  rt.retain 0.48, rt.release_range 0.23), rt.frame 0.14, dispatch stubs 0.32. Measured on `tools/roslyn-parse-bench.cs`
+  and micro in the baseline tier (one locked round per variant), the self-hosted compiler at the end. Kept:
+  - Range releases pass all-zero elements eight bytes at a time (`rt.release_range` of 4- and 8-byte elements): a list
+    builder's array is cleared whole at every reuse and is nulls past its count (0.20 s of rt.release_range was under
+    rt.array_clear). Neutral on the parser bench and micro, which reuse no large builders; part of the self-hosted
+    result below. `CS2WASM_NO_ZERO_SKIP=1`.
+  - The counts' common case written out where they are counted (`Wasm/RcFastPaths.cs`, programs without threads): a
+    retain of an object with a positive count adds one in place, a release of one whose count is above one takes one,
+    anything else is the call as before. The upper bound first: the whole functions inlined everywhere
+    (`CS2WASM_INLINE_RC=1`) made the parser bench 7% faster at 2.1x the module size. The fast path everywhere gave
+    6%; only in the functions a loop calls, three calls deep, 4% (280.5 to 269 ms) at 13% more code there, micro 0.972.
+    Not in the destroy functions: in hello world their many field releases were nearly all the growth (27,843 to
+    30,823 bytes with them, 27,912 without). `CS2WASM_NO_RC_FAST`, `CS2WASM_RC_FAST_DEPTH`, `CS2WASM_RC_FAST_ALL`,
+    `CS2WASM_RC_FAST_DESTROY`, `CS2WASM_RC_FAST_DEBUG`.
+  - Frames of up to 64 bytes taken in place in the same hot functions (`Frames.cs`: the stack's end checked as
+    rt.frame checks it, the pointer moved, the frame cleared word by word): parser bench 265 to 257.5 ms (median of
+    12, quiet machine). Hello world unchanged. `CS2WASM_FRAME_INLINE=n`.
+  Tried and dropped: the runtime's struct helpers (copy, move, retain and release of a struct's references) inlined in
+  the hot functions: no gain (best 253 ms either way), 6% more code. Parked on branch `claude/k2-throw-only-wip`:
+  borrows across calls whose stores happen only on the way to a throw (a second store summary of what a call can
+  store and still return, with which functions can catch). Alone it adds no borrow in the parser probe (152); taking
+  releases as storing nothing would give 185, so the lever is typed releases: what a release of static type T can
+  destroy (`SyntaxNodeCache.TryGetNode` goes through `ConditionalWeakTable.Container`'s finalizer, reachable from any
+  release today).
+  Result: the self-hosted compiler (no threads, the same sources built by each compiler) 10.26 s to 9.94 s median wall
+  time over 8 interleaved rounds on a quiet machine, faster in every round (NativeAOT-LLVM 5.03 s: 2.04x to 1.98x;
+  processor time 1% less); 72,095,418 to 81,240,724 bytes (still 0.63x NativeAOT-LLVM's 129 MB). The four functions'
+  own time 1.50 s to 0.92 s in the profile (taken on a busier machine: 20.4 s total against 13.1). Hello world 27,745
+  to 27,912 bytes. Suite 195 passed checked and as shipped (rebased on main 5f7c98d).
 
 - **Self-hosted compiler's memory (stream L of docs/FINISH.md, 2026-11-20): 568.9 MB to 482.9 MB.**
   - The report: `CS2WASM_MEMSTATS=1` at compile time. The runtime goes through the heap at every growth of the memory

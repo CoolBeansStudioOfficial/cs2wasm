@@ -107,7 +107,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 |---|---|---|---|
 | I. Value sources everywhere | record sources precisely at every store, argument and return (boxed generics, conversions, interface results, conditionals), also without threads; then `Sharing.SiteTypeIds` on by default where it narrows | Compiler/Expressions.cs, Calls.cs, Sharing.cs | done 2026-11-21: on by default, sound (test 171), but the self-hosted compiler's group only 20,717 to 20,636 types; its bound with every source known is 20,555 (Log) |
 | J. Owned arrays | an array filled while only its maker knows it and then kept by a new object's readonly field is a node of its own in the type graph (Roslyn's green nodes' child arrays against its builders' arrays) | Compiler/OwnedArrays.cs (new), Arenas.cs | done 2026-11-20: green nodes out of the cycle graph (268 types); self-hosted 14.1 to 11.9 s, 470 to 295 MB |
-| K. Baseline-tier code quality | from the side-by-side profile: counted reads whose count can sink to the one path that keeps the value, static-initializer checks, constant-length bounds checks, frame setup, small calls left | Wasm/*, Compiler where a pass needs a fact | done 2026-11-20: six changes (Log); micro 1.876x to 1.847x, self-hosted 2.74x to 2.65x NativeAOT (quiet rounds); TryGetNode's count needs per-array element stores (left) |
+| K. Baseline-tier code quality | from the side-by-side profile: counted reads whose count can sink to the one path that keeps the value, static-initializer checks, constant-length bounds checks, frame setup, small calls left | Wasm/*, Compiler where a pass needs a fact | done 2026-11-20: six changes (Log); micro 1.876x to 1.847x, self-hosted 2.74x to 2.65x NativeAOT (quiet rounds). Round 2 done 2026-11-21: count fast paths, frames in place, zero-skipping range releases; self-hosted 2.04x to 1.98x. Left: typed releases for borrows (branch claude/k2-throw-only-wip), dispatch stubs |
 | L. Self-hosted memory | where the 470 MB against 239 go (member words, counts, allocator waste by size class, pages held) and the structural cuts | Boundary/Runtime.cs allocator (after C merges) | first pass done: report `CS2WASM_MEMSTATS=1`; 568.9 to 482.9 MB (members' words inline, sparse words aside, frame names in UTF-8); the rest is per object (Log) |
 
 Tools for them: `tools/profcompare.mjs` (two profiles by category and by Roslyn method), `tools/profsize.mjs` (self
@@ -273,3 +273,11 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   its value against its slot type, and every array type of that element type holds it (Compiler/RefStores.cs, AUDIT).
   Self-hosted compiler (main 3810a98, before stream I): groups and cycle types unchanged (61, 38,881), time the same (10.68 s against 10.74),
   output byte-identical. Suite 193 passed checked and as shipped.
+- 2026-11-21, stream K round 2 (on main 3810a98): profiled against NativeAOT-LLVM of the same sources (13.1 s against
+  5.9 s, eager; the count functions' own time 1.36 s, the largest share left in reach). Kept: the counts' common case
+  written out in the functions a loop calls three deep (`Wasm/RcFastPaths.cs`, no threads; parser bench 4%, micro
+  0.972; the whole functions inlined everywhere were 7% at twice the size), frames up to 64 bytes taken in place there
+  (parser bench 2.8%), range releases skipping all-zero elements. Self-hosted compiler 10.26 to 9.94 s on a quiet
+  machine, 8 interleaved rounds, faster in each (2.04x to 1.98x NativeAOT-LLVM), 72.1 to 81.2 MB. Hello world 27,745 to
+  27,912 bytes. Suite 195 passed checked and as shipped (rebased on 5f7c98d). Dropped: struct helpers inlined (no gain). Parked: borrows
+  across throw-only stores (branch claude/k2-throw-only-wip), which pay only with typed releases. docs/AUDIT.md.
