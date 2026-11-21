@@ -594,12 +594,94 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_NO_DROP_CHECK=1 (a measurement, at compile time: what a let-go structure kept by its own
         /// holds leaves is not freed): the check at the drop is off.</summary>
         [Intrinsic] static extern bool NoDropCheck();
+        /// <summary>CS2WASM_NO_TAKE_IN=1 (a diagnosis, at compile time): the check at the drop tries what the top owns
+        /// alone, as before 2026-11-21 (Dropped).</summary>
+        [Intrinsic] static extern bool NoTakeIn();
         // CS2WASM_DROP_STATS=1 (a diagnosis, at compile time): the check at the drop counts what it does and says so
         [Intrinsic] static extern bool DropStats();
         /// <summary>CS2WASM_STALE_HOLDS=1 (at compile time, an experiment): an owned member keeps a hold once made, without
         /// threads (docs/AUDIT.md, holds kept once made: 90% fewer hold changes in the self-hosted compiler, its time the
         /// same, its peak memory 12% more, which is unexplained, so not the default).</summary>
         [Intrinsic] static extern bool StaleHolds();
+        /// <summary>CS2WASM_ARENA_REPORT=1 (a diagnosis, at compile time): GC.Collect prints every arena still there, its
+        /// members, and those of them referred to from outside (what keeps it).</summary>
+        [Intrinsic] static extern bool ArenaReport();
+        public static bool ArenaReportOn() => ArenaReport();
+        static int s_repEv, s_repEvN;
+        static void RepEv(int kind, int a, int b, int c)
+        {
+            if (s_repEv == 0) s_repEv = Alloc(16 * 8192);
+            int i = s_repEvN & 8191; s_repEvN++;
+            Mem.StoreI32(s_repEv + 16 * i, kind); Mem.StoreI32(s_repEv + 16 * i + 4, a); Mem.StoreI32(s_repEv + 16 * i + 8, b); Mem.StoreI32(s_repEv + 16 * i + 12, c);
+        }
+        static int s_repQ, s_repN, s_repCap, s_repTarget, s_repHits, s_repHitN, s_repRefused, s_repRefusedFlags;
+        static void ReportWho(int head, int target)
+        {
+            int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
+            s_repTarget = target;
+            if (s_repHits == 0) s_repHits = Alloc(16 * 12);
+            s_repHitN = 0;
+            int m = head, k = 0;
+            do
+            {
+                s_visitMode = 20; s_visitObj = m; s_visitElem = 0;
+                ArenaVisitObject(m);
+                m = PL(m, 12); k++;
+            } while (m != head && k < 100000);
+            s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se;
+            for (int h = 0; h < s_repHitN; h++)
+            {
+                int o = Mem.LoadI32(s_repHits + 12 * h);
+                ChkSay("      from " + TypeName(Borrow<object>(o)) + " @" + o + " slot+" + Mem.LoadI32(s_repHits + 12 * h + 4) + " bits " + Mem.LoadI32(s_repHits + 12 * h + 8) + " its owner " + PL(o, 20) + " flags " + PL(o, 24) + " note " + PLM(o) + " count " + Mem.LoadI32(o));
+            }
+        }
+        static void ReportNote(int ar)
+        {
+            if (s_repN == s_repCap)
+            {
+                int cap = s_repCap == 0 ? 256 : s_repCap * 2;
+                int nq = Alloc(cap * 4);
+                if (s_repQ != 0) { Mem.Copy(nq, s_repQ, s_repN * 4); Free(s_repQ, s_repCap * 4); }
+                s_repQ = nq; s_repCap = cap;
+            }
+            Mem.StoreI32(s_repQ + 4 * s_repN, ar);
+            s_repN++;
+        }
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static void ReportForget(int ar) { if (ArenaReport()) ReportForgetNow(ar); }
+        static void ReportForgetNow(int ar) { for (int i = 0; i < s_repN; i++) if (Mem.LoadI32(s_repQ + 4 * i) == ar) Mem.StoreI32(s_repQ + 4 * i, 0); }
+        public static void ArenaReportNow()
+        {
+            if (!ArenaReport()) return;
+            ChkSay("checks at the drop not made (arena busy or shared): " + s_repRefused + ", flags " + s_repRefusedFlags);
+            int from = s_repEvN > 8192 ? s_repEvN - 8192 : 0;
+            for (int e = from; e < s_repEvN; e++)
+            {
+                int i = e & 8191, k = Mem.LoadI32(s_repEv + 16 * i);
+                ChkSay("ev " + e + " " + (k == 1 ? "check" : k == 2 ? "ownerless" : k == 3 ? "adopted" : "queued") + " " + Mem.LoadI32(s_repEv + 16 * i + 4) + " " + Mem.LoadI32(s_repEv + 16 * i + 8) + " " + Mem.LoadI32(s_repEv + 16 * i + 12));
+            }
+            for (int i = 0; i < s_repN; i++)
+            {
+                int ar = Mem.LoadI32(s_repQ + 4 * i);
+                if (ar == 0 || Mem.LoadI32(ar + 16) != 0) continue;
+                int n = Mem.LoadI32(ar + 8);
+                if (n == 0) continue;
+                ChkSay("arena " + ar + ": " + n + " members, " + Mem.LoadI32(ar) + " referred to from outside, flags " + Mem.LoadI32(ar + 12));
+                int head = Mem.LoadI32(ar + 4), m = head, k = 0;
+                if (head == 0) continue;
+                do
+                {
+                    int c = Mem.LoadI32(m);
+                    if (c < -2 || n <= 200 || (PL(m, 20) == 0 && (PLM(m) & 1) != 0))
+                    {
+                        ChkSay("  " + TypeName(Borrow<object>(m)) + " @" + m + " outside " + (-c - 2) + " inside " + PL(m, 4) + " owner " + PL(m, 20) + " flags " + PL(m, 24) + " note " + PLM(m));
+                        if (PL(m, 20) == 0 && PL(m, 4) != 0 && (PLM(m) & 1) != 0) ReportWho(head, m);
+                    }
+                    m = PL(m, 12);
+                    k++;
+                } while (m != head && k < 100000);
+            }
+        }
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static bool StickyHolds() => !ThreadMode() && StaleHolds();
 
@@ -1987,7 +2069,7 @@ namespace Cs2Wasm.Runtime
                 Mem.StoreI32(ar + 20, n);
                 int f = Mem.LoadI32(ar + 16);
                 if (n != 0 || f == 0) return;
-                { MemStatsRecord(-1); Free(ar, ArenaRecord); }
+                { MemStatsRecord(-1); ReportForget(ar); Free(ar, ArenaRecord); }
                 ar = f;
             }
         }
@@ -1995,6 +2077,7 @@ namespace Cs2Wasm.Runtime
         static int NewArena()
         {
             int ar = Alloc(ArenaRecord); MemStatsRecord(1);
+            if (ArenaReport()) ReportNote(ar);
             Mem.StoreI64(ar, 0); Mem.StoreI64(ar + 8, 0); Mem.StoreI64(ar + 16, 0); Mem.StoreI64(ar + 24, 0);
             return ar;
         }
@@ -2103,7 +2186,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(a + 24, Mem.LoadI32(a + 24) | Mem.LoadI32(b + 24));
             // (b's members still point to b: b points to a, for as long as one of them does)
             Mem.StoreI32(b, 0); Mem.StoreI32(b + 4, 0); Mem.StoreI32(b + 8, 0);
-            if (Mem.LoadI32(b + 20) == 0) { MemStatsRecord(-1); Free(b, ArenaRecord); }
+            if (Mem.LoadI32(b + 20) == 0) { MemStatsRecord(-1); ReportForget(b); Free(b, ArenaRecord); }
             else { Mem.StoreI32(b + 16, a); Mem.StoreI32(a + 20, Mem.LoadI32(a + 20) + 1); }
             return a;
         }
@@ -2300,6 +2383,7 @@ namespace Cs2Wasm.Runtime
             if ((fl & (Dying | Queued)) != 0) return;
             KillPush(w);
             PS(w, 24, fl | Queued);
+            if (ArenaReport()) RepEv(4, w, 0, 0);
         }
 
         /// <summary>A member without an owner whose reference a container still holds counted: that container owns it
@@ -2314,6 +2398,7 @@ namespace Cs2Wasm.Runtime
             // (as the first container to hold it would have: the ownership turns round where the member owns
             // what is above the container, a parent it referred to before it was in the parent's list)
             TakeOwnership(v, p);
+            if (ArenaReport()) RepEv(3, v, p, PL(v, 20));
         }
 
         /// <summary>TryLeave's first tests, where it is asked after an unlink: a member with outside references that no
@@ -2474,6 +2559,7 @@ namespace Cs2Wasm.Runtime
             fl &= ~Owned;
             PS(old, 24, fl);
             if ((fl & Held) == 0) PS(old, 20, 0);
+            if (ArenaReport()) RepEv(2, old, container, (fl & Held) != 0 ? 1 : 0);
         }
 
         // ---- The check at the drop (the owner's decision of 2026-11-18) ----
@@ -2489,6 +2575,34 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] static int s_trQ, s_trN, s_trCap, s_trial, s_watch, s_watchHit;
         // (every group's: threads count it atomically)
         static int s_failedTops;
+        // (Dropped: 0, the trial takes in nothing but what the top owns; else one more than how many other tops it took
+        // in, with what they own. Zero by default: an initial value would give Rt a static constructor)
+        static int s_trExt;
+        // (the tops taken in, waiting until what the top owns has been gone through; and where in the trial's list
+        // what they own starts, 0 before that)
+        [Intrinsic] static int s_tkQ, s_tkN, s_tkCap, s_trOwn;
+
+        static void TkPush(int m)
+        {
+            if (s_tkN == s_tkCap)
+            {
+                int cap = s_tkCap == 0 ? 16 : s_tkCap * 2;
+                int nq = Alloc(cap * 4);
+                if (s_tkQ != 0) { Mem.Copy(nq, s_tkQ, s_tkN * 4); Free(s_tkQ, s_tkCap * 4); }
+                s_tkQ = nq; s_tkCap = cap;
+            }
+            Mem.StoreI32(s_tkQ + 4 * s_tkN, m);
+            s_tkN++;
+        }
+
+        /// <summary>The trial's list back to its first n (what the top owns), and the tops taken in let go.</summary>
+        static void TrTruncate(int n)
+        {
+            for (int i = n; i < s_trN; i++) { int m = Mem.LoadI32(s_trQ + 4 * i); PS(m, 24, PL(m, 24) & ~Dying); }
+            for (int k = 0; k < s_tkN; k++) { int m = Mem.LoadI32(s_tkQ + 4 * k); PS(m, 24, PL(m, 24) & ~Dying); }
+            s_trN = n;
+            s_tkN = 0;
+        }
 
         static void TrPush(int m)
         {
@@ -2544,13 +2658,19 @@ namespace Cs2Wasm.Runtime
             return false;
         }
 
-        static void TrVisit(int mode)
+        static void TrVisit(int mode) => TrVisit(mode, 0);
+
+        static void TrVisit(int mode, int from)
         {
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
-            for (int i = 0; i < s_trN; i++)
+            for (int i = from; i < s_trN; i++)
             {
                 int m = Mem.LoadI32(s_trQ + 4 * i);
                 s_visitMode = mode; s_visitObj = m; s_visitElem = 0;
+                // (a member under a top taken in that code refers to: the set cannot die, and what other tops own is
+                // not gone through further, Dropped. A live structure that small ones refer into would be at each of
+                // their checks)
+                if (mode == 13 && s_trOwn != 0 && i >= s_trOwn && Mem.LoadI32(m) != -2) { s_trExt = -1; break; }
                 ArenaVisitObject(m);
                 // (what it holds of its owner is a counted reference too)
                 if (mode != 13 && (PL(m, 24) & Held) != 0)
@@ -2577,26 +2697,57 @@ namespace Cs2Wasm.Runtime
             // (a container waiting to own it refers to it: not kept by holds alone)
             if (PLW(x) != 0) return false;
             int ar = ArenaOf(x);
-            if (Mem.LoadI64(ar + 12) != 0) return false;
+            if (Mem.LoadI64(ar + 12) != 0) { if (ArenaReport()) { s_repRefused++; s_repRefusedFlags |= Mem.LoadI32(ar + 12); } return false; }
             ClearMark(x);
             s_trial = 1;
+            int held, outside; bool inside, dead;
+            // (first with the other tops that what it owns refers into, those that no code refers to and nothing owns,
+            // taken in; if that fails by a reference from outside, again by what the top owns alone, whose numbers the
+            // note keeps)
+            s_trExt = NoTakeIn() ? 0 : 1;
             // what it owns, and what they own: marked as they are found
             s_trN = 0;
             PS(x, 24, PL(x, 24) | Dying);
             TrPush(x);
             TrVisit(13);
-            // the counted references among them, off
-            TrVisit(14);
-            int held = 0, outside = 0; bool inside = true;
-            for (int i = 0; i < s_trN; i++)
+            int own = s_trN;
+            // (then the tops taken in, with what they own, and the tops those take in)
+            while (s_tkN > 0 && s_trExt > 0)
             {
-                int m = Mem.LoadI32(s_trQ + 4 * i);
-                if (Mem.LoadI32(m) != -2) held++;
-                int left = PL(m, 4);
-                if (left != 0) { inside = false; outside += left; }
+                int from = s_trN;
+                if (s_trOwn == 0) s_trOwn = from;
+                for (int k = 0; k < s_tkN; k++) TrPush(Mem.LoadI32(s_tkQ + 4 * k));
+                s_tkN = 0;
+                TrVisit(13, from);
             }
-            TrVisit(15);
-            bool dead = inside && held == 0;
+            s_trOwn = 0;
+            // (stopped at one that code refers to: what the top owns alone, the first part of the list)
+            if (s_trExt < 0) { TrTruncate(own); s_trExt = 0; }
+            while (true)
+            {
+                // the counted references among them, off
+                TrVisit(14);
+                held = 0; outside = 0; inside = true;
+                for (int i = 0; i < s_trN; i++)
+                {
+                    int m = Mem.LoadI32(s_trQ + 4 * i);
+                    if (Mem.LoadI32(m) != -2) held++;
+                    int left = PL(m, 4);
+                    if (left != 0) { inside = false; outside += left; }
+                }
+                TrVisit(15);
+                dead = inside && held == 0;
+                if (ArenaReport()) RepEv(1, x, dead ? 1 : inside ? 2 : 3, (s_trExt << 16) | (inside ? held : outside));
+                if (dead || s_trExt <= 1) break;
+                // (failed by members that code holds: all of them are what the top owns, since one under a top taken in
+                // stops the trial. That is the note, so that the last of them let go looks again, TopHeld, with what
+                // is taken in then)
+                if (inside) break;
+                // (failed by a reference from outside: again by what the top owns alone, whose numbers the note keeps)
+                TrTruncate(own);
+                s_trExt = 0;
+            }
+            s_trExt = 0;
             if (DropStats())
             {
                 s_dsCalls++; s_dsWalked += s_trN; if (s_trN > s_dsMax) s_dsMax = s_trN;
@@ -3187,6 +3338,18 @@ namespace Cs2Wasm.Runtime
         public static void ArenaVisit(int slot)
         {
             int child = Mem.LoadI32(slot);
+            if (ArenaReport() && s_visitMode == 20)
+            {
+                if (child == s_repTarget && s_repHitN < 16)
+                {
+                    int ri = s_visitElem != 0 ? -1 : SlotIndex(s_visitObj, slot);
+                    Mem.StoreI32(s_repHits + 12 * s_repHitN, s_visitObj);
+                    Mem.StoreI32(s_repHits + 12 * s_repHitN + 4, slot - s_visitObj);
+                    Mem.StoreI32(s_repHits + 12 * s_repHitN + 8, ri >= 0 ? SlotBits(s_visitObj, ri) : -1);
+                    s_repHitN++;
+                }
+                return;
+            }
             // (4: each reference, counted by the copy, as a store of it)
             if (s_visitMode == 4) { if (child != 0 && slot != s_storeSlot) ArenaLinkCore(child, s_visitArena, slot); return; }
             // (16: LinkWalk, threads)
@@ -3200,6 +3363,13 @@ namespace Cs2Wasm.Runtime
                 if (s_visitMode == 13)
                 {
                     if (PL(child, 20) == s_visitObj && (cf & (Owned | Dying)) == Owned) { PS(child, 24, cf | Dying); TrPush(child); }
+                    // (a member the set refers to that is under another top, one with no owner that no code refers to:
+                    // that top in the trial too, with what it owns. Two tops that refer into each other's trees are one
+                    // garbage structure, and each tried alone fails by the other's reference. That happens when a
+                    // member's owner goes and the one container waiting to own it next is gone too, while another
+                    // still holds it: tasks' results, test 127)
+                    else if (s_trExt > 0 && (cf & (Owned | Dying)) == 0 && Mem.LoadI32(child) == -2)
+                    { PS(child, 24, cf | Dying); TkPush(child); s_trExt++; }
                     return;
                 }
                 if ((cf & Dying) == 0) return;
@@ -3315,7 +3485,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>The arena's record goes with its last member.</summary>
         static void ArenaEmpty(int ar)
         {
-            if (Mem.LoadI32(ar + 8) == 0 && Mem.LoadI32(ar) == 0 && (Mem.LoadI32(ar + 12) & ArenaBusy) == 0) { MemStatsRecord(-1); Free(ar, ArenaRecord); }
+            if (Mem.LoadI32(ar + 8) == 0 && Mem.LoadI32(ar) == 0 && (Mem.LoadI32(ar + 12) & ArenaBusy) == 0) { MemStatsRecord(-1); ReportForget(ar); Free(ar, ArenaRecord); }
         }
 
         // While the finalizers of members that die together run, every reference to one of them is counted, from
@@ -3452,7 +3622,7 @@ namespace Cs2Wasm.Runtime
                 }
                 // (a whole arena whose member came back keeps its record, busy, for the words that name it; a part's
                 // record was dealt with when it was taken out)
-                if (link == 12 && !back) { RuntimeLock(); { MemStatsRecord(-1); Free(ar, ArenaRecord); } RuntimeUnlock(); }
+                if (link == 12 && !back) { RuntimeLock(); { MemStatsRecord(-1); ReportForget(ar); Free(ar, ArenaRecord); } RuntimeUnlock(); }
             }
             t_defRunning = 0;
         }
@@ -3556,7 +3726,7 @@ namespace Cs2Wasm.Runtime
                     m = next;
                 } while (m != first);
             }
-            { MemStatsRecord(-1); Free(ar, ArenaRecord); }
+            { MemStatsRecord(-1); ReportForget(ar); Free(ar, ArenaRecord); }
         }
 
         /// <summary>Array.Copy into an array whose elements can close a cycle: element by element, as stores.</summary>
