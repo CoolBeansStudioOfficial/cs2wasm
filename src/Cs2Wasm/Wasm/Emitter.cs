@@ -42,9 +42,20 @@ internal sealed class Emitter
     {
         if (RcSites != null && f.Name is "rt.retain" or "rt.release") NoteRcSite(f.Name);
         // (CS2WASM_COUNT_RC: the compiler code that asked for the count, with the call: the run's counts by cause)
-        if (s_countRc && f.Name is "rt.retain" or "rt.release") { Emit(Wasm.Op.Call, 0, RcCause(), f); return; }
+        if (s_countRc && (f.Name is "rt.retain" or "rt.release" || f.Name.StartsWith("rt.retain_struct") || f.Name.StartsWith("rt.release_struct") || f.Name.StartsWith("rt.copy_") || f.Name.StartsWith("rt.move_")))
+        { Emit(Wasm.Op.Call, 0, 0, f).Cause = RcCause(); return; }
+        // (a borrow's placeholder: the count it becomes when the borrow is not proven)
+        if (s_countRc && (f.Name.StartsWith("borrow? ") || f.Name.StartsWith("unborrow? ")))
+        { Emit(Wasm.Op.Call, 0, 0, f).Cause = CauseOf("unproven borrow: " + (CauseOverride ?? string.Join(" <- ", CallerNames().Take(4)))); return; }
         Emit(Wasm.Op.Call, 0, 0, f);
     }
+
+    /// <summary>CS2WASM_COUNT_RC: the cause the next count calls get instead of their emitter's callers (a temporary's or
+    /// a variable's release at its scope's end takes the cause recorded when the slot was made).</summary>
+    [ThreadStatic] public static string? CauseOverride;
+
+    /// <summary>CS2WASM_COUNT_RC: the compiler code asking now, as a cause's text (null when not measuring).</summary>
+    public static string? CauseHere(int depth = 4) => s_countRc ? string.Join(" <- ", CallerNames().Take(depth)) : null;
 
     /// <summary>CS2WASM_STATS: the compiler methods that emitted each retain and release (where counts come from).</summary>
     public static readonly Dictionary<string, int>? RcSites = Environment.GetEnvironmentVariable("CS2WASM_STATS") == "1" ? new() : null;
@@ -53,13 +64,21 @@ internal sealed class Emitter
     public static readonly List<string> RcCauses = [];
     static readonly Dictionary<string, int> s_rcCauseIds = [];
 
-    static int RcCause()
+    static ushort RcCause() => CauseOf(CauseOverride ?? string.Join(" <- ", CallerNames().Take(4)));
+
+    /// <summary>CS2WASM_COUNT_RC: a count call of an inlined body that had none (a runtime function's own) gets the
+    /// function's name as its cause.</summary>
+    public static void StampInlined(ref Instr ins, WasmFunction g)
     {
-        var key = string.Join(" <- ", CallerNames().Take(3));
+        if (s_countRc && ins.Op == Wasm.Op.Call && ins.Cause == 0 && ins.Ref is WasmFunction c && c.Name.StartsWith("rt.re")) ins.Cause = CauseOf("inlined " + g.Name);
+    }
+
+    public static ushort CauseOf(string key)
+    {
         lock (s_rcCauseIds)
         {
-            if (!s_rcCauseIds.TryGetValue(key, out int id)) { s_rcCauseIds[key] = id = RcCauses.Count + 1; RcCauses.Add(key); }
-            return id;
+            if (!s_rcCauseIds.TryGetValue(key, out int id)) { if (RcCauses.Count >= ushort.MaxValue - 1) return 0; s_rcCauseIds[key] = id = RcCauses.Count + 1; RcCauses.Add(key); }
+            return (ushort)id;
         }
     }
 

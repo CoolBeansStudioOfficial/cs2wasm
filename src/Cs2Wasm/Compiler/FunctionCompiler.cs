@@ -40,6 +40,8 @@ sealed class Slot
     public bool Moved;
     /// <summary>A field borrow's temp: its local is its own (EndTemps).</summary>
     public bool OwnLocal;
+    /// <summary>CS2WASM_COUNT_RC: the compiler code that made the slot (its release's cause).</summary>
+    public string? Cause;
 }
 
 sealed class Scope { public List<Slot> Owned = []; }
@@ -476,6 +478,7 @@ sealed partial class FunctionCompiler
 
     void AddOwned(Slot s)
     {
+        if (s_countRcSlots) s.Cause ??= "scope end of " + Emitter.CauseHere();
         _scopes[^1].Owned.Add(s);
         _allSlots.Add(s);
         foreach (var r in _regions) r.Add(s);
@@ -521,7 +524,16 @@ sealed partial class FunctionCompiler
         return 0;
     }
 
+    static readonly bool s_countRcSlots = Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1";
+
     void ReleaseSlot(Slot s)
+    {
+        var saved = Emitter.CauseOverride;
+        if (s.Cause != null) Emitter.CauseOverride = s.Cause;
+        try { ReleaseSlotCore(s); } finally { Emitter.CauseOverride = saved; }
+    }
+
+    void ReleaseSlotCore(Slot s)
     {
         if (s.Local >= 0)
         {
@@ -599,6 +611,7 @@ sealed partial class FunctionCompiler
     void RegisterTemp(Slot s)
     {
         if (_temps.Count == 0) BeginTemps(); // defensive: function-level temps
+        if (s_countRcSlots) s.Cause ??= "temp end of " + Emitter.CauseHere();
         _temps[^1].Add(s);
         _allSlots.Add(s);
         foreach (var r in _regions) r.Add(s);
