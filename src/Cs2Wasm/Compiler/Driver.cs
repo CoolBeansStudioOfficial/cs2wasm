@@ -171,19 +171,21 @@ internal sealed partial class Driver
     /// <summary>The borrow placeholders made for a place no other thread can store (FieldBorrows: no other thread's
     /// store to look for).</summary>
     internal readonly HashSet<WasmFunction> ThreadLocalBorrows = [];
-    /// <summary>Which objects another thread can reach (Sharing.cs): recorded in a program with threads only.</summary>
-    public Sharing? Sharing => ThreadMode ? _sharing ??= new Sharing(this) : null;
+    /// <summary>Where reference values come from (Sharing.cs): recorded in a program with threads, for which objects
+    /// another thread can reach, and for the arenas' type graph (Arenas.SourcesOn: what a slot holds by where its
+    /// values come from) in every program.</summary>
+    public Sharing? Sharing => ThreadMode || Arenas.SourcesOn ? _sharing ??= new Sharing(this) : null;
 
     /// <summary>Which types another thread can reach, once every function exists; then the counts by type.</summary>
     internal void ResolveSharing()
     {
-        if (Sharing is { } sharing && !sharing.Done)
+        if (ThreadMode && Sharing is { } sharing && !sharing.Done)
         {
             var keyOf = new Dictionary<WasmFunction, string>();
             foreach (var mi in AllMethods) keyOf.TryAdd(mi.Fn, Types.MethodKey(mi.Sym));
             sharing.Analyze(Arenas.AllSites, f => keyOf.TryGetValue(f, out var k) ? k : null);
         }
-        Rt.ResolveCounts(Sharing);
+        Rt.ResolveCounts(ThreadMode ? Sharing : null);
     }
     /// <summary>Thrown out of Run when a compilation that is not in thread mode meets the start of a thread.</summary>
     public sealed class ThreadsSeen : Exception { }
@@ -1251,6 +1253,8 @@ internal sealed partial class Driver
         Mark("  static initializers again");
         // cycles (section 4.3): the type graph is complete only now; arena runtime is compiled only if some site needs it
         Arenas.Analyze();
+        // (without threads the calls' marks were for the arenas alone: the code is then as it was without them)
+        if (!ThreadMode) Sharing.ClearCertified(Module);
         Mark("  arenas: analyze");
         if (Arenas.Enabled) { Arenas.RequestRuntime(); Drain(rt); }
         Mark("  arenas: runtime drained");

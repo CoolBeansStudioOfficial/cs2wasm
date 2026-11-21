@@ -1112,12 +1112,18 @@ sealed partial class FunctionCompiler
                                 else if (owner.IsValueType) rst.ReflectWrite(() => rst.Add(Sharing.StructFieldNode(owner, f), TopSrc(ft)));
                                 else if (D.Arenas.FieldSite(owner, T.FieldIn(owner, f)) is { } rsite) rst.ReflectWrite(() => rsite.Sources.Add(TopSrc(ft)));
                             }
+                            // (into a class's field: a store like the program's own, through the field's site, so that a
+                            // cycle it closes is one the arenas know: Arenas.ReflectStore)
+                            var wsite = !f.IsStatic && !owner.IsValueType && Types.IsRef(ft) ? D.Arenas.FieldSite(owner, T.FieldIn(owner, f)) : null;
+                            if (wsite != null) D.Arenas.ReflectStore(wsite, ft);
                             int a = E.AddLocal(ValType.I32);
                             PushAddr(); E.Set(a);
                             E.Get(1); E.Load(Op.I32Load, Types.ArrayData);
                             var vo = Own.Unstable;
                             ConvertValue(D.ObjectType, ft, false, ref vo, explicitConv: true, null);
-                            StoreToAddressFromStack(() => E.Get(a), off, ft, vo, pub: f.IsStatic ? Publish.Always : owner.IsValueType ? Publish.Unknown : Publish.Container, pubContainer: () => E.Get(a));
+                            StoreToAddressFromStack(() => E.Get(a), off, ft, vo, wsite, wsite != null ? () => E.Get(a) : null,
+                                pub: f.IsStatic ? Publish.Always : owner.IsValueType ? Publish.Unknown : Publish.Container, pubContainer: () => E.Get(a),
+                                structContainer: Types.IsStruct(ft) && !f.IsStatic && !owner.IsValueType ? owner : null);
                             E.I32(0);
                         }
                         E.End();

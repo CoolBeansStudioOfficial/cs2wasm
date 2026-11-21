@@ -115,7 +115,7 @@ sealed partial class FunctionCompiler
             if (Types.IsRef(fty))
             {
                 D.FieldsAddressTaken.Add(Driver.FieldKey(fo, fld));
-                if (kind == 3 && !fo.IsValueType && D.Arenas.FieldSite(fo, T.FieldIn(fo, fld)) is { } site) { site.AddressTaken = true; site.AddValue(T.Canonical(fty)); }
+                if (kind == 3 && !fo.IsValueType && D.Arenas.FieldSite(fo, T.FieldIn(fo, fld)) is { } site) { site.AddressTaken = true; site.RefDirty = true; site.AddValue(T.Canonical(fty)); }
             }
             if (kind == 3)
             {

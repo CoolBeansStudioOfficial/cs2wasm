@@ -34,8 +34,18 @@ internal sealed partial class Arenas
         public ISymbol? Member;
         /// <summary>The slot's declared type (an array's element type): what a release of its old value counts.</summary>
         public ITypeSymbol? SlotType;
+        /// <summary>A struct's reference inside a class's object or a box (AddStructSites): its field's type.</summary>
+        public ITypeSymbol? LeafType;
+        /// <summary>The type of what the slot holds, for Sharing.SiteTypeIds.</summary>
+        public ITypeSymbol? DeclaredType => SlotType ?? LeafType;
         public readonly Dictionary<string, ITypeSymbol> Values = [];
         public bool AddressTaken;
+        /// <summary>The slot's address went where a ref of it may be kept or made into another (a ref local, a ref
+        /// return, a span, a pointer, a call the compiler does not see into): a store through any ref of the slot's
+        /// type can land here (Sharing.SiteTypeIds). Else its address went only to the `ref` parameters in RefUses
+        /// ("method-key ordinal", Sharing.RefParamUse), or to Interlocked's and Volatile's.</summary>
+        public bool RefDirty;
+        public readonly HashSet<string> RefUses = [];
         /// <summary>Some store through this site is into an object that other code may know (Analyze: the site's
         /// general link is called somewhere). A field without one is only ever stored into objects that nothing else
         /// can reach yet (FreshStores.cs), and no such store closes a cycle: like a field filled at construction,
@@ -138,10 +148,15 @@ internal sealed partial class Arenas
         owner = D.Types.Canonical(owner);
         var s = Get("f " + Types.Key(owner) + " " + offset, owner, false, offset);
         s.AddressTaken = true;
+        s.RefDirty = true;
         s.AddValue(D.Types.Canonical(slotType));
     }
 
-    static readonly bool s_arenaSources = Environment.GetEnvironmentVariable("CS2WASM_ARENA_SOURCES") == "1";
+    /// <summary>CS2WASM_ARENA_SOURCES=0: a field's targets are the subtypes of what its stores' static types are, not
+    /// narrowed by where the values come from (to compare).</summary>
+    static readonly bool s_arenaSources = Environment.GetEnvironmentVariable("CS2WASM_ARENA_SOURCES") != "0";
+    /// <summary>Sources are recorded for the type graph (Sharing.SiteTypeIds), also in a program without threads.</summary>
+    public static bool SourcesOn => s_arenaSources;
     static readonly bool s_arenaDebug =Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1";
     List<(Site, int)>? _wide;
     static readonly bool s_noFreshSites =Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_SITES") == "1";
@@ -422,6 +437,25 @@ internal sealed partial class Arenas
 
     static readonly bool s_noStructSites = Environment.GetEnvironmentVariable("CS2WASM_NO_STRUCT_SITES") == "1";
 
+    /// <summary>RefLeaves, each with where its values come from (Sharing.cs): what the struct's field holds wherever
+    /// the struct is (Sharing.StructFieldNode: every store into that field of any such struct is recorded there).
+    /// Null, any object of the leaf's type, inside an inline array (its elements past the first have no field).</summary>
+    IEnumerable<(int off, ITypeSymbol type, List<Sharing.Src>? srcs)> RefLeafSources(ITypeSymbol structType, int baseOff, bool inline = false)
+    {
+        var st = D.Types.Canonical(structType);
+        inline |= Types.InlineArrayLength(st) != null;
+        foreach (var f in D.Types.LayoutOf(st).Fields)
+        {
+            if (Types.IsRef(f.Type))
+            {
+                if (Types.IsImmortalType(f.Type)) continue;
+                yield return (baseOff + f.Offset, f.Type, D.Sharing == null || inline ? null : [new Sharing.Src(Sharing.K.Node, Sharing.StructFieldNode(st, f.Symbol), Type: D.Types.Canonical(f.Type))]);
+            }
+            else if (Types.IsStruct(f.Type) && D.Types.LayoutOf(f.Type).HasRefs)
+                foreach (var x in RefLeafSources(f.Type, baseOff + f.Offset, inline)) yield return x;
+        }
+    }
+
     /// <summary>A reference inside a struct that is a field of a class is a slot of the class's object like any other
     /// (a tuple field, a nullable struct, a struct of the program's): a site at its offset, for whatever its type can
     /// hold. Nothing records the stores (a struct is copied whole, and written through its own methods): the
@@ -450,10 +484,11 @@ internal sealed partial class Arenas
             {
                 var bt = D.Types.Canonical(t);
                 if (!Types.IsStruct(bt) || !D.Types.LayoutOf(bt).HasRefs) continue;
-                foreach (var (off, lt) in RefLeaves(bt, FunctionCompilerHelpers.BoxDataOffset(D.Types, bt)))
+                foreach (var (off, lt, srcs) in RefLeafSources(bt, FunctionCompilerHelpers.BoxDataOffset(D.Types, bt)))
                 {
                     var s = Get("f " + Types.Key(bt) + " " + off, bt, false, off);
-                    s.AddValue(lt);
+                    s.LeafType ??= D.Types.Canonical(lt);
+                    s.AddValue(lt, srcs);
                     s.General = true;
                 }
                 continue;
@@ -463,21 +498,29 @@ internal sealed partial class Arenas
             foreach (var f in D.Types.LayoutOf(ct).Fields)
             {
                 if (!Types.IsStruct(f.Type) || !D.Types.LayoutOf(f.Type).HasRefs) continue;
-                foreach (var (off, lt) in RefLeaves(f.Type, f.Offset))
+                foreach (var (off, lt, srcs) in RefLeafSources(f.Type, f.Offset))
                 {
                     var s = Get("f " + Types.Key(ct) + " " + off, ct, false, off);
-                    s.AddValue(lt);
+                    s.LeafType ??= D.Types.Canonical(lt);
+                    s.AddValue(lt, srcs);
                     s.General = true;
                 }
             }
         }
     }
 
+    readonly List<(Site site, ITypeSymbol type)> _reflectStores = [];
+    /// <summary>A field reflection can store into (FieldInfo.SetValue, Reflection.cs): any object of its type, if the
+    /// program can call SetValue.</summary>
+    public void ReflectStore(Site s, ITypeSymbol fieldType) => _reflectStores.Add((s, D.Types.Canonical(fieldType)));
+
     /// <summary>Builds the type graph from the recorded sites and finds the cycle-capable components.</summary>
     public void Analyze()
     {
         AddStructSites();
         AddDisplaySites();
+        if (_reflectStores.Count > 0 && D.AllMethods.Any(m => m.Compiled && m.Sym.Name is "SetValue" or "SetValueDirect" && m.Sym.ContainingType?.Name is "RuntimeFieldInfo" or "FieldInfo"))
+            foreach (var (s, t) in _reflectStores) { s.AddValue(t); s.General = true; }
         // which sites have a store into an object that may be known elsewhere
         {
             var general = new Dictionary<WasmFunction, Site>();
@@ -553,8 +596,10 @@ internal sealed partial class Arenas
             if (containers.Count == 0) continue;
             var targets = s.Values.Count == 1 ? TargetsOf(s.Values.Values.First()) : s.Values.Values.SelectMany(TargetsOf).Distinct().ToList();
             if (s.TargetIds.Count > 0) targets = [.. targets.Concat(s.TargetIds.Order()).Distinct()];
-            // (CS2WASM_ARENA_SOURCES=1: what the slot holds by where its values come from, when that is narrower)
-            if (s_arenaSources && D.Sharing is { } shf && targets.Count > 8 && shf.SiteTypeIds(s, 2000) is { } refined)
+            // (what a class's field holds by where its values come from, when that is
+            // narrower. Not an array's elements: references also arrive there by the runtime's own copies, Array.Copy,
+            // SetValue and Buffer.Memmove's, which no recorded store says)
+            if (SourcesOn && !s.IsArray && s.ContainerId < 0 && D.Sharing is { } shf && targets.Count > 8 && shf.SiteTypeIds(s, 2000) is { } refined)
             {
                 var keep = new HashSet<int>(targets);
                 var narrowed = refined.Where(keep.Contains).Order().ToList();
