@@ -149,6 +149,19 @@ static class Peephole
                 o.Add(ins);
                 continue;
             }
+            // (`i32.eqz; i32.eqz` before a branch on it: the value's own truth)
+            if (ins.Op is Op.If or Op.BrIf && o.Count >= 2 && o[^1].Op == Op.I32Eqz && o[^2].Op == Op.I32Eqz)
+            {
+                o.RemoveRange(o.Count - 2, 2);
+                o.Add(ins);
+                continue;
+            }
+            // (a pure push dropped at once)
+            if (ins.Op == Op.Drop && o.Count > 0 && o[^1].Op is Op.LocalGet or Op.GlobalGet or Op.I32Const or Op.I64Const or Op.F32Const or Op.F64Const)
+            {
+                o.RemoveAt(o.Count - 1);
+                continue;
+            }
             if (ins.Op == Op.LocalGet && o.Count > 0 && o[^1].Op == Op.LocalSet && o[^1].Imm == ins.Imm) { o[^1] = o[^1] with { Op = Op.LocalTee }; continue; }
             // an address plus a constant, loaded from: the constant is the load's offset (a field of an object; an
             // address that wrapped round the 4 GiB end would be no object's)
