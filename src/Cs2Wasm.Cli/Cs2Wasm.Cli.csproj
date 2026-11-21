@@ -3,6 +3,11 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>cs2wasmc</AssemblyName>
     <PackageId>Cs2Wasm.Cli</PackageId>
+    <!-- The compiler holds a heap of several gigabytes for a large program (the compiler compiling itself: 6 to 9 GB),
+         and the workstation collector marks all of it on one thread at every full collection: half of the encoder's
+         time was collections. The server collector marks on every core (the compiler compiling itself: encode
+         130-160 s to 70 s, the same module). -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Cs2Wasm/Cs2Wasm.csproj" />

@@ -628,6 +628,7 @@ internal sealed class WasmModule
                 if (other != null) { f.ForwardTo = other; changed = true; }
                 else bucket.Add((f, key));
             }
+            Step($"  merge round {round}{(changed ? "" : ", nothing merged")}");
             if (!changed) break;
             foreach (var f in Functions) ResolveForwards(f);
         }
