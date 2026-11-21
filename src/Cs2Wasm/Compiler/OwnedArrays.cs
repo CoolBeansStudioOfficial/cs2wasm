@@ -82,10 +82,9 @@ internal sealed partial class Driver
                     if (!_byName.TryGetValue(k, out var l)) _byName[k] = l = [];
                     if (l.Count == 0 || l[^1] != i) l.Add(i);
                 }
-            _reflected = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
-            if (D._reflect != null)
-                foreach (var (t, all, names, ctors) in D._reflect.Types.Values)
-                    foreach (var m in D.KeptMembers(t, all, names, ctors)) _reflected.Add(m.OriginalDefinition);
+            // (what reflection can call or set: the members with an invoke thunk; one with a record and no thunk, a
+            // library frame's, throws when invoked, RuntimeMethodInfo.InternalInvoke)
+            _reflected = new HashSet<ISymbol>(D.ThunkedMembers, SymbolEqualityComparer.Default);
         }
 
         static IEnumerable<SyntaxReference> Initializers(INamedTypeSymbol t, bool statics) =>
@@ -303,6 +302,9 @@ internal sealed partial class Driver
             if (!m.IsStatic && m.MethodKind == MethodKind.Ordinary && m.ContainingType.AllInterfaces.SelectMany(x => x.GetMembers()).Any(x => Eq(m.ContainingType.FindImplementationForInterfaceMember(x)?.OriginalDefinition, m)))
                 return No("implements an interface's");
             bool ctor = m.MethodKind == MethodKind.Constructor;
+            // (an attribute is made by its factory, from the attribute's arguments, with no call in a body)
+            for (var b = m.ContainingType; ctor && b != null; b = b.BaseType)
+                if (b.ContainingNamespace?.ToDisplayString() == "System" && b.Name == "Attribute") return No("an attribute's");
             // (a primary constructor's base call is in a type's declaration, not in a body)
             if (ctor && m.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is TypeDeclarationSyntax)) return No("a primary constructor");
             var names = ctor ? new[] { m.ContainingType.Name, ImplicitNew, CtorInit } : [m.Name];

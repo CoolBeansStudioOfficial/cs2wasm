@@ -45,10 +45,26 @@ internal sealed partial class Driver
     // StackFrame.GetMethod, Exception.TargetSite, MethodBase.GetCurrentMethod (Meta.FrameMethod): the frame names of
     // the compiled methods, each with its record's entry; asked for only by code that reaches them
     WasmFunction? _frameMethods;
-    public WasmFunction FrameMethodsFn => _frameMethods ??= Module.AddFunction("rt.frame_methods", new FuncType([], [ValType.I32]));
+    public WasmFunction FrameMethodsFn => _frameMethods ??= FramesAskedBy(Module.AddFunction("rt.frame_methods", new FuncType([], [ValType.I32])));
     readonly Dictionary<string, int> _frameEntries = [];
     WasmFunction? _throwSites;
-    public WasmFunction ThrowSitesFn => _throwSites ??= Module.AddFunction("rt.throw_sites", new FuncType([], [ValType.I32]));
+    public WasmFunction ThrowSitesFn => _throwSites ??= FramesAskedBy(Module.AddFunction("rt.throw_sites", new FuncType([], [ValType.I32])));
+
+    /// <summary>CS2WASM_REFLECT_DEBUG: what first asked frames for their methods (every compiled method of the
+    /// program then gets a record and an invoke thunk), with the chain of methods that reached it.</summary>
+    WasmFunction FramesAskedBy(WasmFunction f)
+    {
+        if (Environment.GetEnvironmentVariable("CS2WASM_REFLECT_DEBUG") == "1")
+        {
+            var chain = new List<string>();
+            for (var m = Compiling; m != null && chain.Count < 30; m = m.ReachedFrom) chain.Add(m.Sym.ToDisplayString());
+            Console.Error.WriteLine($"{f.Name} asked by: " + string.Join(" <- ", chain));
+        }
+        return f;
+    }
+
+    /// <summary>The members (their definitions) that have an invoke thunk: the ones reflection can call.</summary>
+    internal readonly HashSet<ISymbol> ThunkedMembers = new(SymbolEqualityComparer.Default);
     /// <summary>Whether code asks frames (or a throw) for their methods: their records are kept.</summary>
     public bool FramesAsked => _frameMethods != null || _throwSites != null;
     public static readonly FuncType ThunkType = new([ValType.I32, ValType.I32], [ValType.I32]);
@@ -185,7 +201,9 @@ internal sealed partial class Driver
             if (!_assemblyTypes) { Report(Diags.ReflectionUnknown, loc, what); continue; }
             foreach (var pt in ProgramTypes().OfType<INamedTypeSymbol>())
             {
+                if (Environment.GetEnvironmentVariable("CS2WASM_REFLECT_DEBUG") == "1" && pt == ProgramTypes().OfType<INamedTypeSymbol>().First()) Console.Error.WriteLine($"reflection on types it cannot see, kept on all the program's: {what} {kname} ctors={kctors} at {loc}");
                 if (kctors) { if (pt.TypeKind is TypeKind.Class or TypeKind.Struct && !pt.IsAbstract && !pt.IsStatic && !pt.IsGenericType) keep.Keep(pt, null, ctors: true); }
+                else if (kname == ParameterlessCtor) { if (pt.TypeKind is TypeKind.Class or TypeKind.Struct && !pt.IsAbstract && !pt.IsStatic && !pt.IsGenericType) keep.Keep(pt, ParameterlessCtor); }
                 else if (kname == null || pt.GetMembers(kname).Any()) keep.Keep(pt, kname);
             }
         }
@@ -233,6 +251,8 @@ internal sealed partial class Driver
     }
 
     bool _assemblyTypes;
+    /// <summary>A kept name that stands for a type's constructor without parameters (Activator.CreateInstance(Type)).</summary>
+    internal const string ParameterlessCtor = "<.ctor()>";
     /// <summary>Set when code reads an assembly's custom attributes: the program assembly's are kept (and the types its
     /// attributes name with typeof keep theirs: GodotSharp finds scripts by [assembly: AssemblyHasScripts] and
     /// [ScriptPath]).</summary>
@@ -256,7 +276,10 @@ internal sealed partial class Driver
                         keep.Keep(inst, null, ctors: true);
                 return;
             }
-            if (input) _unknownReflection.Add((op.Syntax.GetLocation(), "Activator.CreateInstance", null, true));
+            // (CreateInstance(Type) and (Type, bool) run a constructor without parameters, nothing else: only such
+            // constructors are kept for them, so that a program's other constructors are not ones reflection can call)
+            bool parameterless = m.Parameters.Skip(1).All(p => p.Type.SpecialType == SpecialType.System_Boolean);
+            if (input) _unknownReflection.Add((op.Syntax.GetLocation(), "Activator.CreateInstance", parameterless ? ParameterlessCtor : null, !parameterless));
             return;
         }
         if (owner is "Assembly" or "RuntimeAssembly" or "Module" or "RuntimeModule" && m.Name is "GetTypes" or "GetExportedTypes" or "GetType" && input) _assemblyTypes = true;
@@ -404,7 +427,8 @@ internal sealed partial class Driver
             var members = isObject ? x.GetMembers().OfType<IMethodSymbol>().Where(m => m.MethodKind == MethodKind.Ordinary).OrderBy(m => m.Name == "GetType" ? 0 : 1).Cast<ISymbol>() : x.GetMembers();
             foreach (var mem in members)
             {
-                bool want = all || names.Contains(mem.Name) || names.Contains(mem.MetadataName) || ctors && mem is IMethodSymbol { MethodKind: MethodKind.Constructor } && SymbolEqualityComparer.Default.Equals(x, t);
+                bool want = all || names.Contains(mem.Name) || names.Contains(mem.MetadataName) || ctors && mem is IMethodSymbol { MethodKind: MethodKind.Constructor } && SymbolEqualityComparer.Default.Equals(x, t)
+                    || mem is IMethodSymbol { MethodKind: MethodKind.Constructor, Parameters.Length: 0 } && names.Contains(ParameterlessCtor) && SymbolEqualityComparer.Default.Equals(x, t);
                 if (!want) continue;
                 switch (mem)
                 {
@@ -450,6 +474,7 @@ internal sealed partial class Driver
         var key = ThunkKey(member);
         if (_reflThunks.TryGetValue(key, out var f)) return f;
         f = Module.AddFunction("reflect " + member.ToDisplayString(), ThunkType);
+        ThunkedMembers.Add(member.OriginalDefinition);
         f.TableRoot = true; // the reflection tables refer to it
         _reflThunks[key] = f;
         var mi = new MethodInst { Sym = LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1).Sym, Fn = f, Key = "thunk " + key, Impl = MethodImpl.Body };

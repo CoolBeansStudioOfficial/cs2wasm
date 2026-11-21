@@ -35,6 +35,7 @@ substitute	method	System.Reflection.Emit.AssemblyBuilder	System.Void EnsureDynam
 substitute	method	System.Reflection.Emit.DynamicMethod	System.Reflection.Module GetDynamicMethodsModule()	=>Cs2Wasm.Runtime.Rt.DynamicMethodsModule
 substitute	method	System.Exception	System.String GetStackTrace()	=>Cs2Wasm.Runtime.Rt.StackTraceOf
 substitute	method	System.Diagnostics.StackTrace	System.String ToString(System.Diagnostics.StackTrace/TraceFormat)	=>Cs2Wasm.Runtime.Rt.EmptyTrace
+substitute	method	System.Diagnostics.StackTrace	System.Void ToString(System.Diagnostics.StackTrace/TraceFormat,System.Text.StringBuilder)	=>Cs2Wasm.Runtime.Rt.TraceTextInto
 substitute	method	System.Diagnostics.StackFrame	System.Reflection.MethodBase GetMethod()	=>Cs2Wasm.Runtime.Meta.FrameMethodOf
 substitute	method	System.Enum	System.Boolean AreSorted(TStorage[])	true
 substitute	method	System.RuntimeTypeHandle	System.RuntimeType GetTypeByName(System.String,System.Boolean,System.Boolean,System.Threading.StackCrawlMark&)	=>Cs2Wasm.Runtime.TypeInfo.GetTypeByName

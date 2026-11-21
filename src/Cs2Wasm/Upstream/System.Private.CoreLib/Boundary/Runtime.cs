@@ -3236,6 +3236,11 @@ namespace Cs2Wasm.Runtime
         /// <summary>StackTrace.ToString(TraceFormat) (manifest substitution): the frames' text (StackTrace.Mono.cs).</summary>
         public static string EmptyTrace(System.Diagnostics.StackTrace t, int format) => t.Cs2WasmText(format);
 
+        /// <summary>StackTrace.ToString(TraceFormat, StringBuilder) (manifest substitution; Exception.SetCurrentStackTrace):
+        /// the same text, appended. (.NET's own reads each frame's MethodBase: asking frames for their methods gives every
+        /// method of the program a reflection record and an invoke thunk, and a frame without one wrote nothing.)</summary>
+        public static void TraceTextInto(System.Diagnostics.StackTrace t, int format, System.Text.StringBuilder sb) => sb.Append(t.Cs2WasmText(format));
+
         public static long CheckedMulI64(long a, long b)
         {
             if (a == 0 || b == 0) return 0;
