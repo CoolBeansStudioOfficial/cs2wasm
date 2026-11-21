@@ -568,28 +568,48 @@ internal sealed partial class Driver
         else _frameEntries.TryAdd(name, entry);
     }
 
-    /// <summary>rt.frame_methods: [count, names, (name offset, entry)...] (Meta.FrameMethod).</summary>
+    /// <summary>rt.frame_methods: [groups, names, (prefix, first, count) per group, (rest, entry) per entry] (Meta.FrameMethod).</summary>
     void EmitFrameMethods()
     {
-        // [count, the names, (a name's offset in them, entry)...]; the names in UTF-8, each [its UTF-16 length, its
-        // bytes' length, the bytes] at a multiple of 4 (they were string literals: the self-hosted compiler's 57,000
-        // frame names were 12.5 MB of its memory, as objects of UTF-16 with a header each)
+        // [groups, the names, (a prefix's offset in them, first entry, entries) per group, (a rest's offset, entry)
+        // per entry]: a frame name is its prefix (up to its last '.' before the parameters: the declaring type,
+        // shared by the type's methods) and the rest; each in UTF-8, [its UTF-16 length, its bytes' length, the
+        // bytes] at a multiple of 4. (They were string literals: the self-hosted compiler's 57,000 frame names
+        // were 12.5 MB of its memory, as objects of UTF-16 with a header each; whole in UTF-8, 6 MB.)
         if (_frameMethods != null)
         {
             var names = new List<byte>();
-            var words = new byte[8 + 8 * _frameEntries.Count];
-            BitConverter.GetBytes(_frameEntries.Count).CopyTo(words, 0);
-            int i = 0;
-            foreach (var (name, entry) in _frameEntries)
+            var at = new Dictionary<string, int>();
+            int Put(string x)
             {
+                if (at.TryGetValue(x, out int o)) return o;
                 while (names.Count % 4 != 0) names.Add(0);
-                BitConverter.GetBytes(names.Count).CopyTo(words, 8 + 8 * i);
-                BitConverter.GetBytes(entry).CopyTo(words, 12 + 8 * i);
-                var utf8 = System.Text.Encoding.UTF8.GetBytes(name);
-                names.AddRange(BitConverter.GetBytes(name.Length));
+                o = names.Count;
+                var utf8 = System.Text.Encoding.UTF8.GetBytes(x);
+                names.AddRange(BitConverter.GetBytes(x.Length));
                 names.AddRange(BitConverter.GetBytes(utf8.Length));
                 names.AddRange(utf8);
-                i++;
+                return at[x] = o;
+            }
+            static int Split(string n) { int p = n.IndexOf('('); return (p < 0 ? n : n[..p]).LastIndexOf('.') + 1; }
+            var groups = _frameEntries.GroupBy(x => x.Key[..Split(x.Key)]).ToList();
+            int total = _frameEntries.Count;
+            var words = new byte[8 + 12 * groups.Count + 8 * total];
+            BitConverter.GetBytes(groups.Count).CopyTo(words, 0);
+            int g = 0, k = 0;
+            foreach (var grp in groups)
+            {
+                BitConverter.GetBytes(Put(grp.Key)).CopyTo(words, 8 + 12 * g);
+                BitConverter.GetBytes(k).CopyTo(words, 12 + 12 * g);
+                BitConverter.GetBytes(grp.Count()).CopyTo(words, 16 + 12 * g);
+                foreach (var (name, entry) in grp)
+                {
+                    int e = 8 + 12 * groups.Count + 8 * k;
+                    BitConverter.GetBytes(Put(name[grp.Key.Length..])).CopyTo(words, e);
+                    BitConverter.GetBytes(entry).CopyTo(words, e + 4);
+                    k++;
+                }
+                g++;
             }
             var blob = DataBlob(names.Count == 0 ? new byte[4] : names.ToArray(), 4);
             new Emitter(_frameMethods).I32Addr(DataBlob(words, 4, [(4, blob)]));

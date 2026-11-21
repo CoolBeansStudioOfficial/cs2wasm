@@ -61,6 +61,7 @@ internal static class DisplayExtra
         if (d.ExtraSlots.TryGetValue(key, out var e)) return e.offset;
         var (size, align) = types.StorageOf(t);
         d.Size = (d.Size + align - 1) / align * align;
+        d.MaxAlign = Math.Max(d.MaxAlign, align);
         int off = d.Size;
         d.ExtraSlots[key] = (off, t);
         d.Size += size;
@@ -163,7 +164,7 @@ sealed partial class FunctionCompiler
         if (info.TaskType != null) machine.Extra("task", info.TaskType, T);
         if (info.Builder != null) machine.Extra("builder", info.Builder, T);
         int tid = D.DisplayTypeId(machine);
-        var sizeAddr = new LateAddr(() => machine.Size);
+        var sizeAddr = new LateAddr(() => machine.AllocSize);
 
         // compile MoveNext later (it may add slots), with the machine as its environment
         var ci = new ClosureInfo { Map = Map, Env = machine, ThisKey = thisKey, OuterMethod = nested ? OuterMethod : M, Clone = _clone };
@@ -353,6 +354,7 @@ sealed partial class FunctionCompiler
         if (s is ILocalSymbol { IsRef: true }) return;
         var (size, align) = T.StorageOf(t);
         d.Size = (d.Size + align - 1) / align * align;
+        d.MaxAlign = Math.Max(d.MaxAlign, align);
         d.Slots[s] = (d.Size, t);
         d.Vars.Add(s);
         d.Size += size;
@@ -394,7 +396,7 @@ sealed partial class FunctionCompiler
             e.Get(0); e.Load(Op.I32Load, stateOff); e.I32(-2); e.Op(Op.I32Eq);
             e.If(); e.Get(0); e.I32(0); e.Store(Op.I32Store, stateOff); e.Get(0); e.Call(Rt.Retain); e.Op(Op.Return); e.End();
             int n = e.AddLocal(ValType.I32);
-            e.I32Addr(new LateAddr(() => machine.Size)); e.Tid(tid); e.Call(Rt.AllocObject); e.Set(n);
+            e.I32Addr(new LateAddr(() => machine.AllocSize)); e.Tid(tid); e.Call(Rt.AllocObject); e.Set(n);
             foreach (var p in M.Parameters)
             {
                 var (off, pt) = machine.Slots[p.OriginalDefinition];
@@ -489,7 +491,7 @@ sealed partial class FunctionCompiler
             e.Get(0); e.Load(Op.I32Load, stateOff); e.I32(-2); e.Op(Op.I32Eq);
             e.If(); e.Get(0); e.I32(0); e.Store(Op.I32Store, stateOff); e.Get(0); e.Call(Rt.Retain); e.Op(Op.Return); e.End();
             int n = e.AddLocal(ValType.I32);
-            e.I32Addr(new LateAddr(() => machine.Size)); e.Tid(tid); e.Call(Rt.AllocObject); e.Set(n);
+            e.I32Addr(new LateAddr(() => machine.AllocSize)); e.Tid(tid); e.Call(Rt.AllocObject); e.Set(n);
             foreach (var p in M.Parameters)
             {
                 var (off, pt) = machine.Slots[p.OriginalDefinition];
