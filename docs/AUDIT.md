@@ -1095,6 +1095,39 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     finding; red nodes' child arrays (`SyntaxList.WithManyChildren._children`) are written lazily after the node is
     shared (by design) and stay edges.
 
+- **Self-hosted compiler's memory, round 2 (stream L, 2026-11-21): 344.2 MB to 306.0 MB, below NativeAOT-LLVM's 322.2.**
+  - What the report showed on main 6a346d8 (J's green nodes no longer cycle-capable): 4.6 million objects, 0.54
+    million arena members (17 MB of their words), the heap's top 301.7 MiB against the 291.8 MiB the memory had before
+    its last growth by an eighth (to 328 MiB). What was left was the size classes: every block a multiple of 8 (a
+    class whose fields need 4 bytes of alignment took 4 more half the time: SyntaxTokenWithValueAndTrivia<string>
+    36 bytes in 40; NativeAOT's 32-bit layout is a multiple of 4), and a class per 8 bytes up to 2 KiB, so 380 classes
+    above 512 bytes each held a partly used page (3.4 MB of blocks in 7.8 MB).
+  - Cut: small sizes in steps of 4 bytes to 128, 8 to 256, then eight per doubling (Rt.RoundSmall). Objects stay
+    aligned where they must: a class with a field that needs 8 bytes has a size that is a multiple of 8
+    (Types.LayoutOf), displays and state machines likewise (Display.AllocSize, at their allocation and their free),
+    boxes and arrays by their element, and a page's blocks start at a multiple of 8; memory that is no object
+    (Rt.Alloc: stacks, words read atomically) stays at a multiple of 8. Without threads the smallest block is 8 bytes
+    (a free block links at its second word; with threads at 8, clear of what a lock-free read looks at): side words
+    in 8 bytes, an object of 12 (no fields) in 12.
+  - Speed: the rounding in the allocator's hot path cost the baseline tier 10 to 26% on the allocation micro
+    benchmarks (and SingleThreaded, asked in the free path, is a call: its answer is known at the end of the build).
+    Now a call whose size is a constant goes to Rt.AllocObjectC / FreeObjectC (and the arena's two) with the size
+    rounded at compile time (RuntimeGen.SizeAllocations); AllocObject rounds first (arrays, sizes known only at run
+    time). micro --baseline 1.83x/1.82x against main's 1.87x/1.87x; bench 0.95x on both; hello world 27,744 to
+    28,120 bytes (the second entry and its free).
+  - Measured, interleaved (tools/selfhost-ab.sh), 3 rounds: main 344.2 MB, 10.6-11.1 s; stream L 306.0 MB,
+    10.7-11.1 s; NativeAOT-LLVM 322.2 MB, 4.9-5.5 s. Output equal to the .NET-hosted compiler's but for the lines
+    section's paths. Suite 192/192 checked and as shipped.
+  - **The margin is thin:** the heap's top is 290.8 MiB and the memory 291.8 MiB (4669 pages): a megabyte more of live
+    objects and the memory grows by its eighth, to 344 MB. What is left per object against NativeAOT: the 12-byte
+    header (the hash word: about 18 MB over 4.6 million objects), 32 bytes before each arena member (17 MB), 13 MB of
+    data below the heap. Removing the hash word (identity hashes and the three flags elsewhere) is the next structural
+    cut; it changes every object's layout.
+  - Found on the way: 070_files names its directory with Guid.NewGuid, and the host's random seed is a constant, so
+    two runs of it at once (the suite's checked and shipped shards) share it and fail; main's too. The heap report read
+    a page on the empty list as a size class from its stale header (a trap in the self-hosted build): such pages are
+    marked first now, and a first word below -1 that is no tag is counted, not followed.
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:
