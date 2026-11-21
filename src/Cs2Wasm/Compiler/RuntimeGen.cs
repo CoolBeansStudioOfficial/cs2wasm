@@ -314,6 +314,8 @@ internal sealed partial class RuntimeFns
     public WasmFunction ReleaseRange(ITypeSymbol et) => Range(et, release: true);
     public WasmFunction RetainRange(ITypeSymbol et) => Range(et, release: false);
 
+    static readonly bool s_noZeroSkip = Environment.GetEnvironmentVariable("CS2WASM_NO_ZERO_SKIP") == "1";
+
     WasmFunction Range(ITypeSymbol et, bool release)
     {
         et = D.Types.Canonical(et);
@@ -325,6 +327,18 @@ internal sealed partial class RuntimeFns
             e.Get(0); e.Get(1); e.I32(size); e.Op(Op.I32Mul); e.Op(Op.I32Add); e.Set(end);
             var brk = e.Block(); var top = e.Loop();
             e.Get(0); e.Get(end); e.Op(Op.I32GeU); e.BrIf(brk);
+            // (an element that is all zeros holds nothing to count: eight bytes of them passed at once. A list
+            // builder's array is cleared whole at every reuse, and past its count it is all nulls)
+            if (release && !s_noZeroSkip && size is 4 or 8)
+            {
+                var skip = e.Block();
+                if (size == 4) { e.Get(0); e.I32(8); e.Op(Op.I32Add); e.Get(end); e.Op(Op.I32GtU); e.BrIf(skip); }
+                e.Get(0); e.Load(Op.I64Load); e.Op(Op.I64Eqz); e.Op(Op.I32Eqz); e.BrIf(skip);
+                e.Get(0); e.I32(8); e.Op(Op.I32Add); e.Set(0);
+                e.Br(top);
+                e.End();
+                if (size == 4) { e.Get(0); e.Load(Op.I32Load); e.Op(Op.I32Eqz); e.If(); e.Get(0); e.I32(4); e.Op(Op.I32Add); e.Set(0); e.Br(top); e.End(); }
+            }
             if (Types.IsRef(et))
             {
                 e.Get(0); e.Load(Op.I32Load);
