@@ -1893,6 +1893,31 @@ sealed partial class RuntimeGen
             return ShortName(D.TypeById[i]);
         }
         EmitFullNames(n, Full);
+        // CS2WASM_LAYOUT_DUMP=<file> (a diagnosis): each class's name, size, padding in its own fields, and the size its
+        // own fields would take ordered by alignment
+        if (Environment.GetEnvironmentVariable("CS2WASM_LAYOUT_DUMP") is { Length: > 0 } dumpPath)
+        {
+            var sb = new StringBuilder();
+            for (int ext = 0; ext < n; ext++)
+            {
+                int i = D.IntId(ext);
+                if (i <= 1 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) || i >= D.TypeById.Count) continue;
+                if (D.TypeById[i] is not INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Delegate } ct) continue;
+                try
+                {
+                    var l = D.Types.LayoutOf(ct);
+                    int b = ct.BaseType != null && !Types.IsObject(ct.BaseType) ? D.Types.LayoutOf(ct.BaseType).Size : Types.ObjectHeader;
+                    var own = l.Fields.Where(f => f.Offset >= b).Select(f => D.Types.StorageOf(f.Type)).ToList();
+                    int used = own.Sum(f => f.size);
+                    int off = b;
+                    foreach (var f in own.OrderByDescending(f => f.align)) { off = (off + f.align - 1) / f.align * f.align; off += f.size; }
+                    if (own.Any(f => f.align >= 8)) off = (off + 7) & ~7;
+                    sb.Append(Full(i)).Append('\t').Append(l.Size).Append('\t').Append(l.Size - b - used).Append('\t').Append(off).Append('\n');
+                }
+                catch (Exception) { }
+            }
+            File.WriteAllText(dumpPath, sb.ToString());
+        }
         EmitIdTable(D.Rt.TypeShortNameById, n, i => (D.StringLiteral(Short(i)), 0));
         EmitIdTable(D.Rt.TypeFlagsById, n, i => (null, i == 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) ? 0 : Flags(D.TypeById[i])));
         if (D.Rt.ProgramTypesIfMade is { } ptf)

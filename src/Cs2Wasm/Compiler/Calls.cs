@@ -962,6 +962,7 @@ sealed partial class FunctionCompiler
             case "Rt.NoThreads": E.I32(Driver.s_noThreads ? 1 : 0); return Own.None;
             case "Rt.MemStatsGrow": if (MemStats) E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "MsGrow", 0).Fn); return Own.None;
             case "Rt.MemStatsRecord": if (MemStats) E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "MsRecord", 1).Fn); else E.Op(Op.Drop); return Own.None;
+            case "Rt.MemStatsHash": if (MemStats) E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "MsHash", 1).Fn); else E.Op(Op.Drop); return Own.None;
             case "Rt.MemStatsOn": E.I32(MemStats ? 1 : 0); return Own.None;
             case "Rt.DropStats": E.I32(Environment.GetEnvironmentVariable("CS2WASM_DROP_STATS") == "1" ? 1 : 0); return Own.None;
             case "Rt.StaleHolds": E.I32(Environment.GetEnvironmentVariable("CS2WASM_STALE_HOLDS") == "1" ? 1 : 0); return Own.None;

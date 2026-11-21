@@ -1069,10 +1069,14 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] static extern void MemStatsRecord(int delta);
         public static void MsGrow() { MsWalk(); MsLine("grow"); }
         public static void MsRecord(int delta) => s_msRec += delta;
+        /// <summary>CS2WASM_MEMSTATS=1: a call of MsHash with the argument (1: the object's first); else nothing.</summary>
+        [Intrinsic] static extern void MemStatsHash(int first);
+        static long s_msHashCalls, s_msHashFirst;
+        public static void MsHash(int first) { s_msHashCalls++; s_msHashFirst += first; }
         const int MsCls = 6, MsTypes = 16384;
         const int TPages = 0, TEmptyPages = 1, THuge = 2, THugeGran = 3, TFreeRuns = 4, TFreeGran = 5, TFreeMax = 6,
             TOther = 7, TOddBlocks = 8, TOddBytes = 9, TMemberWords = 10, TArenaRecords = 11, TFreePageList = 12, TRunLeft = 13,
-            THugeObj = 14, THugeArena = 15, TLeafGran = 16, TMwLive = 17, TBadTags = 18, TWords = 24, TCount = 40;
+            THugeObj = 14, THugeArena = 15, TLeafGran = 16, TMwLive = 17, TBadTags = 18, TObjects = 19, TWords = 24, THashed = 34, TCount = 40;
         static int s_ms, s_msRec, s_msGrows;
         static int MsClsAt(int c) => s_ms + c * MsCls * 4;
         static int MsTotAt(int k) => s_ms + Classes * MsCls * 4 + k * 4;
@@ -1102,6 +1106,15 @@ namespace Cs2Wasm.Runtime
             if (w == 0) return 0;
             int o = w <= PrefixMark ? b + ArenaPrefix : b;
             MsType(Mem.LoadI32(o + 4), bytes);
+            MsAdd(MsTotAt(TObjects), 1);
+            {
+                // (the header's third word: an identity hash made, pinned, marked, finalized)
+                int hw = Mem.LoadI32(o + 8);
+                if ((hw & 0x1FFFFFFF) != 0) MsAdd(MsTotAt(THashed), 1);
+                if (hw < 0) MsAdd(MsTotAt(THashed + 1), 1);
+                if ((hw & 0x40000000) != 0) MsAdd(MsTotAt(THashed + 2), 1);
+                if ((hw & 0x20000000) != 0) MsAdd(MsTotAt(THashed + 3), 1);
+            }
             if (w > PrefixMark) return 1;
             // (a first word below -1 that is no tag: its side words would be outside the heap; counted, not read)
             int side = PrefixMark - w;
@@ -1238,6 +1251,10 @@ namespace Cs2Wasm.Runtime
             for (int k = 4; k <= 28; k += 4) { MsText(" "); MsNum(k); MsText(":"); MsNum(MsTot(TWords + k / 4)); }
             MsText(" waiting:"); MsNum(MsTot(TWords + 8)); MsText(" note:"); MsNum(MsTot(TWords + 9));
             MsEnd();
+            MsText("memstats "); MsText(what); MsText(" objects "); MsNum(MsTot(TObjects)); MsText(" hashed "); MsNum(MsTot(THashed));
+            MsText(" pinned "); MsNum(MsTot(THashed + 1)); MsText(" marked "); MsNum(MsTot(THashed + 2)); MsText(" finalized "); MsNum(MsTot(THashed + 3));
+            MsText(" | identity hashes asked "); MsNum(s_msHashCalls); MsText(", made "); MsNum(s_msHashFirst);
+            MsEnd();
             MsText("memstats "); MsText(what); MsText(" class: size pages in-use objects cycle-capable with-words empty | live KB, held free KB"); MsEnd();
             for (int c = 4; c < Classes; c++)
             {
@@ -1250,7 +1267,7 @@ namespace Cs2Wasm.Runtime
                 MsEnd();
             }
             // the types with the most bytes
-            for (int n = 0; n < 60; n++)
+            for (int n = 0; n < (what == "now" ? MsTypes : 60); n++)
             {
                 int best = -1; long bb = 0;
                 for (int i = 0; i < MsTypes; i++)
@@ -1712,6 +1729,7 @@ namespace Cs2Wasm.Runtime
             // check, bits 24 to 28 are the thread that made the object)
             int mask = ShareCheck() ? 0xFFFFFF : 0x1FFFFFFF;
             int v = Mem.LoadI32(a + 8);
+            MemStatsHash((v & mask) == 0 ? 1 : 0);
             if ((v & mask) == 0)
             {
                 int h = NextHash() & mask;
