@@ -43,17 +43,14 @@ static class RcFastPaths
                 if (ins.Op != Op.Call || !isRetain && !isRelease) { o.Add(ins); continue; }
                 if (p < 0) { p = Local(); c = Local(); }
                 void A(Op op, long imm = 0, long imm2 = 0) => o.Add(new Instr { Op = op, Imm = imm, Imm2 = imm2, Pos = ins.Pos, Inl = ins.Inl });
-                // p = the object; when it is one and its count is above the fast path's bound: the count changed in place
-                A(Op.LocalSet, p);
-                A(Op.LocalGet, p);
-                A(Op.If);
-                A(Op.LocalGet, p); A(Op.I32Load, 0, 2); A(Op.LocalTee, c);
+                // p = the object, its count read: null reads the word at address 0, which is zero (the module's data
+                // begins at 16 and nothing stores below), so it takes the call as any other count outside the bound
+                A(Op.LocalTee, p); A(Op.I32Load, 0, 2); A(Op.LocalTee, c);
                 A(Op.I32Const, isRetain ? 0 : 1); A(Op.I32GtS);
                 A(Op.If);
                 A(Op.LocalGet, p); A(Op.LocalGet, c); A(Op.I32Const, 1); A(isRetain ? Op.I32Add : Op.I32Sub); A(Op.I32Store, 0, 2);
                 A(Op.Else);
                 A(Op.LocalGet, p); o.Add(ins); if (isRetain) A(Op.Drop);
-                A(Op.End);
                 A(Op.End);
                 if (isRetain) A(Op.LocalGet, p);
             }
