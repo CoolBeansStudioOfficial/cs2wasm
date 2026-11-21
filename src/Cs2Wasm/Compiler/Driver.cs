@@ -1211,6 +1211,7 @@ internal sealed partial class Driver
         RunPluginsBeforeCompile(rt);
         Drain(rt);
         Mark("compile (first drain)");
+        if (_times) Console.Error.WriteLine($"    of it binding bodies (Roslyn's GetOperation): {BindTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms");
         RunPlugins(rt);
         rt.FinishExports();
         Drain(rt);
