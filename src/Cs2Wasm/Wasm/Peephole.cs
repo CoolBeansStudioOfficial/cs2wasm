@@ -137,6 +137,8 @@ static class Peephole
     /// before an `if` or a `br_if`, which test for non-zero themselves; `local.set x ; local.get x` that the passes
     /// after Run left; `i32.const k ; i32.add` before a load (its offset); a `return` that is the body's last instruction, where the function's end returns the same
     /// values. Each is fewer bytes and the same meaning.</summary>
+    static readonly bool s_tidyOffsets = Environment.GetEnvironmentVariable("CS2WASM_TIDY_OFFSETS") != "0";
+
     public static void FinalTidy(WasmFunction f)
     {
         var b = f.Body;
@@ -165,7 +167,7 @@ static class Peephole
             if (ins.Op == Op.LocalGet && o.Count > 0 && o[^1].Op == Op.LocalSet && o[^1].Imm == ins.Imm) { o[^1] = o[^1] with { Op = Op.LocalTee }; continue; }
             // an address plus a constant, loaded from: the constant is the load's offset (a field of an object; an
             // address that wrapped round the 4 GiB end would be no object's)
-            if (ins.Op is >= Op.I32Load and <= Op.I64Load32U && o.Count >= 2 && o[^1].Op == Op.I32Add && o[^2].Op == Op.I32Const && o[^2].Ref == null
+            if (s_tidyOffsets && ins.Op is >= Op.I32Load and <= Op.I64Load32U && o.Count >= 2 && o[^1].Op == Op.I32Add && o[^2].Op == Op.I32Const && o[^2].Ref == null
                 && o[^2].Imm >= 0 && o[^2].Imm + ins.Imm < int.MaxValue)
             {
                 long k = o[^2].Imm;
@@ -174,7 +176,7 @@ static class Peephole
                 continue;
             }
             // the same for a store whose value is one push (a local, a constant, a global)
-            if (ins.Op is >= Op.I32Store and <= Op.I64Store32 && o.Count >= 3 && o[^1].Op is Op.LocalGet or Op.GlobalGet or Op.I32Const or Op.I64Const or Op.F32Const or Op.F64Const
+            if (s_tidyOffsets && ins.Op is >= Op.I32Store and <= Op.I64Store32 && o.Count >= 3 && o[^1].Op is Op.LocalGet or Op.GlobalGet or Op.I32Const or Op.I64Const or Op.F32Const or Op.F64Const
                 && o[^2].Op == Op.I32Add && o[^3].Op == Op.I32Const && o[^3].Ref == null && o[^3].Imm >= 0 && o[^3].Imm + ins.Imm < int.MaxValue)
             {
                 long k = o[^3].Imm;
@@ -187,22 +189,10 @@ static class Peephole
             o.Add(ins);
         }
         if (o.Count > 0 && o[^1].Op == Op.Return) o.RemoveAt(o.Count - 1);
-        // (`call thrower; unreachable` at the end of a block or an if that yields nothing: the call leaves nothing,
-        // the block's end needs nothing, and the thrower never returns. The function's own end is left as it is.)
-        var kinds = new Stack<bool>();
-        var t = new List<Instr>(o.Count);
-        foreach (var ins in o)
-        {
-            if (ins.Op is Op.Block or Op.Loop or Op.If or Op.TryTable) kinds.Push(ins.Op is Op.Block or Op.If && ins.Ref == null || ins.Op == Op.Loop && ins.Ref == null);
-            else if (ins.Op == Op.Else) { if (t.Count >= 2 && kinds.Count > 0 && kinds.Peek() && ThrowerEnd(t)) t.RemoveAt(t.Count - 1); }
-            else if (ins.Op == Op.End && kinds.Count > 0) { if (kinds.Pop() && ThrowerEnd(t)) t.RemoveAt(t.Count - 1); }
-            t.Add(ins);
-        }
-        f.Body = t;
+        // (not `call thrower; unreachable` at a block's end without its unreachable: fewer bytes, but in the engine's
+        // baseline tier the code after the block then merges with the throwing arm's state: micro 6% slower)
+        f.Body = o;
     }
-
-    static bool ThrowerEnd(List<Instr> t) => t[^1].Op == Op.Unreachable && t.Count >= 2 && t[^2].Op == Op.Call && t[^2].Ref is WasmFunction { Type.Results.Length: 0 } g
-        && g.Name.StartsWith("Cs2Wasm.Runtime.ThrowHelpers.", StringComparison.Ordinal);
 
     /// <summary>`br 0` as the last instruction of a block or an if (an inlined body's return): the branch goes to where
     /// the code falls through anyway. (Not a loop's: there `br 0` goes back to its start.)</summary>
