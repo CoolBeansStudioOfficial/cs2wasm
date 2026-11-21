@@ -134,6 +134,9 @@ static class ShareConstants
     }
 
     static readonly int MaxSlots = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_SHARE_MAX"), out var sm) ? sm : 6;
+    /// <summary>A generic family's hidden parameters (its dictionary, as .NET's shared code has one): more than other groups may have.</summary>
+    static readonly int MaxFamilySlots = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_SHARE_MAX_FAMILY"), out var smf) ? smf : 24;
+    static int Max(Plan pl) => pl.Members[0].Family != null && s_indirect ? MaxFamilySlots : MaxSlots;
 
     /// <summary>A group and its differing values: per slot, each member's constant (an i32.const instruction).</summary>
     sealed class Plan
@@ -181,12 +184,12 @@ static class ShareConstants
                 {
                     if (pl.Dead) continue;
                     int before = pl.Columns.Count;
-                    if (!Slots(pl, plans)) { pl.Dead = true; changed = true; continue; }
+                    if (!Slots(pl, plans)) { pl.Dead = true; Died(pl, "slots"); changed = true; continue; }
                     if (pl.Columns.Count != before) changed = true;
                 }
             }
             bool died = false;
-            foreach (var pl in all) if (!pl.Dead && (pl.Columns.Count > MaxSlots || !Pays(pl, calls))) { pl.Dead = true; died = true; }
+            foreach (var pl in all) if (!pl.Dead && (pl.Columns.Count > Max(pl) || !Pays(pl, calls))) { pl.Dead = true; Died(pl, pl.Columns.Count > Max(pl) ? "max-slots " + pl.Columns.Count : "pays"); died = true; }
             if (!died || !s_indirect) break;
         }
         // (a group that calls members of an unshared group at differing places is not shared either)
@@ -197,7 +200,7 @@ static class ShareConstants
             {
                 if (pl.Dead) continue;
                 foreach (var i in pl.CallSlots.Keys)
-                    if (!plans.TryGetValue((WasmFunction)pl.Members[0].Body[i].Ref!, out var cp) || cp.Dead) { pl.Dead = true; again = true; break; }
+                    if (!plans.TryGetValue((WasmFunction)pl.Members[0].Body[i].Ref!, out var cp) || cp.Dead) { pl.Dead = true; Died(pl, "callee"); again = true; break; }
             }
         }
         // (the callees called through the table: now in it)
@@ -350,6 +353,10 @@ static class ShareConstants
         return true;
     }
 
+    static readonly bool s_why = Environment.GetEnvironmentVariable("CS2WASM_SHARE_WHY") == "1";
+    static readonly Dictionary<WasmFunction, string> s_died = [];
+    static void Died(Plan pl, string why) { if (s_why) foreach (var m in pl.Members) s_died[m] = why; }
+
     /// <summary>CS2WASM_SHARE_WHY=1 (after sharing): families of functions (names with their type arguments taken
     /// out, one signature) that still have several bodies, and for a pair of them the first instruction that differs.</summary>
     public static void Why(List<WasmFunction> fns)
@@ -402,6 +409,7 @@ static class ShareConstants
                     if (x.Pos != y.Pos) { why = "pos"; break; }
                 }
                 if (why == "same?" && a.FrameName != b.FrameName) why = "frame";
+                if (why == "same?") why = "same: " + (s_died.TryGetValue(a, out var dw) ? dw : "not grouped");
             }
             var cat = why.StartsWith("call ") ? "call" : why.StartsWith("op") ? "op" : why;
             var e = reasons.GetValueOrDefault(cat);
