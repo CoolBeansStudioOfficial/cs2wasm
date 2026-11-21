@@ -679,13 +679,22 @@ internal sealed partial class Driver
         return _assemblies.Count - 1;
     }
 
-    /// <summary>An assembly's display name: a library's is the running .NET's (its version and key token), the
-    /// program's from its identity (as the C# compiler emits it).</summary>
+    /// <summary>An assembly's display name: a library's is .NET's (its version and key token), the program's from its
+    /// identity (as the C# compiler emits it). .NET's is the reference assembly's of that name among the program's
+    /// references (the targeting pack's, as the runtime's own carries it), so the module depends on the build's inputs
+    /// alone: not on the .NET running the compiler, or on whether one is (the self-hosted compiler: SPEC 7.3).
+    /// System.Private.CoreLib is not in the targeting pack: System.Runtime's version, and its own key's token.</summary>
     string AssemblyFullName(IAssemblySymbol a)
     {
-        if (!Inputs.Any(c => SymbolEqualityComparer.Default.Equals(c.Assembly, a)))
-            try { if (System.Reflection.Assembly.Load(a.Identity.Name).FullName is { } fn) return fn; } catch { }
         var id = a.Identity;
+        if (!Inputs.Any(c => SymbolEqualityComparer.Default.Equals(c.Assembly, a)))
+        {
+            var refs = Inputs.SelectMany(c => c.ReferencedAssemblyNames);
+            if (refs.FirstOrDefault(r => r.Name == id.Name && !r.PublicKeyToken.IsDefaultOrEmpty) is { } r) id = r;
+            else if (id.Name == "System.Private.CoreLib" && refs.FirstOrDefault(x => x.Name == "System.Runtime") is { } rt)
+                return $"System.Private.CoreLib, Version={rt.Version}, Culture=neutral, PublicKeyToken=7cec85d7bea7798e";
+            else try { if (System.Reflection.Assembly.Load(id.Name).FullName is { } fn) return fn; } catch { }
+        }
         var token = id.PublicKeyToken.IsDefaultOrEmpty ? "null" : string.Concat(id.PublicKeyToken.Select(b => b.ToString("x2")));
         return $"{id.Name}, Version={id.Version}, Culture={(string.IsNullOrEmpty(id.CultureName) ? "neutral" : id.CultureName)}, PublicKeyToken={token}";
     }

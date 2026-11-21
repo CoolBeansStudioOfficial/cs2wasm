@@ -96,7 +96,19 @@ namespace System.Reflection
             return (uint)EventPipeInternal.GetRuntimeCounterValue(EventPipeInternal.RuntimeCounters.ASSEMBLY_COUNT);
         }
 
-                internal static Assembly InternalLoad(string assemblyName, ref StackCrawlMark stackMark, IntPtr ptrLoadContextBinder) => throw Cs2Wasm.Runtime.TypeInfo.NotYet("reflection (Mono's InternalLoad): cs2wasm's reflection reads the compiler's metadata");
+        // cs2wasm: the assemblies are those in the compiler's table (Compiler/Reflection.cs), all loaded from the start: the one
+        // of that simple name (compared as .NET's loader does, ignoring case), or none (Load throws FileNotFoundException)
+        internal static Assembly? InternalLoad(string assemblyName, ref StackCrawlMark stackMark, IntPtr ptrLoadContextBinder)
+        {
+            string? simple = new AssemblyName(assemblyName).Name;
+            int n = Cs2Wasm.Runtime.Meta.I(Cs2Wasm.Runtime.TypeInfo.AssemblyNames(), 0);
+            for (int i = 0; i < n; i++)
+            {
+                var a = RuntimeAssembly.OfIndex(i);
+                if (string.Equals(a.GetSimpleName(), simple, StringComparison.OrdinalIgnoreCase)) return a;
+            }
+            return null;
+        }
 
         // cs2wasm: a type of the assembly by its full name (nested types with '+')
         internal Type InternalGetType(Module? module, string name, bool throwOnError, bool ignoreCase)

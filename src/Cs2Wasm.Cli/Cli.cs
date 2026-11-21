@@ -26,6 +26,10 @@ public static class Cli
 
     public static int Run(string[] args)
     {
+        // CS2WASM_HASH_PERTURB=n (a diagnosis of output that depends on identity hash codes): n objects' hash codes
+        // taken first, so every later object's RuntimeHelpers.GetHashCode differs from an unperturbed run's
+        if (int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_HASH_PERTURB"), out int perturb))
+            for (int i = 0; i < perturb; i++) System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(new object());
         // CS2WASM_WATCHDOG=1 (a diagnosis of a build that hangs): the thread pool's counts every 5 s
         if (Environment.GetEnvironmentVariable("CS2WASM_WATCHDOG") == "1")
             new Thread(() =>

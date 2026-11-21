@@ -37,6 +37,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | Same: module size | 44.0 MB vs 129 MB (main 480a101, shipped; K round 3 took back round 2's inlining) | met; next waste: code (36.2 MB) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | met 2026-11-21: `node tools/proof5.mjs toolchain`, `web`, `check`: built in headless Chrome in 220.9 s, its 1,667 log lines (1,669 with `--panic`) equal stock Godot .NET's | plays, log equals the oracle's |
+| 5 | Self-hosted output equals the .NET-hosted compiler's, on 1 and 4 cores (`node tools/selfdet.mjs [--self t.wasm] [--cores 1,4] <program.cs> [-r x.dll]`) | met 2026-11-21: 021_threads and the GodotSharp Hello (4,060,330 B) byte-identical, no-threads toolchain and threaded on 1 and 4 cores | byte-identical |
 | - | 072_http's rare out-of-bounds | found and fixed 2026-11-20: none in 600 loaded runs per mode (was ~1 in 1,000) | found or not seen in 500 runs |
 
 ## Where the self-hosted compiler's gap is (measured 2026-11-20)
@@ -355,3 +356,11 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   usual case without a call (65% and 62% of them). Self-hosted 10.47 to 10.27 s against NativeAOT-LLVM's 5.38,
   memory the same. Suite 197/197 both modes. Left: the slow first and last references (a member that is under a
   failed check of the held kind, or whose hold changes), and what lifts the 2.0x is no longer one arena path.
+- 2026-11-21, self-hosted output: the self-hosted compiler built a different module from the .NET-hosted one for
+  threaded and GodotSharp programs (Sharing found 399 types another thread can reach against 1,861). Cause: a
+  miscompile, `Folding.KnownNull` folded `x == null` for a local nothing assigns, looked for in the body being
+  compiled only, so a local function or lambda saw its enclosing method's captured local as never written (test 186;
+  Sharing.Analyze's node keys are such code). Also host-dependent: assembly identities came from the host's
+  `Assembly.Load` (now the reference pack's, Reflection.cs) and `Assembly.Load` in a module threw (now finds a
+  module's assembly by name). `tools/selfdet.mjs` checks it: equal paths and output name, `--pathmap /=/` on Windows.
+  GodotSharp Hello: self-hosted on 1 core 510 s, on 4 cores 953 s (stream 5's threading row). Suite 198/198 both modes.

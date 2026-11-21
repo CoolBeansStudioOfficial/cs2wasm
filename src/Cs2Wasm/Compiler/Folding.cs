@@ -241,6 +241,14 @@ sealed partial class FunctionCompiler
 sealed partial class FunctionCompiler
 {
     HashSet<ILocalSymbol>? _writtenLocals;
+    (ISymbol member, HashSet<ILocalSymbol> written)? _outerWritten;
+    HashSet<ILocalSymbol> OuterWritten(ISymbol member)
+    {
+        if (_outerWritten is { } o && SymbolEqualityComparer.Default.Equals(o.member, member)) return o.written;
+        var w = WrittenIn(member);
+        _outerWritten = (member, w);
+        return w;
+    }
 
     /// <summary>`x == null` / `x != null` / `x is null` where x is known to be null: a null literal, a library call
     /// substituted to an empty body (Environment.GetEnvironmentVariable: the sandbox has no environment), or a local
@@ -287,6 +295,9 @@ sealed partial class FunctionCompiler
                 {
                     var l = lr.Local;
                     if (l.IsRef || WrittenLocals().Contains(l)) return false;
+                    // (a local of an enclosing method, captured: it is written wherever that method's body and its
+                    // other local functions and lambdas assign it, none of which this body shows)
+                    if (!SymbolEqualityComparer.Default.Equals(l.ContainingSymbol, M.OriginalDefinition) && OuterWritten(Outermost(l.ContainingSymbol)).Contains(l)) return false;
                     var decl = l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
                     if (decl == null || D.ModelFor(decl.SyntaxTree).GetOperation(decl) is not IVariableDeclaratorOperation { Initializer.Value: { } init }) return false;
                     return IsNullLiteral(init) || KnownNull(init, depth + 1);
@@ -296,19 +307,29 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>The locals of the method being compiled that are assigned other than by their declaration.</summary>
-    HashSet<ILocalSymbol> WrittenLocals()
+    HashSet<ILocalSymbol> WrittenLocals() => _writtenLocals ??= WrittenIn(M.OriginalDefinition);
+
+    /// <summary>The locals a member's body assigns other than by their declaration, its local functions and lambdas
+    /// included (they are in its body).</summary>
+    HashSet<ILocalSymbol> WrittenIn(ISymbol member)
     {
-        if (_writtenLocals != null) return _writtenLocals;
-        _writtenLocals = new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default);
-        foreach (var r in M.OriginalDefinition.DeclaringSyntaxReferences)
+        var written = new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default);
+        foreach (var r in member.DeclaringSyntaxReferences)
         {
             if (D.ModelFor(r.SyntaxTree).GetOperation(r.GetSyntax()) is not { } body) continue;
             foreach (var o in body.DescendantsAndSelf())
             {
-                if (o is ILocalReferenceOperation lr && IsLocalWrite(lr)) _writtenLocals.Add(lr.Local);
+                if (o is ILocalReferenceOperation lr && IsLocalWrite(lr)) written.Add(lr.Local);
             }
         }
-        return _writtenLocals;
+        return written;
+    }
+
+    /// <summary>The member a local function or lambda is in, through any number of them.</summary>
+    static ISymbol Outermost(ISymbol s)
+    {
+        while (s is IMethodSymbol { MethodKind: MethodKind.LocalFunction or MethodKind.AnonymousFunction } && s.ContainingSymbol is { } c) s = c;
+        return s;
     }
 
     /// <summary>The reference is one through which the local can get another value.</summary>
