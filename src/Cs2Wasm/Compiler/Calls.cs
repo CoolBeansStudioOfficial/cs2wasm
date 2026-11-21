@@ -1077,6 +1077,8 @@ sealed partial class FunctionCompiler
             case "TypeInfo.GenericConstraints": E.Call(Rt.TypeInfo("gp_constraints")); return Own.None;
             case "TypeInfo.AssemblyNames": E.Call(D.AssemblyNamesFn); return Own.None;
             case "TypeInfo.ManifestResources": E.Call(D.ManifestResourcesFn); return Own.None;
+            case "TypeInfo.ResourceInit": E.Call(D.ResourceInitFn); return Own.None;
+            case "TypeInfo.ResourceUnpack": E.Call(D.ResourceUnpackFn); return Own.None;
             case "TypeInfo.DeclaringId": E.Call(Rt.TypeInfo("declaring")); return Own.None;
             case "TypeInfo.Size": E.Call(Rt.TypeInfo("size")); return Own.None;
             case "TypeInfo.BoxOffset": E.Call(Rt.TypeInfo("box_offset")); return Own.None;

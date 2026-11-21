@@ -709,19 +709,42 @@ internal sealed partial class Driver
     {
         if (_manifestResources == null) return;
         var all = Lib.ManifestResources().Concat(Options.Resources.Select(r => (Asm: Inputs[0].AssemblyName ?? "", r.Name, Data: (Func<byte[]>)(() => r.Data)))).ToList();
-        var words = new byte[4 + 16 * all.Count];
+        // A resource's bytes are not in the memory: each is packed on its own into a segment of their own, and
+        // expanded into memory of the stream that reads it (TypeInfo.ResourceInit, ResourceUnpack;
+        // RuntimeAssembly.ManifestResource), which frees it when it is disposed. (They were in the data below the
+        // heap for good: the self-hosted compiler's 4.1 MB, read once each when the library is loaded.)
+        // Entry: [assembly name, resource name, offset in the segment, length, packed length (= length: not packed)].
+        var seg = new DataSegment();
+        var words = new byte[4 + ResourceEntry * all.Count];
         BitConverter.GetBytes(all.Count).CopyTo(words, 0);
         var relocs = new List<(int, IAddress)>();
         for (int i = 0; i < all.Count; i++)
         {
             var data = all[i].Data();
-            BitConverter.GetBytes(data.Length).CopyTo(words, 4 + 16 * i + 12);
-            relocs.Add((4 + 16 * i, StringLiteral(all[i].Asm)));
-            relocs.Add((4 + 16 * i + 4, StringLiteral(all[i].Name)));
-            relocs.Add((4 + 16 * i + 8, DataBlob(data.Length == 0 ? new byte[1] : data, 8)));
+            var packed = data.Length >= 64 ? DataCompression.Compress(data) : data;
+            if (packed.Length + 16 >= data.Length) packed = data;
+            int e = 4 + ResourceEntry * i;
+            BitConverter.GetBytes(seg.Bytes.Count).CopyTo(words, e + 8);
+            BitConverter.GetBytes(data.Length).CopyTo(words, e + 12);
+            BitConverter.GetBytes(packed.Length).CopyTo(words, e + 16);
+            seg.Bytes.AddRange(packed);
+            relocs.Add((e, StringLiteral(all[i].Asm)));
+            relocs.Add((e + 4, StringLiteral(all[i].Name)));
         }
+        if (seg.Bytes.Count == 0) seg.Bytes.Add(0);
+        Module.Data.Add(seg);
         new Emitter(_manifestResources).I32Addr(DataBlob(words, 4, relocs));
+        if (_resourceInit != null) { var e = new Emitter(_resourceInit); e.Get(0); e.Get(1); e.Get(2); e.Emit(Op.MemoryInit, 0, 0, seg); }
+        if (_resourceUnpack != null) DataCompression.EmitDecoder(new Emitter(_resourceUnpack));
     }
+
+    /// <summary>The bytes of an entry of the manifest resources' table.</summary>
+    internal const int ResourceEntry = 20;
+    WasmFunction? _resourceInit, _resourceUnpack;
+    /// <summary>(dst, offset, length): a resource's bytes (packed or not) from their segment into memory.</summary>
+    public WasmFunction ResourceInitFn => _resourceInit ??= Module.AddFunction("rt.resource_init", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
+    /// <summary>(src, dst, end): packed bytes at src expanded into dst..end (DataCompression).</summary>
+    public WasmFunction ResourceUnpackFn => _resourceUnpack ??= Module.AddFunction("rt.resource_unpack", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
 
     internal void EmitAssemblyNames()
     {
@@ -788,6 +811,21 @@ internal sealed partial class Driver
 
     IAddress Ints(IEnumerable<int> values) { var b = values.SelectMany(BitConverter.GetBytes).ToArray(); return DataBlob(b.Length == 0 ? new byte[4] : b, 4); }
 
+    /// <summary>A list of ints that nothing writes and nothing tells apart by its address (a method's parameters, their
+    /// names, attribute factories, a type's interfaces, a generic method's arguments): one blob for each distinct list.
+    /// (Of the self-hosted compiler's reflection records most such lists repeat: an empty one for nearly every method.)</summary>
+    IAddress SharedInts(IEnumerable<int> values)
+    {
+        var b = values.SelectMany(BitConverter.GetBytes).ToArray();
+        var key = Convert.ToBase64String(b);
+        lock (_sharedInts)
+        {
+            if (_sharedInts.TryGetValue(key, out var a)) return a;
+            return _sharedInts[key] = DataBlob(b.Length == 0 ? new byte[4] : b, 4);
+        }
+    }
+    readonly Dictionary<string, IAddress> _sharedInts = [];
+
     (int count, int addr) Attrs(ISymbol s)
     {
         var list = KeptAttributes(s).Where(a => _attrFactories.ContainsKey(AttrKey(a))).ToList();
@@ -797,7 +835,7 @@ internal sealed partial class Driver
             ints.Add(ExtTypeId(a.AttributeClass!));
             ints.Add(RootSlot(AttributeFactory(a)) + 1);
         }
-        return (list.Count, Ints(ints).Address);
+        return (list.Count, SharedInts(ints).Address);
     }
 
     const int FStatic = 1, FPublic = 2, FVirtual = 4, FAbstract = 8, FReadOnly = 16, FPrivate = 32, FFamily = 64, FAssembly = 128;
@@ -859,7 +897,7 @@ internal sealed partial class Driver
                 case IMethodSymbol { MethodKind: MethodKind.Constructor } c:
                     {
                         var (na, aa) = Attrs(c);
-                        ctors.AddRange([(c.IsStatic ? FStatic : 0) | Access(c), Thunk(c), c.Parameters.Length, Ints(c.Parameters.Select(ParamWord)).Address, Ints(c.Parameters.Select(p => Str(p.Name))).Address, na, aa]);
+                        ctors.AddRange([(c.IsStatic ? FStatic : 0) | Access(c), Thunk(c), c.Parameters.Length, SharedInts(c.Parameters.Select(ParamWord)).Address, SharedInts(c.Parameters.Select(p => Str(p.Name))).Address, na, aa]);
                         ctors.Add(ExtTypeId(c.ContainingType));
                         ctors.Add(Defaults(c));
                         ctors.Add(Token(0x06000000, c));
@@ -873,7 +911,7 @@ internal sealed partial class Driver
                         int flags = (ms.IsStatic ? FStatic : 0) | Access(ms) | (ms.IsVirtual || ms.IsOverride || ms.IsAbstract ? FVirtual : 0) | (ms.IsAbstract ? FAbstract : 0)
                             | (ms.MethodKind is MethodKind.EventAdd or MethodKind.EventRemove ? FEventAccessor : 0) | MethodShape(ms);
                         methods.AddRange([Str(ms.Name), ms.ReturnsVoid ? -1 : ExtTypeId(ms.ReturnType), flags, Thunk(ms), ms.Parameters.Length,
-                            Ints(ms.Parameters.Select(ParamWord)).Address, Ints(ms.Parameters.Select(p => Str(p.Name))).Address, na, aa, ExtTypeId(ms.ContainingType), 0, Defaults(ms), Token(0x06000000, ms)]);
+                            SharedInts(ms.Parameters.Select(ParamWord)).Address, SharedInts(ms.Parameters.Select(p => Str(p.Name))).Address, na, aa, ExtTypeId(ms.ContainingType), 0, Defaults(ms), Token(0x06000000, ms)]);
                         methodSyms.Add(ms);
                         nm++;
                         if (ms.AssociatedSymbol is IPropertySymbol p && seenProps.Add(Types.Key(p.ContainingType) + "." + p.Name))
@@ -912,13 +950,13 @@ internal sealed partial class Driver
                 int def = Enumerable.Range(0, methodSyms.Count).FirstOrDefault(j => IsMethodDefinition(methodSyms[j]) && SymbolEqualityComparer.Default.Equals(methodSyms[j].OriginalDefinition, ms.OriginalDefinition), -1);
                 g = [2, ms.TypeArguments.Length, .. ms.TypeArguments.Select(a => ExtTypeId(a)), def < 0 ? 0 : EntryAt(def)];
             }
-            PatchData(methodsBlob, (i * 13 + 10) * 4, Ints(g).Address);
+            PatchData(methodsBlob, (i * 13 + 10) * 4, SharedInts(g).Address);
         }
         var (ta, tb) = Attrs(t);
         int cBase = Ints(ctors).Address;
         for (int i = 0; i < ctorSyms.Count; i++) NoteFrameEntry(t, ctorSyms[i], cBase + 4 * 10 * i + 1);
         var rec = new[] { nf, Ints(fields).Address, np, Ints(props).Address, nm, mBase, nc, cBase, ta, tb,
-            t.BaseType != null ? ExtTypeId(t.BaseType) + 1 : 0, t.Interfaces.Length, Ints(t.AllInterfaces.Select(i => ExtTypeId(i))).Address };
+            t.BaseType != null ? ExtTypeId(t.BaseType) + 1 : 0, t.Interfaces.Length, SharedInts(t.AllInterfaces.Select(i => ExtTypeId(i))).Address };
         return Ints(rec);
     }
 }

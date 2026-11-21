@@ -26,9 +26,14 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int GenericParamMethod(int id);
         /// <summary>The assembly table: [count, full name...] (string addresses).</summary>
         [Intrinsic] public static extern int AssemblyNames();
-        /// <summary>The manifest resources: [count, (assembly name, resource name, data, length)...] (addresses of
-        /// strings and bytes).</summary>
+        /// <summary>The manifest resources: [count, (assembly name, resource name, offset, length, packed length)...]
+        /// (string addresses; where the bytes are in their segment: ResourceInit).</summary>
         [Intrinsic] public static extern int ManifestResources();
+        /// <summary>A resource's bytes as they are kept (packed, or not when the entry's two lengths are equal): `length`
+        /// bytes of their segment from `offset`, to dst.</summary>
+        [Intrinsic] public static extern void ResourceInit(int dst, int offset, int length);
+        /// <summary>Packed bytes at src expanded into dst..end.</summary>
+        [Intrinsic] public static extern void ResourceUnpack(int src, int dst, int end);
         [Intrinsic] public static extern int DeclaringId(int id);
         [Intrinsic] public static extern int Rank(int id);
         /// <summary>System.Reflection.TypeAttributes.</summary>
