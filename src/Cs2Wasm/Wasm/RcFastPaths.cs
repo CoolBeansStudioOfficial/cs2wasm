@@ -8,12 +8,14 @@ namespace Cs2Wasm.Wasm;
 /// called functions. Only in code that runs often: functions a loop calls, three calls deep (NullChecks.CalledFromLoops; not the destroy functions, whose many field releases mostly end their objects),
 /// where the copies (about twenty bytes each against a call's three) pay; loops' own bodies have the whole function
 /// inlined already (Inliner).
+/// Off by default (CS2WASM_RC_FAST=1): 4% on the parser bench, but the self-hosted compiler was within 1% either way
+/// over 14 interleaved rounds while its module grew by 8.7 MB (11.7%), which the engine compiles too.
 /// </summary>
 static class RcFastPaths
 {
     static readonly bool s_debug = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_DEBUG") == "1";
     static readonly bool s_destroys = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_DESTROY") == "1";
-    static readonly bool s_off = Environment.GetEnvironmentVariable("CS2WASM_NO_RC_FAST") == "1";
+    static readonly bool s_off = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST") != "1";
     static readonly bool s_everywhere = Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_ALL") == "1";
     static readonly int s_depth = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_DEPTH"), out var d) ? d : 3;
     static readonly int s_maxBody = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_RC_FAST_MAXBODY"), out var mb) ? mb : int.MaxValue;

@@ -314,7 +314,8 @@ internal sealed partial class RuntimeFns
     public WasmFunction ReleaseRange(ITypeSymbol et) => Range(et, release: true);
     public WasmFunction RetainRange(ITypeSymbol et) => Range(et, release: false);
 
-    static readonly bool s_noZeroSkip = Environment.GetEnvironmentVariable("CS2WASM_NO_ZERO_SKIP") == "1";
+    // (CS2WASM_ZERO_SKIP=1; off by default: no gain measured on the self-hosted compiler, 98 bytes in hello world)
+    static readonly bool s_noZeroSkip = Environment.GetEnvironmentVariable("CS2WASM_ZERO_SKIP") != "1";
 
     WasmFunction Range(ITypeSymbol et, bool release)
     {
