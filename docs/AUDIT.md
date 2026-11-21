@@ -1234,6 +1234,40 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     a page on the empty list as a size class from its stale header (a trap in the self-hosted build): such pages are
     marked first now, and a first word below -1 that is no tag is counted, not followed.
 
+- **Arena operations without the calls of their usual cases (stream N of docs/FINISH.md, 2026-11-21).** The
+  self-hosted compiler's runtime is mostly arena operations on Roslyn's red nodes and symbols, one genuine group
+  (stream I). Counted first (`CS2WASM_DROP_STATS=1` now also prints each arena path's count, OpStat; nothing of it
+  without the diagnosis): in tools/roslyn-parse-bench.cs, per 2.9 million links, 2.8 million are stores by address
+  (ArenaLinkAt: struct copies through `ref`, a struct constructor's `this`, iterators' state), 1.6 and 1.8 million
+  first and last outside references take ArenaRetain and ArenaRelease, UpdateHold is called 6.3 million times and
+  changes something 0.8 million times, Top was walked before every inside unlink (a million walks of six hops) only
+  to see the top was not far, 30,000 checks at the drop fail walking 260,000 members, 250,000 joins visit what they
+  hold and 265,000 new owners visit their slots (Reevaluate). In the baseline tier each helper is a call.
+  - Written where they are asked: UpdateHold's first look (HoldSettled: not a member, dying, no owner, or holding
+    exactly when it should); ArenaOf's unmerged record (ArenaOfMerged for the rest); PLM as two loads; the first
+    tests of Dropped (DropCandidate), TryLeave (LeaveCandidate), NoteOutside and TopHeld (a note on the member). The
+    walk to the top before NoteOutside is gone (NoteOutside looks at the note and walks itself). Each of these is
+    the function's own first test, so nothing is decided differently.
+  - Stores by address: SlotOwner with ObjectOf, BlockOf and MapGet written out; a slot's block in a page found by
+    `off * ceil(2^32 / size) >> 32` (off below 2^14, size at most 2,048: within 2^-18 of off / size, whose fraction
+    is at least 2^-11 from the next integer; checked for every offset and size), without threads; the per-type slot
+    tests copied into rt.arena_is_slot's cases, which answer 2 for an array's element (ArenaLinkAt no longer asks
+    TypeInfo.Rank); rt.scc_of inlined (a table read); ArenaUnlinkAt calls ArenaUnlinkOld directly.
+  - Measured: tools/arena-bench.cs (new: red nodes' shape) 63 to 48 ms, the parse bench 262 to 229 ms, under
+    Liftoff, interleaved with main's build; the self-hosted compiler (named no-threads builds, hello world, 3
+    interleaved rounds) 11.09 to 10.54 s against NativeAOT-LLVM's 5.27, arena self time in a profiled run 2.08 to
+    1.64 s; a later round on a busier machine 11.63 to 11.26 s; byte-identical output, the same peak memory.
+    Test 185 (each case a member's first and last outside reference leaves to the full path; freed when let go).
+    Suite 197 passed checked and as shipped.
+  - Tried and left out: the first and last outside reference written out in ArenaRetain and ArenaRelease: in a parse
+    they apply to 3% (red nodes have side words, from a waiting container, or a hold that changes) and the function
+    got slower. An inline guard in front of UpdateHold on the up-reference bits alone: red nodes have up-references
+    below them (their parent links became up-references when they joined), so it passed 93% of the time.
+  - What is left is work, not calls: a red node's first and last reference from outside changes its hold on its
+    owner, and so on up (0.8 million changes a parse); the failing checks at the drop; joins and Reevaluate's visits.
+    Cheaper there needs a different bookkeeping of holds (one that does not flip with every local reference), which
+    is a design question for step 7, not a fast path.
+
 ### Direction (revised 2026-11-18 with the owner)
 
 What the tool must do, at its core:
