@@ -32,9 +32,9 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Hello world size (test 145) | 28,120 B (stream L round 2: the allocator's rounded-size entries; 27,744 before) | < 28,383 B |
-| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.5 s vs 6.3 s, 2.0x (main 3810a98 with J, K, L, M; interleaved, `tools/selfhost-ab.sh`, 3 rounds; was 2.7x this morning) | < NativeAOT-LLVM |
-| 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (stream L round 2, interleaved, 3 rounds; main 6a346d8 344.2 MB). Thin: the heap's top is 290.8 MiB, 1.0 MiB under the memory's growth step (an eighth) to 328 MiB | < NativeAOT-LLVM's, same measure |
-| 4 | Same: module size | 44.0 MB vs 129 MB (no threads, shipped, main 3810a98) | met; next waste: code (36.2 MB) |
+| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 10.7 s vs 5.3 s, 2.0x (main 26150c1 with K and L round 2; interleaved, 3 rounds; 2.7x on 2026-11-20 morning) | < NativeAOT-LLVM |
+| 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main 26150c1, same run). Met, thinly: the heap top is 1 MiB under the next growth step | < NativeAOT-LLVM's, same measure |
+| 4 | Same: module size | 53.9 MB vs 129 MB (main 26150c1; 44.0 at 3810a98: K's inlining) | met; next waste: code (36.2 MB) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | not re-tried since 11-17 | plays, log equals the oracle's |
 | - | 072_http's rare out-of-bounds | found and fixed 2026-11-20: none in 600 loaded runs per mode (was ~1 in 1,000) | found or not seen in 500 runs |
@@ -295,3 +295,7 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   is the intermittent one on main; 070's directory name is the same in every run, the host's random seed being a
   constant, so its checked and shipped runs collide when they overlap, main's too). The report itself: a page on the
   empty list keeps a stale header (read as a size class out of its table, a trap in the self-hosted build).
+- 2026-11-21, main 26150c1 (K and L round 2), interleaved against NativeAOT-LLVM, 3 rounds: self-hosted compiler
+  10.6-10.8 s / 306.0 MB / 53.9 MB against 5.1-5.6 s / 322.2 MB / 129 MB: time 2.0x, memory 0.95x (met), size 0.42x.
+  Then ae57217: stream D's two premature-free fixes (a borrow temporary unwound as a counted one; MemberwiseClone
+  linking twice); the Godot probe binds all of GodotSharp clean under --checked.
