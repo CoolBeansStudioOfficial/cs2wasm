@@ -1739,48 +1739,9 @@ sealed partial class RuntimeGen
                 e.If(); Tree(lo, mid - 1); e.End();
                 Tree(mid, hi);
             }
-            // Many stretches close together (a node class's GetSlot over hundreds of node types): one jump through a
-            // table instead of halving, which is a dozen compares and branches in the engine's baseline tier. The
-            // table goes from the first stretch's id to the last's; an id below the first is the first's (as halving
-            // has it), one past the last the last's.
-            int first = runs.Count > 1 ? runs[0].id : 0, span = runs.Count > 1 ? D.ExtId(runs[^1].id) - D.ExtId(runs[0].id) + 1 : 0;
-            if (Environment.GetEnvironmentVariable("CS2WASM_STUBSTATS") == "1" && runs.Count >= StubTableRuns) Console.Error.WriteLine($"stub table? runs {runs.Count} span {span} {stub.Fn.Name}");
-            if (!s_noStubTables && runs.Count >= StubTableRuns && span <= 8 * runs.Count + 64 && runs.All(r => D.ExtId(r.id) >= 0))
-            {
-                int baseExt = D.ExtId(first);
-                var targets = new int[span];
-                for (int k = 0, at = 0; k < span; k++)
-                {
-                    while (at + 1 < runs.Count && D.ExtId(runs[at + 1].id) <= baseExt + k) at++;
-                    targets[k] = at;
-                }
-                // (the index: the id less the first's, below the first taken as 0)
-                int idx = e.AddLocal(ValType.I32);
-                for (int k = 0; k < runs.Count; k++) e.Block();
-                e.Get(tid); e.Tid(first); e.Op(Op.I32Sub); e.Tee(idx);
-                e.I32(0); e.Get(idx); e.I32(0); e.Op(Op.I32GeS); e.Op(Op.Select);
-                // (branch k leaves k + 1 blocks... the innermost block is the first stretch's: its code follows its end)
-                e.Emit(Op.BrTable, runs.Count - 1, 0, targets);
-                for (int k = 0; k < runs.Count; k++)
-                {
-                    e.End();
-                    for (int i = 0; i < nparams; i++)
-                    {
-                        e.Get(i);
-                        if (i == thisIdx && runs[k].box != 0) { e.I32(runs[k].box); e.Op(Op.I32Add); }
-                    }
-                    e.Call(runs[k].fn);
-                    e.Op(Op.Return);
-                }
-                e.Op(Op.Unreachable);
-                continue;
-            }
             Tree(0, runs.Count - 1);
         }
     }
-
-    static readonly bool s_noStubTables = Environment.GetEnvironmentVariable("CS2WASM_NO_STUB_TABLES") == "1";
-    static readonly int StubTableRuns = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_STUB_TABLE_RUNS"), out var str) ? str : 8;
 
     void EmitTypeTests()
     {
