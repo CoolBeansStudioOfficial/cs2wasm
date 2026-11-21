@@ -112,11 +112,12 @@ static class Peephole
         BranchesToOwnEnd(dst);
         TeeChains(f, dst);
         // Remove instructions after an unconditional transfer until the end of the enclosing block.
-        var outList = new List<Instr>(dst.Count);
+        // (in place: what is kept moves down over what is not, read ahead of where it is written)
+        int w = 0;
         for (int i = 0; i < dst.Count; i++)
         {
             var ins = dst[i];
-            outList.Add(ins);
+            dst[w++] = ins;
             if (ins.Op is Op.Br or Op.Return or Op.Unreachable or Op.Throw or Op.ThrowRef or Op.BrTable)
             {
                 int depth = 0; int j = i + 1;
@@ -130,7 +131,8 @@ static class Peephole
                 i = j - 1;
             }
         }
-        f.Body = outList;
+        dst.RemoveRange(w, dst.Count - w);
+        f.Body = dst;
     }
 
     /// <summary>The last tidying, on the final bodies (WasmModule, before frames are taken): `i32.const 0 ; i32.ne`

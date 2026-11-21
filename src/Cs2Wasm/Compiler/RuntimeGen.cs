@@ -482,6 +482,8 @@ sealed partial class RuntimeGen
     // stub walks the lists it needs from where it last stopped (every stub and type pair is looked at once)
     SubtypeIndex? _index;
     readonly Dictionary<string, (List<int> list, int own, int special)> _stubPos = [];
+    // (keyed by the symbol itself: IsSubtype is a function of the two symbols)
+    readonly Dictionary<ITypeSymbol, Dictionary<int, bool>> _subtypeOf = new(ReferenceEqualityComparer.Instance);
 
     bool IsSpecial(int id) => D.SyntheticById.ContainsKey(id) || D.DisplayById.ContainsKey(id) || D.TypeById[id] is IArrayTypeSymbol;
     readonly List<(string name, MethodInst mi)> _exports = [];
@@ -540,11 +542,14 @@ sealed partial class RuntimeGen
             _stubPos[key] = pos;
             // (by id, as each round's new cases always came: the stubs' code does not depend on the index)
             fresh.Sort();
+            bool exactList = _index.IsExact(pos.list);
+            string? stubSlotKey = null;
             foreach (var id in fresh)
             {
                 if (D.SyntheticById.TryGetValue(id, out var syn))
                 {
-                    var slotKey = Types.MethodKey(D.CanonicalMethod(stub.Slot));
+                    // (the slot's key once per stub, not once per synthetic type)
+                    var slotKey = stubSlotKey ??= Types.MethodKey(D.CanonicalMethod(stub.Slot));
                     if (syn.Impls.TryGetValue(slotKey, out var sfn))
                         stub.Cases["synthetic#" + id] = (D.ObjectType, new MethodInst { Sym = stub.Slot, Fn = sfn, Key = "synthetic " + id + " " + slotKey }, false);
                     continue;
@@ -564,7 +569,15 @@ sealed partial class RuntimeGen
                 // (an array, one of the special ones every stub is shown: no array is a subtype of most slots' types,
                 // which Types.ArraysMayBe tells once per type instead of a subtype test per stub and array)
                 if (t is IArrayTypeSymbol && !D.Types.ArraysMayBe(slotOwner)) continue;
-                if (!D.Types.IsSubtype(t, slotOwner)) continue;
+                // (the answer per slot type and type, once: the stubs of one interface's methods ask the same pairs,
+                // a variance test each for a generic interface's thousands of candidates)
+                // (a type of the stub's own list, not a special one, is a subtype without asking: SubtypeIndex.IsExact)
+                if (!(exactList && !IsSpecial(id)))
+                {
+                    if (!_subtypeOf.TryGetValue(slotOwner, out var answers)) _subtypeOf[slotOwner] = answers = [];
+                    if (!answers.TryGetValue(id, out var isSub)) answers[id] = isSub = D.Types.IsSubtype(t, slotOwner);
+                    if (!isSub) continue;
+                }
                 var impl = D.Implementation(t, stub.Slot);
                 if (impl == null) continue;
                 bool boxed = t.IsValueType && Types.Key(D.Types.Canonical(impl.ContainingType)) == Types.Key(D.Types.Canonical(t));
@@ -1815,10 +1828,12 @@ sealed partial class RuntimeGen
             var targetKey = Types.Key(target);
             // (no array is one of most targets: told once, Types.ArraysMayBe, not by a test per array)
             bool arraysMayBe = D.Types.ArraysMayBe(target);
-            var ids = candidates.Where(id => D.SyntheticById.TryGetValue(id, out var syn)
+            // (a type of the target's own list, not a special one, is a subtype without asking: SubtypeIndex.IsExact)
+            bool exact = index.IsExact(cl);
+            var ids = candidates.Where(id => exact && !IsSpecial(id) || (D.SyntheticById.TryGetValue(id, out var syn)
                     ? syn.Interfaces.Any(i => Types.Key(i) == targetKey) || Types.IsObject(target)
                       || id < D.TypeById.Count && D.TypeById[id] is { } st && Types.Key(st) == targetKey
-                    : !D.DisplayById.ContainsKey(id) && !(D.TypeById[id] is IArrayTypeSymbol && !arraysMayBe) && D.Types.IsSubtype(D.TypeById[id], target)).ToList();
+                    : !D.DisplayById.ContainsKey(id) && !(D.TypeById[id] is IArrayTypeSymbol && !arraysMayBe) && D.Types.IsSubtype(D.TypeById[id], target))).ToList();
             e.Get(0); e.Op(Op.I32Eqz); e.If(); e.I32(0); e.Op(Op.Return); e.End();
             if (ids.Count == 0) { e.I32(0); continue; }
             int tid = e.AddLocal(ValType.I32);
