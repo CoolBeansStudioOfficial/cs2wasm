@@ -1197,6 +1197,15 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     header (the hash word: about 18 MB over 4.6 million objects), 32 bytes before each arena member (17 MB), 13 MB of
     data below the heap. Removing the hash word (identity hashes and the three flags elsewhere) is the next structural
     cut; it changes every object's layout.
+  - **Round 3 (2026-11-21): round 2's cost to small programs taken back.** Hello world had grown 376 bytes (28,287 on
+    main with K round 2): the second fast entries for allocation and free (AllocObjectC and FreeObjectC, 431 bytes),
+    RoundSmall as a function of its own called in the fast paths (81 bytes), the clearing loops' separate last 4
+    bytes. Now the wide steps above 128 bytes are only in a program that constructs 1,000 types or more (Rt.WideSizes:
+    a constant the compiler writes at the end of the build, its calls replaced and dead branches removed, as for
+    rt.single_threaded); any rounding is right as long as allocation and free agree and a multiple of 8 stays one, so
+    a small program keeps steps of 4 bytes, two instructions where they are used. One fast entry each again (the
+    compile-time sizes gave less than the inline step); a block is cleared from its end down before its header is
+    written. Hello world 27,868 bytes (27,869 before round 2); the self-hosted compiler 306.0 MB, as fast as main's.
   - Found on the way: 070_files names its directory with Guid.NewGuid, and the host's random seed is a constant, so
     two runs of it at once (the suite's checked and shipped shards) share it and fail; main's too. The heap report read
     a page on the empty list as a size class from its stale header (a trap in the self-hosted build): such pages are

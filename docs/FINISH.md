@@ -31,7 +31,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Hello world size (test 145) | 28,120 B (stream L round 2: the allocator's rounded-size entries; 27,744 before) | < 28,383 B |
+| 4 | Hello world size (test 145) | 27,868 B (main 26150c1 with K round 2 and L round 3; 28,287 with L round 2, 27,869 before it) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 12.5 s vs 6.3 s, 2.0x (main 3810a98 with J, K, L, M; interleaved, `tools/selfhost-ab.sh`, 3 rounds; was 2.7x this morning) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (stream L round 2, interleaved, 3 rounds; main 6a346d8 344.2 MB). Thin: the heap's top is 290.8 MiB, 1.0 MiB under the memory's growth step (an eighth) to 328 MiB | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 44.0 MB vs 129 MB (no threads, shipped, main 3810a98) | met; next waste: code (36.2 MB) |
@@ -295,3 +295,14 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   is the intermittent one on main; 070's directory name is the same in every run, the host's random seed being a
   constant, so its checked and shipped runs collide when they overlap, main's too). The report itself: a page on the
   empty list keeps a stale header (read as a size class out of its table, a trap in the self-hosted build).
+- 2026-11-21, stream L round 3 (branch claude/stream-l3-memory, on 26150c1): what round 2 cost a program that barely
+  allocates, taken back: hello world 28,287 to 27,868 bytes (27,869 before round 2), the self-hosted compiler still
+  306.0 MB (interleaved, 3 rounds, against main's build: the same peak, 11.5-13.3 s against 11.5-13.9 s; NativeAOT-LLVM
+  5.5-6.3 s, 322.2 MB). The wider size steps above 128 bytes only for a program that constructs 1,000 types or more
+  (Rt.WideSizes, a constant written at the end of the build as rt.single_threaded is, its dead branches removed): a
+  small program rounds to 4 bytes in two instructions and has no RoundSmall. Round 2's second entries (AllocObjectC,
+  FreeObjectC, sizes rounded at compile time: 431 bytes) taken out; the fast paths call RoundSmall only above 128
+  bytes; blocks cleared from their end down before the header is written. micro --baseline 1.71x/1.75x against
+  main's 1.78x/1.75x; bench 0.95x/0.97x against 0.97x/0.94x, 16.0 MB. Suite 195/195 checked, as shipped 194/195:
+  085 once, where .NET's own run (the expected output) had left 96 objects uncollected under load (cs2wasm's
+  "gone" is right; 400 of 400 loaded runs).
