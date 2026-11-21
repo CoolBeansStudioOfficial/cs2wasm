@@ -66,6 +66,9 @@ public sealed class CompileResult
     /// <summary>The cycle-capable types (section 4.3): their objects live in arenas; every other type's stores are
     /// plain counted stores.</summary>
     public IReadOnlyList<string> CycleCapableTypes { get; init; } = [];
+    /// <summary>The functions compiled a second time because a plugin's Run added hooks after the first compile (0 when
+    /// everything was added in ICompilerPluginBeforeCompile.RunBeforeCompile).</summary>
+    public int RecompiledFunctions { get; init; }
     public bool Success => Module != null;
 }
 
@@ -137,6 +140,7 @@ public static class Cs2WasmCompiler
         {
             Module = bytes, SourceMap = bytes == null ? null : map, Diagnostics = [.. d.Diagnostics],
             CycleCapableTypes = bytes == null ? [] : d.Arenas.CycleTypes.Select(id => Types.Key(d.TypeById[id])).ToList(),
+            RecompiledFunctions = d.RecompiledFunctions,
         };
     }
 }

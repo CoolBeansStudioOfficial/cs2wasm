@@ -6,5 +6,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Cs2Wasm/Cs2Wasm.csproj" />
+    <!-- the Invisible API sample's plugin (samples/invisible-api; InvisibleCheck.cs) -->
+    <Compile Include="../../samples/invisible-api/Plugin/*.cs" />
   </ItemGroup>
 </Project>

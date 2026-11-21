@@ -28,7 +28,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (stream E's tests); open: reflection on compiler-made methods (lambdas, state machines); .NET's own library frames (not reproducible from source) | none |
 | 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20) | none in 200 loaded runs |
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
-| 3 | Invisible API slice (9.4) in the Bazoodle repository | not started | builds and gates one interaction |
+| 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Hello world size (test 145) | 27,825 B | < 28,383 B |
@@ -111,7 +111,8 @@ time by callee size), `tools/profcallers.mjs`, `tools/selfhost-ab.sh` (interleav
 NativeAOT-LLVM's), `tools/roslyn-parse-probe.cs` (a small program over Roslyn's parser: compiles in about 2 minutes,
 with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out/heavy.sh`.
 
-9.4 (the Invisible API slice) lives in the Bazoodle repository: started once F lands, from that repository.
+9.4 (the Invisible API slice): built as a standalone sample in this repository (owner, 2026-11-20), stream M, done:
+`samples/invisible-api` and its check `tests/Cs2Wasm.Tests/InvisibleCheck.cs`.
 
 ## Log
 
@@ -170,3 +171,16 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   On a quiet machine (heavy lock), worst frame cs2wasm vs NativeAOT: churn 0.90 / 1.96 ms, collections 0.34 / 1.54,
   strings 0.16 / 0.32, bigdrop 1.83 / 9.62, tree 29.9 / 3.8 (the rebuild: streams I and J take types out of the
   cycle graph; measure again after they merge). bench 0.82x.
+- 2026-11-20, stream M: the Invisible API's first slice, `samples/invisible-api`: a game in plain C# (players keyed by
+  id with private position, velocity, health and cooldown; coins keyed by player; a claimed grid; a wave timer) and
+  a plugin that registers everything from `RunBeforeCompile` (`CompileResult.RecompiledFunctions` 0). It classifies
+  the 21 writes (PathConditions with a taint of the input exports' parameters along each path; `Player._hp` unknown:
+  a `ref` unsure site), intercepts the three input reads (and replaces one action for the server), marks the
+  writes under input with `InstrumentWrite` and the entry writes under input with the player key with the new
+  `InstrumentEntryWrite` (version 7: per-site entry hooks; the tick's deterministic `_coins[id] += 2` stays
+  unmarked), generates the fire gate from `TryFire`'s own conditions over private fields (`gate_fire`,
+  `gate_view`), and solves the wave timer exactly (`server_predict`, `server_advance`). The check plays a script with
+  `driver.mjs` and under .NET without the plugin: dumps, gate answers, views, predictions (up to 1,000 ticks) and a
+  100-tick catch-up equal; every value an input changed marked; no tick marks anything. Gaps: per-site entry hooks
+  (fixed, version 7); no way to see a second compile (`RecompiledFunctions`); open in docs/AUDIT.md: input taint
+  and conditions as C# over a receiver (the plugin does both itself), field initializers not in `Accesses`.

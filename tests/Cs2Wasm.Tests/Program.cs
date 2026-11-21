@@ -123,6 +123,12 @@ if (shardK == 0 && (filter == null || "godot".Contains(filter) || filter.StartsW
 if (shardK == 0 && (filter == null || filter == "api"))
     foreach (var (n, failure) in ApiChecks.Run(root, outDir))
         if (failure == null) Pass("api: " + n, "ok"); else Fail("api: " + n, failure);
+// the Invisible API's first slice (samples/invisible-api, docs/FINISH.md 9.4), in this runner's mode
+if (shardK == 0 && (filter == null || filter == "api" || filter == "invisible"))
+{
+    var failure = InvisibleCheck.Run(root, outDir, checkedBuild);
+    if (failure == null) Pass("invisible-api slice", "plays as .NET does; gate, marks and solved timer agree"); else Fail("invisible-api slice", failure);
+}
 try { httpServer?.Kill(); } catch { }
 Console.WriteLine($"\n{pass} passed, {fail} failed" + (gaps > 0 ? $", {gaps} known gap{(gaps == 1 ? "" : "s")}" : ""));
 File.WriteAllText(Path.Combine(outDir, shardN == 1 ? "report.txt" : $"report-{shardK}.txt"), report.ToString());
