@@ -63,7 +63,10 @@ static class ShareConstants
             if (ins.Op == Op.I32Const) { sb.Append('k'); continue; }
             // (a call's second immediate is a hint to the passes before this one, the exact type of a release's
             // object: nothing reads it now)
-            sb.Append(',').Append(ins.Imm).Append(',').Append(ins.Op == Op.Call ? 0 : ins.Imm2);
+            // (a family's loads at offsets that differ, a thread static's place in the thread's block: the offset a
+            // hidden parameter added to the address)
+            if (fam && ins.Op is >= Op.I32Load and <= Op.I64Load32U) { sb.Append(",o,").Append(ins.Imm2); }
+            else sb.Append(',').Append(ins.Imm).Append(',').Append(ins.Op == Op.Call ? 0 : ins.Imm2);
             if (ins.Inl != 0) sb.Append('@').Append(ins.Inl);
             if (ins.Probes != 0) sb.Append('r').Append(ins.Probes);
             if (framed && !s_ignorePos && ins.Pos >= 0 && (posShown == null || posShown(ins.Pos))) sb.Append('p').Append(ins.Pos);
@@ -147,6 +150,7 @@ static class ShareConstants
         public Dictionary<int, int> ConstSlot = [];     // body position of a differing constant: its slot
         public Dictionary<int, int[]> CallSlots = [];   // body position of a differing call: per callee slot, own slot, or -1 - constant
         public Dictionary<int, Instr[]> CallConsts = []; // body position: the callee slots whose value is the same for every member
+        public Dictionary<int, int> OffsetSlot = [];    // body position of a load whose offset differs: the slot of the offsets
         public Dictionary<int, int> IndirectSlot = [];  // body position of a call whose callee differs (no shared group): the slot of the callees' table indices
         public WasmFunction? Shared;
         public bool Dead;
@@ -236,6 +240,13 @@ static class ShareConstants
                 var ins = r.Body[i];
                 if (ins.Op is Op.LocalGet or Op.LocalSet or Op.LocalTee && ins.Imm >= np) ins = ins with { Imm = ins.Imm + k };
                 if (pl.ConstSlot.TryGetValue(i, out int slot)) { b.Add(ins with { Op = Op.LocalGet, Imm = np + slot, Ref = null }); continue; }
+                if (pl.OffsetSlot.TryGetValue(i, out int oslot))
+                {
+                    b.Add(new Instr { Op = Op.LocalGet, Imm = np + oslot, Pos = ins.Pos, Inl = ins.Inl });
+                    b.Add(new Instr { Op = Op.I32Add, Pos = ins.Pos, Inl = ins.Inl });
+                    b.Add(ins with { Imm = 0 });
+                    continue;
+                }
                 if (pl.IndirectSlot.TryGetValue(i, out int islot))
                 {
                     b.Add(new Instr { Op = Op.LocalGet, Imm = np + islot, Pos = ins.Pos, Inl = ins.Inl });
@@ -314,7 +325,7 @@ static class ShareConstants
             if (!keyOf.TryGetValue(key, out int s)) { keyOf[key] = s = cols.Count; cols.Add(col); }
             return s;
         }
-        var constSlot = new Dictionary<int, int>(); var callSlots = new Dictionary<int, int[]>(); var callConsts = new Dictionary<int, Instr[]>(); var indirect = new Dictionary<int, int>();
+        var constSlot = new Dictionary<int, int>(); var callSlots = new Dictionary<int, int[]>(); var callConsts = new Dictionary<int, Instr[]>(); var indirect = new Dictionary<int, int>(); var offsetSlot = new Dictionary<int, int>();
         for (int i = 0; i < r.Body.Count; i++)
         {
             var ri = r.Body[i];
@@ -322,6 +333,12 @@ static class ShareConstants
             {
                 if (g.All(m => SameConst(m.Body[i], ri))) continue;
                 constSlot[i] = SlotOf([.. g.Select(m => m.Body[i])]);
+            }
+            else if (ri.Op is >= Op.I32Load and <= Op.I64Load32U)
+            {
+                if (g.All(m => m.Body[i].Imm == ri.Imm)) continue;
+                if (r.Family == null || !s_indirect || g.Any(m => m.Body[i].Imm < 0)) return false;
+                offsetSlot[i] = SlotOf([.. g.Select(m => new Instr { Op = Op.I32Const, Imm = m.Body[i].Imm, Pos = ri.Pos })]);
             }
             else if (ri.Op == Op.Call && ri.Ref is WasmFunction)
             {
@@ -349,7 +366,7 @@ static class ShareConstants
                 callSlots[i] = map; callConsts[i] = [.. consts];
             }
         }
-        pl.Columns = cols; pl.ConstSlot = constSlot; pl.CallSlots = callSlots; pl.CallConsts = callConsts; pl.IndirectSlot = indirect;
+        pl.Columns = cols; pl.ConstSlot = constSlot; pl.CallSlots = callSlots; pl.CallConsts = callConsts; pl.IndirectSlot = indirect; pl.OffsetSlot = offsetSlot;
         return true;
     }
 
