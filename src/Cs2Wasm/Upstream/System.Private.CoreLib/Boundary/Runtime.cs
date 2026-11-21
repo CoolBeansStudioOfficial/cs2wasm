@@ -3668,6 +3668,22 @@ namespace Cs2Wasm.Runtime
                 Free(olds, n * 4);
                 return;
             }
+            // (into a plain array whose one reference is the copying code's, a list's new array as it grows: nothing
+            // refers to it, so no element closes a cycle, and each is a plain counted store, as ArenaLinkOwned's. The
+            // array's elements are linked when it is stored where a cycle can close: ArenaJoin links what a joining
+            // object holds)
+            if (src != dst && Mem.LoadI32(dst) == 1)
+            {
+                for (int k = 0; k < length; k++)
+                {
+                    int v = Mem.LoadI32(s + k * 4);
+                    Retain(Borrow<object>(v));
+                    int old = Mem.LoadI32(d + k * 4);
+                    Mem.StoreI32(d + k * 4, v);
+                    if (old != 0) Release(Borrow<object>(old));
+                }
+                return;
+            }
             bool back = src == dst && si < di;
             for (int k = 0; k < length; k++)
             {
