@@ -1083,7 +1083,7 @@ internal sealed partial class Driver
         var flag = StaticAddress("init:" + key, 4, 4);
         var sym = cctor ?? t.StaticConstructors.FirstOrDefault();
         var fn = Module.AddFunction("static init " + key, new FuncType([], []));
-        var body = Module.AddFunction("static init body " + key, new FuncType([], []));
+        var body = Module.AddFunction(StaticInitBodyPrefix + key, new FuncType([], []));
         // (the initializer is a frame of traces: "T..cctor()")
         if (sym != null && !IsHiddenFrame(sym)) { body.FrameName = FrameName(sym); body.ProgramCode = !IsLibrary(t); }
         {

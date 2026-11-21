@@ -788,13 +788,27 @@ sealed partial class FunctionCompiler
         var ft = T.Resolve(f.Type, Map);
         EmitStoreFieldFrom(f, recv, value.Type != null ? TypeOf(value) : ft, srcs: Sh != null ? FlowSrcs(value) : null, produce: () =>
         {
-            if (Types.IsStruct(ft) && IsDirectStructProducer(value))
+            // `f = default`: copied from zeros of the program's that nothing writes (the store reads its value
+            // and copies it; a temporary would be the function's frame, cleared, then released at the statement's end)
+            if (Types.IsStruct(ft) && !s_noZeroDefault && IsZeroStruct(value) && Types.Key(T.Canonical(TypeOf(value))) == Types.Key(T.Canonical(ft)))
             {
-                // construct into a temp, then copy (field may be read by the constructor arguments)
-                return EmitValue(value);
+                int size = T.StorageOf(ft).size;
+                E.I32Addr(D.StaticAddress("zeros:" + size, size, 8));
+                return Own.None;
             }
             return EmitValue(value);
         }, initializer: initializer);
+    }
+
+    static readonly bool s_noZeroDefault = Environment.GetEnvironmentVariable("CS2WASM_NO_ZERO_DEFAULT") == "1";
+
+    /// <summary>A struct value that is all zeros, made with no code of its own: `default`, `new S()` with no
+    /// constructor or initializer that runs.</summary>
+    static bool IsZeroStruct(IOperation v)
+    {
+        while (v is IConversionOperation { Conversion.IsIdentity: true } c) v = c.Operand;
+        return v is IDefaultValueOperation
+            || v is IObjectCreationOperation { Initializer: null, Constructor: { IsImplicitlyDeclared: true, Parameters.Length: 0 } ctor } && !HasInstanceFieldInitializers(ctor.ContainingType);
     }
 
     /// <summary>A [ThreadStatic] field; or, in a program with threads, a static field of the runtime marked [Intrinsic]
@@ -918,6 +932,7 @@ sealed partial class FunctionCompiler
             while (ar is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } ac) ar = ac.Operand;
             if (D.ThreadMode && ar is IFieldReferenceOperation { Instance: { } fi } && !UnsharedContainer(TypeOf(fi))) return Own.Unstable;
             if (IsStableBase(ar)) _lastFieldLoad = (E.Fn.Body.Count, Driver.ElementsKey);
+            else if (StaticArrayKey(ar) is { } sak) _lastFieldLoad = (E.Fn.Body.Count, sak + "\n" + Driver.ElementsKey);
             else if (ar is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ai } afr && IsStableBase(ai) && afr.Field.ContainingType.TypeKind == TypeKind.Class
                 && !(ai is IParameterReferenceOperation && TypeOf(ai).IsValueType))
             {
@@ -2067,6 +2082,13 @@ sealed partial class FunctionCompiler
         var lv = LValueOf(target);
         lv.Note(StaticValueType(sa.Value), sa.Value);
         lv.Prepare();
+        // (`x = default`: from zeros, as EmitStoreField)
+        if (Types.IsStruct(tt) && !s_noZeroDefault && IsZeroStruct(sa.Value) && sa.Value.Type != null && Types.Key(T.Canonical(TypeOf(sa.Value))) == Types.Key(T.Canonical(tt)))
+        {
+            int size = T.StorageOf(tt).size;
+            E.I32Addr(D.StaticAddress("zeros:" + size, size, 8));
+            return lv.Store(Own.None, needResult);
+        }
         Own o = Types.IsStruct(tt) ? EmitValue(sa.Value) : EmitValueAs(sa.Value, tt);
         if (Types.IsStruct(tt) && sa.Value.Type != null) ConvertTop(TypeOf(sa.Value), tt, ref o);
         return lv.Store(o, needResult);
