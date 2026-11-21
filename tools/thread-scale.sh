@@ -7,7 +7,7 @@
 #   PROF=n: afterwards one profiled run on n threads, summed per thread and by caller of the stripes' waits
 #   ONLY=bench: the PLINQ programs only (no self-hosted build)
 #   BUILD=<name>: the compiler is tests/out/thr/<name>.wasm (built from this checkout when missing)
-#   ALSO="<name>...": other builds in tests/out/thr timed in the same rounds, interleaved
+#   ALSO=<name>,<name>...: other builds in tests/out/thr timed in the same rounds, interleaved
 set -e
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -50,7 +50,7 @@ for r in $(seq 1 ${ROUNDS:-3}); do
       line="$line $b $o;"
     done
     if [ "$ONLY" != bench ]; then
-      for b in $B $ALSO; do
+      for b in $B ${ALSO//,/ }; do
         s=$(date +%s%N)
         CS2WASM_PROCESSORS=$n SELF=$DROOT/tests/out/thr/$b.wasm timeout 600 bash tools/selfrun.sh "$DROOT/tests/out/thr/w42.cs" -o "$DROOT/tests/out/thr/w42-$b-$n.wasm" > $T 2>&1 && rc=0 || rc=$?
         line="$line $b $(( ($(date +%s%N)-s)/1000000 )) ms rc=$rc;"
