@@ -614,15 +614,44 @@ namespace Cs2Wasm.Runtime
             Mem.StoreU16(b + 2 * text.Length, 10);
             Engine.Write(b, text.Length + 1);
         }
+        // (and, with it, how often each path of the arena operations runs: OpStat's numbers, printed with DsPrint)
+        static int s_opStats;
+        const int OpN = 26;
+        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up";
+        // (a constant test where it is asked, so that without the diagnosis nothing is left of it, not even a call)
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static void OpStat(int k) { if (DropStats()) OpStatCount(k); }
+        static void OpStatCount(int k)
+        {
+            if (s_opStats == 0) { s_opStats = Alloc(OpN * 8); for (int i = 0; i < OpN; i++) Mem.StoreI64(s_opStats + 8 * i, 0); }
+            long n = Mem.LoadI64(s_opStats + 8 * k) + 1;
+            Mem.StoreI64(s_opStats + 8 * k, n);
+            if (k == 0 && (n & ((1 << 18) - 1)) == 0) DsPrint();
+        }
         static void DsPrint()
         {
-            if (s_dsBuf == 0) s_dsBuf = Alloc(1024);
+            if (s_dsBuf == 0) s_dsBuf = Alloc(4096);
             int at = 0;
             DsNum(ref at, "drop checks ", s_dsCalls); DsNum(ref at, " walked ", s_dsWalked); DsNum(ref at, " dead ", s_dsDead);
             DsNum(ref at, " fail-inside ", s_dsFailInside); DsNum(ref at, " fail-held ", s_dsFailHeld); DsNum(ref at, " max ", s_dsMax);
             DsNum(ref at, " from-release ", s_dsFromRelease); DsNum(ref at, " from-unlink ", s_dsFromUnlink);
             DsNum(ref at, " tops ", s_dsTops); DsNum(ref at, " top-hops ", s_dsTopHops); DsNum(ref at, " top-marked ", s_dsTopMarked); DsNum(ref at, " top-far ", s_dsTopFar);
             Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
+            if (s_opStats != 0)
+            {
+                // (no string is made here: this runs in the middle of an arena operation)
+                int k = 0;
+                Mem.StoreU16(s_dsBuf + 2 * at, ' '); at++;
+                for (int i = 0; i <= OpNames.Length; i++)
+                    if (i == OpNames.Length || OpNames[i] == ',')
+                    {
+                        DsNum(ref at, " ", Mem.LoadI64(s_opStats + 8 * k));
+                        k++;
+                        Mem.StoreU16(s_dsBuf + 2 * at, k % 8 == 0 ? 10 : ' '); at++;
+                    }
+                    else { Mem.StoreU16(s_dsBuf + 2 * at, OpNames[i]); at++; }
+                Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
+            }
             Engine.Write(s_dsBuf, at);
         }
         /// <summary>No other thread can ever run: the program starts none (known when the whole program is compiled).</summary>
@@ -1774,7 +1803,8 @@ namespace Cs2Wasm.Runtime
         /// <summary>The container waiting to own the member (Owners), 0 for none.</summary>
         static int PLW(int obj) { int w = Side(obj); return w == 0 ? 0 : Mem.LoadI32(w); }
         /// <summary>The note of a check at the drop that failed (Dropped), 0 for none.</summary>
-        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static int PLM(int obj) { int w = Side(obj); return w == 0 ? 0 : Mem.LoadI32(w + 4); }
+        /// (two loads, no call: asked at most counts of a member that a check failed for, and at every link and unlink)
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static int PLM(int obj) { int t = Mem.LoadI32(obj - ArenaPrefix); return t == PrefixMark ? 0 : Mem.LoadI32(PrefixMark - t + 4); }
         static void PSW(int obj, int value) { int w = value == 0 ? Side(obj) : SideOf(obj); if (w != 0) Mem.StoreI32(w, value); }
         static void PSM(int obj, int value) { int w = value == 0 ? Side(obj) : SideOf(obj); if (w != 0) Mem.StoreI32(w + 4, value); }
 
@@ -1911,12 +1941,18 @@ namespace Cs2Wasm.Runtime
             FreeBlock(addr - ArenaPrefix, size + ArenaPrefix, KindArena);
         }
 
-        /// <summary>The arena of a member (its count word says it is one).</summary>
+        /// <summary>The arena of a member (its count word says it is one). (Its record, unless that was merged into another
+        /// since: two loads where it is asked, the rest a call.)</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal static int ArenaOf(int obj)
         {
-            int ar = PL(obj, 16);
+            int ar = Mem.LoadI32(obj - 16);
+            return Mem.LoadI32(ar + 16) == 0 ? ar : ArenaOfMerged(obj, ar);
+        }
+
+        static int ArenaOfMerged(int obj, int ar)
+        {
             int f = Mem.LoadI32(ar + 16);
-            if (f == 0) return ar;
             // (merged since: to the arena it is part of now, and straight there from here on)
             int root = f;
             while (true) { int g = Mem.LoadI32(root + 16); if (g == 0) break; root = g; }
@@ -1963,6 +1999,7 @@ namespace Cs2Wasm.Runtime
             int c;
             // (threads: the group's stripe first, GroupLocks.cs, while the object is still plain and so locked by its
             // own: a thread that sees it a member then finds the stripe this thread holds, and waits)
+            OpStat(4);
             if (ThreadMode()) PS(obj, LockWord, Mem.LoadI32(ar + 28) + 1);
             do { c = Atomic.Load32(ref Mem.RefI32(obj)); } while (Atomic.CompareExchange32(ref Mem.RefI32(obj), c, -(c + 2)) != c);
             PS(obj, 16, ar);
@@ -2013,6 +2050,7 @@ namespace Cs2Wasm.Runtime
                 int o = Mem.LoadI32(s_linkQ + 4 * s_linkN);
                 if (o == 0) continue;
                 // (still a member: nothing ran in between)
+                OpStat(6);
                 int sa = s_visitArena, sm = s_visitMode, so = s_visitObj;
                 s_visitArena = o; s_visitMode = 4; s_visitObj = o;
                 ArenaVisitObject(o);
@@ -2023,6 +2061,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>The smaller arena becomes part of the larger; returns the survivor.</summary>
         static int ArenaMerge(int a, int b)
         {
+            OpStat(5);
             if (Mem.LoadI32(a + 8) < Mem.LoadI32(b + 8)) { int t = a; a = b; b = t; }
             int ha = Mem.LoadI32(a + 4), hb = Mem.LoadI32(b + 4);
             // (threads: b's members take a's stripe; this thread holds both)
@@ -2119,9 +2158,14 @@ namespace Cs2Wasm.Runtime
         }
 
         /// <summary>A member with up-references below it that something other than its owner refers to holds its
-        /// owner; one that no longer does lets it go. Follows the change up the chain.</summary>
+        /// owner; one that no longer does lets it go. Follows the change up the chain.
+        /// (Its usual case where it is asked: a member with no up-reference below it that does not hold its owner has
+        /// nothing to change, want and have both false. Two bits of one word, against a call: 6.3 million calls in a
+        /// parse of 400 classes, nearly all of them that.)</summary>
         static void UpdateHold(int v)
         {
+            OpStat(16);
+            bool first = true;
             while (true)
             {
                 int c = Mem.LoadI32(v);
@@ -2133,6 +2177,7 @@ namespace Cs2Wasm.Runtime
                 int others = PL(v, 4) - ((fl & MultMask) >> 3) + (-c - 2);
                 bool want = (uint)fl >= UOne && others > 0;
                 if (want == ((fl & Held) != 0)) return;
+                if (DropStats()) { OpStat(first ? 24 : 25); first = false; }
                 if (want)
                 {
                     PS(v, 24, fl | Held);
@@ -2148,6 +2193,20 @@ namespace Cs2Wasm.Runtime
                 if (n == 0 && Mem.LoadI32(w) == -2) { Kill(w); return; }
                 v = w;
             }
+        }
+
+        /// <summary>UpdateHold has nothing to do for the member: its first look (not a member, dying, no owner, or holding
+        /// its owner exactly when it should) ends it. Written where UpdateHold is asked after a first or last outside
+        /// reference, a link and an unlink: in a parse of 400 classes 6.3 million calls, 5.5 million of them ending
+        /// there.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static bool HoldSettled(int v)
+        {
+            int c = Mem.LoadI32(v);
+            if (c >= -1) return true;
+            int fl = Mem.LoadI32(v - 24);
+            if ((fl & Dying) != 0 || Mem.LoadI32(v - 20) == 0) return true;
+            return ((uint)fl >= UOne && Mem.LoadI32(v - 4) - ((fl & MultMask) >> 3) + (-c - 2) > 0) == ((fl & Held) != 0);
         }
 
         /// <summary>A member no reference of either kind refers to, found while another change is under way: destroyed
@@ -2224,12 +2283,14 @@ namespace Cs2Wasm.Runtime
             int ar = ArenaOf(m);
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
             // (its own slots, read once: none holds a member of the arena, whatever the counts say)
+            OpStat(11);
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem, ss = s_handSum;
             s_visitArena = ar; s_visitMode = 8; s_visitObj = m; s_visitElem = 0; s_handSum = 0;
             ArenaVisitObject(m);
             int found = s_handSum;
             s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se; s_handSum = ss;
             if (found != 0) return;
+            OpStat(12);
             ClearMark(m);
             ArenaTakeOut(ar, m);
             // (threads: its words cleared but kept, before it is a plain object, which a thread that holds no lock of
@@ -2249,6 +2310,7 @@ namespace Cs2Wasm.Runtime
         /// chain becomes an up-reference (a parent set before the child was put in the parent's list).</summary>
         static void Reevaluate(int v)
         {
+            OpStat(13);
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
             s_visitArena = ArenaOf(v); s_visitMode = 5; s_visitObj = v; s_visitElem = 0;
             ArenaVisitObject(v);
@@ -2261,6 +2323,7 @@ namespace Cs2Wasm.Runtime
         /// by a child, the child then put into the parent's list.</summary>
         static void TakeOwnership(int val, int container)
         {
+            OpStat(20);
             if (OnChain(container, val))
             {
                 int x = container;
@@ -2335,6 +2398,7 @@ namespace Cs2Wasm.Runtime
             // (threads: read only in a group this thread holds)
             if (!ThreadMode()) { if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || PL(to, 20) != owner || PL(to, 16) != PL(from, 16)) return; }
             else if (to == 0 || to == from || Mem.LoadI32(to) >= -1 || !GroupHeld(to) || PL(to, 20) != owner || PL(to, 16) != PL(from, 16)) return;
+            OpStat(17);
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem, sf = s_handFrom, ss = s_handSum;
             s_visitArena = PL(from, 16); s_handFrom = from; s_handSum = 0; s_visitElem = 0;
             s_visitMode = 6; s_visitObj = from;
@@ -2449,6 +2513,11 @@ namespace Cs2Wasm.Runtime
             s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se;
         }
 
+        /// <summary>Dropped's first tests, where it is asked: a member with no outside reference and some inside one, neither
+        /// owned nor dying. (Most members at their last outside reference are owned: the call ended there.)</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static bool DropCandidate(int x) => Mem.LoadI32(x) == -2 && Mem.LoadI32(x - 4) != 0 && (Mem.LoadI32(x - 24) & (Owned | Dying)) == 0;
+
         /// <summary>A member left without a reference from outside: when it has no owner and no other container
         /// holds it, the check. True when it was destroyed, with all it owns.</summary>
         static bool Dropped(int x)
@@ -2549,14 +2618,16 @@ namespace Cs2Wasm.Runtime
         /// others are counted without the lock, rt.retain; so the count is added to atomically here too).</summary>
         public static void ArenaRetain(int p)
         {
+            OpStat(14);
             int old = Atomic.Add32(ref Mem.RefI32(p), -1);
             if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); if (s_failedTops != 0) TopHeld(p, 1); }
-            if ((uint)PL(p, 24) >= UOne) UpdateHold(p);
+            if ((uint)PL(p, 24) >= UOne && !HoldSettled(p)) UpdateHold(p);
         }
 
         /// <summary>Release of an arena member, under the runtime lock: one outside reference fewer (its last).</summary>
         public static void ArenaRelease(int p)
         {
+            OpStat(15);
             int w = Atomic.Add32(ref Mem.RefI32(p), 1) + 1;
             // (checked: a member released with no outside reference counted on it, a release too many or of an inside
             // reference; it would read as immortal, -1, from here on)
@@ -2578,9 +2649,9 @@ namespace Cs2Wasm.Runtime
                 if (DropStats()) s_dsFromRelease++;
                 if (t != 0 && Dropped(t)) { DrainKills(); return; }
                 // (a top a check failed for: again only when the number of its members outside code holds is zero, TopHeld)
-                if (t != p && (PLM(p) & 1) == 0 && Dropped(p)) { DrainKills(); return; }
+                if (t != p && (PLM(p) & 1) == 0 && DropCandidate(p) && Dropped(p)) { DrainKills(); return; }
             }
-            if ((uint)PL(p, 24) >= UOne) { UpdateHold(p); DrainKills(); }
+            if ((uint)PL(p, 24) >= UOne && !HoldSettled(p)) { UpdateHold(p); DrainKills(); }
         }
 
         /// <summary>
@@ -2590,6 +2661,7 @@ namespace Cs2Wasm.Runtime
         /// </summary>
         public static int ArenaLink(int val, int container, int slot)
         {
+            OpStat(0);
             if (container == 0) return val;
             // (threads: a store's region is locked at its link, which knows the value: StoreLockIf, GroupLocks.cs)
             if (ThreadMode() && t_regionC == container) RegionLock(container, val, true);
@@ -2603,8 +2675,8 @@ namespace Cs2Wasm.Runtime
             if (val == 0 || !CanLink(val, container))
             {
                 int i0 = SlotIndex(container, slot), cw = Mem.LoadI32(container);
-                if (i0 < 0 || cw > 0) { t_prevSlot = slot; t_prevBits = slot != 0 && i0 >= 0 ? 0 : -1; return val; }
-                if (cw < -1 && SlotBits(container, i0) == 0) { t_prevSlot = slot; t_prevBits = 0; return val; }
+                if (i0 < 0 || cw > 0) { OpStat(1); t_prevSlot = slot; t_prevBits = slot != 0 && i0 >= 0 ? 0 : -1; return val; }
+                if (cw < -1 && SlotBits(container, i0) == 0) { OpStat(1); t_prevSlot = slot; t_prevBits = 0; return val; }
             }
             if (t_backN != 0) AfterStore();
             int mk = -1;
@@ -2623,8 +2695,8 @@ namespace Cs2Wasm.Runtime
             {
                 // (the usual case: both are members of one arena already, which is not being destroyed or merged)
                 int ar = Mem.LoadI32(container) < -1 && Mem.LoadI32(val) < -1 ? PL(container, 16) : 0;
-                if (ar != 0 && ar == PL(val, 16) && Mem.LoadI64(ar + 12) == 0) LinkMembers(val, container, slot, ar, false);
-                else ArenaLinkCore(val, container, slot);
+                if (ar != 0 && ar == PL(val, 16) && Mem.LoadI64(ar + 12) == 0) { OpStat(2); LinkMembers(val, container, slot, ar, false); }
+                else { OpStat(3); ArenaLinkCore(val, container, slot); }
             }
             if (s_linkN != 0) ArenaLinkJoined();
             s_storeSlot = outer;
@@ -2741,6 +2813,7 @@ namespace Cs2Wasm.Runtime
             if (i >= 0 && OnChain(container, val))
             {
                 // an up-reference: not counted (the chain from the container to the value keeps the value)
+                OpStat(23);
                 SetSlotBits(container, i, 2);
                 UpPath(container, val, 1);
                 // (a value nothing else refers to kept its count: it goes when the store is written, AfterStore)
@@ -2771,7 +2844,7 @@ namespace Cs2Wasm.Runtime
                 // result, a temporary array, is as often gone by then)
                 else if (PLW(val) == 0) { ClearMark(val); PSW(val, container); }
             }
-            UpdateHold(val);
+            if (!HoldSettled(val)) UpdateHold(val);
             return val;
         }
 
@@ -2796,9 +2869,10 @@ namespace Cs2Wasm.Runtime
             int bits = -1;
             if (slot != 0 && t_prevSlot == slot) { bits = t_prevBits; t_prevSlot = 0; }
             if (old == 0) return;
-            if (bits == 0) { Release(Borrow<object>(old)); return; }
+            OpStat(7);
+            if (bits == 0) { OpStat(8); Release(Borrow<object>(old)); return; }
             // (never linked: a plain counted reference, see ArenaLink)
-            if (!CanLink(old, container)) { Release(Borrow<object>(old)); return; }
+            if (!CanLink(old, container)) { OpStat(8); Release(Borrow<object>(old)); return; }
             int mk = -1;
             if (!ThreadMode()) RuntimeLock();
             else
@@ -2811,6 +2885,7 @@ namespace Cs2Wasm.Runtime
             if (bits == 2)
             {
                 // (an up-reference: never counted)
+                OpStat(9);
                 if (co < -1 && cc < -1) { UpPath(container, old, -1); DrainKills(); }
                 if (!ThreadMode()) RuntimeUnlock(); else if (mk >= 0) GroupUnlock(mk);
                 return;
@@ -2829,6 +2904,7 @@ namespace Cs2Wasm.Runtime
             }
             if (inside)
             {
+                OpStat(10);
                 int n = PL(old, 4) - 1;
                 PS(old, 4, n);
                 if (slot == 0 && PL(container, 28) > 0) PS(container, 28, PL(container, 28) - 1);
@@ -2843,18 +2919,20 @@ namespace Cs2Wasm.Runtime
                 else
                 {
                     if (PL(old, 20) == 0) Adopt(old);
-                    UpdateHold(old);
+                    if (!HoldSettled(old)) UpdateHold(old);
                     // (left with what it owns alone, or under a top that a check failed for: the check at the drop)
                     s_watch = container;
-                    int t = s_failedTops != 0 ? Top(old) : 0;
+                    if (s_failedTops != 0) OpStat(21);
                     if (DropStats()) s_dsFromUnlink++;
                     // (a top a check failed for is looked at again only where the look can succeed: when the number of
                     // references from outside what it owns that were left reaches zero, NoteOutside; when it lost its
                     // owner. Each look goes through all it owns: a sort over references to a large structure went
                     // through it at each move)
-                    int back = t != 0 ? NoteOutside(old, container, -1) : 0;
+                    // (NoteOutside looks at the member's note before it walks to the top: most members have none. The
+                    // walk to the top here first, to see it was not far, was a million walks of six hops a parse)
+                    int back = s_failedTops != 0 ? NoteOutside(old, container, -1) : 0;
                     bool died = back != 0 && Dropped(back);
-                    if (!died && back != old && (ownerEdge || (PLM(old) & 1) == 0)) died = Dropped(old);
+                    if (!died && back != old && (ownerEdge || (PLM(old) & 1) == 0) && DropCandidate(old)) died = Dropped(old);
                     gone = died && s_watchHit != 0;
                     s_watch = 0;
                     if (!died && old != container) TryLeave(old);
@@ -2924,6 +3002,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>ArenaLink for a slot known by its address: the value to store (owned).</summary>
         public static int ArenaLinkAt(int val, int slot)
         {
+            OpStat(18);
             int c = SlotOwner(slot);
             t_atSlot = slot; t_atOwner = c;
             if (c == 0) return val;
@@ -2933,6 +3012,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>ArenaUnlink for the slot ArenaLinkAt was just called for (or any other): its old value.</summary>
         public static void ArenaUnlinkAt(int old, int slot)
         {
+            OpStat(19);
             int c = t_atSlot == slot ? t_atOwner : SlotOwner(slot);
             t_atSlot = 0;
             if (c == 0) { if (old != 0) Release(Borrow<object>(old)); return; }
@@ -3250,6 +3330,7 @@ namespace Cs2Wasm.Runtime
         /// as any object.</summary>
         static void ArenaDestroyFrom(int p, int rest)
         {
+            OpStat(22);
             int ar = ArenaOf(p);
             ArenaTakeOut(ar, p);
             // (rest: members that die with it whatever their counts, Dropped; marked and off the ring already)
