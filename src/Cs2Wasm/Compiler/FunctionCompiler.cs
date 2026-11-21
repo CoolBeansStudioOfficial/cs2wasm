@@ -38,6 +38,8 @@ sealed class Slot
     public WasmFunction? ReleaseMarker;
     /// <summary>A struct temporary moved to its owner (StructMoves.cs): cleared, no release at the statement's end.</summary>
     public bool Moved;
+    /// <summary>A field borrow's temp: its local is its own (EndTemps).</summary>
+    public bool OwnLocal;
 }
 
 sealed class Scope { public List<Slot> Owned = []; }
@@ -558,7 +560,10 @@ sealed partial class FunctionCompiler
         foreach (var s in list)
         {
             if (!s.Moved) ReleaseSlot(s);
-            if (s.Local >= 0) _refPool.Push(s.Local);
+            // (a field borrow's temp keeps its local to itself: the handler for an exception on its way out releases
+            // every slot, each as its own kind, so a local shared with a counted temporary would have the counted one's
+            // release reach the borrowed value, which holds no count, test 155)
+            if (s.Local >= 0) { if (!s.OwnLocal) _refPool.Push(s.Local); }
             else
             {
                 var key = T.StorageOf(s.Type);
@@ -641,8 +646,9 @@ sealed partial class FunctionCompiler
             // (threads: a field load that leaves its value unread-counted is of a place no other thread stores)
             if (D.ThreadMode) D.ThreadLocalBorrows.Add(retain);
             E.Call(retain);
-            int l = _refPool.Count > 0 ? _refPool.Pop() : E.AddLocal(ValType.I32);
-            RegisterTemp(new Slot { Local = l, Type = t, ReleaseMarker = release });
+            // (a local of its own: EndTemps)
+            int l = E.AddLocal(ValType.I32);
+            RegisterTemp(new Slot { Local = l, Type = t, ReleaseMarker = release, OwnLocal = true });
             E.Tee(l);
             return Own.Stable;
         }
