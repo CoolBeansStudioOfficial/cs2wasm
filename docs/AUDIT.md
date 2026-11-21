@@ -1104,13 +1104,39 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     hello worlds are byte-identical. The analysis: 1.5 s of the self-host build, 3,432 fields asked, two sealed
     (the other, SharedArrayPoolPartitions' partitions, joined back: its arrays are on a cycle through their elements).
     Hello world (test 145) unchanged. Suite 190 passed checked and as shipped.
-  - Found, not fixed: a store through a span alone (`items.AsSpan()[0] = v`) records no value at the array type's
-    site, so a cycle made only that way is not in the type graph (the store asks `HoldsCyclic` of the slot type,
-    false), with or without this rule: such a cycle would not be freed. Test 175's D case stores through an element
-    too so that it tests the rule.
+  - Found on the way, fixed 2026-11-21 (below, stores by address): a store through a span alone
+    (`items.AsSpan()[0] = v`) recorded no value at the array type's site, so a cycle made only that way was in no
+    group and was never freed.
   - Left: what still joins Roslyn's big group (20,844 types) is the `object` and interface slots of stream I's
     finding; red nodes' child arrays (`SyntaxList.WithManyChildren._children`) are written lazily after the node is
     shared (by design) and stay edges.
+
+- **Stores by address in the type graph (2026-11-21; Compiler/RefStores.cs).** A store through a `ref` (a span's
+  element, MemoryMarshal.GetArrayDataReference, Unsafe.Add, a ref local or parameter, Interlocked's location) or a
+  pointer names no site: the runtime finds the slot's object (Rt.ArenaLinkAt), but the type graph had no edge for it,
+  so a cycle closed only that way was in no group and never freed (test 178: 50 of each of six kinds left before).
+  Now each such store records its value's type against its slot type (Interlocked's and Volatile's at their callers,
+  Calls.ArenaRefWrite), and before the graph:
+  - a `ref T` can point into any T[]'s elements without any element's address being taken (a span), so every array
+    type of element type T the program makes holds those values (its site made if no code stores into it);
+  - a `ref` into a class's field comes only from that field's address taken by name, which already gives the site
+    its declared type; a readonly one is then no field filled at construction alone (`Unsafe.AsRef(in f) = v`);
+  - Unsafe.As<TFrom, TTo>(ref): stores through TTo refs land in TFrom slots (directed; a struct's reference slots for
+    a struct). Interlocked's and Volatile's own reinterpretations are not counted: their callers record the store
+    under the slot's own type. Raw memory seen as references can land in any slot, unless every such
+    reinterpretation in its method is only read (RuntimeHelpers.Box) or it is GetArrayDataReference<T>'s (a T[]'s
+    own elements);
+  - a pointer store lands anywhere a value of its type fits (a value of a wider static type: anything of the slot's
+    type), except the runtime's own (Cs2WasmArrays.SetBoxed for Array.SetValue and Array.Copy across element types,
+    TypeInfo.Set for a QCall handle, Meta.CopyBack for a reflective call's by-ref arguments), which land in arrays'
+    elements or slots whose address was taken. (The first form of that rule added only values narrower than the
+    slot: an object stored by Array.SetValue reached no Node[]; unsound, caught while measuring.)
+  Self-hosted compiler: 5,739 slot types recorded, 498 array sites given values, 21 readonly fields made edges,
+  nothing lands anywhere; groups and cycle types the same with and without (61, 38,881), the green group stays out;
+  hello world 10.68 s against 10.74 s without (noise), the same peak memory, output byte-identical; 0.4 s of the
+  build. Parse probe unchanged (639 cycle types). Suite 193 passed checked and as shipped.
+  `CS2WASM_NO_REF_STORES=1` turns it off; `by address:` debug lines name each pointer store and reinterpretation.
+  Not covered: Unsafe.As<T>(object) (an object seen as another class): the type graph trusts static types there.
 
 ### Direction (revised 2026-11-18 with the owner)
 
