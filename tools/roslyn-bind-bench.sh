@@ -65,24 +65,25 @@ build-naot)
   ;;
 time)
   [ $# -gt 0 ] || set -- bb
-  T=$(mktemp)
+  T=$(mktemp); L=$(mktemp)
   for r in $(seq 1 ${ROUNDS:-5}); do
     for b in "$@"; do
       s=$(date +%s%N)
       host=$(cat "$OUT/$b.host" 2>/dev/null || echo "host/run.mjs")
       case $host in /*|?:*) ;; *) host=$ROOTW/$host ;; esac
       CS2WASM_PROCESSORS=1 CS2WASM_FS_ROOT=C:/ node "$host" "$(cygpath -m "$OUT")/$b.wasm" main -- "$(nodrive "$UP")" "$(nodrive "$RT")" ${BODIES:-400} > $T 2>&1 && rc=0 || rc=$?
-      echo "$b $(( ($(date +%s%N)-s)/1000000 )) ms rc=$rc $(head -1 $T)"
+      echo "$b $(( ($(date +%s%N)-s)/1000000 )) ms rc=$rc $(head -1 $T)" | tee -a $L
       [ $r = 1 ] && grep '^check\|rror' $T | head -3
     done
     if [ -f "$NAOT/bind-bench-naot.js" ]; then
       s=$(date +%s%N)
       (cd "$NAOT" && node bind-bench-naot.js "$(mounted "$UP")" "$(mounted "$RT")" ${BODIES:-400} > $T 2>&1) && rc=0 || rc=$?
-      echo "naot $(( ($(date +%s%N)-s)/1000000 )) ms rc=$rc $(head -1 $T)"
+      echo "naot $(( ($(date +%s%N)-s)/1000000 )) ms rc=$rc $(head -1 $T)" | tee -a $L
       [ $r = 1 ] && grep '^check\|rror' $T | head -3
     fi
   done
-  rm -f $T
+  node "$SRC/summary.mjs" < $L
+  rm -f $T $L
   ;;
 *) echo "usage: $0 build [name [cs2wasmc]] | build-at <commit>... | build-naot | time [name...]"; exit 2 ;;
 esac
