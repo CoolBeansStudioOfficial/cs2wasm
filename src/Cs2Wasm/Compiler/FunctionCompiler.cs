@@ -162,7 +162,16 @@ sealed partial class FunctionCompiler
         var (body, syntax) = GetBody(def);
         Driver.BindTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
         _sharingBody = body;
-        if (Sh != null && SharingKey is { } shk) Sh.BodyRets.Add(shk);
+        if (Sh != null && SharingKey is { } shk)
+        {
+            Sh.BodyRets.Add(shk);
+            RecordRefParamUses(shk, body);
+            // Buffer.Memmove<T>(ref T destination, ref T source, n) moves references as bytes (Rt.MoveRefs): what the
+            // destination's places get is what the source's hold
+            if (M.Name == "Memmove" && M.Parameters.Length == 3 && Types.FullName(M.ContainingType) == "System.Buffer"
+                && M.Parameters[0].RefKind == RefKind.Ref && M.Parameters[1].RefKind == RefKind.Ref && T.Resolve(M.Parameters[1].Type, Map) is var mt && Types.IsRef(mt))
+                Sh.Add(Sharing.OutNode(shk, 0), new Sharing.Src(Sharing.K.RefParam, shk, 1, mt));
+        }
         E.CurrentPos = D.Position(syntax);
         PreScan(body);
         SetupOwnedParams();

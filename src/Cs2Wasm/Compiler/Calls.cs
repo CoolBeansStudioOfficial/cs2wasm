@@ -349,6 +349,8 @@ sealed partial class FunctionCompiler
         // (where the callee's parameter's value comes from: Sharing.cs)
         if (Sh != null && p.ContainingSymbol is IMethodSymbol pm && p.RefKind == RefKind.None && Types.IsRef(pt))
             RecordParam(pm, p, value != null ? FlowSrcs(value) : p.HasExplicitDefaultValue && p.ExplicitDefaultValue is string ? [new Sharing.Src(Sharing.K.Exact, Type: D.Main.GetSpecialType(SpecialType.System_String))] : []);
+        else if (Sh != null && p.ContainingSymbol is IMethodSymbol rpm && p.RefKind != RefKind.None && Types.IsRef(pt))
+            RecordRefIn(rpm, p, value);
         if (value == null)
         {
             // default argument
@@ -360,6 +362,13 @@ sealed partial class FunctionCompiler
         {
             if (Sh != null && p.RefKind is RefKind.Ref or RefKind.Out) RecordOutArg(p, value);
             else if (Sh != null) _preciseAddr = true; // (read only)
+            if (Sh != null)
+            {
+                _addrUse = RefUseOf(p);
+                // (a struct's place to an intrinsic that remakes refs, Unsafe.As<S, object>(ref s): its references
+                // may be stored through refs of other types, any object of their types)
+                if (_addrUse == null && Types.IsStruct(pt) && T.LayoutOf(pt).HasRefs && D.IsIntrinsic(D.MethodTarget((IMethodSymbol)p.ContainingSymbol))) StructLeavesAnything(pt);
+            }
             EmitAddress(value);
             return;
         }
@@ -546,13 +555,15 @@ sealed partial class FunctionCompiler
         finally { _consume = savedConsume; }
         // (a call whose arguments' sources were all recorded: Sharing.cs)
         bool certified = Sh != null && AllRecorded(m, rec0);
+        bool certifiedRefs = Sh != null && AllRefsRecorded(m, rec0);
         if (_recorded.Count > rec0) _recorded.RemoveRange(rec0, _recorded.Count - rec0);
         // (the callee owns them now)
         if (cc != null) foreach (var tl in cc.Temps) { E.I32(0); E.Set(tl); }
         _wantRefReturnAddress = wantAddress;
         _certifyCall = certified;
+        _certifyRefs = certifiedRefs;
         try { return EmitCallInstr(m, dispatch, syntax, sretOff, consts, cc?.Moved ?? 0, stableRecv, thisByValue); }
-        finally { _certifyCall = false; }
+        finally { _certifyCall = _certifyRefs = false; }
     }
 
     /// <summary>Arguments are already on the stack (not for struct-returning methods unless the destination was pushed first).</summary>

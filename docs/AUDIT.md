@@ -636,6 +636,23 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   difference the game's log does not show (closed 2026-11-20, stream E below); (3) a host without JavaScript
   (Wasmtime) for the `godot.*` imports.
 
+- **Stream I, value sources for the arenas (2026-11-21).** `Sharing.SiteTypeIds` on by default in every program: a
+  class field's targets in the cycle graph are the types its values come from (followed through parameters,
+  results, slots, `ref` parameters, struct fields), intersected with the static types' answer; computed once per
+  strongly connected component of the source graph (SharingFlow.cs). Soundness rules: array elements stay as their
+  static types say (the runtime's raw copies, Array.Copy, `Array.SetValue`, `Buffer.Memmove`, put references there
+  that no recorded store says); a slot takes the stores through refs of its type only if its address may be kept
+  (an escape analysis of `ref` parameters: a ref local, a ref return, a span, a pointer, an unknown callee);
+  `Unsafe.As` of a struct's place makes its references any object; reflection's writes apply. Fixed on the way:
+  `FieldInfo.SetValue` into a class field stored past the arena protocol and its edge was not in the graph (test 171's
+  reflection case leaked before this branch). Open (runtime): `MemberwiseClone` of a cycle-capable object leaks with
+  its cycle (the clone's copied slots are not linked; `tests/out/si/clone/c.cs` in the stream's worktree: .NET -1,
+  cs2wasm 2). Measured: test 088 437 to 388 cycle types; the self-hosted compiler (main with J) 20,717 to 20,636 in
+  its largest group, no change in time (14.24 s against 14.29 s). The bound with every source known
+  (`CS2WASM_FLOW_OPTIMISTIC=1`, unsound) is 20,555: hub `object` slots keep ~3,800 types under a context-insensitive
+  flow, and typed edges join the rest. Next for that group: context (call sites or containers' allocation sites),
+  or the typed-edge proofs of 7.E.
+
 - **Stream E, behaviour differences (2026-11-20).** What was on record and what a sweep against .NET found, each
   closed with a test (150 to 153, both modes):
   - `StackFrame.GetMethod()`, `Exception.TargetSite`, `MethodBase.GetCurrentMethod()`. A program that reaches one

@@ -105,7 +105,7 @@ Each stream is independent of the others' files where marked, so it can run in a
 
 | Stream | Items | Files | State |
 |---|---|---|---|
-| I. Value sources everywhere | record sources precisely at every store, argument and return (boxed generics, conversions, interface results, conditionals), also without threads; then `Sharing.SiteTypeIds` on by default where it narrows | Compiler/Expressions.cs, Calls.cs, Sharing.cs | to start |
+| I. Value sources everywhere | record sources precisely at every store, argument and return (boxed generics, conversions, interface results, conditionals), also without threads; then `Sharing.SiteTypeIds` on by default where it narrows | Compiler/Expressions.cs, Calls.cs, Sharing.cs | done 2026-11-21: on by default, sound (test 171), but the self-hosted compiler's group only 20,717 to 20,636 types; its bound with every source known is 20,555 (Log) |
 | J. Owned arrays | an array filled while only its maker knows it and then kept by a new object's readonly field is a node of its own in the type graph (Roslyn's green nodes' child arrays against its builders' arrays) | Compiler/OwnedArrays.cs (new), Arenas.cs | done 2026-11-20: green nodes out of the cycle graph (268 types); self-hosted 14.1 to 11.9 s, 470 to 295 MB |
 | K. Baseline-tier code quality | from the side-by-side profile: counted reads whose count can sink to the one path that keeps the value, static-initializer checks, constant-length bounds checks, frame setup, small calls left | Wasm/*, Compiler where a pass needs a fact | done 2026-11-20: six changes (Log); micro 1.876x to 1.847x, self-hosted 2.74x to 2.65x NativeAOT (quiet rounds); TryGetNode's count needs per-array element stores (left) |
 | L. Self-hosted memory | where the 470 MB against 239 go (member words, counts, allocator waste by size class, pages held) and the structural cuts | Boundary/Runtime.cs allocator (after C merges) | first pass done: report `CS2WASM_MEMSTATS=1`; 568.9 to 482.9 MB (members' words inline, sparse words aside, frame names in UTF-8); the rest is per object (Log) |
@@ -244,3 +244,26 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
 - 2026-11-21, main 3810a98 (streams C, G, H, J, K, L, M merged), interleaved against NativeAOT-LLVM, 3 rounds: self-hosted
   compiler 12.0-12.8 s / 344 MB / 44.0 MB against 6.2-6.5 s / 322 MB / 129 MB. Time 2.0x (2.7x this morning), memory
   1.07x (1.8x), size 0.34x.
+- 2026-11-21, stream I: value sources recorded in every program (not only with threads) and a class field's arena
+  targets narrowed by them by default (`Sharing.SiteTypeIds`, once per component of the source graph in
+  SharingFlow.cs; `CS2WASM_ARENA_SOURCES=0` for the old way; hello world byte-identical, 27,745 B). Made precise:
+  `ref`/`in`/`out` parameters (what the callers' places hold), `Unsafe.Add`/`As` to the place they name,
+  Interlocked's generic stores, `Buffer.Memmove`, a struct inside an object (its struct field's node), stores
+  through refs only for slots whose address may be kept (an escape analysis of ref parameters), nodes recorded with
+  only nulls. Kept sound: array elements are not narrowed (references reach them by the runtime's raw copies:
+  Array.Copy, SetValue, Memmove), a ref field reads as any object, reflection's writes to statics and struct fields
+  apply. Found on the way and fixed: `FieldInfo.SetValue` into a class field skipped the arena protocol and the type
+  graph (a cycle closed that way leaked, narrowing or not). Not fixed (runtime, outside I): an object made by
+  `MemberwiseClone` of a cycle-capable type leaks with its cycle. Test 171: 32 ways a value reaches an object field,
+  each closing a cycle; all freed, both modes, narrowing on and off. Suite 193/193 checked and as shipped. Numbers: test 088 437 to 388 cycle types
+  (largest group 396 to 344); the self-hosted compiler on main with J: 20,841 to 20,763 cycle types, largest group
+  20,717 to 20,636, cyclic sites 40,533 to 40,350; its hello world 14.24 s off against 14.29 s on (NativeAOT-LLVM
+  5.27 s; interleaved, 3 rounds, before J), the build +24 s (arena graph 49 to 72 s). **The bound:**
+  `CS2WASM_FLOW_OPTIMISTIC=1 CS2WASM_FLOW_CAP=1000000` (a measurement, unsound: every unknown source taken as
+  nothing, arrays narrowed too) leaves 20,555 types in the group, `System.Object` among them. The hub slots
+  (a task's state, AsyncLocal's maps, ParameterInfo's default, Linq iterators' current) keep about 3,800 exact types
+  each even then: a context-insensitive flow merges every caller of the shared code they are filled through, and
+  Roslyn's precisely typed edges close the rest. So recording precision is not what holds the group together; what
+  would split it is an analysis that tells callers apart (per call site, or per allocation site of the container),
+  or proofs on typed edges (7.E). CS2WASM_FLOW_CAUSES=1 prints, for each site that stays wide, one source that
+  makes it so and the path to it.
