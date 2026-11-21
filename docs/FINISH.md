@@ -279,5 +279,5 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   0.972; the whole functions inlined everywhere were 7% at twice the size), frames up to 64 bytes taken in place there
   (parser bench 2.8%), range releases skipping all-zero elements. Self-hosted compiler 10.26 to 9.94 s on a quiet
   machine, 8 interleaved rounds, faster in each (2.04x to 1.98x NativeAOT-LLVM), 72.1 to 81.2 MB. Hello world 27,745 to
-  27,912 bytes. Suite 192 passed checked and as shipped. Dropped: struct helpers inlined (no gain). Parked: borrows
+  27,912 bytes. Suite 195 passed checked and as shipped (rebased on 5f7c98d). Dropped: struct helpers inlined (no gain). Parked: borrows
   across throw-only stores (branch claude/k2-throw-only-wip), which pay only with typed releases. docs/AUDIT.md.

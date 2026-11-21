@@ -1048,7 +1048,7 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   time over 8 interleaved rounds on a quiet machine, faster in every round (NativeAOT-LLVM 5.03 s: 2.04x to 1.98x;
   processor time 1% less); 72,095,418 to 81,240,724 bytes (still 0.63x NativeAOT-LLVM's 129 MB). The four functions'
   own time 1.50 s to 0.92 s in the profile (taken on a busier machine: 20.4 s total against 13.1). Hello world 27,745
-  to 27,912 bytes. Suite 192 passed checked and as shipped.
+  to 27,912 bytes. Suite 195 passed checked and as shipped (rebased on main 5f7c98d).
 
 - **Self-hosted compiler's memory (stream L of docs/FINISH.md, 2026-11-20): 568.9 MB to 482.9 MB.**
   - The report: `CS2WASM_MEMSTATS=1` at compile time. The runtime goes through the heap at every growth of the memory
