@@ -45,7 +45,13 @@ internal sealed partial class Driver
     // StackFrame.GetMethod, Exception.TargetSite, MethodBase.GetCurrentMethod (Meta.FrameMethod): the frame names of
     // the compiled methods, each with its record's entry; asked for only by code that reaches them
     WasmFunction? _frameMethods;
-    public WasmFunction FrameMethodsFn => _frameMethods ??= FramesAskedBy(Module.AddFunction("rt.frame_methods", new FuncType([], [ValType.I32])));
+    public WasmFunction FrameMethodsFn => _frameMethods ??= FramesAskedBy(MakeFrameMethods());
+    WasmFunction MakeFrameMethods()
+    {
+        // (the table is made in memory when first asked for: EmitFrameMethods)
+        LibMethod("Cs2Wasm.Runtime.Rt", "Alloc", 1); LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2);
+        return Module.AddFunction("rt.frame_methods", new FuncType([], [ValType.I32]));
+    }
     readonly Dictionary<string, int> _frameEntries = [];
     WasmFunction? _throwSites;
     public WasmFunction ThrowSitesFn => _throwSites ??= FramesAskedBy(Module.AddFunction("rt.throw_sites", new FuncType([], [ValType.I32])));
@@ -611,8 +617,42 @@ internal sealed partial class Driver
                 }
                 g++;
             }
-            var blob = DataBlob(names.Count == 0 ? new byte[4] : names.ToArray(), 4);
-            new Emitter(_frameMethods).I32Addr(DataBlob(words, 4, [(4, blob)]));
+            if (UsesThreads)
+            {
+                var blob = DataBlob(names.Count == 0 ? new byte[4] : names.ToArray(), 4);
+                new Emitter(_frameMethods).I32Addr(DataBlob(words, 4, [(4, blob)]));
+            }
+            else
+            {
+                // Without threads the table is not in the memory until it is asked for (a trace's MethodBase: rare):
+                // the words and the names, packed in a segment of their own, are expanded into memory of the
+                // runtime's own the first time and kept (the self-hosted compiler's 3.4 MB, never asked for when it
+                // compiles a program). Word 1 is the names' offset from the table until then.
+                BitConverter.GetBytes(words.Length).CopyTo(words, 4);
+                var raw = words.Concat(names.Count == 0 ? new byte[4] : names).ToArray();
+                var packed = DataCompression.Compress(raw);
+                var seg = new DataSegment();
+                seg.Bytes.AddRange(packed);
+                Module.Data.Add(seg);
+                var cached = AddGlobal("__frame_methods");
+                var alloc = LibMethod("Cs2Wasm.Runtime.Rt", "Alloc", 1).Fn;
+                var free = LibMethod("Cs2Wasm.Runtime.Rt", "Free", 2).Fn;
+                var dec = Module.AddFunction("rt.frame_methods_unpack", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
+                DataCompression.EmitDecoder(new Emitter(dec));
+                var e = new Emitter(_frameMethods);
+                int tmp = e.AddLocal(ValType.I32), t = e.AddLocal(ValType.I32);
+                e.GGet(cached); e.Op(Op.I32Eqz);
+                e.If();
+                e.I32(packed.Length); e.Call(alloc); e.Set(tmp);
+                e.Get(tmp); e.I32(0); e.I32(packed.Length); e.Emit(Op.MemoryInit, 0, 0, seg);
+                e.I32(raw.Length); e.Call(alloc); e.Set(t);
+                e.Get(tmp); e.Get(t); e.Get(t); e.I32(raw.Length); e.Op(Op.I32Add); e.Call(dec);
+                e.Get(tmp); e.I32(packed.Length); e.Call(free);
+                e.Get(t); e.Get(t); e.Get(t); e.Load(Op.I32Load, 4); e.Op(Op.I32Add); e.Store(Op.I32Store, 4);
+                e.Get(t); e.GSet(cached);
+                e.End();
+                e.GGet(cached);
+            }
         }
         // [count, entry of each hidden thrower by its note - 1]
         if (_throwSites != null)
