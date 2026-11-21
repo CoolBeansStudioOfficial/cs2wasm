@@ -2076,28 +2076,35 @@ namespace Cs2Wasm.Runtime
             }
             s_joinVisit = jv;
             if (jv != 0) return;
-            // (the members whose slot was left to a waiting owner, LinkMembers: what is above them now)
-            while (s_reevN > 0)
+            // (the slots left to a waiting owner, LinkMembers, in the order they were linked: a value now above the
+            // container that refers to it, the container's slot an up-reference; else the container owns it, as it
+            // would have at the link)
+            for (int q = 0; q < s_reevN; q++)
             {
-                s_reevN--;
-                int o = Mem.LoadI32(s_reevQ + 4 * s_reevN);
-                if (Mem.LoadI32(o) < -1 && (PL(o, 24) & Dying) == 0 && PL(o, 20) != 0) Reevaluate(o);
+                int o = Mem.LoadI32(s_reevQ + 8 * q), v = Mem.LoadI32(s_reevQ + 8 * q + 4);
+                if (Mem.LoadI32(o) >= -1 || Mem.LoadI32(v) >= -1 || ((PL(o, 24) | PL(v, 24)) & Dying) != 0) continue;
+                if (PL(v, 20) != 0) { if (PL(o, 20) != 0) Reevaluate(o); continue; }
+                if (PL(o, 20) != 0 && OnChain(o, v)) { Reevaluate(o); continue; }
+                if (PLW(v) == o) PSW(v, 0);
+                TakeOwnership(v, o);
             }
+            s_reevN = 0;
         }
 
         // (ArenaLinkJoined's visits, and the members to Reevaluate after them)
         [Intrinsic] static int s_joinVisit, s_reevQ, s_reevN, s_reevCap;
 
-        static void ReevaluateLater(int m)
+        static void ReevaluateLater(int container, int val)
         {
             if (s_reevN == s_reevCap)
             {
                 int cap = s_reevCap == 0 ? 16 : s_reevCap * 2;
-                int nq = Alloc(cap * 4);
-                if (s_reevQ != 0) { Mem.Copy(nq, s_reevQ, s_reevN * 4); Free(s_reevQ, s_reevCap * 4); }
+                int nq = Alloc(cap * 8);
+                if (s_reevQ != 0) { Mem.Copy(nq, s_reevQ, s_reevN * 8); Free(s_reevQ, s_reevCap * 8); }
                 s_reevQ = nq; s_reevCap = cap;
             }
-            Mem.StoreI32(s_reevQ + 4 * s_reevN, m);
+            Mem.StoreI32(s_reevQ + 8 * s_reevN, container);
+            Mem.StoreI32(s_reevQ + 8 * s_reevN + 4, val);
             s_reevN++;
         }
 
@@ -2754,8 +2761,6 @@ namespace Cs2Wasm.Runtime
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
             // (no reference of either kind: it goes now, with what only it referred to)
             if (w == -2 && PL(p, 4) == 0) { ArenaDestroyFrom(p, 0); DrainKills(); return; }
-            // (one without an owner whose first container waits for it, LinkMembers: that container owns it now)
-            if (w == -2 && PL(p, 20) == 0 && Side(p) != 0 && PLW(p) != 0) { Adopt(p); if (s_killN != 0) DrainKills(); }
             // (kept by what it owns alone, or under a top that was: the check at the drop)
             if (w == -2)
             {
@@ -2955,18 +2960,17 @@ namespace Cs2Wasm.Runtime
                     else PS(val, 24, fl + MultOne);
                 }
                 // A reference a plain object's slot took while it was plain, linked now that the object joins (its
-                // slots, ArenaLinkJoined), to a member without an owner that code still holds from outside: which of
-                // the containers that hold it is its owner is not told by this one being linked first. A tree built
-                // from the leaves up (a node's children made, each with its parent in a field, before the node is put
-                // in its own parent's list) links each child's parent field before the node's list is the node's: the
-                // node was owned by its first child, every node, and turned round when it was put in its list. So the
-                // container waits (as a later container does), and owns it if nothing else has when code lets it go
-                // (ArenaRelease, Adopt). The container's slot is looked at again when the links are done: a member the
-                // value owns may be above it by then (Reevaluate), the child's parent field an up-reference.
+                // slots, ArenaLinkJoined), to a member without an owner that code still holds from outside: whether this
+                // container is its owner is decided when the links are done. A tree built from the leaves up (a node's
+                // children made, each with its parent in a field, before the node is in its own parent's list) links a
+                // child's parent field before the node's list is the node's: the node was owned by its first child,
+                // every node, and turned round when it was put in its list. Once the node's own slots are linked, the
+                // node is above the child, and the child's field is an up-reference (Reevaluate); otherwise the
+                // container owns it, as it would have at the link.
                 else if (ow == 0 && s_joinVisit != 0 && Mem.LoadI32(val) < (later ? -3 : -2) && val != container)
                 {
                     if (PLW(val) == 0) { ClearMark(val); PSW(val, container); }
-                    ReevaluateLater(container);
+                    ReevaluateLater(container, val);
                 }
                 else if (ow == 0) TakeOwnership(val, container);
                 // (the first other container that holds it is the one to own it next: a later one, a task's
