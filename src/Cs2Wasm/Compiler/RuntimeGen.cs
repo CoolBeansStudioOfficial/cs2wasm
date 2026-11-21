@@ -561,6 +561,9 @@ sealed partial class RuntimeGen
                 }
                 var t = D.TypeById[id];
                 var slotOwner = stub.Slot.ContainingType;
+                // (an array, one of the special ones every stub is shown: no array is a subtype of most slots' types,
+                // which Types.ArraysMayBe tells once per type instead of a subtype test per stub and array)
+                if (t is IArrayTypeSymbol && !D.Types.ArraysMayBe(slotOwner)) continue;
                 if (!D.Types.IsSubtype(t, slotOwner)) continue;
                 var impl = D.Implementation(t, stub.Slot);
                 if (impl == null) continue;

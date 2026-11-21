@@ -550,23 +550,33 @@ internal sealed class WasmModule
     {
         for (int round = 0; round < 4; round++)
         {
-            var seen = new Dictionary<string, WasmFunction>();
+            // Two functions merge when their keys (MergeKey: BodyKey, with the frame's name and lines for a frame) are
+            // equal. The keys of every function were made as text each round (hundreds of megabytes): now each key's
+            // characters are hashed as they would be written, and the text is made only for functions whose hash
+            // another's matches, to compare them; the first function with a key is the one the others forward to.
+            var seen = new Dictionary<(ulong, ulong), List<(WasmFunction fn, string? key)>>();
             bool changed = false;
             // (a function that is a frame of a trace, and can be on the stack when one is taken, keeps its own name
             // and lines: two methods with the same code are two frames in .NET)
             var may = ComputeMayThrow();
+            var hasher = new KeyHash();
             foreach (var f in Functions)
             {
                 if (f.IsImport || f.ForwardTo != null || f.Exports.Count > 0 || f.InTable) continue;
-                var key = BodyKey(f);
-                if (f.FrameName != null && may.Contains(f))
+                hasher.Reset();
+                MergeKey(f, may, hasher);
+                var h = hasher.Value;
+                if (!seen.TryGetValue(h, out var bucket)) { seen[h] = [(f, null)]; continue; }
+                var key = MergeKeyText(f, may);
+                WasmFunction? other = null;
+                for (int i = 0; i < bucket.Count; i++)
                 {
-                    var sb = new StringBuilder(key).Append('#').Append(f.FrameName);
-                    foreach (var ins in f.Body) if (ins.Pos >= 0) sb.Append('@').Append(ins.Pos);
-                    key = sb.ToString();
+                    var (cf, ck) = bucket[i];
+                    if (ck == null) bucket[i] = (cf, ck = MergeKeyText(cf, may));
+                    if (ck == key) { other = cf; break; }
                 }
-                if (seen.TryGetValue(key, out var other)) { f.ForwardTo = other; changed = true; }
-                else seen[key] = f;
+                if (other != null) { f.ForwardTo = other; changed = true; }
+                else bucket.Add((f, key));
             }
             if (!changed) break;
             foreach (var f in Functions) ResolveForwards(f);
@@ -678,9 +688,75 @@ internal sealed class WasmModule
     static int s_next;
     static string Id(object o) => s_ids.GetValue(o, _ => Interlocked.Increment(ref s_next).ToString());
 
+    /// <summary>Where a key's characters go: text (StringBuilder's own way of writing each value), or a hash of the
+    /// same characters (KeyHash).</summary>
+    internal abstract class KeyOut
+    {
+        public abstract KeyOut Append(char c);
+        public abstract KeyOut Append(string? s);
+        public abstract KeyOut Append(long v);
+        public KeyOut Append(int v) => Append((long)v);
+    }
+
+    sealed class KeyText : KeyOut
+    {
+        public readonly StringBuilder Sb = new();
+        public override KeyOut Append(char c) { Sb.Append(c); return this; }
+        public override KeyOut Append(string? s) { Sb.Append(s); return this; }
+        public override KeyOut Append(long v) { Sb.Append(v); return this; }
+    }
+
+    /// <summary>Two 64-bit hashes of the characters a key's text would have.</summary>
+    sealed class KeyHash : KeyOut
+    {
+        ulong _a, _b;
+        public void Reset() { _a = 14695981039346656037UL; _b = 0x9E3779B97F4A7C15UL; }
+        public (ulong, ulong) Value => (_a, _b);
+        public override KeyOut Append(char c)
+        {
+            _a = (_a ^ c) * 1099511628211UL;
+            _b = (_b + c) * 0xC2B2AE3D27D4EB4FUL; _b ^= _b >> 29;
+            return this;
+        }
+        public override KeyOut Append(string? s) { if (s != null) foreach (var c in s) Append(c); return this; }
+        public override KeyOut Append(long v)
+        {
+            // (the characters StringBuilder.Append(long) writes: the value's own formatting, no culture asked for)
+            Span<char> buf = stackalloc char[24];
+            v.TryFormat(buf, out int n, default, null);
+            for (int i = 0; i < n; i++) Append(buf[i]);
+            return this;
+        }
+    }
+
+    /// <summary>MergeIdenticalBodies' key: BodyKey, and for a function that is a frame of a trace (it may throw) its
+    /// frame name and lines.</summary>
+    static void MergeKey(WasmFunction f, HashSet<WasmFunction> may, KeyOut sb)
+    {
+        BodyKey(f, sb);
+        if (f.FrameName != null && may.Contains(f))
+        {
+            sb.Append('#').Append(f.FrameName);
+            foreach (var ins in f.Body) if (ins.Pos >= 0) sb.Append('@').Append(ins.Pos);
+        }
+    }
+
+    static string MergeKeyText(WasmFunction f, HashSet<WasmFunction> may)
+    {
+        var t = new KeyText();
+        MergeKey(f, may, t);
+        return t.Sb.ToString();
+    }
+
     internal static string BodyKey(WasmFunction f)
     {
-        var sb = new StringBuilder();
+        var t = new KeyText();
+        BodyKey(f, t);
+        return t.Sb.ToString();
+    }
+
+    static void BodyKey(WasmFunction f, KeyOut sb)
+    {
         foreach (var p in f.Type.Params) sb.Append((char)p);
         sb.Append('|'); foreach (var r in f.Type.Results) sb.Append((char)r);
         sb.Append('|'); foreach (var l in f.Locals) sb.Append((char)l);
@@ -706,7 +782,6 @@ internal sealed class WasmModule
                 default: sb.Append(",o").Append(Id(ins.Ref)); break;
             }
         }
-        return sb.ToString();
     }
 
     void EncodeInstr(Writer b, Instr ins, Func<FuncType, int> typeOf)

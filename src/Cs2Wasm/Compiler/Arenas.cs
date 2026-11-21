@@ -783,6 +783,31 @@ internal sealed partial class Arenas
     /// <summary>Replaces placeholder calls in every function: arena calls at cyclic sites, plain counting elsewhere.</summary>
     static readonly bool s_noInlineLinks = Environment.GetEnvironmentVariable("CS2WASM_NO_INLINE_LINKS") == "1";
 
+    SubtypeIndex? _cycleIndex;
+    int _cycleIndexed;
+    /// <summary>Whether an object of a cycle-capable type can be in a slot of this type: the cycle-capable types that
+    /// may be subtypes of it, by an index (SubtypeIndex, as the graph's), each then asked as before. (Asked of every
+    /// cycle-capable type in turn for each slot type, this was most of a minute of the compiler compiling itself.)</summary>
+    bool AnyCycleTypeIs(ITypeSymbol slotType) => AnyCycleType(slotType, false);
+
+    /// <summary>Whether some cycle-capable type's TypeById entry is a subtype of t (FieldBorrows' question), by the same index.</summary>
+    public bool AnyCycleTypeSubtypeOf(ITypeSymbol t) => AnyCycleType(t, true);
+
+    bool AnyCycleType(ITypeSymbol slotType, bool byTypeOnly)
+    {
+        if (_cycleIndex == null || _cycleIndexed != CycleTypes.Count)
+        {
+            _cycleIndex = new SubtypeIndex(D.Types);
+            // (a display class, and an array, are among the special ones: asked whatever the slot's type)
+            foreach (var id in CycleTypes) _cycleIndex.Add(id, D.DisplayById.ContainsKey(id) || D.TypeById[id] is IArrayTypeSymbol ? null : D.TypeById[id]);
+            _cycleIndexed = CycleTypes.Count;
+        }
+        var cl = _cycleIndex.Candidates(slotType);
+        foreach (var id in cl == _cycleIndex.All ? cl : cl.Concat(_cycleIndex.Special))
+            if (byTypeOnly ? D.Types.IsSubtype(D.TypeById[id], slotType) : IdIs(id, slotType)) return true;
+        return false;
+    }
+
     public void Resolve()
     {
         WasmFunction? link = null, unlink = null, pin = null, linkFresh = null, unlinkFresh = null, linkOwned = null;
@@ -815,7 +840,7 @@ internal sealed partial class Arenas
         bool HoldsCyclic(ITypeSymbol slotType)
         {
             var k = Types.Key(slotType);
-            if (!holdsCyclic.TryGetValue(k, out var r)) holdsCyclic[k] = r = CycleTypes.Any(id => IdIs(id, slotType));
+            if (!holdsCyclic.TryGetValue(k, out var r)) holdsCyclic[k] = r = AnyCycleTypeIs(slotType);
             return r;
         }
         // (a store by address whose container is known: also that the container can be a group's member)
@@ -825,7 +850,7 @@ internal sealed partial class Arenas
         var pinsCyclic = new Dictionary<WasmFunction, bool>();
         bool PinsCyclic(WasmFunction ph, ITypeSymbol pinType)
         {
-            if (!pinsCyclic.TryGetValue(ph, out var r)) pinsCyclic[ph] = r = CycleTypes.Any(id => IdIs(id, pinType));
+            if (!pinsCyclic.TryGetValue(ph, out var r)) pinsCyclic[ph] = r = AnyCycleTypeIs(pinType);
             return r;
         }
         foreach (var f in D.Module.Functions)
