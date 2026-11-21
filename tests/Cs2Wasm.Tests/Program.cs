@@ -84,6 +84,14 @@ foreach (var (name, sources, symbols) in programs.Where((p, i) => (filter == nul
         Fail(name, "cs2wasm failed:\n" + string.Join("\n", result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error)));
         continue;
     }
+    // `// cycles: A, B` in a program: exactly these of its classes are told cycle-capable (CW0202), so a rule that
+    // takes a type out of the cycle graph is held to what it proves, and its near misses to staying in
+    if (src.Contains("// cycles:"))
+    {
+        var want = src[(src.IndexOf("// cycles:") + 10)..].Split('\n')[0].Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Order(StringComparer.Ordinal).ToList();
+        var got = result.Diagnostics.Where(d => d.Id == "CW0202").Select(d => d.GetMessage().Split('\'')[1]).Distinct().Order(StringComparer.Ordinal).ToList();
+        if (!want.SequenceEqual(got)) { Fail(name, $"cycle-capable classes differ: expected {string.Join(", ", want)}; got {string.Join(", ", got)}"); continue; }
+    }
     var wasmPath = Path.Combine(outDir, name + ".wasm");
     File.WriteAllBytes(wasmPath, result.Module!);
     // `// size-limit: n` in a program: as shipped, its module must stay below n bytes (a size goal the suite holds:
