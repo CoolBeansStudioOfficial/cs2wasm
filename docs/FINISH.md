@@ -32,9 +32,9 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Hello world size (test 145) | 27,868 B (main 26150c1 with K round 2 and L round 3; 28,287 with L round 2, 27,869 before it) | < 28,383 B |
-| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 10.7 s vs 5.3 s, 2.0x (main 26150c1 with K and L round 2; interleaved, 3 rounds; 2.7x on 2026-11-20 morning) | < NativeAOT-LLVM |
-| 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main 26150c1, same run). Met, thinly: the heap top is 1 MiB under the next growth step | < NativeAOT-LLVM's, same measure |
-| 4 | Same: module size | 53.9 MB vs 129 MB (main 26150c1; 44.0 at 3810a98: K's inlining) | met; next waste: code (36.2 MB) |
+| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 10.96 s vs 5.44 s, 2.0x (main 480a101 with N and K round 3; interleaved, 3 rounds; 2.7x on 2026-11-20 morning) | < NativeAOT-LLVM |
+| 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main 480a101, same run). Met, thinly: the heap top is 1 MiB under the next growth step | < NativeAOT-LLVM's, same measure |
+| 4 | Same: module size | 44.0 MB vs 129 MB (main 480a101, shipped; K round 3 took back round 2's inlining) | met; next waste: code (36.2 MB) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | met 2026-11-21: `node tools/proof5.mjs toolchain`, `web`, `check`: built in headless Chrome in 220.9 s, its 1,667 log lines (1,669 with `--panic`) equal stock Godot .NET's | plays, log equals the oracle's |
 | - | 072_http's rare out-of-bounds | found and fixed 2026-11-20: none in 600 loaded runs per mode (was ~1 in 1,000) | found or not seen in 500 runs |
@@ -345,3 +345,5 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   noise (10.53 s against 10.47, 12 rounds; NativeAOT-LLVM 5.17 s). Dropped on the way: `unreachable` after throw
   helpers (micro 6% slower: the baseline tier merges block ends), fast paths without a null test (2.3% slower).
   Suite 197 passed checked and as shipped (rebased on 3be4326). docs/AUDIT.md.
+- 2026-11-21, main 480a101 (stream N, K round 3), 3 interleaved rounds against NativeAOT-LLVM: self-hosted compiler
+  10.7-11.4 s / 306.0 MB / 44.0 MB against 5.44 s / 322.2 MB / 129 MB: time 2.0x, memory 0.95x, size 0.34x.
