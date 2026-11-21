@@ -167,6 +167,16 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
   its measure.
 - churn's median frame is 3.4x NativeAOT's (0.28 vs 0.08 ms; p99 and beyond are better): speed, not spikes;
   not looked into yet.
+- Done on the walk (same day): the `foreach` over `e.Children` retained the list and each child, and a member
+  counted from outside walks its owner chain (UpdateHold, TopHeld). The loop's element borrow was refused because the
+  recursive call's summary said it stores array elements: through the changed-list MoveNext call (only throws; now
+  marked as a throw path, its stores the throw helper's, checked against MoveNext's source), through Rt.OnThrow's trace
+  buffer and string (fresh memory: its element key left out, its fields kept), and through Rt.FreeObjectArena
+  (the allocator's, as Rt.FreeObject already was). The list is now held through the field's borrow placeholders, as
+  a temporary is. Median 0.76 to 0.14 ms; the rebuild spike stays (29.9 ms vs 3.8 ms on a quiet machine).
+- List.Add of an isolated value does not help here: array sites always count as general in Arenas.Analyze, and the
+  scene's children refer to their parent. Streams I and J take more types out of the cycle graph; tree is measured
+  again after they merge.
 
 ### A4. Plugins (goal 3)
 
