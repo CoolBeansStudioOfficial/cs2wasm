@@ -9,6 +9,14 @@ namespace Cs2Wasm.Compiler;
 
 sealed partial class FunctionCompiler
 {
+    /// <summary>Shared generic code: in an instantiation of a generic definition (WasmFunction.Family), a type as the
+    /// definition names it is a type parameter. Decisions that would depend on which reference type it stands for (is
+    /// it sealed) are then made as for any reference type, so that the family's members compile to one body (their
+    /// exact types still come in as constants: ShareConstants makes those the shared body's hidden parameters).
+    /// CS2WASM_NO_CANON=1: decided on the exact type, as before.</summary>
+    bool OfTypeParameter(ITypeSymbol? original) => !s_noCanon && original is ITypeParameterSymbol && E.Fn.Family != null;
+    static readonly bool s_noCanon = Environment.GetEnvironmentVariable("CS2WASM_NO_CANON") == "1";
+
     ITypeSymbol TypeOf(IOperation op) => T.Resolve(op.Type ?? throw new CompileException($"expression has no type: {op.Syntax}", op.Syntax.GetLocation()), Map);
 
     void EmitDiscard(IOperation op)
@@ -2784,7 +2792,10 @@ sealed partial class FunctionCompiler
                     int keep = E.AddLocal(ValType.I32);
                     // (a sealed element type has no derived one: the array can only be of this type)
                     var et = T.Canonical(at.ElementType);
-                    bool exact = et is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Delegate, IsSealed: true } || Types.IsString(et);
+                    // (shared generic code: an element type that is a type parameter is any reference type, as in every
+                    // instantiation of the family, so that their bodies are one: the check is made, and passes)
+                    bool exact = (et is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Delegate, IsSealed: true } || Types.IsString(et))
+                        && !OfTypeParameter((ae.ArrayReference.Type as IArrayTypeSymbol)?.ElementType);
                     return new MemLV(this, t, () => EmitArrayElementAddress(ae, keep), D.Arenas.ArraySite(at), keep, pub: Publish.Container, elements: true,
                         covariant: exact || at.Rank != 1 ? null : (IArrayTypeSymbol)T.Canonical(at), owned: OwnedLocal(ae.ArrayReference));
                 }
