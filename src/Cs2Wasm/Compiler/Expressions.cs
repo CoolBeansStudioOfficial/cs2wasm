@@ -857,8 +857,6 @@ sealed partial class FunctionCompiler
         var pub = f.IsStatic ? (IsThreadStatic(f) ? Publish.None : Publish.Always) : f.ContainingType.IsValueType ? Publish.Unknown : Publish.Container;
         StoreToAddressFromStack(() => E.Get(a), off, ft, o, site, () => E.Get(a), pin, pub, () => E.Get(a),
             initializer && !f.IsStatic ? InitStoreKey(f, Owner(f), null) : null,
-            // (a field initializer stores into the object its constructor is making: FreshStores.cs, ThisIsFresh)
-            fresh: site != null && initializer && !f.IsStatic && ThisIsFresh(),
             structContainer: !f.IsStatic && !Owner(f).IsValueType && Types.IsStruct(ft) ? Owner(f) : null);
     }
 

@@ -450,19 +450,6 @@ sealed partial class FunctionCompiler
     IOperation? _bodyOp;
     bool? _bodyHasGoto;
 
-    /// <summary>The code is a class's instance constructor (its body or its field initializers) and no constructor of
-    /// the class or its bases lets `this` out (CtorsKeepThis): until it returns, only the constructing code knows the
-    /// object, so a store into one of its fields closes no cycle (the field initializer `Children = new()` of a scene
-    /// tree's node, and the list's own `_items = s_emptyArray`: each made an arena of the two new objects, merged into
-    /// the tree's at the node's first link). A derived class's constructor runs after this one returns, and its field
-    /// initializers cannot name `this`.</summary>
-    bool ThisIsFresh()
-    {
-        if (Driver.NoFreshStores || _closure != null || _machine != null || D.CompilingInstrumented) return false;
-        if (M.MethodKind != MethodKind.Constructor || M.IsStatic || M.ContainingType is not { TypeKind: TypeKind.Class } ct) return false;
-        return D.CtorsKeepThis(ct);
-    }
-
     /// <summary>A store into this object cannot close a cycle: the object an initializer fills (`new C { F = v }`), or a
     /// local that holds an object only this method knows up to here.</summary>
     bool StoresIntoFresh(IOperation? instance, IOperation at)
@@ -471,7 +458,6 @@ sealed partial class FunctionCompiler
         while (instance is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } c) instance = c.Operand;
         if (instance is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ImplicitReceiver, Type: INamedTypeSymbol { TypeKind: TypeKind.Class } nt })
             return D.CtorsKeepThis(nt);
-        if (instance is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }) return ThisIsFresh();
         if (instance is not ILocalReferenceOperation { Local: var l }) return false;
         if (IsCaptured(l) || _addrTaken.Contains(l)) return false;
         if (_bodyOp == null)
