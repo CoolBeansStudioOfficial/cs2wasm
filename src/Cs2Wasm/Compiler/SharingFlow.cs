@@ -62,7 +62,7 @@ internal sealed partial class Sharing
         {
             if (t == null || wide) return;
             if (s_flowOptimistic && (Types.IsObject(t) || t.TypeKind == TypeKind.Interface || TopIds(t).Count > 50)) return;
-            if (Types.IsObject(t)) { wide = true; if (s_flowCauses) n.Cause = $"{cur.Kind} {cur.Key} #{cur.Index}"; return; }
+            if (Types.IsObject(t)) { wide = true; if (s_flowCauses) n.Cause = $"{cur.Kind} {cur.Key} #{cur.Index} {(cur.Type != null ? Types.Key(cur.Type) : "-")} in {key}"; return; }
             foreach (var x in TopIds(t)) leaves.Add(x);
             if (leaves.Count > _flowCap) { wide = true; if (s_flowCauses) n.Cause = "over the cap: " + Types.Key(t); }
         }
@@ -109,7 +109,8 @@ internal sealed partial class Sharing
             var nk = key[2..bar];
             var declared = bar + Sep.Length < key.Length ? _flowTypes[key[(bar + Sep.Length)..]] : null;
             bool any = false;
-            if (_nodes.TryGetValue(nk, out var l) && l.Count > 0) { foreach (var x in l) Src(x); any = true; }
+            // (recorded, even with no reference: only nulls were; not recorded at all: any object of its type)
+            if (_nodes.TryGetValue(nk, out var l)) { foreach (var x in l) Src(x); any = true; }
             if (_flowStubParams!.TryGetValue(nk, out var sp)) { foreach (var x in sp) Src(x); any = true; }
             if (!any) Top(declared);
         }

@@ -157,6 +157,8 @@ internal sealed partial class Arenas
     static readonly bool s_arenaSources = Environment.GetEnvironmentVariable("CS2WASM_ARENA_SOURCES") != "0";
     /// <summary>Sources are recorded for the type graph (Sharing.SiteTypeIds), also in a program without threads.</summary>
     public static bool SourcesOn => s_arenaSources;
+    /// <summary>More types than this from a site's sources: no narrower than its static types' (CS2WASM_FLOW_CAP).</summary>
+    static readonly int s_flowCap = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_FLOW_CAP"), out var fc) && fc > 0 ? fc : 2000;
     static readonly bool s_arenaDebug =Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1";
     List<(Site, int)>? _wide;
     static readonly bool s_noFreshSites =Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_SITES") == "1";
@@ -599,7 +601,7 @@ internal sealed partial class Arenas
             // (what a class's field holds by where its values come from, when that is
             // narrower. Not an array's elements: references also arrive there by the runtime's own copies, Array.Copy,
             // SetValue and Buffer.Memmove's, which no recorded store says)
-            if (SourcesOn && !s.IsArray && s.ContainerId < 0 && D.Sharing is { } shf && targets.Count > 8 && shf.SiteTypeIds(s, 2000) is { } refined)
+            if (SourcesOn && (!s.IsArray || Sharing.OptimisticFlow) && s.ContainerId < 0 && D.Sharing is { } shf && targets.Count > 8 && shf.SiteTypeIds(s, s_flowCap) is { } refined)
             {
                 var keep = new HashSet<int>(targets);
                 var narrowed = refined.Where(keep.Contains).Order().ToList();

@@ -674,6 +674,8 @@ internal sealed partial class Sharing
     /// <summary>CS2WASM_FLOW_OPTIMISTIC=1 (a measurement, unsound: it leaks cycles): any object of a wide type is taken
     /// as nothing, to see how far the groups could shrink were every source known.</summary>
     static readonly bool s_flowOptimistic = Environment.GetEnvironmentVariable("CS2WASM_FLOW_OPTIMISTIC") == "1";
+    /// <summary>The measurement narrows arrays' elements too.</summary>
+    public static bool OptimisticFlow => s_flowOptimistic;
     HashSet<string>? _flowUncertified;
     /// <summary>Methods some call of which did not record its `ref` arguments' places (or that are called from elsewhere).</summary>
     HashSet<string>? _flowUncertifiedRefs;
@@ -786,7 +788,7 @@ internal sealed partial class Sharing
         {
             if (!seen.Add(key)) return;
             bool any = false;
-            if (_nodes.TryGetValue(key, out var l) && l.Count > 0) { foreach (var x in l) Push(x); any = true; }
+            if (_nodes.TryGetValue(key, out var l)) { foreach (var x in l) Push(x); any = true; }
             if (_flowStubParams!.TryGetValue(key, out var sp)) { foreach (var x in sp) Push(x); any = true; }
             if (!any) Top(declared);
         }
