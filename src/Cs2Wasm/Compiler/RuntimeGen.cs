@@ -502,9 +502,6 @@ sealed partial class RuntimeGen
         D.LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1);
         D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "InvalidCast", 2);
         D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeObject", 2);
-        // (the two for a size already rounded: SizeAllocations)
-        D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocObjectC", 2);
-        D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeObjectC", 2);
         D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1);
         if (D.ThreadMode && RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareCheckFail", 1);
         if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0); }
@@ -1258,63 +1255,8 @@ sealed partial class RuntimeGen
         };
     }
 
-    /// <summary>The allocator's size for a request, as Rt.RoundSmall gives it at run time (steps of 4 to 128 bytes, 8 to
-    /// 256, eight per doubling to 2048; a multiple of 4 above).</summary>
-    public static int RoundSmall(int n)
-    {
-        if (n <= 128 || n > 2048) return (n + 3) & ~3;
-        if (n <= 256) return (n + 7) & ~7;
-        int step = 1 << (28 - System.Numerics.BitOperations.LeadingZeroCount((uint)(n - 1)));
-        return (n + step - 1) & ~(step - 1);
-    }
-
-    /// <summary>A call that makes or frees an object of a size known here (a constant argument) goes to the entry that
-    /// takes the size already rounded (Rt.AllocObjectC, FreeObjectC and the arena's two): the allocator's hot path does
-    /// no rounding. (Its sizes are in steps that widen with the size: computing them at every allocation cost the
-    /// baseline tier a tenth on the allocation micro benchmarks.)</summary>
-    void SizeAllocations()
-    {
-        var alloc = D.Rt.AllocObject;
-        var allocC = D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocObjectC", 2).Fn;
-        var free = D.Rt.Free;
-        var freeC = D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeObjectC", 2).Fn;
-        var plain = D.Module.Functions.FirstOrDefault(f => f.Name == alloc.Name + " [plain]");
-        WasmFunction? allocArena = null, allocArenaC = null, freeArena = null, freeArenaC = null;
-        if (D.Arenas.Enabled)
-        {
-            allocArena = D.Arenas.RuntimeFn("AllocObjectArena", 2); allocArenaC = D.Arenas.RuntimeFn("AllocObjectArenaC", 2);
-            freeArena = D.Arenas.RuntimeFn("FreeObjectArena", 2); freeArenaC = D.Arenas.RuntimeFn("FreeObjectArenaC", 2);
-            allocArenaC.IsObjectAlloc = true;
-        }
-        allocC.IsObjectAlloc = true;
-        int prefix = D.ThreadMode ? 40 : 32;
-        foreach (var f in D.Module.Functions)
-        {
-            if (f.IsImport || f == alloc || f == plain || f == allocArena || f == free || f == freeArena) continue;
-            var b = f.Body;
-            for (int i = 2; i < b.Count; i++)
-            {
-                if (b[i].Op != Op.Call || b[i].Ref is not WasmFunction to) continue;
-                // (size, type id) -> object: the size is the constant before the type's
-                if ((to == alloc || to == plain || to == allocArena) && b[i - 1].Op == Op.I32Const && b[i - 1].Ref is TypeIdRef
-                    && b[i - 2].Op == Op.I32Const && b[i - 2].Ref == null)
-                {
-                    // (a type that may be cycle-capable, by an id only known at run time, keeps the asking entry)
-                    if (to == alloc && D.Arenas.Enabled) continue;
-                    int n = (int)b[i - 2].Imm;
-                    if (to == allocArena) { b[i - 2] = b[i - 2] with { Imm = RoundSmall(n + prefix) }; b[i] = b[i] with { Ref = allocArenaC }; }
-                    else { b[i - 2] = b[i - 2] with { Imm = RoundSmall(n) }; b[i] = b[i] with { Ref = allocC }; }
-                }
-                // (address, size) -> nothing
-                else if ((to == free || to == freeArena) && b[i - 1].Op == Op.I32Const && b[i - 1].Ref == null)
-                {
-                    int n = (int)b[i - 1].Imm;
-                    if (to == freeArena) { b[i - 1] = b[i - 1] with { Imm = RoundSmall(n + prefix) }; b[i] = b[i] with { Ref = freeArenaC }; }
-                    else { b[i - 1] = b[i - 1] with { Imm = RoundSmall(n) }; b[i] = b[i] with { Ref = freeC }; }
-                }
-            }
-        }
-    }
+    /// <summary>How many constructed types make a program one of many sizes (Rt.WideSizes).</summary>
+    const int WideSizesTypes = 1000;
 
     public void Finish()
     {
@@ -1366,6 +1308,21 @@ sealed partial class RuntimeGen
                 bool hit = false;
                 for (int i = 0; i < fn.Body.Count; i++)
                     if (fn.Body[i].Op == Op.Call && fn.Body[i].Ref == st) { fn.Body[i] = new Instr { Op = Op.I32Const, Imm = single ? 1 : 0, Pos = fn.Body[i].Pos }; hit = true; }
+                if (hit) ConstBranches.Run(fn);
+            }
+        }
+        // the allocator's sizes above 128 bytes in wider steps (Rt.RoundSmall) for a program that makes objects of many
+        // types (its sizes are many: one class each, one page each partly used, was 4.4 MB of the self-hosted compiler's);
+        // a small one keeps steps of 4 bytes, two instructions where they are used
+        if (D.Rt.WideSizesIfMade is { } ws)
+        {
+            bool wide = D.Constructed.Count >= WideSizesTypes;
+            ws.Body.Clear(); new Emitter(ws).I32(wide ? 1 : 0);
+            foreach (var fn in D.Module.Functions)
+            {
+                bool hit = false;
+                for (int i = 0; i < fn.Body.Count; i++)
+                    if (fn.Body[i].Op == Op.Call && fn.Body[i].Ref == ws) { fn.Body[i] = new Instr { Op = Op.I32Const, Imm = wide ? 1 : 0, Pos = fn.Body[i].Pos }; hit = true; }
                 if (hit) ConstBranches.Run(fn);
             }
         }
@@ -1458,7 +1415,6 @@ sealed partial class RuntimeGen
         D.Module.Canon = d => d ? D.Rt.CanonF64 : D.Rt.CanonF32;
         D.Module.StackPointer = D.StackPointer;
         D.Module.StackLo = D.StackLo;
-        SizeAllocations();
         D.LayoutMemory();
         D.Mark("  finish: D.LayoutMemory");
         EmitInit();

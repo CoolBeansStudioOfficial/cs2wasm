@@ -583,6 +583,10 @@ internal sealed partial class RuntimeFns
     /// <summary>() → 1 when no other thread can ever run (the program starts none); written at the end (RuntimeGen.Finish).</summary>
     public WasmFunction SingleThreadedFn => _singleThreaded ??= M.AddFunction("rt.single_threaded", FT([], [I]));
     public WasmFunction? SingleThreadedIfMade => _singleThreaded;
+    WasmFunction? _wideSizes;
+    /// <summary>() -> 1 when the allocator rounds sizes above 128 bytes in wider steps (Rt.RoundSmall); written at the end.</summary>
+    public WasmFunction WideSizesFn => _wideSizes ??= M.AddFunction("rt.wide_sizes", FT([], [I]));
+    public WasmFunction? WideSizesIfMade => _wideSizes;
     WasmFunction? _firstChance;
     /// <summary>() → 1 when the program can add a handler to AppDomain.FirstChanceException; written at the end
     /// (RuntimeGen.Finish), so a program without one has no code for it.</summary>
