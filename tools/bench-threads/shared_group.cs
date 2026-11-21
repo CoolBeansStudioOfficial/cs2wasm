@@ -35,6 +35,8 @@ static class Program
             // a new node over a cached one (it joins the cache's arena) and the one made before
             var n = new Node { A = c, B = prev, V = c.V };
             if ((i & 7) == 0) s_cache[idx] = n;
+            // (a store into a member: the new node, and the chain behind it, join the arena; the old value leaves)
+            else if ((i & 7) == 4) c.B = n;
             prev = (i & 15) == 0 ? null : n;
             if (n.A!.V != idx) sum--;
         }

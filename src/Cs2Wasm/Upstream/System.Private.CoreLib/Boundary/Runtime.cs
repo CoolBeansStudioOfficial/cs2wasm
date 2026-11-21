@@ -2757,7 +2757,8 @@ namespace Cs2Wasm.Runtime
             // or a member's that holds no linked reference: `field = null` over null). (Under the lock, each such
             // store of twenty-four parsing threads stopped the rest: of a million stores that took it, 991,000
             // were a null into a member's field.)
-            if (val == 0 || !CanLink(val, container))
+            // (threads: also a pinned container's, which never joins: GroupLocks.cs, PinnedPlain)
+            if (val == 0 || !CanLink(val, container) || ThreadMode() && PinnedPlain(container))
             {
                 int i0 = SlotIndex(container, slot), cw = Mem.LoadI32(container);
                 if (i0 < 0 || cw > 0) { OpStat(1); t_prevSlot = slot; t_prevBits = slot != 0 && i0 >= 0 ? 0 : -1; return val; }
@@ -2957,7 +2958,7 @@ namespace Cs2Wasm.Runtime
             OpStat(7);
             if (bits == 0) { OpStat(8); Release(Borrow<object>(old)); return; }
             // (never linked: a plain counted reference, see ArenaLink)
-            if (!CanLink(old, container)) { OpStat(8); Release(Borrow<object>(old)); return; }
+            if (!CanLink(old, container) || ThreadMode() && PinnedPlain(container)) { OpStat(8); Release(Borrow<object>(old)); return; }
             int mk = -1;
             if (!ThreadMode()) RuntimeLock();
             else
