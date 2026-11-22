@@ -957,7 +957,10 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     timer line (line 7, the second of its five answers False), which run alone there passed both ways. Stress at
     840d4be, 200 loaded runs a mode: 205, 206, 196 and 139 the same in every run of both modes; 127 differed in 4 of
     400 (its "async 5" line: 1 as shipped, 3 checked; main's 5 of 400 in the last round), the other 200 of that test
-    run before it all the same. Not run: the self-hosted compiler, tools/selfdet.mjs.
+    run before it all the same. Not run: the self-hosted compiler, tools/selfdet.mjs. At f54c2b1 (the code as at
+    840d4be, with this text; the homelab busy with other sessions' runs, 713 s for the 284 before): 209/210 checked
+    (135, its WhenAny between a 1 ms and a 50 ms timer: 60950 for 61050) and 209/210 as shipped (088's timer line
+    again); each of the two, run alone there, passed both ways.
 
 ### A4. Plugins (goal 3)
 

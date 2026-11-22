@@ -734,17 +734,20 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   alone, the store's alone, both), medians 0.051-0.060, 0.049-0.062, 0.051-0.063 and 0.051-0.087, the first three
   rounds of it, before the load rose, 0.051-0.052, 0.049-0.052, 0.051 and 0.051-0.052; eight runs with the machine
   quieter, medians 0.047-0.051 and 0.048-0.050, p99.9 2.73-3.08 and 2.65-2.94 (the branch's median the lower or the
-  same in six pairs of eight, its p99.9 the lower in six). So: the same when quiet; under load the branch's median
-  was up to 4% above main's in one set of ten and not in the other sets, inside what the load itself moves a run by
-  (10 to 60%). A load made for the purpose (two and six processes walking 64 MB each) moved every run by more than any
+  same in six pairs of eight, its p99.9 the lower in six). So: the same when quiet; under load the branch's median was
+  up to 4% above main's in one set of ten and not in the other sets, inside what the load itself moves a run by (10 to
+  60%). A load made for the purpose (two and six processes walking 64 MB each) moved every run by more than any
   difference (medians 0.06 to 0.7 ms): no use. The homelab has no Emscripten and its frames.mjs does not run: not
   measured there. Not settled further than that. Homelab: at 8a7895e (both changes) the suite 210/210 checked and as
   shipped (284 s); at 840d4be (the code's last commit: the switch's layout) 210/210 checked and 209/210 as shipped,
   the one test 088 at its timer line (line 7, the second of its five answers False), which run alone there passed both
   ways. Stress at 840d4be, 200 loaded runs a mode: 205, 206, 196 and 139 the same in every run of both modes; 127
   differed in 4 of 400 (its "async 5" line: 1 as shipped, 3 checked; main's 5 of 400 in the last round), the other 200
-  of that test run before it all the same. Not run: the self-hosted compiler, tools/selfdet.mjs. What is left of
-  churn's loop, about 73 us against 45: the store through the list 14 above a bare store (its two counts 4 of them),
-  the NaN tests 2 to 5, the order 2, the rest the loop's own instructions, which the engine does not thin (it carries
-  no load across a store) and NativeAOT-LLVM's compiler does. Not started: the compiler's own inlining of the list's
-  indexers with their loads shared.
+  of that test run before it all the same. Not run: the self-hosted compiler, tools/selfdet.mjs. At f54c2b1 (the code
+  as at 840d4be, with this text; the homelab busy with other sessions' runs, 713 s for the 284 before): 209/210
+  checked (135, its WhenAny between a 1 ms and a 50 ms timer: 60950 for 61050) and 209/210 as shipped (088's timer
+  line again); each of the two, run alone there, passed both ways. What is left of churn's loop, about 73 us against
+  45: the store through the list 14 above a bare store (its two counts 4 of them), the NaN tests 2 to 5, the order 2,
+  the rest the loop's own instructions, which the engine does not thin (it carries no load across a store) and
+  NativeAOT-LLVM's compiler does. Not started: the compiler's own inlining of the list's indexers with their loads
+  shared.
