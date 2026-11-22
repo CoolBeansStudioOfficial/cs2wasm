@@ -2369,6 +2369,39 @@ namespace Cs2Wasm.Runtime
             return false;
         }
 
+        /// <summary>CS2WASM_NO_OWNED_CHAIN=1 (at compile time): a reference to a member on the storing object's chain is
+        /// an up-reference whatever the links of the chain are (OnChainOwned).</summary>
+        [Intrinsic] static extern bool NoOwnedChain();
+
+        /// <summary>OnChain by links that are owned ones, each member up to the target owned by the next: what a new
+        /// up-reference asks. A member whose owner let it go keeps the owner while it holds it (it has an
+        /// up-reference below it and something else refers to it: a child taken out of its parent's list that a
+        /// local still refers to). An up-reference made through that link then kept the hold for good: the child,
+        /// its parent field set to a member above its old place (`moved.Parent = to`, to the parent of the node it
+        /// was taken from) and then put into that one's list, never got the list's array for its owner (it had one,
+        /// the old array, which it held), and held its old array, the old array its list, the list its node, from
+        /// inside the new place: when the old node was replaced, no count of it reached zero, the check at the drop
+        /// found the child's hold a reference from outside what the node owns, and the node with all it owns stayed
+        /// until the group went. In the scene tree of tools/frames.mjs one replaced subtree in twenty-five (the
+        /// move's target is the old node's parent one time in twenty-five): 30,660 entities for 19,531 reachable
+        /// after 500 frames. Refused here, the reference is a counted one: the old up-reference goes at the unlink
+        /// that follows the store, the hold with it, the member has no owner, and the container that takes it next
+        /// owns it and makes the reference an up-reference then (TakeOwnership, Reevaluate), as for a move to any
+        /// other place.</summary>
+        static bool OnChainOwned(int from, int target)
+        {
+            if (NoOwnedChain()) return OnChain(from, target);
+            int v = from;
+            for (int k = 0; k <= ChainMax; k++)
+            {
+                if (v == target) return true;
+                if ((PL(v, 24) & Owned) == 0) return false;
+                v = PL(v, 20);
+                if (v == 0) return false;
+            }
+            return false;
+        }
+
         /// <summary>An up-reference from `from` to `target` came (d = 1) or went (d = -1): the u of each member from
         /// `from` up to below the target, then what each of them holds.</summary>
         static void UpPath(int from, int target, int d)
@@ -3482,7 +3515,7 @@ namespace Cs2Wasm.Runtime
             // ownership turns nothing round. The walks up the chain that asked, three for a tree's leaf with its list,
             // each to the top of the reach, were a fifth of the links' time in the scene tree of tools/frames.mjs.)
             bool fresh = joined && !NoFreshJoin();
-            if (i >= 0 && !fresh && OnChain(container, val))
+            if (i >= 0 && !fresh && OnChainOwned(container, val))
             {
                 // an up-reference: not counted (the chain from the container to the value keeps the value)
                 OpStat(23);
