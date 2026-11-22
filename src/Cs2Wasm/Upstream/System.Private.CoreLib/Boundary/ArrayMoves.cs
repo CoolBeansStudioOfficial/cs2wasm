@@ -34,6 +34,10 @@ namespace Cs2Wasm.Runtime
             // (a plain object with one count each; the same array type)
             int held = Mem.LoadI32(from);
             if ((held != 1 && !(mode == 2 && held > 1)) || Mem.LoadI32(to) != 1 || Mem.LoadI32(from + 4) != Mem.LoadI32(to + 4)) return false;
+            // (an array of a type that can be on a cycle has the arena words before its header, and its block is freed
+            // with them by that type own destroy function alone: left as an array of bytes it would be freed 32 bytes
+            // into its block and 32 short. Such an array is copied. CS2WASM_ARRAY_MOVE_CYCLE=1, to see it fail: moved)
+            if (mode != 3 && SccOf(Mem.LoadI32(from + 4)) != 0) return false;
             if (ArrayRankAt(from) != 1) return false;
             int fl = Mem.LoadI32(from + 12), tl = Mem.LoadI32(to + 12);
             if (fromIndex != 0 || n != fl || n <= 0 || toIndex < 0 || toIndex > tl - n) return false;
