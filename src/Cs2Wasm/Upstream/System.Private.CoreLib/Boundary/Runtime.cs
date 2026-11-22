@@ -709,7 +709,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(s_repEv + 16 * i, kind); Mem.StoreI32(s_repEv + 16 * i + 4, a); Mem.StoreI32(s_repEv + 16 * i + 8, b); Mem.StoreI32(s_repEv + 16 * i + 12, c);
         }
         static int s_repQ, s_repN, s_repCap, s_repTarget, s_repHits, s_repHitN, s_repRefused, s_repRefusedFlags;
-        static void ReportWho(int head, int target)
+        static void ReportWho(int head, int target, bool events = false)
         {
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
             s_repTarget = target;
@@ -726,8 +726,22 @@ namespace Cs2Wasm.Runtime
             for (int h = 0; h < s_repHitN; h++)
             {
                 int o = Mem.LoadI32(s_repHits + 12 * h);
+                if (events) { RepEv(8, o, Mem.LoadI32(s_repHits + 12 * h + 4), Mem.LoadI32(s_repHits + 12 * h + 8)); continue; }
                 ChkSay("      from " + TypeName(Borrow<object>(o)) + " @" + o + " slot+" + Mem.LoadI32(s_repHits + 12 * h + 4) + " bits " + Mem.LoadI32(s_repHits + 12 * h + 8) + " its owner " + PL(o, 20) + " flags " + PL(o, 24) + " note " + PLM(o) + " count " + Mem.LoadI32(o));
             }
+        }
+        /// <summary>The member's own references (the first sixteen): where each is, its slot's bits, what it holds.</summary>
+        static void ReportSlots(int m)
+        {
+            int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
+            s_repTarget = -1;
+            if (s_repHits == 0) s_repHits = Alloc(16 * 12);
+            s_repHitN = 0;
+            s_visitMode = 20; s_visitObj = m; s_visitElem = 0;
+            ArenaVisitObject(m);
+            s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se;
+            for (int h = 0; h < s_repHitN; h++)
+                ChkSay("      slot+" + Mem.LoadI32(s_repHits + 12 * h + 4) + " bits " + Mem.LoadI32(s_repHits + 12 * h + 8) + " -> @" + Mem.LoadI32(s_repHits + 12 * h) + " count " + Mem.LoadI32(Mem.LoadI32(s_repHits + 12 * h)));
         }
         static void ReportNote(int ar)
         {
@@ -752,7 +766,7 @@ namespace Cs2Wasm.Runtime
             for (int e = from; e < s_repEvN; e++)
             {
                 int i = e & 8191, k = Mem.LoadI32(s_repEv + 16 * i);
-                ChkSay("ev " + e + " " + (k == 1 ? "check" : k == 2 ? "ownerless" : k == 3 ? "adopted" : "queued") + " " + Mem.LoadI32(s_repEv + 16 * i + 4) + " " + Mem.LoadI32(s_repEv + 16 * i + 8) + " " + Mem.LoadI32(s_repEv + 16 * i + 12));
+                ChkSay("ev " + e + " " + (k == 1 ? "check" : k == 2 ? "ownerless" : k == 3 ? "adopted" : k == 5 ? "left" : k == 7 ? "left-flags-owner" : k == 8 ? "  from-slot-bits" : "queued") + " " + Mem.LoadI32(s_repEv + 16 * i + 4) + " " + Mem.LoadI32(s_repEv + 16 * i + 8) + " " + Mem.LoadI32(s_repEv + 16 * i + 12));
             }
             for (int i = 0; i < s_repN; i++)
             {
@@ -770,6 +784,7 @@ namespace Cs2Wasm.Runtime
                     {
                         ChkSay("  " + TypeName(Borrow<object>(m)) + " @" + m + " outside " + (-c - 2) + " inside " + PL(m, 4) + " owner " + PL(m, 20) + " flags " + PL(m, 24) + " note " + PLM(m));
                         if (PL(m, 20) == 0 && PL(m, 4) != 0 && (PLM(m) & 1) != 0) ReportWho(head, m);
+                        if (n <= 200) ReportSlots(m);
                     }
                     m = PL(m, 12);
                     k++;
@@ -2563,7 +2578,14 @@ namespace Cs2Wasm.Runtime
                 }
                 fl &= ~Held;
                 PS(v, 24, fl);
-                if ((fl & Owned) == 0) { PS(v, 20, 0); Adopt(v); }
+                // (a member its owner had let go, kept only as what it held: what it held of the owner was a
+                // reference from outside what the owner's top owns, DyingNote)
+                if ((fl & Owned) == 0)
+                {
+                    PS(v, 20, 0);
+                    if (s_failedTops != 0 && OutsideMarked(PLM(w))) DyingNote(w, v);
+                    Adopt(v);
+                }
                 int n = PL(w, 4) - 1;
                 PS(w, 4, n);
                 if (n == 0 && Mem.LoadI32(w) == -2) { Kill(w); return; }
@@ -2644,8 +2666,28 @@ namespace Cs2Wasm.Runtime
                     && (Mem.LoadI32(ArenaOf(w) + 12) & ArenaBusy) == 0) ArenaDestroyFrom(w, 0);
                 // (a destruction's survivor, QueueCheck: kept by what it owns alone? A top whose check failed is looked at
                 // again by its note's number)
-                else if (StickyHolds() && (PLM(w) & 1) == 0 && DropCandidate(w)) Dropped(w);
+                // (or a member left with no owner and no reference from outside, by a destruction or by an ownership
+                // that turned round, TakeOwnership; or a top whose note's number went stale, StaleNote: the check)
+                else if (DropCandidate(w) && (StickyHolds() || !NoStaleNote())) Dropped(w);
             }
+        }
+
+        /// <summary>A member got an owner (the container): when that is under a top whose check failed by references
+        /// from outside what it owns, the note's number is stale from here on. It counts the references into the
+        /// top's members from members that were not under it (NoteOutside takes one off when such a reference goes);
+        /// the member that came under the top, and what it owns, may be where they come from, and those references
+        /// never go: they are inside now, an up-reference where the member refers to what is above it (Reevaluate).
+        /// The number then never reaches zero and the top, garbage, is never looked at again. Test 127, one loaded
+        /// run in ten with the process held to four cores: a task's result (a node that refers to its parent) owned
+        /// by its task, the parent's tree let go by the main thread meanwhile (the check failed by the result's one
+        /// reference), then the task destroyed on its pool thread and the result adopted by the parent's list. So
+        /// the top is looked at again once the operation under way is done (DrainKills): the check is exact, and
+        /// leaves the note it finds. Only a top no code refers to and nothing owns (DropCandidate): one walk up at an
+        /// adoption while some check has failed, nothing else.</summary>
+        static void StaleNote(int container, int kinds = 3)
+        {
+            int t = Top(container);
+            if (t != 0 && (PLM(t) & kinds) == kinds && DropCandidate(t)) QueueCheck(t);
         }
 
         /// <summary>A member to check at the drop once the operation under way is done (a destruction's survivor).</summary>
@@ -2764,12 +2806,22 @@ namespace Cs2Wasm.Runtime
                 if (PL(x, 20) != val || (uint)xf >= UOne || (xf & Held) != 0) return;
                 PS(x, 24, xf & ~(Owned | MultMask));
                 PS(x, 20, 0);
+                // (the top of what the two are in from here on: when no code refers to it, nothing else looks at it
+                // again. A result made referring to its parent and owned by its task, then put in the parent's
+                // list: the parent was the result's, and the list's array took the result over when the task died,
+                // after the last reference to the parent from outside had gone. Test 215)
+                if (Mem.LoadI32(x) == -2 && !NoStaleNote()) QueueCheck(x);
             }
             PS(val, 20, container);
             PS(val, 24, PL(val, 24) | Owned | MultOne);
             // (only a counted reference in one of its own slots can become an up-reference)
             if ((PL(val, 28) & 0x55555555) != 0 && (PL(val, 24) & Elems) == 0) Reevaluate(val);
+            if (s_failedTops != 0 && !NoStaleNote()) StaleNote(container);
         }
+
+        /// <summary>CS2WASM_NO_STALE_NOTE=1 (at compile time, a measurement): a top's note is not looked at again when
+        /// a member comes under it (StaleNote).</summary>
+        [Intrinsic] static extern bool NoStaleNote();
 
         [Intrinsic] static int s_handFrom, s_handSum;
 
@@ -3060,6 +3112,7 @@ namespace Cs2Wasm.Runtime
             PS(old, 24, fl);
             if ((fl & Held) == 0) PS(old, 20, 0);
             if (ArenaReport()) RepEv(2, old, container, (fl & Held) != 0 ? 1 : 0);
+            if (s_failedTops != 0 && PLM(old) != 0 && !NoStaleNote()) StaleNote(container, 1);
         }
 
         // ---- The check at the drop (the owner's decision of 2026-11-18) ----
@@ -3128,34 +3181,45 @@ namespace Cs2Wasm.Runtime
             if (!ThreadMode()) s_failedTops--; else Atomic.Add32(ref s_failedTops, -1);
         }
 
-        /// <summary>The member above all its owners (itself when it has none); 0 when that is far.</summary>
+        /// <summary>The member above all its owners (itself when it has none), however far; 0 when the owners go round
+        /// (a ring of more members than a store looks up, ChainMax: none of them is a top). Asked only for a member
+        /// under a top whose check failed, at a count of its own that came or went (TopHeld, NoteOutside, StaleNote).
+        /// It gave up 64 owners up: a member deeper than that, held when its top was let go, never took its count
+        /// off the top's note when it was let go itself, and the structure stayed for as long as its group lived (a
+        /// doubly linked chain of a hundred members in a group with a static, its last member held last: all of
+        /// it; test 216).</summary>
         static int Top(int m)
         {
-            int v = m;
+            int v = m, mark = m, step = 0, lap = 64;
             if (DropStats()) s_dsTops++;
-            for (int k = 0; k < 64; k++)
+            while (true)
             {
                 if (DropStats()) s_dsTopHops++;
                 if ((PL(v, 24) & Owned) == 0) { if (DropStats() && (PLM(v) & 1) != 0) s_dsTopMarked++; return v; }
                 int w = PL(v, 20);
                 if (w == 0 || Mem.LoadI32(w) >= -1) { if (DropStats() && (PLM(v) & 1) != 0) s_dsTopMarked++; return v; }
                 v = w;
+                // (round a ring: back at a member passed before, looked for at doubling distances)
+                if (v == mark) break;
+                if (++step == lap) { mark = v; step = 0; lap <<= 1; }
             }
             if (DropStats()) s_dsTopFar++;
             return 0;
         }
 
-        /// <summary>The member is the top or one of what it owns, by the owners above it (within a reach of 64).</summary>
+        /// <summary>The member is the top or one of what it owns, by the owners above it (however far, as Top).</summary>
         static bool Under(int m, int top)
         {
-            int v = m;
-            for (int k = 0; k < 64 && v != 0; k++)
+            int v = m, mark = 0, step = 0, lap = 64;
+            while (v != 0)
             {
                 if (v == top) return true;
                 if ((PL(v, 24) & Owned) == 0) return false;
                 int w = PL(v, 20);
                 if (w == 0 || Mem.LoadI32(w) >= -1) return false;
                 v = w;
+                if (v == mark) return false;
+                if (++step == lap) { mark = v; step = 0; lap <<= 1; }
             }
             return false;
         }
@@ -3225,17 +3289,21 @@ namespace Cs2Wasm.Runtime
             s_trOwn = 0;
             // (stopped at one that code refers to: what the top owns alone, the first part of the list)
             if (s_trExt < 0) { TrTruncate(own); s_trExt = 0; }
+            // (with other tops taken in: how many references into what the top owns the first trial left, those from
+            // members of neither; -1 without)
+            int ownLeft1 = -1;
             while (true)
             {
                 // the counted references among them, off
                 TrVisit(14);
                 held = 0; outside = 0; inside = true;
+                int ownLeft = 0;
                 for (int i = 0; i < s_trN; i++)
                 {
                     int m = Mem.LoadI32(s_trQ + 4 * i);
                     if (Mem.LoadI32(m) != -2) held++;
                     int left = PL(m, 4);
-                    if (left != 0) { inside = false; outside += left; }
+                    if (left != 0) { inside = false; outside += left; if (i < own) ownLeft += left; if (ArenaReport()) { RepEv(5, m, left, Mem.LoadI32(m)); RepEv(7, m, PL(m, 24), PL(m, 20)); ReportWho(Mem.LoadI32(ar + 4), m, true); } }
                 }
                 TrVisit(15);
                 dead = inside && held == 0;
@@ -3246,6 +3314,7 @@ namespace Cs2Wasm.Runtime
                 // is taken in then)
                 if (inside) break;
                 // (failed by a reference from outside: again by what the top owns alone, whose numbers the note keeps)
+                ownLeft1 = ownLeft;
                 TrTruncate(own);
                 s_trExt = 0;
             }
@@ -3266,7 +3335,13 @@ namespace Cs2Wasm.Runtime
                 for (int i = 0; i < s_trN; i++) { int m = Mem.LoadI32(s_trQ + 4 * i); PS(m, 24, PL(m, 24) & ~Dying); if (m != x && (PLM(m) & 1) == 0) PSM(m, PLM(m) | (inside ? MarkHeld : MarkOutside)); }
                 // (the note: odd; bit 1 clear, how many of them outside code holds, TopHeld; set, how many references
                 // from members outside what it owns are left into it, NoteOutside)
-                PSM(x, inside ? (held << 2) | 1 : (outside << 2) | 3);
+                // (of the references from outside what it owns, those from the tops that were taken in and what they
+                // own, NoteSome: garbage with it once the others are gone, which only a look can tell)
+                int some = ownLeft1 < 0 ? 0 : outside - ownLeft1;
+                if (some < 0) some = 0;
+                if (some > NoteSome || outside > 0x7FFFFF) some = NoteSome;
+                if (outside > 0x7FFFFF) outside = 0x7FFFFF;
+                PSM(x, inside ? (held << 2) | 1 : (outside << 8) | (some << 2) | 3);
                 if (!ThreadMode()) s_failedTops++; else Atomic.Add32(ref s_failedTops, 1);
                 s_trial = 0;
                 return false;
@@ -3311,10 +3386,23 @@ namespace Cs2Wasm.Runtime
             if (t == 0) return 0;
             int o = PLM(t);
             if ((o & 3) != 3 || Under(container, t)) return 0;
-            int n = (o >> 2) + d;
-            if (n > 0) { PSM(t, (n << 2) | 3); return 0; }
-            return t;
+            int some = (o >> 2) & NoteSome, n = (int)((uint)o >> 8) + d;
+            if (n > 0) PSM(t, (n << 8) | (some << 2) | 3);
+            return some == NoteSome || n <= some ? t : 0;
         }
+
+        // A note of the outside kind (odd, bit 1 set): the number of references from outside what the top owns in its
+        // bits from 8 up; in bits 2 to 7, how many of them came, at the check, from other tops that no code refers
+        // to and nothing owns, and from what those own (the tops the trial took in, Dropped). Those never go while
+        // the structures are garbage: two structures that refer into each other, each one's references the other's
+        // number. While members that live referred into either as well, the trial of both failed and each kept its
+        // own number; when the last of those references went, the number was still above zero, by the other
+        // structure's, and neither was looked at again (test 127 under load: a child a racing List.Add dropped from
+        // its parent's list, still in the array Task.WhenAll returned, kept its place under the list's array; the
+        // tree's number stayed at one, that hold, after the task and the delegate that referred into it had died).
+        // So the top is looked at again when its number is down to those. NoteSome: as many or more, or not known
+        // (the number past what the note holds): at every reference that goes.
+        const int NoteSome = 63;
 
         /// <summary>Retain of an arena member, under the runtime lock: one more outside reference (its first: the
         /// others are counted without the lock, rt.retain; so the count is added to atomically here too).</summary>
@@ -4075,10 +4163,10 @@ namespace Cs2Wasm.Runtime
             }
             if (ArenaReport() && s_visitMode == 20)
             {
-                if (child == s_repTarget && s_repHitN < 16)
+                if ((child == s_repTarget || s_repTarget == -1 && child != 0) && s_repHitN < 16)
                 {
                     int ri = s_visitElem != 0 ? -1 : SlotIndex(s_visitObj, slot);
-                    Mem.StoreI32(s_repHits + 12 * s_repHitN, s_visitObj);
+                    Mem.StoreI32(s_repHits + 12 * s_repHitN, s_repTarget == -1 ? child : s_visitObj);
                     Mem.StoreI32(s_repHits + 12 * s_repHitN + 4, slot - s_visitObj);
                     Mem.StoreI32(s_repHits + 12 * s_repHitN + 8, ri >= 0 ? SlotBits(s_visitObj, ri) : -1);
                     s_repHitN++;
@@ -4193,9 +4281,25 @@ namespace Cs2Wasm.Runtime
             OwnerLetGo(child, obj);
             if (PL(child, 20) == 0) Adopt(child);
             UpdateHold(child);
+            if (s_failedTops != 0 && OutsideMarked(PLM(child))) DyingNote(child, obj);
             // (a survivor of the cut that nothing outside refers to may be kept by stale holds of what it owns alone:
             // checked at the drop when the destruction is done, DrainKills)
-            if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+            if ((StickyHolds() || !NoStaleNote()) && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+        }
+
+        /// <summary>A dying member's reference to a member that lives on went (VisitDying, DyingSurvivor): when that
+        /// one is under a top whose check failed by the references into what it owns from members outside it, and
+        /// the dying member was one of those, the note's number, as at an unlink (ArenaUnlinkOld, NoteOutside); at
+        /// zero the top is looked at again once the destruction is done (DrainKills). Without this the number of a
+        /// top whose outside holders died, and were not unlinked, stayed above zero for good and the top, garbage,
+        /// was never looked at again: test 127 under load, a pool thread still destroying a task (which holds its
+        /// result) and a delegate (which holds the closure) after the main thread's last check of the tree both
+        /// refer into.</summary>
+        static void DyingNote(int child, int obj)
+        {
+            if (NoStaleNote()) return;
+            int back = NoteOutside(child, obj, -1);
+            if (back != 0) QueueCheck(back);
         }
 
         /// <summary>The target is above the dying member on its chain, and every member between them is dying:
@@ -4625,7 +4729,8 @@ namespace Cs2Wasm.Runtime
             OwnerLetGo(child, m);
             if (PL(child, 20) == 0) Adopt(child);
             UpdateHold(child);
-            if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+            if (s_failedTops != 0 && OutsideMarked(PLM(child))) DyingNote(child, m);
+            if ((StickyHolds() || !NoStaleNote()) && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
             return s_visitDead;
         }
 

@@ -974,7 +974,8 @@ sealed partial class FunctionCompiler
             case "Rt.ArenaReport": E.I32(Environment.GetEnvironmentVariable("CS2WASM_ARENA_REPORT") == "1" ? 1 : 0); return Own.None;
             case "Rt.StaleHolds": E.I32(Environment.GetEnvironmentVariable("CS2WASM_STALE_HOLDS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoTakeIn": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TAKE_IN") == "1" ? 1 : 0); return Own.None;
-            case "Rt.NoFreshJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_JOIN") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoStaleNote": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_STALE_NOTE") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoFreshJoin":E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_JOIN") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoSlotWalk": E.I32(Environment.GetEnvironmentVariable("CS2WASM_SLOT_WALK") == "1" ? 0 : 1); return Own.None; // (off by default: with it the strings scene of tools/frames.mjs has one 0.6 ms frame, cause not found; tree the same either way)
             case "Rt.ArrayRankAt": E.Call(Rt.ArrayRank); return Own.None;
             case "Rt.ArrayElementSizeAt": E.Call(Rt.ArrayElemSize); return Own.None;
