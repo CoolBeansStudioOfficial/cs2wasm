@@ -19,7 +19,8 @@ internal sealed partial class Driver
 
     /// <summary>The parameters (a bit per ordinal) m consumes, and the uses that move them.</summary>
     static readonly bool s_noOwned = Environment.GetEnvironmentVariable("CS2WASM_NO_OWNED") == "1";
-    static readonly int s_ownedLimit = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_OWNED_LIMIT"), out var ol) ? ol : 10;
+    static readonly bool s_noOwnedAdd = Environment.GetEnvironmentVariable("CS2WASM_NO_OWNED_ADD") == "1";
+    static readonly int s_ownedLimit =int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_OWNED_LIMIT"), out var ol) ? ol : 10;
 
     internal Consuming ConsumingOf(IMethodSymbol m)
     {
@@ -52,8 +53,13 @@ internal sealed partial class Driver
         // paying for themselves in module size (measured); a struct parameter saves a count per reference it holds,
         // twice, so a larger body still pays (a constructor that stores its struct arguments)
         int size = body.Descendants().Count();
-        bool small = size <= s_ownedLimit;
-        if (size > s_ownedLimit * 4) return s_noConsuming;
+        // (List<T>.Add and the AddWithResize it calls are past the limit, 44 and 39 operations, and are where most
+        // new objects of a program go: `list.Add(new Item())`, `children.Add(Build(..))`. Borrowed, the item is counted
+        // by the store and let go by the caller; for a member of a group that second count is an outside reference
+        // that comes and goes around the store, with the holds it makes up the owners: tools/frames.mjs, tree)
+        bool listAdd = IsListAdd(def);
+        bool small = size <= s_ownedLimit || listAdd && size <= 50;
+        if (size > s_ownedLimit * 4 && !small) return s_noConsuming;
         if (body.DescendantsAndSelf().Any(o => o is ILabeledOperation || o is IBranchOperation { BranchKind: BranchKind.GoTo } || o.Kind is OperationKind.YieldReturn or OperationKind.YieldBreak))
             return s_noConsuming;
         var nested = body.Descendants().Where(o => o is IAnonymousFunctionOperation or ILocalFunctionOperation).SelectMany(o => o.DescendantsAndSelf()).ToHashSet();
@@ -88,7 +94,12 @@ internal sealed partial class Driver
         return mask == 0 ? s_noConsuming : new Consuming(mask, moves);
     }
 
-    static readonly bool s_noStructParams = Environment.GetEnvironmentVariable("CS2WASM_NO_STRUCT_PARAMS") == "1";
+    /// <summary>List&lt;T&gt;.Add(T) or its AddWithResize(T) (CS2WASM_NO_OWNED_ADD=1: as any method of their size).</summary>
+    internal static bool IsListAdd(IMethodSymbol def) =>
+        !s_noOwnedAdd && def.Name is "Add" or "AddWithResize" && def.Parameters.Length == 1
+        && def.ContainingType is { Name: "List", Arity: 1, ContainingNamespace: { Name: "Generic", ContainingNamespace: { Name: "Collections", ContainingNamespace.Name: "System" } } };
+
+    static readonly bool s_noStructParams =Environment.GetEnvironmentVariable("CS2WASM_NO_STRUCT_PARAMS") == "1";
 
     /// <summary>`this.f = p;` as a statement of the body's own block, every path through the body reaching it (no
     /// return before it, no try, no jump); f's type is p's. An exception before it leaves the value where the caller

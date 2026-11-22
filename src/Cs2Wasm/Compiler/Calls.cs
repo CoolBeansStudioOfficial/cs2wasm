@@ -232,7 +232,8 @@ sealed partial class FunctionCompiler
 
     static readonly bool s_thisByValue = Environment.GetEnvironmentVariable("CS2WASM_NO_THIS_BY_VALUE") != "1";
     /// <summary>CS2WASM_MEMSTATS=1 (a diagnosis): the runtime reports where its heap's memory is (Runtime.cs, MemStatsReport).</summary>
-    static readonly bool MemStats = Environment.GetEnvironmentVariable("CS2WASM_MEMSTATS") == "1";
+    static readonly bool s_atomicCounts = Environment.GetEnvironmentVariable("CS2WASM_ATOMIC_COUNTS") == "1";
+    static readonly bool MemStats =Environment.GetEnvironmentVariable("CS2WASM_MEMSTATS") == "1";
 
     int _refPoolLast => -1;
 
@@ -559,7 +560,9 @@ sealed partial class FunctionCompiler
         bool dispatch = virt && IsVirtualDispatch(m);
         CallConsume? cc = null;
         if (consts == null && _clone == null && !dispatch && m.Parameters.Length > 0 && !D.IsIntrinsic(m) && !IsStaticInterfaceMember(m)
-            && D.ConsumingOf(m).Mask is var cmask && cmask != 0 && D.CanSpecializeOwnership(m))
+            && D.ConsumingOf(m).Mask is var cmask && cmask != 0 && D.CanSpecializeOwnership(m)
+            // (List<T>.Add's item moves into an element, which only a reference does: OwnedParams.cs, IsListAdd)
+            && (!Driver.IsListAdd(m.OriginalDefinition) || Types.IsRef(T.Canonical(m.Parameters[0].Type))))
             cc = new CallConsume(m, cmask);
         var savedConsume = _consume;
         _consume = cc;
@@ -968,7 +971,10 @@ sealed partial class FunctionCompiler
             case "Rt.ArenaReport": E.I32(Environment.GetEnvironmentVariable("CS2WASM_ARENA_REPORT") == "1" ? 1 : 0); return Own.None;
             case "Rt.StaleHolds": E.I32(Environment.GetEnvironmentVariable("CS2WASM_STALE_HOLDS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoTakeIn": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TAKE_IN") == "1" ? 1 : 0); return Own.None;
-            case "Rt.NoDropCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoFreshJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_JOIN") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoSlotWalk": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_SLOT_WALK") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoArrayReplace": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_ARRAY_REPLACE") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoDropCheck":E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;
             case "Rt.BulkEnter": E.Call(Rt.BulkEnter); return Own.None;
             case "Rt.BulkExit": E.Call(Rt.BulkExit); return Own.None;
@@ -1104,6 +1110,24 @@ sealed partial class FunctionCompiler
             case "Atomic.Add32": E.Emit(Op.I32AtomicRmwAdd, 0, 2); return Own.None;
             case "Atomic.Exchange32": E.Emit(Op.I32AtomicRmwXchg, 0, 2); return Own.None;
             case "Atomic.CompareExchange32": E.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); return Own.None;
+            case "Atomic.CountAdd32":
+                if (D.ThreadMode || s_atomicCounts) { E.Emit(Op.I32AtomicRmwAdd, 0, 2); return Own.None; }
+                {
+                    // (address, value): the old value; the sum stored
+                    int cv = E.AddLocal(ValType.I32), ca = E.AddLocal(ValType.I32), co = E.AddLocal(ValType.I32);
+                    E.Set(cv); E.Tee(ca); E.Get(ca); E.Load(Op.I32Load); E.Tee(co); E.Get(cv); E.Op(Op.I32Add); E.Store(Op.I32Store); E.Get(co);
+                    return Own.None;
+                }
+            case "Atomic.CountCompareExchange32":
+                if (D.ThreadMode || s_atomicCounts) { E.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); return Own.None; }
+                {
+                    // (address, expected, replacement): the old value; the replacement stored when it was the expected one
+                    int cr = E.AddLocal(ValType.I32), cx = E.AddLocal(ValType.I32), ca = E.AddLocal(ValType.I32), co = E.AddLocal(ValType.I32);
+                    E.Set(cr); E.Set(cx); E.Tee(ca); E.Load(Op.I32Load); E.Tee(co); E.Get(cx); E.Op(Op.I32Eq);
+                    E.If(); E.Get(ca); E.Get(cr); E.Store(Op.I32Store); E.End();
+                    E.Get(co);
+                    return Own.None;
+                }
             case "Atomic.Load64": E.Emit(Op.I64AtomicLoad, 0, 3); return Own.None;
             case "Atomic.Store64": E.Emit(Op.I64AtomicStore, 0, 3); return Own.None;
             case "Atomic.Add64": E.Emit(Op.I64AtomicRmwAdd, 0, 3); return Own.None;

@@ -597,6 +597,14 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_NO_TAKE_IN=1 (a diagnosis, at compile time): the check at the drop tries what the top owns
         /// alone, as before 2026-11-21 (Dropped).</summary>
         [Intrinsic] static extern bool NoTakeIn();
+        /// <summary>CS2WASM_NO_FRESH_JOIN=1 (at compile time): an object that joins an arena for the store that links it is
+        /// asked whether it is above its container, as any member is (LinkMembers, TakeOwnership).</summary>
+        [Intrinsic] static extern bool NoFreshJoin();
+        /// <summary>CS2WASM_NO_ARRAY_REPLACE=1 (at compile time): a new array stored where the array it was copied from
+        /// was is linked element by element, and the old one's items handed over at its unlink (ReplaceArray).</summary>
+        [Intrinsic] static extern bool NoArrayReplace();
+        /// <summary>CS2WASM_NO_SLOT_WALK=1 (at compile time): Reevaluate visits the object by its type.</summary>
+        [Intrinsic] static extern bool NoSlotWalk();
         // CS2WASM_DROP_STATS=1 (a diagnosis, at compile time): the check at the drop counts what it does and says so
         [Intrinsic] static extern bool DropStats();
         /// <summary>CS2WASM_STALE_HOLDS=1 (at compile time, an experiment): an owned member keeps a hold once made, without
@@ -714,8 +722,8 @@ namespace Cs2Wasm.Runtime
         }
         // (and, with it, how often each path of the arena operations runs: OpStat's numbers, printed with DsPrint)
         static int s_opStats;
-        const int OpN = 28;
-        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast";
+        const int OpN = 31;
+        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join";
         // (a constant test where it is asked, so that without the diagnosis nothing is left of it, not even a call)
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static void OpStat(int k) { if (DropStats()) OpStatCount(k); }
@@ -2124,6 +2132,23 @@ namespace Cs2Wasm.Runtime
         /// <summary>A plain object (count c > 0) becomes a member: its count is its outside count.</summary>
         static void ArenaJoin(int ar, int obj)
         {
+            ArenaJoinOnly(ar, obj);
+            // what its slots hold already (stored while only the storing code knew it: ArenaLinkFresh) is linked next
+            if (s_linkN == s_linkCap)
+            {
+                int cap = s_linkCap == 0 ? 64 : s_linkCap * 2;
+                int nq = Alloc(cap * 4);
+                if (s_linkQ != 0) { Mem.Copy(nq, s_linkQ, s_linkN * 4); Free(s_linkQ, s_linkCap * 4); }
+                s_linkQ = nq; s_linkCap = cap;
+            }
+            Mem.StoreI32(s_linkQ + 4 * s_linkN, obj);
+            s_linkN++;
+        }
+
+        /// <summary>ArenaJoin without the note that the object's slots are still to be linked (the caller links them).</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static void ArenaJoinOnly(int ar, int obj)
+        {
             // (exchanged, not stored: another thread that holds a reference may be counting it, without the lock, as
             // the plain object it is until here; its exchange then fails and it counts the member)
             int c;
@@ -2131,7 +2156,7 @@ namespace Cs2Wasm.Runtime
             // own: a thread that sees it a member then finds the stripe this thread holds, and waits)
             OpStat(4);
             if (ThreadMode()) PS(obj, LockWord, Mem.LoadI32(ar + 28) + 1);
-            do { c = Atomic.Load32(ref Mem.RefI32(obj)); } while (Atomic.CompareExchange32(ref Mem.RefI32(obj), c, -(c + 2)) != c);
+            do { c = Atomic.Load32(ref Mem.RefI32(obj)); } while (Atomic.CountCompareExchange32(ref Mem.RefI32(obj), c, -(c + 2)) != c);
             PS(obj, 16, ar);
             PS(obj, 4, 0);
             if (ArenaFinType(Mem.LoadI32(obj + 4)) != 0) Mem.StoreI32(ar + 24, 1);
@@ -2155,16 +2180,6 @@ namespace Cs2Wasm.Runtime
             // some before and after then changes the member's own count word and nothing else: no lock, rt.retain)
             if (c > 0) Mem.StoreI32(ar, Mem.LoadI32(ar) + 1);
             Mem.StoreI32(ar + 20, Mem.LoadI32(ar + 20) + 1);
-            // what its slots hold already (stored while only the storing code knew it: ArenaLinkFresh) is linked next
-            if (s_linkN == s_linkCap)
-            {
-                int cap = s_linkCap == 0 ? 64 : s_linkCap * 2;
-                int nq = Alloc(cap * 4);
-                if (s_linkQ != 0) { Mem.Copy(nq, s_linkQ, s_linkN * 4); Free(s_linkQ, s_linkCap * 4); }
-                s_linkQ = nq; s_linkCap = cap;
-            }
-            Mem.StoreI32(s_linkQ + 4 * s_linkN, obj);
-            s_linkN++;
         }
 
         // (the objects that joined an arena and whose slots are still to be linked)
@@ -2329,7 +2344,7 @@ namespace Cs2Wasm.Runtime
             for (int k = 0; k <= ChainMax && v != target && v != 0; k++)
             {
                 int next = PL(v, 20);
-                UpdateHold(v);
+                if (!HoldSettled(v)) UpdateHold(v);
                 v = next;
             }
         }
@@ -2509,7 +2524,7 @@ namespace Cs2Wasm.Runtime
             // Not its lock word: until the exchange below it is a member of this group, which a thread must wait for)
             if (ThreadMode()) { int w = Side(m); if (w != 0) Mem.StoreI64(w, 0); Mem.StoreI32(m - 28, 0); Mem.StoreI64(m - 24, 0); Mem.StoreI64(m - 16, 0); Mem.StoreI64(m - 8, 0); }
             // (exchanged: other threads count it meanwhile; it has outside references, so one member fewer that does)
-            do { c = Atomic.Load32(ref Mem.RefI32(m)); } while (Atomic.CompareExchange32(ref Mem.RefI32(m), c, -c - 2) != c);
+            do { c = Atomic.Load32(ref Mem.RefI32(m)); } while (Atomic.CountCompareExchange32(ref Mem.RefI32(m), c, -c - 2) != c);
             if (!ThreadMode()) MemberWordsFree(m);
             int total = Mem.LoadI32(ar) - 1;
             Mem.StoreI32(ar, total);
@@ -2519,9 +2534,33 @@ namespace Cs2Wasm.Runtime
 
         /// <summary>The member has an owner now: a counted reference in one of its own slots to a member that is on its
         /// chain becomes an up-reference (a parent set before the child was put in the parent's list).</summary>
+        static void ReevaluateSlot(int obj, int i, int child)
+        {
+            // a counted reference of the member's own to a member on its chain: an up-reference from now on
+            if (child == 0 || Mem.LoadI32(child) >= -1) return;
+            if (SlotBits(obj, i) != 1 || PL(child, 20) == obj || !OnChain(obj, child)) return;
+            if (PL(child, 4) + (-Mem.LoadI32(child) - 2) <= 1) return;
+            PS(child, 4, PL(child, 4) - 1);
+            SetSlotBits(obj, i, 2);
+            if (PLW(child) == obj) PSW(child, 0);
+            UpPath(obj, child, 1);
+            UpdateHold(child);
+        }
+
         static void Reevaluate(int v)
         {
             OpStat(13);
+            // (its counted slots are those its bits say, the first sixteen words: read here, with no visit of the
+            // object by its type. An array has none, its elements are never up-references. In the scene tree of
+            // tools/frames.mjs a node that takes its place is looked at four times: 14,000 visits a build)
+            if (!ThreadMode() && !NoSlotWalk())
+            {
+                if ((PL(v, 24) & Elems) != 0) return;
+                int w = PL(v, 28) & 0x55555555;
+                for (int k = 0; w != 0; k++, w = (int)((uint)w >> 2))
+                    if ((w & 1) != 0) ReevaluateSlot(v, k, Mem.LoadI32(v + 12 + 4 * k));
+                return;
+            }
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
             s_visitArena = ArenaOf(v); s_visitMode = 5; s_visitObj = v; s_visitElem = 0;
             ArenaVisitObject(v);
@@ -2621,6 +2660,95 @@ namespace Cs2Wasm.Runtime
             }
             s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se; s_handFrom = sf; s_handSum = ss;
             UpdateHold(to);
+        }
+
+        /// <summary>A new array (`to`: a plain object, so each of its slots holds a counted reference) is stored into
+        /// the member's slot that holds the array it was copied from (`old`): a list that grows. When the old array
+        /// then has nothing left that refers to it (no code, no other member: only the slot, which this store writes
+        /// over, and the holds of its own items), it is destroyed at the unlink that follows the store, and nothing
+        /// can read it again. So the items change hands in one pass here: the new array joins the arena and is the
+        /// container's, each item is the new array's (its owner, the hold it had, the up-references that pass it), the
+        /// old array's reference to it is the new one's, and the count the new array's slot held is given back. The
+        /// old array is left with no element, for the unlink to destroy.
+        /// The same end as the long way: the new array's elements linked one by one as it joins (each a second
+        /// container's reference to the item, with a waiting owner in side words of its own), the counts given back
+        /// after the store (a release each), the items handed over at the unlink (Handover: two visits), and the old
+        /// array's references taken out as it is destroyed (a visit). In the scene tree of tools/frames.mjs that was
+        /// 1.6 ms of a 4.2 ms build: 3,906 lists that grow from four to eight.
+        /// False (nothing done) unless all of it holds: the old array's elements are exactly the new one's (the rest
+        /// of the new one empty), each a member the old array owns, once; what Handover asks (the up-references that
+        /// pass the old array are all its items'); no check at the drop has a note on any of them.</summary>
+[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static bool ReplaceArray(int to, int container, int slot)
+        {
+            if (NoArrayReplace() || ThreadMode()) return false;
+            int old = Mem.LoadI32(slot);
+            if (old == 0 || Mem.LoadI32(old) != -2) return false;
+            int of = PL(old, 24);
+            if ((of & (Elems | Owned | MultMask | Dying | Queued)) != (Elems | Owned | MultOne) || PL(old, 20) != container) return false;
+            // (the same array type, of one reference an element; the new one not pinned)
+            if (Mem.LoadI32(old + 4) != Mem.LoadI32(to + 4) || Mem.LoadI32(to + 8) < 0) return false;
+            // (the container's arena is the old array's and its items': a linked reference is between members of one)
+            int ar = ArenaOf(container);
+            if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0 || (PL(container, 24) & Dying) != 0) return false;
+            if ((s_destroying | s_trial | s_joinVisit | s_visitElem) != 0 || ArenaReport()) return false;
+            if (Cs2WasmArrays.RankOf(Borrow<Array>(to)) != 1 || Cs2WasmArrays.ElementSize(Borrow<Array>(to)) != 4) return false;
+            int n = Mem.LoadI32(old + 12), tn = Mem.LoadI32(to + 12);
+            if (tn < n) return false;
+            int s = old + 16, d = to + 16;
+            int items = 0, sumU = 0, held = 0, last = 0;
+            bool notes = s_failedTops != 0;
+            if (notes && PLM(old) != 0) return false;
+            for (int k = 0; k < n; k++)
+            {
+                int v = Mem.LoadI32(s + 4 * k);
+                if (v != Mem.LoadI32(d + 4 * k)) return false;
+                if (v == 0) continue;
+                // (a member: the new array's slot counts it from outside)
+                int c = Mem.LoadI32(v);
+                if (c > -3) return false;
+                int vf = PL(v, 24);
+                if ((vf & (Owned | MultMask | Dying)) != (Owned | MultOne) || PL(v, 20) != old) return false;
+                if (notes && PLM(v) != 0) return false;
+                items++;
+                sumU += (int)((uint)vf >> UShift);
+                if ((vf & Held) != 0) held++;
+                if (c == -3) last++;
+            }
+            for (int k = n; k < tn; k++) if (Mem.LoadI32(d + 4 * k) != 0) return false;
+            // (every linked element of the old array is one of these; Handover's condition; and the old array is
+            // referred to by the container's slot and its items' holds, nothing else: it dies at the unlink)
+            if (items == 0 || PL(old, 28) != items || (int)((uint)of >> UShift) != sumU || PL(old, 4) != 1 + held) return false;
+            // (the arena keeps a member that code refers to: none of this is its last)
+            int tc = Mem.LoadI32(to);
+            if (Mem.LoadI32(ar) - last + (tc > 1 ? 1 : 0) <= 0) return false;
+            OpStat(28);
+            ArenaJoinOnly(ar, to);
+            LinkMembers(to, container, slot, ar, true);
+            for (int k = 0; k < n; k++)
+            {
+                int v = Mem.LoadI32(s + 4 * k);
+                if (v == 0) continue;
+                Mem.StoreI32(s + 4 * k, 0);
+                Mem.StoreI32(v, Mem.LoadI32(v) + 1);
+                PS(v, 20, to);
+            }
+            if (last != 0) Mem.StoreI32(ar, Mem.LoadI32(ar) - last);
+            PS(old, 28, 0);
+            PS(old, 24, of & (UOne - 1));
+            PS(old, 4, 1);
+            PS(to, 28, items);
+            PS(to, 24, PL(to, 24) | Elems | (sumU << UShift));
+            PS(to, 4, PL(to, 4) + held);
+            // (the new array holds the container as the old one did, before the old one's hold goes back at its
+            // destruction; then each item, one outside reference fewer)
+            if (!HoldSettled(to)) UpdateHold(to);
+            for (int k = 0; k < n; k++)
+            {
+                int v = Mem.LoadI32(d + 4 * k);
+                if (v != 0 && !HoldSettled(v)) UpdateHold(v);
+            }
+            return true;
         }
 
         /// <summary>The container gave up one counted reference to the member: if it owned it, one of the owner's
@@ -2912,7 +3040,7 @@ namespace Cs2Wasm.Runtime
                     return;
                 }
             }
-            int old = Atomic.Add32(ref Mem.RefI32(p), -1);
+            int old = Atomic.CountAdd32(ref Mem.RefI32(p), -1);
             if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); if (s_failedTops != 0 && HeldMarked(PLM(p))) TopHeld(p, 1); }
             if ((uint)PL(p, 24) >= UOne && !HoldSettled(p)) UpdateHold(p);
         }
@@ -2941,7 +3069,7 @@ namespace Cs2Wasm.Runtime
                     return;
                 }
             }
-            int w = Atomic.Add32(ref Mem.RefI32(p), 1) + 1;
+            int w = Atomic.CountAdd32(ref Mem.RefI32(p), 1) + 1;
             // (checked: a member released with no outside reference counted on it, a release too many or of an inside
             // reference; it would read as immortal, -1, from here on)
             if (Checked() && SingleThreaded() && w == -1) { ChkSay("checked: a " + TypeName(Borrow<object>(p)) + ", a member with no outside reference, released"); Mem.StoreI32(-4, 0); }
@@ -2992,7 +3120,8 @@ namespace Cs2Wasm.Runtime
                 t_prevSlot = slot; t_prevBits = slot != 0 && ip >= 0 ? 0 : -1;
                 return val;
             }
-            if (val == 0 || !CanLink(val, container))
+            bool can = val != 0 && CanLink(val, container);
+            if (!can)
             {
                 int i0 = SlotIndex(container, slot), cw = Mem.LoadI32(container);
                 if (i0 < 0 || cw > 0) { OpStat(1); t_prevSlot = slot; t_prevBits = slot != 0 && i0 >= 0 ? 0 : -1; return val; }
@@ -3023,6 +3152,10 @@ namespace Cs2Wasm.Runtime
                 // (the usual case: both are members of one arena already, which is not being destroyed or merged)
                 int ar = Mem.LoadI32(container) < -1 && Mem.LoadI32(val) < -1 ? PL(container, 16) : 0;
                 if (ar != 0 && ar == PL(val, 16) && Mem.LoadI64(ar + 12) == 0) { OpStat(2); LinkMembers(val, container, slot, ar, false); }
+                // (a plain object over a linked reference of a member's own slot: a list's larger array over its array)
+                else if (t_prevBits == 1 && Mem.LoadI32(val) > 0 && ReplaceArray(val, container, slot)) { }
+                // (a plain object only the store's count refers to: a new object put into a member's list)
+                else if (can && Mem.LoadI32(val) == 1 && JoinOwned(val, container, slot, true)) { }
                 else { OpStat(3); ArenaLinkCore(val, container, slot); }
             }
             if (s_linkN != 0) ArenaLinkJoined();
@@ -3059,6 +3192,40 @@ namespace Cs2Wasm.Runtime
         {
             if (container == 0 || Mem.LoadI32(container) > 0) { Release(Borrow<object>(old)); return; }
             ArenaUnlink(old, container, slot);
+        }
+
+        /// <summary>A plain object whose one count is the reference being linked (a new object stored into a member's
+        /// slot, or held by a slot of an object that joins), of the container's group of classes: it joins the
+        /// container's arena and is the container's, with no outside reference. What ArenaLinkCore and LinkMembers do
+        /// for it, with what they ask and cannot be so left out: it is a member of no arena (nothing to merge), its
+        /// count goes from the store's to none in one step (the arena's number of members that code refers to
+        /// unchanged), it is above nothing (LinkMembers, fresh) and nothing holds or waits for it (its words are
+        /// zero), so it has no hold to settle. False (nothing done) when the container is no member or either cannot
+        /// be linked now: ArenaLinkCore's answer then. `can`: the two are known to be of one group of classes.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static bool JoinOwned(int val, int container, int slot, bool can)
+        {
+            if (NoFreshJoin() || ThreadMode()) return false;
+            if (Mem.LoadI32(container) >= -1) return false;
+            if (!can) { int g = SccOf(Mem.LoadI32(val + 4)); if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return false; }
+            if (((PL(val, 24) | PL(container, 24)) & Dying) != 0 || Mem.LoadI32(val + 8) < 0) return false;
+            int ar = ArenaOf(container);
+            if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return false;
+            OpStat(29);
+            ArenaJoin(ar, val);
+            Mem.StoreI32(val, -2);
+            Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
+            PS(val, 4, 1);
+            int i = s_visitElem != 0 ? -1 : SlotIndex(container, slot);
+            if (i >= 0) SetSlotBits(container, i, 1);
+            else if (slot == 0 || s_visitElem != 0)
+            {
+                PS(container, 28, PL(container, 28) + 1);
+                PS(container, 24, PL(container, 24) | Elems);
+            }
+            PS(val, 20, container);
+            PS(val, 24, PL(val, 24) | Owned | MultOne);
+            return true;
         }
 
         static int ArenaLinkCore(int val, int container, int slot)
@@ -3138,13 +3305,19 @@ namespace Cs2Wasm.Runtime
             // (checked: a value stored with no outside count on it: the store's count was never taken)
             if (Checked() && SingleThreaded() && Mem.LoadI32(val) == -2) { ChkSay("checked: a " + TypeName(Borrow<object>(val)) + " stored into a " + TypeName(Borrow<object>(container)) + " with no outside count" + (joined ? " (it joined for this store)" : "")); Mem.StoreI32(-4, 0); }
             bool later = false;
-            if (Atomic.Add32(ref Mem.RefI32(val), 1) == -3)
+            if (Atomic.CountAdd32(ref Mem.RefI32(val), 1) == -3)
             {
                 if (joined) Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
-                else { Atomic.Add32(ref Mem.RefI32(val), -1); GiveBackLater(val); later = true; }
+                else { Atomic.CountAdd32(ref Mem.RefI32(val), -1); GiveBackLater(val); later = true; }
             }
             int i = s_visitElem != 0 ? -1 : SlotIndex(container, slot);
-            if (i >= 0 && OnChain(container, val))
+            // (fresh: the value was a plain object until this store made it a member. No member is owned by a plain
+            // object (an owner holds what it owns by a linked slot or is held by it, and a member with either does not
+            // leave its arena, TryLeave), so the value is above nothing: not on the container's chain, and its
+            // ownership turns nothing round. The walks up the chain that asked, three for a tree's leaf with its list,
+            // each to the top of the reach, were a fifth of the links' time in the scene tree of tools/frames.mjs.)
+            bool fresh = joined && !NoFreshJoin();
+            if (i >= 0 && !fresh && OnChain(container, val))
             {
                 // an up-reference: not counted (the chain from the container to the value keeps the value)
                 OpStat(23);
@@ -3152,7 +3325,7 @@ namespace Cs2Wasm.Runtime
                 UpPath(container, val, 1);
                 // (a value nothing else refers to kept its count: it goes when the store is written, AfterStore)
                 if (Mem.LoadI32(val) == -2 && PL(val, 4) == 0) Kill(val);
-                else UpdateHold(val);
+                else if (!HoldSettled(val)) UpdateHold(val);
                 return val;
             }
             PS(val, 4, PL(val, 4) + 1);
@@ -3184,6 +3357,13 @@ namespace Cs2Wasm.Runtime
                 else if (ow == 0 && s_joinVisit != 0 && Mem.LoadI32(val) < (later ? -3 : -2) && val != container)
                 {
                     Waiting(val, container);
+                }
+                else if (ow == 0 && fresh)
+                {
+                    // (TakeOwnership without its walk; and none of its own slots is linked yet, so none to look at again)
+                    OpStat(30);
+                    PS(val, 20, container);
+                    PS(val, 24, fl | Owned | MultOne);
                 }
                 else if (ow == 0) TakeOwnership(val, container);
                 // (the first other container that holds it is the one to own it next: a later one, a task's
@@ -3452,6 +3632,28 @@ namespace Cs2Wasm.Runtime
             s_visitElem = e;
         }
 
+        /// <summary>A slot of an object that joined an arena (ArenaLinkJoined), linked as the store it stands for: a
+        /// plain object only this slot refers to joins in one piece (JoinOwned); a member of the object's arena,
+        /// neither dying, goes to LinkMembers as ArenaLink sends it; anything else to ArenaLinkCore.
+        /// (Out of line, as JoinOwned and ReplaceArray are: written into ArenaVisit and ArenaLink they moved the
+        /// engine's change of tier into the timed frames of the strings scene of tools/frames.mjs, one frame of
+        /// 0.5 ms; the same was seen for LinkWaiting.)</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void LinkJoinedSlot(int child, int slot)
+        {
+            int o = s_visitArena, cc = Mem.LoadI32(child);
+            if (!NoFreshJoin() && !ThreadMode())
+            {
+                if (cc == 1) { if (JoinOwned(child, o, slot, false)) return; }
+                else if (cc < -1 && Mem.LoadI32(o) < -1)
+                {
+                    int ar = PL(o, 16);
+                    if (ar == PL(child, 16) && Mem.LoadI64(ar + 12) == 0 && ((PL(child, 24) | PL(o, 24)) & Dying) == 0) { LinkMembers(child, o, slot, ar, false); return; }
+                }
+            }
+            ArenaLinkCore(child, o, slot);
+        }
+
         public static void ArenaVisit(int slot)
         {
             int child = Mem.LoadI32(slot);
@@ -3468,7 +3670,7 @@ namespace Cs2Wasm.Runtime
                 return;
             }
             // (4: each reference, counted by the copy, as a store of it)
-            if (s_visitMode == 4) { if (child != 0 && slot != s_storeSlot) ArenaLinkCore(child, s_visitArena, slot); return; }
+            if (s_visitMode == 4) { if (child != 0 && slot != s_storeSlot) LinkJoinedSlot(child, slot); return; }
             // (16: LinkWalk, threads)
             if (ThreadMode() && s_visitMode == 16) { WalkVisit(child); return; }
             // (13 to 15, Dropped: what the member owns; a counted reference to one of them off, and back on)
@@ -3533,14 +3735,7 @@ namespace Cs2Wasm.Runtime
             int bits = i >= 0 ? SlotBits(obj, i) : -1;
             if (s_visitMode == 5)
             {
-                // a counted reference of the member's own to a member on its chain: an up-reference from now on
-                if (bits != 1 || PL(child, 20) == obj || !OnChain(obj, child)) return;
-                if (PL(child, 4) + (-Mem.LoadI32(child) - 2) <= 1) return;
-                PS(child, 4, PL(child, 4) - 1);
-                SetSlotBits(obj, i, 2);
-                if (PLW(child) == obj) PSW(child, 0);
-                UpPath(obj, child, 1);
-                UpdateHold(child);
+                if (bits == 1) ReevaluateSlot(obj, i, child);
                 return;
             }
             // 0: the member (obj) is being destroyed
@@ -4162,6 +4357,12 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] public static extern int Add32(ref int location, int value);
         [Intrinsic] public static extern int Exchange32(ref int location, int value);
         [Intrinsic] public static extern int CompareExchange32(ref int location, int expected, int replacement);
+        /// <summary>Add32 and CompareExchange32 on an object's count word: atomic in a program with threads; in one
+        /// without, a load and a store, as its counts are everywhere else (rt.retain, rt.release). The engine runs an
+        /// atomic instruction with the bus locked whatever the memory: 20 cycles each, and a tree's leaf joining its
+        /// arena did eight (tools/frames.mjs, tree). CS2WASM_ATOMIC_COUNTS=1 (at compile time): atomic always.</summary>
+        [Intrinsic] public static extern int CountAdd32(ref int location, int value);
+        [Intrinsic] public static extern int CountCompareExchange32(ref int location, int expected, int replacement);
         [Intrinsic] public static extern long Load64(ref long location);
         [Intrinsic] public static extern void Store64(ref long location, long value);
         [Intrinsic] public static extern long Add64(ref long location, long value);
