@@ -608,7 +608,7 @@ namespace Cs2Wasm.Runtime
         /// array of any type come from nowhere).</summary>
         [Intrinsic] static extern int ArrayRankAt(int array);
         [Intrinsic] static extern int ArrayElementSizeAt(int array);
-        /// <summary>CS2WASM_NO_SLOT_WALK=1 (at compile time): Reevaluate visits the object by its type.</summary>
+        /// <summary>Reevaluate visits the object by its type; CS2WASM_SLOT_WALK=1 (at compile time): by its slot bits (off by default: Calls.cs).</summary>
         [Intrinsic] static extern bool NoSlotWalk();
         // CS2WASM_DROP_STATS=1 (a diagnosis, at compile time): the check at the drop counts what it does and says so
         [Intrinsic] static extern bool DropStats();
