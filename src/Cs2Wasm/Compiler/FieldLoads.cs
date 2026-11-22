@@ -14,7 +14,8 @@ namespace Cs2Wasm.Compiler;
 /// stores (StoreSummary) the borrows use. The conditions, each of which takes a field out for the whole program:
 ///  - a class's instance field of a number or a reference: not a struct's (a struct is copied as a whole and written
 ///    through `this`, an address), not of a struct's type, not volatile, not in a class with [StructLayout] (with
-///    explicit layout fields may overlap), not a field of String, Array or a delegate (the runtime writes those);
+///    explicit layout fields may overlap), not a field of String, Array or a delegate (the runtime writes those),
+///    not one of the runtime's own classes (the summary leaves some of their code's stores out);
 ///  - no code has its address: every way to a field's place other than a plain load or a plain store goes through
 ///    FunctionCompiler.EmitFieldSlotBase, which takes the field out unless the load or the store said it is theirs
 ///    (`ref`, `out`, `in`, `fixed`, a call of a struct's method on it, Interlocked, Volatile, [UnsafeAccessor]);
@@ -22,7 +23,12 @@ namespace Cs2Wasm.Compiler;
 ///  - in a program with threads: only a readonly field (another thread may store any other meanwhile).
 /// A local of an iterator or an async method, a captured variable, a primary constructor's parameter: fields of
 /// objects the compiler makes, read and written by their own code; they have no tag and no mark, and no tagged
-/// field shares their memory.
+/// field shares their memory. A state machine's own function is left alone besides (FunctionCompiler.FinishMachine).
+/// A `readonly` field all of whose marks are in constructors of its own class (FieldHoist.CtorOnly; an `init`
+/// accessor's store is not: it is no constructor) is stored only into the object a constructor is making.
+/// What rests on the program not doing it (as the borrows of FieldBorrows.cs do): an object read through another
+/// class than its own (Unsafe.As to a class with other fields at the same offsets), a constructor run a second time
+/// on an object that exists (ConstructorInfo.Invoke on an instance).
 /// CS2WASM_NO_FIELD_HOIST=1: no tag and no mark is made; the module is the one from before this pass.
 /// </summary>
 internal sealed partial class Driver

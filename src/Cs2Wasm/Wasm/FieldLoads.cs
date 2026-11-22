@@ -153,8 +153,19 @@ internal sealed class FieldHoist(int count)
 /// no code of the loop assigns it), and a field's offset from either is inside the memory. The loop's own null check
 /// stays where it was, so a NullReferenceException comes at the same place, after the same effects; what the read
 /// got from a null is not used.
+/// A place (a local, a load, an offset) is read before the loop only when one of its loads stands in no `if` of the
+/// loop, so that it runs on every turn that gets that far: a loop whose arms each read another field (a parser's
+/// loop over a switch) would pay for all of them at every entry (the self-hosted compiler ran a tenth slower that
+/// way). The place's loads in the arms then take the value too.
+/// The local may be one the loop assigns, when it is a copy of one the loop does not (`local.get L; local.set t`:
+/// an inlined callee's parameter, the null check's second local) made before every read: Source.
+/// A throw that a handler inside the loop takes, after which the loop goes on: in a program with filters the catch
+/// site calls rt.first_pass itself (FunctionCompiler.EmitHandlerDecision), which the calls' rule sees as the call
+/// it is, with every filter's stores; a state machine's try statements are written another way, and its function
+/// is left alone (WasmFunction.NoFieldHoist, set by FunctionCompiler.FinishMachine).
+/// The second stage (Reuse) shares a place's loads in a straight line.
 /// CS2WASM_NO_FIELD_HOIST=1: no load has a tag, and this pass finds nothing. CS2WASM_FIELD_HOIST_DEBUG=1: each
-/// candidate and why not.
+/// candidate and why not. CS2WASM_FIELD_HOIST_STATS=1: the counts.
 /// </summary>
 static class FieldLoads
 {
@@ -166,8 +177,9 @@ static class FieldLoads
     /// <summary>CS2WASM_FIELD_HOIST_WITHOUT=a,b (for the proof of tests 230 to 234 only: the module it makes is
     /// wrong): the pass without one of its conditions, so that the test's loop for that condition can be seen to
     /// print something else. address, reflection, layout, volatile, threads (Driver.PrepareFieldLoads); loop, calls,
-    /// indirect, assigned, dominance (here); merge, inline (FieldHoist); constructors: a field only constructors
-    /// store is asked about calls like any other (this one makes the pass weaker, not wrong).</summary>
+    /// indirect, assigned, dominance (here); merge, inline (FieldHoist); machine (FunctionCompiler.FinishMachine);
+    /// constructors: a field only constructors store is asked about calls like any other (this one makes the pass
+    /// weaker, not wrong).</summary>
     static readonly HashSet<string> s_without = [.. (Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_WITHOUT") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)];
     internal static bool Without(string condition) => s_without.Count > 0 && s_without.Contains(condition);
 
