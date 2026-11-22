@@ -7,12 +7,15 @@
 cd "$(dirname "$0")/.."
 bad=0
 for t in 127_everything_is_freed 139_racing_cyclic_stores; do
-  for mode in --unchecked --checked; do
-    flag=$mode; [ "$mode" = "--checked" ] && flag=
+  for mode in shipped checked; do
+    # (the runner leaves a checked module in tests/out, one as shipped in tests/out/shipped)
+    if [ $mode = shipped ]; then flag=--unchecked; dir=tests/out/shipped; else flag=; dir=tests/out; fi
+    rm -f $dir/$t.wasm
     dotnet run --project tests/Cs2Wasm.Tests -c Release -- $t $flag 2>&1 | grep -E "^(PASS|FAIL)" || bad=1
-    cp tests/out/$t.wasm tests/out/$t.stress.wasm
     echo "== $t $mode"
-    node tools/stress.mjs tests/out/$t.stress.wasm --runs ${RUNS:-200} --par ${PAR:-8} || bad=1
+    if [ ! -f $dir/$t.wasm ]; then echo "no module $dir/$t.wasm"; bad=1; continue; fi
+    cp $dir/$t.wasm $dir/$t.stress.wasm
+    node tools/stress.mjs $dir/$t.stress.wasm --runs ${RUNS:-200} --par ${PAR:-8} || bad=1
   done
 done
 exit $bad
