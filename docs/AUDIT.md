@@ -1809,3 +1809,37 @@ What was agreed for decisions 1 and 2:
     (test 139 on 16 threads: 830 to 700 ms). One thread: 15% slower than the one lock (the stripes' bookkeeping).
     No-threads builds: hello world byte-identical; micro and bench the same code (function type order and line
     numbers differ). Suite 187/187 checked and as shipped (070_files failed once in a run beside another session's, its fixed directory shared; passes alone); test 139 200/200 under tools/stress.mjs, 8 at once.
+- **Threads past four (branch threads-scale, 2026-11-21), on stream C's group locks.** Measured on the homelab (16
+  hardware threads), `tools/thread-scale.sh`: the threaded self-hosted compiler built once per commit (named) and
+  timed on hello world per thread count, interleaved with other builds (ALSO), with the PLINQ programs of
+  tools/bench-threads and a profile (PROF=n: busy time per thread, callers of the stripes' waits).
+  `tools/bench-threads/shared_group.cs` is the compiler's shape in small: one arena of 4,096 cached nodes that every
+  thread reads, refers to from new nodes and stores into (1.2 s on one thread, 2.7 on 24: it does nothing but arena
+  operations on one group, so it can only get slower; a check that the waiting does not collapse).
+  - Where the 12-thread time went (main ec13733): the parse. Waits on the one stripe from the lexer's and the parser's
+    stores (LinkLock: Lexer.QuickScanSyntaxToken, LexSyntaxTrivia, BlendedNode copies in SyntaxParser.Reset, AddToken,
+    MoveToNextToken: about 45%) and from the counts of cached tokens, members with no outside reference whose first
+    and last one take the group's lock (LexerCache.LookupToken, FetchCurrentToken, AddNewToken: rt.load_retain's
+    LoadRetainSlow, rt.retain, rt.release, about 45%). Every waiter spun on the lock word before it slept.
+  - Done: (1) at most two threads spin for a stripe, the others sleep, and an unlock wakes one only when none spins
+    (GroupLocks.cs, StripeWait); (2) before the first thread starts no walk under LinkLock and every object counts as
+    this thread's (StripeMine), as without threads; (3) a store into a pinned plain object (a static readonly field's
+    array: Roslyn's node cache) takes no lock and links nothing, as it never could; (4) with threads, a member stored
+    into a plain object stays a counted reference and the container plain (no join): no member refers to a plain
+    object of a cycle-capable class (a store into a member joins it), so no cycle closes through it until a member
+    comes to refer to it, and it joins then with its slots linked; LinkLock then locks only the container (which keeps
+    it plain) and the store links nothing (t_linkOver: the value, unlocked, may have left its group meanwhile). Fresh
+    and owned stores already left such counted references.
+  - Measured, 3 interleaved rounds, main ec13733 against the branch (ed1e518): 15.7 / 13.2 / 16.8 / 17.7 / 18.1 s on
+    1 / 4 / 12 / 16 / 24 threads against 15.5 / 12.9 / 15.1 / 15.9 / 18.2. Output byte-identical on every count.
+    12 and 16 threads 10% faster, 24 (more threads than the machine has) unchanged; more threads than four are still
+    slower than four (check 5 not met). The spinner limit gave most of it (16.2 on 12 threads alone); (4) kept the
+    lexer and parser plain only in part: the profile after it still has the BlendedNode copies' and the lexer's stores
+    waiting, so those containers become members some other way, and the token counts are as before.
+  - Tried and dropped: leaving a just-freed stripe to the thread that gave it back for a while (cache locality of the
+    group's words): shared_group 10-35% slower on 4 to 24 threads.
+  - Left, by measurement the next pieces: the first and last outside reference of a member without the group's lock
+    (a count exchange that the lock's holders must not misread: every reader of a member's count word under the lock,
+    about twenty, the drop check, TopHeld and the holds, would have to see such an exchange or exclude it, a lock per
+    member at least for the count word and the hold's words); and finding what still makes the parser's arrays
+    members (CS2WASM_DROP_STATS's op counts on a threaded build).
