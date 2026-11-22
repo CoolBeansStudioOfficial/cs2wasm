@@ -1132,12 +1132,12 @@ sealed partial class RuntimeGen
                 }
                 return (null, w);
             });
-            // (Rt.ArenaPartInfo: a type's exclusive fields, a nibble each as above, seven at most; bit 28 when they
+            // (Rt.ArenaPartInfo: a type's exclusive fields, a nibble each as above, seven at most; bit 29 for an array of references of one dimension; bit 28 when they
             // cannot be said so; bit 31 when its objects have other slots for members)
             if (rt.ArenaPartInfoIfMade is { } partInfo) EmitIdTable(partInfo, D.TypeById.Count, i =>
             {
                 if (!ar.AnyParts || !visitFns.ContainsKey(i)) return (null, 0);
-                if (D.TypeById[i] is IArrayTypeSymbol pat) return (null, ar.HasCyclicElements(pat) ? int.MinValue : 0);
+                if (D.TypeById[i] is IArrayTypeSymbol pat) return (null, ar.HasCyclicElements(pat) ? int.MinValue | (pat.Rank == 1 && Types.IsRef(pat.ElementType) ? 1 << 29 : 0) : 0);
                 var ex = ar.ExclusiveOffsets(i);
                 var all = ar.CyclicFieldOffsets(i).ToList();
                 int w = all.Any(o => !ex.Contains(o)) ? int.MinValue : 0;

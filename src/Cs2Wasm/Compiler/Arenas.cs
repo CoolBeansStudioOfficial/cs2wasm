@@ -784,7 +784,23 @@ internal sealed partial class Arenas
         [("ArenaLink", 3), ("ArenaUnlink", 3), ("ArenaVisitElement", 1), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
          ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 3), ("ArenaUnlinkFresh", 3), ("ArenaLinkOwned", 3),
          ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3), ("ArenaGrowArray", 4), ("ArenaBeforeFinalizer", 0),
-         ("ArenaPartStore", 3), ("ArenaPartUnstore", 3), ("ArenaVisitPart", 1)];
+         ("ArenaPartStore", 3), ("ArenaPartStoreFresh", 3), ("ArenaPartUnstore", 3), ("ArenaVisitPart", 1)];
+
+    /// <summary>(old, container, slot) -> (): Rt.ArenaPartUnstore, its first question here and not behind a call: no
+    /// old value, nothing to do (the note the store's link left is taken back by the next link: every unlink that
+    /// reads it follows a link that set it).</summary>
+    void PartUnstore(WasmFunction f, List<Instr> body, Instr ins)
+    {
+        int slot = f.Type.Params.Length + f.Locals.Count; f.Locals.Add(ValType.I32);
+        int cont = slot + 1; f.Locals.Add(ValType.I32);
+        int old = slot + 2; f.Locals.Add(ValType.I32);
+        void A(Op op, long imm = 0, object? r = null) => body.Add(new Instr { Op = op, Imm = imm, Ref = r, Pos = ins.Pos });
+        A(Op.LocalSet, slot); A(Op.LocalSet, cont); A(Op.LocalSet, old);
+        A(Op.Block);
+        A(Op.LocalGet, old); A(Op.I32Eqz); A(Op.BrIf, 0);
+        A(Op.LocalGet, old); A(Op.LocalGet, cont); A(Op.LocalGet, slot); A(Op.Call, 0, RuntimeFn("ArenaPartUnstore", 3));
+        A(Op.End);
+    }
 
     /// <summary>Queues the library's arena runtime for compilation (only when some site is cyclic).</summary>
     public void RequestRuntime()
@@ -884,14 +900,18 @@ internal sealed partial class Arenas
                 // exclusive, else the store it would have been; the holder's hold a count, or nothing)
                 if (ph.kind is Kind.PartLink or Kind.PartUnlink)
                 {
-                    if (Enabled && ph.site!.Exclusive) { x.Ref = RuntimeFn(ph.kind == Kind.PartLink ? "ArenaPartStore" : "ArenaPartUnstore", 3); body.Add(x); continue; }
+                    if (Enabled && ph.site!.Exclusive)
+                    {
+                        if (ph.kind == Kind.PartUnlink) { PartUnstore(f, body, ins); continue; }
+                        x.Ref = RuntimeFn(_placeholders[_partFallback[w]].kind == Kind.LinkFresh ? "ArenaPartStoreFresh" : "ArenaPartStore", 3); body.Add(x); continue;
+                    }
                     w = _partFallback[w]; ph = _placeholders[w]; x.Ref = w;
                 }
                 if (ph.kind == Kind.PartHold) { if (Enabled && ph.site!.Exclusive) { x.Ref = D.Rt.Retain; body.Add(x); } continue; }
                 if (ph.kind == Kind.PartUnhold) { if (Enabled && ph.site!.Exclusive) x.Ref = D.Rt.Release; else { x.Op = Op.Drop; x.Ref = null; } body.Add(x); continue; }
                 // (a store into an exclusive site made after the decision, by code the compiler wrote itself: its
                 // value is no part, its old value may be one)
-                if (ph.kind is Kind.Unlink or Kind.UnlinkFresh && Enabled && ph.site!.Exclusive) { x.Ref = RuntimeFn("ArenaPartUnstore", 3); body.Add(x); continue; }
+                if (ph.kind is Kind.Unlink or Kind.UnlinkFresh && Enabled && ph.site!.Exclusive) { PartUnstore(f, body, ins); continue; }
                 if (ph.kind is Kind.LinkFresh or Kind.LinkOwned or Kind.LinkIso && Enabled && ph.site!.Exclusive) { x.Ref = link; body.Add(x); continue; }
                 switch (ph.kind)
                 {

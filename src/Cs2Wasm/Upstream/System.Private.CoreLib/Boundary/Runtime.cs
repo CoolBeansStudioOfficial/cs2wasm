@@ -4115,6 +4115,8 @@ namespace Cs2Wasm.Runtime
         {
             // what the slot held, by its bits before the store (ArenaLink noted them); -1: not known, by the counts
             int bits = -1;
+            // (nothing to let go: only ArenaLink's note is taken back, a part's too, whose slot is the odd one)
+            if (old == 0 && Parts()) { if (t_prevSlot != 0 && (t_prevSlot == slot || t_prevSlot == (slot | 1))) t_prevSlot = 0; return; }
             if (Parts() && container != 0 && IsPart(container)) { slot = slot == 0 ? 1 : slot | 1; container = PartRoot(container); }
             if (slot != 0 && t_prevSlot == slot) { bits = t_prevBits; t_prevSlot = 0; }
             if (old == 0) return;
@@ -4307,11 +4309,36 @@ namespace Cs2Wasm.Runtime
             return ArenaLink(val, container, slot);
         }
 
+        /// <summary>ArenaPartStore for a store into an object only the storing code knows (a field's initializer, a
+        /// constructor's store: Compiler/Arenas.cs, Resolve): the container a plain object that is no part yet, the
+        /// value a new plain object (it becomes the part: one word written) or a pinned one (a list's empty array:
+        /// nothing). Anything else is ArenaPartStore's.</summary>
+        public static int ArenaPartStoreFresh(int val, int container, int slot)
+        {
+            if (val == 0) return ArenaLink(0, container, slot);
+            if (container != 0 && Mem.LoadI32(container) > 0 && Mem.LoadI32(val) > 0 && t_backN == 0 && !ThreadMode())
+            {
+                bool cc = SccOf(Mem.LoadI32(container + 4)) != 0;
+                if (!cc || PL(container, PartWord) == 0)
+                {
+                    if (Mem.LoadI32(val + 8) < 0) { t_prevSlot = slot; t_prevBits = 0; return val; }
+                    if (cc && val != container && SccOf(Mem.LoadI32(val + 4)) != 0 && PL(val, PartWord) == 0)
+                    {
+                        t_prevSlot = slot; t_prevBits = 0;
+                        PS(val, PartWord, container + 1);
+                        return val;
+                    }
+                }
+            }
+            return ArenaPartStore(val, container, slot);
+        }
+
         /// <summary>The old value of an exclusive field after a store: a part of the container is no part any more
         /// (what it holds of the holder's arena becomes its own counted references: code may still refer to it, an
         /// array a list replaced while a method read it), then released; anything else as any store's old value.</summary>
         public static void ArenaPartUnstore(int old, int container, int slot)
         {
+            if (old == 0) { if (t_prevSlot != 0 && (t_prevSlot == slot || t_prevSlot == (slot | 1))) t_prevSlot = 0; return; }
             if (old != 0 && container != 0 && Mem.LoadI32(old) > 0 && SccOf(Mem.LoadI32(old + 4)) != 0 && PL(old, PartWord) == container + 1)
             {
                 t_prevSlot = 0;
@@ -5044,9 +5071,14 @@ namespace Cs2Wasm.Runtime
                         dead = s_visitDead;
                     }
                 }
-                if (NoDestroyByBits() || (fl & Far) != 0) { s_visitDead = dead; s_visitObj = m; ArenaVisitObject(m); dead = s_visitDead; }
+                // (a holder of exclusive parts: its own slots by its bits, below, then its parts' slots, each as an
+                // array's element: Far is the parts' alone where every slot of its own has bits)
+                bool byParts = Parts() && (fl & (Far | Elems)) == Far && !NoDestroyByBits() && PartShape(m);
+                if (!byParts && (NoDestroyByBits() || (fl & Far) != 0)) { s_visitDead = dead; s_visitObj = m; ArenaVisitObject(m); dead = s_visitDead; }
                 else if ((fl & Elems) == 0)
                 {
+                    if (byParts) dead = DyingParts(m, ar, dead);
+
                     // (its linked references are those its bits say: read here, with no visit of the object by its
                     // type, what VisitDying does for each written out)
                     int w = PL(m, 28), cleared = 0;
@@ -5145,6 +5177,78 @@ namespace Cs2Wasm.Runtime
             }
             if (DropStats()) { s_dsKill += t1 - t0; s_dsZero += t2 - t1; s_dsClear += t3 - t2; s_dsFree += Engine.MonotonicNs() - t3; }
             ArenaEmpty(ar);
+        }
+
+        const int PartArray = 1 << 29;
+
+        /// <summary>ArenaDestroyPlain: the member's linked references outside its bits are all in its exclusive
+        /// parts, and those are of the two shapes DyingParts reads: an array of references, or an object without
+        /// slots of its own for members whose parts are such arrays (a list). Else the visit by its type.</summary>
+        static bool PartShape(int m)
+        {
+            int t = Mem.LoadI32(m + 4);
+            int info = ArenaPartInfo(t);
+            if ((info & PartNibbles) == 0 || (info & PartUnknown) != 0) return false;
+            // (every slot of its own has bits)
+            if ((info & PartContent) != 0 && ArenaSlots(t) == 0) return false;
+            for (int w = info & PartNibbles; w != 0; w = (int)((uint)w >> 4))
+            {
+                int p = Mem.LoadI32(m + 8 + ((w & 15) << 2));
+                if (p == 0 || Mem.LoadI32(p) <= 0 || !PartW(p)) continue;
+                int pi = ArenaPartInfo(Mem.LoadI32(p + 4));
+                if ((pi & PartArray) != 0) continue;
+                if ((pi & (PartUnknown | PartContent)) != 0) return false;
+                for (int v = pi & PartNibbles; v != 0; v = (int)((uint)v >> 4))
+                {
+                    int q = Mem.LoadI32(p + 8 + ((v & 15) << 2));
+                    if (q == 0 || Mem.LoadI32(q) <= 0 || !PartW(q)) continue;
+                    if ((ArenaPartInfo(Mem.LoadI32(q + 4)) & PartArray) == 0) return false;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>ArenaDestroyPlain, a dying member of PartShape: each reference in its parts' arrays as an
+        /// array's own element is taken there. Returns the list of the dying.</summary>
+        static int DyingParts(int m, int ar, int dead)
+        {
+            for (int w = ArenaPartInfo(Mem.LoadI32(m + 4)) & PartNibbles; w != 0; w = (int)((uint)w >> 4))
+            {
+                int p = Mem.LoadI32(m + 8 + ((w & 15) << 2));
+                if (p == 0 || Mem.LoadI32(p) <= 0 || !PartW(p)) continue;
+                int pi = ArenaPartInfo(Mem.LoadI32(p + 4));
+                if ((pi & PartArray) != 0) { dead = DyingRange(m, p, ar, dead); continue; }
+                for (int v = pi & PartNibbles; v != 0; v = (int)((uint)v >> 4))
+                {
+                    int q = Mem.LoadI32(p + 8 + ((v & 15) << 2));
+                    if (q == 0 || Mem.LoadI32(q) <= 0 || !PartW(q)) continue;
+                    dead = DyingRange(m, q, ar, dead);
+                }
+            }
+            return dead;
+        }
+
+        /// <summary>The elements of an array of references that is a part of the dying member m.</summary>
+        static int DyingRange(int m, int arr, int ar, int dead)
+        {
+            int slot = arr + 16, end = slot + 4 * Mem.LoadI32(arr + 12);
+            for (; slot != end; slot += 4)
+            {
+                int child = Mem.LoadI32(slot);
+                if (child == 0 || Mem.LoadI32(child) >= -1) continue;
+                if (PL(child, 4) == 0 || ArenaOf(child) != ar) continue;
+                Mem.StoreI32(slot, 0);
+                int left = PL(child, 4) - 1;
+                PS(child, 4, left);
+                if (left == 0 && Mem.LoadI32(child) == -2)
+                {
+                    int cf = PL(child, 24);
+                    if ((cf & (Dying | Queued)) == 0) { PS(child, 24, cf | Dying); ArenaTakeOut(ar, child); PS(child, 12, dead); dead = child; }
+                    continue;
+                }
+                dead = DyingSurvivor(m, child, dead);
+            }
+            return dead;
         }
 
         /// <summary>CS2WASM_NO_DESTROY_BY_BITS=1 (at compile time): ArenaDestroyPlain visits each dying member by its
