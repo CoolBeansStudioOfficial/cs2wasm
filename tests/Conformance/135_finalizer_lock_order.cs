@@ -9,7 +9,11 @@ using System.Threading.Tasks;
 static class P
 {
     static async Task<int> V(int v, int ms = 1) { await Task.Delay(ms); return v; }
-    static async Task<int> R() { var first = await await Task.WhenAny(V(100, 50), V(200, 1)); return first + await V(7); }
+    // (the two tasks of WhenAny give the same value: which of them is first is not .NET's to promise. When the timer
+    // thread comes 49 ms late, both timers are due in one pass of TimerQueue.FireNextTimers, which hands the second
+    // to the pool before it fires the first itself (Timer.cs, timerToFireOnThisThread), and either callback may run
+    // first: under load the sum was 100 less, here as there)
+    static async Task<int> R() { var first = await await Task.WhenAny(V(200, 50), V(200, 1)); return first + await V(7); }
     [UnmanagedCallersOnly(EntryPoint = "main")]
     static void Main()
     {

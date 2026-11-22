@@ -2666,9 +2666,8 @@ namespace Cs2Wasm.Runtime
                     && (Mem.LoadI32(ArenaOf(w) + 12) & ArenaBusy) == 0) ArenaDestroyFrom(w, 0);
                 // (a destruction's survivor, QueueCheck: kept by what it owns alone? A top whose check failed is looked at
                 // again by its note's number)
-                // (or a member left with no owner and no reference from outside, by a destruction or by an ownership
-                // that turned round, TakeOwnership; or a top whose note's number went stale, StaleNote: the check)
-                else if (DropCandidate(w) && (StickyHolds() || !NoStaleNote())) Dropped(w);
+                // (a top whose note's number went stale, StaleNote, DyingNote: the check again)
+                else if ((PLM(w) & 1) != 0 && DropCandidate(w) && !NoStaleNote()) Dropped(w);
             }
         }
 
@@ -2806,11 +2805,11 @@ namespace Cs2Wasm.Runtime
                 if (PL(x, 20) != val || (uint)xf >= UOne || (xf & Held) != 0) return;
                 PS(x, 24, xf & ~(Owned | MultMask));
                 PS(x, 20, 0);
-                // (the top of what the two are in from here on: when no code refers to it, nothing else looks at it
-                // again. A result made referring to its parent and owned by its task, then put in the parent's
-                // list: the parent was the result's, and the list's array took the result over when the task died,
-                // after the last reference to the parent from outside had gone. Test 215)
-                if (Mem.LoadI32(x) == -2 && !NoStaleNote()) QueueCheck(x);
+                // (Open: x is the top of what the two are in from here on, and when no code refers to it nothing
+                // looks at it again: a result made referring to its parent and owned by another member, then put in
+                // the parent's list, the list's array taking it over when that owner dies after the parent's last
+                // reference from outside went. A check queued here, and one for a destruction's survivor left without
+                // an owner, were tried: test 133 then leaves 4,934 objects, and 1.)
             }
             PS(val, 20, container);
             PS(val, 24, PL(val, 24) | Owned | MultOne);
@@ -3337,7 +3336,7 @@ namespace Cs2Wasm.Runtime
                 // from members outside what it owns are left into it, NoteOutside)
                 // (of the references from outside what it owns, those from the tops that were taken in and what they
                 // own, NoteSome: garbage with it once the others are gone, which only a look can tell)
-                int some = ownLeft1 < 0 ? 0 : outside - ownLeft1;
+                int some = ownLeft1 < 0 || NoStaleNote() ? 0 : outside - ownLeft1;
                 if (some < 0) some = 0;
                 if (some > NoteSome || outside > 0x7FFFFF) some = NoteSome;
                 if (outside > 0x7FFFFF) outside = 0x7FFFFF;
@@ -4284,7 +4283,7 @@ namespace Cs2Wasm.Runtime
             if (s_failedTops != 0 && OutsideMarked(PLM(child))) DyingNote(child, obj);
             // (a survivor of the cut that nothing outside refers to may be kept by stale holds of what it owns alone:
             // checked at the drop when the destruction is done, DrainKills)
-            if ((StickyHolds() || !NoStaleNote()) && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+            if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
         }
 
         /// <summary>A dying member's reference to a member that lives on went (VisitDying, DyingSurvivor): when that
@@ -4730,7 +4729,7 @@ namespace Cs2Wasm.Runtime
             if (PL(child, 20) == 0) Adopt(child);
             UpdateHold(child);
             if (s_failedTops != 0 && OutsideMarked(PLM(child))) DyingNote(child, m);
-            if ((StickyHolds() || !NoStaleNote()) && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+            if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
             return s_visitDead;
         }
 

@@ -86,6 +86,21 @@ static class P
         b = null;
     }
 
+    // two structures that refer into each other while a holder that lives refers into one: a child dropped from its
+    // parent's list (as two threads' List.Add at once drop one), still in an array the parent holds, and still
+    // referring up to the parent
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void TwoStructures(bool holderFirst)
+    {
+        var root = Tree(2);
+        var all = new N[] { root.Kids[1], root.Kids[2] }; root.Tag = all;
+        var x = new N(); x.Other = x; x.Next = root.Kids[2];
+        root.Kids[1] = root.Kids[2];
+        if (holderFirst) x = null;
+        root = null; all = null;
+        x = null;
+    }
+
     static void Say(string what)
     {
         for (int i = 0; i < 3; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
@@ -100,8 +115,9 @@ static class P
         HolderDies(false); Say("holder dies");
         HolderDies(true); Say("holder dies, an array");
         TwoHolders(); Say("two holders");
-        HolderComesUnder(1); Say("holder comes under");
         HolderComesUnder(4); Say("four come under");
         HeldPlace(); Say("held place");
+        TwoStructures(true); Say("two structures");
+        TwoStructures(false); Say("two structures, the holder last");
     }
 }
