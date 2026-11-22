@@ -958,3 +958,10 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   .NET-hosted one's was the output's name (tools/selfhost-switch.sh now asks tools/selfdet.mjs). On the homelab tools/selfdet.mjs: self = net, byte for byte (27,591 bytes). **Not
   done:** the free path taken apart (6.6 ns an object), TryInsert's counts, the removes and the queue, the queue's
   growth as a move, `Join`: collections' median is where round 2 left it (1.07x to 1.08x). On the homelab at 0aef607 (9db608e's code and the script): suite 220/220 checked and 219/220 as shipped (088's timer line; alone it passes both ways); at 9db608e 218/220 checked and 219/220 as shipped: 072_http in both (the oracle's own connection refused, the port taken by another run) and 131 checked (5 left, the async kind that differs under load; here it passes both ways with the keep and without, and the second run did not show it); stress, 200 loaded runs a mode: 222 the same in every run; the self-hosted compiler with and without the keep: the same module (27,579 bytes), 9.4 to 10.0 s, peak memory 344 MB. Hello world 27,642 bytes on this base. Not measured this round: frames.mjs and bench.mjs (no change to any scene's code: none makes such a call).
+- 2026-11-23, claude/colstr-3 merged (main a15be27 with this entry after it; the entry above: a reference into a
+  collection's storage keeps the storage), checked again before the merge. Homelab at a15be27: suite 220/221 checked
+  and as shipped, the one 088's timer line in both (the homelab shared with four sessions); stress, 200 loaded runs
+  a mode: 139, 199, 220, 222 the same in every run, 127 differed in 6 of 400; the self-hosted compiler's hello
+  world byte for byte the .NET-hosted compiler's (27,584 bytes), 14.4 to 15.3 s against 14.6 to 16.2 before on the
+  loaded homelab (NativeAOT-LLVM's 6.1 to 6.3). Not covered yet, by its session's report: a span or ref returned up
+  through two frames (one level of wrapper is); given to the session on the free path.
