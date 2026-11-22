@@ -734,7 +734,7 @@ namespace Cs2Wasm.Runtime
         // (and, with it, how often each path of the arena operations runs: OpStat's numbers, printed with DsPrint)
         static int s_opStats;
         const int OpN = 40;
-        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,link-pinned,give-back-early";
+        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,give-back-early,link-pinned";
         // (a constant test where it is asked, so that without the diagnosis nothing is left of it, not even a call)
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static void OpStat(int k) { if (DropStats()) OpStatCount(k); }
@@ -3285,7 +3285,7 @@ namespace Cs2Wasm.Runtime
             // constructor: once for each entity of the scene tree of tools/frames.mjs, 19,531 a build.)
             if (can && !ThreadMode() && !NoPinnedSkip() && t_backN == 0 && Mem.LoadI32(container) > 0 && Mem.LoadI32(val) > 0 && Mem.LoadI32(val + 8) < 0)
             {
-                OpStat(32);
+                OpStat(33);
                 t_prevSlot = slot; t_prevBits = slot != 0 ? 0 : -1;
                 return val;
             }
@@ -3473,7 +3473,7 @@ namespace Cs2Wasm.Runtime
                 if (joined) Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
                 // (given back here, where the release after the store would take the count off and do nothing else:
                 // EarlyGiveBack)
-                else if (EarlyGiveBack(val, container, i, ar)) { OpStat(33); Mem.StoreI32(ar, Mem.LoadI32(ar) - 1); }
+                else if (EarlyGiveBack(val, container, i, ar)) { OpStat(32);Mem.StoreI32(ar, Mem.LoadI32(ar) - 1); }
                 else { Atomic.CountAdd32(ref Mem.RefI32(val), -1); GiveBackLater(val); later = true; }
             }
             // (fresh: the value was a plain object until this store made it a member. No member is owned by a plain

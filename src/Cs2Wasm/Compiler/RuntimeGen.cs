@@ -898,12 +898,6 @@ sealed partial class RuntimeGen
         var copyElemFns = new Dictionary<int, WasmFunction>();
         var clearElemFns = new Dictionary<int, WasmFunction>();
         var visit = ar.RuntimeFn("ArenaVisit", 1);
-        // (a slot that holds null is not visited: Rt.ArenaVisit does nothing for one in any mode, after a call, the
-        // load and the test of its mode. A list's array has as many empty elements as items: the four of the array
-        // every list starts with are visited as it joins, 15,624 calls a build in the scene tree of tools/frames.mjs.
-        // Not with threads (the walk of a link's lock, WalkVisit, is asked first) nor under the report, which
-        // read the slot their own way. CS2WASM_NO_NULL_VISIT_SKIP=1: every slot is visited.)
-        bool skipNull = !D.ThreadMode && Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_VISIT_SKIP") != "1" && Environment.GetEnvironmentVariable("CS2WASM_ARENA_REPORT") != "1";
         foreach (var id in ar.CycleTypes)
         {
             bool hasFin = !D.DisplayById.ContainsKey(id) && D.TypeById[id] is INamedTypeSymbol { TypeKind: TypeKind.Class } ft && FindFinalizer(ft) != null;
@@ -934,24 +928,14 @@ sealed partial class RuntimeGen
                     ve.Get(i); ve.Get(0); ve.Load(Op.I32Load, 12); ve.I32(esize); ve.Op(Op.I32Mul); ve.Op(Op.I32Add); ve.Set(end);
                     var exit = ve.Block(); var top = ve.Loop();
                     ve.Get(i); ve.Get(end); ve.Op(Op.I32GeU); ve.BrIf(exit);
-                    foreach (var (off, _) in leaves)
-                    {
-                        if (skipNull) { ve.Get(i); ve.Load(Op.I32Load, off); ve.If(); }
-                        ve.Get(i); if (off != 0) { ve.I32(off); ve.Op(Op.I32Add); } ve.Call(ar.RuntimeFn("ArenaVisitElement", 1));
-                        if (skipNull) ve.End();
-                    }
+                    foreach (var (off, _) in leaves) { ve.Get(i); if (off != 0) { ve.I32(off); ve.Op(Op.I32Add); } ve.Call(ar.RuntimeFn("ArenaVisitElement", 1)); }
                     ve.Get(i); ve.I32(esize); ve.Op(Op.I32Add); ve.Set(i);
                     ve.Br(top);
                     ve.End(); ve.End();
                 }
             }
             else
-                foreach (var off in ar.CyclicFieldOffsets(id))
-                {
-                    if (skipNull) { ve.Get(0); ve.Load(Op.I32Load, off); ve.If(); }
-                    ve.Get(0); ve.I32(off); ve.Op(Op.I32Add); ve.Call(visit);
-                    if (skipNull) ve.End();
-                }
+                foreach (var off in ar.CyclicFieldOffsets(id)) { ve.Get(0); ve.I32(off); ve.Op(Op.I32Add); ve.Call(visit); }
             visitFns[id] = v;
             // whether an offset into the object is one of those slots (a store that has only the slot's address)
             var sl = D.Module.AddFunction("arena.is_slot " + id, new FuncType([ValType.I32, ValType.I32], [ValType.I32]));
