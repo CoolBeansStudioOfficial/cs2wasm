@@ -3051,7 +3051,7 @@ namespace Cs2Wasm.Runtime
         public static int ArenaGrowArray(int container, int old, int to, int n)
         {
             if (ThreadMode()) return 0;
-            if (Parts() && old != 0 && to != 0 && n > 0 && Mem.LoadI32(old) == 1 && PL(old, PartWord) == container) return PartGrowArray(container, old, to, n);
+            if (Parts() && old != 0 && to != 0 && n > 0 && Mem.LoadI32(old) == 1 && PL(old, PartWord) == container + 1) return PartGrowArray(container, old, to, n);
             if (old == 0 || to == 0 || n <= 0 || Mem.LoadI32(old) != -2 || Mem.LoadI32(to) != 1 || Mem.LoadI32(container) >= -1) return 0;
             int of = PL(old, 24);
             if ((of & (Elems | Owned | MultMask | Dying | Queued)) != (Elems | Owned | MultOne) || PL(old, 20) != container) return 0;
@@ -3502,7 +3502,7 @@ namespace Cs2Wasm.Runtime
             }
             bool can = val != 0 && CanLink(val, container);
             // (a part stored where no proof put it: a counted reference, it joins nothing)
-            bool partVal = can && Parts() && Mem.LoadI32(val) > 0 && PL(val, PartWord) != 0;
+            bool partVal = can && Parts() && Mem.LoadI32(val) > 0 && PartW(val);
             if (!can)
             {
                 int i0 = SlotIndex(container, slot), cw = Mem.LoadI32(container);
@@ -3604,7 +3604,7 @@ namespace Cs2Wasm.Runtime
             if (Mem.LoadI32(container) >= -1) return false;
             if (!can) { int g = SccOf(Mem.LoadI32(val + 4)); if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return false; }
             if (((PL(val, 24) | PL(container, 24)) & Dying) != 0 || Mem.LoadI32(val + 8) < 0) return false;
-            if (PL(val, PartWord) != 0) return false;
+            if (PartW(val)) return false;
             int ar = ArenaOf(container);
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return false;
             OpStat(29);
@@ -3676,7 +3676,7 @@ namespace Cs2Wasm.Runtime
             int d = ArenaSlots(Mem.LoadI32(val + 4));
             if (d == 0) return false;
             // (its exclusive parts hold nothing: else the visit, which goes through them)
-            if (Parts() && (PL(val, PartWord) != 0 || !PartsEmpty(val))) return false;
+            if (Parts() && (PartW(val) || !PartsEmpty(val))) return false;
             int g = SccOf(Mem.LoadI32(val + 4));
             // what the slots hold, before anything is written
             int e = 0, up = 0;
@@ -3692,7 +3692,7 @@ namespace Cs2Wasm.Runtime
                     int ct = Mem.LoadI32(child + 4);
                     if (SccOf(ct) != g) continue;
                     if (PL(child, 24) != 0) return false;
-                    if (Parts() && (PL(child, PartWord) != 0 || !PartsEmpty(child))) return false;
+                    if (Parts() && (PartW(child) || !PartsEmpty(child))) return false;
                     if (cc == 1)
                     {
                         // (a new object of its own: its slots hold nothing to link)
@@ -3865,7 +3865,7 @@ namespace Cs2Wasm.Runtime
             int g = SccOf(Mem.LoadI32(val + 4));
             if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return val;
             // (an exclusive part, a plain object for good: a counted reference; no proof stores one here)
-            if (cv > 0 && PL(val, PartWord) != 0) return val;
+            if (cv > 0 && PartW(val)) return val;
             // (one whose finalizer is running, or that waits for the others': a counted reference, FinPhase)
             if (((PL(val, 24) | PL(container, 24)) & Dying) != 0) return val;
             if (ca > 0 && Mem.LoadI32(container + 8) < 0) return val; // pinned
@@ -4217,7 +4217,7 @@ namespace Cs2Wasm.Runtime
         // the receiver of calls that keep nothing, never stored elsewhere, returned or captured) is no member of
         // its own. The part stays a plain object for good: its count is the field's (and code's, for the length of
         // a call), it has no place on a ring and no owner. It names its holder in a word a plain object has no
-        // use for (PartWord, a member's ring word), and what its slots hold is the holder's:
+        // use for (PartWord, a member's arena word: the holder's address and one, where an arena's record is even), and what its slots hold is the holder's:
         // a store into a part is a store into the holder (ArenaLink and ArenaUnlinkOld go from the part to the
         // holder first, through a part of a part), in a slot the holder keeps no bits for, as one past its
         // sixteenth word (Far): a member in it is a counted inside reference of the holder, owned by the holder,
@@ -4235,16 +4235,20 @@ namespace Cs2Wasm.Runtime
         /// seven at most), PartUnknown when they cannot be said so, PartContent when an object of the type has
         /// other slots that can hold a member (a field that is not exclusive, an array's elements).</summary>
         [Intrinsic] static extern int ArenaPartInfo(int typeId);
-        const int PartWord = 8, PartUnknown = 1 << 28, PartContent = int.MinValue, PartNibbles = 0x0FFFFFFF;
+        const int PartWord = 16, PartUnknown = 1 << 28, PartContent = int.MinValue, PartNibbles = 0x0FFFFFFF;
 
         /// <summary>An exclusive part: a plain object of a cycle-capable type (so with the words) that names a holder.</summary>
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-        static bool IsPart(int o) => Mem.LoadI32(o) > 0 && SccOf(Mem.LoadI32(o + 4)) != 0 && Mem.LoadI32(o - PartWord) != 0;
+        static bool IsPart(int o) => Mem.LoadI32(o) > 0 && SccOf(Mem.LoadI32(o + 4)) != 0 && (Mem.LoadI32(o - PartWord) & 1) != 0;
+
+        /// <summary>The word names a holder (the holder's address and one: an arena's record is even).</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static bool PartW(int o) => (Mem.LoadI32(o - PartWord) & 1) != 0;
 
         /// <summary>The holder of a part that is no part itself.</summary>
         static int PartRoot(int o)
         {
-            do { o = PL(o, PartWord); } while (Mem.LoadI32(o) > 0 && PL(o, PartWord) != 0);
+            do { o = PL(o, PartWord) - 1; } while (Mem.LoadI32(o) > 0 && PartW(o));
             return o;
         }
 
@@ -4282,9 +4286,9 @@ namespace Cs2Wasm.Runtime
         public static int ArenaPartStore(int val, int container, int slot)
         {
             if (container != 0 && val != 0 && !ThreadMode() && Mem.LoadI32(val) > 0 && Mem.LoadI32(val + 8) >= 0
-                && SccOf(Mem.LoadI32(val + 4)) != 0 && SccOf(Mem.LoadI32(container + 4)) != 0 && PL(val, PartWord) == 0 && val != container)
+                && SccOf(Mem.LoadI32(val + 4)) != 0 && SccOf(Mem.LoadI32(container + 4)) != 0 && !PartW(val) && val != container)
             {
-                bool nested = Mem.LoadI32(container) > 0 && PL(container, PartWord) != 0;
+                bool nested = Mem.LoadI32(container) > 0 && PartW(container);
                 int root = nested ? PartRoot(container) : container;
                 int rc = Mem.LoadI32(root);
                 if (rc > 0 || rc < -1)
@@ -4295,7 +4299,7 @@ namespace Cs2Wasm.Runtime
                     if (nested) t_prevBits = -1;
                     else if (rc < -1) { int i = SlotIndex(container, slot); t_prevBits = i >= 0 ? SlotBits(container, i) : -1; if (i >= 0) SetSlotBits(container, i, 0); }
                     else t_prevBits = 0;
-                    PS(val, PartWord, container);
+                    PS(val, PartWord, container + 1);
                     if (rc < -1) PartLinkContents(val, root);
                     return val;
                 }
@@ -4308,7 +4312,7 @@ namespace Cs2Wasm.Runtime
         /// array a list replaced while a method read it), then released; anything else as any store's old value.</summary>
         public static void ArenaPartUnstore(int old, int container, int slot)
         {
-            if (old != 0 && container != 0 && Mem.LoadI32(old) > 0 && SccOf(Mem.LoadI32(old + 4)) != 0 && PL(old, PartWord) == container)
+            if (old != 0 && container != 0 && Mem.LoadI32(old) > 0 && SccOf(Mem.LoadI32(old + 4)) != 0 && PL(old, PartWord) == container + 1)
             {
                 t_prevSlot = 0;
                 PartDetach(old, container);
@@ -4339,7 +4343,7 @@ namespace Cs2Wasm.Runtime
         static void PartDetach(int old, int container)
         {
             int root = container;
-            if (Mem.LoadI32(root) > 0 && PL(root, PartWord) != 0) root = PartRoot(root);
+            if (Mem.LoadI32(root) > 0 && PartW(root)) root = PartRoot(root);
             if (Mem.LoadI32(root) < -1)
             {
                 RuntimeLock();
@@ -4372,7 +4376,7 @@ namespace Cs2Wasm.Runtime
         public static void ArenaVisitPart(int slot)
         {
             int p = Mem.LoadI32(slot);
-            if (p != 0 && Mem.LoadI32(p) > 0 && Mem.LoadI32(p + 8) >= 0 && SccOf(Mem.LoadI32(p + 4)) != 0 && PL(p, PartWord) != 0)
+            if (p != 0 && Mem.LoadI32(p) > 0 && Mem.LoadI32(p + 8) >= 0 && SccOf(Mem.LoadI32(p + 4)) != 0 && PartW(p))
             {
                 int e = s_visitElem;
                 s_visitElem = 2;
@@ -4393,7 +4397,7 @@ namespace Cs2Wasm.Runtime
         static int PartGrowArray(int list, int old, int to, int n)
         {
             if ((s_destroying | s_trial | s_joinVisit | s_visitElem | s_linkN | s_killN | t_backN) != 0) return 0;
-            if (Mem.LoadI32(to) != 1 || Mem.LoadI32(to + 8) < 0 || Mem.LoadI32(old + 4) != Mem.LoadI32(to + 4) || PL(to, PartWord) != 0 || PL(to, 24) != 0) return 0;
+            if (Mem.LoadI32(to) != 1 || Mem.LoadI32(to + 8) < 0 || Mem.LoadI32(old + 4) != Mem.LoadI32(to + 4) || PartW(to) || PL(to, 24) != 0) return 0;
             if (ArrayRankAt(to) != 1 || ArrayElementSizeAt(to) != 4) return 0;
             int on = Mem.LoadI32(old + 12);
             if (n > on || n > Mem.LoadI32(to + 12)) return 0;
@@ -4410,7 +4414,7 @@ namespace Cs2Wasm.Runtime
             for (int k = 0; k < n; k++) if (Mem.LoadI32(d + 4 * k) != 0) return 0;
             for (int k = n; k < on; k++) if (Mem.LoadI32(s + 4 * k) != 0) return 0;
             for (int k = 0; k < n; k++) { Mem.StoreI32(d + 4 * k, Mem.LoadI32(s + 4 * k)); Mem.StoreI32(s + 4 * k, 0); }
-            PS(to, PartWord, list);
+            PS(to, PartWord, list + 1);
             // (the field's count, beside the caller's local's)
             Mem.StoreI32(to, 2);
             Mem.StoreI32(slot, to);
