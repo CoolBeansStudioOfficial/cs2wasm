@@ -1194,6 +1194,15 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     on the homelab (shared with other sessions; 6 interleaved rounds, the first three quiet): main 10.47, 9.93, 10.32 s,
     the branch 10.08, 9.96, 9.76 s, NativeAOT-LLVM 4.30, 4.18, 4.38 s (2.39x to 2.32x); the three loaded rounds even.
     Module 70,235,738 to 70,355,112 bytes, peak memory the same (306.0 MB).
+  - Merged with main fbe7688 (aa47231), on the homelab: tools/roslyn-bind-bench.sh, 5 interleaved rounds, medians:
+    main 6,843 ms (parse 4,157, bind 2,136), the branch 6,713 ms (parse 4,036, bind 2,081): 0.981 of main, 2.16x
+    NativeAOT-LLVM's 3,104 against 2.20x (the bench's resolution is about 2%). bench.mjs 0.92x NativeAOT, 16.0 MB
+    against 71.3; micro --baseline 1.70x; suite 197/197 checked and as shipped (the homelab has no Godot sources);
+    hello world 27,067 (main) to 27,109 bytes.
+  - Where the counts are, by the code that runs them (the self-hosted compiler, hello world): two thirds in the lexer
+    and parser (SyntaxParser, Blender, Lexer, the token caches), about 8% in symbols, 1% in the binder and bound
+    nodes. So the binder's 4x against NativeAOT (the bind bench) is not its count operations; what is left of the
+    counts is the parser's, where its parse phase is 1.8x.
   - Left, by size: the array clears of struct elements (a runtime matter: the zero-skipping range release, or knowing
     the builder's count), struct copies into fields (moves where the source dies), receivers that are fields of a
     struct `this` (`SyntaxListBuilder<T>.Add` forwarding to its `_builder`: a struct's field can be overwritten by
