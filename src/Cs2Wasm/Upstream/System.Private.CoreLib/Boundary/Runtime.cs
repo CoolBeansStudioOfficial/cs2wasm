@@ -3575,9 +3575,11 @@ namespace Cs2Wasm.Runtime
         /// Nothing waits in ArenaJoin's list after either, so no visit follows. False, nothing written, for
         /// anything else: a slot that holds another kind of reference, a type whose slots its word does not say
         /// (ArenaSlots), a container whose arena is busy or merged, threads: JoinOwned's way then.
-        /// (By tools/tree-build.cs and a program of the parts, on the desk machine: a leaf with its list and its
-        /// parent field 48 ns by the general way for 10 ns of allocation, 12,500 of a build's 19,531 entities;
-        /// a node with its first leaf 256 ns, 3,125 a build.)</summary>
+        /// (By a program of the parts, on the desk machine: a leaf with its list and its parent field, put into a
+        /// list that has room, 49 ns by the general way, 10 of them its two allocations, and 38 here: 12,500 of
+        /// the 19,531 entities of a build of the scene tree of tools/frames.mjs; a node with its first leaf and
+        /// their lists 256 ns and 205: 2,500 a build, the 625 whose own parent is a plain object still go the
+        /// general way.)</summary>
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static bool JoinFresh(int val, int container, int slot)
         {
