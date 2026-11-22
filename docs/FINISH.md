@@ -26,7 +26,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 |---|---|---|---|
 | 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 180/180 | all pass, no `known-gap` |
 | 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (stream E's tests); open: reflection on compiler-made methods (lambdas, state machines); .NET's own library frames (not reproducible from source) | none |
-| 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20) | none in 200 loaded runs |
+| 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20). 127: none in 200 loaded runs, checked and as shipped (was 8-15 leaking of 200: two tops whose trees refer into each other; fixed 2026-11-21, test 187) | none in 200 loaded runs |
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
@@ -392,3 +392,16 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   not met: past four threads still slower than four. What waits is the parse: the lexer's and parser's stores and
   cached tokens' first and last outside references on the one group. Suite at ed1e518 196/196 checked and as shipped on the homelab (198/198 here at 0fcc4fa); tests
   139 (200 runs), 147, 149 under stress. docs/AUDIT.md, "Threads past four".
+- 2026-11-21, test 127's leak (`async 5` / `pending 1`, 8-15 of 200 loaded runs): one garbage structure with two
+  tops whose trees refer into each other (a pending TaskCompletionSource owns the root and a WhenAll array; the
+  array refers to a task result, a top of its own, whose `Parent` refers to the root), so each top's check at the
+  drop failed by the other's reference. `Rt.Dropped` now takes in, after what the top owns, the tops it refers to
+  directly that no code refers to and nothing owns, with what they own, and stops at the first member under one of
+  them that code refers to; on a failure by an outside reference it checks again by what the top owns alone (the
+  list's first part). `CS2WASM_NO_TAKE_IN=1` the old check, `CS2WASM_ARENA_REPORT=1` what is left at GC.Collect
+  (both at compile time). Test 187. 127: none in 200 loaded runs, checked and as shipped. On main 1191d18: suite
+  199/199 both modes; hello world 27,297 bytes (unchanged); self-hosted compiler (no threads, homelab, 8 interleaved
+  rounds) 9.54 s against main's 9.46 s (+0.8%, about the noise), memory the same (306.0 MB), output byte-identical.
+  Rebased on 047b2b7 (K round 5): hello world 27,067 bytes (main's), suite on the homelab 197/197 checked and as
+  shipped (no Godot there); on 78eb489, hello world 27,067 bytes and 127, 187, 133 pass both modes. Open: an
+  outside-kind note's number goes stale when a referring member is adopted into the top's own tree (docs/AUDIT.md).
