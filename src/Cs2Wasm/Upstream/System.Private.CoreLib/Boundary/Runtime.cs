@@ -2370,14 +2370,46 @@ namespace Cs2Wasm.Runtime
             for (int q = 0; q < s_reevN; q++)
             {
                 int o = Mem.LoadI32(s_reevQ + 8 * q), v = Mem.LoadI32(s_reevQ + 8 * q + 4);
+                if (o == 0) continue;
                 if (Mem.LoadI32(o) >= -1 || Mem.LoadI32(v) >= -1 || ((PL(o, 24) | PL(v, 24)) & Dying) != 0) continue;
                 if (PL(v, 20) != 0) { if (PL(o, 20) != 0) ReevaluateWaiting(o, v); continue; }
                 if (PL(o, 20) != 0 && OnChain(o, v)) { ReevaluateWaiting(o, v); continue; }
+                if (PL(o, 20) != 0 && !NoWaitingTop() && WaitingTop(q, o, v)) { ReevaluateWaiting(o, v); continue; }
                 if (PLW(v) == o) PSW(v, 0);
                 TakeOwnership(v, o);
             }
             s_reevN = 0;
             s_waitSlot = 0;
+        }
+
+        /// <summary>CS2WASM_NO_WAITING_TOP=1 (at compile time): LinkWaiting takes its pairs strictly in their order.</summary>
+        [Intrinsic] static extern bool NoWaitingTop();
+
+        /// <summary>LinkWaiting, a pair (o, v) that would make o the owner of v: when v itself waits, further down the
+        /// list, to own the member at the top of o's chain, that pair is settled first; true when v is then above
+        /// o (o's reference to it is an up-reference, the caller's Reevaluate). A node's list that code still
+        /// refers to while the node's first child is put into it (`e.Kids.Add(Make(e))` where the list is counted
+        /// across the call: any program with a second place that stores the field, which ends the borrow) waits
+        /// for its owner as the node does, and the pairs are (child, node), (node, list) in the order of the
+        /// visits. Taken in that order the child, whose chain ends at the list, nothing's yet, became the owner of
+        /// the node, and the node's own slot an up-reference to its list: every node of the tree hung below its
+        /// first child, the list on top, kept by holds alone; a subtree stored over was then never destroyed
+        /// before its tree went (tools/tree-assign.cs: 121, 161, 201 nodes for .NET's 121, 121, 121).</summary>
+        static bool WaitingTop(int q, int o, int v)
+        {
+            int t = o;
+            for (int k = 0; (PL(t, 24) & Owned) != 0; t = PL(t, 20)) if (++k > ChainMax) return false;
+            if (t == v || PL(t, 20) != 0 || Mem.LoadI32(t) >= -1 || (PL(t, 24) & Dying) != 0) return false;
+            for (int r = q + 1; r < s_reevN; r++)
+            {
+                if (Mem.LoadI32(s_reevQ + 8 * r) != v || Mem.LoadI32(s_reevQ + 8 * r + 4) != t) continue;
+                // (that pair, as its turn would take it: v has no owner and t none, so v owns t)
+                Mem.StoreI32(s_reevQ + 8 * r, 0);
+                if (PLW(t) == v) PSW(t, 0);
+                TakeOwnership(t, v);
+                return PL(t, 20) == v && OnChain(o, v);
+            }
+            return false;
         }
 
         // (the slot of the store under way whose value was left to a waiting owner, LinkMembers, with its object and

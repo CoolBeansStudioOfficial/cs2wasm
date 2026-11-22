@@ -910,3 +910,27 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   on main too, not fixed:** a Span over a List's items or a `ref` to a dictionary's value held across a growth
   reads the freed array (as shipped the bytes are still there; a checked build traps). Tests 213, 214, 220, 221.
   On the homelab at 11b6497 (the last commit that changes code): suite 214/215 checked (088's timer line; alone it passes both ways) and 215/215 as shipped; at c3c4867, 215/215 both ways; stress, 200 loaded runs a mode: 213, 214, 220 and 221 the same in every run; the self-hosted compiler (tools/selfhost-switch.sh, which now compiles test 145's hello world: its own one-line program was top-level statements, an error in a library, and no module was ever written, on main too) with and without the round's three switches: the same module from both (27,393 bytes), 9.06 to 9.18 s as it is and 9.07 to 9.30 switched, peak memory 344 MB both. The module differs from the one the compiler run by .NET writes for the same file at byte 24,844 (a comparison added to the script this round, each given the file under another path: not followed, and not known for main).
+- 2026-11-22 to 23, the tree's build, round 7 (branch claude/tree-build-7, from claude/round-6b 8022fbc; AUDIT
+  A3.5, "The build, round 7"; not merged when this was written). **Fixed: a program that stores a node's list of
+  children in a second place, or holds the list by a local or a static across the Add, kept every subtree stored
+  over until its tree went** (tools/tree-assign.cs `121 161 201` for .NET's `121 121 121`; a leak in any game that
+  resets a node's children). Cause: the list, counted across `e.Kids.Add(Tree(e, ..))`, waits for its owner as the
+  node does when the first child joins, and Rt.LinkWaiting took (child, node) before (node, list): the child
+  became the node's owner and the list the top of the structure. `Rt.WaitingTop`
+  (`CS2WASM_NO_WAITING_TOP=1`) settles (node, list) first; test 199 fails without it. Measured for the rest of the
+  round's list, nothing built: the scene tree with an array of the node's own in place of the list (one member
+  fewer a node and a leaf) builds in 1.53-1.59 ms for the list's 1.70-1.75 and drops in 0.18-0.20 for 0.42; with
+  first-child and next-sibling fields (one member an entity) in 3.5 ms. **The members' number is not the build's
+  cost, the links' kind is; the exclusive part (the list and its array no members of their own) is worth 0.2 to
+  0.4 ms of a build and half the drop, and was not built in this round, nor the node's own path, nor the parent
+  field's proof.** Entity cannot leave the groups at compile time in this scene (its type is on a cycle through
+  its own list, and the move's target is picked at run time), so a member an entity and an up-reference a child
+  stay: by the parts measured, 25 to 30 ns an entity, 0.5 to 0.6 ms a build against NativeAOT-LLVM's 0.26 (an
+  estimate from parts, not a measurement); today's 1.6 ms is three times that and no floor. frames.mjs here, the
+  fix off and on in turn twice (the scenes do not take its path): tree median 0.047 and 0.048-0.049 against
+  NativeAOT-LLVM's 0.029-0.030, p99.9 2.52-2.62 and 2.67-2.88 against 2.44-2.57 (the desk's spread; with round 6's
+  step the rebuild frame is 0.08 to 0.11 ms above NativeAOT-LLVM's in the quiet pairs: not reached); the other
+  scenes as on main; bench.mjs 0.98x and 0.94x. On the homelab at 1c7f1c4: suite 214/215 both ways
+  (088's timer line, other sessions' jobs beside it); stress, 200 loaded runs a mode: 199, 198, 192 to 197 and 139
+  the same in every run, 127 differed in 2 of 400; the self-hosted compiler builds with and without the switch
+  and writes hello world byte for byte as the .NET-hosted one (selfdet.mjs, 9.1 s); hello world 27,642 bytes.

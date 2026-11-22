@@ -1419,6 +1419,68 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     30 removed and the overwritten values a frame). The removes 0.05 and the queue 0.07: not looked into. Strings:
     `Join` of 20, 0.27 us against 0.20, not looked into (the frame is below NativeAOT's without it).
   - Checked: On the homelab at 11b6497 (the last commit that changes code): suite 214/215 checked (088's timer line; alone it passes both ways) and 215/215 as shipped; at c3c4867, 215/215 both ways; stress, 200 loaded runs a mode: 213, 214, 220 and 221 the same in every run; the self-hosted compiler (tools/selfhost-switch.sh, which now compiles test 145's hello world: its own one-line program was top-level statements, an error in a library, and no module was ever written, on main too) with and without the round's three switches: the same module from both (27,393 bytes), 9.06 to 9.18 s as it is and 9.07 to 9.30 switched, peak memory 344 MB both. The module differs from the one the compiler run by .NET writes for the same file at byte 24,844 (a comparison added to the script this round, each given the file under another path: not followed, and not known for main).
+- **The build, round 7: the list on top of its node (fixed), and what fewer members can give (measured, not built)
+  (2026-11-22 to 23, branch claude/tree-build-7, from claude/round-6b 8022fbc; the desk machine; not merged when this
+  was written).**
+  - **tools/tree-assign.cs's leak: the cause and the fix.** A list of children that code refers to while its
+    node's first child is put into it (in a program with a second store of the field the receiver of
+    `e.Kids.Add(Tree(e, ..))` is counted across the call, not borrowed; the same for a local or a static that holds
+    the list) waits for its owner as the node does when the child joins: LinkMembers leaves both to LinkWaiting,
+    and the pairs stand in the order of the visits, (child, node) then (node, list). Taken so, the child's chain
+    ends at the list, which nothing owns yet, the node is not found above the child, and the child becomes the
+    node's owner; the second pair then finds the list above the node and makes the node's own field an
+    up-reference to its list. Every node hung below its first child with its list on top, kept by holds alone, and
+    a subtree stored over was never destroyed before its tree went (121, 161, 201 nodes for .NET's 121, 121, 121;
+    the holds are not kept ones, `CS2WASM_STALE_HOLDS` is off: round 6's guess at the cause was wrong). Done:
+    `Rt.WaitingTop` (`CS2WASM_NO_WAITING_TOP=1`): a pair that would make the container the value's owner first
+    looks whether the value itself waits, further down the list, to own the top of the container's chain; that
+    pair is settled first (the value owns the top, as its turn would have had it), and the value is then above
+    the container: an up-reference. Test 199 (the receiver counted, a local, a static; subtrees stored over,
+    children moved, a node of a replaced part held, nodes with finalizers; counted against .NET while the trees
+    live): 259 nodes and more for 114 without the fix.
+  - **What a node's way of holding its children costs** (the scene tree, 19,531 entities, the parent set as each is
+    made; a program of three classes, not kept; build and drop, three runs): a List, the scene's, 1.70 to 1.75 ms
+    and 0.42; an array of the node's own with room for eight from the first child (no list: two members a node
+    with children, one a leaf, no growth) 1.53 to 1.59 and 0.18 to 0.20; first-child and next-sibling fields (one
+    member an entity, nothing else) 3.48 to 3.54 and 0.24 to 0.26. **So the number of members is not the build's
+    cost: without the list's membership the build is 0.2 ms shorter and the drop half; one member an entity,
+    linked through siblings, is twice as slow to build, because each link there is a general one.** What a build
+    pays is the links, by their kind (round 6: a fused leaf's two joins 19 ns, its up-reference 9; a node 200).
+  - **The floor, and what is not one.** Entity cannot be taken out of the groups at compile time in this scene: its
+    type is on a cycle through its own list (`Entity -> List<Entity> -> Entity[] -> Entity`) whatever is proven of
+    the parent field, and the scene's move puts a node into the list of a node the program picks at run time
+    (`to.Children.Add(moved)`): that `to` is not below `moved` is true and is not in the program's text. So a
+    member an entity and an up-reference a child stay (SPEC: no collector, the cut subtree freed at its store),
+    and with them, by the parts measured so far, about 10 ns of allocation, 10 for a join and 5 to 9 for an
+    up-reference: 25 to 30 ns an entity, 0.5 to 0.6 ms a build against NativeAOT-LLVM's 0.26 (whose own rebuild
+    frames then pay 2.4 ms collections: its p99.9). That sum is an estimate from measured parts, not a
+    measurement. Today's 1.6 ms is three times it: not a floor.
+  - **Not built in this round: the exclusive part** (a field's object proven at compile time to be the holder's
+    alone: made by the holder's initializer, used only as the receiver of calls that keep nothing, never stored,
+    returned or captured; and List<T>'s array likewise where the program reaches nothing that lets it out). What
+    it takes, worked out: the part carries its holder in its owner word and a flag, never joins and has no place
+    on a ring; every entry of the runtime that takes a container (ArenaLink, ArenaUnlink, ArenaArrayCopy,
+    ArenaArrayClear, ArenaMove, ArenaGrowArray, ReplaceArray, the stores by address) maps a part to its holder
+    first, the reference then a counted inside reference of the holder outside its slot bits (Far), a child's
+    owner the holder itself (its parent field one step up the chain, not three); a list's growth is a plain copy;
+    the holder's generated visit goes through its parts' slots; the holder's clear releases the part as the plain
+    object it is. By the array variant above it is worth at most what the list and the array cost today: about
+    0.2 to 0.4 ms of a build and half the drop (the store over a subtree in an ordinary frame with it), and it
+    makes every leaf's parent field a one-step up-reference. It does not make the node's own path shorter (item
+    2: the node joined from below, 200 ns), which stays the largest single part.
+  - Checked. frames.mjs here, the fix off and on in turn twice (`--runs 3 --js-young 32`; the scenes do not take
+    its path): tree median 0.047 and 0.048 to 0.049 ms against NativeAOT-LLVM's 0.029 to 0.030, p99.9 2.52 and
+    2.62 off, 2.67 and 2.88 on, against 2.44 to 2.57 (the desk's spread; in the two quietest pairs this side's
+    rebuild frame is 0.08 and 0.11 ms above NativeAOT-LLVM's: with round 6's step, not reached); the other scenes
+    as on main; bench.mjs 0.98x and 0.94x; hello world 27,642 bytes. On the homelab at 1c7f1c4: the suite 214/215
+    checked and 214/215 as shipped, the one 088's timer line in both (other sessions' jobs beside it; see the log
+    for the run on the last commit); `tools/stress-cycles.sh`, 200 loaded runs a mode: 199, 198, 192 to 197 and
+    139 the same in every run of both modes, 127 differing in 1 of 200 in each (main's rate); the self-hosted
+    compiler built with and without the switch (`tools/selfhost-switch.sh CS2WASM_NO_WAITING_TOP=1`: 238 and 243
+    s, 31.8 MB each; its runs 10.3 to 11.2 s either way, 490 MB; the script's own comparison found no output
+    file, its `w42.cs` is not a program the compiler takes: not followed) and `node tools/selfdet.mjs --self
+    tests/out/selfsw/as-is.wasm tests/Conformance/145_size_hello.cs`: the self-hosted compiler's module the
+    .NET-hosted compiler's byte for byte (27,595 bytes, 9.1 s).
 
 ### A4. Plugins (goal 3)
 
