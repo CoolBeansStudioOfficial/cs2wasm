@@ -3,7 +3,8 @@
 # switches, in this checkout: builds it as it is and once more with the switches given set (CS2WASM_NO_X=1 ...), then
 # runs both on Console.WriteLine(42) in turn, ROUNDS rounds (3), one thread: time, exit code, peak memory (the
 # module's linear memory at the end), and whether the two wrote the same module.
-#   bash tools/selfhost-switch.sh CS2WASM_NO_RIPE_PAGES=1 CS2WASM_NO_STATIC_HOIST=1     (BUILD=0: the builds already there)
+#   bash tools/selfhost-switch.sh CS2WASM_NO_RIPE_PAGES=1 CS2WASM_NO_STATIC_HOIST=1     (BUILD=0: the builds already there;
+#   SHOW=1: the last lines each run printed)
 #   on the homelab: bash tools/homelab.sh <branch> bash tools/selfhost-switch.sh CS2WASM_NO_RIPE_PAGES=1
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1
@@ -26,7 +27,7 @@ for r in $(seq 1 ${ROUNDS:-3}); do
     s=$(date +%s%N); CS2WASM_PRINT_MEMORY=1 CS2WASM_PROCESSORS=1 SELF="$ROOT/$OUT/$b.wasm" timeout 600 bash tools/selfrun.sh $W/w42.cs -o $W/w42-$b.wasm > $T 2>&1; rc=$?
     pages=$(sed -n 's/^memory: \([0-9]*\) pages$/\1/p' $T)
     echo "$b $(( ($(date +%s%N)-s)/1000000 )) ms rc=$rc peak $(( ${pages:-0} * 65536 )) bytes"
-    if [ $rc != 0 ]; then tail -5 $T; fi
+    if [ $rc != 0 ] || [ "${SHOW:-0}" = 1 ]; then tail -5 $T; fi
   done
 done
 rm -f $T

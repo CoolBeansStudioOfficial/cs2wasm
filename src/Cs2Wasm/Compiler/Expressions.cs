@@ -2109,6 +2109,7 @@ sealed partial class FunctionCompiler
 
     Own EmitAssign(ISimpleAssignmentOperation sa, bool needResult)
     {
+        if (!needResult && TryEmitBorrowedOutStore(sa)) return Own.None;
         if (sa.IsRef)
         {
             // ref reassignment: ref local = ref expr

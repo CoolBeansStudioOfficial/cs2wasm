@@ -225,7 +225,9 @@ sealed partial class FunctionCompiler
             E.CurrentPos = save;
             return spilled;
         }
-        var r = CallWith(m, virt, pushThis, () => PushArgs(m, args), null, syntax, ConstArgsFor(m, args), stableRecv: instance != null && IsStableBase(instance), thisByValue: thisByValue);
+        // (an `out var` the callee can leave borrowed: its copy that stores the value as it is, OutBorrows.cs)
+        int ob = thisByValue || D.ConsumingOf(m).Mask != 0 ? -1 : OutBorrowCall(m, virt, args);
+        var r = CallWith(m, virt, pushThis, () => { PushArgs(m, args); if (ob >= 0) _outBorrowNext = ob + 1; }, null, syntax, ob >= 0 ? null : ConstArgsFor(m, args), stableRecv: instance != null && IsStableBase(instance), thisByValue: thisByValue);
         E.CurrentPos = save;
         return r;
     }
@@ -619,6 +621,7 @@ sealed partial class FunctionCompiler
 
     Own EmitCallInstr(IMethodSymbol m, bool virt, SyntaxNode? syntax, int sretOff, IReadOnlyDictionary<int, ConstArg>? consts = null, int owned = 0, bool stableRecv = false, bool thisByValue = false)
     {
+        int outBorrow = _outBorrowNext; _outBorrowNext = 0;
         if (IsStaticInterfaceMember(m) && TryStaticInterfaceMember(ref m, out var sim)) return sim;
         var rt = T.Canonical(m.ReturnType);
         if (D.IsIntrinsic(m))
@@ -640,7 +643,9 @@ sealed partial class FunctionCompiler
         else
         {
             var mi = D.Method(m, consts);
-            if (owned != 0) mi = D.OwnedVariant(mi, owned);
+            if (outBorrow > 0 && owned == 0 && !thisByValue) mi = D.OutBorrowVariant(mi, outBorrow - 1);
+            else if (outBorrow > 0) throw new CompileException("internal: a borrowed out argument for a call that takes another copy");
+            else if (owned != 0) mi = D.OwnedVariant(mi, owned);
             else if (thisByValue) mi = D.ThisValueVariant(mi);
             if (_clone != null)
             {
