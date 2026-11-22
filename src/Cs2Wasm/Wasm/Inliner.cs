@@ -77,6 +77,9 @@ static class Inliner
             // (the null check: it has no frame of its own in a trace, so a copy of it throws from the same frames; in
             // the second round, when the checks that are not needed are gone)
             if (tiny && g.Name == "rt.nonnull" && !g.IsImport && s_loopBody > 0) { inLoops.Add(g); continue; }
+            // (the free of a known size written where an object dies, WasmModule.ExpandLeafReleases: at each of its
+            // calls, which are only those)
+            if (tiny && !g.IsImport && g.ForwardTo == null && g.Name.StartsWith("Cs2Wasm.Runtime.Rt.FreeFixed(", StringComparison.Ordinal)) { candidates.Add(g); continue; }
             // (a function that does nothing, a lock's in a program without threads: its calls go)
             if (!g.IsImport && g.ForwardTo == null && g.Body.Count == 0 && g.Type.Results.Length == 0 && g.Exports.Count == 0) { candidates.Add(g); continue; }
             if (mayThrow.Contains(g) || !Inlinable(g, mayThrow))

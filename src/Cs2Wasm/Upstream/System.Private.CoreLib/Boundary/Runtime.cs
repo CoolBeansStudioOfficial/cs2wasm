@@ -1683,6 +1683,20 @@ namespace Cs2Wasm.Runtime
             FreeBlock(addr, size, KindPlain);
         }
 
+        /// <summary>FreeObject's usual case for an object whose size the compiler knows, written where the object dies
+        /// (WasmModule.ExpandLeafReleases puts it there only in a program without threads, not in a checked build or
+        /// with the share check, for a size s that is a multiple of 4 and no more than 128; the release has already
+        /// set the object's count word to zero): the block is kept aside for the next allocation of its size, the one
+        /// that was there goes back to its page.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        public static void FreeFixed(int addr, int s)
+        {
+            int hotSlot = s_hot + s;
+            int old = Mem.LoadI32(hotSlot);
+            Mem.StoreI32(hotSlot, addr);
+            if (old != 0) FreeSmallOld(old, s);
+        }
+
         /// <summary>The block that was kept aside for its size (FreeObject, FreeCore) when another takes its place.</summary>
         static void FreeSmallOld(int addr, int size)
         {

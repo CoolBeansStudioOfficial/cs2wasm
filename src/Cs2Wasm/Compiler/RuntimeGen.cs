@@ -498,6 +498,8 @@ sealed partial class RuntimeGen
         _init.Exports.Add("init");
     }
 
+    bool FreeFixedAllowed => !D.ThreadMode && !s_noFlatDestroy && !D.Options.Checked && !RuntimeFns.ShareCheckOn;
+
     public void Prepare()
     {
         // library pieces every module needs
@@ -505,6 +507,8 @@ sealed partial class RuntimeGen
         D.LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1);
         D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "InvalidCast", 2);
         D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeObject", 2);
+        // (the free of a known size written where an object dies: EmitDestroyDispatch, WasmModule.ExpandLeafReleases)
+        if (FreeFixedAllowed) D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeFixed", 2);
         D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1);
         if (D.ThreadMode && RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareCheckFail", 1);
         if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0); }
@@ -1718,7 +1722,10 @@ sealed partial class RuntimeGen
         if (!D.ThreadMode)
         {
             D.Module.ReleaseFn = D.Rt.Release;
-            D.Module.LeafDestroy = id => (IsLeafDestroy(id) || IsFlatDestroy(id)) && D.ExtId(id) >= 0 ? _destroyFns[id] : null;
+            D.Module.LeafDestroy = id => IsLeafDestroy(id) && D.ExtId(id) >= 0 ? _destroyFns[id] : null;
+            D.Module.FlatDestroy = id => !IsLeafDestroy(id) && IsFlatDestroy(id) && D.ExtId(id) >= 0 ? _destroyFns[id] : null;
+            D.Module.FreeFn = D.Rt.Free;
+            if (FreeFixedAllowed) D.Module.FreeFixedFn = D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeFixed", 2).Fn;
         }
         else if (D.Rt.ReleasePlainIfMade is { } rp)
         {
