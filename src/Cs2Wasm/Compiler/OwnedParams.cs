@@ -58,7 +58,11 @@ internal sealed partial class Driver
         // by the store and let go by the caller; for a member of a group that second count is an outside reference
         // that comes and goes around the store, with the holds it makes up the owners: tools/frames.mjs, tree)
         bool listAdd = IsListAdd(def);
-        bool small = size <= s_ownedLimit || listAdd && size <= 50;
+        // (Dictionary<K,V>.TryInsert, where `map[key] = new Item()` and `map.Add(key, Make())` end: far past the
+        // limit, and its three stores of the value are in loops or after them. Each store in a loop is followed
+        // by a return, so the value is stored once at most: see ReturnsAfter below)
+        bool mapInsert = IsMapInsert(def);
+        bool small = size <= s_ownedLimit || listAdd && size <= 50 || mapInsert;
         if (size > s_ownedLimit * 4 && !small) return s_noConsuming;
         if (body.DescendantsAndSelf().Any(o => o is ILabeledOperation || o is IBranchOperation { BranchKind: BranchKind.GoTo } || o.Kind is OperationKind.YieldReturn or OperationKind.YieldBreak))
             return s_noConsuming;
@@ -82,16 +86,53 @@ internal sealed partial class Driver
             if (p.RefKind != RefKind.None || p.Type.IsValueType || p.Type.IsRefLikeType || p.IsParams) continue;
             var rs = refs[i].Where(r => SymbolEqualityComparer.Default.Equals(r.Parameter.ContainingSymbol.OriginalDefinition, def)).ToList();
             if (rs.Count == 0 || rs.Count > 4) continue;
-            if (rs.Any(r => nested.Contains(r) || InLoop(r) || !IsMovePoint(r))) continue;
+            if (rs.Any(r => nested.Contains(r) || InLoop(r) && !(mapInsert && (s_ownedInsertBreak || ReturnsAfter(r))) || !IsMovePoint(r))) continue;
             bool exclusive = true;
             for (int a = 0; a < rs.Count && exclusive; a++)
                 for (int b = a + 1; b < rs.Count && exclusive; b++)
-                    exclusive = Exclusive(rs[a], rs[b]);
+                    exclusive = Exclusive(rs[a], rs[b]) || mapInsert && (s_ownedInsertBreak || OnceByReturn(rs[a], rs[b]));
             if (!exclusive) continue;
             mask |= 1 << i;
             foreach (var r in rs) moves.Add(r.Syntax);
         }
         return mask == 0 ? s_noConsuming : new Consuming(mask, moves);
+    }
+
+    static readonly bool s_noOwnedInsert = Environment.GetEnvironmentVariable("CS2WASM_NO_OWNED_INSERT") == "1";
+    /// <summary>CS2WASM_OWNED_INSERT_BREAK=1 (test 237's proof that the rule is relied on): a method named TryInsert
+    /// of the program's counts as Dictionary's does, and a store of the value in a loop need not be followed by a
+    /// return, nor two stores exclude each other.</summary>
+    static readonly bool s_ownedInsertBreak = Environment.GetEnvironmentVariable("CS2WASM_OWNED_INSERT_BREAK") == "1";
+
+    /// <summary>Dictionary&lt;K,V&gt;.TryInsert(key, value, behavior), and the three that pass their value on to it (the
+    /// indexer's setter, Add, TryAdd: a call and an assertion, past the limit by the assertion)
+    /// (CS2WASM_NO_OWNED_INSERT=1: as any method of their size, which consumes nothing).</summary>
+    internal static bool IsMapInsert(IMethodSymbol def) =>
+        !s_noOwnedInsert && (def.Name == "TryInsert" && def.Parameters.Length == 3 || def.Name is "Add" or "TryAdd" or "set_Item" && def.Parameters.Length == 2)
+        && (def.ContainingType is { Name: "Dictionary", Arity: 2, ContainingNamespace: { Name: "Generic", ContainingNamespace: { Name: "Collections", ContainingNamespace.Name: "System" } } }
+            || s_ownedInsertBreak && def.ContainingType is { ContainingNamespace.IsGlobalNamespace: true });
+
+    /// <summary>The use is the value of a store that is a statement, and the next statement of its block is a
+    /// return: once it has run nothing else of the method does, loop or not.</summary>
+    static bool ReturnsAfter(IOperation use)
+    {
+        IOperation? st = use;
+        while (st != null && st is not IExpressionStatementOperation) st = st.Parent;
+        if (st?.Parent is not IBlockOperation blk) return false;
+        int at = blk.Operations.IndexOf(st);
+        return at >= 0 && at + 1 < blk.Operations.Length && blk.Operations[at + 1] is IReturnOperation;
+    }
+
+    /// <summary>Two stores of which only one can run in a call: both are followed by a return; or one is, and the
+    /// other comes after it in the text and is in no loop (nothing leads from it back to the first: a method with a
+    /// goto is not looked at).</summary>
+    static bool OnceByReturn(IOperation a, IOperation b)
+    {
+        bool ra = ReturnsAfter(a), rb = ReturnsAfter(b);
+        if (ra && rb) return true;
+        if (ra) return !InLoop(b) && b.Syntax.SpanStart > a.Syntax.SpanStart;
+        if (rb) return !InLoop(a) && a.Syntax.SpanStart > b.Syntax.SpanStart;
+        return false;
     }
 
     /// <summary>List&lt;T&gt;.Add(T) or its AddWithResize(T) (CS2WASM_NO_OWNED_ADD=1: as any method of their size).</summary>

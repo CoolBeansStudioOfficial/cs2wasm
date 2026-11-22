@@ -2712,17 +2712,32 @@ sealed partial class FunctionCompiler
             var s = pr.Property.SetMethod ?? throw new CompileException("property has no setter");
             var vt = Type;
             int v;
+            var sm = Accessor(F.SubstMethod(s));
+            // (a fresh value for Dictionary's indexer, whose setter hands it on to TryInsert, which consumes it:
+            // the temporary that holds its count until the call is noted, and the count goes to the callee as a
+            // fresh argument's does, OwnedParams.cs IsMapInsert; `map[key] = new Item()`)
+            int handOver = -1;
             if (Types.IsRef(vt))
             {
-                o = F.ToCallSafe(o, vt);
+                if (o == Own.Owned && !needResult && !F.D.ThreadMode && sm.Parameters.Length > 0 && Driver.IsMapInsert(sm.OriginalDefinition))
+                {
+                    handOver = F.TempRef(vt);
+                    F.E.Tee(handOver);
+                    o = Own.Stable;
+                }
+                else o = F.ToCallSafe(o, vt);
                 v = F.Scratch(ValType.I32); F.E.Set(v);
             }
             else { v = F.Scratch(Types.WasmType(vt)!.Value); F.E.Set(v); }
-            var sm = Accessor(F.SubstMethod(s));
             F.CallWith(sm, !_recvIsStruct && F.IsVirtualCall(pr.Instance, s), _recv >= 0 ? () => F.E.Get(_recv) : null, () =>
             {
                 foreach (var (l, _) in _args) F.E.Get(l);
                 F.E.Get(v);
+                if (handOver >= 0 && F._consume is { } cc && (cc.Mask & (1 << sm.Parameters[^1].Ordinal)) != 0 && SymbolEqualityComparer.Default.Equals(sm.Parameters[^1].ContainingSymbol, cc.M))
+                {
+                    cc.Temps.Add(handOver);
+                    cc.Moved |= 1 << sm.Parameters[^1].Ordinal;
+                }
                 RecordIndexArgs(sm);
                 if (sm.Parameters.Length > 0) F.RecordParam(sm, sm.Parameters[^1], _valueSrcs ?? [TopSrc(vt)]);
             }, null, pr.Syntax);
