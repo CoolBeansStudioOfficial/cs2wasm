@@ -2126,8 +2126,26 @@ sealed partial class FunctionCompiler
         }
         Own o = Types.IsStruct(tt) ? EmitValue(sa.Value) : EmitValueAs(sa.Value, tt);
         if (Types.IsStruct(tt) && sa.Value.Type != null) ConvertTop(TypeOf(sa.Value), tt, ref o);
-        return lv.Store(o, needResult);
+        // (the value is a local of this method, read as it is: an element store of it cannot let go of the object the
+        // local names, FieldBorrows.cs)
+        _storedLocal = StoredLocalOf(sa.Value, out _storedParam);
+        try { return lv.Store(o, needResult); } finally { _storedLocal = -1; _storedParam = -1; }
     }
+
+    /// <summary>The register local an assignment stores, when its value is that local read as it is (through
+    /// reference conversions only), else -1.</summary>
+    int StoredLocalOf(IOperation v, out int param)
+    {
+        param = -1;
+        while (v is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit)) v = c.Operand;
+        if (_closure != null || _machine != null || v.Type == null || TypeOf(v).IsValueType) return -1;
+        if (v is IParameterReferenceOperation { Parameter: { RefKind: RefKind.None } p } pref && !IsPrimaryParamHere(p) && !IsCaptured(p) && !IsMovedParamUse(pref)
+            && _vars.TryGetValue(p, out var pv) && !pv.InMemory)
+        { param = p.Ordinal; return pv.Local; }
+        if (v is not ILocalReferenceOperation { Local: { IsRef: false } l } || IsCaptured(l)) return -1;
+        return LocalVar(l) is { InMemory: false } lv ? lv.Local : -1;
+    }
+    int _storedLocal = -1, _storedParam = -1;
 
     Own EmitCompound(ICompoundAssignmentOperation ca, bool needResult)
     {
@@ -2570,7 +2588,14 @@ sealed partial class FunctionCompiler
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
                 pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned, iso: iso, initNull: initNull, structContainer: structContainer,
                 valueType: _valueType, viaPointer: viaPointer);
-            if (elements && F.T.NeedsRc(Type)) F.D.NoteFieldWrite(F.E, Driver.ElementsKey);
+            if (elements && F.T.NeedsRc(Type))
+            {
+                int before = F.E.Body.Count;
+                F.D.NoteFieldWrite(F.E, Driver.ElementsKey);
+                // (the mark of a plain element store of a local's own value names the local: the store lets go of the
+                // slot's old value after it has counted the new one, so the object the local names stays held)
+                if (F._storedLocal >= 0 && F.E.Body.Count == before + 1) F.E.Body[^1] = F.E.Body[^1] with { Imm = F._storedLocal + 1, Ref = new Driver.SelfStoreMark(Driver.ElementsKey, site, F._storedParam) };
+            }
             return needResult ? Load() : Own.None;
         }
     }
@@ -2655,6 +2680,12 @@ sealed partial class FunctionCompiler
                 RecordIndexArgs(sm);
                 if (sm.Parameters.Length > 0) F.RecordParam(sm, sm.Parameters[^1], _valueSrcs ?? [TopSrc(vt)]);
             }, null, pr.Syntax);
+            // (the value was a local of this method read as it is: FieldBorrows.cs, ArgLocalMark)
+            if (F._storedLocal >= 0 && Types.IsRef(vt) && sm.Parameters.Length > 0 && F.E.Body.Count > 0 && F.E.Body[^1].Op == Op.Call)
+            {
+                F.E.Emit(Op.Nop, 0, 0, new Driver.ArgLocalMark(sm.Parameters.Length - 1, F._storedLocal));
+                F.E.Body[^1] = F.E.Body[^1] with { Pos = -1 };
+            }
             if (needResult) { F.E.Get(v); F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v); return Types.IsRef(vt) ? Own.Stable : Own.None; }
             F.FreeScratch(Types.WasmType(vt) ?? ValType.I32, v);
             return Own.None;

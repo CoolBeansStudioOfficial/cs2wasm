@@ -14,6 +14,8 @@ namespace Cs2Wasm.Compiler;
 // retain, or nothing; on success the local's releases (scope exit, unwinding) go too.
 sealed partial class FunctionCompiler
 {
+    /// <summary>CS2WASM_NO_GETTER_BORROWS=1: a local does not borrow a borrowed getter's value, as before.</summary>
+    static readonly bool s_noGetterBorrows = Environment.GetEnvironmentVariable("CS2WASM_NO_GETTER_BORROWS") == "1";
     /// <summary>The field a declaration can borrow from (key), when the local and its source qualify.</summary>
     string? FieldBorrowCandidate(ILocalSymbol l, IOperation init)
     {
@@ -50,6 +52,25 @@ sealed partial class FunctionCompiler
                 var ak = Driver.FieldKey(Owner(afr.Field), StorageField(afr.Field));
                 D.NoteBorrowField(ak, StorageField(afr.Field), T.Resolve(afr.Field.Type, Map));
                 return ak + "\n" + Driver.ElementsKey;
+            }
+            return null;
+        }
+        // a getter that returns a field's value or an element borrowed (the indexer of List), of a receiver that stays
+        // put: the fields the value came through (Driver.ReturnPathKeys), and the receiver's own place (no threads)
+        if (!tm && !s_noGetterBorrows && init is IPropertyReferenceOperation { Property.GetMethod: { IsStatic: false } gm, Instance: { } gi } gpr
+            && Types.IsRef(T.Resolve(gpr.Type!, Map)) && !TypeOf(gi).IsValueType && !IsVirtualCall(gi, gm)
+            && D.Method(SubstMethod(gm)).BorrowedReturn is { BorrowKeys: { } gk, BorrowedKind: Own.Unstable })
+        {
+            var recv = gi;
+            while (recv is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } rc) recv = rc.Operand;
+            if (IsStableBase(recv)) return gk;
+            if (StaticArrayKey(recv) is { } rsk) return rsk + "\n" + gk;
+            if (recv is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ri } rfr && IsStableBase(ri) && rfr.Field.ContainingType.TypeKind == TypeKind.Class
+                && !(ri is IParameterReferenceOperation && TypeOf(ri).IsValueType))
+            {
+                var rk = Driver.FieldKey(Owner(rfr.Field), StorageField(rfr.Field));
+                D.NoteBorrowField(rk, StorageField(rfr.Field), T.Resolve(rfr.Field.Type, Map));
+                return rk + "\n" + gk;
             }
             return null;
         }
@@ -169,6 +190,8 @@ internal sealed partial class Driver
     /// <summary>The pseudo-field a thread's safe point stores (threads: ResolveFieldBorrows).</summary>
     const string SafePointKey = "<safe point>";
     static readonly bool s_borrowDebug = Environment.GetEnvironmentVariable("CS2WASM_BORROW") == "1";
+    /// <summary>CS2WASM_NO_SELF_STORES=1: an element store of a borrowing local's own value breaks its borrow, as before.</summary>
+    static readonly bool s_noSelfStores = Environment.GetEnvironmentVariable("CS2WASM_NO_SELF_STORES") == "1";
     internal static bool BorrowDebug => s_borrowDebug;
 
     public static bool WritesMemory(Op op) => op is Op.I32Store or Op.I32Store8 or Op.I32Store16 or Op.I64Store or Op.I64Store8 or Op.I64Store16 or Op.I64Store32
@@ -209,7 +232,49 @@ internal sealed partial class Driver
     /// <summary>Where a function stores a field (a no-op instruction carrying the key, beside the store): a borrow is
     /// broken only by a store that runs while the borrowing local is live (section 4.1, retroactive owners). Taken out
     /// again once the borrows are decided.</summary>
-    internal sealed class WriteMark(string key) { public readonly string Key = key; }
+    internal class WriteMark(string key) { public readonly string Key = key; }
+    /// <summary>The mark of an element store whose value is a register local read as it is (the instruction names the
+    /// local: its index and one): the store counts the new value before it lets go of the old one, so the object the
+    /// local names stays held by a slot, and a borrow of that local goes on; not for a slot of a cycle (its site).</summary>
+    internal sealed class SelfStoreMark(string key, Arenas.Site? site, int param) : WriteMark(key)
+    {
+        public readonly Arenas.Site? Site = site;
+        /// <summary>The ordinal of the parameter the stored local is, or -1.</summary>
+        public readonly int Param = param;
+    }
+    /// <summary>Right after a setter's call: the caller's register local that was the argument of the parameter with
+    /// this ordinal, read as it is. A callee whose only element store is of that parameter (the indexer of List) cannot
+    /// let go of the object the local names (SelfStoreParam).</summary>
+    internal sealed class ArgLocalMark(int param, int local) : WriteMark("<argument>") { public readonly int Param = param, Local = local; }
+
+    readonly Dictionary<WasmFunction, int> _selfStoreParam = [];
+    /// <summary>The ordinal of the parameter whose value is the only thing the function stores into elements, itself
+    /// (every element store's mark names it, in no slot of a cycle) and nothing it calls storing any; else -1.</summary>
+    int SelfStoreParam(WasmFunction g, StoreSummary summary)
+    {
+        if (_selfStoreParam.TryGetValue(g, out var known)) return known;
+        int param = -2;
+        var b = g.Body;
+        if (g.IsImport || _unplacedWrites.TryGetValue(g, out var u) && u.Contains(ElementsKey)) param = -1;
+        for (int i = 0; i < b.Count && param != -1; i++)
+        {
+            var ins = b[i];
+            if (ins.Op == Op.Nop)
+            {
+                if (ins.Ref is WriteMark wm && wm.Key == ElementsKey)
+                    param = wm is SelfStoreMark { Param: >= 0 } sm && sm.Site is not { Cyclic: true } && (param == -2 || param == sm.Param) ? sm.Param : -1;
+            }
+            else if (ins.Op == Op.Call && StoresOf(b, i) is { } h) { if (summary.Has(h, ElementsKey)) param = -1; }
+            else if (ins.Op == Op.CallIndirect) { if (summary.HasIndirect(ElementsKey, ins)) param = -1; }
+        }
+        return _selfStoreParam[g] = param >= 0 ? param : -1;
+    }
+    /// <summary>The ArgLocalMark right after the call at `i`, if any.</summary>
+    static ArgLocalMark? ArgMarkAfter(List<Instr> b, int i)
+    {
+        for (int k = i + 1; k < b.Count && b[k].Op == Op.Nop; k++) if (b[k].Ref is ArgLocalMark am) return am;
+        return null;
+    }
 
     /// <summary>Right after a call that can only throw, by a path known at compile time (a List's MoveNext on a list
     /// that was changed: EmitForEach): the stores the call can make are those of the function that throws, `Throws`.
@@ -408,9 +473,26 @@ internal sealed partial class Driver
             {
                 // (the scope's end is a mark too: asked first)
                 if (ReferenceEquals(ins.Ref, ScopeEnd)) { if (ins.Imm == local) return false; }
+                // (an element store of the borrowing local's own value: Expressions.cs, MemLV.Store)
+                else if (ins.Ref is SelfStoreMark sm && ins.Imm == local + 1 && sm.Site is not { Cyclic: true } && !s_noSelfStores) { }
                 else if (ins.Ref is WriteMark wm && Array.IndexOf(keys, wm.Key) >= 0) { if (Why(i, "the function itself", wm.Key)) return true; }
             }
-            else if (ins.Op == Op.Call && StoresOf(b, i) is { } g) { foreach (var k in keys) if (summary.Has(g, k)) { if (Why(i, "a call of " + g.Name, k)) return true; break; } }
+            else if (ins.Op == Op.Call && StoresOf(b, i) is { } g)
+            {
+                // (the check of a type one of whose statics the value was read from: that read came after the same
+                // check, so the initializer has run, or is running further up this stack, and this call returns at
+                // once, as StoreSummary says of the initializer's own stores)
+                if (!s_noSelfStores && g.Name.StartsWith("static init ", StringComparison.Ordinal) && !g.Name.StartsWith(StaticInitBodyPrefix, StringComparison.Ordinal)
+                    && keys.Any(k => IsStaticKey(k) && k.LastIndexOf("::", StringComparison.Ordinal) is > 0 and var c && g.Name.Length == 12 + c && string.CompareOrdinal(g.Name, 12, k, 0, c) == 0)) continue;
+                foreach (var k in keys)
+                    if (summary.Has(g, k))
+                    {
+                        // (a setter that stores only its value, called with the borrowing local's own value)
+                        if (k == ElementsKey && !s_noSelfStores && ArgMarkAfter(b, i) is { } am && am.Local == local && SelfStoreParam(g, summary) == am.Param) continue;
+                        if (Why(i, "a call of " + g.Name, k)) return true;
+                        break;
+                    }
+            }
             else if (ins.Op == Op.CallIndirect) { foreach (var k in keys) if (summary.HasIndirect(k, ins)) { if (Why(i, "an indirect call", k)) return true; break; } }
         }
         return false;
