@@ -22,11 +22,12 @@ if [ ! -f $O/ir.wasm ]; then
   echo "ir build $(( $(date +%s) - s )) s: $(grep '^cs2wasm:' $O/ir.log | tail -1)"
 fi
 grep -E "^ir|^  rejected|^ir loads|^  drop by" $O/ir.log | head -24
+set +e
 P=/${O#/c/}
 T=$(mktemp)
 for r in $(seq 1 ${1:-6}); do
   for b in base ir; do
-    s=$(date +%s%N); CS2WASM_PRINT_MEMORY=1 CS2WASM_PROCESSORS=1 SELF=$O/$b.wasm timeout 300 bash tools/selfrun.sh $P/w42.cs -o $P/w42-$b.wasm > $T 2>&1; rc=$?
+    s=$(date +%s%N); CS2WASM_PRINT_MEMORY=1 CS2WASM_PROCESSORS=1 SELF=$O/$b.wasm timeout 300 bash tools/selfrun.sh $P/w42.cs -o $P/w42-$b.wasm > $T 2>&1; rc=$?; [ $r = 1 ] && [ $rc != 0 ] && tail -5 $T
     pages=$(sed -n 's/^memory: \([0-9]*\) pages$/\1/p' $T)
     echo "$b $(( ($(date +%s%N)-s)/1000000 )) ms rc=$rc peak $(( ${pages:-0} * 65536 )) bytes"
   done
