@@ -741,3 +741,55 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   to be timed again when it is quiet). Seen by that session, on main too: test 087 checked traps in 7 of 1,200
   loaded runs (an unaligned atomic access in rt.retain under Interlocked.Exchange in Task.FinishContinuations);
   given to the session on the tests that differ under load.
+- 2026-11-22, the churn loop, round 2 (branch claude/churn-2 from main 1f7a807, not merged when this was written;
+  AUDIT A3.5, "The churn loop, round 2"). Measured first, and both leads' figures were wrong. (1) The order in memory
+  is 2 to 3 us of the loop, not 17 (tools/churn-layout.cs, new: the particles' addresses in the list's order, and the
+  loop over the settled layout): what the last round took for it was the decrement's store (5), the dead and the moves
+  (3.5), and 7 that are there only while each frame's new particles land between old ones. They did because the page
+  policy's test was fooled: "no longer being emptied" was told between two looks, and a program that allocates a
+  frame's objects and then frees has no free between its looks; the nearly empty page was then taken on sight and
+  handed its blocks out in the order of death; and a page passed over was found again by the look at the back. Built
+  (`CS2WASM_NO_HOLD_PAGES=1`): no longer emptied means no block lost while the size needed four pages; the nearly
+  empty page waits for that; the look at the back stops at a page passed over; bounded by the pages with freed blocks
+  being three quarters of the heap handed out (past it the old rules) and by no memory grown. Steps of the list's walk
+  off the next line 16,246 to 4,270 of 19,000; the particles' pages 68 to 67 (the last round's "1.6 times the pages"
+  was against the policy before it: its own policy held as many); heap tops as before but churn's (3,274 to 3,338 KB),
+  memory 16 MB in all five scenes. (2) The counted move: written without its counts by hand (tools/churn-raw.cs, new)
+  a proved move saves 4 us a frame, not 12 (the store is its instructions: the slot read, two slots written, the
+  tests; every simple thing in this loop is a cycle a particle, 5 us a frame); the proof that saves more frees the
+  dead where they are found, and is not sound: a particle whose Tag is null makes .NET throw in the middle with the
+  dead still readable in the list's slots. Not built. (3) Built (`CS2WASM_NO_SEALED_STORE=1`): the test of the array's
+  type at a store was kept in generic code for every reference type; a sealed class's array needs none there either
+  (List<Particle>'s setter): 3 us. frames.mjs here (`--runs 3 --js-young 32`, main's copy and the branch in turn
+  twice, other sessions at work on the machine): churn median 0.088-0.089 ms to **0.081-0.082** against
+  NativeAOT-LLVM's 0.049-0.052 in the same invocations (**1.78x-1.80x to 1.58x-1.59x**, twice more later 1.76x-1.78x
+  to 1.60x-1.61x: **not reached**), p99.9 0.150-0.158 and 0.143-0.406 against 1.13-1.22, worst 0.26-0.33 and 0.26-2.61
+  (the 2.61 once, the machine's) against 1.18-1.73; tree 0.048-0.050 and 0.051-0.057 against 0.029 and 0.030-0.033
+  (1.66x-1.72x and 1.70x-1.73x: **not reached**), p99.9 2.76-2.91 and 3.14-3.71 against 2.43-2.51 and 2.58-3.28
+  (1.13x-1.16x and 1.13x-1.22x: **not reached**; the machine was busier in the branch's invocations); collections
+  0.008 against 0.006, strings 0.009-0.010 against 0.008, bigdrop 0.003 against 0.003-0.004; memory 16 MB against 59
+  to 71; bench.mjs 0.94x-0.95x and 0.95x; hello world 27,482 to 27,612 bytes. The tree scene with other programs at
+  work: not told apart from main's, on this machine with the other sessions' builds and timings going on (the load the
+  last round's question was about). The modules alone, main's and the branch's in turn: ten runs under that load,
+  medians 0.051-0.062 ms on main and 0.052-0.066 on the branch (the branch's at or above main's in nine of the ten
+  pairs, by 0 to 0.004 and once 0.010), lowest p99.9 3.22 and 3.11; eight runs four ways (main, the pages' change
+  alone, the store's alone, both), medians 0.051-0.060, 0.049-0.062, 0.051-0.063 and 0.051-0.087, the first three
+  rounds of it, before the load rose, 0.051-0.052, 0.049-0.052, 0.051 and 0.051-0.052; eight runs with the machine
+  quieter, medians 0.047-0.051 and 0.048-0.050, p99.9 2.73-3.08 and 2.65-2.94 (the branch's median the lower or the
+  same in six pairs of eight, its p99.9 the lower in six). So: the same when quiet; under load the branch's median was
+  up to 4% above main's in one set of ten and not in the other sets, inside what the load itself moves a run by (10 to
+  60%). A load made for the purpose (two and six processes walking 64 MB each) moved every run by more than any
+  difference (medians 0.06 to 0.7 ms): no use. The homelab has no Emscripten and its frames.mjs does not run: not
+  measured there. Not settled further than that. Homelab: at 8a7895e (both changes) the suite 210/210 checked and as
+  shipped (284 s); at 840d4be (the code's last commit: the switch's layout) 210/210 checked and 209/210 as shipped,
+  the one test 088 at its timer line (line 7, the second of its five answers False), which run alone there passed both
+  ways. Stress at 840d4be, 200 loaded runs a mode: 205, 206, 196 and 139 the same in every run of both modes; 127
+  differed in 4 of 400 (its "async 5" line: 1 as shipped, 3 checked; main's 5 of 400 in the last round), the other 200
+  of that test run before it all the same. Not run: the self-hosted compiler, tools/selfdet.mjs. At f54c2b1 (the code
+  as at 840d4be, with this text; the homelab busy with other sessions' runs, 713 s for the 284 before): 209/210
+  checked (135, its WhenAny between a 1 ms and a 50 ms timer: 60950 for 61050) and 209/210 as shipped (088's timer
+  line again); each of the two, run alone there, passed both ways. What is left of churn's loop, about 73 us against
+  45: the store through the list 14 above a bare store (its two counts 4 of them), the NaN tests 2 to 5, the order 2,
+  the rest the loop's own instructions, which the engine does not thin (it carries no load across a store) and
+  NativeAOT-LLVM's compiler does. Not started: the compiler's own inlining of the list's indexers with their loads
+  shared.

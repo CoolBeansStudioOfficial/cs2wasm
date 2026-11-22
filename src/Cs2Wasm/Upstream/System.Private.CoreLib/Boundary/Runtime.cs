@@ -198,7 +198,7 @@ namespace Cs2Wasm.Runtime
         // writes that one word, and none of the page (each of which the next allocation would wait for: the
         // list of the page, its count of blocks in use). The page still counts the block as in use.
         const int PageSize = 16384, PageHead = 24;
-        static int s_cur, s_avail, s_freePages, s_hot;
+        static int s_cur, s_avail, s_freePages, s_hot, s_takes, s_ringPages;
 
         // ------------------------------------------------------------------
         // Which block an address is in (docs/AUDIT.md step 7.A). The heap is handed out in granules of 1 KiB: a page
@@ -496,8 +496,22 @@ namespace Cs2Wasm.Runtime
                         // free already was freed in one go, a subtree let go, and is still in the cache; the tree
                         // scene's frames, with other programs at work on the machine, took a tenth longer without)
                         int back = Mem.LoadI32(q + 8);
+                        // (HoldPages: the size's count of the times it needed a page, this one included; and whether
+                        // the pages with freed blocks are past their bound)
+                        int now = 0;
+                        bool over = false;
+                        if (HoldPages())
+                        {
+                            int takesSlot = s_takes + c * 4;
+                            now = Mem.LoadI32(takesSlot) + 1;
+                            Mem.StoreI32(takesSlot, now);
+                            over = (uint)(s_ringPages * PageSize) > ((uint)(s_top - s_runLo) >> 2) * 3;
+                        }
                         for (int k = 0; k < BackLook; k++)
                         {
+                            // (HoldPages: a page that was passed over below is at the back too, and is not one whose
+                            // first block was freed last: [12] says so)
+                            if (HoldPages() && Mem.LoadI32(back + 12) != 0) break;
                             if (Mem.LoadI32(back + 16) <= cap - (cap >> StillShift)) { take = back; break; }
                             if (back == q) break;
                             back = Mem.LoadI32(back + 8);
@@ -505,10 +519,21 @@ namespace Cs2Wasm.Runtime
                         for (int k = 0; k < RipeLook && take == 0; k++)
                         {
                             int inUse = Mem.LoadI32(q + 16);
-                            if (inUse <= (cap >> RipeShift)) { take = q; break; }
+                            if ((!HoldPages() || over) && inUse <= (cap >> RipeShift)) { take = q; break; }
                             int seen = Mem.LoadI32(q + 12);
-                            if (seen != 0 && inUse == seen - 1 && inUse <= cap - (cap >> StillShift)) { take = q; break; }
-                            Mem.StoreI32(q + 12, inUse + 1);
+                            if (HoldPages())
+                            {
+                                // [12]: the blocks in use when the page was last seen to have lost one, plus one, in
+                                // 12 bits, and above them the size's count of takes then
+                                bool same = seen != 0 && inUse == (seen & 0xFFF) - 1;
+                                if (same && inUse <= cap - (cap >> StillShift) && (over || ((now - (int)((uint)seen >> 12)) & 0xFFFFF) >= StillTakes)) { take = q; break; }
+                                if (!same) Mem.StoreI32(q + 12, (now << 12) | (inUse + 1));
+                            }
+                            else
+                            {
+                                if (seen != 0 && inUse == seen - 1 && inUse <= cap - (cap >> StillShift)) { take = q; break; }
+                                Mem.StoreI32(q + 12, inUse + 1);
+                            }
                             q = Mem.LoadI32(q + 4);
                             Mem.StoreI32(availSlot, q);
                         }
@@ -547,6 +572,21 @@ namespace Cs2Wasm.Runtime
         /// memory (PageAlloc); CS2WASM_NO_RIPE_PAGES=1: the page whose first block was freed last, whatever is free
         /// in it, as before.</summary>
         [Intrinsic] static extern bool RipePages();
+        /// <summary>Whether a page is told to be "no longer being emptied" by the size's own clock, and the pages at the
+        /// back apart from the ones passed over (CS2WASM_NO_HOLD_PAGES=1: as before, see below). Before: a page
+        /// counted as no longer emptied when it had lost no block between two looks at it, and a look is an
+        /// allocation that needs a page. A program that allocates a frame's objects and then frees (the churn scene:
+        /// 400 particles made, then the loop in which 400 die) looks at all of a size's pages with no free in
+        /// between, so every page a quarter free was taken, and each frame's new particles lay between old ones:
+        /// tools/churn-layout.cs, of the 19,000 steps of the list's walk 16,000 went to a line that was not the next
+        /// one. And a page passed over goes to the ring's back, where the look for a page "freed in one go" then
+        /// found it. Now: no longer emptied means no block lost while the size needed StillTakes pages (its count of
+        /// takes is kept with the mark, in [12]); the look at the back stops at a page that was passed over. What is
+        /// held back is bounded: the pages with freed blocks, of all sizes (s_ringPages), by three quarters of what
+        /// the heap has handed out, past which a page with a quarter free counts as before; and no memory is grown
+        /// for an empty page (as before).</summary>
+        [Intrinsic] static extern bool HoldPages();
+        const int StillTakes = 4;
         /// <summary>How many of a size's pages with freed blocks an allocation looks at from the front; nearly empty: no
         /// more than 1/2^RipeShift of its blocks in use; free enough once it is no longer being emptied, or at the back:
         /// 1/2^StillShift of them; how many it looks at from the back, first.</summary>
@@ -555,6 +595,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>Takes a page out of its size's pages with freed blocks (a ring: [4] next, [8] previous).</summary>
         static void PageUnlink(int slot, int pg)
         {
+            if (HoldPages()) s_ringPages--;
             int next = Mem.LoadI32(pg + 4);
             if (next == pg) { Mem.StoreI32(slot, 0); return; }
             int prev = Mem.LoadI32(pg + 8);
@@ -580,6 +621,7 @@ namespace Cs2Wasm.Runtime
                 // it was full: among its size's pages with freed blocks from now on (a ring), at the back: the
                 // pages before it had their first block freed earlier
                 int head = Mem.LoadI32(availSlot);
+                if (HoldPages()) s_ringPages++;
                 if (head == 0) { Mem.StoreI32(pg + 4, pg); Mem.StoreI32(pg + 8, pg); Mem.StoreI32(availSlot, pg); }
                 else
                 {
@@ -610,6 +652,8 @@ namespace Cs2Wasm.Runtime
             // size freed last, and which 64 KB of memory are pages)
             s_cur = b; b += Classes * 4;
             s_avail = b; b += Classes * 4;
+            // (each size's count of the times it needed a page: HoldPages)
+            if (HoldPages()) { s_takes = b; b += Classes * 4; }
             // (after the hot blocks, each size's run: its next block, and where the run ends)
             s_hot = b; b += 3 * Classes * 4;
             // (the free runs by size, and the table's top: a leaf for every 4 MiB of address space)

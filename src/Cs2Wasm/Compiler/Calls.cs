@@ -236,6 +236,7 @@ sealed partial class FunctionCompiler
     static readonly bool MemStats =Environment.GetEnvironmentVariable("CS2WASM_MEMSTATS") == "1";
     /// <summary>CS2WASM_NO_RIPE_PAGES=1: a size's page whose block was freed last is the next to be used again (Runtime.cs, PageAlloc).</summary>
     static readonly bool s_noRipePages = Environment.GetEnvironmentVariable("CS2WASM_NO_RIPE_PAGES") == "1";
+    static readonly bool s_noHoldPages = Environment.GetEnvironmentVariable("CS2WASM_NO_HOLD_PAGES") == "1";
 
     int _refPoolLast => -1;
 
@@ -970,6 +971,7 @@ sealed partial class FunctionCompiler
             case "Rt.MemStatsHash": if (MemStats) E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "MsHash", 1).Fn); else E.Op(Op.Drop); return Own.None;
             case "Rt.MemStatsOn": E.I32(MemStats ? 1 : 0); return Own.None;
             case "Rt.RipePages": E.I32(s_noRipePages ? 0 : 1); return Own.None;
+            case "Rt.HoldPages": E.I32(s_noHoldPages ? 0 : 1); return Own.None;
             case "Rt.DropStats": E.I32(Environment.GetEnvironmentVariable("CS2WASM_DROP_STATS") == "1" ? 1 : 0); return Own.None;
             case "Rt.ArenaReport": E.I32(Environment.GetEnvironmentVariable("CS2WASM_ARENA_REPORT") == "1" ? 1 : 0); return Own.None;
             case "Rt.StaleHolds": E.I32(Environment.GetEnvironmentVariable("CS2WASM_STALE_HOLDS") == "1" ? 1 : 0); return Own.None;

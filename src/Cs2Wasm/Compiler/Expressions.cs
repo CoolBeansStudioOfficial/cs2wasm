@@ -16,6 +16,7 @@ sealed partial class FunctionCompiler
     /// CS2WASM_NO_CANON=1: decided on the exact type, as before.</summary>
     bool OfTypeParameter(ITypeSymbol? original) => !s_noCanon && original is ITypeParameterSymbol && E.Fn.Family != null;
     static readonly bool s_noCanon = Environment.GetEnvironmentVariable("CS2WASM_NO_CANON") == "1";
+    static readonly bool s_noSealedStore = Environment.GetEnvironmentVariable("CS2WASM_NO_SEALED_STORE") == "1";
 
     ITypeSymbol TypeOf(IOperation op) => T.Resolve(op.Type ?? throw new CompileException($"expression has no type: {op.Syntax}", op.Syntax.GetLocation()), Map);
 
@@ -2857,10 +2858,14 @@ sealed partial class FunctionCompiler
                     int keep = E.AddLocal(ValType.I32);
                     // (a sealed element type has no derived one: the array can only be of this type)
                     var et = T.Canonical(at.ElementType);
-                    // (shared generic code: an element type that is a type parameter is any reference type, as in every
-                    // instantiation of the family, so that their bodies are one: the check is made, and passes)
+                    // (shared generic code: an element type that is a type parameter was taken as any reference type,
+                    // as in every instantiation of the family, so that their bodies are one, and the check made. It
+                    // is decided on the exact type now: the instantiations for sealed classes are one body without
+                    // the check, those for the others one with it. List<T>'s setter is such a store, and the check
+                    // (the array's type word read and compared) was 3 us of the churn scene's 86 a frame: 19,000
+                    // survivors moved down a list of a sealed class. CS2WASM_NO_SEALED_STORE=1: as before.)
                     bool exact = (et is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Delegate, IsSealed: true } || Types.IsString(et))
-                        && !OfTypeParameter((ae.ArrayReference.Type as IArrayTypeSymbol)?.ElementType);
+                        && (!s_noSealedStore || !OfTypeParameter((ae.ArrayReference.Type as IArrayTypeSymbol)?.ElementType));
                     return new MemLV(this, t, () => EmitArrayElementAddress(ae, keep), D.Arenas.ArraySite(at), keep, pub: Publish.Container, elements: true,
                         covariant: exact || at.Rank != 1 ? null : (IArrayTypeSymbol)T.Canonical(at), owned: OwnedLocal(ae.ArrayReference));
                 }
