@@ -699,3 +699,35 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   more step of growth, not followed); stress, 200 loaded runs a mode: 139, 192 to 197 the same in every run, 127
   differed in 5 of 400. At f3fe0b4 (churn-1 alone) the suite was 205/206 checked (088, its timer line; 206/206 as
   shipped), which the combined run did not show again.
+- 2026-11-22, the collections and strings scenes (branch claude/colstr-1 from main 1f7a807, not merged when this
+  was written; AUDIT A3.5, "The collections and strings scenes"). Measured by phase on both sides first
+  (tools/colstr-parts.cs with tools/parts.mjs and tools/parts-naot-wasm, new). (1) Collections: with ContainsKey
+  for TryGetValue the frame was NativeAOT-LLVM's, so the gap was in what TryGetValue adds: its 28 instructions
+  were one shared body for `Dictionary<int, Particle>` and `Dictionary<string, CultureInfo>`, calling each one's
+  FindValue through the table, and V8 inlined nothing across it. A family's body under 32 instructions that a loop
+  calls is not shared where its members call different functions (`CS2WASM_NO_DIRECT_SMALL=1`): the frame 7.62 to
+  6.76 us against 6.10; parser bench +0.29% of its module. (Every short body, the first form, made the tree's build
+  read 4% slower on the desk: a list's Grow, direct, let V8 inline the Capacity setter into the build. With the
+  loop test tree-parts' module is byte for byte the old one.) (2) Strings: an interpolated line of eight parts was
+  three strings, Concat in fours; five parts and more are one call and one string (`CS2WASM_NO_CONCAT_ONCE=1`),
+  which also ends a difference from .NET (`a + "" + "" + "" + ""` was `a` itself). The strings of 0 to 299 are kept
+  as CoreCLR and NativeAOT keep them (the library is compiled as Mono's, which keeps ten:
+  `CS2WASM_NO_SMALL_NUMBERS=1`), another difference from .NET that `ReferenceEquals` shows. The frame 9.30 to 7.94
+  us against 7.66. frames.mjs here (`--runs 3 --js-young 32`, three pairs in turn, before by the three switches):
+  **collections median 1.24x to 1.25x NativeAOT-LLVM's to 1.09x to 1.15x (7.0 to 7.1 us against 6.2 to 6.4): not
+  reached; strings 1.24x to 1.25x to 1.01x to 1.03x (7.9 to 8.0 against 7.7 to 7.9); collections' p99 0.036 to
+  0.038 ms against 0.026 to 0.027, unchanged: not reached.** Both scenes' p99.9 and worst as before (collections
+  0.19 and 0.21 to 0.27 ms against 1.10 to 1.17 and 1.34 to 1.47; strings 0.021 to 0.023 and 0.048 to 0.054 against
+  0.075 to 0.091 and 0.27 to 0.33); churn, tree and bigdrop as on main in the same runs (tree p99.9 2.77 to 2.96 ms
+  against 2.59 to 2.65); memory 16.0 MB against 59.3; bench.mjs 0.94x to 0.95x before, 0.93x after; hello world
+  27,426 to 27,456 bytes. What is left of collections, 0.67 us, measured and not built: the `out` value of a lookup
+  counted in and out of the caller's slot 0.33; the sets 0.21 (TryInsert's count on its `entries` local and the new
+  object's count pair 0.11, the objects' allocation against a bump 0.10); removes and queue 0.12. Its p99 is the
+  dictionary's resize: `Array.Copy` counts every value in and the old array's end counts them off, 6 us of a 29.5 us
+  frame (22.3 on NativeAOT's side). Left of strings: StringBuilder is its own cycle type (`m_ChunkPrevious`), 52% of
+  40 appends is the arena's (1.42 us against 0.43); the proof that the chain cannot close is not built. Tests 210
+  to 212. On the homelab at bc2ba98 (the last commit that changes code): suite 211/211 checked and 211/211 as shipped (461 s); at ebeaa42, the first form, 209/211 checked and 210/211 as shipped (088's timer line in both; 087 checked the trap named in FINISH.md's entry, which main has too). Not run: the self-hosted compiler, stress-cycles. Found on the way, on main too: test 087 checked ends in a trap in 7 of
+  1,200 loaded runs on the homelab at main 1f7a807 (8 of 600 and 2 of 600 on the branch): `operation does not
+  support unaligned accesses` in rt.retain, from `Interlocked.Exchange(object, object)` in
+  `Task.FinishContinuations`, under `Task<bool>.TrySetResult` in the MoveNext of an async iterator on a pool thread;
+  not followed.

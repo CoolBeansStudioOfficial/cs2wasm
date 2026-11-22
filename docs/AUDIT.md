@@ -820,6 +820,117 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     nodes left, the kind of leak the test was written for, not a trap; none such in the 34,400 runs with the stack
     checks; not followed. Not run: the self-hosted compiler.
 
+- **The collections and strings scenes (2026-11-22, branch claude/colstr-1, from main 1f7a807; the desk machine,
+  shared; not merged when this was written).** Nobody had looked at these two: collections' median was 1.24x to 1.27x
+  NativeAOT-LLVM's (7.5 to 8.2 us against 5.9 to 6.6), strings' 1.21x to 1.25x (9.1 to 9.9 against 7.5 to 8.0), their
+  spikes far below. **Now collections 1.09x to 1.15x (7.0 to 7.1 us against 6.2 to 6.4) and strings 1.01x to 1.03x
+  (7.9 to 8.0 against 7.7 to 7.9), three interleaved pairs of `frames.mjs --runs 3 --js-young 32`; collections is
+  not reached, and what is left of it is counted below by cause.**
+  - Measured first, both sides (`tools/colstr-parts.cs`, new, with `tools/parts.mjs` and `tools/parts-naot-wasm`,
+    new: any by-phase tool with a `Parts.Run()` built by cs2wasm and by NativeAOT-LLVM, run in turn, the lowest of N
+    runs a row; a compiler switch as a third column). Each frame does what the scene's does with a timestamp between
+    the phases; a row is the mean of the middle half of the 6,000 frames (the clock steps by 100 ns, so a median is
+    a multiple of it). The phases timed apart do not add up to the frame on NativeAOT's side (7.1 us against 6.1
+    whole: a clock call there is a call out to JavaScript), so the collections frame is also cut short after each
+    phase and timed whole, a phase's cost the difference of two rows. ns, NativeAOT / cs2wasm before / after:
+
+    | collections, whole frames | NativeAOT | before | after |
+    |---|---|---|---|
+    | to the list's 200 adds | 300 | 300 | 300 |
+    | to the map's 100 sets (new objects) | 2,019 | 2,233 | 2,229 |
+    | the same, one object made before | 1,831 | 1,950 | 1,944 |
+    | to the map's 30 removes | 2,497 | 2,768 | 2,759 |
+    | to the queue's 50 | 2,622 | 2,952 | 2,961 |
+    | whole (300 TryGetValue) | 6,095 | 7,620 | 6,763 |
+    | whole, ContainsKey for TryGetValue | 6,198 | 6,285 | 6,298 |
+    | (100 objects made and freed, alone) | 227 | 686 | 700 |
+
+    | strings, phases | NativeAOT | before | after |
+    |---|---|---|---|
+    | 40 lines (interpolation) and their appends | 2,387 | 4,762 | 3,824 |
+    | sb.ToString | 236 | 139 | 160 |
+    | Split | 1,140 | 757 | 760 |
+    | Join of 20 | 197 | 288 | 270 |
+    | 60 names (string + number, two dictionary calls) | 3,416 | 2,981 | 2,757 |
+    | ToUpperInvariant, IndexOf | 631 | 400 | 400 |
+    | whole frame | 7,663 | 9,298 | 7,938 |
+    | (the interpolation alone) | 2,003 | 3,149 | 2,230 |
+    | (the appends alone) | 431 | 1,443 | 1,416 |
+    | (string + number alone, kept in an array) | 880 | 1,700 | 1,467 |
+    | (the dictionary's two calls alone) | 2,704 | 1,734 | 1,756 |
+
+  - **Collections, cause 1 (fixed): the lookups went through the table.** With `ContainsKey` in place of
+    `TryGetValue` the frame was NativeAOT's (6.29 against 6.20 us): the whole gap of the lookups, 1.2 us, was in what
+    `TryGetValue` adds to `FindValue`. `Dictionary<int, Particle>.TryGetValue` (28 instructions) shared one body with
+    `Dictionary<string, CultureInfo>.TryGetValue` (the canon sharing of 2026-11-21: a family's members that call
+    different functions share a body that calls through the table, the callee's index a hidden parameter), so every
+    lookup made a `call_indirect` to its own `FindValue`, and V8 inlined neither the body into the loop nor
+    `FindValue` into it (`--trace-wasm-inlining`: with the body the member's own, all of `TryGetValue`, `FindValue`,
+    the count calls go into the frame). `CS2WASM_SHARE_INDIRECT=0`: 7.56 to 6.91 us. Now a family's body under 32
+    instructions, a member of which is called from inside a loop, is not shared where its members call different
+    functions (Wasm/ShareConstants.cs; `CS2WASM_NO_DIRECT_SMALL=1`, `CS2WASM_SHARE_INDIRECT_MIN=n` the length;
+    `CS2WASM_SHARE_STATS=1` names them): 7.62 to 6.76 us, the lookups' phase 4.65 to 4.12 (NativeAOT 4.13). The parser
+    bench's module 2,382,150 to 2,389,001 bytes (+0.29%), hello world the same. The first form, every short body:
+    `List<Entity>.Grow` (8 instructions, from `AddWithResize`) then called its `Capacity` setter directly, V8 inlined
+    the setter up the chain into the tree's build, and `tools/tree-parts.cs` read the build 4% slower on the desk
+    (1.92 to 2.07 against 2.04 to 2.13 ms, four rounds in turn; the homelab's eight rounds did not tell them
+    apart); with the loop test `tree-parts`' module is byte for byte the one built with the switch. Test 210 (the
+    small methods of a dictionary, a sorted dictionary and a set over eight instantiations, comparers and
+    exceptions; with a member deliberately given another's callee its output changes).
+  - **Collections, what is left (0.67 us of 6.1), by cause, none built.** (a) The lookups, 0.33 us, all of it the
+    value handed out (the frame with `TryGetValue` less the frame with `ContainsKey`: 0.46 us here, -0.10 on
+    NativeAOT's side, whose `ContainsKey` frame is the slower of its two): on a
+    hit (one lookup in five) the `out` value is counted into the caller's frame slot and counted off at the end of
+    the turn, on every lookup the slot's old value is read, released and the slot cleared again. An `out` value
+    borrowed from the dictionary while nothing stores to it (as a returned field's is, FieldBorrows.cs) would take
+    it away; that is a new rule across a call, not attempted on the last day. (b) The sets, 0.21 us: 0.11 with one
+    object made before (TryInsert keeps a count on its `entries` local for the whole method, because `Resize()`
+    stores the field, though the local is assigned again before it is read after that call; and the new object is
+    counted by the store and let go by the caller: `OwnedParams` takes neither, TryInsert is past its size and the
+    stores are in loops), and 0.10 more for the objects themselves (100 objects made and freed alone: 0.70 us
+    against 0.23, NativeAOT's bump allocation; the allocator's paths are other rounds'). (c) The removes 0.05, the
+    queue 0.07.
+  - **Collections' p99 (0.034 to 0.038 ms against 0.025 to 0.028: 1.3x to 1.4x, not changed).** The frames above
+    p99 are the dictionary's resizes (and, 20 of the 60, the clears: without them p99 is 18.6 us against 16.1). A
+    resize frame is 29.5 us against 22.3 with new objects and 23.7 against 22.0 with one object: the 6 us are
+    `Resize`'s `Array.Copy`, which counts every value into the new array, and the old array's end, which counts
+    every one off again, each a touch of an object the copy itself never reads. The old array has two references
+    at the copy (the field and TryInsert's local, cause (b) above), so nothing can take the counts over there; with
+    the local uncounted it has one, and the copy could move them (as `Rt.GrowInto` does for a list in a group), with
+    care for what an exception between the copy and the store leaves. Not built.
+  - **Strings, cause 1 (fixed): a line of eight parts was three strings.** `$"{word} x{i}: {n} hp {m}/100"` was
+    lowered to `Concat` in fours, each call a new string that copied what the calls before had made (profile: the
+    two `Concat`s 25%, `rt.copy` 14%, `FreeObject` 16% of the interpolation). Five parts and more are now one call
+    and one string, eight parts at a time (`String.Concat8`, a null for a place not used; Compiler/Expressions.cs;
+    `CS2WASM_NO_CONCAT_ONCE=1`), as .NET's `Concat` of a span of strings or its handler make one: the 40 lines'
+    interpolation alone 3.06 to 2.32 us against that switch. It was also a difference from .NET: in fours `a + "" + "" + "" + ""` was `a` itself, in .NET
+    a new string (test 211, which fails on main at that line: texts of five to twenty-three parts, nulls, every
+    kind of part, the order of evaluation, a part that throws, and which results are new objects).
+  - **Strings, cause 2 (fixed): the strings of small numbers.** The library is compiled as Mono's, whose cache of
+    number strings is ten long; CoreCLR's and NativeAOT's is 300. `299.ToString()` is one object every time in .NET
+    and was a new string every time here (test 212, which fails with the switch), and every number below 300
+    in a line or a key was an allocation, a copy and a free: `(i & 63).ToString()` 11 to 3 ns. An edit of
+    Number.Formatting.cs in the manifest sets 300 (`CS2WASM_NO_SMALL_NUMBERS=1`: ten): the interpolation alone 2.66
+    to 2.17 us against that switch (NativeAOT 2.0), the names' phase 3.11 to 2.80. Hello world 27,426 to 27,456 bytes with both.
+  - **Strings, what is left, not built: StringBuilder's chunks are its cycle type.** 40 appends of a string and a
+    character into a new builder are 1.42 us against 0.43. Profile (`CS2WASM_NAMES=1`, `--cpu-prof`): 52% of it is
+    the arena's (ArenaLink 12%, ArenaUnlinkOld 11%, ArenaVisit 6%, ArenaFree 5%, LinkMembers 8%, PageAlloc 3%,
+    AllocObjectArena, AfterStore, ArenaRelease, ArenaJoin): `m_ChunkPrevious` is a StringBuilder in a StringBuilder,
+    so each expansion (`m_ChunkPrevious = new StringBuilder(this)`, some seven for the scene's 1,080 characters) links two members and unlinks
+    the old chain, and the builder's end frees a group. The chain cannot close: every store of the field is null,
+    a constructor's own, a new chunk made from the builder it is stored into, or a link further down the same
+    chain; proving the last two is the typed-edge proof of 7.E for a self-typed field (the value comes from the
+    container's own chain), which no rule has yet. Worth 0.7 us of the strings frame, which would put it below
+    NativeAOT's; also `Join` of 20, 0.27 against 0.20, not looked at.
+  - Checked: `frames.mjs` three pairs in turn, before (the three switches) / after: collections median 8.0 to 8.2 /
+    7.0 to 7.1 us (NativeAOT 6.2 to 6.6), p99 36.3 to 37.7 / 36.3 to 37.7, p99.9 0.186 to 0.192 / 0.187 to 0.190 ms
+    (NativeAOT 1.10 to 1.17), worst 0.21 to 0.24 / 0.21 to 0.27 (1.34 to 1.47); strings 9.7 to 9.9 / 7.9 to 8.0
+    (7.7 to 7.9), p99 14.9 to 15.6 / 12.9 to 13.5 (19.9 to 22.2), p99.9 0.021 to 0.024 / 0.021 to 0.023 (0.075 to
+    0.091), worst 0.050 to 0.058 / 0.048 to 0.054 (0.27 to 0.33); churn 1.76x to 1.78x both, tree's median 1.68x to
+    1.70x / 1.61x to 1.65x and p99.9 2.88 to 2.97 / 2.77 to 2.96 ms (2.59 to 2.65: not reached, not this round's),
+    bigdrop 0.86x to 0.97x both; memory 16.0 MB against 59.3 (71.1). `bench.mjs` three pairs: 0.94x to 0.95x /
+    0.93x (word_count 0.85x to 0.80x, dictionary 1.13x to 1.11x). On the homelab at bc2ba98 (the last commit that changes code): suite 211/211 checked and 211/211 as shipped (461 s); at ebeaa42, the first form, 209/211 checked and 210/211 as shipped (088's timer line in both; 087 checked the trap named in FINISH.md's entry, which main has too). Not run: the self-hosted compiler, stress-cycles.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
