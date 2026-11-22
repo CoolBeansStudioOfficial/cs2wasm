@@ -204,7 +204,15 @@ namespace Cs2Wasm.Runtime
                 // (not the counts a store gives back, AfterStore: those wait for the store to be written, its unlink)
                 // (the destructions: rt.lock_exit runs them when the runtime lock is not this thread's, else its exit;
                 // once: inside a destruction it leaves them to the destruction's own loop)
-                if ((t_pendN != 0 || t_defN != 0) && !RuntimeLockHeld() && t_defRunning == 0) { RuntimeLock(); RuntimeUnlock(); more = t_relN != 0; }
+                if ((t_pendN != 0 || t_defN != 0) && !RuntimeLockHeld() && t_defRunning == 0)
+                {
+                    RuntimeLock(); RuntimeUnlock();
+                    // (again too when a group's destruction was left for later after the lock's exit had run those
+                    // there were, by a destruction that exit ran itself: its own AfterLocks ends at once, inside this
+                    // one, and the group's finalizers would wait for whatever makes this thread give a lock back
+                    // next. By reading only: not seen in 600 loaded runs of test 139 that counted it)
+                    more = t_relN != 0 || t_defN != 0;
+                }
             }
             t_after = 0;
         }
