@@ -1,6 +1,7 @@
 // Runs one built module many times, several at once, and counts its distinct outputs: for rare failures that show
 // only under load (test 139's leak, 072_http's out of bounds).
-//   node tools/stress.mjs <module.wasm> [--runs n] [--par k] [--expect "text"] [-- extra host args]
+//   node tools/stress.mjs <module.wasm> [--runs n] [--par k] [--expect "text"] [--node-flags "--liftoff-only ..."]
+// --node-flags: flags for each run's Node (the engine's tiers, for what only one of them does: tools/grow-race.mjs).
 // A run that exits with an error has its output and whole stderr appended to <module.wasm>.fail.txt at once. At the
 // end the whole output and stderr of every run that differed (from --expect, or from the most frequent output; the
 // first 5 of each distinct output) is written to tests/out/stress-fail/<module>.<time>.txt and printed, so a rare
@@ -19,6 +20,7 @@ const wasm = args[0];
 const runs = +opt('--runs', 100), par = +opt('--par', 15);
 const expect = opt('--expect', null);
 const timeout = +opt('--timeout', 120000);
+const nodeFlags = (opt('--node-flags', '') ?? '').split(/[\s,]+/).filter(Boolean);
 const counts = new Map();
 const kept = new Map();   // distinct output -> the first runs that printed it, whole
 let started = 0, finished = 0, bad = 0;
@@ -27,7 +29,7 @@ function one() {
   if (started >= runs) return Promise.resolve();
   started++;
   return new Promise((done) => {
-    const p = spawn('node', [join(root, 'host', 'run.mjs'), wasm, 'main'], { cwd: root });
+    const p = spawn('node', [...nodeFlags, join(root, 'host', 'run.mjs'), wasm, 'main'], { cwd: root });
     let out = '', err = '';
     p.stdout.on('data', (d) => { out += d; });
     p.stderr.on('data', (d) => { err += d; });

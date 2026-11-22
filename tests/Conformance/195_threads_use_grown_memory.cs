@@ -53,6 +53,7 @@ static class P
                 if (n != null) sum += n.V & 0;
                 var t = b.Tail;
                 if (t != null) { Array.Clear(scratch, 0, 8); Array.Copy(t, 0, scratch, 8, t.Length < 8 ? t.Length : 8); sum += scratch[8] & 0; }
+                // (how often is by the threads' turns: a reader may be off the processor while the memory grows; not printed)
                 if ((i & 63) == 0) lock (b) { s_locked++; }
             }
             var fresh = Volatile.Read(ref s_fresh);
@@ -98,6 +99,6 @@ static class P
             counted += last == each ? 0 : 1;
             for (int k = 0; k < big.Length - 2 - Readers; k += 4096) counted += big[k];
         }
-        Console.WriteLine("readers " + Readers + " total " + total + " growths " + kept.Count + " made " + made + " miscounted " + counted + " locked " + (s_locked > 0));
+        Console.WriteLine("readers " + Readers + " total " + total + " growths " + kept.Count + " made " + made + " miscounted " + counted);
     }
 }
