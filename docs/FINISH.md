@@ -851,3 +851,31 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   beside another session's suite and passes alone); stress, 200 loaded runs a mode: 198, 192 to 197 and 139 the
   same in every run, 127 differed in 5 of 400. Test 198 fails with each of six rules of the step broken by hand.
   Not run: the self-hosted compiler.
+- 2026-11-22, the churn loop, round 4 (branch claude/churn-4 from claude/churn-3; AUDIT A3.5, "The churn loop, round
+  4"). The read loop (tools/churn-raw.cs, 32 us a frame against NativeAOT-LLVM's 24) taken apart against
+  NativeAOT-LLVM's own wasm for it: LLVM's turn has no test of the array, no read of its length, no NaN test, one
+  branch (the loop rotated), Vy read once, a pointer stepped where cs2wasm has the index, a particle of 28 bytes; each
+  difference written by hand in the tool: the NaN tests 4.2 us of this loop (2 to 2.5 of the frame), Vy read once 3.0,
+  the loop rotated with the length read once 1.7, the last two 1 together once the NaN tests are out. Built
+  (`CS2WASM_NO_SAME_BASE_LOADS=1`, Wasm/SameBaseLoads.cs): in straight-line code a load repeated from the same local
+  plus the same constant, the local not assigned since and every store between through that very local to bytes that
+  do not overlap, is the first one's value (no knowledge of fields needed; anything else that writes, any call, any
+  branch ends it): the tool's loop 32.9-33.2 to 31.0-32.1; **the churn scene's frame the same (0.083-0.085 ms with and
+  without), bench.mjs the same (0.93x-0.94x, 0.94x): certain and small, not a step toward the target**; hello world
+  27,612 to 27,642 bytes; test 207, each of the pass's five rules taken out changes a line of it. The NaN tests cannot
+  go: WebAssembly gives an arithmetic NaN of canonical operands either sign, V8 on x64 makes the one cs2wasm stores
+  and arm64's default has the other sign, so skipping the test would make memory's bits the machine's: left, a floor
+  of SPEC 7.3 as written. Not built: the loop's shape (the length before the loop is the field-identity pass's,
+  another branch's); the header's hash word (it also holds three flags of any object and the share check's thread, the
+  count and type words have no room for them, a table by address would put a test on every free, and an array's and a
+  string's length are read at the literal offset 12 in ninety places: for 2 us of churn's 80 by round 3's slope;
+  tree's part not measured, the machine too busy to time it). **Churn's median as before, 1.58x to 1.61x
+  NativeAOT-LLVM's: not reached.** Homelab: at b6ae0e4 (the code's commit) the suite 214/214 checked and as shipped
+  (464 s); test 207 under the stress tool, 200 loaded runs a mode, the same in every run; the self-hosted compiler
+  built with the pass and without it (tools/selfhost-switch.sh CS2WASM_NO_SAME_BASE_LOADS=1: 31,816,209 and 31,817,447
+  bytes), each compiling Console.WriteLine(42) three times in turn: 10.3 to 10.7 s with, 10.2 to 11.2 s without, exit
+  0 and the same peak memory (the script's own comparison of the two modules found no file by the name it looks for:
+  not shown there); tools/selfdet.mjs with the toolchain built from this commit (tools/proof5.mjs toolchain,
+  32,334,486 bytes, no threads, one core): test 207 compiled by the self-hosted compiler is the .NET-hosted compiler's
+  module byte for byte (210,405 bytes). Not run: selfdet on more than that one program or with threads; frames.mjs
+  against NativeAOT-LLVM for this round (the machine).

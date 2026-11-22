@@ -1250,6 +1250,87 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
   - Also from the homelab, after round 2's text: test 135 under the stress tool, 200 loaded runs a mode, printed
     60950 for 61050 in 3 of 400 on claude/churn-2 and in 1 of 400 on main: the timer race of its WhenAny, on
     both.
+- **The churn loop, round 4: the read loop taken apart against NativeAOT-LLVM's own code, and the header's word
+  (2026-11-22, branch claude/churn-4, from claude/churn-3; the desk machine, for the second half of the round too
+  busy with other sessions to time anything: said where).**
+  - **The read loop, instruction by instruction** (`tools/churn-raw.cs` LoopNoStore: 31.8-32.3 us a frame against
+    23.4-24.2; both modules disassembled with Emscripten's wasm-dis, cs2wasm's built with CS2WASM_NAMES=1). A turn
+    of NativeAOT-LLVM's loop: the element read through a pointer that steps by 4, its null test; X, Vx read, added,
+    stored; Y and Vy read, added, stored; **Vy not read again** but kept from the read before, 0.1 added, stored;
+    Life read and tested; Tag read, its null test, its length added; the pointer stepped; a counter taken down and
+    one branch back (the loop is rotated: the test at the bottom). No test of the array for null and no read of
+    its length in the loop (both before it), no index check, no NaN test; its particle is 28 bytes (a header of
+    one word; with the word before the object 32). A turn of cs2wasm's: **the array tested for null again**; **its
+    length read again** and the index compared; the element's address from the index (times 4, plus 16; no index
+    check: Loops.cs takes it out); the null test; for each of the three floats two reads, the add, **the NaN
+    test** (a compare and a select), the store, **Vy read twice**; Life; Tag, its null test, its length; the
+    index stepped; **two branches a turn** (the test at the top and a branch back). The differences, each
+    measured by writing the loop that way by hand in the tool (three runs in turn, us a frame): as it is 32.7 to
+    33.4; rotated by hand with the length read once 31.0 to 31.5 (**1.7**: the second branch, the length and the
+    array's null test); Vy read once, before the first store 29.9 to 30.0 (**3.0**); without the NaN tests
+    (`CS2WASM_NO_CANON=1`) 28.7 to 29.2 (**4.2** in this loop; 2 to 2.5 in the whole frame, round 3); without them
+    and rotated 27.4 to 28.9, without them and Vy once 27.6 to 27.9. So the 8 between the two loops: the NaN tests
+    4, the reads and the loop's shape 2 to 3 (they overlap: together with no NaN tests 1), the rest the object's
+    size (36 bytes against 28) and the index against the pointer.
+  - **Built: a load repeated across stores to other bytes of the same object is read once**
+    (`CS2WASM_NO_SAME_BASE_LOADS=1`; Wasm/SameBaseLoads.cs, new, after FloatStores on the final bodies). The proof
+    needs no knowledge of fields: in straight-line code the second load is from the same local plus the same
+    constant as the first, the local was not assigned since, and every store between is through that very local
+    to bytes that do not overlap the load's (so: the same address, bytes nothing wrote). What ends it: an
+    assignment of the local; a store through anything else (another local may hold the same object or a place in
+    it; an address that is not a local) or to bytes that overlap; a call; a copy, a fill, an atomic or vector
+    instruction; any branch, block or loop. A volatile field is read with other instructions and is never one of
+    these loads. The tool's loop without its store 32.9-33.2 to **31.0-32.1** (the hand's 29.8 reads Vy before
+    X's store; the pass keeps the program's order); **the churn scene's frame the same, 0.083 to 0.085 ms with and
+    without, five runs in turn; bench.mjs 0.93x-0.94x and 0.94x: nothing moved.** A small thing that is certain,
+    not a step toward the target. Hello world 27,612 to 27,642 bytes. Test 207 (the place itself stored; another
+    variable holding the same object; a ref, a ref walked along, a pointer; fields that overlap by explicit
+    layout, narrower and wider; a method, a property, a delegate, a constructor between; the variable assigned;
+    array elements by an index that is the same one; branches and loops between; other fields stored between,
+    NaNs among them; each of the pass's five rules taken out changes a line: no overlap test: the place itself,
+    the pointer, the overlapping fields, the property; other locals' loads kept: the other variable; calls
+    passed over: the calls; an assignment passed over: the pointer moved on in a loop; a store without a local
+    for its address passed over: the ref and the pointer).
+  - **Not built: the loop's shape** (the test at the bottom, the array's null test and its length before the
+    loop). 1.7 us of the read loop, and less with the NaN tests in (the two overlap). The length before the loop
+    is the field-identity pass's (claude/field-loads-1: an array's length never changes), which this round was
+    told to stay out of; the rotation alone was not measured apart from it.
+  - **The NaN tests: which stores need them, and why none can go.** In this loop all three stores are of sums
+    just made (`x + vx`, `y + vy`, `vy + 0.1`): FloatStores.cs leaves out only a constant and a value just loaded
+    from memory, so all three are tested. Can a sum of values that came from memory (canonical there) be taken as
+    canonical? WebAssembly says of an arithmetic result that is a NaN: when no operand is a NaN, or every NaN
+    operand is canonical, the result is a canonical NaN **of either sign**; otherwise any arithmetic NaN. So by
+    the specification alone the payload is right and the sign is not: the test could be skipped only if the two
+    signs were the same thing to a program, and they are not (the bits are what section 7.3 is about: memory
+    compared and hashed by its bytes, a span of bytes over floats). On the engine the suite runs on, V8 on x64, a
+    NaN made by an operation is the processor's default, sign set, payload 0x400000, which is the one cs2wasm
+    stores, and one passed through keeps its bits: there the test never changes anything for canonical operands.
+    On arm64 the processor's default NaN has the sign clear: the same module would store 0x7FC00000 where it
+    stores 0xFFC00000 on x64. Skipping the test would make memory's bits depend on the machine, which is what the
+    section rules out. **Left: a floor of SPEC 7.3 as written, 4 us of this loop and 2 to 2.5 of the frame.**
+  - **The header's hash word: not moved, and why.** `Types.ObjectHeader = 12` is the count, the type and a third
+    word that is not only the hash: its bits 29 to 31 are flags every object can have (finalized, pinned by a
+    static, marked), and with the share check bits 24 to 28 are the thread that made the object. Taking the word
+    out means a new place for three flags that the count word (whose negative values are the arenas' and the
+    immortal objects') and the type word (compared whole at every cast, dispatch and store check) do not have
+    free, a table by address for the hash and those flags with its own cost at every free (a freed object's
+    entry must go, so every free would ask whether it has one: a test on the free path that today has none), and
+    the layout of everything after the header: an array's and a string's length are read at the literal offset
+    12 in 71 places of Runtime.cs and 19 of the compiler, beside CoreLib's own code that knows where an object's
+    first field is. What it would give was measured in round 3 on churn (1.5 to 2 us of 80 for four bytes) and
+    could not be measured on tree in this round (the machine: tree's median ran 0.06 to 0.29 ms in consecutive
+    runs of the same module). For 2% of one scene and an unmeasured amount of another, a change to every
+    object's layout and to the free path, to be proved by the self-hosted compiler's own rebuild, was not started
+    on the last day. **Not done; no measurement shows it unsound or a loss: it is unbuilt.**
+  - Verified on the homelab: at b6ae0e4 (the code's commit) the suite 214/214 checked and as shipped (464 s); test 207
+    under the stress tool, 200 loaded runs a mode, the same in every run; the self-hosted compiler built with the pass
+    and without it (tools/selfhost-switch.sh CS2WASM_NO_SAME_BASE_LOADS=1: 31,816,209 and 31,817,447 bytes), each
+    compiling Console.WriteLine(42) three times in turn: 10.3 to 10.7 s with, 10.2 to 11.2 s without, exit 0 and the
+    same peak memory (the script's own comparison of the two modules found no file by the name it looks for: not shown
+    there); tools/selfdet.mjs with the toolchain built from this commit (tools/proof5.mjs toolchain, 32,334,486 bytes,
+    no threads, one core): test 207 compiled by the self-hosted compiler is the .NET-hosted compiler's module byte for
+    byte (210,405 bytes). Not run: selfdet on more than that one program or with threads; frames.mjs against
+    NativeAOT-LLVM for this round (the machine).
 
 ### A4. Plugins (goal 3)
 
