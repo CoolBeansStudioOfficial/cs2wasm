@@ -33,13 +33,13 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 180/180 | all pass, no `known-gap` |
 | 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (stream E's tests); reflection on compiler-made methods closed 2026-11-21 (tests 155, 156: names with Roslyn's ordinals, declaring classes, attributes, MoveNext); open: a capture-free lambda's `Delegate.Target` (`<>c` in .NET), the generated classes' own member lists, generic generated classes as constructed types; .NET's own library frames (not reproducible from source) | none |
 | 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20) | none in 200 loaded runs |
-| 2 | Test 127 under load (`tools/stress-cycles.sh`) | open: `async 5 / pending 1` in about 1% of loaded runs (main 6e60243: 22 of 2,400; main d4b331e: 4 of 400, the homelab); the 2026-11-21 fix made it rarer, not gone | none |
+| 2 | Test 127 under load (`tools/stress-cycles.sh`) | open: `async 5 / pending 1` in about 1% of loaded runs (main 6e60243: 22 of 2,400; main d4b331e: 4 of 400; main dca1f9c: 3 of 400, the homelab); the 2026-11-21 fix made it rarer, not gone. Test 187 as shipped differs under load at about 2.5% (19 of 800 on main bc06ea9, 20 of 800 on dca1f9c) | none |
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
-| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.14x to 0.49x NativeAOT's); tree 4.81 ms vs 3.20 ms worst (1.50x), p99.9 4.51 vs 2.66 (1.70x), its rebuild (main d4b331e, this machine, 2026-11-22; was 6.65 and 6.10; AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 2.15x (was 3.47x), tree 2.16x (was 2.56x), collections 1.27x, strings 1.21x, bigdrop 0.87x (main d4b331e, this machine) | close to 1.0x on every scene |
-| 4 | Hello world size (test 145) | 27,031 B (main 6e60243, the homelab) | < 28,383 B |
+| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.14x to 0.25x NativeAOT's with `--js-young 32`; without it one scavenge of Node's own heap a run, 0.45 to 0.75 ms, the host clock's BigInts: strings 0.45 ms against 0.23); tree 3.83 ms vs 3.15 ms worst (1.21x), p99.9 3.57 vs 2.46 (1.45x), its rebuild (main dca1f9c, this machine, 2026-11-22; was 6.65 and 6.10; AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
+| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 2.15x (was 3.47x), tree 1.91x (was 2.56x), collections 1.28x, strings 1.21x, bigdrop 0.87x; mean frame (NativeAOT's collections in it): churn 1.99x, tree 1.61x, collections 1.07x, strings 1.13x, bigdrop 0.21x (main dca1f9c, this machine) | close to 1.0x on every scene |
+| 4 | Hello world size (test 145) | 27,089 B (main dca1f9c) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 39.5 MB vs 129 MB (main ad4c99e) | met; next waste: code (36.2 MB) |
@@ -513,3 +513,33 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   allocation), a node's own links 0.5 ms, list growth from 4 to 8 items 0.9 ms (the copy's retains still flip holds up the
   owner chain), the drop 1.4 ms. A faster link will not reach parity: that needs fewer group members, or members laid
   out together (7.D, 7.E).
+- 2026-11-22, the tree scene's rebuild, round 2 (branch claude/tree-rebuild-2, main dca1f9c; docs/AUDIT.md A3.5). A list of
+  group members grows in one step (`Rt.GrowInto` before the copy in List<T>.Capacity's setter, an edit of List.cs in the
+  manifest; `Rt.ArenaGrowArray`; `CS2WASM_NO_ARRAY_GROW=1` the old way); ArenaMerge points the members of an arena of 8 or
+  fewer straight at the survivor (`CS2WASM_NO_MERGE_REPOINT=1`). tools/tree-parts.cs: build 3.05 to 2.13 ms, drop 1.4 to
+  1.35. frames.mjs here against NativeAOT-LLVM: tree worst 4.81 to 3.83 ms (3.15), p99.9 4.51 to 3.57 (2.46), median 0.061
+  to 0.055 (0.029); the other scenes as before. The 0.45 to 0.75 ms frame at a fixed frame of churn, collections and
+  strings (round 1's "cause not found", the reason given for leaving the slot walk off) is one scavenge of Node's own heap
+  a run, filled by the BigInts the host's clock returns (`monotonic_ns` is an i64); inside a timed frame or not by the
+  module's size; `--js-young 32` runs both sides without it (worst frames then 0.14x to 0.25x NativeAOT's on the four
+  scenes, tree 3.87 against 3.23). The slot walk stays off: no gain. bench.mjs 0.95x; hello world 27,031 to 27,089 bytes;
+  the self-hosted compiler (homelab, 3 interleaved rounds) 8.68-8.82 s against 8.70-8.96 before and NativeAOT-LLVM's 3.71,
+  its hello world byte for byte the .NET-hosted compiler's. Suite 202/202 checked and as shipped on the homelab (test 191:
+  growths of lists in groups); stress there, 200 loaded runs each mode: 139 and 191 the same in every run, 127 differed in
+  1 and 2. Seen by the agent on main and not fixed: a derived class's finalizer does not run its base's; a finalizer that
+  grows a non-empty list of its own dying group leaks the new objects. Left of the rebuild frame: the objects 0.5 ms, leaf
+  links 0.63, nodes with children about 1.0, the drop 1.35 (75,000 members: walk 0.40, clear 0.46, free 0.53).
+- 2026-11-22, the churn scene by phase (tools/churn-parts.cs, both sides, main dca1f9c; nothing changed). Mean a frame,
+  19,392 particles live, cs2wasm against NativeAOT-LLVM: birth 5.4 against 7.0 us, the loop 102 against 44, the removal
+  0.5 against 0.2. The loop without its move (no count, no store): 58 against 30. Of the 58 us between the loops: the
+  move about 30 (each survivor stored into another slot is a retain and a release, 1.28 ns for a counted array store
+  against 0.66 for NativeAOT's store with its barrier, more through the list's setter; and the 400 dead a frame are freed
+  here, where NativeAOT frees in its collections); the order in memory about 12 (the same read loop over particles
+  allocated in order 45.5 us: freed blocks are reused where they lie, NativeAOT's stay in order, 29.9 either way); the
+  static read again on every use about 9 (the list in a local: 1.91 ns a particle against 2.36; NativeAOT 1.54 either
+  way); the NaN test on float stores (SPEC 7.3) 2 to 5. What is under all of it: an array loop with no floats 0.59 ns a
+  particle against 0.48 (1.22x). Tried by hand in C# and no gain, so not built: the loop rotated (its test at the bottom),
+  the length in a local (0.58 to 0.59 every form). Not built: the static read once before a loop that does not store it
+  (8% of churn; needs what a field borrow needs: no address taken, no reflection, threads). No one cause brings churn to
+  1.0x: half of the gap is counts on moves and frees in the frame, which is what the scene has in place of the
+  collector's pauses (worst frame 0.29 ms against 1.15).
