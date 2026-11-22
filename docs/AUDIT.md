@@ -428,8 +428,9 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     11.6 ns a member (8 the walk with the clear, 3.3 the free).
   - **What reaching NativeAOT's p99.9 would take** (0.45 ms more of 2.85): not a faster path, fewer
     members. 15,625 of a build's 42,968 members are the lists of leaves, each holding nothing but the pinned empty
-    array: a join, a visit, a place in the ring and a member's free each, by the costs above about 0.3 ms of a
-    rebuild (an estimate, not measured). Such a list
+    array: a join, a visit, a place in the ring and a member's free each, by the costs above 0.2 to 0.3 ms of a
+    rebuild (an estimate, not measured; a plain list still has to be made, released and freed), so not the whole
+    0.45 by itself. Such a list
     could stay a plain object until its first array is stored, but the runtime rests on "a member refers to no plain
     object of a cycle-capable class": the plain list would have to name its holder (in its owner word, the
     holder's slot marked by the fourth value of its bits), join with that slot linked when it first takes a
