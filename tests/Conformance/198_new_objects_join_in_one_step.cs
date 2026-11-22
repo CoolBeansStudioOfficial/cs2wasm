@@ -10,7 +10,9 @@
 // structure lives (what .NET frees must be freed then, nothing sooner: a use after free shows in the checked build
 // and in the sums), and again when it has gone. The cases whose structure is one that may stay until its group goes
 // (a node that refers to a member beside it or of another tree, or to itself) are built in a tree of their own,
-// `odd`, which is counted when it has gone, and summed while it lives.
+// `odd`, which is counted when it has gone, and summed while it lives. Nothing here assigns a node's list of
+// children: a program with such a store anywhere keeps every replaced subtree until its tree goes, with the step
+// and without it (tools/tree-assign.cs).
 using System;
 using System.Collections.Generic;
 using System.Linq;

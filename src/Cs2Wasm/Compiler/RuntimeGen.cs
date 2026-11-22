@@ -1109,7 +1109,7 @@ sealed partial class RuntimeGen
             }
             if (rt.ArenaFinTypeIfMade is { } finType) EmitIdTable(finType, D.TypeById.Count, i => (null, finFns.ContainsKey(i) ? 1 : 0));
             if (rt.SccOfIfMade is { } scc) EmitIdTable(scc, D.TypeById.Count, i => (null, ar.SccOf(i)));
-            // (the slots a joining object's links are read from, Rt.ArenaLinkJoined: what the type's visit function
+            // (the slots a new object's links are read from as it joins, Rt.JoinFresh: what the type's visit function
             // goes through, in its order, for a class whose slots are all among the first fifteen words and at most
             // eight; 0 for an array and for any other type, which is visited by its function)
             if (rt.ArenaSlotsIfMade is { } slots) EmitIdTable(slots, D.TypeById.Count, i =>
