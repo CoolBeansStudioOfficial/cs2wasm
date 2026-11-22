@@ -709,7 +709,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(s_repEv + 16 * i, kind); Mem.StoreI32(s_repEv + 16 * i + 4, a); Mem.StoreI32(s_repEv + 16 * i + 8, b); Mem.StoreI32(s_repEv + 16 * i + 12, c);
         }
         static int s_repQ, s_repN, s_repCap, s_repTarget, s_repHits, s_repHitN, s_repRefused, s_repRefusedFlags;
-        static void ReportWho(int head, int target, bool events = false)
+        static void ReportWho(int head, int target)
         {
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
             s_repTarget = target;
@@ -726,22 +726,8 @@ namespace Cs2Wasm.Runtime
             for (int h = 0; h < s_repHitN; h++)
             {
                 int o = Mem.LoadI32(s_repHits + 12 * h);
-                if (events) { RepEv(8, o, Mem.LoadI32(s_repHits + 12 * h + 4), Mem.LoadI32(s_repHits + 12 * h + 8)); continue; }
                 ChkSay("      from " + TypeName(Borrow<object>(o)) + " @" + o + " slot+" + Mem.LoadI32(s_repHits + 12 * h + 4) + " bits " + Mem.LoadI32(s_repHits + 12 * h + 8) + " its owner " + PL(o, 20) + " flags " + PL(o, 24) + " note " + PLM(o) + " count " + Mem.LoadI32(o));
             }
-        }
-        /// <summary>The member's own references (the first sixteen): where each is, its slot's bits, what it holds.</summary>
-        static void ReportSlots(int m)
-        {
-            int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
-            s_repTarget = -1;
-            if (s_repHits == 0) s_repHits = Alloc(16 * 12);
-            s_repHitN = 0;
-            s_visitMode = 20; s_visitObj = m; s_visitElem = 0;
-            ArenaVisitObject(m);
-            s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se;
-            for (int h = 0; h < s_repHitN; h++)
-                ChkSay("      slot+" + Mem.LoadI32(s_repHits + 12 * h + 4) + " bits " + Mem.LoadI32(s_repHits + 12 * h + 8) + " -> @" + Mem.LoadI32(s_repHits + 12 * h) + " count " + Mem.LoadI32(Mem.LoadI32(s_repHits + 12 * h)));
         }
         static void ReportNote(int ar)
         {
@@ -766,7 +752,7 @@ namespace Cs2Wasm.Runtime
             for (int e = from; e < s_repEvN; e++)
             {
                 int i = e & 8191, k = Mem.LoadI32(s_repEv + 16 * i);
-                ChkSay("ev " + e + " " + (k == 1 ? "check" : k == 2 ? "ownerless" : k == 3 ? "adopted" : k == 5 ? "left" : k == 7 ? "left-flags-owner" : k == 8 ? "  from-slot-bits" : "queued") + " " + Mem.LoadI32(s_repEv + 16 * i + 4) + " " + Mem.LoadI32(s_repEv + 16 * i + 8) + " " + Mem.LoadI32(s_repEv + 16 * i + 12));
+                ChkSay("ev " + e + " " + (k == 1 ? "check" : k == 2 ? "ownerless" : k == 3 ? "adopted" : "queued") + " " + Mem.LoadI32(s_repEv + 16 * i + 4) + " " + Mem.LoadI32(s_repEv + 16 * i + 8) + " " + Mem.LoadI32(s_repEv + 16 * i + 12));
             }
             for (int i = 0; i < s_repN; i++)
             {
@@ -784,7 +770,6 @@ namespace Cs2Wasm.Runtime
                     {
                         ChkSay("  " + TypeName(Borrow<object>(m)) + " @" + m + " outside " + (-c - 2) + " inside " + PL(m, 4) + " owner " + PL(m, 20) + " flags " + PL(m, 24) + " note " + PLM(m));
                         if (PL(m, 20) == 0 && PL(m, 4) != 0 && (PLM(m) & 1) != 0) ReportWho(head, m);
-                        if (n <= 200) ReportSlots(m);
                     }
                     m = PL(m, 12);
                     k++;
@@ -1259,7 +1244,7 @@ namespace Cs2Wasm.Runtime
             s_end = Mem.Size() * 65536;
             MemStatsGrow();
             // (with other threads, not here: OomLater)
-            if (SingleThreaded()) ThrowHelpers.ReserveOutOfMemory(); else Atomic.Store32(ref s_oomWanted, 1);
+            if (SingleThreaded()) ThrowHelpers.ReserveOutOfMemory(); else Atomic.Store32(ref ThrowHelpers.s_oomWanted, 1);
         }
 
         // The exception a later failure throws is made when the memory has grown (ThrowHelpers.ReserveOutOfMemory).
@@ -1271,13 +1256,12 @@ namespace Cs2Wasm.Runtime
         // timeout); test 133 checked, 5 loaded runs of 400 on the homelab once other changes made its first growth
         // come at another time. So with threads the growth only notes that the exception is wanted, and the next
         // object allocated the slow way by a thread that holds no lock of the runtime's makes it (AllocObjectSlow).
-        static int s_oomWanted;
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static void OomLater()
         {
             if (t_lkN != 0 || RuntimeLockHeld() || Atomic.Load32(ref s_heapOwner) == ThreadId()) return;
-            if (Atomic.CompareExchange32(ref s_oomWanted, 1, 0) != 1) return;
+            if (Atomic.CompareExchange32(ref ThrowHelpers.s_oomWanted, 1, 0) != 1) return;
             ThrowHelpers.ReserveOutOfMemory();
         }
 
@@ -1895,7 +1879,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
             if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x1F) << 24);
-            if (ThreadMode() && s_oomWanted != 0) OomLater();
+            if (ThreadMode() && ThrowHelpers.s_oomWanted != 0) OomLater();
             return a;
         }
 
@@ -3326,7 +3310,7 @@ namespace Cs2Wasm.Runtime
                     int m = Mem.LoadI32(s_trQ + 4 * i);
                     if (Mem.LoadI32(m) != -2) held++;
                     int left = PL(m, 4);
-                    if (left != 0) { inside = false; outside += left; if (i < own) ownLeft += left; if (ArenaReport()) { RepEv(5, m, left, Mem.LoadI32(m)); RepEv(7, m, PL(m, 24), PL(m, 20)); ReportWho(Mem.LoadI32(ar + 4), m, true); } }
+                    if (left != 0) { inside = false; outside += left; if (i < own) ownLeft += left; }
                 }
                 TrVisit(15);
                 dead = inside && held == 0;
@@ -4186,10 +4170,10 @@ namespace Cs2Wasm.Runtime
             }
             if (ArenaReport() && s_visitMode == 20)
             {
-                if ((child == s_repTarget || s_repTarget == -1 && child != 0) && s_repHitN < 16)
+                if (child == s_repTarget && s_repHitN < 16)
                 {
                     int ri = s_visitElem != 0 ? -1 : SlotIndex(s_visitObj, slot);
-                    Mem.StoreI32(s_repHits + 12 * s_repHitN, s_repTarget == -1 ? child : s_visitObj);
+                    Mem.StoreI32(s_repHits + 12 * s_repHitN, s_visitObj);
                     Mem.StoreI32(s_repHits + 12 * s_repHitN + 4, slot - s_visitObj);
                     Mem.StoreI32(s_repHits + 12 * s_repHitN + 8, ri >= 0 ? SlotBits(s_visitObj, ri) : -1);
                     s_repHitN++;
@@ -5473,6 +5457,8 @@ namespace Cs2Wasm.Runtime
         // and has no room for it at all ends, as the process does under .NET.
         static OutOfMemoryException? s_oom;
         static int s_oomBusy;
+        // (set by a growth of the memory with threads running, Rt.GrowFor: the exception is made later, Rt.OomLater)
+        internal static int s_oomWanted;
 
         internal static void ReserveOutOfMemory()
         {
