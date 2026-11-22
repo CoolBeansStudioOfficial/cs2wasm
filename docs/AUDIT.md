@@ -717,7 +717,8 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   program's own frames are equal, the library's are not reproducible from source. ~~Open, a feature of its own:
   methods the C# compiler makes have no reflection record~~: closed 2026-11-21 (the entry below).
 
-- **Reflection on what the C# compiler makes (2026-11-21).** Tests 155 and 156 (both modes). What .NET reports for
+- **Reflection on what the C# compiler makes (2026-11-21).** Tests 155 and 156 (both modes; suite 198/198 checked and
+  as shipped on the homelab at a975d62; `tools/names-check.sh`, debug and release: no program differs). What .NET reports for
   lambdas, local functions, iterators' and async methods' `MoveNext` and their classes, cs2wasm reports the same
   through `Delegate.Method`, `StackFrame.GetMethod`, `Exception.TargetSite`, `MethodBase.GetCurrentMethod`:
   - Names (Compiler/RoslynNames.cs, rewritten): Roslyn's closure conversion emulated on the operation tree, with

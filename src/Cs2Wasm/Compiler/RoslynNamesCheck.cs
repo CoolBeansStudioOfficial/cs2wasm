@@ -38,7 +38,7 @@ internal sealed partial class Driver
             {
                 var td = md.GetTypeDefinition(h);
                 var tn = TypeName(h);
-                if (tn.StartsWith("<PrivateImplementationDetails>") || tn.Contains("<>f__AnonymousType") || tn == "<Module>" || tn.EndsWith("+<>O") || tn.Contains("<>o__") || tn.StartsWith("<>A") || tn.StartsWith("<>F") || tn.StartsWith("<>z__") || tn.Contains("+<G>$") || tn.Contains("<>f__AnonymousDelegate") || tn.Contains("+<>E__") || tn.StartsWith("Microsoft.CodeAnalysis.") || tn.StartsWith("System.Runtime.CompilerServices.")) continue;
+                if (tn.StartsWith("<PrivateImplementationDetails>") || tn.Contains("<>f__AnonymousType") || tn == "<Module>" || tn.EndsWith("+<>O") || tn.Contains("<>o__") || tn.StartsWith("<>A") || tn.StartsWith("<>F") || tn.StartsWith("<>z__") || tn.Contains("+<G>$") || tn.Contains("<>f__AnonymousDelegate") || System.Text.RegularExpressions.Regex.IsMatch(tn, @"^<[^>]*>F[0-9A-F]+__") || tn.Contains("+<>E__") || tn.StartsWith("Microsoft.CodeAnalysis.") || tn.StartsWith("System.Runtime.CompilerServices.")) continue;
                 if (md.GetString(td.Name).StartsWith('<')) actual.Add("T " + tn);
                 foreach (var mh in td.GetMethods())
                 {

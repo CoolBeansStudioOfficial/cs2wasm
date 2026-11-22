@@ -145,7 +145,8 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   `GetMethod`, `TargetSite` and `GetCurrentMethod` give `<Main>b__9_0` on `Program+<>c`, `MoveNext` on
   `Program+<Numbers>d__5`, with parameters and `[CompilerGenerated]`; kickoff methods carry
   `[AsyncStateMachine(typeof(...))]` / `[IteratorStateMachine]`, `[DebuggerStepThrough]`. TargetSite through
-  `ExceptionDispatchInfo.Throw` fixed. Tests 155, 156; hello world 27,297 B unchanged. Left: a capture-free lambda's
+  `ExceptionDispatchInfo.Throw` fixed. Tests 155, 156; suite 198/198 checked and as shipped (homelab);
+  `tools/names-check.sh` debug and release clean; hello world 27,297 B unchanged. Left: a capture-free lambda's
   `Target` (AUDIT).
 - 2026-11-20, stream E: frames' methods (`StackFrame.GetMethod`, `TargetSite` through `[StackTraceHidden]` throwers,
   `GetCurrentMethod`), `AppDomain.FirstChanceException`, and six trace differences a sweep against .NET found
