@@ -603,6 +603,12 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_NO_ARRAY_REPLACE=1 (at compile time): a new array stored where the array it was copied from
         /// was is linked element by element, and the old one's items handed over at its unlink (ReplaceArray).</summary>
         [Intrinsic] static extern bool NoArrayReplace();
+        /// <summary>CS2WASM_NO_PINNED_SKIP=1 (at compile time): a pinned object stored into a plain object's slot takes
+        /// the lock and ArenaLinkCore's questions before it is left a counted reference (ArenaLink).</summary>
+        [Intrinsic] static extern bool NoPinnedSkip();
+        /// <summary>CS2WASM_NO_EARLY_GIVE_BACK=1 (at compile time): the count a store took on a member is always given
+        /// back after the store is written (EarlyGiveBack).</summary>
+        [Intrinsic] static extern bool NoEarlyGiveBack();
         /// <summary>An array's rank and the size of its elements, by its address (Cs2WasmArrays.RankOf and ElementSize
         /// take an Array; no value of that type is made from an address here, which the compiler would read as an
         /// array of any type come from nowhere).</summary>
@@ -727,8 +733,8 @@ namespace Cs2Wasm.Runtime
         }
         // (and, with it, how often each path of the arena operations runs: OpStat's numbers, printed with DsPrint)
         static int s_opStats;
-        const int OpN = 32;
-        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow";
+        const int OpN = 40;
+        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,link-pinned,give-back-early";
         // (a constant test where it is asked, so that without the diagnosis nothing is left of it, not even a call)
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static void OpStat(int k) { if (DropStats()) OpStatCount(k); }
@@ -746,6 +752,8 @@ namespace Cs2Wasm.Runtime
             DsNum(ref at, "group drop: members ", members); DsNum(ref at, " walk ", walk); DsNum(ref at, " clear ", clear); DsNum(ref at, " free ", free);
             Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
             Engine.Write(s_dsBuf, at);
+            // (and the paths' counts so far: between two drops of a program that builds and drops, one build's)
+            DsPrint();
         }
         static void DsPrint()
         {
@@ -3271,6 +3279,16 @@ namespace Cs2Wasm.Runtime
                 if (i0 < 0 || cw > 0) { OpStat(1); t_prevSlot = slot; t_prevBits = slot != 0 && i0 >= 0 ? 0 : -1; return val; }
                 if (cw < -1 && SlotBits(container, i0) == 0) { OpStat(1); t_prevSlot = slot; t_prevBits = 0; return val; }
             }
+            // (a pinned object, which joins nothing, into a plain object, which has no bits to change: a counted
+            // reference, ArenaLinkCore's answer after the lock and its questions about the two, with what ArenaLink
+            // notes for the unlink that follows. The empty array every new list starts with, stored by List<T>'s
+            // constructor: once for each entity of the scene tree of tools/frames.mjs, 19,531 a build.)
+            if (can && !ThreadMode() && !NoPinnedSkip() && t_backN == 0 && Mem.LoadI32(container) > 0 && Mem.LoadI32(val) > 0 && Mem.LoadI32(val + 8) < 0)
+            {
+                OpStat(32);
+                t_prevSlot = slot; t_prevBits = slot != 0 ? 0 : -1;
+                return val;
+            }
             if (t_backN != 0) AfterStore();
             int mk = -1;
             if (!ThreadMode()) RuntimeLock();
@@ -3449,12 +3467,15 @@ namespace Cs2Wasm.Runtime
             // (checked: a value stored with no outside count on it: the store's count was never taken)
             if (Checked() && SingleThreaded() && Mem.LoadI32(val) == -2) { ChkSay("checked: a " + TypeName(Borrow<object>(val)) + " stored into a " + TypeName(Borrow<object>(container)) + " with no outside count" + (joined ? " (it joined for this store)" : "")); Mem.StoreI32(-4, 0); }
             bool later = false;
+            int i = s_visitElem != 0 ? -1 : SlotIndex(container, slot);
             if (Atomic.CountAdd32(ref Mem.RefI32(val), 1) == -3)
             {
                 if (joined) Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
+                // (given back here, where the release after the store would take the count off and do nothing else:
+                // EarlyGiveBack)
+                else if (EarlyGiveBack(val, container, i, ar)) { OpStat(33); Mem.StoreI32(ar, Mem.LoadI32(ar) - 1); }
                 else { Atomic.CountAdd32(ref Mem.RefI32(val), -1); GiveBackLater(val); later = true; }
             }
-            int i = s_visitElem != 0 ? -1 : SlotIndex(container, slot);
             // (fresh: the value was a plain object until this store made it a member. No member is owned by a plain
             // object (an owner holds what it owns by a linked slot or is held by it, and a member with either does not
             // leave its arena, TryLeave), so the value is above nothing: not on the container's chain, and its
@@ -3518,7 +3539,35 @@ namespace Cs2Wasm.Runtime
             return val;
         }
 
-        /// <summary>The old value of a slot that can close a cycle was overwritten.</summary>
+        /// <summary>The store's count on the value, its last from outside, can be given back as the reference is
+        /// linked, not after the store is written (GiveBackLater): a member with no owner that holds nothing, which
+        /// the container owns from this link on (not one linked as an up-reference, nor one left waiting), in an
+        /// arena other members of which code still refers to. The release after the store would then take the count
+        /// off and do nothing else (ArenaRelease's first case: the arena lives, the member is referred to from inside
+        /// and owned, and wants no hold), but until it did, the member, referred to from elsewhere than its owner,
+        /// held its new owners up the chain when a slot of its own became an up-reference (Reevaluate: a node put
+        /// into its parent's list, its parent field set before), and let them go at the release: six hold changes
+        /// and the release the long way for each node with children in the scene tree of tools/frames.mjs.
+        /// CS2WASM_NO_EARLY_GIVE_BACK=1: after the store, always.</summary>
+        static bool EarlyGiveBack(int val, int container, int i, int ar)
+        {
+            if (ThreadMode() || NoEarlyGiveBack() || val == container) return false;
+            if (PL(val, 20) != 0 || (PL(val, 24) & (Owned | Held | Dying | Queued)) != 0) return false;
+            if (Mem.LoadI32(ar) <= 1 || Mem.LoadI64(ar + 12) != 0) return false;
+            if (s_failedTops != 0 && (PLM(val) != 0 || PLM(container) != 0)) return false;
+            if (!OnChain(container, val)) return true;
+            // (above the container. In one of the container's own slots the reference is an up-reference, not counted:
+            // the value then has the store's count alone. In an array's element the ownership turns round, if
+            // TakeOwnership's test says so, asked here as there: a node that owned its parent since its first child's
+            // parent field was linked, put into the parent's list. If not, the value stays without an owner, and
+            // the release after the store checks it at the drop)
+            if (i >= 0) return false;
+            int x = container;
+            for (int k = 0; k <= ChainMax && PL(x, 20) != val; k++) x = PL(x, 20);
+            int xf = PL(x, 24);
+            return PL(x, 20) == val && (uint)xf < UOne && (xf & Held) == 0;
+        }
+
         /// <summary>Whether a reference from the container to the value can be part of a cycle: both of one group of
         /// classes that can refer to each other. Told by their classes, which do not change: no lock.</summary>
         static bool CanLink(int val, int container)
