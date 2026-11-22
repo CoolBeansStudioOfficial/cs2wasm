@@ -35,13 +35,13 @@ for (let r = 0; r < rounds; r++)
       b.checks.set(m[1], m[3]);
     }
   }
-console.log(`benchmark     ${builds.map((b) => (b.name + ' ms').padStart(10)).join('')}   each round (${builds.map((b) => b.name).join(' | ')})`);
+console.log(`benchmark     ${builds.map((b) => (b.name + ' ms').padStart(12)).join('')}   each round (${builds.map((b) => b.name).join(' | ')})`);
 const geo = builds.map(() => 0);
 for (const n of names) {
   const best = builds.map((b) => Math.min(...b.times.get(n)));
   best.forEach((v, i) => { geo[i] += Math.log(v / best[0]); });
   for (const b of builds) if (b.checks.get(n) !== builds[0].checks.get(n)) { bad++; console.log(`${n}: ${b.name}'s checksum differs`); }
-  console.log(`${n.padEnd(13)} ${best.map((v) => v.toFixed(2).padStart(10)).join('')}   ${builds.map((b) => b.times.get(n).map((v) => v.toFixed(2)).join(' ')).join(' | ')}`);
+  console.log(`${n.padEnd(13)} ${best.map((v) => v.toFixed(2).padStart(12)).join('')}   ${builds.map((b) => b.times.get(n).map((v) => v.toFixed(2)).join(' ')).join(' | ')}`);
 }
 console.log(`geometric mean against ${builds[0].name}: ${geo.map((g) => Math.exp(g / names.length).toFixed(3) + 'x').join('  ')}`);
 process.exit(bad ? 1 : 0);
