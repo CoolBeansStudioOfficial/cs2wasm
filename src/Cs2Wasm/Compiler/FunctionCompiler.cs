@@ -1556,7 +1556,13 @@ sealed partial class FunctionCompiler
                 EndTemps();
             }
             else
-            AssignLoopVariable(fe, elemType, () => EmitCallResolved(SubstMethod(getter), Recv, [], !enumIsStruct && IsVirtualDispatch(getter)), conversion: fe.LoopControlVariable);
+            {
+                // (a struct enumerator's Current that returns its field borrowed: the variable borrows it too, while
+                // nothing that runs stores what the value came through: Driver.EnumeratorCurrentKeys)
+                var keys = enumIsStruct && Types.IsRef(elemType) ? D.EnumeratorCurrentKeys(SubstMethod(getter)) : null;
+                AssignLoopVariable(fe, elemType, () => EmitCallResolved(SubstMethod(getter), Recv, [], !enumIsStruct && IsVirtualDispatch(getter)), conversion: fe.LoopControlVariable,
+                    borrowElement: keys != null, borrowKeys: keys);
+            }
             EmitStatement(fe.Body);
             ExitDisplay(fe);
             PopScope();

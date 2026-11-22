@@ -822,6 +822,53 @@ internal sealed partial class Driver
         return keys.Count == 0 ? null : string.Join("\n", keys);
     }
 
+    /// <summary>CS2WASM_NO_ENUMERATOR_BORROWS=1: a foreach over a struct enumerator counts its variable (as before).</summary>
+    static readonly bool s_noEnumeratorBorrows = Environment.GetEnvironmentVariable("CS2WASM_NO_ENUMERATOR_BORROWS") == "1";
+
+    /// <summary>The keys the value a struct enumerator's Current returns borrowed came through, for a foreach's
+    /// variable (FunctionCompiler.EmitForEach): as ReturnPathKeys, but from a struct `this`, the enumerator the loop
+    /// holds in its own hidden slot. The fields inside that storage (`this`'s, and theirs while they are structs) have
+    /// no key: only the enumerator's own methods store them, and the loop runs none of them while its variable lives
+    /// (MoveNext runs before the variable is set and after its last use; the body cannot name the enumerator). The
+    /// enumerator's count keeps what they hold alive. The fields of classes and the array elements past them have
+    /// their keys (ImmutableArray's `_array[_index]`: the elements'; List's `_current`: none). Null when the path is
+    /// otherwise (a static, a struct field of a class object) or the getter has no borrowed form.</summary>
+    public string? EnumeratorCurrentKeys(IMethodSymbol m)
+    {
+        if (s_noEnumeratorBorrows || ThreadMode) return null;
+        var def = m.OriginalDefinition;
+        if (def.IsStatic || def.ContainingType.TypeKind != TypeKind.Struct || !ReturnsField(m)) return null;
+        if (BorrowableReturns(def) is not { } values) return null;
+        var map = TypeMap.For(m);
+        var keys = new List<string>();
+        static IOperation Strip(IOperation o) { while (o is IConversionOperation { OperatorMethod: null } c) o = c.Operand; return o; }
+        static bool Inside(IOperation o)
+        {
+            o = Strip(o);
+            return o is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }
+                || o is IFieldReferenceOperation { Field: { IsStatic: false } f, Instance: { } i } && f.ContainingType.TypeKind == TypeKind.Struct && Inside(i);
+        }
+        foreach (var r in values)
+        {
+            var v = Strip(r);
+            if (v is ICoalesceAssignmentOperation { Target: var lazy }) v = lazy;
+            if (values.Count > 1 && v.ConstantValue is { HasValue: true, Value: null }) continue;
+            while (true)
+            {
+                v = Strip(v);
+                if (Inside(v)) break;
+                if (v is IArrayElementReferenceOperation ae) { if (!keys.Contains(ElementsKey)) keys.Add(ElementsKey); v = ae.ArrayReference; continue; }
+                if (v is not IFieldReferenceOperation { Field: { IsStatic: false } f, Instance: { } inst } || f.ContainingType.TypeKind != TypeKind.Class) return null;
+                var storage = f.CorrespondingTupleField ?? f;
+                var k = FieldKey(Types.Resolve(f.ContainingType, map), storage);
+                NoteBorrowField(k, storage, Types.Resolve(f.Type, map));
+                if (!keys.Contains(k)) keys.Add(k);
+                v = inst;
+            }
+        }
+        return string.Join("\n", keys);
+    }
+
     /// <summary>An instance method of a class whose every return is `this` (StringBuilder.Append and friends).</summary>
     bool ReturnsThis(IMethodSymbol m)
     {
