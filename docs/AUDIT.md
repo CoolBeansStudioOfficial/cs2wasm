@@ -1255,6 +1255,54 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   2.5% less against main in the last round, where the machine's wall times wandered); bench 0.94x NativeAOT as
   before; hello world 27,194 to 27,297 bytes. Suite 198 passed checked and as shipped (rebased on 05e8cd0), bench 0.94x there.
 
+- **Why Roslyn's binder ran 4-9x NativeAOT-LLVM (2026-11-22, branch claude/bind-dispatch, on main 2b72f15).**
+  - Measured first, the bind phase alone: `bash tools/roslyn-bind-bench.sh prof <name>` profiles a named cs2wasm
+    build and NativeAOT-LLVM's under V8's normal tiering (`--cpu-prof`, 100 us samples; cs2wasm's with eager
+    compilation, NativeAOT's without: it exits at once with `--no-wasm-lazy-compilation`), then `tools/profphase.mjs`
+    keeps the samples under GetOperation or Descendants; `tools/profcats.mjs` gives self time by kind of code.
+    `roslyn-bind-bench.sh run <name>` is one run with all its output (CS2WASM_DROP_STATS's numbers).
+  - Main's bind phase, profiled (5,123 ms; NativeAOT's 526 ms in a profile whose own compile did not distort it):
+    arena runtime 1,822 ms (36%: Rt.ArenaRelease alone 1,147), SourceAssemblySymbol.GetAttributeDeclarations' own
+    code 1,087 (21%), retain and release 294 (6%), dispatch stubs 229 (4.5%; NativeAOT's interface dispatch 2), hashing
+    and dictionaries 148 (3%), allocation and frees 120 (2%; NativeAOT's GC 61), type tests and casts 12 (0.2%), the
+    rest of Roslyn's code 1,412 (28%). So dispatch (hypothesis a), type tests (b), hashing (c) and frames (d) were not it.
+  - The cause: GetAttributeDeclarations, inclusive 2,155 ms of the 5,123 (42%). Every obsolete check of a symbol
+    (Binder.ReportDiagnosticsIfObsoleteInternal, Symbol.ObsoleteKind, up to SourceAssemblySymbol.ObsoleteAttributeData
+    while the assembly's attributes are not bound) runs it, a loop over the 1,812 RootSingleNamespaceDeclarations of
+    the compilation. NativeAOT-LLVM runs that loop in 22-43 ms. Here each declaration is an arena member noted under
+    a top whose check at the drop failed (Dropped: MarkHeld), and each iteration's retain and release are its first
+    and last outside reference: ArenaRetain and ArenaRelease, whose usual cases exclude a noted member, so TopHeld
+    walked up the member's owners to its top, twice per iteration. CS2WASM_DROP_STATS=1, bind phase: 47.6 million
+    walks, 1,079 million steps (22 per walk), 29 million slow releases of 35 million.
+  - The foreach's variable is not borrowed: ImmutableArray's enumerator was counted (fixed below for struct
+    enumerators in general), but the loop still keeps its counts, for the elements' key: `rootNs.Location` reaches
+    rt.release, rt.destroy, ~TaskExceptionHolder, AggregateException's constructor, which stores array elements.
+    Typed element keys (a store into `X[]` cannot overwrite an element of an unrelated `Y[]`) would not be enough
+    either: Buffer.Memmove<char> (string.Substring) and struct constructors storing through `this` note the untyped
+    elements' key, and Buffer.Memmove<T> moves references as bytes (Rt.MoveRefs), so those cannot be told apart
+    without typing the runtime's byte paths.
+  - Fix 1, the tops remembered (Runtime.cs, Top): a table of 8,192 entries (member, epoch, top, steps), 128 KB made at
+    the first walk, without threads (ThreadMode is a constant; with threads the walk is under the runtime lock as
+    before). A walk stops at the first member on its way whose top is remembered in the current epoch, and remembers
+    each member it went through with its distance (the 64-step limit is kept: a top 64 steps or more from the member
+    is far, as the walk said). TopsMoved moves the epoch at every change of what the walk reads: an Owned flag or owner
+    word (TakeOwnership, OwnerLetGo, UpdateHold's lost owner, LinkMembers' last owning reference, Handover), a count
+    word becoming a member's (ArenaJoin) or ceasing to be (TryLeave, ArenaDestroyFrom, ArenaFree, the finalizer
+    phase's bias and its end, FreeObjectArena of a member). Checked builds compare every answer with the walk's
+    (a change TopsMoved missed would trap there). A wrong answer could only skip or add a check at the drop (the
+    check itself recounts), never free early; the comparison shows there is none.
+  - Fix 2, HeldQuiet: the usual cases of ArenaRetain and ArenaRelease now take a noted member whose top keeps no
+    number of held members (no top, far, or one whose check failed by references from outside): what TopHeld would
+    have done (nothing) without the slow way.
+  - Fix 3, foreach over a struct enumerator (Driver.EnumeratorCurrentKeys): Current that returns a field borrowed
+    (ImmutableArray's `_array[_index]`, a struct enumerator's own `_current`) gives the loop variable a borrow, with
+    the keys of what the value came through past the enumerator's own storage (which only its own methods store, and
+    the body cannot name). Test 190 overwrites the sources while the variable is in use (through the array behind an
+    ImmutableArray, a class's array replaced and cleared, the enumerator's field), returns the variable from inside
+    the loop, casts, cycles, nested loops; it fails if the keys are left out. `CS2WASM_NO_ENUMERATOR_BORROWS=1`. On the
+    bench it changes nothing measurable (GetAttributeDeclarations' loop keeps its counts, above).
+  - Results: BIND_RESULTS
+
 - **Fewer count operations (2026-11-21, branch claude/rc-fewer-counts, on main ec13733): where the counts come from.**
   - The measure: `CS2WASM_COUNT_RC=1` now keeps each count call's cause apart from a release's exact-type hint
     (`Instr.Cause`; before, the cause sat in Imm2, which ExpandLeafReleases reads as the hint: the measure could
