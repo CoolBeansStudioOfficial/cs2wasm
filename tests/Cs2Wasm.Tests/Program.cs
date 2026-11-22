@@ -12,6 +12,8 @@ using Microsoft.CodeAnalysis;
 
 var root = FindRoot();
 var dir = Path.Combine(root, "tests", "Conformance");
+// (Roslyn's emit for CS2WASM_CHECK_NAMES=1: each program's generated names against Roslyn's own)
+Cs2WasmCompiler.EmitForNamesCheck = (c, s) => c.Emit(s).Success;
 // (the conformance programs are built checked: a use after free shows; --unchecked builds them as shipped)
 bool checkedBuild = !args.Contains("--unchecked");
 // (as shipped into a folder of its own: tools/suite.mjs runs both modes at once, and they wrote the same files)

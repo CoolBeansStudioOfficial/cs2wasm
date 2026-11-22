@@ -753,10 +753,55 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   `Number.ThrowFormatException`, `Int32.Parse(String)` and nothing between in .NET, cs2wasm every library frame
   between; a failed static initializer's inner trace ends in .NET with CoreCLR's
   `InitHelpers.CallClassConstructor(Void* cctor, ...)` frame and a line break, cs2wasm's at the `.cctor` frame): the
-  program's own frames are equal, the library's are not reproducible from source. **Open, a feature of its own:** methods the C# compiler makes have no
-  reflection record: `GetMethod()` of a lambda's or local function's frame is null and `Delegate.Method` of one
-  throws (.NET: `<Main>b__1_0` on `Program+<>c`), and an async method's frame gives its kickoff method where .NET
-  gives `MoveNext` of its state machine.
+  program's own frames are equal, the library's are not reproducible from source. ~~Open, a feature of its own:
+  methods the C# compiler makes have no reflection record~~: closed 2026-11-21 (the entry below).
+
+- **Reflection on what the C# compiler makes (2026-11-21).** Tests 155 and 156 (both modes; suite 198/198 checked and
+  as shipped on the homelab at a975d62; `tools/names-check.sh`, debug and release: no program differs). What .NET reports for
+  lambdas, local functions, iterators' and async methods' `MoveNext` and their classes, cs2wasm reports the same
+  through `Delegate.Method`, `StackFrame.GetMethod`, `Exception.TargetSite`, `MethodBase.GetCurrentMethod`:
+  - Names (Compiler/RoslynNames.cs, rewritten): Roslyn's closure conversion emulated on the operation tree, with
+    its numbers exact: the method's ordinal among its type's members; the scope tree (blocks that declare variables,
+    every lambda's and local function's body, the scopes lowering adds: a foreach's temporaries and its variable, a
+    for loop's, using, lock, switch, switch expressions, object and collection initializers); an environment per
+    scope with captured variables (a struct when nothing that captures it becomes a delegate, is async or an
+    iterator), numbered in a walk of the tree; each function's place (the nearest class environment, the type itself
+    for `this` alone, `<>c` (`<>c__N`1` in a generic method) for a lambda that captures nothing, else a static
+    method) and its number in the same walk (a scope's own functions before those of the scopes in it: a lambda
+    inside another is numbered after its outer method's other lambdas, `<Lambdas>b__9_9`); in a release build,
+    environments merged into their parents when the same functions capture both, not across a loop's head (a
+    backward jump). State machines `<M>d__N` (a lambda's `<<M>b__0_0>d`). The old names were source order and a
+    scope per variable's block: wrong for nested lambdas and for loops' environments. Checked against Roslyn itself:
+    `CS2WASM_CHECK_NAMES=1` (or `=only`, which stops after the check) emits the program with Roslyn and lists every
+    method and class name it made that the emulation did not predict, and the reverse
+    (Compiler/RoslynNamesCheck.cs; `CS2WASM_CHECK_NAMES_RELEASE=1` as a release build).
+  - Records (Compiler/GeneratedReflection.cs): a method entry per compiled lambda, local function and `MoveNext`
+    (name, return and parameter types and names, a local function's struct of captures as `<>c__DisplayClassN_M&`,
+    static or instance, private for a lambda on the type itself, internal otherwise, `[CompilerGenerated]` on those
+    in the program's own type); their classes as types without symbols (`Driver.GenTypes`): `Program+<>c`,
+    `<>c__DisplayClass9_0`, `<Numbers>d__5` (an iterator object's `GetType()` too, and a closure's: the delegate's
+    `Target.GetType() == Method.DeclaringType`), declaring type, namespace, sealed, nested private, `[Serializable]`
+    on `<>c` (the flag), `[CompilerGenerated]` but on one nested in another such class, a value type for an async
+    state machine in a release build. The kickoff method's `[IteratorStateMachine(typeof(<M>d__N))]` /
+    `[AsyncStateMachine(...)]` and `[DebuggerStepThrough]`, their type the class of the state machine's object. A
+    frame of an async method's `MoveNext` is its `MoveNext` (was the kickoff method). Found on the way:
+    `ExceptionDispatchInfo.Throw` made itself the TargetSite of what it rethrew (it is `[StackTraceHidden]`); the
+    first throw's site now stays (`Exception._capturedSite`).
+  - Cost: none of it in a program that asks no frame or delegate for its method (records, entries, attribute
+    factories are made only then); hello world 27,297 bytes as shipped, unchanged. The iterator classes' full names
+    are longer in programs with iterators (`Program+<Numbers>d__5` against `<Numbers>d`).
+  **Still different (recorded):** a lambda that captures nothing has a display or null as its `Delegate.Target` in
+  cs2wasm, the `<>c` singleton in .NET (so `Method.Invoke(Target, ...)` of a lambda's method: no invoke thunk, and
+  the target is not a `<>c`); the generated classes' own members (`GetMethods()` of `<>c`, a display class's
+  fields but for expression trees') are not listed; a generic type's or method's generated class is reported as
+  its definition where .NET reports a delegate's method on the constructed class; the emulation leaves out the
+  scopes of lowering's other temporaries (a lambda inside `??`, `?.`, named arguments out of order is numbered after
+  its scope's other functions in Roslyn), goto statements' effect on merging, variant interfaces, C# 14 extension
+  blocks' members. Handled besides: interpolated strings built by a handler (a scope), params collections (none),
+  initializers' lambdas (numbered in each constructor, after the body's own), primary constructors' parameters
+  (`this` captured), expression trees' lambdas (numbered, no method, their parameters no environment's). The check
+  over the whole suite (debug and release) finds no difference left; it compares names per class, so two lambdas
+  of one class with their numbers swapped would not show: test 156 prints them in order.
 
 - **Steps 8.2, 8.3: done (2026-11-18).** `MemberAccess.Instrumentable` says which accesses a hook runs at (not a
   `ref` or `out` argument, a deconstruction's target, an event's handlers); every hook form and failure path of the

@@ -239,6 +239,8 @@ internal sealed partial class Driver
         Module.MemoryShared = options.SharedMemory;
         foreach (var b in options.Boundary.Imports) BoundaryByDocId[Types.StripReturn(b.Method, b.Method.Contains("op_Implicit") || b.Method.Contains("op_Explicit"))] = (b.Module, b.Name);
         _typeIds["System.String"] = 1; TypeById.Add(StringType); Constructed.Add(1);
+        // (the developer's check of RoslynNames.cs alone, without building: RoslynNamesCheck.cs)
+        if (Environment.GetEnvironmentVariable("CS2WASM_CHECK_NAMES") == "only") { CheckGeneratedNames(); Environment.Exit(0); }
     }
 
     // ---------------- diagnostics ----------------

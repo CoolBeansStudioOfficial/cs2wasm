@@ -39,6 +39,15 @@ sealed partial class RuntimeGen
             foreach (var ins in f.Body)
                 if (ins.Ref is TypeIdRef tr) Add(tr.Id);
         foreach (var t in D.ReflectedTypes()) Add(D.TypeId(t));
+        foreach (var t in D.GeneratedRelatedTypes()) Add(D.TypeId(t));
+        foreach (var id in D.GeneratedTypeIds()) Add(id);
+        // (what the tables say of the C# compiler's classes: the types they are nested in, their bases, interfaces)
+        foreach (var g in D.GenTypes.Values)
+        {
+            if (kinds.Contains("declaring")) Add(g.DeclaringId);
+            if (kinds.Contains("base")) Add(D.TypeId(D.LibType(g.IsValueType ? "System.ValueType" : "System.Object")));
+            if (kinds.Contains("interfaces")) foreach (var i in g.Interfaces) Add(D.TypeId(i));
+        }
         if (D.Rt.ProgramTypesIfMade != null) foreach (var t in D.ProgramTypes()) Add(D.TypeId(t));
         // MakeGenericType / GetGenericTypeDefinition: the definitions of the generic instances are types too
         bool defs = D.Rt.GenericInstancesIfMade != null;
@@ -156,7 +165,7 @@ sealed partial class RuntimeGen
         }
         foreach (var (kind, fn) in D.Rt.TypeInfoFns)
         {
-            Func<int, (IAddress?, int)> entry = kind switch
+            Func<int, (IAddress?, int)> real = kind switch
             {
                 "base" => i => (null, Real(i) && BaseOf(D.TypeById[i]) is { } b ? D.ExtId(D.TypeId(b)) : -1),
                 "element" => i => (null, Real(i) && ElementOf(D.TypeById[i]) is { } e ? D.ExtId(D.TypeId(D.Types.Canonical(e))) : -1),
@@ -185,6 +194,20 @@ sealed partial class RuntimeGen
                 "assembly" => i => (null, Real(i) && AssemblyOf(D.TypeById[i]) is { } asm ? D.AssemblyIndex(asm) : 0),
                 _ => throw new CompileException("type info " + kind),
             };
+            // a class the C# compiler makes (a closure's, a state machine's: GeneratedReflection.cs)
+            Func<int, (IAddress?, int)> entry = i => D.GenTypes.TryGetValue(i, out var g) ? kind switch
+            {
+                "base" => (null, D.ExistingTypeId(D.LibType(g.IsValueType ? "System.ValueType" : "System.Object")) is int bi ? D.ExtId(bi) : -1),
+                "namespace" => (D.StringLiteral(g.Namespace), 0),
+                // NestedPrivate, Sealed, [Serializable], BeforeFieldInit
+                "attrs" => (null, 0x3 | 0x100 | (g.Serializable ? 0x2000 : 0) | (g.BeforeFieldInit ? 0x100000 : 0)),
+                "cor" => (null, g.IsValueType ? 0x11 : 0x12),
+                "flags2" => (null, 8),
+                "interfaces" => (Ids(g.Interfaces), 0),
+                "declaring" => (null, D.ExtId(g.DeclaringId)),
+                "assembly" => (null, g.Assembly != null ? D.AssemblyIndex(g.Assembly) : 0),
+                _ => real(i),
+            } : real(i);
             Action<Emitter>? byRef = kind switch
             {
                 "cor" => e => e.I32(0x10),

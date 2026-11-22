@@ -43,13 +43,15 @@ internal sealed partial class Driver
     public readonly Dictionary<int, SyntheticType> SyntheticById = [];
     /// <summary>A type id that stands for no symbol: a closure, or a synthetic type other than an anonymous type
     /// (whose overrides are synthetic while its symbol, base type and members are Roslyn's).</summary>
-    public bool IsSymbolless(int id) => DisplayById.ContainsKey(id) || SyntheticById.ContainsKey(id) && !(id < TypeById.Count && TypeById[id] is INamedTypeSymbol { IsAnonymousType: true });
+    public bool IsSymbolless(int id) => DisplayById.ContainsKey(id) || GenTypes.ContainsKey(id) || SyntheticById.ContainsKey(id) && !(id < TypeById.Count && TypeById[id] is INamedTypeSymbol { IsAnonymousType: true });
 }
 
 /// <summary>A compiler-made class (iterator objects): its interfaces and the functions implementing their methods.</summary>
 internal sealed class SyntheticType
 {
     public required string Name;
+    /// <summary>The C# compiler's names for it (an iterator's class): Type.Name and Type.FullName.</summary>
+    public string? ShortName, FullName;
     public List<ITypeSymbol> Interfaces = [];
     public Dictionary<string, WasmFunction> Impls = [];
 }
@@ -102,6 +104,7 @@ sealed partial class FunctionCompiler
         else (body, syntax) = GetBody(def);
         E.CurrentPos = D.Position(syntax);
         var machine = new Display { Owner = null, Name = "<" + def.Name + ">d" };
+        if (D.StateMachineName(this, M) is var (smShort, smFull)) { machine.RoslynShort = smShort; machine.RoslynFull = smFull; }
         var info = new MachineInfo
         {
             Machine = machine, Method = M, Map = Map, IsAsync = IsAsyncM(M), IsIterator = IsIteratorM(M),
@@ -110,7 +113,8 @@ sealed partial class FunctionCompiler
             Cfg = nested ? NestedCfg(def, syntax) : null,
         };
         // (.NET's traces name an iterator's frame "M(...)+MoveNext()", an async method's "M(...)")
-        info.MoveNext.FrameName = Driver.FrameName(M) + (IsIteratorM(M) && !IsAsyncM(M) ? "+MoveNext()" : "");
+        // (a lambda's or local function's: by the name of its method, which the C# compiler makes)
+        info.MoveNext.FrameName = (nested && E.Fn.FrameName != null ? E.Fn.FrameName : Driver.FrameName(M)) + (IsIteratorM(M) && !IsAsyncM(M) ? "+MoveNext()" : "");
         var ret = T.Resolve(M.ReturnType, Map);
         info.DeclaredReturn = ret;
         if (info.IsIterator)
@@ -163,7 +167,8 @@ sealed partial class FunctionCompiler
         }
         if (info.TaskType != null) machine.Extra("task", info.TaskType, T);
         if (info.Builder != null) machine.Extra("builder", info.Builder, T);
-        int tid = D.DisplayTypeId(machine);
+        int tid = D.MachineTypeId(machine, nested ? null : M.OriginalDefinition);
+        D.Machines.Add(new Driver.MachineRec(info.MoveNext, M, machine, info.IsIterator, info.IsAsync, nested ? E.Fn : null));
         var sizeAddr = new LateAddr(() => machine.AllocSize);
 
         // compile MoveNext later (it may add slots), with the machine as its environment
@@ -385,7 +390,7 @@ sealed partial class FunctionCompiler
         var ien = (INamedTypeSymbol)T.Canonical(D.Main.GetTypeByMetadataName("System.Collections.IEnumerable")!);
         var ietor = (INamedTypeSymbol)T.Canonical(D.Main.GetTypeByMetadataName("System.Collections.IEnumerator")!);
         var idisp = (INamedTypeSymbol)T.Canonical(D.Main.GetSpecialType(SpecialType.System_IDisposable));
-        var st = new SyntheticType { Name = machine.Name, Interfaces = [ietorT, ietor, idisp] };
+        var st = new SyntheticType { Name = machine.Name, ShortName = machine.RoslynShort, FullName = machine.RoslynFull, Interfaces = [ietorT, ietor, idisp] };
         if (info.ReturnsEnumerable) { st.Interfaces.Add(ienT); st.Interfaces.Add(ien); }
         string K(INamedTypeSymbol t, string name) => Types.MethodKey(D.CanonicalMethod(t.GetMembers(name).OfType<IMethodSymbol>().First()));
 
@@ -478,7 +483,7 @@ sealed partial class FunctionCompiler
         var ienT = (INamedTypeSymbol)T.Canonical(D.Main.GetTypeByMetadataName("System.Collections.Generic.IAsyncEnumerable`1")!.Construct(et));
         var ietorT = (INamedTypeSymbol)T.Canonical(D.Main.GetTypeByMetadataName("System.Collections.Generic.IAsyncEnumerator`1")!.Construct(et));
         var idisp = (INamedTypeSymbol)T.Canonical(D.Main.GetTypeByMetadataName("System.IAsyncDisposable")!);
-        var st = new SyntheticType { Name = machine.Name, Interfaces = [ietorT, idisp] };
+        var st = new SyntheticType { Name = machine.Name, ShortName = machine.RoslynShort, FullName = machine.RoslynFull, Interfaces = [ietorT, idisp] };
         if (info.ReturnsEnumerable) st.Interfaces.Add(ienT);
         IMethodSymbol Member(INamedTypeSymbol t, string name) => D.CanonicalMethod(t.GetMembers(name).OfType<IMethodSymbol>().First());
         string K(INamedTypeSymbol t, string name) => Types.MethodKey(Member(t, name));

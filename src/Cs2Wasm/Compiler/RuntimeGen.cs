@@ -1297,6 +1297,8 @@ sealed partial class RuntimeGen
 
     public void Finish()
     {
+        // (what the C# compiler would have made, for reflection: its classes get ids before the tables close)
+        D.PrepareGenerated();
         CloseTypeInfo();
         D.Mark("  finish: CloseTypeInfo");
         if (D.Arenas.Enabled) EmitArenaSupport();
@@ -1909,11 +1911,12 @@ sealed partial class RuntimeGen
     {
         { var e = new Emitter(D.Rt.TypeNameFn); e.Get(0); e.Load(Op.I32Load, 4); e.Call(D.Rt.TypeNameById); }
         int n = D.TypeCount;
-        string Full(int i) => i == 0 ? "?" : D.SyntheticById.TryGetValue(i, out var syn) ? syn.Name : D.DisplayById.TryGetValue(i, out var dd) ? D.RoslynDisplayName(dd, true) ?? "<>c__DisplayClass" : Driver.ClrName(D.TypeById[i]);
+        string Full(int i) => i == 0 ? "?" : D.GenTypes.TryGetValue(i, out var g) ? g.Full : D.SyntheticById.TryGetValue(i, out var syn) ? syn.FullName ?? syn.Name : D.DisplayById.TryGetValue(i, out var dd) ? D.RoslynDisplayName(dd, true) ?? "<>c__DisplayClass" : Driver.ClrName(D.TypeById[i]);
         string Short(int i)
         {
             if (i == 0) return "?";
-            if (D.SyntheticById.TryGetValue(i, out var syn)) return syn.Name;
+            if (D.GenTypes.TryGetValue(i, out var g)) return g.Short;
+            if (D.SyntheticById.TryGetValue(i, out var syn)) return syn.ShortName ?? syn.Name;
             if (D.DisplayById.TryGetValue(i, out var sd)) return D.RoslynDisplayName(sd, false) ?? "<>c__DisplayClass";
             return ShortName(D.TypeById[i]);
         }
@@ -1944,7 +1947,7 @@ sealed partial class RuntimeGen
             File.WriteAllText(dumpPath, sb.ToString());
         }
         EmitIdTable(D.Rt.TypeShortNameById, n, i => (D.StringLiteral(Short(i)), 0));
-        EmitIdTable(D.Rt.TypeFlagsById, n, i => (null, i == 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) ? 0 : Flags(D.TypeById[i])));
+        EmitIdTable(D.Rt.TypeFlagsById, n, i => (null, D.GenTypes.TryGetValue(i, out var gf) ? (gf.IsValueType ? 1 : 0) : i == 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) ? 0 : Flags(D.TypeById[i])));
         if (D.Rt.ProgramTypesIfMade is { } ptf)
         {
             var ids = D.ProgramTypes().Select(t => D.ExtId(D.TypeId(t))).Where(x => x >= 0).ToList();
@@ -1965,7 +1968,7 @@ sealed partial class RuntimeGen
             for (int ext = 0; ext < n; ext++)
             {
                 int i = D.IntId(ext);
-                if (i <= 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i)) continue;
+                if (i <= 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) || D.GenTypes.ContainsKey(i)) continue;
                 if (D.TypeById[i] is not INamedTypeSymbol nt || nt.IsUnboundGenericType || nt.TypeArguments.Length > 0 && nt.TypeArguments.Any(a => a is ITypeParameterSymbol)) continue;
                 var asm = nt.ContainingAssembly;
                 if (asm == null || !SymbolEqualityComparer.Default.Equals(asm, corlib) && !programs.Contains(asm)) continue;
@@ -1988,7 +1991,7 @@ sealed partial class RuntimeGen
             for (int ext = 0; ext < n; ext++)
             {
                 int i = D.IntId(ext);
-                if (i <= 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i)) continue;
+                if (i <= 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) || D.GenTypes.ContainsKey(i)) continue;
                 if (D.TypeById[i] is not INamedTypeSymbol { IsGenericType: true } gi || Types.IsGenericDefinition(gi)) continue;
                 if (D.ExistingTypeId(D.Types.Canonical(gi.OriginalDefinition)) is not int di || D.ExtId(di) < 0) continue;
                 var args = gi.TypeArguments.Select(a => D.ExistingTypeId(D.Types.Canonical(a)) is int ai ? D.ExtId(ai) : -1).ToList();
@@ -2026,7 +2029,7 @@ sealed partial class RuntimeGen
             for (int ext = 0; ext < n; ext++)
             {
                 int i = D.IntId(ext);
-                if (i <= 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i)) continue;
+                if (i <= 0 || D.SyntheticById.ContainsKey(i) || D.DisplayById.ContainsKey(i) || D.GenTypes.ContainsKey(i)) continue;
                 // (a generic instance, or an array or pointer of one: the types whose names repeat other names)
                 List<ITypeSymbol> targs;
                 switch (D.TypeById[i])
@@ -2381,6 +2384,7 @@ internal sealed partial class Driver
         // (named by the outer method and position: a chain of the owners' names grows with every nesting)
         var fn = Module.AddFunction("lambda in " + Display(owner.OuterMethod) + "@" + af.Syntax.SpanStart, NestedSignature(sym, map));
         fn.FrameName = RoslynNestedFrameName(owner, af.Syntax, sym, localFunction: false);
+        NestedFns[fn] = (owner.OuterMethod.OriginalDefinition, af.Syntax);
         fn.ProgramCode = owner.FnProgramCode;
         mi = new MethodInst { Sym = sym, Fn = fn, Key = key, Impl = MethodImpl.Body };
         var ci = owner.MakeClosureInfo(map, env, ret);
@@ -2401,6 +2405,7 @@ internal sealed partial class Driver
         if (_methods.TryGetValue(key, out var mi)) return mi;
         var fn = Module.AddFunction("local " + def.Name + " in " + Display(owner.OuterMethod), NestedSignature(def, map));
         fn.FrameName = RoslynNestedFrameName(owner, def.DeclaringSyntaxReferences.First().GetSyntax(), def, localFunction: true);
+        NestedFns[fn] = (owner.OuterMethod.OriginalDefinition, def.DeclaringSyntaxReferences.First().GetSyntax());
         fn.ProgramCode = owner.FnProgramCode;
         mi = new MethodInst { Sym = def, Fn = fn, Key = key, Impl = MethodImpl.Body };
         var syntax = def.DeclaringSyntaxReferences.First().GetSyntax();

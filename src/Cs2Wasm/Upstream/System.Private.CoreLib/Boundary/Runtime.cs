@@ -3980,7 +3980,13 @@ namespace Cs2Wasm.Runtime
             }
             // (Exception.TargetSite: the method that threw, if traces hide it)
             e._asyncTop = false;
-            if (FramesWanted()) e._throwSite = TakeThrowSite();
+            if (FramesWanted())
+            {
+                // (ExceptionDispatchInfo's throw: the site of the first throw stays)
+                int site = TakeThrowSite();
+                e._throwSite = e._dispatching ? e._capturedSite : site;
+                e._dispatching = false;
+            }
             if (FirstChanceWanted()) FirstChance(e);
         }
 

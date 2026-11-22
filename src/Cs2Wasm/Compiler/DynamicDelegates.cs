@@ -286,6 +286,15 @@ internal sealed partial class Driver
                 e.Get(0); e.I32Fn(Module, fn); e.Op(Op.I32Eq);
                 e.If(); e.I32(a); e.Op(Op.Return); e.End();
             }
+        // (lambdas and local functions: the methods the C# compiler makes of them, GeneratedReflection.cs; only
+        // those live code makes delegates of: naming a function here would make it live after the types are numbered)
+        var live = _genEntryOfFn.Count > 0 ? Module.LiveFunctions() : null;
+        foreach (var (fn, a) in _genEntryOfFn)
+        {
+            if (fn.Body.Count == 0 || !live!.Contains(fn) || DelegateFnMethods.ContainsKey(fn) && _methodEntries.ContainsKey(Compiler.Types.MethodKey(CanonicalMethod(DelegateFnMethods[fn])))) continue;
+            e.Get(0); e.I32Fn(Module, fn); e.Op(Op.I32Eq);
+            e.If(); e.I32(a); e.Op(Op.Return); e.End();
+        }
         e.I32(0);
     }
 

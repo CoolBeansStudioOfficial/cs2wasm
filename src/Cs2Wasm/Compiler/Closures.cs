@@ -27,6 +27,8 @@ internal sealed class Display
     internal int Local = -1;  // wasm local in the owner holding the pointer
     internal int FrameOffset = -1;  // where it lives in the owner's frame, when it does (FrameDisplaysAllowed)
     public string Name = "";
+    /// <summary>The C# compiler's name for the class, when it is a state machine (RoslynNames.cs).</summary>
+    public string? RoslynShort, RoslynFull;
 }
 
 sealed class ClosureInfo

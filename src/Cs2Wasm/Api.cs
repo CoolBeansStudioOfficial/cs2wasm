@@ -76,6 +76,11 @@ public static class Cs2WasmCompiler
 {
     public const string CompilerVersion = "0.1.0";
 
+    /// <summary>Roslyn's own emit, for the developer's check of the names of what the C# compiler makes
+    /// (CS2WASM_CHECK_NAMES, Compiler/RoslynNamesCheck.cs): set by the .NET-hosted command line and the tests, so
+    /// that the self-hosted compiler, which has no use for it, does not carry Roslyn's emitter.</summary>
+    public static Func<Compilation, Stream, bool>? EmitForNamesCheck;
+
     /// <summary>CS2WASM_NO_SECOND_PASS=1: a program with threads is compiled once, taking every object as shared.</summary>
     static readonly bool s_noSecondPass = Environment.GetEnvironmentVariable("CS2WASM_NO_SECOND_PASS") == "1";
 
