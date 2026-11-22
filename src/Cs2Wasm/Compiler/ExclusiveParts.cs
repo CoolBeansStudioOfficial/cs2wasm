@@ -27,7 +27,7 @@ namespace Cs2Wasm.Compiler;
 internal sealed partial class Arenas
 {
     static readonly bool s_noParts = Environment.GetEnvironmentVariable("CS2WASM_NO_EXCLUSIVE_PARTS") == "1";
-    static readonly bool s_partsDebug = Environment.GetEnvironmentVariable("CS2WASM_PARTS_DEBUG") == "1";
+    internal static readonly bool PartsDebug = Environment.GetEnvironmentVariable("CS2WASM_PARTS_DEBUG") == "1";
     /// <summary>CS2WASM_EXP_PARTS_SKIP=n (the tests' own: conformance tests 200 to 204 must change their output with
     /// each): condition n of the proof is not asked. 1 the stored value, 2 the reads' uses, 3 the holder kept
     /// alive, 4 addresses and reflection, 5 copies.</summary>
@@ -81,6 +81,7 @@ internal sealed partial class Arenas
     {
         _partsDecided = true;
         if (!Enabled || !PartsOn) return;
+        if (PartsDebug) foreach (var s in _sites.Values.Where(s => !s.IsArray && s.Cyclic)) Console.Error.WriteLine($"parts?: {s.Key} ({s.Member}): stores {s.PartStores} bad {s.PartBad} cid {s.ContainerId}");
         var cands = _sites.Values.Where(s => s.PartStores && s.Cyclic && !s.IsArray && s.ContainerId < 0 && s.Member != null).ToList();
         if (cands.Count == 0) return;
         foreach (var s in cands)
@@ -100,7 +101,7 @@ internal sealed partial class Arenas
         foreach (var s in cands)
         {
             s.Exclusive = s.PartBad == null;
-            if (s_partsDebug) Console.Error.WriteLine($"parts: {s.Key} ({s.Member}): {(s.Exclusive ? "exclusive" : "no: " + s.PartBad)}");
+            if (PartsDebug) Console.Error.WriteLine($"parts: {s.Key} ({s.Member}): {(s.Exclusive ? "exclusive" : "no: " + s.PartBad)}");
         }
         AnyParts = cands.Any(s => s.Exclusive);
         _exclusive = null;
@@ -155,11 +156,20 @@ sealed partial class FunctionCompiler
     {
         if (!PartCandidate(f)) return false;
         if (Arenas.PartsSkip == 1) return true;
-        while (value is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit)) value = c.Operand;
+        bool ok = PartValueOk1(value);
+        if (!ok && Arenas.PartsDebug) Console.Error.WriteLine($"parts value: {f.ToDisplayString()} = `{value.Syntax}` ({value.Kind}) in {M.ToDisplayString()}");
+        return ok;
+    }
+
+    bool PartValueOk1(IOperation value)
+    {
+        while (value is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit || c.Operand is IObjectCreationOperation && SymbolEqualityComparer.Default.Equals(c.Type, c.Operand.Type))) value = c.Operand;
         switch (value)
         {
             case IObjectCreationOperation oc:
                 return PartNewOk(oc);
+            case IConversionOperation cx when Arenas.PartsDebug:
+                Console.Error.WriteLine($"parts value: conversion {cx.Conversion} of {cx.Operand.Kind} {cx.Type} / {cx.Operand.Type} op {cx.OperatorMethod}"); return false;
             case IArrayCreationOperation:
                 return true;
             case IDefaultValueOperation:
@@ -178,9 +188,12 @@ sealed partial class FunctionCompiler
     bool PartNewOk(IObjectCreationOperation oc)
     {
         if (oc.Constructor == null || TypeOf(oc) is not INamedTypeSymbol { TypeKind: TypeKind.Class } nt) return false;
-        for (var t = nt; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
+        for (var t = D.CanonicalMethod(oc.Constructor).ContainingType; t != null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
             if (t.GetMembers("Finalize").OfType<IMethodSymbol>().Any(m => m.MethodKind == MethodKind.Destructor)) return false;
-        return D.CtorsKeepThis(nt) || D.CtorKeepsThis(oc.Constructor);
+        var ctor = D.CanonicalMethod(oc.Constructor).OriginalDefinition;
+        bool r = D.CtorsKeepThis(ctor.ContainingType) || D.CtorKeepsThis(ctor);
+        if (!r && Arenas.PartsDebug) Console.Error.WriteLine($"parts value: constructor {ctor.ToDisplayString()} may let `this` out");
+        return r;
     }
 
     /// <summary>A local declared with a new object or array, never assigned again, whose every other use keeps
@@ -197,7 +210,7 @@ sealed partial class FunctionCompiler
             if (op is IVariableDeclaratorOperation vd && SymbolEqualityComparer.Default.Equals(vd.Symbol, l))
             {
                 var init = vd.Initializer?.Value;
-                while (init is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit)) init = c.Operand;
+                while (init is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit || c.Operand is IObjectCreationOperation && SymbolEqualityComparer.Default.Equals(c.Type, c.Operand.Type))) init = c.Operand;
                 if (!(init is IArrayCreationOperation || init is IObjectCreationOperation ioc && PartNewOk(ioc))) return false;
                 declared = true;
             }

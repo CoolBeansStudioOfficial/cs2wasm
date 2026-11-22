@@ -2595,6 +2595,7 @@ sealed partial class FunctionCompiler
         int _addr = -1, _off;
         /// <summary>The static type of the value stored (NoteValue), for a store by address (RefStores.cs).</summary>
         ITypeSymbol? _valueType;
+        bool _part;
         public override void Prepare() { _off = pushBase(); _addr = F.E.AddLocal(ValType.I32); F.E.Set(_addr); }
         public override void NoteValue(ITypeSymbol? vt, IOperation? value)
         {
@@ -2602,6 +2603,8 @@ sealed partial class FunctionCompiler
             var srcs = F.Sh != null && value != null ? F.FlowSrcs(value) : null;
             site?.AddValue(vt, srcs);
             Record(srcs);
+            // (a store that qualifies as an exclusive part's: ExclusiveParts.cs)
+            _part = site is { IsArray: false, ContainerId: < 0 } && value != null && Types.IsRef(Type) && (site.Member as IFieldSymbol ?? (site.Member is IPropertySymbol sp ? Driver.AutoPropertyField(sp) : null)) is { IsStatic: false } pf && F.PartValueOk(pf, value);
         }
         public override Own Load()
         {
@@ -2630,7 +2633,7 @@ sealed partial class FunctionCompiler
             // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
                 pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned, iso: iso, initNull: initNull, structContainer: structContainer,
-                valueType: _valueType, viaPointer: viaPointer, lastLocal: lastLocal);
+                valueType: _valueType, viaPointer: viaPointer, lastLocal: lastLocal, part: _part);
             if (elements && F.T.NeedsRc(Type))
             {
                 int before = F.E.Body.Count;
