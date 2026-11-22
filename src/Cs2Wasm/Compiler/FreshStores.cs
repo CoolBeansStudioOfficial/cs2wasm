@@ -52,6 +52,8 @@ internal sealed partial class Driver
                     if (ir.Parent is IFieldReferenceOperation) continue;
                     if (ir.Parent is IPropertyReferenceOperation pr && AutoPropertyField(pr.Property.OriginalDefinition) != null) continue;
                     if (ir.Parent is IInvocationOperation { TargetMethod.MethodKind: MethodKind.Constructor }) continue; // : base(...) / : this(...)
+                    // (a call that is not compiled: Debug.Assert's kind, [Conditional] on a symbol not defined)
+                    if (ir.Parent is IInvocationOperation omitted && FunctionCompiler.IsOmittedConditionalCall(omitted)) continue;
                     r = false;
                     break;
                 }

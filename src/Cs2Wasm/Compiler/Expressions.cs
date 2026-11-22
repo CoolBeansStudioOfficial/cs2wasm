@@ -387,6 +387,9 @@ sealed partial class FunctionCompiler
             FreeScratch(ValType.I32, src);
             return;
         }
+        // (a store proven to close no cycle is linked as such, whoever holds the container: the owned local's link
+        // would make the site general)
+        if (iso) owned = false;
         var vt = Types.WasmType(t)!.Value;
         // (an immortal object: stored as it is, nothing counted, nothing to publish: its count word marks it shared)
         if (Types.IsImmortalType(t) && site == null && pin == null) { int iv = Scratch(vt); E.Set(iv); pushAddr(); E.Get(iv); E.Store(Op.I32Store, offset); FreeScratch(vt, iv); return; }
@@ -1843,6 +1846,16 @@ sealed partial class FunctionCompiler
         return ConcatParts(parts.Select(p => (Func<Own>)(() => EmitToString(p))).ToList());
     }
 
+    /// <summary>A store that goes down a structure (ChainStores.cs): of a field of its class's own type, proven for
+    /// this method's text; what the proof asks of the whole program is noted on the site.</summary>
+    bool ChainStore(Arenas.Site site, IFieldReferenceOperation fr, ISimpleAssignmentOperation asg)
+    {
+        if (_closure != null || _machine != null) return false;
+        if (!SymbolEqualityComparer.Default.Equals(fr.Field.Type.OriginalDefinition, fr.Field.ContainingType.OriginalDefinition)) return false;
+        if (D.ChainSafeStore(M, asg) is not { } proof) return false;
+        foreach (var t in proof.RefParamTypes) site.ChainRefTypes.Add(Types.Key(T.Canonical(T.Resolve(t, Map))));
+        return true;
+    }
     static readonly bool s_noConcatOnce = Environment.GetEnvironmentVariable("CS2WASM_NO_CONCAT_ONCE") == "1";
     Own ConcatParts(List<Func<Own>> parts)
     {
@@ -2843,7 +2856,7 @@ sealed partial class FunctionCompiler
                             initKey: StorageField(field) is IFieldSymbol sf ? InitStoreKey(sf, Owner(field), fr.Instance) : null,
                             fresh: site != null && target.Parent != null && StoresIntoFresh(fr.Instance, target.Parent),
                             owned: site != null && OwnedLocal(fr.Instance),
-                            iso: site != null && target.Parent is ISimpleAssignmentOperation isa && ReferenceEquals(isa.Target, target) && D.IsolatedValue(isa.Value),
+                            iso: site != null && target.Parent is ISimpleAssignmentOperation isa && ReferenceEquals(isa.Target, target) && (D.IsolatedValue(isa.Value) || ChainStore(site, fr, isa)),
                             initNull: InitializerStoreIntoNull(fr, target),
                             lastLocal: site != null ? LastContainerLocal(fr.Instance) : -1);
                     }

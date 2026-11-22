@@ -292,6 +292,13 @@ sealed partial class FunctionCompiler
             else if (k < byParam.Length) byParam[k] = a;
             k++;
         }
+        // (one local for two by-reference parameters: each names the other's place)
+        for (int i = 0; i < byParam.Length; i++)
+            if (m.Parameters[i].RefKind != RefKind.None && byParam[i] is ILocalReferenceOperation or IParameterReferenceOperation && T.Resolve(m.Parameters[i].Type, Map) is { IsReferenceType: true } dt)
+                for (int j = 0; j < i; j++)
+                    if (m.Parameters[j].RefKind != RefKind.None && byParam[j] is { } o && o.Kind == byParam[i]!.Kind
+                        && SymbolEqualityComparer.Default.Equals(o is ILocalReferenceOperation ol ? ol.Local : (o as IParameterReferenceOperation)?.Parameter, byParam[i] is ILocalReferenceOperation il ? il.Local : ((IParameterReferenceOperation)byParam[i]!).Parameter))
+                        D.Arenas.RefWild.Add(Types.Key(T.Canonical(dt)));
         // Named arguments written in another order than the parameters' (f(b: x(), a: y())) are evaluated as
         // written: each into a local, then pushed in the parameters' order.
         int[]? held = null;
@@ -363,6 +370,18 @@ sealed partial class FunctionCompiler
         if (Types.IsRef(pt)) ToCallSafe(r, pt);
     }
 
+    /// <summary>An argument for a by-reference parameter that names a place no other code can write while the callee
+    /// runs: a local or a parameter of this method's own, not captured, not itself a reference to elsewhere (a
+    /// by-reference parameter passed on is its caller's question); a variable declared at the call; a discard.</summary>
+    bool PlainRefArg(IOperation value) => value switch
+    {
+        ILocalReferenceOperation lr => lr.Local.RefKind == RefKind.None && !IsCaptured(lr.Local) && _closure == null && _machine == null,
+        IParameterReferenceOperation pr => !IsCaptured(pr.Parameter) && _closure == null && _machine == null,
+        IDeclarationExpressionOperation de => PlainRefArg(de.Expression),
+        IDiscardOperation => true,
+        _ => false,
+    };
+
     void PushArg(IParameterSymbol p, IOperation? value)
     {
         var pt = T.Canonical(p.Type);
@@ -371,6 +390,9 @@ sealed partial class FunctionCompiler
             RecordParam(pm, p, value != null ? FlowSrcs(value) : p.HasExplicitDefaultValue && p.ExplicitDefaultValue is string ? [new Sharing.Src(Sharing.K.Exact, Type: D.Main.GetSpecialType(SpecialType.System_String))] : []);
         else if (Sh != null && p.ContainingSymbol is IMethodSymbol rpm && p.RefKind != RefKind.None && Types.IsRef(pt))
             RecordRefIn(rpm, p, value);
+        // (a class's reference passed by reference from anywhere but a local of this method's own: ChainStores.cs)
+        if (p.RefKind != RefKind.None && value != null && T.Resolve(p.Type, Map) is { IsReferenceType: true } rpt && !PlainRefArg(value) && D.Arenas.RefWild.Add(Types.Key(T.Canonical(rpt))) && Driver.ChainDebug)
+            Console.Error.WriteLine($"by reference, not a local: {value.Syntax} ({value.Kind}) for {p.ContainingSymbol.ToDisplayString()} in {M.ToDisplayString()}");
         if (value == null)
         {
             // default argument
