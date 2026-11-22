@@ -184,9 +184,11 @@ namespace Cs2Wasm.Runtime
         // gives a few blocks, so a size whose objects die one by one all over its pages (the particles of a list,
         // 400 of 19,400 a frame) had every frame's new objects spread over all of them, nine to a page, and a walk
         // of the list in its order went all over memory (the churn scene's loop 88 us a frame, 62 with the same
-        // objects in order). So: a page that is nearly empty; else one that is no longer being emptied and has a
-        // quarter free; else an empty page, cut in order, while memory need not grow for it. A page still being
-        // emptied is left until it is empty or nearly so.
+        // objects in order). So: one of the pages whose first block was freed last, when a quarter of it is free
+        // (freed in one go, a subtree let go: still in the cache, and room for what is made next: as before); else,
+        // of the pages whose first block was freed longest ago, one that is nearly empty, or one that is no longer
+        // being emptied and has a quarter free; else an empty page, cut in order, while memory need not grow for
+        // it. A page still being emptied is left until it is empty or nearly so.
         // A page nothing is left in goes back to the empty pages, for any size. Pages come four at a time from
         // 64 KB of memory at a multiple of 64 KB, noted in a map, so a small block that is not in a page (what is
         // left over when a large block is cut) is told from one that is, and kept on the old lists by size.
@@ -490,7 +492,17 @@ namespace Cs2Wasm.Runtime
                         // empty page, unless memory would have to grow for it: then the front page as it is, as
                         // before.
                         int cap = (PageSize - PageHead) / size, take = 0;
-                        for (int k = 0; k < RipeLook; k++)
+                        // (first the pages at the back, whose first block was freed last: one a quarter of which is
+                        // free already was freed in one go, a subtree let go, and is still in the cache; the tree
+                        // scene's frames, with other programs at work on the machine, took a tenth longer without)
+                        int back = Mem.LoadI32(q + 8);
+                        for (int k = 0; k < BackLook; k++)
+                        {
+                            if (Mem.LoadI32(back + 16) <= cap - (cap >> StillShift)) { take = back; break; }
+                            if (back == q) break;
+                            back = Mem.LoadI32(back + 8);
+                        }
+                        for (int k = 0; k < RipeLook && take == 0; k++)
                         {
                             int inUse = Mem.LoadI32(q + 16);
                             if (inUse <= (cap >> RipeShift)) { take = q; break; }
@@ -535,9 +547,10 @@ namespace Cs2Wasm.Runtime
         /// memory (PageAlloc); CS2WASM_NO_RIPE_PAGES=1: the page whose first block was freed last, whatever is free
         /// in it, as before.</summary>
         [Intrinsic] static extern bool RipePages();
-        /// <summary>How many of a size's pages with freed blocks an allocation looks at; nearly empty: no more than
-        /// 1/2^RipeShift of its blocks in use; free enough once it is no longer being emptied: 1/2^StillShift of them.</summary>
-        const int RipeLook = 8, RipeShift = 3, StillShift = 2;
+        /// <summary>How many of a size's pages with freed blocks an allocation looks at from the front; nearly empty: no
+        /// more than 1/2^RipeShift of its blocks in use; free enough once it is no longer being emptied, or at the back:
+        /// 1/2^StillShift of them; how many it looks at from the back, first.</summary>
+        const int RipeLook = 8, RipeShift = 3, StillShift = 2, BackLook = 3;
 
         /// <summary>Takes a page out of its size's pages with freed blocks (a ring: [4] next, [8] previous).</summary>
         static void PageUnlink(int slot, int pg)
