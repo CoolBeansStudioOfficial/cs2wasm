@@ -39,7 +39,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.11x to 0.30x NativeAOT's with `--js-young 32`); tree worst 2.77 to 2.84 ms vs 3.11 to 3.22 (0.86x to 0.91x over three runs of 3), p99.9 2.66 to 2.68 vs 2.42 to 2.48 (1.07x to 1.10x), its rebuild (main 80ae1ce, this machine, 2026-11-23; AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 1.76x to 1.77x (was 2.16x, before that 3.47x), tree 1.66x to 1.70x (was 2.56x), collections 1.25x to 1.27x, strings 1.21x, bigdrop 0.84x to 0.87x (main 80ae1ce, this machine) | close to 1.0x on every scene |
+| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 1.77x (was 2.16x, before that 3.47x), tree 1.68x (was 2.56x), collections 1.10x (was 1.27x; p99 1.37x), strings 1.01x (was 1.21x), bigdrop 0.90x (main with claude/colstr-1, this machine with other work on it, one run of 3) | close to 1.0x on every scene |
 | 4 | Hello world size (test 145) | 27,089 B (main dca1f9c) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
@@ -731,3 +731,13 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   support unaligned accesses` in rt.retain, from `Interlocked.Exchange(object, object)` in
   `Task.FinishContinuations`, under `Task<bool>.TrySetResult` in the MoveNext of an async iterator on a pool thread;
   not followed.
+- 2026-11-23, claude/colstr-1 merged (the entry above), checked again before the merge: frames.mjs here once
+  (`--runs 3 --js-young 32`, the machine shared with three sessions): collections median 0.007 ms against
+  NativeAOT-LLVM's 0.006 (1.10x), p99 0.034 against 0.025; strings 0.008 against 0.008 (1.01x); churn 0.088 against
+  0.050, tree 0.048 against 0.029 and p99.9 2.73 against 2.42, bigdrop 0.003 both. Homelab at 576dbd4: the suite
+  211/211 both ways at bc2ba98 (that session's run); stress, 200 loaded runs a mode: 210, 211, 212 the same in every
+  run; the self-hosted compiler's hello world byte for byte the .NET-hosted compiler's (27,398 bytes), its time not
+  told from before on the loaded homelab (10.6 to 14.7 s before, 12.1 to 19.2 after, NativeAOT-LLVM's 4.5 to 6.7:
+  to be timed again when it is quiet). Seen by that session, on main too: test 087 checked traps in 7 of 1,200
+  loaded runs (an unaligned atomic access in rt.retain under Interlocked.Exchange in Task.FinishContinuations);
+  given to the session on the tests that differ under load.
