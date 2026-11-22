@@ -222,10 +222,16 @@ export function threadImports(module, memory, out, onSpawn) {
       if (!globalThis.__cs2wasmRing) return;
       const c = ring();
       const watch = () => {
-        const n = Atomics.load(c, 1);
-        if (n <= 0) { spawner?.unref(); return; }
-        spawner?.ref();
-        Atomics.waitAsync(c, 1, n).value.then(watch);
+        for (;;) {
+          const n = Atomics.load(c, 1);
+          if (n <= 0) { spawner?.unref(); return; }
+          spawner?.ref();
+          // (a thread that ended between the load and the wait: the wait answers at once, "not-equal", with no
+          // promise; `.value.then` of that answer was a TypeError and the process's exit code 1, about one loaded
+          // run in some thousands of a program whose threads end as its entry returns)
+          const r = Atomics.waitAsync(c, 1, n);
+          if (r.async) { r.value.then(watch); return; }
+        }
       };
       watch();
     },
