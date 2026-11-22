@@ -820,6 +820,145 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     nodes left, the kind of leak the test was written for, not a trap; none such in the 34,400 runs with the stack
     checks; not followed. Not run: the self-hosted compiler.
 
+- **The churn loop, round 2: where its time is, measured again (2026-11-22, branch claude/churn-2, from main 1f7a807;
+  the desk machine, shared with other sessions' timings: ranges, medians of frames, runs in turn; not merged when
+  this was written).** Two leads were given: the order in memory (17 us of the loop's 81 by the last round's
+  subtraction) and the two counts of a move (12). Both figures were wrong, and what was built follows from the
+  measurements that showed it.
+  - **The order in memory costs 2 to 3 us, not 17** (`tools/churn-layout.cs`, new: the scene run, then the particles'
+    addresses taken in the list's order, and the loop timed over that layout with nothing changing). Median ns a
+    frame on main: the scene's loop 87.5 to 89.0; the same particles where the scene left them, none dying, each
+    stored into its own slot 70.2 to 71.3; as many made in order 66.9 to 68.4. So the layout itself is 3 us. The
+    17 the last round took for it (the scene's loop less the loop over particles in order less the frees) is
+    mostly not the layout: the scene's own loop over the settled layout, none dying, is 5 above the loop without
+    the decrement (`--p.Life` is one more store a particle: 0.26 ns, a cycle); the dead all over the list and held
+    elsewhere (the branch that is taken for one in 48, the moves down) 3.5; the dead freed inside the loop 0 to 1
+    more (a free in its place is 2.5 ns, not 6.6); and about 7 that are there only while the layout changes every
+    frame (each frame's 400 new particles between old ones). What the loop pays is instructions: every simple
+    thing added to it costs about a cycle a particle, 0.25 ns, 5 us a frame (`tools/churn-raw.cs`, below).
+  - **Why a frame's new particles lay between old ones: the page policy's test was fooled, and two of its rules
+    worked against the third** (Runtime.cs, PageAlloc; counters put into the allocator for the measurement, not
+    kept). The last round's rule leaves a page alone while it is being emptied, and told "no longer being emptied"
+    by the page having lost no block between two looks at it. A look is an allocation that needs a page. The scene
+    makes its 400 particles and then frees 400, so all the looks of a frame come with no free between them: every
+    page a quarter free counted as still and was taken. With that put right the page "an eighth in use" was the
+    one taken (5,069 times in 7,000 frames against 1,235 empty pages): its blocks are handed out in the order they
+    were freed, which is the order of death, all over the page. And a page passed over goes to the ring's back,
+    where the look for "a page freed in one go" found it. Of the 19,000 steps of the list's walk 16,246 went to a
+    64-byte line that was not the next one or the one before.
+  - **Built: a page is left to empty by its size's own clock** (`CS2WASM_NO_HOLD_PAGES=1`: the last round's
+    policy, the heap laid out as before). Each size counts the times it needed a page; the mark in a page's header
+    ([12]: the blocks in use when it was last seen to have lost one, 12 bits, and the size's count then) says how
+    long it has lost nothing, and a page counts as no longer emptied when that is four takes of its size
+    (StillTakes; two gives the same choices in the scene, eight a few fewer). The nearly empty page is no longer
+    taken on sight: it is empty soon, or it stops losing blocks and is taken by the rule above. The look at the
+    back stops at a page that was passed over. **Bounded by rule:** the pages with freed blocks, of all sizes
+    together, may be three quarters of what the heap has handed out; past that the last round's conditions hold
+    again (nearly empty, or unchanged since the last look). And no memory is grown for an empty page, as before.
+    The fast paths of allocation and free are untouched (a count of freed bytes kept on them was tried for the
+    bound and taken out: an allocation from a page's list 12.2 to 13.2 ns). The scene: 16,246 steps off the line to
+    4,270, the particles' pages 68 to 67, the heap's top 3,274 to 3,338 KB; "only when empty", which the last round
+    measured at 1.6 times the pages against the policy before it, is not more memory than the last round's policy
+    itself (68 pages either way: that policy held the same pages and filled them in the wrong order).
+    Tree's heap top 9,881 KB both (its pages 476 both, 1,112 to 1,256 KB of them freed blocks), collections 4,645
+    to 4,650, strings 3,280 to 3,286, bigdrop 13,499 both; memory 16 MB in all five (NativeAOT-LLVM 59 to 71).
+    Test 205 (three sizes, one of 16 bytes; frames of births then deaths, pages a third free that stop losing
+    blocks, one object in a hundred kept from the start so that the bound is passed, runs let go at once; every
+    object read back; the allocator's counters showed every way of taking a page reached: the back 566 times, the
+    nearly empty page past the bound 618, no longer emptied 296 of which 12 past the bound, an empty page 613;
+    with the mark left in a page that is taken its output stops after the first line).
+  - **The counted move (lead 2): no sound proof for the pattern, and less to gain than was thought.** What the
+    two counts cost was measured by writing the store without them (`tools/churn-raw.cs`, new: the scene's loop
+    over an array of 19,392 particles in order, every survivor moved 400 slots down, the array seen as nint[] for
+    the uncounted forms; median us a frame): no store 31.1; an int written into another array 33.0; the
+    reference written and nothing else 35.8; that and the slot it came from set to null 40.4; that and what the
+    destination held read and tested 40.8; both, which is what a proof of "moved, not copied" would leave (the
+    destination's old value must still be let go when it is a dead particle, and told from a survivor that moved
+    away, which only a null in the slot it left can say) 45.3; the counted store 49.5. So a move proved would
+    save **4 us of the frame's 80**, not 12: the store's cost is its instructions (the slot read, the two slots
+    written, the tests), and the counts are a third of it. The proof that would save more, nothing written but
+    the reference and the dead let go where they are found dead, is **not sound**: counter-example, the scene's
+    own loop with one particle whose Tag is null. .NET throws NullReferenceException at that particle with the
+    list as it was at that moment: slots below `w` the survivors, slots from `w` up to the particle what they
+    held before, among them dead particles that a handler can still read (`s_particles[k].Life`); the changed
+    loop has freed them. The compiler cannot show that `p.Tag` is never null (it is a field anyone may store),
+    nor that `p` is not (a list may hold null), so every such loop has an exit in its middle, and after an exit
+    every slot is observable. The weaker form (null in the slot left, counts made up at every exit, the
+    exception's included) is sound only if nothing in the loop reads the list but the one read at `i`, nothing it
+    calls can, no other reference to the list's array exists, and each exit's handler rebuilds what the slots
+    held: a recognizer of one loop shape over List<T>'s insides, for 4 us. Not built. The old value being the new
+    one (`w == i`) is the only case in which both counts go by a test alone, and it holds in no frame of the scene
+    after its first death (last round).
+  - **Built: no test of the array's type at a store into a sealed class's array in generic code**
+    (`CS2WASM_NO_SEALED_STORE=1`; Expressions.cs, the array element's place). An array of a sealed class, of
+    string or of a delegate type is of that very type, and its stores had no test, except in an instantiation of
+    generic code, where the element type was taken as any reference type so that a family's bodies are one.
+    List<Particle>'s setter is such a store: the array's type word read and compared for every survivor. Decided
+    on the exact type now, as .NET's own compiler does: the instantiations for sealed classes are one body
+    without the test, the others one with it. Churn median 0.086 to 0.083 ms on its own; hello world's size the
+    same, the frames module 164 bytes smaller. Test 206 (one generic class and method for sealed classes,
+    strings, delegates, open classes, interfaces, object and arrays, with arrays of the very type and of derived
+    ones, and List, Stack and Queue of each; with the test dropped for an open type its "threw" become
+    "stored").
+  - Result. `tools/churn-layout.cs`, median us a frame, main / the pages / the store / both, three runs in turn:
+    the scene's loop 87.5-89.0 / 82.4-84.2 / 82.6-84.0 / **78.7-80.6**; the settled layout, none dying 70.2-71.3 /
+    65.9-68.4 / 66.0-67.0 / 61.4-63.6. `node tools/frames.mjs --runs 3 --js-young 32`, main's copy and the branch
+    in turn twice, other sessions at work (NativeAOT-LLVM's column moved with them, so each line is its own
+    invocation); median / p99 / p99.9 / worst ms, cs2wasm against NativeAOT-LLVM:
+    churn main 0.088 / 0.122 / 0.150 / 0.332 against 0.049 / 0.064 / 1.131 / 1.178 and 0.089 / 0.117 / 0.158 /
+    0.260 against 0.050 / 0.065 / 1.159 / 1.193 (**1.78x to 1.80x**); the branch 0.081 / 0.122 / 0.406 / 2.610
+    against 0.051 / 0.080 / 1.224 / 1.728 and 0.082 / 0.135 / 0.143 / 0.260 against 0.052 / 0.067 / 1.210 / 1.247
+    (**1.58x to 1.59x**; the first invocation's worst frame is the machine's: it is in no other run).
+    tree main 0.048 / 0.076 / 2.756 / 2.940 against 0.029 / 0.049 / 2.433 / 3.147 and 0.050 / 0.075 / 2.906 /
+    3.653 against 0.029 / 0.048 / 2.506 / 3.275; the branch 0.051 / 0.089 / 3.144 / 3.560 against 0.030 / 0.049 /
+    2.582 / 3.315 and 0.057 / 0.153 / 3.712 / 6.443 against 0.033 / 0.070 / 3.283 / 4.249 (median 1.66x to 1.72x
+    and 1.70x to 1.73x, p99.9 1.13x to 1.16x and 1.13x to 1.22x: the machine was busier in the branch's
+    invocations, by NativeAOT's own column).
+    collections 0.008 / 0.035-0.037 / 0.177-0.182 / 0.202-0.204 and 0.008 / 0.037-0.054 / 0.188-0.315 /
+    0.200-0.861 (NativeAOT 0.006 / 0.025-0.028 / 1.04-1.15 / 1.31-2.94); strings 0.009 / 0.014-0.015 /
+    0.022-0.025 / 0.046-0.051 and 0.009-0.010 / 0.015-0.021 / 0.025-0.081 / 0.053-0.133 (0.008 / 0.018-0.024 /
+    0.066-0.104 / 0.24-0.33); bigdrop 0.003 / 0.007 / 0.954-1.056 / 1.022-1.114 and 0.003 / 0.009 / 1.086-1.123 /
+    1.694-1.719 (0.003-0.004 / 0.010-0.018 / 6.3-8.7 / 9.0-10.3). Memory 16 MB against 59 to 71 throughout. Twice
+    more later, the same way: churn 1.76x and 1.78x on main, 1.60x and 1.61x on the branch; tree's median 1.63x
+    and 1.73x on main, 1.68x and 1.71x on the branch, its p99.9 0.98x and 1.03x, 1.09x and 1.23x. The modules
+    alone, each run in its own Node, in turn five times, the machine quieter: churn median 0.087-0.091 on main,
+    0.082-0.086 with the pages' change alone, 0.084-0.087 with the store's alone, **0.078-0.083** with both.
+    `tools/bench.mjs` in turn twice: 0.94x and 0.95x
+    on main, 0.95x and 0.95x on the branch (no kernel moved). Hello world 27,482 to 27,612 bytes (the limit 28,383).
+  - **The tree scene with other programs at work:** not told apart from main's, on this machine with the other
+    sessions' builds and timings going on (the load the last round's question was about). The modules alone, main's
+    and the branch's in turn: ten runs under that load, medians 0.051-0.062 ms on main and 0.052-0.066 on the branch
+    (the branch's at or above main's in nine of the ten pairs, by 0 to 0.004 and once 0.010), lowest p99.9 3.22 and
+    3.11; eight runs four ways (main, the pages' change alone, the store's alone, both), medians 0.051-0.060,
+    0.049-0.062, 0.051-0.063 and 0.051-0.087, the first three rounds of it, before the load rose, 0.051-0.052,
+    0.049-0.052, 0.051 and 0.051-0.052; eight runs with the machine quieter, medians 0.047-0.051 and 0.048-0.050,
+    p99.9 2.73-3.08 and 2.65-2.94 (the branch's median the lower or the same in six pairs of eight, its p99.9 the
+    lower in six). So: the same when quiet; under load the branch's median was up to 4% above main's in one set of
+    ten and not in the other sets, inside what the load itself moves a run by (10 to 60%). A load made for the purpose
+    (two and six processes walking 64 MB each) moved every run by more than any difference (medians 0.06 to 0.7 ms):
+    no use. The homelab has no Emscripten and its frames.mjs does not run: not measured there. Not settled further
+    than that.
+  - What is left of churn's loop (about 73 us against NativeAOT-LLVM's 45, by `tools/churn-layout.cs` and
+    `tools/churn-raw.cs`), by cause: the store through the list about 14 above a bare store of the reference (the
+    slot's old value read, the two counts, the list's and the array's checks twice over, the version), of which
+    the two counts are 4; the three NaN tests 2 to 5 (SPEC 7.3 is about where bits are read; the stores are where
+    they are made safe, for pointers, overlapping fields and the engine's copies alike: left); the order in memory
+    2 with this round's policy (the particles are in order but with holes: 13,700 lines for 19,200 particles
+    where 10,800 would hold them; no policy fills holes in order without moving objects); a particle of 36 bytes
+    where NativeAOT-LLVM's is 32 (the header's hash word); the rest the read loop's own instructions (the list's
+    null test three times a particle, the size, the array and its length read again for the store: the engine
+    does not carry a load across a store, NativeAOT-LLVM's compiler does). **Not reached: churn's median is
+    1.58x NativeAOT-LLVM's, tree's 1.7x.** What would close more is the compiler's own inlining of the list's
+    indexers with the loads shared across them (the last round's trial of inlining alone made the engine stop
+    inlining the count functions: 2.4 to 5.4 ns), which is a change to how every loop over a list is compiled and
+    was not started on the last day.
+  - Verified on the homelab: at 8a7895e (both changes) the suite 210/210 checked and as shipped (284 s); at 840d4be
+    (the code's last commit: the switch's layout) 210/210 checked and 209/210 as shipped, the one test 088 at its
+    timer line (line 7, the second of its five answers False), which run alone there passed both ways. Stress at
+    840d4be, 200 loaded runs a mode: 205, 206, 196 and 139 the same in every run of both modes; 127 differed in 4 of
+    400 (its "async 5" line: 1 as shipped, 3 checked; main's 5 of 400 in the last round), the other 200 of that test
+    run before it all the same. Not run: the self-hosted compiler, tools/selfdet.mjs.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
