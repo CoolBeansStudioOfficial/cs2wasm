@@ -720,14 +720,14 @@ sealed partial class RuntimeGen
                     // (a group's member: what the finalizers of the others counted on it meanwhile stays, and so
                     // does what its own counts: the group's destruction looks at the counts afterwards)
                     e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Add); e.Store(Op.I32Store);
-                    e.Call(rt.FinHold); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
+                    e.Call(rt.FinHold); e.Call(rt.BeforeFin); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
                     e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Sub); e.Store(Op.I32Store);
                     e.End();
                     e.End();
                     return;
                 }
                 e.Get(0); e.I32(1); e.Store(Op.I32Store);
-                e.Call(rt.FinHold); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
+                e.Call(rt.FinHold); e.Call(rt.BeforeFin); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
                 if (finalizer != 1)
                 {
                     // the finalizer stored the object somewhere (its count is more than the temporary one): it
@@ -752,6 +752,13 @@ sealed partial class RuntimeGen
         }
         if (free) { e.Get(0); e.I32(Math.Max(l.Size, Types.ObjectHeader)); e.Call(rt.Free); }
     }
+
+    /// <summary>A group without finalizers is let go in two passes, its members' references released as the ring is
+    /// walked (Rt.ArenaFree): a release of a member that has no reference from outside then does nothing, here in
+    /// rt.release, where it went to Rt.ArenaRelease (a release too many: a checked build says so there). Without
+    /// threads; not in a checked build; CS2WASM_NO_FUSED_DROP=1 the three passes.</summary>
+    internal static bool FusedDrop(Driver d) =>
+        !d.ThreadMode && !d.Options.Checked && Environment.GetEnvironmentVariable("CS2WASM_NO_FUSED_DROP") != "1" && Environment.GetEnvironmentVariable("CS2WASM_STALE_HOLDS") != "1";
 
     // ---------------- arenas (section 4.3) ----------------
     void EmitArenaSupport()
@@ -779,6 +786,10 @@ sealed partial class RuntimeGen
             e.End();
             e.Get(0);
         }
+        bool fusedDrop = FusedDrop(D);
+        // (before each finalizer a destroy function runs: the members a pass of Rt.ArenaFree has not come to yet are
+        // made as the walk before the clears left them, Rt.ArenaBeforeFinalizer)
+        if (fusedDrop && rt.BeforeFin.Body.Count == 0) new Emitter(rt.BeforeFin).Call(ar.RuntimeFn("ArenaBeforeFinalizer", 0));
         {
             var f = rt.Release; f.Body.Clear(); f.Locals.Clear();
             var e = new Emitter(f);
@@ -791,7 +802,10 @@ sealed partial class RuntimeGen
             e.Else();
             e.Get(r); e.I32(-3); e.Op(Op.I32LtS);
             e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(Op.I32Add); e.Store(Op.I32Store);
-            e.Else(); e.Get(r); e.I32(-1); e.Op(Op.I32LtS); e.If(); e.Get(0); e.Call(releaseSlow); e.End();
+            e.Else();
+            if (fusedDrop) { e.Get(r); e.I32(-3); e.Op(Op.I32Eq); }
+            else { e.Get(r); e.I32(-1); e.Op(Op.I32LtS); }
+            e.If(); e.Get(0); e.Call(releaseSlow); e.End();
             e.End();
             e.End();
             e.End();

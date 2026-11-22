@@ -58,6 +58,10 @@ internal sealed partial class RuntimeFns
     public WasmFunction FinHold => _finHold ??= M.AddFunction("rt.fin_hold", FT([], []));
     public WasmFunction FinUnhold => _finUnhold ??= M.AddFunction("rt.fin_unhold", FT([], []));
     public WasmFunction? FinHoldIfMade => _finHold;
+    WasmFunction? _beforeFin;
+    /// <summary>Called before a finalizer runs from a destroy function (before rt.fin_hold): Rt.ArenaBeforeFinalizer in a
+    /// program whose groups are let go in two passes (RuntimeGen.EmitArenaSupport), nothing in any other.</summary>
+    public WasmFunction BeforeFin => _beforeFin ??= M.AddFunction("rt.before_fin", FT([], []));
     public void EmitFinalizerHold(bool threads)
     {
         if (!threads) return;

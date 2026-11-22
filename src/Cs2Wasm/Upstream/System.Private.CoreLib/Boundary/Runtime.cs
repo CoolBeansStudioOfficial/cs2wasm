@@ -4198,6 +4198,64 @@ namespace Cs2Wasm.Runtime
             ArenaEmpty(ar);
         }
 
+        /// <summary>Whether a group without finalizers is let go in two passes (Compiler/RuntimeGen.cs, FusedDrop).</summary>
+        [Intrinsic] static extern bool FusedDrop();
+        // (the innermost pass of ArenaFree that clears its members as it walks their ring, 0 for none)
+        static int s_dropPass;
+
+        /// <summary>A finalizer is about to run (the compiler calls this before each: RuntimeGen.cs, EmitDestroy), the
+        /// first code of the program since a group began to be let go in two passes, ArenaFree: the members that
+        /// pass has not come to yet are as the walk before the clears left them, each count zero (a dying object:
+        /// nothing counts it, a weak reference to it reads as gone), off the list of members to destroy, its note
+        /// gone, before the finalizer can look. Of every such pass under way: one group's clears can let another
+        /// go.</summary>
+        public static void ArenaBeforeFinalizer()
+        {
+            for (int p = s_dropPass; p != 0; p = Mem.LoadI32(p))
+            {
+                int m = Mem.LoadI32(p + 4), first = Mem.LoadI32(p + 8);
+                if (m == 0) continue;
+                do { ArenaOf(m); Unqueue(m); ClearMark(m); Mem.StoreI32(m, 0); m = PL(m, 12); } while (m != first);
+                Mem.StoreI32(p + 4, 0);
+            }
+        }
+
+        /// <summary>CS2WASM_NO_FREE_LIST=1 (at compile time): the members of a group that is let go are freed one by one
+        /// through their types' free functions (ArenaFreeList).</summary>
+        [Intrinsic] static extern bool NoFreeList();
+
+        /// <summary>Frees the members in the list (k of them; each cleared, its count zero): what ArenaFreeObject does
+        /// for each, FreeObjectArena by its type's size, without the dispatch on the type for a block that lies in a
+        /// page of small blocks: the page knows its blocks' size, and the block goes straight back onto its page's
+        /// list (FreeSmallOld's case, PageFree for a page that was full or is empty now), not by way of the block
+        /// kept aside for the next allocation of the size, which every free here would put on its page one free
+        /// later. Any other block (a large array) as before. (The scene tree of tools/frames.mjs: 75,000 members a
+        /// drop, 7 ns each through the dispatch.)</summary>
+        static void ArenaFreeList(int list, int k)
+        {
+            if (!SingleThreaded() || ShareCheck() || Checked() || NoFreeList())
+            {
+                for (int i = 0; i < k; i++) ArenaFreeObject(Mem.LoadI32(list + 4 * i));
+                return;
+            }
+            for (int i = 0; i < k; i++)
+            {
+                int m = Mem.LoadI32(list + 4 * i), blk = m - ArenaPrefix;
+                if (!IsPage(blk)) { ArenaFreeObject(m); continue; }
+                SideFree(m);
+                int pg = blk & ~(PageSize - 1);
+                int used = Mem.LoadI32(pg + 16) - 1;
+                if (used != 0 && (Mem.LoadI32(pg + 20) & 1) != 0)
+                {
+                    Mem.StoreI32(blk, 0);
+                    Mem.StoreI32(blk + 4, Mem.LoadI32(pg));
+                    Mem.StoreI32(pg, blk);
+                    Mem.StoreI32(pg + 16, used);
+                }
+                else PageFree(blk);
+            }
+        }
+
         /// <summary>No outside reference remains: the whole arena goes (its members' inside references are taken out,
         /// then each member's finalizer runs and its other references are released, then the memory is freed).</summary>
         static void ArenaFree(int ar)
@@ -4223,17 +4281,45 @@ namespace Cs2Wasm.Runtime
                 int list = Alloc(cap * 4), k = 0;
                 int m = first;
                 long t0 = DropStats() ? Engine.MonotonicNs() : 0;
-                do
+                long t1;
+                if (FusedDrop())
                 {
-                    ArenaOf(m); Unqueue(m); ClearMark(m); Mem.StoreI32(m, 0);
-                    if (k == cap) { int nl = Alloc(cap * 8); Mem.Copy(nl, list, cap * 4); Free(list, cap * 4); list = nl; cap *= 2; }
-                    Mem.StoreI32(list + 4 * k, m); k++;
-                    m = PL(m, 12);
-                } while (m != first);
-                long t1 = DropStats() ? Engine.MonotonicNs() : 0;
-                for (int i = 0; i < k; i++) ArenaClearObject(Mem.LoadI32(list + 4 * i));
+                    // (the pass's note for ArenaBeforeFinalizer: [0] the pass around this one, [4] the first member whose
+                    // count is not zero yet, 0 for none, [8] the ring's first)
+                    int pass = Alloc(12);
+                    Mem.StoreI32(pass, s_dropPass); Mem.StoreI32(pass + 4, first); Mem.StoreI32(pass + 8, first);
+                    s_dropPass = pass;
+                    do
+                    {
+                        int next = PL(m, 12);
+                        if (Mem.LoadI32(pass + 4) != 0)
+                        {
+                            ArenaOf(m); Unqueue(m); ClearMark(m); Mem.StoreI32(m, 0);
+                            Mem.StoreI32(pass + 4, next == first ? 0 : next);
+                        }
+                        if (k == cap) { int nl = Alloc(cap * 8); Mem.Copy(nl, list, cap * 4); Free(list, cap * 4); list = nl; cap *= 2; }
+                        Mem.StoreI32(list + 4 * k, m); k++;
+                        ArenaClearObject(m);
+                        m = next;
+                    } while (m != first);
+                    s_dropPass = Mem.LoadI32(pass);
+                    Free(pass, 12);
+                    t1 = DropStats() ? Engine.MonotonicNs() : 0;
+                }
+                else
+                {
+                    do
+                    {
+                        ArenaOf(m); Unqueue(m); ClearMark(m); Mem.StoreI32(m, 0);
+                        if (k == cap) { int nl = Alloc(cap * 8); Mem.Copy(nl, list, cap * 4); Free(list, cap * 4); list = nl; cap *= 2; }
+                        Mem.StoreI32(list + 4 * k, m); k++;
+                        m = PL(m, 12);
+                    } while (m != first);
+                    t1 = DropStats() ? Engine.MonotonicNs() : 0;
+                    for (int i = 0; i < k; i++) ArenaClearObject(Mem.LoadI32(list + 4 * i));
+                }
                 long t2 = DropStats() ? Engine.MonotonicNs() : 0;
-                for (int i = 0; i < k; i++) ArenaFreeObject(Mem.LoadI32(list + 4 * i));
+                ArenaFreeList(list, k);
                 Free(list, cap * 4);
                 // (CS2WASM_DROP_STATS=1: a large group's drop by its passes, in microseconds)
                 if (DropStats() && k >= 10000) DsDrop(k, (t1 - t0) / 1000, (t2 - t1) / 1000, (Engine.MonotonicNs() - t2) / 1000);
