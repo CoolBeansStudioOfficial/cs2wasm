@@ -3,7 +3,7 @@
 // loop inside an iterator (an async method is in test 234: a program with tasks has threads), a lambda and a local
 // function (captured variables are fields of a closure), a primary constructor's parameter kept in the object, an
 // auto-property and an init-only one, a record and its `with`, a generic class in two instantiations and through
-// its base class, an anonymous type and a tuple, a struct held in a field, an interface's default method, a field
+// its base class, an iterator's handler that goes on with its loop, an anonymous type and a tuple, a struct held in a field, an interface's default method, a field
 // hidden by a derived class's field of the same name. Each loop reads a field that something else stores meanwhile.
 using System;
 using System.Collections.Generic;
@@ -65,6 +65,24 @@ static class P
             other.Inner++;
         }
     }
+    // an iterator whose handler goes on with its loop after a throw inside its try statement
+    static IEnumerable<int> Catching(Box b, int[]? none)
+    {
+        var list = new List<Box> { b, b, b, b };
+        for (int i = 0; i < list.Count; i++)
+        {
+            var x = list[i];
+            int before = x.Iter;
+            try { if (i > 0) before += none!.Length; } catch (NullReferenceException) { before += 1000; x.Iter += 3; }
+            yield return before + x.Iter;
+        }
+    }
+    static int Machines(Box b)
+    {
+        int s = 0;
+        foreach (var v in Catching(b, null)) s += v;
+        return s + b.Iter;
+    }
     static int Closures(Box b)
     {
         int s = 0, captured = 0;
@@ -125,6 +143,7 @@ static class P
     {
         var b = new Box { Quiet = 4 };
         Console.WriteLine("iterators " + Iterators(b));
+        Console.WriteLine("machines " + Machines(b));
         Console.WriteLine("closures " + Closures(b));
         Console.WriteLine("primary " + Primary(new Kept(5, b), new Box { Quiet = 40 }));
         Console.WriteLine("properties " + Properties(b));

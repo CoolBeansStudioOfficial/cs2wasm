@@ -189,7 +189,6 @@ internal sealed partial class Driver
         public bool Stores(WasmFunction g, int id) => true;
         public bool Indirect(FuncType? sig, int id) => true;
         public bool Host(int id) => true;
-        public bool Throw(int id) => true;
     }
 
     sealed class SummaryStores(Driver d, StoreSummary s) : IFieldStores
@@ -206,11 +205,6 @@ internal sealed partial class Driver
         // (what the summary leaves out as writing only memory no program code reaches, it leaves out here)
         public bool Stores(WasmFunction g, int id) => !Internal(g) && s.HasId(g, id);
         public bool Indirect(FuncType? sig, int id) => s.HasIndirectId(sig, id);
-        // (a throw runs the filters of the try statements around it before any handler: rt.first_pass, made only in
-        // a program with filters. The summary leaves the runtime's throw helpers out of their callers' stores, so a
-        // call's summary does not have what a filter stores: asked on its own, FieldLoads.cs)
-        readonly WasmFunction? _firstPass = d.Rt.FirstPassIfMade;
-        public bool Throw(int id) => _firstPass != null && (!s.Knows(_firstPass) || s.HasId(_firstPass, id));
         public bool Host(int id)
         {
             if (_host.TryGetValue(id, out bool known)) return known;
