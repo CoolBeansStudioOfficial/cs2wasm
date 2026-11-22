@@ -1161,7 +1161,8 @@ namespace Cs2Wasm.Runtime
         }
 
         /// <summary>Grows the memory by at least need bytes: by an eighth of its size, 16 MiB at least, when the maximum
-        /// allows (growing a shared memory is slow; growing it by a page at a time, for every refill, slower still).</summary>
+        /// allows (growing a shared memory is slow; growing it by a page at a time, for every refill, slower still).
+        /// (Threads: the other threads' instances learn the new size later, Wasm/MemSync.cs.)</summary>
         static void GrowFor(int need)
         {
             int pages = (need + 65535) / 65536;
