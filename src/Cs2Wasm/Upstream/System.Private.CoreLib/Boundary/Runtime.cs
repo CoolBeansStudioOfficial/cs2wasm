@@ -4228,8 +4228,8 @@ namespace Cs2Wasm.Runtime
         // (PartGrowArray); and the holder's clear releases the part as the plain object it is, after the visits
         // took the members out of its slots. While the holder is a plain object, so are the references in its
         // parts: plain counted ones, linked when the holder joins, as its own slots'.
-        // CS2WASM_NO_EXCLUSIVE_PARTS=1 at compile time, a program with threads, or a field the proof fails for:
-        // no part is made (Parts() is false in a program without one), every path as it was.
+        // Off unless CS2WASM_EXCLUSIVE_PARTS=1 at compile time; then too, a program with threads, a field the proof fails for:
+        // no part is made (Parts() is false in a program without one, and the constant 0 where they are off), every path as it was.
         // ------------------------------------------------------------------
         /// <summary>Whether the program has an exclusive field (decided when the whole program is compiled).</summary>
         [Intrinsic] static extern bool Parts();

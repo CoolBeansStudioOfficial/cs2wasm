@@ -4,7 +4,8 @@ using Microsoft.CodeAnalysis.Operations;
 
 namespace Cs2Wasm.Compiler;
 
-// Exclusive parts (docs/AUDIT.md A3.5, "The build, round 7" and "round 8"; the runtime's half is in Runtime.cs under
+// Exclusive parts (docs/AUDIT.md A3.5, "The build, round 7" and "round 8": built, no gain as built, one program
+// not right, tools/parts-holder-goes.cs: so off unless asked for; the runtime's half is in Runtime.cs under
 // "Exclusive parts"). A field whose object is its holder's alone needs no membership of its own in the holder's
 // group: the list in `Children`, and that list's array in `_items`. The field's site is exclusive when, over the
 // whole program:
