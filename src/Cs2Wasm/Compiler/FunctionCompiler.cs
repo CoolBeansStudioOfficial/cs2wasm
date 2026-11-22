@@ -528,6 +528,10 @@ sealed partial class FunctionCompiler
 
     int ExactTypeHint(ITypeSymbol? t) => t == null ? 0 : ExactTypeHint(D, T.Resolve(t, Map));
 
+    /// <summary>CS2WASM_FLAT_DESTROY_BREAK=1 (test 235's proof that the rule is relied on): a place of a class that
+    /// is not sealed, whose name begins with "Unsealed", counts as holding objects of that very class.</summary>
+    static readonly bool s_exactBreak = Environment.GetEnvironmentVariable("CS2WASM_FLAT_DESTROY_BREAK") == "1";
+
     /// <summary>The same for a type that is already resolved (the runtime's own loops over an array's elements).</summary>
     internal static int ExactTypeHint(Driver D, ITypeSymbol t, bool plain = false)
     {
@@ -535,7 +539,7 @@ sealed partial class FunctionCompiler
         if (Types.IsString(t)) return 2;
         if (t is IArrayTypeSymbol { Rank: 1 } at)
             return at.ElementType is INamedTypeSymbol { IsValueType: true } et && Types.PrimOf(et) != Prim.None ? D.TypeId(D.Types.Canonical(t)) + 1 : 0;
-        if (t is INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true, IsGenericType: false } nt && !Types.IsImmortalType(nt))
+        if (t is INamedTypeSymbol { TypeKind: TypeKind.Class, IsGenericType: false } nt && (nt.IsSealed || s_exactBreak && nt.Name.StartsWith("Unsealed", StringComparison.Ordinal)) && !Types.IsImmortalType(nt))
         {
             for (var c = nt.ContainingType; c != null; c = c.ContainingType) if (c.IsGenericType) return 0;
             return D.TypeId(D.Types.Canonical(nt)) + 1;

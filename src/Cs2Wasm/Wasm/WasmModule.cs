@@ -621,8 +621,17 @@ internal sealed class WasmModule
             if (body[i].Op == Op.Call && body[i].Ref is WasmFunction g)
             {
                 int guard = 0;
-                while (g.ForwardTo != null && guard++ < 64) g = g.ForwardTo;
+                long hint = body[i].Imm2;
+                while (g.ForwardTo != null && guard++ < 64)
+                {
+                    // (a forwarder whose own call names the class of the object it releases, RuntimeGen.ReleaseOfField:
+                    // the call that takes its place names it too)
+                    int np = g.Type.Params.Length;
+                    if (hint == 0 && g.Body.Count > np && g.Body[np].Op == Op.Call && ReferenceEquals(g.Body[np].Ref, g.ForwardTo)) hint = g.Body[np].Imm2;
+                    g = g.ForwardTo;
+                }
                 body[i].Ref = g;
+                body[i].Imm2 = hint;
             }
     }
 

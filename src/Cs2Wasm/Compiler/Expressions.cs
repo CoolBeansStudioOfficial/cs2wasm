@@ -358,7 +358,7 @@ sealed partial class FunctionCompiler
             {
                 ToOwned(o, t);
                 int nv = Scratch(ValType.I32); E.Set(nv);
-                E.Get(v.Local); E.Call(Rt.ReleaseOf(t));
+                E.Get(v.Local); ReleaseOf(t);
                 E.Get(nv); E.Set(v.Local);
                 FreeScratch(ValType.I32, nv);
             }
@@ -467,7 +467,9 @@ sealed partial class FunctionCompiler
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
             if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink); if (storeLock) { E.Get(took); E.Call(site.StoreUnlock); } }
             else if (byAddress) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.UnlinkAt(t)); if (D.ThreadMode) { E.Get(took); E.Call(D.Arenas.StoreLockAt(t, false)); } }
-            else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.ReleaseOf(t));
+            else if (initKey != null) E.Call(D.InitStoreRelease(E.Fn, initKey));
+            // (what the place held is of the place's class: named, as a local's release is)
+            else ReleaseOf(t);
             if (took >= 0) FreeScratch(ValType.I32, took);
             FreeScratch(ValType.I32, old); FreeScratch(ValType.I32, a);
         }

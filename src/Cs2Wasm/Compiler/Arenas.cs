@@ -937,7 +937,7 @@ internal sealed partial class Arenas
                             if (s_countRc) body[^1] = body[^1] with { Cause = Emitter.CauseOf("a store's old value (cyclic slot, plain container)") };
                             A(Op.End);
                         }
-                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); x.Ref = D.Rt.ReleaseOf(ph.site!.SlotType); if (s_countRc) x.Cause = Emitter.CauseOf("a store's old value (field or element)"); body.Add(x); }
+                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); x.Ref = D.Rt.ReleaseOf(ph.site!.SlotType); if (FunctionCompiler.ExactTypeHint(D, ph.site!.SlotType) is int hint and not 0) x.Imm2 = hint; if (s_countRc) x.Cause = Emitter.CauseOf("a store's old value (field or element)"); body.Add(x); }
                         break;
                     case Kind.LinkAt:
                         // (value, slot) -> value
