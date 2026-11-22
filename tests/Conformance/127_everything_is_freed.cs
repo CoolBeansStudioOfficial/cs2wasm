@@ -105,9 +105,10 @@ static class P
     static void Tasks()
     {
         // (the four continuations run on pool threads at once: the list they add to under a lock. Without it two of them
-        // may write one element, in .NET too, where nothing shows; here the child that lost its place was one of two
-        // structures that refer only to members under each other, which the check at the drop does not take as one:
-        // docs/AUDIT.md A1.8)
+        // may write one element, and List<T> promises nothing for several writers. .NET frees everything all the
+        // same, in 400 loaded runs; here the child that lost its place is then left with the tree for good in some
+        // runs, which is the runtime's fault and open: tests/Load/219_no_lock.cs shows it in one run of five,
+        // tests/Load/127_everything_is_freed.cs is this test as it was)
         static async Task<Node> MakeAsync(Node parent) { await Task.Yield(); var n = new Node("async") { Parent = parent }; await Task.Delay(1); lock (parent.Children) parent.Children.Add(n); return n; }
         var root = new Node("async");
         var all = Task.WhenAll(Enumerable.Range(0, 4).Select(_ => MakeAsync(root))).GetAwaiter().GetResult();

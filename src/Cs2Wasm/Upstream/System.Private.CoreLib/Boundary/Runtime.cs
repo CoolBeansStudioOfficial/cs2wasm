@@ -2700,6 +2700,8 @@ namespace Cs2Wasm.Runtime
         static void Kill(int w)
         {
             int fl = PL(w, 24);
+            // (in a destruction, one that waits in the list too: it dies with the others now, DyingQueued)
+            if (s_destroying != 0 && (fl & (Dying | Queued)) == Queued && !NoDyingQueued()) { Unqueue(w); fl = PL(w, 24); }
             if ((fl & (Dying | Queued)) != 0) return;
             if (s_destroying != 0)
             {
@@ -2725,6 +2727,17 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(s_killQ + 4 * s_killN, w);
             s_killN++;
         }
+
+        // DyingQueued: a member left without a reference of either kind in a destruction dies with the others, also
+        // when it waits in the thread's list (queued before the destruction began, for a check or to be destroyed).
+        // It was left to the list and destroyed alone, after the others' finalizers had run. Measured with a check
+        // queued for every survivor of a destruction left without an owner (CS2WASM_SURVIVOR_CHECK=1, which puts
+        // many more members in the list): test 133, whose finalizers store what their object held, leaves 1 object
+        // without this and none with it. Why that one stayed was not followed further than this: the finalizers of
+        // those that die together are given back the references the dying gave up (CutsBack), and a reference to a
+        // member that lives on is counted there. CS2WASM_NO_DYING_QUEUED=1 (at compile time, a measurement): as it
+        // was.
+        [Intrinsic] static extern bool NoDyingQueued();
 
         /// <summary>A member that is destroyed while it waits in the list: taken off it.</summary>
         static void Unqueue(int m)
@@ -2753,6 +2766,16 @@ namespace Cs2Wasm.Runtime
                 // again by its note's number)
                 // (a top whose note's number went stale, StaleNote, DyingNote: the check again)
                 else if ((PLM(w) & 1) != 0 && DropCandidate(w) && !NoStaleNote()) Dropped(w);
+                // (such a top that code refers to meanwhile, so that no check is made now: its note goes. The number
+                // is stale all the same, and a top that has a note is passed over when its last reference from
+                // outside goes, ArenaRelease; without one that release makes the check. Test 131 under load, and
+                // test 219, 3 runs in 100: a result adopted by its parent's list when its task died, the parent,
+                // whose check had failed by that result's reference, still held by the state machine of the method
+                // that was ending on the pool thread, and let go a moment later)
+                else if ((PLM(w) & 1) != 0 && Mem.LoadI32(w) != -2 && (PL(w, 24) & (Owned | Dying)) == 0 && !NoStaleNote()) ClearMark(w);
+                // (the trials, TurnCheck and SurvivorCheck: a member an ownership that turned round left on top, a
+                // destruction's survivor left without an owner)
+                else if (DropCandidate(w) && (TurnCheck() || SurvivorCheck())) Dropped(w);
             }
         }
 
@@ -2890,6 +2913,7 @@ namespace Cs2Wasm.Runtime
                 if (PL(x, 20) != val || (uint)xf >= UOne || (xf & Held) != 0) return;
                 PS(x, 24, xf & ~(Owned | MultMask));
                 PS(x, 20, 0);
+                if (Mem.LoadI32(x) == -2 && TurnCheck()) QueueCheck(x);
                 // (Open: x is the top of what the two are in from here on, and when no code refers to it nothing
                 // looks at it again: a result made referring to its parent and owned by another member (its task),
                 // then put in the parent's list, the list's array taking it over when that owner dies after the
@@ -2897,7 +2921,10 @@ namespace Cs2Wasm.Runtime
                 // A check queued here (at every such turn, or only where an owner dies), and one for every
                 // survivor of a destruction left without an owner, were tried: test 133 then leaves 4,934 to 4,943
                 // objects, and 1. A top that has a note is passed over by the checks at later unlinks, so a check
-                // that fails must leave a number every later change keeps right, and not all do yet.)
+                // that fails must leave a number every later change keeps right, and not all do yet.
+                // 2026-11-22: the check is CS2WASM_TURN_CHECK=1, a trial; a check that leaves no note when it
+                // fails left test 133 with 4,937 objects all the same, so it is not the notes: four members stay
+                // referred to from outside and their group with them. Not found.)
             }
             PS(val, 20, container);
             PS(val, 24, PL(val, 24) | Owned | MultOne);
@@ -2909,6 +2936,15 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_NO_STALE_NOTE=1 (at compile time, a measurement): a top's note is not looked at again when
         /// a member comes under it (StaleNote).</summary>
         [Intrinsic] static extern bool NoStaleNote();
+
+        /// <summary>CS2WASM_TURN_CHECK=1, CS2WASM_SURVIVOR_CHECK=1 (at compile time, trials, off): the check of the
+        /// member an ownership that turned round leaves on top, and of a destruction's survivor left without an
+        /// owner, when no code refers to them (queued, DrainKills). The first frees the shape said open at
+        /// TakeOwnership (test 215's one-result case, taken out of the test: 3 objects left without) and leaves
+        /// test 133 with 4,934 objects, cause not found; the second passes test 133 since DyingQueued (it left 1)
+        /// and frees nothing more in tests/Load/219_no_lock.cs.</summary>
+        [Intrinsic] static extern bool TurnCheck();
+        [Intrinsic] static extern bool SurvivorCheck();
 
         [Intrinsic] static int s_handFrom, s_handSum;
 
@@ -4594,7 +4630,7 @@ namespace Cs2Wasm.Runtime
             if (s_failedTops != 0 && OutsideMarked(PLM(child))) DyingNote(child, obj);
             // (a survivor of the cut that nothing outside refers to may be kept by stale holds of what it owns alone:
             // checked at the drop when the destruction is done, DrainKills)
-            if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+            if ((StickyHolds() || SurvivorCheck()) && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
         }
 
         /// <summary>A dying member's reference to a member that lives on went (VisitDying, DyingSurvivor): when that
@@ -4955,6 +4991,7 @@ namespace Cs2Wasm.Runtime
                         {
                             // (Kill, in a destruction)
                             int cf = PL(child, 24);
+                            if ((cf & (Dying | Queued)) == Queued && !NoDyingQueued()) { Unqueue(child); cf = PL(child, 24); }
                             if ((cf & (Dying | Queued)) == 0) { PS(child, 24, cf | Dying); ArenaTakeOut(ar, child); PS(child, 12, dead); dead = child; }
                             continue;
                         }
@@ -4978,6 +5015,7 @@ namespace Cs2Wasm.Runtime
                         if (left == 0 && Mem.LoadI32(child) == -2)
                         {
                             int cf = PL(child, 24);
+                            if ((cf & (Dying | Queued)) == Queued && !NoDyingQueued()) { Unqueue(child); cf = PL(child, 24); }
                             if ((cf & (Dying | Queued)) == 0) { PS(child, 24, cf | Dying); ArenaTakeOut(ar, child); PS(child, 12, dead); dead = child; }
                             continue;
                         }
@@ -5040,7 +5078,7 @@ namespace Cs2Wasm.Runtime
             if (PL(child, 20) == 0) Adopt(child);
             UpdateHold(child);
             if (s_failedTops != 0 && OutsideMarked(PLM(child))) DyingNote(child, m);
-            if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+            if ((StickyHolds() || SurvivorCheck()) && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
             return s_visitDead;
         }
 
