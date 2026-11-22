@@ -4238,12 +4238,19 @@ namespace Cs2Wasm.Runtime
                 for (int i = 0; i < k; i++) ArenaFreeObject(Mem.LoadI32(list + 4 * i));
                 return;
             }
+            // (the page of the member before: one member after the other lies in the same page as often as not, and
+            // a page stays one while it has a block in use; nothing is allocated in between)
+            int known = 0;
             for (int i = 0; i < k; i++)
             {
                 int m = Mem.LoadI32(list + 4 * i), blk = m - ArenaPrefix;
-                if (!IsPage(blk)) { ArenaFreeObject(m); continue; }
-                SideFree(m);
                 int pg = blk & ~(PageSize - 1);
+                if (pg != known)
+                {
+                    if (!IsPage(blk)) { ArenaFreeObject(m); continue; }
+                    known = pg;
+                }
+                if (Mem.LoadI32(blk) != PrefixMark) SideFree(m);
                 int used = Mem.LoadI32(pg + 16) - 1;
                 if (used != 0 && (Mem.LoadI32(pg + 20) & 1) != 0)
                 {
