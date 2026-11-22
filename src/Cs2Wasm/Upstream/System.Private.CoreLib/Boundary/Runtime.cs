@@ -1258,6 +1258,26 @@ namespace Cs2Wasm.Runtime
             // (with room again: the exception a later failure throws is made now, while it can be)
             s_end = Mem.Size() * 65536;
             MemStatsGrow();
+            // (with other threads, not here: OomLater)
+            if (SingleThreaded()) ThrowHelpers.ReserveOutOfMemory(); else Atomic.Store32(ref s_oomWanted, 1);
+        }
+
+        // The exception a later failure throws is made when the memory has grown (ThrowHelpers.ReserveOutOfMemory).
+        // GrowFor runs under the heap's lock, the innermost of the runtime's (GroupLocks.cs), and making an exception
+        // runs the program's code: constructors, a static's initialization, the resources' lookup, which take locks
+        // of their own. With other threads running, the thread that grew the memory waited for such a lock under the
+        // heap's while its holder waited for the heap's: every thread stopped, for good, at the program's first
+        // growth of the memory when it came while threads were starting. Test 217, 3 to 5 runs of 480 (no output, a
+        // timeout); test 133 checked, 5 loaded runs of 400 on the homelab once other changes made its first growth
+        // come at another time. So with threads the growth only notes that the exception is wanted, and the next
+        // object allocated the slow way by a thread that holds no lock of the runtime's makes it (AllocObjectSlow).
+        static int s_oomWanted;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void OomLater()
+        {
+            if (t_lkN != 0 || RuntimeLockHeld() || Atomic.Load32(ref s_heapOwner) == ThreadId()) return;
+            if (Atomic.CompareExchange32(ref s_oomWanted, 1, 0) != 1) return;
             ThrowHelpers.ReserveOutOfMemory();
         }
 
@@ -1875,6 +1895,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
             if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x1F) << 24);
+            if (ThreadMode() && s_oomWanted != 0) OomLater();
             return a;
         }
 
@@ -2806,10 +2827,13 @@ namespace Cs2Wasm.Runtime
                 PS(x, 24, xf & ~(Owned | MultMask));
                 PS(x, 20, 0);
                 // (Open: x is the top of what the two are in from here on, and when no code refers to it nothing
-                // looks at it again: a result made referring to its parent and owned by another member, then put in
-                // the parent's list, the list's array taking it over when that owner dies after the parent's last
-                // reference from outside went. A check queued here, and one for a destruction's survivor left without
-                // an owner, were tried: test 133 then leaves 4,934 objects, and 1.)
+                // looks at it again: a result made referring to its parent and owned by another member (its task),
+                // then put in the parent's list, the list's array taking it over when that owner dies after the
+                // parent's last reference from outside went. Test 187's rounds under load, one run in two hundred.
+                // A check queued here (at every such turn, or only where an owner dies), and one for every
+                // survivor of a destruction left without an owner, were tried: test 133 then leaves 4,934 to 4,943
+                // objects, and 1. A top that has a note is passed over by the checks at later unlinks, so a check
+                // that fails must leave a number every later change keeps right, and not all do yet.)
             }
             PS(val, 20, container);
             PS(val, 24, PL(val, 24) | Owned | MultOne);
