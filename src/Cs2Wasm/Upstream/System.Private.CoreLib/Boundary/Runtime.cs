@@ -2075,10 +2075,15 @@ namespace Cs2Wasm.Runtime
                 s_visitArena = sa; s_visitMode = sm; s_visitObj = so;
             }
             s_joinVisit = jv;
-            if (jv != 0) return;
-            // (the slots left to a waiting owner, LinkMembers, in the order they were linked: a value now above the
-            // container that refers to it, the container's slot an up-reference; else the container owns it, as it
-            // would have at the link)
+            if (jv == 0 && s_reevN != 0) LinkWaiting();
+        }
+
+        /// <summary>The slots left to a waiting owner, LinkMembers, in the order they were linked: a value now above
+        /// the container that refers to it, the container's slot an up-reference; else the container owns it, as it
+        /// would have at the link. (Not written into ArenaLinkJoined, which every link that joins an object runs.)</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void LinkWaiting()
+        {
             for (int q = 0; q < s_reevN; q++)
             {
                 int o = Mem.LoadI32(s_reevQ + 8 * q), v = Mem.LoadI32(s_reevQ + 8 * q + 4);
@@ -2093,6 +2098,13 @@ namespace Cs2Wasm.Runtime
 
         // (ArenaLinkJoined's visits, and the members to Reevaluate after them)
         [Intrinsic] static int s_joinVisit, s_reevQ, s_reevN, s_reevCap;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void Waiting(int val, int container)
+        {
+            if (PLW(val) == 0) { ClearMark(val); PSW(val, container); }
+            ReevaluateLater(container, val);
+        }
 
         static void ReevaluateLater(int container, int val)
         {
@@ -2974,8 +2986,7 @@ namespace Cs2Wasm.Runtime
                 // container owns it, as it would have at the link.
                 else if (ow == 0 && s_joinVisit != 0 && Mem.LoadI32(val) < (later ? -3 : -2) && val != container)
                 {
-                    if (PLW(val) == 0) { ClearMark(val); PSW(val, container); }
-                    ReevaluateLater(container, val);
+                    Waiting(val, container);
                 }
                 else if (ow == 0) TakeOwnership(val, container);
                 // (the first other container that holds it is the one to own it next: a later one, a task's
