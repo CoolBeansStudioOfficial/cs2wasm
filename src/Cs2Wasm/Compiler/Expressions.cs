@@ -16,6 +16,7 @@ sealed partial class FunctionCompiler
     /// CS2WASM_NO_CANON=1: decided on the exact type, as before.</summary>
     bool OfTypeParameter(ITypeSymbol? original) => !s_noCanon && original is ITypeParameterSymbol && E.Fn.Family != null;
     static readonly bool s_noCanon = Environment.GetEnvironmentVariable("CS2WASM_NO_CANON") == "1";
+    static readonly bool s_noSealedStore = Environment.GetEnvironmentVariable("CS2WASM_NO_SEALED_STORE") == "1";
 
     ITypeSymbol TypeOf(IOperation op) => T.Resolve(op.Type ?? throw new CompileException($"expression has no type: {op.Syntax}", op.Syntax.GetLocation()), Map);
 
@@ -387,6 +388,9 @@ sealed partial class FunctionCompiler
             FreeScratch(ValType.I32, src);
             return;
         }
+        // (a store proven to close no cycle is linked as such, whoever holds the container: the owned local's link
+        // would make the site general)
+        if (iso && !Driver.NoChainStores) owned = false;
         var vt = Types.WasmType(t)!.Value;
         // (an immortal object: stored as it is, nothing counted, nothing to publish: its count word marks it shared)
         if (Types.IsImmortalType(t) && site == null && pin == null) { int iv = Scratch(vt); E.Set(iv); pushAddr(); E.Get(iv); E.Store(Op.I32Store, offset); FreeScratch(vt, iv); return; }
@@ -1843,6 +1847,17 @@ sealed partial class FunctionCompiler
         return ConcatParts(parts.Select(p => (Func<Own>)(() => EmitToString(p))).ToList());
     }
 
+    /// <summary>A store that goes down a structure (ChainStores.cs): of a field of its class's own type, proven for
+    /// this method's text; what the proof asks of the whole program is noted on the site.</summary>
+    bool ChainStore(Arenas.Site site, IFieldReferenceOperation fr, ISimpleAssignmentOperation asg)
+    {
+        if (_closure != null || _machine != null) return false;
+        if (!SymbolEqualityComparer.Default.Equals(fr.Field.Type.OriginalDefinition, fr.Field.ContainingType.OriginalDefinition)) return false;
+        if (D.ChainSafeStore(M, asg) is not { } proof) return false;
+        foreach (var t in proof.RefParamTypes) site.ChainRefTypes.Add(Types.Key(T.Canonical(T.Resolve(t, Map))));
+        return true;
+    }
+    static readonly bool s_noConcatOnce = Environment.GetEnvironmentVariable("CS2WASM_NO_CONCAT_ONCE") == "1";
     Own ConcatParts(List<Func<Own>> parts)
     {
         // up to four strings in one call, one new string (as the C# compiler does); more: four, then the result
@@ -1850,10 +1865,20 @@ sealed partial class FunctionCompiler
         var first = parts[0]();
         first = ToCallSafe(first, D.StringType);
         Own acc = first;
+        // (five parts and more: eight in one call, one new string, as .NET's Concat of a span of strings makes one;
+        // then the result with the next seven. In fours each call made a string and copied what the calls before it
+        // had: three strings and two copies of the first part for a line of eight parts. CS2WASM_NO_CONCAT_ONCE=1)
+        bool once = parts.Count > 4 && !s_noConcatOnce;
         for (int i = 1; i < parts.Count;)
         {
-            int n = Math.Min(3, parts.Count - i);
+            int n = Math.Min(once ? 7 : 3, parts.Count - i);
             for (int k = 0; k < n; k++) { var o = parts[i + k](); ToCallSafe(o, D.StringType); }
+            if (once)
+            {
+                for (int k = n; k < 7; k++) E.I32(0);
+                E.Call(D.LibMethod("System.String", "Concat8", 8).Fn);
+            }
+            else
             E.Call(D.LibMethod("System.String", n == 1 ? "Concat2" : n == 2 ? "Concat3" : "Concat4", n + 1).Fn);
             i += n;
             acc = Own.Owned;
@@ -2085,6 +2110,7 @@ sealed partial class FunctionCompiler
 
     Own EmitAssign(ISimpleAssignmentOperation sa, bool needResult)
     {
+        if (!needResult && TryEmitBorrowedOutStore(sa)) return Own.None;
         if (sa.IsRef)
         {
             // ref reassignment: ref local = ref expr
@@ -2832,7 +2858,7 @@ sealed partial class FunctionCompiler
                             initKey: StorageField(field) is IFieldSymbol sf ? InitStoreKey(sf, Owner(field), fr.Instance) : null,
                             fresh: site != null && target.Parent != null && StoresIntoFresh(fr.Instance, target.Parent),
                             owned: site != null && OwnedLocal(fr.Instance),
-                            iso: site != null && target.Parent is ISimpleAssignmentOperation isa && ReferenceEquals(isa.Target, target) && D.IsolatedValue(isa.Value),
+                            iso: site != null && target.Parent is ISimpleAssignmentOperation isa && ReferenceEquals(isa.Target, target) && (D.IsolatedValue(isa.Value) || ChainStore(site, fr, isa)),
                             initNull: InitializerStoreIntoNull(fr, target),
                             lastLocal: site != null ? LastContainerLocal(fr.Instance) : -1);
                     }
@@ -2846,10 +2872,14 @@ sealed partial class FunctionCompiler
                     int keep = E.AddLocal(ValType.I32);
                     // (a sealed element type has no derived one: the array can only be of this type)
                     var et = T.Canonical(at.ElementType);
-                    // (shared generic code: an element type that is a type parameter is any reference type, as in every
-                    // instantiation of the family, so that their bodies are one: the check is made, and passes)
+                    // (shared generic code: an element type that is a type parameter was taken as any reference type,
+                    // as in every instantiation of the family, so that their bodies are one, and the check made. It
+                    // is decided on the exact type now: the instantiations for sealed classes are one body without
+                    // the check, those for the others one with it. List<T>'s setter is such a store, and the check
+                    // (the array's type word read and compared) was 3 us of the churn scene's 86 a frame: 19,000
+                    // survivors moved down a list of a sealed class. CS2WASM_NO_SEALED_STORE=1: as before.)
                     bool exact = (et is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Delegate, IsSealed: true } || Types.IsString(et))
-                        && !OfTypeParameter((ae.ArrayReference.Type as IArrayTypeSymbol)?.ElementType);
+                        && (!s_noSealedStore || !OfTypeParameter((ae.ArrayReference.Type as IArrayTypeSymbol)?.ElementType));
                     return new MemLV(this, t, () => EmitArrayElementAddress(ae, keep), D.Arenas.ArraySite(at), keep, pub: Publish.Container, elements: true,
                         covariant: exact || at.Rank != 1 ? null : (IArrayTypeSymbol)T.Canonical(at), owned: OwnedLocal(ae.ArrayReference));
                 }

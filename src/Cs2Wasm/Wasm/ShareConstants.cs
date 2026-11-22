@@ -162,6 +162,7 @@ static class ShareConstants
     public static int Run(List<WasmFunction> fns, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown, bool lend, Func<string, FuncType, WasmFunction> add, Func<WasmFunction, int> tableSlot)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        LoopCalled(fns);
         var groups = Groups(fns, mayThrow, posShown, lend, out _);
         long tGroups = sw.ElapsedMilliseconds;
         var plans = new Dictionary<WasmFunction, Plan>();
@@ -356,6 +357,11 @@ static class ShareConstants
                     // (a family's members calling functions that are not one shared group, of one signature: through
                     // the table, each member's callee's index a slot)
                     if (!s_indirect || r.Family == null || targets.Any(t => !t.Type.Equals(targets[0].Type)) || !s_indirectLoops && InLoop(r, i)) return false;
+                    if (r.Body.Count < s_indirectMin && g.Any(m => s_loopCalled.Contains(m)))
+                    {
+                        if (s_stats) Console.Error.WriteLine($"share: short, not through the table: {g.Count} of {r.Body.Count} instructions, {string.Join(" | ", g.Select(m => m.Name))} calling {targets[0].Name}");
+                        return false;
+                    }
                     indirect[i] = SlotOf([.. targets.Select(t => new Instr { Op = Op.I32Const, Imm = -1, Ref = t, Pos = ri.Pos })]);
                     continue;
                 }
@@ -379,6 +385,39 @@ static class ShareConstants
     static string Id(object o) => s_ids.GetValue(o, _ => (object)Interlocked.Increment(ref s_nextId)).ToString()!;
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, object> s_ids = new();
     static int s_nextId;
+
+    /// <summary>A family's body shorter than this (instructions), a member of which is called from inside a loop, is
+    /// not shared where its members call different functions: the call through the table is then made every turn, and
+    /// the engine's optimizing tier inlines neither the body into the loop nor the callee into the body (a
+    /// dictionary's TryGetValue over its FindValue, 28 instructions: 2.2 ns a lookup, tools/colstr-parts.cs), for a
+    /// body's length saved a member. One called from no loop stays shared (a list's Grow over its Capacity's setter,
+    /// from AddWithResize: direct, the engine inlines the setter up the chain into whatever adds, and what is hot there
+    /// is left a call: tools/tree-parts.cs, the build 4% slower). CS2WASM_NO_DIRECT_SMALL=1: shared whatever their
+    /// length (CS2WASM_SHARE_INDIRECT_MIN=n: the length).</summary>
+    static readonly int s_indirectMin = Environment.GetEnvironmentVariable("CS2WASM_NO_DIRECT_SMALL") == "1" ? 0
+        : int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_SHARE_INDIRECT_MIN"), out var im) ? im : 32;
+    /// <summary>The functions called directly from inside a loop of some function, on the bodies as Run finds them.</summary>
+    static readonly HashSet<WasmFunction> s_loopCalled = [];
+    static void LoopCalled(List<WasmFunction> fns)
+    {
+        s_loopCalled.Clear();
+        if (s_indirectMin <= 0) return;
+        var open = new Stack<bool>();
+        foreach (var f in fns)
+        {
+            if (f.IsImport) continue;
+            open.Clear();
+            int loops = 0;
+            foreach (var ins in f.Body)
+                switch (ins.Op)
+                {
+                    case Op.Loop: open.Push(true); loops++; break;
+                    case Op.Block or Op.If or Op.TryTable: open.Push(false); break;
+                    case Op.End when open.Count > 0: if (open.Pop()) loops--; break;
+                    case Op.Call when loops > 0 && ins.Ref is WasmFunction g: s_loopCalled.Add(g); break;
+                }
+        }
+    }
 
     /// <summary>CS2WASM_SHARE_INDIRECT_LOOPS=0: no call through the table inside a loop (a group with one is not shared).</summary>
     static readonly bool s_indirectLoops = Environment.GetEnvironmentVariable("CS2WASM_SHARE_INDIRECT_LOOPS") != "0";

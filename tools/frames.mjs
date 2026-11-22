@@ -4,7 +4,9 @@
 // after them), then 6,000 frames each timed with Stopwatch inside the module. Per scene: median, p99, p99.9 and worst
 // frame, and peak memory (the module's linear memory at exit; it never shrinks). Each statistic is the lowest over the
 // runs (a spike the program makes comes back every run; a pause of the machine does not).
-//   node tools/frames.mjs [--runs N] [--rebuild-aot] [--no-build] [--worst N] [--json file] [--js-young MB] [scene...]
+//   node tools/frames.mjs [--runs N] [--rebuild-aot] [--no-build] [--no-aot] [--worst N] [--json file] [--js-young MB] [scene...]
+// --no-aot: cs2wasm's side alone (a machine without the Emscripten SDK: two builds of this side against each other,
+// by a compiler switch in the environment); nothing is compared, exit 0.
 // --js-young MB: both sides' Node processes with a young generation of that size (V8's semi-space). cs2wasm's host
 // returns the clock as a BigInt (monotonic_ns is an i64), two a frame for the Stopwatch here: one scavenge of Node's
 // own heap in a run, 0.3 to 0.9 ms, at the same frame of every run of a module (strings 2995, collections 3175, churn
@@ -34,7 +36,8 @@ const src = join(root, 'tools', 'frames');
 const newest = Math.max(...readdirSync(src).filter((f) => f.endsWith('.cs')).map((f) => statSync(join(src, f)).mtimeMs));
 
 const aotDir = join(out, 'naot-wasm'), aotJs = join(aotDir, 'frames-naot.js');
-if (args.includes('--rebuild-aot') || !existsSync(aotJs) || statSync(aotJs).mtimeMs < newest) {
+const noAot = args.includes('--no-aot');
+if (!noAot && (args.includes('--rebuild-aot') || !existsSync(aotJs) || statSync(aotJs).mtimeMs < newest)) {
   const emsdk = process.env.EMSDK ?? (existsSync('C:/tools/emsdk') ? 'C:/tools/emsdk' : null);
   if (!emsdk) throw new Error('NativeAOT for WebAssembly links with Emscripten 3.1.56: set EMSDK to its directory');
   console.error('publishing the NativeAOT build for WebAssembly...');
@@ -65,11 +68,13 @@ const res = {};
 for (const scene of scenes) {
   let aot = null, mod = null;
   for (let i = 0; i < runs; i++) {
-    const a = spawnSync(process.execPath, [...nodeFlags, '-r', peakJs, aotJs, scene], { encoding: 'utf8', cwd: aotDir, maxBuffer: 1 << 26 });
-    const sa = a.status === 0 && stats(a.stdout, scene);
-    if (!sa) { console.error(a.stdout.slice(-2000), a.stderr); throw new Error(`NativeAOT's build failed on ${scene}`); }
-    sa.peak = +(/peak_bytes=(\d+)/.exec(a.stdout)?.[1] ?? 0);
-    aot = low(aot, sa);
+    if (!noAot) {
+      const a = spawnSync(process.execPath, [...nodeFlags, '-r', peakJs, aotJs, scene], { encoding: 'utf8', cwd: aotDir, maxBuffer: 1 << 26 });
+      const sa = a.status === 0 && stats(a.stdout, scene);
+      if (!sa) { console.error(a.stdout.slice(-2000), a.stderr); throw new Error(`NativeAOT's build failed on ${scene}`); }
+      sa.peak = +(/peak_bytes=(\d+)/.exec(a.stdout)?.[1] ?? 0);
+      aot = low(aot, sa);
+    }
     const w = spawnSync(process.execPath, [...nodeFlags, join(root, 'host', 'run.mjs'), wasm, scene], { encoding: 'utf8', env: { ...process.env, CS2WASM_PRINT_MEMORY: '1' }, maxBuffer: 1 << 26 });
     const sw = w.status === 0 && stats(w.stdout, scene);
     if (!sw) { console.error(w.stdout.slice(-2000), w.stderr); throw new Error(`cs2wasm's module failed on ${scene}`); }
@@ -84,6 +89,7 @@ const mb = (b) => (b / 1048576).toFixed(1).padStart(6);
 let bad = 0;
 console.log('scene        side        median ms   p99 ms  p99.9 ms  worst ms   peak MB');
 for (const [scene, { aot, cs2wasm }] of Object.entries(res)) {
+  if (noAot) { console.log(`${scene.padEnd(12)} ${'cs2wasm'.padEnd(10)} ${ms(cs2wasm.median)} ${ms(cs2wasm.p99)} ${ms(cs2wasm.p999)} ${ms(cs2wasm.worst)}  ${mb(cs2wasm.peak)}`); continue; }
   const over = cs2wasm.worst > aot.worst || cs2wasm.p999 > aot.p999;
   const differs = aot.check !== cs2wasm.check;
   if (over || differs) bad++;
