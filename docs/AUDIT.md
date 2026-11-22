@@ -1349,6 +1349,55 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     (6,768) and rt.retain (2,160). Conclusion: the budget is spent on counts; the lever is fewer count calls (borrows,
     counts elided at compile time), not larger budgets or inlining by hand.
 
+- **Shared generic code (2026-11-21, on main fbe7688, branch claude/canon-sharing).** Round 5's pass shares bodies
+  equal but for i32 constants and calls of one shared group; what it could not share, measured with the new
+  `CS2WASM_SHARE_WHY=1` (families of instantiations still several bodies after sharing, the first instruction that
+  differs, the calls one member makes that another does not, and why identical members stayed apart): calls of
+  functions that are no shared group (a sealed type argument's own method, devirtualized: `GreenNodeExtensions.
+  WithAnnotationsGreen<T>` calls each T's `SetAnnotations`; each T's `rt.isinst`; `rt.release of` an exact type), the
+  limit of 6 hidden parameters, the covariant store check left out for a sealed element type (`List<string>` against
+  `List<A>`), null checks written out in one member and not in another (whether it is called from loops), a release's
+  exact-type hint in the key, and loads at a thread static's offset. As .NET's shared code over `__Canon` takes the
+  exact types from its generic dictionary, a family's body here takes them as hidden parameters:
+  - The compiler marks each instantiation with its generic definition (`WasmFunction.Family`, Driver.GenericFamily).
+    Within a family, a call whose callee differs between members and is not one shared group is made through the
+    table, each member's callee's table index a hidden parameter (`call_indirect`); so are loads whose offsets differ
+    (the offset added to the address). A family may have 24 hidden parameters (`CS2WASM_SHARE_MAX_FAMILY`), other
+    groups 6 as before.
+  - Decisions the compiler made on the exact type argument where the code names a type parameter are made as for any
+    reference type in a family (`FunctionCompiler.OfTypeParameter`): the covariant store check into a `T[]` is made
+    (it passes for a sealed T). Behaviour is the same: the check cannot fail there.
+  - A family's members get the written-out null checks alike (one called from loops, all). The same for the
+    inliner's caller counts was measured within 0.1% and is off (`CS2WASM_FAMILY_CALLERS=1`).
+  - Soundness: what is shared is only bodies that are the same instruction for instruction once the differing
+    constants, callees and offsets are parameters, so each member runs exactly its own code: counts, arena
+    operations and cycle-capable answers are each member's own (instantiations whose arena answers differ have
+    different bodies and stay apart: the largest part left, `ArenaLink`/`AllocObjectArena` in one member and not in
+    another). Struct type arguments are never made alike (their bodies differ). Traces: frames as round 5
+    (`tools/k5/lend.cs` the same with sharing on and off).
+  - `CS2WASM_SHARE_INDIRECT=0` (with `CS2WASM_NO_CANON=1`) for round 5's rules.
+  Result: the self-hosted compiler (named, no threads) 58,572,027 to 47,163,399 bytes (-19.5%), its code 33.3 to 25.9
+  MB (generic instantiations 10.2 to 4.7 MB; what over reference types would still share at most 6.3 to 1.5 MB); hello world on the
+  homelab (selfhost-ab.sh, 6 interleaved rounds) 10,444 to 9,990 ms median (-4.3%, faster in each round; NativeAOT-LLVM
+  4,250 ms there: 2.46x to 2.35x), peak memory the same. Parser bench 2,575,966 to 2,363,055 bytes; hello world
+  27,067 to 27,053 bytes. tools/roslyn-bind-bench.sh (homelab, 6 rounds): 6,742 to 6,654 ms median (-1.3%, below
+  what it resolves; its module 16.2 to 14.3 MB). bench.mjs (homelab, 3 interleaved pairs): 0.97x to 0.98x NativeAOT;
+  cs2wasm's own times the same to 0.1 ms but word_count and shapes (+2 to 5%, tens of microseconds); keeping the
+  calls through the table out of loops (`CS2WASM_SHARE_INDIRECT_LOOPS=0`) was no faster. Building: sharing takes
+  1.7 s of the parser bench's build (1.6 s before), the build itself shorter (later passes have less code). Suite
+  196/196 checked and as shipped on the homelab (Godot not installed there). Also fixed: ShareConstants named
+  references by their identity hash code, which two objects can share (members would have been given another's
+  callee or address); now by an object's own number. Open: 108_records_async_misc failed once, checked, in the first
+  of two suite runs (exit 1 at its cancellation line, `await foreach` with a token cancelled), and once in 36 runs of
+  the test alone here (each a new build: builds are not byte-for-byte the same from run to run, with sharing off
+  too); round 5's rules passed 22 of 22 and one module run 60 times passed each time. Not traced; it may be this
+  change or an older rare failure.
+  - What is left (`CS2WASM_SHARE_WHY=1` on the self-hosted compiler): families whose members differ in arena
+    operations (cycle-capable in one instantiation, not in another), loads and stores of a thread static in one body
+    (only loads are made alike), and small groups whose stubs cost more than the body. The hidden parameters are
+    passed at each call; taking them from the object's type word, as .NET does for a generic type's methods, would
+    save the pushes at call sites (not done).
+
 - **Self-hosted compiler's memory (stream L of docs/FINISH.md, 2026-11-20): 568.9 MB to 482.9 MB.**
   - The report: `CS2WASM_MEMSTATS=1` at compile time. The runtime goes through the heap at every growth of the memory
     (the table's word per granule, each page's blocks: a block's first word says what it is) and prints a line;

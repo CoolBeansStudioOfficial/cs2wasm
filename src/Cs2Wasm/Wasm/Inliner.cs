@@ -57,6 +57,14 @@ static class Inliner
             foreach (var ins in f.Body)
                 if (ins.Op == Op.Call && ins.Ref is WasmFunction g) callers[g] = callers.GetValueOrDefault(g) + 1;
         }
+        // (a generic family's members are counted alike, by the most called of them: the rules that look at the
+        // number of callers then decide the same for each, and their callers stay one shared body: ShareConstants)
+        if (s_familyCallers)
+        {
+            var famMax = new Dictionary<string, int>();
+            foreach (var (g, c) in callers) if (g.Family != null) famMax[g.Family] = Math.Max(famMax.GetValueOrDefault(g.Family), c);
+            if (famMax.Count > 0) foreach (var g in functions) if (g.Family != null && famMax.TryGetValue(g.Family, out var mc)) callers[g] = mc;
+        }
         var candidates = new HashSet<WasmFunction>();
         // (in a loop the call is paid for every time round: a larger body goes in there, and only there)
         var inLoops = new HashSet<WasmFunction>();
@@ -211,6 +219,7 @@ static class Inliner
         || g.Name.StartsWith("arena.", StringComparison.Ordinal) || g.Name.StartsWith("destroy ", StringComparison.Ordinal) || g.Name.StartsWith("static init", StringComparison.Ordinal));
 
     static readonly int s_fastPath = Env("CS2WASM_FAST_PATH", 8);
+    static readonly bool s_familyCallers = Environment.GetEnvironmentVariable("CS2WASM_FAMILY_CALLERS") == "1"; // (measured: within 0.1% either way, off)
     static readonly int s_fastPathCallers = Env("CS2WASM_FAST_PATH_CALLERS", 3); // the instructions of a fast path's test and value together (0: none)
 
     /// <summary>Whether an instruction computes without an effect, and cannot trap: a local's or a global's read or

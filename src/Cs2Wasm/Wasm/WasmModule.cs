@@ -345,6 +345,9 @@ internal sealed class WasmModule
                     {
                         // (in loops, and in what loops call, to two calls deep: CS2WASM_NONNULL_DEPTH)
                         var hot = NullChecks.CalledFromLoops(Functions, int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_NONNULL_DEPTH"), out var dd) ? dd : 2);
+                        // (a generic family's members alike: one hot, all, so that they stay one body: ShareConstants)
+                        var hotFamilies = hot.Where(f => f.Family != null).Select(f => f.Family!).ToHashSet();
+                        if (hotFamilies.Count > 0) foreach (var f in Functions) if (f.Family != null && hotFamilies.Contains(f.Family)) hot.Add(f);
                         foreach (var f in Functions) if (!f.IsImport && f != nn2) NullChecks.Expand(f, nn2, thr, hot.Contains(f));
                     }
                 }
@@ -371,10 +374,11 @@ internal sealed class WasmModule
             {
                 // (first the groups of one frame name; then, over what is left, those whose names differ: their members
                 // stay frames, which would keep a group of one name from going to its shared body directly)
-                int n = ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, false, (name, t) => AddFunction(name, t));
-                int n2 = Environment.GetEnvironmentVariable("CS2WASM_SHARE_LEND") == "0" ? 0 : ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, true, (name, t) => AddFunction(name, t));
+                int n = ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, false, (name, t) => AddFunction(name, t), TableSlot);
+                int n2 = Environment.GetEnvironmentVariable("CS2WASM_SHARE_LEND") == "0" ? 0 : ShareConstants.Run(Functions, ComputeMayThrow(), PosShown, true, (name, t) => AddFunction(name, t), TableSlot);
                 if (Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1") Console.Error.WriteLine($"share: {n} functions now call a shared body, then {n2} lend");
             }
+            if (Environment.GetEnvironmentVariable("CS2WASM_SHARE_WHY") == "1") ShareConstants.Why(Functions);
             AfterOptimize?.Invoke(Functions.Where(f => !f.IsImport));
             Step("merge, forwards");
             if (validate) Validate("after optimization");
@@ -534,7 +538,7 @@ internal sealed class WasmModule
             }
             body.Byte(0x0B);
             if (s_sizes != null) s_sizes.Add((body.Length, f.FrameName ?? f.Name));
-            if (s_dump != null && (f.FrameName ?? f.Name).Contains(s_dump)) { Console.Error.WriteLine($"== {f.FrameName ?? f.Name} ({body.Length} bytes)"); foreach (var ins in f.Body) Console.Error.WriteLine("  " + ins); }
+            if (s_dump != null && (f.FrameName ?? f.Name).Contains(s_dump)) { Console.Error.WriteLine($"== {f.FrameName ?? f.Name} [{f.Name}] ({body.Length} bytes)"); foreach (var ins in f.Body) Console.Error.WriteLine("  " + ins); }
             code.U32(body.Length);
             int start = code.Length;
             foreach (var (off, pos) in bodyLines) relLines.Add(new LineEntry(start + off, pos));

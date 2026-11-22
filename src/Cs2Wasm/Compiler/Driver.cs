@@ -636,6 +636,8 @@ internal sealed partial class Driver
         fn.ProgramCode = !IsLibrary(m);
         fn.InlineHint = impl == MethodImpl.Body && IsInlineHint(m.OriginalDefinition);
         fn.NoInline = impl == MethodImpl.Body && IsNoInline(m.OriginalDefinition);
+        fn.Family = GenericFamily(m);
+        fn.RefFamily = fn.Family != null && AllRefArgs(m);
         _methods[key] = mi;
         bool returnsThis = impl == MethodImpl.Body && ReturnsThis(m);
         if (returnsThis || impl == MethodImpl.Body && !ThreadMode && ReturnsField(m))
@@ -643,7 +645,7 @@ internal sealed partial class Driver
             // the body returns `this`, or a field's value, borrowed; the method's own function retains it for indirect
             // callers (section 4.1: a getter costs what the field's load costs)
             var bfn = Module.AddFunction(Display(m) + (returnsThis ? " [returns this]" : " [returns a field]"), Signature(m, Types));
-            bfn.FrameName = fn.FrameName; bfn.ProgramCode = fn.ProgramCode;
+            bfn.FrameName = fn.FrameName; bfn.ProgramCode = fn.ProgramCode; bfn.Family = fn.Family == null ? null : fn.Family + (returnsThis ? "|returns-this" : "|returns-field");
             var mb = new MethodInst { Sym = m, Fn = bfn, Key = key + (returnsThis ? "|returns-this" : "|returns-field"), Impl = MethodImpl.Body, ReachedFrom = Compiling, ReturnsBorrowed = true,
                 BorrowedKind = returnsThis ? Own.Stable : Own.Unstable, BorrowKeys = returnsThis ? null : ReturnPathKeys(m) };
             _methods[mb.Key] = mb;
@@ -670,6 +672,23 @@ internal sealed partial class Driver
             FirstChanceRaiser = LibMethod("Cs2Wasm.Runtime.Rt", "RaiseFirstChance", 1);
         return mi;
     }
+
+    /// <summary>Shared generic code: the definition an instantiation of a generic method, or a method of a generic
+    /// type, is made from (WasmFunction.Family); null for one that is not generic. CS2WASM_NO_FAMILIES=1: none.</summary>
+    internal static string? GenericFamily(IMethodSymbol m)
+    {
+        if (s_noFamilies) return null;
+        bool generic = m.IsGenericMethod;
+        for (var t = m.ContainingType; t != null && !generic; t = t.ContainingType) generic = t.IsGenericType;
+        return generic ? Types.MethodKey(m.OriginalDefinition) : null;
+    }
+    static bool AllRefArgs(IMethodSymbol m)
+    {
+        if (m.TypeArguments.Any(a => !a.IsReferenceType)) return false;
+        for (var t = m.ContainingType; t != null; t = t.ContainingType) if (t.TypeArguments.Any(a => !a.IsReferenceType)) return false;
+        return true;
+    }
+    static readonly bool s_noFamilies = Environment.GetEnvironmentVariable("CS2WASM_NO_FAMILIES") == "1";
 
     /// <summary>Rt.OnThrow and Rt.OnInitializerFailed, once something throws.</summary>
     public (MethodInst onThrow, MethodInst onInitFailed)? CctorTraceHelper;
