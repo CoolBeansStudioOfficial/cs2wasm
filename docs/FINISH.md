@@ -793,3 +793,22 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   the rest the loop's own instructions, which the engine does not thin (it carries no load across a store) and
   NativeAOT-LLVM's compiler does. Not started: the compiler's own inlining of the list's indexers with their loads
   shared.
+- 2026-11-22, the churn loop, round 3 (branch claude/churn-3 from claude/round-6a 19a2035; AUDIT A3.5, "The churn
+  loop, round 3"; a tool and text, no change to the compiler). The round was to build what round 2 ended on (the
+  list's loads shared across the store by field identity; the header's hash word; the NaN tests), each measured first.
+  Round 2's closing sentence was wrong: NativeAOT-LLVM does not share the list's loads either. tools/churn-array.cs
+  (new: the scene through the list and by hand over an array and a count), both sides in turn: NativeAOT-LLVM
+  53.5-55.8 us a frame through the list and 41.5-44.1 over the array, cs2wasm 85.8-89.2 and 77.0-81.0 (80-82 and
+  71.6-73.1 quiet): the list costs NativeAOT 12 us and cs2wasm 8 to 9, and with every list load and check gone cs2wasm
+  is at 1.85x, not nearer. The compiler's own inlining of the indexers into the loop (CS2WASM_INLINE_THROWING=1
+  CS2WASM_INLINE_THROWING_LOOP=80, with and without the counts' fast paths): 0.078-0.081 ms either way, the engine
+  does it already. Where the gap is (tools/churn-raw.cs on both sides): the loop without a store 32 against 24, with
+  the store as each side makes it 51 against 31: cs2wasm's counting is 14 us a frame on top of a bare store of the
+  reference (0.72 ns a move), the collector's card mark 3.5. The hash word: a particle made 40 and 44 bytes costs 1.5
+  to 2 us for each four, so 32 would give 2 of 80; not changed. The NaN tests: 2 to 2.5 us (built without them), left,
+  since bits leave memory where no test can be put (pointer and ref casts, spans of bytes, overlapping fields, structs
+  by their bytes, the engine's copies of an instance's memory). All three at their most: 80 to 67 us, 1.35x; the pass
+  by field identity perhaps 4 of it. **Not built; churn's median stays 1.58x to 1.61x NativeAOT-LLVM's: not reached,
+  and not reachable by these three.** The floor measured: 14 us of counting at the store against 3.5. Test 135 under
+  the stress tool on the homelab: 60950 for 61050 in 3 of 400 runs on claude/churn-2 and 1 of 400 on main (its timer
+  race, on both). Not run this round: the suite, the self-hosted compiler (the compiler is as claude/round-6a's).

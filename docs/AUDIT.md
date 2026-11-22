@@ -1072,6 +1072,63 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     (135, its WhenAny between a 1 ms and a 50 ms timer: 60950 for 61050) and 209/210 as shipped (088's timer line
     again); each of the two, run alone there, passed both ways.
 
+- **The churn loop, round 3: the three levers measured before building, and none built (2026-11-22, branch
+  claude/churn-3, from claude/round-6a 19a2035; the desk machine; a tool and this text, no change to the compiler).**
+  Round 2 ended on "the rest is the loop's own instructions, the list's loads read again around the store, which the
+  engine does not carry across a store and NativeAOT-LLVM's compiler does", and the round was to build that: loads
+  shared by field identity, then the header's hash word, then the NaN tests. Each was measured first, both sides in
+  turn, medians of frames. **Round 2's sentence was wrong, and the three together do not reach the target.**
+  - **The list's loads are not the gap: NativeAOT-LLVM pays more for the list than cs2wasm does.**
+    `tools/churn-array.cs` (new) runs the scene through List<Particle> and the same by hand over an array and a
+    count, the array read once before the loop: what the list's indexers come to when every load of `_size` and
+    `_items` is shared, every size check gone, no version (more than any load elimination can reach: the checks
+    and the version stay). Median us a frame, three runs in turn, NativeAOT-LLVM built from the same file: the
+    list 53.5 to 55.8, the array **41.5 to 44.1**; cs2wasm the list 85.8 to 89.2 (80 to 82 with the machine
+    quiet), the array **77.0 to 81.0** (71.6 to 73.1 quiet). The list costs NativeAOT-LLVM 12 us a frame and
+    cs2wasm 8 to 9: LLVM does not share those loads either. With all of it gone cs2wasm is at 1.85x NativeAOT's
+    array (1.57x on the lists): the gap is in the loop that is left, and a pass that shared every load would bring
+    churn's median from 0.080 to 0.072 at the very most, 1.45x.
+  - The compiler's own inlining of the indexers into the loop was measured again, the right way this time
+    (`CS2WASM_INLINE_THROWING=1 CS2WASM_INLINE_THROWING_LOOP=80`: the getter and setter go into loops only; round
+    1's trial inlined into the setter, which then no longer fitted the engine's budget): churn 0.078 to 0.081 ms
+    with it, with `CS2WASM_RC_IN_LOOPS=1` beside it, with `CS2WASM_RC_FAST=0` beside it, and without: the engine
+    already inlines all of it, and the compiler's doing so changes nothing by itself. It would only be the first
+    step of sharing the loads.
+  - **Where the gap is** (`tools/churn-raw.cs` on both sides: the loop over an array in order, every survivor
+    moved 400 slots down; us a frame, four runs in turn, cs2wasm against NativeAOT-LLVM): no store 31.8-32.3
+    against 23.4-24.2; the reference written and nothing else 36.7-37.5 against 27.1-28.4; the store as each side
+    makes it (counted; card-marked) **50.6-51.4 against 30.8-31.6**. So of the 20 between them: the read loop 8
+    (of which the NaN tests 2 to 2.5 and the object's four bytes 1.5 to 2, below; the rest its null tests and
+    what the engine makes of the loop), and **the store 10.5: cs2wasm's counting is 14 us on top of the bare
+    store (the slot's old value read, a count added, a count taken: 0.72 ns for each of 19,392 moves), the
+    collector's card mark 3.5.** That 14 is what reference counting costs a moved reference; round 2 measured
+    what a proof of the move would leave of it (10, the slot it left set to null and the old value still read and
+    tested) and why the proof that leaves less is not sound.
+  - The header's hash word (a particle is 36 bytes, NativeAOT-LLVM's 32): measured by making the particle larger
+    (one unused int: 40 bytes; two: 44), three runs in turn: the list scene 84.4 / 85.9 / 88.5, the array scene
+    75.5 / 77.4 / 79.4. 1.5 to 2 us for four bytes, so 32 bytes would give about 2 us of 80 (2%): the hash's
+    place was not changed for that.
+  - The NaN tests: built without them (`CS2WASM_NO_CANON=1`, the measurement's switch), three runs in turn: the
+    list scene 84.4 to 82.0, the array scene 75.5 to 72.8: **2 to 2.5 us**. SPEC 7.3 asks that no payload be
+    observable; Wasm/FloatStores.cs makes memory free of them at the store because bits leave memory in ways that
+    have no single place to test at: a pointer or a `ref` cast, a span of bytes over floats, overlapping fields,
+    a struct compared or hashed by its bytes, and the engine's own copies and comparisons of an instance's memory
+    (section 7.2). A test only where bits are read would have to be at every one of those, and the last is not
+    code the compiler writes. Left as it is.
+  - So the three levers are worth at most 8 to 9 (every list load shared and every check gone, which no pass
+    reaches), 2 and 2.5: 80 to 67 us at the very best, **1.35x NativeAOT-LLVM's**, and the pass by field identity
+    alone, which is the large one to build (a key on every load, a summary of every call's stores asked per loop,
+    each of its conditions with a test, the self-hosted compiler rebuilt and compared), perhaps half its 8. It was
+    not built: the measurement that says it cannot reach the target came first, and what was left of the day did
+    not cover a pass over every field load of every program with its proofs and the self-hosted compiler's
+    check. **Not reached, and not reachable by these three: churn's median stays 1.58x to 1.61x.** The floor,
+    measured: 14 us a frame of counting at the store where the collector pays 3.5 (10.5 of the 30 between the
+    two frames), and the collector's side of the bargain is its pauses (churn's worst frame 0.18 to 0.35 ms
+    against 1.2 to 1.7).
+  - Also from the homelab, after round 2's text: test 135 under the stress tool, 200 loaded runs a mode, printed
+    60950 for 61050 in 3 of 400 on claude/churn-2 and in 1 of 400 on main: the timer race of its WhenAny, on
+    both.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
