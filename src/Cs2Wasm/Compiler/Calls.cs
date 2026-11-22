@@ -1011,6 +1011,7 @@ sealed partial class FunctionCompiler
             case "Rt.NoDestroyByBits": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DESTROY_BY_BITS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoStoreWaits": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_STORE_WAITS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoEarlyGiveBack": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_EARLY_GIVE_BACK") == "1" ? 1 : 0); return Own.None;
+            case "Rt.ArrayMoveMode": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_ARRAY_MOVE") == "1" ? 1 : Environment.GetEnvironmentVariable("CS2WASM_ARRAY_MOVE_BREAK") == "1" ? 2 : 0); return Own.None;
             case "Rt.NoArrayReplace": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_ARRAY_REPLACE") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDropCheck":E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;
