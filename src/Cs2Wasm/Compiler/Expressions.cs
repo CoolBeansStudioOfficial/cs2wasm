@@ -792,8 +792,14 @@ sealed partial class FunctionCompiler
         if (Types.IsRef(ft) && f.Field is { IsStatic: true, IsReadOnly: true } && M.MethodKind != MethodKind.StaticConstructor && !s_noStableStatics
             && !f.Field.GetAttributes().Any(a => a.AttributeClass?.Name == "ThreadStaticAttribute"))
             return Own.Stable;
+        // a static's value held for a call (a receiver, an argument): as a field of a stable object, with the static's
+        // own key, the one a local borrows it by (no threads; FieldBorrows.cs decides at the end: no count unless a
+        // store of the static can run meanwhile)
+        if (f.Field.IsStatic && !s_noStaticTemps && StaticArrayKey(f) is { } stk) _lastFieldLoad = (E.Fn.Body.Count, stk);
         return Types.IsRef(ft) ? Own.Unstable : Own.None;
     }
+    /// <summary>CS2WASM_NO_STATIC_TEMPS=1: a static's value held for a call is counted, as before.</summary>
+    static readonly bool s_noStaticTemps = Environment.GetEnvironmentVariable("CS2WASM_NO_STATIC_TEMPS") == "1";
 
     /// <summary>An object reference that stays the same, and alive, for the whole method: this, a parameter never
     /// assigned, a local never assigned after its declaration (none captured).</summary>

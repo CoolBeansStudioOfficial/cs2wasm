@@ -86,13 +86,28 @@ sealed partial class FunctionCompiler
             _ => null,
         };
         if (target == null) return;
-        foreach (var t in target.DescendantsAndSelf())
+        Visit(target);
+        // (a write through a reference, `--p.Life`, `list[i] = v`, `a[i] = v`, writes the object, not the variable that
+        // names it: the variable is still a stable borrow. A struct's member is the variable's own memory.)
+        void Visit(IOperation t)
+        {
             switch (t)
             {
-                case ILocalReferenceOperation l: _nestedWrites.Add(l.Local); break;
-                case IParameterReferenceOperation p: _nestedWrites.Add(p.Parameter); _nestedWrites.Add(p.Parameter.OriginalDefinition); break;
+                case ILocalReferenceOperation l: _nestedWrites.Add(l.Local); return;
+                case IParameterReferenceOperation p: _nestedWrites.Add(p.Parameter); _nestedWrites.Add(p.Parameter.OriginalDefinition); return;
             }
+            IOperation? through = s_nestedThroughRefs ? null : t switch
+            {
+                IMemberReferenceOperation { Instance: { Type.IsReferenceType: true } inst } => inst,
+                IArrayElementReferenceOperation ae => ae.ArrayReference,
+                _ => null,
+            };
+            foreach (var c in t.ChildOperations)
+                if (!ReferenceEquals(c, through)) Visit(c);
+        }
     }
+    /// <summary>CS2WASM_NESTED_THROUGH_REFS=1: a nested write through a reference marks the variable too, as before.</summary>
+    static readonly bool s_nestedThroughRefs = Environment.GetEnvironmentVariable("CS2WASM_NESTED_THROUGH_REFS") == "1";
 
     /// <summary>Whether the variable can be written while a value read from it is in use in the same expression.</summary>
     bool WrittenDuringUse(ISymbol s) => _nestedWrites.Contains(s) || _addrTaken.Contains(s) || _addrTaken.Contains(s.OriginalDefinition);
