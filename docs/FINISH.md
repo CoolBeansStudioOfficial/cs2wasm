@@ -33,11 +33,12 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 180/180 | all pass, no `known-gap` |
 | 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (stream E's tests); reflection on compiler-made methods closed 2026-11-21 (tests 155, 156: names with Roslyn's ordinals, declaring classes, attributes, MoveNext); open: a capture-free lambda's `Delegate.Target` (`<>c` in .NET), the generated classes' own member lists, generic generated classes as constructed types; .NET's own library frames (not reproducible from source) | none |
 | 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20) | none in 200 loaded runs |
+| 2 | Test 127 under load (`tools/stress-cycles.sh`) | open: `async 5 / pending 1` in about 1% of loaded runs (main 6e60243: 22 of 2,400; main d4b331e: 4 of 400, the homelab); the 2026-11-21 fix made it rarer, not gone | none |
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
-| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.14x to 0.31x NativeAOT's); tree 6.65 ms vs 3.11 ms worst, p99.9 6.10 vs 2.44, its rebuild (main 6e60243, this machine, 2026-11-22; AUDIT A3.5; branch claude/tree-rebuild in progress) | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 2.16x (was 3.47x), tree 2.56x, collections 1.28x, strings 1.20x, bigdrop 0.90x (main 6e60243, this machine) | close to 1.0x on every scene |
+| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.14x to 0.49x NativeAOT's); tree 4.81 ms vs 3.20 ms worst (1.50x), p99.9 4.51 vs 2.66 (1.70x), its rebuild (main d4b331e, this machine, 2026-11-22; was 6.65 and 6.10; AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
+| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 2.15x (was 3.47x), tree 2.16x (was 2.56x), collections 1.27x, strings 1.21x, bigdrop 0.87x (main d4b331e, this machine) | close to 1.0x on every scene |
 | 4 | Hello world size (test 145) | 27,031 B (main 6e60243, the homelab) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
@@ -494,3 +495,21 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   and Walk's frame for the enumerator of a changed list, set up on every call (an indexed loop in its place: median 0.073
   to 0.066 ms). Seen and not followed: Dictionary<string, V>.FindValue counts `_comparer` and `_entries` because the
   comparer's virtual calls are taken to store them.
+- 2026-11-22, the tree scene's rebuild (branch claude/tree-rebuild, merged as d4b331e; docs/AUDIT.md A3.5). A list's larger
+  array stored over the one it was copied from takes its items in one pass (`Rt.ReplaceArray`, `CS2WASM_NO_ARRAY_REPLACE`);
+  List.Add and AddWithResize take a new reference item owned (`CS2WASM_NO_OWNED_ADD`); an object plain until the store that
+  links it joins without the walks up its container's chain (`Rt.JoinOwned`, `CS2WASM_NO_FRESH_JOIN`); a member's count word
+  without atomic instructions in a program without threads (`CS2WASM_ATOMIC_COUNTS=1` the old way); UpdateHold only where
+  HoldSettled says something changes. tools/tree-parts.cs: build 4.27 to 3.05 ms, drop 1.5 to 1.4. frames.mjs here, main
+  6e60243 against d4b331e: tree worst 6.65 to 4.81 ms, p99.9 6.10 to 4.51, median 0.072 to 0.061 (NativeAOT-LLVM 3.20, 2.66,
+  0.028); the other scenes as before (churn 2.15x, collections 1.27x, strings 1.21x, bigdrop 0.87x at the median; worst
+  frames 0.14x to 0.49x). Reevaluate by slot bits is in but off (`CS2WASM_SLOT_WALK=1`): with it the strings scene had one
+  0.6 ms frame, frame 3318 or 3349 of every run, also compiled eagerly and without tiering, gone with `--no-liftoff`; cause
+  not found; the tree scene the same either way. bench.mjs 0.95x; hello world 27,031 bytes; the self-hosted compiler
+  (homelab, 3 interleaved rounds) 8.60-8.87 s against 8.84-8.94 before and NativeAOT-LLVM's 3.70-3.91, its hello world byte
+  for byte the .NET-hosted compiler's. Suite 201/201 checked and as shipped on the homelab; tools/stress-cycles.sh there,
+  200 loaded runs each mode: 139 the same in every run; 127 differed in 1 and 3 of 200 (the rare `async 5 / pending 1`, at
+  main's rate: the row above). Still above NativeAOT: per build, the leaves about 1.5 ms (75 ns each, 31 of it plain
+  allocation), a node's own links 0.5 ms, list growth from 4 to 8 items 0.9 ms (the copy's retains still flip holds up the
+  owner chain), the drop 1.4 ms. A faster link will not reach parity: that needs fewer group members, or members laid
+  out together (7.D, 7.E).
