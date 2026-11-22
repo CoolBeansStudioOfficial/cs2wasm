@@ -573,6 +573,102 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     objects whose finalizers allocate and replace a subtree of the same tree); it fails with
     `CS2WASM_NO_OWNED_CHAIN=1` and with `CS2WASM_NO_STORE_WAITS=1` and passes with each of the destruction's three
     switches. On the homelab at b3c5175: the suite twice, 203/204 checked and 204/204 as shipped (test 143: the host's `Atomics.waitAsync(...).value.then is not a function`, engine.mjs line 228, a wait that had ended already; by itself 100 loaded runs a mode the same every time), then 204/204 both ways; `tools/stress-cycles.sh` (200 loaded runs a mode, 8 at once): 139 the same in every run, 127 the same in 200 as shipped and differing in 1 of 200 checked (`async 5` / `pending 1`, main's rate), 193 the same in every run of both modes. Not run: the self-hosted compiler.
+- **The churn loop (2026-11-22 to 23, branch claude/churn-1, from main 77b2aad; the desk machine; not merged when this
+  was written).** The scene with the worst median: a static `List<Particle>`, 300 to 500 born a frame, every particle
+  updated and the survivors moved down with `s_particles[w++] = p`, the tail removed; 19,400 live. Median 0.105 ms
+  against NativeAOT-LLVM's 0.049 (2.14x) on main; its worst frame is a quarter of NativeAOT's.
+  - Measured first, both sides (`tools/churn-parts.cs`; `tools/churn-move.cs`, new: the scene's move apart from the
+    order in memory and from the frees; `tools/churn-order.cs`, new: what the order in memory costs the read loop).
+    us a frame, cs2wasm against NativeAOT-LLVM: the scene's loop 102.7 against 45.0; the same loop over 19,392
+    particles allocated in order, none dead (every store into the element's own slot) 75.1 against 40.4, with the
+    first 400 dead and held elsewhere (every survivor moves 400 slots down, no free) 76.6 against 41.2, without the
+    store 46.0 against 29.6. So of the 57.7 between the two loops: **the order in memory 26** (102.7 less 76.6;
+    NativeAOT 3.8: its collector keeps the list's order in memory), the frees in it (400 particles a frame at 6.6 ns:
+    2.6); **the store with its counts 30.6** against 11.6; the read loop 16.4 (46.0 against 29.6), of which **the
+    static read again 9 to 13** (the list in a local by hand: the scene's loop 89.7, the read loop 1.95 ns a particle
+    against 2.39) and the NaN test on float stores 2 to 5 (SPEC 7.3).
+  - The move (lead 1), read and measured, nothing built. The engine's optimizing tier puts the indexer's getter
+    and setter and the three count functions the setter calls (`rt.retain`, `rt.store_ref`, `rt.release`) into the
+    loop (`node --trace-wasm-inlining`: all of them, 789 bytes to 2,031; `--no-wasm-inlining`: the loop 206 us):
+    no call is paid for a count that only adds or takes one. Inlined by the compiler instead
+    (`CS2WASM_INLINE_THROWING=40`): the setter grows past what the engine then inlines, the store through the list
+    2.4 to 5.4 ns: not that way. What a moved survivor costs is what the store does: the list's size check, the
+    array's null and index checks, the array's type check (kept for a type parameter's array so that the family's
+    bodies are one; NativeAOT's shared code checks through its helper too), the count of the new value (load,
+    test, store), the exchange, the count of the old one (null test, load, test, store), the version: four stores
+    where NativeAOT has two and a card test. An array store alone: 1.28 ns against 0.66. The old value is the new
+    one only until the frame's first death, which is among the oldest particles, at the list's start: a test for it
+    would pay in no frame of this scene. A dead particle: 6.6 ns (the dispatch on its type, its string's count, the
+    block onto its page), 2.6 us a frame of 87: left. The two counts of a move are **what counting costs** here
+    (12 us a frame in the cache): nothing short of knowing the moved value's old slot is overwritten or cut off
+    later takes them out, and that is not known at the store.
+  - **The static read once before the loop** (`CS2WASM_NO_STATIC_HOIST=1`; Compiler/StaticLoads.cs decides,
+    Wasm/StaticLoads.cs moves the read). The loop read `s_particles` three times a particle, each with its null
+    check: the loop stores and calls, so LoopLoads leaves it and the engine cannot know the slot is not stored. A
+    function is given a static's slot when: the field is a reference, not thread-static, read with a plain load,
+    and the program has no threads (another thread may store it, and release what it held); no code takes its
+    address and reflection cannot set it; the function stores it nowhere (FieldWrites: with the stores that only
+    replace a null, which the borrows leave out, and those without a place); nothing it calls does (StoreSummary
+    over FieldWrites under AllStoresPrefix; an indirect call by what it reaches; a call of the host by the exports
+    and the table). The one store the summary leaves out is the type's initializer's own: a loop that refers to the
+    type's initialization flag at all (a check left in it, an initializer inlined) is left alone, so the check that
+    came before a read in the loop was made before the loop. Each outermost loop of such a function then reads the
+    slot once, before the loop, into a local (the local holds no count: the static holds its object while the
+    function runs). Test 195: each condition's loop (a callee, the loop itself, `??=` here and in a callee,
+    initializers that run inside the loop, ref, out, Interlocked, Volatile, a ref parameter, reflection, a delegate,
+    a function pointer, virtual and interface calls, a handler, recursion, nested loops, an iterator, generic
+    statics, a null static); with a condition taken out of the compiler its loop's output changes (seven of them,
+    each tried). Not covered: a static auto-property read through its getter (the function has no read of the slot
+    when it is decided); a program with threads (none is hoisted).
+  - **Which page is used again** (`CS2WASM_NO_RIPE_PAGES=1`; Runtime.cs, PageAlloc, programs without threads). The
+    read loop over the same particles in other orders (`tools/churn-order.cs`, us): in order 45.4, at random 58.9,
+    at random within 16 KB 48.0; a page's blocks used in 48 visits (what the scene has: every frame's new particles
+    go nine to a page into all 44 pages, where the 400 dead of the frame before lay) 57.7, in 8 visits 54.8, in 4
+    52.9 (49.7 when each visit is in address order), in 2 49.7 (46.1). No order of reuse inside a page helps while
+    every page is nearly full: a page has to be left until much of it is free, and that is memory. Prototypes on
+    the scene's loop (87.7 to 89.1 as it was): a page used again when an eighth is free 91.4 against 93.7 beside
+    it, a quarter 89.0, half 88.4; only when empty 76.3 to 78.9 (the particles' pages 44 to about 70); half free
+    and first in line 83.5; an eighth in use, or half free and passed over four times, 78.5 to 79.1, **and the tree
+    scene's heap 9.6 to 13.3 MB** (its pages wait half empty and never empty), its p99.9 2.66 to 2.71-2.78 ms: not
+    kept. What is in: the size's pages with freed blocks are a ring, a page that gets its first freed block goes
+    to the back; an allocation that needs a page takes, of the three at the back, one a quarter of which is free
+    (freed in one go, still in the cache: the page taken before this change); else, of the eight at the front, one
+    that is nearly empty (an eighth in use at most) or one that has lost no block since it was last looked at and
+    has a quarter free; else an empty page, cut in order, unless memory would have to grow for it (then the front
+    page as it is). A page that is still being emptied is left to empty. The alloc and free fast paths are
+    untouched. The scene's loop 101.4 to 96.3 us a frame without the static read's change, 89.9 to 81.9 with it; the births 5.4 to 5.0.
+    What it costs is memory: the heap's top at the end of the run, churn 2,887 to 3,271 KB (the particles' pages 44 to
+    68 at 16 KB, 414 KB of them free against 30), tree 9,561 to 9,881 KB (its three sizes' pages 269 to 314);
+    collections, strings and bigdrop the same; the memory itself (what frames.mjs calls the peak) 16 MB in all five
+    as before, since no page is taken that memory would grow for. Hello world 27,089 to 27,426 bytes.
+    Test 196 (objects of one size dying one by one, in runs, with a few kept in every page, all let go, and again
+    with the memory nearly full and past it; every object read back; the ring's front not moved on at an unlink, or
+    [12] left set in a page taken, change its output).
+  - The look at the back first came from a measurement that the quiet machine does not show: with other programs
+    at work on it (the other session's builds), ten runs in turn, the tree scene with the front alone had median
+    0.060 ms against 0.054 and p99.9 4.7 against 4.3, every run; quiet, the same either way. With the back looked
+    at first, under that load again (six runs in turn): median 0.051 to 0.052 against 0.051, p99.9 4.61 against
+    4.37 (lowest of six; one sample, not repeated). **Not settled: the tree scene's rebuild frame under load.**
+  - Result, quiet machine, `node tools/frames.mjs --runs 5 --js-young 32` twice, the switches set (main's paths)
+    and not, in turn; median / p99.9 / worst, ms:
+    churn 0.104-0.105 / 0.169-0.184 / 0.270-0.325 to **0.087** / 0.134-0.173 / 0.157-0.307 (NativeAOT-LLVM 0.049 /
+    1.12-1.15 / 1.14-1.18: **2.14x to 1.78x**); tree 0.047-0.048 / 2.71-2.86 / 2.94-3.17 to 0.048-0.049 / 2.68-2.73
+    / 2.84-3.00 (0.029 / 2.39-2.46 / 3.10-3.18); collections 0.008 / 0.173-0.174 / 0.187-0.190 to 0.008 /
+    0.175-0.176 / 0.201-0.203 (0.006 / 1.04 / 1.28-1.29); strings 0.009 / 0.020-0.024 / 0.047-0.055 to 0.009 /
+    0.021-0.025 / 0.053-0.056 (0.008 / 0.064-0.068 / 0.23-0.24); bigdrop 0.003 / 0.96-1.02 / 1.00-1.09 to 0.003 /
+    0.95-0.96 / 1.01-1.02 (0.003 / 6.2-6.3 / 8.9-9.0). Each alone, five runs in turn, churn median: 0.104 main,
+    0.093 the static read, 0.098 the pages, 0.086 both. `tools/churn-parts.cs`, us a frame, main / the static read
+    / the pages / both / NativeAOT-LLVM: birth 5.6 / 5.5 / 4.9 / 4.9 / 8.0; the loop 101.6 / 88.5 / 95.4 / 82.0 /
+    44.7; the removal 0.5 / 0.5 / 0.5 / 0.5 / 0.2; the loop without its move 57.7 / 48.7 / 51.4 / 43.6 / 30.1.
+    bench.mjs three times in turn: 0.94x to 0.95x against 0.95x (no kernel moved).
+  - What is left of churn's loop, 81.4 us against 45.0 (`tools/churn-move.cs` on the branch): the order in memory
+    17 (81.4 less 61.9 in order, less the frees; NativeAOT 3.8), the frees 2.6, the store and its counts 24.6
+    against 11.6, the read loop 7.7 (37.3 against 29.6: the NaN test 2 to 5, the rest the array loop itself, 0.60
+    ns a particle against 0.49). What counting costs and stays: the two counts of a move, about 12, and the frees in
+    the frame, 2.6 (they are what the scene has in place of the collector's pauses: worst frame 0.16 to 0.31 ms
+    against 1.14 to 1.18). What the memory model leaves open: the order in memory, which only more memory buys
+    without moving objects (pages used again only when empty: 76.3 for 80.3, and 1.6 times the particles' pages);
+    the list setter's checks beside the counts (about 1); the read loop's 3 to 4.
 
 ### A4. Plugins (goal 3)
 

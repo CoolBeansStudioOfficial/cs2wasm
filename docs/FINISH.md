@@ -611,3 +611,43 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   none in 3,800 checked; main 7451b65 none in 800 as shipped. Merged with it open (the row above): at one in some
   thousands the runs so far do not tell the branch from main. Next for it: the stress tool keeping a failing run's
   whole output, a module built with names.
+- 2026-11-23, the churn loop (branch claude/churn-1 from main 77b2aad, not merged when this was written; docs/AUDIT.md
+  A3.5, "The churn loop"). Measured first, both sides, by part (`tools/churn-move.cs`, `tools/churn-order.cs`, new):
+  of the 57.7 us a frame between the scene's loop and NativeAOT-LLVM's (102.7 against 45.0), the order in memory 26
+  (the same loop over particles in order: 76.6), the store with its counts 30.6 against 11.6, the static read again
+  on every use 9 to 13, the NaN test 2 to 5. Two changes, each with its switch. **A static's reference is read once
+  before a loop that nothing in it can store to** (`CS2WASM_NO_STATIC_HOIST=1`): decided with the borrows, from all of
+  a function's stores and its callees' (those that only replace a null too), no address taken, no reflection, no
+  threads, the type's initialization not in the loop. **Which page of a size is used again**
+  (`CS2WASM_NO_RIPE_PAGES=1`, programs without threads): one freed in one go and still in the cache, else one that
+  is nearly empty or no longer being emptied, else an empty one, cut in order, while memory need not grow; a page
+  still being emptied is left to empty (every frame's new particles had gone nine to a page into all 44 pages).
+  frames.mjs, quiet, twice in turn against the switches set: churn median 0.104-0.105 to 0.087 ms (NativeAOT-LLVM
+  0.049: 2.14x to 1.78x; the static read alone 0.093, the pages alone 0.098), p99.9 0.17-0.18 to 0.13-0.17; tree
+  0.047-0.048 / 2.71-2.86 to 0.048-0.049 / 2.68-2.73; collections, strings and bigdrop within their spread
+  (collections' worst frame 0.19 to 0.20 ms both times). bench.mjs 0.94x to 0.95x against 0.95x. Memory: the heap's
+  top at the end of churn 2,887 to 3,271 KB (the particles' pages 44 to 68), of tree 9,561 to 9,881 KB, the others
+  the same; the memory itself 16 MB in all as before. Hello world 27,089 to 27,426 bytes. Tests 195 (the static read:
+  each condition's loop, each condition taken out changes its output) and 196 (the pages: every object read back
+  while they die one by one, in runs, pinned, with the memory nearly full). Homelab: the suite at c926ac2 (before the
+  look at the back) 206/206 checked and as shipped; at 69e6f4d, on a loaded homelab (903 s for 272), 205/206 checked
+  (test 088) and 204/206 as shipped (088 and 135, both tests with timers); again alone: 135 passed six of six, 088
+  failed two of twelve with the same line (its first timer tick), and one of eight with both switches set: the
+  failure is there without the changes. Stress, 200 loaded runs a mode: 139 the same in every run both times; 127
+  differed in 2 of 400 at c926ac2 and 6 of 400 at 69e6f4d (the loaded run; main: about 1 in 100). The self-hosted
+  compiler without threads on Console.WriteLine(42) (`tools/selfhost-switch.sh`, new: built as it is and with both
+  switches set, eight rounds, the two taking turns to go first; the one that goes second is the slower, whichever):
+  going first 10.59 to 10.93 s as it is against 10.45 to 10.77 with the switches, lowest 10.59 against 10.45; peak
+  memory 489.9 MB both. That the two wrote the same module was not checked (the tool's comparison did not find the
+  files), nor was `tools/selfdet.mjs` run.
+  Read and not built: the move itself (the engine inlines the setter and its three count functions: no call is paid;
+  what is left of it is the two counts, 12 us a frame, which is what counting costs here; a test for the old value
+  being the new one would pay in no frame of the scene; a dead particle's free is 6.6 ns, 2.6 us a frame). Tried and
+  not kept: pages used again only when empty (the loop 76.3 for 80.3, the particles' pages 1.6 times); an eighth
+  in use or half free and passed over four times (the tree scene's heap 9.6 to 13.3 MB). **Open: with other
+  programs at work on the machine the tree scene was a tenth slower with the pages' change as first written (ten
+  runs in turn); with the page freed in one go taken first its median is as before (six runs), its p99.9 4.61 against
+  4.37 in the one sample taken: the rebuild frame under load is not settled.** What is left of churn's loop, 81.4 us
+  against 45.0: the order in memory 17 (more memory buys it, nothing else without moving objects), the two counts
+  of a move 12 and the frees 2.6 (what counting costs), the setter's other checks 1, the NaN test 2 to 5, the
+  array loop under it 3 to 4.
