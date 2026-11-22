@@ -2946,6 +2946,19 @@ namespace Cs2Wasm.Runtime
             return true;
         }
 
+        /// <summary>TopHeld would change nothing for the member: no check failed, it is not noted as under a top whose
+        /// check did, or its top keeps no number of held members (none, far, or one whose check failed by references
+        /// from outside). The first and last outside references' usual cases ask it (ArenaRetain, ArenaRelease): with
+        /// the tops remembered (Top) a noted member is no reason to take the slow way.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static bool HeldQuiet(int p) => s_failedTops == 0 || !HeldMarked(PLM(p)) || TopKeepsNoHeld(p);
+
+        static bool TopKeepsNoHeld(int p)
+        {
+            int t = Top(p);
+            return t == 0 || (PLM(t) & 3) != 1;
+        }
+
         /// <summary>A member under a top whose check failed got its first reference from outside, or lost its
         /// last (d): the top's number; at zero the top is looked at again. Returns the top to look at, or 0.</summary>
         static int TopHeld(int p, int d)
@@ -2987,7 +3000,7 @@ namespace Cs2Wasm.Runtime
             if (!ThreadMode())
             {
                 int ar0 = PL(p, 16), fl0 = PL(p, 24);
-                if (Mem.LoadI32(p) == -2 && Mem.LoadI32(ar0 + 16) == 0 && (s_failedTops == 0 || !HeldMarked(PLM(p)))
+                if (Mem.LoadI32(p) == -2 && Mem.LoadI32(ar0 + 16) == 0 && HeldQuiet(p)
                     && ((uint)fl0 < UOne ? (fl0 & Held) == 0 : (fl0 & Held) != 0 && PL(p, 4) - ((fl0 & MultMask) >> 3) + 1 > 0))
                 {
                     Mem.StoreI32(p, -3);
@@ -3015,7 +3028,7 @@ namespace Cs2Wasm.Runtime
             {
                 int ar0 = PL(p, 16), fl0 = PL(p, 24), total0 = Mem.LoadI32(ar0) - 1, in0 = PL(p, 4);
                 if (Mem.LoadI32(p) == -3 && Mem.LoadI32(ar0 + 16) == 0 && total0 != 0 && (Mem.LoadI32(ar0 + 12) & ArenaBusy) == 0 && in0 != 0
-                    && (fl0 & (Owned | Dying)) == Owned && (s_failedTops == 0 || !HeldMarked(PLM(p)))
+                    && (fl0 & (Owned | Dying)) == Owned && HeldQuiet(p)
                     && ((uint)fl0 < UOne ? (fl0 & Held) == 0 : ((fl0 & Held) != 0) == (in0 - ((fl0 & MultMask) >> 3) > 0)))
                 {
                     Mem.StoreI32(p, -2);
