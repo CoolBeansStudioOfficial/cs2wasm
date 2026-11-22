@@ -595,7 +595,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>Takes a page out of its size's pages with freed blocks (a ring: [4] next, [8] previous).</summary>
         static void PageUnlink(int slot, int pg)
         {
-            s_ringPages--;
+            if (HoldPages()) s_ringPages--;
             int next = Mem.LoadI32(pg + 4);
             if (next == pg) { Mem.StoreI32(slot, 0); return; }
             int prev = Mem.LoadI32(pg + 8);
@@ -621,7 +621,7 @@ namespace Cs2Wasm.Runtime
                 // it was full: among its size's pages with freed blocks from now on (a ring), at the back: the
                 // pages before it had their first block freed earlier
                 int head = Mem.LoadI32(availSlot);
-                s_ringPages++;
+                if (HoldPages()) s_ringPages++;
                 if (head == 0) { Mem.StoreI32(pg + 4, pg); Mem.StoreI32(pg + 8, pg); Mem.StoreI32(availSlot, pg); }
                 else
                 {
@@ -653,7 +653,7 @@ namespace Cs2Wasm.Runtime
             s_cur = b; b += Classes * 4;
             s_avail = b; b += Classes * 4;
             // (each size's count of the times it needed a page: HoldPages)
-            s_takes = b; b += Classes * 4;
+            if (HoldPages()) { s_takes = b; b += Classes * 4; }
             // (after the hot blocks, each size's run: its next block, and where the run ends)
             s_hot = b; b += 3 * Classes * 4;
             // (the free runs by size, and the table's top: a leaf for every 4 MiB of address space)
