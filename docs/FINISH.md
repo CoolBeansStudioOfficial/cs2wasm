@@ -18,6 +18,12 @@ Scope as the owner set it on 2026-11-20:
 Not required: the time or memory it takes to *build* the self-hosted compiler (18 to 20 minutes against 80 s is
 known and accepted). The compiler only needs to be reasonably fast to compile with (rapid prototyping).
 
+**Owner, 2026-11-22: what counts first.** Close to NativeAOT-LLVM's speed or faster, without frame-time spikes (the
+spikes are what ruled the stock .NET runtime out on the web), then the size and memory gains. So requirement 4 is steered
+by game-shaped code (`tools/frames.mjs`: each scene's median and worst frame; `tools/bench.mjs`), and the self-hosted
+compiler's time (2.37x NativeAOT-LLVM's on main 6e60243) is second to that: a compile allocates millions of objects and
+frees none, the case a collector pays least for and counting most.
+
 ## The checks
 
 Each requirement is done when its check passes. A check that does not exist yet is part of the work.
@@ -30,8 +36,9 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
-| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 7.4 ms vs 3.4 ms worst, p99.9 7.1 vs 2.7, its rebuild (homelab, branch tree-spike; main 10.6 / 10.2 there; AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Hello world size (test 145) | 27,868 B (main 26150c1 with K round 2 and L round 3; 28,287 with L round 2, 27,869 before it) | < 28,383 B |
+| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.14x to 0.31x NativeAOT's); tree 6.65 ms vs 3.11 ms worst, p99.9 6.10 vs 2.44, its rebuild (main 6e60243, this machine, 2026-11-22; AUDIT A3.5; branch claude/tree-rebuild in progress) | worst frame and p99.9 not above NativeAOT's on every scene |
+| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 2.16x (was 3.47x), tree 2.56x, collections 1.28x, strings 1.20x, bigdrop 0.90x (main 6e60243, this machine) | close to 1.0x on every scene |
+| 4 | Hello world size (test 145) | 27,031 B (main 6e60243, the homelab) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 39.5 MB vs 129 MB (main ad4c99e) | met; next waste: code (36.2 MB) |
@@ -464,3 +471,26 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   change, fewer count operations, reflection on generated methods, a self-hosted build twice as fast), on the homelab, quiet,
   3 interleaved rounds: self-hosted compiler 9.27-9.79 s / 306.0 MB / 39.5 MB against NativeAOT-LLVM 3.80-3.84 s / 322.2 MB /
   129 MB: time 2.49x, memory 0.95x, size 0.31x. The self-hosted build itself: 247 s.
+- 2026-11-22, frame loops (main 6e60243; the owner's restated bar above). Measured first on main 7dd75a8, this machine,
+  `node tools/frames.mjs --runs 3`, medians against NativeAOT-LLVM: churn 3.47x, tree 2.56x, collections 1.36x, strings
+  1.21x, bigdrop 0.87x; worst frames below NativeAOT's on every scene but tree (6.6 ms against 3.2). Then the churn loop's
+  code read (`CS2WASM_DUMP`): ten count operations a particle where NativeAOT does none. Four ownership rules, each with
+  its switch: a static's value held for a call borrows by the static's key, as a local does (`CS2WASM_NO_STATIC_TEMPS`);
+  a write nested in an expression through a reference (`--p.Life`) marks no variable written during use
+  (`CS2WASM_NESTED_THROUGH_REFS`); a local borrows the value of a getter that returns a field or an element borrowed (the
+  indexer of List) from a receiver that stays put or a static (`CS2WASM_NO_GETTER_BORROWS`); an element store of the
+  borrowing local's own value, in the function or in a setter that stores only its value, does not end the borrow, never
+  for a slot of a cycle, and the check of a type whose static the value was read from is no store
+  (`CS2WASM_NO_SELF_STORES`). Churn median 0.168 to 0.105 ms (NativeAOT 0.048: 3.47x to 2.16x), collections 1.36x to
+  1.28x, the others as before; bench.mjs 0.95x; hello world 27,067 to 27,031 bytes; the self-hosted compiler (homelab, 3
+  interleaved rounds) 8.81-8.88 s against main's 8.85-8.98 and NativeAOT-LLVM's 3.71-4.11, its hello world byte for byte
+  the .NET-hosted compiler's (`tools/selfdet.mjs`). Test 190 (callees and later arguments that rewrite the static, another
+  value stored over the slot, lists cleared, replaced and shortened, a setter that keeps the old value, cycle slots). Suite
+  201/201 checked and as shipped on the homelab. Measured and ruled out for these scenes: inlining (`CS2WASM_INLINE_THROWING=40`,
+  its loop form at 60 to 80, `CS2WASM_EXP_INLINE=60`: churn and tree the same or slower, before and after the count rules;
+  the self-hosted compiler with `CS2WASM_INLINE_THROWING=40` 8.95-9.02 s against 8.85-8.98); the NaN test on float stores
+  (SPEC 7.3) is 5% of churn (`CS2WASM_NO_CANON=1`). Left in churn: the count an element's move to another slot needs (the
+  array form of the loop is 0.083 ms), and the indexer's own work. Left in tree: the rebuild (branch claude/tree-rebuild),
+  and Walk's frame for the enumerator of a changed list, set up on every call (an indexed loop in its place: median 0.073
+  to 0.066 ms). Seen and not followed: Dictionary<string, V>.FindValue counts `_comparer` and `_entries` because the
+  comparer's virtual calls are taken to store them.
