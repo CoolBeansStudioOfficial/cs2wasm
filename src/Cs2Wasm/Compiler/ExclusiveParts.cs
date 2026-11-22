@@ -172,8 +172,6 @@ sealed partial class FunctionCompiler
         {
             case IObjectCreationOperation oc:
                 return PartNewOk(oc);
-            case IConversionOperation cx when Arenas.PartsDebug:
-                Console.Error.WriteLine($"parts value: conversion {cx.Conversion} of {cx.Operand.Kind} {cx.Type} / {cx.Operand.Type} op {cx.OperatorMethod}"); return false;
             case IArrayCreationOperation:
                 return true;
             case IDefaultValueOperation:
