@@ -39,7 +39,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.11x to 0.30x NativeAOT's with `--js-young 32`); tree worst 2.77 to 2.84 ms vs 3.11 to 3.22 (0.86x to 0.91x over three runs of 3), p99.9 2.66 to 2.68 vs 2.42 to 2.48 (1.07x to 1.10x), its rebuild (main 80ae1ce, this machine, 2026-11-23; AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 1.77x (was 2.16x, before that 3.47x), tree 1.68x (was 2.56x), collections 1.10x (was 1.27x; p99 1.37x), strings 1.01x (was 1.21x), bigdrop 0.90x (main with claude/colstr-1, this machine with other work on it, one run of 3) | close to 1.0x on every scene |
+| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 1.60x (was 1.77x, 2.16x, 3.47x; what counting a moved reference costs is 14 us of its 80 a frame against the collector's 3.5: AUDIT A3.5, the churn loop, round 3), tree 1.65x (was 2.56x), collections 1.06x to 1.10x (p99 1.34x to 1.37x), strings 0.99x to 1.01x, bigdrop 0.90x to 0.94x (main 01949ae, this machine with other work on it, one run of 3) | close to 1.0x on every scene |
 | 4 | Hello world size (test 145) | 27,089 B (main dca1f9c) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
@@ -812,3 +812,10 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   and not reachable by these three.** The floor measured: 14 us of counting at the store against 3.5. Test 135 under
   the stress tool on the homelab: 60950 for 61050 in 3 of 400 runs on claude/churn-2 and 1 of 400 on main (its timer
   race, on both). Not run this round: the suite, the self-hosted compiler (the compiler is as claude/round-6a's).
+- 2026-11-23, claude/churn-2 and claude/churn-3 merged (main 01949ae; the two entries above), checked again before
+  the merge. Homelab at 19a2035 (main with churn-2): suite 213/213 checked and as shipped; stress, 200 loaded runs a
+  mode: 139, 196, 205, 206 the same in every run, 127 differed in 2 of 400; the self-hosted compiler's hello world
+  byte for byte the .NET-hosted compiler's (27,584 bytes), 9.6 to 10.2 s against 9.4 to 13.2 before on a loaded
+  homelab (NativeAOT-LLVM's 4.0 to 4.3). frames.mjs here once (`--runs 3 --js-young 32`, the machine shared): churn
+  0.085 ms against NativeAOT-LLVM's 0.053 (1.60x), tree 0.053 against 0.032 and p99.9 3.25 against 2.94,
+  collections 0.007 both (1.06x), strings 0.008 both, bigdrop 0.003 both.
