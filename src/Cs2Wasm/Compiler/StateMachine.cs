@@ -467,8 +467,24 @@ sealed partial class FunctionCompiler
         var info = _machine!;
         var promise = info.Machine.ExtraSlots["promise"];
         var set = AsyncMember("TrySetResultT", promise.type);
-        CallWith(set, false, () => { E.Get(0); E.Load(Op.I32Load, promise.offset); }, () => E.I32(value ? 1 : 0), null, null);
+        // (the promise counted for the call: the machine's field is not enough. Once the promise is complete, the
+        // consumer, on another thread, sees it so, goes on and calls MoveNextAsync again, which lets the field's
+        // promise go, the last reference to it, while this thread is still inside its TrySetResult. Test 087 under
+        // load, checked: Interlocked.Exchange in Task.FinishContinuations read a freed task's continuation word and
+        // counted what it found there, `operation does not support unaligned accesses`, 3 loaded runs of 600. The
+        // field is read before the promise is complete, when the consumer cannot have let it go)
+        int held = HoldPromise(promise.offset);
+        CallWith(set, false, () => E.Get(held), () => E.I32(value ? 1 : 0), null, null);
         E.Op(Op.Drop);
+        E.Get(held); E.Call(Rt.Release);
+    }
+
+    /// <summary>An async iterator's pending promise, read from the machine and counted: a local that holds it.</summary>
+    int HoldPromise(int offset)
+    {
+        int held = E.AddLocal(ValType.I32);
+        E.Get(0); E.Load(Op.I32Load, offset); E.Call(Rt.Retain); E.Set(held);
+        return held;
     }
 
     /// <summary>IAsyncEnumerable/IAsyncEnumerator over the machine: MoveNextAsync makes a fresh promise and runs
@@ -946,8 +962,11 @@ sealed partial class FunctionCompiler
         {
             SetState(-1);
             var promise = info.Machine.ExtraSlots["promise"].offset;
-            E.Get(0); E.Load(Op.I32Load, promise); E.Get(ex);
+            // (counted for the call, as CompletePromise's)
+            int held = HoldPromise(promise);
+            E.Get(held); E.Get(ex);
             E.Call(D.Method(AsyncMember("TrySetExceptionCore", null)).Fn); E.Op(Op.Drop);
+            E.Get(held); E.Call(Rt.Release);
             E.Get(ex); E.Call(Rt.Release);
             E.Op(Op.Return);
             return;
