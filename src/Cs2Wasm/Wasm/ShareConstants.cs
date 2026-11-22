@@ -355,7 +355,12 @@ static class ShareConstants
                 {
                     // (a family's members calling functions that are not one shared group, of one signature: through
                     // the table, each member's callee's index a slot)
-                    if (!s_indirect || r.Family == null || targets.Any(t => !t.Type.Equals(targets[0].Type)) || !s_indirectLoops && InLoop(r, i) || r.Body.Count < s_indirectMin) return false;
+                    if (!s_indirect || r.Family == null || targets.Any(t => !t.Type.Equals(targets[0].Type)) || !s_indirectLoops && InLoop(r, i)) return false;
+                    if (r.Body.Count < s_indirectMin)
+                    {
+                        if (s_stats) Console.Error.WriteLine($"share: short, not through the table: {g.Count} of {r.Body.Count} instructions, {r.Name} calling {targets[0].Name}");
+                        return false;
+                    }
                     indirect[i] = SlotOf([.. targets.Select(t => new Instr { Op = Op.I32Const, Imm = -1, Ref = t, Pos = ri.Pos })]);
                     continue;
                 }

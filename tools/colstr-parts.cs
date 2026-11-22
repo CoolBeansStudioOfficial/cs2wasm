@@ -347,7 +347,10 @@ static class Parts
         sum += s_list[(int)(Next() % (uint)s_list.Count)];
         return sum + s_map.Count;
     }
-    static void Whole(string scene, string what, Func<int, long> frame)
+    // (skip: the frames whose number is a multiple of it are timed as nothing: the collections scene's clear, one
+    // frame in 300, which frees the map's objects here and nothing in NativeAOT's build, takes 20 of the 60 places
+    // above p99)
+    static void Whole(string scene, string what, Func<int, long> frame, int skip = 0)
     {
         Reset();
         s_queue.Clear(); s_names.Clear();
@@ -358,7 +361,7 @@ static class Parts
             long t0 = Stopwatch.GetTimestamp();
             check += frame(f);
             long t1 = Stopwatch.GetTimestamp();
-            if (f >= Warm) s_t[0][f - Warm] = t1 - t0;
+            if (f >= Warm) s_t[0][f - Warm] = skip != 0 && f % skip == 0 ? 0 : t1 - t0;
         }
         Report(scene, check);
     }
@@ -376,6 +379,7 @@ static class Parts
         Whole("collections", "frame to queue", ColUpTo4);
         Whole("collections", "frame, ContainsKey", ColContains);
         Whole("collections", "whole frame again", CollectionsWhole);
+        Whole("collections", "whole frame, no clears", CollectionsWhole, 300);
         Strings();
         Whole("strings", "whole frame", StringsWhole);
     }

@@ -1,6 +1,7 @@
 // A by-phase tool (tools/<name>.cs with a public static Parts.Run() and an entry "parts") on both sides, side by side:
 // cs2wasm's module and NativeAOT-LLVM's WebAssembly (tools/parts-naot-wasm), each in its own Node process, in turn,
-// N times; per row the lowest "mid" (the mean of the middle half of the frames) over the runs, and the range.
+// N times; per row the lowest "mid" (the mean of the middle half of the frames) over the runs, and the range; then
+// the lowest p99.
 //   node tools/parts.mjs [--runs N] [--no-build] [--js-young MB] [--env NAME=VALUE]... <name>      (name: colstr-parts)
 // --env: an environment variable for cs2wasm's compile (a CS2WASM_NO_* switch); the module is then built beside the
 // plain one and shown as a third column.
@@ -55,20 +56,21 @@ for (let r = 0; r < runs; r++)
     const p = run();
     if (p.status !== 0) { console.error(p.stdout.slice(-2000), p.stderr); throw new Error(`${side} failed`); }
     for (const line of p.stdout.split(/\r?\n/)) {
-      const m = /^(.*?)\s+mid\s+(\d+)\s+median\s+(\d+)/.exec(line);
+      const m = /^(.*?)\s+mid\s+(\d+)\s+median\s+(\d+)\s+mean\s+(\d+)\s+p99\s+(\d+)/.exec(line);
       const c = /^(\w+) sum of mids (\d+)\s+check (-?\d+)/.exec(line);
       const key = m ? m[1].trim() : c ? `${c[1]} sum of mids` : null;
       if (!key) continue;
       if (!data.has(key)) { data.set(key, {}); rows.push(key); }
       const d = data.get(key);
       (d[side] ??= []).push(+(m ? m[2] : c[2]));
+      if (m) ((d.p99 ??= {})[side] ??= []).push(+m[5]);
       if (c) { d.check ??= c[3]; if (d.check !== c[3]) d.differs = true; }
     }
   }
 const cell = (v) => (v ? `${Math.min(...v)}`.padStart(7) + ` (${Math.min(...v)}-${Math.max(...v)})`.padEnd(15) : ''.padEnd(22));
-console.log(`${'ns, mid: lowest (range)'.padEnd(36)} ${sides.map(([s]) => s.padEnd(22)).join(' ')} ratio`);
+console.log(`${'ns, mid: lowest (range)'.padEnd(36)} ${sides.map(([s]) => s.padEnd(22)).join(' ')} ratio    p99: lowest, ${sides.map(([s]) => s).join(' / ')}`);
 for (const key of rows) {
   const d = data.get(key);
   const a = Math.min(...d.NativeAOT), w = Math.min(...d.cs2wasm);
-  console.log(`${key.padEnd(36)} ${sides.map(([s]) => cell(d[s])).join(' ')} ${a ? (w / a).toFixed(2) + 'x' : ''}${d.differs ? '   CHECKSUM DIFFERS' : ''}`);
+  console.log(`${key.padEnd(36)} ${sides.map(([s]) => cell(d[s])).join(' ')} ${(a ? (w / a).toFixed(2) + 'x' : '').padEnd(8)} ${d.p99 ? sides.map(([s]) => `${Math.min(...d.p99[s])}`.padStart(7)).join(' /') : ''}${d.differs ? '   CHECKSUM DIFFERS' : ''}`);
 }
