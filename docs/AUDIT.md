@@ -1200,9 +1200,9 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   196/196 checked and as shipped on the homelab (Godot not installed there). Also fixed: ShareConstants named
   references by their identity hash code, which two objects can share (members would have been given another's
   callee or address); now by an object's own number. Open: 108_records_async_misc failed once, checked, in the first
-  of two suite runs (exit 1 at its cancellation line, `await foreach` with a token cancelled), and once in 22 runs of
+  of two suite runs (exit 1 at its cancellation line, `await foreach` with a token cancelled), and once in 36 runs of
   the test alone here (each a new build: builds are not byte-for-byte the same from run to run, with sharing off
-  too); round 5's rules passed 8 of 8 and one module run 60 times passed each time. Not traced; it may be this
+  too); round 5's rules passed 22 of 22 and one module run 60 times passed each time. Not traced; it may be this
   change or an older rare failure.
   - What is left (`CS2WASM_SHARE_WHY=1` on the self-hosted compiler): families whose members differ in arena
     operations (cycle-capable in one instantiation, not in another), loads and stores of a thread static in one body
