@@ -176,8 +176,17 @@ namespace Cs2Wasm.Runtime
         // collector (lists of freed blocks for the whole heap hand out blocks from all over it, and a walk over a
         // list or a tree then misses the cache at every step).
         // A page: [0] its freed blocks (linked at +8), [4] next page and [8] previous one (the size's pages with
-        // freed blocks, or the empty pages), [12] the first block never used (0: none), [16] blocks in use,
-        // [20] size class * 2 + (1: it is the size's current page or among its pages with freed blocks).
+        // freed blocks, a ring; or the empty pages, [4] alone), [12] the first block never used (0: none; in a page
+        // among those with freed blocks: its blocks in use when PageAlloc last passed it over, plus one),
+        // [16] blocks in use, [20] size class * 2 + (1: it is the size's current page or among its pages with freed
+        // blocks).
+        // Which page with freed blocks is used again (PageAlloc, RipePages): a page a few blocks of which are free
+        // gives a few blocks, so a size whose objects die one by one all over its pages (the particles of a list,
+        // 400 of 19,400 a frame) had every frame's new objects spread over all of them, nine to a page, and a walk
+        // of the list in its order went all over memory (the churn scene's loop 88 us a frame, 62 with the same
+        // objects in order). So: a page that is nearly empty; else one that is no longer being emptied and has a
+        // quarter free; else an empty page, cut in order, while memory need not grow for it. A page still being
+        // emptied is left until it is empty or nearly so.
         // A page nothing is left in goes back to the empty pages, for any size. Pages come four at a time from
         // 64 KB of memory at a multiple of 64 KB, noted in a map, so a small block that is not in a page (what is
         // left over when a large block is cut) is told from one that is, and kept on the old lists by size.
@@ -470,11 +479,37 @@ namespace Cs2Wasm.Runtime
                 int q = Mem.LoadI32(availSlot);
                 if (q != 0)
                 {
-                    int next = Mem.LoadI32(q + 4);
-                    Mem.StoreI32(availSlot, next);
-                    if (next != 0) Mem.StoreI32(next + 8, 0);
-                    Mem.StoreI32(curSlot, q);
-                    continue;
+                    if (RipePages())
+                    {
+                        // Of the first few pages (the ring's front: those whose first block was freed longest ago),
+                        // one that is nearly empty; else one a quarter of which is free and that has lost no block
+                        // since it was last looked at here ([12]: its blocks in use then, plus one). A page that is
+                        // still being emptied is left to empty (the blocks of a list whose objects die one by one:
+                        // an empty page is cut in order again, a page used again while they die gets the new objects
+                        // a few at a time); a page looked at and left goes to the back. When there is none, an
+                        // empty page, unless memory would have to grow for it: then the front page as it is, as
+                        // before.
+                        int cap = (PageSize - PageHead) / size, take = 0;
+                        for (int k = 0; k < RipeLook; k++)
+                        {
+                            int inUse = Mem.LoadI32(q + 16);
+                            if (inUse <= (cap >> RipeShift)) { take = q; break; }
+                            int seen = Mem.LoadI32(q + 12);
+                            if (seen != 0 && inUse == seen - 1 && inUse <= cap - (cap >> StillShift)) { take = q; break; }
+                            Mem.StoreI32(q + 12, inUse + 1);
+                            q = Mem.LoadI32(q + 4);
+                            Mem.StoreI32(availSlot, q);
+                        }
+                        if (take == 0 && s_freePages == 0 && (uint)(s_end - s_top) < 3 * 65536) take = Mem.LoadI32(availSlot);
+                        q = take;
+                        if (q != 0) Mem.StoreI32(q + 12, 0);
+                    }
+                    if (q != 0)
+                    {
+                        PageUnlink(availSlot, q);
+                        Mem.StoreI32(curSlot, q);
+                        continue;
+                    }
                 }
                 while (s_freePages == 0) NewChunk();
                 int np = s_freePages;
@@ -495,6 +530,26 @@ namespace Cs2Wasm.Runtime
             }
         }
 
+        /// <summary>Whether a size's pages with freed blocks are used again only once they are nearly empty, or no
+        /// longer being emptied with a quarter free, as long as an empty page can be had instead without growing
+        /// memory (PageAlloc); CS2WASM_NO_RIPE_PAGES=1: the page whose first block was freed last, whatever is free
+        /// in it, as before.</summary>
+        [Intrinsic] static extern bool RipePages();
+        /// <summary>How many of a size's pages with freed blocks an allocation looks at; nearly empty: no more than
+        /// 1/2^RipeShift of its blocks in use; free enough once it is no longer being emptied: 1/2^StillShift of them.</summary>
+        const int RipeLook = 8, RipeShift = 3, StillShift = 2;
+
+        /// <summary>Takes a page out of its size's pages with freed blocks (a ring: [4] next, [8] previous).</summary>
+        static void PageUnlink(int slot, int pg)
+        {
+            int next = Mem.LoadI32(pg + 4);
+            if (next == pg) { Mem.StoreI32(slot, 0); return; }
+            int prev = Mem.LoadI32(pg + 8);
+            Mem.StoreI32(prev + 4, next);
+            Mem.StoreI32(next + 8, prev);
+            if (Mem.LoadI32(slot) == pg) Mem.StoreI32(slot, next);
+        }
+
         /// <summary>A block of a page is free again.</summary>
         static void PageFree(int addr)
         {
@@ -509,20 +564,24 @@ namespace Cs2Wasm.Runtime
             int availSlot = s_avail + c * 4;
             if ((fl & 1) == 0)
             {
-                // it was full: among its size's pages with freed blocks from now on
+                // it was full: among its size's pages with freed blocks from now on (a ring), at the back: the
+                // pages before it had their first block freed earlier
                 int head = Mem.LoadI32(availSlot);
-                Mem.StoreI32(pg + 4, head);
-                Mem.StoreI32(pg + 8, 0);
-                if (head != 0) Mem.StoreI32(head + 8, pg);
-                Mem.StoreI32(availSlot, pg);
+                if (head == 0) { Mem.StoreI32(pg + 4, pg); Mem.StoreI32(pg + 8, pg); Mem.StoreI32(availSlot, pg); }
+                else
+                {
+                    int tail = Mem.LoadI32(head + 8);
+                    Mem.StoreI32(tail + 4, pg); Mem.StoreI32(pg + 8, tail);
+                    Mem.StoreI32(pg + 4, head); Mem.StoreI32(head + 8, pg);
+                    // (CS2WASM_NO_RIPE_PAGES=1: at the front, the next page to be used again)
+                    if (!RipePages()) Mem.StoreI32(availSlot, pg);
+                }
                 Mem.StoreI32(pg + 20, fl | 1);
             }
             else if (used == 0 && Mem.LoadI32(s_cur + c * 4) != pg)
             {
                 // nothing left in it: an empty page, for any size
-                int next = Mem.LoadI32(pg + 4), prev = Mem.LoadI32(pg + 8);
-                if (prev != 0) Mem.StoreI32(prev + 4, next); else Mem.StoreI32(availSlot, next);
-                if (next != 0) Mem.StoreI32(next + 8, prev);
+                PageUnlink(availSlot, pg);
                 Mem.StoreI32(pg + 4, s_freePages);
                 s_freePages = pg;
             }
@@ -1280,7 +1339,8 @@ namespace Cs2Wasm.Runtime
                     MsAdd(row, 1);
                     MsAdd(row + 4, used);
                     if (used == 0) { MsAdd(row + 20, 1); MsAdd(MsTotAt(TEmptyPages), 1); }
-                    int bump = Mem.LoadI32(pg + 12), last = bump != 0 ? bump : pg + PageSize;
+                    // (without threads [12] is no block: what PageAlloc saw in use when it passed the page over)
+                    int bump = k == 1 ? 0 : Mem.LoadI32(pg + 12), last = bump != 0 ? bump : pg + PageSize;
                     for (int b = pg + PageHead; b + size <= last; b += size)
                     {
                         int r = MsObject(b, size);
