@@ -12,7 +12,8 @@ ROOT="$(pwd -W 2>/dev/null || pwd)"
 OUT=tests/out/selfsw
 mkdir -p $OUT
 if [ "${BUILD:-1}" = 1 ]; then rm -rf $OUT/cli && cp -r src/Cs2Wasm.Cli/bin/Release/net11.0 $OUT/cli; fi
-echo 'System.Console.WriteLine(42);' > $OUT/w42.cs
+# (a program with an entry of its own: top-level statements are an error in a library, which is what cs2wasmc compiles)
+cp tests/Conformance/145_size_hello.cs $OUT/w42.cs
 build() { # name, switches
   n=$1; shift
   s=$(date +%s)
@@ -32,3 +33,6 @@ for r in $(seq 1 ${ROUNDS:-3}); do
 done
 rm -f $T
 cmp $OUT/w42-as-is.wasm $OUT/w42-switched.wasm && echo "the two wrote the same module ($(stat -c %s $OUT/w42-as-is.wasm) bytes)"
+# (and the compiler run by .NET: the same module)
+$OUT/cli/cs2wasmc.exe $OUT/w42.cs -o $OUT/w42-dotnet.wasm > /dev/null 2>&1
+cmp $OUT/w42-as-is.wasm $OUT/w42-dotnet.wasm && echo "the same as the compiler run by .NET writes"

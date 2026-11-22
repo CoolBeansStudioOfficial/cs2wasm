@@ -31,6 +31,7 @@ internal sealed partial class Driver
     static readonly bool s_noChain = Environment.GetEnvironmentVariable("CS2WASM_NO_CHAIN_STORES") == "1";
     static readonly bool s_chainDebug = Environment.GetEnvironmentVariable("CS2WASM_CHAIN_DEBUG") == "1";
     internal static bool ChainDebug => s_chainDebug;
+    internal static bool NoChainStores => s_noChain;
     /// <summary>CS2WASM_CHAIN_BREAK=1 (to see a test fail): a value in a plain local counts as read out of anything.</summary>
     static readonly bool s_chainBreak = Environment.GetEnvironmentVariable("CS2WASM_CHAIN_BREAK") == "1";
 

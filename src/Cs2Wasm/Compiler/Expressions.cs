@@ -389,7 +389,7 @@ sealed partial class FunctionCompiler
         }
         // (a store proven to close no cycle is linked as such, whoever holds the container: the owned local's link
         // would make the site general)
-        if (iso) owned = false;
+        if (iso && !Driver.NoChainStores) owned = false;
         var vt = Types.WasmType(t)!.Value;
         // (an immortal object: stored as it is, nothing counted, nothing to publish: its count word marks it shared)
         if (Types.IsImmortalType(t) && site == null && pin == null) { int iv = Scratch(vt); E.Set(iv); pushAddr(); E.Get(iv); E.Store(Op.I32Store, offset); FreeScratch(vt, iv); return; }
