@@ -694,7 +694,7 @@ namespace Cs2Wasm.Runtime
         static bool HeldMarked(int note) => (note & (1 | MarkHeld)) != 0;
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static bool OutsideMarked(int note) => (note & (1 | MarkOutside)) != 0;
-        static long s_dsCalls, s_dsWalked, s_dsDead, s_dsFailInside, s_dsFailHeld, s_dsMax, s_dsFromRelease, s_dsFromUnlink, s_dsTops, s_dsTopHops, s_dsTopMarked, s_dsTopFar;
+        static long s_dsCalls, s_dsWalked, s_dsDead, s_dsFailInside, s_dsFailHeld, s_dsMax, s_dsFromRelease, s_dsFromUnlink, s_dsTops, s_dsTopHops, s_dsTopMarked, s_dsTopFar, s_dsTopCached;
         static int s_dsBuf;
         static void DsNum(ref int at, string label, long v)
         {
@@ -733,7 +733,7 @@ namespace Cs2Wasm.Runtime
             DsNum(ref at, "drop checks ", s_dsCalls); DsNum(ref at, " walked ", s_dsWalked); DsNum(ref at, " dead ", s_dsDead);
             DsNum(ref at, " fail-inside ", s_dsFailInside); DsNum(ref at, " fail-held ", s_dsFailHeld); DsNum(ref at, " max ", s_dsMax);
             DsNum(ref at, " from-release ", s_dsFromRelease); DsNum(ref at, " from-unlink ", s_dsFromUnlink);
-            DsNum(ref at, " tops ", s_dsTops); DsNum(ref at, " top-hops ", s_dsTopHops); DsNum(ref at, " top-marked ", s_dsTopMarked); DsNum(ref at, " top-far ", s_dsTopFar);
+            DsNum(ref at, " tops ", s_dsTops); DsNum(ref at, " top-hops ", s_dsTopHops); DsNum(ref at, " top-marked ", s_dsTopMarked); DsNum(ref at, " top-far ", s_dsTopFar); DsNum(ref at, " top-cached ", s_dsTopCached);
             Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
             if (s_opStats != 0)
             {
@@ -2050,6 +2050,7 @@ namespace Cs2Wasm.Runtime
         {
             // (its count word reads as dead from here on, wherever the block goes)
             Mem.StoreI32(addr, 0);
+            TopsMoved();
             // (its words need no clearing, a block is cleared when it is allocated; its side words go)
             SideFree(addr);
             // (the usual case in one small piece, as FreeObject)
@@ -2132,6 +2133,7 @@ namespace Cs2Wasm.Runtime
             OpStat(4);
             if (ThreadMode()) PS(obj, LockWord, Mem.LoadI32(ar + 28) + 1);
             do { c = Atomic.Load32(ref Mem.RefI32(obj)); } while (Atomic.CompareExchange32(ref Mem.RefI32(obj), c, -(c + 2)) != c);
+            TopsMoved();
             PS(obj, 16, ar);
             PS(obj, 4, 0);
             if (ArenaFinType(Mem.LoadI32(obj + 4)) != 0) Mem.StoreI32(ar + 24, 1);
@@ -2368,7 +2370,7 @@ namespace Cs2Wasm.Runtime
                 }
                 fl &= ~Held;
                 PS(v, 24, fl);
-                if ((fl & Owned) == 0) { PS(v, 20, 0); Adopt(v); }
+                if ((fl & Owned) == 0) { PS(v, 20, 0); TopsMoved(); Adopt(v); }
                 int n = PL(w, 4) - 1;
                 PS(w, 4, n);
                 if (n == 0 && Mem.LoadI32(w) == -2) { Kill(w); return; }
@@ -2510,6 +2512,7 @@ namespace Cs2Wasm.Runtime
             if (ThreadMode()) { int w = Side(m); if (w != 0) Mem.StoreI64(w, 0); Mem.StoreI32(m - 28, 0); Mem.StoreI64(m - 24, 0); Mem.StoreI64(m - 16, 0); Mem.StoreI64(m - 8, 0); }
             // (exchanged: other threads count it meanwhile; it has outside references, so one member fewer that does)
             do { c = Atomic.Load32(ref Mem.RefI32(m)); } while (Atomic.CompareExchange32(ref Mem.RefI32(m), c, -c - 2) != c);
+            TopsMoved();
             if (!ThreadMode()) MemberWordsFree(m);
             int total = Mem.LoadI32(ar) - 1;
             Mem.StoreI32(ar, total);
@@ -2546,6 +2549,7 @@ namespace Cs2Wasm.Runtime
             }
             PS(val, 20, container);
             PS(val, 24, PL(val, 24) | Owned | MultOne);
+            TopsMoved();
             // (only a counted reference in one of its own slots can become an up-reference)
             if ((PL(val, 28) & 0x55555555) != 0 && (PL(val, 24) & Elems) == 0) Reevaluate(val);
         }
@@ -2636,6 +2640,7 @@ namespace Cs2Wasm.Runtime
             fl &= ~Owned;
             PS(old, 24, fl);
             if ((fl & Held) == 0) PS(old, 20, 0);
+            TopsMoved();
             if (ArenaReport()) RepEv(2, old, container, (fl & Held) != 0 ? 1 : 0);
         }
 
@@ -2703,8 +2708,47 @@ namespace Cs2Wasm.Runtime
             if (!ThreadMode()) s_failedTops--; else Atomic.Add32(ref s_failedTops, -1);
         }
 
+        // ---- Tops remembered ----
+        // TopHeld and NoteOutside ask for the top of a member noted under a top whose check failed, at each of its
+        // first and last outside references: a walk up its owners. Once checks have failed in a large structure,
+        // nearly every member is noted, and a loop that takes and drops a reference to each member of a list walks
+        // each one's chain every time (Roslyn's binder, SourceAssemblySymbol.GetAttributeDeclarations over 1,812
+        // declarations per symbol's obsolete check: 47 million walks of 22 owners on average in the bind bench, half
+        // its time). So the answer is remembered, per member, in a table of TopCacheN entries (member, epoch, top),
+        // and is good while the epoch is the one it was found in. The epoch moves at every change of what the walk
+        // reads (TopsMoved): a member's Owned flag and owner word, and an object's count word becoming or ceasing to
+        // be a member's (a join, a leave, a destruction, the finalizer phase's bias, a free). The answer is the same
+        // as the walk's; without threads only (the walk is under the runtime lock there).
+        const int TopCacheN = 4096;
+        static int s_topCache, s_topEpoch;
+
+        /// <summary>Something the walk up the owners reads has changed: the remembered tops are stale.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static void TopsMoved() { if (++s_topEpoch == 0) TopsWrapped(); }
+
+        /// <summary>The epoch went round: an entry four billion changes old could read as current, so all go.</summary>
+        static void TopsWrapped()
+        {
+            if (s_topCache != 0) for (int i = 0; i < TopCacheN; i++) Mem.StoreI32(s_topCache + 12 * i, 0);
+        }
+
         /// <summary>The member above all its owners (itself when it has none); 0 when that is far.</summary>
         static int Top(int m)
+        {
+            if (ThreadMode()) return TopWalk(m);
+            if (s_topCache == 0) { int c = Alloc(12 * TopCacheN); for (int i = 0; i < TopCacheN; i++) Mem.StoreI32(c + 12 * i, 0); s_topCache = c; }
+            int e =s_topCache + 12 * (((m >> 3) ^ (m >> 15)) & (TopCacheN - 1));
+            if (Mem.LoadI32(e) == m && Mem.LoadI32(e + 4) == s_topEpoch)
+            {
+                if (DropStats()) s_dsTopCached++;
+                return Mem.LoadI32(e + 8);
+            }
+            int t = TopWalk(m);
+            Mem.StoreI32(e, m); Mem.StoreI32(e + 4, s_topEpoch); Mem.StoreI32(e + 8, t);
+            return t;
+        }
+
+        static int TopWalk(int m)
         {
             int v = m;
             if (DropStats()) s_dsTops++;
@@ -3170,7 +3214,7 @@ namespace Cs2Wasm.Runtime
                 if (ow == container && (fl & Owned) != 0)
                 {
                     // (one more of its owner's references; more than can be told apart: no owner, as if let go)
-                    if ((fl & MultMask) == MultMask) { fl &= ~(Owned | MultMask); PS(val, 24, fl); if ((fl & Held) == 0) PS(val, 20, 0); }
+                    if ((fl & MultMask) == MultMask) { fl &= ~(Owned | MultMask); PS(val, 24, fl); if ((fl & Held) == 0) PS(val, 20, 0); TopsMoved(); }
                     else PS(val, 24, fl + MultOne);
                 }
                 // A reference a plain object's slot took while it was plain, linked now that the object joins (its
@@ -3524,6 +3568,7 @@ namespace Cs2Wasm.Runtime
                 if ((cf & Held) != 0) { PS(s_handFrom, 4, PL(s_handFrom, 4) - 1); PS(obj, 4, PL(obj, 4) + 1); }
                 PS(child, 24, (cf & ~MultMask) | MultOne);
                 PS(child, 20, obj);
+                TopsMoved();
                 if (PLW(child) == obj) PSW(child, 0);
                 PS(obj, 24, PL(obj, 24) + uc * UOne);
                 PS(s_handFrom, 24, PL(s_handFrom, 24) - uc * UOne);
@@ -3634,6 +3679,7 @@ namespace Cs2Wasm.Runtime
             // (its own code, not FinPhaseCuts: a program without threads carries none of the deferred destruction)
             int end = link == 12 ? first : 0;
             for (int m = first; m != 0; m = FinNext(m, end, link)) { Mem.StoreI32(m, FinBias); PS(m, 24, PL(m, 24) | Dying); }
+            TopsMoved();
             int cutEnd = s_cutN;
             CutsBack(cutBase, cutEnd);
             for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaFinalizeObject(m);
@@ -3644,6 +3690,7 @@ namespace Cs2Wasm.Runtime
             {
                 FinVisit(first, link, 11);
                 for (int m = first; m != 0;) { int next = FinNext(m, end, link); Mem.StoreI32(m, -1); m = next; }
+                TopsMoved();
                 s_cutN = cutBase;
                 return true;
             }
@@ -3651,6 +3698,7 @@ namespace Cs2Wasm.Runtime
             CutsOut(cutBase, cutEnd);
             s_cutN = cutBase;
             for (int m = first; m != 0; m = FinNext(m, end, link)) Mem.StoreI32(m, 0);
+            TopsMoved();
             return false;
         }
 
@@ -3670,6 +3718,7 @@ namespace Cs2Wasm.Runtime
             {
                 FinVisit(first, link, 11);
                 for (int m = first; m != 0;) { int next = FinNext(m, end, link); Mem.StoreI32(m, -1); m = next; }
+                TopsMoved();
                 if (unlocked) RuntimeUnlock();
                 return true;
             }
@@ -3677,6 +3726,7 @@ namespace Cs2Wasm.Runtime
             if (unlocked) RuntimeUnlock();
             CutsOut(q, from, to);
             for (int m = first; m != 0; m = FinNext(m, end, link)) Mem.StoreI32(m, 0);
+            TopsMoved();
             return false;
         }
 
@@ -3687,6 +3737,7 @@ namespace Cs2Wasm.Runtime
         {
             int end = link == 12 ? first : 0;
             for (int m = first; m != 0; m = FinNext(m, end, link)) { Mem.StoreI32(m, FinBias); PS(m, 24, PL(m, 24) | Dying); }
+            TopsMoved();
             CutsBack(q, from, to);
         }
 
@@ -3789,6 +3840,7 @@ namespace Cs2Wasm.Runtime
             s_cutOn = cutOn;
             // then as any object: no longer a member (count zero: being destroyed), its finalizer, its other references
             for (int m = done; m != 0; m = PL(m, 8)) { Mem.StoreI32(m, 0); PS(m, 16, 0); ClearMark(m); }
+            TopsMoved();
             // (threads: the rest once the runtime lock is given back, RunDeferredDestroys)
             // (the members are off the arena's ring already: whether its record goes is known now, and what is left
             // needs it no more; it may be merged or freed by others before then)
@@ -3838,6 +3890,7 @@ namespace Cs2Wasm.Runtime
                     Mem.StoreI32(list + 4 * k, m); k++;
                     m = PL(m, 12);
                 } while (m != first);
+                TopsMoved();
                 for (int i = 0; i < k; i++) ArenaClearObject(Mem.LoadI32(list + 4 * i));
                 for (int i = 0; i < k; i++) ArenaFreeObject(Mem.LoadI32(list + 4 * i));
                 Free(list, cap * 4);
