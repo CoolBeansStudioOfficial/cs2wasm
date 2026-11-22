@@ -2757,6 +2757,13 @@ namespace Cs2Wasm.Runtime
             // or a member's that holds no linked reference: `field = null` over null). (Under the lock, each such
             // store of twenty-four parsing threads stopped the rest: of a million stores that took it, 991,000
             // were a null into a member's field.)
+            // (threads: nor into a pinned container, which never joins: GroupLocks.cs, PinnedPlain)
+            if (ThreadMode() && val != 0 && PinnedPlain(container))
+            {
+                int ip = SlotIndex(container, slot);
+                t_prevSlot = slot; t_prevBits = slot != 0 && ip >= 0 ? 0 : -1;
+                return val;
+            }
             if (val == 0 || !CanLink(val, container))
             {
                 int i0 = SlotIndex(container, slot), cw = Mem.LoadI32(container);
@@ -2776,6 +2783,8 @@ namespace Cs2Wasm.Runtime
             int outer = s_storeSlot;
             s_storeSlot = slot;
             int r = val;
+            // (threads: a value LinkLock left out is linked to nothing, GroupLocks.cs)
+            if (ThreadMode() && t_linkOver != 0) { t_linkOver = 0; val = 0; }
             if (val != 0)
             {
                 // (the usual case: both are members of one arena already, which is not being destroyed or merged)
@@ -2823,6 +2832,12 @@ namespace Cs2Wasm.Runtime
         {
             int cv = Mem.LoadI32(val), ca = Mem.LoadI32(container);
             if (cv == -1 || cv == 0 || ca == -1 || ca == 0) return val; // immortal, or being destroyed
+            // (threads: a member stored into a plain object stays a counted reference, and the container plain. No
+            // member refers to a plain object of a cycle-capable class, which joins as it is stored, so no cycle can
+            // close through it until a member comes to refer to it, and it joins then, its slots linked as it does.
+            // Joined here, every thread's own lexer and parser became members of the one group of Roslyn's shared
+            // tokens, each store into them under that group's lock: GroupLocks.cs, LinkLock)
+            if (ThreadMode() && ca > 0 && cv < -1) return val;
             int g = SccOf(Mem.LoadI32(val + 4));
             if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return val;
             // (one whose finalizer is running, or that waits for the others': a counted reference, FinPhase)
@@ -2958,6 +2973,7 @@ namespace Cs2Wasm.Runtime
             if (bits == 0) { OpStat(8); Release(Borrow<object>(old)); return; }
             // (never linked: a plain counted reference, see ArenaLink)
             if (!CanLink(old, container)) { OpStat(8); Release(Borrow<object>(old)); return; }
+            if (ThreadMode() && PinnedPlain(container)) { Release(Borrow<object>(old)); return; }
             int mk = -1;
             if (!ThreadMode()) RuntimeLock();
             else

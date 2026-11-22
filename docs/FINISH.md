@@ -35,7 +35,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 10.24 s vs 5.18 s, 1.98x (main 1191d18 with K round 4, N round 2, D's fixes; interleaved, 3 rounds; 2.7x on 2026-11-20 morning) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main 1191d18, same run). Met, thinly: the heap top is 1 MiB under the next growth step | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 41.8 MB vs 129 MB (main 1191d18, shipped) | met; next waste: code (36.2 MB) |
-| 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock | faster with threads |
+| 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock. Homelab (16 threads), branch threads-scale: 15.5 / 12.9 / 15.1 / 15.9 / 18.2 s on 1 / 4 / 12 / 16 / 24 against main's 15.7 / 13.2 / 16.8 / 17.7 / 18.1 | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | met 2026-11-21: `node tools/proof5.mjs toolchain`, `web`, `check`: built in headless Chrome in 220.9 s, its 1,667 log lines (1,669 with `--panic`) equal stock Godot .NET's | plays, log equals the oracle's |
 | 5 | Self-hosted output equals the .NET-hosted compiler's, on 1 and 4 cores (`node tools/selfdet.mjs [--self t.wasm] [--cores 1,4] <program.cs> [-r x.dll]`) | met 2026-11-21: 021_threads and the GodotSharp Hello (4,060,330 B) byte-identical, no-threads toolchain and threaded on 1 and 4 cores | byte-identical |
 | - | 072_http's rare out-of-bounds | found and fixed 2026-11-20: none in 600 loaded runs per mode (was ~1 in 1,000) | found or not seen in 500 runs |
@@ -384,3 +384,11 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   bench.mjs 0.94x NativeAOT unchanged. TurboFan inlining diagnosed (`tools/k5`): budgets x4 make ours 5.6% faster,
   NativeAOT 3%; most refused inlines are rt.release (6,768) and rt.retain (2,160), so the lever is fewer count calls,
   not inlining. Suite 198/198 checked and as shipped (rebased on 23d5188). docs/AUDIT.md, stream K round 5.
+- 2026-11-21, threads past four (branch threads-scale, on ec13733): stripe waiters capped at two spinning (the rest
+  sleep, woken only when none spins); no LinkLock walk before the first thread; no lock for a store into a pinned
+  plain object; with threads a member stored into a plain object stays a counted reference (no join). Homelab, 3
+  interleaved rounds, threaded self-hosted compiler on hello world, 1 / 4 / 12 / 16 / 24 threads: main 15.7 / 13.2 /
+  16.8 / 17.7 / 18.1 s, branch 15.5 / 12.9 / 15.1 / 15.9 / 18.2; output byte-identical on every count. Check 5 still
+  not met: past four threads still slower than four. What waits is the parse: the lexer's and parser's stores and
+  cached tokens' first and last outside references on the one group. Suite at ed1e518 196/196 checked and as shipped on the homelab (198/198 here at 0fcc4fa); tests
+  139 (200 runs), 147, 149 under stress. docs/AUDIT.md, "Threads past four".

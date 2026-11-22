@@ -65,7 +65,8 @@ namespace Cs2Wasm.Runtime
         static bool StripeMine(int s)
         {
             int t = s_stripes;
-            if (t == 0) { for (int i = 0; i < t_lkN; i++) if (Mem.LoadI32(t_lkQ + 4 * i) == s) return true; return false; }
+            // (no other thread yet: every object is this thread's to read, as without threads)
+            if (t == 0) return true;
             return Atomic.Load32(ref Mem.RefI32(t + s * StripeBytes)) == ThreadId();
         }
 
@@ -116,21 +117,43 @@ namespace Cs2Wasm.Runtime
             return true;
         }
 
+        // A stripe's words: [0] the thread that holds it, [4] how often (reentrant), [8] the threads asleep on it, [12]
+        // the threads spinning for it. At most MaxSpinners spin; the others sleep, and an unlock wakes one only when
+        // none spins (one spinning is there to take it). With every waiter spinning, a group many threads use (the
+        // self-hosted compiler's one of Roslyn's nodes) had each of its operations wait on a lock word and group words
+        // that moved between all the spinning cores at each handover: twelve threads 1.6x four threads' time.
+        const int MaxSpinners = 2, SpinRounds = 4096;
+
         static void StripeWait(int w, int me)
         {
-            int n = 0;
+            int n = 0, total = 0;
+            bool spinning = false;
             while (true)
             {
                 int cur = Atomic.Load32(ref Mem.RefI32(w));
-                if (cur == 0) { if (Atomic.CompareExchange32(ref Mem.RefI32(w), 0, me) == 0) return; continue; }
-                if (++n < 2048) continue;
-                if (DeadlockDump() && n > 200000) Threads.LockTimeout(cur);
-                if (Threads.MayBlock())
+                if (cur == 0)
                 {
-                    Atomic.Add32(ref Mem.RefI32(w + 8), 1);
-                    Atomic.Wait32(ref Mem.RefI32(w), cur, 1000000);
-                    Atomic.Add32(ref Mem.RefI32(w + 8), -1);
+                    if (Atomic.CompareExchange32(ref Mem.RefI32(w), 0, me) == 0) { if (spinning) Atomic.Add32(ref Mem.RefI32(w + 12), -1); return; }
+                    continue;
                 }
+                if (DeadlockDump() && ++total > 2000000) Threads.LockTimeout(cur);
+                if (!Threads.MayBlock()) continue;
+                if (!spinning)
+                {
+                    // (a spinner's place, if one is free; else asleep until an unlock with none spinning, or a while)
+                    if (Atomic.Load32(ref Mem.RefI32(w + 12)) < MaxSpinners)
+                    {
+                        if (Atomic.Add32(ref Mem.RefI32(w + 12), 1) < MaxSpinners) { spinning = true; n = 0; continue; }
+                        Atomic.Add32(ref Mem.RefI32(w + 12), -1);
+                    }
+                }
+                else if (++n < SpinRounds) continue;
+                else { spinning = false; Atomic.Add32(ref Mem.RefI32(w + 12), -1); }
+                Atomic.Add32(ref Mem.RefI32(w + 8), 1);
+                // (no spinner left meanwhile, and none to wake us: one more look first)
+                if (Atomic.Load32(ref Mem.RefI32(w + 12)) == 0 && Atomic.Load32(ref Mem.RefI32(w)) == 0) { Atomic.Add32(ref Mem.RefI32(w + 8), -1); continue; }
+                Atomic.Wait32(ref Mem.RefI32(w), cur, 1000000);
+                Atomic.Add32(ref Mem.RefI32(w + 8), -1);
             }
         }
 
@@ -143,7 +166,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(w + 4, d);
             if (d != 0) return;
             Atomic.Store32(ref Mem.RefI32(w), 0);
-            if (Atomic.Load32(ref Mem.RefI32(w + 8)) != 0) Atomic.Notify(ref Mem.RefI32(w), 1);
+            if (Atomic.Load32(ref Mem.RefI32(w + 8)) != 0 && Atomic.Load32(ref Mem.RefI32(w + 12)) == 0) Atomic.Notify(ref Mem.RefI32(w), 1);
         }
 
         /// <summary>Gives back what was taken since `mark` (t_lkN then), newest first.</summary>
@@ -251,8 +274,14 @@ namespace Cs2Wasm.Runtime
         // StoreLockIf's result: 0 none, 1 the region (its exchange RegionExchange), 2 + mark a region inside one
         // (never seen: the container's group at once; its exchange rt.store_ref).
 
+        /// <summary>A plain object in a static readonly field (ArenaPin): it never joins a group (MayJoin, ArenaLinkCore)
+        /// and stays plain, so a store into it links nothing and its old value is a counted reference: no lock.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static bool PinnedPlain(int x) => Atomic.Load32(ref Mem.RefI32(x)) > 0 && Mem.LoadI32(x + 8) < 0;
+
         static int RegionEnter(int container, int slot)
         {
+            if (PinnedPlain(container)) return 0;
             if (t_regionC != 0)
             {
                 int mark = t_lkN;
@@ -286,7 +315,7 @@ namespace Cs2Wasm.Runtime
             while (true)
             {
                 if (link) LinkLock(val, container);
-                else LockGroupOf(container, false);
+                else { LockGroupOf(container, false); t_linkOver = 0; }
                 if (Atomic.CompareExchange32(ref Mem.RefI32(place), 0, 1) == 0) break;
                 ReleaseTo(mark);
                 while (Atomic.Load32(ref Mem.RefI32(place)) != 0) { }
@@ -317,15 +346,33 @@ namespace Cs2Wasm.Runtime
         // finds is tried, read only once its lock is held. A try that fails gives every lock back, and the next
         // attempt takes that stripe in order with the first two.
 
+        // (LinkLock left the value out: a member into a plain container, whose words it did not lock; ArenaLink links
+        // nothing then, for the value may have left its group meanwhile, TryLeave, and be plain by now)
+        [ThreadStatic] static int t_linkOver;
+
         /// <summary>Locks what a link of val into container may touch; returns the mark to give it back to.</summary>
         static int LinkLock(int val, int container, bool contents = false)
         {
             int mark = t_lkN;
+            t_linkOver = 0;
+            // (no other thread yet: every object is this thread's, StripeMine; the two counted as held, no walk)
+            if (s_stripes == 0)
+            {
+                if (val != 0) StripeLock(KeyStripe(val), true);
+                if (container != 0) StripeLock(KeyStripe(container), true);
+                return mark;
+            }
             // (a value that cannot be on a cycle with the container is linked to nothing: CanLink; read nothing of)
             if (val != 0 && !CanLink(val, container)) val = 0;
+            // (a member stored into a plain object stays a counted reference, the container plain: ArenaLinkCore. Only
+            // the container's lock then, which keeps it plain meanwhile; nothing of the value is read. Checked again
+            // under it: a container that became a member meanwhile is linked as any)
+            int over = 0;
+            if (!contents && val != 0 && Atomic.Load32(ref Mem.RefI32(container)) > 0 && Atomic.Load32(ref Mem.RefI32(val)) < -1) { over = val; val = 0; }
             t_missN = 0;
             for (int attempt = 0; attempt < 8; attempt++)
             {
+                if (attempt > 0 && over != 0 && Atomic.Load32(ref Mem.RefI32(container)) <= 0) { val = over; over = 0; }
                 int sa = val != 0 ? KeyStripe(val) : -1, sb = container != 0 ? KeyStripe(container) : -1;
                 if (t_missN == 0)
                 {
@@ -347,15 +394,17 @@ namespace Cs2Wasm.Runtime
                     }
                     for (int i = 0; i < t_missN; i++) StripeLock(Mem.LoadI32(t_missQ + 4 * i), true);
                 }
-                if ((val == 0 || KeyStripe(val) == sa) && (container == 0 || KeyStripe(container) == sb))
+                if ((val == 0 || KeyStripe(val) == sa) && (container == 0 || KeyStripe(container) == sb)
+                    && (over == 0 || Atomic.Load32(ref Mem.RefI32(container)) > 0))
                 {
                     // (nothing joins a group unless the value or the container is a plain object: no walk then)
                     bool join = contents || val != 0 && (Atomic.Load32(ref Mem.RefI32(val)) > 0 || Atomic.Load32(ref Mem.RefI32(container)) > 0) && MayJoin(val, container);
-                    if (!join || LinkWalk(val, container, contents)) return mark;
+                    if (!join || LinkWalk(val, container, contents)) { t_linkOver = over != 0 ? 1 : 0; return mark; }
                 }
                 ReleaseTo(mark);
             }
             // (a structure that keeps changing under the walk: every stripe, which nothing can miss)
+            if (over != 0) val = over;
             LockAllGroups();
             LinkWalk(val, container, contents);
             return mark;
