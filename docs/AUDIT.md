@@ -451,6 +451,128 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     once): 139 the same in every run, 127 differed in 1 of 200 as shipped and 2 of 200 checked (main's rate), 192
     the same in every run of both modes. The checked build takes none of the two-pass drop nor the free list
     (`Rt.Checked()`), the early give-back and the pinned store both; a program with threads none of the four.
+- **The rebuild, round 4 (2026-11-22, branch claude/tree-rebuild-4, from main d62ff76; the desk machine; not merged
+  when this was written).** The frames that are not a rebuild first (tools/tree-frame.cs: the new subtree's build 15.9
+  us, its store over the old one 9.8), by the counts and by a program that only builds a subtree of 156 entities and
+  stores it over the one before (`tools/tree-store.cs`, new; its variants: without parent fields, the parent set
+  after, the subtree a group of its own let go whole, a node of the old subtree held over the store).
+  - **Why one replaced subtree in twenty-five stayed** (`drop checks 557 ... fail-inside 557` in 11,461 frames of
+    tools/tree-parts.cs). Not a missed case of the unlink: an up-reference made through an owner that had let go. The
+    scene's move takes the last child of a node `c` (a local holds it: with its parent field an up-reference below
+    it, it holds its old array, the array its list, the list `c`, and keeps the array for its owner though the array
+    let it go), sets `moved.Parent = to`, then `to.Children.Add(moved)`. When `to` is `c`'s own parent (one time in
+    twenty-five), `to` is on the moved child's chain through that hold, and the store was an up-reference: its u on
+    the old array, the old list and `c`, the child still holding the old array when the old parent reference went.
+    The Add then found the child with an owner and left the new array waiting. From then on the child, in its new
+    list, held `c`'s array from inside; when `c` was replaced, no count of it reached zero, and its check at the drop
+    found one reference from outside what `c` owns (the child's hold): `fail-inside`, and `c` with all it owned stayed
+    until the group went (in .NET it is unreachable). (The figure "30,660 entities against 19,531" of the note before
+    this is the tree as the moves have grown it, all reachable; what stayed was 7,000 to 9,000 members of the 75,000
+    at a rebuild.) Done: a new up-reference asks for a chain of owned links (`Rt.OnChainOwned`,
+    `CS2WASM_NO_OWNED_CHAIN=1`): through an owner that let go the reference is a counted one; the old up-reference
+    goes at the unlink after the store, the hold with it, the child has no owner, and the list that takes it next owns
+    it and makes the reference an up-reference then (TakeOwnership, Reevaluate), as for a move to any other node. No
+    walk: one flag read at each step of the walk the link made already. tools/tree-parts.cs: checks at the drop 557
+    to 0, the group at a rebuild about 75,000 members to 67,380, 499 frames without a rebuild 72,752 members for
+    68,260 reachable to 68,264; drop 0.73 to 0.89 ms to 0.67 to 0.69, the other frames' p99 0.112 to 0.072 ms (the
+    failed checks were those frames: with this switch alone off, 0.105).
+  - **The destroy of a subtree at a store**, member by member through its owners (`Rt.ArenaDestroyFrom`): 31.5 ns a
+    member (10.8 us a store of tools/tree-store.cs) where the same subtree as a group of its own, let go whole, takes
+    5.8 (2.0 us). Without parent fields 26.8: the up-references were 5 ns of it. By function (a profile): the visit of
+    each dying member by its type (`rt.arena_visit`, the type's visit function, Rt.ArenaVisit for each slot behind
+    eight tests of other modes, UpPath's two walks for each parent field, Kill), three more passes over the dying
+    (counts, clears, frees through each type's free function). Done, each with its switch:
+    - `Rt.DyingPath` (`CS2WASM_NO_DYING_UP=1`): a dying member's up-reference to a member that is dying too, every
+      member between them dying, is not taken off their u (nothing reads the u of a member being destroyed) nor are
+      their holds settled. 10.1 to 8.8 us a store alone.
+    - `Rt.ArenaDestroyPlain` (`CS2WASM_NO_FAST_DESTROY=1`), in a group without finalizers, without threads: the same
+      steps without what only finalizers need: no references noted for a finalizer, the visit's state set once and
+      not around each member, a member's count zero as its turn comes (a reference a later member holds to it is left
+      in its slot for the clear's release, which does nothing at zero, as one to a member dead before always was), and
+      the blocks back onto their pages without the dispatch on the type (ArenaFreeList's way). Rt.ArenaVisit asks for
+      mode 0 first (`Rt.VisitDying`). With the next one off: 6.3 us.
+    - The dying member's linked references read by its slot bits, or as the elements of an array of references, with
+      no visit by its type (`CS2WASM_NO_DESTROY_BY_BITS=1`). The bits tell of the first sixteen words; a new flag,
+      Far, says a slot past them was linked (the u count starts one bit higher for it), and such a member, and an
+      array of structs or of rank above one, is visited by its type as before. 6.3 to 4.2 us.
+    tools/tree-store.cs: 10.1 to 10.9 us a store on main, 4.1 to 4.2 on the branch, 31 to 12.2 ns a member; by the
+    passes (`CS2WASM_DROP_STATS=1` now times them): the visits 18.3 to 6.8 ns, the counts 2.0 to none, the clears
+    2.5, the frees 3.4. tools/tree-frame.cs: the store 9.8 to 4.0 us (p99 15 to 7.6), the move's mean 1.5 to 0.66.
+    What is left against the group's 5.8: each dying member is taken off the ring by itself (its neighbours written)
+    and its count decided from its owner's reference; a group let go whole does neither.
+    Not changed: a subtree replaced while code holds a node of it (variant 4) costs 11.3 us at the store, 33 ns a
+    member: the check at the drop that fails goes through the subtree three times and notes each member under its top
+    (side words for each).
+  - **The parent set after the add** (`e.Children.Add(c); c.Parent = e;`, tools/tree-build.cs variant 2: 5.5 ms a
+    build for 1.9). By the counts of a build: 6,875 checks at the drop, all failing, 68,500 members gone through by
+    them; none of the 3,906 growths taken by ArenaGrowArray (3,125 Handovers the long way); 38,280 releases the long
+    way; where the scene's order has no check and 3,907 such releases. Cause: the node, its list and
+    the list's array's owner are plain objects until the first child's parent field is stored; that store joined the
+    node as the property of the child at once (a plain object that joins for a store is its container's), and as the
+    node's list then took the array, the ownership of the child was turned round: every node the property of its
+    first child, that child a top, its parent field a counted reference for good. And worse than slow: a subtree of
+    such a tree stored over another was never destroyed before its group went (tools/tree-store.cs variant 2: 1,700
+    members destroyed in 20,000 stores of 343; test 193's `after` counts, 2,012 for .NET's 832). Done
+    (`CS2WASM_NO_STORE_WAITS=1`): a plain object that code still holds, stored into a member's own slot, joins with
+    its owner left open until its slots are linked, as a joining object's slot already did (Waiting, LinkWaiting):
+    then the node is above the child, and the child's field an up-reference. The store's slot does not hold the value
+    yet when LinkWaiting runs (Reevaluate read null there, the first version of this): `Rt.ReevaluateWaiting` is
+    told the slot. Build 5.5 to 2.35 to 2.46 ms, drop 0.67 to 0.50; the subtree is destroyed at its store (5.2 us).
+    What is left above the scene's order (1.9): the local `c` is a reference from outside while its parent field
+    becomes an up-reference, so the child holds its array, the array its list, the list the node, and lets them go
+    when the local goes: six hold changes a child, 117,000 a build, and each child joins by the general link (its
+    count is two). The scene's order hands the child to Add as its last use; this one cannot.
+  - **A leaf's list left a plain object** (step 4 of round 3's list), worked out and measured, not done. What it
+    takes: (1) the join of an object's slots leaves a plain object only that slot refers to, whose own slots hold
+    nothing that can be linked (null or pinned), plain, the holder's slot a counted reference with bits 0; (2) the
+    plain object names its holder and the slot (two of its words, free while it is plain), because whatever makes it
+    a member later (a store into it: the list's first array; a store of it anywhere) must link the holder's slot
+    then, or the group has a counted reference from a member to a member that no link knows of and never goes
+    (seen at once in the prototype: in the scene's order a node joins before its first child is in its list, so
+    every node's list was left plain and empty, took its array later, and the tree stayed for good); (3) every way a
+    plain object becomes a member goes through ArenaJoinOnly, which can ask; the name can be stale (the holder's slot
+    stored over, the holder destroyed or let go whole, with no pass that could clear it), so it is a hint, checked by
+    what is there: a live member at that address whose slot, a slot of its type with bits 0, holds the object;
+    ReplaceArray and ArenaGrowArray, which join without ArenaLinkJoined, refuse an object with a hint. The paths
+    that rest on "a member refers to no plain object of a cycle-capable class" and would need it: ArenaLinkCore's
+    join of a plain container (a new group of the list and its array, merged into the holder's by the hint),
+    JoinOwned and LinkMembers' fresh case ("its words are zero", "above nothing": still true, the object owns
+    nothing), TryLeave (a member that holds only such an object leaves, and the hint then names a plain object:
+    refused by the check), the clears and the destroy (the object is released as any plain reference: right as they
+    are), the check at the drop (visits by type, passes a plain child by: right). Finalizers: only a class without
+    one, or its finalizer would run at the holder's clear and not with the group's. Measured with the prototype
+    (sound only where a list has its array before its node joins): tools/tree-build.cs variant 3 build 1.67 to 1.61
+    ms and drop 0.30 to 0.26, variant 2 build 2.38 to 2.27 and drop 0.49 to 0.38: 0.1 to 0.2 ms a rebuild, less than
+    round 3's estimate, and in the scene's own order each of the 3,906 nodes with children would pay a group of its
+    own, a merge and the hint's link for its list, about what the leaves save. Not worth a second kind of reference
+    between members.
+  - **The allocation** (tools/tree-build.cs variant 4, the objects alone: 0.57 ms for 39,062, 15 ns each with their
+    constructors, two random numbers and their release). By the profile 60% is the program's own function with the
+    allocation written into it (a block off the size's run, three stores), 17% Rt.ArenaLink: the one avoidable call,
+    `_items = s_emptyArray` in List<T>'s constructor, 19,531 a build, about 0.1 ms. It is not a fresh store because
+    CtorsKeepThis asks every constructor of the class and `List(IEnumerable<T>)` uses `this`; asked of the
+    constructor that runs and those it chains to, it would be. Not done (a change of the compiler's analysis for 3%
+    of a build).
+  - Numbers (main d62ff76 built beside the branch, run in turn three times): `node tools/frames.mjs --runs 3
+    --js-young 32`, tree: median 0.052 to 0.047 to 0.048 ms (NativeAOT-LLVM 0.028 to 0.029: 1.8x to 1.65x), p99
+    0.109 to 0.115 to 0.074 to 0.075 (0.048 to 0.051), p99.9 2.94 to 2.99 to 2.67 to 2.71 (2.38 to 2.44: 1.22x to
+    1.11x), worst 3.14 to 3.27 to 2.74 to 2.87 (3.09 to 3.21: 0.89x). **p99.9 is not at NativeAOT's: a rebuild
+    frame has 0.28 ms too much**, its build unchanged at 1.9 ms. The other scenes as on main (churn median 0.105 and
+    0.105, collections 0.008, strings 0.009, bigdrop 0.003; their p99.9 and worst within each other's spread).
+    bench.mjs 0.95x to 0.96x on both. Hello world 27,089 bytes (it has no group). tools/tree-build.cs: variant 0
+    1.81 to 1.92 and 1.88 ms, 1: 1.40 and 1.36, 2: 5.5 to 2.4, 3: 1.70 and 1.68, 4: 0.57, 5: 1.92 and 1.88.
+  - Seen while writing test 193, on main too, not followed: an array of two dimensions of a class that can be on a
+    cycle, held in a member's field (`Node[,]`), keeps its whole group for good (Arenas.ArraySite answers nothing
+    for a rank above one, so the array is no member and its elements are counted references to members that no
+    link knows of). A member that refers back to a member above it through an array's element or a field past the
+    sixteenth word (`n.Raw[6] = n`, `n.W.Back = n`), let go, stays until its group goes: the array is the container
+    waiting to own it, and Dropped makes no check for a member with one.
+  - Checked: test 193 (a tree that lives on while subtrees are replaced and moved, counted against .NET while it
+    lives: both orders of the parent's store, the move to the old node's parent, a node of a replaced subtree held
+    by a static and by another list, wide members, arrays with holes and of structs, nodes with finalizers, plain
+    objects whose finalizers allocate and replace a subtree of the same tree); it fails with
+    `CS2WASM_NO_OWNED_CHAIN=1` and with `CS2WASM_NO_STORE_WAITS=1` and passes with each of the destruction's three
+    switches. On the homelab at b3c5175: the suite twice, 203/204 checked and 204/204 as shipped (test 143: the host's `Atomics.waitAsync(...).value.then is not a function`, engine.mjs line 228, a wait that had ended already; by itself 100 loaded runs a mode the same every time), then 204/204 both ways; `tools/stress-cycles.sh` (200 loaded runs a mode, 8 at once): 139 the same in every run, 127 the same in 200 as shipped and differing in 1 of 200 checked (`async 5` / `pending 1`, main's rate), 193 the same in every run of both modes. Not run: the self-hosted compiler.
 
 ### A4. Plugins (goal 3)
 

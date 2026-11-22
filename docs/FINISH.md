@@ -577,3 +577,26 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   entity built against 15 and 63 destroyed against none in the frame; NativeAOT's mean build is 10.6 us, its
   collections in it. Not followed yet: why one replaced subtree in twenty stays (a tree that is never rebuilt keeps
   them), and the build with the parent set after the add (5.5 ms against 1.9, round 3).
+- 2026-11-22, the tree scene, round 4 (branch claude/tree-rebuild-4 from main d62ff76, not merged when this was written;
+  AUDIT A3.5, "The rebuild, round 4"). The frames that are not a rebuild, and three things found in them. (1) One
+  replaced subtree in twenty-five stayed with its group: the move's `moved.Parent = to`, with `to` the parent of the node
+  the child was taken from, was an up-reference through the old array the child still held, and the child held that
+  array from its new place for good. A new up-reference asks for a chain of owned links (`CS2WASM_NO_OWNED_CHAIN=1`):
+  checks at the drop 557 to 0 in tools/tree-parts.cs, the group at a rebuild 75,000 members to 67,380. (2) A subtree
+  destroyed at its store cost 31 ns a member, a group let go whole 5.8: in a group without finalizers it goes through
+  `Rt.ArenaDestroyPlain` (`CS2WASM_NO_FAST_DESTROY=1`), its members' references read by their slot bits
+  (`CS2WASM_NO_DESTROY_BY_BITS=1`), up-references between dying members left alone (`CS2WASM_NO_DYING_UP=1`): 12.2 ns a
+  member, tools/tree-store.cs (new) 10.5 to 4.2 us a store, tools/tree-frame.cs's store 9.8 to 4.0 us. (3) The parent
+  set after the add (`e.Children.Add(c); c.Parent = e;`) made every node the property of its first child: 6,875 failed
+  checks a build, 5.5 ms for the other order's 1.9, and a subtree of such a tree stored over another was not freed
+  before its group went. A plain object that code still holds, stored into a member's own slot, now joins with its
+  owner left open until its slots are linked (`CS2WASM_NO_STORE_WAITS=1`): 2.4 ms a build, the subtree destroyed at its
+  store. frames.mjs here (`--runs 3 --js-young 32`, main and the branch in turn three times) against NativeAOT-LLVM:
+  tree median 0.052 to 0.047 ms (0.029), p99 0.112 to 0.074 (0.049), p99.9 2.94 to 2.99 to 2.67 to 2.71 (2.38 to
+  2.44), worst 3.14 to 3.27 to 2.74 to 2.87 (3.09 to 3.21): **the worst frame below NativeAOT's, p99.9 1.11 times it:
+  not reached**, a rebuild frame 0.28 ms too long, its build still 1.9 ms. The other scenes as on main; bench.mjs 0.95x
+  to 0.96x either way; hello world 27,089 bytes. On the homelab at b3c5175: the suite twice, 203/204 checked and 204/204 as shipped (test 143: the host's `Atomics.waitAsync(...).value.then is not a function`, engine.mjs line 228, a wait that had ended already; by itself 100 loaded runs a mode the same every time), then 204/204 both ways; `tools/stress-cycles.sh` (200 loaded runs a mode, 8 at once): 139 the same in every run, 127 the same in 200 as shipped and differing in 1 of 200 checked (`async 5` / `pending 1`, main's rate), 193 the same in every run of both modes. Not run: the self-hosted compiler. Worked out and not done: a leaf's list kept a plain object
+  (what it takes, and 0.1 to 0.2 ms a rebuild by a prototype, which the nodes with children would pay back in the
+  scene's order); List<T>'s constructor's store of the empty array as a fresh store (0.1 ms a build). Seen, not
+  followed: an array of two dimensions of a cycle-capable class in a member's field keeps its group for good; a
+  subtree replaced while code holds a node of it costs 33 ns a member at the store (the check that fails).
