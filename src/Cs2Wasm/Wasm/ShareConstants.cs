@@ -154,6 +154,7 @@ static class ShareConstants
         public Dictionary<int, int> IndirectSlot = [];  // body position of a call whose callee differs (no shared group): the slot of the callees' table indices
         public WasmFunction? Shared;
         public bool Dead;
+        public string Sig = ""; // the columns, keyed by their values in order (Slots)
         public bool Framed; // the members are frames of a trace
         public bool Lend;   // the members' frame names differ: each stays a frame (a stub that every call goes through)
     }
@@ -182,19 +183,25 @@ static class ShareConstants
         for (int outer = 0; outer < 8; outer++)
         {
             // the slots, to a fixpoint: a differing call needs its callee group's values for each member's callee
+            // (a change is any change of the columns, their order and values too, not only of their number: a caller's
+            // map of a callee's slots names the callee's columns by position)
             bool changed = true;
+            var changedNow = new List<Plan>();
             for (int round = 0; changed && round < 30; round++)
             {
                 changed = false;
+                changedNow.Clear();
                 foreach (var pl in all)
                 {
                     if (pl.Dead) continue;
-                    int before = pl.Columns.Count;
+                    var before = pl.Sig;
                     if (!Slots(pl, plans)) { pl.Dead = true; Died(pl, "slots"); changed = true; continue; }
-                    if (pl.Columns.Count != before) changed = true;
+                    if (pl.Sig != before) { changed = true; changedNow.Add(pl); }
                 }
             }
             bool died = false;
+            // (not settled: those still changing are given up)
+            if (changed) foreach (var pl in changedNow) { pl.Dead = true; Died(pl, "unsettled"); died = true; }
             foreach (var pl in all) if (!pl.Dead && (pl.Columns.Count > Max(pl) || !Pays(pl, calls))) { pl.Dead = true; Died(pl, pl.Columns.Count > Max(pl) ? "max-slots " + pl.Columns.Count : "pays"); died = true; }
             if (!died || !s_indirect) break;
         }
@@ -207,6 +214,8 @@ static class ShareConstants
                 if (pl.Dead) continue;
                 foreach (var i in pl.CallSlots.Keys)
                     if (!plans.TryGetValue((WasmFunction)pl.Members[0].Body[i].Ref!, out var cp) || cp.Dead) { pl.Dead = true; Died(pl, "callee"); again = true; break; }
+                // (and each member passes its own callee exactly that callee's values: checked, whatever the rounds did)
+                if (!pl.Dead && !Consistent(pl, plans)) { pl.Dead = true; Died(pl, "inconsistent"); again = true; }
             }
         }
         long tSlots = sw.ElapsedMilliseconds;
@@ -313,9 +322,58 @@ static class ShareConstants
                 stubs++;
             }
         }
+        if (s_stats) Console.Error.WriteLine("share: given up: " + string.Join(", ", s_deaths.Select(kv => kv.Key + " " + kv.Value)));
         if (s_stats) Console.Error.WriteLine($"share: groups {tGroups} ms, slots {tSlots - tGroups} ms, the rest {sw.ElapsedMilliseconds - tSlots} ms");
         return stubs;
     }
+
+    /// <summary>Whether the shared body with these slots is each member's own code: every place that is not a slot
+    /// the same in all members, every slot each member's own value, every differing call given exactly its callee's
+    /// values in the callee group's current columns.</summary>
+    static bool Consistent(Plan pl, Dictionary<WasmFunction, Plan> plans)
+    {
+        var g = pl.Members; var r = g[0];
+        for (int m = 0; m < g.Count; m++) if (g[m].Body.Count != r.Body.Count) return false;
+        for (int i = 0; i < r.Body.Count; i++)
+        {
+            var ri = r.Body[i];
+            for (int m = 0; m < g.Count; m++)
+            {
+                var mi = g[m].Body[i];
+                if (mi.Op != ri.Op) return false;
+                if (pl.ConstSlot.TryGetValue(i, out int cs)) { if (!SameConst(pl.Columns[cs][m], mi)) return false; continue; }
+                if (pl.IndirectSlot.TryGetValue(i, out int isl)) { if (!ReferenceEquals(pl.Columns[isl][m].Ref, mi.Ref)) return false; continue; }
+                if (pl.OffsetSlot.TryGetValue(i, out int os)) { if (pl.Columns[os][m].Imm != mi.Imm || mi.Imm2 != ri.Imm2) return false; continue; }
+                if (pl.CallSlots.TryGetValue(i, out var map))
+                {
+                    if (!plans.TryGetValue((WasmFunction)mi.Ref!, out var cp) || cp.Dead || map.Length != cp.Columns.Count || !cp.Index.TryGetValue((WasmFunction)mi.Ref!, out int ti)) return false;
+                    if (m == 0 || plans[(WasmFunction)ri.Ref!] == cp) { }
+                    else return false;
+                    for (int c = 0; c < map.Length; c++)
+                    {
+                        var want = cp.Columns[c][ti];
+                        var have = map[c] >= 0 ? pl.Columns[map[c]][m] : pl.CallConsts[i][-1 - map[c]];
+                        if (!SameConst(want, have)) return false;
+                    }
+                    continue;
+                }
+                if (mi.Op == Op.I32Const ? !SameConst(mi, ri) : mi.Imm != ri.Imm || (mi.Op != Op.Call && mi.Imm2 != ri.Imm2)) return false;
+                if (mi.Inl != ri.Inl) return false;
+                if (mi.Op == Op.Call ? !ReferenceEquals(mi.Ref, ri.Ref) : !(ReferenceEquals(mi.Ref, ri.Ref) || mi.Ref != null && RefKey(mi.Ref) == RefKey(ri.Ref!))) return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>A reference other than a call's callee, as the key names it (structural for types and tables).</summary>
+    static string RefKey(object o) => o switch
+    {
+        ValType vt => "v" + (int)vt,
+        FuncType ft => "t" + string.Join(".", ft.Params) + ">" + string.Join(".", ft.Results),
+        int[] arr => "b" + string.Join(".", arr),
+        TryTableInfo tti => "tt" + tti.BlockType + string.Concat(tti.Catches.Select(cc => ":" + cc.Kind + Id(cc.Tag ?? (object)"") + cc.Label)),
+        _ => "o" + Id(o),
+    };
 
     /// <summary>The group's slots: its differing constants, then for each differing call the callee group's slots in
     /// the callee member each member calls (one slot per distinct column of values). False: not shareable.</summary>
@@ -371,6 +429,7 @@ static class ShareConstants
             }
         }
         pl.Columns = cols; pl.ConstSlot = constSlot; pl.CallSlots = callSlots; pl.CallConsts = callConsts; pl.IndirectSlot = indirect; pl.OffsetSlot = offsetSlot;
+        pl.Sig = string.Join("||", keyOf.OrderBy(kv => kv.Value).Select(kv => kv.Key)) + "#" + string.Join(",", callSlots.OrderBy(kv => kv.Key).Select(kv => kv.Key + ":" + string.Join(".", kv.Value)));
         return true;
     }
 
@@ -406,7 +465,8 @@ static class ShareConstants
     static readonly bool s_why = Environment.GetEnvironmentVariable("CS2WASM_SHARE_WHY") == "1";
     static readonly bool s_stats = Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1";
     static readonly Dictionary<WasmFunction, string> s_died = [];
-    static void Died(Plan pl, string why) { if (s_why) foreach (var m in pl.Members) s_died[m] = why; }
+    static readonly Dictionary<string, int> s_deaths = [];
+    static void Died(Plan pl, string why) { if (s_stats) lock (s_deaths) { var k = why.StartsWith("max") ? "max-slots" : why; s_deaths[k] = s_deaths.GetValueOrDefault(k) + 1; } if (s_why) foreach (var m in pl.Members) s_died[m] = why; }
 
     /// <summary>CS2WASM_SHARE_WHY=1 (after sharing): families of functions (names with their type arguments taken
     /// out, one signature) that still have several bodies, and for a pair of them the first instruction that differs.</summary>
