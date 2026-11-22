@@ -69,6 +69,9 @@ sealed class Made
     }
 }
 
+// (an object no other refers to: a variable of it is assigned by a plain copy)
+sealed class Flat { public int Z; }
+
 // (references at many offsets: the memory after address 0 holds the program's data, and a loop that takes no turn,
 // or throws at its first read, reads nothing through what a null's field "holds")
 sealed class Link
@@ -104,6 +107,22 @@ static class P
         }
         catch (NullReferenceException) { return "n"; }
         return s.ToString();
+    }
+    // a local the loop assigns, read through after a copy of another that the loop does not assign: the copy on one
+    // path only, on both arms from two others, inside an inner loop that may take no turn
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Copies(Flat a, Flat b, int n)
+    {
+        int s = 0;
+        var c = b;
+        for (int i = 0; i < n; i++) { if (i == 2) c = a; s += c.Z; }
+        c = b;
+        for (int i = 0; i < n; i++) { if ((i & 1) == 0) c = a; else c = b; s += c.Z * 3; }
+        c = b;
+        for (int i = 0; i < n; i++) { for (int k = 0; k < i; k++) c = a; s += c.Z * 7; c = b; }
+        // (the copy before every read: one read before the loop will do)
+        for (int i = 0; i < n; i++) { c = a; s += c.Z * 11; c = b; }
+        return s;
     }
     static int s_calls;
     static bool More(Box b) { s_calls++; return b.Q++ < 3; }
@@ -357,6 +376,7 @@ static class P
         Console.WriteLine("lists " + Lists());
         Console.WriteLine("nulls " + Nulls(null, 4));
         Console.WriteLine("lengths " + Lengths(new int[3], null));
+        Console.WriteLine("copies " + Copies(new Flat { Z = 1 }, new Flat { Z = 100 }, 4));
         Console.WriteLine("tested " + Tested(new Box(2), new List<Box> { new Box(1), new Box(2), new Box(3), new Box(4) }, null));
         string chains = "";
         var links = new Link { L0 = new Link { T = 3 }, L3 = new Link { T = 4 }, L8 = new Link { T = 5, L9 = new Link { T = 6 } } };

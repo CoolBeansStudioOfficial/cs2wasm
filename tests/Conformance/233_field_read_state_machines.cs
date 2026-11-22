@@ -77,10 +77,27 @@ static class P
             yield return before + x.Iter;
         }
     }
+    // an iterator whose filter stores the field (through a static) between two reads of it through a local
+    static Box? s_box;
+    static bool Touch(int v) { s_box!.Iter += v; return true; }
+    static IEnumerable<int> Filtering(Box b, int[]? none)
+    {
+        var list = new List<Box> { b, b, b, b };
+        s_box = b;
+        for (int i = 0; i < list.Count; i++)
+        {
+            var x = list[i];
+            int before = x.Iter;
+            try { if (i > 0) before += none!.Length; } catch (NullReferenceException) when (Touch(i + 1)) { before += 1000; }
+            int after = x.Iter;
+            yield return before * 3 + after;
+        }
+    }
     static int Machines(Box b)
     {
         int s = 0;
         foreach (var v in Catching(b, null)) s += v;
+        foreach (var v in Filtering(b, null)) s += v;
         return s + b.Iter;
     }
     static int Closures(Box b)

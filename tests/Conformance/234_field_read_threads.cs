@@ -48,7 +48,7 @@ static class P
     {
         var t = new Thread(Setter);
         t.Start(s);
-        int seen = Spin(s);
+        int seen = Spin(s, int.MaxValue);
         t.Join();
         return seen;
     }
@@ -60,10 +60,11 @@ static class P
     }
     // (s is a parameter no lambda captures: a plain local of the loop)
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static int Spin(Shared s)
+    static int Spin(Shared s, int limit)
     {
-        int turns = 0;
-        for (; ; turns++)
+        // (a loop with a test of its own at its top: what it reads after the test would be read behind a copy of
+        // the test, once, in a program without threads)
+        for (int turns = 0; turns < limit; turns++)
         {
             Monitor.Enter(s.Gate);
             bool done = s.Done;
@@ -72,6 +73,7 @@ static class P
             Monitor.Exit(s.Gate);
             if (done) return stage + (link != null ? link.Ro * 10 : -1);
         }
+        return -2;
     }
     // two threads add under the lock; the reader's loop sees the count grow
     static int Counting(Shared s)
