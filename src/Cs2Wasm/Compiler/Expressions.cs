@@ -372,8 +372,10 @@ sealed partial class FunctionCompiler
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
     void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null,
                                  Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false, bool fresh = false, bool owned = false, bool iso = false, bool initNull = false,
-                                 ITypeSymbol? structContainer = null, ITypeSymbol? valueType = null, bool viaPointer = false, int lastLocal = -1)
+                                 ITypeSymbol? structContainer = null, ITypeSymbol? valueType = null, bool viaPointer = false, int lastLocal = -1, bool part = false)
     {
+        // (a store that qualifies as an exclusive part's: its own placeholders, ExclusiveParts.cs)
+        WasmFunction PartOr(WasmFunction f, bool link) => part && site != null && !site.IsArray ? D.Arenas.PartFn(site, f, link) : f;
         if (Types.IsStruct(t))
         {
             bool move = TakeFresh(t);
@@ -407,7 +409,7 @@ sealed partial class FunctionCompiler
             // link of a store into a new object stays, which takes a plain object's way when it is one)
             if (initNull && pin == null)
             {
-                if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(site.LinkFresh); E.Set(val); }
+                if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(PartOr(site.LinkFresh, true)); E.Set(val); }
                 EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
                 pushAddr(); E.Get(val); E.Store(Op.I32Store, offset);
                 FreeScratch(vt, val);
@@ -423,7 +425,7 @@ sealed partial class FunctionCompiler
             // local is cleared then, before anything else runs)
             bool last = lastLocal >= 0 && site != null && owned && !fresh && !storeLock;
             if (last) { pushContainer!(); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "ArenaLastBegin", 1).Fn); }
-            if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : owned ? site.LinkOwned : iso ? site.LinkIso : site.Link); E.Set(val); }
+            if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(PartOr(fresh ? site.LinkFresh : owned ? site.LinkOwned : iso ? site.LinkIso : site.Link, true)); E.Set(val); }
             else if (byAddress)
             {
                 // (the type graph learns what this store can put where: RefStores.cs)
@@ -462,7 +464,7 @@ sealed partial class FunctionCompiler
             }
             E.Get(old);
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
-            if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink); if (storeLock) { E.Get(took); E.Call(site.StoreUnlock); } }
+            if (site != null) { pushContainer!(); PushSlot(); E.Call(PartOr(fresh || owned ? site.UnlinkFresh : site.Unlink, false)); if (storeLock) { E.Get(took); E.Call(site.StoreUnlock); } }
             else if (byAddress) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.UnlinkAt(t)); if (D.ThreadMode) { E.Get(took); E.Call(D.Arenas.StoreLockAt(t, false)); } }
             else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.ReleaseOf(t));
             if (took >= 0) FreeScratch(ValType.I32, took);
@@ -727,6 +729,7 @@ sealed partial class FunctionCompiler
             EmitValue(f.Instance!); return slot.Offset; // rvalue struct: its temp
         }
         var o = EmitValue(f.Instance!);
+        if (_partHold is { } ph && ReferenceEquals(ph.op, f)) { _partHold = null; EmitPartHold(o, it, ph.site); }
         ToTransient(o, it);
         if (!IsKnownNonNull(f.Instance!)) NullCheckKeep();
         return slot.Offset;
@@ -783,7 +786,16 @@ sealed partial class FunctionCompiler
             return EmitValue(f.Instance);
         }
         if (f.Field.IsFixedSizeBuffer) { EmitAddress(f); return Own.None; }
+        // (a field that may be an exclusive part's: what this read does with it, and its holder held for the
+        // statement where code does not keep it alive: ExclusiveParts.cs)
+        if (!f.Field.IsStatic && f.Instance != null && Types.IsRef(ft) && PartCandidate(f.Field) && !TypeOf(f.Instance).IsValueType
+            && D.Arenas.FieldSite(Owner(f.Field), T.FieldIn(Owner(f.Field), StorageField(f.Field))) is { } partSite)
+        {
+            NotePartRead(f, f.Instance, partSite);
+            if (!IsStableBase(f.Instance) && !QuietLocalBase(f.Instance)) _partHold = (f, partSite);
+        }
         int off = EmitAddressBase(f);
+        _partHold = null;
         if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
         E.Load(Types.LoadOp(ft), off);
         // (a static's reference, read with a plain load: a loop that cannot store it reads it once, StaticLoads.cs)
@@ -830,7 +842,7 @@ sealed partial class FunctionCompiler
     void EmitStoreField(IFieldSymbol f, Action? recv, IOperation value, bool initializer = false)
     {
         var ft = T.Resolve(f.Type, Map);
-        EmitStoreFieldFrom(f, recv, value.Type != null ? TypeOf(value) : ft, srcs: Sh != null ? FlowSrcs(value) : null, produce: () =>
+        EmitStoreFieldFrom(f, recv, value.Type != null ? TypeOf(value) : ft, srcs: Sh != null ? FlowSrcs(value) : null, part: Types.IsRef(ft) && !f.IsStatic && PartValueOk(f, value), produce: () =>
         {
             // `f = default`: copied from zeros of the program's that nothing writes (the store reads its value
             // and copies it; a temporary would be the function's frame, cleared, then released at the statement's end)
@@ -859,7 +871,7 @@ sealed partial class FunctionCompiler
     /// (its scratch state that each thread keeps for itself once threads exist, a plain static without).</summary>
     bool IsThreadStatic(ISymbol f) => f.GetAttributes().Any(a => a.AttributeClass?.Name is "ThreadStaticAttribute" || D.ThreadMode && a.AttributeClass?.Name is "IntrinsicAttribute");
 
-    void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce, bool initializer = false, List<Sharing.Src>? srcs = null)
+    void EmitStoreFieldFrom(IFieldSymbol f, Action? recv, ITypeSymbol valueType, Func<Own> produce, bool initializer = false, List<Sharing.Src>? srcs = null, bool part = false)
     {
         D.NoteFieldWrite(E, Driver.FieldKey(Owner(f), f));
         var ft = T.Resolve(f.Type, Map);
@@ -884,7 +896,7 @@ sealed partial class FunctionCompiler
             initializer && !f.IsStatic ? InitStoreKey(f, Owner(f), null) : null,
             // (a field initializer stores into the object its constructor is making: FreshStores.cs, ThisIsFresh)
             fresh: site != null && initializer && !f.IsStatic && ThisIsFresh(),
-            structContainer: !f.IsStatic && !Owner(f).IsValueType && Types.IsStruct(ft) ? Owner(f) : null);
+            structContainer: !f.IsStatic && !Owner(f).IsValueType && Types.IsStruct(ft) ? Owner(f) : null, part: part);
     }
 
     bool IsDirectAutoProperty(IPropertySymbol p, IOperation? instance)
@@ -912,7 +924,16 @@ sealed partial class FunctionCompiler
             var owner = Owner(p);
             ft = T.Resolve(p.Type, Map);
             if (p.IsStatic) { D.StaticReads.Add(Driver.StaticKey(owner, bf)); EmitStaticInitGuardForField(owner); E.I32Addr(D.StaticField(owner, bf, ft)); off = 0; }
-            else off = EmitReceiverAddressForField(pr.Instance!) + T.FieldIn(owner, bf).Offset;
+            else
+            {
+                // (the field of an auto-property that may be an exclusive part's: ExclusiveParts.cs)
+                if (Types.IsRef(ft) && PartCandidate(bf) && !TypeOf(pr.Instance!).IsValueType && D.Arenas.FieldSite(owner, T.FieldIn(owner, bf)) is { } partSite)
+                {
+                    NotePartRead(pr, pr.Instance!, partSite);
+                    if (!IsStableBase(pr.Instance!) && Arenas.PartsSkip != 3) D.Arenas.PartFail(partSite, "read through its property from a holder that may go, in " + M.ToDisplayString());
+                }
+                off = EmitReceiverAddressForField(pr.Instance!) + T.FieldIn(owner, bf).Offset;
+            }
             if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
             E.Load(Types.LoadOp(ft), off);
             return Types.IsRef(ft) ? Own.Unstable : Own.None;

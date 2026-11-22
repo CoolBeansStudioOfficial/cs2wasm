@@ -935,7 +935,11 @@ sealed partial class RuntimeGen
                 }
             }
             else
-                foreach (var off in ar.CyclicFieldOffsets(id)) { ve.Get(0); ve.I32(off); ve.Op(Op.I32Add); ve.Call(visit); }
+            {
+                // (an exclusive field's part is visited as slots of this object: Rt.ArenaVisitPart)
+                var ex = ar.ExclusiveOffsets(id);
+                foreach (var off in ar.CyclicFieldOffsets(id)) { ve.Get(0); ve.I32(off); ve.Op(Op.I32Add); ve.Call(ex.Contains(off) ? ar.RuntimeFn("ArenaVisitPart", 1) : visit); }
+            }
             visitFns[id] = v;
             // whether an offset into the object is one of those slots (a store that has only the slot's address)
             var sl = D.Module.AddFunction("arena.is_slot " + id, new FuncType([ValType.I32, ValType.I32], [ValType.I32]));
@@ -1115,7 +1119,9 @@ sealed partial class RuntimeGen
             if (rt.ArenaSlotsIfMade is { } slots) EmitIdTable(slots, D.TypeById.Count, i =>
             {
                 if (!visitFns.ContainsKey(i) || D.TypeById[i] is IArrayTypeSymbol) return (null, 0);
-                var offs = ar.CyclicFieldOffsets(i).ToList();
+                // (not its exclusive fields: Rt.ArenaPartInfo says those)
+                var ex = ar.ExclusiveOffsets(i);
+                var offs = ar.CyclicFieldOffsets(i).Where(o => !ex.Contains(o)).ToList();
                 if (offs.Count == 0 || offs.Count > 8) return (null, 0);
                 int w = 0;
                 for (int k = 0; k < offs.Count; k++)
@@ -1126,6 +1132,24 @@ sealed partial class RuntimeGen
                 }
                 return (null, w);
             });
+            // (Rt.ArenaPartInfo: a type's exclusive fields, a nibble each as above, seven at most; bit 28 when they
+            // cannot be said so; bit 31 when its objects have other slots for members)
+            if (rt.ArenaPartInfoIfMade is { } partInfo) EmitIdTable(partInfo, D.TypeById.Count, i =>
+            {
+                if (!ar.AnyParts || !visitFns.ContainsKey(i)) return (null, 0);
+                if (D.TypeById[i] is IArrayTypeSymbol pat) return (null, ar.HasCyclicElements(pat) ? int.MinValue : 0);
+                var ex = ar.ExclusiveOffsets(i);
+                var all = ar.CyclicFieldOffsets(i).ToList();
+                int w = all.Any(o => !ex.Contains(o)) ? int.MinValue : 0;
+                int k = 0;
+                foreach (var o in ex.Order())
+                {
+                    if (o < 12 || o > 68 || (o & 3) != 0 || k == 7) return (null, (w & int.MinValue) | (1 << 28));
+                    w |= (((o - 12) >> 2) + 1) << (4 * k++);
+                }
+                return (null, w);
+            });
+            if (rt.ArenaPartsIfMade is { } partsFn && partsFn.Body.Count == 0) new Emitter(partsFn).I32(ar.AnyParts ? 1 : 0);
         };
     }
 
@@ -1462,6 +1486,8 @@ sealed partial class RuntimeGen
         {
             if (D.Rt.SccOfIfMade is { } scc0 && scc0.Body.Count == 0) new Emitter(scc0).I32(0);
             if (D.Rt.ArenaSlotsIfMade is { } sl0 && sl0.Body.Count == 0) new Emitter(sl0).I32(0);
+            if (D.Rt.ArenaPartInfoIfMade is { } pi0 && pi0.Body.Count == 0) new Emitter(pi0).I32(0);
+            if (D.Rt.ArenaPartsIfMade is { } pa0 && pa0.Body.Count == 0) new Emitter(pa0).I32(0);
             if (D.Rt.ArenaIsSlotFnIfMade is { } is0 && is0.Body.Count == 0) new Emitter(is0).I32(0);
         }
         // (no array that can be on a cycle, or the switch: a list's growth is the copy and the store)

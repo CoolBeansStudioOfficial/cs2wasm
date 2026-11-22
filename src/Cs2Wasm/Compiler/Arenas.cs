@@ -52,6 +52,11 @@ internal sealed partial class Arenas
         /// it can be part of a cycle only where some other edge closes it.</summary>
         public bool General;
         public bool Cyclic;
+        /// <summary>ExclusiveParts.cs: a store that qualifies as a part's was emitted; why the site is not exclusive
+        /// (a read or a store that fails the proof); the decision (Arenas.DecideParts); the holder's hold.</summary>
+        public bool PartStores, Exclusive;
+        public string? PartBad;
+        public WasmFunction? Hold, Unhold;
         /// <summary>The slots of a closure's or a state machine's object (no type of the program's: its type id).</summary>
         public int ContainerId = -1;
         /// <summary>Such objects among what the slot holds (a delegate's target, a closure's enclosing one).</summary>
@@ -82,7 +87,7 @@ internal sealed partial class Arenas
         }
     }
 
-    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh, LinkOwned, LinkAt, UnlinkAt, MoveAt, LinkIso, StoreLock, StoreUnlock }
+    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh, LinkOwned, LinkAt, UnlinkAt, MoveAt, LinkIso, StoreLock, StoreUnlock, PartLink, PartUnlink, PartHold, PartUnhold }
 
     readonly Dictionary<string, Site> _sites = [];
     readonly Dictionary<WasmFunction, (Kind kind, Site? site, ITypeSymbol? pinType)> _placeholders = [];
@@ -778,7 +783,8 @@ internal sealed partial class Arenas
     static readonly (string name, int arity)[] RuntimeMethods =
         [("ArenaLink", 3), ("ArenaUnlink", 3), ("ArenaVisitElement", 1), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
          ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 3), ("ArenaUnlinkFresh", 3), ("ArenaLinkOwned", 3),
-         ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3), ("ArenaGrowArray", 4), ("ArenaBeforeFinalizer", 0)];
+         ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3), ("ArenaGrowArray", 4), ("ArenaBeforeFinalizer", 0),
+         ("ArenaPartStore", 3), ("ArenaPartUnstore", 3), ("ArenaVisitPart", 1)];
 
     /// <summary>Queues the library's arena runtime for compilation (only when some site is cyclic).</summary>
     public void RequestRuntime()
@@ -874,6 +880,19 @@ internal sealed partial class Arenas
             {
                 if (ins.Op != Op.Call || ins.Ref is not WasmFunction w || !_placeholders.TryGetValue(w, out var ph)) { body.Add(ins); continue; }
                 var x = ins;
+                // (ExclusiveParts.cs: a store that qualifies as a part's is the part's store where the site is
+                // exclusive, else the store it would have been; the holder's hold a count, or nothing)
+                if (ph.kind is Kind.PartLink or Kind.PartUnlink)
+                {
+                    if (Enabled && ph.site!.Exclusive) { x.Ref = RuntimeFn(ph.kind == Kind.PartLink ? "ArenaPartStore" : "ArenaPartUnstore", 3); body.Add(x); continue; }
+                    w = _partFallback[w]; ph = _placeholders[w]; x.Ref = w;
+                }
+                if (ph.kind == Kind.PartHold) { if (Enabled && ph.site!.Exclusive) { x.Ref = D.Rt.Retain; body.Add(x); } continue; }
+                if (ph.kind == Kind.PartUnhold) { if (Enabled && ph.site!.Exclusive) x.Ref = D.Rt.Release; else { x.Op = Op.Drop; x.Ref = null; } body.Add(x); continue; }
+                // (a store into an exclusive site made after the decision, by code the compiler wrote itself: its
+                // value is no part, its old value may be one)
+                if (ph.kind is Kind.Unlink or Kind.UnlinkFresh && Enabled && ph.site!.Exclusive) { x.Ref = RuntimeFn("ArenaPartUnstore", 3); body.Add(x); continue; }
+                if (ph.kind is Kind.LinkFresh or Kind.LinkOwned or Kind.LinkIso && Enabled && ph.site!.Exclusive) { x.Ref = link; body.Add(x); continue; }
                 switch (ph.kind)
                 {
                     case Kind.Link or Kind.LinkFresh or Kind.LinkOwned or Kind.LinkIso:

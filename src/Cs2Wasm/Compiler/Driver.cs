@@ -1360,6 +1360,8 @@ internal sealed partial class Driver
         Mark("  arenas: analyze");
         if (Arenas.Enabled) { Arenas.RequestRuntime(); Drain(rt); }
         Mark("  arenas: runtime drained");
+        // (which fields' objects are their holders' alone: ExclusiveParts.cs)
+        Arenas.DecideParts();
         Arenas.Resolve();
         Mark("static initializers again, arenas");
         ReportEngineThreadBlocking(rt.UserExports);

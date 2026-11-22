@@ -640,6 +640,14 @@ internal sealed partial class RuntimeFns
     /// index among the words after the header, plus one), or 0 for a type the word cannot say them for (RuntimeGen).</summary>
     public WasmFunction ArenaSlotsFn => _arenaSlots ??= MarkHinted(M.AddFunction("rt.arena_slots", FT([I], [I])));
     public WasmFunction? ArenaSlotsIfMade => _arenaSlots;
+    WasmFunction? _arenaPartInfo, _arenaParts;
+    /// <summary>rt.arena_part_info(type id): the type's exclusive fields as rt.arena_slots says slots, with whether
+    /// it has other slots for members (Rt.ArenaPartInfo; RuntimeGen); rt.arena_parts(): whether the program has an
+    /// exclusive field at all (Rt.Parts).</summary>
+    public WasmFunction ArenaPartInfoFn => _arenaPartInfo ??= MarkHinted(M.AddFunction("rt.arena_part_info", FT([I], [I])));
+    public WasmFunction? ArenaPartInfoIfMade => _arenaPartInfo;
+    public WasmFunction ArenaPartsFn => _arenaParts ??= MarkHinted(M.AddFunction("rt.arena_parts", FT([], [I])));
+    public WasmFunction? ArenaPartsIfMade => _arenaParts;
     /// <summary>(array, index, length, size): release and zero elements.</summary>
     public WasmFunction ArrayClear => _arrayClear ??= MakeArrayClear();
 

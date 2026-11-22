@@ -2535,7 +2535,7 @@ namespace Cs2Wasm.Runtime
         {
             if (slot == 0) return -1;
             int off = slot - container;
-            return off >= 12 && off < 76 ? (off - 12) >> 2 : -1;
+            return off >= 12 && off < 76 && (off & 3) == 0 ? (off - 12) >> 2 : -1;
         }
         static int SlotBits(int container, int i) => (PL(container, 28) >> (2 * i)) & 3;
         static void SetSlotBits(int container, int i, int b)
@@ -3051,6 +3051,7 @@ namespace Cs2Wasm.Runtime
         public static int ArenaGrowArray(int container, int old, int to, int n)
         {
             if (ThreadMode()) return 0;
+            if (Parts() && old != 0 && to != 0 && n > 0 && Mem.LoadI32(old) == 1 && PL(old, PartWord) == container) return PartGrowArray(container, old, to, n);
             if (old == 0 || to == 0 || n <= 0 || Mem.LoadI32(old) != -2 || Mem.LoadI32(to) != 1 || Mem.LoadI32(container) >= -1) return 0;
             int of = PL(old, 24);
             if ((of & (Elems | Owned | MultMask | Dying | Queued)) != (Elems | Owned | MultOne) || PL(old, 20) != container) return 0;
@@ -3481,6 +3482,8 @@ namespace Cs2Wasm.Runtime
         {
             OpStat(0);
             if (container == 0) return val;
+            // (a store into an exclusive part is a store into its holder, in a slot the holder has no bits for)
+            if (Parts() && IsPart(container)) { slot = slot == 0 ? 1 : slot | 1; container = PartRoot(container); }
             // (threads: a store's region is locked at its link, which knows the value: StoreLockIf, GroupLocks.cs)
             if (ThreadMode() && t_regionC == container) RegionLock(container, val, true);
             // Nothing to link, and nothing of the container's to change: no lock. The value is null, or its own class
@@ -3498,6 +3501,8 @@ namespace Cs2Wasm.Runtime
                 return val;
             }
             bool can = val != 0 && CanLink(val, container);
+            // (a part stored where no proof put it: a counted reference, it joins nothing)
+            bool partVal = can && Parts() && Mem.LoadI32(val) > 0 && PL(val, PartWord) != 0;
             if (!can)
             {
                 int i0 = SlotIndex(container, slot), cw = Mem.LoadI32(container);
@@ -3511,7 +3516,7 @@ namespace Cs2Wasm.Runtime
             if (can && !ThreadMode() && !NoPinnedSkip() && t_backN == 0 && Mem.LoadI32(container) > 0 && Mem.LoadI32(val) > 0 && Mem.LoadI32(val + 8) < 0)
             {
                 OpStat(33);
-                t_prevSlot = slot; t_prevBits = slot != 0 ? 0 : -1;
+                t_prevSlot = slot; t_prevBits = (slot & ~1) != 0 ? 0 : -1;
                 return val;
             }
             if (t_backN != 0) AfterStore();
@@ -3526,12 +3531,15 @@ namespace Cs2Wasm.Runtime
             // linked as it joined, not this one) made the old value read as an inside one, and its outside count was
             // never given back: test 132's wide objects, a field past the sixteenth set while the object was new. An
             // array's elements are all linked as it joins, the old one too: by the counts is right for them)
-            t_prevBits = slot != 0 && (SlotIndex(container, slot) >= 0 || Mem.LoadI32(container) > 0) ? 0 : -1;
+            // (1: an element of a part that is an array, its address not known: linked with the others if its holder
+            // joins here, so by the counts, as an array's own)
+            t_prevBits = (slot & ~1) != 0 && (SlotIndex(container, slot) >= 0 || Mem.LoadI32(container) > 0) ? 0 : -1;
             if (i >= 0) { t_prevBits = SlotBits(container, i); SetSlotBits(container, i, 0); }
             // (a container that joins an arena here has its slots linked: not this one, whose value is on its way out)
             int outer = s_storeSlot;
-            s_storeSlot = slot;
+            s_storeSlot = slot & ~1;
             int r = val;
+            if (partVal) val = 0;
             // (threads: a value LinkLock left out is linked to nothing, GroupLocks.cs)
             if (ThreadMode() && t_linkOver != 0) { t_linkOver = 0; val = 0; }
             if (val != 0)
@@ -3596,6 +3604,7 @@ namespace Cs2Wasm.Runtime
             if (Mem.LoadI32(container) >= -1) return false;
             if (!can) { int g = SccOf(Mem.LoadI32(val + 4)); if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return false; }
             if (((PL(val, 24) | PL(container, 24)) & Dying) != 0 || Mem.LoadI32(val + 8) < 0) return false;
+            if (PL(val, PartWord) != 0) return false;
             int ar = ArenaOf(container);
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return false;
             OpStat(29);
@@ -3605,7 +3614,7 @@ namespace Cs2Wasm.Runtime
             PS(val, 4, 1);
             int i = s_visitElem != 0 ? -1 : SlotIndex(container, slot);
             if (i >= 0) SetSlotBits(container, i, 1);
-            else if (slot == 0 || s_visitElem != 0)
+            else if (s_visitElem == 1 || slot == 0 && s_visitElem == 0)
             {
                 PS(container, 28, PL(container, 28) + 1);
                 PS(container, 24, PL(container, 24) | Elems);
@@ -3666,6 +3675,8 @@ namespace Cs2Wasm.Runtime
             if (PL(val, 24) != 0 || Mem.LoadI32(val + 8) < 0) return false;
             int d = ArenaSlots(Mem.LoadI32(val + 4));
             if (d == 0) return false;
+            // (its exclusive parts hold nothing: else the visit, which goes through them)
+            if (Parts() && (PL(val, PartWord) != 0 || !PartsEmpty(val))) return false;
             int g = SccOf(Mem.LoadI32(val + 4));
             // what the slots hold, before anything is written
             int e = 0, up = 0;
@@ -3681,6 +3692,7 @@ namespace Cs2Wasm.Runtime
                     int ct = Mem.LoadI32(child + 4);
                     if (SccOf(ct) != g) continue;
                     if (PL(child, 24) != 0) return false;
+                    if (Parts() && (PL(child, PartWord) != 0 || !PartsEmpty(child))) return false;
                     if (cc == 1)
                     {
                         // (a new object of its own: its slots hold nothing to link)
@@ -3720,6 +3732,7 @@ namespace Cs2Wasm.Runtime
                 if (Mem.LoadI32(t) != -3 || PL(t, 4) != 0 || PL(t, 20) != 0 || (PL(t, 24) & ~(Elems | Far)) != 0 || Side(t) != 0 || PL(t, 16) != ar) return false;
                 ed = ArenaSlots(Mem.LoadI32(e + 4));
                 if (ed == 0) return false;
+                if (Parts() && !PartsEmpty(e)) return false;
                 for (int w = ed; w != 0; w = (int)((uint)w >> 4))
                 {
                     int c = Mem.LoadI32(e + 8 + ((w & 15) << 2));
@@ -3851,6 +3864,8 @@ namespace Cs2Wasm.Runtime
             if (ThreadMode() && ca > 0 && cv < -1) return val;
             int g = SccOf(Mem.LoadI32(val + 4));
             if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return val;
+            // (an exclusive part, a plain object for good: a counted reference; no proof stores one here)
+            if (cv > 0 && PL(val, PartWord) != 0) return val;
             // (one whose finalizer is running, or that waits for the others': a counted reference, FinPhase)
             if (((PL(val, 24) | PL(container, 24)) & Dying) != 0) return val;
             if (ca > 0 && Mem.LoadI32(container + 8) < 0) return val; // pinned
@@ -3946,7 +3961,7 @@ namespace Cs2Wasm.Runtime
             PS(val, 4, PL(val, 4) + 1);
             if (s_failedTops != 0 && OutsideMarked(PLM(val))) NoteOutside(val, container, 1);
             if (i >= 0) SetSlotBits(container, i, 1);
-            else if (slot == 0 || s_visitElem != 0)
+            else if (s_visitElem == 1 || slot == 0 && s_visitElem == 0)
             {
                 PS(container, 28, PL(container, 28) + 1);
                 PS(container, 24, PL(container, 24) | Elems);
@@ -4100,6 +4115,7 @@ namespace Cs2Wasm.Runtime
         {
             // what the slot held, by its bits before the store (ArenaLink noted them); -1: not known, by the counts
             int bits = -1;
+            if (Parts() && container != 0 && IsPart(container)) { slot = slot == 0 ? 1 : slot | 1; container = PartRoot(container); }
             if (slot != 0 && t_prevSlot == slot) { bits = t_prevBits; t_prevSlot = 0; }
             if (old == 0) return;
             OpStat(7);
@@ -4153,7 +4169,7 @@ namespace Cs2Wasm.Runtime
                 if (n != 0 || co != -2) OwnerLetGo(old, container);
                 // (a container replaced by another in the same slot, a list's array by a larger one: what it owned is
                 // the new one's from here on)
-                if (owned && n > 0 && slot != 0) { Handover(old, Mem.LoadI32(slot), container); n = PL(old, 4); }
+                if (owned && n > 0 && slot != 0 && (slot & 1) == 0) { Handover(old, Mem.LoadI32(slot), container); n = PL(old, 4); }
                 bool gone = false;
                 if (n == 0 && co == -2) ArenaDestroyFrom(old, 0);
                 else
@@ -4192,6 +4208,215 @@ namespace Cs2Wasm.Runtime
         {
             if (val != 0 && Mem.LoadI32(val) > 0) Mem.StoreI32(val + 8, Mem.LoadI32(val + 8) | int.MinValue);
             return val;
+        }
+
+        // ------------------------------------------------------------------
+        // Exclusive parts (docs/AUDIT.md A3.5, "The build, round 7" and "round 8"; Compiler/ExclusiveParts.cs).
+        // A field whose object the compiler proves, over the whole program, to be its holder's alone (the list in
+        // `Children`, and the list's array in `_items`: every store a new object, the field's value used only as
+        // the receiver of calls that keep nothing, never stored elsewhere, returned or captured) is no member of
+        // its own. The part stays a plain object for good: its count is the field's (and code's, for the length of
+        // a call), it has no place on a ring and no owner. It names its holder in a word a plain object has no
+        // use for (PartWord, a member's ring word), and what its slots hold is the holder's:
+        // a store into a part is a store into the holder (ArenaLink and ArenaUnlinkOld go from the part to the
+        // holder first, through a part of a part), in a slot the holder keeps no bits for, as one past its
+        // sixteenth word (Far): a member in it is a counted inside reference of the holder, owned by the holder,
+        // so a child's parent is one step up its chain, not three; the holder's visit goes through its parts'
+        // slots (ArenaVisitPart, generated for an exclusive field); a list's growth moves the items with no count
+        // (PartGrowArray); and the holder's clear releases the part as the plain object it is, after the visits
+        // took the members out of its slots. While the holder is a plain object, so are the references in its
+        // parts: plain counted ones, linked when the holder joins, as its own slots'.
+        // CS2WASM_NO_EXCLUSIVE_PARTS=1 at compile time, a program with threads, or a field the proof fails for:
+        // no part is made (Parts() is false in a program without one), every path as it was.
+        // ------------------------------------------------------------------
+        /// <summary>Whether the program has an exclusive field (decided when the whole program is compiled).</summary>
+        [Intrinsic] static extern bool Parts();
+        /// <summary>A type's exclusive fields, as ArenaSlots says slots (a nibble each, the word's index and one,
+        /// seven at most), PartUnknown when they cannot be said so, PartContent when an object of the type has
+        /// other slots that can hold a member (a field that is not exclusive, an array's elements).</summary>
+        [Intrinsic] static extern int ArenaPartInfo(int typeId);
+        const int PartWord = 8, PartUnknown = 1 << 28, PartContent = int.MinValue, PartNibbles = 0x0FFFFFFF;
+
+        /// <summary>An exclusive part: a plain object of a cycle-capable type (so with the words) that names a holder.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static bool IsPart(int o) => Mem.LoadI32(o) > 0 && SccOf(Mem.LoadI32(o + 4)) != 0 && Mem.LoadI32(o - PartWord) != 0;
+
+        /// <summary>The holder of a part that is no part itself.</summary>
+        static int PartRoot(int o)
+        {
+            do { o = PL(o, PartWord); } while (Mem.LoadI32(o) > 0 && PL(o, PartWord) != 0);
+            return o;
+        }
+
+        /// <summary>JoinFresh: the object's exclusive parts hold nothing that a join would link (a new entity's
+        /// list, which has the pinned empty array): each exclusive field null, pinned, or a part without slots of
+        /// its own for members whose own exclusive fields are null or pinned.</summary>
+        static bool PartsEmpty(int obj)
+        {
+            int info = ArenaPartInfo(Mem.LoadI32(obj + 4));
+            if (info == 0) return true;
+            if ((info & PartUnknown) != 0) return false;
+            for (int w = info & PartNibbles; w != 0; w = (int)((uint)w >> 4))
+            {
+                int p = Mem.LoadI32(obj + 8 + ((w & 15) << 2));
+                if (p == 0) continue;
+                if (Mem.LoadI32(p) <= 0) return false;
+                if (Mem.LoadI32(p + 8) < 0) continue;
+                if (!IsPart(p)) return false;
+                int pi = ArenaPartInfo(Mem.LoadI32(p + 4));
+                if ((pi & (PartUnknown | PartContent)) != 0) return false;
+                for (int v = pi & PartNibbles; v != 0; v = (int)((uint)v >> 4))
+                {
+                    int q = Mem.LoadI32(p + 8 + ((v & 15) << 2));
+                    if (q != 0 && (Mem.LoadI32(q) <= 0 || Mem.LoadI32(q + 8) >= 0)) return false;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>A store into an exclusive field (every link of such a site: Compiler/Arenas.cs, Resolve): a new
+        /// plain object of a cycle-capable type becomes the container's part, and what it holds already the
+        /// holder's (linked, where the holder is a member: a list made with items, an array a growth copied by the
+        /// long way). Anything else (null, a pinned object, an object that is a member already, a container that
+        /// is being destroyed) as any store. Returns the value. The slot's old value is ArenaPartUnstore's.</summary>
+        public static int ArenaPartStore(int val, int container, int slot)
+        {
+            if (container != 0 && val != 0 && !ThreadMode() && Mem.LoadI32(val) > 0 && Mem.LoadI32(val + 8) >= 0
+                && SccOf(Mem.LoadI32(val + 4)) != 0 && SccOf(Mem.LoadI32(container + 4)) != 0 && PL(val, PartWord) == 0 && val != container)
+            {
+                bool nested = Mem.LoadI32(container) > 0 && PL(container, PartWord) != 0;
+                int root = nested ? PartRoot(container) : container;
+                int rc = Mem.LoadI32(root);
+                if (rc > 0 || rc < -1)
+                {
+                    if (t_backN != 0) AfterStore();
+                    // (what the slot held, for the unlink that follows: ArenaLink's note)
+                    t_prevSlot = nested ? slot | 1 : slot;
+                    if (nested) t_prevBits = -1;
+                    else if (rc < -1) { int i = SlotIndex(container, slot); t_prevBits = i >= 0 ? SlotBits(container, i) : -1; if (i >= 0) SetSlotBits(container, i, 0); }
+                    else t_prevBits = 0;
+                    PS(val, PartWord, container);
+                    if (rc < -1) PartLinkContents(val, root);
+                    return val;
+                }
+            }
+            return ArenaLink(val, container, slot);
+        }
+
+        /// <summary>The old value of an exclusive field after a store: a part of the container is no part any more
+        /// (what it holds of the holder's arena becomes its own counted references: code may still refer to it, an
+        /// array a list replaced while a method read it), then released; anything else as any store's old value.</summary>
+        public static void ArenaPartUnstore(int old, int container, int slot)
+        {
+            if (old != 0 && container != 0 && Mem.LoadI32(old) > 0 && SccOf(Mem.LoadI32(old + 4)) != 0 && PL(old, PartWord) == container)
+            {
+                t_prevSlot = 0;
+                PartDetach(old, container);
+                Release(Borrow<object>(old));
+                if (t_backN != 0) AfterStore();
+                return;
+            }
+            ArenaUnlink(old, container, slot);
+        }
+
+        /// <summary>A new part's slots, linked as stores into its holder (a member): ArenaLinkContents' way.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void PartLinkContents(int val, int root)
+        {
+            RuntimeLock();
+            int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
+            s_visitArena = root; s_visitMode = 4; s_visitObj = root; s_visitElem = 2;
+            ArenaVisitObject(val);
+            s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se;
+            ArenaLinkJoined();
+            DrainKills();
+            RuntimeUnlock();
+        }
+
+        /// <summary>The part leaves its holder: where the holder is a member, each inside reference in the part's
+        /// slots becomes a counted one of the part's own (ArenaVisit's mode 9), then the part names no holder.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void PartDetach(int old, int container)
+        {
+            int root = container;
+            if (Mem.LoadI32(root) > 0 && PL(root, PartWord) != 0) root = PartRoot(root);
+            if (Mem.LoadI32(root) < -1)
+            {
+                RuntimeLock();
+                int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
+                s_visitMode = 9; s_visitObj = root; s_visitElem = 2;
+                ArenaVisitObject(old);
+                s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se;
+                if (s_killN != 0) DrainKills();
+                RuntimeUnlock();
+            }
+            PS(old, PartWord, 0);
+        }
+
+        /// <summary>PartDetach, a slot of the part that holds a member of the holder's arena as an inside
+        /// reference: counted for the part first (the member cannot die of the unlink), then unlinked from the
+        /// holder by the counts, as an array's element is.</summary>
+        static void PartSlotOut(int slot, int child)
+        {
+            int root = s_visitObj;
+            if (Mem.LoadI32(child) >= -1 || Mem.LoadI32(root) >= -1) return;
+            if (PL(child, 4) == 0 || ArenaOf(child) != ArenaOf(root)) return;
+            Retain(Borrow<object>(child));
+            ArenaUnlinkOld(child, root, 1);
+        }
+
+        /// <summary>The generated visit of a holder, for an exclusive field (Compiler/RuntimeGen.cs): the part's
+        /// slots are visited as the holder's (s_visitObj stays the holder; s_visitElem 2: no bits, and no count
+        /// of elements as an array has), by the part's own type, a part of the part likewise. A field that holds
+        /// no part (null, a pinned object, a member a constructor made) is visited as any slot.</summary>
+        public static void ArenaVisitPart(int slot)
+        {
+            int p = Mem.LoadI32(slot);
+            if (p != 0 && Mem.LoadI32(p) > 0 && Mem.LoadI32(p + 8) >= 0 && SccOf(Mem.LoadI32(p + 4)) != 0 && PL(p, PartWord) != 0)
+            {
+                int e = s_visitElem;
+                s_visitElem = 2;
+                ArenaVisitObject(p);
+                s_visitElem = e;
+                return;
+            }
+            ArenaVisit(slot);
+        }
+
+        /// <summary>ArenaGrowArray for a list's array that is a part (old, of `list`, which may be a plain object,
+        /// a part itself or a member): the first n references move to the new array as they are, with no count
+        /// (each is the holder's inside reference or, in a plain holder, a counted one: neither says which array
+        /// it is in), the new array is the list's part in the old one's place, and the old one, empty and referred
+        /// to by nothing, is freed. 0, nothing done, unless the old array's one reference is the list's field,
+        /// the new one is new and empty, and no reference is left behind past n.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static int PartGrowArray(int list, int old, int to, int n)
+        {
+            if ((s_destroying | s_trial | s_joinVisit | s_visitElem | s_linkN | s_killN | t_backN) != 0) return 0;
+            if (Mem.LoadI32(to) != 1 || Mem.LoadI32(to + 8) < 0 || Mem.LoadI32(old + 4) != Mem.LoadI32(to + 4) || PL(to, PartWord) != 0 || PL(to, 24) != 0) return 0;
+            if (ArrayRankAt(to) != 1 || ArrayElementSizeAt(to) != 4) return 0;
+            int on = Mem.LoadI32(old + 12);
+            if (n > on || n > Mem.LoadI32(to + 12)) return 0;
+            int info = ArenaPartInfo(Mem.LoadI32(list + 4));
+            if ((info & PartUnknown) != 0) return 0;
+            int slot = 0;
+            for (int w = info & PartNibbles; w != 0; w = (int)((uint)w >> 4))
+            {
+                int a = list + 8 + ((w & 15) << 2);
+                if (Mem.LoadI32(a) == old) { slot = a; break; }
+            }
+            if (slot == 0) return 0;
+            int s = old + 16, d = to + 16;
+            for (int k = 0; k < n; k++) if (Mem.LoadI32(d + 4 * k) != 0) return 0;
+            for (int k = n; k < on; k++) if (Mem.LoadI32(s + 4 * k) != 0) return 0;
+            for (int k = 0; k < n; k++) { Mem.StoreI32(d + 4 * k, Mem.LoadI32(s + 4 * k)); Mem.StoreI32(s + 4 * k, 0); }
+            PS(to, PartWord, list);
+            // (the field's count, beside the caller's local's)
+            Mem.StoreI32(to, 2);
+            Mem.StoreI32(slot, to);
+            PS(old, PartWord, 0);
+            Release(Borrow<object>(old));
+            return 1;
         }
 
         // ------------------------------------------------------------------
@@ -4334,7 +4559,8 @@ namespace Cs2Wasm.Runtime
         public static void ArenaVisitElement(int slot)
         {
             int e = s_visitElem;
-            s_visitElem = 1;
+            // (2: an element of a part, a slot of the part's holder: ArenaVisitPart)
+            if (e != 2) s_visitElem = 1;
             ArenaVisit(slot);
             s_visitElem = e;
         }
@@ -4390,6 +4616,8 @@ namespace Cs2Wasm.Runtime
             }
             // (4: each reference, counted by the copy, as a store of it)
             if (s_visitMode == 4) { if (child != 0 && slot != s_storeSlot) LinkJoinedSlot(child, slot); return; }
+            // (9: a part that is no longer its holder's, ArenaPartUnstore)
+            if (s_visitMode == 9) { if (child != 0) PartSlotOut(slot, child); return; }
             // (16: LinkWalk, threads)
             if (ThreadMode() && s_visitMode == 16) { WalkVisit(child); return; }
             // (13 to 15, Dropped: what the member owns; a counted reference to one of them off, and back on)
@@ -5128,7 +5356,7 @@ namespace Cs2Wasm.Runtime
             // refers to it, so no element closes a cycle, and each is a plain counted store, as ArenaLinkOwned's. The
             // array's elements are linked when it is stored where a cycle can close: ArenaJoin links what a joining
             // object holds)
-            if (src != dst && !ThreadMode() && Mem.LoadI32(dst) == 1)
+            if (src != dst && !ThreadMode() && Mem.LoadI32(dst) == 1 && !(Parts() && IsPart(dst)))
             {
                 for (int k = 0; k < length; k++)
                 {
