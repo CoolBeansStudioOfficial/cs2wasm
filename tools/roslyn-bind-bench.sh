@@ -96,6 +96,13 @@ time)
   node "$SRC/summary.mjs" < $L
   rm -f $T $L
   ;;
+run)
+  # one run of a cs2wasm build, all its output (a diagnosis build's statistics: CS2WASM_DROP_STATS, CS2WASM_COUNT_RC)
+  b=${1:-bb}
+  host=$(cat "$OUT/$b.host" 2>/dev/null || echo "host/run.mjs")
+  case $host in /*|?:*) ;; *) host=$ROOTW/$host ;; esac
+  CS2WASM_PROCESSORS=1 CS2WASM_FS_ROOT=C:/ node "$host" "$(cygpath -m "$OUT")/$b.wasm" main -- "$(nodrive "$UP")" "$(nodrive "$RT")" ${BODIES:-400}
+  ;;
 prof)
   # one run of each build named and of NativeAOT-LLVM's under node --cpu-prof (V8's normal tiering, eager compilation,
   # 100 us samples), the profiles to tests/out/bindbench/prof/<name>.cpuprofile; then each restricted to the bind
@@ -118,5 +125,5 @@ prof)
     node "$ROOTW/tools/profphase.mjs" "$PW/naot.cpuprofile" "$PW/naot.bind.cpuprofile"
   fi
   ;;
-*) echo "usage: $0 build [name [cs2wasmc]] | build-at <commit>... | build-naot | time [name...] | prof [name...]"; exit 2 ;;
+*) echo "usage: $0 build [name [cs2wasmc]] | build-at <commit>... | build-naot | time [name...] | run [name] | prof [name...]"; exit 2 ;;
 esac
