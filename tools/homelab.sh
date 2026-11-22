@@ -12,8 +12,8 @@ SAFE=$(echo "$BR" | tr '/' '_')
 REMOTE=$(cat <<EOF
 set -e
 cd /c/Users/Levi/Documents/GitHub/cs2wasm
-git fetch -q origin "$BR"
-C=\$(git rev-parse FETCH_HEAD)
+git fetch -q origin "+$BR:refs/hl/$SAFE"
+C=$(git rev-parse "refs/hl/$SAFE")
 W=/c/Users/Levi/hl/$SAFE
 if [ -d "\$W" ]; then cd "\$W"; git checkout -q --detach "\$C" 2>/dev/null || git -C /c/Users/Levi/Documents/GitHub/cs2wasm worktree remove --force "\$W"; fi
 if [ ! -d "\$W" ]; then mkdir -p /c/Users/Levi/hl; git worktree add -q --detach "\$W" "\$C"; fi
