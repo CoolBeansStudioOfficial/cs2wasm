@@ -37,7 +37,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
-| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.14x to 0.25x NativeAOT's with `--js-young 32`; without it one scavenge of Node's own heap a run, 0.45 to 0.75 ms, the host clock's BigInts: strings 0.45 ms against 0.23); tree 3.83 ms vs 3.15 ms worst (1.21x), p99.9 3.57 vs 2.46 (1.45x), its rebuild (main dca1f9c, this machine, 2026-11-22; was 6.65 and 6.10; AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
+| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.14x to 0.25x NativeAOT's with `--js-young 32`; without it one scavenge of Node's own heap a run, 0.45 to 0.75 ms, the host clock's BigInts: strings 0.45 ms against 0.23); tree 3.83 ms vs 3.15 ms worst (1.21x), p99.9 3.57 vs 2.46 (1.45x), its rebuild (main dca1f9c, this machine, 2026-11-22; was 6.65 and 6.10; AUDIT A3.5); with branch claude/tree-rebuild-3: worst 3.12 vs 3.13 (0.99x), p99.9 2.97 vs 2.40 (1.24x) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 2.15x (was 3.47x), tree 1.91x (was 2.56x), collections 1.28x, strings 1.21x, bigdrop 0.87x; mean frame (NativeAOT's collections in it): churn 1.99x, tree 1.61x, collections 1.07x, strings 1.13x, bigdrop 0.21x (main dca1f9c, this machine) | close to 1.0x on every scene |
 | 4 | Hello world size (test 145) | 27,089 B (main dca1f9c) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
@@ -543,3 +543,23 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   (8% of churn; needs what a field borrow needs: no address taken, no reflection, threads). No one cause brings churn to
   1.0x: half of the gap is counts on moves and frees in the frame, which is what the scene has in place of the
   collector's pauses (worst frame 0.29 ms against 1.15).
+- 2026-11-22, the tree scene's rebuild, round 3 (branch claude/tree-rebuild-3 from main d061dda, not merged when this
+  was written; docs/AUDIT.md A3.5). The count a store took on a member is given back at the link where the release after
+  the store would only take it off (`Rt.EarlyGiveBack`, `CS2WASM_NO_EARLY_GIVE_BACK=1`: 14,060 hold changes a build to
+  none); a pinned object stored into a plain one returns before the lock (`CS2WASM_NO_PINNED_SKIP=1`); a group
+  without finalizers is let go in two passes, the clears in the walk, with `Rt.ArenaBeforeFinalizer` before the first
+  finalizer (`CS2WASM_NO_FUSED_DROP=1`); the members' blocks go back onto their pages without the dispatch on the type
+  (`Rt.ArenaFreeList`, `CS2WASM_NO_FREE_LIST=1`). tools/tree-parts.cs: build 2.14 to 1.91 ms, drop 1.33 to 0.88.
+  frames.mjs here (`--runs 3 --js-young 32`) against NativeAOT-LLVM: tree p99.9 3.61 to 2.97 ms (2.40), worst 3.88 to
+  3.12 (3.13), median 0.056 to 0.052 (0.029): **the worst frame at NativeAOT's, p99.9 1.18 to 1.24 times it: not
+  reached.** A rebuild frame is 2.70 to 3.13 ms (main 3.31 to 4.01); NativeAOT's is 0.26 ms, with a collection of 2.3
+  to 2.5 ms (one of 3.1) in four of the twelve, so its p99.9 is a collection and this side's the middle rebuild, which
+  has to lose 0.45 ms more. The other scenes as on main; bench.mjs 0.95x to 0.96x either way; hello world 27,089
+  bytes. Homelab at aeab011: suite 203/203 checked and as shipped (test 192: groups let go whole); stress, 200 loaded
+  runs a mode: 139 and 192 the same in every run, 127 differed in 1 and 2. Tried and not kept, none moved the number
+  by itself: null and pinned slots left out of the generated visits, a clear by the slot bits, the waiting container
+  out of the side words, the members by type, the ring walked from both ends. Left: a build 1.9 ms (the objects 0.56,
+  their joins 0.8, the parent fields 0.45, the growths 0.17), a drop 0.88 (11.6 ns a member). What would reach it is
+  fewer members (a leaf's list, a third of them, kept a plain object until it has an item: a change of the runtime's
+  invariants, AUDIT A3.5) or step 7.D. Seen, not followed: the tree built with the parent set after the child is in
+  its list takes 5.5 ms a build (tools/tree-build.cs, variant 2).

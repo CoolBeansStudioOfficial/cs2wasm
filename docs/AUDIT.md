@@ -335,6 +335,121 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     all 800 runs; 127 differed (`async 5` / `pending 1`) in 1 and 0 of 200 as shipped, 4 and 2 of 200 checked; main in
     the same hour 3 of 200 and 3 of 200. A program with threads runs none of this round's code (ArenaGrowArray answers
     no at once, the merge and the pinned slot are behind `!ThreadMode()`), and tests 127, 139 and 187 start threads.
+- **The rebuild, round 3 (2026-11-22, branch claude/tree-rebuild-3, from main d061dda; the desk machine).** Measured
+  first: the paths a build takes, by the runtime's counts (`CS2WASM_DROP_STATS=1`, which now prints them at each large
+  drop: the difference of two lines is one build) of a program that only builds and drops the tree
+  (`tools/tree-build.cs`, variant 0; its other variants take parts of the build out), and a profile of it by function
+  (`node --cpu-prof` on a module built with `CS2WASM_NAMES=1`).
+  - **The counts of one build on main** (19,531 entities, 3,906 with children; 42,968 members: an entity, its list,
+    and an array for each list with items). Rt.ArenaLink 42,967 times: 19,531 the empty array of each new list
+    (List<T>'s constructor stores a pinned object into a plain one: through the lock and ArenaLinkCore's questions to
+    "a counted reference"), 3,906 a list's first array (3,125 of them, a leaf's parent's, make a group of the list
+    and the array, merged into the tree's as the node joins: 3,124 merges), 19,530 an item into its parent's array
+    (15,625 leaves by JoinOwned, 3,905 nodes as members of the same group). Members joined 46,874 (the 3,906 arrays
+    of the growths among them), each visited once as it joins (42,968). For the 3,906 nodes: Reevaluate 14,060 (3.6 a
+    node), TakeOwnership 10,935 (2.8), UpdateHold 21,090 with 14,060 hold changes and 15,620 steps up a chain,
+    Rt.ArenaRelease 10,937 of which 7,031 the long way; 12,500 up-reference links (the parent fields of a node's
+    second to fifth leaf), 3,906 growths.
+  - **What the hold changes were.** A node put into its parent's list is a member whose one reference from outside
+    is the store's own count, kept until the store is written (GiveBackLater). Its parent field becomes an
+    up-reference in that link (Reevaluate, the ownership turned round: each node owns its parent from the link of its
+    first child's parent field until then), and a member with an up-reference below it that is referred to from
+    elsewhere than its owner holds its owners up the chain: three holds made, and three undone by the release after
+    the store, which takes the long way for it. The same for a node's list as the node joins (its count the
+    node's own slot's). Round 1 gave the count back early in the slots of a joining object, saw the scene's checks
+    at the drop change, and dropped it; "outside the join it gained nothing".
+  - Done, the store's count: `Rt.EarlyGiveBack`. Where the release after the store would take the count off and do
+    nothing else (ArenaRelease's first case, asked at the link: a member without an owner that holds nothing, which
+    the container owns from this link on, TakeOwnership's turn of a node that owned its parent included and asked as
+    there; other members of the arena referred to from outside; no note of a failed check on either), LinkMembers
+    gives the count back before it takes the ownership, in a joining object's slots as elsewhere. The end is the
+    same; no hold is made in between. Hold changes 14,060 to none a build, UpdateHold 21,090 to 7,030, releases the
+    long way 7,031 to 1 (the root's). The scene's checks at the drop are what they were (557 in a run of
+    tools/tree-parts.cs, 373,385 members gone through, on main and on the branch). `CS2WASM_NO_EARLY_GIVE_BACK=1`.
+    Build 2.10 to 1.91 ms in tools/tree-parts.cs by the switch alone, 2.03 to 1.81 in tools/tree-build.cs.
+  - Done, the empty array: a pinned object stored into a plain object's slot returns before the lock, with what
+    ArenaLink notes for the unlink that follows (`CS2WASM_NO_PINNED_SKIP=1`). 0.03 to 0.05 ms a build (1.90 to 1.87 and
+    1.96 to 1.91 ms, the lowest 1.85 to 1.81 and 1.91 to 1.86: at the edge of what the timings tell apart, a build
+    varies by 0.05 ms from run to run).
+  - **The drop.** Its three passes over the old tree's 75,000 members on main: the walk 0.33 to 0.40 ms, the clears
+    0.46, the frees 0.53. The clears and the frees fused in one loop gained nothing (1.32 against 1.32 ms: it is
+    not the second pass over the memory that costs), and the walk without the clears takes what it took (0.33 to
+    0.40): a chain of loads. So the walk's wait is where work can go, and the frees' cost is their own.
+  - Done, two passes: the clears in the walk (`Rt.ArenaFree`, a group without finalizers, without threads, not in a
+    checked build). A member's count is made zero as its turn comes, then its references are released; a reference
+    to a member the walk has not come to finds a count of "no reference from outside", and rt.release does nothing
+    for that count (it went to Rt.ArenaRelease for it: a release too many, which a checked build still reports
+    there). The members are listed as they are cleared and freed from the list after the last clear, as before: a
+    freed block may be used again by whatever a clear lets go (a finalizer's allocations, another group's drop),
+    and a later member may still refer to it. **Before a finalizer runs** (the first code of the program since the
+    walk began: `rt.before_fin`, called in the destroy functions inside the hold, `Rt.ArenaBeforeFinalizer`) the
+    members the walk has not come to are made as the walk before the clears left them (count zero, off the list of
+    members to destroy, the note of a failed check gone), in every such pass under way, so a finalizer sees what
+    it saw: the members cleared so far the same ones (the ring's order), the rest dying. `CS2WASM_NO_FUSED_DROP=1`.
+    (`Rt.ArenaBeforeFinalizer` by that name: FieldBorrows' store summaries take `Rt.Arena*` as the runtime's own;
+    under another name every release in the program "stored anything", and the scene's ordinary frames went from
+    0.051 to 0.16 ms.) Drop 1.04 to 0.87 ms by the switch alone.
+  - Done, the frees: `Rt.ArenaFreeList`. A member's block that lies in a page of small blocks goes straight back
+    onto its page's list (FreeSmallOld's case; PageFree for a page that was full or is empty now): the page knows
+    its blocks' size, so no dispatch on the type and no call of its free function, and not by way of the block
+    kept aside for the next allocation of the size, which every free here put on its page one free later. The
+    allocator's map is asked once for each page met, not for each member, and side words are freed where a member
+    has them. Any other block (a large array) as before. `CS2WASM_NO_FREE_LIST=1`. The frees 0.53 to 0.25 ms; drop
+    1.13 to 0.87 by the switch alone.
+  - Numbers (the same session, main d061dda against the branch): tools/tree-parts.cs build 2.14 to 1.91 ms, drop
+    1.33 to 0.88 (the walk with the clears 0.46 to 0.64, the frees 0.25); tools/tree-build.cs (a tree just built,
+    42,968 members) build 2.05 to 1.84, drop 0.53 to 0.36. `node tools/frames.mjs --runs 3 --js-young 32`: tree
+    p99.9 3.61 to 2.97 ms, worst 3.88 to 3.12, median 0.056 to 0.052, against NativeAOT-LLVM's 2.40, 3.13, 0.029;
+    the two modules run in turn five times, the lowest: p99.9 3.65 to 2.84, worst 4.01 to 3.09. **The worst frame
+    is at NativeAOT's (0.99x); p99.9 is 1.18 to 1.24 times NativeAOT's, not at or below it.** The twelve rebuild
+    frames of a run, three runs: 2.70 to 3.13 ms (main 3.31 to 4.01). NativeAOT's own rebuild frames take 0.26 ms
+    (the objects of a new tree are a pointer moved each), and four of the twelve have a collection in them, 2.33 to
+    2.49 ms and one of 3.10 to 3.15: its p99.9 and its worst frame are its collections, this side's the rebuilds
+    themselves, every one of them, so p99.9 here is the middle rebuild. For it to be at 2.40 a rebuild has to take
+    0.45 ms less. The other scenes as on main (five runs each in turn: churn median
+    0.104 and 0.104, p99.9 0.176 and 0.173; collections 0.008, 0.170 and 0.171; strings 0.009, 0.019; bigdrop 0.003,
+    1.160 and 1.159; worst frames within each other's spread). bench.mjs 0.95x to 0.96x with the switches and
+    without. Hello world 27,089 bytes, unchanged (it has no group).
+  - Tried and not kept (each measured by itself, none moved the number): a null slot not visited (a test in the
+    generated visit functions; 15,624 visits of empty elements a build); a slot that holds a pinned object not
+    visited; a member's clear leaving out the slots whose bits say "linked" (0.85 against 0.85 ms); the waiting
+    container kept in the join's list, not in side words (no block of side words for each node, 3,906 a build:
+    build +0.03 ms, drop -0.02); the members sorted by type before the clears and the frees (no dispatch missed,
+    but the order in memory lost: drop 1.32 to 1.43); the ring walked from both ends at once, the back's half
+    cleared from the list after (0.88 to 0.98).
+  - **What a build and a drop cost now** (tools/tree-build.cs's variants, medians): the objects alone, made and let
+    go, 0.56 ms; the tree without parent fields 1.39; with them 1.84; without the growths (capacity 8 set first)
+    1.67; so the growths 0.17, the parent fields 0.45, the joins of 39,000 objects with no parent in it 0.8. By
+    function (a profile; the engine puts small functions into their callers): Rt.ArenaVisit with what it calls
+    for a joining object's slots 0.38 ms, Rt.ArenaLink 0.35, the program's own Build 0.27, the allocation 0.26,
+    LinkMembers 0.26, ArenaGrowArray 0.09. A node with children still costs about 170 ns more than a leaf (by round
+    2's 40 ns for a leaf's links, not measured again): its list's group made and merged, the ownership of its parent
+    taken and turned round, three Reevaluates. The drop:
+    11.6 ns a member (8 the walk with the clear, 3.3 the free).
+  - **What reaching NativeAOT's p99.9 would take** (0.45 ms more of 2.85): not a faster path, fewer
+    members. 15,625 of a build's 42,968 members are the lists of leaves, each holding nothing but the pinned empty
+    array: a join, a visit, a place in the ring and a member's free each, by the costs above about 0.3 ms of a
+    rebuild (an estimate, not measured). Such a list
+    could stay a plain object until its first array is stored, but the runtime rests on "a member refers to no plain
+    object of a cycle-capable class": the plain list would have to name its holder (in its owner word, the
+    holder's slot marked by the fourth value of its bits), join with that slot linked when it first takes a
+    linkable reference or is stored anywhere else, and have the note taken off when the holder's slot is
+    overwritten or the holder dies (its clear, the destroy visit, the drop); every reader of the slot bits (some
+    fifteen places) has to know the fourth value. A change of the runtime's invariants with its own tests, not
+    started here. The other way is step 7.D (a group's members in pages of its own, released by returning the
+    pages: the drop without a pass over the members).
+  - Seen and not followed: the same tree built with the parent set after the child is in its list
+    (`e.Children.Add(c); c.Parent = e;`, tools/tree-build.cs variant 2) takes 5.5 ms a build, three times the
+    scene's order (5.9 on main).
+  - Checked: test 192 (groups let go whole: plain objects with finalizers held by the members, whose finalizers
+    allocate, make and drop a group, let another group go and ask a weak reference to a member not yet cleared;
+    a member holding the last reference to a member of another kind of group; a dictionary, arrays with holes, an
+    array too large for a page, a pinned object in the members' lists, groups made apart and joined, the stores'
+    states: bottom-up, top-down, a child in two lists, a root stored into its own descendant). On the homelab at
+    aeab011: the suite 203/203 checked and 203/203 as shipped; `tools/stress-cycles.sh` (200 runs a mode, 8 at
+    once): 139 the same in every run, 127 differed in 1 of 200 as shipped and 2 of 200 checked (main's rate), 192
+    the same in every run of both modes. The checked build takes none of the two-pass drop nor the free list
+    (`Rt.Checked()`), the early give-back and the pinned store both; a program with threads none of the four.
 
 ### A4. Plugins (goal 3)
 
