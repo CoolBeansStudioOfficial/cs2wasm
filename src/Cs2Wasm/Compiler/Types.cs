@@ -82,6 +82,22 @@ internal sealed class Types
 
     public static string Key(ITypeSymbol t) => s_keys.TryGetValue(t, out var k) ? k : s_keys.GetValue(t, KeyOf);
 
+    /// <summary>Key as a number (equal numbers: equal keys), remembered per symbol: the subtype test compares and
+    /// looks these up, where hashing a key's text (a generic instance's runs to hundreds of characters) was most of
+    /// its time.</summary>
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ITypeSymbol, object> s_keyIds = new();
+    static readonly Dictionary<string, int> s_keyNumbers = [];
+    public static int KeyId(ITypeSymbol t) => s_keyIds.TryGetValue(t, out var o) ? (int)o : (int)s_keyIds.GetValue(t, KeyIdOf);
+    static object KeyIdOf(ITypeSymbol t)
+    {
+        var k = Key(t);
+        lock (s_keyNumbers)
+        {
+            if (!s_keyNumbers.TryGetValue(k, out var id)) s_keyNumbers[k] = id = s_keyNumbers.Count;
+            return id;
+        }
+    }
+
     static string KeyOf(ITypeSymbol t)
     {
         switch (t)
@@ -288,7 +304,11 @@ internal sealed class Types
         return result;
     }
 
-    public static string FullName(ITypeSymbol t) => t is INamedTypeSymbol n && n.ContainingType == null ? Ns(n.ContainingNamespace) + n.MetadataName : Key(t.OriginalDefinition);
+    // (remembered per symbol, as Key is: asked on every subtype test, and each answer was a new string built from the
+    // namespaces up)
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ITypeSymbol, string> s_fullNames = new();
+    public static string FullName(ITypeSymbol t) => s_fullNames.TryGetValue(t, out var s) ? s : s_fullNames.GetValue(t, FullNameOf);
+    static string FullNameOf(ITypeSymbol t) => t is INamedTypeSymbol n && n.ContainingType == null ? Ns(n.ContainingNamespace) + n.MetadataName : Key(t.OriginalDefinition);
 
     // ---------------- classification ----------------
     public static Prim PrimOf(ITypeSymbol t)
@@ -586,34 +606,69 @@ internal sealed class Types
         return keys;
     });
 
+    readonly System.Runtime.CompilerServices.ConditionalWeakTable<ITypeSymbol, HashSet<int>> _superIds = new();
+
+    /// <summary>SupertypeKeys as KeyId numbers.</summary>
+    HashSet<int> SupertypeIds(ITypeSymbol c) => _superIds.TryGetValue(c, out var s) ? s : _superIds.GetValue(c, t =>
+    {
+        var ids = new HashSet<int>();
+        foreach (var k in SupertypeKeys(t)) lock (s_keyNumbers) { if (!s_keyNumbers.TryGetValue(k, out var id)) s_keyNumbers[k] = id = s_keyNumbers.Count; ids.Add(id); }
+        return ids;
+    });
+
+    ITypeSymbol? _arrayT;
+
+    readonly System.Runtime.CompilerServices.ConditionalWeakTable<ITypeSymbol, object> _arraysMayBe = new();
+    /// <summary>False only when IsSubtype(a, target) is false for every array type a: the parts of IsSubtype's array
+    /// case that do not depend on the array (a named type that is not object, not System.Array nor one of the types
+    /// it derives from or implements, nor one of the generic collection interfaces an array of rank 1 is).</summary>
+    public bool ArraysMayBe(ITypeSymbol target) => _arraysMayBe.TryGetValue(target, out var o) ? (bool)o : (bool)_arraysMayBe.GetValue(target, t =>
+    {
+        if (t is not INamedTypeSymbol nt || IsObject(t)) return true;
+        var fn = FullName(t);
+        if (fn == "System.Array") return true;
+        if (!nt.IsGenericType)
+        {
+            _arrayT ??= _d.LibType("System.Array");
+            return _arrayT is { } arrayT && SupertypeIds(arrayT).Contains(KeyId(Canonical(t)));
+        }
+        return nt.Arity == 1 && nt.TypeKind == TypeKind.Interface && fn is "System.Collections.Generic.IList`1" or "System.Collections.Generic.ICollection`1"
+            or "System.Collections.Generic.IEnumerable`1" or "System.Collections.Generic.IReadOnlyList`1" or "System.Collections.Generic.IReadOnlyCollection`1";
+    });
+
     public bool IsSubtype(ITypeSymbol c, ITypeSymbol target)
     {
         if (IsObject(target)) return true;
-        var tk = Key(Canonical(target));
-        if (Key(Canonical(c)) == tk) return true;
+        var tk = KeyId(Canonical(target));
+        if (KeyId(Canonical(c)) == tk) return true;
         if (c is IArrayTypeSymbol ca)
         {
             if (target is IArrayTypeSymbol ta)
-                return ca.Rank == ta.Rank && (Key(ca.ElementType) == Key(ta.ElementType) || (IsRef(ca.ElementType) && IsRef(ta.ElementType) && IsSubtype(ca.ElementType, ta.ElementType)));
+                return ca.Rank == ta.Rank && (KeyId(ca.ElementType) == KeyId(ta.ElementType) || (IsRef(ca.ElementType) && IsRef(ta.ElementType) && IsSubtype(ca.ElementType, ta.ElementType)));
             var fn = FullName(target);
             // System.Array and what it implements (IList, ICollection, IEnumerable, ICloneable, IStructuralComparable,
             // IStructuralEquatable)
             if (fn == "System.Array") return true;
-            if (target is INamedTypeSymbol { IsGenericType: false } && _d.LibType("System.Array") is { } arrayT && SupertypeKeys(arrayT).Contains(tk)) return true;
+            if (target is INamedTypeSymbol { IsGenericType: false })
+            {
+                // (the library's System.Array, found once)
+                _arrayT ??= _d.LibType("System.Array");
+                if (_arrayT is { } arrayT && SupertypeIds(arrayT).Contains(tk)) return true;
+            }
             if (ca.Rank == 1 && target is INamedTypeSymbol nt && nt.Arity == 1 && nt.TypeKind == TypeKind.Interface &&
                 fn is "System.Collections.Generic.IList`1" or "System.Collections.Generic.ICollection`1" or "System.Collections.Generic.IEnumerable`1"
                     or "System.Collections.Generic.IReadOnlyList`1" or "System.Collections.Generic.IReadOnlyCollection`1")
             {
                 // T[] is an IList<U> for each U a reference T converts to (array covariance, as in the CLR)
                 var u = nt.TypeArguments[0];
-                return Key(Canonical(u)) == Key(Canonical(ca.ElementType)) || (IsRef(ca.ElementType) && IsRef(u) && IsSubtype(ca.ElementType, u));
+                return KeyId(Canonical(u)) == KeyId(Canonical(ca.ElementType)) || (IsRef(ca.ElementType) && IsRef(u) && IsSubtype(ca.ElementType, u));
             }
             return false;
         }
         if (c.TypeKind == TypeKind.Delegate && (FullName(target) is "System.Delegate" or "System.MulticastDelegate")) return true;
         if (c.TypeKind == TypeKind.Enum && FullName(target) is "System.Enum" or "System.ValueType") return true;
         if (c.IsValueType && FullName(target) == "System.ValueType") return true;
-        if (SupertypeKeys(c).Contains(tk)) return true;
+        if (SupertypeIds(c).Contains(tk)) return true;
         // variance (out/in type parameters of interfaces and delegates)
         if (target is INamedTypeSymbol { IsGenericType: true } tn && tn.TypeKind is TypeKind.Interface or TypeKind.Delegate)
         {
@@ -632,7 +687,7 @@ internal sealed class Types
         for (int i = 0; i < ps.Length; i++)
         {
             var a = Canonical(from.TypeArguments[i]); var b = Canonical(to.TypeArguments[i]);
-            if (Key(a) == Key(b)) continue;
+            if (KeyId(a) == KeyId(b)) continue;
             switch (ps[i].Variance)
             {
                 case VarianceKind.Out when IsRef(a) && IsRef(b) && IsSubtype(a, b): continue;

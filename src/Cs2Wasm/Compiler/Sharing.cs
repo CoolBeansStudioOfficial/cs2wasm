@@ -318,8 +318,15 @@ internal sealed partial class Sharing
             // (the candidates by the index, in id order as before)
             var allowed = _allIdSet ??= [.. _allIds];
             var ix = Index();
-            foreach (var id in ix.Candidates(t).Concat(ix.Special).Distinct().Order())
-                if (allowed.Contains(id) && (!Types.IsImmortalType(D.TypeById[id]) || D.DisplayById.ContainsKey(id)) && IdIs(id, t)) r.Add(id);
+            // (no array is a subtype of most types: Types.ArraysMayBe, once, not a test per array)
+            bool arrays = D.Types.ArraysMayBe(t);
+            var cl = ix.Candidates(t);
+            // (a type of t's own list, not a special one, is a subtype without asking: SubtypeIndex.IsExact)
+            bool exact = ix.IsExact(cl);
+            foreach (var id in cl.Concat(ix.Special).Distinct().Order())
+                if (allowed.Contains(id) && (!Types.IsImmortalType(D.TypeById[id]) || D.DisplayById.ContainsKey(id))
+                    && (exact && !(D.DisplayById.ContainsKey(id) || D.SyntheticById.ContainsKey(id) || D.TypeById[id] is IArrayTypeSymbol)
+                        || !(!arrays && !D.DisplayById.ContainsKey(id) && D.TypeById[id] is IArrayTypeSymbol) && IdIs(id, t))) r.Add(id);
         }
         return _topIds[k] = r;
     }

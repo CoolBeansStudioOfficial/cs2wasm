@@ -42,7 +42,19 @@ sealed class SubtypeIndex(Types types)
     {
         if (Types.IsObject(t) || t is not INamedTypeSymbol n) return All;
         if (n is { IsGenericType: true, TypeKind: TypeKind.Interface or TypeKind.Delegate } && n.OriginalDefinition.TypeParameters.Any(p => p.Variance != VarianceKind.None))
-            return Get(_byDef, Types.Key(types.Canonical(n.OriginalDefinition)));
+        {
+            var dl = Get(_byDef, Types.Key(types.Canonical(n.OriginalDefinition)));
+            _defLists.Add(dl);
+            return dl;
+        }
         return Get(_bySuper, Types.Key(types.Canonical(n)));
     }
+
+    /// <summary>Whether a list Candidates gave is the one of a type's own key (not All, not a generic definition's):
+    /// then every type in it is a subtype of that type by Types.IsSubtype, without asking. Such a type was listed
+    /// under the key because the key is its own or one of its base types' or interfaces' (SupertypeKeys), and
+    /// IsSubtype answers yes for exactly those before anything else (an array, the one case it tests first, is
+    /// special and never in such a list).</summary>
+    public bool IsExact(List<int> candidates) => !ReferenceEquals(candidates, All) && !_defLists.Contains(candidates);
+    readonly HashSet<List<int>> _defLists = new(ReferenceEqualityComparer.Instance);
 }

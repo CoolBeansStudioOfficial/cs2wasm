@@ -453,7 +453,7 @@ internal sealed partial class Driver
             if (!Arenas.Enabled) return false;
             if (!arenaMember.TryGetValue(k, out var r))
             {
-                r = !_borrowFieldTypes.TryGetValue(k, out var ft) || Arenas.CycleTypes.Any(id => Types.IsSubtype(TypeById[id], ft));
+                r = !_borrowFieldTypes.TryGetValue(k, out var ft) || Arenas.AnyCycleTypeSubtypeOf(ft);
                 arenaMember[k] = r;
             }
             return r;
@@ -469,23 +469,47 @@ internal sealed partial class Driver
         foreach (var (fn, list) in byFn)
         {
             var b = fn.Body;
+            // Where each local is set and read, and where each marker is called: the instructions below are replaced
+            // in place (none moves until the RemoveAll at the end), and only sets, reads and markers are looked at, so
+            // each borrow visits its own positions instead of the whole body (a function with many borrows was
+            // gone through once per borrow, three times). Each position is still asked about its current instruction,
+            // in the body's order, as the scans over the whole body did.
+            var setsOf = new Dictionary<long, List<int>>();
+            var getsOf = new Dictionary<long, List<int>>();
+            var markerAt = new Dictionary<WasmFunction, List<int>>();
+            {
+                var markerSet = new HashSet<WasmFunction>();
+                foreach (var it in list) markerSet.Add(it.marker);
+                for (int i = 0; i < b.Count; i++)
+                {
+                    var x = b[i];
+                    List<int>? l;
+                    if (x.Op is Op.LocalSet or Op.LocalTee) { if (!setsOf.TryGetValue(x.Imm, out l)) setsOf[x.Imm] = l = []; l.Add(i); }
+                    else if (x.Op == Op.LocalGet) { if (!getsOf.TryGetValue(x.Imm, out l)) getsOf[x.Imm] = l = []; l.Add(i); }
+                    else if (x.Op == Op.Call && x.Ref is WasmFunction mw && markerSet.Contains(mw)) { if (!markerAt.TryGetValue(mw, out l)) markerAt[mw] = l = []; l.Add(i); }
+                }
+            }
             foreach (var (_, local, field, marker) in list)
             {
+                var markerPos = markerAt.TryGetValue(marker, out var mp) ? mp : [];
                 // (an init-only field never changes once its object is constructed: no code, on no thread, writes it)
                 bool ok = field == "" || field.Split('\n').All(k => !FieldsAddressTaken.Contains(k) && !reflected.Contains(k)
                     );
                 if (ok && field != "" && summary != null)
                 {
                     var keys = ThreadKeys(fn, field.Split('\n').Where(k => !InitOnlyKey(k)).ToArray(), marker);
-                    int def = b.FindIndex(x => x.Op == Op.Call && x.Ref == marker);
+                    int def = -1;
+                    foreach (var p in markerPos) if (b[p].Op == Op.Call && b[p].Ref == marker) { def = p; break; }
                     if (keys == null || keys.Length > 0 && (def < 0 || StoredWhileInScope(fn, local, def, keys, summary))) ok = false;
                 }
                 if (s_borrowDebug) Console.Error.WriteLine($"borrow {fn.Name} local {local} {field.Replace('\n', '|')}: {ok}"
                     + (summary != null ? " own=" + (FieldWrites.TryGetValue(fn, out var ow) && ow.Contains(field) ? "y" : "n") + " via "
                         + string.Join(",", fn.Body.Where(x => x.Op == Op.Call && x.Ref is WasmFunction g && summary.Has(g, field)).Select(x => ((WasmFunction)x.Ref!).Name).Distinct().Take(5)) : ""));
                 // the local's other writes are the releases at scope exit (get; release; 0; set): nothing moves its value
-                if (ok)
-                    for (int i = 0; i < b.Count && ok; i++)
+                if (ok && setsOf.TryGetValue(local, out var sets))
+                    foreach (var i in sets)
+                    {
+                        if (!ok) break;
                         if (b[i].Op is Op.LocalSet or Op.LocalTee && b[i].Imm == local && !(i > 0 && b[i - 1].Op == Op.Call && b[i - 1].Ref == marker))
                             ok = i >= 3 && b[i - 1].Op == Op.I32Const && b[i - 1].Imm == 0 && b[i - 1].Ref == null
                                  && b[i - 2].Op == Op.Call && IsRelease(b[i - 2].Ref) && b[i - 3].Op == Op.LocalGet && b[i - 3].Imm == local
@@ -494,7 +518,11 @@ internal sealed partial class Driver
                                  || i >= 5 && b[i - 1].Op == Op.LocalGet && b[i - 2].Op == Op.Call && IsRelease(b[i - 2].Ref)
                                     && b[i - 3].Op == Op.LocalGet && b[i - 3].Imm == local && b[i - 4].Op == Op.LocalSet && b[i - 4].Imm == b[i - 1].Imm
                                     && b[i - 5].Op == Op.Call && b[i - 5].Ref == marker;
-                for (int i = 0; i < b.Count; i++)
+                    }
+                // (the marker's calls, and with a borrow the local's reads, in the body's order)
+                IEnumerable<int> at = markerPos;
+                if (ok && getsOf.TryGetValue(local, out var gets)) at = MergeAscending(markerPos, gets);
+                foreach (var i in at)
                 {
                     if (b[i].Op == Op.Call && b[i].Ref == marker)
                         b[i] = ok ? b[i] with { Op = Op.Nop, Ref = null } : b[i] with { Ref = Rt.Retain };
@@ -509,6 +537,24 @@ internal sealed partial class Driver
         }
         // the temps: the retain and the release go together
         var markers = new Dictionary<WasmFunction, WasmFunction?>();
+        // (per function, once: where the temps' retains and releases are called, and its last handler start. The
+        // bodies do not change in this loop; each temp was a search of its whole function, three times)
+        var tempFns = new HashSet<WasmFunction>();
+        foreach (var t in _tempBorrows) { tempFns.Add(t.retain); tempFns.Add(t.release); }
+        var tempIndex = new Dictionary<WasmFunction, (Dictionary<WasmFunction, List<int>> calls, int handler)>();
+        (Dictionary<WasmFunction, List<int>> calls, int handler) TempIndex(WasmFunction fn)
+        {
+            if (tempIndex.TryGetValue(fn, out var ix)) return ix;
+            var calls = new Dictionary<WasmFunction, List<int>>();
+            int handler = -1;
+            var fb = fn.Body;
+            for (int i = 0; i < fb.Count; i++)
+            {
+                if (fb[i].Op == Op.Call && fb[i].Ref is WasmFunction cw && tempFns.Contains(cw)) { if (!calls.TryGetValue(cw, out var l)) calls[cw] = l = []; l.Add(i); }
+                else if (fb[i].Op == Op.Nop && ReferenceEquals(fb[i].Ref, HandlerStart)) handler = i;
+            }
+            return tempIndex[fn] = (calls, handler);
+        }
         foreach (var (fn, field, retain, release) in _tempBorrows)
         {
             // (several fields: the value came through each of them, a getter's path: Driver.ReturnPathKeys)
@@ -525,11 +571,16 @@ internal sealed partial class Driver
             if (ok && (live.Length > 0 || tkeys!.Length > 0))
             {
                 var b = fn.Body;
-                int r = b.FindIndex(x => x.Op == Op.Call && x.Ref == retain);
+                var (calls, h) = TempIndex(fn);
+                int r = calls.TryGetValue(retain, out var rs) ? rs[0] : -1;
                 // (to the last release on a way that goes on; the releases of the handler for an exception on its way
                 // out come after everything, and past them the value is not looked at)
-                int h = b.FindLastIndex(x => x.Op == Op.Nop && ReferenceEquals(x.Ref, HandlerStart));
-                int e = r < 0 ? -1 : b.FindLastIndex(h < 0 ? b.Count - 1 : h, x => x.Op == Op.Call && x.Ref == release);
+                int e = -1;
+                if (r >= 0 && calls.TryGetValue(release, out var es))
+                {
+                    int limit = h < 0 ? b.Count - 1 : h;
+                    for (int q = es.Count - 1; q >= 0; q--) if (es[q] <= limit) { e = es[q]; break; }
+                }
                 if (r < 0 || e < r) ok = !tkeys!.Any(k => summary!.Has(fn, k)) && !(FieldWrites.TryGetValue(fn, out var own) && live.Any(own.Contains));
                 else
                     for (int k = r + 1; k < e && ok; k++)
@@ -561,6 +612,14 @@ internal sealed partial class Driver
         var dead = markers.Keys.Concat(FieldBorrows.Select(b => b.marker)).ToHashSet();
         Module.Functions.RemoveAll(dead.Contains);
         StripWriteMarks();
+    }
+
+    /// <summary>Two ascending lists of positions as one, ascending.</summary>
+    static IEnumerable<int> MergeAscending(List<int> a, List<int> b)
+    {
+        int i = 0, j = 0;
+        while (i < a.Count || j < b.Count)
+            yield return j >= b.Count || i < a.Count && a[i] <= b[j] ? a[i++] : b[j++];
     }
 
     /// <summary>Threads: the functions from which a call chain reaches the function that moves a thread's epoch (a
@@ -734,8 +793,12 @@ internal sealed partial class Driver
             for (int i = 0; i < fns.Count; i++) skip[i] = Internal(fns[i]);
             var edges = new List<int>[n];
             for (int i = 0; i < n; i++) edges[i] = [];
+            // (a function that stores none of the keys shares one empty set, and a component whose stores are one
+            // other's shares that one's: the sets are only read once made. Each function had a set of its own, twice,
+            // nearly a gigabyte for the compiler compiling itself)
+            var none = new ulong[words];
             _bits = new ulong[n][];
-            for (int i = 0; i < n; i++) _bits[i] = new ulong[words];
+            for (int i = 0; i < n; i++) _bits[i] = none;
             for (int i = 0; i < fns.Count; i++)
             {
                 var f = fns[i];
@@ -757,7 +820,10 @@ internal sealed partial class Driver
                 if (d.FieldWrites.TryGetValue(f, out var w))
                     foreach (var k in w)
                         if (_key.TryGetValue(k, out int ki) && !(ownStatics != null && k.StartsWith(ownStatics, StringComparison.Ordinal) && d.IsStaticKey(k)))
+                        {
+                            if (ReferenceEquals(_bits[i], none)) _bits[i] = new ulong[words];
                             _bits[i][ki >> 6] |= 1UL << (ki & 63);
+                        }
             }
             for (int bk = 1; bk < d._bucketFns.Count; bk++)
                 foreach (var t in d.IndirectTargets(new Instr { Op = Op.CallIndirect, Imm2 = bk }))
@@ -810,13 +876,22 @@ internal sealed partial class Driver
                     var comp = new List<int>();
                     int x;
                     do { x = stack.Pop(); on[x] = false; comp.Add(x); } while (x != v);
-                    var acc = new ulong[words];
+                    // (the union of the members' sets and their callees': one of them as it is while it is the only one
+                    // that is not empty, a new set once a second one adds to it)
+                    ulong[]? acc = null; bool own = false;
+                    void Union(ulong[] a)
+                    {
+                        if (ReferenceEquals(a, none) || ReferenceEquals(a, acc)) return;
+                        if (acc == null) { acc = a; return; }
+                        if (!own) { acc = (ulong[])acc.Clone(); own = true; }
+                        for (int k = 0; k < words; k++) acc[k] |= a[k];
+                    }
                     foreach (var c in comp)
                     {
-                        for (int k = 0; k < words; k++) acc[k] |= _bits[c][k];
-                        foreach (var t in edges[c]) if (!on[t]) for (int k = 0; k < words; k++) acc[k] |= _bits[t][k];
+                        Union(_bits[c]);
+                        foreach (var t in edges[c]) if (!on[t]) Union(_bits[t]);
                     }
-                    foreach (var c in comp) _bits[c] = acc;
+                    foreach (var c in comp) _bits[c] = acc ?? none;
                 }
             }
         }

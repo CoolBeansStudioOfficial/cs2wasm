@@ -1185,11 +1185,15 @@ internal sealed partial class Driver
     /// <summary>CS2WASM_TIMES=1: milliseconds since the last mark, per phase.</summary>
     /// <summary>Time spent binding method bodies (Roslyn's GetOperation), for CS2WASM_TIMES.</summary>
     public static long BindTicks;
+    TimeSpan _lastPause; int _lastGen2;
     public void Mark(string phase)
     {
         if (!_times) return;
         long ins = 0, cap = 0; foreach (var f in Module.Functions) { ins += f.Body.Count; cap += f.Body.Capacity; }
-        Console.Error.WriteLine($"  {_clock.ElapsedMilliseconds,6} ms  {GC.GetTotalMemory(false) >> 20,6} MB  {phase}  ({Module.Functions.Count} functions, {ins / 1000000.0:F1}M instructions in room for {cap / 1000000.0:F1}M)");
+        // (and how much of it the .NET collector paused the compiler for, with its full collections)
+        var pause = GC.GetTotalPauseDuration(); int gen2 = GC.CollectionCount(2);
+        Console.Error.WriteLine($"  {_clock.ElapsedMilliseconds,6} ms  {GC.GetTotalMemory(false) >> 20,6} MB  {phase}  ({Module.Functions.Count} functions, {ins / 1000000.0:F1}M instructions in room for {cap / 1000000.0:F1}M; gc {(long)(pause - _lastPause).TotalMilliseconds} ms, {gen2 - _lastGen2} full)");
+        _lastPause = pause; _lastGen2 = gen2;
         _clock.Restart();
     }
 
@@ -1211,6 +1215,7 @@ internal sealed partial class Driver
         RunPluginsBeforeCompile(rt);
         Drain(rt);
         Mark("compile (first drain)");
+        if (_times) Console.Error.WriteLine($"    of it binding bodies (Roslyn's GetOperation): {BindTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms");
         RunPlugins(rt);
         rt.FinishExports();
         Drain(rt);

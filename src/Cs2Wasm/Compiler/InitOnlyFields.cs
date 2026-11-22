@@ -51,14 +51,25 @@ internal sealed partial class Driver
             _ctorFns = [];
             foreach (var mi in AllMethods) if (mi.Sym.MethodKind == MethodKind.Constructor) _ctorFns[mi.Fn] = mi.Sym.ContainingType.OriginalDefinition;
         }
-        var own = f.OriginalDefinition.ContainingType;
-        foreach (var (fn, keys) in FieldWrites)
+        // (the answer per key, from the functions that write each key, gathered once: asked for every borrow of a key,
+        // this went through every function's writes each time. Asked only once the whole program is compiled, as
+        // _ctorFns already assumes)
+        if (_onlyCtorsWrite.TryGetValue(key, out var known)) return known;
+        if (_writersOf == null)
         {
-            if (!keys.Contains(key)) continue;
-            if (!_ctorFns.TryGetValue(fn, out var ct) || !SymbolEqualityComparer.Default.Equals(ct, own)) return false;
+            _writersOf = [];
+            foreach (var (fn, keys) in FieldWrites)
+                foreach (var k in keys) { if (!_writersOf.TryGetValue(k, out var l)) _writersOf[k] = l = []; l.Add(fn); }
         }
-        return true;
+        var own = f.OriginalDefinition.ContainingType;
+        bool r = true;
+        if (_writersOf.TryGetValue(key, out var writers))
+            foreach (var fn in writers)
+                if (!_ctorFns.TryGetValue(fn, out var ct) || !SymbolEqualityComparer.Default.Equals(ct, own)) { r = false; break; }
+        return _onlyCtorsWrite[key] = r;
     }
+    Dictionary<string, List<WasmFunction>>? _writersOf;
+    readonly Dictionary<string, bool> _onlyCtorsWrite = [];
 
     internal bool InitOnly(IFieldSymbol f) => f.IsReadOnly && f.AssociatedSymbol is not IPropertySymbol { SetMethod: not null } && OncePerConstruction(f);
 
