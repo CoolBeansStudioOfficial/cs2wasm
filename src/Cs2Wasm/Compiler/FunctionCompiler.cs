@@ -532,9 +532,9 @@ sealed partial class FunctionCompiler
     /// the place held only by the site's own type, not by the type the generic code is compiled for.</summary>
     static readonly bool s_noStoreHint = Environment.GetEnvironmentVariable("CS2WASM_NO_STORE_HINT") == "1" || Environment.GetEnvironmentVariable("CS2WASM_NO_FLAT_DESTROY") == "1";
 
-    /// <summary>The same for a store's old value in generic code, only where it can pay: a string, an array of
-    /// numbers, or a sealed class that looks flat from its fields (Driver.LooksFlat). Any other class would only make
-    /// the instantiations' bodies differ by a number that nothing uses (they are merged while they are the same).</summary>
+    /// <summary>The same for a store's old value in generic code, only where it can pay: a sealed class that looks
+    /// flat from its fields (Driver.LooksFlat). Any other class would only make the instantiations' bodies differ
+    /// by a number that nothing uses (they are merged while they are the same).</summary>
     int StoreHint(ITypeSymbol? t)
     {
         if (t == null || s_noStoreHint) return 0;

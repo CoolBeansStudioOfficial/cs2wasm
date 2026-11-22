@@ -34,13 +34,16 @@ internal sealed partial class Driver
 {
     readonly Dictionary<ISymbol, bool> _looksFlat = new(SymbolEqualityComparer.Default);
 
-    /// <summary>Whether a type that names its objects' class exactly (FunctionCompiler.ExactTypeHint) is a leaf or
-    /// looks flat by its fields: a string, an array of numbers, or a sealed class without a finalizer whose reference
-    /// fields are strings, arrays of numbers and sealed classes that hold no reference and have no finalizer. A hint
-    /// for where naming the class can pay; what is flat is decided on the destructions (RuntimeGen.IsFlatDestroy).</summary>
+    /// <summary>Whether a class that names its objects exactly (FunctionCompiler.ExactTypeHint) looks flat by its
+    /// fields: a sealed class without a finalizer whose reference fields are strings, arrays of numbers and sealed
+    /// classes that hold no reference and have no finalizer. A hint for where naming the class in generic code can
+    /// pay; what is flat is decided on the destructions (RuntimeGen.IsFlatDestroy). Not a string or an array: with
+    /// every store of a string in a generic collection's loops written out the self-hosted compiler compiled hello
+    /// world in 9.3 to 9.5 s for 9.0 to 9.2 (three rounds in turn on the homelab, its module 0.35% larger), and no
+    /// scene gained from them (tools/colstr-parts.cs: strings' frame 7,148 with against 7,169 without).</summary>
     internal bool LooksFlat(ITypeSymbol t)
     {
-        if (Types.IsString(t) || t is IArrayTypeSymbol) return true;
+        if (Types.IsString(t) || t is IArrayTypeSymbol) return false;
         // (sealed: ExactTypeHint has said so)
         if (t is not INamedTypeSymbol { TypeKind: TypeKind.Class } nt) return false;
         if (_looksFlat.TryGetValue(nt, out var known)) return known;

@@ -872,6 +872,15 @@ internal sealed class WasmModule
             f.Body = o;
             changed.Add(f);
         }
+        // (a class's name on a release has no use from here on: without it the bodies that differ by nothing else are
+        // the same again for the merge)
+        foreach (var f in Functions)
+        {
+            if (f.IsImport) continue;
+            var b = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(f.Body);
+            for (int i = 0; i < b.Length; i++)
+                if (b[i].Op == Op.Call && b[i].Imm2 != 0 && ReferenceEquals(b[i].Ref, ReleaseFn)) b[i].Imm2 = 0;
+        }
         return changed;
     }
 
