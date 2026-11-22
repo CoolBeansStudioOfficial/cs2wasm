@@ -37,8 +37,8 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
-| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.14x to 0.25x NativeAOT's with `--js-young 32`; without it one scavenge of Node's own heap a run, 0.45 to 0.75 ms, the host clock's BigInts: strings 0.45 ms against 0.23); tree 3.83 ms vs 3.15 ms worst (1.21x), p99.9 3.57 vs 2.46 (1.45x), its rebuild (main dca1f9c, this machine, 2026-11-22; was 6.65 and 6.10; AUDIT A3.5); with branch claude/tree-rebuild-3: worst 3.12 vs 3.13 (0.99x), p99.9 2.97 vs 2.40 (1.24x) | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 2.15x (was 3.47x), tree 1.91x (was 2.56x), collections 1.28x, strings 1.21x, bigdrop 0.87x; mean frame (NativeAOT's collections in it): churn 1.99x, tree 1.61x, collections 1.07x, strings 1.13x, bigdrop 0.21x (main dca1f9c, this machine) | close to 1.0x on every scene |
+| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.14x to 0.26x NativeAOT's with `--js-young 32`; without it one scavenge of Node's own heap a run, 0.45 to 0.75 ms, the host clock's BigInts); tree worst 3.20 to 3.37 ms vs 3.17 to 3.59 (0.89x to 1.06x over three runs of 3), p99.9 2.90 to 3.00 vs 2.42 to 2.69 (1.12x to 1.20x), its rebuild (main 7451b65, this machine, 2026-11-22; was 6.65 and 6.10; AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
+| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 2.18x (was 3.47x), tree 1.81x to 1.86x (was 2.56x), collections 1.27x, strings 1.21x, bigdrop 0.87x (main 7451b65, this machine); mean frame (NativeAOT's collections in it; main dca1f9c): churn 1.99x, tree 1.61x, collections 1.07x, strings 1.13x, bigdrop 0.21x | close to 1.0x on every scene |
 | 4 | Hello world size (test 145) | 27,089 B (main dca1f9c) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
@@ -563,3 +563,17 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   fewer members (a leaf's list, a third of them, kept a plain object until it has an item: a change of the runtime's
   invariants, AUDIT A3.5) or step 7.D. Seen, not followed: the tree built with the parent set after the child is in
   its list takes 5.5 ms a build (tools/tree-build.cs, variant 2).
+- 2026-11-22, round 3 merged (main 7451b65) and the tree scene's other frames by phase (tools/tree-frame.cs, both sides;
+  nothing changed). Checked again before the merge: frames.mjs here three times, tree worst 3.20, 3.37, 3.32 ms against
+  NativeAOT-LLVM's 3.59, 3.17, 3.18 and p99.9 3.00, 2.93, 2.90 against 2.69, 2.44, 2.42, the other scenes as before;
+  bench.mjs 0.96x; homelab at 7451b65: suite 203/203 checked and as shipped, stress 200 loaded runs a mode: 139, 191 and
+  192 the same in every run, 127 differed in 1 of 400; the self-hosted compiler 8.76-8.89 s against 8.85-8.89 before and
+  NativeAOT-LLVM's 3.73-3.81, its hello world byte for byte the .NET-hosted compiler's. A frame that is not a rebuild,
+  median us, cs2wasm against NativeAOT-LLVM: the new subtree's build (156 entities) 15.9 against 2.3; its store over the
+  old one 9.8 against 0.1 (the old subtree, 343 members, destroyed there through its owners, 28 ns a member; in 557 of
+  11,461 frames it stays with the group instead, `fail-inside` in `CS2WASM_DROP_STATS=1`); the move 0.6 against 0.1;
+  the walk 27.9 against 29.3 (at NativeAOT's; walked again at once, indexed: 17.7 against 10.9). So the median's 23 us
+  over NativeAOT's is the build and the destroy of the subtree, the two things the rebuild frame is made of, 102 ns an
+  entity built against 15 and 63 destroyed against none in the frame; NativeAOT's mean build is 10.6 us, its
+  collections in it. Not followed yet: why one replaced subtree in twenty stays (a tree that is never rebuilt keeps
+  them), and the build with the parent set after the add (5.5 ms against 1.9, round 3).
