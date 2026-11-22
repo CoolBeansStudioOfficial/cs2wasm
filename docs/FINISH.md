@@ -32,9 +32,9 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 7.4 ms vs 3.4 ms worst, p99.9 7.1 vs 2.7, its rebuild (homelab, branch tree-spike; main 10.6 / 10.2 there; AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Hello world size (test 145) | 27,868 B (main 26150c1 with K round 2 and L round 3; 28,287 with L round 2, 27,869 before it) | < 28,383 B |
-| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 10.24 s vs 5.18 s, 1.98x (main 1191d18 with K round 4, N round 2, D's fixes; interleaved, 3 rounds; 2.7x on 2026-11-20 morning) | < NativeAOT-LLVM |
-| 4 | Same: peak memory | 306.0 MB vs 322.2 MB (main; stream L round 4 merged without its 16 MiB growth, owner 2026-11-21: the heap top is 4.6 MB lower, the memory still grows by an eighth; its 302.0 MB was measured with that growth) | < NativeAOT-LLVM's, same measure |
-| 4 | Same: module size | 41.8 MB vs 129 MB (main 1191d18, shipped) | met; next waste: code (36.2 MB) |
+| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
+| 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
+| 4 | Same: module size | 39.5 MB vs 129 MB (main ad4c99e) | met; next waste: code (36.2 MB) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock. Homelab (16 threads), branch threads-scale: 15.5 / 12.9 / 15.1 / 15.9 / 18.2 s on 1 / 4 / 12 / 16 / 24 against main's 15.7 / 13.2 / 16.8 / 17.7 / 18.1 | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | met 2026-11-21: `node tools/proof5.mjs toolchain`, `web`, `check`: built in headless Chrome in 220.9 s, its 1,667 log lines (1,669 with `--panic`) equal stock Godot .NET's | plays, log equals the oracle's |
 | 5 | Self-hosted output equals the .NET-hosted compiler's, on 1 and 4 cores (`node tools/selfdet.mjs [--self t.wasm] [--cores 1,4] <program.cs> [-r x.dll]`) | met 2026-11-21: 021_threads and the GodotSharp Hello (4,060,330 B) byte-identical, no-threads toolchain and threaded on 1 and 4 cores | byte-identical |
@@ -460,3 +460,7 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   run on the same loaded machine, whose NativeAOT side ran slower: 0.90x / 1.50x; nothing changed touches them).
   Suite on the homelab: checked 195/196, as shipped 194/196: 072_http's .NET run could not connect (another
   session's suite held its port) and 088's timer tick under load (the known one); both pass alone, both modes.
+- 2026-11-22, main ad4c99e (K round 5, the test 127 fix, threads past four, tree spike, stream L round 4 without its growth
+  change, fewer count operations, reflection on generated methods, a self-hosted build twice as fast), on the homelab, quiet,
+  3 interleaved rounds: self-hosted compiler 9.27-9.79 s / 306.0 MB / 39.5 MB against NativeAOT-LLVM 3.80-3.84 s / 322.2 MB /
+  129 MB: time 2.49x, memory 0.95x, size 0.31x. The self-hosted build itself: 247 s.
