@@ -113,7 +113,8 @@ prof)
     node "$ROOTW/tools/profphase.mjs" "$PW/$b.cpuprofile" "$PW/$b.bind.cpuprofile"
   done
   if [ -f "$NAOT/bind-bench-naot.js" ]; then
-    (cd "$NAOT" && node $NP --cpu-prof-dir "$PW" --cpu-prof-name naot.cpuprofile bind-bench-naot.js "$(mounted "$UP")" "$(mounted "$RT")" ${BODIES:-400} 2>&1 | head -2)
+    # (without --no-wasm-lazy-compilation: NativeAOT-LLVM's build exits at once with it, printing nothing)
+    (cd "$NAOT" && node ${NP/--no-wasm-lazy-compilation/} --cpu-prof-dir "$PW" --cpu-prof-name naot.cpuprofile bind-bench-naot.js "$(mounted "$UP")" "$(mounted "$RT")" ${BODIES:-400} 2>&1 | head -2)
     node "$ROOTW/tools/profphase.mjs" "$PW/naot.cpuprofile" "$PW/naot.bind.cpuprofile"
   fi
   ;;
