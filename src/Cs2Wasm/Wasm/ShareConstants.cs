@@ -161,7 +161,9 @@ static class ShareConstants
     /// <summary>Shares the groups (WasmModule, on the final bodies). Returns the number of members made stubs.</summary>
     public static int Run(List<WasmFunction> fns, HashSet<WasmFunction> mayThrow, Func<int, bool>? posShown, bool lend, Func<string, FuncType, WasmFunction> add, Func<WasmFunction, int> tableSlot)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var groups = Groups(fns, mayThrow, posShown, lend, out _);
+        long tGroups = sw.ElapsedMilliseconds;
         var plans = new Dictionary<WasmFunction, Plan>();
         foreach (var g in groups)
         {
@@ -207,6 +209,7 @@ static class ShareConstants
                     if (!plans.TryGetValue((WasmFunction)pl.Members[0].Body[i].Ref!, out var cp) || cp.Dead) { pl.Dead = true; Died(pl, "callee"); again = true; break; }
             }
         }
+        long tSlots = sw.ElapsedMilliseconds;
         // (the callees called through the table: now in it)
         foreach (var pl in all)
         {
@@ -310,6 +313,7 @@ static class ShareConstants
                 stubs++;
             }
         }
+        if (s_stats) Console.Error.WriteLine($"share: groups {tGroups} ms, slots {tSlots - tGroups} ms, the rest {sw.ElapsedMilliseconds - tSlots} ms");
         return stubs;
     }
 
@@ -371,6 +375,7 @@ static class ShareConstants
     }
 
     static readonly bool s_why = Environment.GetEnvironmentVariable("CS2WASM_SHARE_WHY") == "1";
+    static readonly bool s_stats = Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1";
     static readonly Dictionary<WasmFunction, string> s_died = [];
     static void Died(Plan pl, string why) { if (s_why) foreach (var m in pl.Members) s_died[m] = why; }
 
