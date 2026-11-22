@@ -58,7 +58,14 @@ Process? httpServer = null;
 if (programs.Where((p, i) => i % shardN == shardK).Any(p => p.name.EndsWith("_http") && (filter == null || p.name.Contains(filter))))
 {
     httpServer = Process.Start(new ProcessStartInfo("node", [Path.Combine(dir, "http-server.mjs")]) { RedirectStandardOutput = true })!;
-    httpServer.StandardOutput.ReadLine(); // "ready <port>"
+    // ("ready <port>": a free port of this runner's own; the programs name 18765 in their source, which is replaced by
+    // it, for the .NET run and the module alike)
+    var ready = httpServer.StandardOutput.ReadLine();
+    if (ready == null || !ready.StartsWith("ready ")) throw new Exception("the HTTP server did not start: " + ready);
+    var port = ready[6..].Trim();
+    for (int i = 0; i < programs.Count; i++)
+        if (programs[i].name.EndsWith("_http"))
+            programs[i] = (programs[i].name, programs[i].sources.Select(s => (s.path, s.text.Replace("127.0.0.1:18765", "127.0.0.1:" + port))).ToList(), programs[i].symbols);
 }
 foreach (var n in skipped) { var l = $"SKIP {n} (GodotSharp sources not found at {godotSharp})"; Console.WriteLine(l); report.AppendLine(l); }
 foreach (var (name, sources, symbols) in programs.Where((p, i) => (filter == null || p.name.Contains(filter)) && i % shardN == shardK))
