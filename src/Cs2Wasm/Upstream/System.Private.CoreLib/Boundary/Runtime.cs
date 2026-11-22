@@ -2049,8 +2049,11 @@ namespace Cs2Wasm.Runtime
         public static void FreeObjectArena(int addr, int size)
         {
             // (its count word reads as dead from here on, wherever the block goes)
+            // (a member's count word that goes here: the tops remembered may have gone through it. Most objects freed
+            // here are plain, or members whose destruction moved the epoch already)
+            bool member = Mem.LoadI32(addr) < -1;
             Mem.StoreI32(addr, 0);
-            TopsMoved();
+            if (member) TopsMoved();
             // (its words need no clearing, a block is cleared when it is allocated; its side words go)
             SideFree(addr);
             // (the usual case in one small piece, as FreeObject)
@@ -2714,12 +2717,15 @@ namespace Cs2Wasm.Runtime
         // nearly every member is noted, and a loop that takes and drops a reference to each member of a list walks
         // each one's chain every time (Roslyn's binder, SourceAssemblySymbol.GetAttributeDeclarations over 1,812
         // declarations per symbol's obsolete check: 47 million walks of 22 owners on average in the bind bench, half
-        // its time). So the answer is remembered, per member, in a table of TopCacheN entries (member, epoch, top),
-        // and is good while the epoch is the one it was found in. The epoch moves at every change of what the walk
-        // reads (TopsMoved): a member's Owned flag and owner word, and an object's count word becoming or ceasing to
-        // be a member's (a join, a leave, a destruction, the finalizer phase's bias, a free). The answer is the same
-        // as the walk's. Without threads only (a constant: ThreadMode; with threads the walk is under the runtime lock).
-        const int TopCacheN = 4096;
+        // its time). So the answers are remembered in a table of TopCacheN entries (member, epoch, top, steps to the
+        // top), good while the epoch is the one they were found in; a walk stops at the first member on its way whose
+        // answer is remembered, and remembers the answer of each member it went through (the members of a list share
+        // their owners' chain: after one walk the others are a step or two). The epoch moves at every change of what
+        // the walk reads (TopsMoved): a member's Owned flag and owner word, and an object's count word becoming or
+        // ceasing to be a member's (a join, a leave, a destruction, the finalizer phase's bias, a free). The answer is
+        // the walk's, its limit of 64 steps too. Without threads only (a constant: ThreadMode; with threads the walk
+        // is under the runtime lock).
+        const int TopCacheN = 8192, TopEntry = 16, TopReach = 64;
         static int s_topCache, s_topEpoch;
 
         /// <summary>Something the walk up the owners reads has changed: the remembered tops are stale.</summary>
@@ -2729,22 +2735,56 @@ namespace Cs2Wasm.Runtime
         /// <summary>The epoch went round: an entry four billion changes old could read as current, so all go.</summary>
         static void TopsWrapped()
         {
-            if (s_topCache != 0) for (int i = 0; i < TopCacheN; i++) Mem.StoreI32(s_topCache + 12 * i, 0);
+            if (s_topCache != 0) for (int i = 0; i < TopCacheN; i++) Mem.StoreI32(s_topCache + TopEntry * i, 0);
         }
 
-        /// <summary>The member above all its owners (itself when it has none); 0 when that is far.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static int TopSlot(int v) => s_topCache + TopEntry * (((v >> 3) ^ (v >> 16)) & (TopCacheN - 1));
+
+        /// <summary>The member above all its owners (itself when it has none); 0 when that is far (TopReach steps).</summary>
         static int Top(int m)
         {
             if (ThreadMode()) return TopWalk(m);
-            if (s_topCache == 0) { int c = Alloc(12 * TopCacheN); for (int i = 0; i < TopCacheN; i++) Mem.StoreI32(c + 12 * i, 0); s_topCache = c; }
-            int e =s_topCache + 12 * (((m >> 3) ^ (m >> 15)) & (TopCacheN - 1));
-            if (Mem.LoadI32(e) == m && Mem.LoadI32(e + 4) == s_topEpoch)
+            if (s_topCache == 0)
             {
-                if (DropStats()) s_dsTopCached++;
-                return Mem.LoadI32(e + 8);
+                // (the table, then the walk's list of the members it goes through)
+                int c = Alloc(TopEntry * TopCacheN + 4 * TopReach);
+                for (int i = 0; i < TopCacheN; i++) Mem.StoreI32(c + TopEntry * i, 0);
+                s_topCache = c;
             }
-            int t = TopWalk(m);
-            Mem.StoreI32(e, m); Mem.StoreI32(e + 4, s_topEpoch); Mem.StoreI32(e + 8, t);
+            int epoch = s_topEpoch, path = s_topCache + TopEntry * TopCacheN;
+            if (DropStats()) s_dsTops++;
+            // j: the steps from m to its top (-1: far); n: the members gone through, in the list
+            int v = m, j = -1, t = 0, n = 0;
+            for (int k = 0; k < TopReach; k++)
+            {
+                int e = TopSlot(v);
+                if (Mem.LoadI32(e) == v && Mem.LoadI32(e + 4) == epoch)
+                {
+                    if (DropStats()) s_dsTopCached++;
+                    j = k + Mem.LoadI32(e + 12);
+                    t = Mem.LoadI32(e + 8);
+                    break;
+                }
+                if (DropStats()) s_dsTopHops++;
+                Mem.StoreI32(path + 4 * n, v);
+                n++;
+                int w;
+                if ((PL(v, 24) & Owned) == 0 || (w = PL(v, 20)) == 0 || Mem.LoadI32(w) >= -1) { j = k; t = v; break; }
+                v = w;
+            }
+            if (j < 0) { if (DropStats()) s_dsTopFar++; return 0; }
+            // (each member gone through: its top, and how far it is from it)
+            for (int i = 0; i < n; i++)
+            {
+                int u = Mem.LoadI32(path + 4 * i), e = TopSlot(u);
+                Mem.StoreI32(e, u); Mem.StoreI32(e + 4, epoch); Mem.StoreI32(e + 8, t); Mem.StoreI32(e + 12, j - i);
+            }
+            // (the walk's own limit: a top more than TopReach steps up is far from m, though not from those above it)
+            if (j >= TopReach) { t = 0; if (DropStats()) s_dsTopFar++; }
+            else if (DropStats() && (PLM(t) & 1) != 0) s_dsTopMarked++;
+            // (checked: the answer is the walk's, every time; a change TopsMoved does not see would show here)
+            if (Checked() && t != TopWalk(m)) { ChkSay("checked: a remembered top is not the walk's"); Mem.StoreI32(-4, 0); }
             return t;
         }
 
