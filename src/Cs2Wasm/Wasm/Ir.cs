@@ -174,6 +174,12 @@ internal sealed class WasmFunction
     /// <summary>The statics' slots (of references) that nothing this function runs can store, each with its type's
     /// initialization flag (null: the type has no initializer): StaticLoads.cs reads them once before a loop.</summary>
     public Dictionary<object, object?>? StableStatics;
+    /// <summary>The fields this function's own code stores (with what was inlined into it): a set of FieldHoist
+    /// (0: not known, 1: none). Wasm/FieldLoads.cs.</summary>
+    public int FieldStoreSet;
+    /// <summary>Code went into this function whose place among its loops is not known: no field is read once before
+    /// a loop of it (Wasm/FieldLoads.cs).</summary>
+    public bool NoFieldHoist;
     public WasmFunction(string name, FuncType type) { Name = name; Type = type; }
     public override string ToString() => Name;
 }

@@ -112,6 +112,7 @@ sealed partial class FunctionCompiler
             var fo = (INamedTypeSymbol)T.Canonical(fld.ContainingType);
             var fty = T.Resolve(fld.Type, Map);
             // (whoever holds the reference can store through it: the field is one whose address is taken)
+            D.NoteFieldEscape(fld);
             if (Types.IsRef(fty))
             {
                 D.FieldsAddressTaken.Add(Driver.FieldKey(fo, fld));

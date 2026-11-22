@@ -141,18 +141,19 @@ static class Inliner
             if (!any) continue;
             var outBody = new List<Instr>(f.Body.Count + 32);
             var open = new List<bool>(); // the blocks open here: whether each is a loop
+            var openAt = new List<int>(); // where each starts in outBody (FieldHoist.Inlined: the loops' sets)
             int loops = 0;
             any = false;
             foreach (var ins in f.Body)
             {
                 switch (ins.Op)
                 {
-                    case Op.Loop: open.Add(true); loops++; break;
-                    case Op.Block or Op.If or Op.TryTable: open.Add(false); break;
-                    case Op.End when open.Count > 0: if (open[^1]) loops--; open.RemoveAt(open.Count - 1); break;
+                    case Op.Loop: open.Add(true); openAt.Add(outBody.Count); loops++; break;
+                    case Op.Block or Op.If or Op.TryTable: open.Add(false); openAt.Add(-1); break;
+                    case Op.End when open.Count > 0: if (open[^1]) loops--; open.RemoveAt(open.Count - 1); openAt.RemoveAt(openAt.Count - 1); break;
                 }
-                if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != f && (candidates.Contains(g) || loops > 0 && inLoops.Contains(g))) { Expand(f, g, outBody, ins.Pos, ins.Inl, framed.Contains(g)); any = true; }
-                else if (ins.Op == Op.Call && ins.Ref is WasmFunction h && h != f && fast.TryGetValue(h, out int ifAt)) { ExpandFastPath(f, h, ifAt, outBody, ins); any = true; }
+                if (ins.Op == Op.Call && ins.Ref is WasmFunction g && g != f && (candidates.Contains(g) || loops > 0 && inLoops.Contains(g))) { Expand(f, g, outBody, ins.Pos, ins.Inl, framed.Contains(g), openAt); any = true; }
+                else if (ins.Op == Op.Call && ins.Ref is WasmFunction h && h != f && fast.TryGetValue(h, out int ifAt)) { Module?.FieldHoist?.Inlined(f, h, outBody, openAt); ExpandFastPath(f, h, ifAt, outBody, ins); any = true; }
                 else outBody.Add(ins);
             }
             if (!any) continue;
@@ -340,8 +341,10 @@ static class Inliner
         return depth == 0;
     }
 
-    internal static void Expand(WasmFunction f, WasmFunction g, List<Instr> outBody, int pos, int siteScope = 0, bool framed = false)
+    internal static void Expand(WasmFunction f, WasmFunction g, List<Instr> outBody, int pos, int siteScope = 0, bool framed = false, List<int>? openLoops = null)
     {
+        // (the fields g's code stores are stored where it went: in f, in the loops open here; FieldLoads.cs)
+        Module?.FieldHoist?.Inlined(f, g, outBody, openLoops);
         // The scope of the copy: the call's own, and inside it the callee's when the callee is a frame of a trace.
         // What the callee had inlined in itself keeps its scopes, inside that one.
         int scope = framed && g.FrameName != null && Module != null ? Module.InlineScope(siteScope, g, pos) : siteScope;

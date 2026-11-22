@@ -711,6 +711,9 @@ sealed partial class FunctionCompiler
     {
         var field = f.Field;
         var storage = StorageField(field);
+        // (whoever asked for the place did not say it only loads or stores there: the address may go anywhere, FieldLoads.cs)
+        bool plainUse = ReferenceEquals(f, _plainFieldUse);
+        _plainFieldUse = null;
         if (field.IsStatic)
         {
             EmitStaticInitGuardForField(Owner(field));
@@ -726,10 +729,31 @@ sealed partial class FunctionCompiler
             if (IsAddressable(f.Instance!)) return EmitAddressBase(f.Instance!) + slot.Offset;
             EmitValue(f.Instance!); return slot.Offset; // rvalue struct: its temp
         }
+        if (!plainUse) D.NoteFieldEscape(storage);
         var o = EmitValue(f.Instance!);
         ToTransient(o, it);
         if (!IsKnownNonNull(f.Instance!)) NullCheckKeep();
         return slot.Offset;
+    }
+
+    /// <summary>The field reference whose place the next EmitFieldSlotBase is asked for only to load from it or to
+    /// store to it there and then (FieldLoads.cs: any other use of a field's place is its address taken).</summary>
+    IFieldReferenceOperation? _plainFieldUse;
+
+    /// <summary>A store of an instance field by name, about to be made here: its mark (FieldLoads.cs).</summary>
+    void NoteFieldStore(IFieldSymbol storage, ITypeSymbol fieldType)
+    {
+        if (D.FieldTagOf(storage, fieldType) is not { } tag) return;
+        D.NoteFieldStoreIn(E.Fn, tag);
+        E.Emit(Op.Nop, 0, 0, tag.Mark);
+        E.Body[^1] = E.Body[^1] with { Pos = -1 };
+    }
+
+    /// <summary>The load just written reads this instance field of a class's object: its tag (FieldLoads.cs).</summary>
+    void TagFieldLoad(IFieldSymbol storage, ITypeSymbol fieldType)
+    {
+        var b = E.Body;
+        if (b.Count > 0 && b[^1].Op is >= Op.I32Load and <= Op.I64Load32U && b[^1].Ref == null && D.FieldTagOf(storage, fieldType) is { } tag) b[^1] = b[^1] with { Ref = tag };
     }
 
     /// <summary>A frame slot holding a temporary non-struct value (for `in` arguments of rvalues).</summary>
@@ -783,9 +807,13 @@ sealed partial class FunctionCompiler
             return EmitValue(f.Instance);
         }
         if (f.Field.IsFixedSizeBuffer) { EmitAddress(f); return Own.None; }
+        // (a value read from the field's place and nothing else: FieldLoads.cs; a struct's place is handed on)
+        if (!Types.IsStruct(ft)) _plainFieldUse = f;
         int off = EmitAddressBase(f);
+        _plainFieldUse = null;
         if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
         E.Load(Types.LoadOp(ft), off);
+        if (!f.Field.IsStatic && f.Instance != null && !TypeOf(f.Instance).IsValueType) TagFieldLoad(StorageField(f.Field), ft);
         // (a static's reference, read with a plain load: a loop that cannot store it reads it once, StaticLoads.cs)
         if (f.Field.IsStatic && off == 0 && Types.IsRef(ft) && !D.ThreadMode && !f.Field.IsVolatile && !IsThreadStatic(StorageField(f.Field))
             && E.Fn.Body.Count >= 2 && E.Fn.Body[^1].Op == Op.I32Load && E.Fn.Body[^2] is { Op: Op.I32Const, Imm: 0, Ref: StaticSlot slot })
@@ -863,6 +891,7 @@ sealed partial class FunctionCompiler
     {
         D.NoteFieldWrite(E, Driver.FieldKey(Owner(f), f));
         var ft = T.Resolve(f.Type, Map);
+        if (!f.IsStatic) NoteFieldStore(StorageField(f), ft);
         int a = E.AddLocal(ValType.I32);
         int off;
         if (f.IsStatic && IsThreadStatic(f)) { EmitStaticInitGuardForField(Owner(f)); E.GGet(D.TlsBase); off = D.ThreadStaticOffset(Owner(f), f, ft); }
@@ -915,6 +944,7 @@ sealed partial class FunctionCompiler
             else off = EmitReceiverAddressForField(pr.Instance!) + T.FieldIn(owner, bf).Offset;
             if (Types.IsStruct(ft)) { if (off != 0) { E.I32(off); E.Op(Op.I32Add); } return Own.None; }
             E.Load(Types.LoadOp(ft), off);
+            if (!p.IsStatic && !TypeOf(pr.Instance!).IsValueType) TagFieldLoad(bf, ft);
             return Types.IsRef(ft) ? Own.Unstable : Own.None;
         }
         // array length is a plain load
@@ -2812,6 +2842,7 @@ sealed partial class FunctionCompiler
                     var ft = T.Resolve(pr.Property.Type, Map);
                     var owner = Owner(pr.Property);
                     D.NoteFieldWrite(E, Driver.FieldKey(owner, bf));
+                    if (!bf.IsStatic && pr.Instance != null && !TypeOf(pr.Instance).IsValueType) NoteFieldStore(bf, ft);
                     Arenas.Site? psite = null; WasmFunction? ppin = null;
                     if (Types.IsRef(ft))
                     {
@@ -2835,12 +2866,13 @@ sealed partial class FunctionCompiler
                 {
                     var field = fr.Field;
                     D.NoteFieldWrite(E, Driver.FieldKey(Owner(field), StorageField(field)));
+                    if (!field.IsStatic && fr.Instance != null && !TypeOf(fr.Instance).IsValueType) NoteFieldStore(StorageField(field), t);
                     if (field.IsStatic) return new MemLV(this, t, () => EmitAddressBase(target), pin: field.IsReadOnly ? D.Arenas.Pin(t) : null, pub: IsThreadStatic(StorageField(field)) ? Publish.None : Publish.Always,
                         staticKey: Driver.StaticKey(T.Canonical(Owner(field)), StorageField(field)), threadStatic: IsThreadStatic(StorageField(field)));
                     if (fr.Instance != null && !TypeOf(fr.Instance).IsValueType)
                     {
                         var site = D.Arenas.FieldSite(Owner(field), T.FieldIn(Owner(field), StorageField(field)));
-                        return new MemLV(this, t, () => EmitAddressBase(target), site, pub: Publish.Container,
+                        return new MemLV(this, t, () => { _plainFieldUse = fr; int r = EmitAddressBase(target); _plainFieldUse = null; return r; }, site, pub: Publish.Container,
                             initKey: StorageField(field) is IFieldSymbol sf ? InitStoreKey(sf, Owner(field), fr.Instance) : null,
                             fresh: site != null && target.Parent != null && StoresIntoFresh(fr.Instance, target.Parent),
                             owned: site != null && OwnedLocal(fr.Instance),
@@ -2885,6 +2917,12 @@ sealed partial class FunctionCompiler
         };
         IOperation? samePlace = null;
         for (var u = target; u is IInvocationOperation ui && SamePlaceRef(ui) is { } inner; u = inner) samePlace = inner;
+        // (a class's field of a number, stored by name here: the store's mark, and its place is asked for the store alone; FieldLoads.cs)
+        if (target is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } pfi } pfr && !TypeOf(pfi).IsValueType && !Types.IsStruct(t))
+        {
+            NoteFieldStore(StorageField(pfr.Field), t);
+            return new MemLV(this, t, () => { _plainFieldUse = pfr; int r = EmitAddressBase(target); _plainFieldUse = null; return r; }, elements: true, viaPointer: viaPointer, structContainer: structContainer, attachPlace: Sh != null ? samePlace : null);
+        }
         return new MemLV(this, t, () => EmitAddressBase(target), elements: true, viaPointer: viaPointer, structContainer: structContainer, attachPlace: Sh != null ? samePlace : null);
     }
 

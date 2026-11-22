@@ -646,7 +646,8 @@ sealed partial class FunctionCompiler
                 body.Insert(i, new Instr { Op = Op.GlobalSet, Ref = D.StackPointer, Pos = -1 });
                 body.Insert(i, new Instr { Op = Op.LocalGet, Imm = _spEntry, Pos = -1 });
             }
-        E.Fn.Body.RemoveAll(i => i.Op == Op.Nop);
+        // (the marks of the fields the method stores stay: FieldLoads.cs)
+        E.Fn.Body.RemoveAll(i => i.Op == Op.Nop && i.Ref is not FieldStoreMark);
     }
 
     static IEnumerable<ControlFlowRegion> AllRegions(ControlFlowRegion r)

@@ -69,6 +69,8 @@ internal sealed class WasmModule
 
     static readonly List<(int, string)>? s_sizes = Environment.GetEnvironmentVariable("CS2WASM_SIZES") == "1" ? [] : null;
     static readonly string? s_dump = Environment.GetEnvironmentVariable("CS2WASM_DUMP") is { Length: > 0 } d ? d : null;
+    /// <summary>The fields each loop and each call can store (Wasm/FieldLoads.cs); null: that pass is off.</summary>
+    public FieldHoist? FieldHoist;
     /// <summary>The module's number for each internal type id (Driver.AssignTypeIds).</summary>
     public Func<int, int>? TypeIdMap;
     readonly HashSet<int> _deadTable = [];
@@ -342,6 +344,24 @@ internal sealed class WasmModule
                     finally { Locals.MayThrow = null; }
                 }
                 Step("static loads");
+                // (a field read once before a loop that nothing in it can store, an array's length: FieldLoads.cs.
+                // Again while it finds more: the array a hoisted field holds, its length)
+                if (FieldHoist != null)
+                {
+                    Locals.MayThrow = mayThrow;
+                    var fnn = Functions.FirstOrDefault(f => f.Name == "rt.nonnull");
+                    try
+                    {
+                        foreach (var f in Functions)
+                        {
+                            if (f.IsImport) continue;
+                            for (int round = 0; round < 3 && FieldLoads.Run(f, FieldHoist, fnn); round++) { Peephole.Run(f); Locals.Run(f); }
+                        }
+                    }
+                    finally { Locals.MayThrow = null; }
+                    if (Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_STATS") == "1") Console.Error.WriteLine($"field hoist: {FieldLoads.Hoisted} fields and {FieldLoads.HoistedLengths} lengths read before a loop, {FieldHoist.Count} fields with a number");
+                }
+                Step("field loads");
                 // (and the null checks once more, on the final bodies: the passes since the first round made the shapes it
                 // knows of checks it did not see then, a loop's second and third check of a local that does not change)
                 if (Functions.FirstOrDefault(f => f.Name == "rt.nonnull") is { } nn2 && Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_CHECKS") != "1")
@@ -361,6 +381,8 @@ internal sealed class WasmModule
             }
             else if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_BLOCKS") != "1")
                 foreach (var f in Functions) if (!f.IsImport && SmallBlocks.Run(f)) Peephole.Run(f);
+            // (the loads' field tags and the loops' sets have done their work: bodies that differ only there are the same)
+            if (FieldHoist != null) { foreach (var f in Functions) if (!f.IsImport) FieldLoads.Strip(f); FieldHoist = null; }
             Step("null checks again");
             // (the counts' common case written out in code that runs often: RcFastPaths.cs)
             RcFastPaths.Run(this, UsesThreads);
@@ -653,7 +675,7 @@ internal sealed class WasmModule
                     if (ck == null) bucket[i] = (cf, ck = MergeKeyText(cf, may));
                     if (ck == key) { other = cf; break; }
                 }
-                if (other != null) { f.ForwardTo = other; changed = true; }
+                if (other != null) { FieldHoist?.Merged(other, f); f.ForwardTo = other; changed = true; }
                 else bucket.Add((f, key));
             }
             Step($"  merge round {round}{(changed ? "" : ", nothing merged")}");
@@ -725,6 +747,8 @@ internal sealed class WasmModule
             if (releaseOf.TryGetValue(destroy, out var r)) return r;
             r = AddFunction("rt.release of " + destroy.Name, new FuncType([ValType.I32], []));
             r.Locals.Add(ValType.I32);
+            // (its own code stores a count, no field: what its call can store is what the destruction it calls can)
+            r.FieldStoreSet = Wasm.FieldHoist.None;
             r.Body.Add(new Instr { Op = Op.LocalGet, Imm = 0, Pos = -1 });
             Sequence(r.Body, destroy, 0, 1, -1);
             return releaseOf[destroy] = r;
@@ -844,12 +868,14 @@ internal sealed class WasmModule
         sb.Append('|'); foreach (var l in f.Locals) sb.Append((char)l);
         foreach (var ins in f.Body)
         {
-            sb.Append(';').Append((int)ins.Op).Append(',').Append(ins.Imm).Append(',').Append(ins.Imm2);
+            // (a loop's Imm2 is the set of fields stored in it, a load's FieldTag the field it reads: FieldLoads.cs.
+            // Neither is code: two bodies that differ only there are made one, FieldHoist.Merged)
+            sb.Append(';').Append((int)ins.Op).Append(',').Append(ins.Imm).Append(',').Append(ins.Op == Op.Loop ? 0 : ins.Imm2);
             // (two bodies that differ in what was inlined where show different frames in a trace)
             if (ins.Inl != 0) sb.Append('@').Append(ins.Inl);
             switch (ins.Ref)
             {
-                case null: break;
+                case null: case FieldTag: break;
                 // (a function not in the module has no order of its own: a placeholder for a type's counts,
                 // TypedCounts.cs, which becomes the atomic or the plain function later, by its type)
                 case WasmFunction g: sb.Append(",f").Append(g.Order); if (g.Order == 0) sb.Append(':').Append(g.Name); break;
