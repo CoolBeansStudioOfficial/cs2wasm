@@ -4,7 +4,12 @@
 // after them), then 6,000 frames each timed with Stopwatch inside the module. Per scene: median, p99, p99.9 and worst
 // frame, and peak memory (the module's linear memory at exit; it never shrinks). Each statistic is the lowest over the
 // runs (a spike the program makes comes back every run; a pause of the machine does not).
-//   node tools/frames.mjs [--runs N] [--rebuild-aot] [--no-build] [--worst N] [--json file] [scene...]
+//   node tools/frames.mjs [--runs N] [--rebuild-aot] [--no-build] [--worst N] [--json file] [--js-young MB] [scene...]
+// --js-young MB: both sides' Node processes with a young generation of that size (V8's semi-space). cs2wasm's host
+// returns the clock as a BigInt (monotonic_ns is an i64), two a frame for the Stopwatch here: one scavenge of Node's
+// own heap in a run, 0.3 to 0.9 ms, at the same frame of every run of a module (strings 2995, collections 3175, churn
+// 3270), inside the timed part of the frame or not by how many allocations came before it (the module's size, the
+// directory, the environment). With 32 there is none in a run: what the module does, without the harness's own pause.
 // Exits 1 when a scene's worst frame or p99.9 is above NativeAOT's, or a checksum differs.
 // NativeAOT's side needs the Emscripten SDK 3.1.56 (EMSDK, or C:/tools/emsdk); from Git Bash, MSYS_NO_PATHCONV=1.
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -16,7 +21,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const opt = (name, dflt) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : dflt; };
 const runs = +opt('--runs', 3);
-const valued = new Set(['--runs', '--json', '--worst']);
+const valued = new Set(['--runs', '--json', '--worst', '--js-young']);
+const young = opt('--js-young', null);
+const nodeFlags = young ? [`--min-semi-space-size=${+young}`, `--max-semi-space-size=${+young}`] : [];
 const worstN = +opt('--worst', 0);
 const all = ['churn', 'collections', 'strings', 'tree', 'bigdrop'];
 const picked = args.filter((a, i) => !a.startsWith('--') && !valued.has(args[i - 1]));
@@ -58,12 +65,12 @@ const res = {};
 for (const scene of scenes) {
   let aot = null, mod = null;
   for (let i = 0; i < runs; i++) {
-    const a = spawnSync(process.execPath, ['-r', peakJs, aotJs, scene], { encoding: 'utf8', cwd: aotDir, maxBuffer: 1 << 26 });
+    const a = spawnSync(process.execPath, [...nodeFlags, '-r', peakJs, aotJs, scene], { encoding: 'utf8', cwd: aotDir, maxBuffer: 1 << 26 });
     const sa = a.status === 0 && stats(a.stdout, scene);
     if (!sa) { console.error(a.stdout.slice(-2000), a.stderr); throw new Error(`NativeAOT's build failed on ${scene}`); }
     sa.peak = +(/peak_bytes=(\d+)/.exec(a.stdout)?.[1] ?? 0);
     aot = low(aot, sa);
-    const w = spawnSync(process.execPath, [join(root, 'host', 'run.mjs'), wasm, scene], { encoding: 'utf8', env: { ...process.env, CS2WASM_PRINT_MEMORY: '1' }, maxBuffer: 1 << 26 });
+    const w = spawnSync(process.execPath, [...nodeFlags, join(root, 'host', 'run.mjs'), wasm, scene], { encoding: 'utf8', env: { ...process.env, CS2WASM_PRINT_MEMORY: '1' }, maxBuffer: 1 << 26 });
     const sw = w.status === 0 && stats(w.stdout, scene);
     if (!sw) { console.error(w.stdout.slice(-2000), w.stderr); throw new Error(`cs2wasm's module failed on ${scene}`); }
     sw.peak = +(/memory: (\d+) pages/.exec(w.stderr)?.[1] ?? 0) * 65536;

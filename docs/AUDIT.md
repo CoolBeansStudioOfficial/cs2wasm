@@ -256,6 +256,85 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     127 still prints `async 5` / `pending 1` in about one run in a hundred under that load, on main as on this
     branch** (main: 9 of 800 as shipped, 13 of 1,600 checked; the branch: 4 of 800 as shipped, 34 of 2,800 checked):
     the structure with two tops (A1, "Closed (2026-11-21)") is rarer than its one run in eight, not gone.
+- **The rebuild, round 2 (2026-11-22, branch claude/tree-rebuild-2; the desk machine).** Measured first, by the
+  counts of a program that only builds and drops the tree (`CS2WASM_DROP_STATS=1`): of 76,000 hold changes a build,
+  46,000 were the growths' (12 each: the copy's four counts from outside, each item holding its owners up the chain,
+  and the store's undoing of them), and ArenaRetain's quick path was never taken (15,600 calls a build, all the copy's).
+  (Commit 3f6dcdd's message says 13 a growth and 51,000 of 53,000: round 1's figure, and one of the two counters.)
+  - Done, the growth: `List<T>.Capacity`'s setter asks `Rt.GrowInto(this, _items, newItems, _size)` before its
+    `Array.Copy` (an edit of List.cs in the manifest, the same line; folded away for a list of values, a call that
+    answers no at its first test for a list whose array is no member). Where the old array would die at the store
+    that follows (what ReplaceArray asks: the container's slot and its own items' holds all that refers to it, each
+    of the first n elements a member it owns once, no linked element past them, the up-references that pass it all its
+    items', no note of a check at the drop), `Rt.ArenaGrowArray` does the copy, the store and the unlink in one step:
+    the new array joins as the container's, in the slot; each item's reference moves out of the old array into the
+    new, its owner word the new array, its counts and its hold as they were; the old array, with nothing in it, is
+    destroyed. No item is counted twice in between, so nothing holds and lets go: hold changes 76,000 to 30,000 a
+    build, none of them a growth's. The setter's local still counts the new array until the setter returns, without
+    the hold a member with up-references below it makes for a reference from elsewhere: the reference is a local of
+    the container's own method, which its caller keeps, and nothing runs before it is let go. Anything else (threads,
+    a container or an arena being destroyed, an item twice in the list or of another owner, a list of anything with a
+    string in it) is the copy and the store as before. `CS2WASM_NO_ARRAY_GROW=1`. Build 3.05 to 2.3 ms.
+  - Done, the merge: ArenaMerge points the members of an arena of eight or fewer straight at the survivor and frees
+    its record, where each member's record word followed a forwarding record at its next use (and missed the
+    same-arena path of ArenaLink until then): 3,124 merges a build, each of the five members a node with children
+    starts with. `CS2WASM_NO_MERGE_REPOINT=1`. A joining object's slot that holds a pinned object (the empty array of
+    every new list) returns before ArenaLinkCore's questions. Build 2.3 to 2.15 ms, drop 1.42 to 1.36.
+  - Numbers (the same session, main bc06ea9 against the branch): `tools/tree-parts.cs` build 3.05 to 2.13 ms, drop
+    1.4 to 1.35; `node tools/frames.mjs --runs 3` tree median 0.061 to 0.054 ms, p99.9 4.55 to 3.53, worst 5.14 to
+    3.94 (3.72 and 3.79 in two more invocations) against NativeAOT-LLVM's 0.029, 2.40, 3.12: **1.47 and 1.2 to 1.26
+    times NativeAOT's, not at or below it.** The other scenes as on main (medians 2.17x, 1.29x, 1.21x, 0.87x; worst frames
+    0.14x to 0.27x). bench.mjs 0.95x. Hello world 27,031 to 27,089 bytes.
+  - **The one slow frame of the strings scene is the harness's, not the module's.** Run directly (`node host/run.mjs
+    frames.wasm strings`, five runs a side), the branch's module had one frame of 0.44 to 0.9 ms at frame 2995 of every
+    run and one in churn at frame 3270, main's module neither, and both had one in collections at frame 3175 (0.46 to
+    0.9 ms; its other frames end at 0.2). It is not a change of tier (still there with `--liftoff-only`,
+    `--no-wasm-dynamic-tiering`, `--no-wasm-lazy-compilation`). `node --trace-gc` shows it: one scavenge of Node's own
+    heap in a run (`Scavenge 5.5 -> 4.9 MB, 0.45 ms, allocation failure`), in main's module as in the branch's. The host
+    returns the clock as a BigInt (`monotonic_ns` is an i64; two a frame for the scene's Stopwatch), Node's young
+    generation fills once in a run, and the frame it fills in is fixed by how many allocations came before: inside the
+    timed part of that frame or between two frames by the module's size, the directory and the environment (under
+    frames.mjs in this checkout main's module had it in strings, 0.449 ms and "SPIKES ABOVE NATIVEAOT", and the
+    branch's did not; run directly it was the other way round). With `--min-semi-space-size=32
+    --max-semi-space-size=32` there is no scavenge in a run and no such frame in any scene of either module: worst
+    frames, five runs a side, main against the branch: churn 0.30 and 0.43 ms, collections 0.18 and 0.19, strings 0.056
+    and 0.057, bigdrop 1.20 and 1.19, tree 4.93 and 3.78. `tools/frames.mjs --js-young 32` runs both sides so (not
+    the default). So the frame laid to Reevaluate by slot bits in round 1 (`CS2WASM_SLOT_WALK`, "cause not found"), and
+    to LinkWaiting and JoinOwned written in line before it, was this; the slot walk measured again here gains nothing
+    in the tree scene either way (build 2.19 against 2.13 ms) and stays off. What would end it is a clock the host
+    returns without an allocation (an f64, or written into the module's memory).
+  - What a build costs now, by the same program with parts taken out (`objects alone`, a flat list, a flat list with
+    parent fields, a tree of fan 4 that never grows a list): the 39,000 objects made, 0.5 ms; a leaf's links, 40 ns
+    (27 its two joins and the store, 13 its parent field's up-reference), 0.63 ms for 15,625; **a node with children,
+    250 ns more than a leaf, 1.0 ms for 3,906**: its list and first array a group of their own (a record made, merged
+    and freed), the node joined through its first child's parent field with a waiting owner in side words, its own
+    parent field owned and turned round when it is put in its parent's list, three Reevaluates, and eight hold changes
+    with two releases the long way for the store's count kept until the store is written (the list's, then the
+    node's own with three owners above it). The drop, 1.35 ms for 75,000 members (30,660 entities reachable: some
+    7,000 members are let-go parts kept with the group), by its passes (`CS2WASM_DROP_STATS=1` prints them): the walk
+    of the ring 0.40 ms, the clears 0.46, the frees 0.53: 5 to 7 ns a member each, 2.6 to 5.5 in a tree just built, so
+    0.4 ms of it is the order of an aged ring in memory. Nothing in a pass was found that another pass makes
+    unnecessary: the frees cannot follow each member's clear (a finalizer of a plain object released by a later clear
+    may allocate, and a freed member's block made anew would be released through a reference a later member still
+    holds).
+  - Tried and not kept: a plain array without elements stored into a plain object left plain (a list's first array:
+    it leads nowhere, so the store closes no cycle; no group of the list and the array per node): build 2.19 against
+    2.18 ms, the same work done when the node joins. Not tried again: the store's count given back before the links
+    (round 1's; it is what the eight hold changes a node are).
+  - Seen on main while writing test 191, not followed: a class's finalizer does not run its base class's (`class B :
+    A { ~B() { } }`: .NET runs ~B then ~A, cs2wasm ~B alone; test 191 has one finalizer and a virtual method for
+    that reason). A finalizer of a member that grows a list of its own group that has items (`Parent.Children.Add(new
+    Node())` as the group goes) leaves the new objects alive for good: the list's new array, no member, counts the
+    dying items, and the group is taken to have been stored where the program can reach it.
+  - Checked: tests 016, 017, 127, 131, 132, 133, 139, 145, 147, 149, 150, 171, 175, 178, 179, 180, 185, 187, 190 and
+    191 here, checked and as shipped. On the homelab the suite, twice: 202/202 checked both times; as shipped 201/202
+    (test 187: `rounds: result 3, rounds 1`), then 202/202. **Test 187 differs under load on main too**: run by
+    itself (`TESTS=187_two_tops_one_cycle bash tools/stress-cycles.sh`, 200 runs a mode, 8 at once, twice), main with
+    that option alone 19 of 800 (6 and 5 as shipped, 5 and 3 checked), the branch 20 of 800 (3 and 5, 3 and 9): the
+    two-tops structure of test 127, at one run in forty. `tools/stress-cycles.sh` on the branch, twice: 139 the same in
+    all 800 runs; 127 differed (`async 5` / `pending 1`) in 1 and 0 of 200 as shipped, 4 and 2 of 200 checked; main in
+    the same hour 3 of 200 and 3 of 200. A program with threads runs none of this round's code (ArenaGrowArray answers
+    no at once, the merge and the pinned slot are behind `!ThreadMode()`), and tests 127, 139 and 187 start threads.
 
 ### A4. Plugins (goal 3)
 
