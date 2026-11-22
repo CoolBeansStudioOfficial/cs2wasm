@@ -623,7 +623,9 @@ internal sealed partial class Driver
     public void ResolveFieldBorrows()
     {
         PrintReachWhy();
-        if (FieldBorrows.Count == 0 && _tempBorrows.Count == 0) { StripWriteMarks(); return; }
+        // (the statics a loop can read once: StaticLoads.cs)
+        var staticLoads = StaticLoadCandidates();
+        if (FieldBorrows.Count == 0 && _tempBorrows.Count == 0 && staticLoads.Count == 0) { StripWriteMarks(); return; }
         var byFn = FieldBorrows.GroupBy(b => b.fn).ToDictionary(g => g.Key, g => g.ToList());
         bool threads = UsesThreads, safePoints = false;
         // what each function may store, with everything it can call (an indirect call: any function in the table)
@@ -632,6 +634,7 @@ internal sealed partial class Driver
             var queried = new HashSet<string>();
             foreach (var b in FieldBorrows) foreach (var k in b.field.Split('\n')) if (k != "") queried.Add(k);
             foreach (var b in _tempBorrows) foreach (var k in b.field.Split('\n')) queried.Add(k);
+            foreach (var l in staticLoads.Values) foreach (var s in l) queried.Add(AllStoresPrefix + _staticRefSlots[s].key);
             summary = new StoreSummary(this, queried);
             // (threads: the safe point is a pseudo-field the function that moves a thread's epoch stores)
             if (threads && AllMethods.FirstOrDefault(m => m.Compiled && m.Sym.Name == "SetEpoch" && m.Sym.ContainingType?.Name == "Limbo") is { } setEpoch)
@@ -832,6 +835,7 @@ internal sealed partial class Driver
             }
         var dead = markers.Keys.Concat(FieldBorrows.Select(b => b.marker)).ToHashSet();
         Module.Functions.RemoveAll(dead.Contains);
+        ResolveStaticLoads(staticLoads, summary!);
         StripWriteMarks();
     }
 
@@ -1002,6 +1006,9 @@ internal sealed partial class Driver
         public StoreSummary(Driver d, HashSet<string> queried)
         {
             foreach (var k in queried) _key[k] = _key.Count;
+            // (the keys asked about with all their stores, by the field's own key)
+            Dictionary<string, int>? all = null;
+            foreach (var (k, ki) in _key) if (k.StartsWith(AllStoresPrefix, StringComparison.Ordinal)) (all ??= [])[k[AllStoresPrefix.Length..]] = ki;
             int words = Math.Max(1, (_key.Count + 63) / 64);
             var fns = d.Module.Functions;
             for (int i = 0; i < fns.Count; i++) _node[fns[i]] = i;
@@ -1051,6 +1058,15 @@ internal sealed partial class Driver
                 if (d.BorrowWrites.TryGetValue(f, out var w))
                     foreach (var k in w)
                         if (_key.TryGetValue(k, out int ki) && !(ownStatics != null && k.StartsWith(ownStatics, StringComparison.Ordinal) && d.IsStaticKey(k)))
+                        {
+                            if (ReferenceEquals(_bits[i], none)) _bits[i] = new ulong[words];
+                            _bits[i][ki >> 6] |= 1UL << (ki & 63);
+                        }
+                // (every store of a static a loop would read once, StaticLoads.cs: those that only replace a null too;
+                // the initializer's own left out as above, the loop is asked about the type's initialization itself)
+                if (all != null && d.FieldWrites.TryGetValue(f, out var fw))
+                    foreach (var k in fw)
+                        if (all.TryGetValue(k, out int ki) && !(ownStatics != null && k.StartsWith(ownStatics, StringComparison.Ordinal)))
                         {
                             if (ReferenceEquals(_bits[i], none)) _bits[i] = new ulong[words];
                             _bits[i][ki >> 6] |= 1UL << (ki & 63);

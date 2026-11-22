@@ -335,6 +335,13 @@ internal sealed class WasmModule
                     finally { Locals.MayThrow = null; }
                 }
                 Step("loop loads");
+                // (a static's reference read once before a loop that nothing in it can store to: StaticLoads.cs)
+                {
+                    Locals.MayThrow = mayThrow;
+                    try { foreach (var f in Functions) if (!f.IsImport && StaticLoads.Run(f)) { Peephole.Run(f); Locals.Run(f); } }
+                    finally { Locals.MayThrow = null; }
+                }
+                Step("static loads");
                 // (and the null checks once more, on the final bodies: the passes since the first round made the shapes it
                 // knows of checks it did not see then, a loop's second and third check of a local that does not change)
                 if (Functions.FirstOrDefault(f => f.Name == "rt.nonnull") is { } nn2 && Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_CHECKS") != "1")

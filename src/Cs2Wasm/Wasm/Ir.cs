@@ -171,6 +171,9 @@ internal sealed class WasmFunction
     /// <summary>Marked MethodImplOptions.NoInlining: the slow part a method keeps out of itself so that the method
     /// stays small (List.AddWithResize). It stays a call, also into its only caller.</summary>
     public bool NoInline;
+    /// <summary>The statics' slots (of references) that nothing this function runs can store, each with its type's
+    /// initialization flag (null: the type has no initializer): StaticLoads.cs reads them once before a loop.</summary>
+    public Dictionary<object, object?>? StableStatics;
     public WasmFunction(string name, FuncType type) { Name = name; Type = type; }
     public override string ToString() => Name;
 }
