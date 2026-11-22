@@ -2259,8 +2259,10 @@ namespace Cs2Wasm.Runtime
         }
 
         // (the slot of the store under way whose value was left to a waiting owner, LinkMembers, with its object and
-        // the value: the slot holds its old value until ArenaLink returns)
-        static int s_waitSlot, s_waitObj, s_waitVal;
+        // the value: the slot holds its old value until ArenaLink returns. Each thread's own, as the list they go
+        // with, s_reevQ: plain statics, they were written by two threads' links of two groups at once, and a link
+        // then read another thread's slot, or its own gone)
+        [Intrinsic] static int s_waitSlot, s_waitObj, s_waitVal;
 
         /// <summary>LinkWaiting: the container's reference to the value may be an up-reference now. Reevaluate reads
         /// the container's slots; the slot of the store under way does not hold the value yet.</summary>
@@ -2998,8 +3000,10 @@ namespace Cs2Wasm.Runtime
         // (every group's: threads count it atomically)
         static int s_failedTops;
         // (Dropped: 0, the trial takes in nothing but what the top owns; else one more than how many other tops it took
-        // in, with what they own. Zero by default: an initial value would give Rt a static constructor)
-        static int s_trExt;
+        // in, with what they own. Zero by default: an initial value would give Rt a static constructor. Each thread's
+        // own, as the trial's lists: a plain static, the check of one thread's group set it to zero while another's
+        // was taking tops in, which then stayed in s_tkQ, marked Dying, for the thread's next check)
+        [Intrinsic] static int s_trExt;
         // (the tops taken in, waiting until what the top owns has been gone through; and where in the trial's list
         // what they own starts, 0 before that)
         [Intrinsic] static int s_tkQ, s_tkN, s_tkCap, s_trOwn;
