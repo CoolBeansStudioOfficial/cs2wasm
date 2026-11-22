@@ -960,7 +960,7 @@ sealed partial class FunctionCompiler
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
             case "Rt.ArenaSlots": E.Call(Rt.ArenaSlotsFn); return Own.None;
             case "Rt.ArenaPartInfo": E.Call(Rt.ArenaPartInfoFn); return Own.None;
-            case "Rt.Parts": E.Call(Rt.ArenaPartsFn); return Own.None;
+            case "Rt.Parts": if (D.Arenas.PartsOn) E.Call(Rt.ArenaPartsFn); else E.I32(0); return Own.None; // (off: a constant, and nothing of the parts is left in the module)
             case "Rt.NoWaitingTop": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_WAITING_TOP") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoFusedJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FUSED_JOIN") == "1" ? 1 : 0); return Own.None;
             case "Cs2WasmArrays.BoxesElements": D.MarkBoxedElements(); return Own.None;

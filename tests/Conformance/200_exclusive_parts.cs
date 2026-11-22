@@ -76,21 +76,26 @@ static class P
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void Shape()
+    static void Build()
     {
         s_a = Tree(null, 4, 5);
         Console.WriteLine("built " + s_a.Count() + " sound " + s_a.Sound());
-        Report("built");
-        // subtrees stored over, one held meanwhile
+    }
+
+    // subtrees stored over, one held meanwhile
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void StoreOver()
+    {
         var x = s_a.Kids[1].Kids[2];
         s_keepA = x.Kids[3];
         s_a.Kids[1].Kids[2] = Tree(s_a.Kids[1], 2, 5);
-        x = null;
         Console.WriteLine("stored over " + s_a.Count() + " sound " + s_a.Sound() + " held up " + (s_keepA.Up != null) + " held " + s_keepA.Count());
-        Report("stored over");
-        s_keepA = null;
-        Report("held let go");
-        // children moved, taken out, lists that grow to 8, 16, 32 and are cleared
+    }
+
+    // children moved, taken out, lists that grow to 8 and 16
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Move()
+    {
         for (int r = 0; r < 40; r++)
         {
             var from = s_a.Kids[r % 5].Kids[(r / 5) % 5];
@@ -102,23 +107,45 @@ static class P
             to.Kids.Add(moved);
         }
         Console.WriteLine("moved " + s_a.Count() + " sound " + s_a.Sound() + " widest " + Math.Max(s_a.Kids[0].Kids.Count, s_a.Kids[2].Kids.Count));
-        Report("moved");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Cut()
+    {
         s_a.Kids[3].Kids.Clear();
         s_a.Kids[4].Kids.RemoveRange(0, 2);
         s_a.Kids[0].Kids.Insert(0, Tree(s_a.Kids[0], 1, 3));
         Console.WriteLine("cut " + s_a.Count() + " sound " + s_a.Sound());
-        Report("cut");
-        // a node's list replaced by a new one, the node's children gone with it
+    }
+
+    // a node's list replaced by a new one, the node's children gone with it
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void ListReplaced()
+    {
         var n0 = s_a.Kids[0];
         n0.Kids = new List<A>();
         n0.Kids.Add(new A { Up = n0, Id = s_ids++ });
         Console.WriteLine("list replaced " + s_a.Count() + " sound " + s_a.Sound());
-        Report("list replaced");
-        // nodes that never join a tree, with children
+    }
+
+    // nodes that never join a tree, with children
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Lone()
+    {
         for (int i = 0; i < 3; i++) { var lone = Tree(null, 2, 3); if (lone.Count() != 13) Console.WriteLine("lone?"); }
-        Report("lone");
-        s_a = null;
-        Report("gone");
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Shape()
+    {
+        Build(); Report("built");
+        StoreOver(); Report("stored over");
+        s_keepA = null; Report("held let go");
+        Move(); Report("moved");
+        Cut(); Report("cut");
+        ListReplaced(); Report("list replaced");
+        Lone(); Report("lone");
+        s_a = null; Report("gone");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -134,8 +161,6 @@ static class P
         Console.WriteLine("1: " + s_b2.Kids.Count + " " + (s_b2.Kids[0].Up == null) + " " + (s_b2.Kids[5].Up == s_b2));
         for (int i = 0; i < 9; i++) s_b2.Kids.Add(new B { Up = s_b2 });
         Report("1: grown");
-        s_b2 = null;
-        Report("1: gone");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -150,7 +175,6 @@ static class P
         Console.WriteLine("1b: " + box.Sound(0));
         box.Put(1, new C());
         box.Put(0, null);
-        Report("1b: an item stored over");
         return box.Count();
     }
 
@@ -173,8 +197,6 @@ static class P
         s_listD.RemoveAt(0);
         for (int i = 0; i < 20; i++) s_listD.Add(new D());
         Report("2: grown");
-        s_listD = null;
-        Report("2: gone");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -193,8 +215,6 @@ static class P
         Report("4: the other let go");
         for (int i = 0; i < 9; i++) s_f.Kids.Add(new F { Up = s_f });
         Console.WriteLine("4: " + s_f.Kids.Count + " " + (s_f.Kids[0].Up != null) + " " + s_f.Kids[0].Up.Kids.Count);
-        s_f = null;
-        Report("4: gone");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -209,18 +229,19 @@ static class P
         Console.WriteLine("5: " + s_g2.Kids.Count + " " + (s_g2.Kids[0].Up == null) + " " + (s_g2.Kids[5].Up == s_g2));
         for (int i = 0; i < 9; i++) s_g2.Kids.Add(new G { Up = s_g2 });
         Report("5: grown");
-        s_g2 = null;
-        Report("5: gone");
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Drop() { s_b = null; s_b2 = null; s_listD = null; s_d = null; s_f = null; s_g = null; s_g2 = null; }
 
     [UnmanagedCallersOnly(EntryPoint = "main")]
     static void Main()
     {
         Shape();
-        NotNew();
+        NotNew(); Drop(); Report("1: gone");
         LocalUsedAfter();
-        Kept();
-        ByAddress();
-        Copied();
+        Kept(); Drop(); Report("2: gone");
+        ByAddress(); Drop(); Report("4: gone");
+        Copied(); Drop(); Report("5: gone");
     }
 }

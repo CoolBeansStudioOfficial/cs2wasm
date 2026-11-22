@@ -2535,7 +2535,7 @@ namespace Cs2Wasm.Runtime
         {
             if (slot == 0) return -1;
             int off = slot - container;
-            return off >= 12 && off < 76 && (off & 3) == 0 ? (off - 12) >> 2 : -1;
+            return off >= 12 && off < 76 && (!Parts() || (off & 3) == 0) ? (off - 12) >> 2 : -1;
         }
         static int SlotBits(int container, int i) => (PL(container, 28) >> (2 * i)) & 3;
         static void SetSlotBits(int container, int i, int b)
@@ -3516,7 +3516,7 @@ namespace Cs2Wasm.Runtime
             if (can && !ThreadMode() && !NoPinnedSkip() && t_backN == 0 && Mem.LoadI32(container) > 0 && Mem.LoadI32(val) > 0 && Mem.LoadI32(val + 8) < 0)
             {
                 OpStat(33);
-                t_prevSlot = slot; t_prevBits = (slot & ~1) != 0 ? 0 : -1;
+                t_prevSlot = slot; t_prevBits = (Parts() ? slot & ~1 : slot) != 0 ? 0 : -1;
                 return val;
             }
             if (t_backN != 0) AfterStore();
@@ -3533,11 +3533,11 @@ namespace Cs2Wasm.Runtime
             // array's elements are all linked as it joins, the old one too: by the counts is right for them)
             // (1: an element of a part that is an array, its address not known: linked with the others if its holder
             // joins here, so by the counts, as an array's own)
-            t_prevBits = (slot & ~1) != 0 && (SlotIndex(container, slot) >= 0 || Mem.LoadI32(container) > 0) ? 0 : -1;
+            t_prevBits = (Parts() ? slot & ~1 : slot) != 0 && (SlotIndex(container, slot) >= 0 || Mem.LoadI32(container) > 0) ? 0 : -1;
             if (i >= 0) { t_prevBits = SlotBits(container, i); SetSlotBits(container, i, 0); }
             // (a container that joins an arena here has its slots linked: not this one, whose value is on its way out)
             int outer = s_storeSlot;
-            s_storeSlot = slot & ~1;
+            s_storeSlot = Parts() ? slot & ~1 : slot;
             int r = val;
             if (partVal) val = 0;
             // (threads: a value LinkLock left out is linked to nothing, GroupLocks.cs)
@@ -3604,7 +3604,7 @@ namespace Cs2Wasm.Runtime
             if (Mem.LoadI32(container) >= -1) return false;
             if (!can) { int g = SccOf(Mem.LoadI32(val + 4)); if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return false; }
             if (((PL(val, 24) | PL(container, 24)) & Dying) != 0 || Mem.LoadI32(val + 8) < 0) return false;
-            if (PartW(val)) return false;
+            if (Parts() && PartW(val)) return false;
             int ar = ArenaOf(container);
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return false;
             OpStat(29);
@@ -3614,7 +3614,7 @@ namespace Cs2Wasm.Runtime
             PS(val, 4, 1);
             int i = s_visitElem != 0 ? -1 : SlotIndex(container, slot);
             if (i >= 0) SetSlotBits(container, i, 1);
-            else if (s_visitElem == 1 || slot == 0 && s_visitElem == 0)
+            else if (Parts() ? s_visitElem == 1 || slot == 0 && s_visitElem == 0 : slot == 0 || s_visitElem != 0)
             {
                 PS(container, 28, PL(container, 28) + 1);
                 PS(container, 24, PL(container, 24) | Elems);
@@ -3865,7 +3865,7 @@ namespace Cs2Wasm.Runtime
             int g = SccOf(Mem.LoadI32(val + 4));
             if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return val;
             // (an exclusive part, a plain object for good: a counted reference; no proof stores one here)
-            if (cv > 0 && PartW(val)) return val;
+            if (Parts() && cv > 0 && PartW(val)) return val;
             // (one whose finalizer is running, or that waits for the others': a counted reference, FinPhase)
             if (((PL(val, 24) | PL(container, 24)) & Dying) != 0) return val;
             if (ca > 0 && Mem.LoadI32(container + 8) < 0) return val; // pinned
@@ -3961,7 +3961,7 @@ namespace Cs2Wasm.Runtime
             PS(val, 4, PL(val, 4) + 1);
             if (s_failedTops != 0 && OutsideMarked(PLM(val))) NoteOutside(val, container, 1);
             if (i >= 0) SetSlotBits(container, i, 1);
-            else if (s_visitElem == 1 || slot == 0 && s_visitElem == 0)
+            else if (Parts() ? s_visitElem == 1 || slot == 0 && s_visitElem == 0 : slot == 0 || s_visitElem != 0)
             {
                 PS(container, 28, PL(container, 28) + 1);
                 PS(container, 24, PL(container, 24) | Elems);
@@ -4171,7 +4171,7 @@ namespace Cs2Wasm.Runtime
                 if (n != 0 || co != -2) OwnerLetGo(old, container);
                 // (a container replaced by another in the same slot, a list's array by a larger one: what it owned is
                 // the new one's from here on)
-                if (owned && n > 0 && slot != 0 && (slot & 1) == 0) { Handover(old, Mem.LoadI32(slot), container); n = PL(old, 4); }
+                if (owned && n > 0 && slot != 0 && (!Parts() || (slot & 1) == 0)) { Handover(old, Mem.LoadI32(slot), container); n = PL(old, 4); }
                 bool gone = false;
                 if (n == 0 && co == -2) ArenaDestroyFrom(old, 0);
                 else
@@ -4591,7 +4591,7 @@ namespace Cs2Wasm.Runtime
         {
             int e = s_visitElem;
             // (2: an element of a part, a slot of the part's holder: ArenaVisitPart)
-            if (e != 2) s_visitElem = 1;
+            if (!Parts() || e != 2) s_visitElem = 1;
             ArenaVisit(slot);
             s_visitElem = e;
         }
@@ -4648,7 +4648,7 @@ namespace Cs2Wasm.Runtime
             // (4: each reference, counted by the copy, as a store of it)
             if (s_visitMode == 4) { if (child != 0 && slot != s_storeSlot) LinkJoinedSlot(child, slot); return; }
             // (9: a part that is no longer its holder's, ArenaPartUnstore)
-            if (s_visitMode == 9) { if (child != 0) PartSlotOut(slot, child); return; }
+            if (Parts() && s_visitMode == 9) { if (child != 0) PartSlotOut(slot, child); return; }
             // (16: LinkWalk, threads)
             if (ThreadMode() && s_visitMode == 16) { WalkVisit(child); return; }
             // (13 to 15, Dropped: what the member owns; a counted reference to one of them off, and back on)
@@ -5071,13 +5071,12 @@ namespace Cs2Wasm.Runtime
                         dead = s_visitDead;
                     }
                 }
-                // (a holder of exclusive parts: its own slots by its bits, below, then its parts' slots, each as an
-                // array's element: Far is the parts' alone where every slot of its own has bits)
-                bool byParts = Parts() && (fl & (Far | Elems)) == Far && !NoDestroyByBits() && PartShape(m);
-                if (!byParts && (NoDestroyByBits() || (fl & Far) != 0)) { s_visitDead = dead; s_visitObj = m; ArenaVisitObject(m); dead = s_visitDead; }
+                // (a holder of exclusive parts whose own slots all have bits: its parts' slots here, each as an
+                // array's element, then its own by its bits, below: Far was the parts' alone)
+                if (Parts() && (fl & (Far | Elems)) == Far && !NoDestroyByBits() && PartShape(m)) { dead = DyingParts(m, ar, dead); fl &= ~Far; }
+                if (NoDestroyByBits() || (fl & Far) != 0) { s_visitDead = dead; s_visitObj = m; ArenaVisitObject(m); dead = s_visitDead; }
                 else if ((fl & Elems) == 0)
                 {
-                    if (byParts) dead = DyingParts(m, ar, dead);
 
                     // (its linked references are those its bits say: read here, with no visit of the object by its
                     // type, what VisitDying does for each written out)

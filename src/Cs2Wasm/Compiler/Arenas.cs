@@ -783,8 +783,9 @@ internal sealed partial class Arenas
     static readonly (string name, int arity)[] RuntimeMethods =
         [("ArenaLink", 3), ("ArenaUnlink", 3), ("ArenaVisitElement", 1), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
          ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 3), ("ArenaUnlinkFresh", 3), ("ArenaLinkOwned", 3),
-         ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3), ("ArenaGrowArray", 4), ("ArenaBeforeFinalizer", 0),
-         ("ArenaPartStore", 3), ("ArenaPartStoreFresh", 3), ("ArenaPartUnstore", 3), ("ArenaVisitPart", 1)];
+         ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3), ("ArenaGrowArray", 4), ("ArenaBeforeFinalizer", 0)];
+    /// <summary>ExclusiveParts.cs: only where they are on.</summary>
+    static readonly (string name, int arity)[] PartMethods = [("ArenaPartStore", 3), ("ArenaPartStoreFresh", 3), ("ArenaPartUnstore", 3), ("ArenaVisitPart", 1)];
 
     /// <summary>(old, container, slot) -> (): Rt.ArenaPartUnstore, its first question here and not behind a call: no
     /// old value, nothing to do (the note the store's link left is taken back by the next link: every unlink that
@@ -806,6 +807,7 @@ internal sealed partial class Arenas
     public void RequestRuntime()
     {
         foreach (var (name, arity) in RuntimeMethods) D.LibMethod("Cs2Wasm.Runtime.Rt", name, arity);
+        if (PartsOn) foreach (var (name, arity) in PartMethods) D.LibMethod("Cs2Wasm.Runtime.Rt", name, arity);
     }
 
     public WasmFunction RuntimeFn(string name, int arity) => D.LibMethod("Cs2Wasm.Runtime.Rt", name, arity).Fn;
