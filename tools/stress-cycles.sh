@@ -4,8 +4,10 @@
 # once (tools/stress.mjs); every run of a module must print the same.
 #   bash tools/stress-cycles.sh          (RUNS=200 PAR=8 by default; TESTS="187_two_tops_one_cycle ..." for other programs)
 #   on the homelab: bash tools/homelab.sh <branch> bash tools/stress-cycles.sh
-#   NODE_FLAGS=--liftoff-only (several: with commas): flags for each run's Node; a compiler switch in the environment
-#   (CS2WASM_NO_MEM_SYNC=1) reaches the build
+#   NODE_FLAGS=--no-wasm-stack-checks (several: with commas): flags for each run's Node; a compiler switch in the
+#   environment (CS2WASM_NO_MEM_SYNC=1) reaches the build. Without the engine's stack checks a thread learns that
+#   another grew the memory only from the module's own test (Wasm/MemSync.cs): test 139 without that test then traps
+#   in one run of ten, with it in none
 cd "$(dirname "$0")/.."
 # (every function named in the module, so a trap's stack reads; NAMES=0 for the module as the suite builds it)
 if [ "${NAMES:-1}" = 1 ]; then export CS2WASM_NAMES=1; fi

@@ -115,6 +115,15 @@ foreach (var (name, sources, symbols) in programs.Where((p, i) => (filter == nul
     // `// known-gap: what` in a program: its difference from .NET is one the project knows and has not closed
     // (docs/AUDIT.md). It is shown at every run and is no failure; the day the program passes, the marker must go.
     string? gap = src.Contains("// known-gap:") ? src[(src.IndexOf("// known-gap:") + 13)..].Split('\n')[0].Trim() : null;
+    // `// node-flags: --flag ..` in a program: it is run once more with these flags for Node (what only one of the
+    // engine's ways of running shows: test 195 without the engine's stack checks, where a thread learns of another's
+    // growth of the memory only from the module's own test, Wasm/MemSync.cs), and must print the same.
+    string? nodeFlags = src.Contains("// node-flags:") ? src[(src.IndexOf("// node-flags:") + 14)..].Split('\n')[0].Trim() : null;
+    if (actual == expected && code == 0 && gap == null && nodeFlags != null)
+    {
+        var (actual2, stderr2, code2) = RunNode(wasmPath, nodeFlags.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        if (actual2 != expected || code2 != 0) { Fail(name, $"output differs with node {nodeFlags} (exit {code2})\n{Diff(expected, actual2)}{(stderr2.Length > 0 ? "\nstderr: " + stderr2 : "")}"); continue; }
+    }
     if (actual == expected && code == 0)
     {
         if (gap != null) Fail(name, "passes: it is no gap any more, remove its `// known-gap:` line");
@@ -171,9 +180,9 @@ static string RunDotNet(Microsoft.CodeAnalysis.Compilation comp)
     finally { alc.Unload(); }
 }
 
-static (string stdout, string stderr, int code) RunNode(string wasm)
+static (string stdout, string stderr, int code) RunNode(string wasm, string[]? flags = null)
 {
-    var psi = new ProcessStartInfo("node", [Path.Combine(FindRoot(), "host", "run.mjs"), wasm, "main"])
+    var psi = new ProcessStartInfo("node", [.. flags ?? [], Path.Combine(FindRoot(), "host", "run.mjs"), wasm, "main"])
     { RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8 };
     using var p = Process.Start(psi)!;
     var o = p.StandardOutput.ReadToEndAsync();

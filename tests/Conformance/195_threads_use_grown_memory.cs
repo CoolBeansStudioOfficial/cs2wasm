@@ -7,6 +7,10 @@
 // and running through all of them, count the objects they read (a read that counts is an atomic operation on the
 // object), add to the new array's last element by Interlocked, lock the objects, copy from the new arrays and clear
 // them. What is printed does not depend on which thread ran when.
+// With the engine's stack checks a thread learns of the growth at its next call or loop, nearly always in time, and
+// the program passes without the module's own test too; run without them it trapped in 60 runs of 60 without the
+// test, in none with it: so it is run that way as well.
+// node-flags: --no-wasm-stack-checks
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;

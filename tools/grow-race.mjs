@@ -17,6 +17,8 @@
 // Node 24.19 (V8 13.6), default tiers (the function runs in Liftoff): atomic traps in 19 or 20 trials of 20, plain in
 // none, fill in all, size answers the pages before the growth, guard and gfill trap in none. With --no-liftoff: atomic
 // traps in none (TurboFan's atomic accesses are not checked against the instance's number), fill in all.
+// In a compiled program every call and every loop is a stack check, and the window is a few instructions: to see a
+// whole program meet it, `node --no-wasm-stack-checks host/run.mjs module.wasm main` (tools/stress.mjs --node-flags).
 import { Worker, isMainThread, workerData, parentPort } from 'node:worker_threads';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';

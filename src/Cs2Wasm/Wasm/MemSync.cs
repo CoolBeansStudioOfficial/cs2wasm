@@ -11,7 +11,10 @@ namespace Cs2Wasm.Wasm;
 /// access out of bounds" on a word that is there (Node 24.19, V8 13.6; tools/grow-race.mjs shows it: 19 trials of
 /// 20, none with the test below). Test 139 grows its memory once in every run, from 256 to 512 pages, while its
 /// threads start, and one loaded run in some tens of thousands ended so, in Rt.LoadRetainSlow's atomic load of the
-/// count of an object whose reference it had just read from a shared place.
+/// count of an object whose reference it had just read from a shared place. With `node --no-wasm-stack-checks` (no
+/// stack check, so a thread learns of a growth only by growing) the same module trapped there, at the trace's two
+/// frames, in 7 runs of 60; with this pass in none of 300. Test 195 so run: 60 of 60 without the pass, none with it;
+/// the suite runs it that way too (`// node-flags:` in the test).
 /// So, in a program with threads, before each atomic access and each copy or fill: if the address is past what this
 /// instance takes the memory's size to be, `memory.grow(0)`, which brings the instance up to date (the address was
 /// handed out after its pages were there, so the size is past it then). A shift and a compare of numbers the thread
