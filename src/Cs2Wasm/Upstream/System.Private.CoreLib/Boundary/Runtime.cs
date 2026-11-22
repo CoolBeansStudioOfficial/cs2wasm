@@ -2683,7 +2683,7 @@ namespace Cs2Wasm.Runtime
         /// False (nothing done) unless all of it holds: the old array's elements are exactly the new one's (the rest
         /// of the new one empty), each a member the old array owns, once; what Handover asks (the up-references that
         /// pass the old array are all its items'); no check at the drop has a note on any of them.</summary>
-[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static bool ReplaceArray(int to, int container, int slot)
         {
             if (NoArrayReplace() || ThreadMode()) return false;
@@ -2695,7 +2695,8 @@ namespace Cs2Wasm.Runtime
             if (Mem.LoadI32(old + 4) != Mem.LoadI32(to + 4) || Mem.LoadI32(to + 8) < 0) return false;
             // (the container's arena is the old array's and its items': a linked reference is between members of one)
             int ar = ArenaOf(container);
-            if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0 || (PL(container, 24) & Dying) != 0) return false;
+            // (neither with a finalizer running: such an object joins nothing, ArenaLinkCore)
+            if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0 || ((PL(container, 24) | PL(to, 24)) & Dying) != 0) return false;
             if ((s_destroying | s_trial | s_joinVisit | s_visitElem) != 0 || ArenaReport()) return false;
             if (ArrayRankAt(to) != 1 || ArrayElementSizeAt(to) != 4) return false;
             int n = Mem.LoadI32(old + 12), tn = Mem.LoadI32(to + 12);

@@ -251,6 +251,11 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     copy knows that the new array replaces the old one (List<T>'s code says so; the runtime sees two calls); the rest
     is the price of a member (its words, its place in the ring, its owner), which fewer members (7.E) or members
     kept together (7.D) would lower, not a faster link.
+  - Checked: the suite 201/201 checked and as shipped (homelab); `tools/stress-cycles.sh` (tests 127 and 139 built by
+    the runner, each run 800 times, 8 at once, on the homelab): 139 the same output every run, in both modes. **Test
+    127 still prints `async 5` / `pending 1` in about one run in a hundred under that load, on main as on this
+    branch** (main: 9 of 800 as shipped, 13 of 1,600 checked; the branch: 4 of 800 as shipped, 34 of 2,800 checked):
+    the structure with two tops (A1, "Closed (2026-11-21)") is rarer than its one run in eight, not gone.
 
 ### A4. Plugins (goal 3)
 
