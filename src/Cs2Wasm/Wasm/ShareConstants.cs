@@ -355,7 +355,7 @@ static class ShareConstants
                 {
                     // (a family's members calling functions that are not one shared group, of one signature: through
                     // the table, each member's callee's index a slot)
-                    if (!s_indirect || r.Family == null || targets.Any(t => !t.Type.Equals(targets[0].Type))) return false;
+                    if (!s_indirect || r.Family == null || targets.Any(t => !t.Type.Equals(targets[0].Type)) || !s_indirectLoops && InLoop(r, i)) return false;
                     indirect[i] = SlotOf([.. targets.Select(t => new Instr { Op = Op.I32Const, Imm = -1, Ref = t, Pos = ri.Pos })]);
                     continue;
                 }
@@ -380,7 +380,30 @@ static class ShareConstants
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, object> s_ids = new();
     static int s_nextId;
 
-    static readonly bool s_why =Environment.GetEnvironmentVariable("CS2WASM_SHARE_WHY") == "1";
+    /// <summary>CS2WASM_SHARE_INDIRECT_LOOPS=0: no call through the table inside a loop (a group with one is not shared).</summary>
+    static readonly bool s_indirectLoops = Environment.GetEnvironmentVariable("CS2WASM_SHARE_INDIRECT_LOOPS") != "0";
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<WasmFunction, int[]> s_loopDepth = new();
+    static bool InLoop(WasmFunction f, int at)
+    {
+        var d = s_loopDepth.GetValue(f, fn =>
+        {
+            var r = new int[fn.Body.Count]; var open = new Stack<bool>(); int loops = 0;
+            for (int i = 0; i < fn.Body.Count; i++)
+            {
+                switch (fn.Body[i].Op)
+                {
+                    case Op.Loop: open.Push(true); loops++; break;
+                    case Op.Block or Op.If or Op.TryTable: open.Push(false); break;
+                    case Op.End when open.Count > 0: if (open.Pop()) loops--; break;
+                }
+                r[i] = loops;
+            }
+            return r;
+        });
+        return at < d.Length && d[at] > 0;
+    }
+
+    static readonly bool s_why = Environment.GetEnvironmentVariable("CS2WASM_SHARE_WHY") == "1";
     static readonly bool s_stats = Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1";
     static readonly Dictionary<WasmFunction, string> s_died = [];
     static void Died(Plan pl, string why) { if (s_why) foreach (var m in pl.Members) s_died[m] = why; }
