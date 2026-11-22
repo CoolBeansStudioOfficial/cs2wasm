@@ -973,6 +973,8 @@ sealed partial class FunctionCompiler
             case "Rt.NoTakeIn": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TAKE_IN") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoFreshJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_JOIN") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoSlotWalk": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_SLOT_WALK") == "1" ? 1 : 0); return Own.None;
+            case "Rt.ArrayRankAt": E.Call(Rt.ArrayRank); return Own.None;
+            case "Rt.ArrayElementSizeAt": E.Call(Rt.ArrayElemSize); return Own.None;
             case "Rt.NoArrayReplace": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_ARRAY_REPLACE") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDropCheck":E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;

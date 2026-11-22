@@ -603,6 +603,11 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_NO_ARRAY_REPLACE=1 (at compile time): a new array stored where the array it was copied from
         /// was is linked element by element, and the old one's items handed over at its unlink (ReplaceArray).</summary>
         [Intrinsic] static extern bool NoArrayReplace();
+        /// <summary>An array's rank and the size of its elements, by its address (Cs2WasmArrays.RankOf and ElementSize
+        /// take an Array; no value of that type is made from an address here, which the compiler would read as an
+        /// array of any type come from nowhere).</summary>
+        [Intrinsic] static extern int ArrayRankAt(int array);
+        [Intrinsic] static extern int ArrayElementSizeAt(int array);
         /// <summary>CS2WASM_NO_SLOT_WALK=1 (at compile time): Reevaluate visits the object by its type.</summary>
         [Intrinsic] static extern bool NoSlotWalk();
         // CS2WASM_DROP_STATS=1 (a diagnosis, at compile time): the check at the drop counts what it does and says so
@@ -2692,7 +2697,7 @@ namespace Cs2Wasm.Runtime
             int ar = ArenaOf(container);
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0 || (PL(container, 24) & Dying) != 0) return false;
             if ((s_destroying | s_trial | s_joinVisit | s_visitElem) != 0 || ArenaReport()) return false;
-            if (Cs2WasmArrays.RankOf(Borrow<Array>(to)) != 1 || Cs2WasmArrays.ElementSize(Borrow<Array>(to)) != 4) return false;
+            if (ArrayRankAt(to) != 1 || ArrayElementSizeAt(to) != 4) return false;
             int n = Mem.LoadI32(old + 12), tn = Mem.LoadI32(to + 12);
             if (tn < n) return false;
             int s = old + 16, d = to + 16;
