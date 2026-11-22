@@ -635,6 +635,11 @@ internal sealed partial class RuntimeFns
     public WasmFunction ArenaIsSlotFn => _arenaIsSlot ??= M.AddFunction("rt.arena_is_slot", FT([I, I], [I]));
     public WasmFunction? ArenaIsSlotFnIfMade => _arenaIsSlot;
     public WasmFunction? SccOfIfMade => _sccOf;
+    WasmFunction? _arenaSlots;
+    /// <summary>rt.arena_slots(type id): the cycle-capable slots of an object of the type, a nibble each (the slot's
+    /// index among the words after the header, plus one), or 0 for a type the word cannot say them for (RuntimeGen).</summary>
+    public WasmFunction ArenaSlotsFn => _arenaSlots ??= MarkHinted(M.AddFunction("rt.arena_slots", FT([I], [I])));
+    public WasmFunction? ArenaSlotsIfMade => _arenaSlots;
     /// <summary>(array, index, length, size): release and zero elements.</summary>
     public WasmFunction ArrayClear => _arrayClear ??= MakeArrayClear();
 

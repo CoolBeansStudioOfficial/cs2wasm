@@ -819,6 +819,128 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     and Defer); with it, none of 3,000 as shipped and none of 1,000 checked. One of those 3,000 printed `16 3`: two
     nodes left, the kind of leak the test was written for, not a trap; none such in the 34,400 runs with the stack
     checks; not followed. Not run: the self-hosted compiler.
+- **The build, round 6: where an entity's 100 ns are, and the new object that joins in one step (2026-11-22 to 23,
+  branch claude/tree-build-6, from main 1f7a807; the desk machine, shared with another session's timings; not merged
+  when this was written).** The question was why an entity with a list of children and a parent reference costs six
+  times NativeAOT's to make, and what a tree built in the scene's order needs. Measured first, nothing built.
+  - **The memory model has no floor above NativeAOT's here.** A program of the parts (19,531 entities each with
+    its list, made in a loop, kept, then let go; not kept in the repository): a class that cannot be on a cycle,
+    kept in a local array, build 0.15 to 0.17 ms and drop 0.17 to 0.18; Entity itself, with its member words, kept
+    in a local array nothing else knows (plain counted stores, no group): 0.19 to 0.20 and 0.19. NativeAOT-LLVM's
+    build of the same objects in a rebuild frame is 0.26 ms (round 3). tools/tree-build.cs's variant 4 (0.45 ms)
+    makes and frees one block over and over and says less than this. So allocation and the frees are 10 ns an
+    entity with its list, at NativeAOT's, and all of the rest of a build's 1.75 ms (the lists' arrays and their
+    growth, about 0.2) is the bookkeeping of the group: about 1.3 ms, 67 ns an entity.
+  - **What the bookkeeping is, by the same program:** the entities added to one node's list that has room, no
+    parent field: 0.70 to 0.73 ms, so 26 ns for the two joins of a leaf and its list; with the parent field 0.95 to
+    0.97: 13.6 ns an up-reference. **A node with its first leaf, in the scene's order** (`e = new { Parent = p };
+    e.Children.Add(new { Parent = e }); p.Children.Add(e)`, 9,765 such pairs under one root): 2.5 ms, 256 ns a
+    pair, where two leaves cost 98. By the counts of a pair: five joins, five visits, three links, an arena made
+    for the list and its first array and merged into the tree's, side words for the node (a waiting owner), four
+    Reevaluates, three TakeOwnerships, two early give-backs. From tools/tree-build.cs's variants 0 and 5 (fan 5
+    and fan 4): a leaf 52 ns of links, a node 90 and 33 for its list's growth. By function, with the engine's
+    inlining off (`node --no-wasm-inlining --cpu-prof`, a build with names; the times double, the shares are what
+    it is for): the program's Build 5.0%, ArenaVisit 4.4, ArenaFree 4.1, rt.release 4.0, ArenaJoinOnly 3.7,
+    ArenaLinkJoined 3.4, rt.arena_clear 3.2, ArenaLink 3.1, rt.store_ref 3.1, HoldSettled 2.9, and fifty more
+    between 0.7 and 2.5: no function is the cost.
+  - **The cause, then, is not a part that is slow but how an object becomes a member:** it is made a plain object,
+    its slots filled by plain counted stores (FreshStores), and at the store that puts it into the structure it
+    joins and every slot it holds is gone through again as the general store it stands for (the list of joined
+    objects, the visit by type, ArenaVisit's modes, LinkJoinedSlot, JoinOwned or LinkMembers with all their
+    questions): some hundreds of instructions for a leaf whose outcome a few loads decide. And in the scene's
+    order a node is joined from below, through its first leaf's parent field, before anything owns it: its list
+    and first array are a group of their own by then, the node waits for an owner in side words, LinkWaiting
+    finds it above the leaf, its own parent field makes the first child the owner of the parent (a counted
+    reference, ownership turned round when the node is put into its parent's list).
+  - Tried first and not kept, each alone: the joined object's slots read from a word of its type in
+    ArenaLinkJoined, with no visit by type (build 1.77 to 1.76 ms: the engine has the visit in line); the fused
+    step entered at ArenaLink's top, before its questions (0.53 against 0.53 ms in the flat program). The
+    interpretation's overhead is in neither place by itself.
+  - **Done: `Rt.JoinFresh`** (`CS2WASM_NO_FUSED_JOIN=1`; `Rt.ArenaSlots`, a type's slots as a word, eight at most
+    among the first fifteen words, 0 for anything else). A new object (count 1) stored into a member's slot whose
+    own slots hold only what fixes the outcome is joined and linked in one step, nothing left in ArenaJoin's list:
+    an empty slot, a pinned object, an object of another group of classes: nothing; a new object of its own that
+    only that slot refers to and whose slots hold nothing to link (its list): its own, after it on the ring, in
+    the slots' order, as the visit joins them; and one reference up, either to a member on the container's chain
+    of owned links that code still refers to from elsewhere (a leaf's parent: an up-reference, its count given
+    back, UpPath as LinkMembers runs it), or to a plain object that code still refers to and that holds, in one
+    slot, the member at the top of the container's chain, which nothing owns and nothing else refers to (the node
+    whose list takes its first item): the node joins as nothing's, the top of the chain becomes the node's, the
+    field an up-reference, and the node's other slots that hold members go through the general link of a joining
+    object's slot (its own parent, with the merge), then LinkWaiting. Anything else is refused before a word is
+    written and goes JoinOwned's way: another kind of reference in a slot, a type without the word, the member's
+    last reference from outside, a second reference up, a plain object of the group in a slot of the node, a busy
+    or merged arena, threads. The end state is the general way's (argued in the function's comment: the order of
+    the node's list and the up-reference against the node's other slots is the one difference, and those links
+    read the node's owner, which is none either way); the node gets no side words. By the counts of a build:
+    12,476 leaves and 2,500 nodes' first leaves take it; the 625 first leaves whose node's own parent is a plain
+    object still, and what they join above them, go the general way.
+  - Numbers. The flat program: two joins 0.70 to 0.56 ms, with the parent field 0.96 to 0.74, a node with its
+    first leaf 256 to 205 ns. tools/tree-build.cs, the switch on and off in turn five times while the machine was
+    loaded (the middle run, and the five): variant 0 build 2.04 ms (1.97 to 2.06) to 1.74 (1.70 to 1.84), drop
+    0.41 and 0.40; 1 (no parent) 1.38 to 1.27; 2 (the parent after the add) 2.10 and 2.09; 3 (capacity first) 1.82
+    to 1.57; 5 (fan 4) 2.00 to 1.82; on the quiet machine before, variant 0 1.77 to 1.62. tools/tree-store.cs: the
+    build 99 to 112 ns an entity to 90 to 92, the store 11.7 to 12.2 ns a member and 11.1 to 12.0. tools/tree-frame.cs,
+    an ordinary frame: the build 17.0 to 18.3 us to 15.4 to 16.6, the store 3.8 to 4.6 and 4.2 to 4.3, the walk
+    30.8 to 33.2 and 30.6 to 31.5 (NativeAOT-LLVM's, from round 5: 2.3, 0.1, 29.3). tools/tree-parts.cs build 2.02
+    to 2.17 ms to 1.87 to 2.06. `node tools/frames.mjs --runs 3 --js-young 32`, off and on in turn three times,
+    the desk loaded: tree median 0.049, 0.052, 0.050 off and 0.052, 0.051, 0.048 on (NativeAOT-LLVM 0.029 to
+    0.031); p99.9 2.776, 3.043, 2.698 off and 2.847, 2.869, 2.545 on, against NativeAOT-LLVM's 2.49 to 2.74 in
+    those six invocations; worst 2.87 to 3.50 and 2.77 to 3.54 (3.23 to 3.46): not told apart there. On the
+    homelab, this side alone (`node tools/frames.mjs --no-aot --runs 3 --js-young 32 tree`, new: the homelab has
+    no Emscripten SDK; off and on in turn three times): median 0.061, 0.061, 0.060 off and 0.058, 0.058, 0.059 on;
+    p99.9 3.276, 3.292, 3.283 off and 3.024, 3.017, 3.012 on; worst 3.46 to 3.64 and 3.08 to 3.17: **the rebuild
+    frame 0.27 ms shorter (8%), the median 4%.** By that ratio the desk's 2.67 ms would be 2.45, at
+    NativeAOT-LLVM's 2.42 to 2.48. bench.mjs, off and on in turn twice: 0.94x and 0.95x (this side's own times the
+    same both ways, 11.8, 1.6, 1.0 and 3.3 to 3.4 ms; NativeAOT-LLVM's shapes ran 0.9 and 0.8); its module 324.1
+    to 326.1 KB. Hello world 27,426 bytes, as on main (no group in it).
+  - **Not reached.** A rebuild's build is 0.2 to 0.3 ms shorter (12 to 15%), an ordinary frame's 2 us of 50; the
+    tree's median is still 1.6x NativeAOT-LLVM's and its p99.9 is at NativeAOT's, not below it in every
+    invocation. The remaining build, 1.6 ms for 19,531 entities, 82 ns each, against 13: the allocations 10 ns;
+    a fused leaf's two joins and up-reference 28; what still goes the general way is every node: its list and
+    first array as a group of their own (an arena record made, merged, freed: 3,125 a build), its own parent
+    field as a counted reference that makes its first child-node its parent's owner until it is put into the
+    parent's list (Waiting, LinkWaiting, TakeOwnership, the turn at the add with EarlyGiveBack's walk and a
+    Reevaluate by a visit), the 625 first leaves under a plain parent, the lists' growth. None of that is a floor
+    of reference counting; it is what the owners' chain asks when a tree is made parent first: the runtime
+    learns that a node is a parent only when a child is already below it. What would end it is not one more
+    path: a node made with a member for its parent would have to join as the parent's at that store, nothing's
+    until its list takes it (round 1 tried the ownership left open until the member's last release and took it
+    back for test 127), or the parent field proven a reference back (step 7.E), which takes Entity out of the
+    groups altogether and leaves the 10 ns. Both change when something is freed and are the owner's to decide.
+  - Seen on the way, on main too (the same with the switch off), not followed. **A program that assigns a
+    node's list of children anywhere keeps every subtree that is stored over until the whole tree goes**
+    (`tools/tree-assign.cs`, new: `built 121 replaced 161 again 201 gone 0` for .NET's `121 121 121 0`; the line
+    `s_tree.Kids = new List<Node>();` behind a test that is never true is enough; test 198's first version, with
+    such a line in a method the tree in question never ran, 6,653 nodes for 655 after 300 frames). With a second
+    place that stores the field the list is no longer borrowed across `e.Kids.Add(Tree(e, ..))`: the building
+    method counts it for the length of the call (one more rt.retain and its release in `CS2WASM_DUMP=P.Tree`), a
+    list with up-references below it that is referred to from elsewhere than its owner holds its owner
+    (UpdateHold, a hold that is kept), and what those holds leave is not found when the subtree is let go. The
+    scene tree of tools/frames.mjs has no such line. Test 131 (`0 5 5` for `0 0 0`): once as shipped in the
+    homelab's suite at a377166, and in one run of 3,000 each with the switch on and off, 32 at once (the runs that
+    differed were not counted, one of each was kept); 400 runs 8 at once the same every time, both ways. What
+    may stay until its group goes, as designed, and is counted in test 198 only when its tree has gone: a node
+    that refers to a node beside it or to itself, to the root from nine owners below (ChainMax is eight), by a
+    delegate that captures it, by a field of a struct.
+  - Checked: test 198 (new objects that join in one step: a leaf by what its slots hold, its parent, a parent
+    further up, things not of the group, a new node of its own, empty and with content that refers up, new
+    arrays, the same new node twice, a plain node a static holds, into a field and into a member's array; a
+    node whose list takes its first item, by its other slots, with two children made first, a first child with
+    content, a first child in its array, a list something else refers to; classes whose slots are a base's,
+    nine, past the fifteenth word, inside a struct, with finalizers, held by delegates; 300 frames of the
+    scene's kind; counted against .NET while the trees live and when they have gone). It fails with each of six
+    rules of the step broken by hand: the type's word a slot short, the chain not asked, a new object's own
+    slots not looked at, the node's other slots not linked, the top of the chain not asked what refers to it,
+    the member's last reference from outside given back in the step. Its output is the same with the switch
+    off, the first version's too, whose lines differed from .NET's by what stays until a group goes.
+    On the homelab: the suite at a377166 (the step alone) 208/208 checked and 207/208 as shipped (test 131,
+    above); at c3b22e0 209/209 checked and 208/209 as shipped (088, its timer line, another session's suite
+    running beside it); at a440778, the last change of code, 209/209 checked and 209/209 as shipped (419 s), and
+    088 by itself passes both ways. `tools/stress-cycles.sh` there at a440778 (200 loaded runs a mode, 8 at once):
+    198, 192 to 197 and 139 the same in every run of both modes; 127 differing in 1 of 200 as shipped and 4 of
+    200 checked (main's rate, 5 of 400 at 80ae1ce; it starts threads and takes none of the step). Not run: the
+    self-hosted compiler; frames.mjs against NativeAOT-LLVM on a quiet machine.
 
 - **The collections and strings scenes (2026-11-22, branch claude/colstr-1, from main 1f7a807; the desk machine,
   shared; not merged when this was written).** Nobody had looked at these two: collections' median was 1.24x to 1.27x

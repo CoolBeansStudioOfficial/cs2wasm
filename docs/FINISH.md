@@ -819,3 +819,35 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   homelab (NativeAOT-LLVM's 4.0 to 4.3). frames.mjs here once (`--runs 3 --js-young 32`, the machine shared): churn
   0.085 ms against NativeAOT-LLVM's 0.053 (1.60x), tree 0.053 against 0.032 and p99.9 3.25 against 2.94,
   collections 0.007 both (1.06x), strings 0.008 both, bigdrop 0.003 both.
+- 2026-11-22 to 23, the tree's build, round 6 (branch claude/tree-build-6, from main 1f7a807; AUDIT A3.5, "The
+  build, round 6"; not merged when this was written). Measured first: reference counting has no floor above
+  NativeAOT's in this scene (19,531 entities with their lists made and kept as plain objects 0.19 ms, let go 0.19;
+  NativeAOT-LLVM's build 0.26); the other 1.3 ms of a build's 1.75 is the group's bookkeeping, spread over sixty
+  functions none above 5%: a leaf's two joins 26 ns and its parent field 14, a node with its first leaf 256 ns in
+  the scene's order (its list and array a group of their own, merged; the node joined from below through the leaf's
+  parent field, waiting for an owner; its first child-node its parent's owner until the add turns that round). The
+  cause is how an object becomes a member: made plain, then every slot gone through again as a general store.
+  Done: `Rt.JoinFresh` (`CS2WASM_NO_FUSED_JOIN=1`): a new object stored into a member's slot whose slots hold only
+  what fixes the outcome joins with them linked in one step (a leaf with its list and its parent; a node's first
+  leaf, the node a plain object that holds the top of the container's chain), anything else refused before a
+  write. tools/tree-build.cs, off and on in turn: build 2.04 to 1.74 ms (the machine loaded; 1.77 to 1.62 quiet);
+  tools/tree-frame.cs an ordinary frame's build 17.0-18.3 to 15.4-16.6 us, store and walk as they were.
+  frames.mjs here (`--runs 3 --js-young 32`, off and on in turn three times, the desk loaded): tree median
+  0.049-0.052 and 0.048-0.052 against NativeAOT-LLVM's 0.029-0.031; p99.9 2.70, 2.78, 3.04 off and 2.55, 2.85,
+  2.87 on against 2.49-2.74: not told apart there. On the homelab, this side alone (frames.mjs --no-aot, new), off
+  and on in turn three times: p99.9 3.28-3.29 to 3.01-3.02 ms, median 0.060-0.061 to 0.058-0.059. **The rebuild
+  frame is 0.27 ms shorter (8%), the median 4%: by that ratio the desk's 2.67 ms is 2.45, at NativeAOT-LLVM's 2.42
+  to 2.48 and not below it; the median stays 1.6x. Not reached.** The other scenes as on main; bench.mjs 0.94x
+  off and 0.95x on, this side's own times the same; hello world 27,426 bytes as on main. What is left is the
+  nodes (each one's list and first array a group of their own, its own parent field, its place in its parent's
+  list: the general way still, 3,906 a build), and it is not one more path: a node made parent first would have
+  to join as its parent's at that store, or the parent field be proven a reference back (7.E); both change when
+  something is freed: the owner's call. Found on the way, on main too, not followed: **a program that assigns a
+  node's list of children anywhere keeps every subtree stored over until the whole tree goes**
+  (tools/tree-assign.cs, new: `121 161 201` for .NET's `121 121 121`; the list is then counted across
+  `e.Kids.Add(..)`, holds its owner, and the holds are not found at the drop; the scene has no such line); test
+  131 prints `0 5 5` in a run of some thousands under load, with the switch on and off. On the homelab at
+  a440778: suite 209/209 checked and as shipped (test 198 new; 088's timer line failed once as shipped at c3b22e0
+  beside another session's suite and passes alone); stress, 200 loaded runs a mode: 198, 192 to 197 and 139 the
+  same in every run, 127 differed in 5 of 400. Test 198 fails with each of six rules of the step broken by hand.
+  Not run: the self-hosted compiler.

@@ -1109,6 +1109,23 @@ sealed partial class RuntimeGen
             }
             if (rt.ArenaFinTypeIfMade is { } finType) EmitIdTable(finType, D.TypeById.Count, i => (null, finFns.ContainsKey(i) ? 1 : 0));
             if (rt.SccOfIfMade is { } scc) EmitIdTable(scc, D.TypeById.Count, i => (null, ar.SccOf(i)));
+            // (the slots a new object's links are read from as it joins, Rt.JoinFresh: what the type's visit function
+            // goes through, in its order, for a class whose slots are all among the first fifteen words and at most
+            // eight; 0 for an array and for any other type, which is visited by its function)
+            if (rt.ArenaSlotsIfMade is { } slots) EmitIdTable(slots, D.TypeById.Count, i =>
+            {
+                if (!visitFns.ContainsKey(i) || D.TypeById[i] is IArrayTypeSymbol) return (null, 0);
+                var offs = ar.CyclicFieldOffsets(i).ToList();
+                if (offs.Count == 0 || offs.Count > 8) return (null, 0);
+                int w = 0;
+                for (int k = 0; k < offs.Count; k++)
+                {
+                    int o = offs[k];
+                    if (o < 12 || o > 68 || (o & 3) != 0) return (null, 0);
+                    w |= (((o - 12) >> 2) + 1) << (4 * k);
+                }
+                return (null, w);
+            });
         };
     }
 
@@ -1444,6 +1461,7 @@ sealed partial class RuntimeGen
         if (_emitScc == null)
         {
             if (D.Rt.SccOfIfMade is { } scc0 && scc0.Body.Count == 0) new Emitter(scc0).I32(0);
+            if (D.Rt.ArenaSlotsIfMade is { } sl0 && sl0.Body.Count == 0) new Emitter(sl0).I32(0);
             if (D.Rt.ArenaIsSlotFnIfMade is { } is0 && is0.Body.Count == 0) new Emitter(is0).I32(0);
         }
         // (no array that can be on a cycle, or the switch: a list's growth is the copy and the store)
