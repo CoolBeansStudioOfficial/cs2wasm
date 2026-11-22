@@ -246,6 +246,9 @@ sealed class Manifest
             // a hash table picks its bucket by two multiplications (upstream does so on 64-bit targets only; a division otherwise)
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Collections/Generic/Dictionary.cs\t#if TARGET_64BIT\t#if true");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Collections/Generic/HashSet.cs\t#if TARGET_64BIT\t#if true");
+            // a list of references that grows: its new array takes the items and the old one's place in one step where
+            // the items are members of a group (Boundary/Runtime.cs, Rt.GrowInto); false, and the copy as upstream, anywhere else
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Collections/Generic/List.cs\tArray.Copy(_items, newItems, _size);\tif (Cs2Wasm.Runtime.Rt.GrowInto(this, _items, newItems, _size)) return; Array.Copy(_items, newItems, _size);");
             // Span<T>.Clear over references releases them (the upstream loop writes zeros over them)
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Span.cs\tSpanHelpers.ClearWithReferences(ref Unsafe.As<T, IntPtr>(ref _reference), (uint)_length * (nuint)(sizeof(T) / sizeof(nuint)));\tfor (int i = 0; i < _length; i++) Unsafe.Add(ref _reference, i) = default!;");
             // the text scans with 128-bit instructions (Boundary/TextScan.cs)

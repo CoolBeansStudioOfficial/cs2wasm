@@ -727,8 +727,8 @@ namespace Cs2Wasm.Runtime
         }
         // (and, with it, how often each path of the arena operations runs: OpStat's numbers, printed with DsPrint)
         static int s_opStats;
-        const int OpN = 31;
-        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join";
+        const int OpN = 32;
+        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow";
         // (a constant test where it is asked, so that without the diagnosis nothing is left of it, not even a call)
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static void OpStat(int k) { if (DropStats()) OpStatCount(k); }
@@ -738,6 +738,14 @@ namespace Cs2Wasm.Runtime
             long n = Mem.LoadI64(s_opStats + 8 * k) + 1;
             Mem.StoreI64(s_opStats + 8 * k, n);
             if (k == 0 && (n & ((1 << 18) - 1)) == 0) DsPrint();
+        }
+        static void DsDrop(int members, long walk, long clear, long free)
+        {
+            if (s_dsBuf == 0) s_dsBuf = Alloc(4096);
+            int at = 0;
+            DsNum(ref at, "group drop: members ", members); DsNum(ref at, " walk ", walk); DsNum(ref at, " clear ", clear); DsNum(ref at, " free ", free);
+            Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
+            Engine.Write(s_dsBuf, at);
         }
         static void DsPrint()
         {
@@ -2757,6 +2765,118 @@ namespace Cs2Wasm.Runtime
             return true;
         }
 
+        /// <summary>rt.array_grow: ArenaGrowArray in a program with arrays that can be on a cycle, 0 in any other (and
+        /// with CS2WASM_NO_ARRAY_GROW=1 at compile time): RuntimeGen.cs.</summary>
+        [Intrinsic] static extern int ArrayGrow(int container, int old, int to, int n);
+
+        /// <summary>List&lt;T&gt;.Capacity's setter, before its Array.Copy (an edit of List.cs, the manifest): the list's
+        /// new array takes the first n items of the old one and the old one's place in the list, in one step
+        /// (ArenaGrowArray). True when done: the setter returns (its local still counts the new array, as it would
+        /// after the store). False: nothing done, the setter copies and stores as upstream.</summary>
+        public static bool GrowInto<T>(object list, T[] old, T[] fresh, int n)
+        {
+            if (typeof(T).IsValueType) return false;
+            return ArrayGrow(AddressOf(list), AddressOf(old), AddressOf(fresh), n) != 0;
+        }
+
+        /// <summary>A list grows: `to` is its new array (a plain object, new and empty, its one count the caller's), `old`
+        /// the array in the container's slot, whose first n elements the caller is about to copy into `to` before it
+        /// stores `to` over `old`. When the old array would then die at that store's unlink (as ReplaceArray asks: no
+        /// code and no other member refers to it, only the slot and the holds of its own items), the three steps are
+        /// one here: the new array joins the arena as the container's, in the slot; each item moves (its reference out of the old array into the new, its owner the new
+        /// array; its counts, its hold and the up-references that pass it are what they were, on the new array now);
+        /// the old array, with no element and no reference, is destroyed.
+        /// The same end as the copy (a count on each item from outside, which with an up-reference below it holds its
+        /// owners up the chain), the store (ReplaceArray: the counts given back, the holds let go) and the unlink: in
+        /// between, no code runs that could see the items counted twice. In the scene tree of tools/frames.mjs a
+        /// growth from four to eight was 13 hold changes, 223 ns; 3,906 of them a build.
+        /// 0 (nothing done) unless all of it holds: what ReplaceArray asks of the old array and its items (each of the
+        /// first n a member the old array owns, once; no linked element past them; the up-references that pass the
+        /// old array all its items'; no note of a check at the drop on any), and the container's slot found by its
+        /// bits. Returns 1 when done. The caller's count on `to` stays, an outside reference until the setter returns
+        /// (as after the store), but `to` does not hold the container for it meanwhile, as a member with
+        /// up-references below it does for a reference from elsewhere: the reference is the local of a method of the
+        /// container's own, which its caller keeps for the call, and nothing runs before the local is let go (the
+        /// hold would be made here and undone there, up the owners as far as they go).</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        public static int ArenaGrowArray(int container, int old, int to, int n)
+        {
+            if (ThreadMode()) return 0;
+            if (old == 0 || to == 0 || n <= 0 || Mem.LoadI32(old) != -2 || Mem.LoadI32(to) != 1 || Mem.LoadI32(container) >= -1) return 0;
+            int of = PL(old, 24);
+            if ((of & (Elems | Owned | MultMask | Dying | Queued)) != (Elems | Owned | MultOne) || PL(old, 20) != container) return 0;
+            // (the same array type, of one reference an element; the new one not pinned)
+            if (Mem.LoadI32(old + 4) != Mem.LoadI32(to + 4) || Mem.LoadI32(to + 8) < 0) return 0;
+            int cf = PL(container, 24);
+            if ((cf & (Dying | Elems)) != 0) return 0;
+            int ar = ArenaOf(container);
+            if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return 0;
+            if ((s_destroying | s_trial | s_joinVisit | s_visitElem | s_linkN | s_killN | t_backN) != 0 || ArenaReport()) return 0;
+            if (ArrayRankAt(to) != 1 || ArrayElementSizeAt(to) != 4) return 0;
+            if (n > Mem.LoadI32(old + 12) || n > Mem.LoadI32(to + 12)) return 0;
+            // (the container's slot that holds the old array as a linked reference)
+            int slot = 0, sw = PL(container, 28) & 0x55555555;
+            for (int k = 0; sw != 0; k++, sw = (int)((uint)sw >> 2))
+                if ((sw & 1) != 0 && Mem.LoadI32(container + 12 + 4 * k) == old) { slot = container + 12 + 4 * k; break; }
+            if (slot == 0) return 0;
+            int s = old + 16, d = to + 16;
+            int items = 0, sumU = 0, held = 0;
+            bool notes = s_failedTops != 0;
+            if (notes && PLM(old) != 0) return 0;
+            for (int k = 0; k < n; k++)
+            {
+                if (Mem.LoadI32(d + 4 * k) != 0) return 0;
+                int v = Mem.LoadI32(s + 4 * k);
+                if (v == 0) continue;
+                if (Mem.LoadI32(v) >= -1) return 0;
+                int vf = PL(v, 24);
+                if ((vf & (Owned | MultMask | Dying)) != (Owned | MultOne) || PL(v, 20) != old) return 0;
+                if (notes && PLM(v) != 0) return 0;
+                items++;
+                sumU += (int)((uint)vf >> UShift);
+                if ((vf & Held) != 0) held++;
+            }
+            // (every linked element of the old array is one of these; Handover's condition; and the old array is
+            // referred to by the container's slot and its items' holds, nothing else)
+            if (items == 0 || PL(old, 28) != items || (int)((uint)of >> UShift) != sumU || PL(old, 4) != 1 + held) return 0;
+            OpStat(31);
+            RuntimeLock();
+            // (the new array: a member the caller's local refers to from outside; what the old array held of the
+            // container, it holds)
+            ArenaJoinOnly(ar, to);
+            PS(to, 20, container);
+            PS(to, 24, PL(to, 24) | Owned | MultOne | Elems | (sumU << UShift) | (of & Held));
+            PS(to, 4, 1 + held);
+            PS(to, 28, items);
+            for (int k = 0; k < n; k++)
+            {
+                int v = Mem.LoadI32(s + 4 * k);
+                if (v == 0) continue;
+                Mem.StoreI32(d + 4 * k, v);
+                Mem.StoreI32(s + 4 * k, 0);
+                PS(v, 20, to);
+            }
+            Mem.StoreI32(slot, to);
+            // (the old array: no element, no up-reference below it, no hold, no reference: destroyed as at the unlink
+            // of the store, its owner kept while it is)
+            PS(old, 28, 0);
+            PS(old, 24, of & (UOne - 1) & ~Held);
+            PS(old, 4, 0);
+            // (ArenaDestroyFrom for a member that refers to no member, holds nothing and is in no list, where no
+            // member has a finalizer: off the ring, no longer a member, what else it holds released, freed)
+            if (SingleThreaded() && Mem.LoadI32(ar + 24) == 0)
+            {
+                ArenaTakeOut(ArenaOf(old), old);
+                Mem.StoreI32(old, 0); PS(old, 16, 0); ClearMark(old);
+                ArenaClearObject(old);
+                ArenaFreeObject(old);
+            }
+            else ArenaDestroyFrom(old, 0);
+            if (s_killN != 0) DrainKills();
+            RuntimeUnlock();
+            return 1;
+        }
+
         /// <summary>The container gave up one counted reference to the member: if it owned it, one of the owner's
         /// references fewer; with the last, the member has no owner (unless it holds it: then until it lets go).</summary>
         static void OwnerLetGo(int old, int container)
@@ -4032,6 +4152,7 @@ namespace Cs2Wasm.Runtime
                 int n = Mem.LoadI32(ar + 8), cap = n > 0 ? n : 16;
                 int list = Alloc(cap * 4), k = 0;
                 int m = first;
+                long t0 = DropStats() ? Engine.MonotonicNs() : 0;
                 do
                 {
                     ArenaOf(m); Unqueue(m); ClearMark(m); Mem.StoreI32(m, 0);
@@ -4039,9 +4160,13 @@ namespace Cs2Wasm.Runtime
                     Mem.StoreI32(list + 4 * k, m); k++;
                     m = PL(m, 12);
                 } while (m != first);
+                long t1 = DropStats() ? Engine.MonotonicNs() : 0;
                 for (int i = 0; i < k; i++) ArenaClearObject(Mem.LoadI32(list + 4 * i));
+                long t2 = DropStats() ? Engine.MonotonicNs() : 0;
                 for (int i = 0; i < k; i++) ArenaFreeObject(Mem.LoadI32(list + 4 * i));
                 Free(list, cap * 4);
+                // (CS2WASM_DROP_STATS=1: a large group's drop by its passes, in microseconds)
+                if (DropStats() && k >= 10000) DsDrop(k, (t1 - t0) / 1000, (t2 - t1) / 1000, (Engine.MonotonicNs() - t2) / 1000);
             }
             else if (first != 0)
             {

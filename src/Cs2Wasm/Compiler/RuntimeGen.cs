@@ -800,6 +800,13 @@ sealed partial class RuntimeGen
         // Array.Copy / Array.Clear into arrays whose elements can close a cycle go element by element
         if (ar.AnyArrayCycle)
         {
+            // (a list's growth in one step, Rt.GrowInto; CS2WASM_NO_ARRAY_GROW=1: the copy and the store, as upstream)
+            if (rt.ArrayGrowIfMade is { } grow && grow.Body.Count == 0 && Environment.GetEnvironmentVariable("CS2WASM_NO_ARRAY_GROW") != "1")
+            {
+                var ge = new Emitter(grow);
+                for (int i = 0; i < 4; i++) ge.Get(i);
+                ge.Call(ar.RuntimeFn("ArenaGrowArray", 4));
+            }
             if (rt.ArrayCopyIfMade is { } copy)
             {
                 var pre = new Emitter(new WasmFunction("tmp", copy.Type));
@@ -1425,6 +1432,8 @@ sealed partial class RuntimeGen
             if (D.Rt.SccOfIfMade is { } scc0 && scc0.Body.Count == 0) new Emitter(scc0).I32(0);
             if (D.Rt.ArenaIsSlotFnIfMade is { } is0 && is0.Body.Count == 0) new Emitter(is0).I32(0);
         }
+        // (no array that can be on a cycle, or the switch: a list's growth is the copy and the store)
+        if (D.Rt.ArrayGrowIfMade is { } grow0 && grow0.Body.Count == 0) new Emitter(grow0).I32(0);
         D.Rt.EmitArrayDispatch();
         D.EmitReflectionTables();
         D.Mark("  finish: D.EmitReflectionTables");

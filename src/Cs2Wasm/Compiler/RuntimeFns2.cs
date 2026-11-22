@@ -565,6 +565,10 @@ internal sealed partial class RuntimeFns
     public WasmFunction ArrayCopy => _arrayCopy ??= MakeArrayCopy();
     public WasmFunction? ArrayCopyIfMade => _arrayCopy;
     public WasmFunction? ArrayClearIfMade => _arrayClear;
+    WasmFunction? _arrayGrow;
+    /// <summary>rt.array_grow(container, old, to, n): Rt.ArenaGrowArray where arrays can be on a cycle, else 0 (RuntimeGen.cs).</summary>
+    public WasmFunction ArrayGrowFn => _arrayGrow ??= M.AddFunction("rt.array_grow", FT([I, I, I, I], [I]));
+    public WasmFunction? ArrayGrowIfMade => _arrayGrow;
 
     // arenas (section 4.3): dispatch on the type id of a member; bodies are emitted with the type graph
     WasmFunction? _arenaClear, _arenaFree, _arenaVisit, _sccOf;
