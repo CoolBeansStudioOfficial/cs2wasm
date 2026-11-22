@@ -12,6 +12,12 @@ using Microsoft.CodeAnalysis;
 
 var root = FindRoot();
 var dir = Path.Combine(root, "tests", "Conformance");
+// --dir <folder>: the programs of another folder (tests/Load: tests as they were before a change that says ".NET does
+// not promise this", kept to show it)
+if (Array.IndexOf(args, "--dir") is int di and >= 0 && di + 1 < args.Length) dir = Path.GetFullPath(Path.Combine(root, args[di + 1]));
+// --oracle n: only the .NET run of each program, n times in this process, and each distinct output with how often it
+// came (several such processes at once: what .NET itself prints under load)
+int oracleRuns = Array.IndexOf(args, "--oracle") is int oi and >= 0 && oi + 1 < args.Length ? int.Parse(args[oi + 1]) : 0;
 // (Roslyn's emit for CS2WASM_CHECK_NAMES=1: each program's generated names against Roslyn's own)
 Cs2WasmCompiler.EmitForNamesCheck = (c, s) => c.Emit(s).Success;
 // (the conformance programs are built checked: a use after free shows; --unchecked builds them as shipped)
@@ -19,7 +25,7 @@ bool checkedBuild = !args.Contains("--unchecked");
 // (as shipped into a folder of its own: tools/suite.mjs runs both modes at once, and they wrote the same files)
 var outDir = checkedBuild ? Path.Combine(root, "tests", "out") : Path.Combine(root, "tests", "out", "shipped");
 Directory.CreateDirectory(outDir);
-string? filter = args.FirstOrDefault(a => !a.StartsWith("--") && !a.Contains('/'));
+string? filter = args.Where((a, i) => i == 0 || (args[i - 1] != "--dir" && args[i - 1] != "--oracle")).FirstOrDefault(a => !a.StartsWith("--") && !a.Contains('/'));
 int shardK = 0, shardN = 1;
 if (Array.IndexOf(args, "--shard") is int si and >= 0 && si + 1 < args.Length && args[si + 1].Split('/') is [var sk, var sn]) { shardK = int.Parse(sk); shardN = int.Parse(sn); }
 bool verbose = args.Contains("--verbose");
@@ -77,6 +83,18 @@ foreach (var (name, sources, symbols) in programs.Where((p, i) => (filter == nul
     var errs = comp.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
     if (errs.Count > 0) { Fail(name, "C# errors:\n" + string.Join("\n", errs.Take(20))); continue; }
 
+    if (oracleRuns > 0)
+    {
+        var seen = new Dictionary<string, int>();
+        for (int i = 0; i < oracleRuns; i++)
+        {
+            string o;
+            try { o = RunDotNet(comp); } catch (Exception ex) { o = "exception: " + (ex.InnerException ?? ex).GetType().Name; }
+            seen[o] = seen.GetValueOrDefault(o) + 1;
+        }
+        foreach (var (o, k) in seen.OrderByDescending(x => x.Value)) Console.WriteLine($"ORACLE {name} {k} of {oracleRuns}: {o.TrimEnd().Replace('\n', '|')}");
+        continue;
+    }
     var sw = Stopwatch.StartNew();
     var result = Cs2WasmCompiler.Compile(comp, new CompileOptions { Checked = checkedBuild });
     var buildMs = sw.ElapsedMilliseconds;
