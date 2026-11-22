@@ -400,6 +400,9 @@ internal sealed class WasmModule
         // (a frame is taken, checked against the stack's end and cleared by one function: Frames.cs)
         if (StackPointer != null && StackLo != null) Frames.Run(this, StackPointer, StackLo);
         Step("frames");
+        // (threads: each access the engine checks against the memory's size, after the thread has learnt that size)
+        if (UsesThreads) MemSync.Run(this);
+        Step("memory size");
         // Which functions are live: exported, in the table, or called from a live function.
         var live = new HashSet<WasmFunction>();
         var work = new Stack<WasmFunction>();

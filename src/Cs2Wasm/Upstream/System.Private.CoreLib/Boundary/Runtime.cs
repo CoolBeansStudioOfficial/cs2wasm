@@ -811,7 +811,7 @@ namespace Cs2Wasm.Runtime
         // (and, with it, how often each path of the arena operations runs: OpStat's numbers, printed with DsPrint)
         static int s_opStats;
         const int OpN = 40;
-        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,give-back-early,link-pinned";
+        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,give-back-early,link-pinned,give-back-last";
         // (a constant test where it is asked, so that without the diagnosis nothing is left of it, not even a call)
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static void OpStat(int k) { if (DropStats()) OpStatCount(k); }
@@ -1233,7 +1233,8 @@ namespace Cs2Wasm.Runtime
         }
 
         /// <summary>Grows the memory by at least need bytes: by an eighth of its size, 16 MiB at least, when the maximum
-        /// allows (growing a shared memory is slow; growing it by a page at a time, for every refill, slower still).</summary>
+        /// allows (growing a shared memory is slow; growing it by a page at a time, for every refill, slower still).
+        /// (Threads: the other threads' instances learn the new size later, Wasm/MemSync.cs.)</summary>
         static void GrowFor(int need)
         {
             int pages = (need + 65535) / 65536;
@@ -2332,8 +2333,10 @@ namespace Cs2Wasm.Runtime
         }
 
         // (the slot of the store under way whose value was left to a waiting owner, LinkMembers, with its object and
-        // the value: the slot holds its old value until ArenaLink returns)
-        static int s_waitSlot, s_waitObj, s_waitVal;
+        // the value: the slot holds its old value until ArenaLink returns. Each thread's own, as the list they go
+        // with, s_reevQ: plain statics, they were written by two threads' links of two groups at once, and a link
+        // then read another thread's slot, or its own gone)
+        [Intrinsic] static int s_waitSlot, s_waitObj, s_waitVal;
 
         /// <summary>LinkWaiting: the container's reference to the value may be an up-reference now. Reevaluate reads
         /// the container's slots; the slot of the store under way does not hold the value yet.</summary>
@@ -2720,6 +2723,8 @@ namespace Cs2Wasm.Runtime
             PS(child, 4, PL(child, 4) - 1);
             SetSlotBits(obj, i, 2);
             if (PLW(child) == obj) PSW(child, 0);
+            // (a count of the child's that waits for the store to be written may be its last from outside)
+            if (obj == s_lastC) LastGiveBack(obj, child, t_backN != 0);
             UpPath(obj, child, 1);
             UpdateHold(child);
         }
@@ -3071,8 +3076,10 @@ namespace Cs2Wasm.Runtime
         // (every group's: threads count it atomically)
         static int s_failedTops;
         // (Dropped: 0, the trial takes in nothing but what the top owns; else one more than how many other tops it took
-        // in, with what they own. Zero by default: an initial value would give Rt a static constructor)
-        static int s_trExt;
+        // in, with what they own. Zero by default: an initial value would give Rt a static constructor. Each thread's
+        // own, as the trial's lists: a plain static, the check of one thread's group set it to zero while another's
+        // was taking tops in, which then stayed in s_tkQ, marked Dying, for the thread's next check)
+        [Intrinsic] static int s_trExt;
         // (the tops taken in, waiting until what the top owns has been gone through; and where in the trial's list
         // what they own starts, 0 before that)
         [Intrinsic] static int s_tkQ, s_tkN, s_tkCap, s_trOwn;
@@ -3626,6 +3633,7 @@ namespace Cs2Wasm.Runtime
                 // an up-reference: not counted (the chain from the container to the value keeps the value)
                 OpStat(23);
                 SetSlotBits(container, i, 2);
+                if (container == s_lastC) LastGiveBack(container, val, later);
                 UpPath(container, val, 1);
                 // (a value nothing else refers to kept its count: it goes when the store is written, AfterStore)
                 if (Mem.LoadI32(val) == -2 && PL(val, 4) == 0) Kill(val);
@@ -3720,6 +3728,55 @@ namespace Cs2Wasm.Runtime
             for (int k = 0; k <= ChainMax && PL(x, 20) != val; k++) x = PL(x, 20);
             int xf = PL(x, 24);
             return PL(x, 20) == val && (uint)xf < UOne && (xf & Held) == 0;
+        }
+
+        // (the container of the store under way, when the store is the last use of the local that holds it and that
+        // local's is its one reference from outside, ArenaLastBegin; and the container whose count was given back)
+        [Intrinsic] static int s_lastC, s_lastGiven;
+
+        /// <summary>Before the link of a store `c.F = v;` that is the last use of the local c, which owns its count
+        /// (Compiler/LocalMoves.cs, IsLastContainer; CS2WASM_NO_LAST_CONTAINER=1 at compile time: not called): a
+        /// member whose one reference from outside is that local's is noted for the link.</summary>
+        public static void ArenaLastBegin(int c)
+        {
+            if (c != 0 && Mem.LoadI32(c) == -3 && !ThreadMode()) s_lastC = c;
+        }
+
+        /// <summary>After that link: 0 when the local's count was given back (the local is cleared: the release at
+        /// the end of its scope finds nothing), else the container.</summary>
+        public static int ArenaLastEnd(int c)
+        {
+            s_lastC = 0;
+            if (s_lastGiven == 0) return c;
+            s_lastGiven = 0;
+            return 0;
+        }
+
+        /// <summary>The link makes a slot of the noted container an up-reference (`e.Children.Add(c); c.Parent = e;`,
+        /// the parent set after the child is in its list, c a local not used again). With the local's count still
+        /// on it, the container, a member with an up-reference below it that is referred to from elsewhere than its
+        /// owner, would hold its owner, that one its own, up to the value, and let them all go when the local's
+        /// scope ends, the release the long way: six hold changes a child, 117,000 a build of the scene tree of
+        /// tools/frames.mjs in that order. The local's count is given back here instead, where the release would
+        /// take it off and do nothing else had it come before the store (ArenaRelease's first case, asked as there:
+        /// the arena lives by other members, the container is owned and referred to from inside, holds nothing and
+        /// has no up-reference below it yet, no note of a failed check), and the value does not need the hold: it
+        /// is referred to from inside, or from outside by more than the store's own count (`later`: that count is
+        /// still on it). The container lives on by its owner; nothing of the program runs before the store is
+        /// written, and after the statement nothing of the method refers to it.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void LastGiveBack(int c, int val, bool later)
+        {
+            s_lastC = 0;
+            int ar = PL(c, 16), fl = PL(c, 24), total = Mem.LoadI32(ar) - 1;
+            if (Mem.LoadI32(c) != -3 || total == 0 || Mem.LoadI64(ar + 12) != 0 || PL(c, 4) == 0) return;
+            if ((fl & (Owned | Held | Dying | Queued)) != Owned || (uint)fl >= UOne) return;
+            if (s_failedTops != 0 && (PLM(c) != 0 || PLM(val) != 0)) return;
+            if (PL(val, 4) == 0 && Mem.LoadI32(val) >= (later ? -3 : -2)) return;
+            OpStat(34);
+            Mem.StoreI32(c, -2);
+            Mem.StoreI32(ar, total);
+            s_lastGiven = c;
         }
 
         /// <summary>Whether a reference from the container to the value can be part of a cycle: both of one group of

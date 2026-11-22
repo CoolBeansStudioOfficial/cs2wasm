@@ -371,7 +371,7 @@ sealed partial class FunctionCompiler
     /// <summary>Stores the value on top of the stack at (pushAddr() + offset), handling counts and struct copies.</summary>
     void StoreToAddressFromStack(Action pushAddr, int offset, ITypeSymbol t, Own o, Arenas.Site? site = null, Action? pushContainer = null, WasmFunction? pin = null,
                                  Publish pub = Publish.Unknown, Action? pubContainer = null, string? initKey = null, bool frame = false, bool fresh = false, bool owned = false, bool iso = false, bool initNull = false,
-                                 ITypeSymbol? structContainer = null, ITypeSymbol? valueType = null, bool viaPointer = false)
+                                 ITypeSymbol? structContainer = null, ITypeSymbol? valueType = null, bool viaPointer = false, int lastLocal = -1)
     {
         if (Types.IsStruct(t))
         {
@@ -417,6 +417,11 @@ sealed partial class FunctionCompiler
             bool storeLock = site != null && D.ThreadMode && !fresh && !owned && !(D.Sharing is { } shs && shs.PriorThreadLocal(site.Container));
             int took = storeLock || byAddress && D.ThreadMode ? Scratch(ValType.I32) : -1;
             if (storeLock) { pushContainer!(); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(site!.StoreLock); E.Set(took); }
+            // (the last use of the local that holds the container, LocalMoves.cs, IsLastContainer: the link may give
+            // the local's count back, where it would make the container hold its owners until the scope's end; the
+            // local is cleared then, before anything else runs)
+            bool last = lastLocal >= 0 && site != null && owned && !fresh && !storeLock;
+            if (last) { pushContainer!(); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "ArenaLastBegin", 1).Fn); }
             if (site != null) { E.Get(val); pushContainer!(); PushSlot(); E.Call(fresh ? site.LinkFresh : owned ? site.LinkOwned : iso ? site.LinkIso : site.Link); E.Set(val); }
             else if (byAddress)
             {
@@ -425,6 +430,7 @@ sealed partial class FunctionCompiler
                 if (D.ThreadMode) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.StoreLockAt(t, true)); E.Set(took); }
                 E.Get(val); pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.LinkAt(t)); E.Set(val);
             }
+            if (last) { pushContainer!(); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "ArenaLastEnd", 1).Fn); E.Set(lastLocal); }
             if (pin != null) { E.Get(val); E.Call(pin); E.Set(val); }
             EmitPublish(val, pub, pubContainer, () => { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } });
             int a = Scratch(ValType.I32);
@@ -2537,7 +2543,7 @@ sealed partial class FunctionCompiler
         }
     }
 
-    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null, bool owned = false, string? staticKey = null, bool threadStatic = false, string? structField = null, string? outParam = null, bool viaPointer = false, bool iso = false, bool initNull = false, ITypeSymbol? structContainer = null, IOperation? attachPlace = null) : LValue(f, t)
+    sealed class MemLV(FunctionCompiler f, ITypeSymbol t, Func<int> pushBase, Arenas.Site? site = null, int container = -1, WasmFunction? pin = null, Publish pub = Publish.Unknown, bool elements = false, string? initKey = null, bool fresh = false, IArrayTypeSymbol? covariant = null, bool owned = false, string? staticKey = null, bool threadStatic = false, string? structField = null, string? outParam = null, bool viaPointer = false, bool iso = false, bool initNull = false, ITypeSymbol? structContainer = null, IOperation? attachPlace = null, int lastLocal = -1) : LValue(f, t)
     {
         /// <summary>Sharing.cs: where the value stored here comes from.</summary>
         void Record(List<Sharing.Src>? srcs)
@@ -2591,7 +2597,7 @@ sealed partial class FunctionCompiler
             // (an element, or memory behind an address: a borrowed element may be the one overwritten, FieldBorrows.cs)
             F.StoreToAddressFromStack(() => F.E.Get(_addr), _off, Type, o, site, site == null ? null : () => F.E.Get(container >= 0 ? container : _addr), pin,
                 pub, () => F.E.Get(container >= 0 ? container : _addr), initKey, fresh: fresh, owned: owned, iso: iso, initNull: initNull, structContainer: structContainer,
-                valueType: _valueType, viaPointer: viaPointer);
+                valueType: _valueType, viaPointer: viaPointer, lastLocal: lastLocal);
             if (elements && F.T.NeedsRc(Type))
             {
                 int before = F.E.Body.Count;
@@ -2827,7 +2833,8 @@ sealed partial class FunctionCompiler
                             fresh: site != null && target.Parent != null && StoresIntoFresh(fr.Instance, target.Parent),
                             owned: site != null && OwnedLocal(fr.Instance),
                             iso: site != null && target.Parent is ISimpleAssignmentOperation isa && ReferenceEquals(isa.Target, target) && D.IsolatedValue(isa.Value),
-                            initNull: InitializerStoreIntoNull(fr, target));
+                            initNull: InitializerStoreIntoNull(fr, target),
+                            lastLocal: site != null ? LastContainerLocal(fr.Instance) : -1);
                     }
                     // a struct's field, wherever the struct is (Sharing.cs: one node for the field)
                     if (fr.Instance != null && Sh != null)
