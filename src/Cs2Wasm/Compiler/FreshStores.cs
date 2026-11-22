@@ -44,6 +44,10 @@ internal sealed partial class Driver
                 if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) { if (sr.GetSyntax() is not TypeDeclarationSyntax) r = false; continue; }
                 foreach (var op in body.DescendantsAndSelf())
                 {
+                    // (a lambda or a local function that names anything of `this`, a field too, captures it: stored
+                    // into a field of the object, `_f = () => _count++;`, it closes a cycle the fresh store did not
+                    // link, and the object was never freed)
+                    if (op is IAnonymousFunctionOperation or ILocalFunctionOperation && op.Descendants().Any(o => o is IInstanceReferenceOperation)) { r = false; break; }
                     if (op is not IInstanceReferenceOperation ir) continue;
                     if (ir.Parent is IFieldReferenceOperation) continue;
                     if (ir.Parent is IPropertyReferenceOperation pr && AutoPropertyField(pr.Property.OriginalDefinition) != null) continue;
@@ -56,6 +60,54 @@ internal sealed partial class Driver
         // field and property initializers run in the constructor: they cannot name `this`, but a lambda in one can
         // capture nothing of it either (C# forbids it): nothing to look at
         _ctorsKeepThis[key] = r;
+        return r;
+    }
+
+    static readonly bool s_noCtorFresh = Environment.GetEnvironmentVariable("CS2WASM_NO_CTOR_FRESH") == "1";
+    readonly Dictionary<IMethodSymbol, bool> _ctorKeepsThis = new(SymbolEqualityComparer.Default);
+
+    /// <summary>This constructor lets `this` out nowhere, nor does the constructor of its class it hands over to
+    /// (`: this(...)`), nor any constructor of the bases: while it runs, only the constructing code knows the object,
+    /// whatever the class's other constructors do (they do not run for this object). `List<T>()` stores the empty
+    /// array into its `_items`; `List<T>(IEnumerable<T>)` calls `Add` on `this`, so CtorsKeepThis says no for the
+    /// class, and the store in the first went through Rt.ArenaLink for every new list (19,531 a build of the scene
+    /// tree of tools/frames.mjs). CS2WASM_NO_CTOR_FRESH=1: by the class's constructors together, as before.</summary>
+    internal bool CtorKeepsThis(IMethodSymbol ctor)
+    {
+        if (s_noCtorFresh) return false;
+        ctor = ctor.OriginalDefinition;
+        if (ctor.MethodKind != MethodKind.Constructor || ctor.IsStatic || ctor.ContainingType is not { TypeKind: TypeKind.Class } t) return false;
+        if (HooksSeeAny(t.InstanceConstructors)) return false;
+        UsedAnalysis();
+        if (_ctorKeepsThis.TryGetValue(ctor, out var r)) return r;
+        _ctorKeepsThis[ctor] = false; // (while deciding: constructors that hand over to each other in a ring do not compile)
+        r = t.BaseType == null || CtorsKeepThis(t.BaseType);
+        if (r)
+        {
+            if (ctor.IsImplicitlyDeclared && ctor.DeclaringSyntaxReferences.Length == 0) r = t.DeclaringSyntaxReferences.Length != 0;
+            else if (ctor.DeclaringSyntaxReferences.Length == 0) r = false;
+            else
+                foreach (var sr in ctor.DeclaringSyntaxReferences)
+                {
+                    if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) { if (sr.GetSyntax() is not TypeDeclarationSyntax) r = false; continue; }
+                    foreach (var op in body.DescendantsAndSelf())
+                    {
+                        // (the constructor it hands over to: `: this(...)`; a base's is asked above, all of them)
+                        if (op is IInvocationOperation { TargetMethod: { MethodKind: MethodKind.Constructor } tc, Instance: IInstanceReferenceOperation }
+                            && SymbolEqualityComparer.Default.Equals(tc.ContainingType.OriginalDefinition, t) && !CtorKeepsThis(tc)) { r = false; break; }
+                        // (a lambda or a local function that names anything of `this` captures it)
+                        if (op is IAnonymousFunctionOperation or ILocalFunctionOperation && op.Descendants().Any(o => o is IInstanceReferenceOperation)) { r = false; break; }
+                        if (op is not IInstanceReferenceOperation ir) continue;
+                        if (ir.Parent is IFieldReferenceOperation) continue;
+                        if (ir.Parent is IPropertyReferenceOperation pr && AutoPropertyField(pr.Property.OriginalDefinition) != null) continue;
+                        if (ir.Parent is IInvocationOperation { TargetMethod.MethodKind: MethodKind.Constructor }) continue;
+                        r = false;
+                        break;
+                    }
+                    if (!r) break;
+                }
+        }
+        _ctorKeepsThis[ctor] = r;
         return r;
     }
 
@@ -460,7 +512,8 @@ sealed partial class FunctionCompiler
     {
         if (Driver.NoFreshStores || _closure != null || _machine != null || D.CompilingInstrumented) return false;
         if (M.MethodKind != MethodKind.Constructor || M.IsStatic || M.ContainingType is not { TypeKind: TypeKind.Class } ct) return false;
-        return D.CtorsKeepThis(ct);
+        // (or this constructor and those it hands over to: Driver.CtorKeepsThis)
+        return D.CtorsKeepThis(ct) || D.CtorKeepsThis(M);
     }
 
     /// <summary>A store into this object cannot close a cycle: the object an initializer fills (`new C { F = v }`), or a
