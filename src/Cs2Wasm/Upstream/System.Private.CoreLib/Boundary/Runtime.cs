@@ -1038,12 +1038,11 @@ namespace Cs2Wasm.Runtime
             t_cached = 0;
         }
 
-        /// <summary>Grows the memory by at least need bytes: in a program without threads by 16 MiB (more if needed); with
-        /// threads by an eighth of its size, 16 MiB at least, when the maximum allows (there every refill of a thread
-        /// can ask, and a growth by a page at a time, for every refill, was slow). A growth is about 0.15 ms in V8 at any
-        /// size, shared memory or not (320 MB in steps of 16 MiB: 19 growths, 30 ms in all, an eighth: 15, 29 ms): what
-        /// the eighth saves is a few calls, and what it costs is up to an eighth of the memory reserved and never used
-        /// (the self-hosted compiler: 33 MB at its last growth, which the peak counts).</summary>
+        /// <summary>Grows the memory by at least need bytes: by 16 MiB (more if needed), and a shared memory (a program
+        /// with threads) by an eighth of its size, 16 MiB at least, when the maximum allows (growing a shared memory is
+        /// slow; growing it by a page at a time, for every refill, slower still). A memory that is not shared grows in
+        /// about 0.2 ms at any size in V8: what an eighth saves there is a few calls, and what it costs is up to an eighth
+        /// of the memory committed and never used (the self-hosted compiler: 33 MB at its last growth).</summary>
         static void GrowFor(int need)
         {
             int pages = (need + 65535) / 65536;
