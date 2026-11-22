@@ -13,8 +13,8 @@ namespace Cs2Wasm.Compiler;
 /// stored inside it, into each function the set it stores anywhere, and the calls' stores go into the summary of all
 /// stores (StoreSummary) the borrows use. The conditions, each of which takes a field out for the whole program:
 ///  - a class's instance field of a number or a reference: not a struct's (a struct is copied as a whole and written
-///    through `this`, an address), not of a struct's type, not volatile, not in a class with explicit layout (fields
-///    may overlap), not a field of String, Array or a delegate (the runtime writes those);
+///    through `this`, an address), not of a struct's type, not volatile, not in a class with [StructLayout] (with
+///    explicit layout fields may overlap), not a field of String, Array or a delegate (the runtime writes those);
 ///  - no code has its address: every way to a field's place other than a plain load or a plain store goes through
 ///    FunctionCompiler.EmitFieldSlotBase, which takes the field out unless the load or the store said it is theirs
 ///    (`ref`, `out`, `in`, `fixed`, a call of a struct's method on it, Interlocked, Volatile, [UnsafeAccessor]);
@@ -39,11 +39,13 @@ internal sealed partial class Driver
     {
         var f = (IFieldSymbol)s;
         var owner = f.ContainingType;
-        if (owner == null || owner.TypeKind != TypeKind.Class || f.IsStatic || f.IsConst || f.IsVolatile || f.RefKind != RefKind.None || f.IsFixedSizeBuffer) return null;
+        if (owner == null || owner.TypeKind != TypeKind.Class || f.IsStatic || f.IsConst || f.IsVolatile && !Wasm.FieldLoads.Without("volatile") || f.RefKind != RefKind.None || f.IsFixedSizeBuffer) return null;
         if (owner.SpecialType is SpecialType.System_String or SpecialType.System_Array or SpecialType.System_Delegate or SpecialType.System_MulticastDelegate or SpecialType.System_Object) return null;
+        if (!Wasm.FieldLoads.Without("layout"))
         foreach (var a in owner.GetAttributes())
-            if (a.AttributeClass?.Name == "StructLayoutAttribute" && a.ConstructorArguments.Length > 0 && a.ConstructorArguments[0].Value is { } lk && Convert.ToInt32(lk) == 2) return null;
-        foreach (var a in f.GetAttributes()) if (a.AttributeClass?.Name == "FieldOffsetAttribute") return null;
+            // (explicit: fields may overlap; any layout asked for: the class is one Marshal copies memory into)
+            if (a.AttributeClass?.Name == "StructLayoutAttribute") return null;
+        foreach (var a in f.GetAttributes()) if (a.AttributeClass?.Name == "FieldOffsetAttribute" && !Wasm.FieldLoads.Without("layout")) return null;
         return new FieldTag(Types.Key(owner) + "::" + f.Name, f.IsReadOnly);
     }
 
@@ -54,7 +56,7 @@ internal sealed partial class Driver
         if (s_noFieldHoist || storage.IsStatic) return null;
         if (Types.IsStruct(fieldType) || Types.WasmType(fieldType) == null) return null;
         var tag = _fieldTags.GetOrAdd(storage.OriginalDefinition, MakeFieldTag);
-        if (tag == null || ThreadMode && !tag.Readonly) return null;
+        if (tag == null || ThreadMode && !tag.Readonly && !Wasm.FieldLoads.Without("threads")) return null;
         return tag;
     }
 
@@ -73,7 +75,7 @@ internal sealed partial class Driver
     /// <summary>Some code has the field's place by its address.</summary>
     internal void NoteFieldEscape(IFieldSymbol storage)
     {
-        if (s_noFieldHoist || storage.IsStatic) return;
+        if (s_noFieldHoist || storage.IsStatic || Wasm.FieldLoads.Without("address")) return;
         if (_fieldTags.GetOrAdd(storage.OriginalDefinition, MakeFieldTag) is { } tag && !tag.Escaped)
         {
             tag.Escaped = true;
@@ -86,8 +88,8 @@ internal sealed partial class Driver
     bool PrepareFieldLoads()
     {
         if (s_noFieldHoist) return false;
-        bool threads = UsesThreads;
-        if (_reflect != null)
+        bool threads = UsesThreads && !Wasm.FieldLoads.Without("threads");
+        if (_reflect != null && !Wasm.FieldLoads.Without("reflection"))
             foreach (var (t, all, names, ctors) in _reflect.Types.Values)
                 foreach (var m in KeptMembers(t, all, names, ctors))
                     if (m is IFieldSymbol { IsStatic: false } rf && _fieldTags.TryGetValue(rf.OriginalDefinition, out var rt) && rt != null) rt.Escaped = true;

@@ -93,6 +93,7 @@ internal sealed class FieldHoist(int count)
     /// loops name): `into` stands for both.</summary>
     public void Merged(WasmFunction into, WasmFunction from)
     {
+        if (FieldLoads.Without("merge")) return;
         into.FieldStoreSet = Union(into.FieldStoreSet, from.FieldStoreSet);
         if (from.NoFieldHoist) into.NoFieldHoist = true;
         if (!_merged.TryGetValue(into, out var l)) _merged[into] = l = [];
@@ -120,6 +121,7 @@ internal sealed class FieldHoist(int count)
     /// innermost last; null: where is not known).</summary>
     public void Inlined(WasmFunction f, WasmFunction g, List<Instr>? body, List<int>? openLoops)
     {
+        if (FieldLoads.Without("inline")) return;
         int gs = g.FieldStoreSet;
         f.FieldStoreSet = Union(f.FieldStoreSet, gs);
         if (g.NoFieldHoist) f.NoFieldHoist = true;
@@ -152,6 +154,12 @@ static class FieldLoads
     static readonly bool s_debug = Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_DEBUG") == "1";
     static readonly bool s_noLength = Environment.GetEnvironmentVariable("CS2WASM_NO_LENGTH_HOIST") == "1";
     internal static int Hoisted, HoistedLengths;
+    /// <summary>CS2WASM_FIELD_HOIST_WITHOUT=a,b (for the proof of tests 230 to 234 only: the module it makes is
+    /// wrong): the pass without one of its conditions, so that the test's loop for that condition can be seen to
+    /// print something else. address, reflection, layout, volatile, threads (Driver.PrepareFieldLoads); loop, calls,
+    /// indirect, assigned, dominance (here); merge, inline (FieldHoist).</summary>
+    static readonly HashSet<string> s_without = [.. (Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_WITHOUT") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)];
+    internal static bool Without(string condition) => s_without.Count > 0 && s_without.Contains(condition);
 
     static bool IsLoad(Op op) => op >= Op.I32Load && op <= Op.I64Load32U;
 
@@ -197,7 +205,9 @@ static class FieldLoads
             else if (x.Ref != null && IsLoad(x.Op) && (x.Ref is FieldTag || ReferenceEquals(x.Ref, Loops.Length))) anyLoad = true;
         }
         if (!anyLoop || !anyLoad) return false;
+        // end: of the block that opens at an index; opener: of the block an `end` or an `else` belongs to
         var end = new int[n];
+        var opener = new int[n];
         var loops = new List<int>();
         {
             var open = new Stack<int>();
@@ -205,8 +215,17 @@ static class FieldLoads
             {
                 var op = b[i].Op;
                 if (op is Op.Block or Op.Loop or Op.If or Op.TryTable) { open.Push(i); if (op == Op.Loop) loops.Add(i); }
-                else if (op == Op.End && open.Count > 0) end[open.Pop()] = i;
+                else if (op == Op.Else && open.Count > 0) opener[i] = open.Peek();
+                else if (op == Op.End && open.Count > 0) { int at = open.Pop(); end[at] = i; opener[i] = at; }
+                else if (op == Op.End) return false;
             }
+        }
+        int budget = 200_000 + 40 * n;
+        bool AssignedIn(int from, int to, int v)
+        {
+            for (int k = from; k <= to; k++) if (b[k].Op is Op.LocalSet or Op.LocalTee && b[k].Imm == v) return true;
+            budget -= to - from;
+            return false;
         }
         int firstLocal = f.Type.Params.Length;
         ValType TypeOfLocal(int v) => v < firstLocal ? f.Type.Params[v] : f.Locals[v - firstLocal];
@@ -217,6 +236,7 @@ static class FieldLoads
         string? CallKills(WasmFunction g, int id, int depth)
         {
             if (h == null) return "no summary";
+            if (Without("calls")) return null;
             if (g.IsImport) return h.Stores.Host(id) ? "the host, " + g.Name : null;
             if (h.Stores.Knows(g)) return h.CallStores(g, id) ? "a call of " + g.Name : null;
             // a function made since the summary (a type's release written out: WasmModule.ExpandLeafReleases): its
@@ -256,15 +276,40 @@ static class FieldLoads
                 string? why = null;
                 if (h == null || f.NoFieldHoist) why = "the function's stores are not known";
                 else if (b[l].Imm2 == FieldHoist.Unknown) why = "the loop's stores are not known";
-                else if (h.Contains((int)b[l].Imm2, id)) why = "the loop stores it";
+                else if (h.Contains((int)b[l].Imm2, id) && !Without("loop")) why = "the loop stores it";
                 else
                 {
                     foreach (var g in li.Calls) if ((why = CallKills(g, id, 0)) != null) break;
-                    if (why == null) foreach (var sig in li.Indirect) if (h.Stores.Indirect(sig, id)) { why = "an indirect call"; break; }
+                    if (why == null && !Without("indirect")) foreach (var sig in li.Indirect) if (h.Stores.Indirect(sig, id)) { why = "an indirect call"; break; }
                 }
                 return li.Killed[id] = why;
             }
-            Dictionary<(int, Op, long, object?), int>? slots = null;
+            // The local the loop does not assign whose value the read of `t` at `at` has: t itself, or the one t
+            // was last given a copy of (`local.get L; local.set t`, also through further copies), when that copy
+            // runs before every read at `at`: it stands in a block still open at `at` (not in one closed since,
+            // not in the other arm of an `if`), and no loop that began since assigns t (its turns come back to
+            // its start, after the copy). -1: none.
+            int Source(int t, int at, int depth)
+            {
+                if (!Info().Assigned.Contains(t) || Without("assigned")) return t;
+                if (depth == 0) return -1;
+                bool dom = !Without("dominance");
+                for (int k = at - 1; k > l; k--)
+                {
+                    if (--budget < 0) return -1;
+                    var y = b[k];
+                    switch (y.Op)
+                    {
+                        case Op.End when dom: { int op0 = opener[k]; if (op0 <= l || AssignedIn(op0, k, t)) return -1; k = op0; break; }
+                        case Op.Else when dom: k = opener[k]; if (k <= l) return -1; break;
+                        case Op.Loop when dom: if (AssignedIn(k, end[k], t)) return -1; break;
+                        case Op.LocalSet or Op.LocalTee when y.Imm == t:
+                            return k - 1 > l && b[k - 1].Op == Op.LocalGet ? Source((int)b[k - 1].Imm, k - 1, depth - 1) : -1;
+                    }
+                }
+                return -1;
+            }
+            Dictionary<(int, Op, long), int>? slots = null;
             for (int i = l + 2; i < e; i++)
             {
                 var x = b[i];
@@ -273,30 +318,16 @@ static class FieldLoads
                 bool length = tag == null && ReferenceEquals(x.Ref, Loops.Length);
                 if (tag == null && !(length && !s_noLength)) continue;
                 if (replace != null && replace.ContainsKey(i)) continue;
-                // the address: a local read as it is; with its null check between (the call, or written out
-                // through a second local)
+                // the address: a local read as it is, or with its null check's call between
                 int baseLocal = -1, form = 0;
-                if (b[i - 1].Op == Op.LocalGet)
-                {
-                    int t = (int)b[i - 1].Imm;
-                    int q = i - 2;
-                    if (q > l && b[q].Op == Op.End)
-                    {
-                        // local.get L ; local.tee T ; i32.eqz ; if ; call throw ; [unreachable] ; end ; local.get T
-                        q--;
-                        if (q > l && b[q].Op == Op.Unreachable) q--;
-                        if (q - 4 > l && Throws(b[q]) && b[q - 1].Op == Op.If && b[q - 2].Op == Op.I32Eqz && b[q - 3].Op == Op.LocalTee && b[q - 3].Imm == t && b[q - 4].Op == Op.LocalGet)
-                        { baseLocal = (int)b[q - 4].Imm; form = 3; }
-                    }
-                    if (baseLocal < 0) { baseLocal = t; form = 1; }
-                }
+                string? why = null;
+                if (b[i - 1].Op == Op.LocalGet) { baseLocal = (int)b[i - 1].Imm; form = 1; }
                 else if (b[i - 1].Op == Op.Call && nonNull != null && ReferenceEquals(b[i - 1].Ref, nonNull) && i - 2 > l && b[i - 2].Op == Op.LocalGet)
                 { baseLocal = (int)b[i - 2].Imm; form = 2; }
-                string? why = null;
                 if (baseLocal < 0) why = "the address is no local";
-                else if (TypeOfLocal(baseLocal) != ValType.I32) why = "the address is no local";
                 else if (x.Imm < 0 || x.Imm >= 32768) why = "the offset";
-                else if (Info().Assigned.Contains(baseLocal)) why = "the loop assigns the local";
+                else if ((baseLocal = Source(baseLocal, i - form, 4)) < 0) why = "the loop assigns the local";
+                else if (TypeOfLocal(baseLocal) != ValType.I32) why = "the address is no local";
                 else if (tag != null)
                 {
                     if (tag.Ids.Length == 0) why = "no candidate";
@@ -305,7 +336,8 @@ static class FieldLoads
                 if (s_debug) Console.Error.WriteLine($"field hoist {f.Name} @{l} {(tag != null ? tag.Key : "length")}: {why ?? "yes"}");
                 if (why != null) continue;
                 slots ??= [];
-                var slotKey = (baseLocal, x.Op, x.Imm, x.Ref);
+                // (two loads of one place, each allowed by its own field: one value)
+                var slotKey = (baseLocal, x.Op, x.Imm);
                 if (!slots.TryGetValue(slotKey, out int hl))
                 {
                     hl = firstLocal + f.Locals.Count;
