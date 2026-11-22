@@ -6,7 +6,9 @@
 // inner one's turns, two classes whose getters are the same code (one body in the module), a field of a field, a
 // constructor's loop over its own readonly field, a list's size and array changed by the loop; an object that is
 // null (the exception at the same turn, after the same output; no exception from a loop that takes no turn); an
-// array's length where the loop assigns the array; a field of a field of a null (what a read from null gets is no
+// array's length where the loop assigns the array; loops whose test counts, stores or calls (the pass runs a loop's
+// test once more before the loop, to read behind it what the turns read: only a test that can be run twice), loops
+// that take no turn and loops left at once; a field of a field of a null (what a read from null gets is no
 // reference: nothing is read through it before the loop); objects constructed in a loop that reads a readonly field of an
 // older one; two reads in a straight line with a store between them (by the code itself, a callee, another
 // reference, on one path only, a handler, a loop); and loops that store nothing, whose reads may be made once.
@@ -78,28 +80,63 @@ sealed class Link
 
 static class P
 {
-    static string NullChains(Link? n, int turns)
+    // (one loop a call: the first that throws would hide the others)
+    static string NullChains(Link? n, int turns, int which)
     {
         int s = 0;
-        string r = "";
         try
         {
-            for (int i = 0; i < turns; i++) s += n!.L0!.T + n.L0.L0!.T;
-            for (int i = 0; i < turns; i++) s += n!.L1!.T;
-            for (int i = 0; i < turns; i++) s += n!.L2!.T + n.L2.Arr!.Length;
-            for (int i = 0; i < turns; i++) s += n!.L3!.T;
-            for (int i = 0; i < turns; i++) s += n!.L4!.L5!.L6!.T;
-            for (int i = 0; i < turns; i++) s += n!.L5!.T;
-            for (int i = 0; i < turns; i++) s += n!.L6!.Arr!.Length;
-            for (int i = 0; i < turns; i++) s += n!.L7!.T;
-            for (int i = 0; i < turns; i++) s += n!.L8!.T + n.L8.L9!.T;
-            for (int i = 0; i < turns; i++) s += n!.L9!.T;
-            for (int i = 0; i < turns; i++) s += n!.L10!.L11!.T;
-            for (int i = 0; i < turns; i++) s += n!.L11!.T + n.Arr!.Length;
-            r += "none";
+            if (which == 0) for (int i = 0; i < turns; i++) s += n!.L0!.T + n.L0.L0!.T;
+            if (which == 1) for (int i = 0; i < turns; i++) s += n!.L1!.T;
+            if (which == 2) for (int i = 0; i < turns; i++) s += n!.L2!.T + n.L2.Arr!.Length;
+            if (which == 3) for (int i = 0; i < turns; i++) s += n!.L3!.T;
+            if (which == 4) for (int i = 0; i < turns; i++) s += n!.L4!.L5!.L6!.T;
+            if (which == 5) for (int i = 0; i < turns; i++) s += n!.L5!.T;
+            if (which == 6) for (int i = 0; i < turns; i++) s += n!.L6!.Arr!.Length;
+            if (which == 7) for (int i = 0; i < turns; i++) s += n!.L7!.T;
+            if (which == 8) for (int i = 0; i < turns; i++) s += n!.L8!.T + n.L8.L9!.T;
+            if (which == 9) for (int i = 0; i < turns; i++) s += n!.L9!.T;
+            if (which == 10) for (int i = 0; i < turns; i++) s += n!.L10!.L11!.T;
+            if (which == 11) for (int i = 0; i < turns; i++) s += n!.L11!.T + n.Arr!.Length;
+            // (a loop with no test at its top: what it reads on every entry is read before it)
+            if (which == 12) { int i = 0; do { s += n!.L2!.T + n.L3!.L4!.T; } while (++i < turns); }
+            if (which == 13) { int i = 0; do { s += n!.L7!.L8!.L9!.T; } while (++i < turns); }
         }
-        catch (NullReferenceException) { r += "null"; }
-        return r + s;
+        catch (NullReferenceException) { return "n"; }
+        return s.ToString();
+    }
+    static int s_calls;
+    static bool More(Box b) { s_calls++; return b.Q++ < 3; }
+    // the loop's test with an effect of its own: a count, a store, a call; each loop reads fields after its test
+    static string Tested(Box b, List<Box> boxes, Box? none)
+    {
+        int s = 0;
+        b.Q = 0; b.W = 0; b.V = 7;
+        for (int i = 0; i++ < boxes.Count;) s += boxes[i - 1].V + b.V + i;
+        int k = 0;
+        while (k++ < b.Arr.Length) s += b.V * k;
+        s += k;
+        while ((b.W = b.W + 1) < 5) s += b.V + boxes.Count;
+        s += b.W;
+        while (b.W++ < 9) s += b.V + boxes[0].V;
+        s += b.W;
+        while (More(b)) s += b.V + boxes.Count;
+        s += b.Q + s_calls;
+        int n = 3;
+        while (n-- > 0) s += b.V + boxes[n].V;
+        s += n;
+        // no turn: the test alone, once
+        k = 10;
+        while (k++ < 5) s += b.V;
+        for (int i = 0; i < boxes.Count - 100; i++) s += boxes[i].V + b.V;
+        // left at once, before the reads; the reads behind a test that passes are of a null
+        string r = "";
+        for (int i = 0; i < boxes.Count; i++) { if (i == 0) break; s += boxes[i].V + none!.V; }
+        try { for (int i = 0; i < boxes.Count; i++) { r += "a" + i; s += none!.V + none.Next!.V; } } catch (NullReferenceException) { r += " null"; }
+        try { for (int i = 0; i < none!.V; i++) { r += "b"; s += b.V + boxes[i].V; } } catch (NullReferenceException) { r += " test"; }
+        List<Box>? noList = null;
+        try { for (int i = 0; i < noList!.Count; i++) { r += "c"; s += noList[i].V + b.V; } } catch (NullReferenceException) { r += " list"; }
+        return s + " " + k + r;
     }
     static int Constructed(Made first)
     {
@@ -320,8 +357,11 @@ static class P
         Console.WriteLine("lists " + Lists());
         Console.WriteLine("nulls " + Nulls(null, 4));
         Console.WriteLine("lengths " + Lengths(new int[3], null));
-        Console.WriteLine("null chains " + NullChains(null, 0) + " " + NullChains(null, 2) + " " + NullChains(new Link(), 0) + " " + NullChains(new Link(), 2)
-            + " " + NullChains(new Link { L0 = new Link { T = 3 } }, 2));
+        Console.WriteLine("tested " + Tested(new Box(2), new List<Box> { new Box(1), new Box(2), new Box(3), new Box(4) }, null));
+        string chains = "";
+        var links = new Link { L0 = new Link { T = 3 }, L3 = new Link { T = 4 }, L8 = new Link { T = 5, L9 = new Link { T = 6 } } };
+        for (int w = 0; w < 14; w++) chains += " " + NullChains(null, 0, w) + NullChains(null, 2, w) + NullChains(new Link(), 0, w) + NullChains(new Link(), 2, w) + NullChains(links, 2, w);
+        Console.WriteLine("null chains" + chains);
         Console.WriteLine("seconds " + Seconds(b, b, new Box(8)) + " " + SecondNull(b, null));
         Console.WriteLine("quiet " + Quiet(b, new Left { A = 1 }, new Right(), new List<Box> { new Box(1), new Box(2), new Box(3), new Box(4) }));
     }

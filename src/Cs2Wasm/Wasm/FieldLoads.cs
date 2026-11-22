@@ -161,6 +161,17 @@ internal sealed class FieldHoist(int count)
 /// loop, so that it runs on every turn that gets that far: a loop whose arms each read another field (a parser's
 /// loop over a switch) would pay for all of them at every entry (the self-hosted compiler ran a tenth slower that
 /// way). The place's loads in the arms then take the value too.
+/// And a loop that takes no turn must not pay for what its turns read (a recursive walk over a tree is entered
+/// once a node, and most nodes are leaves: with every read before the loop the tree scene's walk was a tenth
+/// slower). A place the loop reads before its first test, on every entry (`i &lt; list.Count`: the size), is read
+/// before the loop as it is; a place it reads only after that test (the list's array, its length, the fields the
+/// body adds up) is read behind a copy of the test, `test; if (it goes on) { reads }`, put before the loop: the
+/// test's instructions are copied when they write no memory, call nothing (a check that throws aside) and give
+/// no local a value made from the local's own, so that running them twice is running them once; the loop keeps
+/// its own test. A loop whose first instructions are no such test (an enumerator's MoveNext) reads before it
+/// only what it reads on every entry. CS2WASM_FIELD_HOIST_ALWAYS=1 (measurement): every place before the loop
+/// as it is. CS2WASM_FIELD_HOIST_WITHOUT=test (measurement; the module is right): no copy of the test, only
+/// what is read on every entry.
 /// The local may be one the loop assigns, when it is a copy of one the loop does not (`local.get L; local.set t`:
 /// an inlined callee's parameter, the null check's second local) made before every read: Source.
 /// A throw that a handler inside the loop takes, after which the loop goes on: in a program with filters the catch
@@ -177,11 +188,15 @@ static class FieldLoads
     static readonly bool s_noLength = Environment.GetEnvironmentVariable("CS2WASM_NO_LENGTH_HOIST") == "1";
     /// <summary>CS2WASM_FIELD_HOIST_ALWAYS=1 (measurement): a place whose loads all stand in an `if` of the loop is read before it too.</summary>
     static readonly bool s_always = Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_ALWAYS") == "1";
-    internal static int Hoisted, HoistedLengths;
+    internal static int Hoisted, HoistedLengths, Guarded;
+    /// <summary>An `if` this pass put before a loop (its Imm2): the loop's test, and behind it the reads of the
+    /// places the loop reads only after its test.</summary>
+    const long Guard = 0x46484c44;
     /// <summary>CS2WASM_FIELD_HOIST_WITHOUT=a,b (for the proof of tests 230 to 234 only: the module it makes is
     /// wrong): the pass without one of its conditions, so that the test's loop for that condition can be seen to
     /// print something else. address, reflection, layout, volatile, threads (Driver.PrepareFieldLoads); loop, calls,
-    /// indirect, assigned, dominance, null (here); merge, inline (FieldHoist); machine (FunctionCompiler.FinishMachine);
+    /// indirect, assigned, dominance, null, twice (here: a test that cannot be run twice is copied all the same); merge,
+    /// inline (FieldHoist); machine (FunctionCompiler.FinishMachine);
     /// constructors: a field only constructors store is asked about calls like any other (this one makes the pass
     /// weaker, not wrong).</summary>
     static readonly HashSet<string> s_without = [.. (Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_WITHOUT") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)];
@@ -214,7 +229,7 @@ static class FieldLoads
         for (int i = 0; i < b.Count; i++)
         {
             if (b[i].Ref is FieldTag) b[i] = b[i] with { Ref = null };
-            else if (b[i].Op == Op.Loop && b[i].Imm2 != 0) b[i] = b[i] with { Imm2 = 0 };
+            else if (b[i].Op is Op.Loop or Op.If && b[i].Imm2 != 0) b[i] = b[i] with { Imm2 = 0 };
         }
     }
 
@@ -342,8 +357,33 @@ static class FieldLoads
             // a parser's loop over a switch reads a different field in each arm). Its other loads, in the arms,
             // then take the same value.
             Dictionary<(int, Op, long), int>? slots = null;
-            List<(int local, Op op, long off, Instr load, bool length, bool always, List<(int at, int form)> uses)>? found = null;
+            List<(int local, Op op, long off, Instr load, bool length, bool always, bool entry, List<(int at, int form)> uses)>? found = null;
             int ifs = 0;
+            // The loop's first instructions, as far as they run one after the other on every entry (a check that
+            // throws between them counts as running through): lineEnd, the first that is not one of them. When that
+            // is the loop's test (a br_if that leaves it) and nothing before it writes memory or gives a local a
+            // value made from the local's own (so that running them twice is running them once): testAt.
+            int lineEnd = l + 1, testAt = -1;
+            {
+                bool twice = true, check = !Without("twice");
+                int height = 0;
+                HashSet<int>? set = null, readFirst = null;
+                for (; lineEnd < e; lineEnd++)
+                {
+                    var x = b[lineEnd];
+                    if (x.Op == Op.If && x.Ref == null && lineEnd + 2 < e && Throws(b[lineEnd + 1]) && (b[lineEnd + 2].Op == Op.End || lineEnd + 3 < e && b[lineEnd + 2].Op == Op.Unreachable && b[lineEnd + 3].Op == Op.End))
+                    { height--; lineEnd += b[lineEnd + 2].Op == Op.End ? 2 : 3; if (height < 0) { lineEnd++; break; } continue; }
+                    if (x.Op == Op.BrIf) { if (x.Imm >= 1 && height == 1 && twice && !Without("test")) testAt = lineEnd; break; }
+                    if (x.Op == Op.Call) { if (nonNull != null && ReferenceEquals(x.Ref, nonNull) && height >= 1) continue; break; }
+                    if (x.Op is Op.CallIndirect or Op.GlobalSet or Op.MemoryGrow or Op.MemoryCopy or Op.MemoryFill or Op.MemoryInit or Op.DataDrop or Op.V128Store || (int)x.Op >= 0xFC00) break;
+                    if (Locals.PlainEffect(x) is not { } eff) break;
+                    if (x.Op >= Op.I32Store && x.Op <= Op.I64Store32) twice = !check;
+                    else if (x.Op == Op.LocalGet) { if (set == null || !set.Contains((int)x.Imm)) (readFirst ??= []).Add((int)x.Imm); }
+                    else if (x.Op is Op.LocalSet or Op.LocalTee) { if (readFirst != null && readFirst.Contains((int)x.Imm)) twice = !check; (set ??= []).Add((int)x.Imm); }
+                    height += eff.push - eff.pop;
+                    if (height < 0) break;
+                }
+            }
             for (int i = l + 1; i < e; i++)
             {
                 var x = b[i];
@@ -369,26 +409,34 @@ static class FieldLoads
                     if (tag.Ids.Length == 0) why = "no candidate";
                     else foreach (int id in tag.Ids) if ((why = Killed(id)) != null) break;
                 }
-                if (s_debug) Console.Error.WriteLine($"field hoist {f.Name} @{l} {(tag != null ? tag.Key : "length")}: {why ?? (ifs == 0 || s_always ? "yes" : "yes, in an if")}");
+                if (s_debug) Console.Error.WriteLine($"field hoist {f.Name} @{l} {(tag != null ? tag.Key : "length")}: {why ?? (i < lineEnd || s_always ? "yes" : ifs != 0 ? "yes, in an if" : testAt >= 0 ? "yes, after the test" : "yes, but not on every entry")}");
                 if (why != null) continue;
                 // (two loads of one place, each allowed by its own field: one value)
                 var slotKey = (baseLocal, x.Op, x.Imm);
-                if (!(slots ??= []).TryGetValue(slotKey, out int k)) { slots[slotKey] = k = (found ??= []).Count; found.Add((baseLocal, x.Op, x.Imm, x, length, false, [])); }
+                if (!(slots ??= []).TryGetValue(slotKey, out int k)) { slots[slotKey] = k = (found ??= []).Count; found.Add((baseLocal, x.Op, x.Imm, x, length, false, false, [])); }
                 var fnd = found![k];
                 fnd.uses.Add((i, form));
                 if (ifs == 0 || s_always) fnd.always = true;
+                if (i < lineEnd || s_always) fnd.entry = true;
                 found[k] = fnd;
             }
             if (found == null) continue;
-            foreach (var (baseLocal, _, _, load, length, always, uses) in found)
+            // (before the block the loop leaves by, when it opens right before the loop: `block; loop` stays together)
+            int at = l;
+            while (at > 0 && b[at - 1].Op == Op.Block && b[at - 1].Ref == null) at--;
+            // the reads behind the test: inside the `if` an earlier round made for this loop, or a new one (below)
+            List<Instr>? behind = null;
+            bool newGuard = false;
+            foreach (var (baseLocal, _, _, load, length, always, entry, uses) in found)
             {
-                if (!always) continue;
+                if (!always || !entry && testAt < 0) continue;
                 int hl = firstLocal + f.Locals.Count;
                 f.Locals.Add(LoadType(load.Op));
-                // (before the block the loop leaves by, when it opens right before the loop: `block; loop` stays together)
-                int at = l;
-                while (at > 0 && b[at - 1].Op == Op.Block && b[at - 1].Ref == null) at--;
-                var pre = (before ??= []).TryGetValue(at, out var list) ? list : before[at] = [];
+                List<Instr> pre;
+                if (entry) pre = (before ??= []).TryGetValue(at, out var list) ? list : before[at] = [];
+                else if (behind != null) pre = behind;
+                else if (at > 0 && b[at - 1].Op == Op.End && b[opener[at - 1]] is { Op: Op.If, Imm2: Guard }) pre = behind = (before ??= []).TryGetValue(at - 1, out var list2) ? list2 : before[at - 1] = [];
+                else { pre = behind = []; newGuard = true; }
                 pre.Add(new Instr { Op = Op.LocalGet, Imm = baseLocal, Pos = -1 });
                 pre.Add(load with { Pos = -1, Inl = 0 });
                 // (a word read from a null is no reference: null in its place, so that a field read through it in
@@ -403,24 +451,42 @@ static class FieldLoads
                 if (length) HoistedLengths++; else Hoisted++;
                 foreach (var (ui, form) in uses) (replace ??= [])[ui] = (hl, form);
             }
+            if (newGuard)
+            {
+                // the loop's test once more before it, as the loop will have it (the reads it makes now come from
+                // the locals above), and the reads behind it
+                var pre = (before ??= []).TryGetValue(at, out var list) ? list : before[at] = [];
+                for (int k = l + 1; k < testAt; k++) Rewritten(k, pre);
+                pre.Add(new Instr { Op = Op.I32Eqz, Pos = -1 });
+                pre.Add(new Instr { Op = Op.If, Imm2 = Guard, Pos = -1 });
+                pre.AddRange(behind!);
+                pre.Add(new Instr { Op = Op.End, Pos = -1 });
+                Guarded++;
+            }
         }
         if (replace == null) return false;
         var o = new List<Instr>(n + 16);
         for (int i = 0; i < n; i++)
         {
             if (before != null && before.TryGetValue(i, out var pre)) o.AddRange(pre);
-            // (the read of the local that was the address goes with the load, unless the check between them uses it)
-            if (i + 1 < n && b[i].Op == Op.LocalGet && replace.TryGetValue(i + 1, out var next) && next.form != 2) continue;
-            if (replace.TryGetValue(i, out var r))
-            {
-                if (r.form == 2) o.Add(new Instr { Op = Op.Drop, Pos = b[i].Pos, Inl = b[i].Inl });
-                o.Add(new Instr { Op = Op.LocalGet, Imm = r.local, Pos = b[i].Pos, Inl = b[i].Inl });
-                continue;
-            }
-            o.Add(b[i]);
+            Rewritten(i, o);
         }
         f.Body = o;
         return true;
+
+        // The instruction at i as the function will have it: a load that is read before its loop is the local.
+        void Rewritten(int i, List<Instr> to)
+        {
+            // (the read of the local that was the address goes with the load, unless the check between them uses it)
+            if (i + 1 < n && b[i].Op == Op.LocalGet && replace!.TryGetValue(i + 1, out var next) && next.form != 2) return;
+            if (replace!.TryGetValue(i, out var r))
+            {
+                if (r.form == 2) to.Add(new Instr { Op = Op.Drop, Pos = b[i].Pos, Inl = b[i].Inl });
+                to.Add(new Instr { Op = Op.LocalGet, Imm = r.local, Pos = b[i].Pos, Inl = b[i].Inl });
+                return;
+            }
+            to.Add(b[i]);
+        }
     }
 
     static readonly bool s_noReuse = Environment.GetEnvironmentVariable("CS2WASM_NO_FIELD_REUSE") == "1";

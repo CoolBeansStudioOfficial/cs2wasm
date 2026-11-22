@@ -361,7 +361,7 @@ internal sealed class WasmModule
                         }
                     }
                     finally { Locals.MayThrow = null; }
-                    if (Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_STATS") == "1") Console.Error.WriteLine($"field hoist: {FieldLoads.Hoisted} fields and {FieldLoads.HoistedLengths} lengths read before a loop, {FieldLoads.Reused} loads a second time, {FieldHoist.Count} fields with a number");
+                    if (Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_STATS") == "1") Console.Error.WriteLine($"field hoist: {FieldLoads.Hoisted} fields and {FieldLoads.HoistedLengths} lengths read before a loop ({FieldLoads.Guarded} loops with reads behind a copy of their test), {FieldLoads.Reused} loads a second time, {FieldHoist.Count} fields with a number");
                 }
                 Step("field loads");
                 // (and the null checks once more, on the final bodies: the passes since the first round made the shapes it
