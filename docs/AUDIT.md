@@ -216,6 +216,41 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     joins the entity and its list, links its parent field as an up-reference (UpPath, three hops), and its hold flips
     on and off around the store (the caller's temporary is an outside reference). The rebuild frame is now 7.1 to 7.2
     ms p99.9 against NativeAOT's 2.7 (homelab, frames.mjs; main: 10.2 to 10.3).
+- **The build again (2026-11-22, branch claude/tree-rebuild; the desk machine, where the build was 4.3 ms).** Measured
+  first, the same program with its parts taken out one by one: the 39,000 objects alone, made and freed, 0.6 ms; as
+  many leaves in one flat list 1.15 ms, with their parent fields 1.6 ms. So most of the tree's cost was not its leaves
+  but its 3,906 nodes with children: their lists growing from four to eight (1.6 ms, 410 ns a growth) and a node's
+  own links. By the counts (`CS2WASM_DROP_STATS=1`) a growth ran four retains in the copy (each a child's first
+  outside reference, which holds its owners up the chain), the new array's join with a link per element (a waiting
+  owner in side words of its own, the count given back after the store by a release), Handover's two visits and the
+  old array's destruction with a visit; a node with children ran four Reevaluate visits, three TakeOwnerships and
+  two releases after the store, in a group of its own that was merged at once.
+  - Done: a list's new array stored over the one it was copied from takes the items in one pass when the old array
+    then dies at the unlink (`Rt.ReplaceArray`; 0.5 ms). `List<T>.Add` takes a new object owned (OwnedParams.cs: no
+    second count on the item that comes and goes around the store; 0.3 ms). A plain object that joins for the store
+    that links it is asked nothing about the owners' chain, and joins in one piece when its only count is that
+    reference (`Rt.JoinOwned`; 0.2 ms). UpdateHold is called only where HoldSettled says there is something to change
+    (0.3 ms). Reevaluate reads the counted slots by the bits, with no visit by type; a member's count word is changed
+    without an atomic instruction in a program without threads (0.1 ms together). Build 4.3 to 3.0 ms, drop 1.5 to
+    1.4; frames.mjs tree p99.9 5.9 to 4.5 ms, worst 6.3 to 4.8, median 0.071 to 0.062 (NativeAOT-LLVM 2.4, 3.1, 0.028).
+    Each has its switch (`CS2WASM_NO_ARRAY_REPLACE`, `_NO_OWNED_ADD`, `_NO_FRESH_JOIN`, `_NO_SLOT_WALK`, `CS2WASM_ATOMIC_COUNTS`).
+  - The new paths are out of line (JoinOwned, ReplaceArray, LinkJoinedSlot): written into ArenaLink and ArenaVisit
+    they brought the strings scene's one frame of 0.5 ms back (the engine's change of tier, as LinkWaiting's did).
+  - Tried and not kept: the store's count on a member given back before the store is written, where the release after
+    the store would take the count off and do nothing else (0.2 ms of the build: a node put into its parent's list
+    holds its owners for the length of the store). In the slots of a joining object it changed what a check at the
+    drop meanwhile sees (a member no code refers to, where it had the store's count): 432 checks for 531 in the scene,
+    but longer ones, the scene's p99 0.12 to 0.16 ms, and not understood further. Outside the join it gained nothing
+    that could be measured.
+  - Left, by the same variants: the leaves 1.5 ms (75 ns each: 31 for the two objects, the rest their two joins and
+    the parent field's up-reference with its three hops), a node's own links 0.5 ms (121 ns: its group made and
+    merged, the waiting owner, the visits), the growth 0.9 ms (223 ns: the copy's four retains still hold the owners
+    up the chain and let them go, 13 hold changes a growth, besides the two arrays made and the one freed), the drop
+    1.4 ms (three passes over 66,000 members that have lived a while). The rebuild frame is 4.5 ms against 2.4: 1.8
+    times NativeAOT's, from 2.45; the parity the scene is held to is not reached. The growth's holds go only if the
+    copy knows that the new array replaces the old one (List<T>'s code says so; the runtime sees two calls); the rest
+    is the price of a member (its words, its place in the ring, its owner), which fewer members (7.E) or members
+    kept together (7.D) would lower, not a faster link.
 
 ### A4. Plugins (goal 3)
 
