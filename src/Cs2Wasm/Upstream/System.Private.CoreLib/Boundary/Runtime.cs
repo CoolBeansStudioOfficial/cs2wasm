@@ -2804,7 +2804,12 @@ namespace Cs2Wasm.Runtime
             // (what the slot's bits said of the value it held: for the ArenaUnlink that follows the store)
             int i = Mem.LoadI32(container) < -1 ? SlotIndex(container, slot) : -1;
             t_prevSlot = slot;
-            t_prevBits = slot != 0 && SlotIndex(container, slot) >= 0 ? 0 : -1;
+            // (a plain container's field held a plain counted reference, a field past those a member keeps bits for too:
+            // told by the counts at the unlink, a container that joined an arena at this very store (its other slots
+            // linked as it joined, not this one) made the old value read as an inside one, and its outside count was
+            // never given back: test 132's wide objects, a field past the sixteenth set while the object was new. An
+            // array's elements are all linked as it joins, the old one too: by the counts is right for them)
+            t_prevBits = slot != 0 && (SlotIndex(container, slot) >= 0 || Mem.LoadI32(container) > 0) ? 0 : -1;
             if (i >= 0) { t_prevBits = SlotBits(container, i); SetSlotBits(container, i, 0); }
             // (a container that joins an arena here has its slots linked: not this one, whose value is on its way out)
             int outer = s_storeSlot;
