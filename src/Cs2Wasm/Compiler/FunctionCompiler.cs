@@ -365,7 +365,7 @@ sealed partial class FunctionCompiler
                 case IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None, Initializer: { } init }: MarkAddr(init.Value); break;
                 case ISimpleAssignmentOperation { IsRef: true } sa: MarkAddr(sa.Value); break;
                 // (a call that gives a reference into a collection's storage: StorageKeeps.cs)
-                case IInvocationOperation or IPropertyReferenceOperation: NoteStorageSite(op); MarkNestedWrite(op); break;
+                case IInvocationOperation or IPropertyReferenceOperation or IObjectCreationOperation: NoteStorageSite(op); MarkNestedWrite(op); break;
                 default: MarkNestedWrite(op); break;
             }
     }

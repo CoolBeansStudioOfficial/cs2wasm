@@ -229,7 +229,7 @@ sealed partial class FunctionCompiler
         int ob = thisByValue || D.ConsumingOf(m).Mask != 0 ? -1 : OutBorrowCall(m, virt, args);
         bool wantRefAddress = _wantRefReturnAddress;
         var r = CallWith(m, virt, pushThis, () => { PushArgs(m, args); if (ob >= 0) _outBorrowNext = ob + 1; }, null, syntax, ob >= 0 ? null : ConstArgsFor(m, args), stableRecv: instance != null && IsStableBase(instance), thisByValue: thisByValue);
-        if (D.ExposesStorage(m)) KeepStorage(m, syntax, wantRefAddress);
+        if (D.ExposesStorage(m)) KeepStorage(m, syntax, wantRefAddress, instance, args);
         E.CurrentPos = save;
         return r;
     }
@@ -523,7 +523,7 @@ sealed partial class FunctionCompiler
         }
         CallWith(m, virt, pushThis, () => PushArgs(m, inv.Arguments.Cast<IOperation>().ToList()), pushDst, inv.Syntax);
         // (a span over a collection's storage, written where it goes: the storage kept, StorageKeeps.cs)
-        if (D.ExposesStorage(m)) { pushDst(); KeepStorage(m, inv.Syntax, false); E.Op(Op.Drop); }
+        if (D.ExposesStorage(m)) { pushDst(); KeepStorage(m, inv.Syntax, false, inv.Instance, inv.Arguments.Cast<IOperation>().ToList()); E.Op(Op.Drop); }
     }
 
     static IOperation StripConversions(IOperation o) { while (o is IConversionOperation c) o = c.Operand; return o; }
@@ -1307,6 +1307,8 @@ sealed partial class FunctionCompiler
         {
             var ctor = SubstMethod(oc.Constructor);
             CallWith(ctor, false, pushDst, () => PushArgs(ctor, oc.Arguments.Cast<IOperation>().ToList()), null, oc.Syntax);
+            // (a ref struct whose constructor puts a reference into a collection's storage in it: StorageKeeps.cs)
+            if (D.ExposesStorage(ctor)) KeepStorageOfNew(ctor, oc.Syntax, pushDst, oc.Arguments.Cast<IOperation>().ToList());
         }
         if (oc.Initializer != null)
         {
