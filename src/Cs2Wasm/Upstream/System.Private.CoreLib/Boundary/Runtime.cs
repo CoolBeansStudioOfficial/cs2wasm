@@ -3685,6 +3685,7 @@ namespace Cs2Wasm.Runtime
                     OpStat(4); OpStat(36);
                     Mem.StoreI32(child, -(cc + 1));
                     PS(child, 16, ar);
+                    PS(child, 4, 0);
                     RingAdd(ar, child);
                     bits |= 2 << (2 * n);
                     continue;
