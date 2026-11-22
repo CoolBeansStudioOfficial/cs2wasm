@@ -33,7 +33,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Hello world size (test 145) | 27,868 B (main 26150c1 with K round 2 and L round 3; 28,287 with L round 2, 27,869 before it) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 10.24 s vs 5.18 s, 1.98x (main 1191d18 with K round 4, N round 2, D's fixes; interleaved, 3 rounds; 2.7x on 2026-11-20 morning) | < NativeAOT-LLVM |
-| 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main 1191d18, same run). Met, thinly: the heap top is 1 MiB under the next growth step | < NativeAOT-LLVM's, same measure |
+| 4 | Same: peak memory | 302.0 MB vs 322.2 MB, 0.94x (stream L round 4, branch claude/stream-l4-memory; main 1191d18 306.0 MB in the same run). The memory grows by 16 MiB now, so a regression costs what it costs (was a step of 38 MB at 1 MiB more) | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 41.8 MB vs 129 MB (main 1191d18, shipped) | met; next waste: code (36.2 MB) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | met 2026-11-21: `node tools/proof5.mjs toolchain`, `web`, `check`: built in headless Chrome in 220.9 s, its 1,667 log lines (1,669 with `--panic`) equal stock Godot .NET's | plays, log equals the oracle's |
@@ -56,11 +56,13 @@ releases. So the two levers, in order:
    passes where the WASM passes cannot see (steps 5 and 6), driven by the hot functions of the profile.
 
 Memory (stream L, `CS2WASM_MEMSTATS=1`, 2026-11-21): the heap only grows and at its peak holds the same objects as
-.NET's after a full collection (4.6 million, type by type). Below NativeAOT-LLVM's 322 MB now (306 MB), by a thin
-margin: the heap's top (290.8 MiB) is 1.0 MiB under the step at which the memory grows by an eighth, so a megabyte more
-of live objects is 344 MB again. Per object, what is left against NativeAOT: the 12-byte header (its is 8: 4.6 million
-times 4 bytes, about 18 MB), 32 bytes before each of 0.54 million arena members (17 MB; side words of 8 bytes for
-half of them), 13 MB of data below the heap.
+.NET's after a full collection (4.67 million, type by type). Round 4: 302 MB against NativeAOT-LLVM's 322 MB; the
+memory grows by 16 MiB now, not by an eighth, so the peak follows the heap (a megabyte more of objects is at most
+16 MiB more, where it was 38 MB) and the 9.3 MB of data below the heap lost the 4.1 MB of manifest resources. What
+is left against NativeAOT is per object and the representation's: the count word (4.67 million times 4 bytes; the
+header's third word is the identity hash, as NativeAOT's header word is, and 35% of the objects have one made:
+Roslyn's SyntaxNodeCache hashes green nodes' children), and 32 bytes before each of 0.54 million arena members
+(17.2 MB, all seven words in use). The library's sources are 110 MB of strings, as in .NET.
 
 **Found 2026-11-20 (CS2WASM_ARENA_DEBUG on the self-hosted build): lever 1 is not a matter of proving a few hot
 sites.** One cycle group holds 19,847 types, `System.Object` among them, and with it the parser (LanguageParser),
@@ -374,3 +376,19 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
 - 2026-11-21, main 1191d18 (K round 4, N round 2, D's KnownNull fix; self-hosted output now equals the .NET-hosted
   compiler's), 3 interleaved rounds: self-hosted compiler 10.2-10.3 s / 306.0 MB / 41.8 MB against 5.1-5.3 s / 322.2 MB /
   129 MB: time 1.98x, memory 0.95x, size 0.32x.
+- 2026-11-21, stream L round 4 (branch claude/stream-l4-memory, on ec13733): self-hosted compiler 306.0 to 302.0 MB
+  against NativeAOT-LLVM's 322.2 MB, time the same (homelab, interleaved, 3 rounds: main 9.9-11.3 s, L4 10.1-10.3 s,
+  NativeAOT 4.0-4.4 s). The report now gives identity hashes, the header's flags, members and hashes per type, field
+  padding (CS2WASM_LAYOUT_DUMP), native memory and the data by maker (CS2WASM_DATA_DUMP). Found: the header's hash
+  word cannot go (1.66 million objects, 35%, have a hash made: Roslyn's SyntaxNodeCache hashes green nodes' children;
+  a side table would cost what the word does); padding is 0.25 MB; the members' seven words are all in use; what is
+  left over NativeAOT is the count word and the members' words. Cuts: manifest resources out of the memory (a packed
+  segment, expanded for the stream that reads them and freed with it: 4.1 MB of data); reflection's read-only lists
+  shared and the frames' method table expanded when first asked for (programs that reflect: 154's data 955 to 766 KB);
+  a program without threads grows its memory by 16 MiB, not an eighth (a growth is 0.15 ms; the eighth's 33 MB tail
+  was counted in the peak, and a megabyte more of objects cost 38 MB). Heap top 298.3 to 293.7 MB; data below the heap
+  13.9 to 9.3 MB. The 20 MB asked for are not in the heap's layout (docs/AUDIT.md, round 4). Module 41.8 to 42.3 MB;
+  hello world 27,297 to 27,290 bytes; bench 0.98x / micro --baseline 1.68x (cs2wasm's times at or below main's own
+  run on the same loaded machine, whose NativeAOT side ran slower: 0.90x / 1.50x; nothing changed touches them).
+  Suite on the homelab: checked 195/196, as shipped 194/196: 072_http's .NET run could not connect (another
+  session's suite held its port) and 088's timer tick under load (the known one); both pass alone, both modes.

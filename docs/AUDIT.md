@@ -1298,6 +1298,53 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     two runs of it at once (the suite's checked and shipped shards) share it and fail; main's too. The heap report read
     a page on the empty list as a size class from its stale header (a trap in the self-hosted build): such pages are
     marked first now, and a first word below -1 that is no tag is counted, not followed.
+- **Self-hosted compiler's memory, round 4 (stream L, 2026-11-21): 306.0 MB to 302.0 MB; what is left is per object.**
+  - The report now also gives, at the end: objects, identity hashes made and asked, the header word's flags, every
+    type with its members and hashed objects, and memory that is no object by size with its first words;
+    `CS2WASM_LAYOUT_DUMP=<file>` each class's size and padding; `CS2WASM_DATA_DUMP=<file>` the data by the compiler
+    method that made it (named by CallerMemberName: a first form with a stack trace made the self-hosted compiler ask
+    frames for their methods, a reflection record for every method, 12.5 MB more data, which every measure of that
+    build then carried).
+  - Found (main 1191d18's build, hello world, no threads): heap top 298.3 MB in a memory of 298.8 MB (the eighth's
+    step landed 0.6 MB above it: luck); 13.9 MB below the heap (data, statics, stack); small blocks 184.5 MB live in
+    188.8 MB of pages; large blocks 92.8 MB, of them 86.2 MB objects (String: 110 MB in all, the library's sources)
+    and 6.6 MB native memory (Roslyn's reference assemblies, 172 PE images, as NativeAOT's build holds them).
+    4.67 million objects: 3.44 million green nodes, 0.37 million strings, 0.30 million arrays; 0.54 million arena
+    members (red nodes, locations, syntax references, Ephemeron[], symbols); padding in fields 0.25 MB in all (the
+    layout in declaration order costs nothing measurable: ordered by alignment, 0.11 MB less).
+  - **The header's third word stays.** 1.66 million objects (35%) have an identity hash made, 1.55 million of them
+    green nodes: Roslyn's SyntaxNodeCache hashes a node's children by RuntimeHelpers.GetHashCode; 8.0 million hashes
+    asked. A table beside the heap for them would hold 1.66 million entries (16.8 MB at the least, 33.6 MB at a load
+    of three quarters) against the 18.7 MB the word costs; and the word's flags (pinned, marked, finalized) would need
+    a home every free looks at. NativeAOT keeps the hash in its header word too: what cs2wasm pays per object over
+    NativeAOT is the count word (4.67 million times 4 bytes), and the members' 32 bytes before the header (17.2 MB),
+    all seven words of which are in use for nearly every member (538,746 to 518,741 of 538,995).
+  - Cut 1: manifest resources out of the memory. They were 4.1 MB of the data below the heap for good, each read once
+    when the library is loaded. Now each is packed on its own into a passive segment of their own and expanded into
+    native memory for the stream that reads it (RuntimeAssembly.ManifestResource, TypeInfo.ResourceInit and
+    ResourceUnpack: memory.init and the data's expander), which frees it when disposed or destroyed (its finalizer;
+    .NET's stream has none, which is not observable). Test program: 200 streams of a 600 KB resource let go
+    undisposed, memory 16 MB.
+  - Cut 2: reflection's lists that nothing writes or tells apart by address (a method's parameter words and names,
+    attribute factories, a type's interfaces, a generic method's arguments) are one blob per distinct list
+    (Driver.SharedInts); most repeat (an empty one for nearly every method). 154_frame_methods' data 955 to 766 KB with
+    cut 3.
+  - Cut 3: without threads, the frames' method table (StackFrame.GetMethod's names and entries) is packed in a segment
+    of its own and expanded when first asked for (3.4 MB in the build whose code asked frames for their methods).
+    Cuts 2 and 3 are for programs that reflect: the self-hosted compiler's own build makes neither records nor the
+    table (its data by maker: type tables 2.6 MB, type names 1.7 MB, type info 0.5 MB, resources' table 5 KB).
+  - Cut 4: a program without threads grows its memory by 16 MiB (more if needed), not by an eighth. Measured in V8, a
+    growth costs about 0.15 ms whatever the size, shared memory or not (to 320 MB: 19 growths in steps of 16 MiB, 30
+    ms; 15 by eighths, 29 ms); the eighth's tail is memory reserved and unused that the peak counts (33 MB at the
+    self-hosted compiler's last growth), and it made the peak move in steps of 33 MB: a megabyte more of objects was
+    344 MB. Now at most 16 MiB above the top, and the peak follows the heap.
+  - Measured (report build): data below the heap 13.9 to 9.3 MB, heap top 298.3 to 293.7 MB, memory 298.8 to 294.9 MB
+    (4,669 to 4,608 pages; 306.0 to 302.0 MB). Interleaved on the homelab (tools/selfhost-ab.sh, 3 rounds, the
+    shipped no-threads builds): main 306.0 MB, 9.9-11.3 s; round 4 302.0 MB, 10.1-10.3 s; NativeAOT-LLVM 322.2 MB,
+    4.0-4.4 s. Module 41.76 to 42.33 MB (the resources packed one by one, not with the rest of the data). Hello world
+    27,297 to 27,290 bytes. The 20 MB asked for are not there in the heap's layout: the rest is the
+    count word and the members' words, which the representation needs, and the library's strings, which .NET holds
+    the same.
 
 - **Arena operations without the calls of their usual cases (stream N of docs/FINISH.md, 2026-11-21).** The
   self-hosted compiler's runtime is mostly arena operations on Roslyn's red nodes and symbols, one genuine group
