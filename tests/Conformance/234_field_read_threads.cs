@@ -78,8 +78,8 @@ static class P
     {
         const int Each = 20000;
         var ws = new Thread[2];
-        for (int k = 0; k < ws.Length; k++) { ws[k] = new Thread(o => { var x = (Shared)o!; for (int i = 0; i < Each; i++) lock (x.Gate) x.Counter++; }); ws[k].Start(s); }
         int start = ReadCounter(s), last = start, grew = 0;
+        for (int k = 0; k < ws.Length; k++) { ws[k] = new Thread(o => { var x = (Shared)o!; for (int i = 0; i < Each; i++) lock (x.Gate) x.Counter++; }); ws[k].Start(s); }
         while (last < start + 2 * Each) { int now = ReadCounter(s); if (now < last) return -1; if (now > last) grew = 1; last = now; }
         foreach (var w in ws) w.Join();
         return last - start + grew;

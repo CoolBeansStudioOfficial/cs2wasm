@@ -119,17 +119,9 @@ static class P
     {
         int s = 0;
         for (int i = 0; i < 4; i++) { Collect(); s += b.Fin; Drop(b, i + 50); Collect(); s += b.Fin + b.Fin2; }
-        // (the object let go of in the loop's own code)
-        for (int i = 0; i < 4; i++)
-        {
-            Collect();
-            s += b.Fin;
-            object? o = Make(b, i + 60);
-            s += o.GetHashCode() == 0 ? 1 : 0;
-            o = null;
-            Collect();
-            s += b.Fin + b.Fin2;
-        }
+        // (the object let go of in the loop's own code: the store over the element that held it)
+        var slot = new object?[1];
+        for (int i = 0; i < 4; i++) { Collect(); s += b.Fin; slot[0] = Make(b, i + 60); Collect(); s += b.Fin + b.Fin2; }
         return s;
     }
     [MethodImpl(MethodImplOptions.NoInlining)] static object Make(Box b, int v) => new Finalized(b, v);

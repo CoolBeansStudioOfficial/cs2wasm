@@ -356,10 +356,12 @@ internal sealed class WasmModule
                         {
                             if (f.IsImport) continue;
                             for (int round = 0; round < 3 && FieldLoads.Run(f, FieldHoist, fnn); round++) { Peephole.Run(f); Locals.Run(f); }
+                            // (and a field read a second time with nothing between that can store it)
+                            if (FieldLoads.Reuse(f, FieldHoist, fnn)) { Peephole.Run(f); Locals.Run(f); }
                         }
                     }
                     finally { Locals.MayThrow = null; }
-                    if (Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_STATS") == "1") Console.Error.WriteLine($"field hoist: {FieldLoads.Hoisted} fields and {FieldLoads.HoistedLengths} lengths read before a loop, {FieldHoist.Count} fields with a number");
+                    if (Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_STATS") == "1") Console.Error.WriteLine($"field hoist: {FieldLoads.Hoisted} fields and {FieldLoads.HoistedLengths} lengths read before a loop, {FieldLoads.Reused} loads a second time, {FieldHoist.Count} fields with a number");
                 }
                 Step("field loads");
                 // (and the null checks once more, on the final bodies: the passes since the first round made the shapes it

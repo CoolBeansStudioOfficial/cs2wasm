@@ -45,6 +45,10 @@ internal sealed class FieldHoist(int count)
     /// <summary>How many fields have a number (1..Count).</summary>
     public readonly int Count = count;
     public const int Unknown = 0, None = 1;
+    /// <summary>By a field's number: only the constructors of its own class store it, and it is `readonly` (the
+    /// store is to the object the constructor is making): no call can store that field of an object that was
+    /// there before the call.</summary>
+    public readonly bool[] CtorOnly = new bool[count + 1];
     readonly List<int[]> _sets = [[], []];
     readonly Dictionary<string, int> _intern = [];
     readonly Dictionary<(int, int), int> _unions = [];
@@ -141,6 +145,9 @@ internal sealed class FieldHoist(int count)
 ///    any object: not the loop's own code (the set its Loop instruction names, with what was inlined there), not a
 ///    call (its summary: direct, indirect by what it reaches, the host by what it can call back; a release by what
 ///    destruction can run), and no code has the field's address (Driver.PrepareFieldLoads: not such a field);
+///    A `readonly` field that only constructors of its own class store (FieldHoist.CtorOnly) is asked about the
+///    loop's own code alone: a constructor stores to the object it is making, which is not the object the loop
+///    had before it started, unless the loop is the constructor's own code;
 ///  - the length of an array in such a local (it never changes).
 /// The read before the loop cannot fail: the local holds null or an object (the loop itself reads a field of it, and
 /// no code of the loop assigns it), and a field's offset from either is inside the memory. The loop's own null check
@@ -157,7 +164,8 @@ static class FieldLoads
     /// <summary>CS2WASM_FIELD_HOIST_WITHOUT=a,b (for the proof of tests 230 to 234 only: the module it makes is
     /// wrong): the pass without one of its conditions, so that the test's loop for that condition can be seen to
     /// print something else. address, reflection, layout, volatile, threads (Driver.PrepareFieldLoads); loop, calls,
-    /// indirect, assigned, dominance (here); merge, inline (FieldHoist).</summary>
+    /// indirect, assigned, dominance (here); merge, inline (FieldHoist); constructors: a field only constructors
+    /// store is asked about calls like any other (this one makes the pass weaker, not wrong).</summary>
     static readonly HashSet<string> s_without = [.. (Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_WITHOUT") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)];
     internal static bool Without(string condition) => s_without.Count > 0 && s_without.Contains(condition);
 
@@ -190,6 +198,25 @@ static class FieldLoads
             if (b[i].Ref is FieldTag) b[i] = b[i] with { Ref = null };
             else if (b[i].Op == Op.Loop && b[i].Imm2 != 0) b[i] = b[i] with { Imm2 = 0 };
         }
+    }
+
+    /// <summary>Why a call of g may store the field with this number; null: it cannot.</summary>
+    static string? CallKills(FieldHoist? h, WasmFunction g, int id, int depth)
+    {
+        if (h == null) return "no summary";
+        if (Without("calls")) return null;
+        if (g.IsImport) return h.Stores.Host(id) ? "the host, " + g.Name : null;
+        if (h.Stores.Knows(g)) return h.CallStores(g, id) ? "a call of " + g.Name : null;
+        // a function made since the summary (a type's release written out: WasmModule.ExpandLeafReleases): its
+        // own code stores no field unless it says so; what it calls is asked in turn
+        if (g.FieldStoreSet == FieldHoist.Unknown || depth > 3) return "a call of " + g.Name + " (not known)";
+        if (h.Contains(g.FieldStoreSet, id)) return "a call of " + g.Name;
+        foreach (var x in g.Body)
+        {
+            if (x.Op == Op.Call && x.Ref is WasmFunction c) { if (!ReferenceEquals(c, g) && CallKills(h, c, id, depth + 1) is { } w) return w; }
+            else if (x.Op == Op.CallIndirect) { if (h.Stores.Indirect(x.Ref as FuncType, id)) return "an indirect call in " + g.Name; }
+        }
+        return null;
     }
 
     /// <summary>Returns whether the function changed.</summary>
@@ -233,24 +260,6 @@ static class FieldLoads
         Dictionary<int, (int local, int form)>? replace = null;
         SortedDictionary<int, List<Instr>>? before = null;
 
-        string? CallKills(WasmFunction g, int id, int depth)
-        {
-            if (h == null) return "no summary";
-            if (Without("calls")) return null;
-            if (g.IsImport) return h.Stores.Host(id) ? "the host, " + g.Name : null;
-            if (h.Stores.Knows(g)) return h.CallStores(g, id) ? "a call of " + g.Name : null;
-            // a function made since the summary (a type's release written out: WasmModule.ExpandLeafReleases): its
-            // own code stores no field unless it says so; what it calls is asked in turn
-            if (g.FieldStoreSet == FieldHoist.Unknown || depth > 3) return "a call of " + g.Name + " (not known)";
-            if (h.Contains(g.FieldStoreSet, id)) return "a call of " + g.Name;
-            foreach (var x in g.Body)
-            {
-                if (x.Op == Op.Call && x.Ref is WasmFunction c) { if (!ReferenceEquals(c, g) && CallKills(c, id, depth + 1) is { } w) return w; }
-                else if (x.Op == Op.CallIndirect) { if (h.Stores.Indirect(x.Ref as FuncType, id)) return "an indirect call in " + g.Name; }
-            }
-            return null;
-        }
-
         foreach (int l in loops)
         {
             int e = end[l];
@@ -277,9 +286,9 @@ static class FieldLoads
                 if (h == null || f.NoFieldHoist) why = "the function's stores are not known";
                 else if (b[l].Imm2 == FieldHoist.Unknown) why = "the loop's stores are not known";
                 else if (h.Contains((int)b[l].Imm2, id) && !Without("loop")) why = "the loop stores it";
-                else
+                else if (!h.CtorOnly[id] || Without("constructors"))
                 {
-                    foreach (var g in li.Calls) if ((why = CallKills(g, id, 0)) != null) break;
+                    foreach (var g in li.Calls) if ((why = CallKills(h, g, id, 0)) != null) break;
                     if (why == null && !Without("indirect")) foreach (var sig in li.Indirect) if (h.Stores.Indirect(sig, id)) { why = "an indirect call"; break; }
                 }
                 return li.Killed[id] = why;
@@ -369,6 +378,159 @@ static class FieldLoads
                 continue;
             }
             o.Add(b[i]);
+        }
+        f.Body = o;
+        return true;
+    }
+
+    static readonly bool s_noReuse = Environment.GetEnvironmentVariable("CS2WASM_NO_FIELD_REUSE") == "1";
+    internal static int Reused;
+
+    sealed class Avail
+    {
+        public int Base; public Op Op; public long Off; public FieldTag? Tag;
+        /// <summary>Where the load is; the order it was found in (a block drops what was found inside it).</summary>
+        public int At, Seq;
+    }
+
+    /// <summary>
+    /// The second read of a field (stage B): a load of the field of the object in a local, when the same load of
+    /// the same local ran before on every way here, the local was not assigned since, and nothing between the two
+    /// can store the field, is the value the first one got (kept in a local). What can store it between them:
+    ///  - the function's own code, where the two are: the set of the loop they are both in, or the function's when
+    ///    they are in none (no field with a tag is stored by code without a mark, so a store instruction between
+    ///    them that is not in that set is to another place);
+    ///  - a call between them, by its summary (not asked for a field only constructors store: Run's rule).
+    /// "On every way here": the first load stands in a block still open at the second (what a block found inside
+    /// it is dropped at its end, and at an `else`; what was killed inside stays killed after it, whichever way the
+    /// block was left). A loop starts with nothing (its turns come back to its start) and leaves nothing. A local
+    /// that is a copy of another (`local.get L; local.set t`) stands for it while neither is assigned.
+    /// An array's length likewise, with nothing that can store it.
+    /// CS2WASM_NO_FIELD_REUSE=1: off.
+    /// </summary>
+    public static bool Reuse(WasmFunction f, FieldHoist? h, WasmFunction? nonNull)
+    {
+        if (s_noReuse) return false;
+        var b = f.Body;
+        int n = b.Count;
+        int cands = 0;
+        for (int i = 0; i < n && cands < 2; i++) if (b[i].Ref != null && IsLoad(b[i].Op) && (b[i].Ref is FieldTag || ReferenceEquals(b[i].Ref, Loops.Length))) cands++;
+        if (cands < 2) return false;
+        var avail = new List<Avail>();
+        var copies = new List<(int local, int root, int seq)>();
+        // the blocks open here: the order number when each began, whether it is a loop, the loop around it
+        var blocks = new Stack<(int seq, bool isLoop, int outer)>();
+        int seq = 0, loop = -1;
+        Dictionary<int, int>? keep = null;
+        Dictionary<int, (int local, int form)>? replace = null;
+        int firstLocal = f.Type.Params.Length;
+        bool ctorRule = !Without("constructors");
+        int Root(int t) { foreach (var c in copies) if (c.local == t) return c.root; return t; }
+        for (int i = 0; i < n; i++)
+        {
+            var x = b[i];
+            switch (x.Op)
+            {
+                case Op.Loop:
+                    avail.Clear(); copies.Clear();
+                    blocks.Push((seq, true, loop)); loop = i;
+                    continue;
+                case Op.If:
+                    // (a check that throws: its body does not come back, nothing is found or killed in it)
+                    if (i + 2 < n && Throws(b[i + 1]) && (b[i + 2].Op == Op.End || i + 3 < n && b[i + 2].Op == Op.Unreachable && b[i + 3].Op == Op.End)) { i += b[i + 2].Op == Op.End ? 2 : 3; continue; }
+                    blocks.Push((seq, false, loop));
+                    continue;
+                case Op.Block or Op.TryTable:
+                    blocks.Push((seq, false, loop));
+                    continue;
+                case Op.Else:
+                    if (blocks.Count > 0) { int s0 = blocks.Peek().seq; avail.RemoveAll(a => a.Seq > s0); copies.RemoveAll(c => c.seq > s0); }
+                    continue;
+                case Op.End:
+                    if (blocks.Count > 0)
+                    {
+                        var (s0, isLoop, outer) = blocks.Pop();
+                        if (isLoop) { avail.Clear(); copies.Clear(); loop = outer; }
+                        else { avail.RemoveAll(a => a.Seq > s0); copies.RemoveAll(c => c.seq > s0); }
+                    }
+                    continue;
+                case Op.LocalSet or Op.LocalTee:
+                    {
+                        int v = (int)x.Imm;
+                        int root = i > 0 && b[i - 1].Op == Op.LocalGet && b[i - 1].Imm != v ? Root((int)b[i - 1].Imm) : -1;
+                        if (avail.Count > 0) avail.RemoveAll(a => a.Base == v);
+                        if (copies.Count > 0) copies.RemoveAll(c => c.local == v || c.root == v);
+                        if (root >= 0 && root != v && copies.Count < 64) copies.Add((v, root, ++seq));
+                        continue;
+                    }
+                case Op.Call:
+                    if (avail.Count > 0 && x.Ref is WasmFunction g && !ReferenceEquals(g, nonNull) && !Throws(x))
+                        avail.RemoveAll(a =>
+                        {
+                            if (a.Tag == null) return false;
+                            foreach (int id in a.Tag.Ids) if (!(ctorRule && h!.CtorOnly[id]) && CallKills(h, g, id, 0) != null) return true;
+                            return false;
+                        });
+                    continue;
+                case Op.CallIndirect:
+                    if (avail.Count > 0 && !Without("indirect"))
+                    {
+                        var sig = x.Ref as FuncType;
+                        avail.RemoveAll(a =>
+                        {
+                            if (a.Tag == null) return false;
+                            foreach (int id in a.Tag.Ids) if (!(ctorRule && h!.CtorOnly[id]) && h!.Stores.Indirect(sig, id)) return true;
+                            return false;
+                        });
+                    }
+                    continue;
+            }
+            if (x.Ref == null || !IsLoad(x.Op)) continue;
+            var tag = x.Ref as FieldTag;
+            if (tag == null && !ReferenceEquals(x.Ref, Loops.Length)) continue;
+            if (tag == null && s_noLength) continue;
+            int t, form;
+            if (i >= 1 && b[i - 1].Op == Op.LocalGet) { t = (int)b[i - 1].Imm; form = 1; }
+            else if (i >= 2 && b[i - 1].Op == Op.Call && nonNull != null && ReferenceEquals(b[i - 1].Ref, nonNull) && b[i - 2].Op == Op.LocalGet) { t = (int)b[i - 2].Imm; form = 2; }
+            else continue;
+            if (x.Imm < 0 || x.Imm >= 32768) continue;
+            int root0 = Root(t);
+            Avail? found = null;
+            foreach (var a in avail) if (a.Base == root0 && a.Op == x.Op && a.Off == x.Imm && ReferenceEquals(a.Tag, tag)) { found = a; break; }
+            if (found != null)
+            {
+                keep ??= [];
+                if (!keep.TryGetValue(found.At, out int hl)) { hl = firstLocal + f.Locals.Count; f.Locals.Add(LoadType(x.Op)); keep[found.At] = hl; }
+                (replace ??= [])[i] = (hl, form);
+                Reused++;
+                if (s_debug) Console.Error.WriteLine($"field reuse {f.Name} @{i} {(tag != null ? tag.Key : "length")}: the load at {found.At}");
+                continue;
+            }
+            if (tag != null)
+            {
+                // (the function's own stores: the set of the loop both loads will be in, or the function's)
+                if (h == null || f.NoFieldHoist || tag.Ids.Length == 0) continue;
+                int set = loop >= 0 ? (int)b[loop].Imm2 : f.FieldStoreSet;
+                bool stored = false;
+                if (!Without("loop")) foreach (int id in tag.Ids) if (h.Contains(set, id)) { stored = true; break; }
+                if (stored) continue;
+            }
+            if (avail.Count >= 24) avail.RemoveAt(0);
+            avail.Add(new Avail { Base = root0, Op = x.Op, Off = x.Imm, Tag = tag, At = i, Seq = ++seq });
+        }
+        if (replace == null) return false;
+        var o = new List<Instr>(n + 8);
+        for (int i = 0; i < n; i++)
+        {
+            if (i + 1 < n && b[i].Op == Op.LocalGet && replace.TryGetValue(i + 1, out var next) && next.form != 2) continue;
+            if (replace.TryGetValue(i, out var r))
+            {
+                if (r.form == 2) o.Add(new Instr { Op = Op.Drop, Pos = b[i].Pos, Inl = b[i].Inl });
+                o.Add(new Instr { Op = Op.LocalGet, Imm = r.local, Pos = b[i].Pos, Inl = b[i].Inl });
+                continue;
+            }
+            o.Add(b[i]);
+            if (keep!.TryGetValue(i, out int kl)) o.Add(new Instr { Op = Op.LocalTee, Imm = kl, Pos = b[i].Pos, Inl = b[i].Inl });
         }
         f.Body = o;
         return true;

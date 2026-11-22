@@ -6,7 +6,9 @@
 // inner one's turns, two classes whose getters are the same code (one body in the module), a field of a field, a
 // constructor's loop over its own readonly field, a list's size and array changed by the loop; an object that is
 // null (the exception at the same turn, after the same output; no exception from a loop that takes no turn); an
-// array's length where the loop assigns the array; and loops that store nothing, whose reads may be made once.
+// array's length where the loop assigns the array; objects constructed in a loop that reads a readonly field of an
+// older one; two reads in a straight line with a store between them (by the code itself, a callee, another
+// reference, on one path only, a handler, a loop); and loops that store nothing, whose reads may be made once.
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -49,8 +51,67 @@ sealed class Ro
     [MethodImpl(MethodImplOptions.NoInlining)] static void Fill(Ro r, int n) { for (int i = 0; i < n; i++) r.Sum += r.R; }
 }
 
+// (objects made inside a loop that reads a readonly field of one made before it: the constructors store that
+// field, of the new objects; an init-only property set by an object initializer in the loop)
+sealed class Made
+{
+    public readonly int K;
+    public readonly Made? Prev;
+    public int Count;
+    public int Init { get; init; }
+    public Made(int k, Made? prev)
+    {
+        K = k; Prev = prev;
+        if (prev != null) for (int i = 0; i < 3; i++) { Count += prev.K + K; if (i == 1) K++; }
+    }
+}
+
 static class P
 {
+    static int Constructed(Made first)
+    {
+        int s = 0;
+        var last = first;
+        for (int i = 0; i < 4; i++) { s += first.K; last = new Made(i + 10, last); s += first.K + last.K + last.Count + last.Prev!.K; }
+        for (int i = 0; i < 4; i++) { s += first.Init; var n = new Made(i, null) { Init = i + 5 }; s += n.Init + first.Init + n.K; }
+        var walk = last;
+        for (int i = 0; i < 3; i++) { s += walk.K * (i + 1); walk = walk.Prev!; }
+        return s;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)] static void Thrower(Box b) { b.T = 500; throw new InvalidOperationException("t"); }
+    // two reads of a field with something between them that stores it, in a straight line: the second read must
+    // see the store (the pass keeps the first read's value for the second only when nothing between can store)
+    static int Seconds(Box b, Box same, Box other)
+    {
+        int s = b.V; b.V = s + 1; s += b.V;
+        s += b.X; b.Bump(); s += b.X;
+        s += b.Y; same.Y = 77; s += b.Y;
+        s += b.W; b.SetW(5); s += b.W + b.GetW();
+        s += b.P; b.P = 9; s += b.P; b.BumpP(); s += b.P;
+        if (s > 0) { s += b.Z; b.Z = 12; }
+        s += b.Z;
+        if (s > 0) b.U++; else s += b.U;
+        s += b.U;
+        var o = b; s += o.Q; o = other; s += o.Q; o = same; s += o.Q;
+        s += b.Next!.T; b.Next = new Box(600); s += b.Next.T;
+        s += b.Arr.Length; b.Arr = new int[11]; s += b.Arr.Length;
+        try { s += b.T; Thrower(b); s += b.T; } catch (InvalidOperationException) { s += b.T; }
+        for (int i = 0; i < 3; i++) { s += b.T; s += b.T; b.T++; }
+        s += b.T; for (int i = 0; i < 2; i++) b.T += 3; s += b.T;
+        s += b.T; for (int i = 0; i < 2; i++) same.Bump(); s += b.T + b.X;
+        // (nothing between: one read)
+        s += b.Q; s += b.Q + b.Q; if (s > 0) s += b.Q; other.Bump(); s += b.Q + other.X;
+        return s;
+    }
+    static string SecondNull(Box b, Box? n)
+    {
+        string r = "";
+        try { r += b.V; Console.Write("s1"); r += n!.V; r += n.V; } catch (NullReferenceException) { r += " null"; }
+        var o = b;
+        try { r += o.V; o = n!; Console.Write("s2"); r += o.V; } catch (NullReferenceException) { r += " later"; }
+        Console.WriteLine();
+        return r;
+    }
     static int Own(Box b)
     {
         int s = 0;
@@ -222,9 +283,11 @@ static class P
         Console.WriteLine("chain " + Chain(b));
         var ro = new Ro(4);
         Console.WriteLine("readonly " + ro.Sum + " " + ro.R);
+        Console.WriteLine("constructed " + Constructed(new Made(3, null) { Init = 2 }));
         Console.WriteLine("lists " + Lists());
         Console.WriteLine("nulls " + Nulls(null, 4));
         Console.WriteLine("lengths " + Lengths(new int[3], null));
+        Console.WriteLine("seconds " + Seconds(b, b, new Box(8)) + " " + SecondNull(b, null));
         Console.WriteLine("quiet " + Quiet(b, new Left { A = 1 }, new Right(), new List<Box> { new Box(1), new Box(2), new Box(3), new Box(4) }));
     }
 }

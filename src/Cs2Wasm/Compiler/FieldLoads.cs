@@ -45,6 +45,9 @@ internal sealed partial class Driver
         foreach (var a in owner.GetAttributes())
             // (explicit: fields may overlap; any layout asked for: the class is one Marshal copies memory into)
             if (a.AttributeClass?.Name == "StructLayoutAttribute") return null;
+        // (the runtime's own classes: the summary leaves the stores of some of their code out, StoreSummary.Internal)
+        for (var ns = owner.ContainingNamespace; ns != null && !ns.IsGlobalNamespace; ns = ns.ContainingNamespace)
+            if (ns.Name == "Runtime" && ns.ContainingNamespace is { Name: "Cs2Wasm", ContainingNamespace.IsGlobalNamespace: true }) return null;
         foreach (var a in f.GetAttributes()) if (a.AttributeClass?.Name == "FieldOffsetAttribute" && !Wasm.FieldLoads.Without("layout")) return null;
         return new FieldTag(Types.Key(owner) + "::" + f.Name, f.IsReadOnly);
     }
@@ -108,6 +111,13 @@ internal sealed partial class Driver
         }
         _hoistCount = next;
         var hoist = _fieldHoist = new FieldHoist(next);
+        // (a readonly field: stored by its class's constructors alone, unless a mark below is in other code, an
+        // `init` accessor's; the class of each field with a number)
+        var ownerOf = new INamedTypeSymbol?[next + 1];
+        foreach (var (sym, t) in _fieldTags)
+            if (t is { Ids: [var tid], Readonly: true }) { hoist.CtorOnly[tid] = true; ownerOf[tid] = sym.ContainingType; }
+        var ctorFns = new Dictionary<WasmFunction, INamedTypeSymbol>();
+        foreach (var mi in AllMethods) if (mi.Sym.MethodKind == MethodKind.Constructor && mi.Fn != null) ctorFns[mi.Fn] = mi.Sym.ContainingType.OriginalDefinition;
         _hoistOwn = [];
         var open = new List<(int at, List<int>? ids, bool loop)>();
         foreach (var f in fns)
@@ -135,6 +145,7 @@ internal sealed partial class Driver
                             break;
                         }
                     case Op.Nop when x.Ref is FieldStoreMark { Tag.Ids: [var id] }:
+                        if (hoist.CtorOnly[id] && !(ctorFns.TryGetValue(f, out var ct) && SymbolEqualityComparer.Default.Equals(ct, ownerOf[id]))) hoist.CtorOnly[id] = false;
                         (own ??= []).Add(id);
                         for (int k = open.Count - 1; k >= 0; k--)
                             if (open[k].loop) { if (open[k].ids == null) open[k] = (open[k].at, [id], true); else open[k].ids!.Add(id); break; }
@@ -146,6 +157,7 @@ internal sealed partial class Driver
                     if (t.Ids is [var nid] && !(own != null && own.Contains(nid)))
                     {
                         // (stored somewhere in the body, the mark gone: no loop of it is known)
+                        hoist.CtorOnly[nid] = false;
                         (own ??= []).Add(nid);
                         f.NoFieldHoist = true;
                         if (s_fieldHoistDebug) Console.Error.WriteLine($"field hoist: {f.Name} lost its mark of {t.Key}");
