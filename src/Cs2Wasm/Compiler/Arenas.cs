@@ -937,7 +937,7 @@ internal sealed partial class Arenas
                             if (s_countRc) body[^1] = body[^1] with { Cause = Emitter.CauseOf("a store's old value (cyclic slot, plain container)") };
                             A(Op.End);
                         }
-                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); x.Ref = D.Rt.ReleaseOf(ph.site!.SlotType); if (FunctionCompiler.ExactTypeHint(D, ph.site!.SlotType) is int hint and not 0) x.Imm2 = hint; if (s_countRc) x.Cause = Emitter.CauseOf("a store's old value (field or element)"); body.Add(x); }
+                        else { var d = x; d.Op = Op.Drop; d.Ref = null; d.Imm2 = 0; body.Add(d); body.Add(d); x.Ref = D.Rt.ReleaseOf(ph.site!.SlotType); if (x.Imm2 == 0 && FunctionCompiler.ExactTypeHint(D, ph.site!.SlotType) is int hint and not 0) x.Imm2 = hint; if (s_countRc) x.Cause = Emitter.CauseOf("a store's old value (field or element)"); body.Add(x); }
                         break;
                     case Kind.LinkAt:
                         // (value, slot) -> value
@@ -947,7 +947,7 @@ internal sealed partial class Arenas
                     case Kind.UnlinkAt:
                         // (old, slot) -> ()
                         if (Enabled && AtCyclic(w, ph.pinType!)) { x.Ref = unlinkAt; body.Add(x); }
-                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); x.Ref = D.Rt.Release; if (s_countRc) x.Cause = Emitter.CauseOf("a store's old value (by address)"); body.Add(x); }
+                        else { var d = x; d.Op = Op.Drop; d.Ref = null; d.Imm2 = 0; body.Add(d); x.Ref = D.Rt.Release; if (s_countRc) x.Cause = Emitter.CauseOf("a store's old value (by address)"); body.Add(x); }
                         break;
                     case Kind.MoveAt:
                         // (destination, source, count) -> done

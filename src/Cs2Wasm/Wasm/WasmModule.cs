@@ -703,6 +703,11 @@ internal sealed class WasmModule
     public WasmFunction? FreeFn, FreeFixedFn;
     /// <summary>CS2WASM_NO_DESTROY_IN_PLACE=1: in a loop a release that names its class calls the class's destruction
     /// (a function of a few instructions of its own), as before; a flat class's goes through rt.release.</summary>
+    /// <summary>A flat class's destruction is written in place outside loops too in a function of no more than this
+    /// many instructions (CS2WASM_IN_PLACE_SMALL=n, 0 for none): an accessor the engine puts into its callers' loops,
+    /// List&lt;T&gt;'s indexer compiled for a sealed class above all (tools/alloc-parts.cs through a List: made over old
+    /// ones 600 ns to 400, let go 700 to 570-600; modules 0.3% larger).</summary>
+    static readonly int s_inPlaceSmall = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_IN_PLACE_SMALL"), out var ips) ? ips : 60;
     static readonly bool s_noDestroyInPlace = Environment.GetEnvironmentVariable("CS2WASM_NO_DESTROY_IN_PLACE") == "1";
     /// <summary>CS2WASM_DESTROY_IN_PLACE_BREAK=1 (test 235's proof that the copy written in place is the destruction):
     /// the copy leaves out the releases of the object's fields.</summary>
@@ -845,8 +850,8 @@ internal sealed class WasmModule
                 var destroy = DestroyOf(ins.Imm2);
                 if (destroy == null)
                 {
-                    // (a flat class: in a loop, written out; elsewhere the release it was)
-                    if (loops == 0 || s_countRc || FlatOf(ins.Imm2) is not { } flat || !InPlace(flat)) { o.Add(ins); continue; }
+                    // (a flat class: in a loop or a small function, written out; elsewhere the release it was)
+                    if (loops == 0 && f.Body.Count > s_inPlaceSmall || s_countRc || FlatOf(ins.Imm2) is not { } flat || !InPlace(flat)) { o.Add(ins); continue; }
                     destroy = flat;
                 }
                 // (CS2WASM_COUNT_RC: a call in loops too, where the site counters see it)

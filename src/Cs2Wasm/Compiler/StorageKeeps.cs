@@ -32,6 +32,41 @@ namespace Cs2Wasm.Compiler;
 // themselves and their direct wrappers by return value only (as it was, and what test 222's deeper cases fail on).
 internal sealed partial class Driver
 {
+    readonly Dictionary<ISymbol, bool> _looksFlat = new(SymbolEqualityComparer.Default);
+
+    /// <summary>Whether a type that names its objects' class exactly (FunctionCompiler.ExactTypeHint) is a leaf or
+    /// looks flat by its fields: a string, an array of numbers, or a sealed class without a finalizer whose reference
+    /// fields are strings, arrays of numbers and sealed classes that hold no reference and have no finalizer. A hint
+    /// for where naming the class can pay; what is flat is decided on the destructions (RuntimeGen.IsFlatDestroy).</summary>
+    internal bool LooksFlat(ITypeSymbol t)
+    {
+        if (Types.IsString(t) || t is IArrayTypeSymbol) return true;
+        // (sealed: ExactTypeHint has said so)
+        if (t is not INamedTypeSymbol { TypeKind: TypeKind.Class } nt) return false;
+        if (_looksFlat.TryGetValue(nt, out var known)) return known;
+        _looksFlat[nt] = false;
+        static bool Finalizes(INamedTypeSymbol c)
+        {
+            for (var b = c; b != null && b.SpecialType != SpecialType.System_Object; b = b.BaseType)
+                if (b.GetMembers("Finalize").OfType<IMethodSymbol>().Any(m => m.MethodKind == MethodKind.Destructor)) return true;
+            return false;
+        }
+        bool ok = !Finalizes(nt);
+        if (ok)
+            foreach (var f in Types.LayoutOf(nt).Fields)
+            {
+                var ft = f.Type;
+                if (Types.IsRef(ft))
+                {
+                    ok = Types.IsString(ft) || ft is IArrayTypeSymbol { Rank: 1, ElementType: INamedTypeSymbol { IsValueType: true } et } && Types.PrimOf(et) != Prim.None
+                        || ft is INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true } fc && !Finalizes(fc) && !Types.LayoutOf(fc).HasRefs;
+                }
+                else if (Types.IsStruct(ft) && Types.LayoutOf(ft).HasRefs) ok = false;
+                if (!ok) break;
+            }
+        return _looksFlat[nt] = ok;
+    }
+
     static readonly bool s_noStorageKeep = Environment.GetEnvironmentVariable("CS2WASM_NO_STORAGE_KEEP") == "1";
     static readonly bool s_shallowStorageKeep = Environment.GetEnvironmentVariable("CS2WASM_STORAGE_KEEP_SHALLOW") == "1";
     readonly Dictionary<ISymbol, bool> _exposesStorage = new(SymbolEqualityComparer.Default);

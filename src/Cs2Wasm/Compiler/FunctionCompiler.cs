@@ -528,6 +528,21 @@ sealed partial class FunctionCompiler
 
     int ExactTypeHint(ITypeSymbol? t) => t == null ? 0 : ExactTypeHint(D, T.Resolve(t, Map));
 
+    /// <summary>CS2WASM_NO_STORE_HINT=1: a store through a site (a field, an array's element) names the class of what
+    /// the place held only by the site's own type, not by the type the generic code is compiled for.</summary>
+    static readonly bool s_noStoreHint = Environment.GetEnvironmentVariable("CS2WASM_NO_STORE_HINT") == "1" || Environment.GetEnvironmentVariable("CS2WASM_NO_FLAT_DESTROY") == "1";
+
+    /// <summary>The same for a store's old value in generic code, only where it can pay: a string, an array of
+    /// numbers, or a sealed class that looks flat from its fields (Driver.LooksFlat). Any other class would only make
+    /// the instantiations' bodies differ by a number that nothing uses (they are merged while they are the same).</summary>
+    int StoreHint(ITypeSymbol? t)
+    {
+        if (t == null || s_noStoreHint) return 0;
+        var r = T.Resolve(t, Map);
+        int h = ExactTypeHint(D, r);
+        return h != 0 && D.LooksFlat(r) ? h : 0;
+    }
+
     /// <summary>CS2WASM_FLAT_DESTROY_BREAK=1 (test 235's proof that the rule is relied on): a place of a class that
     /// is not sealed, whose name begins with "Unsealed", counts as holding objects of that very class.</summary>
     static readonly bool s_exactBreak = Environment.GetEnvironmentVariable("CS2WASM_FLAT_DESTROY_BREAK") == "1";

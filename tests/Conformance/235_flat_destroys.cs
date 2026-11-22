@@ -117,6 +117,21 @@ static class Program
         arr[0] = null!; sum += arr[1].A; arr[1] = null!; sum += h.P.A;
         Console.WriteLine($"plains sum {sum} static {s_plain!.Name}");
         s_plain = null;
+        // the same through generic collections, whose code is compiled for the sealed class
+        var list = new List<Plain>();
+        for (int i = 0; i < 40; i++) { list.Add(new Plain(2000 + i)); objects.Add(new WeakReference<Plain>(list[i])); names.Add(new WeakReference<string>(list[i].Name)); }
+        for (int r = 0; r < 3; r++) for (int i = 0; i < list.Count; i += 2) { list[i] = new Plain(2100 + 50 * r + i); objects.Add(new WeakReference<Plain>(list[i])); }
+        list.RemoveAt(3); list.RemoveRange(10, 5); list[0] = list[1];
+        var map = new Dictionary<int, Plain>();
+        for (int r = 0; r < 4; r++) for (int i = 0; i < 30; i++) { map[i] = new Plain(3000 + 100 * r + i); objects.Add(new WeakReference<Plain>(map[i])); names.Add(new WeakReference<string>(map[i].Name)); }
+        for (int i = 0; i < 30; i += 3) map.Remove(i);
+        var queue = new Queue<Plain>(); var stack = new Stack<Plain>();
+        for (int i = 0; i < 20; i++) { queue.Enqueue(new Plain(4000 + i)); stack.Push(new Plain(4100 + i)); objects.Add(new WeakReference<Plain>(queue.Peek())); objects.Add(new WeakReference<Plain>(stack.Peek())); }
+        for (int i = 0; i < 12; i++) { sum += queue.Dequeue().A; sum += stack.Pop().A; }
+        long rest = 0;
+        foreach (var x in list) rest += x.A; foreach (var kv in map) rest += kv.Value.A; foreach (var x in queue) rest += x.A; foreach (var x in stack) rest += x.A;
+        Console.WriteLine($"collections {list.Count} {map.Count} {queue.Count} {stack.Count} {rest} {sum}");
+        map.Clear(); list.Clear();
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -136,6 +151,14 @@ static class Program
         for (int i = 0; i < holders.Length; i++) holders[i] = null!;
         s_shape = null; h.Shape = null; local = null!;
         Console.WriteLine($"derived sum {sum}");
+        // (and in generic collections of the class that is not sealed)
+        var list = new List<UnsealedShape>();
+        for (int i = 0; i < 20; i++) list.Add(new Circle(500 + i));
+        for (int i = 0; i < 20; i += 2) list[i] = new Circle(600 + i);
+        var map = new Dictionary<int, UnsealedShape>();
+        for (int r = 0; r < 3; r++) for (int i = 0; i < 15; i++) map[i] = new Circle(700 + 20 * r + i);
+        for (int i = 0; i < 15; i += 2) map.Remove(i);
+        Console.WriteLine($"derived collections {list.Count} {map.Count}");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

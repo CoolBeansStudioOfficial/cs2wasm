@@ -465,8 +465,16 @@ sealed partial class FunctionCompiler
             }
             E.Get(old);
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
-            if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink); if (storeLock) { E.Get(took); E.Call(site.StoreUnlock); } }
-            else if (byAddress) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.UnlinkAt(t)); if (D.ThreadMode) { E.Get(took); E.Call(D.Arenas.StoreLockAt(t, false)); } }
+            if (site != null)
+            {
+                pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink);
+                // (the class of what the place held, by this code's own types: a List<T>'s or a Dictionary's store,
+                // compiled for a T that is a sealed class whose objects hold only leaves, names that class, and
+                // where the site turns out plain the release is the class's own: StoreHint, Arenas.Resolve)
+                if (StoreHint(t) is int sh and not 0) E.Body[^1] = E.Body[^1] with { Imm2 = sh };
+                if (storeLock) { E.Get(took); E.Call(site.StoreUnlock); }
+            }
+            else if (byAddress) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.UnlinkAt(t)); if (StoreHint(t) is int ah and not 0) E.Body[^1] = E.Body[^1] with { Imm2 = ah }; if (D.ThreadMode) { E.Get(took); E.Call(D.Arenas.StoreLockAt(t, false)); } }
             else if (initKey != null) E.Call(D.InitStoreRelease(E.Fn, initKey));
             // (what the place held is of the place's class: named, as a local's release is)
             else ReleaseOf(t);
