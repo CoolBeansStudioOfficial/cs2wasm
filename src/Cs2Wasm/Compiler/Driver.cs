@@ -42,6 +42,8 @@ internal sealed class MethodInst
     public int OwnedParams;
     /// <summary>A copy of a number type's method that takes the number itself, not its address (OwnedParams.cs: ThisValueVariant).</summary>
     public bool ThisByValue;
+    /// <summary>A copy that stores its `out` parameter's value as it is, borrowed (OutBorrows.cs): the ordinal + 1.</summary>
+    public int OutBorrow;
 }
 
 sealed class StaticSlot(Driver d, int offset) : IAddress

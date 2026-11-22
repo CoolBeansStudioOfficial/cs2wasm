@@ -479,7 +479,8 @@ sealed partial class FunctionCompiler
         else if (Types.IsStruct(t) || _addrTaken.Contains(l)) v = new Var { Type = t, AddrLocal = _fb, Offset = AllocFrame(t) };
         else v = new Var { Type = t, Local = E.AddLocal(Types.WasmType(t) ?? ValType.I32) };
         _vars[l] = v;
-        if (l.RefKind == RefKind.None && T.NeedsRc(t) && !Types.IsImmortalType(t))
+        // (an `out var` whose value is borrowed, OutBorrows.cs: no owner's slot)
+        if (l.RefKind == RefKind.None && T.NeedsRc(t) && !Types.IsImmortalType(t) && !_borrowedOut.Contains(l))
         {
             var slot = v.InMemory ? new Slot { FrameOffset = v.Offset, Type = t } : new Slot { Local = v.Local, Type = t };
             // a local that owns a frame object (EscapeAnalysis.cs): its scope's end drops the object
