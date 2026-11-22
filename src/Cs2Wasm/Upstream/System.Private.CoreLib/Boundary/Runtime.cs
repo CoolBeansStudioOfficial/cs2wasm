@@ -715,6 +715,8 @@ namespace Cs2Wasm.Runtime
         static bool OutsideMarked(int note) => (note & (1 | MarkOutside)) != 0;
         static long s_dsCalls, s_dsWalked, s_dsDead, s_dsFailInside, s_dsFailHeld, s_dsMax, s_dsFromRelease, s_dsFromUnlink, s_dsTops, s_dsTopHops, s_dsTopMarked, s_dsTopFar;
         static int s_dsBuf;
+        // (ArenaDestroyPlain by its passes, nanoseconds, and the members it destroyed)
+        static long s_dsKill, s_dsZero, s_dsClear, s_dsFree, s_dsKilled;
         static void DsNum(ref int at, string label, long v)
         {
             for (int i = 0; i < label.Length; i++) { Mem.StoreU16(s_dsBuf + 2 * at, label[i]); at++; }
@@ -764,6 +766,12 @@ namespace Cs2Wasm.Runtime
             DsNum(ref at, " from-release ", s_dsFromRelease); DsNum(ref at, " from-unlink ", s_dsFromUnlink);
             DsNum(ref at, " tops ", s_dsTops); DsNum(ref at, " top-hops ", s_dsTopHops); DsNum(ref at, " top-marked ", s_dsTopMarked); DsNum(ref at, " top-far ", s_dsTopFar);
             Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
+            if (s_dsKilled != 0)
+            {
+                DsNum(ref at, "destroyed at a store or release: members ", s_dsKilled); DsNum(ref at, " us: visits ", s_dsKill / 1000); DsNum(ref at, " counts ", s_dsZero / 1000);
+                DsNum(ref at, " clears ", s_dsClear / 1000); DsNum(ref at, " frees ", s_dsFree / 1000);
+                Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
+            }
             if (s_opStats != 0)
             {
                 // (no string is made here: this runs in the middle of an arena operation)
@@ -2337,7 +2345,10 @@ namespace Cs2Wasm.Runtime
         // Slot bits (two per slot, the first 16 words after the header): 1 a counted inside reference, 2 an
         // up-reference, 0 anything else (an outside-counted reference, or nothing).
         // An array has no slot bits: its word counts the inside references its elements hold (Elems says so).
-        const int Owned = 1, Held = 2, Dying = 4, MultOne = 8, MultMask = 0x78, Queued = 0x80, Elems = 0x100, UOne = 0x200, UShift = 9;
+        // Far: a slot past the sixteenth word of the member (not an array) was linked: an inside reference no bits
+        // tell of (it stays set). A member with neither Elems nor Far has all its linked references in the slots
+        // its bits say (ArenaDestroyPlain).
+        const int Owned = 1, Held = 2, Dying = 4, MultOne = 8, MultMask = 0x78, Queued = 0x80, Elems = 0x100, Far = 0x200, UOne = 0x400, UShift = 10;
         const int ChainMax = 8;
         [System.ThreadStatic] static int t_prevSlot, t_prevBits;
         [Intrinsic] static int s_visitObj, s_visitElem, s_destroying, s_killQ, s_killN, s_killCap, s_storeSlot;
@@ -2577,7 +2588,7 @@ namespace Cs2Wasm.Runtime
         {
             int c = Mem.LoadI32(m);
             if (c >= -2 || PL(m, 4) != 0 || PL(m, 28) != 0 || s_destroying != 0) return;
-            if ((PL(m, 24) & ~Elems) != 0 || PL(m, 20) != 0) return;
+            if ((PL(m, 24) & ~(Elems | Far)) != 0 || PL(m, 20) != 0) return;
             int ar = ArenaOf(m);
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
             // (its own slots, read once: none holds a member of the arena, whatever the counts say)
@@ -3418,6 +3429,7 @@ namespace Cs2Wasm.Runtime
                 PS(container, 28, PL(container, 28) + 1);
                 PS(container, 24, PL(container, 24) | Elems);
             }
+            else PS(container, 24, PL(container, 24) | Far);
             PS(val, 20, container);
             PS(val, 24, PL(val, 24) | Owned | MultOne);
             return true;
@@ -3534,6 +3546,7 @@ namespace Cs2Wasm.Runtime
                 PS(container, 28, PL(container, 28) + 1);
                 PS(container, 24, PL(container, 24) | Elems);
             }
+            else PS(container, 24, PL(container, 24) | Far);
             if (val != container)
             {
                 int ow = PL(val, 20);
@@ -3886,6 +3899,15 @@ namespace Cs2Wasm.Runtime
         public static void ArenaVisit(int slot)
         {
             int child = Mem.LoadI32(slot);
+            // (0, a dying member's slot, before the other modes' tests: a subtree let go at a store is one such
+            // visit for each slot of each of its members, the scene tree of tools/frames.mjs 343 members a frame)
+            if (s_visitMode == 0)
+            {
+                if (child == 0 || Mem.LoadI32(child) >= -1) return;
+                if (ThreadMode() && !GroupHeld(child)) return;
+                VisitDying(slot, child);
+                return;
+            }
             if (ArenaReport() && s_visitMode == 20)
             {
                 if (child == s_repTarget && s_repHitN < 16)
@@ -3967,8 +3989,32 @@ namespace Cs2Wasm.Runtime
                 if (bits == 1) ReevaluateSlot(obj, i, child);
                 return;
             }
-            // 0: the member (obj) is being destroyed
-            if (bits == 2) { if (s_cutOn != 0) NoteCut(slot, child); Mem.StoreI32(slot, 0); SetSlotBits(obj, i, 0); UpPath(obj, child, -1); return; }
+        }
+
+        /// <summary>CS2WASM_NO_DYING_UP=1 (at compile time): a dying member's up-reference to a dying member is taken
+        /// off the u of the members between them (VisitDying).</summary>
+        [Intrinsic] static extern bool NoDyingUp();
+
+        /// <summary>ArenaVisit's mode 0: a slot of a member that is being destroyed (s_visitObj) holds a member
+        /// (child): the reference is taken out; a member that loses its last dies too.</summary>
+        static void VisitDying(int slot, int child)
+        {
+            int obj = s_visitObj;
+            int i = s_visitElem != 0 ? -1 : SlotIndex(obj, slot);
+            int bits = i >= 0 ? SlotBits(obj, i) : -1;
+            if (bits == 2)
+            {
+                if (s_cutOn != 0) NoteCut(slot, child);
+                Mem.StoreI32(slot, 0); SetSlotBits(obj, i, 0);
+                // (an up-reference to a member that is dying too, every member between the two dying with them: a
+                // child's parent field in a subtree that goes. The u of members that are being destroyed is read by
+                // nothing (UpdateHold and HoldSettled end at Dying), so the walk up that takes the reference off
+                // each, and the second that settles each one's hold, are left out: 5 ns a member of 32 in the scene
+                // tree of tools/frames.mjs)
+                if (!NoDyingUp() && (PL(child, 24) & Dying) != 0 && DyingPath(obj, child)) return;
+                UpPath(obj, child, -1);
+                return;
+            }
             // (an outside-counted reference stays in the slot for the release every other reference of the dying
             // object gets; so does one whose kind is not known when the member has no inside count)
             if (bits == 0 || ArenaOf(child) != s_visitArena || PL(child, 4) == 0) return;
@@ -3985,6 +4031,21 @@ namespace Cs2Wasm.Runtime
             // (a survivor of the cut that nothing outside refers to may be kept by stale holds of what it owns alone:
             // checked at the drop when the destruction is done, DrainKills)
             if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+        }
+
+        /// <summary>The target is above the dying member on its chain, and every member between them is dying:
+        /// what UpPath would walk (it ends where the chain does, or ChainMax steps up), with nothing left alive on
+        /// the way whose u a reference that goes would have to come off.</summary>
+        static bool DyingPath(int from, int target)
+        {
+            int v = from;
+            for (int k = 0; k <= ChainMax; k++)
+            {
+                if (v == target) return true;
+                if (v == 0 || (PL(v, 24) & Dying) == 0) return false;
+                v = PL(v, 20);
+            }
+            return false;
         }
 
         /// <summary>A copy of an object (MemberwiseClone) has counted each reference it holds: those in slots that can
@@ -4178,6 +4239,7 @@ namespace Cs2Wasm.Runtime
             OpStat(22);
             int ar = ArenaOf(p);
             ArenaTakeOut(ar, p);
+            if (SingleThreaded() && !NoFastDestroy() && !ArenaReport() && Mem.LoadI32(ar + 24) == 0) { ArenaDestroyPlain(p, rest, ar); return; }
             // (rest: members that die with it whatever their counts, Dropped; marked and off the ring already)
             PS(p, 12, rest);
             PS(p, 24, PL(p, 24) | Dying);
@@ -4229,6 +4291,177 @@ namespace Cs2Wasm.Runtime
                 m = next;
             }
             ArenaEmpty(ar);
+        }
+
+        /// <summary>CS2WASM_NO_FAST_DESTROY=1 (at compile time): a member of a group without finalizers is destroyed
+        /// by ArenaDestroyFrom's own passes (ArenaDestroyPlain).</summary>
+        [Intrinsic] static extern bool NoFastDestroy();
+
+        /// <summary>ArenaDestroyFrom in a group no member of which has a finalizer, without threads (p is off the
+        /// ring): the same steps (each dying member gives up its references to members, those that lose their
+        /// last die too; every count zero; then each one's other references released; then the memory freed),
+        /// without what only finalizers and threads need: no references noted for a finalizer to see, the visit's
+        /// state set once for the pass and not around each member, a member's count zero as its turn comes, its
+        /// linked references read by its slot bits or as an array's elements where that is all of them
+        /// (CS2WASM_NO_DESTROY_BY_BITS=1: by its type's visit function), and the blocks back onto their pages
+        /// without the dispatch on the type (ArenaFreeList's way). A subtree replaced in a tree is destroyed here, member by
+        /// member through its owners: 343 members a frame in the scene tree of tools/frames.mjs, 32 ns each where the
+        /// drop of a whole group takes 6 to 12.</summary>
+        static void ArenaDestroyPlain(int p, int rest, int ar)
+        {
+            PS(p, 12, rest);
+            PS(p, 24, PL(p, 24) | Dying);
+            int dead = p, done = 0;
+            int cutOn = s_cutOn;
+            s_cutOn = 0;
+            s_destroying++;
+            long t0 = DropStats() ? Engine.MonotonicNs() : 0;
+            int sa = s_visitArena, sm = s_visitMode, sd = s_visitDead, so = s_visitObj, se = s_visitElem;
+            // (what runs inside a visit and visits in another mode puts these back: Reevaluate, TryLeave, Handover)
+            s_visitArena = ar; s_visitMode = 0; s_visitElem = 0;
+            while (dead != 0)
+            {
+                int m = dead;
+                dead = PL(m, 12);
+                // (its count zero as its turn comes, not in a pass after the visits: nothing of the program runs
+                // before the last of them, and a reference to it that a later one holds is left in its slot, as one
+                // to a member that died before always was, for the clear's release, which does nothing at zero)
+                Mem.StoreI32(m, 0); PS(m, 16, 0); ClearMark(m);
+                int fl = PL(m, 24);
+                if ((fl & (Queued | Held)) != 0)
+                {
+                    Unqueue(m);
+                    // (what it held of its owner goes back)
+                    fl = PL(m, 24);
+                    if ((fl & Held) != 0)
+                    {
+                        int w = PL(m, 20);
+                        PS(m, 24, fl & ~Held);
+                        int n = PL(w, 4) - 1;
+                        PS(w, 4, n);
+                        s_visitDead = dead;
+                        if (n == 0 && Mem.LoadI32(w) == -2) Kill(w); else UpdateHold(w);
+                        dead = s_visitDead;
+                    }
+                }
+                if (NoDestroyByBits() || (fl & Far) != 0) { s_visitDead = dead; s_visitObj = m; ArenaVisitObject(m); dead = s_visitDead; }
+                else if ((fl & Elems) == 0)
+                {
+                    // (its linked references are those its bits say: read here, with no visit of the object by its
+                    // type, what VisitDying does for each written out)
+                    int w = PL(m, 28), cleared = 0;
+                    for (int k = 0; w != 0; k++, w = (int)((uint)w >> 2))
+                    {
+                        int b = w & 3;
+                        if (b == 0) continue;
+                        int slot = m + 12 + 4 * k, child = Mem.LoadI32(slot);
+                        if (child == 0 || Mem.LoadI32(child) >= -1) continue;
+                        if (b == 2)
+                        {
+                            Mem.StoreI32(slot, 0);
+                            cleared |= 3 << (2 * k);
+                            if (!NoDyingUp() && (PL(child, 24) & Dying) != 0 && DyingPath(m, child)) continue;
+                            PS(m, 28, PL(m, 28) & ~cleared);
+                            s_visitDead = dead;
+                            UpPath(m, child, -1);
+                            dead = s_visitDead;
+                            continue;
+                        }
+                        if (PL(child, 4) == 0 || ArenaOf(child) != ar) continue;
+                        Mem.StoreI32(slot, 0);
+                        cleared |= 3 << (2 * k);
+                        int left = PL(child, 4) - 1;
+                        PS(child, 4, left);
+                        if (left == 0 && Mem.LoadI32(child) == -2)
+                        {
+                            // (Kill, in a destruction)
+                            int cf = PL(child, 24);
+                            if ((cf & (Dying | Queued)) == 0) { PS(child, 24, cf | Dying); ArenaTakeOut(ar, child); PS(child, 12, dead); dead = child; }
+                            continue;
+                        }
+                        PS(m, 28, PL(m, 28) & ~cleared);
+                        dead = DyingSurvivor(m, child, dead);
+                    }
+                    if (cleared != 0) PS(m, 28, PL(m, 28) & ~cleared);
+                }
+                else if (ArrayRankAt(m) == 1 && ArrayElementSizeAt(m) == 4)
+                {
+                    // (an array of references: each element as the visit by its type takes it, ArenaVisitElement)
+                    int slot = m + 16, end = slot + 4 * Mem.LoadI32(m + 12);
+                    for (; slot != end; slot += 4)
+                    {
+                        int child = Mem.LoadI32(slot);
+                        if (child == 0 || Mem.LoadI32(child) >= -1) continue;
+                        if (PL(child, 4) == 0 || ArenaOf(child) != ar) continue;
+                        Mem.StoreI32(slot, 0);
+                        int left = PL(child, 4) - 1;
+                        PS(child, 4, left);
+                        if (left == 0 && Mem.LoadI32(child) == -2)
+                        {
+                            int cf = PL(child, 24);
+                            if ((cf & (Dying | Queued)) == 0) { PS(child, 24, cf | Dying); ArenaTakeOut(ar, child); PS(child, 12, dead); dead = child; }
+                            continue;
+                        }
+                        dead = DyingSurvivor(m, child, dead);
+                    }
+                }
+                else { s_visitDead = dead; s_visitObj = m; ArenaVisitObject(m); dead = s_visitDead; }
+                PS(m, 8, done);
+                done = m;
+            }
+            s_visitArena = sa; s_visitMode = sm; s_visitDead = sd; s_visitObj = so; s_visitElem = se;
+            s_destroying--;
+            s_cutOn = cutOn;
+            long t1 = DropStats() ? Engine.MonotonicNs() : 0;
+            long t2 = t1;
+            for (int m = done; m != 0; m = PL(m, 8)) { ArenaClearObject(m); if (DropStats()) s_dsKilled++; }
+            long t3 = DropStats() ? Engine.MonotonicNs() : 0;
+            if (ShareCheck() || Checked() || NoFreeList())
+            {
+                for (int m = done; m != 0;) { int next = PL(m, 8); ArenaFreeObject(m); m = next; }
+            }
+            else
+            {
+                // (ArenaFreeList, down the list of the dead)
+                int known = 0;
+                for (int m = done; m != 0;)
+                {
+                    int next = PL(m, 8), blk = m - ArenaPrefix;
+                    int pg = blk & ~(PageSize - 1);
+                    if (pg != known && !IsPage(blk)) { ArenaFreeObject(m); m = next; continue; }
+                    known = pg;
+                    if (Mem.LoadI32(blk) != PrefixMark) SideFree(m);
+                    int used = Mem.LoadI32(pg + 16) - 1;
+                    if (used != 0 && (Mem.LoadI32(pg + 20) & 1) != 0)
+                    {
+                        Mem.StoreI32(blk, 0);
+                        Mem.StoreI32(blk + 4, Mem.LoadI32(pg));
+                        Mem.StoreI32(pg, blk);
+                        Mem.StoreI32(pg + 16, used);
+                    }
+                    else PageFree(blk);
+                    m = next;
+                }
+            }
+            if (DropStats()) { s_dsKill += t1 - t0; s_dsZero += t2 - t1; s_dsClear += t3 - t2; s_dsFree += Engine.MonotonicNs() - t3; }
+            ArenaEmpty(ar);
+        }
+
+        /// <summary>CS2WASM_NO_DESTROY_BY_BITS=1 (at compile time): ArenaDestroyPlain visits each dying member by its
+        /// type (the generated visit function, Rt.ArenaVisit for each slot).</summary>
+        [Intrinsic] static extern bool NoDestroyByBits();
+
+        /// <summary>ArenaDestroyPlain: a member a dying one (m) referred to that lives on, VisitDying's end for it.
+        /// `dead`: the list of the dying so far; returns it, with what died of this.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static int DyingSurvivor(int m, int child, int dead)
+        {
+            s_visitDead = dead;
+            OwnerLetGo(child, m);
+            if (PL(child, 20) == 0) Adopt(child);
+            UpdateHold(child);
+            if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+            return s_visitDead;
         }
 
         /// <summary>Whether a group without finalizers is let go in two passes (Compiler/RuntimeGen.cs, FusedDrop).</summary>
