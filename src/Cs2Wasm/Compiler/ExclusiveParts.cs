@@ -21,19 +21,22 @@ namespace Cs2Wasm.Compiler;
 //      holder's end takes the members out of the part's slots);
 //   4. its address is taken nowhere (ref, out, Interlocked) and reflection cannot reach it;
 //   5. no object of the holder's class is copied (MemberwiseClone; a record's `with`): two holders of one part.
-// Not with threads. CS2WASM_NO_EXCLUSIVE_PARTS=1: no site is exclusive. Each store that qualifies (1) is emitted
+// Not with threads. Off unless CS2WASM_EXCLUSIVE_PARTS=1 (no site is exclusive, every store and read as it was). Each store that qualifies (1) is emitted
 // through a placeholder of its own; a site with any other store left in the module, or a read that failed, is not
 // exclusive, and its placeholders become the stores they would have been.
 internal sealed partial class Arenas
 {
-    static readonly bool s_noParts = Environment.GetEnvironmentVariable("CS2WASM_NO_EXCLUSIVE_PARTS") == "1";
+    /// <summary>CS2WASM_EXCLUSIVE_PARTS=1 (read for each compilation: the suite compiles a program marked
+    /// `// exclusive-parts` once more with it): exclusive parts are on. Off by default: as built they are no gain
+    /// (docs/AUDIT.md A3.5, "The build, round 8").</summary>
+    readonly bool _partsWanted = Environment.GetEnvironmentVariable("CS2WASM_EXCLUSIVE_PARTS") == "1" && Environment.GetEnvironmentVariable("CS2WASM_NO_EXCLUSIVE_PARTS") != "1";
     internal static readonly bool PartsDebug = Environment.GetEnvironmentVariable("CS2WASM_PARTS_DEBUG") == "1";
     /// <summary>CS2WASM_EXP_PARTS_SKIP=n (the tests' own: conformance tests 200 to 204 must change their output with
     /// each): condition n of the proof is not asked. 1 the stored value, 2 the reads' uses, 3 the holder kept
     /// alive, 4 addresses and reflection, 5 copies.</summary>
     internal static readonly int PartsSkip = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_EXP_PARTS_SKIP"), out var ps) ? ps : 0;
 
-    public bool PartsOn => !s_noParts && !D.ThreadMode;
+    public bool PartsOn => _partsWanted && !D.ThreadMode;
     /// <summary>Some site is exclusive (decided in DecideParts): Rt.Parts().</summary>
     public bool AnyParts { get; private set; }
 
@@ -196,8 +199,8 @@ sealed partial class FunctionCompiler
         return r;
     }
 
-    /// <summary>A local declared with a new object or array, never assigned again, whose every other use keeps
-    /// nothing of it (`T[] newItems = new T[n]; Array.Copy(_items, newItems, _size); _items = newItems;`).</summary>
+    /// <summary>A local declared with a new object or array in the block of the store, never assigned again, not
+    /// used after the store, whose every other use keeps nothing of it (`T[] newItems = new T[n]; Array.Copy(_items, newItems, _size); _items = newItems;`).</summary>
     bool PartFreshLocal(ILocalReferenceOperation store)
     {
         var l = store.Local;
@@ -205,16 +208,24 @@ sealed partial class FunctionCompiler
         IOperation root = store;
         while (root.Parent != null) root = root.Parent;
         bool declared = false;
+        static IOperation? BlockOf(IOperation o) { for (var x = o.Parent; x != null; x = x.Parent) if (x is IBlockOperation) return x; return null; }
+        static IOperation StatementOf(IOperation o) { var x = o; while (x.Parent != null && x.Parent is not IBlockOperation) x = x.Parent; return x; }
         foreach (var op in root.DescendantsAndSelf())
         {
             if (op is IVariableDeclaratorOperation vd && SymbolEqualityComparer.Default.Equals(vd.Symbol, l))
             {
+                // (declared where it is stored, so one object a store: a store in a loop the declaration is outside
+                // of would give several holders one part)
+                if (!ReferenceEquals(BlockOf(vd), BlockOf(store))) return false;
                 var init = vd.Initializer?.Value;
                 while (init is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsIdentity || c.Conversion.IsReference && c.Conversion.IsImplicit || c.Operand is IObjectCreationOperation && SymbolEqualityComparer.Default.Equals(c.Type, c.Operand.Type))) init = c.Operand;
                 if (!(init is IArrayCreationOperation || init is IObjectCreationOperation ioc && PartNewOk(ioc))) return false;
                 declared = true;
             }
             if (op is not ILocalReferenceOperation lr || !SymbolEqualityComparer.Default.Equals(lr.Local, l) || lr == store) continue;
+            // (used after the store, or in its statement, where a call on it may run after the store: code would
+            // refer to the part with nothing holding its holder)
+            if (Arenas.PartsSkip != 6 && (lr.Syntax.SpanStart > store.Syntax.SpanStart || ReferenceEquals(StatementOf(lr), StatementOf(store)))) return false;
             // (another store of it into a field: two holders)
             if (PartUse(lr, false) != null) return false;
         }

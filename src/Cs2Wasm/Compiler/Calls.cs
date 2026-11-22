@@ -40,6 +40,9 @@ sealed partial class FunctionCompiler
         var target = inv.TargetMethod;
         // [Conditional("X")] with X not defined where the call is: the call, arguments included, is omitted (C# 22.5.3)
         if (IsOmittedConditionalCall(inv)) return Own.None;
+        // (an object copied field by field: no field of its class, a base's or a subclass's is exclusive, ExclusiveParts.cs)
+        if (target.Name == "MemberwiseClone" && target.ContainingType.SpecialType == SpecialType.System_Object && D.Arenas.PartsOn)
+            D.Arenas.PartCloned(inv.Instance is { Type: not null } ci && ci is not IInstanceReferenceOperation ? TypeOf(ci) : T.Resolve(M.ContainingType, Map));
         if (target.Name is "New" or "NewOfNullableArg" && Types.FullName(target.ContainingType) == "Cs2Wasm.Runtime.Generics" && D.IsLibrary(target))
             return EmitGenericsNew(inv);
         if (target.MethodKind == MethodKind.LocalFunction) return EmitLocalFunctionCall(inv);

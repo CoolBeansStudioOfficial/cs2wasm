@@ -124,6 +124,19 @@ foreach (var (name, sources, symbols) in programs.Where((p, i) => (filter == nul
         var (actual2, stderr2, code2) = RunNode(wasmPath, nodeFlags.Split(' ', StringSplitOptions.RemoveEmptyEntries));
         if (actual2 != expected || code2 != 0) { Fail(name, $"output differs with node {nodeFlags} (exit {code2})\n{Diff(expected, actual2)}{(stderr2.Length > 0 ? "\nstderr: " + stderr2 : "")}"); continue; }
     }
+    // `// exclusive-parts` in a program: it is compiled once more with exclusive parts on (CS2WASM_EXCLUSIVE_PARTS=1,
+    // Compiler/ExclusiveParts.cs: off by default) and must print the same.
+    if (actual == expected && code == 0 && gap == null && src.Contains("// exclusive-parts"))
+    {
+        Environment.SetEnvironmentVariable("CS2WASM_EXCLUSIVE_PARTS", "1");
+        var result2 = Cs2WasmCompiler.Compile(comp, new CompileOptions { Checked = checkedBuild });
+        Environment.SetEnvironmentVariable("CS2WASM_EXCLUSIVE_PARTS", null);
+        if (!result2.Success) { Fail(name, "cs2wasm failed with exclusive parts:\n" + string.Join("\n", result2.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error))); continue; }
+        var wasm2 = Path.Combine(outDir, name + ".parts.wasm");
+        File.WriteAllBytes(wasm2, result2.Module!);
+        var (actual2, stderr2, code2) = RunNode(wasm2);
+        if (actual2 != expected || code2 != 0) { Fail(name, $"output differs with exclusive parts (exit {code2})\n{Diff(expected, actual2)}{(stderr2.Length > 0 ? "\nstderr: " + stderr2 : "")}"); continue; }
+    }
     if (actual == expected && code == 0)
     {
         if (gap != null) Fail(name, "passes: it is no gap any more, remove its `// known-gap:` line");
