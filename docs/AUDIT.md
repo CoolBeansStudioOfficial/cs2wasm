@@ -1476,7 +1476,18 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
   borrows across reference stores and releases; (2) per-callee field write sets for the call-safe retains; (3) a
   struct value whose reference fields are known null or borrowed (CancellationToken's default) copied without
   counts; (4) borrowed-return variants (step 6.5). The parallel work in FieldBorrows/LocalBorrows is that route.
-  Suite and the self-hosted compiler with the spike's passes on: below.
+  With the spike's passes on (both, throw rule included): suite 198 passed checked and as shipped; hello world
+  27,297 to 27,264 bytes (27,297 with them off, as main). On the homelab (`tools/ir-spike-bindbench.sh`,
+  `tools/ir-spike-selfhost.sh`):
+  - bind bench (`tools/roslyn-bind-bench.sh`, BODIES=400): pairs 71 of 45,313 retains (441 with the throw rule),
+    loads 13,434 of 167,083 reused; median of the five rounds before another job loaded the machine, wall 6,702 ms
+    as shipped, 6,800 pairs, 6,753 loads, 6,621 both; bind phase 2,070, 2,083, 2,135, 2,084 ms: within 2%, nothing
+    resolved.
+  - the self-hosted compiler (no threads, hello world, one thread, 8 interleaved rounds): pairs 799 of 100,877 retains
+    (rejected: 92,934 for a call that can drop, of them null checks' throws 20,668, rt.store_ref 6,359, the arena
+    allocator 4,681, other releases 3,635); median 12.20 s as shipped against 12.26 s with both passes, the same peak
+    (489.9 MB); module 41,990,867 to 41,913,981 bytes; the passes' summaries cost 26 s of its build (the may-drop and
+    may-store fixpoints over 418,284 functions, unoptimized).
 
 ### Direction (revised 2026-11-18 with the owner)
 
