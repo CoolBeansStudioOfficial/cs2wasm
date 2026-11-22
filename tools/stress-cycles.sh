@@ -13,6 +13,8 @@ cd "$(dirname "$0")/.."
 # (every function named in the module, so a trap's stack reads; NAMES=0 for the module as the suite builds it)
 if [ "${NAMES:-1}" = 1 ]; then export CS2WASM_NAMES=1; fi
 bad=0
+# (TESTS and MODES with spaces or commas: tools/homelab.sh hands each word on alone)
+TESTS=${TESTS//,/ }; MODES=${MODES//,/ }
 for t in ${TESTS:-127_everything_is_freed 139_racing_cyclic_stores}; do
   for mode in ${MODES:-shipped checked}; do
     # (the runner leaves a checked module in tests/out, one as shipped in tests/out/shipped)
