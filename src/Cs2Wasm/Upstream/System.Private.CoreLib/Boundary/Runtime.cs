@@ -2262,12 +2262,30 @@ namespace Cs2Wasm.Runtime
             s_reevN++;
         }
 
+        /// <summary>CS2WASM_NO_MERGE_REPOINT=1 (at compile time): the members of a small arena merged into another keep
+        /// their record words until ArenaOf is asked of each (ArenaMerge).</summary>
+        [Intrinsic] static extern bool NoMergeRepoint();
+        const int MergeRepoint = 8;
+
         /// <summary>The smaller arena becomes part of the larger; returns the survivor.</summary>
         static int ArenaMerge(int a, int b)
         {
             OpStat(5);
             if (Mem.LoadI32(a + 8) < Mem.LoadI32(b + 8)) { int t = a; a = b; b = t; }
             int ha = Mem.LoadI32(a + 4), hb = Mem.LoadI32(b + 4);
+            // (a few members: each one's record word straight at the survivor now, as ArenaOf would set it the first
+            // time it is asked; b's record then goes here, if no older record points to it, and no link or count of
+            // these members takes the long way for a record merged since. A tree built from the leaves up makes a
+            // group of five for each node with children, the node, its list, the array and the first child with its
+            // list, merged into the tree's as the node's parent field is linked: 3,124 a build in the scene tree of
+            // tools/frames.mjs.)
+            if (!ThreadMode() && !NoMergeRepoint() && hb != 0 && Mem.LoadI32(b + 8) <= MergeRepoint)
+            {
+                int m = hb, moved = 0;
+                do { if (PL(m, 16) == b) { PS(m, 16, a); moved++; } m = PL(m, 12); } while (m != hb);
+                Mem.StoreI32(b + 20, Mem.LoadI32(b + 20) - moved);
+                Mem.StoreI32(a + 20, Mem.LoadI32(a + 20) + moved);
+            }
             // (threads: b's members take a's stripe; this thread holds both)
             if (ThreadMode() && hb != 0 && Mem.LoadI32(a + 28) != Mem.LoadI32(b + 28))
             {
@@ -3770,6 +3788,9 @@ namespace Cs2Wasm.Runtime
             int o = s_visitArena, cc = Mem.LoadI32(child);
             if (!NoFreshJoin() && !ThreadMode())
             {
+                // (a pinned object, the empty array every new list has: it joins nothing, ArenaLinkCore's answer
+                // after its questions about the two types)
+                if (cc > 1 && Mem.LoadI32(child + 8) < 0) return;
                 if (cc == 1) { if (JoinOwned(child, o, slot, false)) return; }
                 else if (cc < -1 && Mem.LoadI32(o) < -1)
                 {
