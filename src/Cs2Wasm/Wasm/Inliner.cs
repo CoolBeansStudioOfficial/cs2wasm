@@ -398,6 +398,7 @@ static class Inliner
             {
                 var ins = Mapped(g.Body[k]);
                 ins.Inl = Scoped(g.Body[k].Inl);
+                Emitter.StampInlined(ref ins, g);
                 outBody.Add(ins);
             }
             if (g.Body[^1].Op != Op.Return) { var last = Mapped(g.Body[^1]); last.Inl = Scoped(g.Body[^1].Inl); outBody.Add(last); }
@@ -417,6 +418,7 @@ static class Inliner
                 case Op.Return: ins.Op = Op.Br; ins.Imm = depth; break;
             }
             ins.Inl = Scoped(ins.Inl);
+            Emitter.StampInlined(ref ins, g);
             outBody.Add(ins);
         }
         Add(Op.End);

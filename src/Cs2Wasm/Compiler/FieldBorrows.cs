@@ -175,6 +175,12 @@ internal sealed partial class Driver
         or Op.MemoryCopy or Op.MemoryFill || (int)op >= 0xFE00 && op is not (Op.I32AtomicLoad or Op.I64AtomicLoad);
     /// <summary>The instance fields each function stores to (by key).</summary>
     public readonly Dictionary<WasmFunction, HashSet<string>> FieldWrites = [];
+    /// <summary>The stores a borrow must not overlap: FieldWrites without the stores that only replace a null.</summary>
+    public readonly Dictionary<WasmFunction, HashSet<string>> BorrowWrites = [];
+    /// <summary>Set while a store that runs only when the place holds null is emitted (EmitCoalesceAssign).</summary>
+    [ThreadStatic] internal static WasmFunction? NullOnlyStoreIn;
+    /// <summary>CS2WASM_NO_NULL_ONLY=1: such stores break borrows as any store does (as before).</summary>
+    static readonly bool s_noNullOnly = Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_ONLY") == "1";
     /// <summary>Fields whose address code takes (ref, out, Interlocked): written by whoever holds the address.</summary>
     public readonly HashSet<string> FieldsAddressTaken = [];
     public readonly List<(WasmFunction fn, int local, string field, WasmFunction marker)> FieldBorrows = [];
@@ -194,6 +200,8 @@ internal sealed partial class Driver
     {
         if (!FieldWrites.TryGetValue(fn, out var s)) FieldWrites[fn] = s = [];
         s.Add(key);
+        if (!BorrowWrites.TryGetValue(fn, out var bw)) BorrowWrites[fn] = bw = [];
+        bw.Add(key);
         if (!_unplacedWrites.TryGetValue(fn, out var u)) _unplacedWrites[fn] = u = [];
         u.Add(key);
     }
@@ -219,6 +227,11 @@ internal sealed partial class Driver
     {
         if (!FieldWrites.TryGetValue(e.Fn, out var s)) FieldWrites[e.Fn] = s = [];
         s.Add(key);
+        // (a store that only runs when the field holds null, `f ??= v`: it lets go of nothing a borrow can hold, so
+        // the borrows do not see it; what else may change the field meanwhile, v's own code, they see as before)
+        if (NullOnlyStoreIn == e.Fn && !s_noNullOnly) return;
+        if (!BorrowWrites.TryGetValue(e.Fn, out var bw)) BorrowWrites[e.Fn] = bw = [];
+        bw.Add(key);
         if (!_writeMarks.TryGetValue(key, out var m)) _writeMarks[key] = m = new WriteMark(key);
         e.Emit(Op.Nop, 0, 0, m);
         e.Body[^1] = e.Body[^1] with { Pos = -1 };
@@ -262,6 +275,64 @@ internal sealed partial class Driver
         lock (_bucketIds) _bucketFns[id].Add(f);
     }
 
+    // A delegate's Invoke of one constructed type reaches the functions delegates of a type it can be converted from
+    // were made with: the same type, or another instance of its definition whose type arguments variance allows
+    // (`Action<object>` held as an `Action<string>`), not every instance of the definition (an `Action<Diagnostic>`'s
+    // lambda is never run by `Action<AssemblyLoadContext>.Invoke`).
+    static readonly bool s_noDelegateTypes = Environment.GetEnvironmentVariable("CS2WASM_NO_DELEGATE_TYPES") == "1";
+    readonly Dictionary<string, List<(INamedTypeSymbol type, WasmFunction fn)>> _delegateTargets = [];
+    readonly Dictionary<int, INamedTypeSymbol> _delegateBuckets = [];
+    readonly Dictionary<int, List<WasmFunction>> _delegateBucketFns = [];
+
+    /// <summary>A delegate of type dt made with fn (beside NoteIndirectTarget's bucket of its definition).</summary>
+    internal void NoteDelegateTarget(ITypeSymbol dt, WasmFunction fn)
+    {
+        if (dt is not INamedTypeSymbol nt) return;
+        lock (_bucketIds)
+        {
+            var key = Types.Key(nt.OriginalDefinition);
+            if (!_delegateTargets.TryGetValue(key, out var l)) _delegateTargets[key] = l = [];
+            l.Add((nt, fn));
+        }
+    }
+
+    /// <summary>The bucket of an Invoke's indirect call on delegates of the constructed type dt.</summary>
+    internal int DelegateCallBucket(ITypeSymbol dt)
+    {
+        if (s_noDelegateTypes || dt is not INamedTypeSymbol nt || !nt.IsGenericType) return IndirectBucket(DelegateBucket(dt));
+        int id = IndirectBucket("dc:" + Types.Key(nt));
+        lock (_bucketIds) _delegateBuckets[id] = nt;
+        return id;
+    }
+
+    /// <summary>Whether a delegate made as `from` can be invoked through `to`'s Invoke: one definition, each type
+    /// argument the same, or (a variant parameter's, reference types) convertible the way its variance allows; the
+    /// containing types' arguments the same. Unsure: true.</summary>
+    bool DelegateConvertible(INamedTypeSymbol from, INamedTypeSymbol to)
+    {
+        if (!SymbolEqualityComparer.Default.Equals(from.OriginalDefinition, to.OriginalDefinition)) return false;
+        if (Types.Key(from) == Types.Key(to)) return true;
+        for (INamedTypeSymbol? a = from.ContainingType, b = to.ContainingType; a != null || b != null; a = a?.ContainingType, b = b?.ContainingType)
+            if (a == null || b == null || Types.Key(a) != Types.Key(b)) return false;
+        var ps = from.OriginalDefinition.TypeParameters;
+        if (ps.Length != from.TypeArguments.Length || ps.Length != to.TypeArguments.Length) return true;
+        for (int i = 0; i < ps.Length; i++)
+        {
+            ITypeSymbol f = from.TypeArguments[i], t = to.TypeArguments[i];
+            if (Types.Key(f) == Types.Key(t)) continue;
+            if (f is ITypeParameterSymbol || t is ITypeParameterSymbol) return true;
+            // (variance converts only between reference types)
+            if (!f.IsReferenceType || !t.IsReferenceType) return false;
+            switch (ps[i].Variance)
+            {
+                case VarianceKind.Out: if (!Types.IsSubtype(f, t)) return false; break;
+                case VarianceKind.In: if (!Types.IsSubtype(t, f)) return false; break;
+                default: return false;
+            }
+        }
+        return true;
+    }
+
     List<WasmFunction>? _tableFns;
     /// <summary>Every function some code can put in the table (an unbucketed indirect call reaches them all).</summary>
     List<WasmFunction> TableFns()
@@ -280,11 +351,34 @@ internal sealed partial class Driver
     /// be any delegate's (Delegate.CreateDelegate) and are what a thunk call reaches.</summary>
     internal IEnumerable<WasmFunction> IndirectTargets(in Instr call)
     {
+        // (a call_indirect runs only a function of exactly its type: any other traps before it runs)
+        var any = IndirectTargetsAnyType(call);
+        if (s_noIndirectTypes || call.Ref is not FuncType sig) return any;
+        return any.Where(f => f.Type.Equals(sig));
+    }
+
+    /// <summary>CS2WASM_NO_INDIRECT_TYPES=1: an indirect call reaches its bucket's functions of any type (as before).</summary>
+    static readonly bool s_noIndirectTypes = Environment.GetEnvironmentVariable("CS2WASM_NO_INDIRECT_TYPES") == "1";
+
+    IEnumerable<WasmFunction> IndirectTargetsAnyType(in Instr call)
+    {
         int b = (int)call.Imm2;
         if (b <= 0 || b >= _bucketFns.Count) return TableFns();
         var key = _bucketKeys[b];
         if (key == FilterBucket) return _bucketFns[b];
-        return _bucketFns[b].Concat(TableFns().Where(f => f.TableRoot)).Concat(_objectArrayThunks.Values.Select(t => t.Fn));
+        IEnumerable<WasmFunction> own = _bucketFns[b];
+        if (_delegateBuckets.TryGetValue(b, out var to))
+        {
+            if (!_delegateBucketFns.TryGetValue(b, out var fns))
+            {
+                fns = [];
+                if (_delegateTargets.TryGetValue(Types.Key(to.OriginalDefinition), out var made))
+                    foreach (var (from, fn) in made) if (DelegateConvertible(from, to)) fns.Add(fn);
+                _delegateBucketFns[b] = fns;
+            }
+            own = fns;
+        }
+        return own.Concat(TableFns().Where(f => f.TableRoot)).Concat(_objectArrayThunks.Values.Select(t => t.Fn));
     }
 
     /// <summary>Whether a store of one of the keys may run while the local is in scope (section 4.1: a variable
@@ -331,7 +425,7 @@ internal sealed partial class Driver
         while (work.Count > 0)
         {
             var f = work.Dequeue();
-            if (FieldWrites.TryGetValue(f, out var w) && w.Contains(key))
+            if (BorrowWrites.TryGetValue(f, out var w) && w.Contains(key))
             {
                 var chain = new List<string>();
                 for (WasmFunction? x = f; x != null; x = parent[x]) chain.Add(x.Name);
@@ -401,6 +495,48 @@ internal sealed partial class Driver
     /// <summary>Resolves the placeholders (RuntimeGen.Finish, when every function exists).</summary>
     /// <summary>A release: the atomic one or (threads) the plain one, TypedCounts.cs.</summary>
     bool IsRelease(object? f) => ReferenceEquals(f, Rt.Release) || f != null && ReferenceEquals(f, Rt.ReleasePlainIfMade);
+
+    /// <summary>CS2WASM_COUNT_RC: why a temporary's borrow was not proven, as its counts' cause.</summary>
+    static readonly bool s_countRcWhy = Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1";
+
+    static string ShortKey(string k) => k.Length > 90 ? k[^90..] : k;
+
+    readonly Dictionary<(WasmFunction, string), string> _chainKinds = [];
+
+    /// <summary>CS2WASM_COUNT_RC: by what way the call reaches a store of the key: the shortest chain of calls from it
+    /// to a function that stores the key, through a destruction (a release) or not, and the function that stores.</summary>
+    string ChainKind(WasmFunction root, string key)
+    {
+        if (_chainKinds.TryGetValue((root, key), out var known)) return known;
+        var parent = new Dictionary<WasmFunction, WasmFunction?> { [root] = null };
+        var work = new Queue<WasmFunction>(); work.Enqueue(root);
+        string r = " (no chain found)";
+        int steps = 0;
+        while (work.Count > 0 && steps++ < 20000)
+        {
+            var f = work.Dequeue();
+            if (BorrowWrites.TryGetValue(f, out var fw) && fw.Contains(key))
+            {
+                var chain = new List<WasmFunction>();
+                for (WasmFunction? x = f; x != null; x = parent[x]) chain.Add(x);
+                chain.Reverse();
+                int d = chain.FindIndex(x => x.Name == "rt.destroy" || x.Name.StartsWith("rt.release") || x.Name.StartsWith("rt.destroy"));
+                var after = d >= 0 ? chain.Skip(d + 1).FirstOrDefault(x => !x.Name.StartsWith("rt.") && !x.Name.StartsWith("destroy")) : null;
+                r = d >= 0 ? $" via a destruction, {(after?.Name ?? "?")}" : $" by {f.Name}";
+                if (r.Length > 160) r = r[..160];
+                break;
+            }
+            void Add(WasmFunction g) { if (!StoreSummary.Internal(g) && parent.TryAdd(g, f)) work.Enqueue(g); }
+            if (f.ForwardTo != null) Add(f.ForwardTo);
+            for (int j = 0; j < f.Body.Count; j++)
+            {
+                var ins = f.Body[j];
+                if (ins.Op == Op.Call && StoresOf(f.Body, j) is { } g) Add(g);
+                else if (ins.Op == Op.CallIndirect) foreach (var t in IndirectTargets(ins)) Add(t);
+            }
+        }
+        return _chainKinds[(root, key)] = r;
+    }
 
     public void ResolveFieldBorrows()
     {
@@ -555,6 +691,7 @@ internal sealed partial class Driver
             }
             return tempIndex[fn] = (calls, handler);
         }
+        var whys = new Dictionary<WasmFunction, string>();
         foreach (var (fn, field, retain, release) in _tempBorrows)
         {
             // (several fields: the value came through each of them, a getter's path: Driver.ReturnPathKeys)
@@ -564,10 +701,11 @@ internal sealed partial class Driver
             var live = all.Where(k => !InitOnlyKey(k)).ToArray();
             var tkeys = addr ? null : live.Length == 0 ? live : ThreadKeys(fn, live, retain);
             bool ok = tkeys != null;
+            string? why = s_countRcWhy ? (addr ? "address taken" : ok ? null : "threads") : null;
             // the borrow lasts from the retain to the statement's release: only what runs in between may not store the
             // fields (the function's own stores anywhere: the whole function's summary decides)
             // fields, the function's own stores: those marked in between, and those without a place)
-            if (ok && live.Length > 0 && _unplacedWrites.TryGetValue(fn, out var unplaced) && live.Any(unplaced.Contains)) ok = false;
+            if (ok && live.Length > 0 && _unplacedWrites.TryGetValue(fn, out var unplaced) && live.Any(unplaced.Contains)) { ok = false; why = "the function's own unplaced store"; }
             if (ok && (live.Length > 0 || tkeys!.Length > 0))
             {
                 var b = fn.Body;
@@ -581,18 +719,19 @@ internal sealed partial class Driver
                     int limit = h < 0 ? b.Count - 1 : h;
                     for (int q = es.Count - 1; q >= 0; q--) if (es[q] <= limit) { e = es[q]; break; }
                 }
-                if (r < 0 || e < r) ok = !tkeys!.Any(k => summary!.Has(fn, k)) && !(FieldWrites.TryGetValue(fn, out var own) && live.Any(own.Contains));
+                if (r < 0 || e < r) { ok = !tkeys!.Any(k => summary!.Has(fn, k)) && !(BorrowWrites.TryGetValue(fn, out var own) && live.Any(own.Contains)); if (!ok) why = "no range: the whole function stores"; }
                 else
                     for (int k = r + 1; k < e && ok; k++)
                     {
                         var ins = b[k];
-                        if (ins.Op == Op.Nop) { if (ins.Ref is WriteMark wm && !ReferenceEquals(wm, ScopeEnd) && Array.IndexOf(live, wm.Key) >= 0) ok = false; }
-                        else if (ins.Op == Op.Call && StoresOf(b, k) is { } g && g != retain) { foreach (var key in tkeys!) if (summary!.Has(g, key)) { ok = false; break; } }
-                        else if (ins.Op == Op.CallIndirect) { foreach (var key in tkeys!) if (summary!.HasIndirect(key, ins)) { ok = false; break; } }
+                        if (ins.Op == Op.Nop) { if (ins.Ref is WriteMark wm && !ReferenceEquals(wm, ScopeEnd) && Array.IndexOf(live, wm.Key) >= 0) { ok = false; why = "own store in range of " + ShortKey(wm.Key); } }
+                        else if (ins.Op == Op.Call && StoresOf(b, k) is { } g && g != retain) { foreach (var key in tkeys!) if (summary!.Has(g, key)) { ok = false; why = s_countRcWhy ? (IsRelease(g) ? "a release" : g.Name.StartsWith("rt.") ? g.Name : "a call") + " storing " + ShortKey(key) + ChainKind(g, key) : null; break; } }
+                        else if (ins.Op == Op.CallIndirect) { foreach (var key in tkeys!) if (summary!.HasIndirect(key, ins)) { ok = false; why = "an indirect call storing " + ShortKey(key); break; } }
                     }
             }
             markers[retain] = ok ? null : Rt.Retain;
             markers[release] = ok ? null : Rt.Release;
+            if (why != null && !ok) { whys[retain] = why; whys[release] = why; }
         }
         if (markers.Count > 0)
             foreach (var f in Module.Functions)
@@ -604,7 +743,7 @@ internal sealed partial class Driver
                     {
                         any = true;
                         // (retain → the value stays; release → its operand is dropped)
-                        if (to != null) b[i] = b[i] with { Ref = to };
+                        if (to != null) b[i] = b[i] with { Ref = to, Cause = whys.TryGetValue(g, out var wy) ? Emitter.CauseOf("unproven temp borrow (" + wy + ")") : b[i].Cause };
                         else b[i] = g.Type.Results.Length == 1 ? b[i] with { Op = Op.Nop, Ref = null } : b[i] with { Op = Op.Drop, Ref = null };
                     }
                 if (any) b.RemoveAll(x => x.Op == Op.Nop && x.Ref == null && x.Pos < 0);
@@ -698,7 +837,7 @@ internal sealed partial class Driver
         {
             var f = work.Dequeue();
             // ("store:key": the first function that stores the key)
-            if (f != root && (parts[1].StartsWith("store:") ? FieldWrites.TryGetValue(f, out var fw) && fw.Contains(parts[1][6..]) : f.Name.Contains(parts[1])))
+            if (f != root && (parts[1].StartsWith("store:") ? BorrowWrites.TryGetValue(f, out var fw) && fw.Contains(parts[1][6..]) : f.Name.Contains(parts[1])))
             {
                 var chain = new List<string>();
                 for (WasmFunction? x = f; x != null; x = parent[x]) chain.Add(x.Name);
@@ -785,7 +924,17 @@ internal sealed partial class Driver
             var fns = d.Module.Functions;
             for (int i = 0; i < fns.Count; i++) _node[fns[i]] = i;
             int table = fns.Count, n = fns.Count + 1 + d._bucketFns.Count;
-            _table = table;
+            _table = table; _buckets = d._bucketFns.Count;
+            // (an indirect call's node by its bucket and its type, past those: it reaches the functions of that type
+            // only, IndirectTargets)
+            if (!s_noIndirectTypes)
+                foreach (var f in fns)
+                    foreach (var ins in f.Body)
+                        if (ins.Op == Op.CallIndirect && ins.Ref is FuncType sig)
+                        {
+                            int bk = ins.Imm2 > 0 && ins.Imm2 < d._bucketFns.Count ? (int)ins.Imm2 : 0;
+                            if (!_typed.ContainsKey((bk, sig))) _typed[(bk, sig)] = n++;
+                        }
             // what writes only memory no program code can reach: the runtime's throw helpers (bounds, null and cast
             // checks: the exception they make), the allocator (fresh or freed blocks), the arenas' and the marks'
             // own tables (a finalizer a release runs still counts: it is compiled code the destroy path calls)
@@ -806,7 +955,7 @@ internal sealed partial class Driver
                 {
                     var ins = f.Body[j];
                     if (ins.Op == Op.Call && StoresOf(f.Body, j) is { } g && _node.TryGetValue(g, out int gi) && !skip[gi] && gi != i) edges[i].Add(gi);
-                    else if (ins.Op == Op.CallIndirect) edges[i].Add(ins.Imm2 > 0 && ins.Imm2 < d._bucketFns.Count ? table + (int)ins.Imm2 : table);
+                    else if (ins.Op == Op.CallIndirect) edges[i].Add(IndirectNode(ins, d._bucketFns.Count));
                     else if (ins.Op == Op.I32Const && ins.Ref is WasmFunction t && _node.TryGetValue(t, out int ti)) edges[table].Add(ti);
                 }
                 if (f.InTable || f.TableRoot) edges[table].Add(i);
@@ -817,7 +966,7 @@ internal sealed partial class Driver
                 // returns at once: Rt.CctorEnter), and whatever it stores next it stores after the borrow's scope.
                 // Not what it calls: a helper that stores a static can be called again later.)
                 string? ownStatics = f.Name.StartsWith(Driver.StaticInitBodyPrefix, StringComparison.Ordinal) ? f.Name[Driver.StaticInitBodyPrefix.Length..] + "::" : null;
-                if (d.FieldWrites.TryGetValue(f, out var w))
+                if (d.BorrowWrites.TryGetValue(f, out var w))
                     foreach (var k in w)
                         if (_key.TryGetValue(k, out int ki) && !(ownStatics != null && k.StartsWith(ownStatics, StringComparison.Ordinal) && d.IsStaticKey(k)))
                         {
@@ -828,6 +977,9 @@ internal sealed partial class Driver
             for (int bk = 1; bk < d._bucketFns.Count; bk++)
                 foreach (var t in d.IndirectTargets(new Instr { Op = Op.CallIndirect, Imm2 = bk }))
                     if (_node.TryGetValue(t, out int ti)) edges[table + bk].Add(ti);
+            foreach (var ((bk, sig), node) in _typed)
+                foreach (var t in d.IndirectTargets(new Instr { Op = Op.CallIndirect, Imm2 = bk, Ref = sig }))
+                    if (_node.TryGetValue(t, out int ti)) edges[node].Add(ti);
             // A throw's trace (Rt.OnThrow): it writes the exception's fields, and elements only of the buffer and the
             // string it makes, which nothing else refers to. So its elements key is left out: a borrow of an element
             // across a call that may throw survives it (a function's walk of its list, calling itself), and one of
@@ -906,10 +1058,20 @@ internal sealed partial class Driver
         public bool HasIndirect(string key, in Instr call)
         {
             if (key == SafePointKey) return call.Imm2 > 0 ? SafeBuckets?.Contains((int)call.Imm2) == true : SafeTable;
-            int node = call.Imm2 > 0 && _table + (int)call.Imm2 < _bits.Length ? _table + (int)call.Imm2 : _table;
+            int node = IndirectNode(call, _buckets);
             return _key.TryGetValue(key, out int k) && (_bits[node][k >> 6] & (1UL << (k & 63))) != 0;
         }
         readonly int _table;
+        int _buckets;
+        readonly Dictionary<(int, FuncType), int> _typed = [];
+
+        /// <summary>An indirect call's node: its bucket's and type's, else its bucket's, else the table's.</summary>
+        int IndirectNode(in Instr call, int buckets)
+        {
+            int bk = call.Imm2 > 0 && call.Imm2 < buckets ? (int)call.Imm2 : 0;
+            if (call.Ref is FuncType sig && _typed.TryGetValue((bk, sig), out int t)) return t;
+            return bk > 0 ? _table + bk : _table;
+        }
 
         public bool Has(WasmFunction f, string key) => key == SafePointKey ? Safe?.Contains(f) == true :
             _key.TryGetValue(key, out int k) && _node.TryGetValue(f, out int i) && (_bits[i][k >> 6] & (1UL << (k & 63))) != 0;

@@ -391,6 +391,7 @@ internal sealed partial class Arenas
     }
 
     static readonly bool s_noDisplaySites = Environment.GetEnvironmentVariable("CS2WASM_NO_DISPLAY_SITES") == "1";
+    static readonly bool s_countRc = Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1";
 
     /// <summary>The slots of the objects the compiler makes: a closure's captured variables and its enclosing
     /// closure, a state machine's variables, an anonymous type's properties, a delegate's target. A store into a
@@ -923,9 +924,10 @@ internal sealed partial class Arenas
                             A(Op.Br, 1);
                             A(Op.End);
                             A(Op.LocalGet, old); A(Op.Call, 0, D.Rt.ReleaseOf(ph.site!.SlotType));
+                            if (s_countRc) body[^1] = body[^1] with { Cause = Emitter.CauseOf("a store's old value (cyclic slot, plain container)") };
                             A(Op.End);
                         }
-                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); x.Ref = D.Rt.ReleaseOf(ph.site!.SlotType); body.Add(x); }
+                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); x.Ref = D.Rt.ReleaseOf(ph.site!.SlotType); if (s_countRc) x.Cause = Emitter.CauseOf("a store's old value (field or element)"); body.Add(x); }
                         break;
                     case Kind.LinkAt:
                         // (value, slot) -> value
@@ -935,7 +937,7 @@ internal sealed partial class Arenas
                     case Kind.UnlinkAt:
                         // (old, slot) -> ()
                         if (Enabled && AtCyclic(w, ph.pinType!)) { x.Ref = unlinkAt; body.Add(x); }
-                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); x.Ref = D.Rt.Release; body.Add(x); }
+                        else { var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); x.Ref = D.Rt.Release; if (s_countRc) x.Cause = Emitter.CauseOf("a store's old value (by address)"); body.Add(x); }
                         break;
                     case Kind.MoveAt:
                         // (destination, source, count) -> done

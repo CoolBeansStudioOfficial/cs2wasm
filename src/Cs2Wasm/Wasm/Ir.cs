@@ -106,6 +106,9 @@ internal struct Instr
     /// <summary>CS2WASM_COUNT_RC: reference values the source pushes just before this instruction (the baseline a scheme
     /// without ownership analysis would count up and down).</summary>
     public ushort Probes;
+    /// <summary>CS2WASM_COUNT_RC: a count call's cause (an index + 1 into Emitter.RcCauses: the compiler code that asked
+    /// for it), kept apart from Imm2, which a release's exact-type hint uses.</summary>
+    public ushort Cause;
     /// <summary>The inlined call this instruction came with (an index into WasmModule.InlineScopes; 0: none, the
     /// function's own code): a stack trace taken at it shows the frames of the methods that were inlined here.</summary>
     public int Inl;

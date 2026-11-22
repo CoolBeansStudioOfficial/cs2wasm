@@ -1274,11 +1274,14 @@ sealed partial class RuntimeGen
                 {
                     if (b[i].Op != Op.Call || b[i].Ref is not WasmFunction g || names.Count >= MaxSites) continue;
                     // (and calls of the struct helpers, which count the references a struct holds)
-                    bool helper = g.Name.StartsWith("rt.retain_struct") || g.Name.StartsWith("rt.release_struct") || g.Name.StartsWith("rt.copy_");
-                    if (g != D.Rt.Retain && g != D.Rt.Release && !helper) continue;
-                    if (helper && (f.Name.StartsWith("rt.retain_struct") || f.Name.StartsWith("rt.release_struct") || f.Name.StartsWith("rt.copy_"))) continue;
-                    names.Add((g == D.Rt.Retain ? "retain " : g == D.Rt.Release ? "release " : "[" + g.Name + "] ") + (f.FrameName ?? f.Name) + " @" + i
-                        + (b[i].Imm2 > 0 && b[i].Imm2 <= Emitter.RcCauses.Count ? " {" + Emitter.RcCauses[(int)b[i].Imm2 - 1] + "}" : ""));
+                    // (calls of helpers from helpers too: tools/rccauses.mjs charges a helper's counts to its callers)
+                    bool helper = g.Name.StartsWith("rt.retain_struct") || g.Name.StartsWith("rt.release_struct") || g.Name.StartsWith("rt.copy_") || g.Name.StartsWith("rt.move_");
+                    // (a release of an exact type written as its class's own function: WasmModule.ExpandLeafReleases)
+                    bool leaf = g.Name.StartsWith("rt.release of ");
+                    if (g != D.Rt.Retain && g != D.Rt.Release && !helper && !leaf) continue;
+                    if (leaf && f.Name.StartsWith("rt.release of ")) continue;
+                    names.Add((g == D.Rt.Retain ? "retain " : g == D.Rt.Release || leaf ? "release " : "[" + g.Name + "] ") + (f.FrameName ?? f.Name) + " @" + i
+                        + (b[i].Cause > 0 && b[i].Cause <= Emitter.RcCauses.Count ? " {" + Emitter.RcCauses[b[i].Cause - 1] + "}" : ""));
                     var tmp = new Emitter(new WasmFunction("tmp", f.Type));
                     tmp.I32Addr(sites); tmp.I64(1); tmp.Emit(Op.I64AtomicRmwAdd, 8 + 8 * (names.Count - 1), 3); tmp.Op(Op.Drop);
                     b.InsertRange(i, tmp.Fn.Body);

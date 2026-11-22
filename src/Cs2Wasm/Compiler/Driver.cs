@@ -697,13 +697,7 @@ internal sealed partial class Driver
         // borrowed is what the caller's own load through that address would be)
         if (!def.IsStatic && def.ContainingType is not { TypeKind: TypeKind.Class or TypeKind.Struct }) return false;
         if (def.DeclaringSyntaxReferences.Length != 1) return false;
-        var sr = def.DeclaringSyntaxReferences[0];
-        if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) return false;
-        var block = body switch { IMethodBodyOperation mb => mb.BlockBody ?? mb.ExpressionBody, IBlockOperation b => b, _ => null };
-        if (block is not { Operations: [IReturnOperation { ReturnedValue: { } v }] }) return false;
-        while (v is IConversionOperation { OperatorMethod: null, IsImplicit: true } c && (c.Conversion.IsIdentity || c.Conversion.IsReference)) v = c.Operand;
-        // a lazy getter (`return _f ??= Make();`): the result is the field's value after the store
-        if (v is ICoalesceAssignmentOperation { Target: var lazy }) v = lazy;
+        if (BorrowableReturns(def) is not { } values) return false;
         // the roots: `this`, a static field, a struct parameter (by value: the caller's temporary or its own variable,
         // either alive to the end of the caller's statement); through fields, and elements of arrays they hold
         bool Root(IOperation? o) => o is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }
@@ -721,8 +715,75 @@ internal sealed partial class Driver
                 && ae.ArrayReference is IFieldReferenceOperation arr && arr.Type is IArrayTypeSymbol { IsSZArray: true } && Holder(arr),
             _ => false,
         };
-        return Path(v);
+        foreach (var r in values)
+        {
+            var v = r;
+            while (v is IConversionOperation { OperatorMethod: null, IsImplicit: true } c && (c.Conversion.IsIdentity || c.Conversion.IsReference)) v = c.Operand;
+            // a lazy getter (`return _f ??= Make();`): the result is the field's value after the store
+            if (v is ICoalesceAssignmentOperation { Target: var lazy }) v = lazy;
+            // (a null: nothing to count, in a body of several returns)
+            if (values.Count > 1 && v.ConstantValue is { HasValue: true, Value: null }) continue;
+            if (!Path(v)) return false;
+        }
+        return true;
     }
+
+    /// <summary>CS2WASM_NO_RETURN_FIELD_BODIES=1: only a body that is one `return` returns its field borrowed (as before).</summary>
+    static readonly bool s_noReturnFieldBodies = Environment.GetEnvironmentVariable("CS2WASM_NO_RETURN_FIELD_BODIES") == "1";
+
+    /// <summary>The values a method's body returns, when its borrowed form can return them without a count: a body
+    /// that is one `return`; or one whose statements let go of nothing once a return has read its value (the way out
+    /// releases what is still held then: its reference locals, a parameter it assigns, a temporary of a statement
+    /// still running, the hold of a `using`, `foreach` or `lock`, a `finally`, a closure's display). So: no local of a
+    /// type that is counted or holds counted fields, no parameter written, no lambda or local function, every
+    /// `return` only inside blocks, `if` statements and `while`, `do` and `for` loops (whose conditions' temporaries
+    /// are let go before their bodies run), and the last statement a `return`. Null otherwise.</summary>
+    List<IOperation>? BorrowableReturns(IMethodSymbol def)
+    {
+        var sr = def.DeclaringSyntaxReferences[0];
+        if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) return null;
+        var block = body switch { IMethodBodyOperation mb => mb.BlockBody ?? mb.ExpressionBody, IBlockOperation b => b, _ => null };
+        if (block is { Operations: [IReturnOperation { ReturnedValue: { } v1 }] }) return [v1];
+        if (s_noReturnFieldBodies || block is not { Operations: [.., IReturnOperation { ReturnedValue: not null }] }) return null;
+        var values = new List<IOperation>();
+        foreach (var o in block.DescendantsAndSelf())
+        {
+            switch (o)
+            {
+                case IAnonymousFunctionOperation or ILocalFunctionOperation or IDelegateCreationOperation:
+                case ITryOperation or IUsingOperation or ILockOperation or IForEachLoopOperation or IUsingDeclarationOperation:
+                case ISwitchOperation or ILabeledOperation or IBranchOperation { BranchKind: BranchKind.GoTo }:
+                    return null;
+                // (a local of a counted type, or of a struct that holds counted fields; numbers, enums, pointers are not)
+                case IVariableDeclaratorOperation vd when !Uncounted(vd.Symbol.Type):
+                    return null;
+                case IDeclarationPatternOperation { DeclaredSymbol: ILocalSymbol pl } when !Uncounted(pl.Type):
+                    return null;
+                case IRecursivePatternOperation { DeclaredSymbol: ILocalSymbol rl } when !Uncounted(rl.Type):
+                    return null;
+                case IListPatternOperation { DeclaredSymbol: ILocalSymbol ll } when !Uncounted(ll.Type):
+                    return null;
+                case ILocalReferenceOperation lr when !Uncounted(lr.Local.Type):
+                    return null;
+                // (a parameter written: the function holds a count on its value, let go on the way out)
+                case IParameterReferenceOperation pr when pr.Parent is IAssignmentOperation asg && ReferenceEquals(asg.Target, pr)
+                    || pr.Parent is IIncrementOrDecrementOperation || pr.Parent is IArgumentOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out }
+                    || pr.Parent is IDeconstructionAssignmentOperation || pr.Parent is IAddressOfOperation:
+                    return null;
+                case IReturnOperation { ReturnedValue: { } rv } ret:
+                    for (var a = ret.Parent; a != null && !ReferenceEquals(a, block); a = a.Parent)
+                        if (a is not (IBlockOperation or IConditionalOperation { IsRef: false } or IWhileLoopOperation or IForLoopOperation)) return null;
+                    values.Add(rv);
+                    break;
+                case IReturnOperation: return null;
+            }
+        }
+        return values;
+    }
+
+    /// <summary>A type whose values hold no count (and contain none): numbers, bools, chars, enums, pointers.</summary>
+    static bool Uncounted(ITypeSymbol t) => t.TypeKind is TypeKind.Enum or TypeKind.Pointer or TypeKind.FunctionPointer
+        || t.SpecialType is (>= SpecialType.System_Boolean and <= SpecialType.System_Double) or SpecialType.System_IntPtr or SpecialType.System_UIntPtr;
 
     /// <summary>The fields the value a ReturnsField method returns came through, as FieldBorrows keys (a line each; the
     /// elements' key for an array's element): only when the path starts at `this` of a class and every field on it is an
@@ -731,27 +792,30 @@ internal sealed partial class Driver
     {
         var def = m.OriginalDefinition;
         if (def.IsStatic || def.ContainingType.TypeKind != TypeKind.Class) return null;
-        var sr = def.DeclaringSyntaxReferences[0];
-        if (ModelFor(sr.SyntaxTree).GetOperation(sr.GetSyntax()) is not { } body) return null;
-        var block = body switch { IMethodBodyOperation mb => mb.BlockBody ?? mb.ExpressionBody, IBlockOperation b => b, _ => null };
-        if (block is not { Operations: [IReturnOperation { ReturnedValue: { } v }] }) return null;
+        if (BorrowableReturns(def) is not { } values) return null;
+        var map = TypeMap.For(m);
+        var keys = new List<string>();
+        foreach (var r in values)
+        {
+        var v = r;
         while (v is IConversionOperation { OperatorMethod: null } c) v = c.Operand;
         // (a lazy getter stores the field itself, before the caller's borrow starts)
         if (v is ICoalesceAssignmentOperation { Target: var lazy }) v = lazy;
-        var map = TypeMap.For(m);
-        var keys = new List<string>();
+        // (a null, of several returns: nothing it came through)
+        if (values.Count > 1 && v.ConstantValue is { HasValue: true, Value: null }) continue;
         while (true)
         {
             while (v is IConversionOperation { OperatorMethod: null } c2) v = c2.Operand;
             if (v is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }) break;
-            if (v is IArrayElementReferenceOperation ae) { keys.Add(ElementsKey); v = ae.ArrayReference; continue; }
+            if (v is IArrayElementReferenceOperation ae) { if (!keys.Contains(ElementsKey)) keys.Add(ElementsKey); v = ae.ArrayReference; continue; }
             if (v is not IFieldReferenceOperation { Field: { IsStatic: false } f, Instance: { } inst } || f.ContainingType.TypeKind != TypeKind.Class) return null;
             var storage = f.CorrespondingTupleField ?? f;
             var owner = Types.Resolve(f.ContainingType, map);
             var k = FieldKey(owner, storage);
             NoteBorrowField(k, storage, Types.Resolve(f.Type, map));
-            keys.Add(k);
+            if (!keys.Contains(k)) keys.Add(k);
             v = inst;
+        }
         }
         return keys.Count == 0 ? null : string.Join("\n", keys);
     }

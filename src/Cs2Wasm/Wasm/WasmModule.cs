@@ -674,6 +674,8 @@ internal sealed class WasmModule
     /// <summary>A release whose call says what class the object is of exactly (FunctionCompiler.ReleaseOf), where
     /// destroying such an object only frees it: the count's test and the class's own destruction, in place of the
     /// call that would find the class by the object's type. A count below zero is an object that is never freed.</summary>
+    static readonly bool s_countRc = Environment.GetEnvironmentVariable("CS2WASM_COUNT_RC") == "1";
+
     HashSet<WasmFunction> ExpandLeafReleases()
     {
         var changed = new HashSet<WasmFunction>();
@@ -734,7 +736,8 @@ internal sealed class WasmModule
                     case Op.End when open.Count > 0: if (open[^1]) loops--; open.RemoveAt(open.Count - 1); break;
                 }
                 if (ins.Op != Op.Call || ins.Imm2 == 0 || !ReferenceEquals(ins.Ref, ReleaseFn) || DestroyOf(ins.Imm2) is not { } destroy) { o.Add(ins); continue; }
-                if (loops == 0) { o.Add(ins with { Imm2 = 0, Ref = ReleaseOf(destroy) }); continue; }
+                // (CS2WASM_COUNT_RC: a call in loops too, where the site counters see it)
+                if (loops == 0 || s_countRc) { o.Add(ins with { Imm2 = 0, Ref = ReleaseOf(destroy) }); continue; }
                 if (t < 0)
                 {
                     f.Locals.Add(ValType.I32); t = np + f.Locals.Count - 1;
