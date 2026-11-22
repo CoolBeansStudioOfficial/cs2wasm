@@ -3,7 +3,7 @@
 # by round (for timings that move less than the machine's noise between two runs: on the homelab, with a slot).
 #   bash tools/ab-switch.sh <SWITCH=1[,SWITCH2=1...]> <program.cs> [rounds=3] [entry=main] [node flags...]
 #   on the homelab: bash tools/homelab.sh <branch> bash tools/ab-switch.sh CS2WASM_NO_DIRECT_SMALL=1 tools/tree-parts.cs 6
-S=${1:?switches, comma separated}; P=${2:?program}; N=${3:-3}; E=${4:-main}; shift 4 2>/dev/null
+S=${1:?switches, comma separated}; P=${2:?program}; N=${3:-3}; E=${4:-main}; shift $(($# < 4 ? $# : 4))
 R=$(cd "$(dirname "$0")/.." && pwd)
 C=$R/src/Cs2Wasm.Cli/bin/Release/net11.0/cs2wasmc
 O=$R/tests/out/ab; mkdir -p "$O"
