@@ -931,6 +931,94 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     bigdrop 0.86x to 0.97x both; memory 16.0 MB against 59.3 (71.1). `bench.mjs` three pairs: 0.94x to 0.95x /
     0.93x (word_count 0.85x to 0.80x, dictionary 1.13x to 1.11x). On the homelab at bc2ba98 (the last commit that changes code): suite 211/211 checked and 211/211 as shipped (461 s); at ebeaa42, the first form, 209/211 checked and 210/211 as shipped (088's timer line in both; 087 checked the trap named in FINISH.md's entry, which main has too). Not run: the self-hosted compiler, stress-cycles.
 
+- **The collections and strings scenes, round 2 (2026-11-23, branch claude/colstr-2, from main 2dfc806; the desk
+  machine, heavily shared; not merged when this was written).** What round 1 left, in the order of its size. By
+  phase (`tools/colstr-parts.cs`, each change against its own switch, the lowest of 3 to 5 runs):
+  **strings' whole frame 8.19 to 7.21 us against NativeAOT-LLVM's 7.91 (0.91x); collections' 7.21 to 7.27 to 6.78
+  to 6.81 against 6.36 to 6.80, its p99 36.5 to 37.0 to 25.9 to 26.0 us against 26.8 to 30.4 (the lowest of six
+  runs, the desk loaded).** `frames.mjs --runs 3 --js-young 32`, three pairs in turn at a quiet moment, before (the three switches) / after: **collections median 6.9 to 7.2 / 6.4 to 6.6 us against NativeAOT-LLVM's 6.0 to 6.4 (1.13x / 1.07x to 1.08x: not reached), p99 34.5 to 37.9 / 24.2 to 25.4 against 24.9 to 27.0 (at NativeAOT's)**, p99.9 0.175 to 0.193 / 0.174 to 0.183 ms (1.04 to 1.11), **worst 0.21 / 0.36 to 0.37 ms (1.29 to 1.37): one frame, the first clear after the warm-up (frame 200), 0.17 ms longer with the move in every run, the other clears 0.18 to 0.20 as before or below; the code that lets an array's values go ran at every resize before and now runs only at the clears, and is still in the engine's baseline tier at that one: with `node --wasm-tiering-budget=1000000` (the optimizing tier a thirteenth of the calls sooner) frame 200 is 0.21 ms, as the other clears (0.38 to 0.39 by default, three runs each; tests/out timing, the module unchanged). An engine tier-up moved, not work added; the worst frame it makes is 0.37 ms against NativeAOT's 1.3**; **strings median 7.5 to 8.0 / 6.7 to 6.9 us against 7.6 (0.99x / 0.88x to 0.91x)**, p99 12.0 to 13.0 / 10.3 to 10.5 (18.3 to 20.0), p99.9 0.018 to 0.021 / 0.017 (0.059 to 0.080), worst 0.04 to 0.05 / 0.04 to 0.06 (0.24 to 0.26); churn 1.75x to 1.81x / 1.76x to 1.80x, tree 1.63x to 1.66x / 1.61x to 1.67x with p99.9 2.64 to 2.77 / 2.66 to 2.74 ms (2.41 to 2.55: not reached, not this round's), bigdrop 0.87x to 0.88x / 0.84x to 0.88x; memory 16.0 MB against 59.3 (71.1).
+  - **Stores that go down a structure (`Compiler/ChainStores.cs`, `CS2WASM_NO_CHAIN_STORES=1`): StringBuilder is no
+    cycle type.** A store `x.F = v` closes a cycle only if v reaches x. It does not when v was read out of x
+    (`x.F = y.G` or `x.F = y`, y come from x by copies and field reads, and for y itself the code has just found
+    `x != y`), or when v is an object the method has just made, known to nothing else, whose constructor put into
+    it only what was read out of x (`x.F = new C(x)` with the constructor storing `from.F`; `n = new C(.., x.F);
+    ...; x.F = n`). Why reads made earlier still count: order a component's objects so that every reference made
+    so far goes from a higher object to a lower; such a store goes down, an object nothing refers to yet can be
+    put anywhere above what it refers to (a constructor's `this` on top, a new object filled from below x just
+    below x, an isolated structure below its container), so while every store of a component's sites is one of
+    those no reference goes up. The facts (b is a or what a reached, a != b, a is null, a is a new object filled
+    from r) flow over Roslyn's control flow graph of the method, for `this`, parameters and locals that are only
+    plainly assigned, never captured, never passed by reference; a fact about two variables says nothing when
+    either is null, so it survives a join with a path on which one is null (`end = null; while (..) { if (end ==
+    null) end = cur; cur = cur.F; }`). A method that returns its receiver or what it read out of it
+    (FindChunkForIndex) and a constructor's contents by parameter are summaries of their text. A method with a
+    `try` gets no proof. A proven store is linked as an isolated value's (`Site.LinkIso`): it does not make its
+    site general, and links as any store where the site is cyclic through another. What the whole program must
+    confirm: a `ref`/`out` parameter of a class type T counts as a local only if no call passes anything but a
+    local of its own by reference for a `ref T` (`Arenas.RefWild`, noted at every by-reference argument; else the
+    site is general after all). Reflection's SetValue, a `ref` handed out, an accessor: the site's address is
+    taken or its stores are general, as before. Fixed on the way: a constructor's call that is not compiled
+    (`[Conditional("DEBUG")]`, StringBuilder's AssertInvariants) was taken to let `this` out; a proven store into
+    an owned local's object took the owned link, which makes the site general.
+    All of StringBuilder's stores of `m_ChunkPrevious` are proven (ExpandByABlock, MakeRoom, Remove's two, Length's
+    setter; the constructors' are stores into a new object) and its chunks are plain counted objects: 40 appends
+    of a string and a character into a new builder 1.40 to 0.62 us (NativeAOT 0.45), the scene's lines and appends
+    3.87 to 3.06 (2.53). A program that enumerates a builder's chunks (GetChunks:
+    the enumerator passes its current chunk by reference from a field) or sets fields by reflection keeps them a
+    cycle type, as before. Tests 213 (each rule in a class of its own by a marker type, with finalizers counting
+    what is left: growth, a cut to what a walk found, two cursors, a new chunk wired in, an `out` cursor; and each
+    store that looks the same and closes a cycle, a ring, a self link, the cursors untested, a constructor that
+    keeps its argument, a value from above, a `ref` cursor over a field a call rewires, a local a lambda rewires;
+    with `CS2WASM_CHAIN_BREAK=1`, a plain local taken as read out of anything, two of them leak) and 214
+    (reflection, a `ref` handed out, an accessor, GetChunks).
+  - **A collection that grows moves its items (`Rt.MoveRange`, Boundary/ArrayMoves.cs; edits of Dictionary.cs,
+    HashSet.cs and List.cs in the manifest; `CS2WASM_NO_ARRAY_MOVE=1`): collections' p99.** Resize's `Array.Copy`
+    counted every value for the new array and the old array's end counted each off again. Where the old array is
+    full and nothing but the collection's field refers to it (its count is one, a plain object, no threads), the
+    bytes are copied and the old array is left an array of bytes of the same size: nothing counted, its bytes as
+    they were, freed at the same store as before. The two holders: TryInsert and AddIfNotPresent set their
+    `entries` local to null before they call Resize (they assign it again right after), and Resize makes its
+    buckets before the copy when it does not rehash, so nothing can throw between the move and the store of the
+    new array. A method further up the stack that still reads the old entries (a key's Equals that adds to the
+    dictionary under the insert that called it) holds a count, and the copy is made as before (test 220, which
+    with `CS2WASM_ARRAY_MOVE_BREAK=1` throws in those cases). The resize frame (the frame to the map's sets, p99)
+    30.8 to 20.3 to 22.8 us against 22.5 to 22.9; the whole frame's p99 35.0 to 24.7 to 27.5 against 24.9 to 26.1;
+    without the clear frames 19.4 to 14.6 against 16.4. Queue is not done (its copy is two ranges, and the second
+    reads the old array's length). **Found, on main too: a Span over a List's items (`CollectionsMarshal.AsSpan`),
+    or a `ref` to a dictionary's value (`GetValueRefOrNullRef`), held across a growth reads the freed old array:
+    as shipped the bytes are still there, a checked build traps (`list.AddRange(CollectionsMarshal.AsSpan(list))`
+    is the library-shaped case). .NET keeps the old array alive through the span. Not fixed.**
+  - **An `out` value borrowed (`Compiler/OutBorrows.cs`, `CS2WASM_NO_OUT_BORROW=1`).** `if (map.TryGetValue(key, out
+    var v)) sum += v.Life;` counted the value into v's slot and off again. From the text alone, both sides: the
+    callee (a method of a class, not virtual) only ever gives the parameter `default`, or a value it reads at that
+    moment out of a place of the object's (a field or an element from `this` on, or through a `ref` local a call
+    on `this` gave: `value = valRef` after `ref FindValue(key)`) with the return of a constant as the next
+    statement, and has no local that holds a reference; a copy of it stores the value as it is. The caller: a
+    direct call with `out var v`, the call an `if`'s condition or the left of its `&&`s, every use of v in the
+    rest of the condition and the first branch, and nothing there but reads of locals, fields and elements,
+    arithmetic, stores of numbers and `return` (no call, no allocation, no property, no static's first read): then
+    nothing between the callee's read and v's last use changes any place, and v's slot is no owner. Not in a
+    program with threads. The frame 7.08 to 7.14 us to 6.81 to 6.82 (NativeAOT 6.43 to 6.49). Test 221 (the shapes
+    that qualify, and each that must count as before with a use after the place let the value go: the branch
+    removes the key, clears or replaces, calls what does, v used after the `if`, captured, a TryGet that makes its
+    object, returns a local's, is virtual, is a struct's; with `CS2WASM_OUT_BORROW_BREAK=1` two sums show items
+    used after their finalizers).
+  - **What an object costs (`tools/alloc-parts.cs`, new; 100 objects of 40 bytes a frame, ns, NativeAOT /
+    cs2wasm, the desk loaded):** made and kept, nothing freed 538 / 406 (the allocation, the constructor's stores
+    and the array's store are faster here than NativeAOT's bump allocation and write barrier); made over old ones
+    406 / 1,114; 100 let go alone 149 / 810; 100 stores of one object 199 / 221. **The whole difference, 6.6 ns an
+    object, is the free** (the release that finds the last reference, the object's destruction, the block back to
+    its page: `rt.destroy_now`, `FreeSmallOld`), work NativeAOT's collector does later in its pauses (its p99.9 1.1
+    ms on the scene against 0.19). The allocator's and the destruction's paths are other rounds'.
+  - **Left of collections' median, 0.35 us, not built.** The sets 0.21: TryInsert's count on its `entries` local
+    for the whole method (kept because a comparer's call can store the field while the local is read after: it
+    could be taken only around the branch with those calls, a placement the compiler's scoped counts do not have)
+    and the new value counted by the store and let go by the caller (`OwnedParams` leaves TryInsert out: past its
+    size, the stores in loops, though each is followed by a return), 0.11 together; the frees above, 0.10 (of the
+    30 removed and the overwritten values a frame). The removes 0.05 and the queue 0.07: not looked into. Strings:
+    `Join` of 20, 0.27 us against 0.20, not looked into (the frame is below NativeAOT's without it).
+  - Checked: On the homelab at 11b6497 (the last commit that changes code): suite 214/215 checked (088's timer line; alone it passes both ways) and 215/215 as shipped; at c3c4867, 215/215 both ways; stress, 200 loaded runs a mode: 213, 214, 220 and 221 the same in every run; the self-hosted compiler (tools/selfhost-switch.sh, which now compiles test 145's hello world: its own one-line program was top-level statements, an error in a library, and no module was ever written, on main too) with and without the round's three switches: the same module from both (27,393 bytes), 9.06 to 9.18 s as it is and 9.07 to 9.30 switched, peak memory 344 MB both. The module differs from the one the compiler run by .NET writes for the same file at byte 24,844 (a comparison added to the script this round, each given the file under another path: not followed, and not known for main).
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
