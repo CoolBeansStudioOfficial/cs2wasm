@@ -33,6 +33,6 @@ for r in $(seq 1 ${ROUNDS:-3}); do
 done
 rm -f $T
 cmp $OUT/w42-as-is.wasm $OUT/w42-switched.wasm && echo "the two wrote the same module ($(stat -c %s $OUT/w42-as-is.wasm) bytes)"
-# (and the compiler run by .NET: the same module)
-$OUT/cli/cs2wasmc.exe $OUT/w42.cs -o $OUT/w42-dotnet.wasm > /dev/null 2>&1
-cmp $OUT/w42-as-is.wasm $OUT/w42-dotnet.wasm && echo "the same as the compiler run by .NET writes"
+# (and the compiler run by .NET: the same module, by tools/selfdet.mjs, which gives both the same paths and the
+# same output name: the name is in the module)
+node tools/selfdet.mjs --self $OUT/as-is.wasm --cores 1 tests/Conformance/145_size_hello.cs 2>&1 | tail -3
