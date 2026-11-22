@@ -355,7 +355,7 @@ static class ShareConstants
                 {
                     // (a family's members calling functions that are not one shared group, of one signature: through
                     // the table, each member's callee's index a slot)
-                    if (!s_indirect || r.Family == null || targets.Any(t => !t.Type.Equals(targets[0].Type)) || !s_indirectLoops && InLoop(r, i)) return false;
+                    if (!s_indirect || r.Family == null || targets.Any(t => !t.Type.Equals(targets[0].Type)) || !s_indirectLoops && InLoop(r, i) || r.Body.Count < s_indirectMin) return false;
                     indirect[i] = SlotOf([.. targets.Select(t => new Instr { Op = Op.I32Const, Imm = -1, Ref = t, Pos = ri.Pos })]);
                     continue;
                 }
@@ -380,6 +380,13 @@ static class ShareConstants
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, object> s_ids = new();
     static int s_nextId;
 
+    /// <summary>A family's body shorter than this (instructions) is not shared where its members call different functions:
+    /// the call through the table is made at every call of the body, and the engine's optimizing tier inlines neither the
+    /// body's direct callers into it nor the callee (a dictionary's TryGetValue over its FindValue, 28 instructions:
+    /// 2.2 ns a lookup, tools/colstr-parts.cs), for a body's length saved a member. CS2WASM_NO_DIRECT_SMALL=1: shared
+    /// whatever their length (CS2WASM_SHARE_INDIRECT_MIN=n: the length).</summary>
+    static readonly int s_indirectMin = Environment.GetEnvironmentVariable("CS2WASM_NO_DIRECT_SMALL") == "1" ? 0
+        : int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_SHARE_INDIRECT_MIN"), out var im) ? im : 32;
     /// <summary>CS2WASM_SHARE_INDIRECT_LOOPS=0: no call through the table inside a loop (a group with one is not shared).</summary>
     static readonly bool s_indirectLoops = Environment.GetEnvironmentVariable("CS2WASM_SHARE_INDIRECT_LOOPS") != "0";
     static readonly System.Runtime.CompilerServices.ConditionalWeakTable<WasmFunction, int[]> s_loopDepth = new();

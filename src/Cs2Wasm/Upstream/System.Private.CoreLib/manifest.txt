@@ -51,6 +51,7 @@ edit	src/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs	Threa
 edit	src/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs	Thread.Sleep(0);	Cs2Wasm.Runtime.Threads.SpinPause(0);
 edit	src/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs	Thread.Yield();	Cs2Wasm.Runtime.Threads.SpinPause(0);
 edit	src/libraries/System.Private.CoreLib/src/System/Threading/PortableThreadPool.cs	private const short DefaultMaxWorkerThreadCount = 10;	private const short DefaultMaxWorkerThreadCount = 1023;
+edit	src/libraries/System.Private.CoreLib/src/System/Number.Formatting.cs	private const int SmallNumberCacheLength =	private const int SmallNumberCacheLength = 300; private const int SmallNumberCacheLengthMono =
 edit	src/libraries/System.Private.CoreLib/src/System/Collections/Generic/Dictionary.cs	#if TARGET_64BIT	#if true
 edit	src/libraries/System.Private.CoreLib/src/System/Collections/Generic/HashSet.cs	#if TARGET_64BIT	#if true
 edit	src/libraries/System.Private.CoreLib/src/System/Collections/Generic/List.cs	Array.Copy(_items, newItems, _size);	if (Cs2Wasm.Runtime.Rt.GrowInto(this, _items, newItems, _size)) return; Array.Copy(_items, newItems, _size);

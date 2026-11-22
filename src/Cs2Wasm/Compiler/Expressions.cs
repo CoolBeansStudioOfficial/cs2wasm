@@ -1843,6 +1843,7 @@ sealed partial class FunctionCompiler
         return ConcatParts(parts.Select(p => (Func<Own>)(() => EmitToString(p))).ToList());
     }
 
+    static readonly bool s_noConcatOnce = Environment.GetEnvironmentVariable("CS2WASM_NO_CONCAT_ONCE") == "1";
     Own ConcatParts(List<Func<Own>> parts)
     {
         // up to four strings in one call, one new string (as the C# compiler does); more: four, then the result
@@ -1850,10 +1851,20 @@ sealed partial class FunctionCompiler
         var first = parts[0]();
         first = ToCallSafe(first, D.StringType);
         Own acc = first;
+        // (five parts and more: eight in one call, one new string, as .NET's Concat of a span of strings makes one;
+        // then the result with the next seven. In fours each call made a string and copied what the calls before it
+        // had: three strings and two copies of the first part for a line of eight parts. CS2WASM_NO_CONCAT_ONCE=1)
+        bool once = parts.Count > 4 && !s_noConcatOnce;
         for (int i = 1; i < parts.Count;)
         {
-            int n = Math.Min(3, parts.Count - i);
+            int n = Math.Min(once ? 7 : 3, parts.Count - i);
             for (int k = 0; k < n; k++) { var o = parts[i + k](); ToCallSafe(o, D.StringType); }
+            if (once)
+            {
+                for (int k = n; k < 7; k++) E.I32(0);
+                E.Call(D.LibMethod("System.String", "Concat8", 8).Fn);
+            }
+            else
             E.Call(D.LibMethod("System.String", n == 1 ? "Concat2" : n == 2 ? "Concat3" : "Concat4", n + 1).Fn);
             i += n;
             acc = Own.Owned;

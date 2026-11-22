@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- NativeAOT compiled to WebAssembly (NativeAOT-LLVM, browser-wasm): the side the by-phase tools (tools/colstr-parts.cs and the like) are compared with,
+       on the same target and in the same engine. The program is tools/$(Part).cs (-p:Part=colstr-parts), which has a public static Parts.Run(). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+    <Nullable>enable</Nullable>
+    <LangVersion>preview</LangVersion>
+    <PublishTrimmed>true</PublishTrimmed>
+    <SelfContained>true</SelfContained>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Optimize>true</Optimize>
+    <AssemblyName>parts-naot</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <MSBuildEnableWorkloadResolver>false</MSBuildEnableWorkloadResolver>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../$(Part).cs" />
+    <Compile Include="AotMain.cs" />
+    <PackageReference Include="Microsoft.DotNet.ILCompiler.LLVM" Version="10.0.0-*" />
+    <PackageReference Include="runtime.$(NETCoreSdkPortableRuntimeIdentifier).Microsoft.DotNet.ILCompiler.LLVM" Version="10.0.0-*" />
+  </ItemGroup>
+</Project>

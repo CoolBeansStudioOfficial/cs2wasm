@@ -205,7 +205,11 @@ internal sealed class Library
             s_resources[lib] = resources.Select(r => (r[0], Path.Combine(root, r[1]))).ToList();
             bool nullable = lines.Contains("nullable enable");
             // edit<TAB>file<TAB>text<TAB>replacement: an exact change to one upstream file (each must still apply)
-            var edits = lines.Where(l => l.StartsWith("edit\t")).Select(l => l.Split('\t')).Where(p => p.Length >= 4)
+            // (the strings of the numbers below 300 are made once and kept, as CoreCLR and NativeAOT keep them: the library is
+            // compiled as Mono's, which keeps ten. `299.ToString()` is the same object every time there, and a number in
+            // a concatenation costs no string. CS2WASM_NO_SMALL_NUMBERS=1: ten)
+            bool smallNumbers = Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_NUMBERS") != "1";
+            var edits = lines.Where(l => l.StartsWith("edit\t")).Select(l => l.Split('\t')).Where(p => p.Length >= 4 && (smallNumbers || !p[2].Contains("SmallNumberCacheLength")))
                 .GroupBy(p => p[1]).ToDictionary(g => g.Key, g => g.Select(p => (p[2], p[3])).ToList());
             // (on one processor the files are parsed one after the other, in the same order: nothing to hand the
             // work to, and an engine with a single thread cannot wait for a task)
