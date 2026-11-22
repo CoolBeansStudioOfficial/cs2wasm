@@ -6,7 +6,8 @@
 // inner one's turns, two classes whose getters are the same code (one body in the module), a field of a field, a
 // constructor's loop over its own readonly field, a list's size and array changed by the loop; an object that is
 // null (the exception at the same turn, after the same output; no exception from a loop that takes no turn); an
-// array's length where the loop assigns the array; objects constructed in a loop that reads a readonly field of an
+// array's length where the loop assigns the array; a field of a field of a null (what a read from null gets is no
+// reference: nothing is read through it before the loop); objects constructed in a loop that reads a readonly field of an
 // older one; two reads in a straight line with a store between them (by the code itself, a callee, another
 // reference, on one path only, a handler, a loop); and loops that store nothing, whose reads may be made once.
 using System;
@@ -66,8 +67,40 @@ sealed class Made
     }
 }
 
+// (references at many offsets: the memory after address 0 holds the program's data, and a loop that takes no turn,
+// or throws at its first read, reads nothing through what a null's field "holds")
+sealed class Link
+{
+    public Link? L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11;
+    public int[]? Arr;
+    public int T;
+}
+
 static class P
 {
+    static string NullChains(Link? n, int turns)
+    {
+        int s = 0;
+        string r = "";
+        try
+        {
+            for (int i = 0; i < turns; i++) s += n!.L0!.T + n.L0.L0!.T;
+            for (int i = 0; i < turns; i++) s += n!.L1!.T;
+            for (int i = 0; i < turns; i++) s += n!.L2!.T + n.L2.Arr!.Length;
+            for (int i = 0; i < turns; i++) s += n!.L3!.T;
+            for (int i = 0; i < turns; i++) s += n!.L4!.L5!.L6!.T;
+            for (int i = 0; i < turns; i++) s += n!.L5!.T;
+            for (int i = 0; i < turns; i++) s += n!.L6!.Arr!.Length;
+            for (int i = 0; i < turns; i++) s += n!.L7!.T;
+            for (int i = 0; i < turns; i++) s += n!.L8!.T + n.L8.L9!.T;
+            for (int i = 0; i < turns; i++) s += n!.L9!.T;
+            for (int i = 0; i < turns; i++) s += n!.L10!.L11!.T;
+            for (int i = 0; i < turns; i++) s += n!.L11!.T + n.Arr!.Length;
+            r += "none";
+        }
+        catch (NullReferenceException) { r += "null"; }
+        return r + s;
+    }
     static int Constructed(Made first)
     {
         int s = 0;
@@ -287,6 +320,8 @@ static class P
         Console.WriteLine("lists " + Lists());
         Console.WriteLine("nulls " + Nulls(null, 4));
         Console.WriteLine("lengths " + Lengths(new int[3], null));
+        Console.WriteLine("null chains " + NullChains(null, 0) + " " + NullChains(null, 2) + " " + NullChains(new Link(), 0) + " " + NullChains(new Link(), 2)
+            + " " + NullChains(new Link { L0 = new Link { T = 3 } }, 2));
         Console.WriteLine("seconds " + Seconds(b, b, new Box(8)) + " " + SecondNull(b, null));
         Console.WriteLine("quiet " + Quiet(b, new Left { A = 1 }, new Right(), new List<Box> { new Box(1), new Box(2), new Box(3), new Box(4) }));
     }

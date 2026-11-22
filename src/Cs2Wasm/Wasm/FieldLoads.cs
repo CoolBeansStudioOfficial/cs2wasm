@@ -152,7 +152,11 @@ internal sealed class FieldHoist(int count)
 /// The read before the loop cannot fail: the local holds null or an object (the loop itself reads a field of it, and
 /// no code of the loop assigns it), and a field's offset from either is inside the memory. The loop's own null check
 /// stays where it was, so a NullReferenceException comes at the same place, after the same effects; what the read
-/// got from a null is not used.
+/// got from a null is not used, but as the address of the next read before the loop (`a.B.C`: B read once, then C
+/// of it): the memory after address 0 holds the program's data, and a word of it taken for a reference would send
+/// that read anywhere, outside the memory too. A word-sized field read from a null is therefore made null (a
+/// select on the local), and every read before a loop is from null or from an object. LoopLoads.cs, which runs
+/// before this and reads before its loops as well, does the same while this pass is on (its `nullSafe`).
 /// A place (a local, a load, an offset) is read before the loop only when one of its loads stands in no `if` of the
 /// loop, so that it runs on every turn that gets that far: a loop whose arms each read another field (a parser's
 /// loop over a switch) would pay for all of them at every entry (the self-hosted compiler ran a tenth slower that
@@ -177,7 +181,7 @@ static class FieldLoads
     /// <summary>CS2WASM_FIELD_HOIST_WITHOUT=a,b (for the proof of tests 230 to 234 only: the module it makes is
     /// wrong): the pass without one of its conditions, so that the test's loop for that condition can be seen to
     /// print something else. address, reflection, layout, volatile, threads (Driver.PrepareFieldLoads); loop, calls,
-    /// indirect, assigned, dominance (here); merge, inline (FieldHoist); machine (FunctionCompiler.FinishMachine);
+    /// indirect, assigned, dominance, null (here); merge, inline (FieldHoist); machine (FunctionCompiler.FinishMachine);
     /// constructors: a field only constructors store is asked about calls like any other (this one makes the pass
     /// weaker, not wrong).</summary>
     static readonly HashSet<string> s_without = [.. (Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_WITHOUT") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)];
@@ -387,6 +391,14 @@ static class FieldLoads
                 var pre = (before ??= []).TryGetValue(at, out var list) ? list : before[at] = [];
                 pre.Add(new Instr { Op = Op.LocalGet, Imm = baseLocal, Pos = -1 });
                 pre.Add(load with { Pos = -1, Inl = 0 });
+                // (a word read from a null is no reference: null in its place, so that a field read through it in
+                // turn, before the loop as well, is read from null or from an object)
+                if (!length && load.Op == Op.I32Load && !Without("null"))
+                {
+                    pre.Add(new Instr { Op = Op.I32Const, Imm = 0, Pos = -1 });
+                    pre.Add(new Instr { Op = Op.LocalGet, Imm = baseLocal, Pos = -1 });
+                    pre.Add(new Instr { Op = Op.Select, Pos = -1 });
+                }
                 pre.Add(new Instr { Op = Op.LocalSet, Imm = hl, Pos = -1 });
                 if (length) HoistedLengths++; else Hoisted++;
                 foreach (var (ui, form) in uses) (replace ??= [])[ui] = (hl, form);

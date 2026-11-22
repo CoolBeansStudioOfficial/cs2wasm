@@ -333,7 +333,7 @@ internal sealed class WasmModule
                 if (Environment.GetEnvironmentVariable("CS2WASM_NO_LOOP_LOADS") != "1")
                 {
                     Locals.MayThrow = mayThrow;
-                    try { foreach (var f in Functions) if (!f.IsImport && LoopLoads.Run(f)) { Peephole.Run(f); Locals.Run(f); } }
+                    try { foreach (var f in Functions) if (!f.IsImport && LoopLoads.Run(f, FieldHoist != null && !FieldLoads.Without("null"))) { Peephole.Run(f); Locals.Run(f); } }
                     finally { Locals.MayThrow = null; }
                 }
                 Step("loop loads");
