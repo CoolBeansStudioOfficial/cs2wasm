@@ -57,12 +57,24 @@ namespace System.Reflection
         private sealed class UnmanagedMemoryStreamForModule : UnmanagedMemoryStream
         {
             private Module module;
+            // cs2wasm: the resource's bytes, expanded for this stream (ManifestResource): freed when it is disposed, or
+            // when it goes undisposed
+            private unsafe byte* _owned;
 
             public unsafe UnmanagedMemoryStreamForModule(byte* pointer, long length, Module module)
                 : base(pointer, length)
             {
                 this.module = module;
+                _owned = pointer;
             }
+
+            protected override unsafe void Dispose(bool disposing)
+            {
+                base.Dispose(disposing);
+                if (_owned != null) { System.Runtime.InteropServices.NativeMemory.Free(_owned); _owned = null; }
+            }
+
+            ~UnmanagedMemoryStreamForModule() => Dispose(false);
         }
 
         //
@@ -175,7 +187,7 @@ namespace System.Reflection
             int t = Cs2Wasm.Runtime.TypeInfo.ManifestResources(), n = Cs2Wasm.Runtime.Mem.LoadI32(t);
             for (int i = 0; i < n; i++)
             {
-                int e = t + 4 + 16 * i;
+                int e = t + 4 + 20 * i;
                 if (Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Mem.LoadI32(e)) == simple) r.Add(Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Mem.LoadI32(e + 4)));
             }
             return r.ToArray();
@@ -190,18 +202,29 @@ namespace System.Reflection
         }
 
         /// <summary>cs2wasm: this assembly's manifest resource of the name (case-sensitive, as the runtime's), from
-        /// the module's table (TypeInfo.ManifestResources): its bytes, or null.</summary>
+        /// the module's table (TypeInfo.ManifestResources): its bytes, in native memory of their own that the caller
+        /// frees (they are kept packed in a segment of the module, not in its memory), or null.</summary>
         private unsafe byte* ManifestResource(string name, out int size)
         {
             string simple = SimpleName();
             int t = Cs2Wasm.Runtime.TypeInfo.ManifestResources(), n = Cs2Wasm.Runtime.Mem.LoadI32(t);
             for (int i = 0; i < n; i++)
             {
-                int e = t + 4 + 16 * i;
+                int e = t + 4 + 20 * i;
                 if (Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Mem.LoadI32(e + 4)) == name && Cs2Wasm.Runtime.Meta.S(Cs2Wasm.Runtime.Mem.LoadI32(e)) == simple)
                 {
+                    int off = Cs2Wasm.Runtime.Mem.LoadI32(e + 8), packed = Cs2Wasm.Runtime.Mem.LoadI32(e + 16);
                     size = Cs2Wasm.Runtime.Mem.LoadI32(e + 12);
-                    return (byte*)Cs2Wasm.Runtime.Mem.LoadI32(e + 8);
+                    byte* p = (byte*)System.Runtime.InteropServices.NativeMemory.Alloc((nuint)Math.Max(size, 1));
+                    if (packed == size) Cs2Wasm.Runtime.TypeInfo.ResourceInit((int)p, off, size);
+                    else
+                    {
+                        byte* src = (byte*)System.Runtime.InteropServices.NativeMemory.Alloc((nuint)packed);
+                        Cs2Wasm.Runtime.TypeInfo.ResourceInit((int)src, off, packed);
+                        Cs2Wasm.Runtime.TypeInfo.ResourceUnpack((int)src, (int)p, (int)p + size);
+                        System.Runtime.InteropServices.NativeMemory.Free(src);
+                    }
+                    return p;
                 }
             }
             size = 0;

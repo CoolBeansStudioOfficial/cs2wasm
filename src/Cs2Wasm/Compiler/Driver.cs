@@ -442,7 +442,7 @@ internal sealed partial class Driver
         LazyTypeNames = true;
     }
 
-    public IAddress DataBlob(byte[] bytes, int align)
+    public IAddress DataBlob(byte[] bytes, int align, [System.Runtime.CompilerServices.CallerMemberName] string caller = "")
     {
         Align(align);
         int off = Data.Bytes.Count;
@@ -450,7 +450,19 @@ internal sealed partial class Driver
         if (_blobs != null) { var k = Compiling != null ? Display(Compiling.Sym) : "(tables)"; _blobs.TryGetValue(k, out int n); _blobs[k] = n + bytes.Length; }
         var addr = new DataAddr(this, NewChunk(off, align));
         if (_blobs != null) addr.Chunk.Owner = Compiling != null ? Display(Compiling.Sym) : "(tables)";
+        if (s_dataDump != null) lock (s_dataDump) { s_dataDump.TryGetValue(caller, out long n); s_dataDump[caller] = n + bytes.Length; }
         return addr;
+    }
+
+    /// <summary>CS2WASM_DATA_DUMP=<file> (a diagnosis): the data's bytes by the compiler method that made each blob,
+    /// written when the process ends.</summary>
+    static readonly Dictionary<string, long>? s_dataDump = MakeDataDump();
+    static Dictionary<string, long>? MakeDataDump()
+    {
+        if (Environment.GetEnvironmentVariable("CS2WASM_DATA_DUMP") is not { Length: > 0 } path) return null;
+        var d = new Dictionary<string, long>();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => { lock (d) File.WriteAllLines(path, d.OrderByDescending(x => x.Value).Select(x => x.Value + "\t" + x.Key)); };
+        return d;
     }
 
     /// <summary>Writes a value into a blob made earlier (its bytes are still in the data being built).</summary>
@@ -461,9 +473,9 @@ internal sealed partial class Driver
     }
 
     /// <summary>A blob with addresses in it: each (byte offset, target) is written when the layout is final.</summary>
-    public IAddress DataBlob(byte[] bytes, int align, List<(int at, IAddress target)> relocs)
+    public IAddress DataBlob(byte[] bytes, int align, List<(int at, IAddress target)> relocs, [System.Runtime.CompilerServices.CallerMemberName] string caller = "")
     {
-        var a = (DataAddr)DataBlob(bytes, align);
+        var a = (DataAddr)DataBlob(bytes, align, caller);
         a.Chunk.Relocs = relocs;
         return a;
     }
