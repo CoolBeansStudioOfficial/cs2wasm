@@ -22,6 +22,27 @@ static class Inliner
     static readonly int s_throwBody = Env("CS2WASM_INLINE_THROWING", 0);         // at every call site (0: off, the default: see below)
     static readonly int s_throwSingle = Env("CS2WASM_INLINE_THROWING_SINGLE", 60); // into its one caller
     static readonly int s_throwLoop = Env("CS2WASM_INLINE_THROWING_LOOP", 24);   // at a call site inside a loop
+    // A callee that reads fields of an object it is given (a list's indexer: its size for the check, its array), at
+    // a call site inside a loop, although an exception can leave it (its frame stays in a trace, as above): the
+    // engine inlines it too, but only the compiler knows that nothing in the loop stores those fields, and reads
+    // them once before the loop (FieldLoads.cs) when the reads are the loop's own. CS2WASM_INLINE_READERS=n: bodies
+    // up to n instructions (0: off).
+    static readonly int s_readers = Env("CS2WASM_INLINE_READERS", 80);
+
+    /// <summary>A load of a field (by its tag) or of an array's length whose address is a parameter read as it is.</summary>
+    static bool ReadsParamFields(WasmFunction g)
+    {
+        var b = g.Body;
+        int np = g.Type.Params.Length;
+        for (int i = 1; i < b.Count; i++)
+        {
+            if (b[i].Ref is not FieldTag || b[i].Op < Op.I32Load || b[i].Op > Op.I64Load32U) continue;
+            int a = i - 1;
+            if (b[a].Op == Op.Call && b[a].Ref is WasmFunction { Name: "rt.nonnull" } && a > 0) a--;
+            if (b[a].Op == Op.LocalGet && b[a].Imm < np) return true;
+        }
+        return false;
+    }
     // (CS2WASM_RC_IN_LOOPS=1: rt.retain and rt.release whole in loops. Off: on the self-hosted compiler 0.5% of wall time either
     // way and 2% less processor time without, 6.5 MB of its 72.3 less code; the optimizing tier inlines them where it matters)
     static readonly bool s_rcInLoops = Environment.GetEnvironmentVariable("CS2WASM_RC_IN_LOOPS") == "1";
@@ -72,6 +93,8 @@ static class Inliner
         // the rule for them. The others never were on the stack at a throw, or are marked AggressiveInlining, whose
         // frames .NET leaves out too)
         var framed = new HashSet<WasmFunction>();
+        // (the readers of an object's fields that go into loops: s_readers)
+        var readers = new HashSet<WasmFunction>();
         foreach (var g in functions)
         {
             // (the null check: it has no frame of its own in a trace, so a copy of it throws from the same frames; in
@@ -90,6 +113,13 @@ static class Inliner
                     int hc = g.Body.Count + g.Type.Params.Length + 2 * g.Locals.Count + 2;
                     if (hc <= HintedBody) { candidates.Add(g); continue; }
                     if (hc <= 2 * s_loopBody) { inLoops.Add(g); continue; }
+                }
+                if (!tiny && s_exp == 0 && s_throwBody <= 0 && s_readers > 0 && Module?.FieldHoist != null && !(g.NoInline && !s_ignoreNoInline)
+                    && g.Body.Count + g.Type.Params.Length + 2 * g.Locals.Count + 2 <= s_readers && InlinableThrowing(g) && ReadsParamFields(g))
+                {
+                    readers.Add(g); framed.Add(g);
+                    if (s_inlineDebug) Console.Error.WriteLine($"reader {g.Body.Count} {callers.GetValueOrDefault(g)} {g.Name}");
+                    continue;
                 }
                 if (tiny || s_exp > 0 || s_throwBody <= 0 || Module == null || g.NoInline && !s_ignoreNoInline || !InlinableThrowing(g)) continue;
                 int tc = g.Body.Count + g.Type.Params.Length + 2 * g.Locals.Count + 2;
@@ -132,6 +162,7 @@ static class Inliner
                     fast[g] = at;
                     if (s_inlineDebug) Console.Error.WriteLine($"fast path {at} {g.Body.Count} {callers.GetValueOrDefault(g)} {g.Name}");
                 }
+        inLoops.UnionWith(readers);
         if (candidates.Count == 0 && inLoops.Count == 0 && fast.Count == 0) return changed;
         foreach (var f in functions)
         {
