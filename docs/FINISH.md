@@ -965,3 +965,28 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   world byte for byte the .NET-hosted compiler's (27,584 bytes), 14.4 to 15.3 s against 14.6 to 16.2 before on the
   loaded homelab (NativeAOT-LLVM's 6.1 to 6.3). Not covered yet, by its session's report: a span or ref returned up
   through two frames (one level of wrapper is); given to the session on the free path.
+- 2026-11-22 to 23, the tree's build, round 8 (branch claude/tree-build-8, from claude/tree-build-7 d702e3f; AUDIT
+  A3.5, "The build, round 8"; not merged when this was written). **Not reached, and nothing of the tree scene's
+  numbers moved.** Asked for: exclusive parts (round 7's design), then the node's own path, then the store over a
+  subtree. Built: the first, from an unfinished copy another session's process left behind, and it is **off**
+  (`CS2WASM_EXCLUSIVE_PARTS=1` turns it on): a field's object proven its holder's alone (`Entity.Children`,
+  `List<Entity>._items`) is no member of its own, names its holder, and a store into it is a store into the holder
+  (Compiler/ExclusiveParts.cs; Runtime.cs, "Exclusive parts"). **As built it is no gain**: tools/tree-build.cs,
+  off and on in turn, build 1.69-1.75 ms off and 1.73-1.79 on, drop 0.39-0.41 and 0.43-0.45; an ordinary frame
+  and frames.mjs not told apart on the loaded desk (tree median 0.053-0.057 off, 0.052-0.056 on, `--no-aot`). The
+  joins fall from 46,874 to 19,531 a build, and what they cost comes back three ways: a node's first leaf no
+  longer takes round 6's fused step (the container is then the plain node itself), a part is torn down by the
+  release chain where two members were freed down a list, and each store asks its way from the part to the
+  holder. **And it is not right yet**: tools/parts-holder-goes.cs (a callback lets the holder go while a call on
+  its list runs) reads freed memory in the checked build with parts on; the cause was not found. Fixed on the
+  way, in the parts' own code: the part's mark was in the ring word, which a dying member has too (test 191
+  hung); a new object in a local that is used after the store was taken for a part (test 175 read freed memory);
+  MemberwiseClone was not asked. Test 200 (the suite's runner compiles a program marked `// exclusive-parts` once
+  more with parts on; the shape, and a class for each of conditions 1, 2, 4, 5 and the local's rule, whose lines
+  change when the condition is not asked, `CS2WASM_EXP_PARTS_SKIP=n`; none for condition 3, whose program is the
+  failing one; one test, not the five asked for). With the switch off nothing of it runs (`Rt.Parts()` is the constant 0: hello world
+  the same 27,642 bytes as d702e3f's compiler writes; a module with groups 150 bytes larger, the constant's tests
+  left in four runtime functions). **Not done: the
+  node's path (step 2), the store over a subtree (step 3), anything measured against NativeAOT-LLVM, the
+  self-hosted compiler with parts on.** The tree scene stays where main has it: median 1.63x NativeAOT-LLVM's,
+  p99.9 1.05x to 1.09x.

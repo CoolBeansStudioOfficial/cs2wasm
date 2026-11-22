@@ -1520,6 +1520,103 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     the queue's growth as a move (its copy is a rotation: MoveRange takes a whole array from its first place);
     `Join` (0.07). Collections' median stays where round 2 left it, 1.07x to 1.08x NativeAOT-LLVM's.
   - Checked: On the homelab at 0aef607 (9db608e's code and the script): suite 220/220 checked and 219/220 as shipped (088's timer line; alone it passes both ways); at 9db608e 218/220 checked and 219/220 as shipped: 072_http in both (the oracle's own connection refused, the port taken by another run) and 131 checked (5 left, the async kind that differs under load; here it passes both ways with the keep and without, and the second run did not show it); stress, 200 loaded runs a mode: 222 the same in every run; the self-hosted compiler with and without the keep: the same module (27,579 bytes), 9.4 to 10.0 s, peak memory 344 MB. Hello world 27,642 bytes on this base. Not measured this round: frames.mjs and bench.mjs (no change to any scene's code: none makes such a call).
+- **The build, round 8: exclusive parts built, measured, and left off: as built they are no gain (2026-11-22 to 23,
+  branch claude/tree-build-8, from claude/tree-build-7 d702e3f; the desk machine, shared with three other sessions;
+  not merged when this was written).** Round 7's design was built from an unfinished copy another session left: a
+  field's object that is its holder's alone (the list in `Children`, the list's array in `_items`) is no member of
+  its own. **Nothing of the three steps asked for reached the target: step 1 is in the tree behind a switch that is
+  off, step 2 (the node's path) and step 3 (the store over a subtree) were not built. The tree scene's numbers are
+  main's.**
+  - **What is built** (`CS2WASM_EXCLUSIVE_PARTS=1` at compile time; off by default, and off nothing of it runs:
+    below). Compiler/ExclusiveParts.cs: a field's site is exclusive when, over the whole program,
+    (1) every store into it stores a new object, a new array, null, what a static readonly field holds, or a local
+    declared with a new object in the store's own block, never assigned again, not used in the store's statement or
+    after it (found by test 175: `var h = new H(..); h.Set(0, new Item { Back = h })` made the holder a part of its
+    own item, and the checked build read freed memory), the new object's class without a finalizer and its
+    constructor keeping `this` in (asked of the library's own symbol: the program sees `List<T>()` as metadata);
+    (2) every read uses the value as the receiver of a call, a property or an element access that keeps nothing
+    of it (Driver.UseEscape), as an argument that is not kept, in a comparison, or in a `foreach` the compiler
+    writes as a loop; (3) where the holder is not one that stays alive for the method it is counted for the
+    statement (PartHold); (4) the field's address is taken nowhere and reflection does not store it; (5) no object
+    of the holder's class is copied (MemberwiseClone). Each qualifying store goes through a placeholder of its own,
+    which becomes the store it would have been when the site fails; any other store left in the module fails the
+    site. Not with threads. In the scene: `Entity.Children` and `List<Entity>._items` are exclusive; with
+    `InsertRange` or `AddRange` reachable for the instantiation `_items` is not (the array is handed to a callee
+    that the escape analysis does not clear: test 191's `List<Node>`).
+    Runtime.cs, "Exclusive parts": the part names its holder in its arena word (the holder's address and one: an
+    arena's record is even. The unfinished copy used the ring word and took a dying member, whose count is above
+    zero while finalizers run, for a part: test 191 hung in PartRoot); ArenaLink and ArenaUnlinkOld go from a part
+    to its holder first, the slot then one the holder has no bits for (Far); ArenaPartStore, ArenaPartStoreFresh
+    (a store into an object only the storing code knows: one word written), ArenaPartUnstore (the old part made
+    its own again, PartDetach; no call for a null old value); ArenaVisitPart, generated for an exclusive field,
+    visits the part's slots as the holder's; PartGrowArray moves a list's items with no count; JoinFresh asks
+    that a new object's parts hold nothing (PartsEmpty); ArenaDestroyPlain reads a dying holder's parts as an
+    array's elements (PartShape, DyingParts) instead of visiting it by type.
+  - **Measured** (tools/tree-build.cs, 19,531 entities; off and on in turn, three runs, the machine loaded: the
+    lowest of each run). As the unfinished copy stood once it ran: build 1.70 to 1.73 ms off, 1.96 to 2.18 on; drop
+    0.38 to 0.39 off, 0.45 to 0.46 on. With the fresh store in one step, no call for a null old value and the
+    destruction by parts: **build 1.69 to 1.75 off, 1.73 to 1.79 on; drop 0.39 to 0.41 off, 0.43 to 0.45 on.**
+    tools/tree-frame.cs, an ordinary frame (median us, three pairs, loaded): build 17.0 to 20.9 off, 16.5 to 18.1
+    on; store 4.4 to 7.8 off, 4.9 to 6.5 on; tools/tree-store.cs: build 96.8 to 109 ns an entity off, 98.7 to 122
+    on, store 16.3 to 21.3 ns a member off, 17.8 to 31.2 on: not told apart on this machine today, and no run
+    showed the 0.2 to 0.4 ms round 7 hoped for. `node tools/frames.mjs --no-aot --runs 3 --js-young 32 tree`, off
+    and on in turn three times: median 0.053, 0.055, 0.057 off and 0.053, 0.056, 0.052 on; p99.9 3.54, 3.89, 5.07
+    off and 3.08, 3.84, 3.48 on (the machine's own spread is larger than any difference). Not measured: against
+    NativeAOT-LLVM (no quiet moment on the desk), on the homelab.
+  - **Why it is no gain, by the counts and a profile** (`CS2WASM_DROP_STATS=1`, a build: joins 46,874 to 19,531,
+    one a member; fused leaves 12,476 to 12,500; and `node --cpu-prof --no-wasm-inlining`, 600 builds: 3,415 ms
+    off, 3,243 on). What goes: the list's and the array's joins (JoinFresh 244 to 89 ms, RingAdd, ArenaJoinOnly),
+    the groups' frees (ArenaFree 165 to 62, arena_clear 121 to 56). What comes: (a) **the first child of a node no
+    longer takes round 6's fused step** (join-node 2,500 a build to 0: the step wants the container a member, and
+    with parts the container is the node itself, a plain object), so every node's first leaf makes a group of
+    the node and the leaf the general way, with the visit through the part (ArenaVisit, ArenaVisitElement,
+    ArenaVisitPart, rt.arena_visit: 334 ms of the profile); (b) a part is torn down as the plain object it is: the
+    holder's clear releases the list, its destruction the array, its elements one by one, each block freed alone
+    (rt.release 158 to 231 ms, release_range 45 to 119, rt.destroy, FreeObjectArena), where two members were
+    cleared and freed down a list onto their pages; (c) the questions a store asks to find the holder (IsPart,
+    PartRoot's two steps, PartsEmpty, ArenaPartStoreFresh: 230 ms). A direct teardown of the part in the holder's
+    clear (Rt.PartDrop: the array's elements let go and the two blocks freed with no release) was built and
+    measured slower (drop 0.61 to 0.75 ms for 0.43 to 0.45; its loop first touches each child, which the
+    release's did too: not understood, taken out again).
+    So round 7's figure stands as the bound and is not reached: the array of the node's own (no list object at
+    all, the array a member) built in 1.53 to 1.59 ms and dropped in 0.18 to 0.20; parts keep the list's
+    allocation and pay (a) to (c).
+  - **Not right yet, and why the switch is off.** tools/parts-holder-goes.cs (new): a callback lets the holder go
+    while `RemoveAll` runs on its list. With parts on, the checked build reads freed memory in the second callback
+    and the shipped build prints `seen 6` for .NET's 7, with condition 3's hold in place (the holder and the list
+    are both counted across the call in the dump: the cause was not found). Off, it prints what .NET prints.
+    Not looked at with parts on: ArenaMove, ArenaArrayClear and the stores by address on a part (the proof keeps
+    addresses of the field away, not of the part's own slots: `CollectionsMarshal.AsSpan(list)` hands out the
+    array's), a part whose class has slots of its own for members, weak references to a part, the self-hosted
+    compiler, the full suite with the switch on for every program (at ba59c48, with parts on by default and before
+    the fresh local's rule: 214/215 checked, test 175, and 215/215 as shipped on the homelab).
+  - **Test 200** (`// exclusive-parts`, new in the suite's runner: such a program is compiled once more with
+    parts on and must print the same): the shape (a tree in the scene's order, 781 nodes; subtrees stored over,
+    one held meanwhile; children moved, removed, inserted, cleared; a node's list replaced; trees that never join
+    one; counted against .NET through finalizers while the tree lives), then a class for each condition broken in
+    the program. With the condition not asked (`CS2WASM_EXP_PARTS_SKIP=n`) its lines change: 1 (a list that is
+    not new: `built: 656` for 781, the checked build traps), 2 (a list handed out and kept: 0 live for 7), 4
+    (swapped through `ref`: the lines after the swap), 5 (MemberwiseClone: 6 for 7, then a null reference), 6 (the
+    local used after the store: 0 live for 1). Condition 3 has no case in it: its program is the one above. One
+    test, not five (200; 201 to 204 are not used).
+  - **Off.** With the switch off `Rt.Parts()` is the constant 0, none of the parts' functions is compiled and
+    every change to the runtime is behind that constant. Hello world (test 145) built by this branch's compiler
+    and by d702e3f's is the same bytes (27,642). A module with groups is 150 bytes larger (tools/tree-build.cs
+    223,621 to 223,775, test 191 250,698 to 250,871, the frames module 223,523 to 223,673): tests of the
+    constant that the compiler's folding leaves in ArenaLink (644 to 702 bytes), ArenaUnlinkOld (857 to 928),
+    SlotIndex (49 to 57) and ArenaArrayCopy (1,091 to 1,099), by tools/wasmdiff.mjs; every other function is
+    its size (their bytes differ by the runtime's line numbers). So off is main's behaviour by construction, not
+    byte for byte.
+  - **What it would take** (not done; in the order of what the profile says). The node's first leaf with parts:
+    a fused step for a plain node whose part takes its first item (the pair made a group in one step, the node's
+    own parent linked as today), which is round 6's second form moved to the node; the part's teardown without
+    the release chain; the part found without PartRoot (the array naming the node itself). And the node's own
+    path (step 2 of this round's list), which parts do not touch: in the scene's order a node's parent is itself
+    not yet in its parent's list when the node gets its first child (the tree is assembled from below), so each
+    node's group is made, its parent linked as owned by it, merged and turned round at the add: 200 ns a node,
+    3,906 a build, still the largest single part of the 1.7 ms. An ordinary frame's 18 us over NativeAOT-LLVM's
+    (0.047 against 0.029 ms) are its build of 156 entities (16 us against 2.3) and the store over the old subtree
+    (4 against 0.1): the same two paths.
 
 ### A4. Plugins (goal 3)
 
