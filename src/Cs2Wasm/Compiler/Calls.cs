@@ -954,6 +954,8 @@ sealed partial class FunctionCompiler
             case "Rt.Retain": E.Call(Rt.Retain); E.Op(Op.Drop); return Own.None;
             case "Rt.Release": E.Call(Rt.Release); return Own.None;
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
+            case "Rt.ArenaSlots": E.Call(Rt.ArenaSlotsFn); return Own.None;
+            case "Rt.NoFusedJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FUSED_JOIN") == "1" ? 1 : 0); return Own.None;
             case "Cs2WasmArrays.BoxesElements": D.MarkBoxedElements(); return Own.None;
             case "Rt.ArenaFinalizeObject": E.Call(Rt.ArenaFinFn); return Own.None;
             case "Rt.ArenaFinType": E.Call(Rt.ArenaFinTypeFn); return Own.None;
