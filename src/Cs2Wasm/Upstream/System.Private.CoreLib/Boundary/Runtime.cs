@@ -2718,13 +2718,13 @@ namespace Cs2Wasm.Runtime
         // and is good while the epoch is the one it was found in. The epoch moves at every change of what the walk
         // reads (TopsMoved): a member's Owned flag and owner word, and an object's count word becoming or ceasing to
         // be a member's (a join, a leave, a destruction, the finalizer phase's bias, a free). The answer is the same
-        // as the walk's; without threads only (the walk is under the runtime lock there).
+        // as the walk's. Without threads only (a constant: ThreadMode; with threads the walk is under the runtime lock).
         const int TopCacheN = 4096;
         static int s_topCache, s_topEpoch;
 
         /// <summary>Something the walk up the owners reads has changed: the remembered tops are stale.</summary>
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-        static void TopsMoved() { if (++s_topEpoch == 0) TopsWrapped(); }
+        static void TopsMoved() { if (!ThreadMode() && ++s_topEpoch == 0) TopsWrapped(); }
 
         /// <summary>The epoch went round: an entry four billion changes old could read as current, so all go.</summary>
         static void TopsWrapped()
