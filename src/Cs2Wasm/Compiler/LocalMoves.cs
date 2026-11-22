@@ -16,6 +16,10 @@ namespace Cs2Wasm.Compiler;
 sealed partial class FunctionCompiler
 {
     readonly HashSet<IOperation> _localMoves = [];
+    /// <summary>The last use of a local that owns its reference, as the object a statement stores a field of
+    /// (`e.Children.Add(c); c.Parent = e;`): LastContainerLocal.</summary>
+    readonly HashSet<IOperation> _lastContainers = [];
+    static readonly bool s_noLastContainer = Environment.GetEnvironmentVariable("CS2WASM_NO_LAST_CONTAINER") == "1";
     static readonly bool s_noLocalMoves = Environment.GetEnvironmentVariable("CS2WASM_NO_MOVES") == "1";
 
     void ComputeLocalMoves(IOperation body)
@@ -29,7 +33,7 @@ sealed partial class FunctionCompiler
             if (l.IsRef || !Types.IsRef(T.Resolve(l.Type, Map)) || IsCaptured(l) || _addrTaken.Contains(l)) continue;
             var last = g.OrderBy(r => r.Syntax.SpanStart).ThenBy(r => r.Syntax.Span.Length).Last();
             if (last.IsDeclaration || InLambda(last, body)) continue;
-            if (!IsOwningSink(last)) continue;
+            if (!IsOwningSink(last)) { if (IsLastContainer(l, last, g, body)) _lastContainers.Add(last); continue; }
             // inside a loop, only when the local is declared in it (each iteration has its own)
             var decl = l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
             if (decl == null) continue;
@@ -85,6 +89,52 @@ sealed partial class FunctionCompiler
                 if (ok) _localMoves.Add(read);
             }
         }
+    }
+
+    /// <summary>The local's last reference in the text is the object of a statement `c.F = v;`, and nothing that is
+    /// still there after that statement was got from the local: the local is declared by a declaration statement of
+    /// its own and never assigned again, the statement is not in a loop the local is declared outside of, and every
+    /// other reference to it is in an expression statement (a call, a store into a field or an element) that declares
+    /// nothing and makes no lambda: no other local, no `ref`, no enumerator holds what it read through the local,
+    /// which the local's count would have kept until the end of its scope. The store may then give the local's count
+    /// back as it links (Rt.ArenaLastBegin): after the statement nothing of this method refers to the object.</summary>
+    bool IsLastContainer(ILocalSymbol l, ILocalReferenceOperation last, IEnumerable<ILocalReferenceOperation> refs, IOperation body)
+    {
+        if (s_noLastContainer || D.ThreadMode || D.CompilingInstrumented || _closure != null) return false;
+        if (last.Parent is not IFieldReferenceOperation { Field.IsStatic: false } fr || !ReferenceEquals(fr.Instance, last)) return false;
+        if (fr.Parent is not ISimpleAssignmentOperation { IsRef: false, Parent: IExpressionStatementOperation } sa || !ReferenceEquals(sa.Target, fr)) return false;
+        if (!Types.IsRef(T.Resolve(fr.Field.Type, Map)) || fr.Field.IsVolatile || TypeOf(last).IsValueType) return false;
+        if (WrittenLocals().Contains(l)) return false;
+        var decl = l.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax();
+        if (decl is not Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax { Parent: Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclarationSyntax { Parent: Microsoft.CodeAnalysis.CSharp.Syntax.LocalDeclarationStatementSyntax ld } } || ld.UsingKeyword.RawKind != 0) return false;
+        for (var p = last.Parent; p != null && !ReferenceEquals(p, body); p = p.Parent)
+            if (p is ILoopOperation loop && !loop.Body.Syntax.Span.Contains(decl.Span)) return false;
+        foreach (var r in refs)
+        {
+            if (ReferenceEquals(r, last)) continue;
+            if (r.IsDeclaration) return false;
+            IOperation? st = r;
+            while (st != null && st is not IExpressionStatementOperation && !ReferenceEquals(st, body)) st = st.Parent;
+            if (st is not IExpressionStatementOperation { Operation: var eo }) return false;
+            if (eo is not IInvocationOperation && !(eo is ISimpleAssignmentOperation { IsRef: false, Target: IFieldReferenceOperation or IArrayElementReferenceOperation or IPropertyReferenceOperation })) return false;
+            foreach (var d in eo.DescendantsAndSelf())
+                if (d is IAnonymousFunctionOperation or ILocalFunctionOperation or IDeclarationExpressionOperation or IDeclarationPatternOperation or IAwaitOperation
+                    || d is IArgumentOperation { Parameter.RefKind: not RefKind.None } || d is IAddressOfOperation) return false;
+        }
+        return true;
+    }
+
+    /// <summary>The wasm local of the variable whose last use is this store's object (IsLastContainer), where the
+    /// variable owns its count (OwnedLocal) and is kept in a wasm local the scope's end releases; else -1.</summary>
+    int LastContainerLocal(IOperation? instance)
+    {
+        if (instance is not ILocalReferenceOperation lr || !_lastContainers.Contains(lr) || !OwnedLocal(lr)) return -1;
+        if (WrittenBorrow(lr.Local) != null) return -1;
+        var v = LocalVar(lr.Local);
+        if (v.InMemory || !Types.IsRef(v.Type)) return -1;
+        var slot = _allSlots.FirstOrDefault(s => s.Local == v.Local);
+        if (slot == null || slot.ReleaseMarker != null) return -1;
+        return v.Local;
     }
 
     static bool InLambda(IOperation op, IOperation body)
