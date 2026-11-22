@@ -21,6 +21,12 @@ for v in "$@"; do
     echo "built $n ($sw): rc=$? $(( $(date +%s) - s )) s, $(stat -c %s $OUT/$n.wasm 2>/dev/null) bytes"
   fi
   for t in 145_size_hello $(echo "$T" | tr ',' ' '); do
+    if [ "${SHOW:-0}" = 1 ]; then
+      # (a failure with its stack: build with CS2WASM_NAMES=1 for every function's name)
+      echo "$n on $t${RUNENV:+ with $RUNENV}:"
+      env $(echo "$RUNENV" | tr ',' ' ') node tools/selfdet.mjs --self $OUT/$n.wasm tests/Conformance/$t.cs 2>&1 | grep -v '^$\|^Node.js\|selfdet: net:\|CW0202' | cut -c1-230 | head -45
+      continue
+    fi
     echo "$n on $t${RUNENV:+ with $RUNENV}: $(env $(echo "$RUNENV" | tr ',' ' ') node tools/selfdet.mjs --self $OUT/$n.wasm tests/Conformance/$t.cs 2>&1 | grep -v '^    at \|^$\|^Node.js\|selfdet: net:' | head -6 | tr '\n' ' ')"
   done
 done
