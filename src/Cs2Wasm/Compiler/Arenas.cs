@@ -51,6 +51,9 @@ internal sealed partial class Arenas
         /// can reach yet (FreshStores.cs), and no such store closes a cycle: like a field filled at construction,
         /// it can be part of a cycle only where some other edge closes it.</summary>
         public bool General;
+        /// <summary>The class types whose `ref`/`out` parameters a proof of a store here took for locals
+        /// (ChainStores.cs): should the program pass anything else by reference for one (RefWild), the site is general.</summary>
+        public readonly HashSet<string> ChainRefTypes = [];
         public bool Cyclic;
         /// <summary>ExclusiveParts.cs: a store that qualifies as a part's was emitted; why the site is not exclusive
         /// (a read or a store that fails the proof); the decision (Arenas.DecideParts); the holder's hold.</summary>
@@ -517,6 +520,12 @@ internal sealed partial class Arenas
         }
     }
 
+    /// <summary>The class types T for which some call passes, for a `ref T`, `out T` or `in T` parameter, something
+    /// that is not a plain local or parameter of the calling method (a field, an element, a static, a ref local, a
+    /// captured local, one local twice): such a parameter may name a place other code writes.</summary>
+    public readonly HashSet<string> RefWild = [];
+    /// <summary>CS2WASM_WHY_GENERAL=text: which function's store makes a site whose key has the text general.</summary>
+    static readonly string? s_whyGeneral = Environment.GetEnvironmentVariable("CS2WASM_WHY_GENERAL") is { Length: > 0 } wg ? wg : null;
     readonly List<(Site site, ITypeSymbol type)> _reflectStores = [];
     /// <summary>A field reflection can store into (FieldInfo.SetValue, Reflection.cs): any object of its type, if the
     /// program can call SetValue.</summary>
@@ -531,13 +540,14 @@ internal sealed partial class Arenas
             foreach (var (s, t) in _reflectStores) { s.AddValue(t); s.General = true; }
         // (what stores by address can put where: RefStores.cs)
         AddRefStores();
+        foreach (var s in _sites.Values) if (s.ChainRefTypes.Count > 0 && s.ChainRefTypes.Overlaps(RefWild)) { if (s_whyGeneral != null && s.Key.Contains(s_whyGeneral)) Console.Error.WriteLine($"general: {s.Key} by a reference passed for {string.Join(", ", s.ChainRefTypes.Intersect(RefWild))}"); s.General = true; }
         // which sites have a store into an object that may be known elsewhere
         {
             var general = new Dictionary<WasmFunction, Site>();
             foreach (var s in _sites.Values) { general[s.Link] = s; general[s.LinkOwned] = s; }
             foreach (var f in D.Module.Functions)
                 foreach (var ins in f.Body)
-                    if (ins.Ref is WasmFunction w && general.TryGetValue(w, out var gs)) gs.General = true;
+                    if (ins.Ref is WasmFunction w && general.TryGetValue(w, out var gs)) { if (s_whyGeneral != null && gs.Key.Contains(s_whyGeneral)) Console.Error.WriteLine($"general: {gs.Key} by {w.Name} in {f.Name}"); gs.General = true; }
             // (a slot whose address is taken is stored through it by code that knows nothing of the object)
             foreach (var s in _sites.Values) if (s.AddressTaken) s.General = true;
         }

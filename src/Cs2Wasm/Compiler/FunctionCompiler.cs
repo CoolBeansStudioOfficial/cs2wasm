@@ -198,6 +198,7 @@ sealed partial class FunctionCompiler
         using (BodyScope())
         {
             EnterDisplay(s_fnKey);
+            PrepareStorageKeeps();
             GuardStaticInitOnEntry();
             if (body is IConstructorBodyOperation ctor) EmitConstructorBody(ctor);
             else if (body is IMethodBodyOperation mb) EmitStatement((IOperation?)mb.BlockBody ?? mb.ExpressionBody!);
@@ -363,6 +364,8 @@ sealed partial class FunctionCompiler
                 case IDynamicInvocationOperation or IDynamicIndexerAccessOperation or IDynamicObjectCreationOperation: MarkDynamicRefArgs(op); break;
                 case IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None, Initializer: { } init }: MarkAddr(init.Value); break;
                 case ISimpleAssignmentOperation { IsRef: true } sa: MarkAddr(sa.Value); break;
+                // (a call that gives a reference into a collection's storage: StorageKeeps.cs)
+                case IInvocationOperation or IPropertyReferenceOperation: NoteStorageSite(op); MarkNestedWrite(op); break;
                 default: MarkNestedWrite(op); break;
             }
     }
@@ -479,7 +482,8 @@ sealed partial class FunctionCompiler
         else if (Types.IsStruct(t) || _addrTaken.Contains(l)) v = new Var { Type = t, AddrLocal = _fb, Offset = AllocFrame(t) };
         else v = new Var { Type = t, Local = E.AddLocal(Types.WasmType(t) ?? ValType.I32) };
         _vars[l] = v;
-        if (l.RefKind == RefKind.None && T.NeedsRc(t) && !Types.IsImmortalType(t))
+        // (an `out var` whose value is borrowed, OutBorrows.cs: no owner's slot)
+        if (l.RefKind == RefKind.None && T.NeedsRc(t) && !Types.IsImmortalType(t) && !_borrowedOut.Contains(l))
         {
             var slot = v.InMemory ? new Slot { FrameOffset = v.Offset, Type = t } : new Slot { Local = v.Local, Type = t };
             // a local that owns a frame object (EscapeAnalysis.cs): its scope's end drops the object

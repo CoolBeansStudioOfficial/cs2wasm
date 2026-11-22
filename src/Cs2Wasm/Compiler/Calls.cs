@@ -228,7 +228,11 @@ sealed partial class FunctionCompiler
             E.CurrentPos = save;
             return spilled;
         }
-        var r = CallWith(m, virt, pushThis, () => PushArgs(m, args), null, syntax, ConstArgsFor(m, args), stableRecv: instance != null && IsStableBase(instance), thisByValue: thisByValue);
+        // (an `out var` the callee can leave borrowed: its copy that stores the value as it is, OutBorrows.cs)
+        int ob = thisByValue || D.ConsumingOf(m).Mask != 0 ? -1 : OutBorrowCall(m, virt, args);
+        bool wantRefAddress = _wantRefReturnAddress;
+        var r = CallWith(m, virt, pushThis, () => { PushArgs(m, args); if (ob >= 0) _outBorrowNext = ob + 1; }, null, syntax, ob >= 0 ? null : ConstArgsFor(m, args), stableRecv: instance != null && IsStableBase(instance), thisByValue: thisByValue);
+        if (D.ExposesStorage(m)) KeepStorage(m, syntax, wantRefAddress);
         E.CurrentPos = save;
         return r;
     }
@@ -296,6 +300,13 @@ sealed partial class FunctionCompiler
             else if (k < byParam.Length) byParam[k] = a;
             k++;
         }
+        // (one local for two by-reference parameters: each names the other's place)
+        for (int i = 0; i < byParam.Length; i++)
+            if (m.Parameters[i].RefKind != RefKind.None && byParam[i] is ILocalReferenceOperation or IParameterReferenceOperation && T.Resolve(m.Parameters[i].Type, Map) is { IsReferenceType: true } dt)
+                for (int j = 0; j < i; j++)
+                    if (m.Parameters[j].RefKind != RefKind.None && byParam[j] is { } o && o.Kind == byParam[i]!.Kind
+                        && SymbolEqualityComparer.Default.Equals(o is ILocalReferenceOperation ol ? ol.Local : (o as IParameterReferenceOperation)?.Parameter, byParam[i] is ILocalReferenceOperation il ? il.Local : ((IParameterReferenceOperation)byParam[i]!).Parameter))
+                        D.Arenas.RefWild.Add(Types.Key(T.Canonical(dt)));
         // Named arguments written in another order than the parameters' (f(b: x(), a: y())) are evaluated as
         // written: each into a local, then pushed in the parameters' order.
         int[]? held = null;
@@ -367,6 +378,18 @@ sealed partial class FunctionCompiler
         if (Types.IsRef(pt)) ToCallSafe(r, pt);
     }
 
+    /// <summary>An argument for a by-reference parameter that names a place no other code can write while the callee
+    /// runs: a local or a parameter of this method's own, not captured, not itself a reference to elsewhere (a
+    /// by-reference parameter passed on is its caller's question); a variable declared at the call; a discard.</summary>
+    bool PlainRefArg(IOperation value) => value switch
+    {
+        ILocalReferenceOperation lr => lr.Local.RefKind == RefKind.None && !IsCaptured(lr.Local) && _closure == null && _machine == null,
+        IParameterReferenceOperation pr => !IsCaptured(pr.Parameter) && _closure == null && _machine == null,
+        IDeclarationExpressionOperation de => PlainRefArg(de.Expression),
+        IDiscardOperation => true,
+        _ => false,
+    };
+
     void PushArg(IParameterSymbol p, IOperation? value)
     {
         var pt = T.Canonical(p.Type);
@@ -375,6 +398,9 @@ sealed partial class FunctionCompiler
             RecordParam(pm, p, value != null ? FlowSrcs(value) : p.HasExplicitDefaultValue && p.ExplicitDefaultValue is string ? [new Sharing.Src(Sharing.K.Exact, Type: D.Main.GetSpecialType(SpecialType.System_String))] : []);
         else if (Sh != null && p.ContainingSymbol is IMethodSymbol rpm && p.RefKind != RefKind.None && Types.IsRef(pt))
             RecordRefIn(rpm, p, value);
+        // (a class's reference passed by reference from anywhere but a local of this method's own: ChainStores.cs)
+        if (p.RefKind != RefKind.None && value != null && T.Resolve(p.Type, Map) is { IsReferenceType: true } rpt && !PlainRefArg(value) && D.Arenas.RefWild.Add(Types.Key(T.Canonical(rpt))) && Driver.ChainDebug)
+            Console.Error.WriteLine($"by reference, not a local: {value.Syntax} ({value.Kind}) for {p.ContainingSymbol.ToDisplayString()} in {M.ToDisplayString()}");
         if (value == null)
         {
             // default argument
@@ -499,6 +525,8 @@ sealed partial class FunctionCompiler
             else pushThis = () => { var o = EmitValue(inv.Instance); ToCallSafe(o, rt); if (!IsKnownNonNull(inv.Instance)) NullCheckKeep(); };
         }
         CallWith(m, virt, pushThis, () => PushArgs(m, inv.Arguments.Cast<IOperation>().ToList()), pushDst, inv.Syntax);
+        // (a span over a collection's storage, written where it goes: the storage kept, StorageKeeps.cs)
+        if (D.ExposesStorage(m)) { pushDst(); KeepStorage(m, inv.Syntax, false); E.Op(Op.Drop); }
     }
 
     static IOperation StripConversions(IOperation o) { while (o is IConversionOperation c) o = c.Operand; return o; }
@@ -601,6 +629,7 @@ sealed partial class FunctionCompiler
 
     Own EmitCallInstr(IMethodSymbol m, bool virt, SyntaxNode? syntax, int sretOff, IReadOnlyDictionary<int, ConstArg>? consts = null, int owned = 0, bool stableRecv = false, bool thisByValue = false)
     {
+        int outBorrow = _outBorrowNext; _outBorrowNext = 0;
         if (IsStaticInterfaceMember(m) && TryStaticInterfaceMember(ref m, out var sim)) return sim;
         var rt = T.Canonical(m.ReturnType);
         if (D.IsIntrinsic(m))
@@ -622,7 +651,9 @@ sealed partial class FunctionCompiler
         else
         {
             var mi = D.Method(m, consts);
-            if (owned != 0) mi = D.OwnedVariant(mi, owned);
+            if (outBorrow > 0 && owned == 0 && !thisByValue) mi = D.OutBorrowVariant(mi, outBorrow - 1);
+            else if (outBorrow > 0) throw new CompileException("internal: a borrowed out argument for a call that takes another copy");
+            else if (owned != 0) mi = D.OwnedVariant(mi, owned);
             else if (thisByValue) mi = D.ThisValueVariant(mi);
             if (_clone != null)
             {
@@ -999,6 +1030,7 @@ sealed partial class FunctionCompiler
             case "Rt.NoDestroyByBits": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DESTROY_BY_BITS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoStoreWaits": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_STORE_WAITS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoEarlyGiveBack": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_EARLY_GIVE_BACK") == "1" ? 1 : 0); return Own.None;
+            case "Rt.ArrayMoveMode": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_ARRAY_MOVE") == "1" ? 1 : Environment.GetEnvironmentVariable("CS2WASM_ARRAY_MOVE_BREAK") == "1" ? 2 : 0); return Own.None;
             case "Rt.NoArrayReplace": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_ARRAY_REPLACE") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDropCheck":E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;

@@ -36,14 +36,16 @@ static class Parts
         {
             var t = s_t[p];
             long sum = 0;
-            for (int i = 0; i < FrameCount; i++) sum += t[i];
+            int worstAt = 0, secondAt = 0;
+            for (int i = 0; i < FrameCount; i++) { sum += t[i]; if (t[i] > t[worstAt]) { secondAt = worstAt; worstAt = i; } else if (i != worstAt && t[i] > t[secondAt] || secondAt == worstAt) secondAt = i; }
+            string worst = "  worst " + t[worstAt] * 1000000000 / freq + " at " + worstAt + ", " + t[secondAt] * 1000000000 / freq + " at " + secondAt;
             Array.Sort(t);
             long mid = 0;
             for (int i = FrameCount / 4; i < FrameCount * 3 / 4; i++) mid += t[i];
             mid = mid * 1000000000 / freq / (FrameCount / 2);
             long med = t[FrameCount / 2] * 1000000000 / freq, mean = sum * 1000000000 / freq / FrameCount, p99 = t[FrameCount * 99 / 100] * 1000000000 / freq;
             if (s_name[p][0] != '(' && s_name[p] != "clock") totalMid += mid;
-            Console.WriteLine(scene + " " + s_name[p].PadRight(22) + " mid " + mid.ToString().PadLeft(6) + "  median " + med.ToString().PadLeft(6) + "  mean " + mean.ToString().PadLeft(6) + "  p99 " + p99.ToString().PadLeft(6));
+            Console.WriteLine(scene + " " + s_name[p].PadRight(22) + " mid " + mid.ToString().PadLeft(6) + "  median " + med.ToString().PadLeft(6) + "  mean " + mean.ToString().PadLeft(6) + "  p99 " + p99.ToString().PadLeft(6) + worst);
         }
         Console.WriteLine(scene + (s_phases == 1 ? " whole: check " : " sum of mids " + totalMid + "  check ") + check);
     }
