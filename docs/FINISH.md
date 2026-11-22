@@ -879,3 +879,13 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   32,334,486 bytes, no threads, one core): test 207 compiled by the self-hosted compiler is the .NET-hosted compiler's
   module byte for byte (210,405 bytes). Not run: selfdet on more than that one program or with threads; frames.mjs
   against NativeAOT-LLVM for this round (the machine).
+- 2026-11-23, claude/tree-build-6 and claude/churn-4 merged (main ae6e889; the entries above), checked again before
+  the merge. Homelab at 8022fbc (main with tree-build-6): suite 213/214 checked (088, its timer line) and 212/214 as
+  shipped (088, and 072 whose .NET run could not reach its own port while another suite ran beside it); 088 alone
+  three times and 072 alone: passed both ways. Stress, 200 loaded runs a mode: 139, 192, 193, 194, 198 the same in
+  every run, 127 differed in 7 of 400. The self-hosted compiler's hello world byte for byte the .NET-hosted
+  compiler's (27,584 bytes), 9.4 to 11.2 s against 9.5 to 12.4 before on a loaded homelab. churn-4 (one pass,
+  Wasm/SameBaseLoads.cs) by its session's suite, 214/214 both ways; merged here, tests 198 to 207 and 145 passed
+  both ways on the merge. frames.mjs here once, the machine loaded by four sessions: churn 0.083 ms against
+  NativeAOT-LLVM's 0.052 (1.59x), tree 0.051 against 0.031 (1.66x), p99.9 3.06 against 2.83 (1.08x), collections
+  0.007 against 0.006, strings 0.008 against 0.010, bigdrop 0.003 both: to be taken again when the machine is quiet.
