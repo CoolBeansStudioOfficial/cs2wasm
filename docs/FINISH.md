@@ -30,7 +30,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
-| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 29.9 ms vs 3.8 ms, its rebuild (AUDIT A3.5; streams I, J) | worst frame and p99.9 not above NativeAOT's on every scene |
+| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below; tree 7.4 ms vs 3.4 ms worst, p99.9 7.1 vs 2.7, its rebuild (homelab, branch tree-spike; main 10.6 / 10.2 there; AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Hello world size (test 145) | 27,868 B (main 26150c1 with K round 2 and L round 3; 28,287 with L round 2, 27,869 before it) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 10.24 s vs 5.18 s, 1.98x (main 1191d18 with K round 4, N round 2, D's fixes; interleaved, 3 rounds; 2.7x on 2026-11-20 morning) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main 1191d18, same run). Met, thinly: the heap top is 1 MiB under the next growth step | < NativeAOT-LLVM's, same measure |
@@ -374,3 +374,17 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
 - 2026-11-21, main 1191d18 (K round 4, N round 2, D's KnownNull fix; self-hosted output now equals the .NET-hosted
   compiler's), 3 interleaved rounds: self-hosted compiler 10.2-10.3 s / 306.0 MB / 41.8 MB against 5.1-5.3 s / 322.2 MB /
   129 MB: time 1.98x, memory 0.95x, size 0.32x.
+- 2026-11-21, branch tree-spike (on ec13733): the tree scene's rebuild in parts (`tools/tree-parts.cs`, homelab):
+  build 6.0 ms, drop of the old tree 4.3 ms. Found and fixed: a third of the group at the drop was subtrees replaced
+  long before (a member destroyed at an unlink lost its owner first, its up-references stayed on its container's u,
+  and a list's array then refused its Handover and kept all it held); the group's free went round the ring four times
+  reading every member's referents (now three passes over a list, counts zeroed first); a tree built from the leaves
+  up made each node owned by its first child (a joining object's slot now decides ownership after the links: the
+  child's parent field an up-reference); stores into a constructor's own object fresh (and the hole they showed: a
+  plain container's field past the sixteenth word unlinked by the counts, test 132); a list's growth copies plainly.
+  Build 6.0 to 5.3 ms, drop 4.3 to 1.8 ms. frames.mjs on the homelab, main against the branch (2 rounds of 3 runs):
+  tree worst 10.6 / 10.8 to 7.4 / 7.4 ms, p99.9 10.3 / 10.2 to 7.2 / 7.1 (NativeAOT-LLVM 3.4-3.5 and 2.7); churn
+  0.64-0.66 to 0.65-0.69, collections 0.21-0.23 to 0.22-0.23, strings 0.03-0.06 to 0.03-0.04, bigdrop 1.28-1.34 to
+  1.30-1.34 (all below NativeAOT's). bench 0.98x to 0.97x; suite 196 passed checked and as shipped; hello world
+  27,297 bytes. Left: tree's rebuild frame is 7 ms against NativeAOT's 3: the build (5.3 ms against ~1) is per-entity
+  arena work (each leaf's join, its parent field's up-reference, a hold flipped round the store), docs/AUDIT.md A3.5.

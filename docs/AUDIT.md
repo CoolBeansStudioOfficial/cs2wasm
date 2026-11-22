@@ -177,6 +177,45 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
 - List.Add of an isolated value does not help here: array sites always count as general in Arenas.Analyze, and the
   scene's children refer to their parent. Streams I and J take more types out of the cycle graph; tree is measured
   again after they merge.
+- **The rebuild in parts (2026-11-21, branch tree-spike).** `tools/tree-parts.cs` times the rebuild's two halves apart
+  (homelab, quiet): build of 19,531 entities 6.0 ms, drop of the old tree 4.3 ms (NativeAOT-LLVM: the whole rebuild
+  frame 2.7 to 3.8 ms). What each half was:
+  - **A third of the group was garbage.** The group freed at the rebuild held 52,000 entities for 31,000 reachable
+    (`last old tree`): subtrees replaced earlier stayed with the group. Cause: a member destroyed at an unlink had
+    its owner let go first (ArenaUnlinkOld: OwnerLetGo, then ArenaDestroyFrom), so the destruction's UpPath could not
+    walk past it, and the up-references from it (a child's parent field) stayed on the u of its old container and the
+    container's owners for good. A list's array with a stale u refused its Handover when the list grew (the sum of its
+    items' u no longer matched its own), kept every item it held, and those items held it. Fix: a member destroyed
+    there, and one that dies with it (ArenaVisit mode 0), keeps its owner while it is destroyed. Cut tops kept: 370 of
+    1,000 to 61; the group at the rebuild 34,000 entities. The 61 left: a moved node held by a local keeps holding
+    the array it was removed from (it is not Owned there, only Held), and its new container waits behind it; not done.
+  - **The drop's passes.** ArenaFree went round the ring four times and its visit read every member each member refers
+    to (count and record: a miss each, the ring of an aged group in no order in memory). Without finalizers (and
+    without threads) it is now three passes over a list taken in one walk of the ring: each member's count word zero
+    first (a release of it, from another member's clear, then does nothing: rt.release at zero), then the clears, then
+    the frees. Drop 4.3 to 1.9 ms (with the garbage above gone).
+  - **The build's ownership.** A node built from the leaves up is plain until its first child is linked; the child's
+    parent field was linked first, as the node's first counted reference, so every node was owned by its first child
+    and turned round when it was put in its parent's list (TakeOwnership, Reevaluate, holds up the chain). Now a
+    joining object's slot to an ownerless member that code still holds from outside decides ownership after the
+    links (ArenaLinkJoined): if the member is then above the slot's object, the slot is an up-reference (Reevaluate),
+    else the object owns it as before. Stores into a constructor's own object are fresh when no constructor lets
+    `this` out (FreshStores.cs, ThisIsFresh): no arena made and merged per entity (19,530 merges to 3,124 per build).
+    Array.Copy into a plain array only the copying code holds (a list growing) is plain counted stores, without threads.
+  - The fresh constructor stores showed a hole: a plain container's field past the sixteenth word held a plain counted
+    reference, but its unlink went by the counts, and a container that joined an arena at that very store read the old
+    value as an inside one (its outside count never given back: test 132, 2,269 objects left). The slot's old value is
+    now known plain when the container was (ArenaLink's t_prevBits).
+  - The waiting owner's bookkeeping written into ArenaLinkJoined and LinkMembers gave the strings scene (no tree in
+    it: StringBuilder's chunks are its cycle type) one 0.6 ms frame, at the same frame of every run on the homelab and
+    gone with `--no-wasm-dynamic-tiering`: an engine tier-up, not work of the program. Out of line (LinkWaiting,
+    Waiting), it is gone.
+  - Tried and reverted: the ownership decision deferred to the member's last outside release (Adopt): test 127's
+    async nodes and a pending task's waiter were left, held in a group by counted references no owner took.
+  - Left: the build is 5.3 to 5.6 ms against NativeAOT's ~1 ms; per leaf entity the store into its parent's array still
+    joins the entity and its list, links its parent field as an up-reference (UpPath, three hops), and its hold flips
+    on and off around the store (the caller's temporary is an outside reference). The rebuild frame is now 7.1 to 7.2
+    ms p99.9 against NativeAOT's 2.7 (homelab, frames.mjs; main: 10.2 to 10.3).
 
 ### A4. Plugins (goal 3)
 
