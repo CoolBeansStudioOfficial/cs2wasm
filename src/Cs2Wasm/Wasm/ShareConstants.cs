@@ -88,7 +88,7 @@ static class ShareConstants
                     sb.Append(",tt").Append(tti.BlockType?.ToString());
                     foreach (var cc in tti.Catches) sb.Append(':').Append(cc.Kind).Append(cc.Tag?.Name).Append(cc.Label);
                     break;
-                default: sb.Append(",o").Append(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(ins.Ref)); break;
+                default: sb.Append(",o").Append(Id(ins.Ref)); break;
             }
         }
         return sb.ToString();
@@ -325,7 +325,7 @@ static class ShareConstants
         var cols = new List<Instr[]>(); var keyOf = new Dictionary<string, int>();
         int SlotOf(Instr[] col)
         {
-            var key = string.Join("|", col.Select(c => c.Imm + ":" + (c.Ref == null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(c.Ref).ToString())));
+            var key = string.Join("|", col.Select(c => c.Imm + ":" + (c.Ref == null ? "" : Id(c.Ref))));
             if (!keyOf.TryGetValue(key, out int s)) { keyOf[key] = s = cols.Count; cols.Add(col); }
             return s;
         }
@@ -374,7 +374,13 @@ static class ShareConstants
         return true;
     }
 
-    static readonly bool s_why = Environment.GetEnvironmentVariable("CS2WASM_SHARE_WHY") == "1";
+    /// <summary>An object's own number (identity hash codes can be equal for two objects: two callees, two addresses
+    /// taken for one would give members another's value).</summary>
+    static string Id(object o) => s_ids.GetValue(o, _ => (object)Interlocked.Increment(ref s_nextId)).ToString()!;
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, object> s_ids = new();
+    static int s_nextId;
+
+    static readonly bool s_why =Environment.GetEnvironmentVariable("CS2WASM_SHARE_WHY") == "1";
     static readonly bool s_stats = Environment.GetEnvironmentVariable("CS2WASM_SHARE_STATS") == "1";
     static readonly Dictionary<WasmFunction, string> s_died = [];
     static void Died(Plan pl, string why) { if (s_why) foreach (var m in pl.Members) s_died[m] = why; }
