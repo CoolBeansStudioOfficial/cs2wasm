@@ -1420,6 +1420,45 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     `Join` of 20, 0.27 us against 0.20, not looked into (the frame is below NativeAOT's without it).
   - Checked: On the homelab at 11b6497 (the last commit that changes code): suite 214/215 checked (088's timer line; alone it passes both ways) and 215/215 as shipped; at c3c4867, 215/215 both ways; stress, 200 loaded runs a mode: 213, 214, 220 and 221 the same in every run; the self-hosted compiler (tools/selfhost-switch.sh, which now compiles test 145's hello world: its own one-line program was top-level statements, an error in a library, and no module was ever written, on main too) with and without the round's three switches: the same module from both (27,393 bytes), 9.06 to 9.18 s as it is and 9.07 to 9.30 switched, peak memory 344 MB both. The module differs from the one the compiler run by .NET writes for the same file at byte 24,844 (a comparison added to the script this round, each given the file under another path: not followed, and not known for main).
 
+- **The collections and strings scenes, round 3 (2026-11-23, branch claude/colstr-3, from claude/round-6c 20cb183;
+  not merged when this was written): references into a collection's storage; what was not done.**
+  - **Fixed: a span over a list's items, or a `ref` to a dictionary's value, held across a growth
+    (`Compiler/StorageKeeps.cs`, `CS2WASM_NO_STORAGE_KEEP=1`).** A span or a `ref` holds no count here; what keeps
+    its array is whoever holds the array, and for `CollectionsMarshal.AsSpan(list)`, `GetValueRefOrNullRef` and
+    `GetValueRefOrAddDefault` that is the collection's field, which a growth (or Clear with TrimExcess, or the
+    collection's own end) stores over: the span then read the freed array (as shipped its bytes until the block was
+    used again; a checked build trapped at the first read; `list.AddRange(CollectionsMarshal.AsSpan(list))` copied
+    from it). Now the call site holds the array: the object the returned reference points into (`Rt.ObjectOf`, the
+    allocator's table, no search) is counted into a local of the calling function, one a call site, found before
+    the body is compiled so that every return and every unwinding lets it go; a later call at the same place lets
+    the earlier array go. The span reads and writes the old array whatever the collection does, as .NET's does, and
+    a growth meanwhile finds two holders and copies (`Rt.MoveRange` moves only an array nothing else holds). A
+    method or a property of the program's own that returns a span or by reference and calls one of the three is
+    treated as they are at its own call sites (one level: a wrapper of a wrapper is not seen, and a span such a
+    wrapper returns through two frames is as before). Nothing changes for a program that makes no such call: the
+    growth's code is the same. Test 222 (a span across growths, a clear and the list's drop; AddRange and InsertRange
+    of the list's own span; a span taken every turn of a loop; a method and a property that wrap the call; a `ref`
+    across insertions and a removal, to an added entry, to a missing key; items with finalizers that mark them:
+    without the keep both modes differ at the first line).
+  - **Collections' worst frame, 0.21 to 0.37 ms with round 2's move: the engine's tier-up, shown.** It is one
+    frame, the first clear after the warm-up (frame 200), in every run; the other clears are 0.18 to 0.20 ms, as
+    before or below. With `node --wasm-tiering-budget=1000000` (the optimizing tier a thirteenth of the calls
+    sooner) frame 200 is 0.21 ms as the others, three runs of three; by default 0.38 to 0.39. The code that lets an
+    array's values go ran at every resize before the move and runs only at the clears now, five times by frame
+    200. Steady state: 0.18 to 0.20 ms. Not changed.
+  - **The module the self-hosted compiler writes against the one the compiler run by .NET writes (round 2's
+    difference at byte 24,844): the output's name.** The comparison added to tools/selfhost-switch.sh gave the two
+    different output names, and the name is in the module; the script now asks tools/selfdet.mjs (the same paths
+    and name). On the homelab tools/selfdet.mjs: self = net, byte for byte (27,591 bytes).
+  - **Not done this round, as round 2 left them:** the free's 6.6 ns an object taken apart (`rt.destroy_now` is
+    where a plain object's end is: the dispatch on the type's number, a release of each reference field, a string
+    field's too, then FreeObject's block kept aside for its size and the one that was there back onto its page's
+    list with the page's count: read, and timed once at 4.8 ns a free with the clock's share, not taken further:
+    the desk gave no two runs alike for an hour); TryInsert's counts (0.11 us); the removes and the queue (0.12),
+    the queue's growth as a move (its copy is a rotation: MoveRange takes a whole array from its first place);
+    `Join` (0.07). Collections' median stays where round 2 left it, 1.07x to 1.08x NativeAOT-LLVM's.
+  - Checked: On the homelab at 0aef607 (9db608e's code and the script): suite 220/220 checked and 219/220 as shipped (088's timer line; alone it passes both ways); at 9db608e 218/220 checked and 219/220 as shipped: 072_http in both (the oracle's own connection refused, the port taken by another run) and 131 checked (5 left, the async kind that differs under load; here it passes both ways with the keep and without, and the second run did not show it); stress, 200 loaded runs a mode: 222 the same in every run; the self-hosted compiler with and without the keep: the same module (27,579 bytes), 9.4 to 10.0 s, peak memory 344 MB. Hello world 27,642 bytes on this base. Not measured this round: frames.mjs and bench.mjs (no change to any scene's code: none makes such a call).
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
