@@ -611,3 +611,39 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   none in 3,800 checked; main 7451b65 none in 800 as shipped. Merged with it open (the row above): at one in some
   thousands the runs so far do not tell the branch from main. Next for it: the stress tool keeping a failing run's
   whole output, a module built with names.
+- 2026-11-23, test 139's trap and the tree scene, round 5 (branch claude/tree-rebuild-5 from main 77b2aad, not merged
+  when this was written; AUDIT A3.5, "The rebuild, round 5, and test 139's trap"). (1) The trap is not the cycle
+  runtime's. Its whole trace was still on the homelab (stress.mjs kept a failed run's stderr beside the module; it
+  printed six lines): `memory access out of bounds` in Rt.LoadRetainSlow, at the atomic load of the count of an
+  object whose reference it had just read from a place the threads share. V8 (Node 24.19) keeps, in each thread's
+  instance, the size the shared memory had when the thread last passed a stack check, and checks atomic accesses of
+  its baseline tier, and copies and fills, against that number: tools/grow-race.mjs (new) traps on a word that is
+  there in 20 trials of 20, with a plain load in none. Test 139 grows its memory once a run while its threads start.
+  In a program with threads every atomic access, copy and fill now first asks `(address >>> 16) >= memory.size` and
+  calls `memory.grow(0)` if so (Wasm/MemSync.cs; no cost seen in test 139 run ten times as long, 6 KB of its 454;
+  the same test in the tool: no trap). Shown on the module: with `node --no-wasm-stack-checks` main's test 139 traps
+  in 7 runs of 60 at the trace's own two frames, this branch's in none of 300; test 195 (new) so run fails in 60 of
+  60 without the pass and in none with it, and the suite's runner runs it that way (`// node-flags:`). Not shown: a
+  run with the stack checks made to trap again (1 in 3,800 on main; none in 36,000 of this branch before the fix,
+  none in 34,000 after). The host's own failure at the entry's return (`Atomics.waitAsync(...).value.then` of an
+  answer that is no promise: exit 1, 4 loaded runs in 20,000 of test 195) is fixed too. Two statics two threads wrote at once, found by reading, are each thread's own now
+  (round 4's s_waitSlot and the check at the drop's s_trExt); neither was shown to fail a run. tools/stress.mjs
+  keeps every differing run whole under tests/out/stress-fail and prints it; stress-cycles.sh builds with names.
+  (2) The tree's build. `_items = s_emptyArray` in List<T>'s constructor is a fresh store: asked of the constructor
+  that runs and those it hands over to, not of all the class's (`CS2WASM_NO_CTOR_FRESH=1`); Rt.ArenaLink 42,967 to
+  23,436 a build, tools/tree-parts.cs build 2.01-2.04 to 1.92-1.98 ms, the objects alone 0.57 to 0.45. On the way
+  a leak, on main too: a constructor's lambda that names a field of `this` (`_next = () => _count++;`) was taken to
+  keep `this` in, its store a plain one, and the object was never freed; fixed. The parent set after the add
+  (`e.Children.Add(c); c.Parent = e;`): where the store is the local's last use the link gives the local's count back
+  before the child would hold its owners for it (`CS2WASM_NO_LAST_CONTAINER=1`): 117,180 hold changes a build to
+  none, 2.33 ms to 1.91 (the scene's order 1.81); the scene sets the parent first and has nothing of it. A leaf's list left a plain object: not done, as round 4 found. frames.mjs here (`--runs 3 --js-young 32`, main
+  and the branch in turn three times): tree median 0.047-0.048 ms on both (NativeAOT-LLVM 0.028-0.029), p99.9
+  2.667-2.690 on main and 2.653-2.689 on the branch against NativeAOT-LLVM's 2.49-2.75 in the same invocations,
+  worst 2.80-3.05 against 3.18-3.63: **p99.9 is not told apart from main's (the rebuild's 0.07 ms is inside the
+  spread), and is above NativeAOT's in three invocations of six: not reached; the median 1.65x: not reached.** The
+  other scenes as on main; bench.mjs 0.95x and 0.97x (main 0.97x); hello world 27,089 bytes. On the homelab at
+  e8ba580: suite 206/206 checked and as shipped (tests 194: constructors and last stores; 195: threads that use
+  grown memory); stress, 200 loaded runs a mode: 139, 193, 194 and 195 the same in every run, 127 differed in 4 of
+  400; test 139 as shipped 30,000 loaded runs and checked 4,000, the same in every one; without the engine's stack
+  checks 7 traps in 1,000 without the pass, none in 4,000 with it (one of them printed `16 3`, two nodes left: not
+  followed). Not run: the self-hosted compiler.

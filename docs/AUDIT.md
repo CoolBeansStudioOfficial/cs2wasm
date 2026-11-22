@@ -573,6 +573,156 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     objects whose finalizers allocate and replace a subtree of the same tree); it fails with
     `CS2WASM_NO_OWNED_CHAIN=1` and with `CS2WASM_NO_STORE_WAITS=1` and passes with each of the destruction's three
     switches. On the homelab at b3c5175: the suite twice, 203/204 checked and 204/204 as shipped (test 143: the host's `Atomics.waitAsync(...).value.then is not a function`, engine.mjs line 228, a wait that had ended already; by itself 100 loaded runs a mode the same every time), then 204/204 both ways; `tools/stress-cycles.sh` (200 loaded runs a mode, 8 at once): 139 the same in every run, 127 the same in 200 as shipped and differing in 1 of 200 checked (`async 5` / `pending 1`, main's rate), 193 the same in every run of both modes. Not run: the self-hosted compiler.
+- **The rebuild, round 5, and test 139's trap (2026-11-23, branch claude/tree-rebuild-5, from main 77b2aad; the desk
+  machine, shared with another session's timings; not merged when this was written).**
+  - **Test 139's trap under load is the engine's view of a grown memory, not the cycle runtime's.** The trace was on
+    the homelab all along: tools/stress.mjs appended a failed run's whole stderr to `<module>.fail.txt` (it printed six
+    lines of it), and the file of the run that trapped was still in hl/claude_tree-rebuild-4/tests/out/shipped:
+    `RuntimeError: memory access out of bounds` at wasm-function[1127]:0x23f77, called by [13]:0xfc3, by
+    `Program.Work(Int32 t)` [1152]:0x25aa6, the task's delegate and the thread pool below. The same test built here
+    from main with and without `CS2WASM_NAMES=1` (the code sections byte for byte the same; every offset of the trace
+    falls in the body its index names): [1127] is `Rt.LoadRetainSlow`, offset 50 of its body its second atomic load,
+    of the count of the object whose reference it has just read from the place; [13] is `rt.load_retain` at its call
+    of it. So: a thread read a reference from a place the threads share (the lock-free read first saw a member with no
+    reference from outside, count -2, and went the slow way), read the place again, and the word at that address was
+    "out of bounds". Nothing of round 4 is on that path.
+    What it is (tools/grow-race.mjs, new, Node 24.19, V8 13.6): a shared memory grown by one thread is not grown for
+    the others at once. Each instance keeps the size it last saw (`memory.size` answers that number) and V8 brings it
+    up to date at the thread's next stack check (a function's entry, a loop's head) or when the thread grows the
+    memory itself. Plain loads and stores are not checked against it (the pages are there). Atomic accesses in code
+    of the baseline tier, and copies and fills in either tier, are. One worker inside a function without a stack
+    check, the main thread grows the memory, writes a word in the new pages and hands the worker its address: the
+    atomic load traps in 20 trials of 20, the plain load in none, a fill in 20, `memory.size` answers the pages
+    before the growth; with `--no-liftoff` the atomic load traps in none, the fill in 20. Test 139 grows its memory
+    once in every run, 256 to 512 pages (`CS2WASM_PRINT_MEMORY=1`: its sixteen threads' stacks), while the first
+    threads already run; LoadRetainSlow is cold code, in the baseline tier for the whole run. A thread stopped
+    between its last stack check and its read of the place, while another grew the memory, made a node in the new
+    pages and stored it there, traps: a window of a few instructions, once a run. By the runs: one in 3,800 as shipped on
+    main 6e854e4 (run 114 of the first 200), none in 36,000 of this branch before the fix (6,000 twelve at once,
+    30,000 twenty-four at once, built with names).
+    Done (`src/Cs2Wasm/Wasm/MemSync.cs`, the last pass over the bodies of a program with threads): before each
+    atomic access and each copy or fill, `if ((address >>> 16) >= memory.size) memory.grow(0)`, which brings the
+    instance up to date (the address was handed out after its pages were there). Not before an access at a constant
+    address (a static: below the size the memory starts with); where the access's other operands are constants or
+    locals the test goes in before them, else they are set aside in locals. A first version asked a word the growing
+    thread wrote (the size in pages): every count of sixteen threads read one cache line, test 139 with ten times
+    its iterations 3.02 to 3.45 s; by the address, a shift and a compare of what the thread has at hand, 3.03 and
+    2.97 s: no cost seen. Test 139's module 453,750 to 460,099 bytes (260 places). `CS2WASM_NO_MEM_SYNC=1` leaves it
+    out (a measurement). tools/grow-race.mjs with the same test written before the access: no trap in 20 trials,
+    load or fill.
+    **Shown on the module itself:** without the engine's stack checks (`node
+    --no-wasm-stack-checks`: a thread then learns of a growth only by growing) main's module of test 139, as
+    shipped, traps in 7 runs of 60, each at the trace's own two frames (wasm-function[1127]:0x23f77 called by
+    [13]:0xfc3); this branch's module built without the pass in 3 of 60 (two there, one at another atomic access);
+    with the pass in none of 300. Test 195 (new: threads that count, lock, add to by Interlocked, copy from and
+    clear what another thread has just made in pages the memory grew by, six growths) so run: 60 of 60 without the
+    pass, none of 60 with it; with the stack checks it passes either way (30 runs each here; on the
+    homelab 20,000 loaded runs without the pass with `--liftoff-only`, no trap: in a compiled program every call
+    and every loop is a stack check, and the window stays a few instructions). The suite's runner runs a program a second time with the flags of a `// node-flags:` line,
+    and test 195 has `--no-wasm-stack-checks`: it fails with `CS2WASM_NO_MEM_SYNC=1`. What is not shown is a run
+    with the stack checks, as the one that trapped was, made to trap again: at one in tens of thousands the runs
+    before and after the fix tell nothing apart (36,000 before, 30,000 as shipped and 4,000 checked after, on the
+    homelab, none).
+    The host had a failure of its own, seen in these runs: at the entry's return it waits for the threads that
+    keep the process alive by `Atomics.waitAsync(c, 1, n).value.then(..)`, and when one of them ended between the
+    load of n and the wait, the answer is no promise ("not-equal") and `.then` a TypeError, exit code 1: test 143
+    once in round 4's suite, test 195 in 4 of those 20,000 runs. host/engine.mjs looks again
+    then.
+    Found by reading on the way, both real, neither shown to fail a run: `Rt.s_waitSlot`, `s_waitObj`, `s_waitVal`
+    (round 4's store whose value waits for its owner) and `Rt.s_trExt` (31c6310: how many other tops a check at the
+    drop took in) were plain statics that two threads' links and checks of two groups wrote at once; each is the
+    thread's own now, as the lists they go with. (In test 139 the pair a link looks up is never the store's own
+    container, and its threads' nodes are one group after their first stores, under one lock: by reading, not what
+    trapped.)
+  - **`_items = s_emptyArray` in `List<T>`'s constructor is a fresh store** (`Driver.CtorKeepsThis`,
+    `CS2WASM_NO_CTOR_FRESH=1`): a constructor's stores into its own object are plain counted stores when that
+    constructor, the one of its class it hands over to (`: this(...)`) and the bases' constructors let `this` out
+    nowhere; `CtorsKeepThis` asked every constructor of the class, and `List(IEnumerable<T>)` calls `Add`. The
+    other constructors do not run for this object, a derived class's field initializers cannot name `this`, and
+    its constructor's body runs after this one returns. Rt.ArenaLink 42,967 to 23,436 a build. tools/tree-build.cs,
+    main and the branch in turn five times, the middle run (and the five): the objects alone (variant 4) 0.57 to
+    0.45 ms (0.57 with the switch), no parent fields (1) 1.35 to 1.25, the scene's build (0) 1.86 (1.83 to 1.91) to
+    1.81 (1.72 to 1.99; with the switch 1.90), the capacity set first (3) 1.69 to 1.62, fan 4 (5) 1.95 to 1.85;
+    tools/tree-parts.cs build 2.01 to 2.04 against 1.92 to 1.98 ms; tools/tree-store.cs 100 to 102 ns an entity
+    against 98 to 99. Between 0.05 and 0.1 ms of a rebuild (the pinned store's early return had made the call cheap
+    already, round 3).
+    **A leak found in the class's test, on main too:** a lambda or a local function in a constructor that names a
+    field of `this` captures it, and CtorsKeepThis passed every `this` whose parent is a field reference: `_next =
+    () => _count++;` was taken as a store into an object nothing else knows, a plain counted store of a delegate
+    that refers to the object, and the object was never freed (test 194's `counter 20` for 0; none left with
+    `CS2WASM_NO_FRESH_STORES=1`). A constructor with such a lambda lets `this` out.
+  - **The parent set after the add** (`e.Children.Add(c); c.Parent = e;`, tools/tree-build.cs variant 2): the six
+    hold changes a child are gone where the store is the local's last use (`CS2WASM_NO_LAST_CONTAINER=1`). The
+    runtime cannot tell that the reference that makes the child hold its owners is about to go; the compiler can:
+    `c.F = v;` as the last reference to the local c in the text (Compiler/LocalMoves.cs, IsLastContainer: c declared
+    by its own statement and never assigned again, the store a statement, not in a loop c is declared outside of,
+    every other use of c in a call or a store statement that declares nothing and makes no lambda, so nothing read
+    through c is still held after the store). Around the link `Rt.ArenaLastBegin(c)` and `c = Rt.ArenaLastEnd(c)`;
+    where the link makes the slot an up-reference (LinkMembers, ReevaluateSlot), `Rt.LastGiveBack` gives the local's
+    count back first, as ArenaRelease's first case would take it had the release come before the store (the arena
+    lives by other members, c owned, referred to from inside, holding nothing, no up-reference below it yet, no
+    note of a failed check), and only if the value does not need the hold c would have made (it is referred to
+    from inside, or from outside by more than the store's count); the local is cleared, so the release at the end
+    of its scope finds nothing. Otherwise nothing changes. c lives on by its owner while the store is written.
+    Not with threads. By the counts of a build: hold changes 117,180 to 0, releases the long way 23,437 to 3,907.
+    Variant 2, five runs in turn, the middle one (and the five): main 2.33 ms (2.26 to 2.44), the branch with this
+    switch 2.29 (2.19 to 2.30), without 1.91 (1.87 to 2.11); the scene's order 1.81: what is left is the child's
+    general link, its count being two at the add.
+    The scene sets the parent first, so tools/frames.mjs has nothing of it. A child handed to a method that does
+    both (`void AddChild(Node c) { Children.Add(c); c.Parent = this; }`) keeps its holds: the caller's reference
+    is there, and stays.
+  - **A leaf's list left a plain object: still not done.** Nothing new against round 4's account (a hint in the
+    plain list, checked wherever it becomes a member; 0.1 to 0.2 ms a rebuild in the prototype's sound cases, paid
+    back by the nodes with children in the scene's order). With the constructor's store out of ArenaLink a leaf's
+    list costs its join, one visit that finds the pinned array, and a member's place in the drop.
+  - **Where a build's time is now** (`node --cpu-prof` on a module with names, tools/tree-build.cs variant 0, 3,000
+    builds; of the 2.4 ms a build and its drop take there; the engine puts LinkJoinedSlot, JoinOwned and ArenaJoin
+    into their callers): Rt.ArenaVisit, a joining object's slots, 0.41 ms; Rt.ArenaLink 0.30; LinkMembers (the
+    parent fields' up-references: OnChainOwned's walk, UpPath's two) 0.28; the program's own Build 0.24;
+    AllocObjectArena 0.23; ArenaFree 0.17 and ArenaFreeList 0.10 (the drop); ArenaGrowArray 0.09; ArenaUnlinkOld
+    0.08; List.AddWithResize 0.07; the clears 0.08; List's constructor 0.05; LinkWaiting, ArenaLinkCore, ArenaMerge,
+    PageAlloc 0.03 to 0.04 each. By the counts of a build (19,531 entities): 23,436 links, 46,874 joins (32,812 in
+    one piece), 42,968 visits of a joining member, 12,500 up-references linked in LinkMembers, 14,060 Reevaluates,
+    10,935 TakeOwnerships, 3,124 merges, 3,906 growths, 3,907 releases the long way, no hold change. The objects
+    alone (variant 4, 0.45 ms, 11.5 ns an entity with its list, their constructors, two random numbers and the
+    release of both): the allocation is two calls of AllocObjectArena (a block off the size's run, three stores),
+    the constructor two exchanges through rt.store_ref with the release of an old value that is null (`Children`,
+    by the fresh store's inline test; `Name = ""`, whose placeholder InitStores leaves a release because the
+    object initializer writes Name too). An initializer's old value is always null in a class (its
+    field initializers are the first code that has the new object). Tried and removed: such a store written as the
+    link and a plain store, with no exchange and no release (the way an object initializer's store into a field
+    its constructors leave null already goes): variant 4 0.45 to 0.44 ms, variant 0 inside its spread; the engine
+    has the two small functions in line already. The allocator's own
+    path was not touched (another session's).
+  - Numbers (main 77b2aad built beside the branch, run in turn three times; `node tools/frames.mjs --runs 3
+    --js-young 32`): tree median 0.047 to 0.048 ms on both (NativeAOT-LLVM 0.028 to 0.029: 1.65x), p99 0.072 to 0.075
+    and 0.074 to 0.076 (0.051 to 0.057), **p99.9 2.667, 2.681, 2.690 on main and 2.653, 2.689, 2.666 on the branch,
+    against NativeAOT-LLVM's 2.492 to 2.751 in the same six invocations: not told apart from main, and above
+    NativeAOT's in three invocations of six, below it in three** (its p99.9 is a collection, which moves by 0.25 ms
+    from one invocation to the next; this side's is the middle rebuild, the same to 0.04 ms); worst 2.80 to 2.88 and
+    2.81 to 3.05 (3.18 to 3.63). The rebuild's 0.07 ms does not show at p99.9. The other scenes as on main (churn
+    median 0.104 to 0.106, collections 0.008, strings 0.009, bigdrop 0.003; their p99.9 and worst within each
+    other's spread). bench.mjs 0.95x and 0.97x (main 0.97x twice). Hello world 27,089 bytes (no group, no thread).
+    **Not reached: the tree's median (1.65x) and a p99.9 reliably at NativeAOT's.** What a rebuild still does that
+    NativeAOT does not is join 42,968 members one by one and take each off the group again; the parts above are
+    each a few hundredths of a millisecond, and none of them is the 0.2 to 0.3 ms that would put p99.9 below
+    NativeAOT's lowest.
+  - Checked: test 194 (constructors that keep `this` in and that let it out, by a static list, a method, their
+    argument, a lambda, a local function, `: this(...)` to either kind, a base, the object's own field; a list class
+    built as List<T> is; a cycle closed after the constructors; the last store in its shapes: the child used before,
+    a value that is the top of the child's own chain with no other reference, the child in its own field, in no
+    list, moved, the local declared outside the loop, the parent past the sixteenth word and by a property, nodes
+    with finalizers, what was read through the local used after the store; counted against .NET while the trees
+    live; on main `counter 20` for 0) and test 195 (above). On the homelab at e8ba580: the suite 206/206 checked and
+    206/206 as shipped (and at 4f8e35b, before the runner's second run of test 195); `tools/stress-cycles.sh` (200
+    loaded runs a mode, 8 at once): 139 the same in every run, 127 differing in 3 of 200 as shipped and 1 of 200
+    checked (`async 5` / `pending 1`, main's rate; 2 and 3 at 4f8e35b), 193, 194 and 195 the same in every run of both
+    modes. Test 139 with the pass: 30,000 loaded runs as shipped (24 at once) and 4,000 checked (12 at once), the
+    same in every one. Without the engine's stack checks (`NODE_FLAGS=--no-wasm-stack-checks`, 8 at once): built
+    without the pass, 7 runs of 1,000 as shipped end in the trap (at LoadRetainSlow's load, at the copies of TrPush
+    and Defer); with it, none of 3,000 as shipped and none of 1,000 checked. One of those 3,000 printed `16 3`: two
+    nodes left, the kind of leak the test was written for, not a trap; none such in the 34,400 runs with the stack
+    checks; not followed. Not run: the self-hosted compiler.
 
 ### A4. Plugins (goal 3)
 
