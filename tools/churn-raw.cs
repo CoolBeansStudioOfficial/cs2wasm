@@ -37,6 +37,39 @@ static class ChurnRaw
         s_w = w;
         return sum;
     }
+    // (the same loop rotated by hand, the length read once: what the compiler's loop shape costs)
+    static long LoopNoStoreRotated(Particle[] a)
+    {
+        long sum = 0;
+        int w = 0, n = a.Length;
+        if (n > 0)
+        {
+            int i = 0;
+            do
+            {
+                var p = a[i];
+                p.X += p.Vx; p.Y += p.Vy; p.Vy += 0.1f;
+                if (p.Life > 0) { w++; sum += p.Tag.Length; }
+            } while (++i < n);
+        }
+        s_w = w;
+        return sum;
+    }
+    // (and with the three floats' sums kept in locals first, one store each: Vy read once)
+    static long LoopNoStoreOnce(Particle[] a)
+    {
+        long sum = 0;
+        int w = 0;
+        for (int i = 0; i < a.Length; i++)
+        {
+            var p = a[i];
+            float vy = p.Vy;
+            p.X += p.Vx; p.Y += vy; p.Vy = vy + 0.1f;
+            if (p.Life > 0) { w++; sum += p.Tag.Length; }
+        }
+        s_w = w;
+        return sum;
+    }
     static long LoopCounted(Particle[] a)
     {
         long sum = 0;
@@ -158,13 +191,13 @@ static class ChurnRaw
         s_seed = 12345;
         for (int i = 0; i < N; i++) { s_master[i] = Make(); s_master[i].Life = i < 400 ? 0 : 50; }
         long sum = 0;
-        for (int kind = 0; kind < 8; kind++)
+        for (int kind = 0; kind < 10; kind++)
         {
             for (int r = 0; r < 3000; r++)
             {
                 Array.Copy(s_master, s_a, N);
                 long t0 = Stopwatch.GetTimestamp();
-                sum += kind == 0 ? LoopNoStore(s_a) : kind == 1 ? LoopCounted(s_a) : kind == 2 ? LoopMoved(s_a) : kind == 3 ? LoopRawOnly(s_a) : kind == 4 ? LoopRawOther(s_a) : kind == 5 ? LoopIntOther(s_a) : kind == 6 ? LoopRawNull(s_a) : LoopRawOld(s_a);
+                sum += kind == 0 ? LoopNoStore(s_a) : kind == 1 ? LoopCounted(s_a) : kind == 2 ? LoopMoved(s_a) : kind == 3 ? LoopRawOnly(s_a) : kind == 4 ? LoopRawOther(s_a) : kind == 5 ? LoopIntOther(s_a) : kind == 6 ? LoopRawNull(s_a) : kind == 7 ? LoopRawOld(s_a) : kind == 8 ? LoopNoStoreRotated(s_a) : LoopNoStoreOnce(s_a);
                 long t1 = Stopwatch.GetTimestamp();
                 if (r >= 1000) s_t[s_n++] = t1 - t0;
                 if (kind == 2)
@@ -176,14 +209,14 @@ static class ChurnRaw
                     for (int i = 0; i < 400; i++) raw[N - 400 + i] = from[i];
                     Array.Clear(s_a);
                 }
-                if (kind == 3 || kind >= 6)
+                if (kind == 3 || kind == 6 || kind == 7)
                 {
                     // (every slot holds a survivor without a count of its own, or its own particle: all as they were)
                     nint[] raw = Unsafe.As<nint[]>(s_a), from = Unsafe.As<nint[]>(s_master);
                     for (int i = 0; i < N; i++) raw[i] = from[i];
                 }
             }
-            Console.WriteLine((kind == 0 ? "no store: " : kind == 1 ? "counted store: " : kind == 2 ? "moved, no counts: " : kind == 3 ? "the reference written, nothing else: " : kind == 4 ? "written into another array: " : kind == 5 ? "an int written into another array: " : kind == 6 ? "the reference written, its old slot set to null: " : "the reference written, what the slot held read and tested: ") + Med() + " " + sum + " " + s_w + " " + s_dead);
+            Console.WriteLine((kind == 0 ? "no store: " : kind == 1 ? "counted store: " : kind == 2 ? "moved, no counts: " : kind == 3 ? "the reference written, nothing else: " : kind == 4 ? "written into another array: " : kind == 5 ? "an int written into another array: " : kind == 6 ? "the reference written, its old slot set to null: " : kind == 7 ? "the reference written, what the slot held read and tested: " : kind == 8 ? "no store, the loop rotated by hand: " : "no store, Vy read once: ") + Med() + " " + sum + " " + s_w + " " + s_dead);
         }
     }
 }

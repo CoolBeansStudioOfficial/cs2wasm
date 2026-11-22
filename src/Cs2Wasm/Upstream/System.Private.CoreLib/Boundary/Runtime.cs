@@ -722,6 +722,10 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_NO_PINNED_SKIP=1 (at compile time): a pinned object stored into a plain object's slot takes
         /// the lock and ArenaLinkCore's questions before it is left a counted reference (ArenaLink).</summary>
         [Intrinsic] static extern bool NoPinnedSkip();
+        /// <summary>The cycle-capable slots of an object of the type, a nibble each from the lowest: the slot's index
+        /// among the words after the header, plus one (the slot is at 8 + 4 * nibble); 0 for a type whose slots the
+        /// word cannot say (an array, more than eight slots, a slot past the fifteenth word).</summary>
+        [Intrinsic] static extern int ArenaSlots(int typeId);
         /// <summary>CS2WASM_NO_STORE_WAITS=1 (at compile time): a plain object that joins for a store into a member's
         /// own slot is that member's at once, whatever its own slots hold (LinkMembers).</summary>
         [Intrinsic] static extern bool NoStoreWaits();
@@ -855,7 +859,7 @@ namespace Cs2Wasm.Runtime
         // (and, with it, how often each path of the arena operations runs: OpStat's numbers, printed with DsPrint)
         static int s_opStats;
         const int OpN = 40;
-        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,give-back-early,link-pinned,give-back-last";
+        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,give-back-early,link-pinned,give-back-last,join-fused,join-node";
         // (a constant test where it is asked, so that without the diagnosis nothing is left of it, not even a call)
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static void OpStat(int k) { if (DropStats()) OpStatCount(k); }
@@ -2366,14 +2370,46 @@ namespace Cs2Wasm.Runtime
             for (int q = 0; q < s_reevN; q++)
             {
                 int o = Mem.LoadI32(s_reevQ + 8 * q), v = Mem.LoadI32(s_reevQ + 8 * q + 4);
+                if (o == 0) continue;
                 if (Mem.LoadI32(o) >= -1 || Mem.LoadI32(v) >= -1 || ((PL(o, 24) | PL(v, 24)) & Dying) != 0) continue;
                 if (PL(v, 20) != 0) { if (PL(o, 20) != 0) ReevaluateWaiting(o, v); continue; }
                 if (PL(o, 20) != 0 && OnChain(o, v)) { ReevaluateWaiting(o, v); continue; }
+                if (PL(o, 20) != 0 && !NoWaitingTop() && WaitingTop(q, o, v)) { ReevaluateWaiting(o, v); continue; }
                 if (PLW(v) == o) PSW(v, 0);
                 TakeOwnership(v, o);
             }
             s_reevN = 0;
             s_waitSlot = 0;
+        }
+
+        /// <summary>CS2WASM_NO_WAITING_TOP=1 (at compile time): LinkWaiting takes its pairs strictly in their order.</summary>
+        [Intrinsic] static extern bool NoWaitingTop();
+
+        /// <summary>LinkWaiting, a pair (o, v) that would make o the owner of v: when v itself waits, further down the
+        /// list, to own the member at the top of o's chain, that pair is settled first; true when v is then above
+        /// o (o's reference to it is an up-reference, the caller's Reevaluate). A node's list that code still
+        /// refers to while the node's first child is put into it (`e.Kids.Add(Make(e))` where the list is counted
+        /// across the call: any program with a second place that stores the field, which ends the borrow) waits
+        /// for its owner as the node does, and the pairs are (child, node), (node, list) in the order of the
+        /// visits. Taken in that order the child, whose chain ends at the list, nothing's yet, became the owner of
+        /// the node, and the node's own slot an up-reference to its list: every node of the tree hung below its
+        /// first child, the list on top, kept by holds alone; a subtree stored over was then never destroyed
+        /// before its tree went (tools/tree-assign.cs: 121, 161, 201 nodes for .NET's 121, 121, 121).</summary>
+        static bool WaitingTop(int q, int o, int v)
+        {
+            int t = o;
+            for (int k = 0; (PL(t, 24) & Owned) != 0; t = PL(t, 20)) if (++k > ChainMax) return false;
+            if (t == v || PL(t, 20) != 0 || Mem.LoadI32(t) >= -1 || (PL(t, 24) & Dying) != 0) return false;
+            for (int r = q + 1; r < s_reevN; r++)
+            {
+                if (Mem.LoadI32(s_reevQ + 8 * r) != v || Mem.LoadI32(s_reevQ + 8 * r + 4) != t) continue;
+                // (that pair, as its turn would take it: v has no owner and t none, so v owns t)
+                Mem.StoreI32(s_reevQ + 8 * r, 0);
+                if (PLW(t) == v) PSW(t, 0);
+                TakeOwnership(t, v);
+                return PL(t, 20) == v && OnChain(o, v);
+            }
+            return false;
         }
 
         // (the slot of the store under way whose value was left to a waiting owner, LinkMembers, with its object and
@@ -3506,7 +3542,7 @@ namespace Cs2Wasm.Runtime
                 // (a plain object over a linked reference of a member's own slot: a list's larger array over its array)
                 else if (t_prevBits == 1 && Mem.LoadI32(val) > 0 && ReplaceArray(val, container, slot)) { }
                 // (a plain object only the store's count refers to: a new object put into a member's list)
-                else if (can && Mem.LoadI32(val) == 1 && JoinOwned(val, container, slot, true)) { }
+                else if (can && Mem.LoadI32(val) == 1 && (JoinFresh(val, container, slot) || JoinOwned(val, container, slot, true))) { }
                 else { OpStat(3); ArenaLinkCore(val, container, slot); }
             }
             if (s_linkN != 0) ArenaLinkJoined();
@@ -3578,6 +3614,229 @@ namespace Cs2Wasm.Runtime
             PS(val, 20, container);
             PS(val, 24, PL(val, 24) | Owned | MultOne);
             return true;
+        }
+
+        /// <summary>CS2WASM_NO_FUSED_JOIN=1 (at compile time): a new object stored into a member's slot joins by
+        /// JoinOwned and the visit of its slots (ArenaLinkJoined), each slot linked as the store it stands for.</summary>
+        [Intrinsic] static extern bool NoFusedJoin();
+
+        /// <summary>JoinOwned and the links of the new object's own slots in one step, where what the visit of the
+        /// joined object would come to is fixed by what its slots hold, and can be written as it is found:
+        /// nothing for an empty slot, a pinned object (the empty array of a new list) and an object of another
+        /// group of classes; a new object of its own that only that slot refers to and whose own slots hold
+        /// nothing to link (its list) is its own, after it on the ring in the order of the slots, as the visit
+        /// joins them; and one reference up, of two kinds.
+        /// A member above the container on its chain of owned links that code still refers to from elsewhere
+        /// (the parent of a leaf, set as the leaf was made, whose list has items already): an up-reference, its
+        /// count given back (not the member's last from outside: nothing to decide), the u of the members
+        /// between them and their holds as LinkMembers does them (UpPath).
+        /// Or a plain object that code still refers to, which holds, in one slot, the member at the top of the
+        /// container's chain, a member nothing owns and nothing else refers to (the node whose list takes its
+        /// first item, in the scene's order: the node was made with its parent, its list got its first array,
+        /// and neither the node nor anything above the list is the array's yet). The general way: the new
+        /// object joins; the visit of its slots joins the node through the parent field, as a counted reference
+        /// that waits for an owner (Waiting: side words for the node, a place in LinkWaiting's list); the visit
+        /// of the node's slots links its list to it (the store's count given back early, TakeOwnership,
+        /// Reevaluate) and whatever its other slots hold; LinkWaiting then finds the node above the new object
+        /// and makes the field an up-reference (Reevaluate, by a visit of the object). Written here: the node a
+        /// member nothing owns, counted from outside by what counted it less the field; the top of the chain
+        /// the node's, with no reference from outside; the field an up-reference; then the node's other slots
+        /// that hold members, each by the general link of a joining object's slot (LinkJoinedSlot: the node's
+        /// own parent, with the merge of the two arenas), and LinkWaiting for what those left waiting. The
+        /// general way does the node's slots in their order and the up-reference last; here the list and the
+        /// up-reference come first. They change the new object, the members of its chain up to the node and
+        /// the node's count of inside references; the link of another slot of the node reads the node's owner
+        /// (none, either way) and what that slot holds, and writes the node's bits for that slot and, for a
+        /// hold, adds to the node's inside count: the same end either way.
+        /// Nothing waits in ArenaJoin's list after either, so no visit follows. False, nothing written, for
+        /// anything else: a slot that holds another kind of reference, a type whose slots its word does not say
+        /// (ArenaSlots), a container whose arena is busy or merged, threads: JoinOwned's way then.
+        /// (By a program of the parts, on the desk machine: a leaf with its list and its parent field, put into a
+        /// list that has room, 49 ns by the general way, 10 of them its two allocations, and 38 here: 12,500 of
+        /// the 19,531 entities of a build of the scene tree of tools/frames.mjs; a node with its first leaf and
+        /// their lists 256 ns and 205: 2,500 a build, the 625 whose own parent is a plain object still go the
+        /// general way.)</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static bool JoinFresh(int val, int container, int slot)
+        {
+            if (NoFusedJoin() || NoFreshJoin() || NoOwnedChain() || ThreadMode()) return false;
+            if (Mem.LoadI32(container) >= -1 || (s_linkN | s_joinVisit | s_visitElem | s_reevN) != 0) return false;
+            int ar = PL(container, 16);
+            if (Mem.LoadI64(ar + 12) != 0 || (PL(container, 24) & Dying) != 0) return false;
+            if (PL(val, 24) != 0 || Mem.LoadI32(val + 8) < 0) return false;
+            int d = ArenaSlots(Mem.LoadI32(val + 4));
+            if (d == 0) return false;
+            int g = SccOf(Mem.LoadI32(val + 4));
+            // what the slots hold, before anything is written
+            int e = 0, up = 0;
+            for (int w = d; w != 0; w = (int)((uint)w >> 4))
+            {
+                int child = Mem.LoadI32(val + 8 + ((w & 15) << 2));
+                if (child == 0) continue;
+                int cc = Mem.LoadI32(child);
+                if (cc > 0)
+                {
+                    // (pinned, or of another group of classes: linked to nothing)
+                    if (Mem.LoadI32(child + 8) < 0) continue;
+                    int ct = Mem.LoadI32(child + 4);
+                    if (SccOf(ct) != g) continue;
+                    if (PL(child, 24) != 0) return false;
+                    if (cc == 1)
+                    {
+                        // (a new object of its own: its slots hold nothing to link)
+                        int d2 = ArenaSlots(ct);
+                        if (d2 == 0) return false;
+                        for (; d2 != 0; d2 = (int)((uint)d2 >> 4))
+                        {
+                            int c2 = Mem.LoadI32(child + 8 + ((d2 & 15) << 2));
+                            if (c2 != 0 && (Mem.LoadI32(c2) <= 0 || Mem.LoadI32(c2 + 8) >= 0)) return false;
+                        }
+                        continue;
+                    }
+                    // (a plain object that code still refers to: the one reference up)
+                    if ((e | up) != 0) return false;
+                    e = child;
+                    continue;
+                }
+                // (a member of the container's arena, on its chain by owned links, with more references from
+                // outside than this slot's: the one reference up)
+                if ((e | up) != 0 || cc >= -3 || PL(child, 16) != ar || (PL(child, 24) & Dying) != 0) return false;
+                int v = container, k = 0;
+                while (v != child)
+                {
+                    if (++k == ChainMax || (PL(v, 24) & Owned) == 0) return false;
+                    v = PL(v, 20);
+                    if (v == 0) return false;
+                }
+                up = 1;
+            }
+            int t = 0, ed = 0, ts = 0;
+            if (e != 0)
+            {
+                if (NoEarlyGiveBack()) return false;
+                // (the top of the container's chain: nothing owns it, and its one reference is the plain object's)
+                t = container;
+                for (int h = 0; (PL(t, 24) & Owned) != 0; t = PL(t, 20)) if (++h > ChainMax - 2) return false;
+                if (Mem.LoadI32(t) != -3 || PL(t, 4) != 0 || PL(t, 20) != 0 || (PL(t, 24) & ~(Elems | Far)) != 0 || Side(t) != 0 || PL(t, 16) != ar) return false;
+                ed = ArenaSlots(Mem.LoadI32(e + 4));
+                if (ed == 0) return false;
+                for (int w = ed; w != 0; w = (int)((uint)w >> 4))
+                {
+                    int c = Mem.LoadI32(e + 8 + ((w & 15) << 2));
+                    if (c == 0) continue;
+                    if (c == t) { ts = w & 15; continue; }
+                    // (a plain object of the group of classes in another slot: the general way, its slots are not known)
+                    if (Mem.LoadI32(c) > 0 && Mem.LoadI32(c + 8) >= 0 && SccOf(Mem.LoadI32(c + 4)) == g) return false;
+                }
+                if (ts == 0) return false;
+            }
+            OpStat(29); OpStat(35);
+            JoinOne(ar, val, container);
+            int i = SlotIndex(container, slot);
+            if (i >= 0) SetSlotBits(container, i, 1);
+            else if (slot == 0)
+            {
+                PS(container, 28, PL(container, 28) + 1);
+                PS(container, 24, PL(container, 24) | Elems);
+            }
+            else PS(container, 24, PL(container, 24) | Far);
+            int bits = 0;
+            for (int w = d; w != 0; w = (int)((uint)w >> 4))
+            {
+                int n = (w & 15) - 1, child = Mem.LoadI32(val + 12 + (n << 2));
+                if (child == 0) continue;
+                int cc = Mem.LoadI32(child);
+                if (cc > 0)
+                {
+                    if (Mem.LoadI32(child + 8) < 0 || SccOf(Mem.LoadI32(child + 4)) != g) continue;
+                    if (cc == 1)
+                    {
+                        OpStat(29);
+                        JoinOne(ar, child, val);
+                        bits |= 1 << (2 * n);
+                        continue;
+                    }
+                    // (the plain object joins, nothing's: ArenaLinkCore's join, and LinkMembers' count given back
+                    // for an object that joined for the link; the field an up-reference, below)
+                    OpStat(4); OpStat(36);
+                    Mem.StoreI32(child, -(cc + 1));
+                    PS(child, 16, ar);
+                    PS(child, 4, 0);
+                    RingAdd(ar, child);
+                    bits |= 2 << (2 * n);
+                    continue;
+                }
+                OpStat(23);
+                Mem.StoreI32(child, cc + 1);
+                bits |= 2 << (2 * n);
+                PS(val, 28, bits);
+                UpPath(val, child, 1);
+                if (!HoldSettled(child)) UpdateHold(child);
+            }
+            PS(val, 28, bits);
+            if (e != 0)
+            {
+                // (the top of the chain is the node's: its count from outside, the node's slot's, given back; the
+                // arena's number of members that code refers to one more by the node and one less by this)
+                OpStat(32); OpStat(23);
+                Mem.StoreI32(t, -2);
+                PS(t, 4, 1);
+                PS(t, 20, e);
+                PS(t, 24, PL(t, 24) | Owned | MultOne);
+                PS(e, 28, 1 << (2 * (ts - 1)));
+                UpPath(val, e, 1);
+                // (the node's other slots that hold members)
+                int sa = s_visitArena, sm = s_visitMode, so = s_visitObj;
+                s_visitArena = e; s_visitMode = 4; s_visitObj = e; s_joinVisit = 1;
+                for (int w = ed; w != 0; w = (int)((uint)w >> 4))
+                {
+                    int sl = e + 8 + ((w & 15) << 2), c = Mem.LoadI32(sl);
+                    if (c != 0 && c != t && Mem.LoadI32(c) <= 0) LinkJoinedSlot(c, sl);
+                }
+                s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_joinVisit = 0;
+                if (s_linkN == 0 && s_reevN != 0) LinkWaiting();
+            }
+            return true;
+        }
+
+        /// <summary>JoinFresh: a plain object whose one count is the reference of the slot that takes it becomes a
+        /// member the holder of that slot owns, with no reference from outside: ArenaJoinOnly, and what JoinOwned
+        /// writes after it, in one piece (the arena's number of members that code refers to as it was).</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static void JoinOne(int ar, int obj, int owner)
+        {
+            OpStat(4);
+            Mem.StoreI32(obj, -2);
+            PS(obj, 16, ar);
+            PS(obj, 4, 1);
+            PS(obj, 20, owner);
+            PS(obj, 24, Owned | MultOne);
+            RingAdd(ar, obj);
+        }
+
+        /// <summary>ArenaJoinOnly's part that is the arena's: the new member last on the ring, one more member, one
+        /// more word that points to the record, and whether a member has a finalizer.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static void RingAdd(int ar, int obj)
+        {
+            if (ArenaFinType(Mem.LoadI32(obj + 4)) != 0) Mem.StoreI32(ar + 24, 1);
+            int head = Mem.LoadI32(ar + 4);
+            if (head == 0)
+            {
+                PS(obj, 12, obj);
+                PS(obj, 8, obj);
+                Mem.StoreI32(ar + 4, obj);
+            }
+            else
+            {
+                int tail = PL(head, 8);
+                PS(obj, 12, head);
+                PS(obj, 8, tail);
+                PS(tail, 12, obj);
+                PS(head, 8, obj);
+            }
+            Mem.StoreI32(ar + 8, Mem.LoadI32(ar + 8) + 1);
+            Mem.StoreI32(ar + 20, Mem.LoadI32(ar + 20) + 1);
         }
 
         static int ArenaLinkCore(int val, int container, int slot)

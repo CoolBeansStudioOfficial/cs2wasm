@@ -394,6 +394,8 @@ internal sealed class WasmModule
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_SMALL_COPIES") != "1") SmallBlocks.Variable(this);
             Step("small copies");
             if (Canon != null) FloatStores.Run(Functions, Canon);
+            // (a load repeated across stores to other bytes of the same object: after the NaN tests are in)
+            EachFunction(f => SameBaseLoads.Run(f));
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_NORETURN") != "1") NoReturn.Run(Functions);
             Step("float stores, no return");
             if (!s_noMerge) MergeIdenticalBodies();

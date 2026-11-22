@@ -819,6 +819,128 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     and Defer); with it, none of 3,000 as shipped and none of 1,000 checked. One of those 3,000 printed `16 3`: two
     nodes left, the kind of leak the test was written for, not a trap; none such in the 34,400 runs with the stack
     checks; not followed. Not run: the self-hosted compiler.
+- **The build, round 6: where an entity's 100 ns are, and the new object that joins in one step (2026-11-22 to 23,
+  branch claude/tree-build-6, from main 1f7a807; the desk machine, shared with another session's timings; not merged
+  when this was written).** The question was why an entity with a list of children and a parent reference costs six
+  times NativeAOT's to make, and what a tree built in the scene's order needs. Measured first, nothing built.
+  - **The memory model has no floor above NativeAOT's here.** A program of the parts (19,531 entities each with
+    its list, made in a loop, kept, then let go; not kept in the repository): a class that cannot be on a cycle,
+    kept in a local array, build 0.15 to 0.17 ms and drop 0.17 to 0.18; Entity itself, with its member words, kept
+    in a local array nothing else knows (plain counted stores, no group): 0.19 to 0.20 and 0.19. NativeAOT-LLVM's
+    build of the same objects in a rebuild frame is 0.26 ms (round 3). tools/tree-build.cs's variant 4 (0.45 ms)
+    makes and frees one block over and over and says less than this. So allocation and the frees are 10 ns an
+    entity with its list, at NativeAOT's, and all of the rest of a build's 1.75 ms (the lists' arrays and their
+    growth, about 0.2) is the bookkeeping of the group: about 1.3 ms, 67 ns an entity.
+  - **What the bookkeeping is, by the same program:** the entities added to one node's list that has room, no
+    parent field: 0.70 to 0.73 ms, so 26 ns for the two joins of a leaf and its list; with the parent field 0.95 to
+    0.97: 13.6 ns an up-reference. **A node with its first leaf, in the scene's order** (`e = new { Parent = p };
+    e.Children.Add(new { Parent = e }); p.Children.Add(e)`, 9,765 such pairs under one root): 2.5 ms, 256 ns a
+    pair, where two leaves cost 98. By the counts of a pair: five joins, five visits, three links, an arena made
+    for the list and its first array and merged into the tree's, side words for the node (a waiting owner), four
+    Reevaluates, three TakeOwnerships, two early give-backs. From tools/tree-build.cs's variants 0 and 5 (fan 5
+    and fan 4): a leaf 52 ns of links, a node 90 and 33 for its list's growth. By function, with the engine's
+    inlining off (`node --no-wasm-inlining --cpu-prof`, a build with names; the times double, the shares are what
+    it is for): the program's Build 5.0%, ArenaVisit 4.4, ArenaFree 4.1, rt.release 4.0, ArenaJoinOnly 3.7,
+    ArenaLinkJoined 3.4, rt.arena_clear 3.2, ArenaLink 3.1, rt.store_ref 3.1, HoldSettled 2.9, and fifty more
+    between 0.7 and 2.5: no function is the cost.
+  - **The cause, then, is not a part that is slow but how an object becomes a member:** it is made a plain object,
+    its slots filled by plain counted stores (FreshStores), and at the store that puts it into the structure it
+    joins and every slot it holds is gone through again as the general store it stands for (the list of joined
+    objects, the visit by type, ArenaVisit's modes, LinkJoinedSlot, JoinOwned or LinkMembers with all their
+    questions): some hundreds of instructions for a leaf whose outcome a few loads decide. And in the scene's
+    order a node is joined from below, through its first leaf's parent field, before anything owns it: its list
+    and first array are a group of their own by then, the node waits for an owner in side words, LinkWaiting
+    finds it above the leaf, its own parent field makes the first child the owner of the parent (a counted
+    reference, ownership turned round when the node is put into its parent's list).
+  - Tried first and not kept, each alone: the joined object's slots read from a word of its type in
+    ArenaLinkJoined, with no visit by type (build 1.77 to 1.76 ms: the engine has the visit in line); the fused
+    step entered at ArenaLink's top, before its questions (0.53 against 0.53 ms in the flat program). The
+    interpretation's overhead is in neither place by itself.
+  - **Done: `Rt.JoinFresh`** (`CS2WASM_NO_FUSED_JOIN=1`; `Rt.ArenaSlots`, a type's slots as a word, eight at most
+    among the first fifteen words, 0 for anything else). A new object (count 1) stored into a member's slot whose
+    own slots hold only what fixes the outcome is joined and linked in one step, nothing left in ArenaJoin's list:
+    an empty slot, a pinned object, an object of another group of classes: nothing; a new object of its own that
+    only that slot refers to and whose slots hold nothing to link (its list): its own, after it on the ring, in
+    the slots' order, as the visit joins them; and one reference up, either to a member on the container's chain
+    of owned links that code still refers to from elsewhere (a leaf's parent: an up-reference, its count given
+    back, UpPath as LinkMembers runs it), or to a plain object that code still refers to and that holds, in one
+    slot, the member at the top of the container's chain, which nothing owns and nothing else refers to (the node
+    whose list takes its first item): the node joins as nothing's, the top of the chain becomes the node's, the
+    field an up-reference, and the node's other slots that hold members go through the general link of a joining
+    object's slot (its own parent, with the merge), then LinkWaiting. Anything else is refused before a word is
+    written and goes JoinOwned's way: another kind of reference in a slot, a type without the word, the member's
+    last reference from outside, a second reference up, a plain object of the group in a slot of the node, a busy
+    or merged arena, threads. The end state is the general way's (argued in the function's comment: the order of
+    the node's list and the up-reference against the node's other slots is the one difference, and those links
+    read the node's owner, which is none either way); the node gets no side words. By the counts of a build:
+    12,476 leaves and 2,500 nodes' first leaves take it; the 625 first leaves whose node's own parent is a plain
+    object still, and what they join above them, go the general way.
+  - Numbers. The flat program: two joins 0.70 to 0.56 ms, with the parent field 0.96 to 0.74, a node with its
+    first leaf 256 to 205 ns. tools/tree-build.cs, the switch on and off in turn five times while the machine was
+    loaded (the middle run, and the five): variant 0 build 2.04 ms (1.97 to 2.06) to 1.74 (1.70 to 1.84), drop
+    0.41 and 0.40; 1 (no parent) 1.38 to 1.27; 2 (the parent after the add) 2.10 and 2.09; 3 (capacity first) 1.82
+    to 1.57; 5 (fan 4) 2.00 to 1.82; on the quiet machine before, variant 0 1.77 to 1.62. tools/tree-store.cs: the
+    build 99 to 112 ns an entity to 90 to 92, the store 11.7 to 12.2 ns a member and 11.1 to 12.0. tools/tree-frame.cs,
+    an ordinary frame: the build 17.0 to 18.3 us to 15.4 to 16.6, the store 3.8 to 4.6 and 4.2 to 4.3, the walk
+    30.8 to 33.2 and 30.6 to 31.5 (NativeAOT-LLVM's, from round 5: 2.3, 0.1, 29.3). tools/tree-parts.cs build 2.02
+    to 2.17 ms to 1.87 to 2.06. `node tools/frames.mjs --runs 3 --js-young 32`, off and on in turn three times,
+    the desk loaded: tree median 0.049, 0.052, 0.050 off and 0.052, 0.051, 0.048 on (NativeAOT-LLVM 0.029 to
+    0.031); p99.9 2.776, 3.043, 2.698 off and 2.847, 2.869, 2.545 on, against NativeAOT-LLVM's 2.49 to 2.74 in
+    those six invocations; worst 2.87 to 3.50 and 2.77 to 3.54 (3.23 to 3.46): not told apart there. On the
+    homelab, this side alone (`node tools/frames.mjs --no-aot --runs 3 --js-young 32 tree`, new: the homelab has
+    no Emscripten SDK; off and on in turn three times): median 0.061, 0.061, 0.060 off and 0.058, 0.058, 0.059 on;
+    p99.9 3.276, 3.292, 3.283 off and 3.024, 3.017, 3.012 on; worst 3.46 to 3.64 and 3.08 to 3.17: **the rebuild
+    frame 0.27 ms shorter (8%), the median 4%.** By that ratio the desk's 2.67 ms would be 2.45, at
+    NativeAOT-LLVM's 2.42 to 2.48. bench.mjs, off and on in turn twice: 0.94x and 0.95x (this side's own times the
+    same both ways, 11.8, 1.6, 1.0 and 3.3 to 3.4 ms; NativeAOT-LLVM's shapes ran 0.9 and 0.8); its module 324.1
+    to 326.1 KB. Hello world 27,426 bytes, as on main (no group in it).
+  - **Not reached.** A rebuild's build is 0.2 to 0.3 ms shorter (12 to 15%), an ordinary frame's 2 us of 50; the
+    tree's median is still 1.6x NativeAOT-LLVM's and its p99.9 is at NativeAOT's, not below it in every
+    invocation. The remaining build, 1.6 ms for 19,531 entities, 82 ns each, against 13: the allocations 10 ns;
+    a fused leaf's two joins and up-reference 28; what still goes the general way is every node: its list and
+    first array as a group of their own (an arena record made, merged, freed: 3,125 a build), its own parent
+    field as a counted reference that makes its first child-node its parent's owner until it is put into the
+    parent's list (Waiting, LinkWaiting, TakeOwnership, the turn at the add with EarlyGiveBack's walk and a
+    Reevaluate by a visit), the 625 first leaves under a plain parent, the lists' growth. None of that is a floor
+    of reference counting; it is what the owners' chain asks when a tree is made parent first: the runtime
+    learns that a node is a parent only when a child is already below it. What would end it is not one more
+    path: a node made with a member for its parent would have to join as the parent's at that store, nothing's
+    until its list takes it (round 1 tried the ownership left open until the member's last release and took it
+    back for test 127), or the parent field proven a reference back (step 7.E), which takes Entity out of the
+    groups altogether and leaves the 10 ns. Both change when something is freed and are the owner's to decide.
+  - Seen on the way, on main too (the same with the switch off), not followed. **A program that assigns a
+    node's list of children anywhere keeps every subtree that is stored over until the whole tree goes**
+    (`tools/tree-assign.cs`, new: `built 121 replaced 161 again 201 gone 0` for .NET's `121 121 121 0`; the line
+    `s_tree.Kids = new List<Node>();` behind a test that is never true is enough; test 198's first version, with
+    such a line in a method the tree in question never ran, 6,653 nodes for 655 after 300 frames). With a second
+    place that stores the field the list is no longer borrowed across `e.Kids.Add(Tree(e, ..))`: the building
+    method counts it for the length of the call (one more rt.retain and its release in `CS2WASM_DUMP=P.Tree`), a
+    list with up-references below it that is referred to from elsewhere than its owner holds its owner
+    (UpdateHold, a hold that is kept), and what those holds leave is not found when the subtree is let go. The
+    scene tree of tools/frames.mjs has no such line. Test 131 (`0 5 5` for `0 0 0`): once as shipped in the
+    homelab's suite at a377166, and in one run of 3,000 each with the switch on and off, 32 at once (the runs that
+    differed were not counted, one of each was kept); 400 runs 8 at once the same every time, both ways. What
+    may stay until its group goes, as designed, and is counted in test 198 only when its tree has gone: a node
+    that refers to a node beside it or to itself, to the root from nine owners below (ChainMax is eight), by a
+    delegate that captures it, by a field of a struct.
+  - Checked: test 198 (new objects that join in one step: a leaf by what its slots hold, its parent, a parent
+    further up, things not of the group, a new node of its own, empty and with content that refers up, new
+    arrays, the same new node twice, a plain node a static holds, into a field and into a member's array; a
+    node whose list takes its first item, by its other slots, with two children made first, a first child with
+    content, a first child in its array, a list something else refers to; classes whose slots are a base's,
+    nine, past the fifteenth word, inside a struct, with finalizers, held by delegates; 300 frames of the
+    scene's kind; counted against .NET while the trees live and when they have gone). It fails with each of six
+    rules of the step broken by hand: the type's word a slot short, the chain not asked, a new object's own
+    slots not looked at, the node's other slots not linked, the top of the chain not asked what refers to it,
+    the member's last reference from outside given back in the step. Its output is the same with the switch
+    off, the first version's too, whose lines differed from .NET's by what stays until a group goes.
+    On the homelab: the suite at a377166 (the step alone) 208/208 checked and 207/208 as shipped (test 131,
+    above); at c3b22e0 209/209 checked and 208/209 as shipped (088, its timer line, another session's suite
+    running beside it); at a440778, the last change of code, 209/209 checked and 209/209 as shipped (419 s), and
+    088 by itself passes both ways. `tools/stress-cycles.sh` there at a440778 (200 loaded runs a mode, 8 at once):
+    198, 192 to 197 and 139 the same in every run of both modes; 127 differing in 1 of 200 as shipped and 4 of
+    200 checked (main's rate, 5 of 400 at 80ae1ce; it starts threads and takes none of the step). Not run: the
+    self-hosted compiler; frames.mjs against NativeAOT-LLVM on a quiet machine.
 
 - **The collections and strings scenes (2026-11-22, branch claude/colstr-1, from main 1f7a807; the desk machine,
   shared; not merged when this was written).** Nobody had looked at these two: collections' median was 1.24x to 1.27x
@@ -1128,6 +1250,237 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
   - Also from the homelab, after round 2's text: test 135 under the stress tool, 200 loaded runs a mode, printed
     60950 for 61050 in 3 of 400 on claude/churn-2 and in 1 of 400 on main: the timer race of its WhenAny, on
     both.
+- **The churn loop, round 4: the read loop taken apart against NativeAOT-LLVM's own code, and the header's word
+  (2026-11-22, branch claude/churn-4, from claude/churn-3; the desk machine, for the second half of the round too
+  busy with other sessions to time anything: said where).**
+  - **The read loop, instruction by instruction** (`tools/churn-raw.cs` LoopNoStore: 31.8-32.3 us a frame against
+    23.4-24.2; both modules disassembled with Emscripten's wasm-dis, cs2wasm's built with CS2WASM_NAMES=1). A turn
+    of NativeAOT-LLVM's loop: the element read through a pointer that steps by 4, its null test; X, Vx read, added,
+    stored; Y and Vy read, added, stored; **Vy not read again** but kept from the read before, 0.1 added, stored;
+    Life read and tested; Tag read, its null test, its length added; the pointer stepped; a counter taken down and
+    one branch back (the loop is rotated: the test at the bottom). No test of the array for null and no read of
+    its length in the loop (both before it), no index check, no NaN test; its particle is 28 bytes (a header of
+    one word; with the word before the object 32). A turn of cs2wasm's: **the array tested for null again**; **its
+    length read again** and the index compared; the element's address from the index (times 4, plus 16; no index
+    check: Loops.cs takes it out); the null test; for each of the three floats two reads, the add, **the NaN
+    test** (a compare and a select), the store, **Vy read twice**; Life; Tag, its null test, its length; the
+    index stepped; **two branches a turn** (the test at the top and a branch back). The differences, each
+    measured by writing the loop that way by hand in the tool (three runs in turn, us a frame): as it is 32.7 to
+    33.4; rotated by hand with the length read once 31.0 to 31.5 (**1.7**: the second branch, the length and the
+    array's null test); Vy read once, before the first store 29.9 to 30.0 (**3.0**); without the NaN tests
+    (`CS2WASM_NO_CANON=1`) 28.7 to 29.2 (**4.2** in this loop; 2 to 2.5 in the whole frame, round 3); without them
+    and rotated 27.4 to 28.9, without them and Vy once 27.6 to 27.9. So the 8 between the two loops: the NaN tests
+    4, the reads and the loop's shape 2 to 3 (they overlap: together with no NaN tests 1), the rest the object's
+    size (36 bytes against 28) and the index against the pointer.
+  - **Built: a load repeated across stores to other bytes of the same object is read once**
+    (`CS2WASM_NO_SAME_BASE_LOADS=1`; Wasm/SameBaseLoads.cs, new, after FloatStores on the final bodies). The proof
+    needs no knowledge of fields: in straight-line code the second load is from the same local plus the same
+    constant as the first, the local was not assigned since, and every store between is through that very local
+    to bytes that do not overlap the load's (so: the same address, bytes nothing wrote). What ends it: an
+    assignment of the local; a store through anything else (another local may hold the same object or a place in
+    it; an address that is not a local) or to bytes that overlap; a call; a copy, a fill, an atomic or vector
+    instruction; any branch, block or loop. A volatile field is read with other instructions and is never one of
+    these loads. The tool's loop without its store 32.9-33.2 to **31.0-32.1** (the hand's 29.8 reads Vy before
+    X's store; the pass keeps the program's order); **the churn scene's frame the same, 0.083 to 0.085 ms with and
+    without, five runs in turn; bench.mjs 0.93x-0.94x and 0.94x: nothing moved.** A small thing that is certain,
+    not a step toward the target. Hello world 27,612 to 27,642 bytes. Test 207 (the place itself stored; another
+    variable holding the same object; a ref, a ref walked along, a pointer; fields that overlap by explicit
+    layout, narrower and wider; a method, a property, a delegate, a constructor between; the variable assigned;
+    array elements by an index that is the same one; branches and loops between; other fields stored between,
+    NaNs among them; each of the pass's five rules taken out changes a line: no overlap test: the place itself,
+    the pointer, the overlapping fields, the property; other locals' loads kept: the other variable; calls
+    passed over: the calls; an assignment passed over: the pointer moved on in a loop; a store without a local
+    for its address passed over: the ref and the pointer).
+  - **Not built: the loop's shape** (the test at the bottom, the array's null test and its length before the
+    loop). 1.7 us of the read loop, and less with the NaN tests in (the two overlap). The length before the loop
+    is the field-identity pass's (claude/field-loads-1: an array's length never changes), which this round was
+    told to stay out of; the rotation alone was not measured apart from it.
+  - **The NaN tests: which stores need them, and why none can go.** In this loop all three stores are of sums
+    just made (`x + vx`, `y + vy`, `vy + 0.1`): FloatStores.cs leaves out only a constant and a value just loaded
+    from memory, so all three are tested. Can a sum of values that came from memory (canonical there) be taken as
+    canonical? WebAssembly says of an arithmetic result that is a NaN: when no operand is a NaN, or every NaN
+    operand is canonical, the result is a canonical NaN **of either sign**; otherwise any arithmetic NaN. So by
+    the specification alone the payload is right and the sign is not: the test could be skipped only if the two
+    signs were the same thing to a program, and they are not (the bits are what section 7.3 is about: memory
+    compared and hashed by its bytes, a span of bytes over floats). On the engine the suite runs on, V8 on x64, a
+    NaN made by an operation is the processor's default, sign set, payload 0x400000, which is the one cs2wasm
+    stores, and one passed through keeps its bits: there the test never changes anything for canonical operands.
+    On arm64 the processor's default NaN has the sign clear: the same module would store 0x7FC00000 where it
+    stores 0xFFC00000 on x64. Skipping the test would make memory's bits depend on the machine, which is what the
+    section rules out. **Left: a floor of SPEC 7.3 as written, 4 us of this loop and 2 to 2.5 of the frame.**
+  - **The header's hash word: not moved, and why.** `Types.ObjectHeader = 12` is the count, the type and a third
+    word that is not only the hash: its bits 29 to 31 are flags every object can have (finalized, pinned by a
+    static, marked), and with the share check bits 24 to 28 are the thread that made the object. Taking the word
+    out means a new place for three flags that the count word (whose negative values are the arenas' and the
+    immortal objects') and the type word (compared whole at every cast, dispatch and store check) do not have
+    free, a table by address for the hash and those flags with its own cost at every free (a freed object's
+    entry must go, so every free would ask whether it has one: a test on the free path that today has none), and
+    the layout of everything after the header: an array's and a string's length are read at the literal offset
+    12 in 71 places of Runtime.cs and 19 of the compiler, beside CoreLib's own code that knows where an object's
+    first field is. What it would give was measured in round 3 on churn (1.5 to 2 us of 80 for four bytes) and
+    could not be measured on tree in this round (the machine: tree's median ran 0.06 to 0.29 ms in consecutive
+    runs of the same module). For 2% of one scene and an unmeasured amount of another, a change to every
+    object's layout and to the free path, to be proved by the self-hosted compiler's own rebuild, was not started
+    on the last day. **Not done; no measurement shows it unsound or a loss: it is unbuilt.**
+  - Verified on the homelab: at b6ae0e4 (the code's commit) the suite 214/214 checked and as shipped (464 s); test 207
+    under the stress tool, 200 loaded runs a mode, the same in every run; the self-hosted compiler built with the pass
+    and without it (tools/selfhost-switch.sh CS2WASM_NO_SAME_BASE_LOADS=1: 31,816,209 and 31,817,447 bytes), each
+    compiling Console.WriteLine(42) three times in turn: 10.3 to 10.7 s with, 10.2 to 11.2 s without, exit 0 and the
+    same peak memory (the script's own comparison of the two modules found no file by the name it looks for: not shown
+    there); tools/selfdet.mjs with the toolchain built from this commit (tools/proof5.mjs toolchain, 32,334,486 bytes,
+    no threads, one core): test 207 compiled by the self-hosted compiler is the .NET-hosted compiler's module byte for
+    byte (210,405 bytes). Not run: selfdet on more than that one program or with threads; frames.mjs against
+    NativeAOT-LLVM for this round (the machine).
+
+- **The collections and strings scenes, round 2 (2026-11-23, branch claude/colstr-2, from main 2dfc806; the desk
+  machine, heavily shared; not merged when this was written).** What round 1 left, in the order of its size. By
+  phase (`tools/colstr-parts.cs`, each change against its own switch, the lowest of 3 to 5 runs):
+  **strings' whole frame 8.19 to 7.21 us against NativeAOT-LLVM's 7.91 (0.91x); collections' 7.21 to 7.27 to 6.78
+  to 6.81 against 6.36 to 6.80, its p99 36.5 to 37.0 to 25.9 to 26.0 us against 26.8 to 30.4 (the lowest of six
+  runs, the desk loaded).** `frames.mjs --runs 3 --js-young 32`, three pairs in turn at a quiet moment, before (the three switches) / after: **collections median 6.9 to 7.2 / 6.4 to 6.6 us against NativeAOT-LLVM's 6.0 to 6.4 (1.13x / 1.07x to 1.08x: not reached), p99 34.5 to 37.9 / 24.2 to 25.4 against 24.9 to 27.0 (at NativeAOT's)**, p99.9 0.175 to 0.193 / 0.174 to 0.183 ms (1.04 to 1.11), **worst 0.21 / 0.36 to 0.37 ms (1.29 to 1.37): one frame, the first clear after the warm-up (frame 200), 0.17 ms longer with the move in every run, the other clears 0.18 to 0.20 as before or below; the code that lets an array's values go ran at every resize before and now runs only at the clears, and is still in the engine's baseline tier at that one: with `node --wasm-tiering-budget=1000000` (the optimizing tier a thirteenth of the calls sooner) frame 200 is 0.21 ms, as the other clears (0.38 to 0.39 by default, three runs each; tests/out timing, the module unchanged). An engine tier-up moved, not work added; the worst frame it makes is 0.37 ms against NativeAOT's 1.3**; **strings median 7.5 to 8.0 / 6.7 to 6.9 us against 7.6 (0.99x / 0.88x to 0.91x)**, p99 12.0 to 13.0 / 10.3 to 10.5 (18.3 to 20.0), p99.9 0.018 to 0.021 / 0.017 (0.059 to 0.080), worst 0.04 to 0.05 / 0.04 to 0.06 (0.24 to 0.26); churn 1.75x to 1.81x / 1.76x to 1.80x, tree 1.63x to 1.66x / 1.61x to 1.67x with p99.9 2.64 to 2.77 / 2.66 to 2.74 ms (2.41 to 2.55: not reached, not this round's), bigdrop 0.87x to 0.88x / 0.84x to 0.88x; memory 16.0 MB against 59.3 (71.1).
+  - **Stores that go down a structure (`Compiler/ChainStores.cs`, `CS2WASM_NO_CHAIN_STORES=1`): StringBuilder is no
+    cycle type.** A store `x.F = v` closes a cycle only if v reaches x. It does not when v was read out of x
+    (`x.F = y.G` or `x.F = y`, y come from x by copies and field reads, and for y itself the code has just found
+    `x != y`), or when v is an object the method has just made, known to nothing else, whose constructor put into
+    it only what was read out of x (`x.F = new C(x)` with the constructor storing `from.F`; `n = new C(.., x.F);
+    ...; x.F = n`). Why reads made earlier still count: order a component's objects so that every reference made
+    so far goes from a higher object to a lower; such a store goes down, an object nothing refers to yet can be
+    put anywhere above what it refers to (a constructor's `this` on top, a new object filled from below x just
+    below x, an isolated structure below its container), so while every store of a component's sites is one of
+    those no reference goes up. The facts (b is a or what a reached, a != b, a is null, a is a new object filled
+    from r) flow over Roslyn's control flow graph of the method, for `this`, parameters and locals that are only
+    plainly assigned, never captured, never passed by reference; a fact about two variables says nothing when
+    either is null, so it survives a join with a path on which one is null (`end = null; while (..) { if (end ==
+    null) end = cur; cur = cur.F; }`). A method that returns its receiver or what it read out of it
+    (FindChunkForIndex) and a constructor's contents by parameter are summaries of their text. A method with a
+    `try` gets no proof. A proven store is linked as an isolated value's (`Site.LinkIso`): it does not make its
+    site general, and links as any store where the site is cyclic through another. What the whole program must
+    confirm: a `ref`/`out` parameter of a class type T counts as a local only if no call passes anything but a
+    local of its own by reference for a `ref T` (`Arenas.RefWild`, noted at every by-reference argument; else the
+    site is general after all). Reflection's SetValue, a `ref` handed out, an accessor: the site's address is
+    taken or its stores are general, as before. Fixed on the way: a constructor's call that is not compiled
+    (`[Conditional("DEBUG")]`, StringBuilder's AssertInvariants) was taken to let `this` out; a proven store into
+    an owned local's object took the owned link, which makes the site general.
+    All of StringBuilder's stores of `m_ChunkPrevious` are proven (ExpandByABlock, MakeRoom, Remove's two, Length's
+    setter; the constructors' are stores into a new object) and its chunks are plain counted objects: 40 appends
+    of a string and a character into a new builder 1.40 to 0.62 us (NativeAOT 0.45), the scene's lines and appends
+    3.87 to 3.06 (2.53). A program that enumerates a builder's chunks (GetChunks:
+    the enumerator passes its current chunk by reference from a field) or sets fields by reflection keeps them a
+    cycle type, as before. Tests 213 (each rule in a class of its own by a marker type, with finalizers counting
+    what is left: growth, a cut to what a walk found, two cursors, a new chunk wired in, an `out` cursor; and each
+    store that looks the same and closes a cycle, a ring, a self link, the cursors untested, a constructor that
+    keeps its argument, a value from above, a `ref` cursor over a field a call rewires, a local a lambda rewires;
+    with `CS2WASM_CHAIN_BREAK=1`, a plain local taken as read out of anything, two of them leak) and 214
+    (reflection, a `ref` handed out, an accessor, GetChunks).
+  - **A collection that grows moves its items (`Rt.MoveRange`, Boundary/ArrayMoves.cs; edits of Dictionary.cs,
+    HashSet.cs and List.cs in the manifest; `CS2WASM_NO_ARRAY_MOVE=1`): collections' p99.** Resize's `Array.Copy`
+    counted every value for the new array and the old array's end counted each off again. Where the old array is
+    full and nothing but the collection's field refers to it (its count is one, a plain object, no threads), the
+    bytes are copied and the old array is left an array of bytes of the same size: nothing counted, its bytes as
+    they were, freed at the same store as before. The two holders: TryInsert and AddIfNotPresent set their
+    `entries` local to null before they call Resize (they assign it again right after), and Resize makes its
+    buckets before the copy when it does not rehash, so nothing can throw between the move and the store of the
+    new array. A method further up the stack that still reads the old entries (a key's Equals that adds to the
+    dictionary under the insert that called it) holds a count, and the copy is made as before (test 220, which
+    with `CS2WASM_ARRAY_MOVE_BREAK=1` throws in those cases). The resize frame (the frame to the map's sets, p99)
+    30.8 to 20.3 to 22.8 us against 22.5 to 22.9; the whole frame's p99 35.0 to 24.7 to 27.5 against 24.9 to 26.1;
+    without the clear frames 19.4 to 14.6 against 16.4. Queue is not done (its copy is two ranges, and the second
+    reads the old array's length). **Found, on main too: a Span over a List's items (`CollectionsMarshal.AsSpan`),
+    or a `ref` to a dictionary's value (`GetValueRefOrNullRef`), held across a growth reads the freed old array:
+    as shipped the bytes are still there, a checked build traps (`list.AddRange(CollectionsMarshal.AsSpan(list))`
+    is the library-shaped case). .NET keeps the old array alive through the span. Not fixed.**
+  - **An `out` value borrowed (`Compiler/OutBorrows.cs`, `CS2WASM_NO_OUT_BORROW=1`).** `if (map.TryGetValue(key, out
+    var v)) sum += v.Life;` counted the value into v's slot and off again. From the text alone, both sides: the
+    callee (a method of a class, not virtual) only ever gives the parameter `default`, or a value it reads at that
+    moment out of a place of the object's (a field or an element from `this` on, or through a `ref` local a call
+    on `this` gave: `value = valRef` after `ref FindValue(key)`) with the return of a constant as the next
+    statement, and has no local that holds a reference; a copy of it stores the value as it is. The caller: a
+    direct call with `out var v`, the call an `if`'s condition or the left of its `&&`s, every use of v in the
+    rest of the condition and the first branch, and nothing there but reads of locals, fields and elements,
+    arithmetic, stores of numbers and `return` (no call, no allocation, no property, no static's first read): then
+    nothing between the callee's read and v's last use changes any place, and v's slot is no owner. Not in a
+    program with threads. The frame 7.08 to 7.14 us to 6.81 to 6.82 (NativeAOT 6.43 to 6.49). Test 221 (the shapes
+    that qualify, and each that must count as before with a use after the place let the value go: the branch
+    removes the key, clears or replaces, calls what does, v used after the `if`, captured, a TryGet that makes its
+    object, returns a local's, is virtual, is a struct's; with `CS2WASM_OUT_BORROW_BREAK=1` two sums show items
+    used after their finalizers).
+  - **What an object costs (`tools/alloc-parts.cs`, new; 100 objects of 40 bytes a frame, ns, NativeAOT /
+    cs2wasm, the desk loaded):** made and kept, nothing freed 538 / 406 (the allocation, the constructor's stores
+    and the array's store are faster here than NativeAOT's bump allocation and write barrier); made over old ones
+    406 / 1,114; 100 let go alone 149 / 810; 100 stores of one object 199 / 221. **The whole difference, 6.6 ns an
+    object, is the free** (the release that finds the last reference, the object's destruction, the block back to
+    its page: `rt.destroy_now`, `FreeSmallOld`), work NativeAOT's collector does later in its pauses (its p99.9 1.1
+    ms on the scene against 0.19). The allocator's and the destruction's paths are other rounds'.
+  - **Left of collections' median, 0.35 us, not built.** The sets 0.21: TryInsert's count on its `entries` local
+    for the whole method (kept because a comparer's call can store the field while the local is read after: it
+    could be taken only around the branch with those calls, a placement the compiler's scoped counts do not have)
+    and the new value counted by the store and let go by the caller (`OwnedParams` leaves TryInsert out: past its
+    size, the stores in loops, though each is followed by a return), 0.11 together; the frees above, 0.10 (of the
+    30 removed and the overwritten values a frame). The removes 0.05 and the queue 0.07: not looked into. Strings:
+    `Join` of 20, 0.27 us against 0.20, not looked into (the frame is below NativeAOT's without it).
+  - Checked: On the homelab at 11b6497 (the last commit that changes code): suite 214/215 checked (088's timer line; alone it passes both ways) and 215/215 as shipped; at c3c4867, 215/215 both ways; stress, 200 loaded runs a mode: 213, 214, 220 and 221 the same in every run; the self-hosted compiler (tools/selfhost-switch.sh, which now compiles test 145's hello world: its own one-line program was top-level statements, an error in a library, and no module was ever written, on main too) with and without the round's three switches: the same module from both (27,393 bytes), 9.06 to 9.18 s as it is and 9.07 to 9.30 switched, peak memory 344 MB both. The module differs from the one the compiler run by .NET writes for the same file at byte 24,844 (a comparison added to the script this round, each given the file under another path: not followed, and not known for main).
+- **The build, round 7: the list on top of its node (fixed), and what fewer members can give (measured, not built)
+  (2026-11-22 to 23, branch claude/tree-build-7, from claude/round-6b 8022fbc; the desk machine; not merged when this
+  was written).**
+  - **tools/tree-assign.cs's leak: the cause and the fix.** A list of children that code refers to while its
+    node's first child is put into it (in a program with a second store of the field the receiver of
+    `e.Kids.Add(Tree(e, ..))` is counted across the call, not borrowed; the same for a local or a static that holds
+    the list) waits for its owner as the node does when the child joins: LinkMembers leaves both to LinkWaiting,
+    and the pairs stand in the order of the visits, (child, node) then (node, list). Taken so, the child's chain
+    ends at the list, which nothing owns yet, the node is not found above the child, and the child becomes the
+    node's owner; the second pair then finds the list above the node and makes the node's own field an
+    up-reference to its list. Every node hung below its first child with its list on top, kept by holds alone, and
+    a subtree stored over was never destroyed before its tree went (121, 161, 201 nodes for .NET's 121, 121, 121;
+    the holds are not kept ones, `CS2WASM_STALE_HOLDS` is off: round 6's guess at the cause was wrong). Done:
+    `Rt.WaitingTop` (`CS2WASM_NO_WAITING_TOP=1`): a pair that would make the container the value's owner first
+    looks whether the value itself waits, further down the list, to own the top of the container's chain; that
+    pair is settled first (the value owns the top, as its turn would have had it), and the value is then above
+    the container: an up-reference. Test 199 (the receiver counted, a local, a static; subtrees stored over,
+    children moved, a node of a replaced part held, nodes with finalizers; counted against .NET while the trees
+    live): 259 nodes and more for 114 without the fix.
+  - **What a node's way of holding its children costs** (the scene tree, 19,531 entities, the parent set as each is
+    made; a program of three classes, not kept; build and drop, three runs): a List, the scene's, 1.70 to 1.75 ms
+    and 0.42; an array of the node's own with room for eight from the first child (no list: two members a node
+    with children, one a leaf, no growth) 1.53 to 1.59 and 0.18 to 0.20; first-child and next-sibling fields (one
+    member an entity, nothing else) 3.48 to 3.54 and 0.24 to 0.26. **So the number of members is not the build's
+    cost: without the list's membership the build is 0.2 ms shorter and the drop half; one member an entity,
+    linked through siblings, is twice as slow to build, because each link there is a general one.** What a build
+    pays is the links, by their kind (round 6: a fused leaf's two joins 19 ns, its up-reference 9; a node 200).
+  - **The floor, and what is not one.** Entity cannot be taken out of the groups at compile time in this scene: its
+    type is on a cycle through its own list (`Entity -> List<Entity> -> Entity[] -> Entity`) whatever is proven of
+    the parent field, and the scene's move puts a node into the list of a node the program picks at run time
+    (`to.Children.Add(moved)`): that `to` is not below `moved` is true and is not in the program's text. So a
+    member an entity and an up-reference a child stay (SPEC: no collector, the cut subtree freed at its store),
+    and with them, by the parts measured so far, about 10 ns of allocation, 10 for a join and 5 to 9 for an
+    up-reference: 25 to 30 ns an entity, 0.5 to 0.6 ms a build against NativeAOT-LLVM's 0.26 (whose own rebuild
+    frames then pay 2.4 ms collections: its p99.9). That sum is an estimate from measured parts, not a
+    measurement. Today's 1.6 ms is three times it: not a floor.
+  - **Not built in this round: the exclusive part** (a field's object proven at compile time to be the holder's
+    alone: made by the holder's initializer, used only as the receiver of calls that keep nothing, never stored,
+    returned or captured; and List<T>'s array likewise where the program reaches nothing that lets it out). What
+    it takes, worked out: the part carries its holder in its owner word and a flag, never joins and has no place
+    on a ring; every entry of the runtime that takes a container (ArenaLink, ArenaUnlink, ArenaArrayCopy,
+    ArenaArrayClear, ArenaMove, ArenaGrowArray, ReplaceArray, the stores by address) maps a part to its holder
+    first, the reference then a counted inside reference of the holder outside its slot bits (Far), a child's
+    owner the holder itself (its parent field one step up the chain, not three); a list's growth is a plain copy;
+    the holder's generated visit goes through its parts' slots; the holder's clear releases the part as the plain
+    object it is. By the array variant above it is worth at most what the list and the array cost today: about
+    0.2 to 0.4 ms of a build and half the drop (the store over a subtree in an ordinary frame with it), and it
+    makes every leaf's parent field a one-step up-reference. It does not make the node's own path shorter (item
+    2: the node joined from below, 200 ns), which stays the largest single part.
+  - Checked. frames.mjs here, the fix off and on in turn twice (`--runs 3 --js-young 32`; the scenes do not take
+    its path): tree median 0.047 and 0.048 to 0.049 ms against NativeAOT-LLVM's 0.029 to 0.030, p99.9 2.52 and
+    2.62 off, 2.67 and 2.88 on, against 2.44 to 2.57 (the desk's spread; in the two quietest pairs this side's
+    rebuild frame is 0.08 and 0.11 ms above NativeAOT-LLVM's: with round 6's step, not reached); the other scenes
+    as on main; bench.mjs 0.98x and 0.94x; hello world 27,642 bytes. On the homelab at 1c7f1c4: the suite 214/215
+    checked and 214/215 as shipped, the one 088's timer line in both (other sessions' jobs beside it; see the log
+    for the run on the last commit); `tools/stress-cycles.sh`, 200 loaded runs a mode: 199, 198, 192 to 197 and
+    139 the same in every run of both modes, 127 differing in 1 of 200 in each (main's rate); the self-hosted
+    compiler built with and without the switch (`tools/selfhost-switch.sh CS2WASM_NO_WAITING_TOP=1`: 238 and 243
+    s, 31.8 MB each; its runs 10.3 to 11.2 s either way, 490 MB; the script's own comparison found no output
+    file, its `w42.cs` is not a program the compiler takes: not followed) and `node tools/selfdet.mjs --self
+    tests/out/selfsw/as-is.wasm tests/Conformance/145_size_hello.cs`: the self-hosted compiler's module the
+    .NET-hosted compiler's byte for byte (27,595 bytes, 9.1 s).
 
 ### A4. Plugins (goal 3)
 
