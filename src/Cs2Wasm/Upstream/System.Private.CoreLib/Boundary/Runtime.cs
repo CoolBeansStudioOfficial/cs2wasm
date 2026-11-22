@@ -606,6 +606,9 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_NO_PINNED_SKIP=1 (at compile time): a pinned object stored into a plain object's slot takes
         /// the lock and ArenaLinkCore's questions before it is left a counted reference (ArenaLink).</summary>
         [Intrinsic] static extern bool NoPinnedSkip();
+        /// <summary>CS2WASM_NO_STORE_WAITS=1 (at compile time): a plain object that joins for a store into a member's
+        /// own slot is that member's at once, whatever its own slots hold (LinkMembers).</summary>
+        [Intrinsic] static extern bool NoStoreWaits();
         /// <summary>CS2WASM_NO_EARLY_GIVE_BACK=1 (at compile time): the count a store took on a member is always given
         /// back after the store is written (EarlyGiveBack).</summary>
         [Intrinsic] static extern bool NoEarlyGiveBack();
@@ -2246,12 +2249,30 @@ namespace Cs2Wasm.Runtime
             {
                 int o = Mem.LoadI32(s_reevQ + 8 * q), v = Mem.LoadI32(s_reevQ + 8 * q + 4);
                 if (Mem.LoadI32(o) >= -1 || Mem.LoadI32(v) >= -1 || ((PL(o, 24) | PL(v, 24)) & Dying) != 0) continue;
-                if (PL(v, 20) != 0) { if (PL(o, 20) != 0) Reevaluate(o); continue; }
-                if (PL(o, 20) != 0 && OnChain(o, v)) { Reevaluate(o); continue; }
+                if (PL(v, 20) != 0) { if (PL(o, 20) != 0) ReevaluateWaiting(o, v); continue; }
+                if (PL(o, 20) != 0 && OnChain(o, v)) { ReevaluateWaiting(o, v); continue; }
                 if (PLW(v) == o) PSW(v, 0);
                 TakeOwnership(v, o);
             }
             s_reevN = 0;
+            s_waitSlot = 0;
+        }
+
+        // (the slot of the store under way whose value was left to a waiting owner, LinkMembers, with its object and
+        // the value: the slot holds its old value until ArenaLink returns)
+        static int s_waitSlot, s_waitObj, s_waitVal;
+
+        /// <summary>LinkWaiting: the container's reference to the value may be an up-reference now. Reevaluate reads
+        /// the container's slots; the slot of the store under way does not hold the value yet.</summary>
+        static void ReevaluateWaiting(int o, int v)
+        {
+            if (s_waitSlot != 0 && o == s_waitObj && v == s_waitVal)
+            {
+                int i = SlotIndex(o, s_waitSlot);
+                if (i >= 0) ReevaluateSlot(o, i, v);
+                return;
+            }
+            Reevaluate(o);
         }
 
         // (ArenaLinkJoined's visits, and the members to Reevaluate after them)
@@ -3567,6 +3588,20 @@ namespace Cs2Wasm.Runtime
                 // container owns it, as it would have at the link.
                 else if (ow == 0 && s_joinVisit != 0 && Mem.LoadI32(val) < (later ? -3 : -2) && val != container)
                 {
+                    Waiting(val, container);
+                }
+                // The same for a store into a member's own slot of a plain object that code still holds, which joins
+                // for it with its slots still to be linked (it waits in ArenaJoin's list, so ArenaLinkJoined and
+                // LinkWaiting run before this store's link ends): `e.Children.Add(c); c.Parent = e;`, the parent set
+                // after the child is in the list, where the node, its list and its array's owner are plain objects
+                // until the first child's parent field is stored. Owned by that child at once, every node was the
+                // property of its first child (and the child no longer its array's, the ownership turned round
+                // as the node's list took the array), each first child a top held by its own tree: 1,600 checks at
+                // the drop a build of the scene tree of tools/frames.mjs, the old arrays of the lists' growths
+                // handed over the long way, 5.5 ms a build for the other order's 1.9.
+                else if (ow == 0 && fresh && i >= 0 && s_joinVisit == 0 && s_linkN != 0 && !NoStoreWaits() && Mem.LoadI32(val) < -2)
+                {
+                    s_waitSlot = slot; s_waitObj = container; s_waitVal = val;
                     Waiting(val, container);
                 }
                 else if (ow == 0 && fresh)
