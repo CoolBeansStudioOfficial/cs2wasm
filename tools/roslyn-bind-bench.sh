@@ -96,5 +96,26 @@ time)
   node "$SRC/summary.mjs" < $L
   rm -f $T $L
   ;;
-*) echo "usage: $0 build [name [cs2wasmc]] | build-at <commit>... | build-naot | time [name...]"; exit 2 ;;
+prof)
+  # one run of each build named and of NativeAOT-LLVM's under node --cpu-prof (V8's normal tiering, eager compilation,
+  # 100 us samples), the profiles to tests/out/bindbench/prof/<name>.cpuprofile; then each restricted to the bind
+  # phase (samples under GetOperation or Descendants: tools/profphase.mjs) as <name>.bind.cpuprofile. A cs2wasm build
+  # to profile is built with CS2WASM_NAMES=1 (env CS2WASM_NAMES=1 bash tools/roslyn-bind-bench.sh build <name>).
+  [ $# -gt 0 ] || set -- bb
+  P=$OUT/prof; mkdir -p "$P"; PW=$(cygpath -m "$P")
+  NP="--cpu-prof --cpu-prof-interval ${INTERVAL:-100} --no-wasm-lazy-compilation $NODE_PROF_ARGS"
+  for b in "$@"; do
+    host=$(cat "$OUT/$b.host" 2>/dev/null || echo "host/run.mjs")
+    case $host in /*|?:*) ;; *) host=$ROOTW/$host ;; esac
+    rm -f "$P"/*.tmp.cpuprofile
+    CS2WASM_PROCESSORS=1 CS2WASM_FS_ROOT=C:/ node $NP --cpu-prof-dir "$PW" --cpu-prof-name "$b.tmp.cpuprofile" "$host" "$(cygpath -m "$OUT")/$b.wasm" main -- "$(nodrive "$UP")" "$(nodrive "$RT")" ${BODIES:-400} 2>&1 | head -2
+    mv "$P/$b.tmp.cpuprofile" "$P/$b.cpuprofile"
+    node "$ROOTW/tools/profphase.mjs" "$PW/$b.cpuprofile" "$PW/$b.bind.cpuprofile"
+  done
+  if [ -f "$NAOT/bind-bench-naot.js" ]; then
+    (cd "$NAOT" && node $NP --cpu-prof-dir "$PW" --cpu-prof-name naot.cpuprofile bind-bench-naot.js "$(mounted "$UP")" "$(mounted "$RT")" ${BODIES:-400} 2>&1 | head -2)
+    node "$ROOTW/tools/profphase.mjs" "$PW/naot.cpuprofile" "$PW/naot.bind.cpuprofile"
+  fi
+  ;;
+*) echo "usage: $0 build [name [cs2wasmc]] | build-at <commit>... | build-naot | time [name...] | prof [name...]"; exit 2 ;;
 esac
