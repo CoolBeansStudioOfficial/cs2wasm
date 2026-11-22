@@ -198,6 +198,7 @@ sealed partial class FunctionCompiler
         using (BodyScope())
         {
             EnterDisplay(s_fnKey);
+            PrepareStorageKeeps();
             GuardStaticInitOnEntry();
             if (body is IConstructorBodyOperation ctor) EmitConstructorBody(ctor);
             else if (body is IMethodBodyOperation mb) EmitStatement((IOperation?)mb.BlockBody ?? mb.ExpressionBody!);
@@ -363,6 +364,8 @@ sealed partial class FunctionCompiler
                 case IDynamicInvocationOperation or IDynamicIndexerAccessOperation or IDynamicObjectCreationOperation: MarkDynamicRefArgs(op); break;
                 case IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None, Initializer: { } init }: MarkAddr(init.Value); break;
                 case ISimpleAssignmentOperation { IsRef: true } sa: MarkAddr(sa.Value); break;
+                // (a call that gives a reference into a collection's storage: StorageKeeps.cs)
+                case IInvocationOperation or IPropertyReferenceOperation: NoteStorageSite(op); MarkNestedWrite(op); break;
                 default: MarkNestedWrite(op); break;
             }
     }
