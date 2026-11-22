@@ -34,6 +34,8 @@ internal interface IFieldStores
     bool Indirect(FuncType? sig, int id);
     /// <summary>A call of the host: what it can call back.</summary>
     bool Host(int id);
+    /// <summary>A throw: the filters it runs before a handler takes it.</summary>
+    bool Throw(int id);
 }
 
 /// <summary>The module's knowledge of field stores, kept from the compiler to the pass below: sets of field numbers
@@ -186,6 +188,8 @@ static class FieldLoads
         public HashSet<int> Assigned = [];
         public List<WasmFunction> Calls = [];
         public List<FuncType?> Indirect = [];
+        /// <summary>Something in the loop can throw (any call, the null check's too).</summary>
+        public bool MayThrow;
         public Dictionary<int, string?> Killed = [];
     }
 
@@ -224,11 +228,12 @@ static class FieldLoads
     {
         var b = f.Body;
         int n = b.Count;
-        bool anyLoop = false, anyLoad = false;
+        bool anyLoop = false, anyLoad = false, hasTry = false;
         for (int i = 0; i < n; i++)
         {
             var x = b[i];
             if (x.Op == Op.Loop) anyLoop = true;
+            else if (x.Op == Op.TryTable) hasTry = true;
             else if (x.Ref != null && IsLoad(x.Op) && (x.Ref is FieldTag || ReferenceEquals(x.Ref, Loops.Length))) anyLoad = true;
         }
         if (!anyLoop || !anyLoad) return false;
@@ -273,8 +278,9 @@ static class FieldLoads
                 {
                     var x = b[k];
                     if (x.Op is Op.LocalSet or Op.LocalTee) info.Assigned.Add((int)x.Imm);
-                    else if (x.Op == Op.Call && x.Ref is WasmFunction g) { if (!ReferenceEquals(g, nonNull) && !Throws(x) && !info.Calls.Contains(g)) info.Calls.Add(g); }
-                    else if (x.Op == Op.CallIndirect) { var sig = x.Ref as FuncType; if (!info.Indirect.Contains(sig)) info.Indirect.Add(sig); }
+                    else if (x.Op == Op.Call && x.Ref is WasmFunction g) { info.MayThrow = true; if (!ReferenceEquals(g, nonNull) && !Throws(x) && !info.Calls.Contains(g)) info.Calls.Add(g); }
+                    else if (x.Op == Op.CallIndirect) { info.MayThrow = true; var sig = x.Ref as FuncType; if (!info.Indirect.Contains(sig)) info.Indirect.Add(sig); }
+                    else if (x.Op is Op.Throw or Op.ThrowRef) info.MayThrow = true;
                 }
                 return info;
             }
@@ -290,6 +296,8 @@ static class FieldLoads
                 {
                     foreach (var g in li.Calls) if ((why = CallKills(h, g, id, 0)) != null) break;
                     if (why == null && !Without("indirect")) foreach (var sig in li.Indirect) if (h.Stores.Indirect(sig, id)) { why = "an indirect call"; break; }
+                    // (a throw caught in this function, the loop going on after it: the filters ran meanwhile)
+                    if (why == null && hasTry && li.MayThrow && !Without("throws") && h.Stores.Throw(id)) why = "a filter of a throw";
                 }
                 return li.Killed[id] = why;
             }
@@ -414,8 +422,14 @@ static class FieldLoads
         var b = f.Body;
         int n = b.Count;
         int cands = 0;
-        for (int i = 0; i < n && cands < 2; i++) if (b[i].Ref != null && IsLoad(b[i].Op) && (b[i].Ref is FieldTag || ReferenceEquals(b[i].Ref, Loops.Length))) cands++;
+        bool hasTry = false;
+        for (int i = 0; i < n; i++)
+        {
+            if (b[i].Op == Op.TryTable) hasTry = true;
+            else if (b[i].Ref != null && IsLoad(b[i].Op) && (b[i].Ref is FieldTag || ReferenceEquals(b[i].Ref, Loops.Length))) cands++;
+        }
         if (cands < 2) return false;
+        hasTry &= h != null && !Without("throws");
         var avail = new List<Avail>();
         var copies = new List<(int local, int root, int seq)>();
         // the blocks open here: the order number when each began, whether it is a loop, the loop around it
@@ -425,6 +439,17 @@ static class FieldLoads
         Dictionary<int, (int local, int form)>? replace = null;
         int firstLocal = f.Type.Params.Length;
         bool ctorRule = !Without("constructors");
+        // (a throw caught in this function: the filters that ran before the handler; any call can throw)
+        void Thrown()
+        {
+            if (avail.Count > 0)
+                avail.RemoveAll(a =>
+                {
+                    if (a.Tag == null) return false;
+                    foreach (int id in a.Tag.Ids) if (!(ctorRule && h!.CtorOnly[id]) && h!.Stores.Throw(id)) return true;
+                    return false;
+                });
+        }
         int Root(int t) { foreach (var c in copies) if (c.local == t) return c.root; return t; }
         for (int i = 0; i < n; i++)
         {
@@ -436,7 +461,9 @@ static class FieldLoads
                     blocks.Push((seq, true, loop)); loop = i;
                     continue;
                 case Op.If:
-                    // (a check that throws: its body does not come back, nothing is found or killed in it)
+                    // (a check that throws: its body does not come back, nothing is found or killed in it; the
+                    // filters of a handler in this function that takes it have run where it goes on)
+                    if (hasTry && i + 1 < n && Throws(b[i + 1])) Thrown();
                     if (i + 2 < n && Throws(b[i + 1]) && (b[i + 2].Op == Op.End || i + 3 < n && b[i + 2].Op == Op.Unreachable && b[i + 3].Op == Op.End)) { i += b[i + 2].Op == Op.End ? 2 : 3; continue; }
                     blocks.Push((seq, false, loop));
                     continue;
@@ -463,7 +490,11 @@ static class FieldLoads
                         if (root >= 0 && root != v && copies.Count < 64) copies.Add((v, root, ++seq));
                         continue;
                     }
+                case Op.Throw or Op.ThrowRef:
+                    if (hasTry) Thrown();
+                    continue;
                 case Op.Call:
+                    if (hasTry) Thrown();
                     if (avail.Count > 0 && x.Ref is WasmFunction g && !ReferenceEquals(g, nonNull) && !Throws(x))
                         avail.RemoveAll(a =>
                         {
@@ -473,6 +504,7 @@ static class FieldLoads
                         });
                     continue;
                 case Op.CallIndirect:
+                    if (hasTry) Thrown();
                     if (avail.Count > 0 && !Without("indirect"))
                     {
                         var sig = x.Ref as FuncType;

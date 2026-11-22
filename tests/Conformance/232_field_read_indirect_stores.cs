@@ -1,7 +1,8 @@
 // An instance field read in a loop while something the loop reaches only indirectly stores it: a delegate (a lambda
 // that is given the object, one that finds it in a static, a method group, a multicast one), an interface and a virtual call with several
 // implementations, a function pointer, an event's handlers, a finalizer run where the loop lets go of an object, a
-// handler for an exception thrown inside the loop (by the loop and by a callee that stored first), reflection
+// handler for an exception thrown inside the loop (by the loop and by a callee that stored first), a filter that
+// stores the field when a check of the runtime's throws, reflection
 // (FieldInfo.SetValue), LINQ's deferred lambdas, a comparer called by a sort, a recursive call, a constructor and a
 // static initializer run inside the loop, IDisposable in a `using`. Each field is used by one case only.
 using System;
@@ -13,7 +14,7 @@ using System.Runtime.InteropServices;
 
 sealed class Box
 {
-    public int Lambda, Group, Multi, Iface, Virt, Ptr, Event, Fin, Fin2, Catch, Thrown, Reflect, Linq, Sort, Rec, Ctor, Init, Disp, Quiet;
+    public int Lambda, Group, Multi, Iface, Virt, Ptr, Event, Fin, Fin2, Catch, Thrown, Filter, Filter2, Reflect, Linq, Sort, Rec, Ctor, Init, Disp, Quiet;
     public string Name = "n";
     public void SetGroup(int v) { Group = v; }
 }
@@ -148,6 +149,35 @@ static class P
         }
         return s;
     }
+    // a filter that stores the field (through a static: b stays a variable of the method), run by a throw of the
+    // runtime's own (a null array's length, an index out of range) and by one in a callee, before the handler
+    static bool Touch(int v) { s_box!.Filter += v; s_box.Filter2 = s_box.Filter2 * 3 + v; return true; }
+    [MethodImpl(MethodImplOptions.NoInlining)] static int At(int[] a, int i) => a[i];
+    static int FilterStores(Box b, int[]? none)
+    {
+        int s = 0;
+        s_box = b;
+        var one = new int[1];
+        for (int i = 0; i < 4; i++)
+        {
+            try { s += b.Filter; if (i > 0) s += none!.Length; }
+            catch (NullReferenceException) when (Touch(i)) { s += 1; }
+            s += b.Filter;
+        }
+        for (int i = 0; i < 4; i++)
+        {
+            try { s += b.Filter; s += At(one, i); s += one[i & 2]; }
+            catch (IndexOutOfRangeException) when (Touch(i + 10)) { s += 2; }
+            s += b.Filter;
+        }
+        // (in a straight line: a read before the try statement and one after it)
+        int before = b.Filter2;
+        try { s += none!.Length; } catch (NullReferenceException) when (Touch(5)) { }
+        s += before + b.Filter2;
+        before = b.Filter2;
+        try { s += At(one, 3); } catch (IndexOutOfRangeException) when (Touch(6)) { }
+        return s + before + b.Filter2;
+    }
     static int Reflected(Box b)
     {
         int s = 0;
@@ -206,6 +236,7 @@ static class P
         Console.WriteLine("events " + Events(b));
         Console.WriteLine("finalizers " + Finalizers(b));
         Console.WriteLine("handlers " + Handlers(b));
+        Console.WriteLine("filters " + FilterStores(b, null));
         Console.WriteLine("reflected " + Reflected(b));
         Console.WriteLine("deferred " + Deferred(b));
         Console.WriteLine("recursive " + Recursive(b, 3));

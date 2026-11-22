@@ -60,6 +60,7 @@ internal sealed partial class RuntimeFns
     WasmFunction? _firstPass, _ehBoundary;
     /// <summary>first_pass(ex): walks the handler chain; sets __eh_record (-1: none) and __eh_clause.</summary>
     public WasmFunction FirstPass => _firstPass ??= MakeFirstPass();
+    public WasmFunction? FirstPassIfMade => _firstPass;
     /// <summary>A record whose test catches everything (a filter's own frame: what escapes a filter is swallowed).</summary>
     public WasmFunction EhBoundary => _ehBoundary ??= MakeBoundary();
 
