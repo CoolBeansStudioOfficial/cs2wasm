@@ -16,6 +16,8 @@ bad=0
 # (TESTS and MODES with spaces or commas: tools/homelab.sh hands each word on alone)
 TESTS=${TESTS//,/ }; MODES=${MODES//,/ }
 for t in ${TESTS:-127_everything_is_freed 139_racing_cyclic_stores}; do
+  # (a test by the start of its name too: 187_)
+  f=$(ls tests/Conformance/$t*.cs 2>/dev/null | head -1); if [ -n "$f" ]; then t=$(basename "$f" .cs); fi
   for mode in ${MODES:-shipped checked}; do
     # (the runner leaves a checked module in tests/out, one as shipped in tests/out/shipped)
     if [ $mode = shipped ]; then flag=--unchecked; dir=tests/out/shipped; else flag=; dir=tests/out; fi
