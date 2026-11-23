@@ -692,10 +692,33 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     queued in the thread's list, tried before; the hold let go in DrainKills) leaves test 133 with 4,934 objects,
     four members referred to from outside for good; why exactly was not followed. Test 215 (the case back in) and
     215b (the same with threads): `holder comes under: 4` without, pass with. Test 187: 6 and 10 of 1,000 before the turn hold (as shipped, checked; 4 and 7 at 32 at once), none in 2,000 a mode and none in 1,000 a mode at 32 at once with it.
-  - **A queued member in a destruction (DyingQueued).** A member left without a reference of either kind during a
-    destruction was left to the thread's list when it already waited there, and destroyed alone later. It dies with
-    the others. Shown only with a trial that queues many more members (CS2WASM_SURVIVOR_CHECK=1): test 133 leaves 1
-    object without, none with.
+  - **The notes' upkeep and the self-hosted compiler (2026-11-23).** With the branch as it stood (a8a50fc's
+    StaleNote: the whole check of a noted top again, a walk of all it owns, at every ownership taken under it and
+    at every owner under it that lets a member go) the self-hosted compiler did not end Console.WriteLine(42):
+    stopped at 600 s, 9.3 s before the branch; 31 s with the first of the two off, 11.5 s with both. Under a top
+    that lives on (no code refers to it, members elsewhere do) that is the structure's size squared, and the
+    suite's programs are too small to show it: tools/selfhost-time.sh is the step that does. A debt that put such
+    checks off and paid for them later was built and taken out again (work moved to another time). In its place
+    the numbers are kept at the events, with no walk of what the top owns:
+    NoteCameUnder: what changed hands (the member that got an owner under a noted top, and what it owns, up to 64
+    members, by the slots their bits tell of and an array's elements) takes its references into what the top
+    owned off the number; NoteLeft: a held, marked member its owner lets go is one off the top's number of held
+    members; TellTakenIn: a trial with other tops taken in that fails tells each of them, in its note's share,
+    how many of the references into it come from this top (test 215's four results); a noted top that gets an
+    owner loses its note; SurvivorHold: a destruction's survivor left without an owner that no code refers to
+    is held like TurnHold's top and let go when the destruction is done, the one check at that event; TurnHold
+    only at a turn an adoption makes; TakeInAbove walks to the top only from a member a failed check marked
+    (the walk for every reference of every trial was 2.4 s of hello world's 11.7 s).
+    Left as before a8a50fc, in the code's own words at NoteCameUnder and NoteLeft: a member that comes under a
+    noted top bringing more than 64 members, references from slots past the sixteenth word or from an array of
+    structs, held members further down in what a member that leaves owns. No test has them.
+    Test 088 through the self-hosted compiler did not end with the notes off, the take-in off or the turn hold
+    off, each alone, and ended in 102 s with all the branch's switches off: DyingQueued (below) was the one not
+    tried alone, and is off.
+  - **A queued member in a destruction (DyingQueued), off.** A member left without a reference of either kind
+    during a destruction is left to the thread's list when it already waits there, as on main. Dying with the
+    others instead (CS2WASM_DYING_QUEUED=1) was needed only by a trial that queues every survivor (test 133 left
+    1 object without it); Unqueue goes through the whole list for each such member.
   - **What the tests asked that .NET does not promise**, each checked against .NET under the same load (400 runs
     of the test as it was, eight processes): .NET gave the usual output in all 400 for 127, 131, 135, 187, so none
     of these is shown by .NET's output; they stand on .NET's sources. 127 and 187 counted what was left right

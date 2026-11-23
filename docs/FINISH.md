@@ -1082,4 +1082,13 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   one run of five to fifteen (tests/Load/219_no_lock.cs), by two structures that refer into each other and whose
   checks each waited on the other's note; the trial takes in the top above a member it refers to (TakeInAbove).
   None of 300 after; test 127 without its lock again (the homelab's runs at aeda59c: not back when this was written).
+  2026-11-23, the same branch: with it the self-hosted compiler did not end hello world (stopped at 600 s; 9.3 s
+  before), by a8a50fc's whole check of a noted top at every ownership taken or let go under it; the suite and the
+  stress never showed it. Replaced by numbers kept at the events (docs/AUDIT.md A3.5, "The notes' upkeep and the
+  self-hosted compiler"; tools/selfhost-time.sh is the new step of every verification here). 43202b7 on the desk,
+  eight at once, 500 runs each as shipped: 187, 219, tests/Load/219_no_lock.cs, 127 (no lock) and 131 the same in
+  all 500; tests 132, 133, 215, 215b, 216 pass; test 139 at ten times its length 2.90 s against main's 3.29.
+  The self-hosted compiler at 43202b7 (hello world's time, selfdet on 145, 220, 193, 088), the homelab's suite
+  and stress: not back when this was written (the counts in the row above are from 59a6c4a, before this change).
+  claude/load-flakes-safe (from main 00d78fe) carries what is independent of the notes; see its own entry.
   Open: test 139's two nodes without the engine's stack checks, not seen again, its cause not shown.
