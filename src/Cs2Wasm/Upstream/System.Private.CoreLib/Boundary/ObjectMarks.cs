@@ -104,6 +104,8 @@ namespace Cs2Wasm.Runtime
         internal const int MarkedBit = 0x40000000;
         static int s_marks;
         static int s_count;
+        // (the objects with the Weak mark: a group that goes asks whether there is any, Any)
+        static int s_weak;
         // (the table's own allocations free objects, whose destruction comes back here: that thread's, not another's)
         [System.ThreadStatic] static int t_busy;
 
@@ -116,6 +118,7 @@ namespace Cs2Wasm.Runtime
             if (s_marks == 0) s_marks = IntMap.New();
             IntMap.TryGet(s_marks, a, out int f);
             if (f == 0) s_count++;
+            if ((f & Weak) == 0 && (flag & Weak) != 0) s_weak++;
             IntMap.Set(s_marks, a, f | flag);
             t_busy--;
             Rt.RuntimeUnlock();
@@ -135,6 +138,7 @@ namespace Cs2Wasm.Runtime
             t_busy++;
             if (s_marks != 0 && IntMap.TryGet(s_marks, a, out int f))
             {
+                if ((f & flag & Weak) != 0) s_weak--;
                 f &= ~flag;
                 if (f == 0) { IntMap.Remove(s_marks, a); s_count--; } else IntMap.Set(s_marks, a, f);
             }
@@ -142,8 +146,8 @@ namespace Cs2Wasm.Runtime
             Rt.RuntimeUnlock();
         }
 
-        /// <summary>Whether any object has a mark now.</summary>
-        public static int Any() => s_count != 0 ? 1 : 0;
+        /// <summary>Whether any object is a weak handle's target now.</summary>
+        public static int Any() => s_weak != 0 ? 1 : 0;
 
         /// <summary>The member of a group that is going, at `addr`: the weak handles to it are cleared now, before
         /// any finalizer of the group runs and before any of its members is cleared (as .NET clears the short weak
@@ -160,6 +164,7 @@ namespace Cs2Wasm.Runtime
             if (has)
             {
                 f &= ~Weak;
+                s_weak--;
                 if (f == 0) { IntMap.Remove(s_marks, addr); s_count--; } else IntMap.Set(s_marks, addr, f);
             }
             t_busy--;
@@ -175,7 +180,7 @@ namespace Cs2Wasm.Runtime
             Rt.RuntimeLock();
             t_busy++;
             bool has = IntMap.TryGet(s_marks, addr, out int f);
-            if (has) { IntMap.Remove(s_marks, addr); s_count--; }
+            if (has) { IntMap.Remove(s_marks, addr); s_count--; if ((f & Weak) != 0) s_weak--; }
             t_busy--;
             Rt.RuntimeUnlock();
             if (!has) return 1;

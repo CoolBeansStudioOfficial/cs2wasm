@@ -1629,7 +1629,8 @@ sealed partial class RuntimeGen
         if (D.Rt.WeakDyingIfMade is { } dying)
         {
             var m = D.AllMethods.FirstOrDefault(x => x.Sym.Name == "WeakDying" && x.Sym.ContainingType?.Name == "ObjectMarks" && x.Compiled);
-            if (m != null) { var de = new Emitter(dying); de.Get(0); de.Call(m.Fn); }
+            // (an object without a mark, which is nearly every one: nothing to ask; ObjectMarks.MarkedBit)
+            if (m != null) { var de = new Emitter(dying); de.Get(0); de.Load(Op.I32Load, 8); de.I32(0x40000000); de.Op(Op.I32And); de.If(); de.Get(0); de.Call(m.Fn); de.End(); }
         }
         var f = D.Rt.OnDestroyIfMade;
         if (f == null) return;
