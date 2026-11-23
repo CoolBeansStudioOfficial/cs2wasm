@@ -171,7 +171,7 @@ internal sealed partial class Arenas
         // every array type of reference elements the program makes (one no code stores an element of has no site yet)
         foreach (var t in D.ConstructedTypes().ToList())
         {
-            if (t is not IArrayTypeSymbol { Rank: 1 } at) continue;
+            if (t is not IArrayTypeSymbol at || ArraySite(at) == null) continue;
             var et = D.Types.Canonical(at.ElementType);
             if (!Types.IsRef(et) || Types.IsImmortalType(et)) continue;
             var vs = ValuesFor(et);

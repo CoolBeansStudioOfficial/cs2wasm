@@ -4775,6 +4775,23 @@ namespace Cs2Wasm.Runtime
 
         static int FinNext(int m, int first, int link) { int n = PL(m, link); return n == first ? 0 : n; }
 
+        [Intrinsic] static extern int WeakAny();
+        [Intrinsic] static extern void WeakDying(int addr);
+
+        /// <summary>The members that die together (a list through the prefix word `link`: 8 ending in 0, 12 a ring):
+        /// the weak references to each are cleared, before a finalizer of any runs and before any is cleared, as
+        /// .NET clears the short weak references to all that became unreachable together first (test 245; until
+        /// 2026-11-22 a member's were cleared at its own turn, and a finalizer of one member read a weak reference
+        /// to the next alive). One call and a test for a program, or a moment, without a marked object.</summary>
+        static void WeakDyingAll(int first, int link)
+        {
+            if (WeakAny() == 0) return;
+            int end = link == 12 ? first : 0;
+            WeakSlots.Hold();
+            for (int m = first; m != 0; m = FinNext(m, end, link)) WeakDying(m);
+            WeakSlots.Release();
+        }
+
         static void FinVisit(int first, int link, int mode)
         {
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
@@ -4795,6 +4812,7 @@ namespace Cs2Wasm.Runtime
             for (int m = first; m != 0; m = FinNext(m, end, link)) { Mem.StoreI32(m, FinBias); PS(m, 24, PL(m, 24) | Dying); }
             int cutEnd = s_cutN;
             CutsBack(cutBase, cutEnd);
+            WeakDyingAll(first, link);
             for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaFinalizeObject(m);
             FinVisit(first, link, 10);
             bool back = false;
@@ -4820,6 +4838,7 @@ namespace Cs2Wasm.Runtime
             int end = link == 12 ? first : 0;
             // (prepared: done already, under the lock, FinPrepare)
             if (!prepared) FinPrepare(first, link, q, from, to);
+            WeakDyingAll(first, link);
             for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaFinalizeObject(m);
             if (unlocked) RuntimeLock();
             FinVisit(first, link, 10);
@@ -4894,6 +4913,7 @@ namespace Cs2Wasm.Runtime
                 if (cuts != 0) Free(cuts, n * 8);
                 if (!back)
                 {
+                    if (!fin) WeakDyingAll(first, link);
                     for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaClearObject(m);
                     for (int m = first; m != 0;) { int next = FinNext(m, end, link); ArenaFreeObject(m); m = next; }
                 }
@@ -4957,6 +4977,7 @@ namespace Cs2Wasm.Runtime
             // refer to, and are never freed (what one of several objects that die together can still reach is
             // not followed: section 4.3's group stays whole).
             if (fin && FinPhase(done, 8, cutBase)) { ArenaEmpty(ar); return; }
+            if (!fin) WeakDyingAll(done, 8);
             for (int m = done; m != 0; m = PL(m, 8)) ArenaClearObject(m);
             for (int m = done; m != 0;)
             {
@@ -5088,6 +5109,7 @@ namespace Cs2Wasm.Runtime
             s_cutOn = cutOn;
             long t1 = DropStats() ? Engine.MonotonicNs() : 0;
             long t2 = t1;
+            WeakDyingAll(done, 8);
             for (int m = done; m != 0; m = PL(m, 8)) { ArenaClearObject(m); if (DropStats()) s_dsKilled++; }
             long t3 = DropStats() ? Engine.MonotonicNs() : 0;
             if (ShareCheck() || Checked() || NoFreeList())
@@ -5227,6 +5249,7 @@ namespace Cs2Wasm.Runtime
                 int n = Mem.LoadI32(ar + 8), cap = n > 0 ? n : 16;
                 int list = Alloc(cap * 4), k = 0;
                 int m = first;
+                WeakDyingAll(first, 12);
                 long t0 = DropStats() ? Engine.MonotonicNs() : 0;
                 long t1;
                 if (FusedDrop())
@@ -5290,6 +5313,7 @@ namespace Cs2Wasm.Runtime
                 // (a finalizer stored one of them where the program can reach it: as in ArenaDestroyFrom; the
                 // arena's record stays, busy, for the words of its members that name it)
                 if (fin && FinPhase(first, 12, cutBase)) return;
+                if (!fin) WeakDyingAll(first, 12);
                 m = first;
                 do { ArenaClearObject(m); m = PL(m, 12); } while (m != first);
                 m = first;

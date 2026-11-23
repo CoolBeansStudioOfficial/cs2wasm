@@ -763,14 +763,14 @@ sealed partial class RuntimeGen
                     // (a group's member: what the finalizers of the others counted on it meanwhile stays, and so
                     // does what its own counts: the group's destruction looks at the counts afterwards)
                     e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Add); e.Store(Op.I32Store);
-                    e.Call(rt.FinHold); e.Call(rt.BeforeFin); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
+                    e.Call(rt.FinHold); e.Call(rt.BeforeFin); CallFinalizers(e, fin); e.Call(rt.FinUnhold);
                     e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Sub); e.Store(Op.I32Store);
                     e.End();
                     e.End();
                     return;
                 }
                 e.Get(0); e.I32(1); e.Store(Op.I32Store);
-                e.Call(rt.FinHold); e.Call(rt.BeforeFin); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
+                e.Call(rt.FinHold); e.Call(rt.BeforeFin); CallFinalizers(e, fin); e.Call(rt.FinUnhold);
                 if (finalizer != 1)
                 {
                     // the finalizer stored the object somewhere (its count is more than the temporary one): it
@@ -1172,6 +1172,17 @@ sealed partial class RuntimeGen
         };
     }
 
+    /// <summary>The object's finalizer and then each base class's, most derived first: what the C# compiler writes
+    /// into a destructor for .NET (`try { body } finally { base.Finalize(); }`; test 242. Until 2026-11-22 only the
+    /// most derived ran). An exception out of a finalizer ends the program in .NET, so no later one is owed.</summary>
+    void CallFinalizers(Emitter e, IMethodSymbol fin)
+    {
+        for (IMethodSymbol? f = fin; f != null; f = f.ContainingType.BaseType is { } bt ? FindFinalizer(D.Types.Canonical(bt)) : null)
+        {
+            e.Get(0); e.Call(D.Method(f).Fn);
+        }
+    }
+
     IMethodSymbol? FindFinalizer(ITypeSymbol t)
     {
         for (var b = t as INamedTypeSymbol; b != null; b = b.BaseType is { } bt ? (INamedTypeSymbol)D.Types.Canonical(bt) : null)
@@ -1198,7 +1209,11 @@ sealed partial class RuntimeGen
         }
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
+        {
             D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
+            // (and a group that goes clears the weak references to all its members first: Rt.WeakDyingAll)
+            D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "WeakDying", 1); D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "Any", 0);
+        }
         // CS2WASM_MEMSTATS=1: the heap's report, which the host prints at the end (Runtime.cs, MemStatsReport)
         if (Environment.GetEnvironmentVariable("CS2WASM_MEMSTATS") == "1")
             Export("cs2wasm_memstats", D.LibMethod("Cs2Wasm.Runtime.Rt", "MemStatsReport", 0));
@@ -1605,6 +1620,18 @@ sealed partial class RuntimeGen
     /// result is dropped are removed.</summary>
     void EmitOnDestroy()
     {
+        if (D.Rt.WeakAnyIfMade is { } any)
+        {
+            var m = D.AllMethods.FirstOrDefault(x => x.Sym.Name == "Any" && x.Sym.ContainingType?.Name == "ObjectMarks" && x.Compiled);
+            var ae = new Emitter(any);
+            if (m != null) ae.Call(m.Fn); else ae.I32(0);
+        }
+        if (D.Rt.WeakDyingIfMade is { } dying)
+        {
+            var m = D.AllMethods.FirstOrDefault(x => x.Sym.Name == "WeakDying" && x.Sym.ContainingType?.Name == "ObjectMarks" && x.Compiled);
+            // (an object without a mark, which is nearly every one: nothing to ask; ObjectMarks.MarkedBit)
+            if (m != null) { var de = new Emitter(dying); de.Get(0); de.Load(Op.I32Load, 8); de.I32(0x40000000); de.Op(Op.I32And); de.If(); de.Get(0); de.Call(m.Fn); de.End(); }
+        }
         var f = D.Rt.OnDestroyIfMade;
         if (f == null) return;
         var marks = D.AllMethods.FirstOrDefault(m => m.Sym.Name == "OnDestroy" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled);
