@@ -3797,56 +3797,69 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] static extern bool TakeInStopBreak();
 
         // LivingTops: the trial with tops taken in failed by references from outside the whole set into what those tops
-        // own, and none into what the top owns, and no member that code refers to. Those tops live (what refers into
-        // them is outside the set, and no code refers to any of the set); taken in, they made the trial fail for the
-        // others as well. Test 282: two structures that refer into each other (test 215's), one of them also into a
-        // third that lives, which a static's member refers into: the third was taken in too, the trial failed by the
-        // static's reference, the trial again by what the top owns alone failed by the other structure's, and both
-        // stayed (main: 14 and 17 where .NET has 5). So such tops are left out, each the top above a member with
-        // references left (a walk up from that member, not a visit of what the top owns), and the trial is made again
-        // with the tops taken in that are not they: what refers from a top left out into the others counts then as
-        // from outside, as it is. At most four times; then by what the top owns alone, as before.
-        // CS2WASM_NO_TAKE_IN_DROP=1 (at compile time): by what the top owns alone at once.
-        const int LvMax = 32;
+        // own, and none into what the top owns. Those tops live (what refers into them is outside the set; one that
+        // code refers to stops the take-in before); taken in, they made the trial fail for the others as well. Test
+        // 282: two structures that refer into each other (test 215's), one of them also into a third that lives, which
+        // a static's member refers into: the third was taken in too, the trial failed by the static's reference, the
+        // trial again by what the top owns alone failed by the other structure's, and both stayed (main: 14 and 17
+        // where .NET has 5). So such tops are left out, each the top above a member with references left (a walk up
+        // from that member, not a visit of what the top owns), and the trial is made again with the tops taken in that
+        // are not they: what refers from a top left out into the others counts then as from outside, as it is. Again
+        // until a trial has no such top left: each round leaves out one top more, so there are at most as many rounds
+        // as tops taken in, and nothing is given up for size (test 283: forty members with references left, five
+        // living structures). With members that code refers to in what the top owns the same: the note is then of the
+        // held kind, on the right set, which the last of those releases looks at again.
+        // CS2WASM_NO_TAKE_IN_DROP=1 (at compile time): by what the top owns alone at once, as before.
         [Intrinsic] static extern bool NoTakeInDrop();
         /// <summary>CS2WASM_NO_TOP_SELF=1 (at compile time): TopHeld and NoteOutside walk to the top from a member without
         /// an owner too (Top: itself, one step).</summary>
         [Intrinsic] static extern bool NoTopSelf();
-        // (the members with references left, then from LvMax on the tops left out; s_bdN of them)
-        static int s_lvQ, s_bdN;
-        static void LvPut(int i, int m)
+        // (the members with references left, s_lvN of them; the tops left out, s_bdN: each as long as it needs to be)
+        static int s_lvQ, s_lvN, s_lvCap, s_bdQ, s_bdN, s_bdCap;
+        static void LvPush(int m)
         {
-            if (s_lvQ == 0) s_lvQ = Alloc(4 * (2 * LvMax));
-            Mem.StoreI32(s_lvQ + 4 * i, m);
-        }
-        static int LvGet(int i) => Mem.LoadI32(s_lvQ + 4 * i);
-
-        /// <summary>Dropped, LivingTops: the tops above the lvN members with references left are left out (Dying, so
-        /// that nothing takes them in again; out of the list); if any top taken in is left, the trial's list goes back
-        /// to what the top owns and the others are taken in again, with what they own. False: nothing to try.</summary>
-        static bool LivingTops(int own, int lvN)
-        {
-            int bd0 = s_bdN;
-            for (int i = 0; i < lvN; i++)
+            if (s_lvN == s_lvCap)
             {
-                int t = Top(LvGet(i));
-                if (t == 0) return false;
-                bool known = false;
-                for (int k = 0; k < s_bdN; k++) if (LvGet(LvMax + k) == t) known = true;
-                if (known) continue;
-                if (s_bdN == LvMax) return false;
-                Mem.StoreI32(s_lvQ + 4 * (LvMax + s_bdN), t); s_bdN++;
+                int cap = s_lvCap == 0 ? 32 : s_lvCap * 2, nq = Alloc(4 * cap);
+                if (s_lvQ != 0) { Mem.Copy(nq, s_lvQ, 4 * s_lvN); Free(s_lvQ, 4 * s_lvCap); }
+                s_lvQ = nq; s_lvCap = cap;
+            }
+            Mem.StoreI32(s_lvQ + 4 * s_lvN, m); s_lvN++;
+        }
+        static void BdPush(int m)
+        {
+            if (s_bdN == s_bdCap)
+            {
+                int cap = s_bdCap == 0 ? 16 : s_bdCap * 2, nq = Alloc(4 * cap);
+                if (s_bdQ != 0) { Mem.Copy(nq, s_bdQ, 4 * s_bdN); Free(s_bdQ, 4 * s_bdCap); }
+                s_bdQ = nq; s_bdCap = cap;
+            }
+            Mem.StoreI32(s_bdQ + 4 * s_bdN, m); s_bdN++;
+        }
+
+        /// <summary>Dropped, LivingTops: the tops above the members with references left are left out; if any top taken
+        /// in is left, the trial's list goes back to what the top owns and the others are taken in again, with what
+        /// they own. The tops left out stay Dying out of the list, so that nothing takes them in again (Dropped clears
+        /// that at its end). False: nothing to try.</summary>
+        static bool LivingTops(int own)
+        {
+            // (a top of the list found for the first time: its Dying cleared for now, as the mark; it is set again below)
+            int bd0 = s_bdN;
+            for (int i = 0; i < s_lvN; i++)
+            {
+                int t = Top(Mem.LoadI32(s_lvQ + 4 * i));
+                if (t == 0) continue;
+                if ((PL(t, 24) & Dying) == 0) continue;
+                PS(t, 24, PL(t, 24) & ~Dying);
+                BdPush(t);
             }
             if (s_bdN == bd0) return false;
-            // (the tops taken in that are not left out: in the list after what the top owns, without an owner)
+            // (the tops taken in that are not left out: in the list after what the top owns, without an owner, Dying)
             int good = 0;
             for (int i = own; i < s_trN; i++)
             {
                 int m = Mem.LoadI32(s_trQ + 4 * i);
-                if ((PL(m, 24) & Owned) != 0) continue;
-                bool bad = false;
-                for (int k = 0; k < s_bdN; k++) if (LvGet(LvMax + k) == m) bad = true;
-                if (!bad) { TkPush(m); good++; }
+                if ((PL(m, 24) & (Owned | Dying)) == Dying) { TkPush(m); good++; }
             }
             // (the list back to what the top owns; the tops kept wait in s_tkQ, which TrTruncate lets go: so taken out
             // first and put back)
@@ -3854,7 +3867,7 @@ namespace Cs2Wasm.Runtime
             int keep = 0;
             if (n > 0) { keep = Alloc(4 * n); Mem.Copy(keep, s_tkQ, 4 * n); }
             TrTruncate(own);
-            for (int k = 0; k < s_bdN; k++) { int b = LvGet(LvMax + k); PS(b, 24, PL(b, 24) | Dying); }
+            for (int k = 0; k < s_bdN; k++) { int b = Mem.LoadI32(s_bdQ + 4 * k); PS(b, 24, PL(b, 24) | Dying); }
             if (good == 0) { if (keep != 0) Free(keep, 4 * n); return false; }
             s_trExt = 1;
             for (int k = 0; k < n; k++) { int m = Mem.LoadI32(keep + 4 * k); PS(m, 24, PL(m, 24) | Dying); TkPush(m); s_trExt++; }
@@ -4006,7 +4019,8 @@ namespace Cs2Wasm.Runtime
                 // the counted references among them, off
                 TrVisit(14);
                 held = 0; outside = 0; inside = true;
-                int ownLeft = 0, lvN = 0;
+                int ownLeft = 0;
+                s_lvN = 0;
                 for (int i = 0; i < s_trN; i++)
                 {
                     int m = Mem.LoadI32(s_trQ + 4 * i);
@@ -4016,7 +4030,7 @@ namespace Cs2Wasm.Runtime
                     {
                         inside = false; outside += left; if (i < own) ownLeft += left;
                         // (a member of a top taken in with references left from outside the whole set, LivingTops)
-                        else if (lvN < LvMax) { LvPut(lvN, m); lvN++; } else lvN = LvMax + 1;
+                        else if (!NoTakeInDrop()) LvPush(m);
                     }
                 }
                 TrVisit(15);
@@ -4036,13 +4050,13 @@ namespace Cs2Wasm.Runtime
                 }
                 // (what the top owns has none left, and only tops taken in do: those tops live, and the trial is made
                 // again with the others, LivingTops)
-                if (ownLeft == 0 && lvN <= LvMax && rounds < 4 && !NoTakeInDrop() && LivingTops(own, lvN)) { rounds++; continue; }
+                if (ownLeft == 0 && !NoTakeInDrop() && LivingTops(own)) { rounds++; continue; }
                 TrTruncate(own);
                 s_trExt = 0;
             }
             s_trExt = 0;
             // (the tops left out: in the trial no more)
-            for (int k = 0; k < s_bdN; k++) { int b = LvGet(LvMax + k); PS(b, 24, PL(b, 24) & ~Dying); }
+            for (int k = 0; k < s_bdN; k++) { int b = Mem.LoadI32(s_bdQ + 4 * k); PS(b, 24, PL(b, 24) & ~Dying); }
             s_bdN = 0;
             if (DropStats())
             {
