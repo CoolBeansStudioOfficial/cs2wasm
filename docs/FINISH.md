@@ -1253,4 +1253,10 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   (0.049), private tree at eight 0.243-0.259 -> 0.056 (0.006), shared at four 0.26-0.30 and 0.18-0.33 from run to run on either (0.105). The desk on
   the merged code: thread-share-check 61 of 61 the same, thread-escape-breaks as before, 275 to 279 300 loaded runs
   each all the same, 139, 218, 215b, 131, 127 200 each all the same with this branch's compiler and with main's,
-  187 3 of 200 with each.
+  187 3 of 200 with each. The homelab on the merged code (612cd56 and its docs commit c1f0859): suite 246 passed,
+  0 failed, 2 known gaps, checked and as shipped; `tools/selfhost-check.sh`: the self-hosted compiler built in
+  431 s (33,455,890 bytes), hello world in 8.3 to 8.5 s, peak 272.0 MB, self-1 = net byte for byte on 145, 220,
+  193 and 088; 139 without the engine's stack checks 200 loaded runs a mode all the same; 276 200 a mode the same.
+  Not merged: main 4a42328 (claude/tree-3's foreach over a List<T>, which meets this branch's list loops), since
+  this check had started. Not run on the merged code before the hand-back: the threaded self-hosted compiler
+  (`tools/thread-scale.sh`), the homelab's stress of 127, 218, 215b, 187, 131, 275, 277 to 279 (the desk's above).
