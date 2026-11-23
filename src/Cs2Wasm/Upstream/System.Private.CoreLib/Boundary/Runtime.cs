@@ -2715,7 +2715,7 @@ namespace Cs2Wasm.Runtime
         {
             int fl = PL(w, 24);
             // (in a destruction, one that waits in the list too: it dies with the others now, DyingQueued)
-            if (s_destroying != 0 && (fl & (Dying | Queued)) == Queued && !NoDyingQueued()) { Unqueue(w); fl = PL(w, 24); }
+            if (s_destroying != 0 && (fl & (Dying | Queued)) == Queued && DyingQueued()) { Unqueue(w); fl = PL(w, 24); }
             if ((fl & (Dying | Queued)) != 0) return;
             if (s_destroying != 0)
             {
@@ -2749,9 +2749,12 @@ namespace Cs2Wasm.Runtime
         // many more members in the list): test 133, whose finalizers store what their object held, leaves 1 object
         // without this and none with it. Why that one stayed was not followed further than this: the finalizers of
         // those that die together are given back the references the dying gave up (CutsBack), and a reference to a
-        // member that lives on is counted there. CS2WASM_NO_DYING_QUEUED=1 (at compile time, a measurement): as it
+        // member that lives on is counted there. Off, CS2WASM_DYING_QUEUED=1 (at compile time, a trial) for it: Unqueue
+        // goes through the thread's whole list for each such member, and with the branch's changes on the self-hosted
+        // compiler did not end test 088, by this or by another of them (not separated when this was written); no
+        // test needs it while the survivors' check is a hold, SurvivorHold. Without: as it
         // was.
-        [Intrinsic] static extern bool NoDyingQueued();
+        [Intrinsic] static extern bool DyingQueued();
 
         /// <summary>A member that is destroyed while it waits in the list: taken off it.</summary>
         static void Unqueue(int m)
@@ -3523,6 +3526,9 @@ namespace Cs2Wasm.Runtime
         /// checked, may be alive, and a live top stops the whole trial.</summary>
         static void TakeInAbove(int member)
         {
+            // (only a member that such a check marked, MarkOutside: no walk to the top for any other. The walk for
+            // every reference of every trial was 2.4 s of the self-hosted compiler's 11.7 s on Console.WriteLine(42))
+            if ((PLM(member) & MarkOutside) == 0) return;
             int t = Top(member);
             if (t == 0 || t == member || Mem.LoadI32(t) != -2 || (PL(t, 24) & (Owned | Dying)) != 0 || (PLM(t) & 3) != 3) return;
             if (ThreadMode() && !GroupHeld(t)) return;
@@ -5409,7 +5415,7 @@ namespace Cs2Wasm.Runtime
                         {
                             // (Kill, in a destruction)
                             int cf = PL(child, 24);
-                            if ((cf & (Dying | Queued)) == Queued && !NoDyingQueued()) { Unqueue(child); cf = PL(child, 24); }
+                            if ((cf & (Dying | Queued)) == Queued && DyingQueued()) { Unqueue(child); cf = PL(child, 24); }
                             if ((cf & (Dying | Queued)) == 0) { PS(child, 24, cf | Dying); ArenaTakeOut(ar, child); PS(child, 12, dead); dead = child; }
                             continue;
                         }
@@ -5433,7 +5439,7 @@ namespace Cs2Wasm.Runtime
                         if (left == 0 && Mem.LoadI32(child) == -2)
                         {
                             int cf = PL(child, 24);
-                            if ((cf & (Dying | Queued)) == Queued && !NoDyingQueued()) { Unqueue(child); cf = PL(child, 24); }
+                            if ((cf & (Dying | Queued)) == Queued && DyingQueued()) { Unqueue(child); cf = PL(child, 24); }
                             if ((cf & (Dying | Queued)) == 0) { PS(child, 24, cf | Dying); ArenaTakeOut(ar, child); PS(child, 12, dead); dead = child; }
                             continue;
                         }
