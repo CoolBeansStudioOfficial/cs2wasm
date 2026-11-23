@@ -1,7 +1,7 @@
 #!/bin/bash
 # Test 201 and the rules of the node path (Rt.JoinPair, Rt.NodeUp, Rt.AddNode): the test compiled as shipped with
 # each rule left out (CS2WASM_NODE_PATH_BREAK=n), its output against the plain build's. A rule about who owns a
-# member (4, 5, 7) leaves garbage that the check at the drop finds later, so the program prints the same: those
+# member (4, 5, 7, 8) leaves garbage that the check at the drop finds later, so the program prints the same: those
 # are compared with that check off on both sides (CS2WASM_NO_DROP_CHECK=1), where the general way and the node
 # path must still print the same and the broken rule must not.
 #   bash tools/node-path-breaks.sh        exit 1 when a break leaves the output as it is, or off differs from on
@@ -18,11 +18,13 @@ build t201; build t201off CS2WASM_NO_NODE_PATH=1
 cmp -s $O/t201.txt $O/t201off.txt && echo "off: the same" || { echo "off: DIFFERS"; bad=1; }
 build t201nc CS2WASM_NO_DROP_CHECK=1; build t201ncoff CS2WASM_NO_DROP_CHECK=1 CS2WASM_NO_NODE_PATH=1
 cmp -s $O/t201nc.txt $O/t201ncoff.txt && echo "off, no check at the drop: the same" || { echo "off, no check at the drop: DIFFERS"; bad=1; }
+build t201pp CS2WASM_NO_PLAIN_PARENTS=1
+cmp -s $O/t201.txt $O/t201pp.txt && echo "plain parents off: the same" || { echo "plain parents off: DIFFERS"; bad=1; }
 for n in ${BREAKS:-1 2 6}; do
   build t201b$n CS2WASM_NODE_PATH_BREAK=$n
   if cmp -s $O/t201.txt $O/t201b$n.txt; then echo "break $n: THE SAME"; bad=1; else echo "break $n: differs: $(diff $O/t201.txt $O/t201b$n.txt | sed -n 2,3p | tr '\n' ' ' | cut -c1-170)"; fi
 done
-for n in ${BREAKS_NC:-4 5 7}; do
+for n in ${BREAKS_NC:-4 5 7 8}; do
   build t201ncb$n CS2WASM_NO_DROP_CHECK=1 CS2WASM_NODE_PATH_BREAK=$n
   if cmp -s $O/t201nc.txt $O/t201ncb$n.txt; then echo "break $n, no check at the drop: THE SAME"; bad=1; else echo "break $n, no check at the drop: differs: $(diff $O/t201nc.txt $O/t201ncb$n.txt | sed -n 2,3p | tr '\n' ' ' | cut -c1-170)"; fi
 done
