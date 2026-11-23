@@ -1091,6 +1091,12 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   The self-hosted compiler at 43202b7 (hello world's time, selfdet on 145, 220, 193, 088), the homelab's suite
   and stress: hello world 10.1 s twice (9.3 s with all of the branch off, measured the evening before), byte for byte the .NET-hosted compiler's module on 145, 220, 193 and 088; test 088 in 177 s where it took 102 s with the branch off and 112 s on claude/load-flakes-safe: not at main's time. Which part costs it is not separated yet. The homelab's suite and stress at this commit: not back when this was written.
   claude/load-flakes-safe (from main 00d78fe) carries what is independent of the notes; see its own entry.
+  2026-11-23 (morning), the same branch merged with main 4cf95fe (2fc2262): the homelab's suite at 9e2a38c 237
+  passed, 0 failed both modes. Test 088 through the self-hosted compiler on the desk 171.4 s against 91.6 s with
+  main's runtime: the checks at the drop from rt.release go through far more members (the trial's visit of a
+  reference 88 s against 3.6 s by the profile); the holds off 153.8 s, the notes off 157.2 s, TakeInAbove off no
+  end (the homelab). Not removed; docs/AUDIT.md A3.5, "Test 088 through the self-hosted compiler". The branch
+  stays off main until it is.
   Open: test 139's two nodes without the engine's stack checks, not seen again, its cause not shown.
 - 2026-11-22, the node path, second part (branch claude/tree-node-path-2 from claude/tree-node-path 35ddb45, not
   merged; AUDIT A3.5, the build, round 9, second part). The first part's queued checks came back clean (selfdet

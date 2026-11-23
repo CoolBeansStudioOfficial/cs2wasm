@@ -719,6 +719,26 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     during a destruction is left to the thread's list when it already waits there, as on main. Dying with the
     others instead (CS2WASM_DYING_QUEUED=1) was needed only by a trial that queues every survivor (test 133 left
     1 object without it); Unqueue goes through the whole list for each such member.
+  - **Test 088 through the self-hosted compiler, where its time goes (2026-11-23, 43202b7).** On the desk, one core,
+    the self-hosted compilers copied from the homelab: claude/load-flakes-safe's (main's runtime) 91.6 s, this
+    branch's 171.4 s (the homelab: 112 s and 177 s). By CS2WASM_TIMES the whole difference is in the two compile
+    passes (24.5 and 16.0 s against 57.8 and 37.9 s), Roslyn's binding inside them 3.1 and 3.5 s against 13.3 and
+    14.3 s; reading the library, the arenas' analysis and the encoding are the same. By the CPU profile (node
+    --cpu-prof, tools/profsum.mjs, tools/profcallers.mjs) one runtime function, the trial's visit of a reference
+    (wasm-function[71], under ArenaVisitObject's dispatch, under TrVisit, under Dropped), is 88.3 s of the
+    branch's 237 s of work there against 3.6 s on main, and Dropped is called almost only from ArenaRelease under
+    rt.release from the program's code: the checks at the drop of a last reference from code, each going through
+    far more members than on main. Variants on the homelab (tools/selfhost-variants.sh, 088, against 177 s
+    plain): CS2WASM_NO_TURN_HOLD=1 with CS2WASM_NO_SURVIVOR_HOLD=1 153.8 s; CS2WASM_NO_STALE_NOTE=1 157.2 s;
+    CS2WASM_NO_TAKE_IN_ABOVE=1 no end in 300 s. Neither the holds nor the notes is the bulk alone, and the trial
+    without TakeInAbove is worse still. Tried and taken out the same hour: TakeInAbove taking a top in only once the
+    trial has found as many references into it as its note's number (less the note's share): test 215's four
+    results and its two structures were left (7 objects where .NET has 1), so a top is garbage with others only by
+    references the trial cannot have counted yet when it decides. The Roslyn probe (repro/RoslynGodotProbe.cs,
+    built by the .NET-hosted compiler, CS2WASM_DROP_STATS=1) on cs2wasm's own compiler sources does not show it
+    (442,151 checks walking 4.27 million members, 397,736 and 3.87 million with CS2WASM_NO_STALE_NOTE=1, the time
+    within its noise): the structure that makes each check large is the library's compilation from sources, which
+    only the self-hosted compiler has. Open, not merged.
   - **What the tests asked that .NET does not promise**, each checked against .NET under the same load (400 runs
     of the test as it was, eight processes): .NET gave the usual output in all 400 for 127, 131, 135, 187, so none
     of these is shown by .NET's output; they stand on .NET's sources. 127 and 187 counted what was left right
