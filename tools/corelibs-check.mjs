@@ -41,6 +41,8 @@ const run = (file, target, env) => new Promise((done) => {
 });
 let next = 0, same = 0, failedBoth = 0, differ = 0;
 const again = [];
+// (where a program with threads began: for threads at once and kept; for threads at once and thrown away, as it starts none; without threads up to the start of one)
+const threads = { atOnce: 0, thrownAway: [], found: [] };
 const counts = new Map();
 async function worker() {
   while (next < files.length) {
@@ -54,8 +56,11 @@ async function worker() {
     counts.set(n, (counts.get(n) ?? 0) + 1);
     // (a program compiled again with every reported library: one it was begun without was needed)
     if (/again, with every library reported/.test(ra.err)) again.push(`${name} (begun with ${n})`);
+    if (/compiled for threads at once/.test(ra.err)) threads.atOnce++;
+    if (/compiled for threads first .*begun again/.test(ra.err)) threads.thrownAway.push(name);
+    if (/compiled without threads until the start of a thread/.test(ra.err)) threads.found.push(name);
     // (the first run's phase lines are not part of what is compared)
-    const errA = ra.err.split('\n').filter((l) => !/^\s+(library:|\d+ ms|of it binding|static initializers again:|memory layout:)/.test(l) && !/^cs2wasm: heap after/.test(l)).join('\n').replaceAll(join(a, 'p.wasm'), 'OUT');
+    const errA = ra.err.split('\n').filter((l) => !/^\s+(library:|\d+ ms|of it binding|static initializers again:|memory layout:|compiled for threads)/.test(l) && !/^cs2wasm: heap after/.test(l)).join('\n').replaceAll(join(a, 'p.wasm'), 'OUT');
     const errB = rb.err.replaceAll(join(b, 'p.wasm'), 'OUT');
     const ma = existsSync(join(a, 'p.wasm')) ? readFileSync(join(a, 'p.wasm')) : null, mb = existsSync(join(b, 'p.wasm')) ? readFileSync(join(b, 'p.wasm')) : null;
     if (ma && mb && ma.equals(mb)) same++;
@@ -66,5 +71,6 @@ async function worker() {
 await Promise.all(Array.from({ length: par }, worker));
 console.log(`corelibs-check (against ${Object.entries(other ?? { CS2WASM_ALL_CORE_LIBS: '1' }).map(([k, v]) => k + '=' + v).join(' ')}): ${files.length} programs: ${same} the same module, ${failedBoth} not compiled either way with the same messages, ${differ} differ`);
 console.log(`compiled again with every reported library: ${again.length}${again.length ? ': ' + again.sort().join(', ') : ''}`);
+console.log(`programs with threads: ${threads.atOnce} compiled for threads at once and kept; ${threads.found.length} compiled without threads up to the start of one${threads.found.length ? ' (' + threads.found.sort().join(', ') + ')' : ''}; compiled for threads at once though they start none: ${threads.thrownAway.length}${threads.thrownAway.length ? ' (' + threads.thrownAway.sort().join(', ') + ')' : ''}`);
 console.log(`libraries needed (at the start): ${[...counts].sort((x, y) => +x[0] - +y[0]).map(([n, c]) => `${n}: ${c} programs`).join(', ')}`);
 process.exit(differ ? 1 : 0);
