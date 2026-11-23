@@ -33,7 +33,7 @@ an engine package's loader); **the module** is the compiler's output; **a native
 | Output | One 32-bit **core** WASM module (plus the native libraries' WASM it links, section 8), with imported memory. Not a component, not WasmGC |
 | Pipeline | MSBuild and the language compilers produce IL; il2wasm compiles IL to WASM. No other compiler in the path (no LLVM, no C) for .NET code |
 | Correctness | **The same observable output as the project under .NET.** Observable output is the sequence of calls the module makes to its imports and native libraries, and their arguments. How the compiler gets there is free |
-| Input scope | **Every project .NET builds compiles**, packages included. Where the compiler cannot prove something cheap, it pays a run-time cost; it never rejects a project for being hard to analyse. P/Invoke into a native library shipped as WASM works (section 8); P/Invoke into a library with no WASM build is the only refusal, naming the library and the package |
+| Input scope | **Every project .NET builds compiles**, packages included. Where the compiler cannot prove something cheap, it pays a run-time cost; it never rejects a project for being hard to analyse. P/Invoke into a native library shipped as WASM works (section 8); a P/Invoke into a library with no WASM build compiles to the `DllNotFoundException` .NET throws when the library is missing, with a build warning naming the library and the package |
 | Memory | No garbage collector, no background collector, no whole-heap scan. Compile-time reference counting copied from Lobster (section 4) |
 | Determinism | **A hard requirement.** Bit-identical results on every machine, every run, under any load; byte-identical modules from the same inputs (section 7) |
 | Speed | Speed and module size are the priorities, reached by real translations of .NET concepts, not by imitating the .NET runtime |
@@ -49,12 +49,11 @@ what .NET does is a sign the real translation has not been found yet. Copy desig
 rather than invent new ones. When a design hits a hard case, look for a different translation before accepting a
 loss, and say plainly when none has been found.
 
-**NetWasm is a reference, not a source (owner).** NetWasm (github.com/zion-sati/NetWasm) already compiles .NET
-projects with packages and P/Invoke to WASM. Its compiler is not fully MIT: it carries conditions on commercial use.
-So it is read to learn how it solves each problem, the design is written down in this repository's own words, and the
-compiler implements it from that written design. No NetWasm code is copied or translated. NetWasm is also a bounded
-profile (one thread, ordinal-only text, rewritten library parts): its mechanisms are studied, its deviations from .NET
-are not adopted.
+**NetWasm is the reference (owner).** NetWasm (github.com/zion-sati/NetWasm) already compiles .NET projects with
+packages and P/Invoke to WASM. Its code may be read directly while writing il2wasm; il2wasm's code is its own,
+written for il2wasm's design, and NetWasm's code is not pasted into this repository. NetWasm is a bounded profile
+(one thread, ordinal-only text, rewritten library parts): its mechanisms are studied, its deviations from .NET are
+not adopted. Its design is summarised in `docs/netwasm-design.md`.
 
 ---
 
@@ -80,6 +79,8 @@ are not adopted.
   MSBuild target lets `dotnet publish` produce the module.
 - **The IR is the compiler's own**, below IL: SSA values, explicit control flow, explicit ownership. Everything after
   step 3 works on it. The IL front end is the only part that knows IL.
+- **The type system is NativeAOT's (owner)**, the MIT-licensed one in dotnet/runtime (`ILCompiler.TypeSystem`), over
+  System.Reflection.Metadata: types, layouts, generics, virtual and interface resolution, as NativeAOT computes them.
 - **Source facts come from IL and PDBs.** What the memory analysis needs to know (that a loop walks a list, that a
   getter returns its field, that a method is an async state machine) is recovered from IL patterns, compiler-generated
   attributes and names, and the PDB where present, never by decompiling to a source language.
@@ -115,6 +116,9 @@ process under .NET. **Out of memory** throws `OutOfMemoryException` when the hos
 
 **Integer and floating-point semantics** are the CLR's: wrapping and checked arithmetic, division by zero throws,
 IEEE 754 as WASM gives it. Determinism rules are in section 7.
+
+**Pointers are 32-bit (owner).** The module is wasm32: `IntPtr.Size` and `sizeof(nint)` are 4, as on 32-bit .NET.
+Where a test's output depends on the pointer size, the oracle is 32-bit .NET (x86).
 
 ---
 
@@ -313,8 +317,9 @@ The design follows NetWasm's (a reference, section 1).
 - **Memory between the module and a native library** is one shared linear memory or separate memories with explicit
   copies, as the library's build allows; the choice is part of the library's package and is decided per library with
   call cost in mind (a boundary call should cost a few nanoseconds).
-- **A P/Invoke into a library with no WASM build** is the only build error, naming the library and the package that
-  needs it.
+- **A P/Invoke into a library with no WASM build** compiles to what .NET does when the library is missing: the call
+  throws `DllNotFoundException` (or `EntryPointNotFoundException` for a missing entry point) when it runs, and the build
+  warns, naming the library and the package that needs it.
 - **COM** is not supported (as on .NET outside Windows).
 
 ### 8.1 libgodot through 2dog
@@ -334,10 +339,12 @@ collector to pause the page.
 
 ## 9. The core library
 
-- **It is upstream's library, as NativeAOT builds it** (owner): `System.Private.CoreLib` and the libraries above it from
-  `dotnet/runtime`, compiled to IL for il2wasm's runtime, as NativeAOT has its own CoreLib build. Only the runtime
-  boundary is the compiler's own (memory, counting, groups, exceptions, threads, the host imports); everything else
-  (formatting, collections, LINQ, text) is upstream's code and behaves exactly as .NET does.
+- **It is upstream's library, as NativeAOT builds it** (owner): `System.Private.CoreLib` from `dotnet/runtime`,
+  compiled to IL for il2wasm's runtime, as NativeAOT has its own CoreLib build. Only the runtime boundary is the
+  compiler's own (memory, counting, groups, exceptions, threads, the host imports); everything else is upstream's code
+  and behaves exactly as .NET does.
+- **The libraries above CoreLib are the stock ones (owner):** the IL of .NET's browser-wasm runtime pack, unmodified;
+  their native calls (`libSystem.Native` and the like) are served by il2wasm's runtime over host imports.
 - **Only what the program reaches is emitted**, and only the libraries the program uses are loaded.
 - **Invariant globalization.** Formatting, parsing, comparison and casing are culture-invariant on every machine, so
   every machine computes the same strings, and no ICU data is shipped. Localized text is a package's concern.
@@ -461,6 +468,6 @@ that keyed on source shapes are re-derived on the IR from IL patterns.
 - ECMA-335, Common Language Infrastructure
 - NativeAOT (dotnet/runtime `src/coreclr/nativeaot`, `src/coreclr/tools/aot`): IL compilation, trimming, CoreLib for an
   AOT runtime
-- NetWasm (github.com/zion-sati/NetWasm): reference only, for project, package and P/Invoke handling (section 1)
+- NetWasm (github.com/zion-sati/NetWasm): the reference for project, package and P/Invoke handling (section 1)
 - 2dog: libgodot as a NuGet package with bindings
 - WebAssembly exception handling and threads proposals
