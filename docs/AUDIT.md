@@ -2226,7 +2226,7 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     (one particle in 48, at random) and a path of about 80 instructions and two calls run once in 48 turns.
     NativeAOT-LLVM pays none of it in the median: its collector frees in its pauses, **5.5 to 6 us a frame in the
     mean** (its mean frame 0.0566-0.0580 ms against its median 0.051-0.052; cs2wasm's 0.0645-0.0673 against
-    0.063-0.064). Freeing after the loop would be a deferred free: not done.
+    0.063-0.064). Freeing after the loop would be a deferred free: not done. With every particle given the same life (the tool's last two scenes: a frame's dead are its oldest, side by side at the list's start, so the branch is predicted and the path runs 400 times in a row) the loop was 54.3 us with the dead ending in it against 53.6 with them held: **one sample, on a loaded desk; not repeated** (a quiet run was waited for and did not come before this was written).
   - **Tried for the ends, and not kept** (branch claude/churn-5-free-inline, the code as it was when measured;
     its suite was not run). (1) The pass on by default only for loops whose every call is rare by what it is (the
     retain of an object of a flat sealed class, said by the compiler on the call; rt.on_destroy behind its own
