@@ -1617,6 +1617,23 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     3,906 a build, still the largest single part of the 1.7 ms. An ordinary frame's 18 us over NativeAOT-LLVM's
     (0.047 against 0.029 ms) are its build of 156 entities (16 us against 2.3) and the store over the old subtree
     (4 against 0.1): the same two paths.
+  - Later, with the desk quieter (the same commit's code): tools/tree-build.cs, three pairs: build 1.58 to 1.65 ms
+    off and 1.66 to 1.67 on, drop 0.35 to 0.36 and 0.36 to 0.37; frames.mjs `--no-aot`, the tree scene, three
+    pairs: median 0.050, 0.050, 0.051 off and 0.050, 0.051, 0.055 on, p99.9 3.05, 2.91, 2.78 and 2.89, 2.96, 3.34.
+    The same answer: parts on are no faster, and a little slower to build.
+  - Checked, on the homelab, merged with main (b83579f). The suite at 2addb07 (the code as it is but for comments
+    and one debug line): 222/222 checked and 221/222 as shipped, the one test 088 at its timer line (line 7, the
+    second answer False), which run alone there at 1fcd88b passed both ways. `tools/stress-cycles.sh` at 1fcd88b,
+    200 loaded runs a mode: 139 the same in every run of both modes; 127 differed in 3 of 200 as shipped and in
+    none of 200 checked (main's rate; it starts threads, and nothing of the parts runs). Tests 200 (as the suite builds it, parts off), 192 and 193: the same in every run of both modes; 194 to 199 were still waiting for the homelab when this was written (FINISH.md's entry has what came after). The self-hosted
+    compiler: **the first try did not build** (`error CW0101: Microsoft.CodeAnalysis.Operations.CommonConversion
+    has no ToString in cs2wasm's library yet`, a debug line of the parts' proof that printed a conversion; taken
+    out, 1fcd88b). At 1fcd88b (`tools/selfhost-switch.sh CS2WASM_EXCLUSIVE_PARTS=1`): as it is, built in 406 s,
+    32,069,609 bytes, hello world in 9.0 to 9.2 s with 344 MB, and `tools/selfdet.mjs`: **self = net, byte for
+    byte** (27,595 bytes). **Built with exclusive parts on (32,083,626 bytes) it does not run**: exit code 1 after
+    7 s in each of three runs, no module written; not looked into (one more reason they are off). Hello world
+    27,642 bytes (the limit 28,383). Not run: bench.mjs and frames.mjs against NativeAOT-LLVM (off is main's
+    code but for four tests of a constant), the suite with parts on for every program at the last commit.
 
 ### A4. Plugins (goal 3)
 
