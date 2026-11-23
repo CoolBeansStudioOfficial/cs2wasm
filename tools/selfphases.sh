@@ -8,6 +8,8 @@
 #   PROF=1: after the rounds, one run of the self-hosted compiler (and one of NativeAOT's) under node --cpu-prof,
 #   summed by tools/profsum.mjs (NAMES=1 to read it); NODE_FLAGS="--x --y": node options for the self-hosted runs
 #   PROG=tests/Conformance/088_x.cs: another program than hello world
+#   ALLCORE=1: also the self-hosted compiler and .NET's on one processor with CS2WASM_ALL_CORE_LIBS=1 (every core
+#   library read, as before UpstreamSources.Needed took only those a program uses); SHOW=0: the times only
 #   on the homelab: bash tools/homelab.sh <branch> env NAMES=1 PROF=1 bash tools/selfphases.sh
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1
@@ -37,11 +39,13 @@ timed() { # label, command...
 }
 for r in $(seq 1 ${ROUNDS:-3}); do
   timed self self
+  [ "${ALLCORE:-0}" = 1 ] && CS2WASM_ALL_CORE_LIBS=1 timed self-allcore self
   [ -d $NAOT ] && timed naot naot
   DOTNET_PROCESSOR_COUNT=1 timed net-1 net
+  [ "${ALLCORE:-0}" = 1 ] && CS2WASM_ALL_CORE_LIBS=1 DOTNET_PROCESSOR_COUNT=1 timed net-1-allcore net
   timed net-all net
 done
-for l in self naot net-1 net-all; do
+[ "${SHOW:-1}" = 1 ] && for l in self self-allcore naot net-1 net-all; do
   [ -f $OUT/$l.txt ] || continue
   echo "=== $l (the last round)"
   cut -c1-170 $OUT/$l.txt

@@ -47,6 +47,33 @@ internal sealed class Library
         {
             foreach (var t in c.SyntaxTrees) _trees.Add(t);
         }
+        if (Environment.GetEnvironmentVariable("CS2WASM_REF_LIBS") == "1") PrintReferenceLibraries(program);
+    }
+
+    /// <summary>CS2WASM_REF_LIBS=1 (with CS2WASM_ALL_CORE_LIBS=1, so that every core library is there to look in): for
+    /// each reference assembly of the program, the libraries its public types are found in, with how many (the
+    /// check of <see cref="UpstreamSources.Needed"/>'s rule: a reference assembly's types are in the core library of
+    /// its name or in CoreLib, and in no other core library).</summary>
+    void PrintReferenceLibraries(CSharpCompilation program)
+    {
+        foreach (var r in program.References)
+        {
+            if (program.GetAssemblyOrModuleSymbol(r) is not IAssemblySymbol asm) continue;
+            var by = new SortedDictionary<string, int>(StringComparer.Ordinal);
+            var work = new Stack<INamespaceSymbol>(); work.Push(asm.GlobalNamespace);
+            while (work.Count > 0)
+            {
+                var ns = work.Pop();
+                foreach (var n in ns.GetNamespaceMembers()) work.Push(n);
+                foreach (var t in ns.GetTypeMembers())
+                {
+                    if (t.DeclaredAccessibility != Accessibility.Public) continue;
+                    var lib = Lookup(t)?.ContainingAssembly.Name ?? "(none)";
+                    by[lib] = by.GetValueOrDefault(lib) + 1;
+                }
+            }
+            if (by.Count > 0) Console.Error.WriteLine($"reference {asm.Name}: {string.Join(", ", by.Select(kv => kv.Key + " " + kv.Value))}");
+        }
     }
 
     static IEnumerable<(string Name, string Text)> Resources(string prefix)
@@ -394,11 +421,20 @@ internal static class UpstreamSources
         ["System.IO.Compression.ZipFile"] = "System.IO.Compression",
     };
 
-    /// <summary>The libraries the program needs, in library order: the core ones, an optional one with every one
-    /// before it (which it may reference), and the standalone ones it uses.</summary>
+    /// <summary>CS2WASM_ALL_CORE_LIBS=1: the first <see cref="CoreCount"/> libraries for every program, used or not.</summary>
+    static readonly bool s_allCore = Environment.GetEnvironmentVariable("CS2WASM_ALL_CORE_LIBS") == "1";
+
+    /// <summary>The libraries the program needs, in library order: CoreLib, a library whose reference assembly the
+    /// program's code uses with every one before it (which it may reference), an optional one its text names
+    /// likewise, and the standalone ones it uses. A reference assembly's types are in the core library of its name
+    /// or in CoreLib (CS2WASM_REF_LIBS=1 lists them), and what the C# compiler itself calls for a construct
+    /// (a `dynamic` operation's binders, an expression tree's factories, a query's methods) is among the references
+    /// Roslyn reports as used.</summary>
     public static IReadOnlyList<string> Needed(CSharpCompilation program)
     {
-        int count = CoreCount;
+        // (a core library is compiled against those before it and no other, so the ones after the last the program
+        // uses cannot be reached: their files are not read)
+        int count = s_allCore ? CoreCount : 1;
         var standalone = new HashSet<string>();
         var names = program.ReferencedAssemblyNames.Select(a => a.Name).ToHashSet();
         string? text = null;
