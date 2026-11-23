@@ -5,7 +5,7 @@
 // usage: node tools/selfdet.mjs [--self toolchain.wasm] [--cores 1,4] <program.cs>... [cs2wasmc options: -r x.dll ...]
 // --self: default tests/out/proof5/toolchain.wasm (node tools/proof5.mjs toolchain [--threads]); a toolchain without
 // threads is told one core whatever --cores says (it starts none). Environment: CS2WASM_REFERENCE_DIR, CS2WASM_CACHE.
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +41,8 @@ function build(name, cmd, cmdArgs, extraEnv) {
   const t0 = performance.now();
   const r = spawnSync(cmd, [...cmdArgs, ...prog, '-o', selfPath(target)], { env: { ...env, ...extraEnv }, encoding: 'utf8', maxBuffer: 1 << 28, timeout: limit });
   const s = ((performance.now() - t0) / 1000).toFixed(1);
+  // (SELFDET_STDOUT=<file>: what the self-hosted compiler printed, kept: a build with CS2WASM_DROP_STATS=1's tables)
+  if (process.env.SELFDET_STDOUT && name !== 'net') writeFileSync(process.env.SELFDET_STDOUT, (r.stdout || '') + (r.stderr || ''));
   if (r.error && r.error.code === 'ETIMEDOUT') { console.log(`selfdet: ${name}: no end in ${s} s (stopped; SELFDET_TIMEOUT seconds, 600)`); process.exit(1); }
   if (r.status !== 0 || !existsSync(target)) { console.log(`selfdet: ${name}: failed (exit ${r.status}) in ${s} s\n${(r.stderr || r.stdout || '').slice(-2000)}`); process.exit(1); }
   console.log(`selfdet: ${name}: ${readFileSync(target).length.toLocaleString('en-US')} bytes in ${s} s`);
