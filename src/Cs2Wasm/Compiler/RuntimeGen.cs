@@ -610,6 +610,8 @@ sealed partial class RuntimeGen
     static readonly bool s_noFlatDestroy = Environment.GetEnvironmentVariable("CS2WASM_NO_FLAT_DESTROY") == "1";
     /// <summary>CS2WASM_NO_FIN_EXCHANGE=1 (a deliberate break, for test 285): with threads, the finalizer's temporary count taken back by a plain store (EmitDestroy).</summary>
     static readonly bool s_noFinExchange = Environment.GetEnvironmentVariable("CS2WASM_NO_FIN_EXCHANGE") == "1";
+    /// <summary>CS2WASM_NO_FIN_GROUP_ATOMIC=1 (a deliberate break, for test 286): with threads, a group member's finalizer bias added and taken off by a read and a write (EmitDestroy).</summary>
+    static readonly bool s_noFinGroupAtomic = Environment.GetEnvironmentVariable("CS2WASM_NO_FIN_GROUP_ATOMIC") == "1";
     HashSet<int>? _flat;
 
     /// <summary>The classes whose destruction is flat: it frees the object after letting go of fields that each hold
@@ -766,9 +768,16 @@ sealed partial class RuntimeGen
                 {
                     // (a group's member: what the finalizers of the others counted on it meanwhile stays, and so
                     // does what its own counts: the group's destruction looks at the counts afterwards)
-                    e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Add); e.Store(Op.I32Store);
+                    // (threads: an addition, not a read and a write: once the finalizer has stored the object where
+                    // the program can reach it, other threads count it and give their counts back meanwhile, and a
+                    // count lost here let the check after the finalizers free the group while one of them held a
+                    // member (test 286). CS2WASM_NO_FIN_GROUP_ATOMIC=1: the read and the write, a deliberate break.)
+                    bool atomicBias = D.ThreadMode && !s_noFinGroupAtomic;
+                    if (atomicBias) { e.Get(0); e.I32(0x40000000); e.Emit(Op.I32AtomicRmwAdd, 0, 2); e.Op(Op.Drop); }
+                    else { e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Add); e.Store(Op.I32Store); }
                     e.Call(rt.FinHold); e.Call(rt.BeforeFin); CallFinalizers(e, fin); e.Call(rt.FinUnhold);
-                    e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Sub); e.Store(Op.I32Store);
+                    if (atomicBias) { e.Get(0); e.I32(0x40000000); e.Emit(Op.I32AtomicRmwSub, 0, 2); e.Op(Op.Drop); }
+                    else { e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Sub); e.Store(Op.I32Store); }
                     e.End();
                     e.End();
                     return;
