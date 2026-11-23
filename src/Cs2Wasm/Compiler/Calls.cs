@@ -259,7 +259,7 @@ sealed partial class FunctionCompiler
                 || inst is ILocalReferenceOperation { Local.RefKind: RefKind.RefReadOnly };
             if (IsAddressable(instance))
             {
-                EmitAddress(instance);
+                EmitAddressForCall(instance);
                 if (mutates && readOnlyPlace) CopyToTemp(rt);
                 return;
             }
@@ -416,12 +416,12 @@ sealed partial class FunctionCompiler
                 // may be stored through refs of other types, any object of their types)
                 if (_addrUse == null && Types.IsStruct(pt) && T.LayoutOf(pt).HasRefs && D.IsIntrinsic(D.MethodTarget((IMethodSymbol)p.ContainingSymbol))) StructLeavesAnything(pt);
             }
-            EmitAddress(value);
+            EmitAddressForCall(value);
             return;
         }
         if (p.RefKind == RefKind.In)
         {
-            if (IsAddressable(value) && (value.Type == null || Types.Key(TypeOf(value)) == Types.Key(pt))) EmitAddress(value);
+            if (IsAddressable(value) && (value.Type == null || Types.Key(TypeOf(value)) == Types.Key(pt))) EmitAddressForCall(value);
             else EmitAddressOfCopy(value, pt);
             return;
         }

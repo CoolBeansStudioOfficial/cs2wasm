@@ -747,10 +747,25 @@ sealed partial class FunctionCompiler
             EmitValue(f.Instance!); return slot.Offset; // rvalue struct: its temp
         }
         if (!plainUse) D.NoteFieldEscape(storage);
+        bool forCall = _addrForCall; _addrForCall = false;
         var o = EmitValue(f.Instance!);
-        ToTransient(o, it);
+        if (forCall) ToCallSafe(o, it); else ToTransient(o, it);
         if (!IsKnownNonNull(f.Instance!)) NullCheckKeep();
         return slot.Offset;
+    }
+
+    /// <summary>The address EmitAddress is about to make goes to a call by reference (a `ref`, `out` or `in`
+    /// argument, the struct a method is called on), in a function of the program's: where it is a place in an
+    /// object the code reads from a field, an element or a call (`F(ref h.Arr[0], h)`, `h.Pts[i].Move(h)`), that
+    /// object is kept for the statement, as a reference argument is (ToCallSafe), since the callee may let go of
+    /// it and go on using the place; under .NET the place keeps its object. Until 2026-11-23 the callee then
+    /// read and wrote freed memory (test 271). CS2WASM_NO_SPAN_KEEP=1: not.</summary>
+    bool _addrForCall;
+    void EmitAddressForCall(IOperation op)
+    {
+        _addrForCall = !s_noSpanKeep && !D.IsLibrary(M);
+        EmitAddress(op);
+        _addrForCall = false;
     }
 
     /// <summary>The field reference whose place the next EmitFieldSlotBase is asked for only to load from it or to
@@ -1041,11 +1056,13 @@ sealed partial class FunctionCompiler
     {
         var at = (IArrayTypeSymbol)TypeOf(ae.ArrayReference);
         var et = T.Canonical(at.ElementType);
+        // (the element's place goes to a call by reference: the array is kept for the statement, AddressForCall)
+        bool forCall = _addrForCall; _addrForCall = false;
         if (at.Rank != 1)
         {
             // row-major: ((i0 * d1 + i1) * d2 + i2) ..., each index checked against its dimension
             var o0 = EmitValue(ae.ArrayReference);
-            bool calls = ae.Indices.Any(ix => ix.DescendantsAndSelf().Any(x => x is IInvocationOperation or IObjectCreationOperation));
+            bool calls = forCall || ae.Indices.Any(ix => ix.DescendantsAndSelf().Any(x => x is IInvocationOperation or IObjectCreationOperation));
             o0 = calls ? ToCallSafe(o0, at) : ToTransient(o0, at);
             int a = E.AddLocal(ValType.I32);
             E.Tee(a);
@@ -1069,7 +1086,7 @@ sealed partial class FunctionCompiler
             return Types.ArrayDataOffset(at.Rank);
         }
         var o = EmitValue(ae.ArrayReference);
-        bool indexCalls = ae.Indices[0].DescendantsAndSelf().Any(x => x is IInvocationOperation or IObjectCreationOperation);
+        bool indexCalls = forCall || ae.Indices[0].DescendantsAndSelf().Any(x => x is IInvocationOperation or IObjectCreationOperation);
         o = indexCalls ? ToCallSafe(o, at) : ToTransient(o, at);
         int arr = Scratch(ValType.I32);
         E.Tee(arr);
