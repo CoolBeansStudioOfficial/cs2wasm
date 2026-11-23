@@ -1412,3 +1412,8 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   (3.41 to 3.83), NativeAOT-LLVM's build 5.24 (5.15 to 5.92). **Not finished when written** (still running in
   the same turn): test 088 timed from the start and on a snapshot beside NativeAOT-LLVM's; stress of 250, 127 and
   139; `tools/libs-rules-check.sh`.
+  Later in the same turn (ended 08:15): test 088 in turn, three rounds: from the start 75.19 to 77.38 s (median
+  76.44), on its own snapshot 55.11 to 55.31 (55.30), NativeAOT-LLVM's build 91.13 to 105.17 (94.72), every module
+  byte for byte; stress of test 250, 200 loaded runs a mode, 0 bad both ways (the lines for 127 and 139 were cut
+  by the chain's `tail -30` and are not known); `tools/libs-rules-check.sh` passed: 225 programs the same module
+  against both switches, 0 differ, and the host's snapshot rules as expected.
