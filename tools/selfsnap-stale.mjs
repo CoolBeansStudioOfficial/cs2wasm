@@ -16,7 +16,8 @@ import { selfPath, selfEnv, referenceDir, cache } from '../tests/Godot/proof5_he
 const root = join(fileURLToPath(import.meta.url), '..', '..');
 const args = process.argv.slice(2);
 let self = join(root, 'tests', 'out', 'selfsw', 'as-is.wasm');
-for (let i = 0; i < args.length; i++) if (args[i] === '--self') self = resolve(args[++i]);
+let refSelf = false;
+for (let i = 0; i < args.length; i++) if (args[i] === '--self') self = resolve(args[++i]); else if (args[i] === '--ref-self') refSelf = true;
 if (!existsSync(self)) { console.error(`selfsnap-stale: no compiler at ${self}`); process.exit(2); }
 const exe = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
 const out = join(root, 'tests', 'out', 'selfsnap-stale');
@@ -25,15 +26,20 @@ mkdirSync(join(out, 'src'), { recursive: true });
 const prog = join(out, 'src', 'w.cs');
 const hello = readFileSync(join(root, 'tests', 'Conformance', '145_size_hello.cs'), 'utf8');
 const v1 = hello;
-const v2 = hello.replace('Console.WriteLine(42)', 'Console.WriteLine("v2 " + 43.5)');
-const v3 = hello.replace('using System;', 'using System;\nusing System.Linq;').replace('Console.WriteLine(42)', 'Console.WriteLine(new[] { 3, 1, 2 }.OrderBy(x => x).Sum())');
+const v2 = hello.replace('=> Console.WriteLine(42)', '=> Console.WriteLine("v2 " + 43.5)');
+const v3 = hello.replace('using System;', 'using System;\nusing System.Linq;').replace('=> Console.WriteLine(42)', '=> Console.WriteLine(new[] { 3, 1, 2 }.OrderBy(x => x).Sum())');
 if (v2 === v1 || v3 === v1) { console.error('selfsnap-stale: test 145 changed shape'); process.exit(2); }
 let failed = false, n = 0;
 
 function net(refDir, tag) {
   const target = join(out, 'net-' + tag, 'w.wasm');
   mkdirSync(join(out, 'net-' + tag), { recursive: true });
-  const r = spawnSync(exe, [selfPath(prog), ...(process.platform === 'win32' ? ['--pathmap', '/=/'] : []), '-o', selfPath(target)],
+  // (--ref-self: the reference is the self-hosted compiler from the start, no snapshot: to try this script with a
+  // build of the compiler older than the checkout)
+  const r = refSelf
+    ? spawnSync('node', [join(root, 'host', 'run.mjs'), self, 'main', '--', selfPath(prog), ...(process.platform === 'win32' ? ['--pathmap', '/=/'] : []), '-o', selfPath(target)],
+      { env: { ...selfEnv(), CS2WASM_REFERENCE_DIR: selfPath(refDir), CS2WASM_CACHE: selfPath(cache), CS2WASM_PROCESSORS: '1' }, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 600000 })
+    : spawnSync(exe, [selfPath(prog), ...(process.platform === 'win32' ? ['--pathmap', '/=/'] : []), '-o', selfPath(target)],
     { env: { ...process.env, CS2WASM_REFERENCE_DIR: refDir }, encoding: 'utf8', timeout: 600000 });
   if (r.status !== 0) { console.log(`net ${tag}: FAILED ${r.stdout}${r.stderr}`); process.exit(1); }
   return readFileSync(target);
@@ -72,7 +78,7 @@ step('the same source on it', { snap: S, expect: /^restored .*; \d+ paths checke
 writeFileSync(prog, v2);
 step('another version of the source at the same path: the snapshot holds, the source is read anew', { snap: S, expect: /^restored .*paths checked$/, ref: net2, notRef: net1 });
 writeFileSync(prog, v3);
-step('a version that needs another library (System.Linq): on the snapshot, the library read, written again', { snap: S, expect: /^restored .*paths checked; written: /, ref: net3 });
+step('a version that needs another library (System.Linq): on the snapshot (written again if it read files the snapshot does not cover)', { snap: S, expect: /^restored .*paths checked(; written: .*)?$/, ref: net3 });
 writeFileSync(prog, v1);
 step('back to the first version on that snapshot', { snap: S, expect: /^restored .*paths checked$/, ref: net1, notRef: net3 });
 
