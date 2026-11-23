@@ -2222,7 +2222,12 @@ base compiler's, as shipped and checked (hello world 27,784 bytes by the command
   threads (1,638 against 270 us; the whole tree's rebuild is the idle tree's worst frame, 17 ms), and private
   trees scale 3.2 at eight threads. The node path and the fused steps are off with threads; a store into a member
   takes LinkLock's walk, and a member's first and last reference from outside the runtime lock, which every
-  thread shares. Leaving the groups' stripes out when no cycle-capable type can be reached by another thread was
+  thread shares. What eight private trees wait for, by the profile (`node tools/profsum.mjs`, `profcallers.mjs`):
+  `Rt.StripeWait` is the first function, 14.5% of all samples, called from LinkLock under ArenaLink under the
+  build and the lists' Add: objects that are no members take the stripe their address gives, of 256, so threads
+  that share nothing meet on stripes. (Tried on a reading and measured at nothing: the skip of the pinned empty
+  array every new list starts with, which a program without threads has in ArenaLink, allowed with threads.)
+  Leaving the groups' stripes out when no cycle-capable type can be reached by another thread was
   built and measured (build 1,790 -> 1,170 us with every stripe off): never the case as a whole (Thread, its start
   helper and the thread's closure are cycle-capable and reached in every program with threads), so it needs the
   answer by group of types (the runtime's SccOf), a change in GroupLocks.cs, the other session's file tonight.

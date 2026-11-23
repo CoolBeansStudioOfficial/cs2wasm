@@ -98,6 +98,11 @@ if (groups.includes('private')) for (const k of ['pchurn', 'ptree']) for (const 
 if (groups.includes('shared')) for (const n of [1, 2, 4]) rows.push({ scene: 'shared' + n, base: 'shared0', group: 'shared', n });
 const res = {};
 const baseDone = {};
+// (N threads of arithmetic alone, spinN: what the machine itself gives N threads, beside the private scenes' scaling)
+const spins = {};
+if (groups.includes('private'))
+  for (let i = 0; i < runs; i++)
+    for (const n of [1, 2, 4, 8]) { const t = runWasm(threads, 'spin' + n); spins[n] = low(spins[n], stats(t.text, t.memory)); }
 for (let i = 0; i < runs; i++)
   for (const r of rows) {
     const e = res[r.scene] ??= { row: r };
@@ -134,7 +139,8 @@ for (const r of rows) {
   if (e.aotThreads && e.aotThreads.check !== e.threads.check) { bad++; console.log(`  CHECKSUM DIFFERS: ${e.aotThreads.check} vs ${e.threads.check}`); }
   if (r.group === 'private' && r.n > 1) {
     const one = res[r.scene.replace(/\d+$/, '1')].threads;
-    console.log(`${''.padEnd(17)} ${`scaling, ${r.n} threads`.padEnd(22)} ${(r.n * one.wall / e.threads.wall).toFixed(2)}x the work of one thread in the same time (${r.n}.00x: each thread as fast as one alone)`);
+    const spin = spins[r.n] && spins[1] ? `; arithmetic alone on this machine: ${(r.n * spins[1].wall / spins[r.n].wall).toFixed(2)}x` : '';
+    console.log(`${''.padEnd(17)} ${`scaling, ${r.n} threads`.padEnd(22)} ${(r.n * one.wall / e.threads.wall).toFixed(2)}x the work of one thread in the same time (${r.n}.00x: each thread as fast as one alone${spin})`);
   }
 }
 // the churn's parts

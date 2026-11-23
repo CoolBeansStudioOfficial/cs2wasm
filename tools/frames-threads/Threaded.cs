@@ -89,6 +89,38 @@ static class Threaded
         Report.Print(scene, times, check, Report.Now() - t0);
     }
 
+    /// <summary>N threads of arithmetic alone (no object, no memory beyond a few locals): what the machine itself
+    /// gives N threads, to read the other scenes' scaling against.</summary>
+    public static void Spin(string scene, int n)
+    {
+        var times = new long[n][];
+        var checks = new long[n];
+        var threads = new Thread[n];
+        long t0 = Report.Now();
+        for (int i = 0; i < n; i++)
+        {
+            int id = i;
+            threads[i] = new Thread(() =>
+            {
+                var mine = new long[600];
+                uint x = 12345 + (uint)id;
+                long sum = 0;
+                for (int f = 0; f < 700; f++)
+                {
+                    long a = Report.Now();
+                    for (int k = 0; k < 400000; k++) { x = x * 1664525u + 1013904223u; sum += x >> 24; }
+                    if (f >= 100) mine[f - 100] = Report.Now() - a;
+                }
+                checks[id] = sum;
+                times[id] = mine;
+            });
+            threads[i].Start();
+        }
+        long check = 0;
+        for (int i = 0; i < n; i++) { threads[i].Join(); check += checks[i]; }
+        Report.Print(scene, times, check, Report.Now() - t0);
+    }
+
     public static void Shared(string scene, int n)
     {
         var threads = new Thread[n];

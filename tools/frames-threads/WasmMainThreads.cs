@@ -25,6 +25,10 @@ static class WasmMainThreads
     [UnmanagedCallersOnly(EntryPoint = "tparts1")] static void TParts1() => Threaded.PartsOnWorker(true);
     [UnmanagedCallersOnly(EntryPoint = "tparts_main")] static void TPartsMain() => Threaded.PartsWithIdle(true);
     [UnmanagedCallersOnly(EntryPoint = "parts_main")] static void PartsMain() => Threaded.PartsWithIdle(false);
+    [UnmanagedCallersOnly(EntryPoint = "spin1")] static void Spin1() => Threaded.Spin("spin1", 1);
+    [UnmanagedCallersOnly(EntryPoint = "spin2")] static void Spin2() => Threaded.Spin("spin2", 2);
+    [UnmanagedCallersOnly(EntryPoint = "spin4")] static void Spin4() => Threaded.Spin("spin4", 4);
+    [UnmanagedCallersOnly(EntryPoint = "spin8")] static void Spin8() => Threaded.Spin("spin8", 8);
     [UnmanagedCallersOnly(EntryPoint = "shared1")] static void Shared1() => Threaded.Shared("shared1", 1);
     [UnmanagedCallersOnly(EntryPoint = "shared2")] static void Shared2() => Threaded.Shared("shared2", 2);
     [UnmanagedCallersOnly(EntryPoint = "shared4")] static void Shared4() => Threaded.Shared("shared4", 4);
