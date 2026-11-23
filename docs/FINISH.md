@@ -30,7 +30,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 
 | # | Check | Now | Goal |
 |---|---|---|---|
-| 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 255/255 both ways and no `known-gap` test (claude/known-diffs-2 1cae0b2, its merge with main 4cf95fe, the homelab, 2026-11-23) | all pass, no `known-gap` |
+| 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 264 passed, 0 failed, no known gap, both ways (main 440bb82, the homelab, 2026-11-23 08:45) | all pass, no `known-gap` |
 | 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (stream E's tests); reflection on compiler-made methods closed 2026-11-21 (tests 155, 156: names with Roslyn's ordinals, declaring classes, attributes, MoveNext); a capture-free lambda's `Delegate.Target` closed 2026-11-23 (test 270, claude/known-diffs-2); open: the generated classes' own member lists, generic generated classes as constructed types, and what docs/AUDIT.md's "Known differences from .NET, second round" lists as left (a table's value that holds its key, what only a dying finalizable object holds, a root that is a member of its group, spans in the core library's own code); .NET's own library frames (not reproducible from source) | none |
 | 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20) | none in 200 loaded runs |
 | 2 | Test 127 under load (`tools/stress-cycles.sh`) | open: `async 5 / pending 1` in about 1% of loaded runs (main 6e60243: 22 of 2,400; main d4b331e: 4 of 400; main dca1f9c: 3 of 400, the homelab); the 2026-11-21 fix made it rarer, not gone. Test 187 as shipped differs under load at about 2.5% (19 of 800 on main bc06ea9, 20 of 800 on dca1f9c) | none |. 2026-11-23 (claude/load-flakes-safe): tests 127 and 187 now wait, bounded, for the pool thread that completed the last async method before they count (what they asked right after Task.WhenAll came back .NET does not promise, by its sources; not shown by .NET's output in 400 loaded runs); the leak itself is open as before, about one loaded run of a hundred of 127, 131, 187. Its causes are found and closed on claude/load-flakes-1 (a stale note on a top that code still holds; the top an ownership that turns round leaves; two structures that refer into each other), but the upkeep of the notes there (a8a50fc) kept the self-hosted compiler from ending, and the form that does not (the numbers kept at the events) still leaves test 187's rounds in 3 to 8 loaded runs of 400: not merged
@@ -1417,3 +1417,9 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   byte for byte; stress of test 250, 200 loaded runs a mode, 0 bad both ways (the lines for 127 and 139 were cut
   by the chain's `tail -30` and are not known); `tools/libs-rules-check.sh` passed: 225 programs the same module
   against both switches, 0 differ, and the host's snapshot rules as expected.
+- 2026-11-23, 08:45, main's last code commits checked whole on the homelab. f549fb0 (known-diffs-2 with tree-3,
+  plain parts off): suite 258 passed, 0 failed, no known gap, both ways; self-host check all the same (hello world
+  10.2 to 10.7 s on the loaded homelab, 272 MB; byte for byte on 145, 220, 193, 088). 440bb82 (with threads-1 and
+  selfhost-speed-2): suite 264 passed, 0 failed, both ways (896 s); self-host check all the same: built in 275 s
+  (33,809,524 bytes), hello world 7.30 to 7.56 s at 241.8 MB, the switched build the same module, byte for byte on
+  145, 220, 193, 088. The morning report is docs/REPORT-2026-11-23.md.
