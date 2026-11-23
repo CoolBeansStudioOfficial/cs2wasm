@@ -26,8 +26,11 @@ static class Inliner
     // a call site inside a loop, although an exception can leave it (its frame stays in a trace, as above): the
     // engine inlines it too, but only the compiler knows that nothing in the loop stores those fields, and reads
     // them once before the loop (FieldLoads.cs) when the reads are the loop's own. CS2WASM_INLINE_READERS=n: bodies
-    // up to n instructions (0: off).
-    static readonly int s_readers = Env("CS2WASM_INLINE_READERS", 80);
+    // up to n instructions (0: off). 96: a list's setter for a class's elements is in (its count of the new value and
+    // of the old one make it 81 to 90; at 80 the getter went into a loop and the setter stayed a call, which the
+    // engine inlines but whose reads of the size and the array it makes again, and a call that comes back in a loop
+    // keeps the loop's values in memory, ColdExits.cs).
+    static readonly int s_readers = Env("CS2WASM_INLINE_READERS", 96);
 
     /// <summary>A load of a field (by its tag) or of an array's length whose address is a parameter read as it is.</summary>
     static bool ReadsParamFields(WasmFunction g)

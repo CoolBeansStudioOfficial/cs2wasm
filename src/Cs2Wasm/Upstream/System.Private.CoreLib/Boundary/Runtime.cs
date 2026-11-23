@@ -1292,7 +1292,7 @@ namespace Cs2Wasm.Runtime
             s_end = Mem.Size() * 65536;
             MemStatsGrow();
             // (with other threads, not here: OomLater)
-            if (SingleThreaded()) ThrowHelpers.ReserveOutOfMemory(); else Atomic.Store32(ref ThrowHelpers.s_oomWanted, 1);
+            if (SingleThreaded()) ThrowHelpers.ReserveOutOfMemory(); else Atomic.Store32(ref s_oomWanted, 1);
         }
 
         // The exception a later failure throws is made when the memory has grown (ThrowHelpers.ReserveOutOfMemory).
@@ -1304,12 +1304,13 @@ namespace Cs2Wasm.Runtime
         // timeout); test 133 checked, 5 loaded runs of 400 on the homelab once other changes made its first growth
         // come at another time. So with threads the growth only notes that the exception is wanted, and the next
         // object allocated the slow way by a thread that holds no lock of the runtime's makes it (AllocObjectSlow).
+        static int s_oomWanted;
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static void OomLater()
         {
             if (t_lkN != 0 || RuntimeLockHeld() || Atomic.Load32(ref s_heapOwner) == ThreadId()) return;
-            if (Atomic.CompareExchange32(ref ThrowHelpers.s_oomWanted, 1, 0) != 1) return;
+            if (Atomic.CompareExchange32(ref s_oomWanted, 1, 0) != 1) return;
             ThrowHelpers.ReserveOutOfMemory();
         }
 
@@ -1941,7 +1942,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
             if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x1F) << 24);
-            if (ThreadMode() && ThrowHelpers.s_oomWanted != 0) OomLater();
+            if (ThreadMode() && s_oomWanted != 0) OomLater();
             return a;
         }
 
@@ -4174,8 +4175,8 @@ namespace Cs2Wasm.Runtime
         /// (JoinPair, NodeUp, AddNode) are not taken; each goes the general way.</summary>
         [Intrinsic] static extern bool NoNodePath();
         /// <summary>CS2WASM_NODE_PATH_BREAK=n (at compile time, test 201's): one rule of those steps is not asked.
-        /// 1: JoinPair, what the new object holds; 2: JoinPair, the container's other slots; 3: NodeUp, that the
-        /// field's count is not the parent's last from outside; 4: NodeUp, that the node has no other slot to
+        /// 1: JoinPair, what the new object holds; 2: JoinPair, the container's other slots; (3: no longer a
+        /// rule: NodeUp gives the parent's last count from outside back as LinkMembers does;) 4: NodeUp, that the node has no other slot to
         /// link; 5: NodeUp, whether the parent has an owner; 6: AddNode, that the store's count is the node's one
         /// reference from outside; 7: AddNode, that the member the node owns above the array has no up-reference
         /// below it and holds nothing. (Test 201's lines change with 1, 2 and 6; 3, 4 and 5 are reached there and
@@ -4271,7 +4272,7 @@ namespace Cs2Wasm.Runtime
         {
             if (NoNodePath() || (s_failedTops | s_reevN | s_linkN) != 0) return false;
             int cp = Mem.LoadI32(p);
-            if (NodePathBreak() == 3 ? cp > -3 : cp >= -3) return false;
+            if (cp > -3) return false;
             if (p == e || PL(e, 20) != 0 || PL(e, 24) != 0) return false;
             if (SccOf(Mem.LoadI32(p + 4)) != SccOf(Mem.LoadI32(e + 4))) return false;
             if ((PL(p, 24) & (Dying | Queued)) != 0) return false;
@@ -4280,11 +4281,23 @@ namespace Cs2Wasm.Runtime
             int i = SlotIndex(e, sl), ow = PL(p, 20);
             if (i < 0 || ow == e) return false;
             OpStat(38);
-            if (ae != ap) ArenaMerge(ae, ap);
-            Mem.StoreI32(p, cp + 1);
+            int ar = ae != ap ? ArenaMerge(ae, ap) : ae;
+            if (cp != -3) Mem.StoreI32(p, cp + 1);
+            else
+            {
+                // (the field's count is the parent's last from outside: given back here or after the store, as
+                // LinkMembers decides it; the parent then does not wait, and is the node's at once all the same)
+                Mem.StoreI32(p, -2);
+                if (EarlyGiveBack(p, e, i, ar)) { OpStat(32); Mem.StoreI32(ar, Mem.LoadI32(ar) - 1); }
+                else { Mem.StoreI32(p, -3); GiveBackLater(p); }
+            }
             PS(p, 4, PL(p, 4) + 1);
             SetSlotBits(e, i, 1);
-            if (ow == 0 || NodePathBreak() == 5) TakeOwnership(p, e);
+            if (ow == 0 || NodePathBreak() == 5)
+            {
+                TakeOwnership(p, e);
+                if (cp == -3 && !HoldSettled(p)) UpdateHold(p);
+            }
             else
             {
                 if (PLW(p) == 0) { ClearMark(p); PSW(p, e); }
@@ -5140,6 +5153,23 @@ namespace Cs2Wasm.Runtime
 
         static int FinNext(int m, int first, int link) { int n = PL(m, link); return n == first ? 0 : n; }
 
+        [Intrinsic] static extern int WeakAny();
+        [Intrinsic] static extern void WeakDying(int addr);
+
+        /// <summary>The members that die together (a list through the prefix word `link`: 8 ending in 0, 12 a ring):
+        /// the weak references to each are cleared, before a finalizer of any runs and before any is cleared, as
+        /// .NET clears the short weak references to all that became unreachable together first (test 245; until
+        /// 2026-11-22 a member's were cleared at its own turn, and a finalizer of one member read a weak reference
+        /// to the next alive). One call and a test for a program, or a moment, without a marked object.</summary>
+        static void WeakDyingAll(int first, int link)
+        {
+            if (WeakAny() == 0) return;
+            int end = link == 12 ? first : 0;
+            WeakSlots.Hold();
+            for (int m = first; m != 0; m = FinNext(m, end, link)) WeakDying(m);
+            WeakSlots.Release();
+        }
+
         static void FinVisit(int first, int link, int mode)
         {
             int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
@@ -5160,6 +5190,7 @@ namespace Cs2Wasm.Runtime
             for (int m = first; m != 0; m = FinNext(m, end, link)) { Mem.StoreI32(m, FinBias); PS(m, 24, PL(m, 24) | Dying); }
             int cutEnd = s_cutN;
             CutsBack(cutBase, cutEnd);
+            WeakDyingAll(first, link);
             for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaFinalizeObject(m);
             FinVisit(first, link, 10);
             bool back = false;
@@ -5185,6 +5216,7 @@ namespace Cs2Wasm.Runtime
             int end = link == 12 ? first : 0;
             // (prepared: done already, under the lock, FinPrepare)
             if (!prepared) FinPrepare(first, link, q, from, to);
+            WeakDyingAll(first, link);
             for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaFinalizeObject(m);
             if (unlocked) RuntimeLock();
             FinVisit(first, link, 10);
@@ -5259,6 +5291,7 @@ namespace Cs2Wasm.Runtime
                 if (cuts != 0) Free(cuts, n * 8);
                 if (!back)
                 {
+                    if (!fin) WeakDyingAll(first, link);
                     for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaClearObject(m);
                     for (int m = first; m != 0;) { int next = FinNext(m, end, link); ArenaFreeObject(m); m = next; }
                 }
@@ -5322,6 +5355,7 @@ namespace Cs2Wasm.Runtime
             // refer to, and are never freed (what one of several objects that die together can still reach is
             // not followed: section 4.3's group stays whole).
             if (fin && FinPhase(done, 8, cutBase)) { ArenaEmpty(ar); return; }
+            if (!fin) WeakDyingAll(done, 8);
             for (int m = done; m != 0; m = PL(m, 8)) ArenaClearObject(m);
             for (int m = done; m != 0;)
             {
@@ -5455,6 +5489,7 @@ namespace Cs2Wasm.Runtime
             s_cutOn = cutOn;
             long t1 = DropStats() ? Engine.MonotonicNs() : 0;
             long t2 = t1;
+            WeakDyingAll(done, 8);
             for (int m = done; m != 0; m = PL(m, 8)) { ArenaClearObject(m); if (DropStats()) s_dsKilled++; }
             long t3 = DropStats() ? Engine.MonotonicNs() : 0;
             if (ShareCheck() || Checked() || NoFreeList())
@@ -5599,6 +5634,7 @@ namespace Cs2Wasm.Runtime
                 int n = Mem.LoadI32(ar + 8), cap = n > 0 ? n : 16;
                 int list = Alloc(cap * 4), k = 0;
                 int m = first;
+                WeakDyingAll(first, 12);
                 long t0 = DropStats() ? Engine.MonotonicNs() : 0;
                 long t1;
                 if (FusedDrop())
@@ -5662,6 +5698,7 @@ namespace Cs2Wasm.Runtime
                 // (a finalizer stored one of them where the program can reach it: as in ArenaDestroyFrom; the
                 // arena's record stays, busy, for the words of its members that name it)
                 if (fin && FinPhase(first, 12, cutBase)) return;
+                if (!fin) WeakDyingAll(first, 12);
                 m = first;
                 do { ArenaClearObject(m); m = PL(m, 12); } while (m != first);
                 m = first;
@@ -6226,8 +6263,6 @@ namespace Cs2Wasm.Runtime
         // and has no room for it at all ends, as the process does under .NET.
         static OutOfMemoryException? s_oom;
         static int s_oomBusy;
-        // (set by a growth of the memory with threads running, Rt.GrowFor: the exception is made later, Rt.OomLater)
-        internal static int s_oomWanted;
 
         internal static void ReserveOutOfMemory()
         {

@@ -569,6 +569,7 @@ sealed partial class FunctionCompiler
             IImplicitIndexerReferenceOperation { IndexerSymbol: IPropertySymbol ip } => ip.ReturnsByRef || ip.ReturnsByRefReadonly,
             IInlineArrayAccessOperation => true,
             IInvocationOperation inv => inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly,
+            IFunctionPointerInvocationOperation { Target.Type: IFunctionPointerTypeSymbol fp } => fp.Signature.ReturnsByRef || fp.Signature.ReturnsByRefReadonly,
             IDeclarationExpressionOperation => true,
             IConditionalOperation { IsRef: true } => true,
             IInterpolatedStringHandlerArgumentPlaceholderOperation { PlaceholderKind: InterpolatedStringArgumentPlaceholderKind.TrailingValidityArgument } => true,
@@ -678,6 +679,9 @@ sealed partial class FunctionCompiler
             case IArrayElementReferenceOperation ae: return EmitArrayElementAddress(ae);
             case IInvocationOperation inv when inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly:
                 { var save = _wantRefReturnAddress; _wantRefReturnAddress = true; try { EmitInvocation(inv); } finally { _wantRefReturnAddress = save; } return 0; }
+            // (a function pointer that returns by reference: the reference itself; before 2026-11-22 a copy's address)
+            case IFunctionPointerInvocationOperation { Target.Type: IFunctionPointerTypeSymbol { Signature: { } fsig } } fpi when fsig.ReturnsByRef || fsig.ReturnsByRefReadonly:
+                { var save = _wantRefReturnAddress; _wantRefReturnAddress = true; try { EmitFunctionPointerInvocation(fpi); } finally { _wantRefReturnAddress = save; } return 0; }
             case IInlineArrayAccessOperation ia when TypeOf(ia.Argument) is not INamedTypeSymbol { Name: "Range" }:
                 {
                     // element i of an inline array: bounds-checked, at i * size
@@ -1046,6 +1050,8 @@ sealed partial class FunctionCompiler
             int a = E.AddLocal(ValType.I32);
             E.Tee(a);
             if (!IsKnownNonNull(ae.ArrayReference)) NullCheck(); else E.Op(Op.Drop);
+            // (the array itself for the store's link: the container of the element, Arenas.ArraySite)
+            if (keepArray >= 0) { E.Get(a); E.Set(keepArray); }
             var idxs = new int[at.Rank];
             for (int i = 0; i < at.Rank; i++) { idxs[i] = E.AddLocal(ValType.I32); EmitIndex(ae.Indices[i]); E.Set(idxs[i]); }
             int lin = E.AddLocal(ValType.I32);

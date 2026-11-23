@@ -37,11 +37,42 @@ internal sealed class Library
 
     public Library(CSharpCompilation program)
     {
-        All = Upstream(UpstreamSources.Needed(program));
+        var sw = s_times ? System.Diagnostics.Stopwatch.StartNew() : null;
+        var needed = UpstreamSources.Needed(program);
+        if (sw != null) { Console.Error.WriteLine($"    library: {sw.ElapsedMilliseconds,6} ms  what the program needs ({needed.Count} libraries{UpstreamSources.NeededWhy})"); sw.Restart(); }
+        All = Upstream(needed);
+        if (sw != null) Console.Error.WriteLine($"    library: {sw.ElapsedMilliseconds,6} ms  read and parsed in all");
         Compilation = All[0];
         foreach (var c in All)
         {
             foreach (var t in c.SyntaxTrees) _trees.Add(t);
+        }
+        if (Environment.GetEnvironmentVariable("CS2WASM_REF_LIBS") == "1") PrintReferenceLibraries(program);
+    }
+
+    /// <summary>CS2WASM_REF_LIBS=1 (with CS2WASM_ALL_CORE_LIBS=1, so that every core library is there to look in): for
+    /// each reference assembly of the program, the libraries its public types are found in, with how many (the
+    /// check of <see cref="UpstreamSources.Needed"/>'s rule: a reference assembly's types are in the core library of
+    /// its name or in CoreLib, and in no other core library).</summary>
+    void PrintReferenceLibraries(CSharpCompilation program)
+    {
+        foreach (var r in program.References)
+        {
+            if (program.GetAssemblyOrModuleSymbol(r) is not IAssemblySymbol asm) continue;
+            var by = new SortedDictionary<string, int>(StringComparer.Ordinal);
+            var work = new Stack<INamespaceSymbol>(); work.Push(asm.GlobalNamespace);
+            while (work.Count > 0)
+            {
+                var ns = work.Pop();
+                foreach (var n in ns.GetNamespaceMembers()) work.Push(n);
+                foreach (var t in ns.GetTypeMembers())
+                {
+                    if (t.DeclaredAccessibility != Accessibility.Public) continue;
+                    var lib = Lookup(t)?.ContainingAssembly.Name ?? "(none)";
+                    by[lib] = by.GetValueOrDefault(lib) + 1;
+                }
+            }
+            if (by.Count > 0) Console.Error.WriteLine($"reference {asm.Name}: {string.Join(", ", by.Select(kv => kv.Key + " " + kv.Value))}");
         }
     }
 
@@ -126,6 +157,10 @@ internal sealed class Library
     }
 
     static readonly object s_lock = new();
+    /// <summary>CS2WASM_TIMES=1: each library's files read and parsed, in milliseconds (summed over the threads that
+    /// parse, so on several processors more than the time that passed).</summary>
+    static readonly bool s_times = Environment.GetEnvironmentVariable("CS2WASM_TIMES") == "1";
+    static long s_readTicks, s_parseTicks, s_chars;
     static readonly Dictionary<string, CSharpCompilation> s_built = [];
     static List<(string Name, string Text)>? s_own;
 
@@ -220,6 +255,7 @@ internal sealed class Library
                 // (read at once: asking first whether it is there is a second trip to the file system for each of
                 // some thousands of files)
                 string text;
+                long t0 = s_times ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                 try { text = File.ReadAllText(path); }
                 catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { throw new CompileException($"library source missing: {path}"); }
                 if (edits.TryGetValue(f, out var es))
@@ -228,14 +264,28 @@ internal sealed class Library
                         if (!text.Contains(from)) throw new CompileException($"library edit no longer applies: {f}: '{from}'");
                         text = text.Replace(from, to);
                     }
-                return CSharpSyntaxTree.ParseText(text, po, path: UpstreamSources.DisplayPrefix(root) + f);
+                if (!s_times) return CSharpSyntaxTree.ParseText(text, po, path: UpstreamSources.DisplayPrefix(root) + f);
+                long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+                var tree = CSharpSyntaxTree.ParseText(text, po, path: UpstreamSources.DisplayPrefix(root) + f);
+                long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
+                Interlocked.Add(ref s_readTicks, t1 - t0); Interlocked.Add(ref s_parseTicks, t2 - t1); Interlocked.Add(ref s_chars, text.Length);
+                return tree;
             };
+            var swLib = s_times ? System.Diagnostics.Stopwatch.StartNew() : null;
+            s_readTicks = s_parseTicks = s_chars = 0;
             var trees = (many ? files.AsParallel().AsOrdered().Select(parse) : files.Select(parse)).ToList();
             var ownFiles = own.Where(r => r.Name.StartsWith(prefix) && r.Name.EndsWith(".cs"));
             trees.AddRange(many ? ownFiles.AsParallel().AsOrdered().Select(r => CSharpSyntaxTree.ParseText(r.Text, po, path: "cs2wasm/" + r.Name))
                                 : ownFiles.Select(r => CSharpSyntaxTree.ParseText(r.Text, po, path: "cs2wasm/" + r.Name)));
-            return CSharpCompilation.Create(lib, trees, built.Select(b => (MetadataReference)b.ToMetadataReference()),
+            long tTrees = swLib?.ElapsedMilliseconds ?? 0;
+            var made = CSharpCompilation.Create(lib, trees, built.Select(b => (MetadataReference)b.ToMetadataReference()),
                 nullable ? s_options.WithNullableContextOptions(NullableContextOptions.Enable) : s_options);
+            if (swLib != null)
+            {
+                long f = System.Diagnostics.Stopwatch.Frequency;
+                Console.Error.WriteLine($"    library: {swLib.ElapsedMilliseconds,6} ms  {lib}: {trees.Count} files, {s_chars / 1000000.0:F1}M characters; reading {s_readTicks * 1000 / f} ms, parsing {s_parseTicks * 1000 / f} ms (both summed over threads), all its trees {tTrees} ms, the compilation {swLib.ElapsedMilliseconds - tTrees} ms");
+            }
+            return made;
         }
     }
 
@@ -371,11 +421,24 @@ internal static class UpstreamSources
         ["System.IO.Compression.ZipFile"] = "System.IO.Compression",
     };
 
-    /// <summary>The libraries the program needs, in library order: the core ones, an optional one with every one
-    /// before it (which it may reference), and the standalone ones it uses.</summary>
+    /// <summary>For CS2WASM_TIMES: what made the last library of the list needed.</summary>
+    public static string NeededWhy = "";
+
+    /// <summary>CS2WASM_ALL_CORE_LIBS=1: the first <see cref="CoreCount"/> libraries for every program, used or not.</summary>
+    static readonly bool s_allCore = Environment.GetEnvironmentVariable("CS2WASM_ALL_CORE_LIBS") == "1";
+
+    /// <summary>The libraries the program needs, in library order: CoreLib, a library whose reference assembly the
+    /// program's code uses with every one before it (which it may reference), an optional one its text names
+    /// likewise, and the standalone ones it uses. A reference assembly's types are in the core library of its name
+    /// or in CoreLib (CS2WASM_REF_LIBS=1 lists them), and what the C# compiler itself calls for a construct
+    /// (a `dynamic` operation's binders, an expression tree's factories, a query's methods) is among the references
+    /// Roslyn reports as used.</summary>
     public static IReadOnlyList<string> Needed(CSharpCompilation program)
     {
-        int count = CoreCount;
+        NeededWhy = "";
+        // (a core library is compiled against those before it and no other, so the ones after the last the program
+        // uses cannot be reached: their files are not read)
+        int count = s_allCore ? CoreCount : 1;
         var standalone = new HashSet<string>();
         var names = program.ReferencedAssemblyNames.Select(a => a.Name).ToHashSet();
         string? text = null;
@@ -390,7 +453,7 @@ internal static class UpstreamSources
                 need = nss.Any(n => text.Contains(n, StringComparison.Ordinal));
             }
             if (need && Standalone.Contains(lib)) standalone.Add(lib);
-            else if (need) count = i + 1;
+            else if (need) { count = i + 1; NeededWhy = "; the last for its name in the text: " + lib; }
         }
         // and the libraries whose reference assemblies the program's code uses, whatever its text says (a type
         // named in full: `new System.Net.Sockets.Socket(...)`); a reference assembly is its library's, or one of these
@@ -400,7 +463,7 @@ internal static class UpstreamSources
             if (s_referenceLibrary.TryGetValue(asm, out var mapped)) asm = mapped;
             int i = Array.IndexOf(Libraries, asm);
             if (i < count) continue;
-            if (Standalone.Contains(asm)) standalone.Add(asm); else count = i + 1;
+            if (Standalone.Contains(asm)) standalone.Add(asm); else { count = i + 1; NeededWhy = "; the last for a reference used: " + asm; }
         }
         // (a standalone library's references come with it: Library.Upstream builds them)
         return Libraries.Where((l, i) => i < count && !Standalone.Contains(l) || standalone.Contains(l)).ToList();

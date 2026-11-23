@@ -18,6 +18,26 @@ namespace Cs2Wasm.Wasm;
 static class SameBaseLoads
 {
     static readonly bool s_off = Environment.GetEnvironmentVariable("CS2WASM_NO_SAME_BASE_LOADS") == "1";
+    // A value stored and read back (`--p.Life > 0`: the store, then the place read for the test): the read is the
+    // value that was stored, kept in a local where it is stored, by the same proof (the same local plus the same
+    // constant, the local not assigned since, also not inside the stored value's own code; every store between to
+    // other bytes of that object). Only a store of the place's whole width, read with the load of the same type
+    // (a narrower store keeps part of the value: left as it is). CS2WASM_NO_STORE_FORWARD=1: off.
+    // CS2WASM_SAME_BASE_WITHOUT=overlap|other|calls|assigned|value|address: one of the pass's rules taken out (the
+    // bytes' overlap, a store through another local, a call, the local's assignment, its assignment inside the
+    // stored value's code, a store whose address is no local): tests 207 and 209 then print something else.
+    static readonly bool s_noForward = Environment.GetEnvironmentVariable("CS2WASM_NO_STORE_FORWARD") == "1";
+    static readonly string s_without = Environment.GetEnvironmentVariable("CS2WASM_SAME_BASE_WITHOUT") ?? "";
+
+    /// <summary>The load that reads back what a store of the whole place wrote; Nop: none.</summary>
+    static Op LoadOf(Op store) => store switch
+    {
+        Op.I32Store => Op.I32Load,
+        Op.I64Store => Op.I64Load,
+        Op.F32Store => Op.F32Load,
+        Op.F64Store => Op.F64Load,
+        _ => Op.Nop,
+    };
 
     static bool IsLoad(Op op) => op >= Op.I32Load && op <= Op.I64Load32U;
     static bool IsStore(Op op) => op >= Op.I32Store && op <= Op.I64Store32;
@@ -40,8 +60,12 @@ static class SameBaseLoads
 
     /// <summary>The local a store's address is, when the address is just that local: the instructions between it and
     /// the store are the stored value's, by their effect on the stack. -1: not known.</summary>
-    static int StoreBase(List<Instr> b, int store)
+    static int StoreBase(List<Instr> b, int store) => StoreBase(b, store, out _);
+
+    /// <summary>assigned: the stored value's own code assigns that local (the address was pushed before).</summary>
+    static int StoreBase(List<Instr> b, int store, out bool assigned)
     {
+        assigned = false;
         int need = 1, k = store - 1;
         for (; k >= 0; k--)
         {
@@ -51,7 +75,10 @@ static class SameBaseLoads
             need += e.pop;
             if (need == 0) break;
         }
-        return k >= 1 && b[k - 1].Op is Op.LocalGet or Op.LocalTee ? (int)b[k - 1].Imm : -1;
+        if (!(k >= 1 && b[k - 1].Op is Op.LocalGet or Op.LocalTee)) return -1;
+        int x = (int)b[k - 1].Imm;
+        for (int q = k; q < store; q++) if (b[q].Op is Op.LocalSet or Op.LocalTee && b[q].Imm == x) assigned = true;
+        return x;
     }
 
     /// <summary>Returns whether the function changed.</summary>
@@ -68,11 +95,11 @@ static class SameBaseLoads
         {
             var ins = b[i];
             var op = ins.Op;
-            if (avail.Count == 0 && !IsLoad(op)) continue;
+            if (avail.Count == 0 && !IsLoad(op) && (s_noForward || !IsStore(op))) continue;
             if (op is Op.LocalSet or Op.LocalTee)
             {
                 drop.Clear();
-                foreach (var key in avail.Keys) if (key.local == (int)ins.Imm) drop.Add(key);
+                foreach (var key in avail.Keys) if (key.local == (int)ins.Imm && s_without != "assigned") drop.Add(key);
                 foreach (var key in drop) avail.Remove(key);
                 continue;
             }
@@ -88,17 +115,19 @@ static class SameBaseLoads
             }
             if (IsStore(op))
             {
-                int x = StoreBase(b, i);
-                if (x < 0) { avail.Clear(); continue; }
+                int x = StoreBase(b, i, out bool assigned);
+                if (x < 0) { if (s_without != "address") avail.Clear(); continue; }
                 long lo = ins.Imm, hi = lo + Bytes(op);
                 drop.Clear();
                 foreach (var key in avail.Keys)
-                    if (key.local != x || key.off < hi && lo < key.off + Bytes(key.op)) drop.Add(key);
+                    if (key.local != x && s_without != "other" || key.local == x && (s_without == "overlap" ? key.off == lo : key.off < hi && lo < key.off + Bytes(key.op))) drop.Add(key);
                 foreach (var key in drop) avail.Remove(key);
+                // (what was stored is what the place holds now)
+                if (!s_noForward && LoadOf(op) is var back and not Op.Nop && (!assigned || s_without == "value")) avail[(x, back, lo)] = i;
                 continue;
             }
             // anything else that may write memory or leave the straight line: nothing is known after it
-            if (op is Op.Call or Op.CallIndirect or Op.MemoryCopy or Op.MemoryFill or Op.MemoryInit or Op.MemoryGrow or Op.V128Store
+            if (op is Op.Call or Op.CallIndirect && s_without != "calls" || op is Op.MemoryCopy or Op.MemoryFill or Op.MemoryInit or Op.MemoryGrow or Op.V128Store
                 || (int)op >= 0xFC00 || Locals.PlainEffect(ins) == null)
                 avail.Clear();
         }
@@ -110,7 +139,7 @@ static class SameBaseLoads
         {
             if (!temp.TryGetValue(first, out int t))
             {
-                f.Locals.Add(LoadType(b[first].Op));
+                f.Locals.Add(LoadType(IsStore(b[first].Op) ? LoadOf(b[first].Op) : b[first].Op));
                 temp[first] = t = firstLocal + f.Locals.Count - 1;
             }
             again[ag] = t;
@@ -121,8 +150,10 @@ static class SameBaseLoads
             // (the local's read before a load that is replaced goes with it)
             if (again.ContainsKey(i + 1)) continue;
             if (again.TryGetValue(i, out int t)) { nb.Add(new Instr { Op = Op.LocalGet, Imm = t, Pos = b[i].Pos, Inl = b[i].Inl }); continue; }
+            // (a store whose value is read back: the value kept before it is stored)
+            if (temp.TryGetValue(i, out int keep) && IsStore(b[i].Op)) { nb.Add(new Instr { Op = Op.LocalTee, Imm = keep, Pos = b[i].Pos, Inl = b[i].Inl }); nb.Add(b[i]); continue; }
             nb.Add(b[i]);
-            if (temp.TryGetValue(i, out int keep)) nb.Add(new Instr { Op = Op.LocalTee, Imm = keep, Pos = b[i].Pos, Inl = b[i].Inl });
+            if (temp.TryGetValue(i, out keep)) nb.Add(new Instr { Op = Op.LocalTee, Imm = keep, Pos = b[i].Pos, Inl = b[i].Inl });
         }
         f.Body = nb;
         return true;
