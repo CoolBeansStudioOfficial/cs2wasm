@@ -57,7 +57,7 @@ sealed partial class FunctionCompiler
         }
         // a getter that returns a field's value or an element borrowed (the indexer of List), of a receiver that stays
         // put: the fields the value came through (Driver.ReturnPathKeys), and the receiver's own place (no threads)
-        if (!tm && !s_noGetterBorrows && init is IPropertyReferenceOperation { Property.GetMethod: { IsStatic: false } gm, Instance: { } gi } gpr
+        if (!s_noGetterBorrows && init is IPropertyReferenceOperation { Property.GetMethod: { IsStatic: false } gm, Instance: { } gi } gpr && (!tm || UnsharedContainer(TypeOf(gi)))
             && Types.IsRef(T.Resolve(gpr.Type!, Map)) && !TypeOf(gi).IsValueType && !IsVirtualCall(gi, gm)
             && D.Method(SubstMethod(gm)).BorrowedReturn is { BorrowKeys: { } gk, BorrowedKind: Own.Unstable })
         {
@@ -65,7 +65,7 @@ sealed partial class FunctionCompiler
             while (recv is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } rc) recv = rc.Operand;
             if (IsStableBase(recv)) return gk;
             if (StaticArrayKey(recv) is { } rsk) return rsk + "\n" + gk;
-            if (recv is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ri } rfr && IsStableBase(ri) && rfr.Field.ContainingType.TypeKind == TypeKind.Class
+            if (recv is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ri } rfr && IsStableBase(ri) && rfr.Field.ContainingType.TypeKind == TypeKind.Class && (!tm || UnsharedPlace(rfr))
                 && !(ri is IParameterReferenceOperation && TypeOf(ri).IsValueType))
             {
                 var rk = Driver.FieldKey(Owner(rfr.Field), StorageField(rfr.Field));

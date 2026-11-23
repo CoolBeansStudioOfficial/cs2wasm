@@ -36,6 +36,10 @@ one 279_private_work_and_handed_results CS2WASM_SHARING_NONE=1 CS2WASM_NO_SAME_T
 # borrow is refused for; the one program that got past both hangs for another reason, tools/thread-board-hang.cs)
 build 279_private_work_and_handed_results t279-nolist CS2WASM_NO_LOCAL_LIST_LOOPS=1
 cmp -s $O/t279.txt $O/t279-nolist.txt && echo "279 with CS2WASM_NO_LOCAL_LIST_LOOPS=1: the same" || { echo "279 with CS2WASM_NO_LOCAL_LIST_LOOPS=1: DIFFERS"; bad=1; }
+# (a getter of an object no other thread can reach returns its field borrowed, List<T>'s indexer: off, the same.
+# What both rules rest on is that the list is no other thread's: CS2WASM_SHARING_NONE above)
+build 279_private_work_and_handed_results t279-nogetter CS2WASM_NO_LOCAL_GETTERS=1
+cmp -s $O/t279.txt $O/t279-nogetter.txt && echo "279 with CS2WASM_NO_LOCAL_GETTERS=1: the same" || { echo "279 with CS2WASM_NO_LOCAL_GETTERS=1: DIFFERS"; bad=1; }
 # (a second rule on a test built above: a delegate made of a lambda reaches that lambda's closure, test 276's thread
 # lambdas and what they capture; and a lambda runs on a worker when a delegate of it can be reached by one, test
 # 275's thread lambdas, whose code names the crates' statics)
