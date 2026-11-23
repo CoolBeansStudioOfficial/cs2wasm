@@ -737,8 +737,14 @@ namespace Cs2Wasm.Runtime
         /// array of any type come from nowhere).</summary>
         [Intrinsic] static extern int ArrayRankAt(int array);
         [Intrinsic] static extern int ArrayElementSizeAt(int array);
-        /// <summary>Reevaluate visits the object by its type; CS2WASM_SLOT_WALK=1 (at compile time): by its slot bits (off by default: Calls.cs).</summary>
+        /// <summary>CS2WASM_NO_SLOT_WALK=1 (at compile time): Reevaluate visits the object by its type, not by its slot
+        /// bits. (The walk was off from round 2 of the rebuild to round 10, for one long frame of the strings
+        /// scene that turned out to be the host's own collection, and because it gained nothing then; with the
+        /// node's add written out, Rt.AddNode, it is what is left of that step: docs/AUDIT.md A3.5, round 10.)</summary>
         [Intrinsic] static extern bool NoSlotWalk();
+        /// <summary>CS2WASM_SLOT_WALK_BREAK=1 (at compile time, tools/slot-walk-breaks.sh): the walk leaves the
+        /// member's first counted slot out.</summary>
+        [Intrinsic] static extern bool SlotWalkBreak();
         // CS2WASM_DROP_STATS=1 (a diagnosis, at compile time): the check at the drop counts what it does and says so
         [Intrinsic] static extern bool DropStats();
         /// <summary>CS2WASM_STALE_HOLDS=1 (at compile time, an experiment): an owned member keeps a hold once made, without
@@ -2833,6 +2839,7 @@ namespace Cs2Wasm.Runtime
             {
                 if ((PL(v, 24) & Elems) != 0) return;
                 int w = PL(v, 28) & 0x55555555;
+                if (SlotWalkBreak()) w &= w - 1;
                 for (int k = 0; w != 0; k++, w = (int)((uint)w >> 2))
                     if ((w & 1) != 0) ReevaluateSlot(v, k, Mem.LoadI32(v + 12 + 4 * k));
                 return;

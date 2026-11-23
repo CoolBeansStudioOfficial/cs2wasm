@@ -1021,7 +1021,8 @@ sealed partial class FunctionCompiler
             case "Rt.StaleHolds": E.I32(Environment.GetEnvironmentVariable("CS2WASM_STALE_HOLDS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoTakeIn": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TAKE_IN") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoFreshJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_JOIN") == "1" ? 1 : 0); return Own.None;
-            case "Rt.NoSlotWalk": E.I32(Environment.GetEnvironmentVariable("CS2WASM_SLOT_WALK") == "1" ? 0 : 1); return Own.None; // (off by default: with it the strings scene of tools/frames.mjs has one 0.6 ms frame, cause not found; tree the same either way)
+            case "Rt.SlotWalkBreak": E.I32(Environment.GetEnvironmentVariable("CS2WASM_SLOT_WALK_BREAK") == "1" ? 1 : 0); return Own.None; // (a test: the walk leaves the member's first counted slot out, tools/slot-walk-breaks.sh)
+            case "Rt.NoSlotWalk": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_SLOT_WALK") == "1" ? 1 : 0); return Own.None; // (on since round 10; the long frame of the strings scene laid to it in round 1 was the host's own collection, round 2)
             case "Rt.ArrayRankAt": E.Call(Rt.ArrayRank); return Own.None;
             case "Rt.ArrayElementSizeAt": E.Call(Rt.ArrayElemSize); return Own.None;
             case "Rt.ArrayGrow": E.Call(Rt.ArrayGrowFn); return Own.None;
