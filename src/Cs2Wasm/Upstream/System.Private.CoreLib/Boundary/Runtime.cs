@@ -3814,7 +3814,8 @@ namespace Cs2Wasm.Runtime
         /// field's count is not the parent's last from outside; 4: NodeUp, that the node has no other slot to
         /// link; 5: NodeUp, whether the parent has an owner; 6: AddNode, that the store's count is the node's one
         /// reference from outside; 7: AddNode, that the member the node owns above the array has no up-reference
-        /// below it and holds nothing; 8: AddNode, that the node has no owner.</summary>
+        /// below it and holds nothing. (Test 201's lines change with 1, 2 and 6; 3, 4 and 5 are reached there and
+        /// leave its lines as they are: the general path's later checks mend what they leave; 7 is not reached.)</summary>
         [Intrinsic] static extern int NodePathBreak();
 
         /// <summary>The node path, 1 of 3 (docs/AUDIT.md A3.5, the build, round 9). A tree built parent first
@@ -3945,7 +3946,7 @@ namespace Cs2Wasm.Runtime
             if (NoNodePath() || ThreadMode() || NoEarlyGiveBack()) return false;
             if ((s_failedTops | s_joinVisit | s_visitElem) != 0 || val == container) return false;
             int fl = PL(val, 24);
-            if ((PL(val, 20) != 0 && NodePathBreak() != 8) || (fl & (Owned | Held | Dying | Queued | MultMask | Elems)) != 0) return false;
+            if (PL(val, 20) != 0 || (fl & (Owned | Held | Dying | Queued | MultMask | Elems)) != 0) return false;
             if (Mem.LoadI32(ar) <= 1) return false;
             int cf = PL(container, 24);
             if ((cf & Dying) != 0) return false;
