@@ -887,7 +887,10 @@ sealed partial class FunctionCompiler
         };
     }
 
-    static readonly bool s_pinStaticInit = Environment.GetEnvironmentVariable("CS2WASM_PIN_STATIC_INIT") == "1";
+    // (CS2WASM_UNPIN_STATIC_INIT=1: the object a static's initializer stores is pinned only when the field is readonly,
+    // as an assignment's is. Not the default: tests 247 to 249 hold with the pinned root they were written with; with
+    // a root that is a member, cells that refer to each other and back to the root stay until the group goes)
+    static readonly bool s_pinStaticInit = Environment.GetEnvironmentVariable("CS2WASM_UNPIN_STATIC_INIT") != "1";
 
     void EmitStoreField(IFieldSymbol f, Action? recv, IOperation value, bool initializer = false)
     {
@@ -938,9 +941,8 @@ sealed partial class FunctionCompiler
         if (Types.IsRef(ft))
         {
             // (a static readonly field's object stays out of groups, Rt.ArenaPin; any other static's is a member like
-            // any other, also when the store is the field's initializer: pinned there too until 2026-11-23, the first
-            // object of `static Node s_root = new Node(0);` was never freed once it was in a cycle, test 273)
-            // (CS2WASM_PIN_STATIC_INIT=1: as before)
+            // any other; but the store of a field's initializer pins whatever the field: the first object of
+            // `static Node s_root = new Node(0);` is never freed once it is in a cycle, docs/AUDIT.md)
             if (f.IsStatic) { if (f.IsReadOnly || s_pinStaticInit) pin = D.Arenas.Pin(ft); }
             else if ((site = D.Arenas.FieldSite(Owner(f), T.Field(f, Map))) != null) site.AddValue(valueType, srcs);
         }

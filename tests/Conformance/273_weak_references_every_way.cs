@@ -119,7 +119,7 @@ static class Program
         Collect();
         Console.WriteLine("handle freed: " + s_pinWeak.IsAlive + " " + s_pin.IsAllocated);
         Many();
-        s_root = new Node(-1);
-        Console.WriteLine("root replaced: " + State());
+        s_root.Kids.Clear();
+        Console.WriteLine("root emptied: " + State());
     }
 }

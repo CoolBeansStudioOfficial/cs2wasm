@@ -3433,7 +3433,10 @@ namespace Cs2Wasm.Runtime
             if (Mem.LoadI32(x) != -2 || PL(x, 4) == 0) return false;
             if ((PL(x, 24) & (Owned | Dying)) != 0) return false;
             // (a container waiting to own it refers to it: not kept by holds alone)
-            if (PLW(x) != 0) return false;
+            // (unless that container is one the member itself owns: `n.Raw[6] = n`, the array waits to own the member
+            // that owns it, and its reference is one the trial takes off; a member that holds its old owner is not
+            // adopted, so nothing else looks: test 247 with a root that is a member)
+            if (PLW(x) != 0 && !Under(PLW(x), x)) return false;
             int ar = ArenaOf(x);
             if (Mem.LoadI64(ar + 12) != 0) { if (ArenaReport()) { s_repRefused++; s_repRefusedFlags |= Mem.LoadI32(ar + 12); } return false; }
             ClearMark(x);
