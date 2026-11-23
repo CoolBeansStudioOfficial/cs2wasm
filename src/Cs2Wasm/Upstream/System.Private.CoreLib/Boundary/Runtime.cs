@@ -3824,8 +3824,8 @@ namespace Cs2Wasm.Runtime
         /// (JoinPair, NodeUp, AddNode) are not taken; each goes the general way.</summary>
         [Intrinsic] static extern bool NoNodePath();
         /// <summary>CS2WASM_NODE_PATH_BREAK=n (at compile time, test 201's): one rule of those steps is not asked.
-        /// 1: JoinPair, what the new object holds; 2: JoinPair, the container's other slots; 3: NodeUp, that the
-        /// field's count is not the parent's last from outside; 4: NodeUp, that the node has no other slot to
+        /// 1: JoinPair, what the new object holds; 2: JoinPair, the container's other slots; (3: no longer a
+        /// rule: NodeUp gives the parent's last count from outside back as LinkMembers does;) 4: NodeUp, that the node has no other slot to
         /// link; 5: NodeUp, whether the parent has an owner; 6: AddNode, that the store's count is the node's one
         /// reference from outside; 7: AddNode, that the member the node owns above the array has no up-reference
         /// below it and holds nothing. (Test 201's lines change with 1, 2 and 6; 3, 4 and 5 are reached there and
@@ -3921,7 +3921,7 @@ namespace Cs2Wasm.Runtime
         {
             if (NoNodePath() || (s_failedTops | s_reevN | s_linkN) != 0) return false;
             int cp = Mem.LoadI32(p);
-            if (NodePathBreak() == 3 ? cp > -3 : cp >= -3) return false;
+            if (cp > -3) return false;
             if (p == e || PL(e, 20) != 0 || PL(e, 24) != 0) return false;
             if (SccOf(Mem.LoadI32(p + 4)) != SccOf(Mem.LoadI32(e + 4))) return false;
             if ((PL(p, 24) & (Dying | Queued)) != 0) return false;
@@ -3930,11 +3930,23 @@ namespace Cs2Wasm.Runtime
             int i = SlotIndex(e, sl), ow = PL(p, 20);
             if (i < 0 || ow == e) return false;
             OpStat(38);
-            if (ae != ap) ArenaMerge(ae, ap);
-            Mem.StoreI32(p, cp + 1);
+            int ar = ae != ap ? ArenaMerge(ae, ap) : ae;
+            if (cp != -3) Mem.StoreI32(p, cp + 1);
+            else
+            {
+                // (the field's count is the parent's last from outside: given back here or after the store, as
+                // LinkMembers decides it; the parent then does not wait, and is the node's at once all the same)
+                Mem.StoreI32(p, -2);
+                if (EarlyGiveBack(p, e, i, ar)) { OpStat(32); Mem.StoreI32(ar, Mem.LoadI32(ar) - 1); }
+                else { Mem.StoreI32(p, -3); GiveBackLater(p); }
+            }
             PS(p, 4, PL(p, 4) + 1);
             SetSlotBits(e, i, 1);
-            if (ow == 0 || NodePathBreak() == 5) TakeOwnership(p, e);
+            if (ow == 0 || NodePathBreak() == 5)
+            {
+                TakeOwnership(p, e);
+                if (cp == -3 && !HoldSettled(p)) UpdateHold(p);
+            }
             else
             {
                 if (PLW(p) == 0) { ClearMark(p); PSW(p, e); }

@@ -48,7 +48,7 @@ sealed class Boom : Exception { }
 
 static class P
 {
-    static Node s_tree, s_odd, s_keep, s_two;
+    static Node s_tree, s_odd, s_keep, s_two, s_hold, s_pin, s_cross;
     static List<Node> s_list;
     static Fin s_fin;
     static int s_ids, s_fuse;
@@ -195,6 +195,65 @@ static class P
         s_odd = top;
     }
 
+    // A node p that another node's list holds (and owns), a node built under p and put into p's list, then p's own
+    // parent field set to its holder: a reference up only if the holder's list still owns p. `twice`: the new
+    // node refers to p by two slots when its first child joins, one of them cleared before p goes into the
+    // holder's list. The holder is then let go: all of it goes at that store. A small tree of the same group
+    // stays, so that nothing goes because its whole group does.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Node Under(Node p, Node hold, bool twice)
+    {
+        var e = new Node(7, ++s_ids) { Up = p };
+        if (twice) e.Side = p;
+        e.Kids.Add(Leaf(e, 7));
+        if (twice) { SetSide(e, null); hold.Kids.Add(p); }
+        e.Kids.Add(Leaf(e, 7));
+        return e;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Holder(bool twice)
+    {
+        var hold = new Node(7, ++s_ids);
+        var pin = Tree(null, 1, 2, 7);
+        var p = new Node(7, ++s_ids);
+        p.Kids.Add(Leaf(p, 7));
+        if (!twice) hold.Kids.Add(p);
+        p.Kids.Add(Under(p, hold, twice));
+        SetUp(p, hold);
+        SetSide(hold, pin); SetSide(hold, null);
+        s_pin = pin; s_hold = hold;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void HolderGone() { Console.WriteLine("holder " + s_hold.Count() + " " + s_hold.Sum()); s_hold = null; }
+
+    // a node built under a top that nothing owns, which a child of that top comes to refer to before the node is
+    // put into the top's list (the node is above the top meanwhile, the child's reference one up through the
+    // top); the node is then taken out of the list again and read through the child
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Node Cross(Node top, Node c)
+    {
+        var e = new Node(7, ++s_ids) { Up = top };
+        e.Kids.Add(Leaf(e, 7));
+        SetSide(c, e);
+        return e;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Crossed()
+    {
+        var top = new Node(7, ++s_ids);
+        top.Kids.Add(Leaf(top, 7));
+        top.Kids.Add(Cross(top, top.Kids[0]));
+        s_cross = top;
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void Uncross()
+    {
+        s_cross.Kids.RemoveAt(1);
+        var c = s_cross.Kids[0];
+        Console.WriteLine("crossed " + c.Side.Kids.Count + " " + c.Side.Sum() + " " + (c.Side.Up == s_cross));
+        c.Side = null;
+    }
+
     // new objects with content stored into plain objects that then close a cycle
     [MethodImpl(MethodImplOptions.NoInlining)]
     static long Plain()
@@ -252,7 +311,7 @@ static class P
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void Unkeep() { Console.WriteLine("kept " + s_keep.Up.Up.Count()); s_keep = null; }
     [MethodImpl(MethodImplOptions.NoInlining)]
-    static void Drop() { s_tree = null; s_fin = null; }
+    static void Drop() { s_tree = null; s_fin = null; s_pin = null; s_cross = null; }
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void OddOut() { s_two.Kids.RemoveAt(s_two.Kids.Count - 1); Console.WriteLine("odd " + s_odd.Count() + " " + s_odd.Sum()); s_two = null; s_odd = null; }
 
@@ -260,7 +319,7 @@ static class P
     static void Say(string when)
     {
         for (int i = 0; i < 4; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
-        string live = Node.Live[0] + " " + Node.Live[1] + " " + Node.Live[2] + " " + Node.Live[3] + " " + Node.Live[4];
+        string live = Node.Live[0] + " " + Node.Live[1] + " " + Node.Live[2] + " " + Node.Live[3] + " " + Node.Live[4] + " " + Node.Live[7];
         // (kinds 5 and 6 may stay until their groups go: counted when all is gone)
         if (s_tree == null) { Console.WriteLine(when + ": " + live + " " + Node.Live[5] + " " + Node.Live[6] + " finalizers " + Fin.Ran + " saw " + Fin.Seen); return; }
         Console.WriteLine(when + ": " + live + " nodes " + s_tree.Count() + " sound " + s_tree.Sound() + " sum " + s_tree.Sum() + " finalizers " + Fin.Ran + " saw " + Fin.Seen);
@@ -274,6 +333,9 @@ static class P
         Console.WriteLine("orphans " + Orphans()); Say("orphans");
         OnlyTree(); Say("only field");
         BuildOdd(); OnlyOdd(); Console.WriteLine("plain " + Plain()); Say("odd");
+        Holder(false); Say("held"); HolderGone(); Say("holder gone");
+        Holder(true); Say("held twice"); HolderGone(); Say("holder gone");
+        Crossed(); Say("crossed"); Uncross(); Say("uncrossed");
         Move(); Say("moved");
         for (int f = 3; f < 40; f += 7) { Throw(f); Say("thrown"); }
         Keep(); Say("kept");
