@@ -1,6 +1,8 @@
 #!/bin/bash
 # Runs the self-hosted compiler (tests/out/self2/cs2wasm.wasm, or $SELF) on the given arguments, from Git Bash on
 # Windows: paths are given without the drive, with '/'. usage: tools/selfrun.sh [node options --] <cs2wasmc arguments>
+# CS2WASM_SNAPSHOT=<file> (a path of this machine): the compiler's state kept from one run to the next, so a later
+# build does not read the libraries again (host/snapshot.mjs; hello world 2.7 s where it is 7.2 s from the start)
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*"
 ROOT="$(cd "$(dirname "$0")/.." && pwd -W 2>/dev/null || pwd)"
 # (the reference pack of the .NET that DOTNET_ROOT names, else the default install)
