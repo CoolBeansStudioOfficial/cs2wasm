@@ -30,7 +30,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 
 | # | Check | Now | Goal |
 |---|---|---|---|
-| 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 180/180 | all pass, no `known-gap` |
+| 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 236 passed, 0 failed, 2 known gaps (244: a finalizer that grows a list of its own dying group; 247: a member that refers to itself through an array's element or a far field), both ways (main d430594, the homelab, 2026-11-23) | all pass, no `known-gap` |
 | 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (stream E's tests); reflection on compiler-made methods closed 2026-11-21 (tests 155, 156: names with Roslyn's ordinals, declaring classes, attributes, MoveNext); open: a capture-free lambda's `Delegate.Target` (`<>c` in .NET), the generated classes' own member lists, generic generated classes as constructed types; .NET's own library frames (not reproducible from source) | none |
 | 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20) | none in 200 loaded runs |
 | 2 | Test 127 under load (`tools/stress-cycles.sh`) | open: `async 5 / pending 1` in about 1% of loaded runs (main 6e60243: 22 of 2,400; main d4b331e: 4 of 400; main dca1f9c: 3 of 400, the homelab); the 2026-11-21 fix made it rarer, not gone. Test 187 as shipped differs under load at about 2.5% (19 of 800 on main bc06ea9, 20 of 800 on dca1f9c) | none |
@@ -1157,3 +1157,36 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   unchanged; leads in the note); NativeAOT-LLVM's build of today's compiler (about 2.8 s for hello world by its
   profile, not measured); a snapshot for the browser's host and for the threaded compiler; GodotSharp programs
   gain nothing from (2); tools/frames.mjs and tools/bench.mjs not run (no module changed).
+- 2026-11-23, 00:00, claude/selfhost-speed-1 and claude/known-diffs-1 merged (main d430594; their entries above),
+  checked again before the merge. Homelab at d430594: suite 236 passed, 0 failed, 2 known gaps, checked and as
+  shipped; the self-hosted compiler built (350 s, 32,920,709 bytes), its module byte for byte the .NET-hosted
+  compiler's on hello world and on tests 243, 245, 127, 201, 230, 232, 207, 220, 222, 240, 193, 088; hello world in
+  17.0 to 21.4 s against 18.9 to 19.3 for the build before and NativeAOT-LLVM's 6.9 to 12.0 on a homelab under
+  several sessions' load (its session: 8.20 s against 9.11, quiet medians), peak 272.0 MB against 344.2. Not run:
+  stress of 241 to 246. NOT merged: claude/load-flakes-1 (causes and fixes for tests 187, 131, 127, 087 under load
+  and a racing List.Add; its suite 237/237 both ways and every stress count clean on the merge e1cb12a): with it
+  the self-hosted compiler runs hello world for minutes (two builds here, each stopped after four minutes and more
+  at full load; its own session saw the same), which the suite cannot show; its session is to find which of its
+  changes it is. From here a merge's self-host check times the self-hosted compiler too. The owner gave until the
+  morning (about 08:45) and standing leave to stop stuck jobs of the sessions on the homelab: used once, for this
+  session's own runs of the slow builds (selfhost-ab on t17 and t18, t16's build). Sessions through the night, one
+  for each goal of the spec not met: claude/selfhost-speed-2 (proof 4: the parse at 2x, the binding at 4.4x, library
+  work not needed), claude/tree-3, claude/churn-5 (the header word among it), claude/known-diffs-2 (no known gap
+  left), claude/threads-1 (a first comparison with threads; what is off with threads), claude/load-flakes-1.
+- 2026-11-23, 03:20, claude/load-flakes-safe merged (main 68f3eb5 with this entry after it): the part of
+  claude/load-flakes-1 that touches nothing of the cycle runtime's checks and notes. An async iterator's promise
+  counted while it is completed (8577829: test 087's trap under load, 7 of 1,200 checked runs before; test 217
+  trapped 24 of 24 without it); the out-of-memory exception not made under the heap's lock (a80a658); the statics
+  laid out by cache lines in a program with threads (5837122: test 139 at ten times its length 3.26 to 2.84 s);
+  test 072's server on a free port and each suite runner in its own directory (f75de80); tests 088, 135, 127, 187
+  with bounded waits where .NET promises no point in time (by .NET's sources: .NET itself gave the usual output in
+  400 of 400 loaded runs of each as they were), test 218, tests/Load, tools (oracle-load.sh, selfhost-time.sh, which
+  times the self-hosted compiler with a limit, selfdet-tests.sh). By its session, homelab at 68f3eb5: suite 238
+  passed, 0 failed, 2 known gaps, both ways; the self-hosted compiler's hello world in 12.7 and 14.1 s on the
+  loaded homelab, its module byte for byte the .NET-hosted compiler's on 145, 220, 193 and 088 (112 s). Here on the
+  merge: tests 21x, 087, 127 and 145 both ways. Open as before, on main: tests 127, 131 and 187 differ in about one
+  loaded run of a hundred. Their fixes (claude/load-flakes-1: a stale note's upkeep) made the self-hosted compiler
+  run for minutes: a full check again at every ownership taken or let go under a noted top. A queue that put those
+  checks off and paid them down later (NoteDebt) was refused here as deferred work; its session is building the
+  number kept right at the one event that changes it, and test 219 still leaks in 2 to 4 loaded runs of 300 to 400
+  with that so far.
