@@ -75,7 +75,7 @@ namespace System
                 return (char)Il2Wasm.Runtime.Mem.LoadU16(Il2Wasm.Runtime.Rt.AddressOf(this) + 16 + index * 2);
             }
         }
-        internal static string Alloc(int length) => Il2Wasm.Runtime.Rt.Take<string>(Il2Wasm.Runtime.Rt.AllocArray(length, 2, Il2Wasm.Runtime.Rt.TypeIdOf<string>()));
+        internal static string Alloc(int length) => Il2Wasm.Runtime.Rt.Take<string>(Il2Wasm.Runtime.Rt.AllocString(length));
         internal int CharsAddress => Il2Wasm.Runtime.Rt.AddressOf(this) + 16;
         internal static string FromChar(char c)
         {
@@ -93,6 +93,14 @@ namespace System
             return s;
         }
         public static string Concat(string a, string b, string c) => Concat(Concat(a, b), c);
+        public static string Concat(string a, string b, string c, string d) => Concat(Concat(a, b), Concat(c, d));
+        public static string Concat(params string[] values)
+        {
+            string r = "";
+            for (int i = 0; i < values.Length; i++) r = Concat(r, values[i]);
+            return r;
+        }
+        public static string Concat(object a, object b, object c) => Concat(a?.ToString(), b?.ToString(), c?.ToString());
         public static string Concat(object a, object b) => Concat(a?.ToString(), b?.ToString());
         public static bool operator ==(string a, string b) => Equals(a, b);
         public static bool operator !=(string a, string b) => !Equals(a, b);
@@ -190,7 +198,8 @@ namespace System
 
 namespace System.Collections
 {
-    public interface IEnumerable { }
+    public interface IEnumerable { IEnumerator GetEnumerator(); }
+    public interface IEnumerator { bool MoveNext(); object Current { get; } void Reset(); }
 }
 
 namespace System.Runtime.CompilerServices
@@ -344,6 +353,23 @@ namespace Il2Wasm.Runtime
         }
 
         public static void FreeObject(int addr, int size) => FreeBlock(addr, size);
+
+        /// <summary>A new string (as the IL CoreLib makes one): type id 1, the length at 12, the characters from 16, a
+        /// trailing NUL.</summary>
+        public static int AllocString(int length)
+        {
+            if (length < 0) throw new System.OverflowException();
+            int a = AllocObject(16 + 2 * length + 2, 1);
+            Mem.StoreI32(a + 12, length);
+            return a;
+        }
+
+        /// <summary>An exception escaped the entry point: the host is told (type, message).</summary>
+        public static void ReportUnhandled(System.Exception e)
+        {
+            string t = e.GetType().ToString(), m = e.Message;
+            Engine.ReportException(t.CharsAddress, t.Length, m.CharsAddress, m.Length, 0, 0);
+        }
 
         /// <summary>Blocks allocated and not freed (the tests' leak check).</summary>
         public static int LiveBlocks => s_live;

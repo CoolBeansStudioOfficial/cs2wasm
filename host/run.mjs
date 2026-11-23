@@ -124,3 +124,5 @@ if (instance.exports.il2wasm_rc_counts) { // (a module built with IL2WASM_COUNT_
 if (instance.exports.il2wasm_memstats) { try { instance.exports.il2wasm_memstats(); } finally { flush(); } }
 if (r !== undefined && process.env.IL2WASM_PRINT_RESULT) console.log(`=> ${r}`);
 if (process.env.IL2WASM_PRINT_MEMORY) console.error(`memory: ${memory.buffer.byteLength / 65536} pages`);
+// (IL2WASM_PRINT_LIVE=1, a module with the il2wasm_live export: the blocks its allocator still holds, a leak check)
+if (process.env.IL2WASM_PRINT_LIVE && instance.exports.il2wasm_live) console.error(`live: ${instance.exports.il2wasm_live()}`);
