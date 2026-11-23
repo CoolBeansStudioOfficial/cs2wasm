@@ -30,7 +30,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 
 | # | Check | Now | Goal |
 |---|---|---|---|
-| 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 236 passed, 0 failed, 2 known gaps (244: a finalizer that grows a list of its own dying group; 247: a member that refers to itself through an array's element or a far field), both ways (main d430594, the homelab, 2026-11-23) | all pass, no `known-gap` |
+| 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 241 passed, 0 failed, 2 known gaps (244: a finalizer that grows a list of its own dying group; 247: a member that refers to itself through an array's element or a far field), both ways (main 4cf95fe, the homelab, 2026-11-23 05:30) | all pass, no `known-gap` |
 | 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (stream E's tests); reflection on compiler-made methods closed 2026-11-21 (tests 155, 156: names with Roslyn's ordinals, declaring classes, attributes, MoveNext); open: a capture-free lambda's `Delegate.Target` (`<>c` in .NET), the generated classes' own member lists, generic generated classes as constructed types; .NET's own library frames (not reproducible from source) | none |
 | 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20) | none in 200 loaded runs |
 | 2 | Test 127 under load (`tools/stress-cycles.sh`) | open: `async 5 / pending 1` in about 1% of loaded runs (main 6e60243: 22 of 2,400; main d4b331e: 4 of 400; main dca1f9c: 3 of 400, the homelab); the 2026-11-21 fix made it rarer, not gone. Test 187 as shipped differs under load at about 2.5% (19 of 800 on main bc06ea9, 20 of 800 on dca1f9c) | none |. 2026-11-23 (claude/load-flakes-safe): tests 127 and 187 now wait, bounded, for the pool thread that completed the last async method before they count (what they asked right after Task.WhenAll came back .NET does not promise, by its sources; not shown by .NET's output in 400 loaded runs); the leak itself is open as before, about one loaded run of a hundred of 127, 131, 187. Its causes are found and closed on claude/load-flakes-1 (a stale note on a top that code still holds; the top an ownership that turns round leaves; two structures that refer into each other), but the upkeep of the notes there (a8a50fc) kept the self-hosted compiler from ending, and the form that does not (the numbers kept at the events) still leaves test 187's rounds in 3 to 8 loaded runs of 400: not merged
@@ -1213,3 +1213,13 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   208, 209, 260 and 139 the same in every one of 200 loaded runs a mode, 127 differed in 3 of 400 (its "async 5 / pending 1", as on main); `tools/field-hoist-proof.sh` with the setter inlined: as before. Not built: the header's word. Not
   checked: the suite with ColdExits on at the last commit (tests 190 to 209 on the desk, the whole suite at its
   first commit).
+- 2026-11-23, 05:40, main 4cf95fe checked whole on the homelab (claude/main-check-1): suite 241 passed, 0
+  failed, 2 known gaps, checked and as shipped; tools/selfhost-check.sh: the self-hosted compiler built (247 s,
+  32,978,189 bytes), hello world in 8.32 to 8.50 s (peak 272 MB), its module byte for byte the .NET-hosted
+  compiler's on 145, 220, 193 and 088. The churn merge was checked on its own branch by its session and on the
+  merge only by tests here until this run. The standing leave to stop stuck jobs on the homelab was used three
+  times in the night: twice for this session's own leftover self-host runs of branches that were not merged, once
+  (04:25) for four queued jobs of the load-flakes session that it had superseded and was not allowed to stop.
+  At about 03:44 the overnight sessions' model began to fail (overloaded, then its limit): tree-3,
+  selfhost-speed-2, load-flakes-1, known-diffs-2 and threads-1 were taken over in their worktrees by sessions on
+  another model; churn-5 had handed back first.
