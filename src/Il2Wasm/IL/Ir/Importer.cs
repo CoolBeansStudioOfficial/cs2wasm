@@ -183,6 +183,13 @@ public sealed class Importer
     /// any two of its instructions) or inside a finally, fault or filter (they run on paths SSA does not see).</summary>
     void FindSlots()
     {
+        // struct locals and arguments are variables (in the frame; an argument in the caller's copy)
+        for (int v = 0; v < _nArgs + _nLocals; v++)
+        {
+            if (!Kinds.IsStruct(VarType(v))) continue;
+            _slotOf[v] = _body.Vars.Count;
+            _body.Vars.Add(new Var { Kind = VK.Struct, Type = VarType(v), InFrame = v >= _nArgs, ArgIndex = v < _nArgs ? v : -1 });
+        }
         var rd = new ILReader(_code);
         while (rd.HasNext)
         {
@@ -207,7 +214,7 @@ public sealed class Importer
             if (addr)
             {
                 if (!_slotOf.TryGetValue(v, out int si)) { _slotOf[v] = si = _body.Vars.Count; _body.Vars.Add(new Var { Kind = Kinds.Of(VarType(v)), Type = VarType(v) }); }
-                _body.Vars[si].InFrame = true;
+                if (_body.Vars[si].ArgIndex < 0) _body.Vars[si].InFrame = true;
                 continue;
             }
             bool protectedWrite = false;
@@ -423,14 +430,15 @@ public sealed class Importer
         for (int i = 0; i < _nArgs; i++)
         {
             var t = _argTypes[i];
-            var a = NewNode(Opc.Arg, Kinds.Of(t), _entry);
+            // (a struct argument is the address of the caller's copy)
+            var a = NewNode(Opc.Arg, Kinds.Of(t) == VK.Struct ? VK.Ptr : Kinds.Of(t), _entry);
             a.I = i; a.Type = t; a.SType = Kinds.StackOf(t);
             _body.Args[i] = a;
             _entry.Code.Add(a);
         }
         // slot variables start with their argument's value
         foreach (var (v, slot) in _slotOf)
-            if (v < _nArgs) { var st = NewNode(Opc.VarSt, VK.Void, _entry, _body.Args[v]); st.I = slot; _entry.Code.Add(st); }
+            if (v < _nArgs && _body.Vars[slot].ArgIndex < 0) { var st = NewNode(Opc.VarSt, VK.Void, _entry, _body.Args[v]); st.I = slot; _entry.Code.Add(st); }
         var br = NewNode(Opc.Br, VK.Void, _entry);
         _entry.Code.Add(br);
         _filled.Add(_entry); _sealed.Add(_entry);
@@ -804,7 +812,7 @@ public sealed class Importer
                     var f = (FieldDesc)I._il.GetObject(rd.ReadILToken());
                     var o = Pop();
                     if (f.IsStatic) { Push(AddOfType(Opc.LdSFld, f.FieldType).WithX(f)); return true; }
-                    if (o.Kind != VK.Ref && o.Kind != VK.Ptr) throw new NotSupportedException($"{I._method}: ldfld of a struct value");
+                    if (o.Kind is not (VK.Ref or VK.Ptr or VK.Struct)) throw Invalid("ldfld of a " + o.Kind);
                     Push(AddOfType(Opc.LdFld, f.FieldType, o).WithX(f));
                     return true;
                 }
@@ -873,7 +881,6 @@ public sealed class Importer
                     var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
                     var v = Pop();
                     if (!t.IsValueType) { Push(v); return true; }
-                    if (!t.IsPrimitive && !t.IsEnum) throw new NotSupportedException($"{I._method}: box of the struct {t}");
                     Push(Add(Opc.Box, VK.Ref, StackType.ObjRef, t, Coerce(v, t)).WithX(t));
                     return true;
                 }
@@ -882,11 +889,55 @@ public sealed class Importer
                     var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
                     var o = Pop();
                     if (!t.IsValueType) { Push(Add(Opc.CastClass, VK.Ref, StackType.ObjRef, t, o).WithX(t)); return true; }
-                    if (!t.IsPrimitive && !t.IsEnum) throw new NotSupportedException($"{I._method}: unbox.any to the struct {t}");
                     Push(AddOfType(Opc.UnboxAny, t, o).WithX(t));
                     return true;
                 }
 
+                case ILOpcode.ldobj:
+                {
+                    var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
+                    var addr = Pop();
+                    if (addr.Kind != VK.Ptr) throw Invalid("ldobj through a " + addr.Kind);
+                    Push(AddOfType(Kinds.IsStruct(t) ? Opc.LdObj : Opc.LdInd, t, addr).WithX(t));
+                    return true;
+                }
+                case ILOpcode.stobj:
+                {
+                    var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
+                    var v = Pop(); var addr = Pop();
+                    if (addr.Kind != VK.Ptr) throw Invalid("stobj through a " + addr.Kind);
+                    Add(Opc.StInd, VK.Void, StackType.None, t, addr, Coerce(v, t));
+                    return true;
+                }
+                case ILOpcode.cpobj:
+                {
+                    var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
+                    var src = Pop(); var dst = Pop();
+                    var v = AddOfType(Kinds.IsStruct(t) ? Opc.LdObj : Opc.LdInd, t, src).WithX(t);
+                    Add(Opc.StInd, VK.Void, StackType.None, t, dst, v);
+                    return true;
+                }
+                case ILOpcode.initobj:
+                {
+                    var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
+                    var addr = Pop();
+                    if (addr.Kind != VK.Ptr) throw Invalid("initobj through a " + addr.Kind);
+                    Add(Opc.InitObj, VK.Void, StackType.None, t, addr).WithX(t);
+                    return true;
+                }
+                case ILOpcode.unbox:
+                {
+                    var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
+                    var o = Pop();
+                    Push(Add(Opc.Unbox, VK.Ptr, StackType.ByRef, t.MakeByRefType(), o).WithX(t));
+                    return true;
+                }
+                case ILOpcode.sizeof_:
+                {
+                    var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
+                    Push(Const(VK.I32, Kinds.Of(t) == VK.Struct ? ((DefType)t).InstanceFieldSize.AsInt : Kinds.SizeOf(t)));
+                    return true;
+                }
                 default: throw new NotSupportedException($"{I._method}: IL {op} at IL_{_at:x4} is not imported yet");
             }
         }
@@ -955,14 +1006,12 @@ public sealed class Importer
         Node LdElem(Node arr, Node idx, TypeDesc et)
         {
             if (arr.Kind != VK.Ref || idx.SType is not (StackType.Int32 or StackType.NativeInt)) throw Invalid("ldelem");
-            if (et.IsValueType && !et.IsPrimitive && !et.IsEnum) throw new NotSupportedException($"{I._method}: an element of the struct type {et}");
             return AddOfType(Opc.LdElem, et, arr, idx).WithX(et);
         }
 
         void StElem(Node arr, Node idx, Node val, TypeDesc et, bool checkType)
         {
             if (arr.Kind != VK.Ref || idx.SType is not (StackType.Int32 or StackType.NativeInt)) throw Invalid("stelem");
-            if (et.IsValueType && !et.IsPrimitive && !et.IsEnum) throw new NotSupportedException($"{I._method}: an element of the struct type {et}");
             var n = Add(Opc.StElem, VK.Void, StackType.None, null, arr, idx, Coerce(val, et)).WithX(et);
             n.Ovf = checkType;
         }
@@ -990,8 +1039,7 @@ public sealed class Importer
                     else
                     {
                         // the value boxed, and the call made on the box
-                        if (!ct.IsPrimitive && !ct.IsEnum) throw new NotSupportedException($"{I._method}: a constrained call boxing the struct {ct}");
-                        var v = AddOfType(Opc.LdInd, ct, args[0]);
+                        var v = Kinds.IsStruct(ct) ? AddOfType(Opc.LdObj, ct, args[0]).WithX(ct) : AddOfType(Opc.LdInd, ct, args[0]);
                         args[0] = Add(Opc.Box, VK.Ref, StackType.ObjRef, ct, v).WithX(ct);
                     }
                 }
@@ -1009,11 +1057,12 @@ public sealed class Importer
         void NewObj(MethodDesc ctor)
         {
             var t = ctor.OwningType;
-            if (t.IsValueType) throw new NotSupportedException($"{I._method}: newobj of the struct {t}");
+
             if (t.IsArray) throw new NotSupportedException($"{I._method}: newobj of a multi-dimensional array {t}");
             var sig = ctor.Signature;
             var args = new Node[sig.Length];
             for (int i = sig.Length - 1; i >= 0; i--) args[i] = Coerce(Pop(), sig[i]);
+            if (t.IsValueType) { Push(AddOfType(Opc.NewObj, t, args).WithX(ctor)); return; }
             Push(Add(Opc.NewObj, VK.Ref, StackType.ObjRef, t, args).WithX(ctor));
         }
     }

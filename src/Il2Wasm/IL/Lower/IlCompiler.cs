@@ -133,6 +133,8 @@ public sealed class IlCompiler
         if (!m.Signature.IsStatic) ps.Add(ValType.I32);
         for (int i = 0; i < m.Signature.Length; i++) ps.Add(FunctionLowering.ValOf(Kinds.Of(m.Signature[i])));
         var r = m.Signature.ReturnType;
+        // (a struct result: the caller's buffer, the last parameter)
+        if (!r.IsVoid && Kinds.Of(r) == VK.Struct) { ps.Add(ValType.I32); return new FuncType(ps.ToArray(), []); }
         return new FuncType(ps.ToArray(), r.IsVoid ? [] : [FunctionLowering.ValOf(Kinds.Of(r))]);
     }
 
@@ -493,7 +495,8 @@ public sealed class IlCompiler
             {
                 EmitIdTest(e, tid, g.Select(p => Final(p.x)));
                 e.If();
-                for (int i = 0; i < f.Type.Params.Length; i++) e.Get(i);
+                // (a struct's method on its box: this is the value, after the header)
+                for (int i = 0; i < f.Type.Params.Length; i++) { e.Get(i); if (i == 0 && g.Key.OwningType.IsValueType) { e.I32(IlContext.ObjectHeader); e.Op(WOp.I32Add); } }
                 e.Call(FunctionFor(g.Key));
                 e.Op(WOp.Return);
                 e.End();
@@ -544,6 +547,7 @@ public sealed class IlCompiler
                     for (TypeDesc? c = x; c != null; c = c.BaseType)
                         foreach (var fd in c.GetFields())
                             if (!fd.IsStatic && Kinds.Of(fd.FieldType) == VK.Ref) { e.Get(0); e.Load(WOp.I32Load, IlContext.FieldOffset(fd)); e.Call(Rt.Release); }
+                    if (Kinds.Of(x) == VK.Struct && Kinds.Counted(x)) { e.Get(0); e.I32(IlContext.ObjectHeader); e.Op(WOp.I32Add); e.Call(Rt.ReleaseStruct(x)); }
                     e.Get(0); e.I32(x.IsValueType ? IlContext.ObjectHeader + Math.Max(4, Kinds.SizeOf(x)) : IlContext.InstanceSize((DefType)x));
                 }
                 e.Call(Rt.Free); e.Op(WOp.Return);
@@ -820,6 +824,22 @@ public sealed class IlCompiler
                 if (to != VK.I64) e.Op(WOp.I32WrapI64);
             });
         }
+
+        /// <summary>(address of a struct): each reference in it retained or released, nested structs too.</summary>
+        public WasmFunction RetainStruct(TypeDesc t) => StructCounts(t, true);
+        public WasmFunction ReleaseStruct(TypeDesc t) => StructCounts(t, false);
+
+        WasmFunction StructCounts(TypeDesc t, bool retain) => Cached((retain ? "rt.retain_struct " : "rt.release_struct ") + t, FT([I], []), e =>
+        {
+            foreach (var f in t.GetFields())
+            {
+                if (f.IsStatic) continue;
+                var ft = f.FieldType;
+                var k = Kinds.Of(ft);
+                if (k == VK.Ref) { e.Get(0); e.Load(WOp.I32Load, IlContext.FieldOffset(f)); if (retain) { e.Call(Retain); e.Op(WOp.Drop); } else e.Call(Release); }
+                else if (k == VK.Struct && Kinds.Counted(ft)) { e.Get(0); e.I32(IlContext.FieldOffset(f)); e.Op(WOp.I32Add); e.Call(StructCounts(ft, retain)); }
+            }
+        });
 
         public WasmFunction FRem(bool d) => throw new NotSupportedException("the remainder of floating-point values");
     }

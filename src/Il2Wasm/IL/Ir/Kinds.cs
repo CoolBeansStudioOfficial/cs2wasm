@@ -22,8 +22,7 @@ public static class Kinds
             case TypeFlags.Double: return VK.F64;
             case TypeFlags.Enum: return Of(t.UnderlyingType);
             case TypeFlags.Class: case TypeFlags.Interface: case TypeFlags.Array: case TypeFlags.SzArray: return VK.Ref;
-            case TypeFlags.ValueType: case TypeFlags.Nullable:
-                throw new NotSupportedException($"value type {t} (structs are not imported yet)");
+            case TypeFlags.ValueType: case TypeFlags.Nullable: return VK.Struct;
             default: throw new NotSupportedException($"type {t} ({t.Category})");
         }
     }
@@ -35,7 +34,7 @@ public static class Kinds
         TypeFlags.Enum => StackOf(t.UnderlyingType),
         _ => Of(t) switch
         {
-            VK.I32 => StackType.Int32, VK.I64 => StackType.Int64, VK.F32 or VK.F64 => StackType.Float, VK.Ref => StackType.ObjRef,
+            VK.I32 => StackType.Int32, VK.I64 => StackType.Int64, VK.F32 or VK.F64 => StackType.Float, VK.Ref => StackType.ObjRef, VK.Struct => StackType.ValueType,
             _ => StackType.None,
         },
     };
@@ -50,6 +49,11 @@ public static class Kinds
         TypeFlags.ValueType or TypeFlags.Nullable => ((DefType)t).InstanceFieldSize.AsInt,
         _ => 4,
     };
+
+    /// <summary>A value of the type holds counts: a reference, or a struct with references in it.</summary>
+    public static bool Counted(TypeDesc t) => Of(t) switch { VK.Ref => true, VK.Struct => ((DefType)t).ContainsGCPointers, _ => false };
+
+    public static bool IsStruct(TypeDesc t) => Of(t) == VK.Struct;
 
     public static bool IsSigned(TypeDesc t) => t.Category switch
     {

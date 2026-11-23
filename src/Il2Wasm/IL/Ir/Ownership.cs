@@ -25,13 +25,14 @@ public static class Ownership
         public readonly List<Node> RefValues = [];
     }
 
-    static bool IsRef(Node n) => n.Kind == VK.Ref;
+    /// <summary>A value that holds counts: a reference, or a struct with references in it.</summary>
+    static bool IsRef(Node n) => n.Kind == VK.Ref || n.Kind == VK.Struct && n.Type != null && Kinds.Counted(n.Type);
 
     /// <summary>Operand i of n takes a count (a store of it).</summary>
     public static bool Consumes(Node n, int i) => n.Op switch
     {
         Opc.StFld => i == 1, Opc.StSFld => i == 0, Opc.StElem => i == 2, Opc.StInd => i == 1, Opc.VarSt => i == 0,
-        Opc.Ret => i == 0, Opc.Throw => i == 0, Opc.Rethrow => i == 0,
+        Opc.Ret => i == 0, Opc.Throw => i == 0, Opc.Rethrow => i == 0, Opc.Box => i == 0,
         _ => false,
     };
 

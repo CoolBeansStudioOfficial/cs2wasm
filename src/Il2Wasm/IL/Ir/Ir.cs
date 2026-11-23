@@ -5,19 +5,19 @@ using Internal.TypeSystem;
 
 namespace Il2Wasm.IL.Ir;
 
-/// <summary>How a value is held: WASM's number types, a counted object reference, or an uncounted address (a byref,
-/// a pointer, a native int: i32 on wasm32).</summary>
-public enum VK : byte { Void, I32, I64, F32, F64, Ref, Ptr }
+/// <summary>How a value is held: WASM's number types, a counted object reference, an uncounted address (a byref,
+/// a pointer, a native int: i32 on wasm32), or a struct (a copy of its own in the frame, named by its address).</summary>
+public enum VK : byte { Void, I32, I64, F32, F64, Ref, Ptr, Struct }
 
 /// <summary>ECMA-335's evaluation stack types (III.1.5), for the typed stack validation.</summary>
-public enum StackType : byte { None, Int32, Int64, NativeInt, Float, ObjRef, ByRef }
+public enum StackType : byte { None, Int32, Int64, NativeInt, Float, ObjRef, ByRef, ValueType }
 
 public enum Opc : byte
 {
     // values
     Const, Arg, Phi, Bin, Un, Cmp, Conv, LdNull, LdStr, LdToken, Call, NewObj, NewArr, LdLen, LdElem, StElem, LdElemA,
     LdFld, StFld, LdFldA, LdSFld, StSFld, LdSFldA, LdInd, StInd, CastClass, IsInst, Box, UnboxAny, VarLd, VarSt,
-    CatchVal, Intrinsic, CheckFinite, Retain, Release, LocA,
+    CatchVal, Intrinsic, CheckFinite, Retain, Release, LocA, LdObj, InitObj, Unbox, SizeOf,
     // terminators
     Br, BrIf, Switch, Ret, Throw, Rethrow, Leave, EndFinally, EndFilter, Unreachable,
 }
@@ -68,6 +68,8 @@ public sealed class Var
     public VK Kind;
     public TypeDesc Type = null!;
     public bool InFrame;
+    /// <summary>A struct argument: its storage is the caller's copy, whose address is this parameter (-1: none).</summary>
+    public int ArgIndex = -1;
     /// <summary>Its offset in the frame (InFrame).</summary>
     public int Offset;
 }

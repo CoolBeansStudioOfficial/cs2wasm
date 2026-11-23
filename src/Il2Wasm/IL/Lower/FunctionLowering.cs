@@ -42,16 +42,74 @@ sealed class FunctionLowering
             v.Offset = _frameSize;
             _frameSize += size;
         }
+        // struct values: a copy each in the frame (and one per struct argument of a call, the callee's to change)
+        foreach (var b in body.Blocks)
+            foreach (var n in b.Phis.Concat(b.Code))
+            {
+                if (n.Kind == VK.Struct) _slot[n] = Reserve(n.Type!);
+                if (n.Op is Opc.Call or Opc.NewObj)
+                    for (int i = 0; i < n.A.Length; i++) if (n.A[i].Kind == VK.Struct) _argSlot[(n, i)] = Reserve(n.A[i].Type!);
+            }
         _frameSize = (_frameSize + 15) & ~15;
         if (_frameSize > 0) _fb = E.AddLocal(ValType.I32);
     }
 
-    readonly int _frameSize, _fb = -1;
+    readonly Dictionary<Node, int> _slot = new();
+    readonly Dictionary<(Node, int), int> _argSlot = new();
+
+    int Reserve(TypeDesc t)
+    {
+        var dt = (DefType)t;
+        int size = Math.Max(4, dt.InstanceFieldSize.AsInt), align = Math.Max(4, Math.Min(8, dt.InstanceFieldAlignment.AsInt));
+        _frameSize = (_frameSize + align - 1) / align * align;
+        int at = _frameSize;
+        _frameSize += size;
+        return at;
+    }
+
+    static int SizeOfStruct(TypeDesc t) => ((DefType)t).InstanceFieldSize.AsInt;
+
+    void FrameAddr(int off) { E.Get(_fb); if (off != 0) { E.I32(off); E.Op(WOp.I32Add); } }
+
+    /// <summary>A variable's storage address (a struct variable: in the frame, or the caller's copy of an argument).</summary>
+    void VarAddr(int i)
+    {
+        var v = _body.Vars[i];
+        if (v.ArgIndex >= 0) E.Get(v.ArgIndex); else FrameAddr(v.Offset);
+    }
+
+    /// <summary>A struct's counts: the references in it, each retained or released.</summary>
+    void StructCounts(TypeDesc t, bool retain) { if (Kinds.Counted(t)) E.Call(retain ? C.Rt.RetainStruct(t) : C.Rt.ReleaseStruct(t)); else E.Op(WOp.Drop); }
+
+    /// <summary>The struct at the address on the stack copied into n's own copy, with counts of its own.</summary>
+    void LoadStruct(Node n)
+    {
+        var t = n.Type!;
+        int src = E.AddLocal(ValType.I32);
+        E.Set(src);
+        Get(n); E.Get(src); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryCopy);
+        if (Kinds.Counted(t)) { Get(n); StructCounts(t, true); }
+    }
+
+    /// <summary>A struct value stored at the address in the local: the old contents released, the new copied in (its
+    /// counts moved when it is the value's last use, made again otherwise).</summary>
+    void StoreStruct(int addr, int offset, Node v, TypeDesc t, bool moved)
+    {
+        int dst = E.AddLocal(ValType.I32);
+        E.Get(addr); if (offset != 0) { E.I32(offset); E.Op(WOp.I32Add); }
+        E.Set(dst);
+        if (Kinds.Counted(t)) { E.Get(dst); StructCounts(t, false); }
+        E.Get(dst); Get(v); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryCopy);
+        if (Kinds.Counted(t)) { if (moved) Clear(v); else { E.Get(dst); StructCounts(t, true); } }
+    }
+
+    int _frameSize, _fb = -1;
 
     /// <summary>A variable's value on the stack.</summary>
     void VarGet(int i)
     {
         var v = _body.Vars[i];
+        if (v.Kind == VK.Struct) { VarAddr(i); return; }
         if (!v.InFrame) { E.Get(_varLocal[i]); return; }
         E.Get(_fb); Load(v.Type, v.Offset);
     }
@@ -81,6 +139,7 @@ sealed class FunctionLowering
     void Get(Node n)
     {
         if (n.Op == Opc.Const) { EmitConst(n); return; }
+        if (n.Kind == VK.Struct) { FrameAddr(_slot[n]); return; }
         E.Get(L(n));
     }
 
@@ -108,7 +167,7 @@ sealed class FunctionLowering
             E.Get(_fb); E.I32(0); E.I32(_frameSize); E.Emit(WOp.MemoryFill);
         }
         // (pre-create the locals of the reference values: the cleanup below names them all)
-        foreach (var v in _own.RefValues) if (v.Op != Opc.Const) L(v);
+        foreach (var v in _own.RefValues) if (v.Op != Opc.Const && v.Kind != VK.Struct) L(v);
         // (the shape the back end's passes know: block $ok, block $c (exnref), try_table, the body, br $ok)
         Label? cleanup = null, ok = null;
         int exn = -1;
@@ -128,8 +187,17 @@ sealed class FunctionLowering
             E.End();
             // an exception leaves the function: every count it holds is released
             E.Set(exn);
-            foreach (var v in _own.RefValues) if (_local.TryGetValue(v, out int l)) { E.Get(l); E.Call(C.Rt.Release); }
-            for (int i = 0; i < _body.Vars.Count; i++) if (_body.Vars[i].Kind == VK.Ref) { VarGet(i); E.Call(C.Rt.Release); }
+            foreach (var v in _own.RefValues)
+            {
+                if (v.Kind == VK.Struct) { Get(v); StructCounts(v.Type!, false); }
+                else if (_local.TryGetValue(v, out int l)) { E.Get(l); E.Call(C.Rt.Release); }
+            }
+            for (int i = 0; i < _body.Vars.Count; i++)
+            {
+                var vr = _body.Vars[i];
+                if (vr.Kind == VK.Ref) { VarGet(i); E.Call(C.Rt.Release); }
+                else if (vr.Kind == VK.Struct && vr.ArgIndex < 0 && Kinds.Counted(vr.Type)) { VarAddr(i); StructCounts(vr.Type, false); }
+            }
             PopFrame();
             E.Get(exn); E.Op(WOp.ThrowRef);
             E.End();
@@ -260,7 +328,14 @@ sealed class FunctionLowering
                 return;
             }
             case Opc.Ret:
-                if (n.A.Length > 0) { Get(n.A[0]); if (n.A[0].Kind == VK.Ref && (n.Moves & 1) == 0) E.Call(C.Rt.Retain); if ((n.Moves & 1) != 0) Clear(n.A[0]); }
+                if (n.A.Length > 0 && n.A[0].Kind == VK.Struct)
+                {
+                    int rb = E.AddLocal(ValType.I32);
+                    E.Get(_fn.Type.Params.Length - 1); E.Set(rb);
+                    E.Get(rb); Get(n.A[0]); E.I32(SizeOfStruct(n.A[0].Type!)); E.Emit(WOp.MemoryCopy);
+                    if (Kinds.Counted(n.A[0].Type!)) { if ((n.Moves & 1) != 0) Clear(n.A[0]); else { E.Get(rb); StructCounts(n.A[0].Type!, true); } }
+                }
+                else if (n.A.Length > 0) { Get(n.A[0]); if (n.A[0].Kind == VK.Ref && (n.Moves & 1) == 0) E.Call(C.Rt.Retain); if ((n.Moves & 1) != 0) Clear(n.A[0]); }
                 ReleaseVars();
                 PopFrame();
                 E.Op(WOp.Return);
@@ -303,22 +378,37 @@ sealed class FunctionLowering
         var s = b.Succs[0];
         if (s.Phis.Count == 0) return;
         int pi = s.Preds.IndexOf(b);
-        foreach (var phi in s.Phis)
+        // (structs: copied one by one, before the numbers and references)
+        foreach (var phi in s.Phis.Where(p => p.Kind == VK.Struct))
+        {
+            var v = phi.A[pi];
+            Get(phi); Get(v); E.I32(SizeOfStruct(phi.Type!)); E.Emit(WOp.MemoryCopy);
+            if (Kinds.Counted(phi.Type!)) { if (_own.PhiMoves.Contains((phi, pi))) Clear(v); else { Get(phi); StructCounts(phi.Type!, true); } }
+        }
+        foreach (var phi in s.Phis.Where(p => p.Kind != VK.Struct))
         {
             var v = phi.A[pi];
             Get(v);
             if (v.Kind == VK.Ref && !_own.PhiMoves.Contains((phi, pi))) E.Call(C.Rt.Retain);
         }
-        foreach (var phi in s.Phis) if (_own.PhiMoves.Contains((phi, pi))) Clear(phi.A[pi]);
-        for (int i = s.Phis.Count - 1; i >= 0; i--) Set(s.Phis[i]);
+        foreach (var phi in s.Phis) if (phi.Kind != VK.Struct && _own.PhiMoves.Contains((phi, pi))) Clear(phi.A[pi]);
+        for (int i = s.Phis.Count - 1; i >= 0; i--) if (s.Phis[i].Kind != VK.Struct) Set(s.Phis[i]);
     }
 
-    void Clear(Node v) { if (v.Kind == VK.Ref && v.Op is not (Opc.Const or Opc.LdNull or Opc.LdStr)) { E.I32(0); E.Set(L(v)); } }
+    void Clear(Node v)
+    {
+        if (v.Kind == VK.Struct) { Get(v); E.I32(0); E.I32(SizeOfStruct(v.Type!)); E.Emit(WOp.MemoryFill); return; }
+        if (v.Kind == VK.Ref && v.Op is not (Opc.Const or Opc.LdNull or Opc.LdStr)) { E.I32(0); E.Set(L(v)); }
+    }
 
     void ReleaseVars()
     {
         for (int i = 0; i < _body.Vars.Count; i++)
-            if (_body.Vars[i].Kind == VK.Ref) { VarGet(i); E.Call(C.Rt.Release); E.I32(0); VarSet(i); }
+        {
+            var vr = _body.Vars[i];
+            if (vr.Kind == VK.Ref) { VarGet(i); E.Call(C.Rt.Release); E.I32(0); VarSet(i); }
+            else if (vr.Kind == VK.Struct && vr.ArgIndex < 0 && Kinds.Counted(vr.Type)) { VarAddr(i); StructCounts(vr.Type, false); VarAddr(i); E.I32(0); E.I32(SizeOfStruct(vr.Type)); E.Emit(WOp.MemoryFill); }
+        }
     }
 
     // ------------------------------------------------------------------ try regions
@@ -416,6 +506,8 @@ sealed class FunctionLowering
             case Opc.Const: return; // (materialised where used)
             case Opc.LdNull: E.I32(0); Set(n); return;
             case Opc.LdStr: E.I32Addr(C.StringLiteral((string)n.X!)); Set(n); return;
+            case Opc.Retain when n.A[0].Kind == VK.Struct: Get(n.A[0]); StructCounts(n.A[0].Type!, true); return;
+            case Opc.Release when n.A[0].Kind == VK.Struct: Get(n.A[0]); StructCounts(n.A[0].Type!, false); Clear(n.A[0]); return;
             case Opc.Retain: Get(n.A[0]); E.Call(C.Rt.Retain); E.Op(WOp.Drop); return;
             case Opc.Release:
                 if (n.A[0].Op is Opc.LdStr or Opc.LdNull) return;
@@ -429,7 +521,15 @@ sealed class FunctionLowering
                 Set(n);
                 return;
             }
-            case Opc.LocA: E.Get(_fb); E.I32(_body.Vars[(int)n.I].Offset); E.Op(WOp.I32Add); Set(n); return;
+            case Opc.LocA: VarAddr((int)n.I); Set(n); return;
+            case Opc.VarLd when n.Kind == VK.Struct: VarAddr((int)n.I); LoadStruct(n); return;
+            case Opc.VarSt when _body.Vars[(int)n.I].Kind == VK.Struct:
+            {
+                int a = E.AddLocal(ValType.I32);
+                VarAddr((int)n.I); E.Set(a);
+                StoreStruct(a, 0, n.A[0], _body.Vars[(int)n.I].Type, (n.Moves & 1) != 0);
+                return;
+            }
             case Opc.VarLd:
                 VarGet((int)n.I);
                 if (n.Kind == VK.Ref) E.Call(C.Rt.Retain);
@@ -482,6 +582,7 @@ sealed class FunctionLowering
             {
                 var et = (TypeDesc)n.X!;
                 Get(n.A[0]); Get(n.A[1]); E.Call(C.Rt.ElemAddr(Kinds.SizeOf(et)));
+                if (n.Kind == VK.Struct) { LoadStruct(n); return; }
                 Load(et, 0);
                 if (n.Kind == VK.Ref) E.Call(C.Rt.Retain);
                 Set(n);
@@ -504,6 +605,7 @@ sealed class FunctionLowering
                 var f = (FieldDesc)n.X!;
                 Get(n.A[0]);
                 if (n.A[0].Kind == VK.Ref) E.Call(C.Rt.NonNull);
+                if (n.Kind == VK.Struct) { E.I32(IlContext.FieldOffset(f)); E.Op(WOp.I32Add); LoadStruct(n); return; }
                 Load(f.FieldType, IlContext.FieldOffset(f));
                 if (n.Kind == VK.Ref) E.Call(C.Rt.Retain);
                 Set(n);
@@ -534,6 +636,7 @@ sealed class FunctionLowering
                 var f = (FieldDesc)n.X!;
                 C.CctorCheck(E, f.OwningType);
                 E.I32Addr(C.StaticAddress(f));
+                if (n.Kind == VK.Struct) { LoadStruct(n); return; }
                 Load(f.FieldType, 0);
                 if (n.Kind == VK.Ref) E.Call(C.Rt.Retain);
                 Set(n);
@@ -557,6 +660,23 @@ sealed class FunctionLowering
                 Set(n);
                 return;
             }
+            case Opc.LdObj: Get(n.A[0]); LoadStruct(n); return;
+            case Opc.InitObj:
+            {
+                var t = (TypeDesc)n.X!;
+                int a = E.AddLocal(ValType.I32);
+                Get(n.A[0]); E.Set(a);
+                if (Kinds.Of(t) == VK.Struct)
+                {
+                    if (Kinds.Counted(t)) { E.Get(a); StructCounts(t, false); }
+                    E.Get(a); E.I32(0); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryFill);
+                }
+                else if (Kinds.Of(t) == VK.Ref) { int old = E.AddLocal(ValType.I32); E.Get(a); E.Load(WOp.I32Load); E.Set(old); E.Get(a); E.I32(0); E.Store(WOp.I32Store); E.Get(old); E.Call(C.Rt.Release); }
+                else { E.Get(a); ZeroOf(t); Store(t, 0); }
+                return;
+            }
+            case Opc.Unbox:
+                Get(n.A[0]); E.Call(C.UnboxFn((TypeDesc)n.X!)); E.I32(IlContext.ObjectHeader); E.Op(WOp.I32Add); Set(n); return;
             case Opc.LdInd:
                 Get(n.A[0]);
                 Load(n.Type!, 0);
@@ -581,6 +701,14 @@ sealed class FunctionLowering
                 C.Constructed(t);
                 E.I32(IlContext.ObjectHeader + Math.Max(4, Kinds.SizeOf(t))); E.Tid(C.TypeId(t)); E.Call(C.Rt.AllocObject);
                 Set(n);
+                if (n.A[0].Kind == VK.Struct)
+                {
+                    int a = E.AddLocal(ValType.I32);
+                    E.Get(L(n)); E.Set(a);
+                    E.Get(a); E.I32(IlContext.ObjectHeader); E.Op(WOp.I32Add); Get(n.A[0]); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryCopy);
+                    if (Kinds.Counted(t)) { if ((n.Moves & 1) != 0) Clear(n.A[0]); else { E.Get(a); E.I32(IlContext.ObjectHeader); E.Op(WOp.I32Add); StructCounts(t, true); } }
+                    return;
+                }
                 E.Get(L(n)); Get(n.A[0]); Store(t, IlContext.ObjectHeader);
                 return;
             }
@@ -588,12 +716,18 @@ sealed class FunctionLowering
             {
                 var t = (TypeDesc)n.X!;
                 Get(n.A[0]); E.Call(C.UnboxFn(t));
+                if (n.Kind == VK.Struct) { E.I32(IlContext.ObjectHeader); E.Op(WOp.I32Add); LoadStruct(n); return; }
                 Load(t, IlContext.ObjectHeader);
                 Set(n);
                 return;
             }
         }
         throw new NotSupportedException($"{_body.Method}: IR {n.Op} is not lowered yet");
+    }
+
+    void ZeroOf(TypeDesc t)
+    {
+        switch (Kinds.Of(t)) { case VK.I64: E.I64(0); break; case VK.F32: E.F32(0); break; case VK.F64: E.F64(0); break; default: E.I32(0); break; }
     }
 
     readonly Dictionary<ValType, int> _temps = new();
@@ -638,6 +772,7 @@ sealed class FunctionLowering
     /// <summary>A store at addr+offset; a reference's old value is released after the new one is in place.</summary>
     void StoreAt(int addr, int offset, Node v, TypeDesc t, bool moved)
     {
+        if (v.Kind == VK.Struct) { StoreStruct(addr, offset, v, t, moved); return; }
         if (v.Kind == VK.Ref)
         {
             int old = E.AddLocal(ValType.I32);
@@ -765,24 +900,65 @@ sealed class FunctionLowering
         var kind = (CallKind)n.Sub;
         if (kind == CallKind.Direct && n.Ovf && n.A.Length > 0 && n.A[0].Kind == VK.Ref) { Get(n.A[0]); E.Call(C.Rt.NonNull); E.Op(WOp.Drop); }
         if (kind == CallKind.Direct && m.Signature.IsStatic) C.CctorCheckForCall(E, m);
-        foreach (var a in n.A) Get(a);
+        PushCallArgs(n);
+        if (n.Kind == VK.Struct) Get(n);
         E.Call(kind == CallKind.Direct ? C.FunctionFor(m) : C.DispatchFor(m));
-        if (n.HasValue) Set(n);
+        if (n.HasValue && n.Kind != VK.Struct) Set(n);
+        AfterCall(n);
+    }
+
+    /// <summary>A call's arguments; a struct argument is a copy of its own (the callee may change it), counted.</summary>
+    void PushCallArgs(Node n)
+    {
+        for (int i = 0; i < n.A.Length; i++)
+        {
+            var a = n.A[i];
+            if (a.Kind != VK.Struct) { Get(a); continue; }
+            int off = _argSlot[(n, i)];
+            FrameAddr(off); Get(a); E.I32(SizeOfStruct(a.Type!)); E.Emit(WOp.MemoryCopy);
+            if (Kinds.Counted(a.Type!)) { FrameAddr(off); StructCounts(a.Type!, true); }
+            FrameAddr(off);
+        }
+    }
+
+    /// <summary>The argument copies' counts released after the call.</summary>
+    void AfterCall(Node n)
+    {
+        for (int i = 0; i < n.A.Length; i++)
+        {
+            var a = n.A[i];
+            if (a.Kind != VK.Struct || !Kinds.Counted(a.Type!)) continue;
+            int off = _argSlot[(n, i)];
+            FrameAddr(off); StructCounts(a.Type!, false);
+            FrameAddr(off); E.I32(0); E.I32(SizeOfStruct(a.Type!)); E.Emit(WOp.MemoryFill);
+        }
     }
 
     public void PushArgs(Node n) { foreach (var a in n.A) Get(a); }
-    public void SetResult(Node n) { if (n.HasValue) Set(n); }
+    public void SetResult(Node n) { if (n.HasValue && n.Kind != VK.Struct) Set(n); }
 
     void NewObj(Node n)
     {
         var ctor = (MethodDesc)n.X!;
         var t = (DefType)ctor.OwningType;
+        if (t.IsValueType)
+        {
+            // a struct: made in its own copy, which the constructor gets the address of
+            C.CctorCheckForCall(E, ctor);
+            Get(n); E.I32(0); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryFill);
+            Get(n);
+            PushCallArgs(n);
+            E.Call(C.FunctionFor(ctor));
+            AfterCall(n);
+            return;
+        }
         C.Constructed(t);
         C.CctorCheckForCall(E, ctor);
         E.I32(IlContext.InstanceSize(t)); E.Tid(C.TypeId(t)); E.Call(C.Rt.AllocObject);
         Set(n);
         E.Get(L(n));
-        foreach (var a in n.A) Get(a);
+        PushCallArgs(n);
         E.Call(C.FunctionFor(ctor));
+        AfterCall(n);
     }
 }
