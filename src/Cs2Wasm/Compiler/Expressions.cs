@@ -1135,6 +1135,8 @@ sealed partial class FunctionCompiler
                 var o = EmitValueAs(c.Operand, argT);
                 if (Types.IsRef(argT)) ToCallSafe(o, argT);
             }, null, c.Syntax);
+            // (a span made of an object the code may let go while the span is in use: StorageKeeps.cs)
+            if (KeepsStorageAt(m, c.Syntax)) KeepStorage(SubstMethod(m), c.Syntax, false, null, null);
             var rt = T.Resolve(m.ReturnType, Map);
             ConvertTop(rt, to, ref r);
             return r;
@@ -1187,6 +1189,14 @@ sealed partial class FunctionCompiler
         }
         var own = EmitValue(c.Operand);
         ConvertValue(from, to, conv.IsNumeric || from.TypeKind == TypeKind.Enum || to.TypeKind == TypeKind.Enum ? c.IsChecked : false, ref own, explicitConv: !conv.IsImplicit, conv);
+        // (an array or a string taken as a span, where the code may let it go while the span is in use: StorageKeeps.cs)
+        if (_spanSites.Contains(c.Syntax) && IsSpanType(to) && !from.IsRefLikeType)
+        {
+            int sa = Scratch(ValType.I32);
+            E.Tee(sa); E.Get(sa);
+            KeepRefsOfStruct(to, c.Syntax, 0);
+            FreeScratch(ValType.I32, sa);
+        }
         return own;
     }
 
@@ -2164,6 +2174,7 @@ sealed partial class FunctionCompiler
             {
                 var v = LocalVar(rl.Local);
                 EmitAddress(sa.Value); E.Set(v.AddrLocal);
+                if (_spanSites.Contains(sa.Syntax)) KeepObjectOf(v.AddrLocal, StorageKeepLocal(sa.Syntax, 0));
                 return needResult ? RefAssignResult(v.AddrLocal, TypeOf(sa)) : Own.None;
             }
             if (sa.Target is IParameterReferenceOperation { Parameter.RefKind: not RefKind.None } rp && !IsCaptured(rp.Parameter))

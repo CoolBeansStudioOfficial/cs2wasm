@@ -2095,6 +2095,44 @@ namespace Cs2Wasm.Runtime
             return b;
         }
 
+        // (the objects the references a function just returned point into, each counted until the caller has
+        // counted it: ReturnKeep)
+        [System.ThreadStatic] static int t_ret0, t_ret1, t_ret2, t_ret3, t_retN;
+
+        /// <summary>A function of the program returns a span or a `ref` (Compiler/StorageKeeps.cs): the object it
+        /// points into is counted here before the function lets go of its locals and temporaries, which may
+        /// be all that held it (`Span<T> F() { var a = new T[3]; return a; }`); the caller counts it for itself
+        /// at the call (KeepStorage) and gives this count back (ReturnDone). Four at a time (a ref struct with
+        /// several spans); one more lets the oldest go.</summary>
+        public static void ReturnKeep(int addr)
+        {
+            int o = ObjectOf(addr);
+            if (o == 0) return;
+            Retain(Borrow<object>(o));
+            int old;
+            switch (t_retN++ & 3)
+            {
+                case 0: old = t_ret0; t_ret0 = o; break;
+                case 1: old = t_ret1; t_ret1 = o; break;
+                case 2: old = t_ret2; t_ret2 = o; break;
+                default: old = t_ret3; t_ret3 = o; break;
+            }
+            if (old != 0) Release(Borrow<object>(old));
+        }
+
+        /// <summary>The caller has counted what came out of the call: ReturnKeep's counts go.</summary>
+        public static void ReturnDone()
+        {
+            if (t_retN == 0) return;
+            t_retN = 0;
+            int a = t_ret0, b = t_ret1, c = t_ret2, d = t_ret3;
+            t_ret0 = 0; t_ret1 = 0; t_ret2 = 0; t_ret3 = 0;
+            if (a != 0) Release(Borrow<object>(a));
+            if (b != 0) Release(Borrow<object>(b));
+            if (c != 0) Release(Borrow<object>(c));
+            if (d != 0) Release(Borrow<object>(d));
+        }
+
         /// <summary>One of the object's seven words (k: 4 to 28, the word that many bytes before its header); 0 until
         /// it is written (the block is cleared when the object is made).</summary>
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static int PL(int obj, int k) => Mem.LoadI32(obj - k);

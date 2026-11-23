@@ -215,8 +215,202 @@ sealed partial class FunctionCompiler
         IObjectCreationOperation oc => oc.Constructor,
         // (a function pointer: its type's signature; the target is not known, as a delegate's is not)
         IFunctionPointerInvocationOperation { Target.Type: IFunctionPointerTypeSymbol fp } => fp.Signature,
+        IConversionOperation { OperatorMethod: { } om } => om,
         _ => null,
     };
+
+    // ---- A span or a `ref` over an object that the code may let go while the span is in use (2026-11-23) ----
+    // `Make().AsSpan()`, `ReadOnlySpan<T> s = h.Arr; h.Arr = other;`, `var s = a.AsSpan(); a = other;`: under .NET
+    // the span keeps the array. Here it holds no count, and the array went with its last holder: the span then
+    // read freed memory (22 of 24 such programs trapped or printed another object's bytes). The same remedy as
+    // for a collection's storage, above: the call site counts the object the reference that came out points
+    // into (Rt.ObjectOf) into a local of the function, let go when the function returns.
+    // Which sites, in the program's own functions (not the core library's, whose code is as it was): a call,
+    // property, constructor or conversion operator through which a reference can come out (StorageWayOut), unless
+    // (a) what it is called on and with is stable for the function (a parameter or a local never written again,
+    // `this`, a constant, a static readonly field: IsStableBase; a local of an inner block only where the result
+    // stays in that block: an initializer, an argument, a foreach) and (b) the callee is one of the library's
+    // that give out only what they were given (a ref struct's members, MemoryExtensions, MemoryMarshal, Unsafe,
+    // string, Memory, ReadOnlyMemory, ArraySegment). Any other callee can return a span over storage of its own.
+    // CS2WASM_NO_SPAN_KEEP=1: none of these (test 268).
+    static readonly bool s_noSpanKeep = Environment.GetEnvironmentVariable("CS2WASM_NO_SPAN_KEEP") == "1";
+    readonly HashSet<SyntaxNode> _spanSites = [];
+
+    /// <summary>Whether the call at `syntax` keeps what its references point into: a collection's storage
+    /// (Driver.ExposesStorage) or a site NoteSpanSites found.</summary>
+    bool KeepsStorageAt(IMethodSymbol m, SyntaxNode? syntax) =>
+        D.ExposesStorage(m) || syntax != null && _spanSites.Contains(syntax) && Driver.StorageWayOut((m.ReducedFrom ?? m).OriginalDefinition);
+
+    static bool GivesOnlyWhatItGot(IMethodSymbol def)
+    {
+        var ct = def.ContainingType?.OriginalDefinition;
+        if (ct == null || ct.ContainingNamespace is not { } ns) return false;
+        string n = ns.ToDisplayString();
+        if (n != "System" && !n.StartsWith("System.", StringComparison.Ordinal)) return false;
+        if (ct.IsRefLikeType) return true;
+        return ct.Name is "MemoryExtensions" or "MemoryMarshal" or "Unsafe" or "String" or "Memory" or "ReadOnlyMemory" or "ArraySegment";
+    }
+
+    bool StableForSpan(IOperation? v, IOperation site)
+    {
+        if (v == null) return true;
+        while (v is IConversionOperation { OperatorMethod: null } c && (c.Conversion.IsReference || c.Conversion.IsIdentity) || v is IParenthesizedOperation) v = v is IConversionOperation cc ? cc.Operand : ((IParenthesizedOperation)v).Operand;
+        if (v.ConstantValue.HasValue || v is ILiteralOperation or IDefaultValueOperation or ITypeOfOperation) return true;
+        var t = v.Type;
+        // (a span, or a value without a reference in it: nothing of it to keep)
+        if (t == null) return false;
+        var rt = TypeOf(v);
+        if (rt.IsRefLikeType) return true;
+        if (!Types.IsRef(rt) && !(Types.IsStruct(rt) && T.LayoutOf(rt).HasRefs) && rt.TypeKind != TypeKind.TypeParameter) return true;
+        switch (v)
+        {
+            case IFieldReferenceOperation { Field: { IsStatic: true, IsReadOnly: true } }: return true;
+            // (`ref a[i]`, `ref o.f`: the address is in the object the base names)
+            case IArrayElementReferenceOperation ae: return StableForSpan(ae.ArrayReference, site);
+            case ILocalReferenceOperation { Local: var l }:
+                if (!IsStableBase(v)) return false;
+                return InOutermostBlock(l) || StaysInStatement(site);
+            default: return IsStableBase(v);
+        }
+    }
+
+    /// <summary>What a `ref` is taken of stays for the function: a variable of its own, or a place in an object
+    /// that a stable value names (StableForSpan). A call's result is its own site.</summary>
+    bool StableRefTarget(IOperation v, IOperation site)
+    {
+        while (v is IParenthesizedOperation po) v = po.Operand;
+        switch (v)
+        {
+            case ILocalReferenceOperation or IParameterReferenceOperation: return true;
+            case IInvocationOperation or IPropertyReferenceOperation or IFunctionPointerInvocationOperation: return true;
+            case IArrayElementReferenceOperation ae: return StableForSpan(ae.ArrayReference, site);
+            case IFieldReferenceOperation f:
+                if (f.Field.IsStatic || f.Instance == null) return true;
+                return f.Instance.Type is { IsValueType: true } ? StableRefTarget(f.Instance, site) : StableForSpan(f.Instance, site);
+            default: return false;
+        }
+    }
+
+    static bool InOutermostBlock(ILocalSymbol l)
+    {
+        if (l.DeclaringSyntaxReferences.Length != 1) return false;
+        for (var n = l.DeclaringSyntaxReferences[0].GetSyntax().Parent; n != null; n = n.Parent)
+        {
+            if (n is Microsoft.CodeAnalysis.CSharp.Syntax.LocalDeclarationStatementSyntax or Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclarationSyntax or Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax) continue;
+            if (n is Microsoft.CodeAnalysis.CSharp.Syntax.BlockSyntax b)
+                return b.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.BaseMethodDeclarationSyntax or Microsoft.CodeAnalysis.CSharp.Syntax.AccessorDeclarationSyntax or Microsoft.CodeAnalysis.CSharp.Syntax.LocalFunctionStatementSyntax or Microsoft.CodeAnalysis.CSharp.Syntax.AnonymousFunctionExpressionSyntax;
+            return false;
+        }
+        return false;
+    }
+
+    /// <summary>The site's result is used up where it is made: it initializes a local of the same or an inner
+    /// block, is an argument of a call that gives no reference back, or is what a foreach goes over.</summary>
+    static bool StaysInStatement(IOperation site)
+    {
+        IOperation child = site;
+        for (var p = site.Parent; p != null; child = p, p = p.Parent)
+        {
+            switch (p)
+            {
+                case IConversionOperation or IParenthesizedOperation: continue;
+                case IArgumentOperation: continue;
+                case IInvocationOperation inv:
+                    if (inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly || inv.TargetMethod.ReturnType.IsRefLikeType) continue;
+                    return true;
+                case IPropertyReferenceOperation pr:
+                    if (pr.Property.ReturnsByRef || pr.Property.ReturnsByRefReadonly || pr.Property.Type.IsRefLikeType) continue;
+                    return true;
+                case IVariableInitializerOperation: return p.Parent is IVariableDeclaratorOperation { Symbol.RefKind: RefKind.None };
+                case IForEachLoopOperation fe: return ReferenceEquals(fe.Collection, child);
+                case IExpressionStatementOperation: return true;
+                default: return false;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Before a function of the program that returns a span, a ref struct or a `ref` lets go of what it
+    /// holds: Rt.ReturnKeep for each reference in the result.</summary>
+    void EmitReturnKeep(bool hasValue)
+    {
+        if (s_noSpanKeep || _machine != null || D.IsLibrary(M)) return;
+        if (M.ReturnsVoid) return;
+        // (a `ref`: as its address is taken, EmitReturnKeepRef)
+        if (M.ReturnsByRef || M.ReturnsByRefReadonly) return;
+        var rt = T.Resolve(M.ReturnType, Map);
+        if (_closure?.ReturnType is { } crt) rt = crt;
+        if (!Types.IsStruct(rt) || !rt.IsRefLikeType || _structRetLocal < 0) return;
+        foreach (int off in RefOffsets(rt))
+        {
+            E.Get(_structRetLocal); E.Load(Op.I32Load, off); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "ReturnKeep", 1).Fn);
+        }
+    }
+
+    void EmitReturnKeepRef()
+    {
+        if (s_noSpanKeep || _machine != null || _closure != null || D.IsLibrary(M)) return;
+        E.Get(_retLocal); E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "ReturnKeep", 1).Fn);
+    }
+
+    /// <summary>After the captures are known: the sites of this function whose result is kept (see above).</summary>
+    void NoteSpanSites(IOperation root)
+    {
+        if (s_noSpanKeep || D.IsLibrary(M)) return;
+        foreach (var op in root.DescendantsAndSelf())
+        {
+            // (`ref T r = ref h.Arr[i];`, `r = ref o.F;`: a reference into an object the code may let go)
+            if (op is IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None, Initializer.Value: { } rv } && !StableRefTarget(rv, op)
+                || op is ISimpleAssignmentOperation { IsRef: true, Target: ILocalReferenceOperation, Value: { } av } && !StableRefTarget(av, op))
+            {
+                bool inner = false;
+                for (var p = op.Parent; p != null && p != root && p.Syntax != root.Syntax; p = p.Parent)
+                    if (p is IAnonymousFunctionOperation or ILocalFunctionOperation) { inner = true; break; }
+                if (!inner && _spanSites.Add(op.Syntax)) _storageSites.Add(op);
+                continue;
+            }
+            // (an array or a string taken as a span by the language's own conversion)
+            if (op is IConversionOperation { OperatorMethod: null, Operand.Type: not null, Type: { IsRefLikeType: true } } sc && !sc.Operand.Type.IsRefLikeType && !sc.Conversion.IsUserDefined)
+            {
+                bool inner = false;
+                for (var p = op.Parent; p != null && p != root && p.Syntax != root.Syntax; p = p.Parent)
+                    if (p is IAnonymousFunctionOperation or ILocalFunctionOperation) { inner = true; break; }
+                if (!inner && !StableForSpan(sc.Operand, op) && _spanSites.Add(op.Syntax)) _storageSites.Add(op);
+                continue;
+            }
+            if (op is not (IInvocationOperation or IPropertyReferenceOperation or IObjectCreationOperation or IConversionOperation { OperatorMethod: not null })) continue;
+            if (StorageCallee(op) is not { } m) continue;
+            var def = (m.ReducedFrom ?? m).OriginalDefinition;
+            if (!Driver.StorageWayOut(def) || D.ExposesStorage(m)) continue;
+            bool nested = false;
+            for (var p = op.Parent; p != null && p != root && p.Syntax != root.Syntax; p = p.Parent)
+                if (p is IAnonymousFunctionOperation or ILocalFunctionOperation) { nested = true; break; }
+            if (nested) continue;
+            if (GivesOnlyWhatItGot(def))
+            {
+                bool stable = true;
+                switch (op)
+                {
+                    case IInvocationOperation inv:
+                        stable = StableForSpan(inv.Instance, op);
+                        foreach (var a in inv.Arguments) stable = stable && StableForSpan(a.Value, op);
+                        break;
+                    case IPropertyReferenceOperation pr:
+                        stable = StableForSpan(pr.Instance, op);
+                        foreach (var a in pr.Arguments) stable = stable && StableForSpan(a.Value, op);
+                        break;
+                    case IObjectCreationOperation oc:
+                        foreach (var a in oc.Arguments) stable = stable && StableForSpan(a.Value, op);
+                        break;
+                    case IConversionOperation co:
+                        stable = StableForSpan(co.Operand, op);
+                        break;
+                }
+                if (stable) continue;
+            }
+            if (_spanSites.Add(op.Syntax)) _storageSites.Add(op);
+        }
+    }
 
     void NoteStorageSite(IOperation op, IOperation root)
     {
@@ -264,7 +458,9 @@ sealed partial class FunctionCompiler
         foreach (var site in _storageSites)
         {
             if (_storageKeeps.ContainsKey(site.Syntax)) continue;
-            var (ret, self, args) = StoragePlan(site is IFunctionPointerInvocationOperation fpi ? ((IFunctionPointerTypeSymbol)TypeOf(fpi.Target)).Signature : SubstMethod(StorageCallee(site)!));
+            var (ret, self, args) = site is IVariableDeclaratorOperation or ISimpleAssignmentOperation ? (1, 0, Array.Empty<int>())
+                : site is IConversionOperation { OperatorMethod: null } ? (RefOffsets(TypeOf(site)).Count, 0, Array.Empty<int>())
+                : StoragePlan(site is IFunctionPointerInvocationOperation fpi ? ((IFunctionPointerTypeSymbol)TypeOf(fpi.Target)).Signature : SubstMethod(StorageCallee(site)!));
             var locals = new List<int>();
             for (int n = ret + self + args.Sum(); n > 0; n--)
             {
@@ -332,6 +528,13 @@ sealed partial class FunctionCompiler
     /// out point into are counted into the site's locals: the result's, then those of the ref struct the method was
     /// called on, then those of each `out`/`ref` argument that is a ref struct.</summary>
     void KeepStorage(IMethodSymbol m, SyntaxNode? syntax, bool refAddress, IOperation? instance = null, IReadOnlyList<IOperation>? args = null)
+    {
+        KeepStorageCore(m, syntax, refAddress, instance, args);
+        // (what the callee counted for the way out, Rt.ReturnKeep, is the site's now)
+        if (!s_noSpanKeep && !D.IsLibrary(M)) E.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "ReturnDone", 0).Fn);
+    }
+
+    void KeepStorageCore(IMethodSymbol m, SyntaxNode? syntax, bool refAddress, IOperation? instance = null, IReadOnlyList<IOperation>? args = null)
     {
         var (ret, self, argRefs) = StoragePlan(m);
         int k = 0;

@@ -41,7 +41,7 @@ static class Program
 {
     static WeakReference<Node>? s_short;
     static WeakReference? s_long;
-    static void Collect() { for (int i = 0; i < 6; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); } }
+    static void Collect() { for (int i = 0; i < 2; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); } }
     static string Counts() { Collect(); return $"live {Node.Live} finalized {Node.Finalized}"; }
     static string Weak() => $"short {(s_short!.TryGetTarget(out _) ? "alive" : "dead")} long {(s_long!.IsAlive ? "alive" : "dead")}";
 

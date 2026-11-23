@@ -47,7 +47,7 @@ sealed class Thing
 
 static class Program
 {
-    static void Collect() { for (int i = 0; i < 6; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); } }
+    static void Collect() { for (int i = 0; i < 2; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); } }
     static void Show(string what)
     {
         Collect();

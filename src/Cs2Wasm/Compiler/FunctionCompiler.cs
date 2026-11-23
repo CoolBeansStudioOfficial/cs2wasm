@@ -407,6 +407,7 @@ sealed partial class FunctionCompiler
         }
         AnalyzeCaptures(body);
         ComputeLocalMoves(body);
+        NoteSpanSites(body);
         foreach (var p in M.Parameters)
         {
             var v = _vars[p];
@@ -1122,6 +1123,8 @@ sealed partial class FunctionCompiler
             if (d.Symbol.RefKind != RefKind.None)
             {
                 EmitAddress(init); E.Set(v.AddrLocal);
+                // (a reference into an object the code may let go while it is in use: StorageKeeps.cs)
+                if (_spanSites.Contains(d.Syntax)) KeepObjectOf(v.AddrLocal, StorageKeepLocal(d.Syntax, 0));
             }
             else if (Types.IsStruct(v.Type) && IsDirectStructProducer(init))
             {
@@ -1154,6 +1157,7 @@ sealed partial class FunctionCompiler
                 EmitAddress(value);
                 _retLocal = _retLocal >= 0 ? _retLocal : E.AddLocal(ValType.I32);
                 E.Set(_retLocal);
+                EmitReturnKeepRef();
             }
             else
             {
@@ -1215,6 +1219,8 @@ sealed partial class FunctionCompiler
 
     void EmitReturnSequence(bool hasValue)
     {
+        // (a span or a `ref` going out: what it points into is counted until the caller has it, StorageKeeps.cs)
+        EmitReturnKeep(hasValue);
         foreach (var tl in _temps) foreach (var s in tl) ReleaseSlot(s);
         for (int i = _scopes.Count - 1; i >= 0; i--)
             for (int j = _scopes[i].Owned.Count - 1; j >= 0; j--) ReleaseSlot(_scopes[i].Owned[j]);
