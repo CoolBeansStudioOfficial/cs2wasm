@@ -2200,12 +2200,20 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     in cycles and under a living tree (266); spans and refs into collections across growth through every way of
     passing them (268; its one failure was the span over `stack.ToArray()`, the case above); function pointers,
     generic, by `ref`, in fields, arrays and generic classes (269): the same as .NET but for what is listed below.
-  - **9. Two more the sweep found (closed, tests 273, 274).** (a) *A static's initializer pinned its object*:
-    the object of `static Node s_root = new Node(0);` was kept out of groups (Rt.ArenaPin) as a static readonly
-    field's is, by the initializer's store alone (EmitStoreField pinned any static; a later assignment to the same
-    field did not): once in a cycle it was never freed when the static was set again. Pinned only when the field
-    is readonly (`CS2WASM_PIN_STATIC_INIT=1`: as before). (b) *A container let go while one of its items is held
-    from elsewhere*: `g.A = null` where one cell of the array is also in `g.One` and each cell refers back to g:
+  - **9. Two more the sweep found (one closed, test 274; one found and left, test 273 goes round it).** (a) *A
+    static's initializer pins its object*: the object of `static Node s_root = new Node(0);` is kept out of
+    groups (Rt.ArenaPin) as a static readonly field's is, by the initializer's store alone (EmitStoreField pins
+    any static; a later assignment to the same field does not): once in a cycle it is never freed when the static
+    is set again. Unpinned (commit b27e90f) it was freed, and tests 247, 248 and 249 failed: their roots are
+    statics set by initializers, and with the root a member of the group, as a root assigned in code is, the
+    cells' references back to it are up-references, a cell another cell refers to holds its old array, and
+    pairs of cells that refer to each other stay until the group goes (SPEC 4.3's allowance; test 249 "kind 1
+    how 3": 2, 6, 6 and 8 cells too many). So the pin stays the default (`CS2WASM_UNPIN_STATIC_INIT=1`: pinned
+    only when readonly), and **what tests 247 to 249 prove, they prove for a root that is a plain pinned object**.
+    One of the three holds for a member root too: Rt.Dropped refused a member with a container waiting to own
+    it; when that container is one the member itself owns (`n.Raw[6] = n`: the member holds its old owner, is
+    therefore not adopted, and nothing else looked) the check is made now (247 passes either way). (b) *A
+    container let go while one of its items is held from elsewhere*: `g.A = null` where one cell of the array is also in `g.One` and each cell refers back to g:
     the other cells stayed until the held one was let go (three of four for .NET's none), because the held
     cell, with an up-reference below it and a holder other than its owner, holds the array. `Rt.ShedHolds`,
     asked where a member is let go by its owner (ArenaUnlinkOld) or by the code (ArenaRelease) and only its
@@ -2247,6 +2255,17 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     to g and to each other across arrays): cells stay until the group goes (3 of 21 in the program test 274 was
     cut down from; the item holds its old array without being in it, so ShedHolds does not find it).
     (h) *A place passed by reference in the core library's own code*, as (f).
+    (i) *A root that is a member of its group* (a static assigned in code, or any with
+    `CS2WASM_UNPIN_STATIC_INIT=1`): two cells of an array that refer to each other and back to the root, taken
+    out of the array one by one, stay until the group goes (test 249's "kind 1 how 3" with the switch; with the
+    switch test 248's "star under a living tree, mode 5" differs too: not looked into). And the other side of it:
+    the pinned object of a static's initializer, once in a cycle, is never freed when the static is set again
+    (`static Node s_root = new Node(0); .. s_root.Kids.Add(new Node { Parent = s_root }); s_root = new Node(1);`:
+    a weak reference to the first root reads alive for .NET's dead).
+    (j) *Not this branch's, seen under load*: test 108 as built checked traps in about 1 run of 100 with four at
+    once on the desk (`operation does not support unaligned accesses` in rt.retain under
+    Interlocked.Exchange(object, object) in Task.FinishContinuations), the same with every switch of this branch
+    off; 088's timer line; 085's oracle (.NET had not collected yet).
 
 ### A4. Plugins (goal 3)
 
