@@ -2243,6 +2243,32 @@ base compiler's, as shipped and checked (hello world 27,784 bytes by the command
   compiler too (2 of 12). Not looked into: the groups' locks.
 - claude/load-flakes-1's layout of the statics by cache lines (5837122) is on this branch (cherry-picked, 43f1dd1).
 
+*A hang of the base's that the new tests met.* The homelab's suite at 170ac22 stopped test 277 as shipped at the
+time limit, nothing printed. On the desk (`node tools/stress.mjs`, 8 at once) the test's first form hangs in 7 of
+300 runs, built by the base's compiler d430594 in 5 of 300, and with each of this branch's rules off in 2 to 8 of
+300: not this branch's code. The shape: threads that read and replace, unsynchronized, the elements of an array a
+static holds, whose class has a finalizer (`tools/thread-notes-hang.cs`). Variants built by the base's compiler,
+400 loaded runs each: the notes alone 5 hangs; no finalizer 0; the read and the store under a lock 0; the store
+without the read 0. In 600 runs of the notes alone, 14 hangs and one run that ended with a note never finalized;
+with CS2WASM_DEADLOCK_DUMP=1 the hung runs say nothing. Test 275's first form had the shape too (1 of 300). Both
+tests take a lock around the shared objects now (what they test is the counting, not the race; test 139 has the
+racing stores): 500 loaded runs a mode each all the same, 276, 278 and 279 300 each. Not looked into further.
+
+*What the machine gives.* N threads of arithmetic alone (scenes spinN, beside the private scenes' scaling in the
+tool's output): about 1.9, 3.3 and 6.3 at 2, 4 and 8 threads on the desk (24 logical processors, other sessions
+at work): the private churn's 5.3 at eight is most of it, the private trees' 3.2 half.
+
+*Checks* (the code is 170ac22; later commits are tests, tools and these documents). The homelab: the suite, checked
+240 passed, 1 failed, 2 known gaps, as shipped 239 passed, 2 failed, 2 known gaps (961 s): 088's timer line in
+both (the known one under load) and 277's hang above; the self-host check (`tools/selfhost-switch.sh`): the
+self-hosted compiler built in 340 s (33,404,357 bytes), hello world in 8.7 to 9.4 s, peak 272.0 MB, self-1 = net
+byte for byte on 145. The desk: `tools/thread-escape-breaks.sh` as said above, on the final tests;
+`tools/thread-share-check.sh` (every conformance test that is a program with threads, once as it is and once
+under the share check). Queued on the homelab when this was written, and in docs/FINISH.md's entry when in:
+`tools/stress-cycles.sh` (127, 139; 139 without the engine's stack checks), `tools/stress-threads.sh` (275 to
+279, 187, 131), `tools/thread-scale.sh` (the threaded self-hosted compiler, not yet built with this analysis),
+`tools/selfdet-set.sh` (220, 193, 088 through the self-hosted compiler), 088 and 275 to 279 alone.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
