@@ -61,3 +61,5 @@ if [ "${PROF:-0}" = 1 ]; then
     node tools/profsum.mjs $OUT/prof-naot ${TOP:-70}
   fi
 fi
+# VERIFY=1: then tools/selfhost-verify.sh (the build's modules against the .NET-hosted compiler's, four programs)
+if [ "${VERIFY:-0}" = 1 ]; then bash tools/selfhost-verify.sh; fi
