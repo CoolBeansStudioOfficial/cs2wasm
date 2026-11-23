@@ -1751,9 +1751,10 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Allocates a delegate; stack: target (owned i32) → delegate (owned).</summary>
-    void NewDelegate(ITypeSymbol dt, WasmFunction fn, ITypeSymbol? targetType = null, Display? env = null)
+    void NewDelegate(ITypeSymbol dt, WasmFunction fn, ITypeSymbol? targetType = null, Display? env = null, int site = -1)
     {
         D.Arenas.DelegateTarget(dt, targetType, env);
+        if (D.ThreadMode) D.NoteDelegateMade(fn, T.Canonical(dt), site);
         int target = Scratch(ValType.I32); E.Set(target);
         int tid = D.MarkConstructed(dt);
         var layout = T.LayoutOf(dt);
@@ -1812,7 +1813,10 @@ sealed partial class FunctionCompiler
         var fn = D.Lambda(this, af, Map, env);
         Sh?.LambdaAs(af.Symbol, dt);
         PushDisplayPtr(env, retain: true);
-        NewDelegate(dt, fn.Fn, env: env);
+        // (the place in the text: the delegate's sources name it, Sharing.LambdaTag)
+        int site = D.ThreadMode && Sh != null ? LambdaSiteAt(af.Syntax) : -1;
+        if (site >= 0) D.FillLambdaSite(site, fn.Fn, T.Canonical(dt), env);
+        NewDelegate(dt, fn.Fn, env: env, site: site);
         return Own.Owned;
     }
 

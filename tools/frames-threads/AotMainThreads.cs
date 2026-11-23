@@ -5,6 +5,8 @@ static class AotMainThreads
     {
         string s = args[0];
         if (s.StartsWith("idle_")) Threaded.Idle(s.Substring(5));
+        else if (s.StartsWith("aidle_")) Threaded.IdleBy(() => Frames.Run(s.Substring(6)));
+        else if (s == "aparts1") Threaded.OnWorkerBy(() => Parts.Run("parts1"));
         else if (s == "parts1") Threaded.PartsOnWorker(false);
         else if (s == "tparts1") Threaded.PartsOnWorker(true);
         else if (s == "parts_main") Threaded.PartsWithIdle(false);

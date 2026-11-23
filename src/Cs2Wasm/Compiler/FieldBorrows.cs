@@ -957,10 +957,10 @@ internal sealed partial class Driver
 
     /// <summary>The static slots that code a worker thread can run names (reads, writes or takes the address of: every
     /// use of a static's storage is an instruction that refers to its slot). Called before the counts are resolved.</summary>
-    internal HashSet<object> WorkerStaticSlots()
+    internal HashSet<object> WorkerStaticSlots(Func<WasmFunction, bool>? lambdaRuns = null)
     {
         var r = new HashSet<object>(ReferenceEqualityComparer.Instance);
-        foreach (var f in WorkerReachable())
+        foreach (var f in WorkerReachable(lambdaRuns))
             foreach (var ins in f.Body)
                 if (ins.Ref is StaticSlot s) r.Add(s);
         // (the table's functions are listed again when the borrows ask: functions may be made in between)
@@ -972,8 +972,12 @@ internal sealed partial class Driver
     internal object? StaticSlotOf(string key) => _statics.TryGetValue("F:" + key, out var s) ? s : null;
 
     /// <summary>The functions a worker thread can run: what its start export (__thread_entry: the only export a worker
-    /// instance is entered through) reaches by calls; an indirect call reaches every function in the table.</summary>
-    HashSet<WasmFunction> WorkerReachable()
+    /// instance is entered through) reaches by calls; an indirect call reaches every function in the table.
+    /// With `lambdaRuns` (Sharing.Analyze): a function that only lambdas' delegates were made with (DelegatesMade,
+    /// every site a lambda's) is reached by an indirect call only when it says so (a delegate of one of its sites, or
+    /// any delegate of its type, can be reached by another thread); and a function whose address the code of a
+    /// reached function takes is reached (the code that makes a delegate may call it, or hand it to what does).</summary>
+    HashSet<WasmFunction> WorkerReachable(Func<WasmFunction, bool>? lambdaRuns = null)
     {
         var seen = new HashSet<WasmFunction>();
         var root = Module.Functions.FirstOrDefault(f => f.Exports.Contains("__thread_entry"));
@@ -1004,8 +1008,10 @@ internal sealed partial class Driver
                 {
                     if (ins.Imm2 == 0) { if (tableDone) continue; tableDone = true; }
                     else if (!buckets.Add((int)ins.Imm2)) continue;
-                    foreach (var t in IndirectTargets(ins)) Add(t);
+                    foreach (var t in IndirectTargets(ins))
+                        if (lambdaRuns == null || t.TableRoot || !DelegatesMade.TryGetValue(t, out var made) || made.Any(x => x.site < 0) || lambdaRuns(t)) Add(t);
                 }
+                else if (lambdaRuns != null && ins.Op == Op.I32Const && ins.Ref is WasmFunction taken) Add(taken);
             }
         }
         return seen;

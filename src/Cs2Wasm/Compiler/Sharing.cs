@@ -299,6 +299,17 @@ internal sealed partial class Sharing
     /// <summary>CS2WASM_EXP_ALL_ENGINE_STATICS=1 (a test of the tests, unsound): no static is a root.</summary>
     static readonly bool s_allEngineStatics = Environment.GetEnvironmentVariable("CS2WASM_EXP_ALL_ENGINE_STATICS") == "1";
     public const string StaticPrior = "static ";
+    /// <summary>The tag (an Exact source's Key) of a delegate made of a lambda at one place of the text; Index is the
+    /// lambda site (Driver.LambdaSites). Reaching such a delegate reaches its own closure, and makes its lambda code
+    /// a worker thread can run; a delegate with no tag is any of its type, with every closure and every lambda the
+    /// type's delegates were made with. For every other reader of the sources it is a delegate of its exact type.
+    /// CS2WASM_NO_LAMBDA_SITES=1: no tag, as before. CS2WASM_EXP_LAMBDA_SITES_UNREACHED=1 (a test of the tests,
+    /// unsound): a tagged delegate reaches nothing and makes no code a worker's.</summary>
+    public const string LambdaTag = "lambda";
+    internal static readonly bool s_noLambdaSites = Environment.GetEnvironmentVariable("CS2WASM_NO_LAMBDA_SITES") == "1";
+    /// <summary>CS2WASM_EXP_NO_LAMBDA_RUNS=1 (a test of the tests, unsound): no lambda is code a worker runs by a delegate.</summary>
+    static readonly bool s_expNoLambdaRuns = Environment.GetEnvironmentVariable("CS2WASM_EXP_NO_LAMBDA_RUNS") == "1";
+    static readonly bool s_expLambdaUnreached = Environment.GetEnvironmentVariable("CS2WASM_EXP_LAMBDA_SITES_UNREACHED") == "1";
     /// <summary>In the map the next compilation is given: whether a slot of an object another thread can reach can be
     /// in an object in a place of the type (MaySlotsBeShared).</summary>
     public const string SlotsPrior = "slots ";
@@ -495,6 +506,9 @@ internal sealed partial class Sharing
         var shared = new HashSet<int>();
         // (array types reached only as an array with no element: EmptyArrayTag)
         var emptyOnly = new HashSet<int>();
+        // (delegate types reached only as delegates of lambda sites, and those sites: LambdaTag)
+        var delegateOnly = new HashSet<int>();
+        var lambdaShared = new HashSet<int>();
         var seenNodes = new HashSet<string>();
         var ptrSeen = new HashSet<(Arenas.Site, string?)>();
         var seenTops = new HashSet<string>();
@@ -673,26 +687,50 @@ internal sealed partial class Sharing
         // the roots: what the statics hold, the thread a thread start hands over, what a static struct's fields hold
         // A static is a root only if code a worker thread can run names it (StaticIsRoot): one that only the engine
         // thread's code reads and writes hands nothing to another thread.
-        var workerSlots = s_noEngineStatics ? null : D.WorkerStaticSlots();
+        // Which code a worker can run depends on which delegates a worker can reach (a lambda runs on a worker only
+        // if a delegate made of it there, or by code a worker runs, exists: Driver.WorkerReachable), and which
+        // delegates it can reach depends on the statics its code names: both grow together until neither does.
+        // The roots are added as the worker's code is found to name them; everything only grows.
         var staticRoots = new HashSet<string>();
-        int engineStatics = 0;
-        bool StaticIsRoot(string key)
+        var refStatics = _nodes.Keys.Where(k => k.StartsWith("s ") && !_threadStatics.Contains(k[2..])).Select(k => k[2..]).ToList();
+        var structStatics = _structStatics.Where(kv => !_threadStatics.Contains(kv.Key)).ToList();
+        bool LambdaRuns(WasmFunction fn)
         {
-            bool root = !s_allEngineStatics && (workerSlots == null || D.StaticSlotOf(key) is not { } slot || workerSlots.Contains(slot) || NodeRefsReach(StaticNode(key)));
-            if (root) staticRoots.Add(key); else { engineStatics++; if (s_debug) Console.Error.WriteLine("engine-thread static " + key); }
-            return root;
+            if (s_expNoLambdaRuns) return false;
+            foreach (var (dt, site) in D.DelegatesMade[fn])
+            {
+                if (lambdaShared.Contains(site)) return true;
+                // (any delegate of the type can be reached: one with no tag was)
+                if (D.ExistingTypeId(dt) is not int did || shared.Contains(did)) return true;
+            }
+            return false;
         }
-        foreach (var k in _nodes.Keys.Where(k => k.StartsWith("s ")).ToList())
-            if (!_threadStatics.Contains(k[2..]) && StaticIsRoot(k[2..])) Node(k, null, "static " + k[2..]);
-        foreach (var (k, t) in _structStatics)
-            if (!_threadStatics.Contains(k) && StaticIsRoot(k))
-                StructFields(t, "static " + k);
-        _staticRoots = staticRoots;
+        // (true when a root was added)
+        bool AddStaticRoots()
+        {
+            filter = null;
+            var workerSlots = s_noEngineStatics ? null : D.WorkerStaticSlots(s_noLambdaSites ? null : LambdaRuns);
+            bool IsRoot(string key) => !s_allEngineStatics && (workerSlots == null || D.StaticSlotOf(key) is not { } slot || workerSlots.Contains(slot) || NodeRefsReach(StaticNode(key)));
+            bool any = false;
+            foreach (var k in refStatics)
+                if (!staticRoots.Contains(k) && IsRoot(k)) { staticRoots.Add(k); Node(StaticNode(k), null, "static " + k); any = true; }
+            foreach (var (k, t) in structStatics)
+                if (!staticRoots.Contains("struct " + k) && IsRoot(k)) { staticRoots.Add("struct " + k); staticRoots.Add(k); StructFields(t, "static " + k); any = true; }
+            return any;
+        }
         var threadType = D.LibType("System.Threading.Thread");
         Push(new Src(K.Top, Type: threadType), "a thread start");
 
-        int steps = 0;
-        while (work.Count > 0)
+        int steps = 0, rounds = 0;
+        while (true)
+        {
+        if (work.Count == 0)
+        {
+            // (what is reached so far: the statics a worker's code names now; none new: done)
+            rounds++;
+            if (!AddStaticRoots() && work.Count == 0) break;
+            if (work.Count == 0) continue;
+        }
         {
             var (s, why, f) = work.Pop();
             filter = f;
@@ -706,6 +744,17 @@ internal sealed partial class Sharing
                         // (an array with no element: the object can be reached, nothing through it; its type is
                         // one another thread can reach, its elements' slots are not followed for it)
                         if (s.Key == EmptyArrayTag && !s_noEmptyArrays) { if ((filter == null || IdIs(eid, filter)) && !shared.Contains(eid) && emptyOnly.Add(eid) && whyType != null) whyType[eid] = why + " (an array with no element)"; }
+                        else if (s.Key == LambdaTag && !s_noLambdaSites && s.Index < D.LambdaSites.Count && D.LambdaSites[s.Index] is { Unsure: false, Fn: not null } ls)
+                        {
+                            // (a delegate made of one lambda: the delegate, the closure it was made with and what that
+                            // holds; not the closures of the type's other delegates, which its target's slot stands for)
+                            if ((filter == null || IdIs(eid, filter)) && !s_expLambdaUnreached)
+                            {
+                                lambdaShared.Add(s.Index);
+                                if (!shared.Contains(eid) && delegateOnly.Add(eid) && whyType != null) whyType[eid] = why + " (a lambda's delegate)";
+                                if (ls.Env is { TypeId: > 0 } lenv) { var f0 = filter; filter = null; AddType(lenv.TypeId, why + " (the closure of the lambda " + ls.Fn.Name + ")"); filter = f0; }
+                            }
+                        }
                         else AddType(eid, why);
                     }
                     else if (s.Type != null && Types.IsRef(s.Type)) Push(new Src(K.Top, Type: s.Type), why);
@@ -758,11 +807,16 @@ internal sealed partial class Sharing
                     }
             }
         }
+        }
+        _staticRoots = staticRoots;
+        int engineStatics = refStatics.Count(k => !staticRoots.Contains(k)) + structStatics.Count(kv => !staticRoots.Contains(kv.Key));
+        if (s_debug) foreach (var k in refStatics.Concat(structStatics.Select(kv => kv.Key)).Where(k => !staticRoots.Contains(k))) Console.Error.WriteLine("engine-thread static " + k);
         emptyOnly.RemoveWhere(shared.Contains);
         foreach (var id in emptyOnly) shared.Add(id);
+        foreach (var id in delegateOnly) shared.Add(id);
         _emptyOnly = emptyOnly;
         _shared = shared;
-        D.Mark($"    sharing: {shared.Count} types another thread can reach, {engineStatics} statics only the engine thread's code names, {steps} steps, {sw.ElapsedMilliseconds} ms");
+        D.Mark($"    sharing: {shared.Count} types another thread can reach, {engineStatics} statics only the engine thread's code names, {lambdaShared.Count} of {D.LambdaSites.Count} lambdas' delegates, {steps} steps, {rounds} rounds, {sw.ElapsedMilliseconds} ms");
         if (whyType != null)
         {
             Console.Error.WriteLine($"sharing: {shared.Count} of {TopIds(D.ObjectType).Count} types reachable by another thread; {uncertified.Count} methods called from elsewhere");
@@ -1235,6 +1289,14 @@ sealed partial class FunctionCompiler
         HashSet<ISymbol>? refd = null;
         foreach (var (sym, d) in _capturedHere)
         {
+            // (a parameter no code of the body writes: the slot holds what the method was called with)
+            if (sym is IParameterSymbol { RefKind: RefKind.None } cp && SharingKey is { } ckey && !Sharing.s_noLambdaSites
+                && SymbolEqualityComparer.Default.Equals(cp.ContainingSymbol?.OriginalDefinition, M.OriginalDefinition) && !ParamWritten(cp)
+                && d.Slots.TryGetValue(sym, out var pslot) && Types.IsRef(pslot.type))
+            {
+                D.Arenas.DisplaySources[(d, pslot.offset)] = [new Sharing.Src(Sharing.K.Param, ckey, cp.Ordinal, pslot.type)];
+                continue;
+            }
             if (sym is not ILocalSymbol { IsRef: false } l || !d.Slots.TryGetValue(sym, out var slot) || !Types.IsRef(slot.type)) continue;
             if (AssignedValues(l) is not { } vals) continue;
             // (a ref of the local, kept in a ref local, returned or chosen by a ref conditional: stores through it)
@@ -1264,6 +1326,16 @@ sealed partial class FunctionCompiler
             if (_localOutSources != null && _localOutSources.TryGetValue(l, out var outs)) srcs.AddRange(outs);
             D.Arenas.DisplaySources[(d, slot.offset)] = srcs;
         }
+    }
+
+    Dictionary<SyntaxNode, int>? _lambdaSiteAt;
+    /// <summary>The lambda site of a lambda in this method's text (Driver.LambdaSites), made when first asked for:
+    /// by the code that makes the delegate, or by a source that names it before that code is compiled.</summary>
+    int LambdaSiteAt(SyntaxNode lambda)
+    {
+        _lambdaSiteAt ??= [];
+        if (!_lambdaSiteAt.TryGetValue(lambda, out int site)) _lambdaSiteAt[lambda] = site = D.NewLambdaSite();
+        return site;
     }
 
     List<IOperation>? AssignedValues(ILocalSymbol l)
@@ -1456,6 +1528,10 @@ sealed partial class FunctionCompiler
             case IDefaultValueOperation:
                 return;
             // (an array of no element: `new T[0]`, of one dimension, with no initializer)
+            // (a lambda made into a delegate: the delegate of this place in the text, Sharing.LambdaTag)
+            case IDelegateCreationOperation { Target: IAnonymousFunctionOperation laf } when D.ThreadMode && !Sharing.s_noLambdaSites && t.TypeKind == TypeKind.Delegate:
+                r.Add(new Sharing.Src(Sharing.K.Exact, Sharing.LambdaTag, LambdaSiteAt(laf.Syntax), t));
+                return;
             // (in a program with threads: the sources of one without are what they were)
             case IArrayCreationOperation { DimensionSizes: [{ ConstantValue: { HasValue: true, Value: 0 } }], Initializer: null or { ElementValues.Length: 0 } } when D.ThreadMode && t is IArrayTypeSymbol { Rank: 1 }:
             case IArrayCreationOperation when D.ThreadMode && Sharing.s_expEveryArrayEmpty && t is IArrayTypeSymbol:

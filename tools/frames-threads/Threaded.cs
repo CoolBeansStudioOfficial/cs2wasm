@@ -9,8 +9,22 @@ using System.Threading;
 
 static class Threaded
 {
-    // (each scene's work is called by name, not handed over as a delegate: a delegate type that a worker invokes
-    // makes every lambda of that type one a worker's code can run, tools/frames-threads.mjs's note)
+    // (the same with the work handed over as an Action, one delegate type for the main thread's work and the
+    // workers': aidle_<scene> and aparts1. Which lambda a worker can run is told by the delegates it can reach,
+    // not by their type: Sharing.LambdaTag)
+    public static void IdleBy(Action work)
+    {
+        var idle = new IdleWorker();
+        work();
+        idle.Stop();
+    }
+    public static void OnWorkerBy(Action work)
+    {
+        var t = new Thread(() => work());
+        t.Start();
+        t.Join();
+    }
+
     public static void Idle(string scene)
     {
         var idle = new IdleWorker();

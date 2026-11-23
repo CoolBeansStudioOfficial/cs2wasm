@@ -36,4 +36,16 @@ one 279_private_work_and_handed_results CS2WASM_SHARING_NONE=1 CS2WASM_NO_SAME_T
 # borrow is refused for; the one program that got past both hangs for another reason, tools/thread-board-hang.cs)
 build 279_private_work_and_handed_results t279-nolist CS2WASM_NO_LOCAL_LIST_LOOPS=1
 cmp -s $O/t279.txt $O/t279-nolist.txt && echo "279 with CS2WASM_NO_LOCAL_LIST_LOOPS=1: the same" || { echo "279 with CS2WASM_NO_LOCAL_LIST_LOOPS=1: DIFFERS"; bad=1; }
+# (a second rule on a test built above: a delegate made of a lambda reaches that lambda's closure, test 276's thread
+# lambdas and what they capture; and a lambda runs on a worker when a delegate of it can be reached by one, test
+# 275's thread lambdas, whose code names the crates' statics)
+more() { # test, the weakening switch, the rule's off switch
+  local t=$1 n=${1%%_*} w=${2%%=*}
+  build $t t$n-$w CS2WASM_SHARE_CHECK=1 $2
+  if cmp -s $O/t$n.txt $O/t$n-$w.txt; then echo "$n with $2: THE SAME"; bad=1; else echo "$n with $2: differs: $(grep -m1 -o 'share check[^|]*' $O/t$n-$w.txt | cut -c1-150)"; fi
+  build $t t$n-off2 CS2WASM_SHARE_CHECK=1 $3
+  cmp -s $O/t$n.txt $O/t$n-off2.txt && echo "$n with $3: the same" || { echo "$n with $3: DIFFERS: $(head -c 300 $O/t$n-off2.txt | tr '\n' ' ')"; bad=1; }
+}
+more 276_captured_locals_between_threads CS2WASM_EXP_LAMBDA_SITES_UNREACHED=1 CS2WASM_NO_LAMBDA_SITES=1
+more 275_engine_thread_statics CS2WASM_EXP_NO_LAMBDA_RUNS=1 CS2WASM_NO_LAMBDA_SITES=1
 exit $bad
