@@ -665,6 +665,32 @@ internal sealed partial class RuntimeFns
     /// <summary>(array, index, length, size): release and zero elements.</summary>
     public WasmFunction ArrayClear => _arrayClear ??= MakeArrayClear();
 
+    WasmFunction? _slotsLocal;
+    /// <summary>rt.slots_local(type id): 1 when no object of exactly this type can be reached by another thread than the
+    /// one that made it (a program with threads, Sharing.MemberIdShared; written once that is known, RuntimeGen). An
+    /// array of such a type is copied and cleared as without threads: no other thread reads or stores its elements.</summary>
+    public WasmFunction SlotsLocalFn => _slotsLocal ??= MarkHinted(M.AddFunction("rt.slots_local", FT([I], [I])));
+    public WasmFunction? SlotsLocalIfMade => _slotsLocal;
+    /// <summary>CS2WASM_NO_LOCAL_ARRAY_OPS=1: with threads every array's copy and clear takes the places' locks, as before.</summary>
+    internal static readonly bool s_noLocalArrayOps = Environment.GetEnvironmentVariable("CS2WASM_NO_LOCAL_ARRAY_OPS") == "1";
+    /// <summary>CS2WASM_EXP_ALL_SLOTS_LOCAL=1 (a test of the tests, unsound): every array is copied and cleared as one
+    /// no other thread can reach (test 306 then loses counts of the Gems two threads' copies and clears exchange).</summary>
+    internal static readonly bool s_expAllSlotsLocal = Environment.GetEnvironmentVariable("CS2WASM_EXP_ALL_SLOTS_LOCAL") == "1";
+
+    /// <summary>Threads: the single-thread form of an array's copy or clear, for arrays rt.slots_local says are one
+    /// thread's (`arrs`: the arrays' locals); then returns. The counts are the typed ones (RuntimeGen.Range: plain for
+    /// an element type no other thread can reach).</summary>
+    void EmitLocalArrayPath(Emitter e, int[] arrs, Action single)
+    {
+        if (s_noLocalArrayOps) return;
+        for (int i = 0; i < arrs.Length; i++)
+        {
+            e.Get(arrs[i]); e.Load(Op.I32Load, 4); e.Call(SlotsLocalFn);
+            if (i > 0) e.Op(Op.I32And);
+        }
+        e.If(); single(); e.Op(Op.Return); e.End();
+    }
+
     /// <summary>Pushes how far after a vector's first element the array's own first element is, in bytes: an array of
     /// more dimensions has their lengths in between (Types.ArrayDataOffset).</summary>
     public void EmitArrayLead(Emitter e, int arr, int tmp)
@@ -690,6 +716,13 @@ internal sealed partial class RuntimeFns
             // (elements that hold no reference: their bytes, with no lock)
             e.Get(0); e.Call(ArrayCounted); e.Op(Op.I32Eqz);
             e.If(); e.Get(d); e.Get(s); e.Get(bytes); e.Op(Op.MemoryCopy); e.Op(Op.Return); e.End();
+            // (two arrays no other thread can reach: as without threads, the source counted, the old released, the copy)
+            EmitLocalArrayPath(e, [0, 2], () =>
+            {
+                e.Get(0); e.Get(s); e.Get(4); e.Call(ArrayRetainRange);
+                e.Get(2); e.Get(d); e.Get(4); e.Call(ArrayReleaseRange);
+                e.Get(d); e.Get(s); e.Get(bytes); e.Op(Op.MemoryCopy);
+            });
             e.Get(bytes); e.Call(D.LibMethod("Cs2Wasm.Runtime.Rt", "Alloc", 1).Fn); e.Set(tmp);
             // (the locks of the two ranges' places, not every place's)
             e.Get(s); e.Get(bytes); e.Call(StripeMask); e.Get(d); e.Get(bytes); e.Call(StripeMask); e.Op(Op.I64Or); e.Set(locks);
@@ -771,6 +804,8 @@ internal sealed partial class RuntimeFns
         {
             int bytes = e.AddLocal(I), tmp = e.AddLocal(I), p = e.AddLocal(I), end = e.AddLocal(I), l = e.AddLocal(I);
             e.Get(2); e.Get(3); e.Op(Op.I32Mul); e.Tee(bytes); e.Op(Op.I32Eqz); e.If(); e.Op(Op.Return); e.End();
+            // (an array no other thread can reach: as without threads, the elements released, then the zeros)
+            EmitLocalArrayPath(e, [0], () => { e.Get(0); e.Get(a); e.Get(2); e.Call(ArrayReleaseRange); e.Get(a); e.I32(0); e.Get(bytes); e.Op(Op.MemoryFill); });
             e.Get(a); e.Get(bytes); e.Op(Op.I32Add); e.Set(end);
             // nothing there to clear (a list emptied twice, a pool's array given back empty): nothing is locked
             e.Get(bytes); e.I32(3); e.Op(Op.I32And); e.Op(Op.I32Eqz);

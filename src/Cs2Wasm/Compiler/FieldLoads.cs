@@ -23,7 +23,8 @@ namespace Cs2Wasm.Compiler;
 ///    one field is walked to the next with Unsafe.Add or a pointer (test 207's `Unsafe.Add(ref p.B0, 2) = 77`
 ///    between two reads of p.B2, which the suite found);
 ///  - reflection cannot set it (the members kept for reflection);
-///  - in a program with threads: only a readonly field (another thread may store any other meanwhile).
+///  - in a program with threads: a readonly field, or one no object another thread can reach has (another thread
+///    may store any other meanwhile; Sharing.FieldMayBeShared, CS2WASM_NO_LOCAL_FIELD_LOADS).
 /// A local of an iterator or an async method, a captured variable, a primary constructor's parameter: fields of
 /// objects the compiler makes, read and written by their own code; they have no tag and no mark, and no tagged
 /// field shares their memory. A state machine's own function is left alone besides (FunctionCompiler.FinishMachine).
@@ -37,6 +38,8 @@ namespace Cs2Wasm.Compiler;
 internal sealed partial class Driver
 {
     internal static readonly bool s_noFieldHoist = Environment.GetEnvironmentVariable("CS2WASM_NO_FIELD_HOIST") == "1";
+    /// <summary>CS2WASM_NO_LOCAL_FIELD_LOADS=1: with threads only a readonly field is read once by a loop, as before.</summary>
+    internal static readonly bool s_noLocalFieldLoads = Environment.GetEnvironmentVariable("CS2WASM_NO_LOCAL_FIELD_LOADS") == "1";
     static readonly bool s_fieldHoistDebug = Environment.GetEnvironmentVariable("CS2WASM_FIELD_HOIST_DEBUG") == "1";
     readonly ConcurrentDictionary<ISymbol, FieldTag?> _fieldTags = new(SymbolEqualityComparer.Default);
     /// <summary>Per function, the numbers of the fields its own code stores; how many fields have a number.</summary>
@@ -68,7 +71,9 @@ internal sealed partial class Driver
         if (s_noFieldHoist || storage.IsStatic) return null;
         if (Types.IsStruct(fieldType) || Types.WasmType(fieldType) == null) return null;
         var tag = _fieldTags.GetOrAdd(storage.OriginalDefinition, MakeFieldTag);
-        if (tag == null || ThreadMode && !tag.Readonly && !Wasm.FieldLoads.Without("threads")) return null;
+        // (threads: any field for now; one that an object another thread can reach has is taken out when that is
+        // known, PrepareFieldLoads)
+        if (tag == null || ThreadMode && !tag.Readonly && s_noLocalFieldLoads && !Wasm.FieldLoads.Without("threads")) return null;
         return tag;
     }
 
@@ -125,6 +130,16 @@ internal sealed partial class Driver
                     if (reached.Contains(x)) { t.Escaped = true; if (s_fieldHoistDebug) Console.Error.WriteLine("field hoist: " + t.Key + " is in an object a field of which has its address taken"); break; }
             }
         }
+        // Threads: a field that no object another thread can reach has (Sharing.FieldMayBeShared, decided by now) is
+        // stored by this thread's code alone, as in a program without threads. (Wasm.FieldLoads' "threads": every
+        // field, the unsound form for the tests)
+        HashSet<FieldTag>? sharedTags = null;
+        if (threads && !s_noLocalFieldLoads && Sharing is { Done: true } shf)
+        {
+            sharedTags = [];
+            foreach (var (sym, t) in _fieldTags)
+                if (t != null && !t.Readonly && (sym is not IFieldSymbol fs || shf.FieldMayBeShared(fs))) sharedTags.Add(t);
+        }
         int next = 0;
         var fns = Module.Functions;
         foreach (var f in fns)
@@ -134,7 +149,7 @@ internal sealed partial class Driver
             for (int i = 0; i < b.Count; i++)
                 if (b[i].Ref is FieldTag t)
                 {
-                    if (t.Escaped || threads && !t.Readonly) b[i] = b[i] with { Ref = null };
+                    if (t.Escaped || threads && !t.Readonly && (sharedTags == null || sharedTags.Contains(t))) b[i] = b[i] with { Ref = null };
                     else if (t.Ids.Length == 0) t.Ids = [++next];
                 }
         }

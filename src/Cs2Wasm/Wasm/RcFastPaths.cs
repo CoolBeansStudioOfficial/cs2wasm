@@ -39,11 +39,22 @@ static class RcFastPaths
         return null;
     }
 
+    /// <summary>CS2WASM_NO_PLAIN_FAST=1: in a program with threads no count is written out, as before. With threads the
+    /// counts written out are the plain ones (rt.retain_plain, rt.release_plain: of objects no other thread can reach,
+    /// TypedCounts.cs), whose common case is the same as without threads; the atomic ones stay calls.</summary>
+    static readonly bool s_noPlainFast = Environment.GetEnvironmentVariable("CS2WASM_NO_PLAIN_FAST") == "1";
+    /// <summary>CS2WASM_EXP_FAST_ATOMIC=1 (a test of the tests, unsound): with threads the atomic counts are written
+    /// out as plain ones too (test 305 then loses counts of an object two threads count).</summary>
+    static readonly bool s_expFastAtomic = Environment.GetEnvironmentVariable("CS2WASM_EXP_FAST_ATOMIC") == "1";
+
     public static void Run(WasmModule m, bool threads)
     {
-        if (s_off || threads) return;
-        var retain = m.Functions.FirstOrDefault(f => f.Name == "rt.retain" && !f.IsImport);
-        var release = m.Functions.FirstOrDefault(f => f.Name == "rt.release" && !f.IsImport);
+        if (s_off) return;
+        // (threads: the check of a plain count's thread, CS2WASM_SHARE_CHECK, is in the function: no copy of it)
+        if (threads && (s_noPlainFast || Compiler.RuntimeFns.ShareCheckOn)) return;
+        string rn = threads && !s_expFastAtomic ? "rt.retain_plain" : "rt.retain", ln = threads && !s_expFastAtomic ? "rt.release_plain" : "rt.release";
+        var retain = m.Functions.FirstOrDefault(f => f.Name == rn && !f.IsImport);
+        var release = m.Functions.FirstOrDefault(f => f.Name == ln && !f.IsImport);
         if (retain == null || release == null) return;
         // (what rt.release calls for the last reference, when it is that shape: its count word set to 0, then this)
         WasmFunction? destroy = s_loopsOnly ? DestroyOf(release) : null;

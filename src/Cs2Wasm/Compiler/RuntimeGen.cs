@@ -317,6 +317,9 @@ internal sealed partial class RuntimeFns
     // (CS2WASM_ZERO_SKIP=1; off by default: no gain measured on the self-hosted compiler, 98 bytes in hello world)
     static readonly bool s_noZeroSkip = Environment.GetEnvironmentVariable("CS2WASM_ZERO_SKIP") != "1";
 
+    static readonly bool s_noTypedRanges = Environment.GetEnvironmentVariable("CS2WASM_NO_TYPED_RANGES") == "1";
+    WasmFunction RetainReleaseOf(ITypeSymbol et, bool release) => release ? D.Rt.ReleaseOf(et) : D.Rt.RetainOf(et);
+
     WasmFunction Range(ITypeSymbol et, bool release)
     {
         et = D.Types.Canonical(et);
@@ -346,11 +349,13 @@ internal sealed partial class RuntimeFns
                 if (release)
                 {
                     // (elements of a class nothing derives from: each release names it, as a typed local's does)
-                    e.Call(Release);
+                    // (threads: the count of the element type, plain where no other thread can reach such an object,
+                    // TypedCounts.cs; CS2WASM_NO_TYPED_RANGES=1: atomic, as before)
+                    e.Call(s_noTypedRanges ? Release : RetainReleaseOf(et, true));
                     int hint = FunctionCompiler.ExactTypeHint(D, et);
                     if (hint != 0) e.Body[^1] = e.Body[^1] with { Imm2 = hint };
                 }
-                else { e.Call(Retain); e.Op(Op.Drop); }
+                else { e.Call(s_noTypedRanges ? Retain : RetainReleaseOf(et, false)); e.Op(Op.Drop); }
             }
             else { e.Get(0); e.Call(release ? ReleaseStruct(et) : RetainStruct(et)); }
             e.Get(0); e.I32(size); e.Op(Op.I32Add); e.Set(0);
@@ -611,6 +616,14 @@ sealed partial class RuntimeGen
     /// only where that frees the object and nothing else (a leaf), as before.</summary>
     static readonly bool s_noFlatDestroy = Environment.GetEnvironmentVariable("CS2WASM_NO_FLAT_DESTROY") == "1";
     HashSet<int>? _flat;
+    /// <summary>CS2WASM_NO_THREAD_FLAT=1: in a program with threads no class's destruction is flat, as before (the
+    /// rule is the same with threads: such a destruction runs no program code and takes no lock; the counts in it are
+    /// the typed ones, atomic for a field another thread can reach).</summary>
+    static readonly bool s_noThreadFlat = Environment.GetEnvironmentVariable("CS2WASM_NO_THREAD_FLAT") == "1";
+    /// <summary>CS2WASM_EXP_THREAD_FLAT_ANY=1 (a test of the tests, unsound): with threads every class outside a cycle's
+    /// group is taken for flat (test 306's chain of Links is then let go by nested destructions, with no count of
+    /// their depth: the stack runs out).</summary>
+    static readonly bool s_expThreadFlatAny = Environment.GetEnvironmentVariable("CS2WASM_EXP_THREAD_FLAT_ANY") == "1";
 
     /// <summary>The classes whose destruction is flat: it frees the object after letting go of fields that each hold
     /// an object of a leaf class by its very type (a string, an array of numbers, a sealed class without references),
@@ -618,10 +631,11 @@ sealed partial class RuntimeGen
     /// cycle's group. Such a destruction runs none of the program's code and nests one level at most, so a release
     /// that names the class (FunctionCompiler.ExactTypeHint) calls it as it calls a leaf's: without the dispatch on
     /// the object's type and without the count of nested destructions (rt.destroy). Decided once, on the bodies as
-    /// they are before the final pass rewrites any release in them. Without threads.</summary>
+    /// they are before the final pass rewrites any release in them. With threads too: a field's count there is the
+    /// typed one, which only the sealed leaves' wrappers let through.</summary>
     bool IsFlatDestroy(int id)
     {
-        if (s_noFlatDestroy || D.ThreadMode) return false;
+        if (s_noFlatDestroy || D.ThreadMode && s_noThreadFlat) return false;
         if (_flat == null)
         {
             _flat = [];
@@ -640,7 +654,7 @@ sealed partial class RuntimeGen
                     if (i.Ref is WasmFunction w && leafWrappers.Contains(w)) continue;
                     flat = false; break;
                 }
-                if (flat) _flat.Add(tid);
+                if (flat || D.ThreadMode && s_expThreadFlatAny) _flat.Add(tid);
             }
         }
         return _flat.Contains(id);
@@ -1570,6 +1584,13 @@ sealed partial class RuntimeGen
             if (D.Arenas.Enabled) EmitIdTable(sccLocal, D.TypeById.Count, i => (null, D.Arenas.LocalScc(D.Arenas.SccOf(i)) ? 1 : 0));
             else new Emitter(sccLocal).I32(0);
         }
+        // (which types' objects no other thread can reach: the arrays copied and cleared as without threads)
+        if (D.Rt.SlotsLocalIfMade is { } slotsLocal && slotsLocal.Body.Count == 0)
+        {
+            if (D.ThreadMode && D.Sharing is { Done: true } shl)
+                EmitIdTable(slotsLocal, D.TypeById.Count, i => (null, RuntimeFns.s_expAllSlotsLocal || !shl.MemberIdShared(i) ? 1 : 0));
+            else new Emitter(slotsLocal).I32(0);
+        }
         ExpandThreadLocalReleases();
         D.Mark("  finish: sharing");
         // (every function exists: what each can store is known)
@@ -1798,6 +1819,9 @@ sealed partial class RuntimeGen
             // (threads: the plain releases, of objects no other thread can reach, TypedCounts.cs)
             D.Module.ReleaseFn = rp;
             D.Module.LeafDestroy = id => IsLeafDestroy(id) && D.ExtId(id) >= 0 ? _destroyFns[id] : null;
+            // (and a flat class's destruction written in place, IsFlatDestroy; the free stays Rt.FreeObject's call)
+            D.Module.FlatDestroy = id => !IsLeafDestroy(id) && IsFlatDestroy(id) && D.ExtId(id) >= 0 ? _destroyFns[id] : null;
+            D.Module.FreeFn = D.Rt.Free;
         }
         var now = D.Module.AddFunction("rt.destroy_now", new FuncType([ValType.I32], []));
         {

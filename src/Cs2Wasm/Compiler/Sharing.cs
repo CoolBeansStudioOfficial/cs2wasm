@@ -257,6 +257,30 @@ internal sealed partial class Sharing
         return _maySlotsBeShared[k] = r;
     }
 
+    HashSet<IFieldSymbol>? _sharedFields;
+    /// <summary>Whether an object another thread can reach can have this instance field (by its declaration: every
+    /// instantiation of a generic class alike), a slot that thread may store: a field of a class another thread can
+    /// reach or of one of its bases. True until the analysis is done. Asked when a loop's reads of a field are made
+    /// one (FieldLoads.cs).</summary>
+    public bool FieldMayBeShared(IFieldSymbol f)
+    {
+        if (s_none) return false;
+        if (_shared == null) return true;
+        if (_sharedFields == null)
+        {
+            var r = new HashSet<IFieldSymbol>(SymbolEqualityComparer.Default);
+            foreach (var id in _shared)
+            {
+                if (D.DisplayById.ContainsKey(id) || id >= D.TypeById.Count || _emptyOnly != null && _emptyOnly.Contains(id)) continue;
+                for (var b = D.TypeById[id] as INamedTypeSymbol; b != null; b = b.BaseType)
+                    foreach (var m in b.GetMembers())
+                        if (m is IFieldSymbol { IsStatic: false } bf) r.Add(bf.OriginalDefinition);
+            }
+            _sharedFields = r;
+        }
+        return _sharedFields.Contains(f.OriginalDefinition);
+    }
+
     public bool MayBeShared(ITypeSymbol t)
     {
         if (s_none) return false;

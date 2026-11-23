@@ -11,7 +11,7 @@ bad=0
 build() { # test, name, switches
   local t=$1 m=$2; shift 2
   env X=1 "$@" $C tests/Conformance/$t.cs -o $O/$m.wasm > $O/$m.build 2>&1 || { echo "failed to compile $m"; bad=1; }
-  timeout 120 node host/run.mjs $O/$m.wasm main > $O/$m.txt 2>&1
+  timeout ${TL:-120} node host/run.mjs $O/$m.wasm main > $O/$m.txt 2>&1
 }
 one() { # test, the weakening switch, the rule's off switch
   local t=$1 n=${1%%_*}
@@ -58,4 +58,32 @@ more() { # test, the weakening switch, the rule's off switch
 more 276_captured_locals_between_threads CS2WASM_EXP_LAMBDA_SITES_UNREACHED=1 CS2WASM_NO_LAMBDA_SITES=1
 more 275_engine_thread_statics CS2WASM_EXP_NO_LAMBDA_RUNS=1 CS2WASM_NO_LAMBDA_SITES=1
 more 290_groups_of_one_thread CS2WASM_EXP_ALL_GROUPS_LOCAL=1 CS2WASM_NO_LOCAL_GROUPS=1
+# (test 305: loops over objects no other thread can reach compiled as without threads, RcFastPaths.cs on the plain
+# counts and FieldLoads.cs on the fields Sharing.FieldMayBeShared clears. Weakened without the share check, which
+# keeps every count a call: the atomic counts written out as plain ones lose counts of the Gem two threads count;
+# every field read once by a loop never sees the flag another thread sets (a hang, the time limit). Each rule off:
+# the same)
+plain() { # test, the weakening switch, the rule's off switch (no share check)
+  local t=$1 n=${1%%_*} w=${2%%=*}
+  TL=30 build $t t$n-$w $2
+  if cmp -s $O/t$n.txt $O/t$n-$w.txt; then echo "$n with $2: THE SAME"; bad=1; else echo "$n with $2: differs: $(head -c 150 $O/t$n-$w.txt | tr '\n' ' ')"; fi
+  build $t t$n-off-$w $3
+  cmp -s $O/t$n.txt $O/t$n-off-$w.txt && echo "$n with $3: the same" || { echo "$n with $3: DIFFERS: $(head -c 300 $O/t$n-off-$w.txt | tr '\n' ' ')"; bad=1; }
+}
+build 305_thread_loops_as_without t305
+build 305_thread_loops_as_without t305-check CS2WASM_SHARE_CHECK=1
+cmp -s $O/t305.txt $O/t305-check.txt && echo "305 checked: the same" || { echo "305 checked: DIFFERS: $(head -c 300 $O/t305-check.txt | tr '\n' ' ')"; bad=1; }
+plain 305_thread_loops_as_without CS2WASM_EXP_FAST_ATOMIC=1 CS2WASM_NO_PLAIN_FAST=1
+plain 305_thread_loops_as_without CS2WASM_FIELD_HOIST_WITHOUT=threads CS2WASM_NO_LOCAL_FIELD_LOADS=1
+# (test 306: test 235's flat destructions on a worker, in place as without threads, and the copies and clears of
+# arrays no other thread can reach without the places' locks, their elements counted by type. Weakened: every array
+# taken for one thread's, two threads' copies and clears take one Gem's count out at once; every class taken for
+# flat, the chain of Links is let go nested, with no count of the depth. Each rule off: the same)
+build 306_flat_destroys_and_arrays_with_threads t306
+build 306_flat_destroys_and_arrays_with_threads t306-check CS2WASM_SHARE_CHECK=1
+cmp -s $O/t306.txt $O/t306-check.txt && echo "306 checked: the same" || { echo "306 checked: DIFFERS: $(head -c 300 $O/t306-check.txt | tr '\n' ' ')"; bad=1; }
+plain 306_flat_destroys_and_arrays_with_threads CS2WASM_EXP_ALL_SLOTS_LOCAL=1 CS2WASM_NO_LOCAL_ARRAY_OPS=1
+plain 306_flat_destroys_and_arrays_with_threads CS2WASM_EXP_THREAD_FLAT_ANY=1 CS2WASM_NO_THREAD_FLAT=1
+build 306_flat_destroys_and_arrays_with_threads t306-noranges CS2WASM_NO_TYPED_RANGES=1
+cmp -s $O/t306.txt $O/t306-noranges.txt && echo "306 with CS2WASM_NO_TYPED_RANGES=1: the same" || { echo "306 with CS2WASM_NO_TYPED_RANGES=1: DIFFERS"; bad=1; }
 exit $bad
