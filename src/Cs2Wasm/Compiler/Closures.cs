@@ -382,6 +382,7 @@ sealed partial class FunctionCompiler
         using (BodyScope())
         {
             EnterDisplay(s_fnKey);
+            PrepareStorageKeeps();
             EmitStatement(body);
         }
         Finish();

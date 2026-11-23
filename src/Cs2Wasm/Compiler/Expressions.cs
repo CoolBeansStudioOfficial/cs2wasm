@@ -569,6 +569,7 @@ sealed partial class FunctionCompiler
             IImplicitIndexerReferenceOperation { IndexerSymbol: IPropertySymbol ip } => ip.ReturnsByRef || ip.ReturnsByRefReadonly,
             IInlineArrayAccessOperation => true,
             IInvocationOperation inv => inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly,
+            IFunctionPointerInvocationOperation { Target.Type: IFunctionPointerTypeSymbol fp } => fp.Signature.ReturnsByRef || fp.Signature.ReturnsByRefReadonly,
             IDeclarationExpressionOperation => true,
             IConditionalOperation { IsRef: true } => true,
             IInterpolatedStringHandlerArgumentPlaceholderOperation { PlaceholderKind: InterpolatedStringArgumentPlaceholderKind.TrailingValidityArgument } => true,
@@ -678,6 +679,9 @@ sealed partial class FunctionCompiler
             case IArrayElementReferenceOperation ae: return EmitArrayElementAddress(ae);
             case IInvocationOperation inv when inv.TargetMethod.ReturnsByRef || inv.TargetMethod.ReturnsByRefReadonly:
                 { var save = _wantRefReturnAddress; _wantRefReturnAddress = true; try { EmitInvocation(inv); } finally { _wantRefReturnAddress = save; } return 0; }
+            // (a function pointer that returns by reference: the reference itself; before 2026-11-22 a copy's address)
+            case IFunctionPointerInvocationOperation { Target.Type: IFunctionPointerTypeSymbol { Signature: { } fsig } } fpi when fsig.ReturnsByRef || fsig.ReturnsByRefReadonly:
+                { var save = _wantRefReturnAddress; _wantRefReturnAddress = true; try { EmitFunctionPointerInvocation(fpi); } finally { _wantRefReturnAddress = save; } return 0; }
             case IInlineArrayAccessOperation ia when TypeOf(ia.Argument) is not INamedTypeSymbol { Name: "Range" }:
                 {
                     // element i of an inline array: bounds-checked, at i * size
