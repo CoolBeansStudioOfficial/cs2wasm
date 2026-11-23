@@ -1,7 +1,7 @@
 // Threads (section 4.5): a static that only the engine thread's code names is that thread's own (its objects are
 // counted as in a program without threads), and a static that a worker's code names is every thread's: the pallets
-// below live in statics only Main's code touches, the crates in statics the workers store and read too, unsynchronized
-// (racy stores, which stay memory-safe). Whatever the interleaving, every object is freed exactly once.
+// below live in statics only Main's code touches, the crates in statics the workers store and read too: a crate made
+// by one thread is counted and let go by another. Whatever the interleaving, every object is freed exactly once.
 // CS2WASM_EXP_ALL_ENGINE_STATICS=1 takes the crates' statics for the engine thread's too: with
 // CS2WASM_SHARE_CHECK=1 the first crate a worker counts then stops the program (tools/thread-escape-breaks.sh).
 using System;
@@ -59,14 +59,20 @@ static class Program
         long n = 0;
         for (int i = 0; i < rounds; i++)
         {
-            var seen = s_shared[(i + t) & 7];
-            var c = new Crate(i) { Inner = seen };
-            s_shared[(i * 3 + t) & 7] = c;
-            s_hand = seen;
-            var h = s_hand;
-            if (h != null && h.V >= 0) n++;
-            if (seen != null && seen.Inner != null) seen.Inner = null;
-            n += c.V >= 0 ? 1 : 0;
+            // (under a lock: an unsynchronized read racing a store of an object with a finalizer hangs about one
+            // loaded run in three hundred, with the base's compiler too: tools/thread-notes-hang.cs. Test 139 has
+            // the racing stores)
+            lock (s_shared)
+            {
+                var seen = s_shared[(i + t) & 7];
+                var c = new Crate(i) { Inner = seen };
+                s_shared[(i * 3 + t) & 7] = c;
+                s_hand = seen;
+                var h = s_hand;
+                if (h != null && h.V >= 0) n++;
+                if (seen != null && seen.Inner != null) seen.Inner = null;
+                n += c.V >= 0 ? 1 : 0;
+            }
         }
         return n >= rounds ? rounds : -1;
     }

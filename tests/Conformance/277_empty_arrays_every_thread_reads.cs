@@ -1,7 +1,7 @@
 // Threads (section 4.5): an array made with no element can be reached by every thread (List<T>'s empty array is a
 // static each list starts with) and nothing can be reached through it: each worker below fills a list of its own
 // with objects of its own, which stay that thread's. An array with elements that a static holds hands its elements
-// to every thread: the workers also read and replace the notes of one.
+// to every thread: the workers also read and replace the notes of one, each made by one thread and let go by another.
 // CS2WASM_EXP_EVERY_ARRAY_EMPTY=1 takes every array made for one with no element: with CS2WASM_SHARE_CHECK=1 a note
 // read from the shared array stops the program (tools/thread-escape-breaks.sh).
 using System;
@@ -42,10 +42,14 @@ static class Program
             if (mine.Count > 40) { sum += mine[3].V; mine.RemoveRange(0, 30); }
             if ((i & 1023) == 0) { row = new Leaf[4]; row[i & 3] = mine[mine.Count - 1]; }
             if (row.Length > 0 && row[i & 3] != null) sum += row[i & 3].V >= 0 ? 1 : 0;
-            // the shared notes
-            var n = s_notes[(i + t) & 7];
-            if (n != null && n.V >= 0) sum += 0;
-            s_notes[(i * 5 + t) & 7] = new Note(i);
+            // the shared notes (under a lock: an unsynchronized read racing a store of an object with a finalizer
+            // hangs about one loaded run in a hundred, with the base's compiler too: tools/thread-notes-hang.cs)
+            lock (s_notes)
+            {
+                var n = s_notes[(i + t) & 7];
+                if (n != null && n.V >= 0) sum += 0;
+                s_notes[(i * 5 + t) & 7] = new Note(i);
+            }
         }
         return sum >= 0 ? mine.Count : -1;
     }
