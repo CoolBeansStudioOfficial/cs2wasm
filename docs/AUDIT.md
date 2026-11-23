@@ -1520,6 +1520,168 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     the queue's growth as a move (its copy is a rotation: MoveRange takes a whole array from its first place);
     `Join` (0.07). Collections' median stays where round 2 left it, 1.07x to 1.08x NativeAOT-LLVM's.
   - Checked: On the homelab at 0aef607 (9db608e's code and the script): suite 220/220 checked and 219/220 as shipped (088's timer line; alone it passes both ways); at 9db608e 218/220 checked and 219/220 as shipped: 072_http in both (the oracle's own connection refused, the port taken by another run) and 131 checked (5 left, the async kind that differs under load; here it passes both ways with the keep and without, and the second run did not show it); stress, 200 loaded runs a mode: 222 the same in every run; the self-hosted compiler with and without the keep: the same module (27,579 bytes), 9.4 to 10.0 s, peak memory 344 MB. Hello world 27,642 bytes on this base. Not measured this round: frames.mjs and bench.mjs (no change to any scene's code: none makes such a call).
+- **The free path taken apart; references into storage, complete; Dictionary takes a fresh value; the queue's move
+  (2026-11-22, branch claude/free-path-1, from claude/round-6d a15be27; the desk machine, shared: lowest of N runs in
+  turn, ranges; not merged when this was written).** "Before" is the same compiler with the round's switches set
+  (`CS2WASM_NO_FLAT_DESTROY=1 CS2WASM_NO_DESTROY_IN_PLACE=1 CS2WASM_NO_OWNED_INSERT=1`). `tools/alloc-parts.cs`, 100
+  objects of 36 bytes a frame, ns, NativeAOT-LLVM / before / now (five runs in turn): **made over old ones 226 / 600 /
+  300; 100 let go 100 / 500 / 233**; made and kept 271 / 200 / 200; 100 stores of one object 100 / 122 / 133 (122 to
+  158 on both sides over the round's runs). `tools/colstr-parts.cs` (five in turn, quiet): **the collections frame 6,405 to 6,101
+  against 5,961 (1.07x to 1.02x by this tool; 1.02x and 1.03x in its other two rows)**, strings' 6,759 to 6,690 against
+  7,458 (0.90x).
+  `frames.mjs --runs 3 --js-young 32`, three pairs in turn on a quiet machine at the last commit, before / now:
+  **collections 1.03x to 1.05x / 1.00x to 1.03x; churn 1.57x to 1.58x / 1.56x to 1.58x (not moved: its 400 frees are
+  1% of its frame; not reached); tree 1.62x to 1.63x / 1.62x to 1.65x (not moved, not reached), its p99.9 2.44 to
+  2.59 ms / 2.44 to 2.57 against NativeAOT-LLVM's 2.42 to 2.73; strings 0.89x to 0.91x / 0.86x to 0.87x; bigdrop 0.90x
+  to 0.94x / 0.90x to 0.97x.** (Pairs taken with other sessions at work spread wider, 1.00x to 1.06x for
+  collections either way.) The cs2wasm side alone, five pairs in turn, median ms before / now: tree 0.045 to 0.048 /
+  0.046 to 0.049, churn 0.077 to 0.079 / 0.076 to 0.079. `bench.mjs`, five pairs: 0.92x to 0.93x both ways (0.89x to
+  0.99x in one pair on a busy machine). Hello world 27,642 to 27,757 bytes.
+  - **What a free was, to the instruction** (alloc-parts built with `CS2WASM_NAMES=1`, read with wasm-dis; `node
+    --trace-wasm-inlining`). `kept[i] = null` in a loop: the slot read and cleared, the null test, the count read and
+    compared with 1 (written out in the loop, RcFastPaths); then `rt.release`: the null test and the count again, the
+    count compared with 1, the count word set to 0, the type word read and compared with string's, read again and
+    compared with the number of leaf types, the nesting depth (a global) read and compared with 48, read, added to
+    and written; a call of `rt.destroy_now`: the type word read, a jump through a table of 39 cases; in the
+    particle's case its string field read and released (null test, count read, two compares: the literal is never
+    freed), then `Rt.FreeObject`: the size rounded and compared, `s_hot` read, the size's slot read and written with
+    the block, the block's count word set to 0 again, and for the block that was in the slot the allocator's table
+    read (`MapGet`, two loads and two tests: is it a page's block), the page's count of blocks in use read, taken
+    down and tested, its flags read and tested, its list's head read, the block's link and the head written, the
+    count written; back in `rt.release` the depth read, taken down and written, read again and tested, the list of
+    waiting destructions tested. About twenty loads, ten stores, twenty branches, one indirect jump, a jump through a table of some forty cases counted once above, and one call
+    where the engine has inlined all it can (it put `rt.release` into the loop, the string's release and
+    `FreeObject` with `MapGet` into `rt.destroy_now`'s case; `rt.destroy_now` itself, 882 bytes, stays a call).
+    4 ns a free over NativeAOT-LLVM's store on a quiet machine (500 against 100), 6.6 loaded.
+  - **Measured before building.** The nesting depth alone: `rt.destroy` made to call `rt.destroy_now` for every
+    object (a prototype, not sound): let go 505 to 409, **1 ns a free**. No finalizer test, no weak-reference test
+    and no visit of fields is on a plain object's path: a class without a finalizer has no test for one (its
+    destruction is generated without), the weak references' test (`rt.on_destroy`, the mark bit) is in the program
+    only when it has marks, and the fields released are those the class has. Clearing the block is the allocation's
+    (`AllocObject`'s hot path without it: made over old ones 616 to 666 against 600 to 634 with: no difference). The
+    table's lookup that tells a page's block cannot go: a small block that is no page's exists (what is left when a
+    large block is cut), and it is off the path that the next instruction waits for.
+  - **What the engine inlines decides more than the instructions do.** V8 inlines a call only if its count in the
+    baseline code was above zero when the caller was compiled by the optimizing tier, and it never compiles a wasm
+    function again (`--trace-wasm-inlining`: "not called often enough", count 0, for the release in a loop
+    compiled while its array was still filling). A loop compiled before the first object died in it keeps the
+    release's call for good. And by V8's tiering rule (a budget, `--wasm-tiering-budget`, that a function's size
+    is taken off at every call) a function of 18 bytes stays in baseline code for several hundred thousand
+    calls: not traced, but it is what the timings below fit. So the first form of the change, a release that names its class calling that
+    class's destruction directly (no `rt.release`, no dispatch), was **slower** than the dispatch where the loop
+    had been compiled early: `tools/colstr-parts.cs` "(100 objects alone)" 568 ns to 757, alloc-parts "made over
+    old ones" 660 to 610 only, while the same code with the loop warmed on the freeing path first gave 400
+    against 600. `rt.release` and `rt.destroy_now` are shared by every release of the program and hot from the
+    start; a class's own destruction, called from one place, runs in baseline code through most of a measurement.
+    What is built follows from that: nothing small and private to a class is called on the free path.
+  - **Built: flat destructions** (`CS2WASM_NO_FLAT_DESTROY=1`; `RuntimeGen.IsFlatDestroy`). A class is flat when its
+    destruction lets go of leaves by their very type (a string, an array of numbers, a sealed class without
+    references) and frees the object: no finalizer, no field of a type whose object could hold a reference, on no
+    cycle of types. It runs none of the program's code and nests one level at most, so (a) `rt.destroy` tells flat
+    classes by their number (numbered after the leaves: a class's own are three ranges of numbers at most) and
+    counts no nesting for them, from any release; (b) a release that names such a class
+    (`FunctionCompiler.ExactTypeHint`: the place's type is the sealed class) is, in a loop or in a function of at
+    most 60 instructions (`CS2WASM_IN_PLACE_SMALL=n`), **the destruction written in place**
+    (`WasmModule.ExpandLeafReleases`, `CS2WASM_NO_DESTROY_IN_PLACE=1`; leaves' too, which were a call of their own
+    function before): the count's test, the leaf fields' releases with their own count tests (a shared string or a
+    literal costs a test and no call), and the free of a known size as `Rt.FreeFixed`, put there by the inliner:
+    `s_hot` read, the size's slot exchanged with the block, and a call (`Rt.FreeSmallOld`, shared and hot) only for
+    the block that was in the slot. Elsewhere a flat class's release is `rt.release` as before. Not with threads
+    (a program with threads is compiled as before: its counts are the atomic ones or the plain ones of
+    TypedCounts.cs, and neither is touched); `FreeFixed` not in a checked build or with the share check
+    (`FreeObject` there).
+  - **Built: the class named at more releases.** A release named its class only at a typed local's scope end and
+    in the runtime's loops over an array's elements. Now also: a local assigned again (`StoreVar`); a store's old
+    value in a field or an array's element (Arenas.cs, the plain site); the fields a destruction lets go
+    (`ReleaseOfField`: the hint is carried through the forwarder, `WasmModule.ResolveForwards`); and **a store in
+    generic code, by the type the code is compiled for** (`CS2WASM_NO_STORE_HINT=1`; `FunctionCompiler.StoreHint`):
+    `List<T>`'s indexer and `Dictionary<K,V>`'s entries are compiled for each T, so the store knows the class when
+    T is sealed. This is where the scenes' frees are: none comes from a place whose own type is the class. Only
+    for a sealed class that looks flat by its fields (`Driver.LooksFlat`), not for a string or an array: with
+    every store of a string in a generic collection's loops written out, the self-hosted compiler compiled hello
+    world in 9.3 to 9.5 s against 9.0 to 9.2 (three rounds in turn on the homelab; at the commit before the hint the two were the same, and with the hint for flat classes only they are again, 9.18 to 9.48 s against 9.22 to 9.47), and no
+    scene gained from them. A name that nothing used is cleared after the pass (`CS2WASM_NO_HINT_CLEAR=1`), so that bodies which differ by
+    nothing else are merged as before.
+    colstr-parts, with / without the store's hint (five in turn): map set 100 (new) 1,920 / 1,987, map remove 30
+    540 / 567, the whole frame 6,746 / 6,910. alloc-parts through a `List<Particle>`: made over old ones 600 to
+    400, let go 700 to 570-600. Modules 0.3% larger where a program has such collections; hello world the same.
+  - **Tried and not kept: the dispatch's own cases written in place** (the leaf fields' tests and `FreeFixed` in
+    `rt.destroy_now`'s cases, for the frees that reach it): churn 0.085 to 0.087 ms either way, collections and
+    strings the same, three pairs; hello world 27,757 to 30,177 bytes, over its limit. The diff is not in the tree.
+  - **What a free is now, and what is left.** In a loop over a place of the class: the count read and tested, the
+    count word cleared, the string field's test, `s_hot`'s slot exchanged, and for the block that was there the
+    call that puts it back on its page (the table's two loads, the page's count, flags and list: three loads and
+    three stores in one line of the cache). 1.5 ns a free over NativeAOT-LLVM's store (254 against 100), from 4;
+    where each free is followed by an allocation of the size the slot is empty and nothing else runs (made over
+    old ones 300 against 239: 0.6 ns). That remainder is work NativeAOT-LLVM does not do in the frame at all (its
+    collector does it in its pauses): the measurement is the 254, not a proof that nothing shorter exists. A
+    release that does not name its class (an open class, an interface, `object`, a class with references to
+    other classes) goes through `rt.release` and `rt.destroy_now` as before, without the depth's traffic when
+    the object is flat.
+  - **References into a collection's storage, complete** (`Compiler/StorageKeeps.cs`; round 3 covered the three
+    calls and a wrapper one level deep by return value). A call now keeps the storage wherever a reference into it
+    can come out, decided by a fixed point over the calls (`Driver.ExposesStorage`, depth first; an answer "no"
+    that leaned on a method still being decided is not remembered and is asked again): the value returned (a
+    `ref`, a span, a ref struct with spans or `ref` fields anywhere inside it, one keep local a reference); an
+    `out` or `ref` argument that is a ref struct; the ref struct a constructor fills; the ref struct an instance
+    method is called on; a virtual or interface method when it or any override or implementation in the program
+    is one; a delegate that returns or gives out such a type (always: its target is not known). The library's
+    methods are decided as the program's: **`Enumerable.First`, `Last` and `Any` with a predicate walk a list
+    through `TryGetSpan(out ReadOnlySpan<T>)`, and a predicate that grew the list left them reading the freed
+    array** (`l.First(x => { Grow(l); return .. })`: as shipped the old bytes, a checked build traps, with main's
+    compiler too; now it answers as .NET). What flows where inside a body is
+    not followed: a body that makes such a call anywhere counts for all its ways out, which keeps an array to the
+    calling function's return, never shorter than .NET. A reference to the place just past an array's end (an
+    empty slice at the end) names the block after it (`Rt.ObjectOf`), as before: that object, if there is one, is
+    kept to the function's return too. Not covered: a function pointer.
+    `CS2WASM_STORAGE_KEEP_SHALLOW=1`: as it was. Test 222 extended (two and three frames, recursion, `ref` returns
+    up three frames, ref structs returned, constructed, loaded and nested, `out` and `ref` arguments, an
+    interface, an abstract class, a delegate, LINQ under a growing list: shallow, the new sections' lines differ as shipped, freed
+    items read, and a checked build traps at the first). Hello world the same size; test 008 (LINQ) 365,696 to 367,078 bytes.
+  - **A queue that grows moves its items** (`Rt.MoveRotated`, Boundary/ArrayMoves.cs; an edit of Queue.cs;
+    `CS2WASM_NO_ARRAY_MOVE=1`). The full array's two stretches (head to the end, the start to head) go to the new
+    array as bytes under `MoveRange`'s conditions, the old array left an array of bytes; a queue trimmed or given
+    room (not full) copies. 4,096 enqueues of objects into a new queue (ten growths) 31 us to 21. The scene's
+    queue grows only while it warms up: its median was not this (below). Test 236 (growth from every position of
+    the head; the old array held from outside by reflection keeps its items: with `CS2WASM_ARRAY_MOVE_BREAK=1`
+    that line reads null four times).
+  - **Dictionary takes a fresh value's count** (`CS2WASM_NO_OWNED_INSERT=1`; OwnedParams.cs `IsMapInsert`).
+    `map[key] = new Item()`, `map.Add(key, Make())`, `map.TryAdd(..)`: the new value was counted by TryInsert's
+    store and let go by the caller. TryInsert now consumes its value and its three callers pass it on, as
+    `List<T>.Add` does. What let it in: it is far past the size limit (let in by name, as List's Add is), and its
+    three stores of the value are in loops or after them; the rule: a store in a loop that is a statement
+    followed by a return runs once at most (`ReturnsAfter`), and of two stores only one can run in a call when
+    both are followed by a return, or one is and the other comes after it in the text and is in no loop
+    (`OnceByReturn`; a method with a goto is not looked at). A value that is not stored after all (Add of a key
+    that is there, TryAdd's false, a key whose GetHashCode or Equals throws) is released by the callee's end or
+    unwinding, as any consumed parameter. An indexer's setter got its value already evaluated, so nothing was
+    ever handed over through one: Dictionary's now notes the temporary that holds the fresh value's count
+    (`PropertyLV.Store`; not with threads, not where the assignment's own value is used). colstr-parts, NativeAOT-LLVM
+    / with / without, five in turn, quiet: map set 100 (new) 1,707 / 1,770 / 1,806; the whole frame 5,980 / 6,165 /
+    6,447, again 5,947 / 6,127 / 6,369, without the clears 5,948 / 6,128 / 6,404. Test 237 (fresh values by `new`,
+    a call, an initializer; overwrites; duplicates that throw; TryAdd refused; keys that throw; values the caller
+    goes on using; the assignment's value used; every item counted by its finalizer; a program's own TryInsert
+    that stores its value twice in a loop: with `CS2WASM_OWNED_INSERT_BREAK=1`, the rule not asked for, its
+    second place reads null).
+  - **Collections, what is left** (colstr-parts, NativeAOT-LLVM / now / before): the removes 499 / 508 / 542 and the
+    queue 191 / 200 / 202 are within 2% and 5% (the removed values' frees were the removes' difference; the
+    queue was not changed); the sets 1,699 / 1,762 / 1,905, and the frame up to the sets 1,993 / 1,984 / 2,145. **Left,
+    not built: the count on TryInsert's `entries` local** (the frame to the sets with one object made before,
+    which is not a fresh value, 1,768 / 1,903 / 1,882): it can go only in the path without a
+    comparer's call (a key's Equals may store the field while the local is read after, and the local's count is
+    what keeps the array: memory safety), which needs a count taken at the branch and a tail that knows whether
+    it holds one. And the lookups: the frame with `TryGetValue` 6,101 against 5,953 with `ContainsKey`
+    (NativeAOT-LLVM 5,961 and 6,319): the value handed out, outside `OutBorrows`' shape in this tool's loop. **By
+    this tool the collections frame is 1.02x to 1.03x NativeAOT-LLVM's; by frames.mjs its median is 1.00x to
+    1.02x. Not below it.**
+  - **Not done.** `String.Join` (246 ns against 188 for 20 strings, 276 before): read, not built: `JoinCore` reads every
+    element twice, once to add up the lengths and once to copy, each read counted into a local and counted off
+    (the span's strings are kept by nothing the function can name), with a frame for the unwinding; a borrow of a
+    span's element while nothing stores is a new rule. `Queue.Dequeue` and `Stack.Pop` read the slot (a count),
+    clear it (the count off) and return the value: a pair that a "taken out of the slot" rule would remove, seen in
+    the module, not built. **Found, on main too, not fixed: a `ConditionalWeakTable`'s values are not let go when
+    their keys die while the table lives** (25 keys dropped, 25 values still alive after collections; .NET 0).
+  - Checked: On the homelab at 66374eb (the last commit that changes code): suite 224/224 checked and as shipped (343 s); 088 alone both ways (at 97f3772 the suite was 222/223 both ways, 088's timer line; at 9e254f8 221/224 both ways, tests 055, 058 and 107 not compiled, "consumed struct parameter not moved in Dictionary<string, ResourceLocator>.Add": the owned insert for a value that is a struct, fixed in 66374eb, test 237 has the case; the earlier stages 222/222 at a7918b9, c5395a0 and 0e981fa). Stress, 200 loaded runs a mode: 235, 222 and 236 at 9e254f8 and 237 at 66374eb the same in every run of both modes; 139 the same in every run and 127 differing in 7 of 400 at 9b4639b (its "async 5" line, main's rate; 4 of 400 at a671855). The self-hosted compiler at 66374eb, built as it is and with `CS2WASM_NO_FLAT_DESTROY=1 CS2WASM_NO_OWNED_INSERT=1` (tools/selfhost-switch.sh: 32,558,663 and 32,292,082 bytes, 0.8% larger): both compile hello world to the same module (27,709 bytes), 9.18 to 9.48 s as it is and 9.22 to 9.47 s switched, three rounds in turn, peak memory 344 MB both; tools/selfdet.mjs: self = net, byte for byte (27,721 bytes); the same at 0e981fa and 97f3772. Not run on the homelab: frames.mjs (it has no Emscripten); nothing was measured with threads.
 
 ### A4. Plugins (goal 3)
 
