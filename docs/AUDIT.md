@@ -669,6 +669,66 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     against 1.14 to 1.18). What the memory model leaves open: the order in memory, which only more memory buys
     without moving objects (pages used again only when empty: 76.3 for 80.3, and 1.6 times the particles' pages);
     the list setter's checks beside the counts (about 1); the read loop's 3 to 4.
+- **Tests that differ under load (2026-11-22, branch claude/load-flakes-1; the homelab for counts, eight processes
+  at once unless said; the desk machine for the traces).** How it was hunted: tools/stress-cycles.sh (TESTS=, RUNS=,
+  PAR=, MODES=, KEY_RE=) for rates; a test made of many rounds of the one that fails rarely (219 of 131: 3 runs in
+  100 where 131 gave 1 in 600); a build with CS2WASM_ARENA_REPORT=1 whose whole output is kept for the runs that
+  fail (the events before the leak, the arena as it was left); tools/oracle-load.sh (the runner's `--oracle n`) for
+  what .NET itself prints when eight processes run the test at once (tests/Load: the tests as they were).
+  - **A stale note on a top that code still holds (tests 131, 187, 219).** The main thread lets a parent go; its
+    check at the drop fails by a result's reference (the result is still owned by its task) and leaves a note. The
+    task dies on its pool thread, the parent's list adopts the result, the note's number is stale and StaleNote
+    queues the check again. The state machine of the method that is ending still holds the parent then: DrainKills
+    found no candidate and dropped the entry, and when the machine let go a moment later ArenaRelease passed over
+    a top that has a note. DrainKills now takes the note off such a top, so its last release makes the check.
+    Test 219: 3 of 100, 5 of 120, 7 of 300 before (the desk), none of 300 after and none of 2,000 on the homelab.
+  - **The top an ownership that turns round leaves (test 187's rounds, test 215's one-result case).** A result
+    refers to its parent and so owns it, its task owns the result, the parent's list holds it too. The parent is
+    let go while the task lives: owned, no check. The task dies, the list's array adopts the result, the ownership
+    turns round (TakeOwnership) and the parent is the top of garbage that no code refers to; nothing looked.
+    TurnHold: the runtime refers to that top until the operation is done and lets go then, which makes the check
+    at the drop by the path of every release. Where it lets go matters: with threads only after the thread's last
+    group lock and outside a destruction (AfterLocks). The check made while the store's locks are held (a check
+    queued in the thread's list, tried before; the hold let go in DrainKills) leaves test 133 with 4,934 objects,
+    four members referred to from outside for good; why exactly was not followed. Test 215 (the case back in) and
+    215b (the same with threads): `holder comes under: 4` without, pass with. Test 187: 6 and 10 of 1,000 before the turn hold (as shipped, checked; 4 and 7 at 32 at once), none in 2,000 a mode and none in 1,000 a mode at 32 at once with it.
+  - **A queued member in a destruction (DyingQueued).** A member left without a reference of either kind during a
+    destruction was left to the thread's list when it already waited there, and destroyed alone later. It dies with
+    the others. Shown only with a trial that queues many more members (CS2WASM_SURVIVOR_CHECK=1): test 133 leaves 1
+    object without, none with.
+  - **What the tests asked that .NET does not promise**, each checked against .NET under the same load (400 runs
+    of the test as it was, eight processes): .NET gave the usual output in all 400 for 127, 131, 135, 187, so none
+    of these is shown by .NET's output; they stand on .NET's sources. 127 and 187 counted what was left right
+    after Task.WhenAll's waiter came back, while the pool thread that completed the last method is still inside
+    it and its state machine holds the parent (AsyncStateMachineBox.MoveNext clears the machine after the
+    completion that wakes the waiter): they wait, bounded, and what is never freed still shows. 088 slept 30 ms
+    and asked whether a 1 ms timer had fired: a due time is the earliest; it waits for the first tick, bounded
+    (1,000 loaded runs a mode the same). 135: WhenAny of a 50 ms and a 1 ms delay; a timer thread 49 ms late
+    finds both due and hands the 50 ms one to the pool first (TimerQueue.FireNextTimers). 235cf87 had made both
+    give the same value; now the far one is 2 s off and the first to complete is checked again. 127's lock on the
+    list its four continuations add to stays: by List's contract several writers are not supported, but .NET
+    frees everything all the same and the runtime does not (next).
+  - **Open: List.Add from four threads at once.** tests/Load/219_no_lock.cs leaves a round's five objects for
+    good in 65 runs of 300 (the desk; checked build 57 of 200, no trap), with every fix above and with the trials.
+    In the three traced runs the arena report itself failed while walking the group's ring after the array that
+    Task.WhenAll returned (memory access out of bounds), which the same report never did in the runs with the
+    lock: the ring of members is damaged, not only a check missed. Not found.
+  - **Test 139, two nodes left without the engine's stack checks (one run of 3,000).** Not reproduced: 4,000 of 4,000 runs as shipped without the stack checks ended `16 1` (59a6c4a);
+    test 218 (its rounds, 3,200 thread ends a run) none in 3,200 runs, with and without the AfterLocks change of
+    b02ce58 (1,200 on the desk). No cause is shown.
+  - **Test 087's trap** (rt.retain from Interlocked.Exchange in Task.FinishContinuations): an async iterator's
+    promise was completed without a count of its own (8577829). Test 217 without that change traps in 24 runs of
+    24, with it in none of 1,200; test 087 checked 600/600 as shipped and 600/600 checked at 35019ac (7 of 1,200 on main); a run of 2,400 was not finished when this was written.
+  - **Test 072 and the suite's runners.** Each runner's HTTP server listens on a free port (they all took 18765);
+    each runner has a working directory of its own (070 and 088 write files there; the two modes ran them at
+    once in one directory, and .NET's own run of 088 failed so in 31 of 400 when eight ran at once).
+  - **Where the statics fall (test 139 at ten times its length).** The branch ran it 10 to 12% slower than main
+    with no instruction of its own on the path: the statics started where the data ended and lay in the order
+    first named, so the test's Node.Live, counted by every thread at every node, shared a cache line with the
+    allocator's words in three of four positions (3.43 to 3.47 s) and not in the fourth (3.00 s;
+    CS2WASM_STATIC_PAD, CS2WASM_PRINT_STATICS). With threads the statics now start on a cache line, the
+    runtime's first and the program's after them, the locks' words and s_failedTops on lines of their own
+    (Driver.StaticAddress): 2.62 to 2.72 s in every position against main's 3.05.
 - **The rebuild, round 5, and test 139's trap (2026-11-23, branch claude/tree-rebuild-5, from main 77b2aad; the desk
   machine, shared with another session's timings; not merged when this was written).**
   - **Test 139's trap under load is the engine's view of a grown memory, not the cycle runtime's.** The trace was on
