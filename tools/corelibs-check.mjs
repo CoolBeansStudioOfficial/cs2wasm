@@ -40,6 +40,7 @@ const run = (file, target, env) => new Promise((done) => {
   p.on('close', (code) => done({ code, err: err.replace(/ in \d+ ms/g, '').replaceAll(target, 'OUT') }));
 });
 let next = 0, same = 0, failedBoth = 0, differ = 0;
+const again = [];
 const counts = new Map();
 async function worker() {
   while (next < files.length) {
@@ -51,6 +52,8 @@ async function worker() {
     const rb = await run(f, join(b, 'p.wasm'), other ?? { CS2WASM_ALL_CORE_LIBS: '1' });
     const n = /what the program needs \((\d+) libraries/.exec(ra.err)?.[1] ?? '?';
     counts.set(n, (counts.get(n) ?? 0) + 1);
+    // (a program compiled again with every reported library: one it was begun without was needed)
+    if (/again, with every library reported/.test(ra.err)) again.push(`${name} (begun with ${n})`);
     // (the first run's phase lines are not part of what is compared)
     const errA = ra.err.split('\n').filter((l) => !/^\s+(library:|\d+ ms|of it binding|static initializers again:|memory layout:)/.test(l) && !/^cs2wasm: heap after/.test(l)).join('\n').replaceAll(join(a, 'p.wasm'), 'OUT');
     const errB = rb.err.replaceAll(join(b, 'p.wasm'), 'OUT');
@@ -62,5 +65,6 @@ async function worker() {
 }
 await Promise.all(Array.from({ length: par }, worker));
 console.log(`corelibs-check (against ${Object.entries(other ?? { CS2WASM_ALL_CORE_LIBS: '1' }).map(([k, v]) => k + '=' + v).join(' ')}): ${files.length} programs: ${same} the same module, ${failedBoth} not compiled either way with the same messages, ${differ} differ`);
-console.log(`libraries needed: ${[...counts].sort((x, y) => +x[0] - +y[0]).map(([n, c]) => `${n}: ${c} programs`).join(', ')}`);
+console.log(`compiled again with every reported library: ${again.length}${again.length ? ': ' + again.sort().join(', ') : ''}`);
+console.log(`libraries needed (at the start): ${[...counts].sort((x, y) => +x[0] - +y[0]).map(([n, c]) => `${n}: ${c} programs`).join(', ')}`);
 process.exit(differ ? 1 : 0);
