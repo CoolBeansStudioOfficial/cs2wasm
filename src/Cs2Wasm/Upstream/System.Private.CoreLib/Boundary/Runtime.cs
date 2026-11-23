@@ -2829,19 +2829,36 @@ namespace Cs2Wasm.Runtime
         /// what it owns: the member's own references to members under that top (the slots its bits tell of) are
         /// inside from here on, and come off the note's number; at what NoteOutside asks, the top is looked at again
         /// (DrainKills). Not seen here, and left as they were before a8a50fc (the number stays too high and the top
-        /// is not looked at again): references from an array's elements, from slots past the sixteenth word, and
+        /// is not looked at again): references from the elements of an array of structs, from slots past the sixteenth word, and
         /// from what the member owns further down.</summary>
         static void NoteCameUnder(int val, int container)
         {
-            if ((PL(val, 24) & Elems) != 0) return;
-            int w = PL(val, 28), t = 0, k = 0;
-            for (int i = 0; w != 0; i++, w = (int)((uint)w >> 2))
+            int t = 0, k = 0;
+            if ((PL(val, 24) & Elems) != 0)
             {
-                if ((w & 3) == 0) continue;
-                int child = Mem.LoadI32(val + 12 + 4 * i);
-                if (child == 0 || Mem.LoadI32(child) >= -1 || !OutsideMarked(PLM(child))) continue;
-                if (t == 0) { t = Top(container); if (t == 0 || (PLM(t) & 3) != 3) return; }
-                if (child == t || Under(child, t)) k++;
+                // (an array of references: each element, once, as the array changes hands; the array Task.WhenAll
+                // returned, which a parent takes over when the task dies: test 219 under load, 2 to 4 runs of 400)
+                if (PL(val, 28) == 0 || ArrayRankAt(val) != 1 || ArrayElementSizeAt(val) != 4) return;
+                int slot = val + 16, end = slot + 4 * Mem.LoadI32(val + 12);
+                for (; slot != end; slot += 4)
+                {
+                    int child = Mem.LoadI32(slot);
+                    if (child == 0 || Mem.LoadI32(child) >= -1 || !OutsideMarked(PLM(child))) continue;
+                    if (t == 0) { t = Top(container); if (t == 0 || (PLM(t) & 3) != 3) return; }
+                    if (child == t || Under(child, t)) k++;
+                }
+            }
+            else
+            {
+                int w = PL(val, 28);
+                for (int i = 0; w != 0; i++, w = (int)((uint)w >> 2))
+                {
+                    if ((w & 3) == 0) continue;
+                    int child = Mem.LoadI32(val + 12 + 4 * i);
+                    if (child == 0 || Mem.LoadI32(child) >= -1 || !OutsideMarked(PLM(child))) continue;
+                    if (t == 0) { t = Top(container); if (t == 0 || (PLM(t) & 3) != 3) return; }
+                    if (child == t || Under(child, t)) k++;
+                }
             }
             if (k == 0) return;
             int o = PLM(t), some = (o >> 2) & NoteSome, n = (int)((uint)o >> 8) - k;
@@ -3013,6 +3030,12 @@ namespace Cs2Wasm.Runtime
             }
             PS(val, 20, container);
             PS(val, 24, PL(val, 24) | Owned | MultOne);
+            // (a top whose check had failed has an owner now: its note goes. Nothing keeps the number right while it
+            // is owned (what comes under it then comes under its owner's top), and a note would keep its last
+            // release from checking once it has no owner again. Test 219 under load, 2 runs of 300 with the
+            // numbers kept by NoteCameUnder alone: the parent, noted, was owned by a result for a moment while the
+            // other results came under its list)
+            if (s_failedTops != 0 && (PLM(val) & 1) != 0 && !NoStaleNote() && !StaleNoteWhole()) ClearMark(val);
             // (only a counted reference in one of its own slots can become an up-reference)
             if ((PL(val, 28) & 0x55555555) != 0 && (PL(val, 24) & Elems) == 0) Reevaluate(val);
             if (s_failedTops != 0 && !NoStaleNote()) { if (StaleNoteWhole()) StaleNote(container); else NoteCameUnder(val, container); }
@@ -3038,6 +3061,8 @@ namespace Cs2Wasm.Runtime
         // (A check queued in the thread's list, CS2WASM_TURN_CHECK=1, a trial: test 133 with 4,934 objects, as above.)
         // CS2WASM_NO_TURN_HOLD=1 (at compile time, a measurement): none.
         [Intrinsic] static extern bool NoTurnHold();
+        /// <summary>CS2WASM_NO_SURVIVOR_HOLD=1 (at compile time, a measurement): no hold of a destruction's survivor.</summary>
+        [Intrinsic] static extern bool NoSurvivorHold();
         /// <summary>CS2WASM_NO_TAKE_IN_ABOVE=1 (at compile time, a measurement): the trial takes in another top only
         /// where it is referred to itself, not where a member it owns is (Dropped's visit).</summary>
         [Intrinsic] static extern bool NoTakeInAbove();
@@ -5000,6 +5025,10 @@ namespace Cs2Wasm.Runtime
             // (a survivor of the cut that nothing outside refers to may be kept by stale holds of what it owns alone:
             // checked at the drop when the destruction is done, DrainKills)
             if ((StickyHolds() || SurvivorCheck()) && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+            // (SurvivorHold: a destruction's survivor left without an owner that no code refers to is on top of what it
+            // owns, and nothing else looks at it: held as TurnHold's, and let go once the destruction is done, which
+            // makes the check at the drop. A parent owned for a moment by a state machine or a result that dies)
+            if (!NoSurvivorHold() && Mem.LoadI32(child) == -2 && (PL(child, 24) & (Owned | Dying | Queued)) == 0 && PL(child, 4) != 0 && (PLM(child) & 1) == 0) TurnHold(child);
         }
 
         /// <summary>A dying member's reference to a member that lives on went (VisitDying, DyingSurvivor): when that
@@ -5448,6 +5477,10 @@ namespace Cs2Wasm.Runtime
             UpdateHold(child);
             if (s_failedTops != 0 && OutsideMarked(PLM(child))) DyingNote(child, m);
             if ((StickyHolds() || SurvivorCheck()) && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+            // (SurvivorHold: a destruction's survivor left without an owner that no code refers to is on top of what it
+            // owns, and nothing else looks at it: held as TurnHold's, and let go once the destruction is done, which
+            // makes the check at the drop. A parent owned for a moment by a state machine or a result that dies)
+            if (!NoSurvivorHold() && Mem.LoadI32(child) == -2 && (PL(child, 24) & (Owned | Dying | Queued)) == 0 && PL(child, 4) != 0 && (PLM(child) & 1) == 0) TurnHold(child);
             return s_visitDead;
         }
 
