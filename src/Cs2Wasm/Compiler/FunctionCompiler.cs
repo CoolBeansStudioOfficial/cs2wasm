@@ -676,8 +676,16 @@ sealed partial class FunctionCompiler
     void ToOwned(Own o, ITypeSymbol? t = null)
     {
         if (D.ThreadMode && CountedLoad(o) == Own.Owned) return;
-        if (o is Own.Stable or Own.Unstable) E.Call(Rt.RetainOf(t));
+        if (o is Own.Stable or Own.Unstable)
+        {
+            E.Call(Rt.RetainOf(t));
+            // (an object of a sealed class that looks flat: it is in no group and is never one of the objects that
+            // are not freed, so its count is above zero whenever it is counted and the count's other path, the
+            // call, is not taken. Said on the call for Wasm/ColdExits.cs; CS2WASM_NO_RETAIN_HINT=1: not said)
+            if (!s_noRetainHint && StoreHint(t) != 0) E.Body[^1] = E.Body[^1] with { Imm2 = 1 };
+        }
     }
+    static readonly bool s_noRetainHint = Environment.GetEnvironmentVariable("CS2WASM_NO_RETAIN_HINT") == "1";
 
     /// <summary>Value on stack stays valid for the rest of the statement.</summary>
     Own ToTransient(Own o, ITypeSymbol t)

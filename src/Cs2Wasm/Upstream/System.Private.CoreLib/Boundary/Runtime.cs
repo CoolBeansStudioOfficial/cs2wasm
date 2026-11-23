@@ -1697,6 +1697,57 @@ namespace Cs2Wasm.Runtime
             if (old != 0) FreeSmallOld(old, s);
         }
 
+        /// <summary>FreeSmallOld, its usual case written so that what is left for a call is one `else`: the block goes
+        /// back onto its page's list when the page has freed blocks already and others still in use. Written out in
+        /// place of FreeSmallOld's call where an object ends inside a loop that then calls nothing (Wasm/ColdExits.cs:
+        /// with a call that comes back in it the engine keeps the loop's values in memory; docs/AUDIT.md A3.5, "The
+        /// churn loop, round 5"). The three tests are one value. A block that is in no page: the words read at `pg`
+        /// are some other memory's, and are not used. (The map's word of the block's granule is read as MapGet reads
+        /// it, without the test for a leaf: a block that was allocated has its leaf.)</summary>
+        public static void FreeBack(int addr, int size)
+        {
+            int pg = addr & ~(PageSize - 1);
+            int used = Mem.LoadI32(pg + 16);
+            int kind = Mem.LoadI32(Mem.LoadI32(s_mapTop + ((int)((uint)addr >> 22) << 2)) + ((int)(((uint)addr >> GShift) & 4095) << 2));
+            if (((kind & 7) == 1) & (used != 1) & ((Mem.LoadI32(pg + 20) & 1) != 0))
+            {
+                Mem.StoreI32(addr + 4, Mem.LoadI32(pg));
+                Mem.StoreI32(pg, addr);
+                Mem.StoreI32(pg + 16, used - 1);
+            }
+            else FreeSmallOld(addr, size);
+        }
+
+        /// <summary>FreeObject for a program without threads, not checked, no share check (the conditions of
+        /// FreeFixed), written the same way: an object of up to 128 bytes is kept aside for the next allocation of
+        /// its size and the one that was there goes back onto its page (FreeBack's code); a larger one is
+        /// FreeObject's call. In place of FreeObject's call in such a loop (a string that ends there).</summary>
+        public static void FreeSmall(int addr, int size)
+        {
+            int s = (size + 3) & ~3;
+            if ((uint)s <= 128)
+            {
+                int hotSlot = s_hot + s;
+                int old = Mem.LoadI32(hotSlot);
+                Mem.StoreI32(hotSlot, addr);
+                Mem.StoreI32(addr, 0);
+                if (old != 0)
+                {
+                    int pg = old & ~(PageSize - 1);
+                    int used = Mem.LoadI32(pg + 16);
+                    int kind = Mem.LoadI32(Mem.LoadI32(s_mapTop + ((int)((uint)old >> 22) << 2)) + ((int)(((uint)old >> GShift) & 4095) << 2));
+                    if (((kind & 7) == 1) & (used != 1) & ((Mem.LoadI32(pg + 20) & 1) != 0))
+                    {
+                        Mem.StoreI32(old + 4, Mem.LoadI32(pg));
+                        Mem.StoreI32(pg, old);
+                        Mem.StoreI32(pg + 16, used - 1);
+                    }
+                    else FreeSmallOld(old, s);
+                }
+            }
+            else FreeObject(addr, size);
+        }
+
         /// <summary>The block that was kept aside for its size (FreeObject, FreeCore) when another takes its place.</summary>
         static void FreeSmallOld(int addr, int size)
         {

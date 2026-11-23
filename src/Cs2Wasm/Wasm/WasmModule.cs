@@ -398,6 +398,7 @@ internal sealed class WasmModule
             EachFunction(f => SameBaseLoads.Run(f));
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_NORETURN") != "1") NoReturn.Run(Functions);
             // (the calls of a count's other path, outside the loop that counts: ColdExits.cs)
+            ColdExits.Module = this;
             EachFunction(f => ColdExits.Run(f));
             Step("float stores, no return");
             if (!s_noMerge) MergeIdenticalBodies();
@@ -727,6 +728,9 @@ internal sealed class WasmModule
     /// <summary>Rt.FreeObject, and Rt.FreeFixed where a free of a known small size may be written as it (a program
     /// without threads, not checked, no share check), else null.</summary>
     public WasmFunction? FreeFn, FreeFixedFn;
+    /// <summary>Rt.FreeBack and Rt.FreeSmall: Rt.FreeSmallOld's and Rt.FreeObject's usual cases as functions, which
+    /// ColdExits.cs writes out in place of those calls in a loop (under Rt.FreeFixed's conditions), else null.</summary>
+    public WasmFunction? FreeBackFn, FreeSmallFn;
     /// <summary>CS2WASM_NO_DESTROY_IN_PLACE=1: in a loop a release that names its class calls the class's destruction
     /// (a function of a few instructions of its own), as before; a flat class's goes through rt.release.</summary>
     /// <summary>A flat class's destruction is written in place outside loops too in a function of no more than this

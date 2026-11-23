@@ -509,6 +509,8 @@ sealed partial class RuntimeGen
         D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeObject", 2);
         // (the free of a known size written where an object dies: EmitDestroyDispatch, WasmModule.ExpandLeafReleases)
         if (FreeFixedAllowed) D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeFixed", 2);
+        // (and the free's usual cases, which Wasm/ColdExits.cs writes out in loops)
+        if (FreeFixedAllowed) { D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeBack", 2); D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeSmall", 2); }
         D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1);
         if (D.ThreadMode && RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareCheckFail", 1);
         if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0); }
@@ -1753,6 +1755,7 @@ sealed partial class RuntimeGen
             D.Module.FlatDestroy = id => !IsLeafDestroy(id) && IsFlatDestroy(id) && D.ExtId(id) >= 0 ? _destroyFns[id] : null;
             D.Module.FreeFn = D.Rt.Free;
             if (FreeFixedAllowed) D.Module.FreeFixedFn = D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeFixed", 2).Fn;
+            if (FreeFixedAllowed) { D.Module.FreeBackFn = D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeBack", 2).Fn; D.Module.FreeSmallFn = D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeSmall", 2).Fn; }
         }
         else if (D.Rt.ReleasePlainIfMade is { } rp)
         {
