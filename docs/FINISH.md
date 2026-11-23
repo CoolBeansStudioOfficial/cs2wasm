@@ -1246,3 +1246,11 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   types reached by their type only (the churn's drop is the atomic release of each particle's string, 316 us
   against 40); a delegate with no tag is any of its type; the threaded self-hosted compiler (check 5) not
   touched. `tools/thread-board-hang.cs` hangs one run in six, with the base's compiler too.
+- 2026-11-23, claude/threads-1 merged with main 4cf95fe (612cd56; docs/AUDIT.md A3.6, "On the merge"). Programs
+  without threads byte for byte main's (145 27,786 bytes, 220, 193, 201, 208, 209, tools/frames). frames-threads,
+  main's compiler -> this branch's, median ms (NativeAOT-LLVM without threads): idle churn 2.02 -> 0.096-0.100
+  (0.050-0.052), idle tree 0.94-0.99 -> 0.122-0.126 (0.033-0.035), private churn at eight 3.09-3.27 -> 0.160
+  (0.049), private tree at eight 0.243-0.259 -> 0.056 (0.006), shared at four 0.26 -> 0.31 (0.105). The desk on
+  the merged code: thread-share-check 61 of 61 the same, thread-escape-breaks as before, 275 to 279 300 loaded runs
+  each all the same, 139, 218, 215b, 131, 127 200 each all the same with this branch's compiler and with main's,
+  187 3 of 200 with each.

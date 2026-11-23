@@ -2477,6 +2477,46 @@ under the share check): all 59 print the same. Queued on the homelab when this w
 279, 187, 131), `tools/thread-scale.sh` (the threaded self-hosted compiler, not yet built with this analysis),
 `tools/selfdet-set.sh` (220, 193, 088 through the self-hosted compiler), 088 and 275 to 279 alone.
 
+*On the merge with main 4cf95fe (612cd56; the session that took over, 2026-11-23 04:40 to 07:45).* Main's code
+since the base (claude/churn-5: a list's setter in loops, the stored value read back, ColdExits off) merged
+without a conflict in code. Programs without threads are compiled byte for byte as by main's compiler 4cf95fe:
+145 (27,786 bytes), 220, 193, 201, 208, 209 and tools/frames's module (230,417 bytes); so `tools/frames.mjs` is
+main's: `--runs 3 --js-young 32` on the desk, medians churn 1.23x, collections 1.02x, strings 0.89x, tree 1.61x
+(worst 1.21x: tree's spikes above NativeAOT's, as on main), bigdrop 0.97x; the mean frame 0.74x NativeAOT's.
+`node tools/frames-threads.mjs --runs 3 --js-young 32`, the desk, main's compiler (before, two runs) and this
+branch's (after, three runs) in turn; median frame, ms, the range over the runs (NativeAOT-LLVM without threads):
+
+| scene | NativeAOT, no threads | cs2wasm, no threads | threads, main | threads, this branch |
+|---|---|---|---|---|
+| churn, one idle worker | 0.050-0.052 | 0.061-0.063 | 2.016-2.030 | 0.096-0.100 |
+| collections, idle | 0.006 | 0.006 | 0.039-0.040 | 0.012-0.013 |
+| strings, idle | 0.008 | 0.007 | 0.021 | 0.013 |
+| tree, idle | 0.033-0.035 | 0.046-0.049 | 0.937-0.986 | 0.122-0.126 |
+| bigdrop, idle | 0.003 | 0.003 | 0.028 | 0.009 |
+| private churn, 1 / 4 / 8 workers | 0.049-0.050 | 0.066 | 1.90 / 2.49-2.59 / 3.09-3.27 | 0.104-0.108 / 0.110-0.114 / 0.160-0.161 |
+| private tree, 1 / 4 / 8 workers | 0.006 | 0.009 | 0.160 / 0.174-0.198 / 0.243-0.259 | 0.022-0.023 / 0.034-0.042 / 0.056-0.057 |
+| shared, 1 / 2 / 4 workers | 0.104-0.106 | 0.072 | 0.174-0.191 / 0.101-0.176 / 0.260-0.262 | 0.111-0.170 / 0.082-0.170 / 0.309-0.316 |
+
+Worst frames, this branch: idle churn 0.29 to 0.52 ms (NativeAOT's 1.24 to 1.79), idle tree 16.3 to 23.2 ms
+(3.7 to 3.8; main's 21 to 32), private churn at eight 0.8 to 5.5 ms (main's 10 to 39). Scaling (the work of N
+threads in the time of one): private churn 1.75-1.86, 3.06-3.22, 4.76-5.38 at 2, 4, 8 (main 1.78-1.88, 2.88-3.05,
+4.67-4.70, of frames twenty times as long); private tree 1.57-2.00, 2.19-2.75, 3.04-3.55 (main 1.85-1.98, 2.73,
+4.14-4.20); arithmetic alone 1.73, 3.43, 5.64. The parts on a worker, us (main -> this branch; NativeAOT without
+threads): 20,000 particles made 1,074-1,088 -> 294-303 (159-161), a pass 1,445-1,465 -> 125-129 (103-109), let go
+316-320 -> 315-327 (4); a tree of 3,906 built 2,582 -> 1,648-1,703 (42), walked 558 -> 15 (17), 100 subtrees
+replaced 2,317-2,335 -> 1,553-1,601 (33), dropped 202-211 -> 201-204 (0). The shared scene with four workers is
+slower here than on main (0.309-0.316 against 0.260-0.262; two workers as fast or faster): not looked into; its
+frame is mostly the workers' wake. Against NativeAOT-LLVM without threads (its build with threads does not link
+here), at or below its median only in the shared scene with one or two workers in their best runs; everywhere
+else 1.7x to 9x: what is left is the list above (the groups with threads, types reached by their type).
+Checks on the merged code (the desk): `bash tools/thread-share-check.sh` 61 programs with threads (main brought
+217 and 218), all the same under the share check; `bash tools/thread-escape-breaks.sh` every test the same under
+the check, every weakened rule (seven) stopped, every rule off the same; `node tools/suite.mjs --shards 2` 27x,
+145, 208, 209, 260, 139 pass both modes; 300 loaded runs each of 275 to 279 (8 at once), all the same; 200 loaded
+runs each, this branch's compiler and main's in turn: 139, 218, 215b, 131, 127 all the same on both, 187 3 of 200
+on both (`rounds: result 3`, the open leak of the row in docs/FINISH.md). The homelab's jobs: docs/FINISH.md's
+entry.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
