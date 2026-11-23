@@ -19,6 +19,9 @@ namespace Cs2Wasm.Compiler;
 ///  - no code has its address: every way to a field's place other than a plain load or a plain store goes through
 ///    FunctionCompiler.EmitFieldSlotBase, which takes the field out unless the load or the store said it is theirs
 ///    (`ref`, `out`, `in`, `fixed`, a call of a struct's method on it, Interlocked, Volatile, [UnsafeAccessor]);
+///    and with it every field of the same object (its class's, the bases', the derived classes'): a reference to
+///    one field is walked to the next with Unsafe.Add or a pointer (test 207's `Unsafe.Add(ref p.B0, 2) = 77`
+///    between two reads of p.B2, which the suite found);
 ///  - reflection cannot set it (the members kept for reflection);
 ///  - in a program with threads: only a readonly field (another thread may store any other meanwhile).
 /// A local of an iterator or an async method, a captured variable, a primary constructor's parameter: fields of
@@ -81,10 +84,17 @@ internal sealed partial class Driver
         }
     }
 
+    /// <summary>The classes one of whose instance fields some code has the address of: a reference to one field can
+    /// be walked to the next (Unsafe.Add, a pointer's arithmetic, a span made over it), so every field of such an
+    /// object is stored by whoever holds that reference: the class's own, its bases' and those of the classes
+    /// derived from it (PrepareFieldLoads).</summary>
+    readonly ConcurrentDictionary<INamedTypeSymbol, bool> _fieldEscapeOwners = new(SymbolEqualityComparer.Default);
+
     /// <summary>Some code has the field's place by its address.</summary>
     internal void NoteFieldEscape(IFieldSymbol storage)
     {
         if (s_noFieldHoist || storage.IsStatic || Wasm.FieldLoads.Without("address")) return;
+        if (storage.ContainingType is { TypeKind: TypeKind.Class } oc && !Wasm.FieldLoads.Without("walk")) _fieldEscapeOwners.TryAdd(oc.OriginalDefinition, true);
         if (_fieldTags.GetOrAdd(storage.OriginalDefinition, MakeFieldTag) is { } tag && !tag.Escaped)
         {
             tag.Escaped = true;
@@ -102,6 +112,19 @@ internal sealed partial class Driver
             foreach (var (t, all, names, ctors) in _reflect.Types.Values)
                 foreach (var m in KeptMembers(t, all, names, ctors))
                     if (m is IFieldSymbol { IsStatic: false } rf && _fieldTags.TryGetValue(rf.OriginalDefinition, out var rt) && rt != null) rt.Escaped = true;
+        // (a field's address taken: the fields of the same object, which the reference can be walked to)
+        if (!_fieldEscapeOwners.IsEmpty)
+        {
+            var reached = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+            foreach (var c in _fieldEscapeOwners.Keys)
+                for (INamedTypeSymbol? x = c; x != null && x.SpecialType != SpecialType.System_Object; x = x.BaseType?.OriginalDefinition) reached.Add(x);
+            foreach (var (sym, t) in _fieldTags)
+            {
+                if (t == null || t.Escaped) continue;
+                for (INamedTypeSymbol? x = sym.ContainingType?.OriginalDefinition; x != null && x.SpecialType != SpecialType.System_Object; x = x.BaseType?.OriginalDefinition)
+                    if (reached.Contains(x)) { t.Escaped = true; if (s_fieldHoistDebug) Console.Error.WriteLine("field hoist: " + t.Key + " is in an object a field of which has its address taken"); break; }
+            }
+        }
         int next = 0;
         var fns = Module.Functions;
         foreach (var f in fns)

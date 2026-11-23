@@ -17,6 +17,8 @@ struct Pair { public int A, B; public Pair(int a, int b) { A = a; B = b; } }
 sealed class Box
 {
     public int RefLocal, RefArg, OutArg, RefRet, Fixed, Inter, Vol, AsRef, Span, First, Second, Quiet;
+    public byte B0, B1, B2, B3;
+    public int W0, W1, W2;
     public long Long;
     public string Text = "a";
     public string Swap = "s";
@@ -96,6 +98,21 @@ static class P
         for (int i = 0; i < 4; i++) { s += b.Span; span.Fill(i + 80); s += b.Span; }
         return s;
     }
+    // a reference to one field walked to another: the field read is not the one whose address was taken
+    static unsafe int Walked(Box b)
+    {
+        int s = 0;
+        ref byte rb = ref b.B0;
+        byte c = b.B2; Unsafe.Add(ref rb, 2) = 77; s += c + b.B2;
+        for (int i = 0; i < 4; i++) { s += b.B3; Unsafe.Add(ref rb, 3) = (byte)(i + 1); s += b.B3; }
+        ref int rw = ref b.W0;
+        for (int i = 0; i < 4; i++) { s += b.W1 + b.W2; Unsafe.Add(ref rw, 1) = i + 5; Unsafe.Add(ref rw, 2) += 3; s += b.W1 + b.W2; }
+        var span = MemoryMarshal.CreateSpan(ref b.W0, 3);
+        for (int i = 0; i < 4; i++) { s += b.W2; span[2] = i * 9; s += b.W2; }
+        fixed (int* p = &b.W0)
+            for (int i = 0; i < 4; i++) { s += b.W1; p[1] = i + 40; s += b.W1; }
+        return s;
+    }
     static int Structs(Box b)
     {
         int s = 0;
@@ -143,6 +160,7 @@ static class P
         Console.WriteLine("pointers " + Pointers(b));
         Console.WriteLine("interlocked " + Interlock(b));
         Console.WriteLine("unsafe " + Unsafes(b));
+        Console.WriteLine("walked " + Walked(b));
         Console.WriteLine("structs " + Structs(b));
         Console.WriteLine("overlap " + Overlaps(new Overlap()));
         Console.WriteLine("volatile " + Volatiles(b));

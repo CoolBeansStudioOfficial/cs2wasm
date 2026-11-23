@@ -10,7 +10,7 @@ R=$(pwd)
 C=$R/src/Cs2Wasm.Cli/bin/Release/net11.0/cs2wasmc
 O=$R/tests/out/fhproof; mkdir -p "$O"
 conds=("$@")
-[ ${#conds[@]} = 0 ] && conds=(address reflection layout volatile threads loop calls indirect assigned dominance merge inline machine null twice)
+[ ${#conds[@]} = 0 ] && conds=(address walk reflection layout volatile threads loop calls indirect assigned dominance merge inline machine null twice)
 tests=$(ls tests/Conformance/23*_field_read_*.cs)
 run() { timeout 60 node "$R/host/run.mjs" "$1" main 2>&1; }
 for t in $tests; do

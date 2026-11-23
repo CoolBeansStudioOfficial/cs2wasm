@@ -194,7 +194,8 @@ static class FieldLoads
     const long Guard = 0x46484c44;
     /// <summary>CS2WASM_FIELD_HOIST_WITHOUT=a,b (for the proof of tests 230 to 234 only: the module it makes is
     /// wrong): the pass without one of its conditions, so that the test's loop for that condition can be seen to
-    /// print something else. address, reflection, layout, volatile, threads (Driver.PrepareFieldLoads); loop, calls,
+    /// print something else. address, walk (the other fields of an object one field of which has its address taken),
+    /// reflection, layout, volatile, threads (Driver.PrepareFieldLoads); loop, calls,
     /// indirect, assigned, dominance, null, twice (here: a test that cannot be run twice is copied all the same); merge,
     /// inline (FieldHoist); machine (FunctionCompiler.FinishMachine);
     /// constructors: a field only constructors store is asked about calls like any other (this one makes the pass
