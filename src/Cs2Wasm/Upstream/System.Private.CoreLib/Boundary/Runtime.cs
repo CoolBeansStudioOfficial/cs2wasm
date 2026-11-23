@@ -917,6 +917,9 @@ namespace Cs2Wasm.Runtime
                 }
                 DsNum(ref at, "holds turn ", DsGet(256)); DsNum(ref at, " survivor ", DsGet(257)); DsNum(ref at, " take-in-above ", DsGet(260)); DsNum(ref at, " its walks ", DsGet(258)); DsNum(ref at, " steps ", DsGet(259));
                 Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
+                DsNum(ref at, "tops by site", 0);
+                for (int k = 1; k < 8; k++) { DsNum(ref at, " ", DsGet(270 + k)); DsNum(ref at, "/", DsGet(280 + k)); }
+                Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
             }
             if (s_dsKilled != 0)
             {
@@ -2890,7 +2893,7 @@ namespace Cs2Wasm.Runtime
         /// adoption while some check has failed, nothing else.</summary>
         static void StaleNote(int container, int kinds = 3)
         {
-            int t = Top(container);
+            int t = TopS(container, 6);
             if (t != 0 && (PLM(t) & kinds) == kinds && DropCandidate(t)) QueueCheck(t);
         }
 
@@ -2928,7 +2931,7 @@ namespace Cs2Wasm.Runtime
                 if (!any) return;
             }
             else if (PL(val, 28) == 0) return;
-            int t = Top(container);
+            int t = TopS(container, 4);
             if (t == 0 || (PLM(t) & 3) != 3) return;
             if (t_nwQ == 0) t_nwQ = Alloc(4 * NoteWalk);
             int q = t_nwQ, head = 0, tail = 0, k = 0;
@@ -2972,7 +2975,7 @@ namespace Cs2Wasm.Runtime
         static void NoteLeft(int old, int container)
         {
             if (Mem.LoadI32(old) == -2 || !HeldMarked(PLM(old))) return;
-            int t = Top(container);
+            int t = TopS(container, 5);
             if (t == 0) return;
             int o = PLM(t);
             if ((o & 3) != 1) return;
@@ -3681,6 +3684,18 @@ namespace Cs2Wasm.Runtime
             return 0;
         }
 
+        /// <summary>Top, counted by where it is asked from for CS2WASM_DROP_STATS=1 (1 TopHeld, 2 NoteOutside, 3
+        /// TellTakenIn, 4 NoteCameUnder, 5 NoteLeft, 6 StaleNote, 7 an adoption's check): walks and steps.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static int TopS(int m, int site)
+        {
+            if (!DropStats()) return Top(m);
+            long h = s_dsTopHops;
+            int t = Top(m);
+            DsAdd(270 + site, 1); DsAdd(280 + site, s_dsTopHops - h);
+            return t;
+        }
+
         /// <summary>The member is the top or one of what it owns, by the owners above it (however far, as Top).</summary>
         static bool Under(int m, int top)
         {
@@ -3772,7 +3787,7 @@ namespace Cs2Wasm.Runtime
                 int m = Mem.LoadI32(s_trQ + 4 * (own + i));
                 int j = PL(m, 4) - Mem.LoadI32(tmp + 4 * i);
                 if (j <= 0) continue;
-                int t = Top(m);
+                int t = TopS(m, 3);
                 if (t == 0) continue;
                 int o = PLM(t);
                 if ((o & 3) != 3) continue;
@@ -3957,7 +3972,7 @@ namespace Cs2Wasm.Runtime
         static int TopHeld(int p, int d)
         {
             if (!HeldMarked(PLM(p))) return 0;
-            int t = Top(p);
+            int t = TopS(p, 1);
             if (t == 0) return 0;
             int o = PLM(t);
             if ((o & 3) != 1) return 0;
@@ -3972,7 +3987,7 @@ namespace Cs2Wasm.Runtime
         static int NoteOutside(int member, int container, int d)
         {
             if (!OutsideMarked(PLM(member))) return 0;
-            int t = Top(member);
+            int t = TopS(member, 2);
             if (t == 0) return 0;
             int o = PLM(t);
             if ((o & 3) != 3 || Under(container, t)) return 0;
@@ -5252,7 +5267,7 @@ namespace Cs2Wasm.Runtime
                     // stayed until its group went. CS2WASM_NO_ADOPT_CHECK=1: not asked)
                     if (!died && adopted && !NoAdoptCheck())
                     {
-                        int t = Top(old);
+                        int t = TopS(old, 7);
                         if (t != 0 && t != old && t != back && (PLM(t) & 1) == 0 && DropCandidate(t)) died = DroppedW(t, 4);
                     }
                     gone = died && s_watchHit != 0;
