@@ -748,7 +748,9 @@ sealed partial class RuntimeGen
             else
             {
             // weak references to it are cleared first; GC.SuppressFinalize can skip the finalizer
-            e.Get(0); e.Call(rt.OnDestroy);
+            // (before a finalizer the short ones only: one that tracks resurrection, and a ConditionalWeakTable's
+            // entry, go when the object does, below)
+            e.Get(0); e.Call(fin != null ? rt.OnFinalize : rt.OnDestroy);
             if (fin != null)
             {
                 e.If();
@@ -783,9 +785,13 @@ sealed partial class RuntimeGen
                 e.Get(0); e.I32(0); e.Store(Op.I32Store);
                 e.End();
                 e.End();
+                // (it goes: the weak handles left)
+                e.Get(0); e.Call(rt.OnDestroy); e.Op(Op.Drop);
             }
             else e.Op(Op.Drop);
             }
+            // (a group's member with a finalizer, cleared after the finalizers: the weak handles left)
+            if (finalizer == -1 && clear && FindFinalizer(type) != null) { e.Get(0); e.Call(rt.OnDestroy); e.Op(Op.Drop); }
             if (finalizer == 1) return;
             foreach (var fs in l.Fields)
             {
@@ -810,6 +816,12 @@ sealed partial class RuntimeGen
         var ar = D.Arenas;
         var retainSlow = ar.RuntimeFn("ArenaRetain", 1);
         var releaseSlow = ar.RuntimeFn("ArenaRelease", 1);
+        // (a weak handle made for a member's plain part: Rt.PartMarked)
+        if (rt.PartWeakIfMade is { } partWeak && partWeak.Body.Count == 0)
+        {
+            var pe = new Emitter(partWeak);
+            pe.Get(0); pe.Call(ar.RuntimeFn("PartMarked", 1));
+        }
         // retain(p) -> p: count +1; a member (count word below -1) counts on its arena
         {
             var f = rt.Retain; f.Body.Clear(); f.Locals.Clear();
@@ -1210,7 +1222,7 @@ sealed partial class RuntimeGen
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
         {
-            D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
+            D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnFinalize", 1);
             // (and a group that goes clears the weak references to all its members first: Rt.WeakDyingAll)
             D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "WeakDying", 1); D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "Any", 0);
         }
@@ -1395,6 +1407,12 @@ sealed partial class RuntimeGen
     {
         // (what the C# compiler would have made, for reflection: its classes get ids before the tables close)
         D.PrepareGenerated();
+        // (the singletons of the `<>c` classes, Delegate.Target of a lambda that captures nothing: Object's virtual
+        // methods are theirs, as a closure object's are in Expand)
+        foreach (var sid in D.SingletonClassIds())
+            foreach (var stub in D.Stubs.Values)
+                if (Types.IsObject(stub.Slot.ContainingType) && D.Implementation((INamedTypeSymbol)D.ObjectType, stub.Slot) is { } oimpl)
+                    stub.Cases["synthetic#" + sid] = (D.ObjectType, D.Method(oimpl, stub.Consts), false);
         CloseTypeInfo();
         D.Mark("  finish: CloseTypeInfo");
         if (D.Arenas.Enabled) EmitArenaSupport();
@@ -1528,6 +1546,7 @@ sealed partial class RuntimeGen
         D.EmitReflectionTables();
         D.Mark("  finish: D.EmitReflectionTables");
         D.EmitDelegateMethod();
+        D.EmitDelegateSingleton();
         D.EmitSharing(D.UsesThreads, Enumerable.Range(0, D.TypeById.Count).Where(id => D.Constructed.Contains(id)).Select(id => (id, D.TypeById[id])));
         D.Mark("  finish: D.EmitSharing");
         EmitDestroyDispatch();
@@ -1631,6 +1650,17 @@ sealed partial class RuntimeGen
             var m = D.AllMethods.FirstOrDefault(x => x.Sym.Name == "WeakDying" && x.Sym.ContainingType?.Name == "ObjectMarks" && x.Compiled);
             // (an object without a mark, which is nearly every one: nothing to ask; ObjectMarks.MarkedBit)
             if (m != null) { var de = new Emitter(dying); de.Get(0); de.Load(Op.I32Load, 8); de.I32(0x40000000); de.Op(Op.I32And); de.If(); de.Get(0); de.Call(m.Fn); de.End(); }
+        }
+        if (D.Rt.OnFinalizeIfMade is { } onFin)
+        {
+            var m = D.AllMethods.FirstOrDefault(x => x.Sym.Name == "OnFinalize" && x.Sym.ContainingType?.Name == "ObjectMarks" && x.Compiled);
+            var fe = new Emitter(onFin);
+            if (m != null)
+            {
+                fe.Get(0); fe.Load(Op.I32Load, 8); fe.I32(0x40000000); fe.Op(Op.I32And); fe.Op(Op.I32Eqz);
+                fe.If(ValType.I32); fe.I32(1); fe.Else(); fe.Get(0); fe.Call(m.Fn); fe.End();
+            }
+            else fe.I32(1);
         }
         var f = D.Rt.OnDestroyIfMade;
         if (f == null) return;
@@ -2506,6 +2536,7 @@ internal sealed partial class Driver
         fn.ProgramCode = owner.FnProgramCode;
         mi = new MethodInst { Sym = sym, Fn = fn, Key = key, Impl = MethodImpl.Body };
         var ci = owner.MakeClosureInfo(map, env, ret);
+        NestedEnvs[fn] = (env, ci.ThisKey);
         // (a local function called from the lambda is the outer method's: keyed by it, not by the lambda, or local
         // functions that call each other through lambdas would make new instances without end)
         ci.OuterKey = owner.OuterKey ?? owner.InstanceKey;
@@ -2529,6 +2560,7 @@ internal sealed partial class Driver
         var syntax = def.DeclaringSyntaxReferences.First().GetSyntax();
         var op = (ILocalFunctionOperation)ModelFor(syntax.SyntaxTree).GetOperation(syntax)!;
         var ci = owner.MakeClosureInfo(map, env, Types.Resolve(def.ReturnType, map));
+        NestedEnvs[fn] = (env, ci.ThisKey);
         ci.OuterKey = owner.OuterKey ?? owner.InstanceKey;
         mi.Compile = () => FunctionCompiler.CompileNested(this, mi, def, op.Body ?? op.IgnoredBody, ci);
         _methods[key] = mi;

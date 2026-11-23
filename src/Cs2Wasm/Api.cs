@@ -83,25 +83,39 @@ public static class Cs2WasmCompiler
 
     /// <summary>CS2WASM_NO_SECOND_PASS=1: a program with threads is compiled once, taking every object as shared.</summary>
     static readonly bool s_noSecondPass = Environment.GetEnvironmentVariable("CS2WASM_NO_SECOND_PASS") == "1";
+    static readonly bool s_times = Environment.GetEnvironmentVariable("CS2WASM_TIMES") == "1";
 
     public static CompileResult Compile(Compilation compilation, CompileOptions? options = null)
     {
         options ??= new CompileOptions();
         if (compilation is not CSharpCompilation cs)
             return new CompileResult { Diagnostics = [Diagnostic.Create(Diags.NotCSharp, Location.None)] };
-        var d = new Driver(cs, options);
+        // (compiled with the libraries the program is seen to need; when it meets a type that one left out may
+        // hold, once more with all that Roslyn reports as used: Library.NeedsAll)
+        return CompileWith(cs, options, false) ?? CompileWith(cs, options, true)!;
+    }
+
+    static CompileResult? CompileWith(CSharpCompilation cs, CompileOptions options, bool allLibraries)
+    {
+        var d = new Driver(cs, options, allLibraries);
         byte[]? bytes = null; string? map = null;
         try
         {
             // a program that starts threads is compiled as one (Driver.ThreadMode): known when the compilation
             // reaches the start of a thread, where it stops and begins again
+            // (What that first compilation bound is used by the one that follows, so little of it is lost: compiling
+            // for threads at once, when the text names a thread's start or the last build of the name started one,
+            // was measured no faster. Test 088 under .NET: 6 to 9.5 s of 26 to 36 s before the thread's start is
+            // met, and 47 to 56 s of processor time either way, three runs each.)
             bool threads = false;
+            var sw = s_times ? System.Diagnostics.Stopwatch.StartNew() : null;
             try { d.Run(); }
             catch (Driver.ThreadsSeen) { threads = true; }
+            if (threads && sw != null) Console.Error.WriteLine($"    {sw.ElapsedMilliseconds,6} ms  compiled without threads until the start of a thread was met ({d.AllMethods.Count(m => m.Compiled)} functions): begun again for threads");
             if (threads || d.UsesThreads && !Driver.s_expNoThreadMode && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
             {
                 d = null!;
-                d = new Driver(cs, options) { ThreadMode = true };
+                d = new Driver(cs, options, allLibraries) { ThreadMode = true };
                 d.Run();
                 // Section 4.5: compiled again knowing which types another thread can reach, so that objects no other
                 // thread can reach are read and borrowed from as without threads. The new compilation's own answer
@@ -109,23 +123,31 @@ public static class Cs2WasmCompiler
                 if (!s_noSecondPass && d.Sharing is { Done: true } first && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
                 {
                     var prior = first.PriorMap();
-                    var sharedKeys = first.SharedTypeSymbols().Select(Types.Key).ToHashSet();
+                    // (the types, and the statics a worker's code names: Sharing.SharedKeys)
+                    var sharedKeys = first.SharedKeys();
                     for (int round = 0; round < 3; round++)
                     {
                         d = null!;
-                        d = new Driver(cs, options) { ThreadMode = true, SharingPrior = prior };
+                        d = new Driver(cs, options, allLibraries) { ThreadMode = true, SharingPrior = prior };
                         d.Run();
                         if (d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error) || d.Sharing is not { Done: true } again) break;
-                        var extra = again.SharedTypeSymbols().Select(Types.Key).Where(k => !sharedKeys.Contains(k)).ToList();
+                        var extra = again.SharedKeys().Where(k => !sharedKeys.Contains(k)).ToList();
+                        if (Environment.GetEnvironmentVariable("CS2WASM_SHARING_ROUNDS") == "1") Console.Error.WriteLine($"sharing: round {round}: {extra.Count} more than the compilation was given{(extra.Count > 0 ? ": " + string.Join(", ", extra.Take(12)) : "")}");
                         if (extra.Count == 0) break;
-                        if (round == 2) { d = new Driver(cs, options) { ThreadMode = true }; d.Run(); break; }
+                        if (round == 2) { d = new Driver(cs, options, allLibraries) { ThreadMode = true }; d.Run(); break; }
                         prior = again.PriorMap(prior);
                         sharedKeys.UnionWith(extra);
                     }
                 }
             }
+            if (d.Lib.NeedsAll) return null;
             if (!d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
                 (bytes, map) = d.Emit();
+            if (d.Lib.NeedsAll) return null;
+        }
+        catch (Exception) when (d.Lib.NeedsAll)
+        {
+            return null;
         }
         catch (CompileException ex)
         {

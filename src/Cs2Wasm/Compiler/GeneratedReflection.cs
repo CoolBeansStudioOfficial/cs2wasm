@@ -30,6 +30,45 @@ internal sealed partial class Driver
     /// <summary>Whether code asks a delegate for its method (Delegate.Method, GetMethodInfo).</summary>
     bool _wantsDelegateMethod;
     bool WantsGenerated => FramesAsked || _wantsDelegateMethod;
+    /// <summary>Whether the program's code asks a delegate for its target (Delegate.Target): a lambda that captures
+    /// nothing answers with the singleton of its `&lt;&gt;c` class, as under .NET (the delegate itself holds what it
+    /// always held, and is invoked as before: only the property looks, EmitDelegateSingleton).</summary>
+    bool _wantsDelegateTarget;
+    bool WantsGenTypes => WantsGenerated || _wantsDelegateTarget;
+    /// <summary>The functions of the lambdas on a singleton class, and the class's id.</summary>
+    readonly Dictionary<WasmFunction, int> _singletonOfFn = [];
+    /// <summary>What a lambda's or local function's code is called with (the delegate's target field): the
+    /// environment where it was made, and the key of `this` in it.</summary>
+    internal readonly Dictionary<WasmFunction, (Display? env, ISymbol? thisKey)> NestedEnvs = [];
+    /// <summary>The functions whose delegate's Target is not what the delegate holds, and what it is: no object
+    /// (a local function that captures nothing: a static method), or an object found from the one held (so many
+    /// environments up, then, for a lambda that captures `this` alone, the field `this` is kept in).</summary>
+    readonly Dictionary<WasmFunction, (bool none, int up, int thisOffset)> _targetOfFn = [];
+
+    /// <summary>Under .NET the target is the environment the function captures nearest (its class) or `this`; the
+    /// delegate here holds the innermost environment of the place it was made in.</summary>
+    void NoteTargetRule(WasmFunction fn, ClosureNames names, CFn f)
+    {
+        if (f.Kind == ClosureKind.Static) { _targetOfFn[fn] = (true, 0, -1); return; }
+        if (!NestedEnvs.TryGetValue(fn, out var ne)) return;
+        int up = 0;
+        for (var x = ne.env; x != null; x = x.Parent, up++)
+        {
+            // (a state machine's environments are held and linked their own way: left as they are)
+            if (x.Owner is not FunctionCompiler || x.RoslynFull != null) return;
+            if (f.Kind == ClosureKind.ThisOnly)
+            {
+                if (ne.thisKey == null || !x.Slots.TryGetValue(ne.thisKey, out var slot)) continue;
+                _targetOfFn[fn] = (false, up, slot.offset);
+                return;
+            }
+            if (RoslynDisplayName(x, false) == f.Container!.Name)
+            {
+                if (up > 0) _targetOfFn[fn] = (false, up, -1);
+                return;
+            }
+        }
+    }
 
     /// <summary>The functions compiled for lambdas and local functions: the outer method (definition) and syntax.</summary>
     internal readonly Dictionary<WasmFunction, (IMethodSymbol outer, SyntaxNode syntax)> NestedFns = [];
@@ -159,17 +198,25 @@ internal sealed partial class Driver
                     : [LibType("System.Runtime.CompilerServices.IAsyncStateMachine")];
             }
         }
-        if (!WantsGenerated) return;
+        if (!WantsGenTypes) return;
         var byKey = new Dictionary<string, GenMethod>();
         // lambdas and local functions
         foreach (var (fn, (outer, syntax)) in NestedFns)
         {
             if (fn.Body.Count == 0 || NamesOf(outer) is not { } names || !names.Functions.TryGetValue(syntax, out var f) || f.InExpressionTree) continue;
+            var outerType = (INamedTypeSymbol)Types.Canonical(outer.ContainingType.OriginalDefinition);
+            var path = ClrPath(outer.ContainingType.OriginalDefinition);
+            if (_wantsDelegateTarget && f.Kind == ClosureKind.Singleton)
+            {
+                // (an object of the class exists: the dispatch of Object's virtual methods is told of its id,
+                // RuntimeGen.Finish; AnalyzeReflection had Object's own compiled)
+                _singletonOfFn[fn] = GenTypeId(path + "+" + names.SingletonName, names.SingletonName, TypeId(outerType), outerType, serializable: true, beforeFieldInit: true);
+            }
+            else if (_wantsDelegateTarget && f.Converted) NoteTargetRule(fn, names, f);
+            if (!WantsGenerated) continue;
             var key = Types.MethodKey(outer) + "@" + syntax.SyntaxTree.FilePath + ":" + syntax.SpanStart;
             if (!byKey.TryGetValue(key, out var gm))
             {
-                var outerType = (INamedTypeSymbol)Types.Canonical(outer.ContainingType.OriginalDefinition);
-                var path = ClrPath(outer.ContainingType.OriginalDefinition);
                 Func<int> declaring = f.Kind switch
                 {
                     ClosureKind.Singleton => () => GenTypeId(path + "+" + names.SingletonName, names.SingletonName, TypeId(outerType), outerType, serializable: true, beforeFieldInit: true),
@@ -204,7 +251,7 @@ internal sealed partial class Driver
         // the state machines' MoveNext
         foreach (var mr in Machines)
         {
-            if (mr.MoveNext.Body.Count == 0) continue;
+            if (mr.MoveNext.Body.Count == 0 || !WantsGenerated) continue;
             var machineId = mr.Machine.TypeId;
             if (mr.NestedOwner != null && GenTypes.TryGetValue(machineId, out var mg) && mg.DeclaringId < 0)
             {
@@ -245,6 +292,47 @@ internal sealed partial class Driver
             if (FramesAsked && gm.FrameKey != null) _frameEntries[gm.FrameKey] = entry;
             if (gm.Converted) foreach (var fn in gm.Fns) _genEntryOfFn[fn] = entry;
         }
+    }
+
+    internal IEnumerable<int> SingletonClassIds() => _singletonOfFn.Values.Distinct();
+
+    WasmFunction? _delegateSingleton;
+    public WasmFunction DelegateSingletonFn => _delegateSingleton ??= Module.AddFunction("rt.delegate_target", new FuncType([ValType.I32, ValType.I32], [ValType.I32]));
+
+    /// <summary>Delegate.Target (Delegate.TargetOf, asked by the property alone; parameters: the delegate's function
+    /// and what it holds; the result is counted): of a lambda that captures nothing, the one object of its
+    /// `&lt;&gt;c` class, which is in the data as a string literal is (count -1: never freed, the same for every
+    /// thread), its type the class's; of the functions of NoteTargetRule, what the rule says; of any other, and of
+    /// every function in a program whose code never asks for a target, what the delegate holds.</summary>
+    public void EmitDelegateSingleton()
+    {
+        if (_delegateSingleton == null) return;
+        var e = new Emitter(_delegateSingleton);
+        var live = _singletonOfFn.Count + _targetOfFn.Count > 0 ? Module.LiveFunctions() : null;
+        var objects = new Dictionary<int, IAddress>();
+        foreach (var (fn, id) in _singletonOfFn)
+        {
+            if (fn.Body.Count == 0 || !live!.Contains(fn) || ExtId(id) < 0) continue;
+            if (!objects.TryGetValue(id, out var o)) objects[id] = o = DataBlob([.. new[] { -1, ExtId(id), 0, 0 }.SelectMany(BitConverter.GetBytes)], 8);
+            e.Get(0); e.I32Fn(Module, fn); e.Op(Op.I32Eq);
+            e.If(); e.I32Addr(o); e.Op(Op.Return); e.End();
+        }
+        foreach (var (fn, (none, up, thisOffset)) in _targetOfFn)
+        {
+            if (fn.Body.Count == 0 || !live!.Contains(fn)) continue;
+            e.Get(0); e.I32Fn(Module, fn); e.Op(Op.I32Eq);
+            e.If();
+            if (none) e.I32(0);
+            else
+            {
+                e.Get(1);
+                for (int i = 0; i < up; i++) e.Load(Op.I32Load, 12);
+                if (thisOffset >= 0) e.Load(Op.I32Load, thisOffset);
+                e.Call(Rt.Retain);
+            }
+            e.Op(Op.Return); e.End();
+        }
+        e.Get(1); e.Call(Rt.Retain);
     }
 
     /// <summary>The records of the generated types (their attributes, base and interfaces), by id.</summary>
@@ -323,7 +411,7 @@ internal sealed partial class Driver
     /// <summary>The factories of the attributes the C# compiler adds (before the last compile round).</summary>
     void RequestGeneratedAttributeFactories()
     {
-        if (WantsGenerated)
+        if (WantsGenTypes)
         {
             GenAttributeFactory("System.Runtime.CompilerServices.CompilerGeneratedAttribute", null);
         }

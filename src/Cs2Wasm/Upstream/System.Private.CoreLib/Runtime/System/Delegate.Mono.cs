@@ -30,7 +30,15 @@ namespace System
 
         public object? Target => GetTarget();
 
-        internal virtual object? GetTarget() => _list == null ? (Binding is { } b ? b.Target : _target) : _list[^1].GetTarget();
+        // cs2wasm: a lambda that captures nothing is a method of its class's singleton (`<>c`) under .NET, one that
+        // captures `this` alone a method of that object, a local function that captures nothing a static method:
+        // the compiler knows such a delegate by its function, and says what its Target is (the delegate holds what
+        // the function's code is called with, which is not that object)
+        internal virtual object? GetTarget() => _list == null ? (Binding is { } b ? b.Target : TargetOf(_fn, _target)) : _list[^1].GetTarget();
+
+        /// <summary>What .NET's Target is for a delegate of the function that holds the object: the object itself
+        /// but for the functions of lambdas and local functions (Compiler/GeneratedReflection.cs EmitDelegateSingleton).</summary>
+        [Cs2Wasm.Runtime.Intrinsic] static extern object? TargetOf(int fn, object? target);
 
         public partial bool HasSingleTarget => _list == null;
 

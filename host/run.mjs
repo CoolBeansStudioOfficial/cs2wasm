@@ -4,6 +4,7 @@
 import { readFileSync, writeSync } from 'node:fs';
 import { cs2wasmImports, threadImports } from './engine.mjs';
 import { startIo } from './http.mjs';
+import { openSnapshot } from './snapshot.mjs';
 
 const args = process.argv.slice(2);
 const file = args[0];
@@ -44,6 +45,9 @@ const tModule = performance.now();
     p.i = end;
   }
 }
+// CS2WASM_SNAPSHOT=<file>: the module's state kept from one process to the next (host/snapshot.mjs)
+const snapshot = process.env.CS2WASM_SNAPSHOT ? openSnapshot(process.env.CS2WASM_SNAPSHOT, bytes, globalThis.__cs2wasmArgs.slice(1)) : null;
+let threadsStarted = false, httpUsed = false;
 const memory = new WebAssembly.Memory({ initial: pages, maximum: maxPages, shared: true });
 let buf = '';
 const flush = () => { if (buf) { writeSync(1, buf); buf = ''; } };
@@ -57,7 +61,7 @@ const out = {
     process.exitCode = 3;
   },
 };
-const spawned = () => { if (!threaded) { flush(); threaded = true; } };
+const spawned = () => { threadsStarted = true; if (!threaded) { flush(); threaded = true; } };
 const imports = { env: { memory }, cs2wasm: { ...cs2wasmImports(module, () => memory, out), ...threadImports(module, memory, out, spawned) } };
 // any other import is an engine boundary method: log the call (stub boundary, proof 3)
 for (const imp of WebAssembly.Module.imports(module)) {
@@ -69,18 +73,30 @@ for (const imp of WebAssembly.Module.imports(module)) {
 // (a module with threads: a worker is made ready now, so its first thread starts at once)
 if (WebAssembly.Module.exports(module).some((x) => x.name === '__thread_entry')) imports.cs2wasm.__prewarm();
 startIo(module, memory);
+if (snapshot) for (const k of Object.keys(imports.cs2wasm)) if (k.startsWith('http_')) { const f = imports.cs2wasm[k]; imports.cs2wasm[k] = (...a) => { httpUsed = true; return f(...a); }; }
 const t0 = performance.now();
 const instance = new WebAssembly.Instance(module, imports);
-instance.exports.init();
-if (process.env.CS2WASM_HOST_TIMES) process.stderr.write(`[host] node up and the file read ${tRead.toFixed(0)} ms, the module made ${(tModule - tRead).toFixed(0)} ms, instantiate and init ${(performance.now() - t0).toFixed(0)} ms (since start ${performance.now().toFixed(0)} ms)
+const restored = snapshot?.restore(instance, memory) ?? false;
+if (!restored) instance.exports.init();
+if (process.env.CS2WASM_HOST_TIMES) process.stderr.write(`[host] node up and the file read ${tRead.toFixed(0)} ms, the module made ${(tModule - tRead).toFixed(0)} ms, instantiate and ${restored ? 'the snapshot put back' : 'init'} ${(performance.now() - t0).toFixed(0)} ms (since start ${performance.now().toFixed(0)} ms)
 `);
 const fn = instance.exports[entry];
 if (!fn) { console.error(`no export '${entry}'`); process.exit(2); }
-let r;
-try { r = fn(); } finally { flush(); }
+let r, failed = true;
+// CS2WASM_REPEAT=n (a measurement): the entry called n times in this instance, each call's time on stderr: what an
+// embedder that keeps a module (a compiler) instantiated pays for a later call
+for (let n = +(process.env.CS2WASM_REPEAT || 1), i = 1; i <= n; i++) {
+  const t = performance.now();
+  failed = true;
+  try { r = fn(); failed = false; } finally { flush(); }
+  if (n > 1) process.stderr.write(`[host] call ${i} of ${entry}: ${(performance.now() - t).toFixed(0)} ms
+`);
+}
+const tReturned = performance.now();
+if (snapshot && entry === 'main') snapshot.save(instance, memory, { result: r, failed: failed || process.exitCode !== undefined, threads: threadsStarted, io: httpUsed });
 // (the process lasts while a thread that is not a background one runs, as in .NET)
 imports.cs2wasm.__mainReturned?.();
-if (process.env.CS2WASM_HOST_TIMES) { process.stderr.write(`[host] ${entry} returned at ${performance.now().toFixed(0)} ms
+if (process.env.CS2WASM_HOST_TIMES) { process.stderr.write(`[host] ${entry} returned at ${tReturned.toFixed(0)} ms${globalThis.__cs2wasmStackStats ? `; ${globalThis.__cs2wasmStackStats.calls} stacks asked for, ${globalThis.__cs2wasmStackStats.ms.toFixed(0)} ms` : ''}
 `); process.on('exit', () => process.stderr.write(`[host] exit at ${performance.now().toFixed(0)} ms
 `)); }
 if (instance.exports.cs2wasm_rc_counts) { // (a module built with CS2WASM_COUNT_RC=1; CS2WASM_RC_NAMES: its sites file)

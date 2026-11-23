@@ -128,6 +128,8 @@ namespace Cs2Wasm.Runtime
                 ref int w = ref Mem.RefI32(a + 8);
                 while (true) { int v = Atomic.Load32(ref w); if ((v & MarkedBit) != 0 || Atomic.CompareExchange32(ref w, v, v | MarkedBit) == v) break; }
             }
+            // (a member's plain part becomes a member: Rt.PartMarked)
+            if ((flag & Weak) != 0) Rt.PartWeak(a);
         }
 
         public static void Clear(object o, int flag) => ClearAt(Rt.AddressOf(o), flag);
@@ -169,7 +171,33 @@ namespace Cs2Wasm.Runtime
             }
             t_busy--;
             Rt.RuntimeUnlock();
-            if (has) WeakSlots.Cleared(addr);
+            if (has && WeakSlots.Cleared(addr, false)) SetAt(addr, Weak);
+        }
+
+        /// <summary>The object at `addr` is about to be finalized (it has a finalizer, and no reference is left): the
+        /// short weak handles to it are cleared, as .NET clears them before the finalizer; the handles that track
+        /// resurrection and the dependent handles (a ConditionalWeakTable's entries) stay until the object is
+        /// freed (OnDestroy, after the finalizer, unless the finalizer brought the object back). 0 if the
+        /// finalizer must not run (GC.SuppressFinalize).</summary>
+        public static int OnFinalize(int addr)
+        {
+            if (s_count == 0 || t_busy != 0) return 1;
+            if ((Mem.LoadI32(addr + 8) & MarkedBit) == 0) return 1;
+            Rt.RuntimeLock();
+            t_busy++;
+            bool has = IntMap.TryGet(s_marks, addr, out int f);
+            bool weak = has && (f & Weak) != 0;
+            if (weak)
+            {
+                int g = f & ~Weak;
+                s_weak--;
+                if (g == 0) { IntMap.Remove(s_marks, addr); s_count--; } else IntMap.Set(s_marks, addr, g);
+            }
+            t_busy--;
+            Rt.RuntimeUnlock();
+            if (!has) return 1;
+            if (weak && WeakSlots.Cleared(addr, false)) SetAt(addr, Weak);
+            return (f & FinalizerSuppressed) != 0 ? 0 : 1;
         }
 
         /// <summary>The object at `addr` is dying: clear weak handles to it; 0 if its finalizer must not run.</summary>
@@ -184,7 +212,7 @@ namespace Cs2Wasm.Runtime
             t_busy--;
             Rt.RuntimeUnlock();
             if (!has) return 1;
-            if ((f & Weak) != 0) WeakSlots.Cleared(addr);
+            if ((f & Weak) != 0) WeakSlots.Cleared(addr, true);
             return (f & FinalizerSuppressed) != 0 ? 0 : 1;
         }
     }
@@ -197,6 +225,10 @@ namespace Cs2Wasm.Runtime
 
         public static void Link(int slot, object target) => LinkAs(slot, target, 0);
 
+        /// <summary>A weak handle that tracks resurrection (GCHandleType.WeakTrackResurrection): cleared when its
+        /// target is freed, not when it is about to be finalized. Its block in the chain has bit 1 set.</summary>
+        public static void LinkLong(int slot, object target) => LinkAs(slot, target, 2);
+
         /// <summary>A dependent handle's slot (System.Runtime.DependentHandle): [target, dependent], the dependent
         /// counted by the slot and let go when the target is destroyed. Its block in the chain has bit 0 set.</summary>
         public static void LinkDependent(int slot, object target) => LinkAs(slot, target, 1);
@@ -204,12 +236,14 @@ namespace Cs2Wasm.Runtime
         /// <summary>The dependent handle's slot loses its target (if it has one still) and its dependent.</summary>
         public static void UnlinkDependent(int slot)
         {
+            int a = Mem.LoadI32(slot);
             Unlink(slot);
             Rt.RuntimeLock();
             int d = Mem.LoadI32(slot + 4);
             Mem.StoreI32(slot + 4, 0);
             Rt.RuntimeUnlock();
-            if (d != 0) Rt.Release(Rt.Borrow<object>(d));
+            // (a dependent that is its own target is not counted: DependentHandle)
+            if (d != 0 && d != a) Rt.Release(Rt.Borrow<object>(d));
         }
 
         /// <summary>The dependent handle's slot takes another dependent (an address the caller counted, or 0) if its
@@ -217,10 +251,15 @@ namespace Cs2Wasm.Runtime
         public static int ExchangeDependent(int slot, int dependent, out bool stored)
         {
             Rt.RuntimeLock();
-            stored = Mem.LoadI32(slot) != 0;
+            int a = Mem.LoadI32(slot);
+            stored = a != 0;
             int old = Mem.LoadI32(slot + 4);
             Mem.StoreI32(slot + 4, stored ? dependent : 0);
             Rt.RuntimeUnlock();
+            // (a dependent that is its own target is not counted, DependentHandle: the one that was is nothing to
+            // let go, and the caller's count on the new one is not kept)
+            if (old == a) old = 0;
+            if (stored && dependent == a) stored = false;
             return old;
         }
 
@@ -267,7 +306,7 @@ namespace Cs2Wasm.Runtime
                 // (the slot's block out of the chain)
                 for (int prev = 0, n = head; n != 0; prev = n, n = Mem.LoadI32(n + 4))
                 {
-                    if ((Mem.LoadI32(n) & ~1) != slot) continue;
+                    if ((Mem.LoadI32(n) & ~3) != slot) continue;
                     int next = Mem.LoadI32(n + 4);
                     if (prev == 0) head = next; else Mem.StoreI32(prev + 4, next);
                     Rt.Free(n, 8);
@@ -280,31 +319,36 @@ namespace Cs2Wasm.Runtime
             if (last) ObjectMarks.ClearAt(a, ObjectMarks.Weak);
         }
 
-        internal static void Cleared(int addr)
+        /// <summary>The handles to the object at `addr` are cleared: all of them (the object is freed), or the short
+        /// ones only (it is about to be finalized, or dies with others whose finalizers are about to run): then the
+        /// handles that track resurrection and the dependent handles stay; true when some did.</summary>
+        internal static bool Cleared(int addr, bool all)
         {
             // (the dependents the target's handles held: let go once the lock is, their blocks kept for the list)
-            int dependents = 0;
+            int dependents = 0, kept = 0;
             Rt.RuntimeLock();
             if (s_byAddr != 0 && IntMap.TryGet(s_byAddr, addr, out int head))
             {
-                IntMap.Remove(s_byAddr, addr);
                 for (int n = head; n != 0;)
                 {
                     int s = Mem.LoadI32(n), next = Mem.LoadI32(n + 4);
-                    Mem.StoreI32(s & ~1, 0);
+                    if (!all && (s & 3) != 0) { Mem.StoreI32(n + 4, kept); kept = n; n = next; continue; }
+                    Mem.StoreI32(s & ~3, 0);
                     int d = 0;
-                    if ((s & 1) != 0) { d = Mem.LoadI32((s & ~1) + 4); Mem.StoreI32((s & ~1) + 4, 0); }
-                    if (d != 0) { Mem.StoreI32(n, d); Mem.StoreI32(n + 4, dependents); dependents = n; }
+                    if ((s & 1) != 0) { d = Mem.LoadI32((s & ~3) + 4); Mem.StoreI32((s & ~3) + 4, 0); }
+                    // (a dependent that is its own target was not counted: DependentHandle)
+                    if (d != 0 && d != addr) { Mem.StoreI32(n, d); Mem.StoreI32(n + 4, dependents); dependents = n; }
                     else Rt.Free(n, 8);
                     n = next;
                 }
+                if (kept != 0) IntMap.Set(s_byAddr, addr, kept); else IntMap.Remove(s_byAddr, addr);
             }
             Rt.RuntimeUnlock();
             // (a group's members one after the other: the dependents wait until all are cleared, Release)
             if (t_hold != 0)
             {
                 while (dependents != 0) { int n = dependents; dependents = Mem.LoadI32(n + 4); Mem.StoreI32(n + 4, t_held); t_held = n; }
-                return;
+                return kept != 0;
             }
             while (dependents != 0)
             {
@@ -313,6 +357,7 @@ namespace Cs2Wasm.Runtime
                 Rt.Free(n, 8);
                 Rt.Release(Rt.Borrow<object>(d));
             }
+            return kept != 0;
         }
     }
 }

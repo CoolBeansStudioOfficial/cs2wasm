@@ -33,7 +33,9 @@ namespace System.Runtime
             if (dependent is not null)
             {
                 Cs2Wasm.Runtime.Rt.Share(dependent);
-                Cs2Wasm.Runtime.Rt.Retain(dependent);
+                // (a dependent that is its own target is not counted: the slot holds it for as long as the target
+                // lives, which is as long as it lives; counted, it kept itself for good, where .NET frees it)
+                if (!ReferenceEquals(dependent, target)) Cs2Wasm.Runtime.Rt.Retain(dependent);
                 Cs2Wasm.Runtime.Mem.StoreI32(slot + 4, Cs2Wasm.Runtime.Rt.AddressOf(dependent));
             }
             Cs2Wasm.Runtime.WeakSlots.LinkDependent(slot, target);

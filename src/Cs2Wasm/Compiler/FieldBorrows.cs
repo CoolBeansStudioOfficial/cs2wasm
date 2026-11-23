@@ -57,7 +57,7 @@ sealed partial class FunctionCompiler
         }
         // a getter that returns a field's value or an element borrowed (the indexer of List), of a receiver that stays
         // put: the fields the value came through (Driver.ReturnPathKeys), and the receiver's own place (no threads)
-        if (!tm && !s_noGetterBorrows && init is IPropertyReferenceOperation { Property.GetMethod: { IsStatic: false } gm, Instance: { } gi } gpr
+        if (!s_noGetterBorrows && init is IPropertyReferenceOperation { Property.GetMethod: { IsStatic: false } gm, Instance: { } gi } gpr && (!tm || UnsharedContainer(TypeOf(gi)))
             && Types.IsRef(T.Resolve(gpr.Type!, Map)) && !TypeOf(gi).IsValueType && !IsVirtualCall(gi, gm)
             && D.Method(SubstMethod(gm)).BorrowedReturn is { BorrowKeys: { } gk, BorrowedKind: Own.Unstable })
         {
@@ -65,7 +65,7 @@ sealed partial class FunctionCompiler
             while (recv is IConversionOperation { OperatorMethod: null, Conversion.IsReference: true } rc) recv = rc.Operand;
             if (IsStableBase(recv)) return gk;
             if (StaticArrayKey(recv) is { } rsk) return rsk + "\n" + gk;
-            if (recv is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ri } rfr && IsStableBase(ri) && rfr.Field.ContainingType.TypeKind == TypeKind.Class
+            if (recv is IFieldReferenceOperation { Field.IsStatic: false, Instance: { } ri } rfr && IsStableBase(ri) && rfr.Field.ContainingType.TypeKind == TypeKind.Class && (!tm || UnsharedPlace(rfr))
                 && !(ri is IParameterReferenceOperation && TypeOf(ri).IsValueType))
             {
                 var rk = Driver.FieldKey(Owner(rfr.Field), StorageField(rfr.Field));
@@ -100,8 +100,10 @@ sealed partial class FunctionCompiler
     /// (no threads: a static is any thread's to store), else null.</summary>
     string? StaticArrayKey(IOperation ar)
     {
-        if (D.ThreadMode || ar is not IFieldReferenceOperation { Field: { IsStatic: true, IsVolatile: false } sf } sfr
+        if (ar is not IFieldReferenceOperation { Field: { IsStatic: true, IsVolatile: false } sf } sfr
             || !Types.IsRef(T.Resolve(sf.Type, Map)) || IsThreadStatic(StorageField(sf))) return null;
+        // (threads: a static only the engine thread's code names)
+        if (D.ThreadMode && !EngineStatic(sf)) return null;
         var key = Driver.FieldKey(Owner(sfr.Field), StorageField(sfr.Field));
         D.NoteBorrowField(key, StorageField(sfr.Field), T.Resolve(sf.Type, Map));
         return key;
@@ -953,9 +955,29 @@ internal sealed partial class Driver
         Console.Error.WriteLine($"reach: {parts[0]} does not reach {parts[1]}");
     }
 
+    /// <summary>The static slots that code a worker thread can run names (reads, writes or takes the address of: every
+    /// use of a static's storage is an instruction that refers to its slot). Called before the counts are resolved.</summary>
+    internal HashSet<object> WorkerStaticSlots(Func<WasmFunction, bool>? lambdaRuns = null)
+    {
+        var r = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        foreach (var f in WorkerReachable(lambdaRuns))
+            foreach (var ins in f.Body)
+                if (ins.Ref is StaticSlot s) r.Add(s);
+        // (the table's functions are listed again when the borrows ask: functions may be made in between)
+        _tableFns = null;
+        _delegateBucketFns.Clear();
+        return r;
+    }
+    /// <summary>The slot of a static field by its key (StaticKey); null when it has none.</summary>
+    internal object? StaticSlotOf(string key) => _statics.TryGetValue("F:" + key, out var s) ? s : null;
+
     /// <summary>The functions a worker thread can run: what its start export (__thread_entry: the only export a worker
-    /// instance is entered through) reaches by calls; an indirect call reaches every function in the table.</summary>
-    HashSet<WasmFunction> WorkerReachable()
+    /// instance is entered through) reaches by calls; an indirect call reaches every function in the table.
+    /// With `lambdaRuns` (Sharing.Analyze): a function that only lambdas' delegates were made with (DelegatesMade,
+    /// every site a lambda's) is reached by an indirect call only when it says so (a delegate of one of its sites, or
+    /// any delegate of its type, can be reached by another thread); and a function whose address the code of a
+    /// reached function takes is reached (the code that makes a delegate may call it, or hand it to what does).</summary>
+    HashSet<WasmFunction> WorkerReachable(Func<WasmFunction, bool>? lambdaRuns = null)
     {
         var seen = new HashSet<WasmFunction>();
         var root = Module.Functions.FirstOrDefault(f => f.Exports.Contains("__thread_entry"));
@@ -986,8 +1008,10 @@ internal sealed partial class Driver
                 {
                     if (ins.Imm2 == 0) { if (tableDone) continue; tableDone = true; }
                     else if (!buckets.Add((int)ins.Imm2)) continue;
-                    foreach (var t in IndirectTargets(ins)) Add(t);
+                    foreach (var t in IndirectTargets(ins))
+                        if (lambdaRuns == null || t.TableRoot || !DelegatesMade.TryGetValue(t, out var made) || made.Any(x => x.site < 0) || lambdaRuns(t)) Add(t);
                 }
+                else if (lambdaRuns != null && ins.Op == Op.I32Const && ins.Ref is WasmFunction taken) Add(taken);
             }
         }
         return seen;
@@ -999,7 +1023,12 @@ internal sealed partial class Driver
     sealed class StoreSummary
     {
         // (Rt.StringOf, Rt.Prefix: a string they make, its characters)
-        static readonly string[] s_internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.StringOf(", "Cs2Wasm.Runtime.Rt.Prefix(", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.FreeObject(", "Cs2Wasm.Runtime.Rt.FreeObjectArena(", "Cs2Wasm.Runtime.Rt.FreeBlock(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks."];
+        static readonly string[] s_internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.StringOf(", "Cs2Wasm.Runtime.Rt.Prefix(", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.FreeObject(", "Cs2Wasm.Runtime.Rt.FreeObjectArena(", "Cs2Wasm.Runtime.Rt.FreeBlock(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks.",
+            // (threads: the list of the thread's own that rt.destroy keeps the objects waiting for the outermost destruction in: memory from Rt.Alloc)
+            "Cs2Wasm.Runtime.Rt.PendDestroy(", "Cs2Wasm.Runtime.Rt.NextPending(", "Cs2Wasm.Runtime.Rt.LocksHeld(",
+            // (threads: the exchange of a store in its region, called by generated code where the store is, which notes the
+            // write itself; besides that it takes the region's locks, words of the runtime's own)
+            "Cs2Wasm.Runtime.Rt.RegionExchange("];
         public static bool Internal(WasmFunction f) => s_internals.Any(p => f.Name.StartsWith(p, StringComparison.Ordinal));
 
         readonly Dictionary<string, int> _key = [];

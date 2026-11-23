@@ -141,9 +141,11 @@ internal sealed partial class RuntimeFns
                         // place, WasmModule.ExpandLeafReleases)
                         body.Add(ins with { Ref = _releasePlain, Imm2 = FunctionCompiler.ExactTypeHint(D, t, plain: true) });
                         break;
-                    case CountKind.StoreRef: body.Add(ins with { Ref = shared || _storeRefPlain == null ? StoreRef : _storeRefPlain }); break;
+                    // (a store into a slot, a read of one: by whether a slot of a reachable object can be there, which an
+                    // array type reached only as an array with no element has none of: Sharing.MaySlotsBeShared)
+                    case CountKind.StoreRef: body.Add(ins with { Ref = !threads || sh == null || sh.MaySlotsBeShared(t) || _storeRefPlain == null ? StoreRef : _storeRefPlain }); break;
                     case CountKind.LoadRetain:
-                        if (!threads || sh == null || sh.MayBeShared(c!) || _retainPlain == null) { body.Add(ins with { Ref = LoadRetain }); break; }
+                        if (!threads || sh == null || sh.MaySlotsBeShared(c!) || _retainPlain == null) { body.Add(ins with { Ref = LoadRetain }); break; }
                         // (no other thread stores into this slot: the read, then the count)
                         body.Add(ins with { Op = Op.I32Load, Imm = 0, Imm2 = 2, Ref = null });
                         body.Add(ins with { Ref = shared ? Retain : _retainPlain });

@@ -229,7 +229,7 @@ sealed partial class FunctionCompiler
         int ob = thisByValue || D.ConsumingOf(m).Mask != 0 ? -1 : OutBorrowCall(m, virt, args);
         bool wantRefAddress = _wantRefReturnAddress;
         var r = CallWith(m, virt, pushThis, () => { PushArgs(m, args); if (ob >= 0) _outBorrowNext = ob + 1; }, null, syntax, ob >= 0 ? null : ConstArgsFor(m, args), stableRecv: instance != null && IsStableBase(instance), thisByValue: thisByValue);
-        if (D.ExposesStorage(m)) KeepStorage(m, syntax, wantRefAddress, instance, args);
+        if (KeepsStorageAt(m, syntax)) KeepStorage(m, syntax, wantRefAddress, instance, args);
         E.CurrentPos = save;
         return r;
     }
@@ -259,7 +259,7 @@ sealed partial class FunctionCompiler
                 || inst is ILocalReferenceOperation { Local.RefKind: RefKind.RefReadOnly };
             if (IsAddressable(instance))
             {
-                EmitAddress(instance);
+                EmitAddressForCall(instance);
                 if (mutates && readOnlyPlace) CopyToTemp(rt);
                 return;
             }
@@ -414,14 +414,19 @@ sealed partial class FunctionCompiler
                 _addrUse = RefUseOf(p);
                 // (a struct's place to an intrinsic that remakes refs, Unsafe.As<S, object>(ref s): its references
                 // may be stored through refs of other types, any object of their types)
-                if (_addrUse == null && Types.IsStruct(pt) && T.LayoutOf(pt).HasRefs && D.IsIntrinsic(D.MethodTarget((IMethodSymbol)p.ContainingSymbol))) StructLeavesAnything(pt);
+                // (not one that keeps the ref's type, nor inside the library's own that do: Unsafe.Add<S> and
+                // Unsafe.Subtract<S> give a ref of another S, and Buffer.Memmove<S> copies S's into places of S's;
+                // what a field of S holds, wherever the S is, is one node, and a copy adds nothing to it.
+                // CS2WASM_NO_SAME_TYPE_REFS=1: these too, as before)
+                if (_addrUse == null && Types.IsStruct(pt) && T.LayoutOf(pt).HasRefs && D.IsIntrinsic(D.MethodTarget((IMethodSymbol)p.ContainingSymbol))
+                    && !(D.ThreadMode && !Driver.s_noSameTypeRefs && (SameTypeRefs(D.MethodTarget((IMethodSymbol)p.ContainingSymbol)) || SameTypeRefs(M)))) StructLeavesAnything(pt);
             }
-            EmitAddress(value);
+            EmitAddressForCall(value);
             return;
         }
         if (p.RefKind == RefKind.In)
         {
-            if (IsAddressable(value) && (value.Type == null || Types.Key(TypeOf(value)) == Types.Key(pt))) EmitAddress(value);
+            if (IsAddressable(value) && (value.Type == null || Types.Key(TypeOf(value)) == Types.Key(pt))) EmitAddressForCall(value);
             else EmitAddressOfCopy(value, pt);
             return;
         }
@@ -523,7 +528,7 @@ sealed partial class FunctionCompiler
         }
         CallWith(m, virt, pushThis, () => PushArgs(m, inv.Arguments.Cast<IOperation>().ToList()), pushDst, inv.Syntax);
         // (a span over a collection's storage, written where it goes: the storage kept, StorageKeeps.cs)
-        if (D.ExposesStorage(m)) { pushDst(); KeepStorage(m, inv.Syntax, false, inv.Instance, inv.Arguments.Cast<IOperation>().ToList()); E.Op(Op.Drop); }
+        if (KeepsStorageAt(m, inv.Syntax)) { pushDst(); KeepStorage(m, inv.Syntax, false, inv.Instance, inv.Arguments.Cast<IOperation>().ToList()); E.Op(Op.Drop); }
     }
 
     static IOperation StripConversions(IOperation o) { while (o is IConversionOperation c) o = c.Operand; return o; }
@@ -990,8 +995,16 @@ sealed partial class FunctionCompiler
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
             case "Rt.ArenaSlots": E.Call(Rt.ArenaSlotsFn); return Own.None;
             case "Rt.NoWaitingTop": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_WAITING_TOP") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoPlainParents": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_PLAIN_PARENTS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoNodePath": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_NODE_PATH") == "1" ? 1 : 0); return Own.None;
             case "Rt.NodePathBreak": E.I32(int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_NODE_PATH_BREAK"), out int npb) ? npb : 0); return Own.None; // (a test's: one rule of the node path left out, tests/Conformance/201)
+            case "Rt.PartWeak": E.Call(Rt.PartWeakFn); return Own.None;
+            // (the plain parts are off by default since 2026-11-23: with them on, objects a finalizer brings back and
+            // objects behind weak handles stay alive where .NET frees them, tests 248, 265, 266 of claude/known-diffs-2;
+            // CS2WASM_PLAIN_PARTS=1, or a CS2WASM_PLAIN_PARTS_BREAK, turns them on; CS2WASM_NO_PLAIN_PARTS=1 keeps them off)
+            case "Rt.NoPlainParts": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_PLAIN_PARTS") == "1"
+                || (Environment.GetEnvironmentVariable("CS2WASM_PLAIN_PARTS") != "1" && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CS2WASM_PLAIN_PARTS_BREAK"))) ? 1 : 0); return Own.None;
+            case "Rt.PlainPartsBreak": E.I32(int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_PLAIN_PARTS_BREAK"), out int ppb) ? ppb : 0); return Own.None; // (a test: one rule of the plain parts left out, tests/Conformance/202)
             case "Rt.NoFusedJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FUSED_JOIN") == "1" ? 1 : 0); return Own.None;
             case "Cs2WasmArrays.BoxesElements": D.MarkBoxedElements(); return Own.None;
             case "Rt.ArenaFinalizeObject": E.Call(Rt.ArenaFinFn); return Own.None;
@@ -1024,8 +1037,9 @@ sealed partial class FunctionCompiler
             case "Rt.NoSurvivorHold": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_SURVIVOR_HOLD") == "1" ? 1 : 0); return Own.None;
             case "Rt.TurnCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_TURN_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.SurvivorCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_SURVIVOR_CHECK") == "1" ? 1 : 0); return Own.None;
-            case "Rt.NoFreshJoin":E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_JOIN") == "1" ? 1 : 0); return Own.None;
-            case "Rt.NoSlotWalk": E.I32(Environment.GetEnvironmentVariable("CS2WASM_SLOT_WALK") == "1" ? 0 : 1); return Own.None; // (off by default: with it the strings scene of tools/frames.mjs has one 0.6 ms frame, cause not found; tree the same either way)
+            case "Rt.NoFreshJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_JOIN") == "1" ? 1 : 0); return Own.None;
+            case "Rt.SlotWalkBreak": E.I32(Environment.GetEnvironmentVariable("CS2WASM_SLOT_WALK_BREAK") == "1" ? 1 : 0); return Own.None; // (a test: the walk leaves the member's first counted slot out, tools/slot-walk-breaks.sh)
+            case "Rt.NoSlotWalk": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_SLOT_WALK") == "1" ? 1 : 0); return Own.None; // (on since round 10; the long frame of the strings scene laid to it in round 1 was the host's own collection, round 2)
             case "Rt.ArrayRankAt": E.Call(Rt.ArrayRank); return Own.None;
             case "Rt.ArrayElementSizeAt": E.Call(Rt.ArrayElemSize); return Own.None;
             case "Rt.ArrayGrow": E.Call(Rt.ArrayGrowFn); return Own.None;
@@ -1035,6 +1049,10 @@ sealed partial class FunctionCompiler
             case "Rt.NoPinnedSkip": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_PINNED_SKIP") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoOwnedChain": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_OWNED_CHAIN") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoFastDestroy": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FAST_DESTROY") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoFinRevive": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FIN_REVIVE") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoAdoptCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_ADOPT_CHECK") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoDyingNote": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DYING_NOTE") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoShedHolds": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_SHED_HOLDS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDyingUp": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DYING_UP") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDestroyByBits": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DESTROY_BY_BITS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoStoreWaits": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_STORE_WAITS") == "1" ? 1 : 0); return Own.None;
@@ -1053,6 +1071,7 @@ sealed partial class FunctionCompiler
             case "Rt.DynamicInvokeRaw": E.Call(D.DynamicInvokeFn); return Own.Owned;
             case "Rt.DelegateArity": E.Call(D.DelegateArityFn); return Own.None;
             case "Rt.DelegateMethodEntry": E.Call(D.DelegateMethodFn); return Own.None;
+            case "Delegate.TargetOf": E.Call(D.DelegateSingletonFn); return Own.Owned;
             case "Rt.FrameMethods": E.Call(D.FrameMethodsFn); return Own.None;
             case "Rt.ArenaClearObject": E.Call(Rt.ArenaClearFn); return Own.None;
             case "Rt.ArenaFreeObject": E.Call(Rt.ArenaFreeFn); return Own.None;
@@ -1322,7 +1341,7 @@ sealed partial class FunctionCompiler
             var ctor = SubstMethod(oc.Constructor);
             CallWith(ctor, false, pushDst, () => PushArgs(ctor, oc.Arguments.Cast<IOperation>().ToList()), null, oc.Syntax);
             // (a ref struct whose constructor puts a reference into a collection's storage in it: StorageKeeps.cs)
-            if (D.ExposesStorage(ctor)) KeepStorageOfNew(ctor, oc.Syntax, pushDst, oc.Arguments.Cast<IOperation>().ToList());
+            if (KeepsStorageAt(ctor, oc.Syntax)) KeepStorageOfNew(ctor, oc.Syntax, pushDst, oc.Arguments.Cast<IOperation>().ToList());
         }
         if (oc.Initializer != null)
         {
@@ -1754,9 +1773,10 @@ sealed partial class FunctionCompiler
     }
 
     /// <summary>Allocates a delegate; stack: target (owned i32) → delegate (owned).</summary>
-    void NewDelegate(ITypeSymbol dt, WasmFunction fn, ITypeSymbol? targetType = null, Display? env = null)
+    void NewDelegate(ITypeSymbol dt, WasmFunction fn, ITypeSymbol? targetType = null, Display? env = null, int site = -1)
     {
         D.Arenas.DelegateTarget(dt, targetType, env);
+        if (D.ThreadMode) D.NoteDelegateMade(fn, T.Canonical(dt), site);
         int target = Scratch(ValType.I32); E.Set(target);
         int tid = D.MarkConstructed(dt);
         var layout = T.LayoutOf(dt);
@@ -1815,7 +1835,10 @@ sealed partial class FunctionCompiler
         var fn = D.Lambda(this, af, Map, env);
         Sh?.LambdaAs(af.Symbol, dt);
         PushDisplayPtr(env, retain: true);
-        NewDelegate(dt, fn.Fn, env: env);
+        // (the place in the text: the delegate's sources name it, Sharing.LambdaTag)
+        int site = D.ThreadMode && Sh != null ? LambdaSiteAt(af.Syntax) : -1;
+        if (site >= 0) D.FillLambdaSite(site, fn.Fn, T.Canonical(dt), env);
+        NewDelegate(dt, fn.Fn, env: env, site: site);
         return Own.Owned;
     }
 

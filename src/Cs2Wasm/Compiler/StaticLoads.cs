@@ -38,7 +38,8 @@ internal sealed partial class Driver
     Dictionary<WasmFunction, List<object>> StaticLoadCandidates()
     {
         var r = new Dictionary<WasmFunction, List<object>>();
-        if (_staticRefSlots.Count == 0 || UsesThreads) return r;
+        // (threads: only the engine thread's own statics are noted, FunctionCompiler.EngineStatic)
+        if (_staticRefSlots.Count == 0 || UsesThreads && !ThreadMode) return r;
         foreach (var f in Module.Functions)
         {
             if (f.IsImport) continue;

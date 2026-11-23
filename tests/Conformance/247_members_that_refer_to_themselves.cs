@@ -1,7 +1,6 @@
 // A member of a living group that refers back to itself, or to a member above it, through an array's element or
 // through a field past the sixteenth word, goes when it is let go, as under .NET (it stayed until its whole group
 // went). A tree that lives on in a static while such nodes are cut from it.
-// known-gap: a member cut from a living group that an array element or a field past the sixteenth word under it refers back to stays until the group goes (docs/AUDIT.md, known differences 2026-11-22)
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
@@ -54,6 +53,9 @@ static class Program
         if (kind is 6) { n.Raw = new Node?[4]; n.Raw[0] = n; n.Raw[3] = n; n.Raw[2] = kid; }
     }
 
+    // (not in Main: under .NET the call's result would stay in a slot of Main's frame, and the node with it)
+    [MethodImpl(MethodImplOptions.NoInlining)] static void First() { Add(s_root); }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void Cut() { s_root.Kids.RemoveAt(s_root.Kids.Count - 1); }
 
@@ -62,7 +64,7 @@ static class Program
 
     [UnmanagedCallersOnly(EntryPoint = "main")] static void Main()
     {
-        Add(s_root);
+        First();
         Console.WriteLine("start: " + Counts());
         for (int kind = 0; kind <= 7; kind++)
         {

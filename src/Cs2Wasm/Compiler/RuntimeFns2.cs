@@ -534,6 +534,11 @@ internal sealed partial class RuntimeFns
     WasmFunction? _onDestroy;
     public WasmFunction OnDestroy => _onDestroy ??= M.AddFunction("rt.on_destroy", FT([I], [I]));
     public WasmFunction? OnDestroyIfMade => _onDestroy;
+    WasmFunction? _onFinalize;
+    /// <summary>rt.on_finalize(p): before p's finalizer: the short weak handles to p cleared, the others left for
+    /// rt.on_destroy; 1 if the finalizer runs (ObjectMarks.OnFinalize; `1` in a program that sets no mark).</summary>
+    public WasmFunction OnFinalize => _onFinalize ??= M.AddFunction("rt.on_finalize", FT([I], [I]));
+    public WasmFunction? OnFinalizeIfMade => _onFinalize;
     WasmFunction? _weakAny, _weakDying;
     /// <summary>rt.weak_any(): whether any object is a weak handle's target now (0 in a program that sets no mark); rt.weak_dying(obj):
     /// the weak references to a member of a group that is going are cleared (ObjectMarks.WeakDying; nothing in a
@@ -577,6 +582,10 @@ internal sealed partial class RuntimeFns
     /// <summary>rt.array_grow(container, old, to, n): Rt.ArenaGrowArray where arrays can be on a cycle, else 0 (RuntimeGen.cs).</summary>
     public WasmFunction ArrayGrowFn => _arrayGrow ??= M.AddFunction("rt.array_grow", FT([I, I, I, I], [I]));
     public WasmFunction? ArrayGrowIfMade => _arrayGrow;
+    WasmFunction? _partWeak;
+    /// <summary>rt.part_weak(obj): Rt.PartMarked in a program with groups, nothing in any other (RuntimeGen.cs).</summary>
+    public WasmFunction PartWeakFn => _partWeak ??= M.AddFunction("rt.part_weak", FT([I], []));
+    public WasmFunction? PartWeakIfMade => _partWeak;
 
     // arenas (section 4.3): dispatch on the type id of a member; bodies are emitted with the type graph
     WasmFunction? _arenaClear, _arenaFree, _arenaVisit, _sccOf;

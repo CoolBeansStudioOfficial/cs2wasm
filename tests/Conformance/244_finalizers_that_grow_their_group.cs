@@ -1,7 +1,6 @@
 // A finalizer of a member of a group that is going grows a list of that same group (and makes new members of it):
 // everything goes, as under .NET (what the finalizer added stayed for good). Each object counts itself; a log
 // outside the group counts the finalizers.
-// known-gap: what a finalizer of a dying group adds to that group refers back to its members, which reads as a member stored where the program can reach it: the group and the additions are never freed (docs/AUDIT.md, known differences 2026-11-22)
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;

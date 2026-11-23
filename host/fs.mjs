@@ -35,7 +35,15 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
   };
   const virt = (r) => '/' + path.relative(root, r).split(path.sep).filter(Boolean).join('/');
   // reads and writes through a copy (the module's memory may be shared, which the file system does not take)
-  const readInto = (fd, p, n, pos) => { const b = Buffer.alloc(n); const r = fs.readSync(fd, b, 0, n, pos); u8().set(b.subarray(0, r), p >>> 0); return r; };
+  // (one buffer kept for the reads, grown to the largest: a new zeroed one for each of a compiler's thousands of
+  // files was a tenth of its file reading)
+  let scratch = Buffer.allocUnsafe(1 << 16);
+  const readInto = (fd, p, n, pos) => {
+    if (scratch.length < n) scratch = Buffer.allocUnsafe(Math.max(n, 2 * scratch.length));
+    const r = fs.readSync(fd, scratch, 0, n, pos);
+    u8().set(r === scratch.length ? scratch : scratch.subarray(0, r), p >>> 0);
+    return r;
+  };
   const writeFrom = (fd, p, n, pos) => fs.writeSync(fd, Buffer.from(u8().slice(p >>> 0, (p >>> 0) + n)), 0, n, pos);
   const utf8Into = (s, p, size) => { const b = Buffer.from(s, 'utf8'); u8().set(b.subarray(0, Math.min(size, b.length)), p >>> 0); return b.length; };
   const statInto = (st, out) => {
@@ -65,9 +73,13 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
   const pending = new Map(); // a directory's entry read but not yet taken (its name did not fit)
   const NT = (d) => d.isDirectory() ? 4 : d.isFile() ? 8 : d.isSymbolicLink() ? 10 : d.isFIFO() ? 1 : d.isCharacterDevice() ? 2 : d.isBlockDevice() ? 6 : d.isSocket() ? 12 : 0;
   const tryDo = (f) => { try { return f(); } catch (e) { return err(e); } };
+  // (host/snapshot.mjs: what the module asks about and what it writes, when its state is to be kept; the main thread's)
+  const watch = globalThis.__cs2wasmFsWatch;
+  const reads = (r) => { watch?.read(r); return r; }, writes = (r) => { watch?.write(r); return r; };
   return {
     fs_open: (p, len, flags, mode) => tryDo(() => {
       const r = real(p, len);
+      if (watch) { if ((flags & 3) !== 0 || (flags & 0xA0)) watch.write(r); else watch.read(r); }
       // (a directory opened for reading is opened as one; asked only when the plain open fails: a compiler that
       // reads thousands of files paid two more system calls for each)
       let fd;
@@ -77,9 +89,10 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
         fd = fs.openSync(r, 'r');
       }
       pos.set(fd, 0);
+      watch?.opened();
       return fd;
     }),
-    fs_close: (fd) => tryDo(() => { fs.closeSync(fd); pos.delete(fd); return 0; }),
+    fs_close: (fd) => tryDo(() => { fs.closeSync(fd); pos.delete(fd); watch?.closed(); return 0; }),
     fs_read: (fd, p, n) => tryDo(() => { const r = readInto(fd, p, n, at(fd)); pos.set(fd, at(fd) + r); return r; }),
     fs_pread: (fd, p, n, off) => tryDo(() => readInto(fd, p, n, Number(off))),
     fs_write: (fd, p, n) => tryDo(() => { const r = writeFrom(fd, p, n, at(fd)); pos.set(fd, at(fd) + r); return r; }),
@@ -94,18 +107,18 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
       } catch (e) { return BigInt(err(e)); }
     },
     fs_fstat: (fd, out) => tryDo(() => statInto(fs.fstatSync(fd, { bigint: true }), out)),
-    fs_stat: (p, len, follow, out) => tryDo(() => statInto((follow ? fs.statSync : fs.lstatSync)(real(p, len), { bigint: true }), out)),
+    fs_stat: (p, len, follow, out) => tryDo(() => statInto((follow ? fs.statSync : fs.lstatSync)(reads(real(p, len)), { bigint: true }), out)),
     fs_ftruncate: (fd, n) => tryDo(() => { fs.ftruncateSync(fd, Number(n)); return 0; }),
     fs_fsync: (fd) => tryDo(() => { fs.fsyncSync(fd); return 0; }),
-    fs_access: (p, len, mode) => tryDo(() => { fs.accessSync(real(p, len), mode); return 0; }),
-    fs_unlink: (p, len) => tryDo(() => { fs.unlinkSync(real(p, len)); return 0; }),
-    fs_mkdir: (p, len, mode) => tryDo(() => { fs.mkdirSync(real(p, len), { mode }); return 0; }),
-    fs_rmdir: (p, len) => tryDo(() => { fs.rmdirSync(real(p, len)); return 0; }),
-    fs_rename: (a, al, b, bl) => tryDo(() => { fs.renameSync(real(a, al), real(b, bl)); return 0; }),
-    fs_link: (a, al, b, bl) => tryDo(() => { fs.linkSync(real(a, al), real(b, bl)); return 0; }),
-    fs_symlink: (t, tl, l, ll) => tryDo(() => { fs.symlinkSync(str(t, tl), real(l, ll)); return 0; }),
-    fs_readlink: (p, len, buf, size) => tryDo(() => utf8Into(fs.readlinkSync(real(p, len)), buf, size)),
-    fs_opendir: (p, len) => tryDo(() => { const d = fs.opendirSync(real(p, len)); const h = nextDir++; dirs.set(h, d); return h; }),
+    fs_access: (p, len, mode) => tryDo(() => { fs.accessSync(reads(real(p, len)), mode); return 0; }),
+    fs_unlink: (p, len) => tryDo(() => { fs.unlinkSync(writes(real(p, len))); return 0; }),
+    fs_mkdir: (p, len, mode) => tryDo(() => { fs.mkdirSync(writes(real(p, len)), { mode }); return 0; }),
+    fs_rmdir: (p, len) => tryDo(() => { fs.rmdirSync(writes(real(p, len))); return 0; }),
+    fs_rename: (a, al, b, bl) => tryDo(() => { fs.renameSync(writes(real(a, al)), writes(real(b, bl))); return 0; }),
+    fs_link: (a, al, b, bl) => tryDo(() => { fs.linkSync(reads(real(a, al)), writes(real(b, bl))); return 0; }),
+    fs_symlink: (t, tl, l, ll) => tryDo(() => { fs.symlinkSync(str(t, tl), writes(real(l, ll))); return 0; }),
+    fs_readlink: (p, len, buf, size) => tryDo(() => utf8Into(fs.readlinkSync(reads(real(p, len))), buf, size)),
+    fs_opendir: (p, len) => tryDo(() => { const d = fs.opendirSync(reads(real(p, len))); const h = nextDir++; dirs.set(h, d); watch?.opened(); return h; }),
     fs_readdir: (h, buf, size, typeOut) => tryDo(() => {
       const d = dirs.get(h);
       if (!d) return -E.EBADF;
@@ -118,12 +131,12 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
       dv().setInt32(typeOut >>> 0, NT(e), true);
       return name.length;
     }),
-    fs_closedir: (h) => tryDo(() => { dirs.get(h)?.closeSync(); dirs.delete(h); pending.delete(h); return 0; }),
+    fs_closedir: (h) => tryDo(() => { dirs.get(h)?.closeSync(); if (dirs.delete(h)) watch?.closed(); pending.delete(h); return 0; }),
     fs_getcwd: (buf, size) => utf8Into(getCwd(), buf, size),
-    fs_chdir: (p, len) => tryDo(() => { const r = real(p, len); if (!fs.statSync(r).isDirectory()) return -E.ENOTDIR; setCwd(virt(r)); return 0; }),
-    fs_chmod: (p, len, mode) => tryDo(() => { fs.chmodSync(real(p, len), mode); return 0; }),
+    fs_chdir: (p, len) => tryDo(() => { const r = real(p, len); if (!fs.statSync(r).isDirectory()) return -E.ENOTDIR; setCwd(virt(r)); watch?.unsafe('the working directory was changed'); return 0; }),
+    fs_chmod: (p, len, mode) => tryDo(() => { fs.chmodSync(writes(real(p, len)), mode); return 0; }),
     fs_fchmod: (fd, mode) => tryDo(() => { fs.fchmodSync(fd, mode); return 0; }),
-    fs_utimens: (p, len, t) => tryDo(() => { const [a, m] = timesOf(t); fs.utimesSync(real(p, len), a, m); return 0; }),
+    fs_utimens: (p, len, t) => tryDo(() => { const [a, m] = timesOf(t); fs.utimesSync(writes(real(p, len)), a, m); return 0; }),
     fs_futimens: (fd, t) => tryDo(() => { const [a, m] = timesOf(t); fs.futimesSync(fd, a, m); return 0; }),
   };
 }

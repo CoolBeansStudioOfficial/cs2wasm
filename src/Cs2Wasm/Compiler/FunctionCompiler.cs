@@ -406,7 +406,9 @@ sealed partial class FunctionCompiler
                 foreach (var t in da.Target.DescendantsAndSelf().OfType<IParameterReferenceOperation>()) _assignedParams.Add(t.Parameter);
         }
         AnalyzeCaptures(body);
+        RecordCapturedSources();
         ComputeLocalMoves(body);
+        NoteSpanSites(body);
         foreach (var p in M.Parameters)
         {
             var v = _vars[p];
@@ -1122,6 +1124,8 @@ sealed partial class FunctionCompiler
             if (d.Symbol.RefKind != RefKind.None)
             {
                 EmitAddress(init); E.Set(v.AddrLocal);
+                // (a reference into an object the code may let go while it is in use: StorageKeeps.cs)
+                if (_spanSites.Contains(d.Syntax)) KeepObjectOf(v.AddrLocal, StorageKeepLocal(d.Syntax, 0));
             }
             else if (Types.IsStruct(v.Type) && IsDirectStructProducer(init))
             {
@@ -1154,6 +1158,7 @@ sealed partial class FunctionCompiler
                 EmitAddress(value);
                 _retLocal = _retLocal >= 0 ? _retLocal : E.AddLocal(ValType.I32);
                 E.Set(_retLocal);
+                EmitReturnKeepRef();
             }
             else
             {
@@ -1215,6 +1220,8 @@ sealed partial class FunctionCompiler
 
     void EmitReturnSequence(bool hasValue)
     {
+        // (a span or a `ref` going out: what it points into is counted until the caller has it, StorageKeeps.cs)
+        EmitReturnKeep(hasValue);
         foreach (var tl in _temps) foreach (var s in tl) ReleaseSlot(s);
         for (int i = _scopes.Count - 1; i >= 0; i--)
             for (int j = _scopes[i].Owned.Count - 1; j >= 0; j--) ReleaseSlot(_scopes[i].Owned[j]);
@@ -1409,15 +1416,28 @@ sealed partial class FunctionCompiler
             // The element comes straight from the list's array: one copy where the enumerator made two (into its
             // Current, then into the variable), and a reference borrows from the array as an array's element does
             // (section 4.1), unless something the loop runs stores elements or the list's array.
+            // Written with the size's test first (CS2WASM_NO_LIST_TEST_FIRST=1: as above):
+            //   for (i = 0; ; i++) { if (i >= list._size) { if (version != list._version) throw; break; } if (version != list._version) throw; .. }
+            // Both tests read and write nothing else, so which comes first cannot be told: a changed list throws
+            // whatever its size says, an unchanged one goes by its size. With the size's test first the loop
+            // starts with a test Wasm/FieldLoads.cs can copy before it, and the loads here carry their fields'
+            // tags as loads by name do: a loop that stores none of the list's fields (by its own code or its
+            // calls) reads the size, the version, the array, its length and the body's own fields once.
+            // And the path of a changed list ends in the enumerator's throw (MoveNextThrows), so its enumerator
+            // is made there, on the stack below the function's frame, counts nothing and is never released: the
+            // function needs no frame slot and no handler for it (CS2WASM_NO_LIST_THROW_PATH=1: a temporary of
+            // the statement, as before). A walk over a tree enters such a loop once a node.
             BeginTemps();
             var o = EmitValue(coll);
             int list = E.AddLocal(ValType.I32);
             if (o == Own.Owned) { E.Set(list); AddOwned(new Slot { Local = list, Type = collType }); }
-            else if (o == Own.Unstable && !D.ThreadMode && _lastFieldLoad is var (fat, fkey) && fat == E.Fn.Body.Count)
+            else if (o == Own.Unstable && (!D.ThreadMode || LocalListLoops && UnsharedPlace(coll)) && _lastFieldLoad is var (fat, fkey) && fat == E.Fn.Body.Count)
             {
                 // a field of a stable object (`foreach (var c in node.Children)`): the field keeps the list for the
                 // loop unless something the loop runs stores that field (FieldBorrows.cs decides, as for a temporary)
+                // (threads: a field of an object no other thread can reach, which no other thread stores)
                 var (retain, release) = D.NewFieldBorrow(E.Fn, fkey);
+                if (D.ThreadMode) D.ThreadLocalBorrows.Add(retain);
                 E.Call(retain); E.Set(list);
                 AddOwned(new Slot { Local = list, Type = collType, ReleaseMarker = release });
             }
@@ -1425,12 +1445,50 @@ sealed partial class FunctionCompiler
             EndTemps();
             E.Get(list); NullCheck();
             int version = E.AddLocal(ValType.I32), i = E.AddLocal(ValType.I32), items = E.AddLocal(ValType.I32);
-            E.Get(list); E.Load(Op.I32Load, lVersion.Offset); E.Set(version);
+            bool testFirst = !s_noListTestFirst;
+            var throwsBy = s_noListThrowPath ? null : MoveNextThrows(lEnum, lMoveNext);
+            E.Get(list); E.Load(Op.I32Load, lVersion.Offset); if (testFirst) TagFieldLoad((IFieldSymbol)lVersion.Symbol, lVersion.Type); E.Set(version);
             E.I32(0); E.Set(i);
             var brk = E.Block();
+            var done = testFirst ? E.Block() : brk;
             var top = E.Loop();
-            E.Get(list); E.Load(Op.I32Load, lVersion.Offset); E.Get(version); E.Op(Op.I32Ne);
+            void Changed()
+            {
+            E.Get(list); E.Load(Op.I32Load, lVersion.Offset); if (testFirst) TagFieldLoad((IFieldSymbol)lVersion.Symbol, lVersion.Type); E.Get(version); E.Op(Op.I32Ne);
             E.If();
+            if (throwsBy != null)
+            {
+                // the list was changed: the enumerator's own MoveNext throws (its frames are the trace's), on an
+                // enumerator in the state this loop is in, made here: below the stack's pointer, which the catch
+                // that takes the exception puts back (RuntimeGen.RestoreStackAtCatches); it refers to the list
+                // without a count, as nothing releases it
+                BeginTemps();
+                var el = T.LayoutOf(lEnum);
+                int ea = E.AddLocal(ValType.I32), bytes = (T.StorageOf(lEnum).size + 15) / 16 * 16;
+                // (more than the stack has left: a trap, as a frame's: Wasm/Frames.cs)
+                E.I32(bytes); E.GGet(D.StackPointer); E.GGet(D.StackLo!); E.Op(Op.I32Sub); E.Op(Op.I32GtU);
+                E.If(); E.Op(Op.Unreachable); E.End();
+                E.GGet(D.StackPointer); E.I32(bytes); E.Op(Op.I32Sub); E.Tee(ea); E.GSet(D.StackPointer);
+                E.Get(ea); E.I32(0); E.I32(bytes); E.Op(Op.MemoryFill);
+                foreach (var f in el.Fields)
+                {
+                    int src = f.Symbol.Name switch { "_list" => list, "_index" => i, "_version" => version, _ => -1 };
+                    if (src < 0) continue;
+                    E.Get(ea); E.Get(src);
+                    // (CS2WASM_LIST_FOREACH_BREAK=2, test 203's: the enumerator with the list's version as it is now)
+                    if (f.Symbol.Name == "_version" && s_listForEachBreak == 2) { E.Op(Op.Drop); E.Get(list); E.Load(Op.I32Load, lVersion.Offset); }
+                    E.Store(Op.I32Store, f.Offset);
+                }
+                CallWith(D.CanonicalMethod(lMoveNext), false, () => { E.Get(ea); }, () => { }, null, fe.Syntax);
+                // (a call that only throws: what it stores is what the throwing function stores, so a borrow across
+                // a call of the function this loop is in survives it; FieldBorrows.StoresOf)
+                if (E.Body[^1].Op == Op.Call && E.Body[^1].Ref is WasmFunction called && called.Name.Contains("MoveNext"))
+                { E.Emit(Op.Nop, 0, 0, new Driver.ThrowPath(throwsBy)); E.Body[^1] = E.Body[^1] with { Pos = -1 }; }
+                E.Op(Op.Drop);
+                EndTemps();
+                E.Op(Op.Unreachable);
+            }
+            else
             {
                 // the list was changed: the enumerator's own MoveNext throws (its frames are the trace's), on an
                 // enumerator in the state this loop is in
@@ -1456,11 +1514,14 @@ sealed partial class FunctionCompiler
                 EndTemps();
             }
             E.End();
-            E.Get(i); E.Get(list); E.Load(Op.I32Load, lSize.Offset); E.Op(Op.I32GeU); E.BrIf(brk);
+            }
+            if (!testFirst) Changed();
+            E.Get(i); E.Get(list); E.Load(Op.I32Load, lSize.Offset); if (testFirst) TagFieldLoad((IFieldSymbol)lSize.Symbol, lSize.Type); E.Op(Op.I32GeU); E.BrIf(done);
+            if (testFirst) Changed();
             // (the array as it is now, and the index within it: a list another thread changes may have a shorter one)
-            E.Get(list); E.Load(Op.I32Load, lItems.Offset); E.Set(items);
+            E.Get(list); E.Load(Op.I32Load, lItems.Offset); if (testFirst) TagFieldLoad((IFieldSymbol)lItems.Symbol, lItems.Type); E.Set(items);
             E.Get(items); NullCheck();
-            E.Get(i); E.Get(items); E.Load(Op.I32Load, 12); E.Op(Op.I32GeU);
+            E.Get(i); E.Get(items); if (testFirst) E.Emit(Op.I32Load, 12, 2, Loops.Length); else E.Load(Op.I32Load, 12); E.Op(Op.I32GeU);
             E.If(); E.Call(D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "IndexOutOfRange", 0).Fn); E.Op(Op.Unreachable); E.End();
             var cont = E.Block();
             var c = PushLoop(fe, brk, cont);
@@ -1469,7 +1530,11 @@ sealed partial class FunctionCompiler
             var listType = (INamedTypeSymbol)collType;
             string itemsKey = Driver.FieldKey(listType, lItems.Symbol);
             D.NoteBorrowField(itemsKey, lItems.Symbol, lItems.Type);
-            AssignLoopVariable(fe, lElem, borrowElement: !D.ThreadMode, borrowKeys: Driver.ElementsKey + "\n" + itemsKey, produce: () =>
+            // (threads: the element borrows from the array of a list no other thread can reach, neither the list
+            // nor its array: no other thread stores the array's elements or the list's field, and this thread's
+            // stores are looked for as without threads. CS2WASM_NO_LOCAL_LIST_LOOPS=1: counted, as before)
+            bool localList = D.ThreadMode && LocalListLoops && (s_expEveryListLocal || UnsharedContainer(collType) && UnsharedContainer(lItems.Type));
+            AssignLoopVariable(fe, lElem, borrowElement: !D.ThreadMode || localList, threadLocal: localList, borrowKeys: Driver.ElementsKey + "\n" + itemsKey, produce: () =>
             {
                 E.Get(items); E.Get(i); var sz = T.StorageOf(lElem).size;
                 if (sz != 1) { E.I32(sz); E.Op(Op.I32Mul); }
@@ -1485,7 +1550,19 @@ sealed partial class FunctionCompiler
             E.End();
             E.Get(i); E.I32(1); E.Op(Op.I32Add); E.Set(i);
             E.Br(top);
-            E.End(); E.End();
+            E.End();
+            // (the list's end: the enumerator's last MoveNext looks at the version before it says so.
+            // CS2WASM_LIST_FOREACH_BREAK=1, test 203's: not asked)
+            // (a loop that took no turn ran nothing since the version was read: not asked, CS2WASM_LIST_FOREACH_BREAK=3:
+            // asked all the same; with threads another thread may have changed the list: asked)
+            if (testFirst)
+            {
+                E.End();
+                if (s_listForEachBreak == 1) { }
+                else if (D.ThreadMode || s_listForEachBreak == 3 || s_noListTestFirst) Changed();
+                else { E.Get(i); E.If(); Changed(); E.End(); }
+            }
+            E.End();
             PopScope();
             return;
         }
@@ -1640,6 +1717,9 @@ sealed partial class FunctionCompiler
 
     /// <summary>Declares and assigns the foreach iteration variable from the value produced by <paramref name="produce"/>.</summary>
     static readonly bool s_listForEach = Environment.GetEnvironmentVariable("CS2WASM_NO_LIST_FOREACH") != "1";
+    static readonly bool s_noListTestFirst = Environment.GetEnvironmentVariable("CS2WASM_NO_LIST_TEST_FIRST") == "1";
+    static readonly bool s_noListThrowPath = Environment.GetEnvironmentVariable("CS2WASM_NO_LIST_THROW_PATH") == "1";
+    static readonly int s_listForEachBreak = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_LIST_FOREACH_BREAK"), out int lfb) ? lfb : 0;
 
     /// <summary>The parts of the library's List&lt;T&gt; a `foreach` over one reads (EmitForEach): its array, size and
     /// version fields, T, and its enumerator's type and MoveNext. Null for any other type.</summary>
@@ -1685,7 +1765,14 @@ sealed partial class FunctionCompiler
         return D.Method(helper).Fn;
     }
 
-    void AssignLoopVariable(IForEachLoopOperation fe, ITypeSymbol valueType, Func<Own> produce, IOperation? conversion = null, bool borrowElement = false, string? borrowKeys = null)
+    /// <summary>CS2WASM_NO_LOCAL_LIST_LOOPS=1: in a program with threads a foreach over a List counts its list and each
+    /// element, as before.</summary>
+    static readonly bool s_noLocalListLoops = Environment.GetEnvironmentVariable("CS2WASM_NO_LOCAL_LIST_LOOPS") == "1";
+    /// <summary>CS2WASM_EXP_EVERY_LIST_LOCAL=1 (a test of the tests, unsound): every list's foreach borrows.</summary>
+    static readonly bool s_expEveryListLocal = Environment.GetEnvironmentVariable("CS2WASM_EXP_EVERY_LIST_LOCAL") == "1";
+    static bool LocalListLoops => !s_noLocalListLoops;
+
+    void AssignLoopVariable(IForEachLoopOperation fe, ITypeSymbol valueType, Func<Own> produce, IOperation? conversion = null, bool borrowElement = false, string? borrowKeys = null, bool threadLocal = false)
     {
         if (fe.LoopControlVariable is not IVariableDeclaratorOperation decl)
         {
@@ -1722,6 +1809,8 @@ sealed partial class FunctionCompiler
                 var marker = D.Module.AddFunction("borrow? []", new FuncType([ValType.I32], [ValType.I32]));
                 E.Call(marker);
                 E.Set(v.Local);
+                // (threads: an element of a list no other thread can reach, FieldBorrows.ThreadKeys)
+                if (threadLocal) D.ThreadLocalBorrows.Add(marker);
                 D.FieldBorrows.Add((E.Fn, v.Local, borrowKeys ?? Driver.ElementsKey, marker));
             }
             else StoreVar(v, o);

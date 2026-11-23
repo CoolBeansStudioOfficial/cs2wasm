@@ -747,10 +747,25 @@ sealed partial class FunctionCompiler
             EmitValue(f.Instance!); return slot.Offset; // rvalue struct: its temp
         }
         if (!plainUse) D.NoteFieldEscape(storage);
+        bool forCall = _addrForCall; _addrForCall = false;
         var o = EmitValue(f.Instance!);
-        ToTransient(o, it);
+        if (forCall) ToCallSafe(o, it); else ToTransient(o, it);
         if (!IsKnownNonNull(f.Instance!)) NullCheckKeep();
         return slot.Offset;
+    }
+
+    /// <summary>The address EmitAddress is about to make goes to a call by reference (a `ref`, `out` or `in`
+    /// argument, the struct a method is called on), in a function of the program's: where it is a place in an
+    /// object the code reads from a field, an element or a call (`F(ref h.Arr[0], h)`, `h.Pts[i].Move(h)`), that
+    /// object is kept for the statement, as a reference argument is (ToCallSafe), since the callee may let go of
+    /// it and go on using the place; under .NET the place keeps its object. Until 2026-11-23 the callee then
+    /// read and wrote freed memory (test 271). CS2WASM_NO_SPAN_KEEP=1: not.</summary>
+    bool _addrForCall;
+    void EmitAddressForCall(IOperation op)
+    {
+        _addrForCall = !s_noSpanKeep && !D.IsLibrary(M);
+        EmitAddress(op);
+        _addrForCall = false;
     }
 
     /// <summary>The field reference whose place the next EmitFieldSlotBase is asked for only to load from it or to
@@ -832,7 +847,7 @@ sealed partial class FunctionCompiler
         E.Load(Types.LoadOp(ft), off);
         if (!f.Field.IsStatic && f.Instance != null && !TypeOf(f.Instance).IsValueType) TagFieldLoad(StorageField(f.Field), ft);
         // (a static's reference, read with a plain load: a loop that cannot store it reads it once, StaticLoads.cs)
-        if (f.Field.IsStatic && off == 0 && Types.IsRef(ft) && !D.ThreadMode && !f.Field.IsVolatile && !IsThreadStatic(StorageField(f.Field))
+        if (f.Field.IsStatic && off == 0 && Types.IsRef(ft) && (!D.ThreadMode || EngineStatic(f.Field)) && !f.Field.IsVolatile && !IsThreadStatic(StorageField(f.Field))
             && E.Fn.Body.Count >= 2 && E.Fn.Body[^1].Op == Op.I32Load && E.Fn.Body[^2] is { Op: Op.I32Const, Imm: 0, Ref: StaticSlot slot })
             D.NoteStaticRefRead(slot, Driver.FieldKey(Owner(f.Field), StorageField(f.Field)), D.StaticInit((INamedTypeSymbol)T.Resolve(T.Canonical(Owner(f.Field)), Map))?.flag);
         // (a readonly field is written by its object's constructors only, before the object is anyone else's)
@@ -871,6 +886,11 @@ sealed partial class FunctionCompiler
             _ => false,
         };
     }
+
+    // (CS2WASM_UNPIN_STATIC_INIT=1: the object a static's initializer stores is pinned only when the field is readonly,
+    // as an assignment's is. Not the default: tests 247 to 249 hold with the pinned root they were written with; with
+    // a root that is a member, cells that refer to each other and back to the root stay until the group goes)
+    static readonly bool s_pinStaticInit = Environment.GetEnvironmentVariable("CS2WASM_UNPIN_STATIC_INIT") != "1";
 
     void EmitStoreField(IFieldSymbol f, Action? recv, IOperation value, bool initializer = false)
     {
@@ -920,7 +940,10 @@ sealed partial class FunctionCompiler
         Arenas.Site? site = null; WasmFunction? pin = null;
         if (Types.IsRef(ft))
         {
-            if (f.IsStatic) pin = D.Arenas.Pin(ft);
+            // (a static readonly field's object stays out of groups, Rt.ArenaPin; any other static's is a member like
+            // any other; but the store of a field's initializer pins whatever the field: the first object of
+            // `static Node s_root = new Node(0);` is never freed once it is in a cycle, docs/AUDIT.md)
+            if (f.IsStatic) { if (f.IsReadOnly || s_pinStaticInit) pin = D.Arenas.Pin(ft); }
             else if ((site = D.Arenas.FieldSite(Owner(f), T.Field(f, Map))) != null) site.AddValue(valueType, srcs);
         }
         if (f.IsStatic) Sh?.Static(Driver.StaticKey(T.Canonical(Owner(f)), f), ft, IsThreadStatic(f), srcs ?? [TopSrc(valueType)]);
@@ -1041,11 +1064,13 @@ sealed partial class FunctionCompiler
     {
         var at = (IArrayTypeSymbol)TypeOf(ae.ArrayReference);
         var et = T.Canonical(at.ElementType);
+        // (the element's place goes to a call by reference: the array is kept for the statement, AddressForCall)
+        bool forCall = _addrForCall; _addrForCall = false;
         if (at.Rank != 1)
         {
             // row-major: ((i0 * d1 + i1) * d2 + i2) ..., each index checked against its dimension
             var o0 = EmitValue(ae.ArrayReference);
-            bool calls = ae.Indices.Any(ix => ix.DescendantsAndSelf().Any(x => x is IInvocationOperation or IObjectCreationOperation));
+            bool calls = forCall || ae.Indices.Any(ix => ix.DescendantsAndSelf().Any(x => x is IInvocationOperation or IObjectCreationOperation));
             o0 = calls ? ToCallSafe(o0, at) : ToTransient(o0, at);
             int a = E.AddLocal(ValType.I32);
             E.Tee(a);
@@ -1069,7 +1094,7 @@ sealed partial class FunctionCompiler
             return Types.ArrayDataOffset(at.Rank);
         }
         var o = EmitValue(ae.ArrayReference);
-        bool indexCalls = ae.Indices[0].DescendantsAndSelf().Any(x => x is IInvocationOperation or IObjectCreationOperation);
+        bool indexCalls = forCall || ae.Indices[0].DescendantsAndSelf().Any(x => x is IInvocationOperation or IObjectCreationOperation);
         o = indexCalls ? ToCallSafe(o, at) : ToTransient(o, at);
         int arr = Scratch(ValType.I32);
         E.Tee(arr);
@@ -1135,6 +1160,8 @@ sealed partial class FunctionCompiler
                 var o = EmitValueAs(c.Operand, argT);
                 if (Types.IsRef(argT)) ToCallSafe(o, argT);
             }, null, c.Syntax);
+            // (a span made of an object the code may let go while the span is in use: StorageKeeps.cs)
+            if (KeepsStorageAt(m, c.Syntax)) KeepStorage(SubstMethod(m), c.Syntax, false, null, null);
             var rt = T.Resolve(m.ReturnType, Map);
             ConvertTop(rt, to, ref r);
             return r;
@@ -1187,6 +1214,14 @@ sealed partial class FunctionCompiler
         }
         var own = EmitValue(c.Operand);
         ConvertValue(from, to, conv.IsNumeric || from.TypeKind == TypeKind.Enum || to.TypeKind == TypeKind.Enum ? c.IsChecked : false, ref own, explicitConv: !conv.IsImplicit, conv);
+        // (an array or a string taken as a span, where the code may let it go while the span is in use: StorageKeeps.cs)
+        if (_spanSites.Contains(c.Syntax) && IsSpanType(to) && !from.IsRefLikeType)
+        {
+            int sa = Scratch(ValType.I32);
+            E.Tee(sa); E.Get(sa);
+            KeepRefsOfStruct(to, c.Syntax, 0);
+            FreeScratch(ValType.I32, sa);
+        }
         return own;
     }
 
@@ -2164,6 +2199,7 @@ sealed partial class FunctionCompiler
             {
                 var v = LocalVar(rl.Local);
                 EmitAddress(sa.Value); E.Set(v.AddrLocal);
+                if (_spanSites.Contains(sa.Syntax)) KeepObjectOf(v.AddrLocal, StorageKeepLocal(sa.Syntax, 0));
                 return needResult ? RefAssignResult(v.AddrLocal, TypeOf(sa)) : Own.None;
             }
             if (sa.Target is IParameterReferenceOperation { Parameter.RefKind: not RefKind.None } rp && !IsCaptured(rp.Parameter))
@@ -2891,7 +2927,7 @@ sealed partial class FunctionCompiler
                     Arenas.Site? psite = null; WasmFunction? ppin = null;
                     if (Types.IsRef(ft))
                     {
-                        if (bf.IsStatic) ppin = D.Arenas.Pin(ft);
+                        if (bf.IsStatic) { if (bf.IsReadOnly || s_pinStaticInit) ppin = D.Arenas.Pin(ft); }
                         else if (pr.Instance != null && !TypeOf(pr.Instance).IsValueType) psite = D.Arenas.FieldSite(owner, T.FieldIn(owner, bf));
                     }
                     return new MemLV(this, ft, () =>

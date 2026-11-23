@@ -76,8 +76,33 @@ internal sealed partial class Arenas
         /// <summary>Where the values stored here come from (Sharing.cs): the sources given, else the static type.</summary>
         public readonly List<Sharing.Src> Sources = [];
 
+        /// <summary>A store into the slot was compiled (AddValue): one with no source at all then stored null, or the
+        /// default (Sharing.SiteNode).</summary>
+        public bool Stored;
+        /// <summary>CS2WASM_SITE_ADD=text (a diagnosis): every value recorded for a slot whose key has the text, with
+        /// the compiler's stack.</summary>
+        static readonly string? s_addWhy = Environment.GetEnvironmentVariable("CS2WASM_SITE_ADD") is { Length: > 0 } aw ? aw : null;
+
+        /// <summary>For the values AddRefStores gives the slot (stores by address that can land in it), where they come
+        /// from: the nodes of the stores through refs of the slot's type and through pointers (Sharing.RefNode,
+        /// PtrNode), or any object of the type. Sharing.Analyze reads these in place of the sources tagged
+        /// Sharing.ByAddressTag.</summary>
+        public readonly List<Sharing.Src> ByAddress = [];
+        /// <summary>A value a store by address can leave in the slot (RefStores.cs): any object of the type for the
+        /// type graph, and `from` (or any object of the type) for Sharing.Analyze.</summary>
+        public void AddByAddress(ITypeSymbol v, IEnumerable<Sharing.Src>? from)
+        {
+            Stored = true;
+            Sources.Add(new Sharing.Src(Sharing.K.Top, Sharing.ByAddressTag, Type: v));
+            if (from != null) ByAddress.AddRange(from); else ByAddress.Add(new Sharing.Src(Sharing.K.Top, Type: v));
+            Values.TryAdd(Types.Key(v), v);
+        }
+
         public void AddValue(ITypeSymbol? t, IEnumerable<Sharing.Src>? srcs = null)
         {
+            Stored = true;
+            if (s_addWhy != null && Key.Contains(s_addWhy))
+                Console.Error.WriteLine($"site-add {Key}: {(t != null ? Types.Key(t) : "-")} {(srcs == null ? "no sources" : string.Join("; ", srcs.Select(x => x.Kind + " " + x.Key + " " + (x.Type != null ? Types.Key(x.Type) : ""))))}\n{string.Join("\n", Environment.StackTrace.Split('\n').Skip(2).Take(6))}");
             if (srcs != null) Sources.AddRange(srcs);
             else if (t != null && t.TypeKind != TypeKind.Error) Sources.Add(new Sharing.Src(Sharing.K.Top, Type: t));
             if (t == null || t.TypeKind == TypeKind.Error) return;
@@ -403,6 +428,9 @@ internal sealed partial class Arenas
     /// <summary>The slots of the objects the compiler makes: a closure's captured variables and its enclosing
     /// closure, a state machine's variables, an anonymous type's properties, a delegate's target. A store into a
     /// captured variable has the slot's address (Arenas.LinkAt), the others are filled when the object is made.</summary>
+    /// <summary>For a closure's slot of a captured local (the display, the offset): where its values come from.</summary>
+    internal readonly Dictionary<(Display, int), List<Sharing.Src>> DisplaySources = [];
+
     void AddDisplaySites()
     {
         if (s_noDisplaySites) return;
@@ -414,7 +442,9 @@ internal sealed partial class Arenas
             foreach (var v in d.Vars)
             {
                 var (off, t) = d.Slots[v];
-                if (Types.IsRef(t)) { if (!Types.IsImmortalType(t)) { var s = At(off); s.AddValue(t); s.General = true; } }
+                // (a captured local whose every write the declaring body shows: where its values come from,
+                // FunctionCompiler.RecordCapturedSources; any other variable: any object of its type)
+                if (Types.IsRef(t)) { if (!Types.IsImmortalType(t)) { var s = At(off); s.AddValue(t, DisplaySources.TryGetValue((d, off), out var ds) ? ds : null); s.General = true; } }
                 else if (Types.IsStruct(t) && D.Types.LayoutOf(t).HasRefs)
                     foreach (var (lo, lt) in RefLeaves(t, off)) { var s = At(lo); s.AddValue(lt); s.General = true; }
             }
@@ -792,7 +822,7 @@ internal sealed partial class Arenas
     static readonly (string name, int arity)[] RuntimeMethods =
         [("ArenaLink", 3), ("ArenaUnlink", 3), ("ArenaVisitElement", 1), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
          ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 3), ("ArenaUnlinkFresh", 3), ("ArenaLinkOwned", 3),
-         ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3), ("ArenaGrowArray", 4), ("ArenaBeforeFinalizer", 0)];
+         ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3), ("ArenaGrowArray", 4), ("ArenaBeforeFinalizer", 0), ("PartMarked", 1)];
 
     /// <summary>Queues the library's arena runtime for compilation (only when some site is cyclic).</summary>
     public void RequestRuntime()
@@ -804,6 +834,8 @@ internal sealed partial class Arenas
 
     /// <summary>Replaces placeholder calls in every function: arena calls at cyclic sites, plain counting elsewhere.</summary>
     static readonly bool s_noInlineLinks = Environment.GetEnvironmentVariable("CS2WASM_NO_INLINE_LINKS") == "1";
+    static readonly bool s_noUnlinkSkip = Environment.GetEnvironmentVariable("CS2WASM_NO_UNLINK_SKIP") == "1";
+    static readonly bool s_unlinkSkipBreak = Environment.GetEnvironmentVariable("CS2WASM_UNLINK_SKIP_BREAK") == "1";
 
     SubtypeIndex? _cycleIndex;
     int _cycleIndexed;
@@ -862,6 +894,16 @@ internal sealed partial class Arenas
             ue.Get(1); ue.I32Addr(new LateAddr(() => D.HeapBase)); ue.Op(Op.I32LtU);
             ue.If(); ue.Get(0); ue.Call(D.Rt.Release); ue.Op(Op.Return); ue.End();
             ue.Get(0); ue.Get(1); ue.Call(RuntimeFn("ArenaUnlinkAt", 2));
+        }
+        // (Rt.t_backN's place among the thread's statics: the unlink's first question, written at the store. Not in a
+        // program with threads, whose unlink also ends the store's locked region)
+        int backOff = -1, prevOff = -1;
+        if (Enabled && !D.ThreadMode && !s_noUnlinkSkip
+            && D.LibType("Cs2Wasm.Runtime.Rt").GetMembers("t_backN").OfType<IFieldSymbol>().FirstOrDefault() is { } backField
+            && D.LibType("Cs2Wasm.Runtime.Rt").GetMembers("t_prevSlot").OfType<IFieldSymbol>().FirstOrDefault() is { } prevField)
+        {
+            backOff = D.ThreadStaticOffset(D.LibType("Cs2Wasm.Runtime.Rt"), backField, backField.Type);
+            prevOff = D.ThreadStaticOffset(D.LibType("Cs2Wasm.Runtime.Rt"), prevField, prevField.Type);
         }
         var holdsCyclic = new Dictionary<string, bool>();
         bool HoldsCyclic(ITypeSymbol slotType)
@@ -923,17 +965,37 @@ internal sealed partial class Arenas
                         // (old, container) -> ()
                         if (Enabled && ph.site!.Cyclic)
                         {
-                            if (ph.kind == Kind.Unlink || s_noInlineLinks) { x.Ref = ph.kind == Kind.Unlink ? unlink : unlinkFresh; body.Add(x); break; }
-                            // Rt.ArenaUnlinkFresh, likewise: a plain container's old value is released as any
+                            if ((ph.kind == Kind.Unlink && backOff < 0) || s_noInlineLinks) { x.Ref = ph.kind == Kind.Unlink ? unlink : unlinkFresh; body.Add(x); break; }
                             int slot = f.Type.Params.Length + f.Locals.Count; f.Locals.Add(ValType.I32);
                             int cont = slot + 1; f.Locals.Add(ValType.I32);
                             int old = slot + 2; f.Locals.Add(ValType.I32);
                             void A(Op op, long imm = 0, object? r = null) => body.Add(new Instr { Op = op, Imm = imm, Imm2 = op == Op.I32Load ? 2 : 0, Ref = r, Pos = ins.Pos });
                             A(Op.LocalSet, slot); A(Op.LocalSet, cont); A(Op.LocalSet, old);
+                            // Rt.ArenaUnlink over a slot that held nothing does one thing: it gives back the counts
+                            // the store's link kept until the slot was written (Rt.AfterStore, t_backN of them).
+                            // Asked here: no old value and nothing kept, no call; the slot ArenaLink noted for
+                            // this unlink is cleared as the call would have cleared it (t_prevSlot: a note is
+                            // there only between a link and its unlink).
+                            // CS2WASM_NO_UNLINK_SKIP=1: the call, always. CS2WASM_UNLINK_SKIP_BREAK=1 (test 204's):
+                            // the kept counts are not asked.
+                            void Pending() { A(Op.LocalGet, old); if (!s_unlinkSkipBreak) { A(Op.GlobalGet, 0, D.TlsBase); A(Op.I32Load, backOff); A(Op.I32Or); } }
+                            void NoNote() { A(Op.GlobalGet, 0, D.TlsBase); A(Op.I32Const, 0); body.Add(new Instr { Op = Op.I32Store, Imm = prevOff, Imm2 = 2, Pos = ins.Pos }); }
+                            if (ph.kind == Kind.Unlink)
+                            {
+                                Pending();
+                                A(Op.If);
+                                A(Op.LocalGet, old); A(Op.LocalGet, cont); A(Op.LocalGet, slot); A(Op.Call, 0, unlink);
+                                A(Op.Else);
+                                NoNote();
+                                A(Op.End);
+                                break;
+                            }
+                            // Rt.ArenaUnlinkFresh, likewise: a plain container's old value is released as any
                             A(Op.Block);
                             A(Op.Block);
                             A(Op.LocalGet, cont); A(Op.I32Eqz); A(Op.BrIf, 0);
                             A(Op.LocalGet, cont); A(Op.I32Load); A(Op.I32Const, 0); A(Op.I32GtS); A(Op.BrIf, 0);
+                            if (backOff >= 0) { Pending(); A(Op.If); A(Op.Else); NoNote(); A(Op.Br, 2); A(Op.End); }
                             A(Op.LocalGet, old); A(Op.LocalGet, cont); A(Op.LocalGet, slot); A(Op.Call, 0, unlink);
                             A(Op.Br, 1);
                             A(Op.End);

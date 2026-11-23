@@ -2195,6 +2195,316 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     NativeAOT-LLVM's in every invocation (frames.mjs flags it), the median 1.5x to 1.6x.**
   - Checked, on the homelab at 88f2a6e (the branch's code: the first part, NodeUp's last count, test 201's new cases, the script): the suite 223/223 checked and 223/223 as shipped (435 s); the self-hosted compiler built with and without the node path (`tools/selfhost-switch.sh CS2WASM_NO_NODE_PATH=1`: 32,014,763 and 32,013,104 bytes; hello world in 14.1 to 15.4 s either way on a loaded machine, peak 344 MB, the two the same module, self = net byte for byte, 27,599 bytes); `selfdet` with that compiler for tests 220 (271,925 bytes), 193 (252,996) and 088 (1,613,340): self = net byte for byte each; `tools/stress-trees.sh`, 200 loaded runs a mode: 139, 192 to 199 and 201 the same in every run of both modes; **127 differed in 4 of 200 as shipped and 5 of 200 checked (`async 5` for 0: the kind and the rate earlier rounds give for main, 1 to 4 in 200; it starts threads and takes none of these steps; in the first part's run at 1e71501 it differed in none; not followed here)**. On the desk: `tools/node-path-breaks.sh` exits 0 (on and off the same with and without the check at the drop; each of the six breaks changes the lines). Not checked: the side branch on the homelab; the suite with `CS2WASM_NO_NODE_PATH=1` for every program (the switch is checked by test 201, the two trees' tools and the self-hosted compiler); frames.mjs on the homelab at this commit (the four pairs above are the first part's code).
 
+- **The build, round 10: where a frame of the tree scene is, the walk's `foreach`, the unlink that is not called,
+  and a leaf's list left a plain object (2026-11-22 to 23, branch claude/tree-3, from claude/round-9 d430594; the
+  desk, shared and loaded most of the night, and the homelab; not merged when this was written).** The brief was
+  the build of the tree, part by part (the objects alone, the up-reference, the list's growth, the destroy at the
+  store). Measured first, by phase and by step, and the two largest things found were none of them: the walk's
+  `foreach`, and a call after every store that did nothing. **The tree's median frame is 0.038 to 0.043 ms where
+  it was 0.045 to 0.052 (1.27x to 1.43x NativeAOT-LLVM's, from 1.52x to 1.68x in the same pairs); the rebuild
+  frame, the scene's p99.9, was 0.76x to 0.85x NativeAOT-LLVM's in five pairs where it was 0.95x to 1.14x, and
+  on a desk under heavy load later the two sides could not be told apart at all. The median is not reached: the
+  build is not at NativeAOT's cost by any step that keeps the model.**
+  - **An ordinary frame by phase** (tools/tree-frame.cs, the desk, quiet: the new subtree's build 12.2 to 12.5 us,
+    its store over the old one 3.9, the move 0.6, the walk 27.6 to 28.8; NativeAOT-LLVM's, round 5: 2.3, 0.1,
+    29.3). **The walk is three fifths of the frame**, and it was level with NativeAOT-LLVM's only because both
+    paid for `foreach` over a List<T>. The build and the store are 16 us against 2.4: to bring the frame to
+    NativeAOT-LLVM's 30 us with the walk as it was they would have to be 2 us, less than NativeAOT-LLVM's own.
+    (`walk-indexed`, 16.4 to 17.3 us in the same tool, is not what the `foreach` walk could be: it runs second,
+    over memory the first walk left in the cache. With the lowering below the two loops are the same
+    instructions but for one compare, and the first walk is still 24 to 26 us.)
+  - **A node by its steps** (tools/tree-node.cs, new: N nodes with K leaves each made under a living node in the
+    scene's order; the desk, quiet): a leaf 34 ns (two allocations with their constructors about 12, the store
+    that joins it the rest); a node with one leaf 150; each further leaf 45; the fifth, with the list's growth
+    from four to eight, 108 (the growth 63: with the capacity set first a node of five is 329 for 392). So of a
+    scene node with five leaves, 392 ns: the leaves' joins 100 to 150, six allocations 70, the growth 63, and
+    what a node costs beyond a leaf (the list's first array as a group of its own, the merge, the parent's
+    ownership turned at the add, two Reevaluates) about 110. NativeAOT-LLVM: 13 ns an entity, 78 for the six.
+    A profile with the engine's inlining on (`node --cpu-prof`, 600 builds and drops, names; shares of the 2.5
+    ms a build and its drop took there): Rt.JoinFresh 16.6%, the program's Build 12.5, ArenaFree 7.8, ArenaLink
+    7.4, AllocObjectArena 6.8, ArenaVisit 6.4, ArenaFreeList 5.4, ArenaGrowArray 4.4, the clears 5.3,
+    List.AddWithResize 3.5, rt.release 3.4, and thirty more below 2. JoinFresh's own code was read as the
+    module has it (1,827 bytes, the type tables read in line, no call it does not need): nothing in it is
+    waste by its writing. **Tools/tree-build.cs's variant 4 (0.45 to 0.47 ms, "the objects alone") is a build
+    and the free of every object, as round 6 said: the allocations of a build are 0.19 ms, below
+    NativeAOT-LLVM's whole build of 0.26, and the brief's first item is not a cost above NativeAOT's.**
+  - **Done, 1: `foreach` over a List<T>** (FunctionCompiler; `CS2WASM_NO_LIST_TEST_FIRST=1`,
+    `CS2WASM_NO_LIST_THROW_PATH=1`). The lowering asked the version, then the size, at every turn, by loads
+    without a field's tag, and kept the enumerator for the changed list's throw as a temporary of the
+    statement. So every function with such a loop took a frame off the stack (rt.frame), cleared it, and had a
+    handler around its whole body for a path that runs when the program has a bug; and Wasm/FieldLoads.cs,
+    which copies a loop's test before it only when the loop starts with it, read nothing before the loop
+    ("a foreach reads nothing before its loop", the field loads' own item). Now: (1) the size's test first,
+    the version asked after it and once more where the list ends (not when no turn was taken: nothing ran
+    since it was read; with threads asked all the same). The two tests read two fields and write nothing, so
+    their order cannot be told; a changed list throws whatever its size says, as the enumerator's MoveNext
+    does. (2) The loads of `_version`, `_size`, `_items` and the array's length carry the tags a load by name
+    carries: a loop that stores none of them, by its own code or by what it calls, reads them once, and the
+    body's own fields with them (the node's X and Y in the walk). (3) The path of a changed list ends in
+    MoveNext's throw (MoveNextThrows reads that from List's source): its enumerator is made there, below the
+    stack's pointer (asked for room first: a trap otherwise, as a frame's), refers to the list without a
+    count and is never released; the catch that takes the exception puts the pointer back
+    (RuntimeGen.RestoreStackAtCatches). The walk's function has no frame and no handler: 356 bytes to 351, its
+    loop the indexed loop's.
+    Test 203 (a list changed by the body, by a call, through a static that refers to it, through another
+    instantiation, in the last round by a removal and by an addition, before a `break` and a `return`; the
+    capacity alone; nested loops, the inner's throw caught inside; a change far below a recursive walk, seen
+    when the walk is back; the node's own fields changed by the body and by a call; the exception's frames;
+    a function that catches its own loop's throw and goes on with structs on its stack; 3,000 throws one after
+    the other) and `tools/list-foreach-breaks.sh`: the same lines with each switch off, with the whole
+    lowering off and with the field loads off; other lines with `CS2WASM_LIST_FOREACH_BREAK=1` (the version
+    not asked at the list's end), `=2` (the enumerator handed to MoveNext with the list's present version)
+    and with the field loads' rules for calls and for the loop's own stores left out
+    (`CS2WASM_FIELD_HOIST_WITHOUT=calls`, `=loop`). Not proven by a break: that the stack's pointer comes back
+    after the throw. As shipped 3,000,000 such throws in a loop ran to their end in the stack's megabyte (16
+    bytes each would be 48 MB; a program outside the suite, within three minutes: a throw is some tens of
+    microseconds); the test has 3,000, because a checked build runs out of memory at 200,000 caught
+    exceptions of any kind (below, seen on the way).
+  - **Done, 2: a member's plain part** (`Rt.PartHolder`, `CS2WASM_NO_PLAIN_PARTS=1`; rounds 4 and 5 worked this
+    out as "a leaf's list left a plain object" and did not build it). JoinFresh joined a leaf's empty list with
+    the leaf: a second member for each of the 15,625 leaves of a build, with its place on the ring, destroyed
+    as a member when the leaf goes. A new object's own new object that only its slot refers to and that holds
+    nothing to link is now left a plain object: the member holds it by a plain counted reference (the slot's
+    bits 0, as a reference to a pinned object), it is released at the holder's clear, and it keeps the holder
+    and the slot in the two words a member has its ring in (free while it is plain, written by every join).
+    What that gives up is "a member refers to no plain object of its group of classes", which is what kept a
+    cycle from closing unseen. It holds again by one rule: **wherever a plain object that code still refers to
+    becomes a member, its note is asked and its holder's slot is linked first, as the store it stands for**
+    (ArenaLinkCore, for the container and for the value; JoinPair's container, JoinFresh's node and
+    PlainParents' levels refuse such an object and so come to ArenaLinkCore). The note can be stale (the slot
+    stored over, the holder gone or plain again): it is checked by what is there (the slot's address is a slot
+    of a living object of a group, by the allocator and the type: SlotOwner; that object the one named, a
+    member; the slot one it has bits for, the bits 0, the slot holding the part), and a member that passes
+    does hold the part unlinked, whatever wrote the note. A part only its holder refers to joins as the
+    holder's (JoinOwned), any other the general way. Not left a part: an object of a class with a finalizer
+    (it would run at the holder's clear, not with the group's), and one a weak handle refers to
+    (ObjectMarks' bit); a part that gets a weak handle later becomes a member there (ObjectMarks.SetAt,
+    rt.part_weak, Rt.PartMarked: the store of the part into its holder's slot once more, the general way),
+    because the weak references to the members of a group that goes are cleared before its finalizers run
+    (test 245) and a part is released after them. Not with threads (JoinFresh is not taken there).
+    By the counts of a build (tools/tree-build.cs, `CS2WASM_DROP_STATS=1`): joins 46,874 to 31,301, parts left
+    15,573, none linked later (the scene never puts a child into a leaf).
+    Test 202 (a leaf that gets children later and is then cut; a leaf's list a second node holds, filled
+    through either, the leaf cut, the loan let go; a part of another class with references back to its holder
+    and above it; a list taken out of its leaf, with the slot null, with another list, with the same list
+    again, filled through a local; a leaf that left its group; weak handles made before and after the leaf
+    joined, read by the finalizers of the group they die with; parts of a class with a finalizer; lists an
+    array holds; 300 frames of the scene's kind with leaves grown and lists lent; counted against .NET while
+    the structures live and when they have gone) and `tools/plain-parts-breaks.sh`: the same lines with the
+    parts off, with and without the check at the drop; other lines with each of
+    `CS2WASM_PLAIN_PARTS_BREAK=1` (a part that joins as a container is not linked to its holder), `2` (as a
+    value), `3` (JoinPair takes a part), `5` (the note is taken without asking that the slot still holds the
+    part), `7` (a part with a weak handle stays one). **Not proven by a break: 4** (JoinFresh's node or a plain
+    parent is a part: such an object would have to hold a member in a slot, and a store that puts one there
+    links the part first by rules 1 and 3; the test is kept as a second line) **and 6** (a part of a class
+    with a finalizer: the test has such parts and its lines are the same; what could differ is the order of
+    two finalizers of one group, which .NET does not fix).
+  - **Done, 3: `Rt.PlainParents` taken in from the side branch** (claude/tree-node-path-2-plain-parents a3ce95f,
+    round 9's, `CS2WASM_NO_PLAIN_PARENTS=1`, test 201's case and break 8, tools/node-path-breaks.sh): it had not
+    been run on the homelab then, and is now, with the rest. With the parts: a plain parent that is a member's
+    part with a living holder is refused, as JoinFresh's node is.
+  - **Done, 4: the unlink that is not called** (Compiler/Arenas.cs, `CS2WASM_NO_UNLINK_SKIP=1`). After every store
+    into a slot a cycle can close through, the compiler called Rt.ArenaUnlink with the slot's old value. For an
+    old value that is null (a list's Add, a field set once: 19,530 of the 23,436 stores of a build) that call
+    does one thing: it gives back the counts the store's link kept until the slot was written (Rt.AfterStore,
+    when `t_backN` is not zero; none in a build). It was two calls deep and read the thread's statics twice to
+    find that out. The two questions are asked at the store now (the old value, and `t_backN` at its place
+    among the thread's statics), and the call is made only for a yes; what ArenaLink noted of the slot's bits
+    stays noted, and the next unlink that reads the note follows a link that set it. Not in a program with
+    threads (the unlink ends the store's locked region there). **The largest step of the round for the
+    build: 0.14 to 0.17 ms of 1.75 on the homelab, 0.12 of 1.40 on the desk**, three times what the profile
+    gave the two functions (3.2%): a call that does nothing is not free in its caller either.
+    Test 204 (a member another member owns, stored by a temporary into an empty field, an empty element, a
+    new list; over a value; into a plain and a new object; groups that only such a store's value holds;
+    a thousand such statements in a row; counted against .NET after each) and `tools/unlink-skip-breaks.sh`:
+    the same lines with the skip off; with `CS2WASM_UNLINK_SKIP_BREAK=1` (the kept counts not asked) groups
+    stay alive until the next store that links something.
+  - **Done, 5: Rt.Reevaluate by the member's slot bits again** (`CS2WASM_NO_SLOT_WALK=1` for the visit by type;
+    it was `CS2WASM_SLOT_WALK=1` to turn it on). Round 1 wrote it, round 2 switched it off: a long frame of the
+    strings scene was laid to it (the host's own collection, found later in round 2) and it gained nothing in
+    the tree then. Found again here from the profile: Rt.ArenaVisit was 6% of a build and its drop, called
+    twice through the type's dispatch for each of the 7,866 Reevaluates of a build (a node's add, and the
+    parent a node takes at its first child). `tools/slot-walk-breaks.sh` (test 201: off the same lines;
+    `CS2WASM_SLOT_WALK_BREAK=1`, the walk without the member's first counted slot, other lines).
+  - **Numbers.** `node tools/frames.mjs --runs 3 --js-young 32` against NativeAOT-LLVM on the desk (loaded by
+    other sessions; the six switches of this round off and on in turn, five pairs, the first with all five
+    scenes). **Tree, median: 0.052, 0.051, 0.047, 0.045, 0.047 ms off and 0.040, 0.043, 0.038, 0.039, 0.042 on,
+    against NativeAOT-LLVM's 0.029 to 0.033: 1.52x to 1.68x off, 1.27x to 1.43x on. p99.9 (the rebuild frame):
+    2.919, 3.263, 2.522, 2.263, 2.922 off and 2.113, 2.416, 2.000, 2.111, 2.458 on, against NativeAOT-LLVM's
+    2.394 to 3.239 in the same ten invocations: 0.95x to 1.14x off, 0.76x to 0.85x on, below it in every
+    pair.** Worst frame: 5.815, 5.360, 3.040, 2.353, 4.559 off and 3.340, 2.834, 2.292, 2.405, 3.082 on, against
+    3.114 to 4.917: 0.68x to 0.78x in four invocations, and 3.340 against 3.328 in the fifth (frames.mjs flags
+    it; a desk on which the same invocation's `off` side had 5.8 ms). p99 0.060 to 0.093 on (0.067 to 0.198
+    off; NativeAOT-LLVM 0.047 to 0.074). The mean frame of the tree 1.03x to 1.12x NativeAOT-LLVM's (1.26x to
+    1.47x off). The other scenes, one pair: churn 0.070 ms both (NativeAOT-LLVM 0.052: 1.35x), collections
+    0.006 both, strings 0.007 both, bigdrop 0.003 both, their p99.9 and worst within each other's spread; the
+    mean frame's geometric mean over the five 0.74x off and 0.70x on, the medians' 1.14x and 1.07x.
+    An earlier set with the `foreach` and the parts alone (1d4abf2, four pairs): tree median 0.045 to 0.048 off
+    and 0.043 on in every one (NativeAOT-LLVM 0.029 to 0.031, 0.034 once); p99.9 not told apart there.
+    **The same on a desk under heavy load half an hour later** (cd93b54, fourteen pairs two minutes apart;
+    NativeAOT-LLVM's own median 0.030 to 0.066 ms and its p99.9 2.6 to 8.4 in them, where a quiet desk gives
+    0.029 and 2.4): median 1.28x to 1.46x on in the ten pairs where NativeAOT-LLVM's own was below 0.047 (1.54x
+    to 1.94x off); **p99.9 0.71x to 1.50x on (below NativeAOT-LLVM's in six pairs, 0.99x to 1.00x in three, above
+    in five) and 0.92x to 1.79x off (below in two): under that load the rebuild frame is not shown to be below
+    NativeAOT-LLVM's in every run, only lower than without the steps in eleven pairs of fourteen.** A quiet desk
+    was not had again before this was written.
+    On the homelab, this side alone (`node tools/frames-ab.mjs --rounds 5 --js-young 32`, at 1c47445, the
+    `foreach` alone): tree median 0.0541 ms on and 0.0565 off (each round's: 0.0541, 0.0571, 0.0543, 0.0551,
+    0.0543 and 0.0595, 0.0610, 0.0565, 0.0594, 0.0606), p99 0.074 and 0.080, worst 2.86 and 2.97; churn 0.0891
+    and 0.0888, collections 0.0065 both. **Not measured: the scene's frames by step on the homelab** (the job
+    waited forty minutes in its queue behind eight others and was given up for the checks below).
+    By step, `tools/tree-build.cs` variant 0 on the homelab (`tools/tree-ab.sh`, new; each switch against the
+    build with all steps, six pairs; that build is 1.57 to 1.62 ms there, its drop 0.39 to 0.43): the unlink
+    not called 0.14 to 0.17 ms of the build (1.73 to 1.79 without it); the plain parts 0.05 to 0.08 of the
+    build (1.61 to 1.67) and 0.07 of the drop (0.47 to 0.49); the plain parents 0.05 to 0.12 (1.61 to 1.73);
+    the slot walk 0.03 (1.57 to 1.62 by the visit, 1.54 to 1.59 by the walk, the lower in each of six pairs).
+    On the desk, the six off and on in turn three times: variant 0 build 1.52, 1.54, 1.63 ms off and 1.29,
+    1.30, 1.31 on (it was 1.40 to 1.48 at the start of the round), drop 0.37 to 0.39 and 0.32 to 0.37; variant
+    3 (capacity first) 1.22 to 1.37 and 1.14 to 1.16; variant 5 (fan 4) 1.56 to 1.62 and 1.26 to 1.30; variant
+    1 (no parent field) 1.05 to 1.06 and 0.99 to 1.10; variant 2 (the parent after the add) 1.79 to 1.88 and
+    1.72 to 1.82 (it takes the general way, which only the unlink's step touches); variant 4 0.45 to 0.49 both.
+    `tools/tree-store.cs`: a frame's build 12.5 to 12.8 us off and 11.1 to 11.3 on (80 to 82 ns an entity,
+    then 71 to 72), its store 4.0 to 5.2 and 3.6 to 3.8. `tools/tree-frame.cs`, before the desk was loaded:
+    the `foreach` alone took the walk from 30.2 to 32.9 us to 27.3 to 28.6 in each of four pairs (the desk
+    was 10% slower than in the quiet numbers above), the build and the store as they were.
+    By the counts of a build (`CS2WASM_DROP_STATS=1`, 19,531 entities): joins 46,874 to 31,301; visits of a
+    joined object 4,266 to 977 (the 781 first arrays of the nodes above the leaves' parents, and 196 more);
+    15,573 parts left, none linked later; 597 of 625 first leaves by the plain parents; unlinks called 23,436
+    to 3,906. The drop of a group (27,395 members where it had 42,968): the walk with the clears 0.26 to 0.28
+    ms where it was 0.29 to 0.30 (the parts are released there, one by one, through the generic release and
+    the dispatch on the type: rt.destroy_now is 4.7% of a build and its drop), the frees 0.065 where they
+    were 0.12.
+    `node tools/bench.mjs` on the desk, off and on in turn twice: 0.91x and 0.90x off, 0.92x and 0.89x on
+    (this side's own times within 0.2 ms of each other but `tree`, 7.4 to 7.6 ms both); its module 336.5 KB
+    off and 338.6 on. Hello world (test 145) 27,784 bytes, as at the branch's start (the limit 28,383).
+  - **Not reached: the median.** With all of it the tree's median frame is 1.27x to 1.43x NativeAOT-LLVM's, and
+    no step in sight ends that inside the model. A frame is now, by phase (the desk, from the tools above):
+    the walk 24 to 26 us (NativeAOT-LLVM's 29.3: this side's is the faster one now), the build 11.1 to 11.3,
+    the store 3.6 to 3.8, the move 0.6: 40. NativeAOT-LLVM's 30 are its walk and 2.4 for the build and the
+    store. To be level, the build and the store together would have to be 5 us, a third of what they are:
+    29 ns an entity for both where the build alone is 71. What an entity's 71 ns are, from tools/tree-node.cs
+    and the profile: two allocations with their constructors 12 (the engine does not put AllocObjectArena in
+    line: 6.4% of a build and its drop); a leaf's join with its up-reference about 15 (Rt.JoinFresh, the
+    largest function still, 19%); and for each node with children its list's first array as a group that is
+    merged a step later, the parent's ownership turned at the add, two Reevaluates, and the list's growth
+    from four to eight: about 170 ns a node, 30 an entity. Round 9's sentence stands: these are the general
+    path's own states, written out; to have less, the states must change (round 7's exclusive part, which
+    the brief of this round says not to build; a node under its parent from its first child on, round 9's
+    direction (a), which needs an owner that does not hold what it owns). **The brief's items 2 to 4 as
+    such were measured and not changed:** the up-reference is about 9 ns of a leaf's join (round 6's figure;
+    three members' u and four looks at a hold, each a few loads: nothing to take out but one look, 1 to 2
+    ns); the list's growth is 63 ns a node (an allocation, the move in one step, the old array's clear and
+    free by the dispatch on its type, the setter's count given back: the clear and the dispatches could go,
+    about 10 ns); the destroy at the store is 10 to 11 ns a member with the parts (it was 12).
+    Not built, each worth a per cent or two of a frame by these measurements: the old array of a growth
+    freed without its clear and the dispatches; AllocObjectArena's first case written at the allocation; a
+    part released by its class's own destruction where the field's class has no subclass in the program
+    (today only a sealed class is released so: Driver's ExactTypeHint); the first look at a hold left out
+    for an object that has just joined.
+  - **Seen on the way, not followed.** (1) A checked build runs out of memory in a loop of 200,000 caught
+    exceptions of any kind (`for (..) try { throw new InvalidOperationException("x"); } catch
+    (InvalidOperationException) { }`, nothing else in the program: `Insufficient memory`; with a changed
+    list's `foreach` the same, with this round's lowering and with the old one): something a checked build
+    keeps for each exception. As shipped the loops run, some tens of microseconds a throw (3,000,000 plain
+    ones had not finished after 100 seconds; 3,000,000 of a changed list's finished within three minutes).
+    Test 203 has 3,000 throws for that reason. (2) Test 236
+    (`236_queue_grows_by_moving`) printed `live 0` where .NET printed `live 191` once on the loaded desk
+    (the lines `after grow` and `after held`), and passed when run again and in both homelab suites.
+    (3) tools/tree-node.cs's first figure (`k=0`, a lone leaf) is 35 to 38 ns in some runs and 48 to 53 in
+    others, whatever the switches: the engine's tiers during the first measurement, not a step's.
+    (4) `walk-indexed` of tools/tree-frame.cs runs after the walk, over a warm cache: it is not what the
+    walk could be (the first item).
+  - Checked. The code is cd93b54 (the commits after it are tools and these documents). On the homelab: the suite
+    at 1d4abf2 (the `foreach` and the parts) 238 passed, 0 failed and the 2 known gaps, checked and as shipped
+    (499 s); at 5fb8575 (all five steps; cd93b54 differs from it by the three instructions that clear the
+    unlink's note) 239 passed, 0 failed, 2 known gaps, both modes (493 s). The self-hosted compiler at e92a608
+    (the `foreach`, the parts, the plain parents; before the unlink's step and the slot walk),
+    `tools/selfhost-switch.sh` with those four switches: built in 262 s and 244 s, 32,933,542 and 32,934,950
+    bytes; hello world in 8.27 to 8.55 s as it is and 8.21 to 8.37 s switched, peak memory 272.0 MB both; the
+    two wrote the same module, and `tools/selfdet.mjs` for test 145: self = net byte for byte (27,731 bytes,
+    8.1 s). The per-switch builds of tools/tree-build.cs above, at 860ce82. On the desk, at cd93b54: the five
+    scripts of breaks (`tools/list-foreach-breaks.sh`, `plain-parts-breaks.sh`, `node-path-breaks.sh`,
+    `unlink-skip-breaks.sh`, `slot-walk-breaks.sh`) exit 0; tests 190 to 199, 200 to 207, 120 to 129 and 130 to
+    139 pass checked and as shipped; tests 202, 203 and 204 as shipped 60 runs each, six at once, one output.
+    **Queued on the homelab when this was written, at 25b5f6b (cd93b54's code), not yet run:**
+    `env SET=202_,203_,204_,145_ bash tools/overnight-check.sh` with the six switches: the suite in both modes
+    again, the self-hosted compiler with and without the six switches and `tools/selfdet.mjs` for tests 220, 193,
+    088, 202, 203, 204 and 145, and `tools/stress-trees.sh` (127, 139, 192 to 199, 201 to 204; 200 loaded runs a
+    mode). Its output: tests/out/overnight/ in the homelab's worktree of this branch (C:/Users/Levi/hl/claude_tree-3)
+    and the session's log. **So for cd93b54 itself: the suite, the self-host check with the unlink's step and the
+    slot walk in it, selfdet beyond test 145, and every stress run are not done yet; the next entry of
+    docs/FINISH.md's log says how they came out.** Threads: none of the steps runs in a program with threads but
+    the `foreach`'s size-first loop and its throw path (the tags are not given there; the version is asked at
+    the list's end whatever the turns); tests 139, 143, 197 and 234 are in the suites above.
+    A job of this session is left in the homelab's queue by mistake: process 30140 there (`heavy.sh node
+    tools/frames-ab.mjs ..`, the scene by step), whose session was closed; it will take a slot for some four
+    minutes when its turn comes and its output goes nowhere.
+  - **Checked on the merge with main (37c6b15: main eba0f0d into the branch; the one conflict, docs/FINISH.md,
+    two appended entries, both kept; Runtime.cs merged by itself).** The queued `tools/overnight-check.sh` (with
+    the six switches) ran there: the homelab's worktree was moved to the merge and built before the job's turn
+    came, so what it checked is the merge. **Suite 241 passed, 0 failed, 2 known gaps, checked and as shipped
+    (595 s).** The self-hosted compiler built as it is (286 s, 33,203,338 bytes) and with the six switches off
+    (262 s, 32,944,300 bytes); **hello world by it in 8.59, 8.82 and 8.95 s** (switched 8.56 to 9.40), peak
+    272.0 MB both, the two modules the same (27,722 bytes); `tools/selfdet.mjs`: **self-1 = net, byte for byte on
+    145 (27,734 bytes), 220, 193, 088 (1,616,223 bytes, 82 s), 202, 203 and 204.** `tools/stress-trees.sh`, 200
+    loaded runs a mode: 139, 192 to 199, 201, 202 and 203 the same output in every run of both modes; **127
+    differed in 3 of 200 as shipped and 4 of 200 checked, each time `async 5` / `pending 1`**, the open gap of
+    docs/FINISH.md's table (item 2: about one run in a hundred on main, 22 of 2,400 and 3 to 5 of 400 in earlier
+    rounds); not run against main the same hour, so whether this branch's 7 of 400 is main's rate is not shown
+    here. Test 204 was not in the script's set (it takes 192 to 199 and 201 to 203); its own 200-run stress was
+    queued after. On the desk at the merge: the five scripts of breaks exit 0; tests 12x, 13x, 19x, 20x and 21x
+    pass checked and as shipped; hello world (145) passes its size limit as shipped.
+  - **Frames on the merge, main against the branch** (main eba0f0d and 37c6b15, `node tools/frames.mjs --runs 3
+    --js-young 32`, all five scenes, main and branch in turn, nine pairs in three sets of three; the desk loaded
+    in the first set: NativeAOT-LLVM's own tree median 0.031 to 0.037 there, 0.028 to 0.029 in the second, 0.028
+    to 0.036 in the third). **Tree, median: main 1.49x to 1.65x NativeAOT-LLVM's (0.044 to 0.061 ms), the branch
+    1.30x to 1.50x (0.038 to 0.049); in the six pairs of the second and third sets main 1.49x to 1.60x and the
+    branch 1.30x to 1.37x, lower in every pair.** p99.9 (the rebuild frame): main 0.81x to 1.40x (0.81x to 0.91x
+    in those six), the branch 0.70x to 0.92x (0.80x to 0.84x in those six): below NativeAOT-LLVM's in every pair
+    on the branch, above it in two of nine on main. Worst frame: main 0.67x to 1.32x, the branch 0.65x to 1.27x;
+    on the branch above NativeAOT-LLVM's in four of nine pairs, the three of the loaded set and the first of the
+    third (1.05x to 1.27x: frames.mjs flags them), at or below 0.81x in the five others; main above in three.
+    p99 in those six: the branch 1.23x to 1.50x, main 1.35x to 2.30x. The tree's mean frame 1.08x to 1.12x on
+    the branch and 1.23x to 1.31x on main in those six (1.14x to 1.41x and 1.28x to 1.63x in the loaded set).
+    The other scenes, the same on both within the desk's spread (second set: churn median 1.33x to 1.34x,
+    collections 1.02x, strings 0.88x to 0.89x, bigdrop 0.90x to 0.94x; their p99.9 and worst 0.10x to 0.37x on
+    both); the mean frame's geometric mean over the five 0.69x to 0.74x on the branch, 0.70x to 0.86x on main
+    (0.70x to 0.71x and 0.73x in the second set). `node tools/bench.mjs`, two pairs: geometric mean 0.93x and 0.91x on main, 0.92x and
+    0.92x on the branch (`tree` 7.4 to 7.5 ms both); the bench module 335.5 KB on main and 339.0 on the branch.
+    **Not reached, as the round says: the median (1.30x to 1.37x on a quiet desk), and the worst frame is not
+    below NativeAOT-LLVM's in every run on a loaded desk.** No further step of the "not built" list was taken:
+    each is a per cent or two of a frame by the measurements above (the old array of a growth freed without its
+    clear and dispatches about 10 ns a node, 8 us of a 1.3 ms build), below what the desk can show, and each
+    would have needed a second full check on a homelab whose queue held nine to thirteen jobs this night.
+  - **Test 127 against main the same hour** (main 4cf95fe on the homelab, `env TESTS=127_ RUNS=400 bash
+    tools/stress-cycles.sh`): `async 5` / `pending 1` in 3 of 400 as shipped and 4 of 400 checked, against the
+    branch's 3 of 200 and 4 of 200 above. Seven of 800 on main and seven of 400 on the branch: twice the rate in
+    one sample each, counts too small to tell apart (a Poisson spread of seven is 2 to 13). Not followed further.
+  - **Merged with main again (e682484: main 4cf95fe, claude/churn-5's ColdExits, the store forwarding and the
+    setter in loops).** Conflicts: docs/FINISH.md (the table's three rows that both changed, each side's words
+    kept; the appended entries both kept) and tools/selfhost-check.sh, which the two sessions wrote the same
+    night: one script now, the switches passed on, hello world, 220, 193 and 088 and SET's tests by selfdet,
+    main's last line ("selfhost-check: all the same"). On the desk at the merge: the five scripts of breaks
+    exit 0, tests 19x, 20x (with 208 and 209), 26x and 145 checked and as shipped. Frames, main 4cf95fe and the
+    merge in turn, six pairs, a desk loaded by other sessions in most of them (NativeAOT-LLVM's own churn median
+    0.049 to 0.088 ms): in the two pairs where both sides' NativeAOT-LLVM tree median was 0.029 to 0.030, tree
+    median 1.53x and 1.54x on main and 1.33x and 1.35x on the branch, p99.9 0.82x and 0.91x against 0.80x and
+    0.86x, worst 0.67x and 0.89x against 0.66x and 0.77x, churn 1.22x to 1.24x on the branch and 1.23x and
+    1.36x on main (its NativeAOT-LLVM churn 0.088 ms in the second: the desk); over all six the tree's
+    median lower on the branch in five (1.30x to 1.59x against 1.41x to 1.96x). The worst frame of the tree on
+    the branch was above NativeAOT-LLVM's in two of the six (1.45x, 1.21x, both on the loaded desk).
+    **Checked on the homelab at e682484** (`env SET=202_,203_,204_,208_,209_ bash tools/overnight-check.sh` with
+    the six switches): **suite 244 passed, 0 failed, 2 known gaps, checked and as shipped (772 s)**; the
+    self-hosted compiler built as it is (323 s, 33,252,200 bytes) and switched (456 s, 32,994,322 bytes: the
+    homelab under other sessions' builds), **hello world by it in 10.2 to 11.4 s** (switched 10.0 to 10.3; 8.6 to
+    9.0 s at 37c6b15 an hour and a half before on a quieter homelab, and main's own session gave 8.29 to 8.34 s
+    for 4cf95fe's code: not measured here side by side, so whether the merge costs the self-hosted compiler
+    anything is not shown; the switched build, without this branch's six steps, is as slow, which lays the
+    difference to the homelab or to main's side), peak 272.0 MB, the two modules the same (27,721 bytes);
+    **self-1 = net, byte for byte on 145 (27,733 bytes), 220, 193, 088, 202, 203, 204, 208 and 209**. Stress, 200
+    loaded runs a mode: 139, 192 to 199, 201 to 203 the same in every run; 127 `async 5` / `pending 1` in 3 of
+    200 as shipped and 1 of 200 checked (the open gap, as above).
+
 - **Known differences from .NET, taken in turn (2026-11-22, branch claude/known-diffs-1, from main cb287fb; the
   desk for the work, the homelab for the checks; not merged when this was written).** Seven differences earlier
   sessions had found and left. Five are closed, each with a test that fails without the fix; two are left, with a
@@ -2256,6 +2566,198 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     the member's group goes (test 246 does not count them while the board lives).
   - Checked: each closed item's test fails without its fix (241 with `CS2WASM_NO_FNPTR_STORAGE_KEEP=1` and before the scan, the generic and the `ref` fixes; 246 with `CS2WASM_NO_RANK_SITES=1`; 242, 243 and 245 on the commit before theirs) and passes checked and as shipped. The branch was merged with main 7932c93 (the node path; no conflict) at 14779aa, and what follows is of that commit unless said. On the homelab: the suite 236 passed, 0 failed and the 2 known gaps, checked and as shipped (460 s; the job was queued at a46bd11 and its first line names that commit, the checkout was at 14779aa when it ran: tests 201, 244 and 247 are in its count); the self-hosted compiler (`tools/selfhost-switch.sh CS2WASM_NO_RANK_SITES=1`): built in 240 s, 32,886,612 bytes, hello world in 9.06 to 9.17 s, peak memory 344 MB, the same module with and without the switch, and `tools/selfdet.mjs`: self = net byte for byte on 145 (27,738 bytes), 220 (276,626), 193 (258,680) and 088 (1,617,408); before the merge, at a63e075 (item 1 alone) the suite 231/231 checked and as shipped, and at dbae95a (items 1 to 3) the self-hosted compiler byte for byte on 145 (9.3 to 10.2 s, 344 MB). **Not run: `tools/stress-cycles.sh`** (127 and 139, and the new tests, 200 runs a mode): queued on the homelab behind other sessions for forty minutes and not started when this was written; the desk refuses heavy work. On the desk, the merge: tests 241 to 247 (244 and 247 as known gaps), 030 to 039, 190 to 207, 220 to 222, 020, 086, 087, 125, 127, 139, 143, 180 and 187 and the five of 22x pass both ways; hello world 27,784 bytes as shipped (the limit 28,383; the same number at the first commit of the branch). `node tools/frames.mjs --runs 3 --js-young 32 --no-aot`, main and the merge built in turn, two rounds each (main first): tree median 0.048 and 0.048 ms against 0.047 and 0.048, p99 0.073 and 0.070 against 0.070 and 0.070, p99.9 2.78 and 2.83 against 2.70 and 2.66, worst 3.33 and 3.14 against 2.96 and 2.97; churn median 0.066 and 0.067 against 0.068 and 0.067, p99 0.076 and 0.076 against 0.090 and 0.082 (main's own in a full run half an hour before: 0.140; the scene has no group, no weak reference and no finalizer, and none of its code changed), p99.9 0.116 and 0.100 against 0.124 and 0.124; bigdrop median 0.003 both, p99.9 1.09 against 1.08 to 1.11: level. With NativeAOT-LLVM beside it, before the merge (bd6177b): churn 1.34x its median, collections 0.97x, strings 0.89x, tree 1.69x (p99.9 1.27x, the node path not yet in), bigdrop 0.94x. Nothing was measured with threads beyond tests 139, 143 and 197 in the suite.
 
+- **Known differences from .NET, second round (2026-11-23, branch claude/known-diffs-2, from claude/round-9
+  d430594; the desk for the work, the homelab for the checks; not merged when this was written).** The two known
+  gaps of the round before are closed (the suite has no `known-gap` test), three more differences that were on
+  record are closed or narrowed, and a sweep of small programs around them found one large one, which is closed
+  for the program's own code. What is left is listed at the end, each with its smallest program.
+  - **1. A finalizer that grows a list of its own dying group (closed, test 244; and test 248).** The members'
+    counts after the finalizers, beyond their own references, were read as "stored where the program can reach
+    it", and the whole set was made immortal (count -1): a real resurrection was never freed either. Which of the
+    two it is is no longer asked. `Rt.FinRevive`: the members become what they were before any store linked them,
+    plain objects with every reference counted where it is held (during the finalizers every reference to and
+    from a dying member is a counted one already: ArenaLinkCore refuses the link). Then the references are linked
+    as the stores they stand for: (a) each member that had no owner among the others, with all that its slots
+    reach, top down (ArenaLinkContents: a container's links before those of what it holds, as the program made
+    them); (b) the slots of members that live on which took a dying member during the finalizers: noted where the
+    link was refused (`FinRecord`, the container counted once more while it is in the list), found by one visit
+    of each noted container (mode 21) while the dying members carry a tag on their counts, so nothing is walked
+    that the finalizers did not touch; (c) what neither reached. The count each member was given for the while is
+    let go last, bottom up. What the program can reach then lives on as any object does and is freed when it is
+    let go later (its finalizer not run again unless GC.ReRegisterForFinalize asked: Rt.FinalizedBit); the rest
+    goes by the counts at once, or as a group of its own whose finalizer phase runs the finalizers of the objects
+    made meanwhile with every reference in place: .NET's next collection. Three things the tests found on the
+    way: a noted container nothing else refers to any more (an array a list grew out of during the finalizer) is
+    let go before the links, else it kept what it owned from the array that holds the same items now; during
+    these links a member that code still refers to is not made the property of one that came back (the garbage
+    owned the living root it referred to, and the check at the drop, finding a member code holds under it, kept
+    it); the record of a whole group that came back is freed (it stayed, busy, for good).
+    `CS2WASM_NO_FIN_REVIVE=1`: as before. Without threads only: with threads FinPhaseCuts is as it was (the
+    members never freed).
+  - **2. A member that refers back to itself through an array's element (closed, test 247).** Let go by its
+    owner, the member is adopted by the other container that holds it (Adopt), here an array it owns itself: the
+    ownership turns round, the array is the top, nothing's, with no reference from outside, kept by what it owns
+    alone, and nothing asked the check at the drop of it (the member is owned, so no candidate).
+    ArenaUnlinkOld asks it of the new top (`CS2WASM_NO_ADOPT_CHECK=1`: not). The far fields of the test (a field
+    past the sixteenth word, a field of a wide struct) were freed already once this was; the test's last line was
+    .NET's own artefact (the first node's reference stayed in a slot of Main's frame: made in a method of its own
+    now).
+  - **5. The cells of a replaced array that refer back to the array's holder (closed, test 249).** One, two and
+    three dimensions, jagged, lists, with and without a local across the store: all freed already but one shape,
+    a ring of cells kept for a while by a cell of another array. The ring's top failed its check by that one
+    reference from outside what it owns, and the number the note keeps is taken down only at a store
+    (NoteOutside at the unlink): when the other array was let go and its cell destroyed, the reference went with
+    its holder and the number stayed. VisitDying and DyingSurvivor ask NoteOutside as the unlink does
+    (`Rt.DyingNote`), and DrainKills checks the top when the destruction is done (`CS2WASM_NO_DYING_NOTE=1`: not).
+    Rt's NoteOutside itself is unchanged (it is called from one more place).
+  - **3 and weak handles (narrowed, tests 265, 266, 248).** .NET clears a short weak reference before the
+    finalizer, but a handle that tracks resurrection and a dependent handle (a ConditionalWeakTable's entry) only
+    when the object is freed. All were cleared before the finalizer: a finalizer did not find its own table
+    entry, and an object brought back had lost its entry and its long weak references. Now a chain block has a
+    bit for a long handle (WeakSlots.LinkLong), `Cleared(addr, all)` clears the short ones or all;
+    ObjectMarks.OnFinalize (rt.on_finalize, before a finalizer) and WeakDying clear the short ones, OnDestroy all
+    (after the finalizer of an object that did not come back, and in a group member's clear function when its
+    class has a finalizer). **A value that is its own key** (`table.Add(k, k)`, Roslyn's and the compiler's
+    tables of a type that is its own canonical form) is not counted by the slot, so the key is freed. **Left: a
+    value that holds its key through a field** (see the end).
+  - **6. Reflection on compiler-made classes (one of three closed, test 270; branch
+    claude/known-diffs-2-reflection, merged).** `Delegate.Target` of a capture-free lambda is the `<>c` singleton
+    (one object a class, its type the method's declaring type), of a lambda that captures `this` alone the object,
+    of a capture-free local function null, of a lambda made further in the method's display: the delegate's
+    layout and call are unchanged, the property asks a function the compiler writes (rt.delegate_target, a
+    compare on the delegate's function; the singleton a 16-byte immortal object in the data). Gated on the
+    program reading Delegate.Target: hello world the same bytes, +31 B where the property is reachable and not
+    asked, +291 B on test 155.
+  - **7. Test 139 with the engine's stack checks off (not reproduced).** 6,000 runs as shipped, 24 at once,
+    `--no-wasm-stack-checks`, on the homelab (562 s): every run `16 1`. With the 4,000 of the round before: one
+    `16 3` in 13,000. Not followed further.
+  - **8. The sweep, and what it found: a span or a `ref` did not keep its object (closed for the program's own
+    code, tests 271, 272, 268).** `Make().AsSpan()`, `ReadOnlySpan<T> s = h.Arr; h.Arr = other;`,
+    `var s = a.AsSpan(); a = other;`, `ref T r = ref h.Arr[i];`, `Span<T> F() { var a = new T[3]; return a; }`,
+    `F(ref h.Arr[0], h)` where F replaces `h.Arr` (test 272): under .NET the span or the place keeps the array. Here neither
+    holds a count (StorageKeeps kept a collection's storage only), and the array went with its last holder: of 38
+    small programs 34 read freed memory, a trap or another object's bytes, checked and as shipped. The remedy is
+    StorageKeeps' own, widened, in the functions of the program (the core library's code is compiled as it was):
+    - the site counts the object the reference that came out points into (Rt.ObjectOf) into a local of the
+      function, let go at its return, for a call, property, constructor, conversion operator or the language's
+      own span conversion through which a reference can come out, unless what it is given is stable for the
+      function (a parameter or local never written again, `this`, a constant, a static readonly field; a local
+      of an inner block only where the result stays in its statement) and the callee is one of the library's
+      that give out only what they got (a ref struct's members, MemoryExtensions, MemoryMarshal, Unsafe, string,
+      Memory, ReadOnlyMemory, ArraySegment); and for a `ref` local or `ref` assignment whose target is a place in
+      an object that is not stable (FunctionCompiler.NoteSpanSites, after the captures are known);
+    - a function that returns a span, a ref struct or a `ref` counts what the result points into before it lets
+      go of its locals and temporaries (Rt.ReturnKeep, four at a time), and the calling site, which counts it for
+      itself, gives that count back (Rt.ReturnDone);
+    - a place passed by reference (`ref`, `out`, `in`, the struct a method is called on) that is in an object
+      read from a field, an element or a call keeps that object for the statement, as a reference argument is
+      kept (ToCallSafe, with the field borrow's own decision whether the count is needed).
+    `CS2WASM_NO_SPAN_KEEP=1`: none of the three (tests 271 and 272 trap). The sweep's other programs: finalizers
+    of plain objects with inheritance, brought back from the derived or the base finalizer, asked again,
+    suppressed (267); ConditionalWeakTable enumerated, cleared, replaced, with values that hold other keys, keys
+    in cycles and under a living tree (266); spans and refs into collections across growth through every way of
+    passing them (268; its one failure was the span over `stack.ToArray()`, the case above); function pointers,
+    generic, by `ref`, in fields, arrays and generic classes (269): the same as .NET but for what is listed below.
+  - **9. Two more the sweep found (one closed, test 274; one found and left, test 273 goes round it).** (a) *A
+    static's initializer pins its object*: the object of `static Node s_root = new Node(0);` is kept out of
+    groups (Rt.ArenaPin) as a static readonly field's is, by the initializer's store alone (EmitStoreField pins
+    any static; a later assignment to the same field does not): once in a cycle it is never freed when the static
+    is set again. Unpinned (commit b27e90f) it was freed, and tests 247, 248 and 249 failed: their roots are
+    statics set by initializers, and with the root a member of the group, as a root assigned in code is, the
+    cells' references back to it are up-references, a cell another cell refers to holds its old array, and
+    pairs of cells that refer to each other stay until the group goes (SPEC 4.3's allowance; test 249 "kind 1
+    how 3": 2, 6, 6 and 8 cells too many). So the pin stays the default (`CS2WASM_UNPIN_STATIC_INIT=1`: pinned
+    only when readonly), and **what tests 247 to 249 prove, they prove for a root that is a plain pinned object**.
+    One of the three holds for a member root too: Rt.Dropped refused a member with a container waiting to own
+    it; when that container is one the member itself owns (`n.Raw[6] = n`: the member holds its old owner, is
+    therefore not adopted, and nothing else looked) the check is made now (247 passes either way). (b) *A
+    container let go while one of its items is held from elsewhere*: `g.A = null` where one cell of the array is also in `g.One` and each cell refers back to g:
+    the other cells stayed until the held one was let go (three of four for .NET's none), because the held
+    cell, with an up-reference below it and a holder other than its owner, holds the array. `Rt.ShedHolds`,
+    asked where a member is let go by its owner (ArenaUnlinkOld) or by the code (ArenaRelease) and only its
+    items' holds are left: each held item changes owner to the container waiting to own it, when that one is the
+    array's owner or below it (its up-references then pass the same members: the u of the members between is
+    moved), or, when it owns nothing that refers up, has its own up-references made counted ones (Reevaluate
+    makes them up-references again under its next owner); the array then has no reference and goes with the
+    items nothing else holds. Arrays of any rank and members by their slot bits; nothing done when an item
+    refers up to the container itself, has a note of a failed check, or with threads.
+    `CS2WASM_NO_SHED_HOLDS=1`: not (test 274 fails).
+  - **Left, each with its smallest program.**
+    (a) *A table's value that holds its key through a field*: `var k = new K(); table.Add(k, new V { Key = k });`
+    and k let go: .NET frees both (the ephemeron rule), here both stay while the table has the entry (`keys 1
+    values 1` for `keys 0 values 0`). The slot's count on the value and the value's on the key are a cycle no
+    link knows of; to free it the key's last reference from elsewhere would have to be told from the value's at
+    every release of a key.
+    (b) *What only a dying finalizable object holds*: `sealed class P { public object Q = new(); ~P() { .. W.TryGetTarget(out _) .. } }`
+    with W a weak reference to `p.Q`: the finalizer reads True where .NET reads False (the short weak references
+    to everything that became unreachable together are cleared before the first finalizer); and of the same
+    kind, when the finalizer brings its object back, what the object holds has been finalized under .NET at that
+    collection (it was unreachable with it), here it is finalized when it is freed (tests 265 and 267 do not
+    count such objects meanwhile). For a group's members both are as .NET (test 245). For plain objects it needs
+    a pass over what the dying object alone holds before its finalizer: not made.
+    (c) *GC.ReRegisterForFinalize twice on an object not yet finalized*: .NET runs its finalizer twice (two
+    entries in its queue), here once.
+    (d) *Reflection*: `typeof(delegate*<int, void>).IsFunctionPointer` is False; the compiler-made classes' own
+    member lists (`GetNestedTypes`, `GetFields` of `<>c`, of a display class, of a state machine: empty; .NET
+    lists Roslyn's delegate caches and hoisted locals), generic compiler-made classes as constructed types (the
+    definition is reported, and a capture-free lambda of a generic method has one Target for all instantiations),
+    `MethodInfo.Invoke` and `Delegate.CreateDelegate` on a compiler-made method (NotSupportedException), a
+    capture-free lambda evaluated twice (two delegate objects; Roslyn caches one).
+    (e) *With threads*: FinRevive is not applied (the members a reference was left to are never freed, as
+    before).
+    (f) *Spans in the core library's own code* are compiled as before (no case of it is known: the suite and the
+    self-hosted compiler run the library's paths).
+    (g) *Compositions of the held-item shape*: an item taken out of its array while a plain copy of the array
+    holds it, then the copy stored in the array's place and let go
+    (`var copy = (Cell[,])g.A.Clone(); g.A[0, 1] = null; g.A = copy; .. g.A = null;` with cells that refer back
+    to g and to each other across arrays): cells stay until the group goes (3 of 21 in the program test 274 was
+    cut down from; the item holds its old array without being in it, so ShedHolds does not find it).
+    (h) *A place passed by reference in the core library's own code*, as (f).
+    (i) *A root that is a member of its group* (a static assigned in code, or any with
+    `CS2WASM_UNPIN_STATIC_INIT=1`): two cells of an array that refer to each other and back to the root, taken
+    out of the array one by one, stay until the group goes (test 249's "kind 1 how 3" with the switch; with the
+    switch test 248's "star under a living tree, mode 5" differs too: not looked into). And the other side of it:
+    the pinned object of a static's initializer, once in a cycle, is never freed when the static is set again
+    (`static Node s_root = new Node(0); .. s_root.Kids.Add(new Node { Parent = s_root }); s_root = new Node(1);`:
+    a weak reference to the first root reads alive for .NET's dead).
+    (j) *Not this branch's, seen under load*: test 108 as built checked traps in about 1 run of 100 with four at
+    once on the desk (`operation does not support unaligned accesses` in rt.retain under
+    Interlocked.Exchange(object, object) in Task.FinishContinuations), the same with every switch of this branch
+    off; 088's timer line; 085's oracle (.NET had not collected yet).
+  - **Checked at the merge with main 4cf95fe (1cae0b2, the branch's last code; the homelab unless said).** The suite
+    255 passed, 0 failed, **no `known-gap` test**, checked and as shipped (1,088 s, the machine shared). The
+    self-hosted compiler (`tools/selfhost-check.sh`): built in 251 s, 33,041,673 bytes; hello world in 13.1 to
+    13.6 s on the loaded homelab (two slots in use), peak 272.0 MB, the same module with the switches; 145
+    (27,740 bytes), 220 (283,039), 193 (266,314) and 088 (1,618,568) each "self-1 = net, byte for byte". The time
+    against main's: main 4cf95fe's self-hosted compiler (claude/main-check-1's build) and this one's, copied to the
+    desk and run in turn on hello world, five rounds: main 9.80 to 12.19 s, this branch 9.68 to 12.12 s, the same
+    module (27,785 bytes): level, the homelab's 13 s is its load. On the desk, the merge: the tests matching 24,
+    26, 27 and 208, 209, 260 pass both ways (12, 8, 7, 1, 1, 1). **Stress (`tools/stress-cycles.sh`, the new tests
+    and 127, 139, 200 loaded runs a mode, at 1cae0b2): 244, 247, 248, 249, 265 to 274 and 139 the same in every
+    run of both modes; 127 as shipped the same in 200, checked 1 of 200 differed (its "async 5 / pending 1", the
+    load flake on record).**
+    The last session's uncommitted change (DrainKills looks again only at a top whose DyingNote brought its
+    number to zero) was not finished (no switch, no test, not measured): parked untested on
+    claude/known-diffs-2-drainkills (9145a28).
+  - **The merge with main 4a42328 (claude/tree-3; branch claude/known-diffs-2-main2): the plain parts are off by
+    default.** Merged without a conflict in code, tests 248, 265 and 266 failed checked and as shipped on the desk
+    (248 "star, mode 0, let go: live 8 finalized 5 short dead long alive" for .NET's "live 1 finalized 12 short
+    dead long dead"; 266 "a pair, mode 1, let go": things 0, finalized 7, the long weak reference True for -2, 9,
+    False): objects a finalizer brings back and objects behind weak handles stay alive. Of tree-3's switches only
+    `CS2WASM_NO_PLAIN_PARTS=1` puts all three right (NO_PLAIN_PARENTS, NO_LIST_TEST_FIRST, NO_LIST_THROW_PATH,
+    NO_UNLINK_SKIP, NO_SLOT_WALK each leave all three failing). So the plain parts (Rt.PartHolder, JoinFresh's
+    plain part) are off by default, correctness first; `CS2WASM_PLAIN_PARTS=1` (or a `CS2WASM_PLAIN_PARTS_BREAK`)
+    turns them on for later work, and tools/plain-parts-breaks.sh asks for them so. **The cause is not found**:
+    where a part's finalizer or weak handle is reached through its holder after FinRevive or with the weak handles
+    that stay until the object is freed is the place to look. Checked on the desk at that commit: the tests
+    matching 19, 20, 24, 26, 27, 145, 127, 139, 187, 088 pass checked and as shipped (12, 12, 12, 8, 7 and one
+    each); hello world 27,786 bytes as shipped. Not run on the homelab (the suite and the self-host check are
+    those of 1cae0b2 above). `node tools/frames.mjs --runs 3 --js-young 32` on the desk, off and on in turn, two
+    rounds (07:02 to 07:04): tree median 0.038 and 0.037 ms off, 0.039 and 0.038 on (1.32x and 1.27x NativeAOT-LLVM's
+    off, 1.36x and 1.31x on), p99.9 2.01 and 2.03 off, 1.97 and 1.93 on, worst 2.38 and 2.08 off, 2.13 and 2.04 on;
+    the module 239,094 bytes off, 239,684 on; churn, collections, strings and bigdrop the same either way (churn
+    median 1.21x, mean frame over the scenes 0.69x to 0.70x NativeAOT-LLVM's): what the tree gives back is about
+    2 to 5 percent of its p99.9 and nothing measurable of its median.
 - **The churn loop, round 5: 1.35x to 1.17x-1.22x, what the engine does with a call in a loop, and what is left by
   measurement (2026-11-22 to 23, branch claude/churn-5, from claude/round-9 d430594; the desk machine, shared with
   other sessions' timings: ranges, runs in turn, the lowest of several rounds where said; the homelab for the
@@ -2444,6 +2946,208 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     scenes on a quiet machine (every figure above is from the shared desk, with its ranges); a program with
     threads for the two changes that are in (the stored value read back is the pass's own proof, which holds for a
     field another thread may write only as far as any plain read does; the suite's thread tests pass).
+
+**A3.6 Programs with threads: the measurement, and the thread escape analysis made to hold (2026-11-23, branch
+claude/threads-1 from claude/round-9 d430594). [run]** SPEC 1 asks for threads that are worth using and for every
+program to be faster than under NativeAOT; until now every speed figure was of a program without threads, and the
+optimizations of the last days are switched off in one with.
+
+*The measurement.* `node tools/frames-threads.mjs` (sources in tools/frames-threads; `tools/frames-threads-quick.mjs`
+for one module without NativeAOT's side): tools/frames's five scenes on the main thread while one worker waits on a
+monitor (idle_*; aidle_*: the scene's work handed over as an `Action`), N threads each with a particle system or a
+scene tree of its own made on that thread (pchurnN, ptreeN, N = 1, 2, 4, 8), 64 work items a frame made on the main
+thread and handed to N workers through a queue under a lock, their results back through another (sharedN), and the
+churn's and the tree's parts each timed alone on a worker (parts1, tparts1). Each against the same work in a program
+without threads, cs2wasm's and NativeAOT-LLVM's. **NativeAOT-LLVM's WebAssembly with threads does not link here**:
+`-p:WasmEnableThreads=true` reaches the linker, which refuses `--shared-memory` because the package's runtime
+libraries are built without atomics (`allocheap.cpp.o`); so the comparison is with NativeAOT without threads, said
+on every line. Median frame, ms, the desk, three runs, lowest (before: the base's compiler on the same sources):
+
+| scene | NativeAOT, no threads | cs2wasm, no threads | threads, before | threads, now | now against NativeAOT |
+|---|---|---|---|---|---|
+| churn, one idle worker | 0.050 | 0.068 | 1.99 | 0.100 | 2.0x |
+| collections, idle | 0.007 | 0.006 | 0.065 | 0.012 | 1.8x |
+| strings, idle | 0.008 | 0.007 | 0.032 | 0.013 | 1.65x |
+| tree, idle | 0.034 | 0.046 | 1.21 | 0.120 | 3.6x |
+| bigdrop, idle | 0.003 | 0.003 | 0.031 | 0.009 | 2.8x |
+| private churn, 1 worker | 0.048 | 0.070 | 2.33 | 0.107 | 2.2x |
+| private churn, 4 workers | | | 3.12 | 0.116 | 2.4x |
+| private churn, 8 workers | | | 3.15 | 0.158 | 3.3x |
+| private tree, 1 worker | 0.006 | 0.009 | 0.160 | 0.022 | 3.6x |
+| private tree, 4 workers | | | 0.199 | 0.034 | 5.6x |
+| private tree, 8 workers | | | 0.246 | 0.056 | 9.2x |
+| shared, 1 worker | 0.102 | 0.071 | 0.170 | 0.113 | 1.1x |
+| shared, 2 workers | | | 0.231 | 0.081 | 0.8x |
+| shared, 4 workers | | | 0.405 | 0.264 | 2.6x |
+
+Worst frames now against NativeAOT's without threads: below it in churn (0.57x), collections (0.49x), bigdrop
+(0.30x) and the private churn (0.53x to 0.88x); above in the tree (17.4 ms against 3.7: the whole tree rebuilt,
+35.3 before), in strings in one of the two forms (0.58 against 0.30 ms; 0.23 the other), and in the private tree
+(3.5 to 11.3 ms against 2.9). Memory 16 MB (32 to 48 with four and eight workers) against NativeAOT's 59 to 71.
+Scaling of private work (the work of N threads in the time of one, N the ideal): churn 1.94, 3.23, 5.28 at 2, 4,
+8; tree 1.89, 2.44, 3.20 (before: churn 1.98, 3.40, 6.4 of a frame thirty times as long; tree 1.99, 2.76, 4.1).
+The shared scene's medians move between 0.11 and 0.20 ms from run to run on one build: the wake of a worker is
+most of its frame, and four workers for 64 small items are slower than two.
+The parts on a worker, us (before -> now; without threads; NativeAOT): 20,000 particles made 1,073 -> 296 (194;
+159), a pass over them 1,450 -> 130 (112; 110), let go 315 -> 316 (40; 4); a tree of 3,906 built 2,600 -> 1,638
+(270; 42), walked 555 -> 15 (15; 17), 100 subtrees replaced 2,350 -> 1,541 (316; 33), dropped 204 -> 195 (59; 0).
+
+*What the cost was.* Not the atomic counts as such. Sharing.cs decides at compile time which types' objects another
+thread can reach, and code for the others is as without threads; for the scenes' program it answered **every type**
+(156 of the 155 ids its count is taken against). Each cause was found by asking the analysis why (CS2WASM_SHARING_DEBUG=1; new:
+CS2WASM_SHARING_ADD and CS2WASM_SITE_ADD print where a source was recorded) and each now says where its values come
+from instead of "any object of the type"; each has its switch:
+- a struct's place handed to `Unsafe.Add`, `Unsafe.Subtract`, `Buffer.Memmove` (and inside those): the ref stays of
+  the struct's type, a copy adds nothing to what its fields hold (the values of every AsyncLocal were any object).
+  CS2WASM_NO_SAME_TYPE_REFS.
+- a slot whose every compiled store stored null (`Thread.StartHelper._startArg`): nothing. CS2WASM_NO_NULL_SITES.
+- what stores by address can leave in an array (Arenas.AddRefStores gave any object of the element type to every
+  array): the sources of the stores through refs of the type; for the runtime's `Array.SetValue` and `Array.Copy`
+  across element types, the types those values can be (Sharing.PtrIds: what `Cs2WasmArrays.GetBoxed` returns is an
+  element of some array or a box of a value array's element type), of which each array takes its own. Kept as a
+  set of types: the walk's own filters are dropped after four at a node. CS2WASM_NO_BY_ADDRESS_SOURCES,
+  CS2WASM_NO_PTR_IDS.
+- a closure's slot of a captured local whose every write the declaring body shows, and of a parameter no code
+  writes (an `object gate` a thread's lambda captures was any object). CS2WASM_NO_DISPLAY_SOURCES.
+- an array made with no element (`List<T>.s_emptyArray`, a static every thread reads): the type can be reached,
+  nothing through it; and such a type has no slot another thread could read or store, so reads and stores of a
+  worker's own `T[]` are plain (Sharing.MaySlotsBeShared against MayBeShared: a count asks the second).
+  CS2WASM_NO_EMPTY_ARRAYS.
+- a static is a root only if code a worker thread can run names its slot (Driver.WorkerStaticSlots, over what
+  `__thread_entry` reaches); the engine thread's own statics are read with a plain load, borrowed from, and read
+  once by a loop, as without threads. CS2WASM_NO_ENGINE_STATICS.
+- a delegate made of a lambda is a source that names the place in the text (Sharing.LambdaTag): reaching it
+  reaches that lambda's closure, not every closure a delegate of the type was made with; and a lambda is code a
+  worker can run only if a delegate of it, or any delegate of its type, can be reached by another thread, or code
+  a worker runs makes it. Without this, handing the main thread's work over as an `Action` in a program whose
+  workers invoke an `Action` put the idle scenes back at 1.96 ms a frame of churn. The roots and the worker's code
+  grow together in rounds (two here). CS2WASM_NO_LAMBDA_SITES.
+Now 113 of 155; the scenes' own types (the particles, the entities, their lists, each worker's world) are no
+other thread's, and 17 statics are the engine thread's.
+Then, with the types known, what still cost (each found by timing the parts, not by reading code: field loads read
+once by a loop and the plain counts written out in loops were built on a reading, measured at no gain and taken
+out again):
+- `foreach` over a `List<T>` counted each element: a walk over a tree took the group's locks at every child (30x).
+  It borrows the list and each element when neither the list nor its array can be reached by another thread.
+  CS2WASM_NO_LOCAL_LIST_LOOPS.
+- with threads every release reaches `Rt.PendDestroy` (the thread's list of objects that wait for the outermost
+  destruction), whose raw store the store summary took for a store of an array's element: nothing was borrowed
+  across any call that may release, in any program with threads. The same for `Rt.RegionExchange`, the exchange
+  of every store in its region. Both are the runtime's own now (StoreSummary.Internal), as Rt.Alloc and Rt.Free
+  are. (No switch: it is a correction of what the summary takes for a store.)
+- a getter that returns a field (List<T>'s indexer) returned it counted; borrowed now when `this` and every
+  object on the way are no other thread's. CS2WASM_NO_LOCAL_GETTERS.
+
+*A fault of the analysis, found by its test.* Sharing.Analyze took the types a pointer store can leave in an array
+with the filter of the visit that reached the array's slot first; a later visit with a wider filter was refused as
+seen. Test 278 (a `Gem` stored by `Array.SetValue` into an `object[]` a static holds) ran a worker's plain count on
+it: the check stopped it, the build without the check hung. Now once for each filter.
+
+*Tests.* 275 to 279 (the engine thread's statics; captured locals; arrays of no element; `Array.Copy` and
+`SetValue`; private work and handed results), each racing, each printing the same whatever the interleaving.
+`bash tools/thread-escape-breaks.sh`: each compiled with CS2WASM_SHARE_CHECK=1 (a plain count of an object another
+thread made stops the program) prints the same; with its rule deliberately weakened (CS2WASM_EXP_ALL_ENGINE_STATICS,
+_DISPLAY_FIRST_ONLY, _EVERY_ARRAY_EMPTY, _NO_PTR, _LAMBDA_SITES_UNREACHED, _NO_LAMBDA_RUNS, CS2WASM_SHARING_NONE)
+the check stops it; with the rule off it prints the same. The two borrows (the list's loop, the getter) rest on the
+list being no other thread's, which CS2WASM_SHARING_NONE breaks; a weakened form of their own (every list's
+foreach borrows) was not made to fail: an element another thread lets go of stays until the borrowing thread's next
+safe point, and a safe point inside the loop is a store the borrow is refused for.
+
+*Programs without threads are compiled as before*: 145, 220, 193, 201 and tools/frames's module byte for byte the
+base compiler's, as shipped and checked (hello world 27,784 bytes by the command line, the same).
+
+*Not done, in the order of what it costs.*
+- **The groups with threads.** A tree's build and a subtree's replacement are 5 to 6 times the program without
+  threads (1,638 against 270 us; the whole tree's rebuild is the idle tree's worst frame, 17 ms), and private
+  trees scale 3.2 at eight threads. The node path and the fused steps are off with threads; a store into a member
+  takes LinkLock's walk, and a member's first and last reference from outside the runtime lock, which every
+  thread shares. What eight private trees wait for, by the profile (`node tools/profsum.mjs`, `profcallers.mjs`):
+  `Rt.StripeWait` is the first function, 14.5% of all samples, called from LinkLock under ArenaLink under the
+  build and the lists' Add: objects that are no members take the stripe their address gives, of 256, so threads
+  that share nothing meet on stripes. (Tried on a reading and measured at nothing: the skip of the pinned empty
+  array every new list starts with, which a program without threads has in ArenaLink, allowed with threads.)
+  Leaving the groups' stripes out when no cycle-capable type can be reached by another thread was
+  built and measured (build 1,790 -> 1,170 us with every stripe off): never the case as a whole (Thread, its start
+  helper and the thread's closure are cycle-capable and reached in every program with threads), so it needs the
+  answer by group of types (the runtime's SccOf), a change in GroupLocks.cs, the other session's file tonight.
+- **Strings and other types every thread can reach by their type.** The churn's drop is the atomic release of each
+  particle's string (316 against 40 us) and its making the locked read of a `string[]` element; the type is one
+  another thread can reach, the objects here are not. This needs the answer by where an object is made, not by
+  its type.
+- **A delegate with no tag** (a method group's, a local function's, a clone made by `Delegate.Combine`) is still
+  any delegate of its type: every lambda of the type is then a worker's code and every closure reached.
+- **The threaded self-hosted compiler** (docs/FINISH.md check 5): not touched; Roslyn's one group is one lock.
+- `tools/thread-board-hang.cs`: four workers storing small trees over the elements of a list a static holds
+  (through its span) while the main thread's foreach reads them hangs in about one run of six, with the base's
+  compiler too (2 of 12). Not looked into: the groups' locks.
+- claude/load-flakes-1's layout of the statics by cache lines (5837122) is on this branch (cherry-picked, 43f1dd1).
+
+*A hang of the base's that the new tests met.* The homelab's suite at 170ac22 stopped test 277 as shipped at the
+time limit, nothing printed. On the desk (`node tools/stress.mjs`, 8 at once) the test's first form hangs in 7 of
+300 runs, built by the base's compiler d430594 in 5 of 300, and with each of this branch's rules off in 2 to 8 of
+300: not this branch's code. The shape: threads that read and replace, unsynchronized, the elements of an array a
+static holds, whose class has a finalizer (`tools/thread-notes-hang.cs`). Variants built by the base's compiler,
+400 loaded runs each: the notes alone 5 hangs; no finalizer 0; the read and the store under a lock 0; the store
+without the read 0. In 600 runs of the notes alone, 14 hangs and one run that ended with a note never finalized;
+with CS2WASM_DEADLOCK_DUMP=1 the hung runs say nothing. Test 275's first form had the shape too (1 of 300). Both
+tests take a lock around the shared objects now (what they test is the counting, not the race; test 139 has the
+racing stores): 500 loaded runs a mode each all the same, 276, 278 and 279 300 each. Not looked into further.
+
+*What the machine gives.* N threads of arithmetic alone (scenes spinN, beside the private scenes' scaling in the
+tool's output): about 1.9, 3.3 and 6.3 at 2, 4 and 8 threads on the desk (24 logical processors, other sessions
+at work): the private churn's 5.3 at eight is most of it, the private trees' 3.2 half.
+
+*Checks* (the code is 170ac22; later commits are tests, tools and these documents). The homelab: the suite, checked
+240 passed, 1 failed, 2 known gaps, as shipped 239 passed, 2 failed, 2 known gaps (961 s): 088's timer line in
+both (the known one under load) and 277's hang above; the self-host check (`tools/selfhost-switch.sh`): the
+self-hosted compiler built in 340 s (33,404,357 bytes), hello world in 8.7 to 9.4 s, peak 272.0 MB, self-1 = net
+byte for byte on 145. The desk: `tools/thread-escape-breaks.sh` as said above, on the final tests;
+`tools/thread-share-check.sh` (every conformance test that is a program with threads, 59 of them, once as it is and once
+under the share check): all 59 print the same. Queued on the homelab when this was written, and in docs/FINISH.md's entry when in:
+`tools/stress-cycles.sh` (127, 139; 139 without the engine's stack checks), `tools/stress-threads.sh` (275 to
+279, 187, 131), `tools/thread-scale.sh` (the threaded self-hosted compiler, not yet built with this analysis),
+`tools/selfdet-set.sh` (220, 193, 088 through the self-hosted compiler), 088 and 275 to 279 alone.
+
+*On the merge with main 4cf95fe (612cd56; the session that took over, 2026-11-23 04:40 to 07:45).* Main's code
+since the base (claude/churn-5: a list's setter in loops, the stored value read back, ColdExits off) merged
+without a conflict in code. Programs without threads are compiled byte for byte as by main's compiler 4cf95fe:
+145 (27,786 bytes), 220, 193, 201, 208, 209 and tools/frames's module (230,417 bytes); so `tools/frames.mjs` is
+main's: `--runs 3 --js-young 32` on the desk, medians churn 1.23x, collections 1.02x, strings 0.89x, tree 1.61x
+(worst 1.21x: tree's spikes above NativeAOT's, as on main), bigdrop 0.97x; the mean frame 0.74x NativeAOT's.
+`node tools/frames-threads.mjs --runs 3 --js-young 32`, the desk, main's compiler (before, two runs) and this
+branch's (after, three runs) in turn; median frame, ms, the range over the runs (NativeAOT-LLVM without threads):
+
+| scene | NativeAOT, no threads | cs2wasm, no threads | threads, main | threads, this branch |
+|---|---|---|---|---|
+| churn, one idle worker | 0.050-0.052 | 0.061-0.063 | 2.016-2.030 | 0.096-0.100 |
+| collections, idle | 0.006 | 0.006 | 0.039-0.040 | 0.012-0.013 |
+| strings, idle | 0.008 | 0.007 | 0.021 | 0.013 |
+| tree, idle | 0.033-0.035 | 0.046-0.049 | 0.937-0.986 | 0.122-0.126 |
+| bigdrop, idle | 0.003 | 0.003 | 0.028 | 0.009 |
+| private churn, 1 / 4 / 8 workers | 0.049-0.050 | 0.066 | 1.90 / 2.49-2.59 / 3.09-3.27 | 0.104-0.108 / 0.110-0.114 / 0.160-0.161 |
+| private tree, 1 / 4 / 8 workers | 0.006 | 0.009 | 0.160 / 0.174-0.198 / 0.243-0.259 | 0.022-0.023 / 0.034-0.042 / 0.056-0.057 |
+| shared, 1 / 2 / 4 workers | 0.104-0.106 | 0.072 | 0.174-0.191 / 0.101-0.176 / 0.260-0.262 | 0.111-0.170 / 0.082-0.170 / 0.309-0.316 |
+
+Worst frames, this branch: idle churn 0.29 to 0.52 ms (NativeAOT's 1.24 to 1.79), idle tree 16.3 to 23.2 ms
+(3.7 to 3.8; main's 21 to 32), private churn at eight 0.8 to 5.5 ms (main's 10 to 39). Scaling (the work of N
+threads in the time of one): private churn 1.75-1.86, 3.06-3.22, 4.76-5.38 at 2, 4, 8 (main 1.78-1.88, 2.88-3.05,
+4.67-4.70, of frames twenty times as long); private tree 1.57-2.00, 2.19-2.75, 3.04-3.55 (main 1.85-1.98, 2.73,
+4.14-4.20); arithmetic alone 1.73, 3.43, 5.64. The parts on a worker, us (main -> this branch; NativeAOT without
+threads): 20,000 particles made 1,074-1,088 -> 294-303 (159-161), a pass 1,445-1,465 -> 125-129 (103-109), let go
+316-320 -> 315-327 (4); a tree of 3,906 built 2,582 -> 1,648-1,703 (42), walked 558 -> 15 (17), 100 subtrees
+replaced 2,317-2,335 -> 1,553-1,601 (33), dropped 202-211 -> 201-204 (0). The shared scene with four workers
+looked slower here than on main (0.309-0.316 against 0.260-0.262); timed alone in turn it is not a difference of
+the builds: main 0.256-0.304, the merge 0.242-0.331, the branch before the merge (3f73a93) 0.179 and 0.313, from
+run to run of one build (its frame is mostly the workers' wake). Against NativeAOT-LLVM without threads (its build with threads does not link
+here), at or below its median only in the shared scene with one or two workers in their best runs; everywhere
+else 1.7x to 9x: what is left is the list above (the groups with threads, types reached by their type).
+Checks on the merged code (the desk): `bash tools/thread-share-check.sh` 61 programs with threads (main brought
+217 and 218), all the same under the share check; `bash tools/thread-escape-breaks.sh` every test the same under
+the check, every weakened rule (seven) stopped, every rule off the same; `node tools/suite.mjs --shards 2` 27x,
+145, 208, 209, 260, 139 pass both modes; 300 loaded runs each of 275 to 279 (8 at once), all the same; 200 loaded
+runs each, this branch's compiler and main's in turn: 139, 218, 215b, 131, 127 all the same on both, 187 3 of 200
+on both (`rounds: result 3`, the open leak of the row in docs/FINISH.md). The homelab's jobs: docs/FINISH.md's
+entry.
 
 ### A4. Plugins (goal 3)
 
@@ -3668,6 +4372,227 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     parser's 2x are the group machinery and the counts (Step 7's value sources, 4.1's borrows), unchanged.
     (4) NativeAOT-LLVM's build of today's compiler, for its time with the same rule (by its share of the
     characters about 0.6 s less than its 4.0).
+
+- **The self-hosted compiler's build time, second round: what it reads, what it keeps from one build to the next,
+  and where the gap to NativeAOT-LLVM is (2026-11-23, branch claude/selfhost-speed-2 on claude/round-9 d430594).**
+  Measured first, on the homelab, with `tools/selfphases.sh` (named build, `node --cpu-prof` of each side) and the
+  new `tools/selfprof-report.sh` (the two profiles by phase, who calls the runtime's functions, the two sides method
+  by method); the self-hosted compiler without threads on one processor, NativeAOT-LLVM's WebAssembly build of
+  2026-11-20 in the same Node (it reads fifteen libraries and parses their documentation comments; it cannot be
+  built on the homelab and was not built again).
+  - **Where the time is, one hello-world compile, profiled** (after the documentation comments below; self-hosted /
+    NativeAOT-LLVM, milliseconds): everything 7,740 / 4,073; compiled code 4,858 / 2,548; the runtime's memory
+    management 2,424 (counts, arena functions, allocation) / 923 (its collector); the host's functions 329 / 539.
+    The 230 methods both profiles name take 1,540 / 1,326 (1.16x): `Lexer.QuickScanSyntaxToken` 156 / 192,
+    `SyntaxNodeCache.TryGetNode` 48 / 85. So the gap is in no one function: it is the memory management (2.6x the
+    collector's cost) and the long tail of small functions, where a call costs what NativeAOT-LLVM's inlining
+    removed (`StringTable.TextEquals` 23 / 2: `span.Equals(span, Ordinal)` through three calls that pass spans in
+    memory; `IsCurrentTokenDefinitelyPartialModifier` 21 / 2: a method with a captured variable, see the leads).
+    - The parse (under `Library.BuildOne`): 3,291 / 2,923, at unequal work (ours without the documentation
+      comments, theirs with them and six more libraries). Ours: counting 134 (`rt.release`) + 81 (`rt.retain`) + 75
+      (`rt.release_range` of the parser's token window, cleared whole after each file: 4,096 elements for each of
+      1,813 files, which NativeAOT-LLVM clears as memory, 41) + 56 (`SyntaxParser._currentNode = default`, a
+      struct of references assigned for every token), the arena functions about 150, dispatch stubs 39
+      (`GreenNode.GetSlot`); theirs: the collector 650 (relocate 193, mark 143 + 29, cards 86 + 59, plan 74,
+      compact 30). For the parse the two memory managements cost about the same.
+    - The first drain (under `Driver.Drain`): 2,370 / 488. Ours by self time: the arena functions 21%
+      (`ArenaRelease` 117, `ArenaRetain` 84, `ArenaLink` 67, `LinkMembers` 67, `ArenaVisit` 50, `SlotOwner` 42,
+      `ArenaUnlinkOld` 36), counting 5%, the rest flat over Roslyn's binder and the compiler. Who calls
+      `ArenaRetain` and `ArenaRelease`: getters that return a member (`Symbol.ContainingSymbol`, virtual, 12% of
+      `ArenaRetain`; `LexerCache.LookupToken`; `Binder.FieldsBeingBound`): the member's first reference from
+      outside comes and goes around each use, a call into the runtime each way. `SlotOwner`:
+      `Interlocked.CompareExchange` on a field of a pooled object (`ObjectPool<T>.Allocate` and `Free`) 28%.
+    - `Driver.ConsumingOf` binds each callee's body through the semantic model of its tree, which keeps what it
+      bound: the compile of that callee then finds it bound, so the work is done once; and the libraries' models
+      are kept for the process (`Driver.s_libModels`), so a later build in the same process, or on a snapshot
+      (below), finds the bodies of the last one bound: the first drain 2.1 s to 1.3 to 1.4 s.
+    - One exception is thrown in a hello-world compile: Roslyn's `CaseInsensitiveComparison` tries
+      `new CultureInfo("en")` and falls back to the invariant culture, as under any runtime with invariant
+      globalization. The throw asks the host for three stacks, and the first made it read all of the module's
+      debug sections: 232 ms (`CS2WASM_HOST_TIMES=1` now counts them; `=2` prints each stack taken).
+    - The engine's tiers: a build on a snapshot runs mostly in the baseline tier (its entry 2.1 to 2.3 s, where
+      the same build as a later call in an instance that stayed is 0.64 to 0.68 s); `--wasm-tiering-budget=1300000`
+      gave nothing there (3.52 to 4.52 s against 3.00 to 4.02, five rounds in turn). Node cannot keep a module's
+      compiled code (`v8.serialize` of a module does not come back); a browser's cache of compiled WebAssembly
+      would.
+  - **Changed, each with its switch. No generated code changes: every module is byte for byte what it was.**
+    - **The libraries' documentation comments are passed over as plain comments** (`Library.BuildOne`: the
+      libraries are parsed with `DocumentationMode.None`; `CS2WASM_NO_LIB_DOC_SKIP=1`: parsed, as before). Parsed,
+      every `///` comment is an XML tree made by Roslyn's second parser, and nothing reads them; the trees' text,
+      the positions and the symbols are the same. CoreLib's parse 3,658 to 2,278 ms self-hosted (2.9 to 2.2 s
+      under .NET on one processor), the peak memory 272.0 to 241.8 MB.
+    - **A library Roslyn reports as used only for a candidate is left out at the start, and the program is
+      compiled again with every reported library when it meets a type that one left out may hold**
+      (`UpstreamSources.Needed`, `Library.Lookup` and `TypeByMetadataName`, `Cs2WasmCompiler.Compile`;
+      `CS2WASM_NO_LIB_RESTART=1`: every reported library from the start, as before). A call written as an
+      extension reports every assembly that has an extension method of that name: `xs.Select(...)` reports
+      System.Linq.Queryable, System.Linq.Parallel and System.Collections.Immutable (`ImmutableArrayExtensions`
+      is in the namespace System.Linq), and with the last came the thirteen libraries before it. At the start a
+      reported assembly that has extension methods is taken only when the program's text has a word that names
+      it: one of its public top-level types, or the last part of a namespace it has public types in, which no
+      reported assembly earlier in library order has too (`Linq` is System.Linq's; `Queryable`, `ImmutableArray`
+      and `Frozen` are their own); an assembly without extension methods is taken as reported. Why the result is
+      the same: the libraries read are those all reported would give, without a tail (in library order, the
+      standalone ones aside), so a reference assembly's type that the search finds visible in a library before
+      the first one left out is the type the search over all of them finds (it goes in library order and stops at
+      the first visible type). Anything else a reference assembly's type comes to (none, or one not visible, which
+      a later library's would replace), and a type asked for by name that is not found, or found past the first
+      library left out, sets `Library.NeedsAll` and throws; `Compile` then compiles the program with every
+      reported library, which is the compile of before. The one question exempt is whether System.Linq.Queryable
+      has kept generic instances, which exist only when the program reached its type. A program's own types are
+      not asked about (they were not before either: the rule of the core libraries has the same gap).
+      `CS2WASM_BREAK_LIB_RESTART=1` takes what the libraries read give and compiles nothing again: test 250 (a
+      queryable sequence reached only through `AsQueryable()`, begun with 13 libraries) then gets
+      PlatformNotSupportedException where it passes with the rule, and with the rule it builds the same module as
+      with `CS2WASM_NO_LIB_RESTART=1`. A program that calls System.Linq as extensions: 9 libraries where it had
+      22 (tests 008, 193, 220), 13 for test 088 (expression trees).
+    - **The host keeps a module's state from one process to the next** (`host/snapshot.mjs`,
+      `CS2WASM_SNAPSHOT=<file>`; SPEC 7.2 and 7.6). When the entry has returned 0 the module's memory (the pages
+      that are not zero) and its mutable globals are written to the file; a later process puts them back in
+      place of `init` and calls the entry on them. That is the second call of the entry in one process, in a new
+      one: for the compiler, what `--watch` does, the libraries parsed and their bodies bound. A snapshot is used
+      only while what it was made from is unchanged: the module's bytes (their hash), the environment block the
+      module is given (every variable: a module reads it once), and every path the module asked the file system
+      about while the state was made (opened, listed, asked whether there: the same size and time of change, or
+      still absent), except the paths its command line names (an argument that is no option and no `name=value`,
+      those under it, those in an `@file`) and the paths it wrote, which the entry reads anew on every call. None
+      is taken of a module that started a thread (a thread's stack is not in memory), has a file open, moved its
+      working directory or used HTTP. After a run on a snapshot the file is written again only when the module
+      read files the snapshot does not cover (a library the earlier programs did not need), so otherwise every
+      build starts from the same state; `CS2WASM_SNAPSHOT_KEEP=1` never writes one that holds again. One cut
+      short, or larger than the memory may grow, is not used. `tools/snapshot-check.sh` proves each rule on a
+      small module (nineteen steps against expected output); `tools/selfsnap.mjs` builds programs on a snapshot
+      and compares each module with the .NET-hosted compiler's. It is the host's, for any module; nothing in the
+      compiler knows of it.
+    - **The host reads a module's debug sections when a stack asks** (`host/engine.mjs`, `debugInfo`, and its
+      copy for the browser): names are decoded for the frames shown, the tables are numbers in typed arrays, and
+      a throw's two frame counts need neither names nor lines. Compared with the reader of before at every code
+      offset of four modules: the same frames. The compile's three stacks 232 to 143 ms. And one buffer for the
+      file reads, where each read made a new zeroed one.
+    - `CS2WASM_TIMES=1` also prints the time of the compilation that is thrown away when the start of a thread is
+      met; `CS2WASM_REPEAT=n` (host) calls the entry n times in one instance.
+  - **Tried and taken out: compiling for threads at once.** A program that starts threads is compiled without
+    them up to the start of a thread, then begun again for threads: 6 to 9.5 s of test 088's 26 to 36 s under
+    .NET on the desk, 17.0 of its 80 s self-hosted (4,632 of its 14,054 functions). Beginning for threads at
+    once, when the text names a thread's start or awaits, or when the last build of that name in the process
+    started one (kept only when the compilation does start one, so the module is the same: an API check proved
+    it), was no faster under .NET: 47 to 56 s of processor time either way, three runs each, and the same within
+    the noise by the clock. Much of what the first compilation does is Roslyn's first binding of what it
+    touches, which the one that follows uses. Not measured on the self-hosted compiler (the job was withdrawn for
+    the homelab's queue): by its phases about 5 of test 088's 80 s (the compilation for threads that has
+    everything bound takes 14.7 s for the 14,054 functions, so the 4,632 thrown away are about 4.9 s of code
+    generation in their 17.0; the rest is first binding, which is used). The two
+    commits are decfc45 and 34c315c.
+  - **Measured** (the homelab, other sessions' jobs beside, at times heavily; the self-hosted compiler built at
+    d4ac9d6 without threads, 32,934,974 bytes in 252 s, told one processor; wall time of the process; "as it was":
+    the same build with `CS2WASM_NO_LIB_DOC_SKIP=1 CS2WASM_NO_LIB_RESTART=1`; NativeAOT-LLVM's build of
+    2026-11-20; seconds, lowest to highest and the median):
+
+    | hello world (test 145) | self-hosted | NativeAOT-LLVM in the same rounds | peak memory |
+    |---|---|---|---|
+    | as it was, from the start (five rounds in turn) | 8.13 to 9.01 (8.45) | 3.88 to 4.37 (4.06) | 272.0 MB |
+    | now, from the start (the same rounds) | 6.79 to 8.32 (7.19) | | 241.8 MB |
+    | now, on a snapshot (five rounds, the build of a2ef8de) | 2.34 to 3.01 (2.65) | 3.89 to 5.13 (4.07) | 241.8 MB |
+    | now, on a snapshot (five rounds, the build of d4ac9d6, the machine loaded) | 3.00 to 4.02 (3.66) | 4.49 to 5.95 (4.78) | 241.8 MB |
+    | now, the second to fourth build in one instance (`CS2WASM_REPEAT=4`) | 0.68, 0.66, 0.64 (the first 6.99) | | |
+
+    The phases from the start, as it was / now (ms): the libraries read and parsed 4,463 / 3,020, library ready
+    5,144 / 3,716, first drain 2,178 / 2,093, encode 235 / 191, the compiler's total 7,974 / 6,412. On a
+    snapshot: what the program needs 98, library ready 142, first drain 1,443, second drain 120, encode 375, the
+    entry 2,301, the process 2,503; the snapshot 233.8 MB, written in about 200 ms, put back in 50 to 90 ms with
+    its 2,023 paths checked.
+    Larger programs, three rounds in turn while the machine was loaded (as it was / now / NativeAOT-LLVM): test
+    220 (System.Linq as extensions: 22 libraries / 9) 27.2 to 28.7 / 23.8 to 29.8 (23.8, 24.2, 29.8) / 10.2 to
+    10.5 s, peak memory 435.6 / 344.2 MB, library ready 10.6 / 6.5 s, the first drain 11.1 / 11.6 s (2,817
+    functions); test 088 (22 / 13 libraries; threads) 79.9 to 87.5 / 78.2 to 91.0 / 92.9 to 94.9 s, 993 MB
+    either way. On the snapshot hello world wrote (two builds each, loaded): 220 11.9 and 11.4 s; 193 9.9 and
+    10.2; 088 76.4 (it reads four more libraries and the snapshot is written again: 915 MB, the size of that
+    compile's memory) then 66.4; hello world on that snapshot 4.9 s at 993 MB. Test 220 built four times in one
+    instance: 22.1, then 7.3, 7.2 and 6.1 s.
+  - **What the numbers say.** From the start hello world is 1.77x NativeAOT-LLVM's build as it stands (it was
+    2.1x), and that build does more work (fifteen libraries, their documentation comments): at equal work the
+    ratio is not better than the 2.3x of the note above, because nothing here changed the code the compiler
+    makes. What changed is the work. A build from the start does less of it, and a later build does not read the
+    libraries at all: on a snapshot hello world is 0.65x to 0.77x NativeAOT-LLVM's build from its start, and in an
+    instance that is kept it is two thirds of a second. That is the budget's "a few seconds" for a small
+    program, for every build but the first. A middle-sized program stays at its own compile: test 220's later
+    builds are 6 to 7 s for 2,817 functions with everything bound and the code optimized, two milliseconds a
+    function of the compiler's own work, and from the start it is 2.3x NativeAOT-LLVM's. The largest, test 088,
+    is below NativeAOT-LLVM's build (0.86x by the medians; its collector on a gigabyte of heap).
+  - **Checked.** On the homelab. The suite at 713fdb0 (the last commit that changes code or the host; the compiler is
+    d4ac9d6's): 237 passed, 0 failed and the 2 known gaps, checked and as shipped (493 s; test 250 among them, and
+    test 145's limit of 28,383 bytes: hello world is 27,741). The self-hosted compiler built at d4ac9d6
+    (32,934,974 bytes in 252 s) writes hello world, 220, 193 and 088 byte for byte as the .NET-hosted compiler
+    (`tools/selfdet.mjs`: 27,741, 276,629, 258,686 and 1,617,407 bytes; hello world in 6.9 s), and so does every
+    build on a snapshot (`tools/selfsnap.mjs`: those four, each on hello world's snapshot twice, and hello world
+    again on the snapshot test 088 left), and the fourth build in one instance. Stress
+    (`tools/stress-also.sh`, 200 loaded runs a mode, at b4f0840): test 250 and test 139 the same in every run of
+    both modes; test 127 differed in 5 of 200 as shipped and 3 of 200 checked, each with `async 5 / pending 1`,
+    the open item of docs/FINISH.md's table (nothing here changes its module). `tools/snapshot-check.sh`: as
+    expected. The host's new reader of the debug sections: the same frames as the old one at every offset of four
+    modules, and the suite's trace tests. Queued on the homelab when this was written, results in docs/FINISH.md's
+    entry if they came: `tools/libs-rules-check.sh` (every conformance and benchmark program compiled with the two
+    rules and with both switches: the same bytes; here it was run on some twenty programs, all the same),
+    thirty more programs on a snapshot, and a profile of a build on a snapshot (`tools/selfsnap-prof.sh`).
+  - **Checked again after main was merged (4746983, main 4a42328), 2026-11-23 morning, one homelab turn
+    (`tools/selfhost-speed-2-verify.sh`; other sessions' jobs beside).** The suite 245 passed, 0 failed, 2 known
+    gaps, checked and as shipped. The self-hosted compiler built (253 s, 33,265,837 bytes); hello world 6.77 to
+    7.20 s as it is against 8.11 to 8.15 with `CS2WASM_NO_LIB_DOC_SKIP=1 CS2WASM_NO_LIB_RESTART=1` (the same
+    module, 27,731 bytes), peak 241.8 MB against 272.0; NativeAOT-LLVM's build of 2026-11-20 3.76 to 3.96 s (three
+    rounds in turn); four builds in one instance 11.4, 1.16, 1.10, 1.09 s, the fourth the same module.
+    `tools/selfdet.mjs`: self = net byte for byte on 145 (27,743), 220 (279,559), 193 (262,743), 088 (1,616,137).
+    **The snapshot, what is checked:** (a) `tools/selfsnap.mjs`: every module written on a snapshot is the
+    .NET-hosted compiler's byte for byte: hello world five times, then on hello world's snapshot 220, 193, 088 and
+    two programs with threads (139 and 197), each twice (088 read more and wrote the snapshot again; the second
+    088, 139, 197 and hello world after them on that larger snapshot); the builds from the start also equal. (b)
+    `tools/selfsnap-stale.mjs` (results in docs/FINISH.md's entry): another version of the source at the same path
+    (read anew, the snapshot holds, the new module), a source that needs System.Linq, then the first again; another
+    build of the compiler (let go); another reference directory (let go); a reference assembly's time of change
+    (let go); a file added to the reference directory (let go); every module the .NET-hosted compiler's. (c)
+    `tools/snapshot-check.sh` (the host's rules on a small module, on the desk at the merge): as expected. **Not
+    covered:** a file rewritten with the same size and the same time of change (a path's state is size and time,
+    as make and MSBuild judge; by design); references given with `-r`, which are named on the command line and so
+    read anew (not tried); the threaded compiler and the browser's host have no snapshot. The snapshot is used only
+    when `CS2WASM_SNAPSHOT=<file>` is set: off by default. Timed in turn (five rounds, the homelab loaded): hello
+    world from the start 9.39 to 10.47 s (median 9.61), on the snapshot 3.41 to 3.83 (3.54), NativeAOT-LLVM's
+    build 5.15 to 5.92 (5.24): on a snapshot 0.68x NativeAOT-LLVM's, from the start 1.83x.
+  - **Not done, not reached, not measured.**
+    - The ratio at equal work: the counts (rt.retain, rt.release, the struct copies), the arena functions and the
+      cost of a call are where they were. Leads the profiles give, none built: a member's first outside reference
+      taken and given back around a getter's result (`ArenaRetain`/`ArenaRelease`, 0.3 s: a borrowed return for
+      virtual getters whose every implementation returns a field); a method with captured variables pays a frame,
+      a fill, a count on `this`, an exception region and a drop on every call, even when it returns at its first
+      test (`IsCurrentTokenDefinitelyPartialModifier`, 21 ms against 2: a frame display's `this` and unwritten
+      parameters need no count, and a display with nothing counted no region); `x = default` of a struct with
+      references retains and releases an empty temporary (`SyntaxParser._currentNode`, 56 ms); the token window
+      cleared element by element (`rt.release_range`, 75 ms: `CS2WASM_ZERO_SKIP=1` exists and was measured as no
+      gain before); spans passed in memory through small calls (`StringTable.TextEquals`, 23 ms against 2); the
+      compiler's own two milliseconds a function (under .NET's profiler `Types.Resolve`, `Canonical` and `Key`
+      are 10% of a drain, two thirds of it making a constructed symbol's key and weak-table entry anew; `PreScan`
+      14%; the callee analyses that bind bodies 26%. A memo of `Types.Resolve` per map and type symbol was
+      written and gave the same modules; the loaded desk could not resolve its gain, and it was not kept).
+    - NativeAOT-LLVM's build of today's compiler (it needs the Emscripten SDK, which only the desk has, and the
+      desk takes no heavy work): its time with the same rules is not measured. By its profile the documentation
+      comments are 0.5 to 0.7 s of its 2.9 s parse and the six libraries about 0.6 s, so about 2.8 s for hello
+      world where it measures 4.0.
+    - A program with a standalone library (GodotSharp) that calls System.Linq as extensions is compiled again
+      with every reported library at its first Godot type (found past the first library left out): no gain
+      there, and the little done before that type is lost. Telling that no library left out has a visible type
+      of that name needs each one's type names without reading it. No Godot program was built here.
+    - The snapshot is the Node host's. The browser's host (`host/web`) has none; a compiler kept in a worker
+      does not need one between builds (`CS2WASM_REPEAT` measures that), a page opened anew would. The threaded
+      build of the compiler starts threads, so no snapshot is taken of it. A snapshot is the memory as the last
+      build left it: 234 MB after hello world, 915 MB after test 088, and a build on it starts at that size.
+    - Binaryen's optimizer over the self-hosted compiler's module, to see what a general WebAssembly optimizer
+      finds: the version here (117) stops at `try_table`.
+    - `tools/frames.mjs` and `tools/bench.mjs` were not run: no module changed (the rules' check compiles every
+      conformance and benchmark program both ways to the same bytes).
+    - The browser check of proof 5 (`tests/Godot/proof5_hello2d/check/browser.mjs`), which reads the debug
+      sections through `host/web/debuginfo.mjs`: the copy is in step with `host/engine.mjs` (its own rule), the
+      check itself was not run (no Godot on the homelab).
+    - Found beside: `Queryable.Sum(IQueryable<int>)` and `Max` without a selector fail in
+      `EnumerableRewriter.FindEnumerableMethodForQueryable` (IndexOutOfRangeException), with either rule of the
+      libraries; test 250 does not use them.
 
 - **Shared generic code (2026-11-21, on main fbe7688, branch claude/canon-sharing).** Round 5's pass shares bodies
   equal but for i32 constants and calls of one shared group; what it could not share, measured with the new
