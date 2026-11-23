@@ -919,6 +919,8 @@ namespace Cs2Wasm.Runtime
                 Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
                 DsNum(ref at, "tops by site", 0);
                 for (int k = 1; k < 8; k++) { DsNum(ref at, " ", DsGet(270 + k)); DsNum(ref at, "/", DsGet(280 + k)); }
+                DsNum(ref at, " held: to a noted top ", DsGet(291)); DsNum(ref at, " from a both-marked ", DsGet(292)); DsNum(ref at, " itself the top ", DsGet(293)); DsNum(ref at, " itself noted ", DsGet(294));
+                DsNum(ref at, " outside: to a noted top ", DsGet(295)); DsNum(ref at, " itself the top ", DsGet(296)); DsNum(ref at, " from a both-marked ", DsGet(297));
                 Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
             }
             if (s_dsKilled != 0)
@@ -3973,6 +3975,7 @@ namespace Cs2Wasm.Runtime
         {
             if (!HeldMarked(PLM(p))) return 0;
             int t = TopS(p, 1);
+            if (DropStats()) { DsAdd(291, t != 0 && (PLM(t) & 3) == 1 ? 1 : 0); DsAdd(292, PLM(p) == (MarkHeld | MarkOutside) ? 1 : 0); DsAdd(293, t == p ? 1 : 0); DsAdd(294, (PLM(p) & 1) != 0 ? 1 : 0); }
             if (t == 0) return 0;
             int o = PLM(t);
             if ((o & 3) != 1) return 0;
@@ -3988,6 +3991,7 @@ namespace Cs2Wasm.Runtime
         {
             if (!OutsideMarked(PLM(member))) return 0;
             int t = TopS(member, 2);
+            if (DropStats()) { DsAdd(295, t != 0 && (PLM(t) & 3) == 3 ? 1 : 0); DsAdd(296, t == member ? 1 : 0); DsAdd(297, PLM(member) == (MarkHeld | MarkOutside) ? 1 : 0); }
             if (t == 0) return 0;
             int o = PLM(t);
             if ((o & 3) != 3 || Under(container, t)) return 0;
