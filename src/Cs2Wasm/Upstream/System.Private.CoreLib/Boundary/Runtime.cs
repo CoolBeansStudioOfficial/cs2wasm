@@ -859,7 +859,7 @@ namespace Cs2Wasm.Runtime
         // (and, with it, how often each path of the arena operations runs: OpStat's numbers, printed with DsPrint)
         static int s_opStats;
         const int OpN = 40;
-        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,give-back-early,link-pinned,give-back-last,join-fused,join-node";
+        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,give-back-early,link-pinned,give-back-last,join-fused,join-node,join-pair,node-up,node-add";
         // (a constant test where it is asked, so that without the diagnosis nothing is left of it, not even a call)
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static void OpStat(int k) { if (DropStats()) OpStatCount(k); }
@@ -3538,11 +3538,16 @@ namespace Cs2Wasm.Runtime
             {
                 // (the usual case: both are members of one arena already, which is not being destroyed or merged)
                 int ar = Mem.LoadI32(container) < -1 && Mem.LoadI32(val) < -1 ? PL(container, 16) : 0;
-                if (ar != 0 && ar == PL(val, 16) && Mem.LoadI64(ar + 12) == 0) { OpStat(2); LinkMembers(val, container, slot, ar, false); }
+                if (ar != 0 && ar == PL(val, 16) && Mem.LoadI64(ar + 12) == 0)
+                {
+                    OpStat(2);
+                    // (a node put into its parent's list: AddNode)
+                    if (slot != 0 || (Mem.LoadI32(val) != -3 && NodePathBreak() != 6) || !AddNode(val, container, ar)) LinkMembers(val, container, slot, ar, false);
+                }
                 // (a plain object over a linked reference of a member's own slot: a list's larger array over its array)
                 else if (t_prevBits == 1 && Mem.LoadI32(val) > 0 && ReplaceArray(val, container, slot)) { }
                 // (a plain object only the store's count refers to: a new object put into a member's list)
-                else if (can && Mem.LoadI32(val) == 1 && (JoinFresh(val, container, slot) || JoinOwned(val, container, slot, true))) { }
+                else if (can && Mem.LoadI32(val) == 1 && (JoinFresh(val, container, slot) || JoinPair(val, container, slot) || JoinOwned(val, container, slot, true))) { }
                 else { OpStat(3); ArenaLinkCore(val, container, slot); }
             }
             if (s_linkN != 0) ArenaLinkJoined();
@@ -3710,7 +3715,7 @@ namespace Cs2Wasm.Runtime
                 }
                 up = 1;
             }
-            int t = 0, ed = 0, ts = 0;
+            int t = 0, ed = 0, ts = 0, others = 0;
             if (e != 0)
             {
                 if (NoEarlyGiveBack()) return false;
@@ -3727,6 +3732,8 @@ namespace Cs2Wasm.Runtime
                     if (c == t) { ts = w & 15; continue; }
                     // (a plain object of the group of classes in another slot: the general way, its slots are not known)
                     if (Mem.LoadI32(c) > 0 && Mem.LoadI32(c + 8) >= 0 && SccOf(Mem.LoadI32(c + 4)) == g) return false;
+                    // (the node's other slots that hold members: one alone can take NodeUp)
+                    if (Mem.LoadI32(c) <= 0) others++;
                 }
                 if (ts == 0) return false;
             }
@@ -3791,11 +3798,183 @@ namespace Cs2Wasm.Runtime
                 for (int w = ed; w != 0; w = (int)((uint)w >> 4))
                 {
                     int sl = e + 8 + ((w & 15) << 2), c = Mem.LoadI32(sl);
-                    if (c != 0 && c != t && Mem.LoadI32(c) <= 0) LinkJoinedSlot(c, sl);
+                    if (c != 0 && c != t && Mem.LoadI32(c) <= 0 && !((others == 1 || NodePathBreak() == 4) && NodeUp(c, e, sl))) LinkJoinedSlot(c, sl);
                 }
                 s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_joinVisit = 0;
                 if (s_linkN == 0 && s_reevN != 0) LinkWaiting();
             }
+            return true;
+        }
+
+        /// <summary>CS2WASM_NO_NODE_PATH=1 (at compile time): the three steps of a node of a tree built parent first
+        /// (JoinPair, NodeUp, AddNode) are not taken; each goes the general way.</summary>
+        [Intrinsic] static extern bool NoNodePath();
+        /// <summary>CS2WASM_NODE_PATH_BREAK=n (at compile time, test 201's): one rule of those steps is not asked.
+        /// 1: JoinPair, what the new object holds; 2: JoinPair, the container's other slots; 3: NodeUp, that the
+        /// field's count is not the parent's last from outside; 4: NodeUp, that the node has no other slot to
+        /// link; 5: NodeUp, whether the parent has an owner; 6: AddNode, that the store's count is the node's one
+        /// reference from outside; 7: AddNode, that the member the node owns above the array has no up-reference
+        /// below it and holds nothing; 8: AddNode, that the node has no owner.</summary>
+        [Intrinsic] static extern int NodePathBreak();
+
+        /// <summary>The node path, 1 of 3 (docs/AUDIT.md A3.5, the build, round 9). A tree built parent first
+        /// (`e = new Node { Parent = p }; e.Kids.Add(child of e) ..; p.Kids.Add(e)`) asks three things of the
+        /// general link for each node, each of them a fixed outcome a few loads decide:
+        /// this one, a new object (count 1: the store's) stored into a slot of a plain object of its group of
+        /// classes (a list's first array, `_items = new T[4]`, before the list's node is anything's): the two
+        /// become a group of their own, the container its first member with the counts code has on it, the new
+        /// object the container's with none. The general way: ArenaLinkCore (a record, two joins noted for a
+        /// visit each, LinkMembers with the count given back as for an object that joined for the store and the
+        /// fresh object's ownership without a walk), then ArenaLinkJoined's visits of both by their types, which
+        /// find nothing: asked here before a word is written, the new object's slots or elements all empty (a
+        /// pinned object or one of another group of classes in a slot counts as empty, as the visit passes it
+        /// by) and the container's other slots likewise. False, nothing written, for anything else.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static bool JoinPair(int val, int container, int slot)
+        {
+            if (NoNodePath() || NoFreshJoin() || ThreadMode()) return false;
+            int ca = Mem.LoadI32(container);
+            if (ca <= 0 || val == container || (s_linkN | s_joinVisit | s_visitElem | s_reevN) != 0) return false;
+            if (Mem.LoadI32(container + 8) < 0 || Mem.LoadI32(val + 8) < 0 || (PL(container, 24) | PL(val, 24)) != 0) return false;
+            int i = SlotIndex(container, slot);
+            if (i < 0) return false;
+            int g = SccOf(Mem.LoadI32(container + 4));
+            // (the container's other slots: what the visit of a joined object would link)
+            int dc = ArenaSlots(Mem.LoadI32(container + 4));
+            if (dc == 0) return false;
+            if (NodePathBreak() != 2)
+                for (int w = dc; w != 0; w = (int)((uint)w >> 4))
+                {
+                    int sl = container + 8 + ((w & 15) << 2);
+                    if (sl != slot && !SlotEmpty(Mem.LoadI32(sl), g)) return false;
+                }
+            // (the new object: its slots, or an array's elements, one reference each)
+            int dv = ArenaSlots(Mem.LoadI32(val + 4));
+            if (NodePathBreak() != 1)
+            {
+                if (dv != 0)
+                {
+                    for (int w = dv; w != 0; w = (int)((uint)w >> 4))
+                        if (!SlotEmpty(Mem.LoadI32(val + 8 + ((w & 15) << 2)), g)) return false;
+                }
+                else
+                {
+                    if (ArrayElementSizeAt(val) != 4 || ArrayRankAt(val) != 1) return false;
+                    int n = Mem.LoadI32(val + 12);
+                    if ((uint)n > 64) return false;
+                    for (int k = 0; k < n; k++) if (Mem.LoadI32(val + 16 + 4 * k) != 0) return false;
+                }
+            }
+            OpStat(37);
+            int ar = NewArena();
+            // (the container: ArenaJoinOnly, a member with the counts it had)
+            OpStat(4);
+            Mem.StoreI32(container, -(ca + 2));
+            PS(container, 16, ar);
+            PS(container, 4, 0);
+            RingAdd(ar, container);
+            Mem.StoreI32(ar, 1);
+            // (the new object: its, with no reference from outside; the slot a linked one)
+            JoinOne(ar, val, container);
+            SetSlotBits(container, i, 1);
+            return true;
+        }
+
+        /// <summary>JoinPair: a slot's value the visit of a joined object links to nothing: none, a pinned object,
+        /// a plain object of another group of classes.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        static bool SlotEmpty(int c, int g)
+        {
+            if (c == 0) return true;
+            return Mem.LoadI32(c) > 0 && (Mem.LoadI32(c + 8) < 0 || SccOf(Mem.LoadI32(c + 4)) != g);
+        }
+
+        /// <summary>The node path, 2 of 3: JoinFresh's node (a plain object whose list takes its first item) has
+        /// just joined as nothing's, and one other slot of it holds a member p that code refers to by more than
+        /// that slot (its parent, set as the node was made): the link of that slot, as LinkJoinedSlot comes to
+        /// it. The general way: ArenaLinkCore's questions, the merge of the two groups, LinkMembers (the slot's
+        /// count given back, not p's last; a counted reference, the node not being below p yet), and then, for a
+        /// p nothing owns, Waiting (side words for p, a place in LinkWaiting's list) and LinkWaiting's turn of
+        /// that one pair, which finds the node without an owner and makes it p's (TakeOwnership: the first
+        /// child-node owns its parent until it is put into the parent's list); for a p that has an owner, the
+        /// node noted as the container waiting to own it next, and p's hold. Written here in that order with no
+        /// list between: the same words but p's side words, which are not made for a p nothing owns (they would
+        /// hold nothing after LinkWaiting). Only when no other slot of the node is linked in the same step
+        /// (LinkWaiting runs after all of them) and nothing waits already. False, nothing written, otherwise:
+        /// LinkJoinedSlot then.</summary>
+        static bool NodeUp(int p, int e, int sl)
+        {
+            if (NoNodePath() || (s_failedTops | s_reevN | s_linkN) != 0) return false;
+            int cp = Mem.LoadI32(p);
+            if (NodePathBreak() == 3 ? cp > -3 : cp >= -3) return false;
+            if (p == e || PL(e, 20) != 0 || PL(e, 24) != 0) return false;
+            if (SccOf(Mem.LoadI32(p + 4)) != SccOf(Mem.LoadI32(e + 4))) return false;
+            if ((PL(p, 24) & (Dying | Queued)) != 0) return false;
+            int ae = PL(e, 16), ap = PL(p, 16);
+            if (Mem.LoadI64(ae + 12) != 0 || Mem.LoadI64(ap + 12) != 0) return false;
+            int i = SlotIndex(e, sl), ow = PL(p, 20);
+            if (i < 0 || ow == e) return false;
+            OpStat(38);
+            if (ae != ap) ArenaMerge(ae, ap);
+            Mem.StoreI32(p, cp + 1);
+            PS(p, 4, PL(p, 4) + 1);
+            SetSlotBits(e, i, 1);
+            if (ow == 0 || NodePathBreak() == 5) TakeOwnership(p, e);
+            else
+            {
+                if (PLW(p) == 0) { ClearMark(p); PSW(p, e); }
+                if (!HoldSettled(p)) UpdateHold(p);
+            }
+            return true;
+        }
+
+        /// <summary>The node path, 3 of 3: the node is put into its parent's list, `arr[k] = e`, a member with no
+        /// owner whose one reference from outside is the store's, into an array of its own group that is not
+        /// being changed. LinkMembers' way: the count given back early (EarlyGiveBack, two walks up the array's
+        /// owners to find the node above it and the member right below the node), a counted element, then
+        /// TakeOwnership (the same two walks: the member the node owned above the array, its parent since its
+        /// first child joined, stops being the node's when nothing below it refers above it and it holds
+        /// nothing; the array owns the node), Reevaluate of the node's counted slots (its parent field becomes
+        /// an up-reference), and the node's hold. Here one walk, asked before a word is written: the node found
+        /// above the array within the chain's reach, with the member below it free to be let go, or not found
+        /// above it at all (the top node of a new subtree put into a living tree: nothing turns round). False,
+        /// nothing written, for anything else: a walk that ends in neither, a node that holds, is owned, is an
+        /// array, is being destroyed, a note of a failed check anywhere, threads.</summary>
+        static bool AddNode(int val, int container, int ar)
+        {
+            if (NoNodePath() || ThreadMode() || NoEarlyGiveBack()) return false;
+            if ((s_failedTops | s_joinVisit | s_visitElem) != 0 || val == container) return false;
+            int fl = PL(val, 24);
+            if ((PL(val, 20) != 0 && NodePathBreak() != 8) || (fl & (Owned | Held | Dying | Queued | MultMask | Elems)) != 0) return false;
+            if (Mem.LoadI32(ar) <= 1) return false;
+            int cf = PL(container, 24);
+            if ((cf & Dying) != 0) return false;
+            int x = container, turn = 0;
+            for (int steps = 0; ; steps++)
+            {
+                int w = PL(x, 20);
+                if (w == val) { turn = x; break; }
+                if (w == 0) break;
+                if (steps == ChainMax - 1) return false;
+                x = w;
+            }
+            if (turn != 0)
+            {
+                int xf = PL(turn, 24);
+                if ((xf & (Dying | Queued)) != 0) return false;
+                if (((uint)xf >= UOne || (xf & Held) != 0) && NodePathBreak() != 7) return false;
+            }
+            OpStat(39);
+            Mem.StoreI32(val, Mem.LoadI32(val) + 1);
+            Mem.StoreI32(ar, Mem.LoadI32(ar) - 1);
+            PS(val, 4, PL(val, 4) + 1);
+            PS(container, 28, PL(container, 28) + 1);
+            PS(container, 24, cf | Elems);
+            if (turn != 0) { PS(turn, 24, PL(turn, 24) & ~(Owned | MultMask)); PS(turn, 20, 0); }
+            PS(val, 20, container);
+            PS(val, 24, fl | Owned | MultOne);
+            if ((PL(val, 28) & 0x55555555) != 0) Reevaluate(val);
+            if (!HoldSettled(val)) UpdateHold(val);
             return true;
         }
 
