@@ -1423,3 +1423,11 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   selfhost-speed-2): suite 264 passed, 0 failed, both ways (896 s); self-host check all the same: built in 275 s
   (33,809,524 bytes), hello world 7.30 to 7.56 s at 241.8 MB, the switched build the same module, byte for byte on
   145, 220, 193, 088. The morning report is docs/REPORT-2026-11-23.md.
+- 2026-11-23 afternoon, claude/netwasm-suite (d508471): the harness that runs NetWasm's suite against il2wasm with .NET
+  as the oracle (`tools/netwasm-suite.mjs`; docs/AUDIT.md, the entry "NetWasm's suite as il2wasm's main suite").
+  Homelab: 474 cases (78,073 inputs) extracted from the pinned NetWasm d0cecda45cc8, 473 built, and 473 stable over
+  three .NET win-x86 runs. The `dotnet-standin` run passed 473 of 473 checked and as shipped, 4 at once each
+  (`all` takes about 2 minutes). Not run: il2wasm itself (the IL front end cannot compile these yet). The
+  runtime, compiler and library are unchanged, so the suite, stress and self-host checks do not apply. Desk: the
+  .NET runs opened 4 JIT-debugger dialogs (library:System.Runtime.Tests calls Debugger.Launch/Break). Since then the
+  .NET runs of the cases are refused off the homelab.
