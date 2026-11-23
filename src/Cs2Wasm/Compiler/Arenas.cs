@@ -76,8 +76,33 @@ internal sealed partial class Arenas
         /// <summary>Where the values stored here come from (Sharing.cs): the sources given, else the static type.</summary>
         public readonly List<Sharing.Src> Sources = [];
 
+        /// <summary>A store into the slot was compiled (AddValue): one with no source at all then stored null, or the
+        /// default (Sharing.SiteNode).</summary>
+        public bool Stored;
+        /// <summary>CS2WASM_SITE_ADD=text (a diagnosis): every value recorded for a slot whose key has the text, with
+        /// the compiler's stack.</summary>
+        static readonly string? s_addWhy = Environment.GetEnvironmentVariable("CS2WASM_SITE_ADD") is { Length: > 0 } aw ? aw : null;
+
+        /// <summary>For the values AddRefStores gives the slot (stores by address that can land in it), where they come
+        /// from: the nodes of the stores through refs of the slot's type and through pointers (Sharing.RefNode,
+        /// PtrNode), or any object of the type. Sharing.Analyze reads these in place of the sources tagged
+        /// Sharing.ByAddressTag.</summary>
+        public readonly List<Sharing.Src> ByAddress = [];
+        /// <summary>A value a store by address can leave in the slot (RefStores.cs): any object of the type for the
+        /// type graph, and `from` (or any object of the type) for Sharing.Analyze.</summary>
+        public void AddByAddress(ITypeSymbol v, IEnumerable<Sharing.Src>? from)
+        {
+            Stored = true;
+            Sources.Add(new Sharing.Src(Sharing.K.Top, Sharing.ByAddressTag, Type: v));
+            if (from != null) ByAddress.AddRange(from); else ByAddress.Add(new Sharing.Src(Sharing.K.Top, Type: v));
+            Values.TryAdd(Types.Key(v), v);
+        }
+
         public void AddValue(ITypeSymbol? t, IEnumerable<Sharing.Src>? srcs = null)
         {
+            Stored = true;
+            if (s_addWhy != null && Key.Contains(s_addWhy))
+                Console.Error.WriteLine($"site-add {Key}: {(t != null ? Types.Key(t) : "-")} {(srcs == null ? "no sources" : string.Join("; ", srcs.Select(x => x.Kind + " " + x.Key + " " + (x.Type != null ? Types.Key(x.Type) : ""))))}\n{string.Join("\n", Environment.StackTrace.Split('\n').Skip(2).Take(6))}");
             if (srcs != null) Sources.AddRange(srcs);
             else if (t != null && t.TypeKind != TypeKind.Error) Sources.Add(new Sharing.Src(Sharing.K.Top, Type: t));
             if (t == null || t.TypeKind == TypeKind.Error) return;
@@ -403,6 +428,9 @@ internal sealed partial class Arenas
     /// <summary>The slots of the objects the compiler makes: a closure's captured variables and its enclosing
     /// closure, a state machine's variables, an anonymous type's properties, a delegate's target. A store into a
     /// captured variable has the slot's address (Arenas.LinkAt), the others are filled when the object is made.</summary>
+    /// <summary>For a closure's slot of a captured local (the display, the offset): where its values come from.</summary>
+    internal readonly Dictionary<(Display, int), List<Sharing.Src>> DisplaySources = [];
+
     void AddDisplaySites()
     {
         if (s_noDisplaySites) return;
@@ -414,7 +442,9 @@ internal sealed partial class Arenas
             foreach (var v in d.Vars)
             {
                 var (off, t) = d.Slots[v];
-                if (Types.IsRef(t)) { if (!Types.IsImmortalType(t)) { var s = At(off); s.AddValue(t); s.General = true; } }
+                // (a captured local whose every write the declaring body shows: where its values come from,
+                // FunctionCompiler.RecordCapturedSources; any other variable: any object of its type)
+                if (Types.IsRef(t)) { if (!Types.IsImmortalType(t)) { var s = At(off); s.AddValue(t, DisplaySources.TryGetValue((d, off), out var ds) ? ds : null); s.General = true; } }
                 else if (Types.IsStruct(t) && D.Types.LayoutOf(t).HasRefs)
                     foreach (var (lo, lt) in RefLeaves(t, off)) { var s = At(lo); s.AddValue(lt); s.General = true; }
             }

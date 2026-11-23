@@ -193,6 +193,10 @@ internal sealed partial class Driver
     public sealed class ThreadsSeen : Exception { }
     /// <summary>CS2WASM_EXP_NO_THREADMODE=1 (a measurement, unsafe: the program must then run on one thread): a program
     /// that starts threads is compiled as one that does not, to see what compiling for threads costs.</summary>
+    /// <summary>CS2WASM_NO_SAME_TYPE_REFS=1: a struct's place handed to Unsafe.Add or Buffer.Memmove may again hold any
+    /// object in its reference fields (FunctionCompiler.SameTypeRefs).</summary>
+    internal static readonly bool s_noSameTypeRefs = Environment.GetEnvironmentVariable("CS2WASM_NO_SAME_TYPE_REFS") == "1";
+    internal static readonly bool s_noDisplaySources = Environment.GetEnvironmentVariable("CS2WASM_NO_DISPLAY_SOURCES") == "1";
     internal static readonly bool s_expNoThreadMode = Environment.GetEnvironmentVariable("CS2WASM_EXP_NO_THREADMODE") == "1";
     public readonly WasmTag ExceptionTag;
     readonly List<SourcePos> _positions = [];

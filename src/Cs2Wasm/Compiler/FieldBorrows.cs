@@ -953,6 +953,22 @@ internal sealed partial class Driver
         Console.Error.WriteLine($"reach: {parts[0]} does not reach {parts[1]}");
     }
 
+    /// <summary>The static slots that code a worker thread can run names (reads, writes or takes the address of: every
+    /// use of a static's storage is an instruction that refers to its slot). Called before the counts are resolved.</summary>
+    internal HashSet<object> WorkerStaticSlots()
+    {
+        var r = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        foreach (var f in WorkerReachable())
+            foreach (var ins in f.Body)
+                if (ins.Ref is StaticSlot s) r.Add(s);
+        // (the table's functions are listed again when the borrows ask: functions may be made in between)
+        _tableFns = null;
+        _delegateBucketFns.Clear();
+        return r;
+    }
+    /// <summary>The slot of a static field by its key (StaticKey); null when it has none.</summary>
+    internal object? StaticSlotOf(string key) => _statics.TryGetValue("F:" + key, out var s) ? s : null;
+
     /// <summary>The functions a worker thread can run: what its start export (__thread_entry: the only export a worker
     /// instance is entered through) reaches by calls; an indirect call reaches every function in the table.</summary>
     HashSet<WasmFunction> WorkerReachable()

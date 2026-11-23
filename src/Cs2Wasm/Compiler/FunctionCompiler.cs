@@ -406,6 +406,7 @@ sealed partial class FunctionCompiler
                 foreach (var t in da.Target.DescendantsAndSelf().OfType<IParameterReferenceOperation>()) _assignedParams.Add(t.Parameter);
         }
         AnalyzeCaptures(body);
+        RecordCapturedSources();
         ComputeLocalMoves(body);
         foreach (var p in M.Parameters)
         {

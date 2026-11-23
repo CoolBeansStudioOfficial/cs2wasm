@@ -414,7 +414,12 @@ sealed partial class FunctionCompiler
                 _addrUse = RefUseOf(p);
                 // (a struct's place to an intrinsic that remakes refs, Unsafe.As<S, object>(ref s): its references
                 // may be stored through refs of other types, any object of their types)
-                if (_addrUse == null && Types.IsStruct(pt) && T.LayoutOf(pt).HasRefs && D.IsIntrinsic(D.MethodTarget((IMethodSymbol)p.ContainingSymbol))) StructLeavesAnything(pt);
+                // (not one that keeps the ref's type, nor inside the library's own that do: Unsafe.Add<S> and
+                // Unsafe.Subtract<S> give a ref of another S, and Buffer.Memmove<S> copies S's into places of S's;
+                // what a field of S holds, wherever the S is, is one node, and a copy adds nothing to it.
+                // CS2WASM_NO_SAME_TYPE_REFS=1: these too, as before)
+                if (_addrUse == null && Types.IsStruct(pt) && T.LayoutOf(pt).HasRefs && D.IsIntrinsic(D.MethodTarget((IMethodSymbol)p.ContainingSymbol))
+                    && !(D.ThreadMode && !Driver.s_noSameTypeRefs && (SameTypeRefs(D.MethodTarget((IMethodSymbol)p.ContainingSymbol)) || SameTypeRefs(M)))) StructLeavesAnything(pt);
             }
             EmitAddress(value);
             return;
