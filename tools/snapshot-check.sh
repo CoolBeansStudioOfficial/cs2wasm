@@ -27,8 +27,8 @@ echo "--- 11: on the new one"; r
 echo "--- 12: an entry that returns 1: nothing written"; r /$D/lib/fail.txt
 echo "--- 13: the module changed: from the start"; printf '\0asm' > /dev/null; cp $D/m.wasm $D/m2.wasm; node -e "
 const fs=require('fs');const b=fs.readFileSync('$D/m.wasm');const n=Buffer.from([0,5,4,115,110,97,112]);fs.writeFileSync('$D/m.wasm',Buffer.concat([b,n]));"; r
-echo "--- 14: a snapshot cut short is an error, not a wrong run"; node -e "
-const fs=require('fs');const b=fs.readFileSync('$D/m.snap');fs.writeFileSync('$D/m.snap',b.subarray(0,b.length-70000));"; r | sed -E 's/^(Error: snapshot ).*( is cut short)$/\1...\2/' | grep -E "^---|^Error|^call|^exit"
+echo "--- 14: a snapshot cut short is not used: from the start"; node -e "
+const fs=require('fs');const b=fs.readFileSync('$D/m.snap');fs.writeFileSync('$D/m.snap',b.subarray(0,b.length-70000));"; r
 } > $D/out.txt 2>&1
 cat $D/out.txt
 cat > $D/expected.txt <<EOF
@@ -113,8 +113,13 @@ call 1, mode m1
 call 1 on the error stream
 [snapshot] written: N pages, 1 paths (1 new)
 exit 0
---- 14: a snapshot cut short is an error, not a wrong run
-Error: snapshot ... is cut short
-exit 1
+--- 14: a snapshot cut short is not used: from the start
+[snapshot] not used: cut short
+read /$D/lib/b.txt
+kept /$D/lib/b.txt: three
+call 1, mode m1
+call 1 on the error stream
+[snapshot] written: N pages, 1 paths (1 new)
+exit 0
 EOF
 if diff <(tr -d '\r' < $D/out.txt) <(tr -d '\r' < $D/expected.txt) > $D/diff.txt; then echo "snapshot-check: as expected"; else echo "snapshot-check: DIFFERS"; cat $D/diff.txt; exit 1; fi

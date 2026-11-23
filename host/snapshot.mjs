@@ -100,6 +100,8 @@ export function openSnapshot(file, moduleBytes, programArgs) {
       throw new Error('another environment (' + diff.slice(0, 6).join(', ') + ')');
     }
     for (const [p, sig] of header.deps) if (signature(p) !== sig) throw new Error('changed: ' + p);
+    // (all of it there: one cut short, by a full disk or a copy that did not end, is not put back in part)
+    if (fs.fstatSync(fd).size !== dataStart + header.runs.reduce((s, r) => s + r[1], 0) * PAGE) throw new Error('cut short');
     covered = new Map(header.deps);
   } catch (e) {
     if (fd >= 0) { fs.closeSync(fd); fd = -1; }
@@ -113,7 +115,9 @@ export function openSnapshot(file, moduleBytes, programArgs) {
       if (!header) return false;
       const t0 = performance.now();
       const have = memory.buffer.byteLength / PAGE;
-      if (header.pages > have) memory.grow(header.pages - have);
+      // (a memory that cannot be made that large, the host's limit lower than when the snapshot was written: from the start)
+      try { if (header.pages > have) memory.grow(header.pages - have); }
+      catch { why(`not used: the memory cannot grow to ${header.pages} pages`); fs.closeSync(fd); fd = -1; header = null; covered = new Map(); return false; }
       const u8 = new Uint8Array(memory.buffer);
       // (pages the snapshot has as zero: those the instantiation wrote data into are cleared; grown ones are zero)
       let at = 0, pos = dataStart;
