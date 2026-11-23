@@ -4153,8 +4153,11 @@ namespace Cs2Wasm.Runtime
             return 0;
         }
 
-        /// <summary>CS2WASM_NO_PLAIN_PARTS=1 (at compile time): JoinFresh joins a new object's own new object with
-        /// it, a member (PartHolder).</summary>
+        /// <summary>True, the default since 2026-11-23 (CS2WASM_PLAIN_PARTS=1 at compile time, or a
+        /// CS2WASM_PLAIN_PARTS_BREAK, for false; CS2WASM_NO_PLAIN_PARTS=1 true): JoinFresh joins a new object's own
+        /// new object with it, a member (PartHolder). Off because with the parts on, objects a finalizer brings back
+        /// (Rt.FinRevive) and objects behind weak handles that track resurrection stay alive where .NET frees them
+        /// (tests 248, 265, 266; cause not found).</summary>
         [Intrinsic] static extern bool NoPlainParts();
         /// <summary>CS2WASM_PLAIN_PARTS_BREAK=n (at compile time, test 202's): one rule of the plain parts is not
         /// asked. 1: ArenaLinkCore, a part that joins as a container is not linked to its holder; 2: the same

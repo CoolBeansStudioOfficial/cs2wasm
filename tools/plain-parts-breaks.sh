@@ -15,9 +15,9 @@ build() { # name, switches
   env X=1 "$@" $C $T -o $O/$m.wasm > /dev/null 2>&1 || { echo "failed to compile $m"; bad=1; }
   node host/run.mjs $O/$m.wasm main > $O/$m.txt 2>&1
 }
-build t202; build t202off CS2WASM_NO_PLAIN_PARTS=1
+build t202 CS2WASM_PLAIN_PARTS=1; build t202off CS2WASM_NO_PLAIN_PARTS=1
 cmp -s $O/t202.txt $O/t202off.txt && echo "off: the same" || { echo "off: DIFFERS"; bad=1; }
-build t202nc CS2WASM_NO_DROP_CHECK=1; build t202ncoff CS2WASM_NO_DROP_CHECK=1 CS2WASM_NO_PLAIN_PARTS=1
+build t202nc CS2WASM_NO_DROP_CHECK=1 CS2WASM_PLAIN_PARTS=1; build t202ncoff CS2WASM_NO_DROP_CHECK=1 CS2WASM_NO_PLAIN_PARTS=1
 cmp -s $O/t202nc.txt $O/t202ncoff.txt && echo "off, no check at the drop: the same" || { echo "off, no check at the drop: DIFFERS"; bad=1; }
 for n in ${BREAKS:-1 2 3 5 7}; do
   build t202b$n CS2WASM_PLAIN_PARTS_BREAK=$n

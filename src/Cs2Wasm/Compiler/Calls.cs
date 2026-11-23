@@ -994,7 +994,11 @@ sealed partial class FunctionCompiler
             case "Rt.NoNodePath": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_NODE_PATH") == "1" ? 1 : 0); return Own.None;
             case "Rt.NodePathBreak": E.I32(int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_NODE_PATH_BREAK"), out int npb) ? npb : 0); return Own.None; // (a test's: one rule of the node path left out, tests/Conformance/201)
             case "Rt.PartWeak": E.Call(Rt.PartWeakFn); return Own.None;
-            case "Rt.NoPlainParts": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_PLAIN_PARTS") == "1" ? 1 : 0); return Own.None;
+            // (the plain parts are off by default since 2026-11-23: with them on, objects a finalizer brings back and
+            // objects behind weak handles stay alive where .NET frees them, tests 248, 265, 266 of claude/known-diffs-2;
+            // CS2WASM_PLAIN_PARTS=1, or a CS2WASM_PLAIN_PARTS_BREAK, turns them on; CS2WASM_NO_PLAIN_PARTS=1 keeps them off)
+            case "Rt.NoPlainParts": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_PLAIN_PARTS") == "1"
+                || (Environment.GetEnvironmentVariable("CS2WASM_PLAIN_PARTS") != "1" && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CS2WASM_PLAIN_PARTS_BREAK"))) ? 1 : 0); return Own.None;
             case "Rt.PlainPartsBreak": E.I32(int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_PLAIN_PARTS_BREAK"), out int ppb) ? ppb : 0); return Own.None; // (a test: one rule of the plain parts left out, tests/Conformance/202)
             case "Rt.NoFusedJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FUSED_JOIN") == "1" ? 1 : 0); return Own.None;
             case "Cs2WasmArrays.BoxesElements": D.MarkBoxedElements(); return Own.None;
