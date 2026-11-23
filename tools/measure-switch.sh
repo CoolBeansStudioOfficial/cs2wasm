@@ -35,11 +35,11 @@ if [ "${SELF:-1}" = 1 ]; then
   ls -la tests/out/selfsw/*.wasm 2>&1 | awk '{print $5, $9}'
   echo "== the self-hosted compiler against the .NET-hosted one"
   node tools/selfdet.mjs --self tests/out/selfsw/as-is.wasm tests/Conformance/145_size_hello.cs
-  for t in ${SELFDET:-230_field_read_in_loops 232_field_read_indirect_stores}; do
+  for t in $(echo "${SELFDET:-230_field_read_in_loops 232_field_read_indirect_stores}" | tr "," " "); do
     node tools/selfdet.mjs --self tests/out/selfsw/as-is.wasm tests/Conformance/$t.cs 2>&1 | grep -v "^    at \|^$\|^Node.js"
   done
   echo "== the self-hosted compiler built with $S against the .NET-hosted one"
-  for t in 145_size_hello ${SELFDET:-230_field_read_in_loops}; do
+  for t in 145_size_hello $(echo "${SELFDET:-230_field_read_in_loops}" | tr "," " "); do
     node tools/selfdet.mjs --self tests/out/selfsw/switched.wasm tests/Conformance/$t.cs 2>&1 | grep -v "^    at \|^$\|^Node.js"
   done
 fi
