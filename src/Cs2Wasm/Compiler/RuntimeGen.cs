@@ -1395,6 +1395,12 @@ sealed partial class RuntimeGen
     {
         // (what the C# compiler would have made, for reflection: its classes get ids before the tables close)
         D.PrepareGenerated();
+        // (the singletons of the `<>c` classes, Delegate.Target of a lambda that captures nothing: Object's virtual
+        // methods are theirs, as a closure object's are in Expand)
+        foreach (var sid in D.SingletonClassIds())
+            foreach (var stub in D.Stubs.Values)
+                if (Types.IsObject(stub.Slot.ContainingType) && D.Implementation((INamedTypeSymbol)D.ObjectType, stub.Slot) is { } oimpl)
+                    stub.Cases["synthetic#" + sid] = (D.ObjectType, D.Method(oimpl, stub.Consts), false);
         CloseTypeInfo();
         D.Mark("  finish: CloseTypeInfo");
         if (D.Arenas.Enabled) EmitArenaSupport();
@@ -1528,6 +1534,7 @@ sealed partial class RuntimeGen
         D.EmitReflectionTables();
         D.Mark("  finish: D.EmitReflectionTables");
         D.EmitDelegateMethod();
+        D.EmitDelegateSingleton();
         D.EmitSharing(D.UsesThreads, Enumerable.Range(0, D.TypeById.Count).Where(id => D.Constructed.Contains(id)).Select(id => (id, D.TypeById[id])));
         D.Mark("  finish: D.EmitSharing");
         EmitDestroyDispatch();
@@ -2506,6 +2513,7 @@ internal sealed partial class Driver
         fn.ProgramCode = owner.FnProgramCode;
         mi = new MethodInst { Sym = sym, Fn = fn, Key = key, Impl = MethodImpl.Body };
         var ci = owner.MakeClosureInfo(map, env, ret);
+        NestedEnvs[fn] = (env, ci.ThisKey);
         // (a local function called from the lambda is the outer method's: keyed by it, not by the lambda, or local
         // functions that call each other through lambdas would make new instances without end)
         ci.OuterKey = owner.OuterKey ?? owner.InstanceKey;
@@ -2529,6 +2537,7 @@ internal sealed partial class Driver
         var syntax = def.DeclaringSyntaxReferences.First().GetSyntax();
         var op = (ILocalFunctionOperation)ModelFor(syntax.SyntaxTree).GetOperation(syntax)!;
         var ci = owner.MakeClosureInfo(map, env, Types.Resolve(def.ReturnType, map));
+        NestedEnvs[fn] = (env, ci.ThisKey);
         ci.OuterKey = owner.OuterKey ?? owner.InstanceKey;
         mi.Compile = () => FunctionCompiler.CompileNested(this, mi, def, op.Body ?? op.IgnoredBody, ci);
         _methods[key] = mi;
