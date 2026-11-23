@@ -39,8 +39,8 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.11x to 0.22x NativeAOT's with `--js-young 32`, quiet); tree: on main cb287fb, quiet, p99.9 2.55 to 2.57 ms vs 2.38 to 2.41 (1.06x to 1.08x), worst 0.87x to 0.88x; with the node path (main 189b8c6, the machine loaded by three sessions) p99.9 0.97x and 1.08x, worst 1.08x and 1.27x; switch on and off in turn on 7d36995, busy: p99.9 1.03x to 1.16x on, 1.15x to 1.22x off; on the homelab alone 2.80 to 2.83 ms on, 3.05 to 3.07 off. To be taken again quiet | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`). The owner's bar since the evening of 2026-11-22: churn and tree may be slightly slower as long as it is faster overall, the self-hosted compiler is fast enough to be practical, and everything is fully correct and deterministic | churn 1.32x to 1.35x (was 1.58x, 2.16x, 3.47x), tree 1.57x to 1.60x (was 1.64x, 2.56x), collections 0.99x to 1.03x, strings 0.87x to 0.89x, bigdrop 0.88x to 0.94x (main 189b8c6 and cb287fb). The whole run (mean frame, pauses and rebuilds in it; `frames.mjs` prints it): geometric mean over the scenes 0.72x to 0.74x NativeAOT-LLVM's; churn 1.18x to 1.29x, tree 1.32x to 1.38x, collections 0.77x to 0.83x, strings 0.75x to 0.80x, bigdrop 0.20x; the five means summed 0.98x. bench.mjs 0.92x | faster overall; churn and tree slightly slower accepted |
-| 4 | Hello world size (test 145) | 27,089 B (main dca1f9c) | < 28,383 B |
+| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`). The owner's bar since the evening of 2026-11-22: churn and tree may be slightly slower as long as it is faster overall, the self-hosted compiler is fast enough to be practical, and everything is fully correct and deterministic | churn 1.17x to 1.22x on claude/churn-5 (2026-11-23; its mean frame 1.12x to 1.17x), 1.32x to 1.35x on main 189b8c6 (was 1.58x, 2.16x, 3.47x), tree 1.57x to 1.60x (was 1.64x, 2.56x), collections 0.99x to 1.03x, strings 0.87x to 0.89x, bigdrop 0.88x to 0.94x (main 189b8c6 and cb287fb). The whole run (mean frame, pauses and rebuilds in it; `frames.mjs` prints it): geometric mean over the scenes 0.72x to 0.74x NativeAOT-LLVM's; churn 1.18x to 1.29x, tree 1.32x to 1.38x, collections 0.77x to 0.83x, strings 0.75x to 0.80x, bigdrop 0.20x; the five means summed 0.98x. bench.mjs 0.92x | faster overall; churn and tree slightly slower accepted |
+| 4 | Hello world size (test 145) | 27,783 B (claude/churn-5, 2026-11-23); 27,089 B (main dca1f9c) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 8.20 s vs 3.96 s, 2.1x (claude/selfhost-speed-1, 2026-11-22, the homelab, nine interleaved rounds; NativeAOT-LLVM's build is of 2026-11-20 and reads all fifteen core libraries, the self-hosted compiler nine); before: 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 272.0 MB vs 322.2 MB (claude/selfhost-speed-1, with nine libraries read, 344.2 MB with all fifteen; NativeAOT-LLVM's figure is the one on record, of its build that reads fifteen, not measured again); before: 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 39.5 MB vs 129 MB (main ad4c99e) | met; next waste: code (36.2 MB) |
@@ -1177,3 +1177,39 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   the homelab loaded, and byte for byte the .NET-hosted compiler's module on tests 145, 220, 193 and 088 (112 s).
   Not on this branch, open: the leaks of tests 127, 131 and 187 under load (the row above); test 139's two nodes
   left without the engine's stack checks, not seen again in 4,000 runs, cause not shown.
+- 2026-11-22 to 23, the churn loop, round 5 (branch claude/churn-5, from claude/round-9 d430594; docs/AUDIT.md A3.5
+  "The churn loop, round 5"). Asked for: churn's median at or below NativeAOT-LLVM's, or what is left shown to be a
+  floor. **`frames.mjs` churn 1.35x-1.36x to 1.17x-1.22x (0.068-0.070 ms to 0.063-0.064 against 0.050-0.054; by
+  `frames-ab.mjs`, eight rounds, 0.0652-0.0681 to 0.0589-0.0631), its mean frame 1.24x-1.25x to 1.12x-1.17x; not at
+  NativeAOT-LLVM's.** The other scenes and `bench.mjs` as they were (0.91x and 0.93x, `bench-ab.mjs` 0.991x of before).
+  In: (1) a list's setter goes into loops as its getter does (`CS2WASM_INLINE_READERS` 80 to 96: it was 81 to 90
+  instructions and stayed a call; `churn-move`, the store through the list 55 us a frame to 46 against
+  NativeAOT-LLVM's 40.5); (2) a value stored and read back is the stored value (`CS2WASM_NO_STORE_FORWARD=1`,
+  Wasm/SameBaseLoads.cs: `--p.Life > 0` read the field twice after storing it; test 209, and
+  `CS2WASM_SAME_BASE_WITHOUT=...` takes each of the pass's rules out for tests 207 and 209). Built and **off by
+  default** (`CS2WASM_COLD_EXITS=1`, Wasm/ColdExits.cs, test 208, `tools/cold-exits-proof.sh`): the calls of a
+  count's other path written after the loop. Found with the engine's own listing (`node --print-wasm-code`): a
+  call that comes back, on a path never taken, makes V8 write every value that is alive across it to the stack
+  where the value is made, five stores a turn in the counted store's loop; without them the store is 40.5 us a
+  frame for 46 (`tools/churn-count.cs`), but each turn that leaves the loop pays 5 to 7 ns, so a loop whose other
+  path is taken once in 4 to 50 turns is up to 17% slower (`tools/drop-range.cs`), list_sort 3 to 4% slower, and
+  the churn scene, where one particle in 48 ends in the loop, the same with and without. Tried and not kept (branch
+  claude/churn-5-free-inline): an object's end in the loop without a call (the frees' usual cases written out, the
+  rare calls outside): the tool's loop 2 us shorter, the frames scene not; the mark's bit tested before
+  rt.on_destroy: nothing; the NaN test as a select on the bits: slower. **What is left, by measurement** (us of a
+  63 against 51 to 54): the particles that end inside the loop 6 (`tools/churn-deaths.cs`: 15 ns each there, 7 after
+  the loop, under 1 where every object ends: an unpredicted branch and a path run once in 48 turns; NativeAOT-LLVM
+  pays it in its pauses, 5.5 to 6 us a frame of its mean); the NaN tests 2.8 to 3.1 (the owner's ruling); the two
+  counts of a moved reference 5.5, 2.4 above the card mark (no sound proof of a move); their tests 1.5 and the
+  engine's stores for the calls 2 to 3.7; the header's third word 1.5 to 2, **not built**: the pinned bit is read
+  on fifteen arena paths before the type is known, the mark bit at every end, the count's sign and the type word
+  have no bit to spare, SPEC 7.3's hash is a counter kept in the word (AUDIT has the design that is left: a
+  two-word header for hierarchies without a cycle-capable or finalizable class). The loop's shape: the read loop
+  rotated by hand is slower now on both sides, and the scene's loop without its move is level with NativeAOT-LLVM's
+  (29.4 against 29.7): nothing to build. Hello world 27,783 bytes. **Checked** on the homelab: the suite
+  at ba966f6 239 passed, 0 failed, 2 known gaps, checked and as shipped; the self-host check at cb43eb9 (new:
+  `tools/selfhost-check.sh`): built in 246 s, 32,970,943 bytes, hello world in 8.29-8.34 s (8.25-8.35 with the two
+  changes switched off), peak 272.0 MB, and 145, 220, 193 and 088 each "self-1 = net, byte for byte"; stress:
+  208, 209, 260 and 139 the same in every one of 200 loaded runs a mode, 127 differed in 3 of 400 (its "async 5 / pending 1", as on main); `tools/field-hoist-proof.sh` with the setter inlined: as before. Not built: the header's word. Not
+  checked: the suite with ColdExits on at the last commit (tests 190 to 209 on the desk, the whole suite at its
+  first commit).
