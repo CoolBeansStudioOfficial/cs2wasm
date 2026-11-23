@@ -3020,6 +3020,57 @@ runs each, this branch's compiler and main's in turn: 139, 218, 215b, 131, 127 a
 on both (`rounds: result 3`, the open leak of the row in docs/FINISH.md). The homelab's jobs: docs/FINISH.md's
 entry.
 
+**A3.7 The two rare hangs of programs with threads: their causes (2026-11-23, branch claude/thread-hangs-1 from
+main 2440607). [run]** The owner: "Determinism is a hard requirement". Two programs hung now and then
+(tools/thread-notes-hang.cs and tools/thread-board-hang.cs, A3.6). A racing program is legal C#; .NET stays
+memory-safe, finalizes every object exactly once and frees it, and never hangs.
+
+*How a hung run is seen now.* `CS2WASM_HANG_DUMP=<seconds>` (host/hangdump.mjs, started by host/run.mjs): a run
+still going after that long prints every thread's wasm stack, the main thread's and each worker's (a watcher thread
+of its own reaches them through the inspector, which interrupts a thread in a wasm loop or a wait), then ends the
+process. `bash tools/thread-hang-stress.sh <program.cs>` builds a program checked and as shipped and runs it under
+load with the dump on (`RUNS`, `PAR`, `NODE_FLAGS`); on the homelab through tools/homelab.sh.
+
+*tools/thread-notes-hang.cs.* The hung runs' stacks: two workers inside rt.load_retain, spinning: a place held an
+object whose count was 0, a freed block. The cause: a plain object with a finalizer runs it under a temporary count
+of 1 (RuntimeGen.EmitDestroy), and afterwards the count was checked to be 1 and set to 0 by a plain store. A read
+that counts takes no lock (rt.load_retain): it can hold a reference read just before the store that let the object
+go, count it while the finalizer runs (1 -> 2), see that the place has changed, and give the count back. Taken
+between the check and the store, that count was lost; its release then fell on the freed block, or on the next
+object made there, which went while a place still held it: the read of that place spun for good, or a note was
+never finalized ("0 1"), or the program trapped. Now, with threads, the store of 1 is atomic and the count goes
+back by a compare-exchange from 1 to 0; when it fails, the temporary count is released as a resurrection's is, and
+the object goes at the last release, not finalized again (its finalized bit). `CS2WASM_NO_FIN_EXCHANGE=1` puts the
+plain store back. tools/thread-notes-hang.cs, 800 loaded runs (8 at once): before 51 hung, 1 other output, 1 trap;
+after none. Test 285 (24 rounds of the race, a slow finalizer): with the switch 19 of 20 runs fail; fixed, all the
+same (stress below).
+*The same in a group's member* (the coordinator's question; not one of the note functions): a member's finalizer
+runs with 0x40000000 added to its count, which was added and taken off by a read and a write. Once the finalizer
+has stored the object where the program can reach it, other threads count it and give their counts back by
+exchanges meanwhile; a count lost there let the check after the finalizers take the group for garbage while a
+place or a thread still held a member (the same spin on a freed object). Now an atomic addition and subtraction,
+with threads. `CS2WASM_NO_FIN_GROUP_ATOMIC=1` the read and the write. Test 286 (eight threads replace and read
+pairs whose finalizer brings one in eight back into an array a static holds, which they also read and clear): with
+the switch 14 of 80 loaded runs hang (an earlier form with four threads 4 to 5 of 200); fixed 0 of 200, and the
+four-thread form 0 of 400. Without the finalizer bringing objects back (the form tried first) no run failed:
+that is the shape that needs it.
+
+*tools/thread-board-hang.cs.* Does not hang on main: 0 of 1,200 runs on the homelab (24 at once, checked and as
+shipped) and 0 of about 1,000 on the desk (checked, as shipped, `--liftoff-only`, `--no-wasm-stack-checks`, 1 and
+8 and 20 at once). The compilers it hung with, built from their commits: 1b16778 (where it was written) 4 of 100,
+3f73a93 (claude/threads-1 before its merge with main 4cf95fe) 15 of 150, 8a4d1bc (after that merge) 0 of 100.
+3f73a93 with b859008 alone ("the exception kept for running out of memory is not made under the heap's lock", on
+main since 4cf95fe; its test is 217) 0 of 300. The old compiler's hung runs' stacks are that deadlock exactly: a
+worker making the OutOfMemoryException in GrowFor under the heap's lock, one in HeapLockMt, the others waiting
+behind them. So the cause is the first growth's deadlock, fixed before this session; not the groups' locks.
+
+*Programs without threads are compiled as before*: 145 (27,786 bytes), 220, 193 and tools/frames's module byte for
+byte main's. The scenes' program with threads differs (171 bytes: the destroy functions of classes with
+finalizers); tools/frames-threads-quick.mjs, main's module and this branch's in turn, two rounds of three runs:
+medians idle churn 0.093/0.093 against 0.092/0.094 ms, idle tree 0.113/0.113 against 0.112/0.115, private churn
+at four 0.107/0.109 against 0.106/0.117, private tree at four 0.025/0.027 against 0.029/0.026, shared at two
+0.080/0.081 against 0.082/0.081: within the run-to-run spread.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
