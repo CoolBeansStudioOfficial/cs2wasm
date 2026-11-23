@@ -1288,7 +1288,9 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   loaded homelab, peak 272.0 MB, byte for byte the .NET-hosted compiler on 145, 220, 193 and 088. Against main
   4cf95fe on the desk, in turn, five rounds: 9.68 to 12.12 s for 9.80 to 12.19, the same module: level. The last
   session's uncommitted DrainKills change: parked untested on claude/known-diffs-2-drainkills. Stress of the new
-  tests and 127, 139: queued on the homelab at 05:45, not run when this was written.
+  tests and 127, 139 (200 loaded runs a mode, the homelab, at 1cae0b2): 244, 247 to 249, 265 to 274 and 139 the
+  same in every run of both modes; 127 checked 1 of 200 "async 5 / pending 1" (the load flake on record), as
+  shipped none.
 - 2026-11-23, 05:40, main 4cf95fe checked whole on the homelab (claude/main-check-1): suite 241 passed, 0
   failed, 2 known gaps, checked and as shipped; tools/selfhost-check.sh: the self-hosted compiler built (247 s,
   32,978,189 bytes), hello world in 8.32 to 8.50 s (peak 272 MB), its module byte for byte the .NET-hosted
@@ -1309,3 +1311,12 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   against the merge, six pairs on a loaded desk: tree median 1.53x and 1.54x on main against 1.33x and 1.35x in
   the two quiet pairs, lower on the branch in five of six; churn as on main. Not merged into main by this
   session; the tree's median is not at NativeAOT-LLVM's.
+- 2026-11-23, 07:10, claude/known-diffs-2-main2: claude/known-diffs-2 merged with main 4a42328 (claude/tree-3).
+  Merged so, tests 248, 265 and 266 failed (objects a finalizer brings back and objects behind weak handles stayed
+  alive); of tree-3's switches only `CS2WASM_NO_PLAIN_PARTS=1` put them right, so **the plain parts are off by
+  default** (`CS2WASM_PLAIN_PARTS=1` turns them on; the cause not found: docs/AUDIT.md A3.5, "Known differences
+  from .NET, second round", the merge with main 4a42328). On the desk at that commit: the tests matching 19, 20,
+  24, 26, 27, 145, 127, 139, 187 and 088 pass checked and as shipped; hello world 27,786 bytes as shipped; frames,
+  off and on in turn, two rounds: tree median 0.038/0.037 ms off for 0.039/0.038 on, p99.9 2.01/2.03 for
+  1.97/1.93, the other scenes the same. The homelab's suite, self-host check and stress are those of 1cae0b2 (the
+  entry above); nothing of this merge was run there.

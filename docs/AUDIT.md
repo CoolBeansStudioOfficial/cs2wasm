@@ -2604,10 +2604,31 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     desk and run in turn on hello world, five rounds: main 9.80 to 12.19 s, this branch 9.68 to 12.12 s, the same
     module (27,785 bytes): level, the homelab's 13 s is its load. On the desk, the merge: the tests matching 24,
     26, 27 and 208, 209, 260 pass both ways (12, 8, 7, 1, 1, 1). **Stress (`tools/stress-cycles.sh`, the new tests
-    and 127, 139): queued on the homelab at 05:45 behind seven jobs; not run when this was written.**
+    and 127, 139, 200 loaded runs a mode, at 1cae0b2): 244, 247, 248, 249, 265 to 274 and 139 the same in every
+    run of both modes; 127 as shipped the same in 200, checked 1 of 200 differed (its "async 5 / pending 1", the
+    load flake on record).**
     The last session's uncommitted change (DrainKills looks again only at a top whose DyingNote brought its
     number to zero) was not finished (no switch, no test, not measured): parked untested on
     claude/known-diffs-2-drainkills (9145a28).
+  - **The merge with main 4a42328 (claude/tree-3; branch claude/known-diffs-2-main2): the plain parts are off by
+    default.** Merged without a conflict in code, tests 248, 265 and 266 failed checked and as shipped on the desk
+    (248 "star, mode 0, let go: live 8 finalized 5 short dead long alive" for .NET's "live 1 finalized 12 short
+    dead long dead"; 266 "a pair, mode 1, let go": things 0, finalized 7, the long weak reference True for -2, 9,
+    False): objects a finalizer brings back and objects behind weak handles stay alive. Of tree-3's switches only
+    `CS2WASM_NO_PLAIN_PARTS=1` puts all three right (NO_PLAIN_PARENTS, NO_LIST_TEST_FIRST, NO_LIST_THROW_PATH,
+    NO_UNLINK_SKIP, NO_SLOT_WALK each leave all three failing). So the plain parts (Rt.PartHolder, JoinFresh's
+    plain part) are off by default, correctness first; `CS2WASM_PLAIN_PARTS=1` (or a `CS2WASM_PLAIN_PARTS_BREAK`)
+    turns them on for later work, and tools/plain-parts-breaks.sh asks for them so. **The cause is not found**:
+    where a part's finalizer or weak handle is reached through its holder after FinRevive or with the weak handles
+    that stay until the object is freed is the place to look. Checked on the desk at that commit: the tests
+    matching 19, 20, 24, 26, 27, 145, 127, 139, 187, 088 pass checked and as shipped (12, 12, 12, 8, 7 and one
+    each); hello world 27,786 bytes as shipped. Not run on the homelab (the suite and the self-host check are
+    those of 1cae0b2 above). `node tools/frames.mjs --runs 3 --js-young 32` on the desk, off and on in turn, two
+    rounds (07:02 to 07:04): tree median 0.038 and 0.037 ms off, 0.039 and 0.038 on (1.32x and 1.27x NativeAOT-LLVM's
+    off, 1.36x and 1.31x on), p99.9 2.01 and 2.03 off, 1.97 and 1.93 on, worst 2.38 and 2.08 off, 2.13 and 2.04 on;
+    the module 239,094 bytes off, 239,684 on; churn, collections, strings and bigdrop the same either way (churn
+    median 1.21x, mean frame over the scenes 0.69x to 0.70x NativeAOT-LLVM's): what the tree gives back is about
+    2 to 5 percent of its p99.9 and nothing measurable of its median.
 - **The churn loop, round 5: 1.35x to 1.17x-1.22x, what the engine does with a call in a loop, and what is left by
   measurement (2026-11-22 to 23, branch claude/churn-5, from claude/round-9 d430594; the desk machine, shared with
   other sessions' timings: ranges, runs in turn, the lowest of several rounds where said; the homelab for the
