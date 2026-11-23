@@ -28,7 +28,8 @@ for v in $([ "${PLAIN:-1}" = 1 ] && echo plain=) "$@"; do
     if [ $rc != 0 ]; then [ $first = 1 ] && bad=1; break; fi
   done
   if [ $first = 1 ] && [ $bad = 0 ]; then
-    for t in ${SELFDET:-145_size_hello}; do
+    # (SELFDET=145_,220_,193_: the tests, with commas)
+    for t in $(echo "${SELFDET:-145_size_hello}" | tr "," " "); do
       f=$(ls tests/Conformance/$t*.cs | head -1)
       echo "$n against the .NET-hosted compiler on $f: $(node tools/selfdet.mjs --self $OUT/$n.wasm --cores 1 $f 2>&1 | grep -v '^    at \|^$\|^Node.js' | tail -2 | tr '\n' ' ')"
       [ ${PIPESTATUS[0]} = 0 ] || true
