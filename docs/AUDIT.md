@@ -2047,6 +2047,67 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     NativeAOT-LLVM's in every invocation (frames.mjs flags it), the median 1.5x to 1.6x.**
   - Checked, on the homelab at 88f2a6e (the branch's code: the first part, NodeUp's last count, test 201's new cases, the script): the suite 223/223 checked and 223/223 as shipped (435 s); the self-hosted compiler built with and without the node path (`tools/selfhost-switch.sh CS2WASM_NO_NODE_PATH=1`: 32,014,763 and 32,013,104 bytes; hello world in 14.1 to 15.4 s either way on a loaded machine, peak 344 MB, the two the same module, self = net byte for byte, 27,599 bytes); `selfdet` with that compiler for tests 220 (271,925 bytes), 193 (252,996) and 088 (1,613,340): self = net byte for byte each; `tools/stress-trees.sh`, 200 loaded runs a mode: 139, 192 to 199 and 201 the same in every run of both modes; **127 differed in 4 of 200 as shipped and 5 of 200 checked (`async 5` for 0: the kind and the rate earlier rounds give for main, 1 to 4 in 200; it starts threads and takes none of these steps; in the first part's run at 1e71501 it differed in none; not followed here)**. On the desk: `tools/node-path-breaks.sh` exits 0 (on and off the same with and without the check at the drop; each of the six breaks changes the lines). Not checked: the side branch on the homelab; the suite with `CS2WASM_NO_NODE_PATH=1` for every program (the switch is checked by test 201, the two trees' tools and the self-hosted compiler); frames.mjs on the homelab at this commit (the four pairs above are the first part's code).
 
+- **Known differences from .NET, taken in turn (2026-11-22, branch claude/known-diffs-1, from main cb287fb; the
+  desk for the work, the homelab for the checks; not merged when this was written).** Seven differences earlier
+  sessions had found and left. Five are closed, each with a test that fails without the fix; two are left, with a
+  test each that the suite shows as a known gap.
+  - **1. A reference into storage through a function pointer (closed, test 241).** `delegate*<List<T>, Span<T>>`
+    whose target returns `CollectionsMarshal.AsSpan` (or a `ref` from GetValueRefOrNullRef / GetValueRefOrAddDefault,
+    a ref struct with spans, an `out` or `ref` argument): the call is kept as a delegate's is, by the pointer type's
+    signature (StorageKeeps.cs; `CS2WASM_NO_FNPTR_STORAGE_KEEP=1`: not). Three things the test found on the way,
+    none of them the function pointer's alone. (a) **The keep ended with the scope of the call, for every kind of
+    call**: the sites were found before the body only in a state machine, everywhere else the keep was a local of
+    the scope the call was written in, so `Span<T> s = default; if (c) s = CollectionsMarshal.AsSpan(list);` read
+    the freed array after the list grew (test 222 has no call in an inner scope). PreScan notes the sites now, and
+    lambdas, local functions and state machines prepare their keeps as methods do. (b) A function pointer's type in
+    generic code was not substituted (Types.Substitute): the arguments were cast to `List<T>` and the call threw
+    InvalidCastException. (c) `ref x = ref fp(...)` took the address of a copy (EmitAddressBase had no case).
+  - **2. ConditionalWeakTable (closed but for one shape, test 243).** DependentHandle was Mono's `Ephemeron[]` with
+    the key a counted field: the table kept every key, so nothing ever went (25 keys and 25 values of 25; the note
+    of 2026-11-22 saw the values). A handle is a slot of the runtime's own memory, [target, dependent]: the target
+    not counted, the dependent counted; when the target's last reference goes (ObjectMarks.OnDestroy, before its
+    finalizer, as .NET clears a short weak reference) WeakSlots.Cleared clears the slot and lets the dependent go
+    after the runtime lock is released. The slot lives until Dispose, as .NET's handle; the table's container
+    disposes its handles in its finalizer, which upstream runs in two rounds (GC.ReRegisterForFinalize): a
+    finalizer runs once here, so the manifest edits the first round out. **Left: a value that holds its own key
+    (directly or through other objects) keeps both while the table has the entry**: a cycle of counted references
+    through the runtime's slot, which no link knows of; .NET's collector frees both. Roslyn's and the compiler's
+    own tables whose value is the key itself (Types.Canonical of a type that is its own canonical form) are of
+    this shape, and kept their entries before as well.
+  - **3. A derived class's finalizer and its base's (closed, test 242).** The destruction called the most derived
+    finalizer only; the C# compiler writes `try { body } finally { base.Finalize(); }` into a destructor for .NET.
+    RuntimeGen.CallFinalizers: each finalizer up the chain at both places one is called.
+  - **5. Weak references into a dying group (closed for groups, test 245).** What .NET guarantees and is matched: a
+    short weak reference (WeakReference<T>, WeakReference, a Weak GC handle) is cleared before any finalizer of the
+    objects that became unreachable with its target runs. Each member's handles were cleared at its own turn, so a
+    finalizer of one member read a weak reference to a later member alive (855 of 1,680 reads in a ring of 40).
+    Rt.WeakDyingAll: once the members that die together are known and before a finalizer runs or a member is
+    cleared, the weak handles to each are cleared (the whole group, a part cut from a living one, the deferred
+    destruction with threads); the dependents of dependent handles go after the last member's. A program that sets
+    no mark has no code for it; one that does pays a call and a test of a count (the objects that are a weak
+    handle's target now, ObjectMarks.s_weak) for each group or part destroyed. Not asked: a weak reference that
+    tracks resurrection. **Left, plain objects**: a finalizer reads a weak reference to an object that only its
+    own object holds as alive (.NET: dead); the object is counted by that field until the holder is cleared.
+  - **6. `Node[,]` in a member's field (closed, test 246).** Arenas.ArraySite gives the site for every rank
+    (`CS2WASM_NO_RANK_SITES=1`: rank one only). The visit, is_slot, the copy and clear and the allocation were
+    rank-aware already; the element store of a rank above one did not hand the array to the link
+    (EmitArrayElementAddress set the container's local for a vector only), which is why the site alone left the
+    array's own stores unlinked.
+  - **4. A finalizer that grows a list of its own dying group (left, test 244, a known gap).** The cause: the new
+    objects refer back to the dying members; after the finalizers the members' counts are above the bias by those
+    references, which FinPhase reads as "a finalizer stored one of them where the program can reach it", so the
+    group lives on, unreachable, with the additions (the finalizers have run: "owners 0 items 40"). Telling these
+    references from a real one means following the objects only the dying members hold, plain objects among them:
+    a walk the runtime does not make and the owner's rules exclude. Not fixed; no way seen that is sound without it.
+  - **7. A member that refers back to itself through an array's element or a far field (left, test 247, a known
+    gap).** `n.Raw[6] = n`, `n.W.Back = n`, `n.Far = n`, and the same from a child: cut from a living tree the
+    member stays until the group goes. Tried and not kept: Dropped passing a waiting container that the member
+    itself owns (`Under(PLW(x), x)`) changes nothing by itself; the reference is not one the trial takes off.
+    Seen beside it, the same family, with arrays of one dimension too: the items of an array that was replaced in
+    a living member (`var old = b.Cells; b.Cells = new Cell[4];`), which refer back to that member, stay until
+    the member's group goes (test 246 does not count them while the board lives).
+  - Checked: each closed item's test fails without its fix (241 with `CS2WASM_NO_FNPTR_STORAGE_KEEP=1` and before the scan, the generic and the `ref` fixes; 246 with `CS2WASM_NO_RANK_SITES=1`; 242, 243 and 245 on the commit before theirs) and passes checked and as shipped. The branch was merged with main 7932c93 (the node path; no conflict) at 14779aa, and what follows is of that commit unless said. On the homelab: the suite 236 passed, 0 failed and the 2 known gaps, checked and as shipped (460 s; the job was queued at a46bd11 and its first line names that commit, the checkout was at 14779aa when it ran: tests 201, 244 and 247 are in its count); the self-hosted compiler (`tools/selfhost-switch.sh CS2WASM_NO_RANK_SITES=1`): built in 240 s, 32,886,612 bytes, hello world in 9.06 to 9.17 s, peak memory 344 MB, the same module with and without the switch, and `tools/selfdet.mjs`: self = net byte for byte on 145 (27,738 bytes), 220 (276,626), 193 (258,680) and 088 (1,617,408); before the merge, at a63e075 (item 1 alone) the suite 231/231 checked and as shipped, and at dbae95a (items 1 to 3) the self-hosted compiler byte for byte on 145 (9.3 to 10.2 s, 344 MB). **Not run: `tools/stress-cycles.sh`** (127 and 139, and the new tests, 200 runs a mode): queued on the homelab behind other sessions for forty minutes and not started when this was written; the desk refuses heavy work. On the desk, the merge: tests 241 to 247 (244 and 247 as known gaps), 030 to 039, 190 to 207, 220 to 222, 020, 086, 087, 125, 127, 139, 143, 180 and 187 and the five of 22x pass both ways; hello world 27,784 bytes as shipped (the limit 28,383; the same number at the first commit of the branch). `node tools/frames.mjs --runs 3 --js-young 32 --no-aot`, main and the merge built in turn, two rounds each (main first): tree median 0.048 and 0.048 ms against 0.047 and 0.048, p99 0.073 and 0.070 against 0.070 and 0.070, p99.9 2.78 and 2.83 against 2.70 and 2.66, worst 3.33 and 3.14 against 2.96 and 2.97; churn median 0.066 and 0.067 against 0.068 and 0.067, p99 0.076 and 0.076 against 0.090 and 0.082 (main's own in a full run half an hour before: 0.140; the scene has no group, no weak reference and no finalizer, and none of its code changed), p99.9 0.116 and 0.100 against 0.124 and 0.124; bigdrop median 0.003 both, p99.9 1.09 against 1.08 to 1.11: level. With NativeAOT-LLVM beside it, before the merge (bd6177b): churn 1.34x its median, collections 0.97x, strings 0.89x, tree 1.69x (p99.9 1.27x, the node path not yet in), bigdrop 0.94x. Nothing was measured with threads beyond tests 139, 143 and 197 in the suite.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
