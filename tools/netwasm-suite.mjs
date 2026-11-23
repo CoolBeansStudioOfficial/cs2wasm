@@ -142,7 +142,7 @@ async function extract() {
   const b = await run('dotnet', ['build', proj, '-c', 'Release', '-v', 'q', '-nologo'], { timeout: 600_000 });
   if (b.code !== 0) { console.error(b.stdout + b.stderr); process.exit(1); }
   mkdirSync(work, { recursive: true });
-  const r = await run('dotnet', [join(proj, 'bin', 'Release', 'net11.0', 'Extract.dll'), '--checkout', checkout, '--work', work, '--commit', commit], { timeout: 600_000 });
+  const r = await run('dotnet', [join(proj, 'bin', 'Release', 'net11.0', 'Extract.dll'), '--checkout', checkout, '--work', work, '--commit', commit, '--shim', join(root, 'tools', 'netwasm-suite', 'Shim', 'TUnitShim.cs')], { timeout: 600_000 });
   process.stdout.write(r.stdout);
   if (r.code !== 0) { console.error(r.stderr); process.exit(1); }
   // the build settings every case shares (the same for the .NET run and il2wasm's: one IL)
@@ -186,7 +186,24 @@ function loadCases() {
 // DOTNET_ROOT_<ARCH>.
 const dotnetRoot = join(cache, `dotnet-${rid}`);
 async function setup() {
-  if (existsSync(join(dotnetRoot, 'host', 'fxr'))) { console.log(`oracle runtime: ${dotnetRoot}`); return; }
+  if (!existsSync(join(dotnetRoot, 'host', 'fxr'))) await assembleRuntime();
+  // the check: a framework-dependent program, built and run as the cases are, says which runtime it ran on
+  const checkFile = join(dotnetRoot, 'check.txt');
+  if (!existsSync(checkFile)) {
+    const dir = join(cache, `runtime-check-${rid}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'check.csproj'), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net11.0</TargetFramework><RuntimeIdentifier>${rid}</RuntimeIdentifier><SelfContained>false</SelfContained><AssemblyName>check</AssemblyName></PropertyGroup></Project>\n`);
+    writeFileSync(join(dir, 'Check.cs'), 'System.Console.WriteLine(".NET " + System.Environment.Version + ", " + System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture + ", IntPtr.Size " + System.IntPtr.Size + ", from " + System.IO.Path.GetDirectoryName(typeof(object).Assembly.Location));\n');
+    const b = await run('dotnet', ['build', dir, '-c', config, '-v', 'q', '-nologo'], { timeout: 600_000 });
+    if (b.code !== 0) { console.error(b.stdout + b.stderr); process.exit(1); }
+    const r = await run(join(dir, 'bin', config, 'net11.0', rid, process.platform === 'win32' ? 'check.exe' : 'check'), [], { env: oracleEnv() });
+    if (r.code !== 0) { console.error(`the oracle's runtime does not start: ${r.stdout}${r.stderr}`); process.exit(1); }
+    writeFileSync(checkFile, r.stdout);
+  }
+  console.log(`oracle runtime: ${readFileSync(checkFile, 'utf8').trim()}`);
+}
+
+async function assembleRuntime() {
   const probe = join(cache, `runtime-probe-${rid}`);
   mkdirSync(probe, { recursive: true });
   writeFileSync(join(probe, 'probe.csproj'), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net11.0</TargetFramework><RuntimeIdentifier>${rid}</RuntimeIdentifier><SelfContained>true</SelfContained></PropertyGroup></Project>\n`);
@@ -270,11 +287,11 @@ async function oracle(cases) {
     // the open-source programs: once more with hardware intrinsics off (a library's portable paths must agree)
     if (c.origin === 'sut') results.push({ ...(await run(exePath(c), [], { cwd: binDir(c), env: { ...oracleEnv(), DOTNET_EnableHWIntrinsic: '0' } })), variant: 'no-hw-intrinsics' });
     const outs = results.map(observed);
-    const variants = [...new Set(outs)];
+    const variants = [...new Set(outs.slice(0, runs))];
     const rec = {
       id: c.id, dir: c.dir,
-      stable: variants.length === 1 && !results.some((r) => r.timedOut),
-      timedOut: results.some((r) => r.timedOut),
+      stable: variants.length === 1 && !results.slice(0, runs).some((r) => r.timedOut),
+      timedOut: results.slice(0, runs).some((r) => r.timedOut),
       variants: variants.length,
       ms: results.map((r) => r.ms),
       exit: results.map((r) => r.code),
@@ -282,7 +299,7 @@ async function oracle(cases) {
       expected: outs[0],
       others: variants.slice(1),
     };
-    if (c.origin === 'sut' && outs[outs.length - 1] !== outs[0]) rec.hwDependent = true;
+    if (c.origin === 'sut' && outs[runs] !== outs[0]) { rec.hwDependent = true; rec.noHwIntrinsics = outs[runs]; }
     writeJson(join(work, 'oracle', `${c.dir}.json`), rec);
     mkdirSync(join(work, 'expected'), { recursive: true });
     writeFileSync(join(work, 'expected', `${c.dir}.txt`), outs[0]);
@@ -372,6 +389,15 @@ function report(cases) {
   for (const [mode, m] of Object.entries(t.modes))
     console.log(`== ${mode}: ${m.pass} passed, ${m.fail} failed, ${m.compileFail} did not compile, ${m.timeout} timed out (${m.passOfStable} of ${m.stable} with a stable oracle)`);
   const show = +opt('--show', 40);
+  // the oracle's own problems: cases that did not build, outputs that differ between .NET runs
+  for (const r of rows.filter((r) => r.build !== 'ok' && r.build !== 'not built').slice(0, show))
+    console.log(`NOBUILD ${r.id}: ${r.build.split('\n')[0].slice(0, 200)}`);
+  for (const c of cases) {
+    const o = readJson(join(work, 'oracle', `${c.dir}.json`), null);
+    if (!o || (o.stable && !o.hwDependent)) continue;
+    const d = o.others.length ? diff(o.expected, o.others[0]) : o.noHwIntrinsics ? diff(o.expected, o.noHwIntrinsics) : null;
+    console.log(`${o.timedOut ? 'TIMEOUT' : o.stable ? 'HW-DEPENDENT' : 'UNSTABLE'} ${c.id} (${o.variants} outputs${o.hwDependent ? ', differs without hardware intrinsics' : ''})${d ? ` first at line ${d.line}: ${d.expected[0]?.slice(0, 120)} | ${d.actual[0]?.slice(0, 120)}` : ''}`);
+  }
   let shown = 0;
   for (const r of rows) for (const [mode, x] of Object.entries(r.results)) {
     if (x.status === 'pass' || shown++ >= show) continue;
