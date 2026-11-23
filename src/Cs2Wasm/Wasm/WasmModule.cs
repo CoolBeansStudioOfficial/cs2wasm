@@ -397,6 +397,8 @@ internal sealed class WasmModule
             // (a load repeated across stores to other bytes of the same object: after the NaN tests are in)
             EachFunction(f => SameBaseLoads.Run(f));
             if (Environment.GetEnvironmentVariable("CS2WASM_NO_NORETURN") != "1") NoReturn.Run(Functions);
+            // (the calls of a count's other path, outside the loop that counts: ColdExits.cs)
+            EachFunction(f => ColdExits.Run(f));
             Step("float stores, no return");
             if (!s_noMerge) MergeIdenticalBodies();
             foreach (var f in Functions) ResolveForwards(f);
