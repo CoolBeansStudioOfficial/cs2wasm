@@ -1,8 +1,11 @@
 // The libraries a program is compiled with (UpstreamSources.Needed: CoreLib and the core libraries up to the last
 // whose reference assembly the program uses) against all the core libraries (CS2WASM_ALL_CORE_LIBS=1): each program
 // compiled both ways by cs2wasmc must give the same module byte for byte, or fail the same way.
-// usage: node tools/corelibs-check.mjs [--par 4] [program.cs ...]     (default: tests/Conformance/*.cs and the
-// benchmark programs; exits 1 when one differs)
+// usage: node tools/corelibs-check.mjs [--par 4] [--env NAME=value]... [program.cs ...]     (default:
+// tests/Conformance/*.cs and the benchmark programs; exits 1 when one differs)
+// --env: the second compile's environment in place of CS2WASM_ALL_CORE_LIBS=1 (another rule of what is read, by its
+// switch: CS2WASM_NO_LIB_DOC_SKIP=1, the libraries' documentation comments parsed; CS2WASM_NO_LIB_RESTART=1, every
+// library Roslyn reports as used)
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -10,9 +13,9 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(fileURLToPath(import.meta.url), '..', '..');
 const args = process.argv.slice(2);
-let par = 4;
+let par = 4, other = null;
 const files = [];
-for (let i = 0; i < args.length; i++) { if (args[i] === '--par') par = +args[++i]; else files.push(args[i]); }
+for (let i = 0; i < args.length; i++) { if (args[i] === '--par') par = +args[++i]; else if (args[i] === '--env') { const kv = args[++i].split('='); (other ??= {})[kv[0]] = kv.slice(1).join('='); } else files.push(args[i]); }
 if (files.length === 0) {
   const dir = join(root, 'tests', 'Conformance');
   files.push(...readdirSync(dir).filter((f) => f.endsWith('.cs')).sort().map((f) => join(dir, f)));
@@ -45,7 +48,7 @@ async function worker() {
     const a = join(out, 'a', name), b = join(out, 'b', name);
     mkdirSync(a, { recursive: true }); mkdirSync(b, { recursive: true });
     const ra = await run(f, join(a, 'p.wasm'), { CS2WASM_TIMES: '1' });
-    const rb = await run(f, join(b, 'p.wasm'), { CS2WASM_ALL_CORE_LIBS: '1' });
+    const rb = await run(f, join(b, 'p.wasm'), other ?? { CS2WASM_ALL_CORE_LIBS: '1' });
     const n = /what the program needs \((\d+) libraries/.exec(ra.err)?.[1] ?? '?';
     counts.set(n, (counts.get(n) ?? 0) + 1);
     // (the first run's phase lines are not part of what is compared)
@@ -58,6 +61,6 @@ async function worker() {
   }
 }
 await Promise.all(Array.from({ length: par }, worker));
-console.log(`corelibs-check: ${files.length} programs: ${same} the same module, ${failedBoth} not compiled either way with the same messages, ${differ} differ`);
+console.log(`corelibs-check (against ${Object.entries(other ?? { CS2WASM_ALL_CORE_LIBS: '1' }).map(([k, v]) => k + '=' + v).join(' ')}): ${files.length} programs: ${same} the same module, ${failedBoth} not compiled either way with the same messages, ${differ} differ`);
 console.log(`libraries needed: ${[...counts].sort((x, y) => +x[0] - +y[0]).map(([n, c]) => `${n}: ${c} programs`).join(', ')}`);
 process.exit(differ ? 1 : 0);

@@ -84,10 +84,11 @@ const fn = instance.exports[entry];
 if (!fn) { console.error(`no export '${entry}'`); process.exit(2); }
 let r, failed = true;
 try { r = fn(); failed = false; } finally { flush(); }
+const tReturned = performance.now();
 if (snapshot && entry === 'main') snapshot.save(instance, memory, { result: r, failed: failed || process.exitCode !== undefined, threads: threadsStarted, io: httpUsed });
 // (the process lasts while a thread that is not a background one runs, as in .NET)
 imports.cs2wasm.__mainReturned?.();
-if (process.env.CS2WASM_HOST_TIMES) { process.stderr.write(`[host] ${entry} returned at ${performance.now().toFixed(0)} ms
+if (process.env.CS2WASM_HOST_TIMES) { process.stderr.write(`[host] ${entry} returned at ${tReturned.toFixed(0)} ms${globalThis.__cs2wasmStackStats ? `; ${globalThis.__cs2wasmStackStats.calls} stacks asked for, ${globalThis.__cs2wasmStackStats.ms.toFixed(0)} ms` : ''}
 `); process.on('exit', () => process.stderr.write(`[host] exit at ${performance.now().toFixed(0)} ms
 `)); }
 if (instance.exports.cs2wasm_rc_counts) { // (a module built with CS2WASM_COUNT_RC=1; CS2WASM_RC_NAMES: its sites file)

@@ -161,6 +161,7 @@ internal sealed class Library
     /// parse, so on several processors more than the time that passed).</summary>
     static readonly bool s_times = Environment.GetEnvironmentVariable("CS2WASM_TIMES") == "1";
     static long s_readTicks, s_parseTicks, s_chars;
+    static readonly bool s_noDocSkip = Environment.GetEnvironmentVariable("CS2WASM_NO_LIB_DOC_SKIP") == "1";
     static readonly Dictionary<string, CSharpCompilation> s_built = [];
     static List<(string Name, string Text)>? s_own;
 
@@ -227,7 +228,10 @@ internal sealed class Library
                 var parts = l[16..].Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length == 2) BatchInitMethods[parts[0]] = parts[1];
             }
-            var po = new CSharpParseOptions(LanguageVersion.Preview, preprocessorSymbols: defines);
+            // (the libraries' documentation comments are passed over as plain comments: parsed as XML they are a
+            // large part of the libraries' parse, and nothing reads them. The trees' text, positions and symbols are
+            // the same. CS2WASM_NO_LIB_DOC_SKIP=1: parsed, as they were)
+            var po = new CSharpParseOptions(LanguageVersion.Preview, s_noDocSkip ? DocumentationMode.Parse : DocumentationMode.None, preprocessorSymbols: defines);
             var files = lines.Where(l => l.StartsWith("file ")).Select(l => l[5..]).ToList();
             // `resource <logical name> <file>`: a manifest resource of the library's assembly (a .resx is compiled to
             // .resources when a program reads it)

@@ -145,7 +145,14 @@ export function cs2wasmImports(module, getMemory, out) {
     for (let i = 0; i < len; i += 4096) s += String.fromCharCode.apply(null, u16.subarray(i, Math.min(len, i + 4096)));
     return s;
   };
+  // (CS2WASM_HOST_TIMES: how many stacks the module asked for, a throw's two included, and the time they took here)
+  const stats = process.env.CS2WASM_HOST_TIMES ? (globalThis.__cs2wasmStackStats ??= { calls: 0, ms: 0 }) : null;
   const visibleFrames = () => {
+    if (!stats) return visibleFramesNow();
+    const t0 = performance.now();
+    try { return visibleFramesNow(); } finally { stats.calls++; stats.ms += performance.now() - t0; }
+  };
+  const visibleFramesNow = () => {
     const saved = Error.stackTraceLimit;
     Error.stackTraceLimit = Infinity;
     const stack = new Error().stack;
