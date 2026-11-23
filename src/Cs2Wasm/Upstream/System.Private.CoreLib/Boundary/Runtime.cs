@@ -1297,6 +1297,26 @@ namespace Cs2Wasm.Runtime
             // (with room again: the exception a later failure throws is made now, while it can be)
             s_end = Mem.Size() * 65536;
             MemStatsGrow();
+            // (with other threads, not here: OomLater)
+            if (SingleThreaded()) ThrowHelpers.ReserveOutOfMemory(); else Atomic.Store32(ref s_oomWanted, 1);
+        }
+
+        // The exception a later failure throws is made when the memory has grown (ThrowHelpers.ReserveOutOfMemory).
+        // GrowFor runs under the heap's lock, the innermost of the runtime's (GroupLocks.cs), and making an exception
+        // runs the program's code: constructors, a static's initialization, the resources' lookup, which take locks
+        // of their own. With other threads running, the thread that grew the memory waited for such a lock under the
+        // heap's while its holder waited for the heap's: every thread stopped, for good, at the program's first
+        // growth of the memory when it came while threads were starting. Test 217, 3 to 5 runs of 480 (no output, a
+        // timeout); test 133 checked, 5 loaded runs of 400 on the homelab once other changes made its first growth
+        // come at another time. So with threads the growth only notes that the exception is wanted, and the next
+        // object allocated the slow way by a thread that holds no lock of the runtime's makes it (AllocObjectSlow).
+        static int s_oomWanted;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void OomLater()
+        {
+            if (t_lkN != 0 || RuntimeLockHeld() || Atomic.Load32(ref s_heapOwner) == ThreadId()) return;
+            if (Atomic.CompareExchange32(ref s_oomWanted, 1, 0) != 1) return;
             ThrowHelpers.ReserveOutOfMemory();
         }
 
@@ -1928,6 +1948,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(a, 1);
             Mem.StoreI32(a + 4, typeId);
             if (ShareCheck()) Mem.StoreI32(a + 8, (ThreadId() & 0x1F) << 24);
+            if (ThreadMode() && s_oomWanted != 0) OomLater();
             return a;
         }
 

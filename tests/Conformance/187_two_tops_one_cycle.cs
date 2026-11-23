@@ -28,6 +28,9 @@ class Tracked
     public static void Report(string when)
     {
         for (int i = 0; i < 3; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
+        // (the pool thread that completed the last async method may not be out of it yet, and its state machine holds
+        // `parent` until it is, in .NET too: test 127's note. Until nothing is left, for a bounded time)
+        for (int waited = 0; waited < 5000 && Live.Sum() > 0; waited++) { System.Threading.Thread.Sleep(1); GC.Collect(); GC.WaitForPendingFinalizers(); }
         Console.WriteLine(when + ": " + string.Join(", ", Kinds.Select((k, i) => (k, i)).OrderBy(x => x.k, StringComparer.Ordinal).Select(x => x.k + " " + Live[x.i])));
     }
 }

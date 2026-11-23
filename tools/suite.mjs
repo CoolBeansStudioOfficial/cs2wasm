@@ -5,6 +5,8 @@
 // 20 GB. Builds the runner once first. Exit code: 1 when anything failed.
 import { spawn, execFileSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -23,11 +25,15 @@ for (const unchecked of modes)
   for (let k = 0; k < shards; k++)
     runs.push(new Promise((done) => {
       const a = ['run', '--project', join(root, 'tests', 'Cs2Wasm.Tests'), '--no-build', '--', ...(filter ? [filter] : []), '--shard', `${k}/${shards}`, ...(unchecked ? ['--unchecked'] : []), ...extra];
-      const p = spawn('dotnet', a, { cwd: root });
+      // (a working directory of its own: the programs that write files, 070 and 088, write them there, in the .NET
+      // run and in the module's, and the two modes run the same program at the same time; in one directory a run
+      // found the other's file open, or gone)
+      const cwd = mkdtempSync(join(tmpdir(), 'cs2wasm-suite-'));
+      const p = spawn('dotnet', a, { cwd });
       let out = '';
       p.stdout.on('data', (d) => { out += d; });
       p.stderr.on('data', (d) => { out += d; });
-      p.on('close', (code) => done({ unchecked, k, out, code }));
+      p.on('close', (code) => { try { rmSync(cwd, { recursive: true, force: true }); } catch { } done({ unchecked, k, out, code }); });
     }));
 const results = await Promise.all(runs);
 let failed = false;

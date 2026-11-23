@@ -1,6 +1,7 @@
 // HTTP through the host's fetch (SPEC section 8: every module gets HTTP as .NET's browser target does): HttpClient's
 // GET, POST and PUT with request headers and bodies, response status, headers, content type, a streamed body of
-// 300 KB, a 404, and a refused connection as HttpRequestException. The runner serves http-server.mjs on port 18765.
+// 300 KB, a 404, and a refused connection as HttpRequestException. The runner serves http-server.mjs on a free
+// port and puts it in place of 18765 below.
 using System;
 using System.Linq;
 using System.Net.Http;
