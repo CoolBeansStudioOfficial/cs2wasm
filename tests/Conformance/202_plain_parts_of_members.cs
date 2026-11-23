@@ -1,7 +1,7 @@
 // A member's plain part (Rt.PartHolder, docs/AUDIT.md A3.5, the build, round 10): a new object that joins a group in
 // one step (Rt.JoinFresh) leaves its own new, empty object (an entity's list of children) a plain object, held by a
 // plain counted reference, with the member and the slot noted in it; whenever that object joins later, its holder's
-// slot is linked first (CS2WASM_NO_PLAIN_PARTS=1: it joins with its holder, as before). Counted against .NET while
+// slot is linked first (IL2WASM_NO_PLAIN_PARTS=1: it joins with its holder, as before). Counted against .NET while
 // the structures live and when they have gone: a subtree cut from a living tree goes at the store that cuts it.
 // The cases: a tree in the scene's order, a subtree replaced; a leaf that gets children later, and is then cut (the
 // part joins as a container); a leaf's list a second node holds, filled through either, the leaf cut, the second

@@ -3,15 +3,20 @@
 The working list to 100%. Updated as items land: each line says its state and the evidence. Details and history
 stay in docs/AUDIT.md; this file is only what is left and how each part is checked.
 
+Renamed il2wasm on 2026-11-23 (docs/SPEC.md section 12; the IL front end's map is docs/IL-FRONTEND.md). Dated
+sections and the log keep the names they were written with: `cs2wasm` is il2wasm, `cs2wasmc` the command line
+`il2wasm`, a `CS2WASM_*` switch `IL2WASM_*`, `src/Cs2Wasm*` and `tests/Cs2Wasm.Tests` are `src/Il2Wasm*` and
+`tests/Il2Wasm.Tests`.
+
 ## What 100% means
 
 Scope as the owner set it on 2026-11-20:
 
 1. **Any C# in, one WASM module out** (not WasmGC), behaving as .NET does, stack traces included.
-2. **No GC of any kind**: no collector, no run-time walk of memory; what .NET frees, cs2wasm frees.
+2. **No GC of any kind**: no collector, no run-time walk of memory; what .NET frees, il2wasm frees.
 3. **Plugins good enough for the Invisible API.**
-4. **Every module cs2wasm emits beats its NativeAOT-LLVM WebAssembly counterpart**: faster, smaller, less memory, no
-   frame-time spikes, in the same engine. The self-hosted compiler is one such module: cs2wasm's build of the
+4. **Every module il2wasm emits beats its NativeAOT-LLVM WebAssembly counterpart**: faster, smaller, less memory, no
+   frame-time spikes, in the same engine. The self-hosted compiler is one such module: il2wasm's build of the
    compiler against NativeAOT-LLVM's build of it, both compiling the same program.
 5. **Self-hosted**: the compiler compiles itself, and that build compiles programs (the game in the browser too).
 
@@ -127,10 +132,10 @@ Each stream is independent of the others' files where marked, so it can run in a
 Tools for them: `tools/profcompare.mjs` (two profiles by category and by Roslyn method), `tools/profsize.mjs` (self
 time by callee size), `tools/profcallers.mjs`, `tools/selfhost-ab.sh` (interleaved self-hosted builds against
 NativeAOT-LLVM's), `tools/roslyn-parse-probe.cs` (a small program over Roslyn's parser: compiles in about 2 minutes,
-with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out/heavy.sh`.
+with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out/heavy.sh`.
 
 9.4 (the Invisible API slice): built as a standalone sample in this repository (owner, 2026-11-20), stream M, done:
-`samples/invisible-api` and its check `tests/Cs2Wasm.Tests/InvisibleCheck.cs`.
+`samples/invisible-api` and its check `tests/Il2Wasm.Tests/InvisibleCheck.cs`.
 
 ## Log
 

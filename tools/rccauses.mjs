@@ -1,7 +1,7 @@
-// Sums a CS2WASM_COUNT_RC run's count calls by the compiler code that asked for them (the cause after each site), the
-// kind of count with it: where the counts a program runs come from. Compile with CS2WASM_COUNT_RC=1,
-// CS2WASM_COUNT_RC_SITES=sites.txt and CS2WASM_RC_FAST=0; run with CS2WASM_RC_NAMES=sites.txt and
-// CS2WASM_COUNT_RC_TOP=10000000, the host's listing on stderr into run.txt.
+// Sums an IL2WASM_COUNT_RC run's count calls by the compiler code that asked for them (the cause after each site), the
+// kind of count with it: where the counts a program runs come from. Compile with IL2WASM_COUNT_RC=1,
+// IL2WASM_COUNT_RC_SITES=sites.txt and IL2WASM_RC_FAST=0; run with IL2WASM_RC_NAMES=sites.txt and
+// IL2WASM_COUNT_RC_TOP=10000000, the host's listing on stderr into run.txt.
 //   node tools/rccauses.mjs run.txt [sites.txt] [--top N] [--depth D] [--fn]
 // The struct helpers' own counts (rt.retain_struct, rt.release_struct, rt.copy_*, rt.move_*) are charged to the sites
 // that call them, in proportion to their calls ("via" rows). --depth D: the cause's first D callers only (coarser
@@ -20,7 +20,7 @@ const parse = (rest) => {
 };
 const keyOf = (r) => {
   if (byFn) return r.fn;
-  if (/^(rt\.|Cs2Wasm\.Runtime\.)/.test(r.fn)) return `(runtime ${r.fn.split(' ')[0]})`;
+  if (/^(rt\.|Il2Wasm\.Runtime\.)/.test(r.fn)) return `(runtime ${r.fn.split(' ')[0]})`;
   return r.cause ? r.cause.split(' <- ').slice(0, depth).join(' <- ') : '(no cause: a runtime function inlined here, or a pass)';
 };
 const rows = [];

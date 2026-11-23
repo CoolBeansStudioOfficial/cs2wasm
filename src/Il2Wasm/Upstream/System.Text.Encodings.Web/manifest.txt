@@ -1,0 +1,50 @@
+# System.Text.Encodings.Web for il2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.
+# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: il2wasm supplies its own)
+# | replaced <path> (an upstream file il2wasm replaces with its own)
+# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for il2wasm's features)
+#   (a value =>Type.Method: the body calls that boundary method) | edit<TAB><path><TAB><text><TAB><replacement> (an exact change to an upstream file)
+define NET
+define NETCOREAPP
+define NET11_0
+define RELEASE
+define NET5_0_OR_GREATER
+define NET6_0_OR_GREATER
+define NET7_0_OR_GREATER
+define NET8_0_OR_GREATER
+define NET9_0_OR_GREATER
+define NET10_0_OR_GREATER
+define NET11_0_OR_GREATER
+define NETCOREAPP1_0_OR_GREATER
+define NETCOREAPP1_1_OR_GREATER
+define NETCOREAPP2_0_OR_GREATER
+define NETCOREAPP2_1_OR_GREATER
+define NETCOREAPP2_2_OR_GREATER
+define NETCOREAPP3_0_OR_GREATER
+define NETCOREAPP3_1_OR_GREATER
+define TARGET_BROWSER
+file src/libraries/System.Text.Encodings.Web/src/System/IO/TextWriterExtensions.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/AsciiByteMap.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/AllowedBmpCodePointsBitmap.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/OptimizedInboxTextEncoder.Ascii.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/OptimizedInboxTextEncoder.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/DefaultUrlEncoder.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/DefaultJavaScriptEncoder.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/ScalarEscaperBase.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/HtmlEncoder.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/DefaultHtmlEncoder.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/JavaScriptEncoder.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/TextEncoder.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/TextEncoderSettings.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/ThrowHelper.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Encodings/Web/UrlEncoder.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Unicode/UnicodeHelpers.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Unicode/UnicodeHelpers.generated.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Unicode/UnicodeRange.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Unicode/UnicodeRanges.cs
+file src/libraries/System.Text.Encodings.Web/src/System/Text/Unicode/UnicodeRanges.generated.cs
+file src/libraries/System.Private.CoreLib/src/System/Text/UnicodeDebug.cs
+file src/libraries/System.Private.CoreLib/src/System/Text/UnicodeUtility.cs
+file src/libraries/Common/src/System/HexConverter.cs
+file src/libraries/Common/src/System/Text/ValueStringBuilder.cs
+file src/libraries/System.Text.Encodings.Web/src/System/ThrowHelper.cs
+file src/libraries/Common/src/System/SR.cs

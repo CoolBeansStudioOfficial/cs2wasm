@@ -1,6 +1,6 @@
 // The host's file system for a module (SPEC section 8: every module gets files over its host's file system): the
-// cs2wasm.fs_* imports System.Native's file functions call (src/Cs2Wasm/Upstream/System.Private.CoreLib/Boundary/
-// Interop.Files.cs), with POSIX meaning. The module sees a directory of this machine as "/" (CS2WASM_FS_ROOT, else
+// il2wasm.fs_* imports System.Native's file functions call (src/Il2Wasm/Upstream/System.Private.CoreLib/Boundary/
+// Interop.Files.cs), with POSIX meaning. The module sees a directory of this machine as "/" (IL2WASM_FS_ROOT, else
 // the current directory); its working directory starts at "/", as in .NET's browser target. Failures are negative
 // PAL error codes (Interop.Error).
 import * as fs from 'node:fs';
@@ -14,10 +14,10 @@ const err = (e) => -(E[e?.code] ?? E.EIO);
 /** The file system's process-wide state (descriptor positions, the working directory), shared with worker threads
  * (their instances are threads of one process, as on POSIX): made once, handed to workers by thread_spawn. */
 export function fsShared() {
-  return globalThis.__cs2wasmFs ??= { pos: new SharedArrayBuffer(8 * 4096), cwd: new SharedArrayBuffer(4 + 4096) };
+  return globalThis.__il2wasmFs ??= { pos: new SharedArrayBuffer(8 * 4096), cwd: new SharedArrayBuffer(4 + 4096) };
 }
 
-export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? process.cwd()) {
+export function fsImports(getMemory, root = process.env.IL2WASM_FS_ROOT ?? process.cwd()) {
   const shared = fsShared();
   const posArr = new BigInt64Array(shared.pos);
   const cwdLen = new Int32Array(shared.cwd, 0, 1), cwdBytes = new Uint8Array(shared.cwd, 4);
@@ -74,7 +74,7 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
   const NT = (d) => d.isDirectory() ? 4 : d.isFile() ? 8 : d.isSymbolicLink() ? 10 : d.isFIFO() ? 1 : d.isCharacterDevice() ? 2 : d.isBlockDevice() ? 6 : d.isSocket() ? 12 : 0;
   const tryDo = (f) => { try { return f(); } catch (e) { return err(e); } };
   // (host/snapshot.mjs: what the module asks about and what it writes, when its state is to be kept; the main thread's)
-  const watch = globalThis.__cs2wasmFsWatch;
+  const watch = globalThis.__il2wasmFsWatch;
   const reads = (r) => { watch?.read(r); return r; }, writes = (r) => { watch?.write(r); return r; };
   return {
     fs_open: (p, len, flags, mode) => tryDo(() => {

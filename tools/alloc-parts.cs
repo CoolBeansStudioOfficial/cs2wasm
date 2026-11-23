@@ -1,4 +1,4 @@
-// Where an object's allocation and free go, for both sides (cs2wasm, and NativeAOT-LLVM through
+// Where an object's allocation and free go, for both sides (il2wasm, and NativeAOT-LLVM through
 // tools/parts-naot-wasm): 100 objects of the collections scene's kind (40 bytes: four floats, an int, a string) a
 // frame, 6,000 frames, in parts: made and kept in an array of 30,000 that starts empty (the allocation, the
 // constructor's stores and the store into the array, nothing freed: the array is cleared outside the clock every 300

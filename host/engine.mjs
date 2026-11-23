@@ -3,7 +3,7 @@ import { availableParallelism } from 'node:os';
 import { writeSync } from 'node:fs';
 import { fsImports, fsShared } from './fs.mjs';
 import { httpImports, ioShared } from './http.mjs';
-// Reference implementation of the engine imports cs2wasm's library calls (module "cs2wasm").
+// Reference implementation of the engine imports il2wasm's library calls (module "il2wasm").
 // An embedder (Bazoodle's engine) supplies the same functions; this one is used by the tests.
 //
 //   write(ptr, len)                        console output, UTF-16
@@ -48,7 +48,7 @@ function readName(bytes, pos) {
   return s;
 }
 
-/** Reads cs2wasm's custom sections: frame names per function index, and the code-offset line table. What a stack
+/** Reads il2wasm's custom sections: frame names per function index, and the code-offset line table. What a stack
  * needs is found when it is asked for: a name is decoded when a frame with it is shown (a large module has a hundred
  * thousand, a stack some tens), and the tables are numbers in typed arrays. A program's first throw pays for this. */
 export function debugInfo(module) {
@@ -69,7 +69,7 @@ export function debugInfo(module) {
   // frames: a bit per function index, set for .NET frames; strings; a name made of strings for some functions
   let fb = null, visibleAt = 0, count = 0;
   const strStart = [], strs = [], shapeAt = new Map(), lenders = new Set();
-  for (const sec of WebAssembly.Module.customSections(module, 'cs2wasm.frames')) {
+  for (const sec of WebAssembly.Module.customSections(module, 'il2wasm.frames')) {
     const b = unpackSection(new Uint8Array(sec)), p = { i: 0 };
     fb = b;
     count = readU32(b, p);
@@ -115,7 +115,7 @@ export function debugInfo(module) {
   const readLines = () => {
     const files = [];
     let offs = new Int32Array(0), fileOf = new Int32Array(0), lineOf = new Int32Array(0), n = 0;
-    for (const sec of WebAssembly.Module.customSections(module, 'cs2wasm.lines')) {
+    for (const sec of WebAssembly.Module.customSections(module, 'il2wasm.lines')) {
       const b = new Uint8Array(sec), p = { i: 0 };
       const nf = readU32(b, p);
       for (let k = 0; k < nf; k++) files.push(readName(b, p));
@@ -143,7 +143,7 @@ export function debugInfo(module) {
   let ib = null, scopeParent = new Int32Array(0), scopeName = new Int32Array(0), scopeFile = new Int32Array(0), scopeLine = new Int32Array(0);
   let inlineOff = new Int32Array(0), inlineScope = new Int32Array(0);
   const inNameStart = [], inNames = [], inFileStart = [], inFiles = [];
-  for (const sec of WebAssembly.Module.customSections(module, 'cs2wasm.inline')) {
+  for (const sec of WebAssembly.Module.customSections(module, 'il2wasm.inline')) {
     const b = unpackSection(new Uint8Array(sec)), p = { i: 0 };
     ib = b;
     for (let k = readU32(b, p); k > 0; k--) { inNameStart.push(p.i); skipName(b, p); }
@@ -198,7 +198,7 @@ export function debugInfo(module) {
   };
 }
 
-export function cs2wasmImports(module, getMemory, out) {
+export function il2wasmImports(module, getMemory, out) {
   // (the frame names and lines, read when a stack trace is first wanted: every thread's instance would pay for them)
   let infoCache = null;
   const info = { get frames() { return (infoCache ??= debugInfo(module)).frames; }, lineAt: (o) => (infoCache ??= debugInfo(module)).lineAt(o), framesAt: (i, o, w) => (infoCache ??= debugInfo(module)).framesAt(i, o, w), countAt: (i, o) => (infoCache ??= debugInfo(module)).countAt(i, o) };
@@ -209,8 +209,8 @@ export function cs2wasmImports(module, getMemory, out) {
     for (let i = 0; i < len; i += 4096) s += String.fromCharCode.apply(null, u16.subarray(i, Math.min(len, i + 4096)));
     return s;
   };
-  // (CS2WASM_HOST_TIMES: how many stacks the module asked for, a throw's two included, and the time they took here)
-  const stats = process.env.CS2WASM_HOST_TIMES ? (globalThis.__cs2wasmStackStats ??= { calls: 0, ms: 0 }) : null;
+  // (IL2WASM_HOST_TIMES: how many stacks the module asked for, a throw's two included, and the time they took here)
+  const stats = process.env.IL2WASM_HOST_TIMES ? (globalThis.__il2wasmStackStats ??= { calls: 0, ms: 0 }) : null;
   const visibleFrames = () => {
     if (!stats) return visibleFramesNow();
     const t0 = performance.now();
@@ -248,14 +248,14 @@ export function cs2wasmImports(module, getMemory, out) {
     ...httpImports(getMemory),
     write: (ptr, len) => out.write(str(ptr, len)),
     // the environment (name=value, each ended by a zero byte, UTF-8) and the command line (a string block), the
-    // process's: shared with the workers through globalThis.__cs2wasmArgs
+    // process's: shared with the workers through globalThis.__il2wasmArgs
     env_block: (buf, size) => {
       const bytes = new TextEncoder().encode(Object.entries(process.env).map(([k, v]) => `${k}=${v}\0`).join(''));
       if (buf && size >= bytes.length) new Uint8Array(getMemory().buffer).set(bytes, buf >>> 0);
       return bytes.length;
     },
     args_block: (buf, size) => {
-      const args = globalThis.__cs2wasmArgs ?? [''];
+      const args = globalThis.__il2wasmArgs ?? [''];
       const chars = [args.length];
       for (const a of args) { chars.push(a.length); for (let i = 0; i < a.length; i++) chars.push(a.charCodeAt(i)); }
       if (buf && size >= chars.length) new Uint16Array(getMemory().buffer, buf >>> 0, chars.length).set(chars);
@@ -270,8 +270,8 @@ export function cs2wasmImports(module, getMemory, out) {
     utc_offset_minutes: () => 0,
     capture_stack: (ptr, cap) => {
       const text = visibleFrames().map(f => `   at ${f.name}` + (f.loc ? ` in ${f.loc.file}:line ${f.loc.line}` : '')).join('\n');
-      // (CS2WASM_HOST_TIMES=2: each stack the module took, which is where it threw: what a run's exceptions are)
-      if (process.env.CS2WASM_HOST_TIMES === '2') writeSync(2, `[host] stack taken:\n${text.split('\n').slice(0, 12).join('\n')}\n`);
+      // (IL2WASM_HOST_TIMES=2: each stack the module took, which is where it threw: what a run's exceptions are)
+      if (process.env.IL2WASM_HOST_TIMES === '2') writeSync(2, `[host] stack taken:\n${text.split('\n').slice(0, 12).join('\n')}\n`);
       const n = Math.min(text.length, cap);
       const u16 = new Uint16Array(getMemory().buffer, ptr >>> 0, n);
       for (let i = 0; i < n; i++) u16[i] = text.charCodeAt(i);
@@ -288,16 +288,16 @@ export function threadImports(module, memory, out, onSpawn) {
   // the main thread makes the ring and the starter (at the first thread, or __prewarm); a worker has them from its start
   let spawner = null;
   const ring = () => {
-    if (!globalThis.__cs2wasmRing) {
-      globalThis.__cs2wasmRing = new SharedArrayBuffer((2 + RingSlots * 6) * 4);
-      spawner = new Worker(new URL('./spawner.mjs', import.meta.url), { workerData: { module, memory, fs: fsShared(), io: ioShared(), argv: globalThis.__cs2wasmArgs, ring: globalThis.__cs2wasmRing } });
+    if (!globalThis.__il2wasmRing) {
+      globalThis.__il2wasmRing = new SharedArrayBuffer((2 + RingSlots * 6) * 4);
+      spawner = new Worker(new URL('./spawner.mjs', import.meta.url), { workerData: { module, memory, fs: fsShared(), io: ioShared(), argv: globalThis.__il2wasmArgs, ring: globalThis.__il2wasmRing } });
       spawner.on('message', (m) => {
         if (m.unhandled) { process.stderr.write(m.unhandled); process.exit(3); }
         if (m.error) { process.stderr.write(m.error + '\n'); process.exit(4); }
       });
       spawner.unref();
     }
-    return new Int32Array(globalThis.__cs2wasmRing);
+    return new Int32Array(globalThis.__il2wasmRing);
   };
   return {
     // (not an import: the host calls it once, before the program starts, when the module has threads: the starter and
@@ -306,7 +306,7 @@ export function threadImports(module, memory, out, onSpawn) {
     // (not an import: the host calls it when the program's entry returned; while threads that keep the process alive
     // run, the starter keeps it, as .NET's process lasts while a foreground thread runs)
     __mainReturned: () => {
-      if (!globalThis.__cs2wasmRing) return;
+      if (!globalThis.__il2wasmRing) return;
       const c = ring();
       const watch = () => {
         for (;;) {
@@ -322,10 +322,10 @@ export function threadImports(module, memory, out, onSpawn) {
       };
       watch();
     },
-    // (CS2WASM_PROCESSORS: the cores the module is told it has)
-    processor_count: () => +(process.env.CS2WASM_PROCESSORS || availableParallelism()),
+    // (IL2WASM_PROCESSORS: the cores the module is told it has)
+    processor_count: () => +(process.env.IL2WASM_PROCESSORS || availableParallelism()),
     thread_spawn: (sp, tls, id, arg, background) => {
-      if (process.env.CS2WASM_TRACE_THREADS) writeSync(2, `[thread_spawn id=${id} background=${background}]\n`);
+      if (process.env.IL2WASM_TRACE_THREADS) writeSync(2, `[thread_spawn id=${id} background=${background}]\n`);
       onSpawn?.();
       const c = ring();
       if (!background) Atomics.add(c, 1, 1);

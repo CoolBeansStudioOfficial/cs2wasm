@@ -4,7 +4,7 @@
 # check (tools/selfhost-check.sh with the switches given, SET for more tests than its three), and the stress of the
 # trees' tests with 127 and 139 (tools/stress-trees.sh). Each part's lines are kept in tests/out/overnight/, and the
 # last lines of each are printed at the end again.
-#   bash tools/homelab.sh <branch> env SET=202_,203_,204_ bash tools/overnight-check.sh CS2WASM_NO_UNLINK_SKIP=1 ...
+#   bash tools/homelab.sh <branch> env SET=202_,203_,204_ bash tools/overnight-check.sh IL2WASM_NO_UNLINK_SKIP=1 ...
 cd "$(dirname "$0")/.."
 O=tests/out/overnight; mkdir -p $O
 bad=0

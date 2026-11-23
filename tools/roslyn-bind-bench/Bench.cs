@@ -1,11 +1,11 @@
 // A stand-in for the self-hosted compiler's run that builds in minutes (tools/roslyn-bind-bench.sh builds and times it
-// with cs2wasm and with NativeAOT-LLVM, interleaved). It uses Roslyn as the compiler's front end does on hello world:
+// with il2wasm and with NativeAOT-LLVM, interleaved). It uses Roslyn as the compiler's front end does on hello world:
 // System.Private.CoreLib's sources read and parsed as Library.BuildOne parses them (the manifest's files from the
-// dotnet/runtime cache with its defines and edits, then cs2wasm's own files), one compilation of them, then method
+// dotnet/runtime cache with its defines and edits, then il2wasm's own files), one compilation of them, then method
 // bodies bound as the Driver discovers them: from a few roots, each body's operation tree (SemanticModel.GetOperation,
 // one model per tree as Driver.ModelFor keeps them) walked, and the methods it calls, constructs, reads as properties
 // or takes as delegates queued in turn, up to a number of bodies.
-// usage: <program> <src/Cs2Wasm/Upstream dir> <runtime sources dir> [bodies (default 400)]
+// usage: <program> <src/Il2Wasm/Upstream dir> <runtime sources dir> [bodies (default 400)]
 // Prints each phase's time and a check line (counts that both builds must print alike).
 using System;
 using System.Collections.Generic;
@@ -44,7 +44,7 @@ static class BindBench
             chars += text.Length;
             trees.Add(CSharpSyntaxTree.ParseText(text, po, path: "dotnet/runtime/" + f));
         }
-        // cs2wasm's own files of the library, in the order of their resource names
+        // il2wasm's own files of the library, in the order of their resource names
         var ownDir = Path.Combine(upstream, lib);
         var own = Directory.GetFiles(ownDir, "*.cs", SearchOption.AllDirectories)
             .Select(p => (Name: p.Substring(ownDir.Length + 1).Replace('\\', '/'), Path: p)).OrderBy(p => p.Name, StringComparer.Ordinal).ToList();
@@ -52,7 +52,7 @@ static class BindBench
         {
             var text = File.ReadAllText(path);
             chars += text.Length;
-            trees.Add(CSharpSyntaxTree.ParseText(text, po, path: "cs2wasm/upstream/" + lib + "/" + name));
+            trees.Add(CSharpSyntaxTree.ParseText(text, po, path: "il2wasm/upstream/" + lib + "/" + name));
         }
         long parseMs = sw.ElapsedMilliseconds;
 

@@ -2,7 +2,7 @@
 
 SPEC section 10, proof 5. **Met (2026-11-21): the game's C# sources built in a browser page by the self-hosted
 compiler, played in stock Godot 4.7.2's web template, its engine-call log equal to stock Godot .NET's.** Also met since
-2026-11-19 for the game compiled by the .NET-hosted cs2wasmc. Windows 11, 24 cores, Node 24.19, Chrome 157 headless;
+2026-11-19 for the game compiled by the .NET-hosted il2wasm. Windows 11, 24 cores, Node 24.19, Chrome 157 headless;
 rows marked 11-19 and 11-17 are from those days.
 
 The build in the browser, three commands (the first two only when the compiler or the game's project changed):
@@ -16,10 +16,10 @@ node tools/proof5.mjs check         # headless Chrome: build the game in the pag
 | Step | Command | Result |
 |---|---|---|
 | The game under stock Godot 4.7.2 .NET (the oracle) | `node tools/proof5.mjs oracle` | `oracle-calls.txt`, 1,667 lines, and `oracle-calls-panic.txt`, 1,669; run again (11-19), the same bytes |
-| Compiled by the .NET-hosted cs2wasmc, on a replayed engine | `node tools/proof5.mjs stub` (also in `dotnet run --project tests/Cs2Wasm.Tests`: `godot_proof5_hello2d`) | 11-19: 3,449,802 bytes; its 1,667 log lines equal the oracle's; with `--panic` its 1,669 too |
+| Compiled by the .NET-hosted il2wasm, on a replayed engine | `node tools/proof5.mjs stub` (also in `dotnet run --project tests/Il2Wasm.Tests`: `godot_proof5_hello2d`) | 11-19: 3,449,802 bytes; its 1,667 log lines equal the oracle's; with `--panic` its 1,669 too |
 | The same module played in the engine in a browser, **stock web template** | `node tools/proof5.mjs check --module tests/out/proof5/game-net.wasm` (`--panic`: with the key that throws) | 11-19: the engine says `v4.7.2.stable.official.ed1daf0bf`; 1,667 log lines (1,666 engine calls) equal the oracle's; with `--panic` 1,669 equal, the exception's stack in the page's output. Also in the built-in browser pane of the Claude app (Chrome 156): `node tools/proof5.mjs serve`, `?module=prebuilt.wasm&drive=1`, the page's own comparison "the engine calls equal stock Godot .NET's" |
 | ... and by the keyboard | `... check --module tests/out/proof5/game-net.wasm --play shot.png`; or `serve` and `?module=prebuilt.wasm` in a browser | 11-19: right arrow for 1 s then Space: the HUD goes from `jumps: 0 position: (576, 548)` to `jumps: 1 position: (901, 548)` (real time: the position depends on the key's timing) |
-| The toolchain | `node tools/proof5.mjs toolchain` | 55,170,538 bytes (9,290,612 Brotli) in 14.0 min: cs2wasm without threads (as NativeAOT-LLVM's browser-wasm build, the page tells it one core either way), Godot's source generators compiled in (SPEC 7.1), their sources fetched into the cache at the stock commit GodotSharp's come from |
+| The toolchain | `node tools/proof5.mjs toolchain` | 55,170,538 bytes (9,290,612 Brotli) in 14.0 min: il2wasm without threads (as NativeAOT-LLVM's browser-wasm build, the page tells it one core either way), Godot's source generators compiled in (SPEC 7.1), their sources fetched into the cache at the stock commit GodotSharp's come from |
 | The game built by the toolchain under Node, on a replayed engine | `node check/selfgame.mjs` then `node tools/proof5.mjs stub --module tests/out/proof5/game-self.wasm` | 4,525,251 bytes in 292 s (one core); its 1,667 log lines equal the oracle's; with `--panic` 1,669 |
 | **The game built in the browser** | `node tools/proof5.mjs check` (`--panic`) | **passes**: 4,525,050 bytes built in the page in 220.9 s (220.4 s of it the build; 18,190,769 bytes downloaded, the compiler's memory 2,160 MB at the end), played in the stock web template: 1,667 log lines equal the oracle's; with `--panic` 1,669 |
 | A console program built in the browser by the self-hosted compiler | `node tools/proof5.mjs check --game hello` | 11-17: 27,805 bytes in 23 to 30 s (five runs), 17,139,958 bytes downloaded; the same bytes as the self-hosted compiler under Node writes; run in the page it writes `42` |
@@ -64,9 +64,9 @@ objects (numbers the engine's side hands out), method calls, singletons and prin
 - `host/godot-replay.mjs`: no engine. Each call must be the oracle's next line and is answered with the oracle's
   result. It checks what the compiled scripts ask of the engine given the engine's answers; it checks no engine.
 - `host/web/godot-web.mjs`: the real engine in the page. A ptrcall becomes a call of a GDScript callback
-  (`JavaScriptBridge.create_callback`) in the autoload `cs2wasm_bridge.gd`, which does `Object.callv` and hands the
-  result back through `cs2wasmEngine.ret(...)` (a callback's own result does not reach JavaScript). The other way,
-  `cs2wasm_node.gd` stands on each node where a C# script stood (the C# script's path and the scene's values of its
+  (`JavaScriptBridge.create_callback`) in the autoload `il2wasm_bridge.gd`, which does `Object.callv` and hands the
+  result back through `il2wasmEngine.ret(...)` (a callback's own result does not reach JavaScript). The other way,
+  `il2wasm_node.gd` stands on each node where a C# script stood (the C# script's path and the scene's values of its
   properties are in the node's metadata) and passes `_ready`, `_process` and `_physics_process` to the module.
   All of it is synchronous on the page's thread (the engine's build without threads).
 
@@ -79,14 +79,14 @@ far from it).
 ## The browser host (`host/web`)
 
 `server.mjs` (static files, the cross-origin isolation headers, `x.br` for `x`, a count of bytes sent);
-`cs2wasm-web.mjs` (the `cs2wasm.*` imports: console, time, command line, environment, stack traces);
+`il2wasm-web.mjs` (the `il2wasm.*` imports: console, time, command line, environment, stack traces);
 `vfs.mjs` (files in memory: read-only packs in one `SharedArrayBuffer` for every thread, files written kept by the
 thread that wrote them); `run-module.mjs` and `module-worker.mjs` (a module with a `main` run in a Web Worker, with a
 pool of workers made beforehand for its threads: a blocked worker cannot start another). Not there: HTTP
-(`cs2wasm.http_*` throws), a cache of the downloads between visits, writes from worker threads.
+(`il2wasm.http_*` throws), a cache of the downloads between visits, writes from worker threads.
 
 Measured 2026-11-17 for `repro/Hello.cs` (`check --game hello`): the browser downloads **17,139,958 bytes** to build
-(`cs2wasm.wasm` 8,243,308 and `library.pack` 8,896,298, both Brotli quality 9; 59,964,726 and 85,215,870 bytes
+(`il2wasm.wasm` 8,243,308 and `library.pack` 8,896,298, both Brotli quality 9; 59,964,726 and 85,215,870 bytes
 unpacked; plus the program's sources). `library.pack` is the 4,896 files the self-hosted compiler opened when it built
 a program that references GodotSharp: 72.2 MB of sources from the cache (the .NET library's, 3,633 files, 46.6 MB;
 GodotSharp's, 1,086 files, 25.6 MB), 6.5 MB of reference assemblies, GodotSharp.dll (5.9 MB). The build itself took
@@ -94,7 +94,7 @@ GodotSharp's, 1,086 files, 25.6 MB), 6.5 MB of reference assemblies, GodotSharp.
 0.2 to 0.3 s; the browser reports 0.0 s to compile the compiler's module, which it compiles lazily). The compiler's
 memory at the end: 395 MB (444 MB told four cores). The game's own sources are 28,897 bytes in 15 files.
 
-The game (2026-11-21, `check`): the browser downloads **18,190,769 bytes** to build (`cs2wasm.wasm` 9,290,612 and
+The game (2026-11-21, `check`): the browser downloads **18,190,769 bytes** to build (`il2wasm.wasm` 9,290,612 and
 `library.pack` 8,896,298 Brotli; 55,170,538 and 85,215,870 bytes unpacked; the game's sources 3,859 bytes in 3 files:
 the two scripts and `sources.json`). The page gives the toolchain the .NET-hosted compiler's arguments (`-r
 GodotSharp.dll -a Godot.SourceGenerators.dll --property GodotProjectDir=/game/ ...`): the generators run in the page,
@@ -121,7 +121,7 @@ Tried again 2026-11-20 and 21 with that day's self-hosted compiler:
    runs the toolchain without threads, as NativeAOT-LLVM's browser-wasm build has none.
 5. **The self-hosted compiler freed memory still in use** on every program with `-r GodotSharp.dll` (found 2026-11-20:
    a cycle of `SyntaxList` parents, then `SimpleSyntaxReference` where a syntax node was due: type confusion).
-   `repro/RoslynGodotProbe.cs` (Roslyn compiled `--checked` by cs2wasmc, binding every body of GodotSharp's sources)
+   `repro/RoslynGodotProbe.cs` (Roslyn compiled `--checked` by il2wasm, binding every body of GodotSharp's sources)
    showed it in 16 s, where the toolchain takes 15 minutes to build. Two causes, both fixed on main (2026-11-21), each
    with a conformance test:
    - a temporary that borrows from a field shared its local with counted temporaries, and the handler for an
@@ -140,7 +140,7 @@ Tried again 2026-11-20 and 21 with that day's self-hosted compiler:
    (`bazoodle/godot/bin/godot.web.template_release.wasm32.nothreads.zip`, `custom_build`); the logs were the same.
    Still so: the stock editor with .NET refuses a web export ("Exporting to Web is currently not supported in Godot 4
    when using C#/.NET"), so `web` has it write the pack (`--export-pack`) and puts the template's files beside it
-   (`CS2WASM_GODOT_WEB_TEMPLATE` names another archive).
+   (`IL2WASM_GODOT_WEB_TEMPLATE` names another archive).
 7. **`GD.PushError` and `StackTrace`** (2026-11-19): `stub --panic` and `check --panic` pass; `StackFrame.GetMethod()`
    was null in a module then (stream E's).
 
@@ -160,8 +160,8 @@ declares (the scene's `Speed = 320.0` was gone from the pack while `metadata/...
 - `check/`: the steps of `tools/proof5.mjs` (`toolchain.mjs`, `stub.mjs`, `web.mjs`, `browser.mjs`), the self-hosted compiler under
   Node from any shell (`self.mjs`, with `--trace-files`), `raise-memory.mjs`.
 - `web/`: the page.
-- `repro/`: the gaps' programs. `repro/Hello.cs` is the smallest program, for timing; `repro/RoslynGodotProbe.cs` binds GodotSharp's sources with Roslyn compiled by cs2wasm.
+- `repro/`: the gaps' programs. `repro/Hello.cs` is the smallest program, for timing; `repro/RoslynGodotProbe.cs` binds GodotSharp's sources with Roslyn compiled by il2wasm.
 - `toolchain/Common.Constants.cs`: what Godot's build writes beside its source generators.
 
-Environment: `CS2WASM_GODOT_EDITOR`, `CS2WASM_GODOT_WEB_TEMPLATE`, `CS2WASM_GODOT_GENERATORS`, `CS2WASM_CACHE`, `CS2WASM_SELF`,
-`CS2WASM_REFERENCE_DIR`, `CS2WASM_BROWSER`.
+Environment: `IL2WASM_GODOT_EDITOR`, `IL2WASM_GODOT_WEB_TEMPLATE`, `IL2WASM_GODOT_GENERATORS`, `IL2WASM_CACHE`, `IL2WASM_SELF`,
+`IL2WASM_REFERENCE_DIR`, `IL2WASM_BROWSER`.

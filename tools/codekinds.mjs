@@ -1,4 +1,4 @@
-// Where a module's code is, by kind of function (a module built with CS2WASM_NAMES=1): dispatch stubs, destroy
+// Where a module's code is, by kind of function (a module built with IL2WASM_NAMES=1): dispatch stubs, destroy
 // functions, initializers, copies made for ownership or constants, the namespaces of the rest; and its largest
 // functions. For the size of large programs (the self-hosted compiler).
 // usage: node tools/codekinds.mjs module.wasm [largest N]
@@ -33,7 +33,7 @@ const kindOf = (n) =>
   n.startsWith('virtual ') ? 'dispatch stubs'
   : /^destroy |^arena\.|^rt\.release|^rt\.retain_struct|^rt\.release_struct|^rt\.release_range|^rt\.retain_range|^rt\.copy|^rt\.move/.test(n) ? 'destroy, release and copy functions'
   : n.startsWith('static init') ? 'static initializers'
-  : n.startsWith('rt.') || n.startsWith('Cs2Wasm.Runtime.') ? 'runtime'
+  : n.startsWith('rt.') || n.startsWith('Il2Wasm.Runtime.') ? 'runtime'
   : n.startsWith('thunk ') || n.startsWith('frameobj.') || n.startsWith('export ') ? 'thunks'
   : /\[own \d+\]/.test(n) ? 'copies: owned arguments'
   : / \[this by value\]$/.test(n) ? 'copies: this by value'
@@ -43,7 +43,7 @@ const kindOf = (n) =>
   : n.startsWith('System.Collections') ? 'System.Collections'
   : n.startsWith('System.Linq') ? 'System.Linq'
   : n.startsWith('System.') ? 'System (other)'
-  : n.startsWith('Cs2Wasm.') ? 'Cs2Wasm'
+  : n.startsWith('Il2Wasm.') ? 'Il2Wasm'
   : n.startsWith('local ') || n.startsWith('lambda ') ? 'lambdas and local functions'
   : 'other';
 const kinds = new Map(), all = [];

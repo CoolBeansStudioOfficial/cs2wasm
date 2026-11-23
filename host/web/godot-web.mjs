@@ -1,11 +1,11 @@
-// The page's end of the bridge between a cs2wasm module and stock Godot's web export (SPEC section 10, proof 5): the
+// The page's end of the bridge between an il2wasm module and stock Godot's web export (SPEC section 10, proof 5): the
 // backend of host/godot-bridge.mjs on the real engine. The module's `godot.*` imports reach the engine through the
-// callback the exported project's autoload hands over (host/web/godot/cs2wasm_bridge.gd, by JavaScriptBridge); the
-// engine's callbacks reach the module through window.cs2wasmEngine. Everything is synchronous on the page's thread
+// callback the exported project's autoload hands over (host/web/godot/il2wasm_bridge.gd, by JavaScriptBridge); the
+// engine's callbacks reach the module through window.il2wasmEngine. Everything is synchronous on the page's thread
 // (the export's build without threads), so a script's call of the engine returns its answer as under stock Godot.
 import { GodotBoundary, VARIANT } from '../godot-bridge.mjs';
 
-// extension_api.json types as the proxy's value codes (cs2wasm_bridge.gd)
+// extension_api.json types as the proxy's value codes (il2wasm_bridge.gd)
 const CODES = { bool: 'b', int: 'i', float: 'f', String: 's', StringName: 'n', NodePath: 'p', Vector2: '2', Vector2i: 'I', Color: 'c', Rect2: 'r' };
 const notCarried = ['Variant', 'Array', 'Dictionary', 'Callable', 'Signal', 'RID'];
 function code(type) {
@@ -44,7 +44,7 @@ export class WebEngineBackend {
   printError(text) { this.out.printError(text); }
 }
 
-/** Sets up window.cs2wasmEngine for a module (instantiated, init run) before the engine starts. Returns
+/** Sets up window.il2wasmEngine for a module (instantiated, init run) before the engine starts. Returns
  * { bridge, backend, log }: log is the engine-call log's lines. makeInstance(godot imports) resolves with
  * { instance, memory }. */
 export async function attachGame(module, sigs, out, makeInstance) {
@@ -56,8 +56,8 @@ export async function attachGame(module, sigs, out, makeInstance) {
   instance.exports.init();
   const variantOf = (kind, a, b) => (kind === 'b' ? { type: VARIANT.BOOL, value: !!a } : kind === 'i' ? { type: VARIANT.INT, value: a }
     : kind === 'f' ? { type: VARIANT.FLOAT, value: a } : kind === 's' ? { type: VARIANT.STRING, value: String(a) } : { type: VARIANT.VECTOR2, value: [a, b] });
-  const guard = (f) => (...a) => { try { return f(...a); } catch (e) { out.printError('cs2wasm bridge: ' + (e?.stack ?? e)); out.failed?.(e); return 0; } };
-  globalThis.cs2wasmEngine = {
+  const guard = (f) => (...a) => { try { return f(...a); } catch (e) { out.printError('il2wasm bridge: ' + (e?.stack ?? e)); out.failed?.(e); return 0; } };
+  globalThis.il2wasmEngine = {
     // the engine's autoload is up: the module's start (it asks the engine already)
     attach: guard((callback) => { backend.proxy = callback; bridge.initialize(); }),
     ret: (...values) => { backend.answer = values; },

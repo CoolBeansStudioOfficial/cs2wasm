@@ -2,7 +2,7 @@
 // report of an exception that escapes a script callback, ExceptionUtils.LogException) takes
 // new StackTrace(skipFrames, fNeedFileInfo: true).GetFrame(0) and reads its file name, line and method.
 // Under .NET this prints: True / True / A / True.
-//   cs2wasmc StackTraceFrames.cs -o s.wasm && node host/run.mjs s.wasm main
+//   il2wasm StackTraceFrames.cs -o s.wasm && node host/run.mjs s.wasm main
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;

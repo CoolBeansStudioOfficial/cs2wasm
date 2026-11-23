@@ -2,24 +2,24 @@
 // the thread starter (host/spawner.mjs), with its thread's start or ready for the next one.
 import { workerData, parentPort } from 'node:worker_threads';
 import { writeSync } from 'node:fs';
-import { cs2wasmImports, threadImports } from './engine.mjs';
+import { il2wasmImports, threadImports } from './engine.mjs';
 
 const { module, memory } = workerData;
-globalThis.__cs2wasmFs = workerData.fs; // (the process's file system state: fs.mjs)
-globalThis.__cs2wasmIo = workerData.io; // (and its I/O worker's: http.mjs)
-globalThis.__cs2wasmArgs = workerData.argv; // (and its command line)
-globalThis.__cs2wasmRing = workerData.ring; // (and the thread starter's requests: engine.mjs)
+globalThis.__il2wasmFs = workerData.fs; // (the process's file system state: fs.mjs)
+globalThis.__il2wasmIo = workerData.io; // (and its I/O worker's: http.mjs)
+globalThis.__il2wasmArgs = workerData.argv; // (and its command line)
+globalThis.__il2wasmRing = workerData.ring; // (and the thread starter's requests: engine.mjs)
 const out = {
   write: (s) => writeSync(1, s),
   error: (type, message, stack) => parentPort.postMessage({ unhandled: `Unhandled exception. ${type}: ${message}${stack ? '\n' + stack : ''}\n` }),
 };
-const imports = { env: { memory }, cs2wasm: { ...cs2wasmImports(module, () => memory, out), ...threadImports(module, memory, out) } };
+const imports = { env: { memory }, il2wasm: { ...il2wasmImports(module, () => memory, out), ...threadImports(module, memory, out) } };
 for (const imp of WebAssembly.Module.imports(module)) {
   if (imp.kind !== 'function') continue;
   imports[imp.module] ??= {};
   imports[imp.module][imp.name] ??= () => 0;
 }
-const trace = process.env.CS2WASM_TRACE_THREADS ? (m) => writeSync(2, `[worker ${m}]\n`) : () => {};
+const trace = process.env.IL2WASM_TRACE_THREADS ? (m) => writeSync(2, `[worker ${m}]\n`) : () => {};
 const instance = new WebAssembly.Instance(module, imports);
 function run({ args, background }) {
   trace(`run thread ${args[2]}`);

@@ -2,8 +2,8 @@
 // counted as in a program without threads), and a static that a worker's code names is every thread's: the pallets
 // below live in statics only Main's code touches, the crates in statics the workers store and read too: a crate made
 // by one thread is counted and let go by another. Whatever the interleaving, every object is freed exactly once.
-// CS2WASM_EXP_ALL_ENGINE_STATICS=1 takes the crates' statics for the engine thread's too: with
-// CS2WASM_SHARE_CHECK=1 the first crate a worker counts then stops the program (tools/thread-escape-breaks.sh).
+// IL2WASM_EXP_ALL_ENGINE_STATICS=1 takes the crates' statics for the engine thread's too: with
+// IL2WASM_SHARE_CHECK=1 the first crate a worker counts then stops the program (tools/thread-escape-breaks.sh).
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;

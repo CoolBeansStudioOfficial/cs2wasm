@@ -7,7 +7,7 @@
 //   ?game=hello      the sources to build: a directory of the site with a sources.json (default: game)
 // What happened is left in window.proof5 ({ state, build, log, error }) for tests/Godot/proof5_hello2d/check/browser.mjs.
 import { runModule } from './host/web/run-module.mjs';
-import { webImports, memoryLimits } from './host/web/cs2wasm-web.mjs';
+import { webImports, memoryLimits } from './host/web/il2wasm-web.mjs';
 import { attachGame } from './host/web/godot-web.mjs';
 import { comparable } from './host/godot-bridge.mjs';
 
@@ -23,9 +23,9 @@ async function build() {
   files.push({ path: '/out/.keep', bytes: new Uint8Array(0) });
   status('building in the browser (downloading the toolchain, then compiling)');
   const r = await runModule({
-    module: 'toolchain/cs2wasm.wasm', packs: ['toolchain/library.pack'], files,
+    module: 'toolchain/il2wasm.wasm', packs: ['toolchain/library.pack'], files,
     args: [...manifest.sources.map((s) => s.path), ...manifest.args, '-o', '/out/game.wasm'],
-    env: { CS2WASM_CACHE: '/cache', CS2WASM_REFERENCE_DIR: '/ref', ...(params.has('times') ? { CS2WASM_TIMES: '1' } : {}) },
+    env: { IL2WASM_CACHE: '/cache', IL2WASM_REFERENCE_DIR: '/ref', ...(params.has('times') ? { IL2WASM_TIMES: '1' } : {}) },
     // (one core unless the address says more: with several, the toolchain's builds of a program with GodotSharp did
     // not end under Node; ?times=1: the compiler's phase times in the output)
     processors: params.has('processors') ? +params.get('processors') : 1,
@@ -43,7 +43,7 @@ async function build() {
     const memory = new WebAssembly.Memory({ initial: limits.initial, maximum: limits.maximum, shared: true });
     let text = '';
     const out = { mainCanBlock: false, write: (s) => { text += s; }, error: (type, message, stack) => { text += `Unhandled exception. ${type}: ${message}\n${stack}\n`; } };
-    const instance = await WebAssembly.instantiate(module, { env: { memory }, cs2wasm: webImports(module, () => memory, out, {}) });
+    const instance = await WebAssembly.instantiate(module, { env: { memory }, il2wasm: webImports(module, () => memory, out, {}) });
     instance.exports.init();
     instance.exports[manifest.run]();
     result.ran = text;
@@ -71,7 +71,7 @@ async function play(wasm) {
   };
   const game = await attachGame(module, sigs, out, async (godot) => {
     const memory = new WebAssembly.Memory({ initial: limits.initial, maximum: limits.maximum, shared: true });
-    const instance = await WebAssembly.instantiate(module, { env: { memory }, cs2wasm: webImports(module, () => memory, out, {}), godot });
+    const instance = await WebAssembly.instantiate(module, { env: { memory }, il2wasm: webImports(module, () => memory, out, {}), godot });
     return { instance, memory };
   });
   const config = await (await fetch('godot/config.json')).json();

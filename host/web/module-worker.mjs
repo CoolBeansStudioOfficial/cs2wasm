@@ -6,7 +6,7 @@
 //
 // The control block (Int32 words), a slot of 8 words per pool worker: [state, sp, tls, id, arg, background]; state
 // 0 idle, 1 claimed by a spawner, 2 arguments written, 3 running, 4 not there yet.
-import { webImports } from './cs2wasm-web.mjs';
+import { webImports } from './il2wasm-web.mjs';
 import { vfsImports } from './vfs.mjs';
 
 const SLOT = 8;
@@ -38,13 +38,13 @@ function setup(m, canWrite, fdBase) {
         Atomics.notify(ctl, at);
         return 0;
       }
-      out.writeError(`cs2wasm threads: thread ${id} asked for, and all ${m.pool} workers of the pool are busy\n`);
+      out.writeError(`il2wasm threads: thread ${id} asked for, and all ${m.pool} workers of the pool are busy\n`);
       return -1;
     },
     // (no HTTP in this host: the module's completion pump waits for completions that never come)
     host_next_completion: () => { Atomics.wait(never, 0, 0); return 0; },
   };
-  const imports = { env: { memory }, cs2wasm: webImports(module, () => memory, out, { args: m.args, env: m.env, epoch: m.epoch, fs: fs.imports, threads }) };
+  const imports = { env: { memory }, il2wasm: webImports(module, () => memory, out, { args: m.args, env: m.env, epoch: m.epoch, fs: fs.imports, threads }) };
   // any other import is an engine boundary this host does not have
   for (const imp of WebAssembly.Module.imports(module)) {
     if (imp.kind !== 'function') continue;

@@ -3,8 +3,8 @@
 // tools/selfhost.mjs --generators):
 //   node tests/Godot/proof5_hello2d/check/selfgame.mjs [out.wasm] [--pregenerated]
 // --pregenerated: for a toolchain without the generators: their sources are written first by the .NET-hosted
-// compiler (CS2WASM_GENERATED) and given as sources.
-// Environment: CS2WASM_SELF, CS2WASM_PROCESSORS, CS2WASM_TIMES.
+// compiler (IL2WASM_GENERATED) and given as sources.
+// Environment: IL2WASM_SELF, IL2WASM_PROCESSORS, IL2WASM_TIMES.
 import { readdirSync, statSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { root, outDir, godotSharp, selfHosted, selfPath, selfEnv, run } from './common.mjs';
@@ -18,7 +18,7 @@ let args;
 if (pregenerated) {
   const generated = join(outDir, 'generated');
   rmSync(generated, { recursive: true, force: true });
-  if (run(compilerExe(), [...buildArgs(), '-o', join(outDir, 'game-net.wasm')], { env: { ...process.env, CS2WASM_GENERATED: generated } }) !== 0) process.exit(1);
+  if (run(compilerExe(), [...buildArgs(), '-o', join(outDir, 'game-net.wasm')], { env: { ...process.env, IL2WASM_GENERATED: generated } }) !== 0) process.exit(1);
   args = [...scripts(), ...walk(generated).sort(), '-r', godotSharp].map(selfPath);
 } else args = buildArgs(selfPath);
 const t0 = performance.now();

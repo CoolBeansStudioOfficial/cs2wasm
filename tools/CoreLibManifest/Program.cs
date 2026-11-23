@@ -1,17 +1,17 @@
 // CoreLibManifest <runtime-root> <upstream-dir>                       evaluate the libraries, generate SR and the externs
 // CoreLibManifest check <runtime-root> <upstream-dir> [library]          compile the libraries, summarize errors
 //
-// Evaluates dotnet/runtime's projects for cs2wasm's target and writes, per library, <upstream-dir>/<Library>/:
+// Evaluates dotnet/runtime's projects for il2wasm's target and writes, per library, <upstream-dir>/<Library>/:
 //   manifest.txt              the defines, the source files (relative to the runtime root) in project order, and the
 //                             libraries it references;
 //   Generated/SR.g.cs         its resource strings, as constants;
-//   Generated/Interop.Unavailable.g.cs   the platform invokes cs2wasm's boundary does not implement (Externs).
+//   Generated/Interop.Unavailable.g.cs   the platform invokes il2wasm's boundary does not implement (Externs).
 // Only what those projects use of MSBuild is implemented: properties with conditions, $(X) expansion, projitems
 // imports, and Compile items (Include/Remove, conditions).
 //
 // The target: a 32-bit WASM build like Mono's browser one, with no hardware intrinsics and no event tracing.
 // System.Private.CoreLib is Mono's project; its runtime-specific half (src/mono/System.Private.CoreLib/src) is listed
-// as `runtime`: cs2wasm supplies its own versions of those files, against its runtime (<Library>/Runtime).
+// as `runtime`: il2wasm supplies its own versions of those files, against its runtime (<Library>/Runtime).
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -27,7 +27,7 @@ return Libraries.Run(Path.GetFullPath(args[0]), Path.GetFullPath(args[1]), args.
 
 static class Libraries
 {
-    /// <summary>The libraries cs2wasm builds, each after those it references.</summary>
+    /// <summary>The libraries il2wasm builds, each after those it references.</summary>
     public static readonly string[] All =
     [
         "System.Private.CoreLib", "System.Collections", "System.Collections.NonGeneric", "System.ObjectModel",
@@ -46,7 +46,7 @@ static class Libraries
         "Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
     ];
 
-    /// <summary>Libraries cs2wasm writes by hand (members the others name, for capabilities the sandbox lacks): compiled,
+    /// <summary>Libraries il2wasm writes by hand (members the others name, for capabilities the sandbox lacks): compiled,
     /// never evaluated from dotnet/runtime.</summary>
     public static readonly HashSet<string> HandWritten = ["Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
         "System.Runtime.Serialization.Primitives", "System.Text.Encoding.CodePages"];
@@ -107,7 +107,7 @@ sealed class Manifest
     readonly List<(string Path, string Why)> replaced = [];
     readonly List<string> substitutionFiles = [];
 
-    /// <summary>The feature switches cs2wasm fixes (the trimmer's substitutions for them are applied, section 7.4).</summary>
+    /// <summary>The feature switches il2wasm fixes (the trimmer's substitutions for them are applied, section 7.4).</summary>
     static readonly Dictionary<string, string> Features = new()
     {
         ["System.Diagnostics.Tracing.EventSource.IsSupported"] = "false",
@@ -119,12 +119,12 @@ sealed class Manifest
 
     static readonly (string Path, string Why)[] Replaced =
     [
-        ("src/libraries/System.Private.CoreLib/src/System/Threading/ThreadPool.Browser.Threads.cs", "cs2wasm's workers have no JS event loop to yield to"),
-        ("src/libraries/System.Private.CoreLib/src/System/TimeZoneInfo.Unix.NonAndroid.cs", "no time zone database: the local zone has the engine clock's offset (Boundary/TimeZoneInfo.Cs2Wasm.cs)"),
+        ("src/libraries/System.Private.CoreLib/src/System/Threading/ThreadPool.Browser.Threads.cs", "il2wasm's workers have no JS event loop to yield to"),
+        ("src/libraries/System.Private.CoreLib/src/System/TimeZoneInfo.Unix.NonAndroid.cs", "no time zone database: the local zone has the engine clock's offset (Boundary/TimeZoneInfo.Il2Wasm.cs)"),
         ("src/libraries/System.Net.Http/src/System/Net/Http/BrowserHttpHandler/BrowserHttpInterop.cs", "the browser runtime's JavaScript interop: the host's fetch, through imports (Boundary/BrowserHttpInterop.cs)"),
     ];
     readonly SortedSet<string> unknown = [];
-    // cs2wasm's choices: the projects may not override them
+    // il2wasm's choices: the projects may not override them
     readonly HashSet<string> pinned = new(StringComparer.OrdinalIgnoreCase);
     readonly string root, lib;
 
@@ -152,7 +152,7 @@ sealed class Manifest
         props["Is64Bit"] = "false";
         props["FeaturePerfTracing"] = "false";
         props["FeatureWasmManagedThreads"] = "false";
-        // cs2wasm has threads (section 4.5): workers on the shared memory, not the browser runtime's JS ones
+        // il2wasm has threads (section 4.5): workers on the shared memory, not the browser runtime's JS ones
         props["FeatureMultithreading"] = "true";
         props["RuntimeFlavor"] = "Mono";
         props["TargetFrameworkIdentifier"] = ".NETCoreApp";
@@ -160,7 +160,7 @@ sealed class Manifest
         foreach (var k in props.Keys) pinned.Add(k);
         pinned.Remove("DefineConstants");
         Project(Libraries.Project(root, lib));
-        // files cs2wasm replaces with its own (under <Library>/Boundary), listed as `replaced`
+        // files il2wasm replaces with its own (under <Library>/Boundary), listed as `replaced`
         foreach (var (drop, why) in Replaced)
             if (files.Remove(Path.GetFullPath(Path.Combine(root, drop)))) replaced.Add((drop, why));
         // what the libraries' build adds to a project with resources (CoreLib has its own SR.cs)
@@ -176,10 +176,10 @@ sealed class Manifest
         var defines = (sdk + props["DefineConstants"]).Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(d => d is not ("DEBUG" or "_LOGGING")).Distinct().ToList();
         var sb = new StringBuilder();
-        sb.AppendLine($"# {lib} for cs2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.");
-        sb.AppendLine("# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: cs2wasm supplies its own)");
-        sb.AppendLine("# | replaced <path> (an upstream file cs2wasm replaces with its own)");
-        sb.AppendLine("# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for cs2wasm's features)");
+        sb.AppendLine($"# {lib} for il2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.");
+        sb.AppendLine("# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: il2wasm supplies its own)");
+        sb.AppendLine("# | replaced <path> (an upstream file il2wasm replaces with its own)");
+        sb.AppendLine("# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for il2wasm's features)");
         sb.AppendLine("#   (a value =>Type.Method: the body calls that boundary method) | edit<TAB><path><TAB><text><TAB><replacement> (an exact change to an upstream file)");
         foreach (var d in defines) sb.AppendLine("define " + d);
         foreach (var r in references.Distinct()) sb.AppendLine("reference " + r);
@@ -187,16 +187,16 @@ sealed class Manifest
         // the console writes to the engine's log import (Boundary/EngineConsole.cs)
         if (lib == "System.Console")
         {
-            sb.AppendLine("substitute	method	System.Console	System.IO.TextWriter CreateOutputWriter(System.IO.Stream)	=>System.Cs2WasmConsole.CreateOutputWriter");
-            sb.AppendLine("substitute	method	System.ConsolePal	System.IO.Stream OpenStandardOutput()	=>System.Cs2WasmConsole.OpenStandardOutput");
-            sb.AppendLine("substitute	method	System.ConsolePal	System.IO.Stream OpenStandardError()	=>System.Cs2WasmConsole.OpenStandardError");
+            sb.AppendLine("substitute	method	System.Console	System.IO.TextWriter CreateOutputWriter(System.IO.Stream)	=>System.Il2WasmConsole.CreateOutputWriter");
+            sb.AppendLine("substitute	method	System.ConsolePal	System.IO.Stream OpenStandardOutput()	=>System.Il2WasmConsole.OpenStandardOutput");
+            sb.AppendLine("substitute	method	System.ConsolePal	System.IO.Stream OpenStandardError()	=>System.Il2WasmConsole.OpenStandardError");
         }
         // expression trees run on the interpreter: no IL is emitted for object[] thunks either (as on NativeAOT)
         if (lib == "System.Linq.Expressions")
         {
             sb.AppendLine("substitute	method	System.Dynamic.Utils.DelegateHelpers	System.Boolean get_CanEmitObjectArrayDelegate()	false");
             // lifting a struct: the Nullable instances the program makes exist (MakeGenericType)
-            sb.AppendLine("edit	src/libraries/System.Linq.Expressions/src/System/Dynamic/Utils/TypeUtils.cs	                    throw new NotSupportedException(Strings.LiftingInExpressionRequiresDynamicCode(type));	                    return GetNullableType(type); // cs2wasm: the Nullable instances the program makes exist (MakeGenericType)");
+            sb.AppendLine("edit	src/libraries/System.Linq.Expressions/src/System/Dynamic/Utils/TypeUtils.cs	                    throw new NotSupportedException(Strings.LiftingInExpressionRequiresDynamicCode(type));	                    return GetNullableType(type); // il2wasm: the Nullable instances the program makes exist (MakeGenericType)");
         }
         // a cache of weak references assumes a collector (an object only a weak reference refers to lives until one):
         // with counting it dies at once, so the code that makes a namespace keeps it while it hands it out
@@ -205,22 +205,22 @@ sealed class Manifest
             sb.AppendLine("edit\tsrc/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNamespace.cs\trefNamespace = s_namespaces.Add(new WeakReference<XNamespace>(new XNamespace(namespaceName.Substring(index, count))));\tvar made = new XNamespace(namespaceName.Substring(index, count)); refNamespace = s_namespaces.Add(new WeakReference<XNamespace>(made)); if (refNamespace != null && refNamespace.TryGetTarget(out XNamespace? own) && ReferenceEquals(own, made)) return own;");
             sb.AppendLine("edit\tsrc/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNamespace.cs\tInterlocked.CompareExchange(ref refNmsp, new WeakReference<XNamespace>(new XNamespace(namespaceName)), refOld);\tvar made = new XNamespace(namespaceName); if (Interlocked.CompareExchange(ref refNmsp, new WeakReference<XNamespace>(made), refOld) == refOld) return made;");
         }
-        // feature switches without a trimmer substitution that cs2wasm fixes: no code is generated at run time
+        // feature switches without a trimmer substitution that il2wasm fixes: no code is generated at run time
         if (lib == "System.Private.CoreLib")
         {
             sb.AppendLine("substitute	method	System.Runtime.CompilerServices.RuntimeFeature	System.Boolean get_IsDynamicCodeSupported()	false");
             // DynamicMethod runs on the IL interpreter (Reflection/Emit/DynamicMethod.Interpreter.cs): no dynamic assembly
             sb.AppendLine("substitute	method	System.Reflection.Emit.AssemblyBuilder	System.Void EnsureDynamicCodeSupported()	");
-            sb.AppendLine("substitute	method	System.Reflection.Emit.DynamicMethod	System.Reflection.Module GetDynamicMethodsModule()	=>Cs2Wasm.Runtime.Rt.DynamicMethodsModule");
-            // cs2wasm's stack traces are text captured at the throw (Boundary/Runtime.cs): no frames to format
-            sb.AppendLine("substitute	method	System.Exception	System.String GetStackTrace()	=>Cs2Wasm.Runtime.Rt.StackTraceOf");
-            sb.AppendLine("substitute	method	System.Diagnostics.StackTrace	System.String ToString(System.Diagnostics.StackTrace/TraceFormat)	=>Cs2Wasm.Runtime.Rt.EmptyTrace");
+            sb.AppendLine("substitute	method	System.Reflection.Emit.DynamicMethod	System.Reflection.Module GetDynamicMethodsModule()	=>Il2Wasm.Runtime.Rt.DynamicMethodsModule");
+            // il2wasm's stack traces are text captured at the throw (Boundary/Runtime.cs): no frames to format
+            sb.AppendLine("substitute	method	System.Exception	System.String GetStackTrace()	=>Il2Wasm.Runtime.Rt.StackTraceOf");
+            sb.AppendLine("substitute	method	System.Diagnostics.StackTrace	System.String ToString(System.Diagnostics.StackTrace/TraceFormat)	=>Il2Wasm.Runtime.Rt.EmptyTrace");
             // a frame's method: from the compiler's table of frame names, kept when the program asks (Compiler/Reflection.cs)
-            sb.AppendLine("substitute	method	System.Diagnostics.StackFrame	System.Reflection.MethodBase GetMethod()	=>Cs2Wasm.Runtime.Meta.FrameMethodOf");
+            sb.AppendLine("substitute	method	System.Diagnostics.StackFrame	System.Reflection.MethodBase GetMethod()	=>Il2Wasm.Runtime.Meta.FrameMethodOf");
             // the compiler's enum tables are sorted by unsigned value already (Enum.Mono.cs): no sorting code
             sb.AppendLine("substitute	method	System.Enum	System.Boolean AreSorted(TStorage[])	true");
             // Type.GetType(name): the program is whole, its types' names are a table (Boundary/TypeInfo.cs)
-            sb.AppendLine("substitute	method	System.RuntimeTypeHandle	System.RuntimeType GetTypeByName(System.String,System.Boolean,System.Boolean,System.Threading.StackCrawlMark&)	=>Cs2Wasm.Runtime.TypeInfo.GetTypeByName");
+            sb.AppendLine("substitute	method	System.RuntimeTypeHandle	System.RuntimeType GetTypeByName(System.String,System.Boolean,System.Boolean,System.Threading.StackCrawlMark&)	=>Il2Wasm.Runtime.TypeInfo.GetTypeByName");
             // C# declares no enums over float, double, char or nint (as for NativeAOT): no code for them
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Enum.cs	#define RARE_ENUMS	#undef RARE_ENUMS");
             // AppDomain.FirstChanceException: raised by the runtime's throw (Boundary/Runtime.cs, Rt.RaiseFirstChance)
@@ -235,11 +235,11 @@ sealed class Manifest
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	Gen2GcCallback.Register(s => ((SharedArrayPool<T>)s).Trim(), this);	");
             sb.AppendLine("edit	src/libraries/System.Private.CoreLib/src/System/Buffers/SharedArrayPool.cs	_allTlsBuckets = new ConditionalWeakTable<SharedArrayPoolThreadLocalArray[], object?>();	_allTlsBuckets = null!;");
             // a spin lock spins while its thread holds references it borrowed: its pauses are no safe points (Threads.SpinPause)
-            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(1);\tCs2Wasm.Runtime.Threads.SpinPause(1);");
-            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(0);\tCs2Wasm.Runtime.Threads.SpinPause(0);");
-            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Yield();\tCs2Wasm.Runtime.Threads.SpinPause(0);");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(1);\tIl2Wasm.Runtime.Threads.SpinPause(1);");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Sleep(0);\tIl2Wasm.Runtime.Threads.SpinPause(0);");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs\tThread.Yield();\tIl2Wasm.Runtime.Threads.SpinPause(0);");
             // the thread pool's limit is a 32-bit target's (1023), not the browser's 10: a browser's workers are a fixed
-            // pool made up front, cs2wasm's hosts start a thread when one is asked for; with 10 (or as many as there are
+            // pool made up front, il2wasm's hosts start a thread when one is asked for; with 10 (or as many as there are
             // processors, if more) threads blocked on work queued behind them, the pool could add none (PLINQ's producers
             // waiting for one whose task was not running: the self-hosted compiler on 12 threads waited forever)
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Threading/PortableThreadPool.cs\tprivate const short DefaultMaxWorkerThreadCount = 10;\tprivate const short DefaultMaxWorkerThreadCount = 1023;");
@@ -248,24 +248,24 @@ sealed class Manifest
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Collections/Generic/HashSet.cs\t#if TARGET_64BIT\t#if true");
             // a list of references that grows: its new array takes the items and the old one's place in one step where
             // the items are members of a group (Boundary/Runtime.cs, Rt.GrowInto); false, and the copy as upstream, anywhere else
-            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Collections/Generic/List.cs\tArray.Copy(_items, newItems, _size);\tif (Cs2Wasm.Runtime.Rt.GrowInto(this, _items, newItems, _size)) return; Array.Copy(_items, newItems, _size);");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Collections/Generic/List.cs\tArray.Copy(_items, newItems, _size);\tif (Il2Wasm.Runtime.Rt.GrowInto(this, _items, newItems, _size)) return; Array.Copy(_items, newItems, _size);");
             // Span<T>.Clear over references releases them (the upstream loop writes zeros over them)
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Span.cs\tSpanHelpers.ClearWithReferences(ref Unsafe.As<T, IntPtr>(ref _reference), (uint)_length * (nuint)(sizeof(T) / sizeof(nuint)));\tfor (int i = 0; i < _length; i++) Unsafe.Add(ref _reference, i) = default!;");
             // the text scans with 128-bit instructions (Boundary/TextScan.cs)
-            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/SpanHelpers.T.cs\t=> IndexOfValueType(ref Unsafe.As<char, short>(ref searchSpace), (short)value, length);\t=> Cs2Wasm.Runtime.TextScan.IndexOfChar(ref searchSpace, value, length);");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/SpanHelpers.T.cs\t=> IndexOfValueType(ref Unsafe.As<char, short>(ref searchSpace), (short)value, length);\t=> Il2Wasm.Runtime.TextScan.IndexOfChar(ref searchSpace, value, length);");
             sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/String.Manipulation.cs\tif (Vector128.IsHardwareAccelerated && source.Length >= Vector128<ushort>.Count * 2)\tif (source.Length >= 16)");
-            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/String.Manipulation.cs\tMakeSeparatorListVectorized(source, ref sepListBuilder, sep0, sep1, sep2);\tCs2Wasm.Runtime.TextScan.Separators(source, ref sepListBuilder, sep0, sep1, sep2);");
-            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Text/Ascii.CaseConversion.cs\tif (!conversionIsWidthPreserving && !Vector128.IsHardwareAccelerated)\tif (sizeof(TFrom) == 2 && sizeof(TTo) == 2) i = Cs2Wasm.Runtime.TextScan.ChangeCase16((int)pSrc, (int)pDest, (int)elementCount, conversionIsToUpper); if (!conversionIsWidthPreserving && !Vector128.IsHardwareAccelerated)");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/String.Manipulation.cs\tMakeSeparatorListVectorized(source, ref sepListBuilder, sep0, sep1, sep2);\tIl2Wasm.Runtime.TextScan.Separators(source, ref sepListBuilder, sep0, sep1, sep2);");
+            sb.AppendLine("edit\tsrc/libraries/System.Private.CoreLib/src/System/Text/Ascii.CaseConversion.cs\tif (!conversionIsWidthPreserving && !Vector128.IsHardwareAccelerated)\tif (sizeof(TFrom) == 2 && sizeof(TTo) == 2) i = Il2Wasm.Runtime.TextScan.ChangeCase16((int)pSrc, (int)pDest, (int)elementCount, conversionIsToUpper); if (!conversionIsWidthPreserving && !Vector128.IsHardwareAccelerated)");
             // resource keys are not used for messages (System.Resources.UseSystemResourceKeys is off, as by default)
             sb.AppendLine("substitute	method	System.SR	System.Boolean UsingResourceKeys()	false");
             // a WASM worker has no processor number: the thread's id stands for it (a hint, as in .NET)
-            sb.AppendLine("substitute	method	System.Threading.Thread	System.Int32 GetCurrentProcessorId()	=>Cs2Wasm.Runtime.Rt.CurrentProcessorId");
+            sb.AppendLine("substitute	method	System.Threading.Thread	System.Int32 GetCurrentProcessorId()	=>Il2Wasm.Runtime.Rt.CurrentProcessorId");
             // enum formatting over the compiler's enum tables (Boundary/EnumFormat.cs), not a copy per storage type
-            sb.AppendLine("substitute	method	System.Enum	System.String ToString()	=>Cs2Wasm.Runtime.EnumFormat.ToString");
-            sb.AppendLine("substitute	method	System.Enum	System.String ToString(System.String)	=>Cs2Wasm.Runtime.EnumFormat.ToString");
-            sb.AppendLine("substitute	method	System.Enum	System.Boolean System.ISpanFormattable.TryFormat(System.Span`1,System.Int32&,System.ReadOnlySpan`1,System.IFormatProvider)	=>Cs2Wasm.Runtime.EnumFormat.TryFormat");
+            sb.AppendLine("substitute	method	System.Enum	System.String ToString()	=>Il2Wasm.Runtime.EnumFormat.ToString");
+            sb.AppendLine("substitute	method	System.Enum	System.String ToString(System.String)	=>Il2Wasm.Runtime.EnumFormat.ToString");
+            sb.AppendLine("substitute	method	System.Enum	System.Boolean System.ISpanFormattable.TryFormat(System.Span`1,System.Int32&,System.ReadOnlySpan`1,System.IFormatProvider)	=>Il2Wasm.Runtime.EnumFormat.TryFormat");
         }
-        // the trimmer's substitutions that apply with cs2wasm's features: method bodies the compiler replaces
+        // the trimmer's substitutions that apply with il2wasm's features: method bodies the compiler replaces
         // (`stub`: an empty body, or the value), fields with a fixed value
         foreach (var x in substitutionFiles.Distinct().Where(File.Exists))
             foreach (var t in XDocument.Load(x).Descendants("type"))

@@ -1,4 +1,4 @@
-// cs2wasm's debug sections read in a browser: host/engine.mjs's debugInfo and its helpers, as they are there (that
+// il2wasm's debug sections read in a browser: host/engine.mjs's debugInfo and its helpers, as they are there (that
 // file imports Node's modules, so a page cannot load it; this copy is kept in step by tests/Godot/proof5_hello2d/
 // check/browser.mjs, which fails when the two differ).
 function readU32(bytes, pos) {
@@ -35,7 +35,7 @@ function readName(bytes, pos) {
   return s;
 }
 
-/** Reads cs2wasm's custom sections: frame names per function index, and the code-offset line table. What a stack
+/** Reads il2wasm's custom sections: frame names per function index, and the code-offset line table. What a stack
  * needs is found when it is asked for: a name is decoded when a frame with it is shown (a large module has a hundred
  * thousand, a stack some tens), and the tables are numbers in typed arrays. A program's first throw pays for this. */
 export function debugInfo(module) {
@@ -56,7 +56,7 @@ export function debugInfo(module) {
   // frames: a bit per function index, set for .NET frames; strings; a name made of strings for some functions
   let fb = null, visibleAt = 0, count = 0;
   const strStart = [], strs = [], shapeAt = new Map(), lenders = new Set();
-  for (const sec of WebAssembly.Module.customSections(module, 'cs2wasm.frames')) {
+  for (const sec of WebAssembly.Module.customSections(module, 'il2wasm.frames')) {
     const b = unpackSection(new Uint8Array(sec)), p = { i: 0 };
     fb = b;
     count = readU32(b, p);
@@ -102,7 +102,7 @@ export function debugInfo(module) {
   const readLines = () => {
     const files = [];
     let offs = new Int32Array(0), fileOf = new Int32Array(0), lineOf = new Int32Array(0), n = 0;
-    for (const sec of WebAssembly.Module.customSections(module, 'cs2wasm.lines')) {
+    for (const sec of WebAssembly.Module.customSections(module, 'il2wasm.lines')) {
       const b = new Uint8Array(sec), p = { i: 0 };
       const nf = readU32(b, p);
       for (let k = 0; k < nf; k++) files.push(readName(b, p));
@@ -130,7 +130,7 @@ export function debugInfo(module) {
   let ib = null, scopeParent = new Int32Array(0), scopeName = new Int32Array(0), scopeFile = new Int32Array(0), scopeLine = new Int32Array(0);
   let inlineOff = new Int32Array(0), inlineScope = new Int32Array(0);
   const inNameStart = [], inNames = [], inFileStart = [], inFiles = [];
-  for (const sec of WebAssembly.Module.customSections(module, 'cs2wasm.inline')) {
+  for (const sec of WebAssembly.Module.customSections(module, 'il2wasm.inline')) {
     const b = unpackSection(new Uint8Array(sec)), p = { i: 0 };
     ib = b;
     for (let k = readU32(b, p); k > 0; k--) { inNameStart.push(p.i); skipName(b, p); }

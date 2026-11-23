@@ -2,7 +2,7 @@
 // cut, so the list's storage moves them: Buffer.Memmove; a tree with parent links; a slot only ever stored null)
 // and hands the main thread one result object through an array its lambda captures. The worlds are each thread's
 // own; the results are every thread's. Whatever the interleaving, the sums are the same.
-// CS2WASM_SHARING_NONE=1 takes no object for one another thread can reach: with CS2WASM_SHARE_CHECK=1 a result made
+// IL2WASM_SHARING_NONE=1 takes no object for one another thread can reach: with IL2WASM_SHARE_CHECK=1 a result made
 // by a worker stops the program when the main thread counts it (tools/thread-escape-breaks.sh).
 using System;
 using System.Collections.Generic;

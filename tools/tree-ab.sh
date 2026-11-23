@@ -3,7 +3,7 @@
 # tools/ab-switch.sh for tools/tree-build.cs (the build and the drop of the scene tree), tools/tree-frame.cs (an
 # ordinary frame by phase), tools/tree-parts.cs (the rebuild in the scene) and tools/tree-node.cs (a node by its
 # steps). One command with no argument that holds a space, for tools/homelab.sh:
-#   bash tools/homelab.sh <branch> bash tools/tree-ab.sh CS2WASM_NO_UNLINK_SKIP=1 CS2WASM_NO_PLAIN_PARTS=1,CS2WASM_NO_PLAIN_PARENTS=1
+#   bash tools/homelab.sh <branch> bash tools/tree-ab.sh IL2WASM_NO_UNLINK_SKIP=1 IL2WASM_NO_PLAIN_PARTS=1,IL2WASM_NO_PLAIN_PARENTS=1
 #   ROUNDS=5 (rounds of each program), PROGRAMS="tree-build tree-frame" (which)
 cd "$(dirname "$0")/.."
 for s in "$@"; do

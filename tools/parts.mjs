@@ -1,9 +1,9 @@
 // A by-phase tool (tools/<name>.cs with a public static Parts.Run() and an entry "parts") on both sides, side by side:
-// cs2wasm's module and NativeAOT-LLVM's WebAssembly (tools/parts-naot-wasm), each in its own Node process, in turn,
+// il2wasm's module and NativeAOT-LLVM's WebAssembly (tools/parts-naot-wasm), each in its own Node process, in turn,
 // N times; per row the lowest "mid" (the mean of the middle half of the frames) over the runs, and the range; then
 // the lowest p99.
 //   node tools/parts.mjs [--runs N] [--no-build] [--js-young MB] [--env NAME=VALUE]... <name>      (name: colstr-parts)
-// --env: an environment variable for cs2wasm's compile (a CS2WASM_NO_* switch); the module is then built beside the
+// --env: an environment variable for il2wasm's compile (an IL2WASM_NO_* switch); the module is then built beside the
 // plain one and shown as a third column.
 // NativeAOT's side needs the Emscripten SDK 3.1.56 (EMSDK, or C:/tools/emsdk); from Git Bash, MSYS_NO_PATHCONV=1.
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -37,8 +37,8 @@ if (!existsSync(aotJs) || statSync(aotJs).mtimeMs < statSync(src).mtimeMs) {
   if (nd) env.EMSDK_NODE = join(nd, process.platform === 'win32' ? 'node.exe' : 'bin/node');
   execFileSync('dotnet', ['publish', join(root, 'tools', 'parts-naot-wasm', 'parts-naot-wasm.csproj'), '-c', 'Release', '-o', aotDir, `-p:Part=${name}`, '-v', 'q', '--nologo', '-nowarn:CS0649'], { stdio: ['ignore', 'ignore', 'inherit'], env });
 }
-const cli = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
-if (!args.includes('--no-build')) execFileSync('dotnet', ['build', join(root, 'src', 'Cs2Wasm.Cli'), '-c', 'Release', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
+const cli = join(root, 'src', 'Il2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'il2wasm.exe' : 'il2wasm');
+if (!args.includes('--no-build')) execFileSync('dotnet', ['build', join(root, 'src', 'Il2Wasm.Cli'), '-c', 'Release', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
 const wasm = join(out, 'parts.wasm');
 execFileSync(cli, [src, '-o', wasm], { stdio: ['ignore', 'ignore', 'ignore'] });
 let wasm2 = null;
@@ -48,7 +48,7 @@ if (envs.length) {
 }
 
 const sides = [['NativeAOT', () => spawnSync(process.execPath, [...nodeFlags, aotJs], { encoding: 'utf8', cwd: aotDir })],
-  ['cs2wasm', () => spawnSync(process.execPath, [...nodeFlags, join(root, 'host', 'run.mjs'), wasm, 'parts'], { encoding: 'utf8' })]];
+  ['il2wasm', () => spawnSync(process.execPath, [...nodeFlags, join(root, 'host', 'run.mjs'), wasm, 'parts'], { encoding: 'utf8' })]];
 if (wasm2) sides.push([envs.join(' '), () => spawnSync(process.execPath, [...nodeFlags, join(root, 'host', 'run.mjs'), wasm2, 'parts'], { encoding: 'utf8' })]);
 const rows = [], data = new Map();
 for (let r = 0; r < runs; r++)
@@ -71,6 +71,6 @@ const cell = (v) => (v ? `${Math.min(...v)}`.padStart(7) + ` (${Math.min(...v)}-
 console.log(`${'ns, mid: lowest (range)'.padEnd(36)} ${sides.map(([s]) => s.padEnd(22)).join(' ')} ratio    p99: lowest, ${sides.map(([s]) => s).join(' / ')}`);
 for (const key of rows) {
   const d = data.get(key);
-  const a = Math.min(...d.NativeAOT), w = Math.min(...d.cs2wasm);
+  const a = Math.min(...d.NativeAOT), w = Math.min(...d.il2wasm);
   console.log(`${key.padEnd(36)} ${sides.map(([s]) => cell(d[s])).join(' ')} ${(a ? (w / a).toFixed(2) + 'x' : '').padEnd(8)} ${d.p99 ? sides.map(([s]) => `${Math.min(...d.p99[s])}`.padStart(7)).join(' /') : ''}${d.differs ? '   CHECKSUM DIFFERS' : ''}`);
 }

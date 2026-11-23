@@ -16,7 +16,7 @@ static class Program
         // (a directory of its own: the suite runs the program checked and as shipped at once, and .NET beside them.
         // Not from Guid.NewGuid: in a module it is seeded by the engine's seed, the same in every run by design (SPEC
         // section 7.4), so two runs made the same directory. The monotonic clock differs between runs)
-        string dir = "cs2wasm-070-files-" + System.Diagnostics.Stopwatch.GetTimestamp().ToString("x") + "-" + Environment.TickCount64.ToString("x");
+        string dir = "il2wasm-070-files-" + System.Diagnostics.Stopwatch.GetTimestamp().ToString("x") + "-" + Environment.TickCount64.ToString("x");
         if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         Directory.CreateDirectory(dir);
         Directory.CreateDirectory(Path.Combine(dir, "sub"));

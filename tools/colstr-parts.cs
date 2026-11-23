@@ -1,8 +1,8 @@
-// The collections and strings scenes of tools/frames.mjs by phase, for both sides (cs2wasm, and NativeAOT-LLVM through
+// The collections and strings scenes of tools/frames.mjs by phase, for both sides (il2wasm, and NativeAOT-LLVM through
 // tools/parts-naot-wasm, whose Main calls Parts.Run): each frame does what the scene's frame does, in the scene's
 // order and with the scene's generator, with a timestamp between the phases; per phase the mean of the middle half of the 6,000 measured frames
 // ("mid": the clock's step is 100 ns, a median is a multiple of it), the median, the mean and p99, in nanoseconds. "clock" is two timestamps with nothing between them (what one costs).
-//   cs2wasmc tools/colstr-parts.cs -o cp.wasm   then   node host/run.mjs cp.wasm parts
+//   il2wasm tools/colstr-parts.cs -o cp.wasm   then   node host/run.mjs cp.wasm parts
 //   dotnet publish tools/parts-naot-wasm -c Release -o <dir> -p:Part=colstr-parts   then   node <dir>/parts-naot.js
 using System;
 using System.Collections.Generic;

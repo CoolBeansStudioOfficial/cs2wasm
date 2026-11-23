@@ -2,7 +2,7 @@
 // page's part. It downloads the module and its files (packs: vfs.mjs), makes the shared memory, starts the pool of
 // thread workers and the worker that runs the entry (module-worker.mjs), and resolves with what the run wrote.
 // The page must be cross-origin isolated (shared memory): host/web/server.mjs sends the headers.
-import { memoryLimits } from './cs2wasm-web.mjs';
+import { memoryLimits } from './il2wasm-web.mjs';
 import { openPack, sharePacks } from './vfs.mjs';
 
 /** A URL's bytes, with what the download was: { bytes, transferred (bytes on the wire, by the browser's own
@@ -36,7 +36,7 @@ export async function runModule(options) {
   const pool = options.pool ?? 16, processors = options.processors ?? Math.max(1, Math.min(4, navigator.hardwareConcurrency ?? 1));
   const ctl = new SharedArrayBuffer(4 * 8 * Math.max(pool, 1));
   new Int32Array(ctl).fill(4);
-  const common = { module, memory, shared, ctl, pool, processors, args: ['cs2wasm', ...(options.args ?? [])], env: options.env ?? {}, epoch: performance.timeOrigin, entry: options.entry };
+  const common = { module, memory, shared, ctl, pool, processors, args: ['il2wasm', ...(options.args ?? [])], env: options.env ?? {}, epoch: performance.timeOrigin, entry: options.entry };
   const workers = [];
   let output = '';
   const say = (text, isError) => { output += text; options.onOutput?.(text, isError); };

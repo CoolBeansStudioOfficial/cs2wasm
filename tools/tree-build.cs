@@ -6,8 +6,8 @@
 // first (no growth from 4 to 8); 4 the objects alone, made and let go, no list of them; 5 fan 4, depth 7 (21,845
 // entities, 5,461 with children, a list never grows).
 //   sed "s/const int Variant = 0;/const int Variant = 3;/" tools/tree-build.cs > tb3.cs
-//   cs2wasmc tb3.cs -o tb3.wasm   then   node host/run.mjs tb3.wasm
-// With CS2WASM_DROP_STATS=1 at compile time the runtime prints, at each drop, how often each path of the arena
+//   il2wasm tb3.cs -o tb3.wasm   then   node host/run.mjs tb3.wasm
+// With IL2WASM_DROP_STATS=1 at compile time the runtime prints, at each drop, how often each path of the arena
 // operations ran so far: the difference of two such lines is one build and one drop.
 using System;
 using System.Collections.Generic;

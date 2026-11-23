@@ -1,0 +1,55 @@
+# System.Diagnostics.TraceSource for il2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.
+# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: il2wasm supplies its own)
+# | replaced <path> (an upstream file il2wasm replaces with its own)
+# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for il2wasm's features)
+#   (a value =>Type.Method: the body calls that boundary method) | edit<TAB><path><TAB><text><TAB><replacement> (an exact change to an upstream file)
+define NET
+define NETCOREAPP
+define NET11_0
+define RELEASE
+define NET5_0_OR_GREATER
+define NET6_0_OR_GREATER
+define NET7_0_OR_GREATER
+define NET8_0_OR_GREATER
+define NET9_0_OR_GREATER
+define NET10_0_OR_GREATER
+define NET11_0_OR_GREATER
+define NETCOREAPP1_0_OR_GREATER
+define NETCOREAPP1_1_OR_GREATER
+define NETCOREAPP2_0_OR_GREATER
+define NETCOREAPP2_1_OR_GREATER
+define NETCOREAPP2_2_OR_GREATER
+define NETCOREAPP3_0_OR_GREATER
+define NETCOREAPP3_1_OR_GREATER
+define TRACE
+reference System.Collections
+reference System.Collections.NonGeneric
+reference System.Collections.Specialized
+reference System.ComponentModel.Primitives
+reference System.Threading
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/BooleanSwitch.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/InitializingSwitchEventArgs.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/InitializingTraceSourceEventArgs.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/CorrelationManager.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/DefaultTraceListener.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/DiagnosticsConfiguration.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/SeverityFilter.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/SourceFilter.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/SourceLevels.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/SourceSwitch.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/Switch.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/Trace.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/TraceEventCache.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/TraceEventType.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/TraceFilter.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/TraceInternal.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/TraceLevel.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/TraceListener.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/TraceListeners.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/TraceOptions.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/TraceSource.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/TraceSwitch.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/TraceUtils.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/SwitchAttribute.cs
+file src/libraries/System.Diagnostics.TraceSource/src/System/Diagnostics/SwitchLevelAttribute.cs
+file src/libraries/Common/src/System/SR.cs

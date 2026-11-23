@@ -3,7 +3,7 @@
 // self-hosted compiler: its libraries stay parsed and bound from build to build, as in one process they do under
 // `--watch` (Library.s_built), so a later build of a small program does not read them again.
 //
-//   CS2WASM_SNAPSHOT=<file>   node host/run.mjs module.wasm main -- arguments...
+//   IL2WASM_SNAPSHOT=<file>   node host/run.mjs module.wasm main -- arguments...
 //
 // No snapshot (or one that no longer holds): the module runs from its start, and when its entry has returned 0 its
 // memory and globals are written to the file. A snapshot that holds: the memory and globals are put back in place of
@@ -22,16 +22,16 @@
 // (a library the earlier programs did not need); otherwise every build starts from the same state.
 // What is written is the memory as the entry left it, the last build's own leftovers with the libraries: after a
 // large program the snapshot is large, and every later run starts at that size.
-//   CS2WASM_SNAPSHOT_KEEP=1: a snapshot that holds is never written again (one made with a small program stays
+//   IL2WASM_SNAPSHOT_KEEP=1: a snapshot that holds is never written again (one made with a small program stays
 //   small; a program that needs more libraries then reads them on every run)
-//   CS2WASM_SNAPSHOT_WHY=1: why a snapshot was not used, and what was written, on stderr
+//   IL2WASM_SNAPSHOT_WHY=1: why a snapshot was not used, and what was written, on stderr
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 
 const MAGIC = 'CS2WSNP2';
 const PAGE = 65536;
-const why = (s) => { if (process.env.CS2WASM_SNAPSHOT_WHY === '1') process.stderr.write(`[snapshot] ${s}\n`); };
+const why = (s) => { if (process.env.IL2WASM_SNAPSHOT_WHY === '1') process.stderr.write(`[snapshot] ${s}\n`); };
 
 /** A path's state as a snapshot records it: absent, a directory (its time of change: an entry added or removed), or
  * a file (size and time of change). */
@@ -71,7 +71,7 @@ function argumentPaths(args, root) {
  * is none that holds, call `init`), and `save(instance, memory, state)` when the entry has returned.
  */
 export function openSnapshot(file, moduleBytes, programArgs) {
-  const root = process.env.CS2WASM_FS_ROOT ?? process.cwd();
+  const root = process.env.IL2WASM_FS_ROOT ?? process.cwd();
   const moduleHash = createHash('sha256').update(moduleBytes).digest('hex');
   const envHash = createHash('sha256').update(envBlock()).digest('hex');
   const named = argumentPaths(programArgs, root);
@@ -79,7 +79,7 @@ export function openSnapshot(file, moduleBytes, programArgs) {
   // what this run asked the file system about: path -> its signature when first asked; and what it wrote
   const seen = new Map(), written = new Set();
   let open = 0, unsafe = null, covered = new Map();
-  globalThis.__cs2wasmFsWatch = {
+  globalThis.__il2wasmFsWatch = {
     read: (p) => { if (!seen.has(p) && !covered.has(p)) seen.set(p, signature(p)); },
     write: (p) => { written.add(p); },
     opened: () => { open++; }, closed: () => { open--; },
@@ -149,8 +149,8 @@ export function openSnapshot(file, moduleBytes, programArgs) {
       const restored = header != null;
       const fresh = [...seen].filter(([p]) => !written.has(p) && !isNamed(p));
       if (restored && fresh.length === 0) return;
-      // (CS2WASM_SNAPSHOT_KEEP=1: a snapshot that holds is never written again)
-      if (restored && process.env.CS2WASM_SNAPSHOT_KEEP === '1') { why(`not written again (CS2WASM_SNAPSHOT_KEEP): ${fresh.length} paths it does not cover were read`); return; }
+      // (IL2WASM_SNAPSHOT_KEEP=1: a snapshot that holds is never written again)
+      if (restored && process.env.IL2WASM_SNAPSHOT_KEEP === '1') { why(`not written again (IL2WASM_SNAPSHOT_KEEP): ${fresh.length} paths it does not cover were read`); return; }
       const no = state.failed ? 'the entry failed' : state.result !== 0 && state.result !== undefined ? `the entry returned ${state.result}` : state.threads ? 'the module started a thread'
         : state.io ? 'the module uses HTTP' : open !== 0 ? 'a file is open' : unsafe;
       if (no) { why(`not written: ${no}`); return; }

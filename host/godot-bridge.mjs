@@ -1,4 +1,4 @@
-// The `godot.*` imports of a module built from Godot C# scripts (stock GodotSharp's NativeFuncs, as cs2wasm compiles
+// The `godot.*` imports of a module built from Godot C# scripts (stock GodotSharp's NativeFuncs, as il2wasm compiles
 // them), over an engine that is not in the module's address space (SPEC section 10, proof 5). The engine's values
 // that live on the module's side (strings, string names, node paths) are kept here; everything that is the engine's
 // own (objects, method calls, singletons, printing) goes to a backend:

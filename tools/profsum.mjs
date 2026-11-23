@@ -1,5 +1,5 @@
 // Sums the self time of V8 CPU profiles (node --cpu-prof, one per thread) by function, and by a coarse category of
-// cs2wasm's runtime: counting (retain/release, sharing), dispatch stubs, allocation, locks and waits, the rest.
+// il2wasm's runtime: counting (retain/release, sharing), dispatch stubs, allocation, locks and waits, the rest.
 // usage: node tools/profsum.mjs <dir of .cpuprofile> [top N]
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';

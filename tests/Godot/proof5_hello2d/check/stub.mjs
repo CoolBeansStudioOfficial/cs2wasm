@@ -1,11 +1,11 @@
 // Proof 5, the step before the browser (node tools/proof5.mjs stub [--module game.wasm] [--project dir]): the game's scripts compiled
-// by the .NET-hosted cs2wasmc against stock GodotSharp with Godot's source generators (as proof 3), run in Node on
+// by the .NET-hosted il2wasm against stock GodotSharp with Godot's source generators (as proof 3), run in Node on
 // host/godot-bridge.mjs with the oracle's log replayed (host/godot-replay.mjs). The module's engine calls must be the
 // oracle's, line for line.
 import { existsSync, readFileSync, writeFileSync, readdirSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { root, project, outDir, api, godotSharp, generators, run, frames } from './common.mjs';
-import { cs2wasmImports, threadImports } from '../../../../host/engine.mjs';
+import { il2wasmImports, threadImports } from '../../../../host/engine.mjs';
 import { startIo } from '../../../../host/http.mjs';
 import { GodotBoundary, signatures, comparable } from '../../../../host/godot-bridge.mjs';
 import { ReplayBackend, ReplayMismatch, parseScene, playScene } from '../../../../host/godot-replay.mjs';
@@ -21,10 +21,10 @@ export function buildArgs(px = (s) => s) {
 
 export function compilerExe() {
   for (const c of ['Release', 'Debug']) {
-    const p = join(root, 'src', 'Cs2Wasm.Cli', 'bin', c, 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
+    const p = join(root, 'src', 'Il2Wasm.Cli', 'bin', c, 'net11.0', process.platform === 'win32' ? 'il2wasm.exe' : 'il2wasm');
     if (existsSync(p)) return p;
   }
-  throw new Error('no cs2wasmc: dotnet build src/Cs2Wasm.Cli -c Release');
+  throw new Error('no il2wasm: dotnet build src/Il2Wasm.Cli -c Release');
 }
 
 /** Compares a log with the oracle's: the lines that differ (at most 20), as text; '' when equal. */
@@ -43,8 +43,8 @@ export async function stub(args) {
   if (!wasm) {
     wasm = join(outDir, 'game-net.wasm');
     const t0 = performance.now();
-    if (run(compilerExe(), [...buildArgs(), '-o', wasm]) !== 0) { console.error('stub: cs2wasmc failed'); return 1; }
-    console.log(`stub: compiled by the .NET-hosted cs2wasmc in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+    if (run(compilerExe(), [...buildArgs(), '-o', wasm]) !== 0) { console.error('stub: il2wasm failed'); return 1; }
+    console.log(`stub: compiled by the .NET-hosted il2wasm in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
   }
   const expected = (existsSync(join(dir, name)) ? readFileSync(join(dir, name), 'utf8') : '').replaceAll('\r\n', '\n').split('\n');
   if (expected.at(-1) === '') expected.pop();
@@ -57,7 +57,7 @@ export async function stub(args) {
   };
   const backend = new ReplayBackend(expected, parseScene(readFileSync(join(dir, 'main.tscn'), 'utf8')), out);
   const bridge = new GodotBoundary(module, signatures(JSON.parse(readFileSync(api, 'utf8'))), backend, { log: (l) => lines.push(l) });
-  const imports = { env: { memory }, cs2wasm: { ...cs2wasmImports(module, () => memory, out), ...threadImports(module, memory, out, () => {}) }, godot: bridge.imports() };
+  const imports = { env: { memory }, il2wasm: { ...il2wasmImports(module, () => memory, out), ...threadImports(module, memory, out, () => {}) }, godot: bridge.imports() };
   startIo(module, memory);
   const instance = new WebAssembly.Instance(module, imports);
   bridge.attach(instance, memory);

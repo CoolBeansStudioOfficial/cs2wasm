@@ -1,8 +1,8 @@
-// The benchmarks (tools/bench/Programs.cs) built by cs2wasm with and without compiler switches, run in turn: per
+// The benchmarks (tools/bench/Programs.cs) built by il2wasm with and without compiler switches, run in turn: per
 // benchmark and build the best time over the rounds (each run's own best of five) and every round's, in ms. No
 // NativeAOT side: runs where there is no Emscripten (the homelab), for a change's own effect.
 //   node tools/bench-ab.mjs [--rounds N] <name>=<SWITCH=1,...> ...
-//   node tools/bench-ab.mjs --rounds 5 on= off=CS2WASM_NO_FIELD_HOIST=1
+//   node tools/bench-ab.mjs --rounds 5 on= off=IL2WASM_NO_FIELD_HOIST=1
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -16,7 +16,7 @@ const builds = args.filter((a, i) => a.includes('=') && !a.startsWith('--') && i
 const out = join(root, 'tests', 'out', 'bench-ab');
 mkdirSync(out, { recursive: true });
 const src = join(root, 'tools', 'bench');
-const cli = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
+const cli = join(root, 'src', 'Il2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'il2wasm.exe' : 'il2wasm');
 for (const b of builds) {
   b.wasm = join(out, `bench-${b.name}.wasm`);
   execFileSync(cli, [join(src, 'Programs.cs'), join(src, 'WasmMain.cs'), '-o', b.wasm], { stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, ...b.env } });

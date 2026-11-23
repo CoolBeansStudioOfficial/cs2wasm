@@ -1,12 +1,12 @@
 // HTTP for a module through the host's fetch (SPEC section 8: every module gets HTTP as .NET's browser target does):
-// the cs2wasm.http_* imports of System.Net.Http's browser handler (src/Cs2Wasm/Upstream/System.Net.Http/Boundary/
+// the il2wasm.http_* imports of System.Net.Http's browser handler (src/Il2Wasm/Upstream/System.Net.Http/Boundary/
 // BrowserHttpInterop.cs).
 //
 // A fetch settles on the event loop of the JavaScript thread that started it, and a module's threads seldom return to
 // theirs (a Task.Wait spins or waits). So every fetch lives in one I/O worker (io.mjs), plain JavaScript, whose event
 // loop is always free: each thread's http_* import is a synchronous call into it over shared memory (a request slot,
 // Atomics.wait for the answer; the worker reads and writes the module's memory itself). A settled fetch is a
-// completion in a shared ring; the module's pump thread (Cs2Wasm.Runtime.HostOps) takes them through
+// completion in a shared ring; the module's pump thread (Il2Wasm.Runtime.HostOps) takes them through
 // host_next_completion and completes the operations' tasks.
 //
 // The control block (Int32 words): [0] request count (the worker waits on it), [1] completions written,
@@ -22,12 +22,12 @@ export const IO = {
 
 /** The process's I/O state (shared with every thread: worker.mjs). */
 export function ioShared() {
-  return globalThis.__cs2wasmIo ??= { ctl: new SharedArrayBuffer(4 * (IO.SLOTS + IO.SLOT_WORDS * IO.SLOT_COUNT)) };
+  return globalThis.__il2wasmIo ??= { ctl: new SharedArrayBuffer(4 * (IO.SLOTS + IO.SLOT_WORDS * IO.SLOT_COUNT)) };
 }
 
 /** Starts the I/O worker for a module that imports HTTP (once, on the engine thread). */
 export function startIo(module, memory) {
-  if (!WebAssembly.Module.imports(module).some((i) => i.module === 'cs2wasm' && i.name === 'http_fetch')) return;
+  if (!WebAssembly.Module.imports(module).some((i) => i.module === 'il2wasm' && i.name === 'http_fetch')) return;
   const shared = ioShared();
   if (shared.started) return;
   shared.started = true;

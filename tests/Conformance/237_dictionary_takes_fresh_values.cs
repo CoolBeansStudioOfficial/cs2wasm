@@ -5,7 +5,7 @@
 // TryAdd of one: false; a key whose GetHashCode or Equals throws) dropped and finalized; a value the caller still
 // uses afterwards (not fresh) counted as before; the result of the assignment used. Every item has a finalizer:
 // what is left is counted after each part. MiniMap's TryInsert stores its value in two places in a loop, which
-// is why the rule asks for a return after a store in a loop: with CS2WASM_OWNED_INSERT_BREAK=1 (the rule not asked
+// is why the rule asks for a return after a store in a loop: with IL2WASM_OWNED_INSERT_BREAK=1 (the rule not asked
 // for, a program's own TryInsert taken as Dictionary's) the "mini" lines differ.
 using System;
 using System.Collections.Generic;

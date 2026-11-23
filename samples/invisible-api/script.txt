@@ -1,4 +1,4 @@
-# The scripted session the check plays (driver.mjs; tests/Cs2Wasm.Tests/InvisibleCheck.cs plays it under .NET too).
+# The scripted session the check plays (driver.mjs; tests/Il2Wasm.Tests/InvisibleCheck.cs plays it under .NET too).
 join 1
 join 2
 join 9

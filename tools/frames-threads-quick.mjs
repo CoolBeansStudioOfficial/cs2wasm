@@ -14,7 +14,7 @@ const flags = ['--min-semi-space-size=32', '--max-semi-space-size=32'];
 for (const scene of scenes) {
   let best = null;
   for (let i = 0; i < runs; i++) {
-    const w = spawnSync(process.execPath, [...flags, join(root, 'host', 'run.mjs'), wasm, scene], { encoding: 'utf8', env: { ...process.env, CS2WASM_PRINT_MEMORY: '1' }, maxBuffer: 1 << 27 });
+    const w = spawnSync(process.execPath, [...flags, join(root, 'host', 'run.mjs'), wasm, scene], { encoding: 'utf8', env: { ...process.env, IL2WASM_PRINT_MEMORY: '1' }, maxBuffer: 1 << 27 });
     const m = /^frames (\S+) (.*)$/m.exec(w.stdout);
     if (w.status !== 0 || !m) { console.error(w.stdout.slice(-500), w.stderr.slice(-2000)); process.exit(1); }
     const t = m[2].split(',').map(Number).sort((a, b) => a - b);

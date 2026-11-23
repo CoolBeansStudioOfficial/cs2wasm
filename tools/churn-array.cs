@@ -2,7 +2,7 @@
 // (what the list's indexers come to once their checks and loads are shared: the array read once before the loop, no
 // size check beside the array's own, no version), for both sides: median ns a frame of each, 6,000 frames after
 // 1,000. The difference is the most a compiler can take out of the list's loop without touching the store itself.
-//   cs2wasmc tools/churn-array.cs -o ca.wasm   then   node host/run.mjs ca.wasm
+//   il2wasm tools/churn-array.cs -o ca.wasm   then   node host/run.mjs ca.wasm
 // NativeAOT-LLVM: tools/frames-naot-wasm's project with this file in place of Frames.cs, the attribute on WasmMain
 // taken out (its export would be the module's main), and a Main that calls ChurnArray.Go.
 using System;

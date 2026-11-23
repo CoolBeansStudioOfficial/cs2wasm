@@ -3,7 +3,7 @@ using System.Xml.Linq;
 
 // CoreLibManifest roslyn <roslyn-root> <upstream-dir>: manifests for Roslyn's compiler libraries (Microsoft.CodeAnalysis
 // and Microsoft.CodeAnalysis.CSharp, section 9: the compiler compiles itself, Roslyn included), from dotnet/roslyn's
-// projects at the version cs2wasm is built with. Their files are relative to the Roslyn sources (`root roslyn-<version>`),
+// projects at the version il2wasm is built with. Their files are relative to the Roslyn sources (`root roslyn-<version>`),
 // the projects' default globs plus their shared projects; the resource classes are generated (constants, and a
 // ResourceManager over the same table for lookups by name), with the InternalsVisibleTo the build would write.
 static class RoslynLibraries
@@ -29,7 +29,7 @@ static class RoslynLibraries
             var doc = XDocument.Load(Path.Combine(projDir, project));
             foreach (var dc in doc.Descendants("DefineConstants"))
                 defines.AddRange(dc.Value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Where(d => !d.StartsWith('$')));
-            // the SDK's default glob (the generator's outputs under Generated/ included: cs2wasm does not run generators)
+            // the SDK's default glob (the generator's outputs under Generated/ included: il2wasm does not run generators)
             files.AddRange(Directory.EnumerateFiles(projDir, "*.cs", SearchOption.AllDirectories)
                 .Where(f => !f.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar) && !f.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar)));
             // (PerformanceSensitiveAttribute.cs is removed only where an analyzer package supplies the attribute)
@@ -48,7 +48,7 @@ static class RoslynLibraries
             var outDir = Path.Combine(upstream, lib);
             Directory.CreateDirectory(Path.Combine(outDir, "Generated"));
             var sb = new StringBuilder();
-            sb.AppendLine($"# {lib} for cs2wasm, from dotnet/roslyn's project ({Version}, {Commit}) by tools/CoreLibManifest roslyn.");
+            sb.AppendLine($"# {lib} for il2wasm, from dotnet/roslyn's project ({Version}, {Commit}) by tools/CoreLibManifest roslyn.");
             sb.AppendLine("# root <dir> (the sources' root under the cache) | define <symbol> | file <path>");
             sb.AppendLine($"root roslyn-{Version}");
             sb.AppendLine("nullable enable");

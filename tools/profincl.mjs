@@ -1,5 +1,5 @@
 // A profile's time under a function (itself and everything it calls), split by what it spent it in: for one phase of
-// a run (the final pass of the self-hosted compiler: `Cs2Wasm.Wasm.WasmModule.Encode`), which functions took the time.
+// a run (the final pass of the self-hosted compiler: `Il2Wasm.Wasm.WasmModule.Encode`), which functions took the time.
 // usage: node tools/profincl.mjs <profile dir> <function name contains> [lines]
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';

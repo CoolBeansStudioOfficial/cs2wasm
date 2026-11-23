@@ -1,5 +1,5 @@
 // A stub Godot engine for modules built from Godot scripts (SPEC section 10, proof 3): it supplies the `godot.*`
-// imports (stock GodotSharp's NativeFuncs, as cs2wasm compiles them) with just enough of the engine for a Node2D
+// imports (stock GodotSharp's NativeFuncs, as il2wasm compiles them) with just enough of the engine for a Node2D
 // script, logs each engine call (method-bind ptrcalls and prints) in the format of the oracle's call log
 // (tests/Godot/proof3_node2d/Oracle/CallLog.cs), and drives the script as the engine does: load the script, create
 // the instance on a native Node2D, _ready, then _process every frame until the tree quits, then shut down.

@@ -5,7 +5,7 @@
 // it is not simply the stored value: a place narrower than the value (a byte, a short, a char, a bool: the read
 // sees what fits), a float that is a NaN, the variable assigned inside the stored value's own code or between the
 // store and the read (the read is of another object), a store between that overlaps the place (explicit layout) or
-// goes through another variable, a ref or a pointer to it, a call between. CS2WASM_SAME_BASE_WITHOUT=overlap, other,
+// goes through another variable, a ref or a pointer to it, a call between. IL2WASM_SAME_BASE_WITHOUT=overlap, other,
 // calls, assigned, value or address: a line each prints something else.
 using System;
 using System.Runtime.CompilerServices;

@@ -1,0 +1,44 @@
+# System.Memory for il2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.
+# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: il2wasm supplies its own)
+# | replaced <path> (an upstream file il2wasm replaces with its own)
+# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for il2wasm's features)
+#   (a value =>Type.Method: the body calls that boundary method) | edit<TAB><path><TAB><text><TAB><replacement> (an exact change to an upstream file)
+define NET
+define NETCOREAPP
+define NET11_0
+define RELEASE
+define NET5_0_OR_GREATER
+define NET6_0_OR_GREATER
+define NET7_0_OR_GREATER
+define NET8_0_OR_GREATER
+define NET9_0_OR_GREATER
+define NET10_0_OR_GREATER
+define NET11_0_OR_GREATER
+define NETCOREAPP1_0_OR_GREATER
+define NETCOREAPP1_1_OR_GREATER
+define NETCOREAPP2_0_OR_GREATER
+define NETCOREAPP2_1_OR_GREATER
+define NETCOREAPP2_2_OR_GREATER
+define NETCOREAPP3_0_OR_GREATER
+define NETCOREAPP3_1_OR_GREATER
+define MAKE_ABW_PUBLIC
+file src/libraries/System.Memory/src/System/SequencePosition.cs
+file src/libraries/System.Memory/src/System/ThrowHelper.cs
+file src/libraries/System.Memory/src/System/Buffers/ArrayMemoryPool.cs
+file src/libraries/System.Memory/src/System/Buffers/ArrayMemoryPool.ArrayMemoryPoolBuffer.cs
+file src/libraries/System.Memory/src/System/Buffers/BuffersExtensions.cs
+file src/libraries/System.Memory/src/System/Buffers/IBufferWriter.cs
+file src/libraries/System.Memory/src/System/Buffers/MemoryPool.cs
+file src/libraries/System.Memory/src/System/Buffers/ReadOnlySequence.cs
+file src/libraries/System.Memory/src/System/Buffers/ReadOnlySequenceDebugView.cs
+file src/libraries/System.Memory/src/System/Buffers/ReadOnlySequenceSegment.cs
+file src/libraries/System.Memory/src/System/Buffers/ReadOnlySequenceStream.cs
+file src/libraries/System.Memory/src/System/Buffers/ReadOnlySequence.Helpers.cs
+file src/libraries/System.Memory/src/System/Buffers/SequenceReader.cs
+file src/libraries/System.Memory/src/System/Buffers/SequenceReader.Search.cs
+file src/libraries/System.Memory/src/System/Buffers/SequenceReaderExtensions.Binary.cs
+file src/libraries/System.Memory/src/System/Runtime/InteropServices/SequenceMarshal.cs
+file src/libraries/System.Memory/src/System/Text/EncodingExtensions.cs
+file src/libraries/Common/src/System/Buffers/ArrayBufferWriter.cs
+file src/libraries/Common/src/System/Threading/Tasks/CachedCompletedInt32Task.cs
+file src/libraries/Common/src/System/SR.cs

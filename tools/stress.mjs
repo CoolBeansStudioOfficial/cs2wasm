@@ -2,12 +2,12 @@
 // only under load (test 139's leak, 072_http's out of bounds).
 //   node tools/stress.mjs <module.wasm> [--runs n] [--par k] [--expect "text"] [--node-flags "--liftoff-only ..."] [--key-re regex]
 // --key-re: runs are told apart by their output lines that match the regex alone (a module built with a report that
-// differs from run to run, CS2WASM_ARENA_REPORT=1: its addresses), and kept whole all the same.
+// differs from run to run, IL2WASM_ARENA_REPORT=1: its addresses), and kept whole all the same.
 // --node-flags: flags for each run's Node (the engine's tiers, for what only one of them does: tools/grow-race.mjs).
 // A run that exits with an error has its output and whole stderr appended to <module.wasm>.fail.txt at once. At the
 // end the whole output and stderr of every run that differed (from --expect, or from the most frequent output; the
 // first 5 of each distinct output) is written to tests/out/stress-fail/<module>.<time>.txt and printed, so a rare
-// trap's stack is kept whole (a module built with CS2WASM_NAMES=1 gives a stack by name).
+// trap's stack is kept whole (a module built with IL2WASM_NAMES=1 gives a stack by name).
 // Prints each distinct output (stdout, stderr's last lines, exit code) with how often it came; exit code 1 when any
 // run differed from --expect (or, without it, when there was more than one distinct output).
 import { spawn } from 'node:child_process';

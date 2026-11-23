@@ -1,8 +1,8 @@
 // Where a self-hosted compiler that does not end is: runs it on a program under Node's inspector and, if it is still
 // running after --after seconds, pauses it --samples times a second apart and prints each stack (the function names
-// of the module's name section: build the compiler with CS2WASM_NAMES=1 for all of them), then stops it. A run that
+// of the module's name section: build the compiler with IL2WASM_NAMES=1 for all of them), then stops it. A run that
 // ends by itself says how (its exit code, the last of what it wrote) and how long it took.
-//   node tools/selfstack.mjs --self tests/out/selfvar/nohoist.wasm [--after 40] [--samples 5] [--depth 40] [--runs 1] <program.cs> [cs2wasmc options]
+//   node tools/selfstack.mjs --self tests/out/selfvar/nohoist.wasm [--after 40] [--samples 5] [--depth 40] [--runs 1] <program.cs> [il2wasm options]
 import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -26,7 +26,7 @@ const prog = rest.map((a) => (existsSync(a) ? selfPath(resolve(a)) : a));
 if (process.platform === 'win32' && !prog.includes('--pathmap')) prog.push('--pathmap', '/=/');
 const out = join(root, 'tests', 'out', 'selfstack');
 mkdirSync(out, { recursive: true });
-const env = { ...selfEnv(), CS2WASM_REFERENCE_DIR: selfPath(referenceDir()), CS2WASM_CACHE: selfPath(cache), CS2WASM_PROCESSORS: '1' };
+const env = { ...selfEnv(), IL2WASM_REFERENCE_DIR: selfPath(referenceDir()), IL2WASM_CACHE: selfPath(cache), IL2WASM_PROCESSORS: '1' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function once(run) {

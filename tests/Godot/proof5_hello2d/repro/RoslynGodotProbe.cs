@@ -1,8 +1,8 @@
 // Repro (proof 5): what the self-hosted compiler does to GodotSharp's sources when a program references GodotSharp,
-// without the rest of cs2wasmc: Roslyn, compiled by cs2wasm, binds every method body of GodotSharp's sources
-// (GetOperation, as cs2wasmc's FunctionCompiler does). The self-hosted compiler of 2026-11-20 frees memory still in use
+// without the rest of il2wasm: Roslyn, compiled by il2wasm, binds every method body of GodotSharp's sources
+// (GetOperation, as il2wasm's FunctionCompiler does). The self-hosted compiler of 2026-11-20 frees memory still in use
 // on this path (docs/AUDIT.md, proof 5). Build it --checked (freed memory poisoned, never reused) with no threads:
-//   CS2WASM_NO_THREADS=1 cs2wasmc RoslynGodotProbe.cs -r Microsoft.CodeAnalysis.dll -r Microsoft.CodeAnalysis.CSharp.dll
+//   IL2WASM_NO_THREADS=1 il2wasm RoslynGodotProbe.cs -r Microsoft.CodeAnalysis.dll -r Microsoft.CodeAnalysis.CSharp.dll
 //     --checked --max-pages 65536 -o probe.wasm
 //   node host/run.mjs probe.wasm main -- <dir of GodotSharp's sources> <dir of reference assemblies> [first] [count]
 // (paths as the module sees them: host/fs.mjs). Prints how many files and bodies it bound.

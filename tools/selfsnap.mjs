@@ -2,7 +2,7 @@
 // stay parsed and bound from one build to the next. Checks that every module it writes on a snapshot is the
 // .NET-hosted compiler's byte for byte, and times a build from the start, the build that writes the snapshot, and
 // builds on it, in turn with NativeAOT-LLVM's build of the compiler when there is one.
-// usage: node tools/selfsnap.mjs [--self toolchain.wasm] [--rounds 3] [--naot <dir of cs2wasmc-naot.js>] first.cs [other.cs...]
+// usage: node tools/selfsnap.mjs [--self toolchain.wasm] [--rounds 3] [--naot <dir of il2wasm-naot.js>] first.cs [other.cs...]
 //   first.cs: the program whose build writes the snapshot and is timed; the others are then built on that snapshot
 //   (one that needs more libraries reads them and the snapshot is written again), each twice, and the first again.
 //   --node "<options>": also, in each round, a build on the snapshot with these Node options (the engine's tiering
@@ -26,12 +26,12 @@ for (let i = 0; i < args.length; i++) {
   else programs.push(resolve(args[i]));
 }
 if (!existsSync(self) || programs.length === 0) { console.error('usage: node tools/selfsnap.mjs [--self toolchain.wasm] [--rounds n] [--naot dir] first.cs [other.cs...]'); process.exit(2); }
-const exe = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
+const exe = join(root, 'src', 'Il2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'il2wasm.exe' : 'il2wasm');
 const out = join(root, 'tests', 'out', 'selfsnap');
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 const snap = join(out, 'compiler.snap');
-const env = { ...selfEnv(), CS2WASM_REFERENCE_DIR: selfPath(referenceDir()), CS2WASM_CACHE: selfPath(cache), CS2WASM_PROCESSORS: '1', CS2WASM_PRINT_MEMORY: '1' };
+const env = { ...selfEnv(), IL2WASM_REFERENCE_DIR: selfPath(referenceDir()), IL2WASM_CACHE: selfPath(cache), IL2WASM_PROCESSORS: '1', IL2WASM_PRINT_MEMORY: '1' };
 let failed = false;
 const times = {};
 
@@ -68,15 +68,15 @@ function build(kind, label, program, cmd, cmdArgs, extraEnv, quiet) {
 const net = (p) => build('net', `net ${basename(p, '.cs')}`, p, exe, [], {});
 const selfCmd = [join(root, 'host', 'run.mjs'), self, 'main', '--'];
 const cold = (p, n) => build('cold', `from the start ${basename(p, '.cs')} ${n}`, p, 'node', selfCmd, {});
-const tuned = (p, n) => build('snap', `on the snapshot, node ${nodeOptions.join(' ')}, ${basename(p, '.cs')} ${n}`, p, 'node', [...nodeOptions, ...selfCmd], { CS2WASM_SNAPSHOT: snap, CS2WASM_SNAPSHOT_WHY: '1' });
-const warm = (p, n, extra = {}) => build('snap', `on the snapshot ${basename(p, '.cs')} ${n}`, p, 'node', selfCmd, { CS2WASM_SNAPSHOT: snap, CS2WASM_SNAPSHOT_WHY: '1', ...extra });
+const tuned = (p, n) => build('snap', `on the snapshot, node ${nodeOptions.join(' ')}, ${basename(p, '.cs')} ${n}`, p, 'node', [...nodeOptions, ...selfCmd], { IL2WASM_SNAPSHOT: snap, IL2WASM_SNAPSHOT_WHY: '1' });
+const warm = (p, n, extra = {}) => build('snap', `on the snapshot ${basename(p, '.cs')} ${n}`, p, 'node', selfCmd, { IL2WASM_SNAPSHOT: snap, IL2WASM_SNAPSHOT_WHY: '1', ...extra });
 // NativeAOT-LLVM's build of the compiler (as tools/selfhost-ab.sh runs it: the drive under /c)
 function native(p, n) {
   const dir = join(out, 'naot'); mkdirSync(dir, { recursive: true });
   const target = join(dir, 'program.wasm');
   const t0 = performance.now();
-  const r = spawnSync('node', ['cs2wasmc-naot.js', '/c' + selfPath(p), '-o', '/c' + selfPath(target)],
-    { cwd: naot, env: { ...process.env, CS2WASM_CACHE: '/c' + selfPath(cache), CS2WASM_REFERENCE_DIR: '/c' + selfPath(referenceDir()) }, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 600000 });
+  const r = spawnSync('node', ['il2wasm-naot.js', '/c' + selfPath(p), '-o', '/c' + selfPath(target)],
+    { cwd: naot, env: { ...process.env, IL2WASM_CACHE: '/c' + selfPath(cache), IL2WASM_REFERENCE_DIR: '/c' + selfPath(referenceDir()) }, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 600000 });
   const s = (performance.now() - t0) / 1000;
   console.log(`NativeAOT-LLVM ${basename(p, '.cs')} ${n}: ${s.toFixed(2)} s${r.status === 0 ? '' : ` (exit ${r.status}) ${(r.stderr || '').slice(-300)}`}`);
   (times[`NativeAOT-LLVM ${basename(p, '.cs')}`] ??= []).push(s);
@@ -92,14 +92,14 @@ for (let r = 1; r <= rounds; r++) {
   cold(first, r);
   warm(first, r);
   if (nodeOptions) tuned(first, r);
-  if (naot && existsSync(join(naot, 'cs2wasmc-naot.js'))) native(first, r);
+  if (naot && existsSync(join(naot, 'il2wasm-naot.js'))) native(first, r);
 }
-// the phases of a build on the snapshot (CS2WASM_TIMES is another environment: its own snapshot)
+// the phases of a build on the snapshot (IL2WASM_TIMES is another environment: its own snapshot)
 {
-  const snap2 = { CS2WASM_SNAPSHOT: join(out, 'times.snap'), CS2WASM_TIMES: '1', CS2WASM_HOST_TIMES: '1' };
+  const snap2 = { IL2WASM_SNAPSHOT: join(out, 'times.snap'), IL2WASM_TIMES: '1', IL2WASM_HOST_TIMES: '1' };
   build('snap', 'with the phases printed, writing', first, 'node', selfCmd, snap2, true);
   const r = build('snap', 'with the phases printed, on the snapshot', first, 'node', selfCmd, snap2, true);
-  console.log('--- the phases of a build on the snapshot (CS2WASM_TIMES=1 CS2WASM_HOST_TIMES=1)');
+  console.log('--- the phases of a build on the snapshot (IL2WASM_TIMES=1 IL2WASM_HOST_TIMES=1)');
   console.log(r.err.split('\n').filter((l) => l.trim() && !/^\s+library:.*files, |^ +\d+ ms +\d+ MB +(finish|arenas|static)/.test(l)).map((l) => l.slice(0, 170)).join('\n'));
 }
 if (programs.length > 1) console.log('--- other programs on the same snapshot, each twice, then the first again');

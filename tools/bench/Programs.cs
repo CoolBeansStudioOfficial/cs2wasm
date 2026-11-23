@@ -1,4 +1,4 @@
-// Benchmarks for the comparison with NativeAOT (SPEC sections 1, 7.6, 10): the same C# built by cs2wasm and by
+// Benchmarks for the comparison with NativeAOT (SPEC sections 1, 7.6, 10): the same C# built by il2wasm and by
 // NativeAOT. Each returns a checksum, which must be the same on both. tools/bench.mjs builds and runs them.
 using System;
 using System.Collections.Generic;

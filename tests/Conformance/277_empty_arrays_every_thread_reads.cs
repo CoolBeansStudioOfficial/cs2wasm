@@ -2,7 +2,7 @@
 // static each list starts with) and nothing can be reached through it: each worker below fills a list of its own
 // with objects of its own, which stay that thread's. An array with elements that a static holds hands its elements
 // to every thread: the workers also read and replace the notes of one, each made by one thread and let go by another.
-// CS2WASM_EXP_EVERY_ARRAY_EMPTY=1 takes every array made for one with no element: with CS2WASM_SHARE_CHECK=1 a note
+// IL2WASM_EXP_EVERY_ARRAY_EMPTY=1 takes every array made for one with no element: with IL2WASM_SHARE_CHECK=1 a note
 // read from the shared array stops the program (tools/thread-escape-breaks.sh).
 using System;
 using System.Collections.Generic;

@@ -1,5 +1,5 @@
 // Preloaded into a Node run of a module (node --import): records every path the module's host file system is asked
-// for (open, stat, access, opendir), to CS2WASM_FS_TRACE, without changing host/fs.mjs. One line per path:
+// for (open, stat, access, opendir), to IL2WASM_FS_TRACE, without changing host/fs.mjs. One line per path:
 // "<kind> <path>", kind o (a file that was opened), f (a file that exists and was only asked about), d (a
 // directory), - (asked for, not there). Each thread of the run appends its own lines (a path opened after it was
 // asked about has both lines).
@@ -13,7 +13,7 @@ const note = (p, opened) => {
   let kind = '-';
   try { kind = stat(p).isDirectory() ? 'd' : opened ? 'o' : 'f'; } catch { /* not there */ }
   seen.set(p, kind);
-  append(process.env.CS2WASM_FS_TRACE, `${kind} ${p}\n`); // (at once: a worker thread ends with the process, unasked)
+  append(process.env.IL2WASM_FS_TRACE, `${kind} ${p}\n`); // (at once: a worker thread ends with the process, unasked)
 };
 for (const name of ['openSync', 'statSync', 'lstatSync', 'accessSync', 'opendirSync', 'existsSync']) {
   const f = fs[name];

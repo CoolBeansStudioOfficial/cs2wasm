@@ -8,16 +8,16 @@ To regenerate it (the API description from the stock editor: `--headless --dump-
 
 ```bash
 dotnet build -c Debug
-CS2WASM_CALL_LOG=expected-calls.txt CS2WASM_GODOT_API=extension_api.json Godot_v4.7.2-stable_mono_win64_console.exe --headless --path .
+IL2WASM_CALL_LOG=expected-calls.txt IL2WASM_GODOT_API=extension_api.json Godot_v4.7.2-stable_mono_win64_console.exe --headless --path .
 ```
 
-The compiled side (`tests/Cs2Wasm.Tests`, check `godot_proof3_node2d`): `Mover.cs` against stock GodotSharp's
-package, with Godot's source generators (`GodotProjectDir` this folder; `GodotPluginsInitializer` off: cs2wasm's
+The compiled side (`tests/Il2Wasm.Tests`, check `godot_proof3_node2d`): `Mover.cs` against stock GodotSharp's
+package, with Godot's source generators (`GodotProjectDir` this folder; `GodotPluginsInitializer` off: il2wasm's
 GodotPlugins starts the module), run by `host/godot-run.mjs` on the stub engine in `host/godot.mjs`, which plays the
 engine's part (script registration, the instance on a native Node2D, `_ready`, `_process` until the tree quits,
 shutdown) and writes the same log from the scene on. By hand:
 
 ```bash
-cs2wasmc Mover.cs -r GodotSharp.dll -a Godot.SourceGenerators.dll --property GodotProjectDir=<this folder>/ --property GodotDisabledSourceGenerators=GodotPluginsInitializer -o p.wasm
+il2wasm Mover.cs -r GodotSharp.dll -a Godot.SourceGenerators.dll --property GodotProjectDir=<this folder>/ --property GodotDisabledSourceGenerators=GodotPluginsInitializer -o p.wasm
 node host/godot-run.mjs p.wasm extension_api.json res://Mover.cs Node2D calls.txt
 ```

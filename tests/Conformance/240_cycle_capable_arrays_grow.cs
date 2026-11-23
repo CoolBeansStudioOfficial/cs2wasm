@@ -3,7 +3,7 @@
 // no object of a cycle, then given to its owner. Such an array has the arena's words before its header and is
 // freed with them; Rt.MoveItems (collections that grow by moving) left it an array of bytes, which is freed at the
 // header: 32 bytes into its block. Here: among large blocks of other kinds that are kept and checked; with the
-// old move (CS2WASM_ARRAY_MOVE_CYCLE=1) the program traps in the allocator. The self-hosted compiler's
+// old move (IL2WASM_ARRAY_MOVE_CYCLE=1) the program traps in the allocator. The self-hosted compiler's
 // Inliner (a List<Instr> made with a capacity for each function it rewrites) is where this was found.
 using System;
 using System.Collections.Generic;

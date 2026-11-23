@@ -3,7 +3,7 @@
 // to give back once the slot is written (Rt.GiveBackLater: the value's last reference from outside, where giving it
 // back before the store could let the value go). That count must go back at this store, not at the next one that
 // happens to link something: with it, the last reference to a whole group goes, and the group with it, at the
-// statement that lets it go (CS2WASM_NO_UNLINK_SKIP=1: the call, always). Counted against .NET after each step.
+// statement that lets it go (IL2WASM_NO_UNLINK_SKIP=1: the call, always). Counted against .NET after each step.
 // The cases: a member that another member owns, stored by a temporary into an empty field of a temporary member,
 // into an empty element, into a new list, into an empty field of a plain object and of a new object; the same
 // with the field holding something before; a group whose members are held by nothing else than such a store's

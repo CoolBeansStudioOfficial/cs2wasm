@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Il2Wasm/Il2Wasm.csproj" />
+    <!-- the Invisible API sample's plugin (samples/invisible-api; InvisibleCheck.cs) -->
+    <Compile Include="../../samples/invisible-api/Plugin/*.cs" />
+  </ItemGroup>
+</Project>

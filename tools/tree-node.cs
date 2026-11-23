@@ -3,7 +3,7 @@
 // is made, the node put into its parent's list after its children), then all let go at one store. Nanoseconds a
 // node, the lowest of 30 rounds, for K = 0 (a leaf by another name), 1, 2, 4, 5 (the list grows from four to eight),
 // and for 5 with the capacity set first; `drop` is the nanoseconds a node to let them go.
-//   cs2wasmc tools/tree-node.cs -o tn.wasm   then   node host/run.mjs tn.wasm
+//   il2wasm tools/tree-node.cs -o tn.wasm   then   node host/run.mjs tn.wasm
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

@@ -3,7 +3,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Xml.Linq;
 
-// System.Xml.Linq keeps its namespaces in caches of weak references, written for a collector; cs2wasm's manifest makes
+// System.Xml.Linq keeps its namespaces in caches of weak references, written for a collector; il2wasm's manifest makes
 // the code that creates a namespace keep it while it hands it out (section 7.4).
 static class Program
 {

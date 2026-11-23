@@ -1,0 +1,63 @@
+# System.IO.Pipelines for il2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.
+# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: il2wasm supplies its own)
+# | replaced <path> (an upstream file il2wasm replaces with its own)
+# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for il2wasm's features)
+#   (a value =>Type.Method: the body calls that boundary method) | edit<TAB><path><TAB><text><TAB><replacement> (an exact change to an upstream file)
+define NET
+define NETCOREAPP
+define NET11_0
+define RELEASE
+define NET5_0_OR_GREATER
+define NET6_0_OR_GREATER
+define NET7_0_OR_GREATER
+define NET8_0_OR_GREATER
+define NET9_0_OR_GREATER
+define NET10_0_OR_GREATER
+define NET11_0_OR_GREATER
+define NETCOREAPP1_0_OR_GREATER
+define NETCOREAPP1_1_OR_GREATER
+define NETCOREAPP2_0_OR_GREATER
+define NETCOREAPP2_1_OR_GREATER
+define NETCOREAPP2_2_OR_GREATER
+define NETCOREAPP3_0_OR_GREATER
+define NETCOREAPP3_1_OR_GREATER
+reference System.Collections
+reference System.Memory
+reference System.Threading
+file src/libraries/System.IO.Pipelines/src/Properties/InternalsVisibleTo.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/BufferSegment.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/CompletionData.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/FlushResult.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/InlineScheduler.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/IDuplexPipe.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/BufferSegmentStack.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/Pipe.DefaultPipeReader.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/Pipe.DefaultPipeWriter.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/Pipe.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeAwaitable.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeCompletion.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeCompletionCallback.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeCompletionCallbacks.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeOptions.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeReader.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeOperationState.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeReaderStream.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeScheduler.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeWriter.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/PipeWriterStream.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/ReadResult.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/ResultFlags.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/SequencePipeReader.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/StreamPipeExtensions.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/StreamPipeReader.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/StreamPipeReaderOptions.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/StreamPipeWriter.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/StreamPipeWriterOptions.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/ThrowHelper.cs
+file src/libraries/Common/src/System/IO/StreamHelpers.CopyValidation.cs
+file src/libraries/Common/src/System/Collections/Concurrent/SingleProducerSingleConsumerQueue.cs
+file src/libraries/Common/src/System/Collections/Concurrent/IProducerConsumerQueue.cs
+file src/libraries/Common/src/Internal/Padding.cs
+file src/libraries/System.IO.Pipelines/src/System/IO/Pipelines/ThreadPoolScheduler.netcoreapp.cs
+file src/libraries/Common/src/System/Runtime/CompilerServices/RuntimeAsyncMethodGenerationAttribute.cs
+file src/libraries/Common/src/System/SR.cs

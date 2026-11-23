@@ -1,4 +1,4 @@
-// node tools/profsize.mjs module.wasm profile.cpuprofile (a named build: CS2WASM_NAMES=1)
+// node tools/profsize.mjs module.wasm profile.cpuprofile (a named build: IL2WASM_NAMES=1)
 // Self time by the callee's body size (bytes), from a named build: where calls to small functions cost.
 import { readFileSync } from 'node:fs';
 const buf = readFileSync(process.argv[2]);

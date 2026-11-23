@@ -6,7 +6,7 @@ using System.Xml.Linq;
 // Godot sources (`root godot-<version>`): the project's Compile items, and the generated glue its
 // Generated/GeneratedIncludes.props lists (the stock editor writes it: `--headless --generate-mono-glue
 // <root>/modules/mono/glue`). The project's internal source generator (NativeFuncs' table of engine callbacks) is
-// not run: cs2wasm's NativeFuncs bodies are the boundary's imports (Upstream/GodotSharp/NativeFuncs.cs2wasm.cs).
+// not run: il2wasm's NativeFuncs bodies are the boundary's imports (Upstream/GodotSharp/NativeFuncs.il2wasm.cs).
 static class GodotLibrary
 {
     public const string Version = "4.7.2";
@@ -27,7 +27,7 @@ static class GodotLibrary
         var outDir = Path.Combine(upstream, "GodotSharp");
         Directory.CreateDirectory(outDir);
         var sb = new StringBuilder();
-        sb.AppendLine($"# GodotSharp for cs2wasm, from godotengine/godot's project ({Version}, {Commit}) and the stock editor's glue, by tools/CoreLibManifest godot.");
+        sb.AppendLine($"# GodotSharp for il2wasm, from godotengine/godot's project ({Version}, {Commit}) and the stock editor's glue, by tools/CoreLibManifest godot.");
         sb.AppendLine("# root <dir> (the sources' root under the cache) | define <symbol> | file <path>");
         sb.AppendLine($"root godot-{Version}");
         // (System.Diagnostics.Trace: GodotSharp sends it to the engine's output)
@@ -39,7 +39,7 @@ static class GodotLibrary
         sb.AppendLine("pure-init-checked Godot.GodotObject.ClassDB_get_constructor");
         sb.AppendLine("pure-init Godot.StringName.op_Implicit");
         sb.AppendLine("pure-init Godot.NodePath.op_Implicit");
-        sb.AppendLine("# pure-init-batch: a lookup's form over tables of names and hashes (Cs2WasmLookups.cs)");
+        sb.AppendLine("# pure-init-batch: a lookup's form over tables of names and hashes (Il2WasmLookups.cs)");
         sb.AppendLine("pure-init-batch Godot.GodotObject.ClassDB_get_method_with_compatibility ClassDB_check_methods_with_compatibility");
         foreach (var d in defines.Distinct()) sb.AppendLine("define " + d);
         foreach (var f in rel) sb.AppendLine("file " + f);
@@ -52,9 +52,9 @@ static class GodotLibrary
         d.Descendants().Where(e => e.Name.LocalName == "Compile").Select(c => (string?)c.Attribute("Include")).OfType<string>().Where(s => s.EndsWith(".cs"));
 }
 
-// CoreLibManifest godot-funcs <godot-root> <upstream-dir>: cs2wasm's NativeFuncs bodies. Stock GodotSharp calls the engine
+// CoreLibManifest godot-funcs <godot-root> <upstream-dir>: il2wasm's NativeFuncs bodies. Stock GodotSharp calls the engine
 // through a table of function pointers the engine fills in (an internal source generator writes NativeFuncs' bodies over
-// it); cs2wasm's call imports instead, one per function (module "godot", the function's name), so the engine supplies
+// it); il2wasm's call imports instead, one per function (module "godot", the function's name), so the engine supplies
 // them as it supplies the boundary's. A struct argument or result goes by address (the engine reads and writes linear
 // memory); `in`/`ref`/`out` arguments are addresses already; a function pointer is an index into the module's table.
 static class GodotNativeFuncs
@@ -90,7 +90,7 @@ static class GodotNativeFuncs
         sb.AppendLine("{");
         sb.AppendLine("    public static unsafe partial class NativeFuncs");
         sb.AppendLine("    {");
-        sb.AppendLine("        // (NativeFuncs.Initialize copies the engine's table here; under cs2wasm nothing reads it)");
+        sb.AppendLine("        // (NativeFuncs.Initialize copies the engine's table here; under il2wasm nothing reads it)");
         sb.AppendLine("        private static UnmanagedCallbacks _unmanagedCallbacks;");
         sb.AppendLine();
         var imports = new StringBuilder();
@@ -129,7 +129,7 @@ static class GodotNativeFuncs
             sb.AppendLine($"        {head}");
             sb.AppendLine($"        {{ {body} }}");
             sb.AppendLine();
-            imports.AppendLine($"            [Cs2Wasm.Runtime.Import(\"godot\", \"{m.Name}\")] internal static extern {extRet} {m.Name}({string.Join(", ", ext)});");
+            imports.AppendLine($"            [Il2Wasm.Runtime.Import(\"godot\", \"{m.Name}\")] internal static extern {extRet} {m.Name}({string.Join(", ", ext)});");
             n++;
         }
         sb.AppendLine("        private static class __Godot");
@@ -138,13 +138,13 @@ static class GodotNativeFuncs
         sb.AppendLine("        }");
         sb.AppendLine("    }");
         sb.AppendLine("}");
-        File.WriteAllText(Path.Combine(upstream, "GodotSharp", "NativeFuncs.cs2wasm.cs"), sb.ToString());
+        File.WriteAllText(Path.Combine(upstream, "GodotSharp", "NativeFuncs.il2wasm.cs"), sb.ToString());
         Console.WriteLine($"NativeFuncs: {n} imports");
         WritePlugins(comp, Path.Combine(Path.GetDirectoryName(upstream)!, "Godot", "GodotPlugins.cs"));
         return 0;
     }
 
-    // cs2wasm's GodotPlugins (the assembly stock Godot loads to start managed code): an export per entry of stock
+    // il2wasm's GodotPlugins (the assembly stock Godot loads to start managed code): an export per entry of stock
     // GodotSharp's ManagedCallbacks, calling through the table ManagedCallbacks.Create fills, so the engine calls the
     // script side by name (SPEC 6.1: exports are named); the start, and an allocator the engine's strings use.
     static void WritePlugins(Microsoft.CodeAnalysis.CSharp.CSharpCompilation comp, string output)
@@ -152,7 +152,7 @@ static class GodotNativeFuncs
         var mc = comp.GetTypeByMetadataName("Godot.Bridge.ManagedCallbacks")!;
         var sb = new StringBuilder();
         sb.AppendLine("// <auto-generated> by tools/CoreLibManifest godot-funcs from stock GodotSharp's ManagedCallbacks (Godot " + GodotLibrary.Version + "). </auto-generated>");
-        sb.AppendLine("// cs2wasm's GodotPlugins: added to a program that references GodotSharp. Stock Godot starts managed code through its");
+        sb.AppendLine("// il2wasm's GodotPlugins: added to a program that references GodotSharp. Stock Godot starts managed code through its");
         sb.AppendLine("// GodotPlugins assembly (NativeFuncs.Initialize, ManagedCallbacks.Create, then ScriptManagerBridge.LookupScriptsInAssembly");
         sb.AppendLine("// on the game's assembly) and calls the script side through the ManagedCallbacks table. A module has named exports");
         sb.AppendLine("// only (SPEC 6.1), so each entry of the table is an export of the same name, calling through the table; NativeFuncs");
@@ -163,7 +163,7 @@ static class GodotNativeFuncs
         sb.AppendLine("using Godot.Bridge;");
         sb.AppendLine("using Godot.NativeInterop;");
         sb.AppendLine();
-        sb.AppendLine("namespace Cs2Wasm.Plugins");
+        sb.AppendLine("namespace Il2Wasm.Plugins");
         sb.AppendLine("{");
         sb.AppendLine("    internal static unsafe class GodotPlugins");
         sb.AppendLine("    {");

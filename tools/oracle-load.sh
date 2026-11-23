@@ -8,12 +8,12 @@
 #   on the homelab: bash tools/homelab.sh <branch> env PROCS=8 RUNS=50 bash tools/oracle-load.sh 127_
 cd "$(dirname "$0")/.."
 filter=${1:?filter}; dir=${2:-tests/Load}
-dotnet build tests/Cs2Wasm.Tests -c Release -v q --nologo 2>&1 | grep -E " error " | head
+dotnet build tests/Il2Wasm.Tests -c Release -v q --nologo 2>&1 | grep -E " error " | head
 # (several filters with commas: one after the other)
 for f in ${filter//,/ }; do
 tmp=$(mktemp -d)
 for i in $(seq 1 ${PROCS:-8}); do
-  dotnet run --project tests/Cs2Wasm.Tests -c Release --no-build -- --dir $dir $f --oracle ${RUNS:-50} > $tmp/$i.txt 2>&1 &
+  dotnet run --project tests/Il2Wasm.Tests -c Release --no-build -- --dir $dir $f --oracle ${RUNS:-50} > $tmp/$i.txt 2>&1 &
 done
 wait
 # "ORACLE <name> <k> of <n>: <output, lines joined by |>"

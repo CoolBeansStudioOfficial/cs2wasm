@@ -15,7 +15,7 @@ static class Program
         Console.WriteLine(s.ToLower());
         Console.WriteLine(s.IndexOf('o') + " " + s.LastIndexOf('o') + " " + s.IndexOf("World") + " " + s.IndexOf("xyz"));
         Console.WriteLine(s.Contains("lo, W") + " " + s.StartsWith("Hell") + " " + s.EndsWith("d"));
-        Console.WriteLine(s.Replace("World", "cs2wasm").Replace('l', 'L'));
+        Console.WriteLine(s.Replace("World", "il2wasm").Replace('l', 'L'));
         Console.WriteLine("  trim me  ".Trim() + "|" + "xxabcxx".Trim('x') + "|" + "  a".TrimStart() + "|");
         foreach (var part in "a,b,,c".Split(',')) Console.Write("[" + part + "]");
         Console.WriteLine();

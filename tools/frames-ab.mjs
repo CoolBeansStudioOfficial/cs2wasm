@@ -1,8 +1,8 @@
-// The frame scenes (tools/frames/Frames.cs) built by cs2wasm with and without compiler switches, run in turn: per
+// The frame scenes (tools/frames/Frames.cs) built by il2wasm with and without compiler switches, run in turn: per
 // scene and build the median, p99, p99.9 and worst frame, each the lowest over the rounds, and every round's median and p99.9 (the
 // desk machine's noise is larger than most changes: the rounds beside each other show it).
 //   node tools/frames-ab.mjs [--rounds N] [--js-young MB] <name>=<SWITCH=1,...> ... [scene...]
-//   node tools/frames-ab.mjs --rounds 5 --js-young 32 on= off=CS2WASM_NO_FIELD_HOIST=1 churn tree
+//   node tools/frames-ab.mjs --rounds 5 --js-young 32 on= off=IL2WASM_NO_FIELD_HOIST=1 churn tree
 // A build named with no switches (`on=`) is the compiler as it is.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -23,7 +23,7 @@ const scenes = picked.length ? picked : ['churn', 'collections', 'strings', 'tre
 const out = join(root, 'tests', 'out', 'frames-ab');
 mkdirSync(out, { recursive: true });
 const src = join(root, 'tools', 'frames');
-const cli = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
+const cli = join(root, 'src', 'Il2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'il2wasm.exe' : 'il2wasm');
 for (const b of builds) {
   b.wasm = join(out, `frames-${b.name}.wasm`);
   execFileSync(cli, [join(src, 'Frames.cs'), join(src, 'WasmMain.cs'), '-o', b.wasm], { stdio: ['ignore', 'ignore', 'inherit'], env: { ...process.env, ...b.env } });

@@ -4,7 +4,7 @@
 // long function is measured in the baseline tier).
 //   node tools/micro.mjs [--rebuild-aot] [--baseline] [filter]
 // --baseline: both sides run in the engine's baseline tier only (V8: --liftoff-only), which executes the module as it
-// is written: what a short run over a great many functions gets (a compiler compiling: the self-hosted cs2wasm stays
+// is written: what a short run over a great many functions gets (a compiler compiling: the self-hosted il2wasm stays
 // in that tier, and is as much slower than NativeAOT's build as this says).
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, statSync, readdirSync } from 'node:fs';
@@ -18,7 +18,7 @@ const out = join(root, 'tests', 'out', 'micro');
 mkdirSync(out, { recursive: true });
 const src = join(root, 'tools', 'micro');
 const newest = Math.max(...readdirSync(src).filter((f) => f.endsWith('.cs') || f.endsWith('.csproj')).map((f) => statSync(join(src, f)).mtimeMs));
-// NativeAOT compiled to WebAssembly (NativeAOT-LLVM, linked by Emscripten 3.1.56: EMSDK, or C:/tools/emsdk), run in Node as cs2wasm's module is
+// NativeAOT compiled to WebAssembly (NativeAOT-LLVM, linked by Emscripten 3.1.56: EMSDK, or C:/tools/emsdk), run in Node as il2wasm's module is
 const aotDir = join(out, 'naot-wasm'), aotJs = join(aotDir, 'micro-naot.js');
 if (args.includes('--rebuild-aot') || !existsSync(aotJs) || statSync(aotJs).mtimeMs < newest) {
   const emsdk = process.env.EMSDK ?? (existsSync('C:/tools/emsdk') ? 'C:/tools/emsdk' : null);
@@ -31,8 +31,8 @@ if (args.includes('--rebuild-aot') || !existsSync(aotJs) || statSync(aotJs).mtim
   if (nd) env.EMSDK_NODE = join(nd, process.platform === 'win32' ? 'node.exe' : 'bin/node');
   execFileSync('dotnet', ['publish', join(root, 'tools', 'micro-naot-wasm', 'micro-naot-wasm.csproj'), '-c', 'Release', '-o', aotDir, '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'], env });
 }
-const cli = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
-execFileSync('dotnet', ['build', join(root, 'src', 'Cs2Wasm.Cli'), '-c', 'Release', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
+const cli = join(root, 'src', 'Il2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'il2wasm.exe' : 'il2wasm');
+execFileSync('dotnet', ['build', join(root, 'src', 'Il2Wasm.Cli'), '-c', 'Release', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
 const wasm = join(out, 'micro.wasm');
 execFileSync(cli, [join(src, 'Micro.cs'), join(src, 'WasmMain.cs'), '-o', wasm], { stdio: ['ignore', 'ignore', 'ignore'] });
 const parse = (text) => Object.fromEntries(text.split(/\r?\n/).filter((l) => l.startsWith('phase ')).map((l) => { const p = l.split(' '); return [p[1], +p[2]]; }));
@@ -47,7 +47,7 @@ for (let i = 0; i < 2; i++) {
   best(aot, parse(a.stdout)); best(mod, parse(w.stdout));
   checks = [/check (-?\d+)/.exec(a.stdout)?.[1], /check (-?\d+)/.exec(w.stdout)?.[1]];
 }
-console.log('operation         NativeAOT wasm us  cs2wasm us   ratio');
+console.log('operation         NativeAOT wasm us  il2wasm us   ratio');
 let logSum = 0, n = 0;
 for (const k in aot) {
   if (filter && !k.includes(filter)) continue;

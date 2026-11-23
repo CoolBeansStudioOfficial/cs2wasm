@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- cs2wasmc itself (with Roslyn) compiled by NativeAOT to WebAssembly (NativeAOT-LLVM, browser-wasm, linked by
-       Emscripten with the host's files visible): what the self-hosted compiler (cs2wasm compiling itself, SPEC
+  <!-- il2wasm itself (with Roslyn) compiled by NativeAOT to WebAssembly (NativeAOT-LLVM, browser-wasm, linked by
+       Emscripten with the host's files visible): what the self-hosted compiler (il2wasm compiling itself, SPEC
        section 10, proof 4) is measured against, on the same target and in the same engine. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -10,18 +10,18 @@
     <SelfContained>true</SelfContained>
     <InvariantGlobalization>true</InvariantGlobalization>
     <Optimize>true</Optimize>
-    <AssemblyName>cs2wasmc-naot</AssemblyName>
-    <RootNamespace>Cs2Wasm</RootNamespace>
+    <AssemblyName>il2wasm-naot</AssemblyName>
+    <RootNamespace>Il2Wasm</RootNamespace>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <MSBuildEnableWorkloadResolver>false</MSBuildEnableWorkloadResolver>
     <NoWarn>$(NoWarn);RS1024;RS2008;CS0649;IL2026;IL2104;IL3053;IL2072;IL2075;IL2070;IL3000;IL3002</NoWarn>
     <EmccExtraArgs>-lnodefs.js -sFORCE_FILESYSTEM=1 --pre-js $(MSBuildProjectDirectory)/pre.js -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=16MB -sINITIAL_MEMORY=256MB</EmccExtraArgs>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../src/Cs2Wasm/**/*.cs" Exclude="../../src/Cs2Wasm/Upstream/**;../../src/Cs2Wasm/Godot/**;../../src/Cs2Wasm/bin/**;../../src/Cs2Wasm/obj/**" />
-    <Compile Include="../../src/Cs2Wasm.Cli/*.cs" />
-    <EmbeddedResource Include="../../src/Cs2Wasm/Godot/*.cs" LogicalName="godot/%(Filename)%(Extension)" />
-    <EmbeddedResource Include="../../src/Cs2Wasm/Upstream/**/*.cs;../../src/Cs2Wasm/Upstream/**/manifest.txt" LogicalName="upstream/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="../../src/Il2Wasm/**/*.cs" Exclude="../../src/Il2Wasm/Upstream/**;../../src/Il2Wasm/Godot/**;../../src/Il2Wasm/bin/**;../../src/Il2Wasm/obj/**" />
+    <Compile Include="../../src/Il2Wasm.Cli/*.cs" />
+    <EmbeddedResource Include="../../src/Il2Wasm/Godot/*.cs" LogicalName="godot/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="../../src/Il2Wasm/Upstream/**/*.cs;../../src/Il2Wasm/Upstream/**/manifest.txt" LogicalName="upstream/%(RecursiveDir)%(Filename)%(Extension)" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.12.0" />
     <PackageReference Include="Microsoft.DotNet.ILCompiler.LLVM" Version="10.0.0-*" />
     <PackageReference Include="runtime.$(NETCoreSdkPortableRuntimeIdentifier).Microsoft.DotNet.ILCompiler.LLVM" Version="10.0.0-*" />

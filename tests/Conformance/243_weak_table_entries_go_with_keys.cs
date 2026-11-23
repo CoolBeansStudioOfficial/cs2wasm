@@ -4,7 +4,7 @@
 // before its keys; the table grown past its first size with dead and living keys mixed; a DependentHandle by
 // itself. Everything is made in frames that have returned before the counts are read (.NET's own temporaries keep
 // objects otherwise). Not here, a difference that is left (docs/AUDIT.md): a value that holds its own key, which
-// .NET collects and cs2wasm keeps while the table has the entry.
+// .NET collects and il2wasm keeps while the table has the entry.
 using System;
 using System.Collections.Generic;
 using System.Runtime;

@@ -1,6 +1,6 @@
 // Frame times of programs with threads (SPEC sections 1 and 4.5; tools/frames.mjs measures programs without): the
-// scenes of tools/frames-threads compiled by cs2wasm as a program with threads, against the same work in a program
-// without threads compiled by cs2wasm and by NativeAOT-LLVM for WebAssembly, each run in its own Node (V8) process.
+// scenes of tools/frames-threads compiled by il2wasm as a program with threads, against the same work in a program
+// without threads compiled by il2wasm and by NativeAOT-LLVM for WebAssembly, each run in its own Node (V8) process.
 //   idle     tools/frames's five scenes on the main thread while one worker waits on a monitor (what a program pays
 //            for having a thread at all), against the same scene in the programs without threads
 //   private  N threads (1, 2, 4, 8), each with a particle system (pchurn) or a scene tree (ptree) of its own made on
@@ -16,7 +16,7 @@
 // Per scene: median, p99, p99.9 and worst frame, the wall time of the measured part and peak memory, each the lowest
 // over the runs.
 //   node tools/frames-threads.mjs [--runs N] [--no-build] [--no-aot] [--rebuild-aot] [--aot-threads] [--js-young MB] [--json file] [group...]
-// groups: idle private shared parts (default: all). A compiler switch in the environment reaches cs2wasm's builds.
+// groups: idle private shared parts (default: all). A compiler switch in the environment reaches il2wasm's builds.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, statSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -63,9 +63,9 @@ if (!noAot && args.includes('--aot-threads')) {
   else aotThreads = true;
 }
 
-// cs2wasm's two programs
-const cli = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
-if (!args.includes('--no-build')) execFileSync('dotnet', ['build', join(root, 'src', 'Cs2Wasm.Cli'), '-c', 'Release', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
+// il2wasm's two programs
+const cli = join(root, 'src', 'Il2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'il2wasm.exe' : 'il2wasm');
+if (!args.includes('--no-build')) execFileSync('dotnet', ['build', join(root, 'src', 'Il2Wasm.Cli'), '-c', 'Release', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
 const single = join(out, 'single.wasm'), threads = join(out, 'threads.wasm');
 execFileSync(cli, [frames, join(src, 'Work.cs'), join(src, 'WasmMainSingle.cs'), '-o', single], { stdio: ['ignore', 'ignore', 'ignore'] });
 execFileSync(cli, [frames, join(src, 'Work.cs'), join(src, 'Threaded.cs'), join(src, 'WasmMainThreads.cs'), '-o', threads], { stdio: ['ignore', 'ignore', 'ignore'] });
@@ -80,8 +80,8 @@ function stats(text, memory) {
 }
 const low = (a, b) => { if (!a) return { ...b }; for (const k of ['median', 'p99', 'p999', 'worst', 'wall', 'peak']) if (!(a[k] <= b[k])) a[k] = b[k]; return a; };
 function runWasm(module, scene) {
-  const w = spawnSync(process.execPath, [...nodeFlags, join(root, 'host', 'run.mjs'), module, scene], { encoding: 'utf8', env: { ...process.env, CS2WASM_PRINT_MEMORY: '1' }, maxBuffer: 1 << 27 });
-  if (w.status !== 0) { console.error(w.stdout.slice(-1000), w.stderr.slice(-3000)); throw new Error(`cs2wasm's module failed on ${scene}`); }
+  const w = spawnSync(process.execPath, [...nodeFlags, join(root, 'host', 'run.mjs'), module, scene], { encoding: 'utf8', env: { ...process.env, IL2WASM_PRINT_MEMORY: '1' }, maxBuffer: 1 << 27 });
+  if (w.status !== 0) { console.error(w.stdout.slice(-1000), w.stderr.slice(-3000)); throw new Error(`il2wasm's module failed on ${scene}`); }
   return { text: w.stdout, memory: +(/memory: (\d+) pages/.exec(w.stderr)?.[1] ?? 0) * 65536 };
 }
 function runAot(js, dir, scene) {
@@ -89,7 +89,7 @@ function runAot(js, dir, scene) {
   if (a.status !== 0) { console.error(a.stdout.slice(-1000), a.stderr.slice(-3000)); throw new Error(`NativeAOT's build failed on ${scene}`); }
   return { text: a.stdout, memory: +(/peak_bytes=(\d+)/.exec(a.stdout)?.[1] ?? 0) };
 }
-// a row: the scene with threads, the same work without (cs2wasm's and NativeAOT's scene names)
+// a row: the scene with threads, the same work without (il2wasm's and NativeAOT's scene names)
 const rows = [];
 // (idle_<scene>: the scene called by name; aidle_<scene>: handed over as an Action, the delegate type the workers of
 // other scenes invoke too)
@@ -128,11 +128,11 @@ for (const r of rows) {
   const e = res[r.scene], b = res['=' + r.base];
   if (r.base !== lastBase) {
     if (b.aot) line(r.base, 'NativeAOT, no threads', b.aot, null);
-    line(b.aot ? '' : r.base, 'cs2wasm, no threads', b.single, b.aot);
+    line(b.aot ? '' : r.base, 'il2wasm, no threads', b.single, b.aot);
     if (b.aot && b.aot.check !== b.single.check) { bad++; console.log(`  CHECKSUM DIFFERS: ${b.aot.check} vs ${b.single.check}`); }
     lastBase = r.base;
   }
-  line(r.scene, 'cs2wasm, threads', e.threads, b.aot ?? b.single);
+  line(r.scene, 'il2wasm, threads', e.threads, b.aot ?? b.single);
   if (e.aotThreads) line('', 'NativeAOT, threads', e.aotThreads, b.aot);
   // (one world's checksum is the base's; N private worlds differ by their seeds: compared with NativeAOT's when it ran)
   if (r.group !== 'private' || r.n === 1) { if (e.threads.check !== b.single.check) { bad++; console.log(`  CHECKSUM DIFFERS from the program without threads: ${e.threads.check} vs ${b.single.check}`); } }
@@ -157,8 +157,8 @@ if (groups.includes('parts')) {
   const us = (ns) => (ns / 1e3).toFixed(0).padStart(7);
   console.log('the churn in parts, us for 20,000 particles      make    pass    drop');
   if (pa) console.log(`  NativeAOT, no threads                       ${us(pa.make)} ${us(pa.pass)} ${us(pa.drop)}`);
-  console.log(`  cs2wasm, no threads                         ${us(ps.make)} ${us(ps.pass)} ${us(ps.drop)}`);
-  console.log(`  cs2wasm, on a worker                        ${us(pt.make)} ${us(pt.pass)} ${us(pt.drop)}`);
+  console.log(`  il2wasm, no threads                         ${us(ps.make)} ${us(ps.pass)} ${us(ps.drop)}`);
+  console.log(`  il2wasm, on a worker                        ${us(pt.make)} ${us(pt.pass)} ${us(pt.drop)}`);
   if (pt.check !== ps.check || pa && pa.check !== ps.check) { bad++; console.log('  CHECKSUM DIFFERS'); }
   // the tree's parts
   const tpart = (text) => { const m = /^tparts \S+ build (\d+) walk (\d+) replace (\d+) drop (\d+) check (-?\d+)/m.exec(text); return m ? { build: +m[1], walk: +m[2], replace: +m[3], drop: +m[4], check: m[5] } : null; };
@@ -172,8 +172,8 @@ if (groups.includes('parts')) {
   res.tparts = { threads: tt, single: ts, aot: ta };
   console.log('the tree in parts, us for 3,906 entities        build    walk replace    drop');
   if (ta) console.log(`  NativeAOT, no threads                       ${us(ta.build)} ${us(ta.walk)} ${us(ta.replace)} ${us(ta.drop)}`);
-  console.log(`  cs2wasm, no threads                         ${us(ts.build)} ${us(ts.walk)} ${us(ts.replace)} ${us(ts.drop)}`);
-  console.log(`  cs2wasm, on a worker                        ${us(tt.build)} ${us(tt.walk)} ${us(tt.replace)} ${us(tt.drop)}`);
+  console.log(`  il2wasm, no threads                         ${us(ts.build)} ${us(ts.walk)} ${us(ts.replace)} ${us(ts.drop)}`);
+  console.log(`  il2wasm, on a worker                        ${us(tt.build)} ${us(tt.walk)} ${us(tt.replace)} ${us(tt.drop)}`);
   if (tt.check !== ts.check || ta && ta.check !== ts.check) { bad++; console.log('  CHECKSUM DIFFERS'); }
 }
 const json = opt('--json', null);

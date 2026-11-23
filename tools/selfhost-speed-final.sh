@@ -4,7 +4,7 @@
 # NativeAOT-LLVM's build), its modules against the .NET-hosted compiler's on four programs (tools/selfdet.mjs), the
 # snapshot (tools/selfsnap.mjs), then two larger programs with and without the switches (3 rounds each) and four
 # builds in one instance.
-#   bash tools/selfhost-speed-final.sh CS2WASM_NO_LIB_DOC_SKIP=1 CS2WASM_NO_LIB_RESTART=1
+#   bash tools/selfhost-speed-final.sh IL2WASM_NO_LIB_DOC_SKIP=1 IL2WASM_NO_LIB_RESTART=1
 #   on the homelab: bash tools/homelab.sh <branch> bash tools/selfhost-speed-final.sh <switches>
 cd "$(dirname "$0")/.."
 env ROUNDS=${ROUNDS:-5} VERIFY=1 SNAP=1 bash tools/selfenv-ab.sh "$@"

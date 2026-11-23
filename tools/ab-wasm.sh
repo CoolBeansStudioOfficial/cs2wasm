@@ -1,6 +1,6 @@
 #!/bin/bash
 # A program compiled by two compilers, run interleaved: the first line of its output from each, round by round.
-#   bash tools/ab-wasm.sh <cs2wasmc A> <cs2wasmc B> <program.cs> [rounds=3] [node flags...]
+#   bash tools/ab-wasm.sh <il2wasm A> <il2wasm B> <program.cs> [rounds=3] [node flags...]
 # (for timings that move less than the machine's noise between two runs: on the homelab, with a heavy.sh slot)
 A=${1:?compiler A}; B=${2:?compiler B}; P=${3:?program}; N=${4:-3}; shift 4 2>/dev/null
 R=$(cd "$(dirname "$0")/.." && pwd)

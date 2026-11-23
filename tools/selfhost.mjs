@@ -1,14 +1,14 @@
-// Builds the self-hosted compiler (SPEC section 9, proof 4): cs2wasm's sources compiled by a cs2wasmc into one
+// Builds the self-hosted compiler (SPEC section 9, proof 4): il2wasm's sources compiled by an il2wasm into one
 // module, with the project's embedded resources (the library manifests and sources) as manifest resources and Roslyn's
 // assemblies as references.
-// usage: node tools/selfhost.mjs <cs2wasmc> <out.wasm> [--plugin-source <file.cs|dir>]... [--plugin-type <Type>]...
-//        [--generators <Assembly>=<dir of its sources>]... [cs2wasmc options...]
+// usage: node tools/selfhost.mjs <il2wasm> <out.wasm> [--plugin-source <file.cs|dir>]... [--plugin-type <Type>]...
+//        [--generators <Assembly>=<dir of its sources>]... [il2wasm options...]
 // --generators: source generators compiled into the toolchain (SPEC section 7.1), run when a build names the
 // assembly with -a (Godot's: --generators Godot.SourceGenerators=<godot>/modules/mono/editor/Godot.NET.Sdk/Godot.SourceGenerators)
 // --plugin-source, --plugin-type: plugin passes (SPEC section 7.1) compiled into the toolchain: their sources, and the
 // full names of their ICompilerPlugin classes (each with a constructor without parameters); the toolchain runs one
 // when asked with --plugin <Type>
-// (<cs2wasmc> is a command: the .NET build's cs2wasmc.exe, or `node host/run.mjs cs2wasm.wasm main --` for the
+// (<il2wasm> is a command: the .NET build's il2wasm.exe, or `node host/run.mjs il2wasm.wasm main --` for the
 // self-hosted one)
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
@@ -25,12 +25,12 @@ for (let i = 0; i < rest.length; i++) {
   else extra.push(rest[i]);
 }
 const walk = (d) => readdirSync(d).flatMap((n) => { const p = join(d, n); return statSync(p).isDirectory() ? (n === 'bin' || n === 'obj' ? [] : walk(p)) : [p]; });
-const src = join(root, 'src', 'Cs2Wasm');
+const src = join(root, 'src', 'Il2Wasm');
 const rel = (p) => relative(src, p).replaceAll('\\', '/');
 const lines = [];
-// the compiler's sources (as Cs2Wasm.csproj compiles them), the command line, the entry
+// the compiler's sources (as Il2Wasm.csproj compiles them), the command line, the entry
 for (const f of walk(src).filter((f) => f.endsWith('.cs') && !/^(Upstream|Godot)\//.test(rel(f))).sort()) lines.push(f);
-lines.push(join(root, 'src', 'Cs2Wasm.Cli', 'Cli.cs'), ...walk(join(root, 'src', 'Cs2Wasm.Wasm')).filter((f) => f.endsWith('.cs')).sort());
+lines.push(join(root, 'src', 'Il2Wasm.Cli', 'Cli.cs'), ...walk(join(root, 'src', 'Il2Wasm.Wasm')).filter((f) => f.endsWith('.cs')).sort());
 // the plugin passes compiled in: their sources, and the other part of Entry, which makes them known by name
 for (const p of pluginSources) lines.push(...(statSync(p).isDirectory() ? walk(p).filter((f) => f.endsWith('.cs')).sort() : [p]));
 // the source generators compiled in: an assembly's name and the directory of its sources (the classes that are an
@@ -54,19 +54,19 @@ if (pluginTypes.length > 0 || generators.length > 0) {
 {
     static partial void AddPlugins()
     {
-${pluginTypes.map((t) => `        Cs2Wasm.Cli.KnownPlugins.Add(new global::${t}());
-`).join('')}${generators.map((g) => `        Cs2Wasm.Frontend.KnownGenerators[${JSON.stringify(g.name)}] = () => new Microsoft.CodeAnalysis.ISourceGenerator[] { ${g.types.map((t) => `new global::${t}()`).join(', ')} };
+${pluginTypes.map((t) => `        Il2Wasm.Cli.KnownPlugins.Add(new global::${t}());
+`).join('')}${generators.map((g) => `        Il2Wasm.Frontend.KnownGenerators[${JSON.stringify(g.name)}] = () => new Microsoft.CodeAnalysis.ISourceGenerator[] { ${g.types.map((t) => `new global::${t}()`).join(', ')} };
 `).join('')}    }
 }
 `);
   lines.push(gen);
 }
-// its embedded resources, by the names Cs2Wasm.csproj gives them
+// its embedded resources, by the names Il2Wasm.csproj gives them
 for (const f of walk(join(src, 'Godot')).filter((f) => f.endsWith('.cs')).sort()) lines.push('--resource', `godot/${rel(f).slice(6)}=${f}`);
 for (const f of walk(join(src, 'Upstream')).filter((f) => f.endsWith('.cs') || f.endsWith('manifest.txt')).sort()) lines.push('--resource', `upstream/${rel(f).slice(9)}=${f}`);
-// Roslyn: the assemblies beside the .NET build of cs2wasmc
-// (CS2WASM_ROSLYN_DIR to take them from elsewhere)
-const bin = process.env.CS2WASM_ROSLYN_DIR ?? join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0');
+// Roslyn: the assemblies beside the .NET build of il2wasm
+// (IL2WASM_ROSLYN_DIR to take them from elsewhere)
+const bin = process.env.IL2WASM_ROSLYN_DIR ?? join(root, 'src', 'Il2Wasm.Cli', 'bin', 'Release', 'net11.0');
 lines.push('-r', join(bin, 'Microsoft.CodeAnalysis.dll'), '-r', join(bin, 'Microsoft.CodeAnalysis.CSharp.dll'));
 // (a compiler's memory: 4 GiB at most, all a 32-bit module can have. A program with a large library needs more than
 // the 1 GiB a module gets by default)
@@ -74,14 +74,14 @@ if (!extra.includes('--max-pages')) extra.push('--max-pages', '65536');
 lines.push('-o', out, ...extra);
 const rsp = out + '.rsp';
 const [cmd, ...pre] = compiler.split(' ');
-// The self-hosted compiler sees the host's files under one root with '/' separators (host/fs.mjs: CS2WASM_FS_ROOT):
+// The self-hosted compiler sees the host's files under one root with '/' separators (host/fs.mjs: IL2WASM_FS_ROOT):
 // on Windows the drive is the root, and the paths are written without it.
 const selfHosted = pre.some((a) => a.endsWith('.wasm'));
 const px = (s) => selfHosted && process.platform === 'win32' ? s.replace(/(^|=)[A-Za-z]:/, '$1').replaceAll('\\', '/') : s;
 const env = { ...process.env };
 if (selfHosted && process.platform === 'win32') {
-  env.CS2WASM_FS_ROOT ??= root.slice(0, 3);
-  if (process.env.LOCALAPPDATA) env.CS2WASM_CACHE ??= px(join(process.env.LOCALAPPDATA, 'cs2wasm'));
+  env.IL2WASM_FS_ROOT ??= root.slice(0, 3);
+  if (process.env.LOCALAPPDATA) env.IL2WASM_CACHE ??= px(join(process.env.LOCALAPPDATA, 'il2wasm'));
 }
 writeFileSync(rsp, lines.map(px).join('\n') + '\n');
 const r = spawnSync(cmd, [...pre, '@' + px(rsp)], { stdio: 'inherit', env });

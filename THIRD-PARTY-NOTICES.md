@@ -1,7 +1,7 @@
 # Third-party notices
 
-cs2wasm compiles other projects' sources into the modules it produces, and keeps changed copies of some of their files
-in this repository (`src/Cs2Wasm/Upstream`). Their licences apply to those files and to what is built from them.
+il2wasm compiles other projects' sources into the modules it produces, and keeps changed copies of some of their files
+in this repository (`src/Il2Wasm/Upstream`). Their licences apply to those files and to what is built from them.
 
 | What | Where it is used | Licence |
 |---|---|---|

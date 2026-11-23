@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- NativeAOT compiled to WebAssembly (NativeAOT-LLVM, browser-wasm): the side tools/bench.mjs compares cs2wasm with,
+  <!-- NativeAOT compiled to WebAssembly (NativeAOT-LLVM, browser-wasm): the side tools/bench.mjs compares il2wasm with,
        on the same target and in the same engine. The programs are tools/bench's. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>

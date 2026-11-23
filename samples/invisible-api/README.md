@@ -1,6 +1,6 @@
 # The Invisible API's first slice
 
-A small multiplayer-style game in plain C# and a cs2wasm plugin that turns it into a server's view of it without
+A small multiplayer-style game in plain C# and an il2wasm plugin that turns it into a server's view of it without
 changing the game (docs/FINISH.md 9.4, requirement 3).
 
 - `Game/Arena.cs`: players keyed by id (position, velocity from input, health, a fire cooldown, all private), a coin
@@ -21,12 +21,12 @@ changing the game (docs/FINISH.md 9.4, requirement 3).
 - `driver.mjs`: plays `script.txt` against the module as a server would.
 - `expected-writes.txt`: the classification the check expects.
 
-The check (`tests/Cs2Wasm.Tests/InvisibleCheck.cs`, "invisible-api slice" in the suite, both modes) plays the script
+The check (`tests/Il2Wasm.Tests/InvisibleCheck.cs`, "invisible-api slice" in the suite, both modes) plays the script
 with the driver and under .NET (the game without the plugin; the plugin's answers computed from the private state by
 reflection and by running the ticks) and compares: the game's own output, each gate answer against whether the fire
 happened, each view, each prediction and catch-up against running the ticks, every value changed by an input marked
 (but for the unknown members) and no tick marking anything, the inputs seen. Run it alone:
 
 ```bash
-dotnet run --project tests/Cs2Wasm.Tests -- invisible
+dotnet run --project tests/Il2Wasm.Tests -- invisible
 ```

@@ -1,7 +1,7 @@
 // Writes a copy of a module whose imported memory may grow further: node raise-memory.mjs in.wasm out.wasm [pages=65536]
 // The self-hosted compiler at tests/out/self2 was built with the default greatest memory (16,384 pages, 1 GiB), and
 // compiling a program that uses GodotSharp needs more (it ends with OutOfMemoryException at the limit). The limit is
-// a number in the module's import of env.memory; this rewrites that number (cs2wasmc --max-pages sets it at build
+// a number in the module's import of env.memory; this rewrites that number (il2wasm --max-pages sets it at build
 // time: rebuilding the toolchain with it is the proper way, and this copy stands in until then).
 import { readFileSync, writeFileSync } from 'node:fs';
 

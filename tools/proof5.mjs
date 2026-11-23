@@ -2,10 +2,10 @@
 //   node tools/proof5.mjs oracle [dir]       the game under stock Godot 4.7.2 .NET on the desktop: its engine-call logs
 //                                            (oracle-calls.txt and oracle-calls-panic.txt, default in
 //                                            tests/Godot/proof5_hello2d)
-//   node tools/proof5.mjs toolchain          the self-hosted compiler the page runs: cs2wasm compiled by the .NET-hosted
-//                                            cs2wasmc, without threads, with Godot's source generators compiled in
+//   node tools/proof5.mjs toolchain          the self-hosted compiler the page runs: il2wasm compiled by the .NET-hosted
+//                                            il2wasm, without threads, with Godot's source generators compiled in
 //                                            (tests/out/proof5/toolchain.wasm; 15 to 30 min)
-//   node tools/proof5.mjs stub               the game compiled by the .NET-hosted cs2wasmc, run on the Node stub
+//   node tools/proof5.mjs stub               the game compiled by the .NET-hosted il2wasm, run on the Node stub
 //                                            engine replaying the oracle's answers; the calls must be the oracle's
 //   node tools/proof5.mjs web                the web variant of the Godot project, exported with the stock templates,
 //                                            and everything the page serves (tests/out/proof5/site)
@@ -15,8 +15,8 @@
 //                                            compiler built, no build in the page)
 //   node tools/proof5.mjs serve [--build] [--port n]   the site for a browser, with game-net.wasm as the page's
 //                                            module (--build: web --no-toolchain first); stays up
-// Environment: CS2WASM_GODOT_EDITOR (the stock editor's console executable), CS2WASM_CACHE, CS2WASM_SELF (the
-// self-hosted compiler, default tests/out/self2/cs2wasm.wasm here or in the main checkout), CS2WASM_BROWSER.
+// Environment: IL2WASM_GODOT_EDITOR (the stock editor's console executable), IL2WASM_CACHE, IL2WASM_SELF (the
+// self-hosted compiler, default tests/out/self2/il2wasm.wasm here or in the main checkout), IL2WASM_BROWSER.
 import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { project, outDir, api, frames, editor, run } from '../tests/Godot/proof5_hello2d/check/common.mjs';
@@ -31,7 +31,7 @@ async function main() {
     for (const [file, extra] of [['oracle-calls.txt', []], ['oracle-calls-panic.txt', ['--proof5-panic']]]) {
       const out = resolve(rest[0] ?? project, file);
       const status = run(editor(), ['--headless', '--path', project, '--fixed-fps', String(frames), '--', '--proof5-drive', ...extra],
-        { env: { ...process.env, CS2WASM_CALL_LOG: out, CS2WASM_GODOT_API: api } });
+        { env: { ...process.env, IL2WASM_CALL_LOG: out, IL2WASM_GODOT_API: api } });
       console.log(`oracle: stock Godot exited ${status}; log at ${out}`);
     }
   } else if (step === 'toolchain') {
@@ -43,7 +43,7 @@ async function main() {
   } else if (step === 'check') {
     process.exit(await (await import('../tests/Godot/proof5_hello2d/check/browser.mjs')).check(rest));
   } else if (step === 'serve') {
-    // the site served for a person's browser, with the game's module built by the .NET-hosted cs2wasmc (the web
+    // the site served for a person's browser, with the game's module built by the .NET-hosted il2wasm (the web
     // step's game-net.wasm) in place of the build in the page: --build runs `web --no-toolchain` first
     const { web, site } = await import('../tests/Godot/proof5_hello2d/check/web.mjs');
     const { serve } = await import('../host/web/server.mjs');

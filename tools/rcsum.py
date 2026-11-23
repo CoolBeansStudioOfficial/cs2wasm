@@ -1,4 +1,4 @@
-# Sums a CS2WASM_COUNT_RC run's site counts (the host's listing, CS2WASM_COUNT_RC_TOP large) by function, charging
+# Sums an IL2WASM_COUNT_RC run's site counts (the host's listing, IL2WASM_COUNT_RC_TOP large) by function, charging
 # each struct helper's own count operations to the functions that call it (in proportion to their calls).
 # usage: python tools/rcsum.py counts.txt [top=40]
 import re, sys
