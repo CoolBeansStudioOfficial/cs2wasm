@@ -1283,6 +1283,8 @@ sealed partial class FunctionCompiler
                 else if (mem is IFieldSymbol fld)
                 {
                     var ft = T.Resolve(fld.Type, Map);
+                    // (a store by the field's offset, no mark beside it: FieldLoads.cs leaves the field alone)
+                    D.NoteFieldEscape(fld);
                     PushTypedConstant(val, ft);
                     var o = Types.IsRef(ft) ? Own.Stable : Own.None;
                     int v = E.AddLocal(Types.WasmType(ft) ?? ValType.I32); E.Set(v);

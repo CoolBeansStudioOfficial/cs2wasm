@@ -662,7 +662,11 @@ sealed partial class FunctionCompiler
                 body.Insert(i, new Instr { Op = Op.GlobalSet, Ref = D.StackPointer, Pos = -1 });
                 body.Insert(i, new Instr { Op = Op.LocalGet, Imm = _spEntry, Pos = -1 });
             }
-        E.Fn.Body.RemoveAll(i => i.Op == Op.Nop);
+        // (the marks of the fields the method stores stay: FieldLoads.cs. No field is read once in the machine's own
+        // code: its try statements keep no record for a throw's first pass and their catch sites do not run it, so a
+        // filter further up the stack may have run, and stored, before a handler here goes on with a loop)
+        if (!Wasm.FieldLoads.Without("machine")) E.Fn.NoFieldHoist = true;
+        E.Fn.Body.RemoveAll(i => i.Op == Op.Nop && i.Ref is not FieldStoreMark);
     }
 
     static IEnumerable<ControlFlowRegion> AllRegions(ControlFlowRegion r)

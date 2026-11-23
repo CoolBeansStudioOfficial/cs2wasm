@@ -1013,6 +1013,32 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   `String.Join`'s counted reads (read, not built), Dequeue's and Pop's count pair (seen, not built). **Found, not
   fixed, on main too:** a ConditionalWeakTable's values are not let go when their keys die while the table lives.
   On the homelab at 66374eb (the last commit that changes code): suite 224/224 checked and as shipped (343 s); 088 alone both ways (at 97f3772 the suite was 222/223 both ways, 088's timer line; at 9e254f8 221/224 both ways, tests 055, 058 and 107 not compiled, "consumed struct parameter not moved in Dictionary<string, ResourceLocator>.Add": the owned insert for a value that is a struct, fixed in 66374eb, test 237 has the case; the earlier stages 222/222 at a7918b9, c5395a0 and 0e981fa). Stress, 200 loaded runs a mode: 235, 222 and 236 at 9e254f8 and 237 at 66374eb the same in every run of both modes; 139 the same in every run and 127 differing in 7 of 400 at 9b4639b (its "async 5" line, main's rate; 4 of 400 at a671855). The self-hosted compiler at 66374eb, built as it is and with `CS2WASM_NO_FLAT_DESTROY=1 CS2WASM_NO_OWNED_INSERT=1` (tools/selfhost-switch.sh: 32,558,663 and 32,292,082 bytes, 0.8% larger): both compile hello world to the same module (27,709 bytes), 9.18 to 9.48 s as it is and 9.22 to 9.47 s switched, three rounds in turn, peak memory 344 MB both; tools/selfdet.mjs: self = net, byte for byte (27,721 bytes); the same at 0e981fa and 97f3772. Not run on the homelab: frames.mjs (it has no Emscripten); nothing was measured with threads.
+- 2026-11-23, claude/field-loads-1 (merged with main 3dbef69; not merged into main; docs/AUDIT.md A3.5 "Field loads
+  by the field's identity"): a field of an object in a local read once before a loop that nothing in it can store,
+  an array's length likewise, a field read a second time with nothing between that can store it, and a callee
+  that reads fields of an object it is given inlined into loops (`CS2WASM_NO_FIELD_HOIST=1`; tests 230 to 234).
+  Things found and fixed on the way: a field of a field of a null was read through whatever address 0 holds
+  ("memory access out of bounds" from a loop that takes no turn), and a loop that takes no turn paid for what its
+  turns read (the tree scene's median 5% to 7% up on the homelab): what a loop reads only after its test is now
+  read behind a copy of the test; and the suite found test 207's reference to one field walked to the next
+  (Unsafe.Add): a field's address taken now takes every field of that object out. The churn scene on the desk, with and without in turn: 0.069 to 0.071 ms, 1.33x
+  to 1.35x NativeAOT-LLVM's, against 0.083 to 0.086, 1.56x to 1.60x (main: 1.58x): **not reached, two fifths of the
+  distance closed**; on the homelab before the second fix 0.089 to 0.093 against 0.100 to 0.103. Tree after the second fix, the two
+  builds in turn on the desk: 0.0480 to 0.0487 ms against 0.0471 to 0.0494, level (against NativeAOT-LLVM on the
+  loaded desk 1.68x to 1.80x and 1.60x to 1.70x; main: 1.63x; on the loaded homelab at the end 0.069 against 0.065, below: not explained); collections, strings, bigdrop and bench.mjs: nothing (the homelab's
+  geometric mean 1.006x without the pass). Hello world 27,657 bytes (27,642 without); the self-hosted compiler
+  0.56% larger, built in the same time, as fast (9.0 to 9.3 s against 9.1 to 10.3). Each condition that takes a
+  field out has a line of the tests that changes without it (tools/field-hoist-proof.sh), but `volatile` and
+  `machine`, which stay as guards. **Found by the way and fixed here, main's: collections that grow by
+  moving (claude/colstr-2) broke the self-hosted compiler on every program larger than hello world**
+  (Rt.MoveItems left an array whose type can be on a cycle an array of bytes, which is freed 32 bytes into the
+  block such an array has; with the pass and without it: tests 207, 220, 222, 230, 232 trapped, one run did not
+  end): such an array is copied now (`CS2WASM_ARRAY_MOVE_CYCLE=1`: the old move), test 240 shows it under the
+  .NET-hosted compiler, and the self-hosted compiler compiles 145, 207, 220, 222, 230 and 232 byte for byte as
+  the .NET-hosted one (homelab, 601c0e1). Checked on the homelab at 7393522: suite 226 of 227 checked (088's
+  timer line; alone it passes) and 227 of 227 as shipped; stress, 200 loaded runs a mode: 230 to 234, 240, 139
+  the same in every run, 127 differed in 4 of 400. The homelab at the last commit, with and without the pass in turn (five rounds, other sessions' jobs beside: the rounds spread by a third): churn's median 0.095 ms against 0.107; **tree 0.069 against 0.065, the pass's higher in four rounds of five, where the desk's two sets were level: not explained** (the scene's Build and Walk are the same code in both modules, 345 and 356 bytes, Tree(int) 18 bytes shorter with the pass; tree-frame.cs there: build 17.9 to 19.2 us against 17.5 to 18.0, walk 37.3 to 40.3 and once 43.8 against 38.2 to 40.4, the indexed walk 24.0 to 25.4 and once 29.0 against 25.9 to 27.7); collections 0.0076 against 0.0070 and strings 0.0085 against 0.0084 at their lowest, inside the rounds' spread; bench-ab's geometric mean 1.004x without the pass; churn-array's list 94.8 to 99.1 us (once 109.8) against 104.9 to 111.2. The self-hosted compiler there: built in 259 s with the pass and 249 s without, 32,298,942 bytes against 32,189,404 (0.34%), hello world in 9.4 to 9.5 s against 9.4 to 10.0, peak memory 344 MB both, and built either way it compiles 145, 207 and 220 (with the pass 230 too) byte for byte as the .NET-hosted one. Not done: a test
+  with a host that calls back; main's own checkout with the fix.
 - 2026-11-22, claude/load-flakes-1 (from main 1f7a807, merged with main 3dbef69): the tests that differ under load
   (docs/AUDIT.md A3.5, "Tests that differ under load"). Runtime: a stale note on a top that code still holds is
   taken off (DrainKills), so its last release checks; the top an ownership that turns round leaves is held by the
