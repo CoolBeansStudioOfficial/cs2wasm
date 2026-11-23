@@ -992,6 +992,9 @@ sealed partial class FunctionCompiler
             case "Rt.NoWaitingTop": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_WAITING_TOP") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoNodePath": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_NODE_PATH") == "1" ? 1 : 0); return Own.None;
             case "Rt.NodePathBreak": E.I32(int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_NODE_PATH_BREAK"), out int npb) ? npb : 0); return Own.None; // (a test's: one rule of the node path left out, tests/Conformance/201)
+            case "Rt.PartWeak": E.Call(Rt.PartWeakFn); return Own.None;
+            case "Rt.NoPlainParts": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_PLAIN_PARTS") == "1" ? 1 : 0); return Own.None;
+            case "Rt.PlainPartsBreak": E.I32(int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_PLAIN_PARTS_BREAK"), out int ppb) ? ppb : 0); return Own.None; // (a test: one rule of the plain parts left out, tests/Conformance/202)
             case "Rt.NoFusedJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FUSED_JOIN") == "1" ? 1 : 0); return Own.None;
             case "Cs2WasmArrays.BoxesElements": D.MarkBoxedElements(); return Own.None;
             case "Rt.ArenaFinalizeObject": E.Call(Rt.ArenaFinFn); return Own.None;
