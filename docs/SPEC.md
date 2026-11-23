@@ -414,17 +414,21 @@ are. il2wasm keeps:
 - the host, the snapshot, the self-host tooling;
 - the conformance suite, stress, frames and bench tools, which become the oracle for the new front end.
 
-The IL front end replaces the operation-tree front end; the memory analyses that keyed on source shapes are re-derived
-on the IR from IL patterns. Until the IL front end passes the whole conformance suite, both front ends run the suite
-side by side and every difference is a test.
+The IL front end replaces the operation-tree front end, which is removed, not kept beside it; the memory analyses
+that keyed on source shapes are re-derived on the IR from IL patterns.
 
 ---
 
 ## 13. Testing and evidence
 
-- **The oracle is .NET.** A conformance suite of projects (programs, and projects with package and project references)
-  runs under .NET and through the compiler; their output (console output, or the logged sequence of import and native
-  library calls) must match exactly, checked and as shipped, and under heavy machine load.
+- **The oracle is .NET.** Test projects run under .NET and through the compiler; their output (console output, or
+  the logged sequence of import and native-library calls) must match exactly, checked and as shipped, and under heavy
+  machine load.
+- **The main suite is NetWasm's (owner)**, its far more complete set of test projects run against il2wasm with .NET as
+  the oracle, with the expected outputs taken from .NET, never from NetWasm's own profile. Its tests are used as its
+  licence allows (run from a pinned checkout of its repository if they may not be copied), and never shape the
+  compiler's code. The tests carried over from cs2wasm cover what NetWasm's do not: cycles, finalizers, weak
+  references, threads under load, the memory model's edge cases.
 - **Native-library oracles are .NET with the native build.** A 2dog project must make the same sequence of engine calls
   under .NET with 2dog's native libgodot as compiled to WASM with libgodot's WASM build.
 - **The self-hosted compiler is a correctness check, not only a speed one.** Every change to the runtime, the IR or
