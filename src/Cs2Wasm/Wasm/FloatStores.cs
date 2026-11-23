@@ -42,6 +42,8 @@ static class FloatStores
                         void Add(Op o, long imm = 0) => nb.Add(new Instr { Op = o, Imm = imm, Pos = b[i].Pos });
                         // x == x ? x : NaN
                         Add(Op.LocalTee, t);
+                        // (tried: the bits chosen by a select on integers, stored as an integer, which the engine makes
+                        // without a branch: slower, tools/churn-raw.cs's read loop 29.9 us a frame to 34.8)
                         if (d) Add(Op.F64Const, unchecked((long)0xFFF8000000000000)); else Add(Op.F32Const, unchecked((int)0xFFC00000));
                         Add(Op.LocalGet, t); Add(Op.LocalGet, t); Add(d ? Op.F64Eq : Op.F32Eq);
                         Add(Op.Select);
