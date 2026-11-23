@@ -98,7 +98,9 @@ sealed partial class FunctionCompiler
         var b = E.Fn.Body;
         if (o != Own.Unstable || b.Count == 0 || _plainLoadAt == b.Count || s_noCountedLoads) return o;
         var last = b[^1];
-        if (last.Op != Op.I32Load || last.Ref != null) return o;
+        // (a load of a field that is not readonly carries its tag in a program with threads too, FieldLoads.cs: it is
+        // made a read that counts all the same, and then read once by no loop)
+        if (last.Op != Op.I32Load || last.Ref != null && last.Ref is not FieldTag { Readonly: false }) return o;
         b.RemoveAt(b.Count - 1);
         if (last.Imm != 0) { E.I32((int)last.Imm); E.Op(Op.I32Add); }
         // (a slot of an object no other thread can reach: no other thread stores there, TypedCounts.cs)

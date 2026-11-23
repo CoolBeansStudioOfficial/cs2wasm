@@ -54,7 +54,7 @@ static class Program
     {
         var mine = new Gem[8];
         long sum = 0;
-        for (int i = 0; i < 400000; i++)
+        for (int i = 0; i < 1500000; i++)
         {
             mine[i & 7] = s_gem;
             sum += mine[(i + 3) & 7]?.V ?? 0;
@@ -81,6 +81,12 @@ static class Program
         var junk = new List<Gem>();
         for (int i = 0; i < 1000; i++) junk.Add(new Gem { V = -i, Name = "j" + i });
         Console.WriteLine(total + " " + s_gem.V + " " + s_gem.Name + " " + junk.Count);
+        // (every count the threads took of the Gem given back: the static's is the last, and the Gem goes with it;
+        // a count lost one way keeps it, the other way frees it too soon)
+        var weak = new WeakReference<Gem>(s_gem);
+        s_gem = null!;
+        for (int i = 0; i < 3; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
+        Console.WriteLine("gem gone " + !weak.TryGetTarget(out _));
 
         var setter = new Thread(() => { Thread.Sleep(20); lock (s_gate) { s_flag.N = 7; s_flag.Done = true; } });
         setter.Start();
