@@ -10,7 +10,7 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 struct Item { public long Imm; public object? Ref; public int V; }
-sealed class Owner { public List<Item> Items = new(); public Dictionary<int, Item> Map = new(); public HashSet<(int, object?)> Set = new(); }
+sealed class Owner { public List<Item> Items = new(); public Dictionary<int, Item> Map = new(); public HashSet<(int, object?)> Set = new(); public Queue<Item> Q = new(); }
 static class P
 {
     // a new list with a capacity, filled past it with items that refer to no object of a cycle, then given to
@@ -23,7 +23,11 @@ static class P
         var map = new Dictionary<int, Item>(n / 4);
         var set = new HashSet<(int, object?)>(n / 4);
         for (int i = 0; i < n / 2; i++) { map[i] = new Item { Imm = i, V = round }; set.Add((i, null)); }
-        f.Items = body; f.Map = map; f.Set = set;
+        var q = new Queue<Item>(n / 4 + 4);
+        for (int i = 0; i < n / 4 + 4; i++) q.Enqueue(new Item { Imm = i, V = round });
+        q.Dequeue(); q.Dequeue(); q.Enqueue(new Item { Imm = -1, V = round }); q.Enqueue(new Item { Imm = -2, V = round });
+        for (int i = 0; i < n / 2; i++) q.Enqueue(new Item { Imm = i, Ref = (i & 3) == 0 ? "q" : null, V = round });
+        f.Items = body; f.Map = map; f.Set = set; f.Q = q;
     }
     [UnmanagedCallersOnly(EntryPoint = "main")] static void Main()
     {
@@ -45,6 +49,7 @@ static class P
             foreach (var it in a.Items) { if (it.V != round) bad++; total += it.Imm; }
             foreach (var kv in a.Map) { if (kv.Value.Imm != kv.Key) bad++; }
             total += a.Set.Count;
+            foreach (var it in a.Q) { if (it.V != round) bad++; total += it.Imm; }
             foreach (var k in keep) { long b0 = k[0]; for (int i = 1; i < k.Length; i++) if (k[i] != b0 + i) { bad++; break; } }
             foreach (var k in items) { for (int i = 0; i < k.Length; i++) if (k[i].V != i || k[i].Imm != k[0].Imm) { bad++; break; } }
         }

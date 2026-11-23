@@ -498,6 +498,8 @@ sealed partial class RuntimeGen
         _init.Exports.Add("init");
     }
 
+    bool FreeFixedAllowed => !D.ThreadMode && !s_noFlatDestroy && !D.Options.Checked && !RuntimeFns.ShareCheckOn;
+
     public void Prepare()
     {
         // library pieces every module needs
@@ -505,6 +507,8 @@ sealed partial class RuntimeGen
         D.LibMethod("Cs2Wasm.Runtime.Rt", "ReportUnhandled", 1);
         D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "InvalidCast", 2);
         D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeObject", 2);
+        // (the free of a known size written where an object dies: EmitDestroyDispatch, WasmModule.ExpandLeafReleases)
+        if (FreeFixedAllowed) D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeFixed", 2);
         D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1);
         if (D.ThreadMode && RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareCheckFail", 1);
         if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0); }
@@ -600,6 +604,45 @@ sealed partial class RuntimeGen
         _destroyFns.TryGetValue(id, out var f) && f.Body.All(i => i.Op != Op.Call && i.Op != Op.CallIndirect || ReferenceEquals(i.Ref, D.Rt.Free) || ReferenceEquals(i.Ref, D.Rt.OnDestroy));
 
     bool HasDestroy(int id) => _destroyFns.ContainsKey(id);
+
+    /// <summary>CS2WASM_NO_FLAT_DESTROY=1: a release that names its class goes straight to the class's destruction
+    /// only where that frees the object and nothing else (a leaf), as before.</summary>
+    static readonly bool s_noFlatDestroy = Environment.GetEnvironmentVariable("CS2WASM_NO_FLAT_DESTROY") == "1";
+    HashSet<int>? _flat;
+
+    /// <summary>The classes whose destruction is flat: it frees the object after letting go of fields that each hold
+    /// an object of a leaf class by its very type (a string, an array of numbers, a sealed class without references),
+    /// and does nothing else: no finalizer, no field of a type whose object could hold a reference, not a member of a
+    /// cycle's group. Such a destruction runs none of the program's code and nests one level at most, so a release
+    /// that names the class (FunctionCompiler.ExactTypeHint) calls it as it calls a leaf's: without the dispatch on
+    /// the object's type and without the count of nested destructions (rt.destroy). Decided once, on the bodies as
+    /// they are before the final pass rewrites any release in them. Without threads.</summary>
+    bool IsFlatDestroy(int id)
+    {
+        if (s_noFlatDestroy || D.ThreadMode) return false;
+        if (_flat == null)
+        {
+            _flat = [];
+            var leafWrappers = _releaseOf.Where(kv => IsLeafDestroy(kv.Key)).Select(kv => kv.Value).ToHashSet();
+            foreach (var (tid, f) in _destroyFns)
+            {
+                if (IsLeafDestroy(tid) || D.DisplayById.ContainsKey(tid) || D.SyntheticById.ContainsKey(tid) || tid <= 1 || tid >= D.TypeById.Count) continue;
+                if (D.TypeById[tid] is not INamedTypeSymbol { TypeKind: TypeKind.Class } || D.Arenas.SccOf(tid) != 0) continue;
+                bool flat = true;
+                foreach (var i in f.Body)
+                {
+                    if (i.Op == Op.CallIndirect || i.Op == Op.Loop) { flat = false; break; }
+                    if (i.Op != Op.Call) continue;
+                    if (ReferenceEquals(i.Ref, D.Rt.Free) || ReferenceEquals(i.Ref, D.Rt.OnDestroy)) continue;
+                    if (ReferenceEquals(i.Ref, D.Rt.Release) && i.Imm2 != 0 && IsLeafDestroy((int)i.Imm2 - 1)) continue;
+                    if (i.Ref is WasmFunction w && leafWrappers.Contains(w)) continue;
+                    flat = false; break;
+                }
+                if (flat) _flat.Add(tid);
+            }
+        }
+        return _flat.Contains(id);
+    }
 
     WasmFunction MakeDestroy(int id)
     {
@@ -1606,6 +1649,9 @@ sealed partial class RuntimeGen
         f = D.Module.AddFunction("rt.release exact " + id, new FuncType([ValType.I32], []));
         var e = new Emitter(f);
         e.Get(0); e.Call(rt.ReleaseOf(t));
+        // (the class it is of, for the final pass: where such an object's destruction only frees it, the count's test
+        // and that destruction in place of the dispatch, as at a typed local's release; FlatDestroys)
+        if (!s_noFlatDestroy && FunctionCompiler.ExactTypeHint(D, t) is int hint and not 0) e.Body[^1] = e.Body[^1] with { Imm2 = hint };
         _releaseOfType[id] = t;
         return _releaseOf[id] = f;
     }
@@ -1677,6 +1723,9 @@ sealed partial class RuntimeGen
         {
             D.Module.ReleaseFn = D.Rt.Release;
             D.Module.LeafDestroy = id => IsLeafDestroy(id) && D.ExtId(id) >= 0 ? _destroyFns[id] : null;
+            D.Module.FlatDestroy = id => !IsLeafDestroy(id) && IsFlatDestroy(id) && D.ExtId(id) >= 0 ? _destroyFns[id] : null;
+            D.Module.FreeFn = D.Rt.Free;
+            if (FreeFixedAllowed) D.Module.FreeFixedFn = D.LibMethod("Cs2Wasm.Runtime.Rt", "FreeFixed", 2).Fn;
         }
         else if (D.Rt.ReleasePlainIfMade is { } rp)
         {
@@ -1698,7 +1747,8 @@ sealed partial class RuntimeGen
                     w.Get(0); w.Load(Op.I32Load, 4); w.I32(1); w.Op(Op.I32Eq);
                     w.If(); w.Get(0); w.Call(ds); w.Op(Op.Return); w.End();
                 }
-                w.Get(0); w.Load(Op.I32Load, 4); w.I32(D.LeafTypeCount); w.Op(Op.I32LtU);
+                // (and a class whose destruction is flat: one level below it at most, IsFlatDestroy)
+                w.Get(0); w.Load(Op.I32Load, 4); w.I32(Math.Max(D.LeafTypeCount, D.FlatTypeCount)); w.Op(Op.I32LtU);
                 w.If(); w.Get(0); w.Call(now); w.Op(Op.Return); w.End();
             }
             // (threads: the objects that wait are kept in a list of the thread's own, Rt.PendDestroy; a dead object's

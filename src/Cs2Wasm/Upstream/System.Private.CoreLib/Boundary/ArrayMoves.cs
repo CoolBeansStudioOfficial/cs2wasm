@@ -50,5 +50,40 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(from + 12, fl * size);
             return true;
         }
+
+        /// <summary>A queue grows (an edit of Queue.cs, the manifest): its array is full and its first item is at
+        /// `head`, so the items are two stretches, from head to the array's end and from its start to head, which go
+        /// to the new array's start one after the other. As MoveRange otherwise: under the same conditions the
+        /// references move and the old array is left an array of bytes; false, and nothing done, when the items hold
+        /// no reference, with threads, when anything else refers to the old array, or when it is not full (a queue
+        /// trimmed or given room by EnsureCapacity copies).</summary>
+        public static bool MoveRotated<T>(T[] from, int head, T[] to, int n)
+        {
+            if (!System.Runtime.CompilerServices.RuntimeHelpers.IsReferenceOrContainsReferences<T>()) return false;
+            return MoveItemsRotated(AddressOf(from), head, AddressOf(to), n);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static bool MoveItemsRotated(int from, int head, int to, int n)
+        {
+            int mode = ArrayMoveMode();
+            if (mode == 1 || ThreadMode() || from == 0 || to == 0 || from == to) return false;
+            int held = Mem.LoadI32(from);
+            if ((held != 1 && !(mode == 2 && held > 1)) || Mem.LoadI32(to) != 1 || Mem.LoadI32(from + 4) != Mem.LoadI32(to + 4)) return false;
+            // (as in MoveItems: an array of a type that can be on a cycle is copied, its block has the arena words)
+            if (mode != 3 && SccOf(Mem.LoadI32(from + 4)) != 0) return false;
+            if (ArrayRankAt(from) != 1) return false;
+            int fl = Mem.LoadI32(from + 12), tl = Mem.LoadI32(to + 12);
+            if (n != fl || n <= 0 || n > tl || (uint)head >= (uint)fl) return false;
+            int size = ArrayElementSizeAt(from);
+            if (fl > 0x7fffffff / size) return false;
+            int first = fl - head;
+            Mem.Copy(to + 16, from + 16 + head * size, first * size);
+            if (head > 0) Mem.Copy(to + 16 + first * size, from + 16, head * size);
+            if (mode == 2) { Mem.Fill(from + 16, 0, n * size); return true; }
+            Mem.StoreI32(from + 4, MarkConstructed<byte[]>());
+            Mem.StoreI32(from + 12, fl * size);
+            return true;
+        }
     }
 }

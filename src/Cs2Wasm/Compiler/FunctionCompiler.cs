@@ -365,7 +365,7 @@ sealed partial class FunctionCompiler
                 case IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None, Initializer: { } init }: MarkAddr(init.Value); break;
                 case ISimpleAssignmentOperation { IsRef: true } sa: MarkAddr(sa.Value); break;
                 // (a call that gives a reference into a collection's storage: StorageKeeps.cs)
-                case IInvocationOperation or IPropertyReferenceOperation: NoteStorageSite(op); MarkNestedWrite(op); break;
+                case IInvocationOperation or IPropertyReferenceOperation or IObjectCreationOperation: NoteStorageSite(op); MarkNestedWrite(op); break;
                 default: MarkNestedWrite(op); break;
             }
     }
@@ -528,6 +528,25 @@ sealed partial class FunctionCompiler
 
     int ExactTypeHint(ITypeSymbol? t) => t == null ? 0 : ExactTypeHint(D, T.Resolve(t, Map));
 
+    /// <summary>CS2WASM_NO_STORE_HINT=1: a store through a site (a field, an array's element) names the class of what
+    /// the place held only by the site's own type, not by the type the generic code is compiled for.</summary>
+    static readonly bool s_noStoreHint = Environment.GetEnvironmentVariable("CS2WASM_NO_STORE_HINT") == "1" || Environment.GetEnvironmentVariable("CS2WASM_NO_FLAT_DESTROY") == "1";
+
+    /// <summary>The same for a store's old value in generic code, only where it can pay: a sealed class that looks
+    /// flat from its fields (Driver.LooksFlat). Any other class would only make the instantiations' bodies differ
+    /// by a number that nothing uses (they are merged while they are the same).</summary>
+    int StoreHint(ITypeSymbol? t)
+    {
+        if (t == null || s_noStoreHint) return 0;
+        var r = T.Resolve(t, Map);
+        int h = ExactTypeHint(D, r);
+        return h != 0 && D.LooksFlat(r) ? h : 0;
+    }
+
+    /// <summary>CS2WASM_FLAT_DESTROY_BREAK=1 (test 235's proof that the rule is relied on): a place of a class that
+    /// is not sealed, whose name begins with "Unsealed", counts as holding objects of that very class.</summary>
+    static readonly bool s_exactBreak = Environment.GetEnvironmentVariable("CS2WASM_FLAT_DESTROY_BREAK") == "1";
+
     /// <summary>The same for a type that is already resolved (the runtime's own loops over an array's elements).</summary>
     internal static int ExactTypeHint(Driver D, ITypeSymbol t, bool plain = false)
     {
@@ -535,7 +554,7 @@ sealed partial class FunctionCompiler
         if (Types.IsString(t)) return 2;
         if (t is IArrayTypeSymbol { Rank: 1 } at)
             return at.ElementType is INamedTypeSymbol { IsValueType: true } et && Types.PrimOf(et) != Prim.None ? D.TypeId(D.Types.Canonical(t)) + 1 : 0;
-        if (t is INamedTypeSymbol { TypeKind: TypeKind.Class, IsSealed: true, IsGenericType: false } nt && !Types.IsImmortalType(nt))
+        if (t is INamedTypeSymbol { TypeKind: TypeKind.Class, IsGenericType: false } nt && (nt.IsSealed || s_exactBreak && nt.Name.StartsWith("Unsealed", StringComparison.Ordinal)) && !Types.IsImmortalType(nt))
         {
             for (var c = nt.ContainingType; c != null; c = c.ContainingType) if (c.IsGenericType) return 0;
             return D.TypeId(D.Types.Canonical(nt)) + 1;

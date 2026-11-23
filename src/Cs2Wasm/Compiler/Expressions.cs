@@ -358,7 +358,7 @@ sealed partial class FunctionCompiler
             {
                 ToOwned(o, t);
                 int nv = Scratch(ValType.I32); E.Set(nv);
-                E.Get(v.Local); E.Call(Rt.ReleaseOf(t));
+                E.Get(v.Local); ReleaseOf(t);
                 E.Get(nv); E.Set(v.Local);
                 FreeScratch(ValType.I32, nv);
             }
@@ -465,9 +465,19 @@ sealed partial class FunctionCompiler
             }
             E.Get(old);
             // (a constructor's first store to its object's field replaces null: InitStores.cs decides at the end)
-            if (site != null) { pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink); if (storeLock) { E.Get(took); E.Call(site.StoreUnlock); } }
-            else if (byAddress) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.UnlinkAt(t)); if (D.ThreadMode) { E.Get(took); E.Call(D.Arenas.StoreLockAt(t, false)); } }
-            else E.Call(initKey != null ? D.InitStoreRelease(E.Fn, initKey) : Rt.ReleaseOf(t));
+            if (site != null)
+            {
+                pushContainer!(); PushSlot(); E.Call(fresh || owned ? site.UnlinkFresh : site.Unlink);
+                // (the class of what the place held, by this code's own types: a List<T>'s or a Dictionary's store,
+                // compiled for a T that is a sealed class whose objects hold only leaves, names that class, and
+                // where the site turns out plain the release is the class's own: StoreHint, Arenas.Resolve)
+                if (StoreHint(t) is int sh and not 0) E.Body[^1] = E.Body[^1] with { Imm2 = sh };
+                if (storeLock) { E.Get(took); E.Call(site.StoreUnlock); }
+            }
+            else if (byAddress) { pushAddr(); if (offset != 0) { E.I32(offset); E.Op(Op.I32Add); } E.Call(D.Arenas.UnlinkAt(t)); if (StoreHint(t) is int ah and not 0) E.Body[^1] = E.Body[^1] with { Imm2 = ah }; if (D.ThreadMode) { E.Get(took); E.Call(D.Arenas.StoreLockAt(t, false)); } }
+            else if (initKey != null) E.Call(D.InitStoreRelease(E.Fn, initKey));
+            // (what the place held is of the place's class: named, as a local's release is)
+            else ReleaseOf(t);
             if (took >= 0) FreeScratch(ValType.I32, took);
             FreeScratch(ValType.I32, old); FreeScratch(ValType.I32, a);
         }
@@ -2702,17 +2712,32 @@ sealed partial class FunctionCompiler
             var s = pr.Property.SetMethod ?? throw new CompileException("property has no setter");
             var vt = Type;
             int v;
+            var sm = Accessor(F.SubstMethod(s));
+            // (a fresh value for Dictionary's indexer, whose setter hands it on to TryInsert, which consumes it:
+            // the temporary that holds its count until the call is noted, and the count goes to the callee as a
+            // fresh argument's does, OwnedParams.cs IsMapInsert; `map[key] = new Item()`)
+            int handOver = -1;
             if (Types.IsRef(vt))
             {
-                o = F.ToCallSafe(o, vt);
+                if (o == Own.Owned && !needResult && !F.D.ThreadMode && sm.Parameters.Length > 0 && Driver.IsMapInsert(sm.OriginalDefinition))
+                {
+                    handOver = F.TempRef(vt);
+                    F.E.Tee(handOver);
+                    o = Own.Stable;
+                }
+                else o = F.ToCallSafe(o, vt);
                 v = F.Scratch(ValType.I32); F.E.Set(v);
             }
             else { v = F.Scratch(Types.WasmType(vt)!.Value); F.E.Set(v); }
-            var sm = Accessor(F.SubstMethod(s));
             F.CallWith(sm, !_recvIsStruct && F.IsVirtualCall(pr.Instance, s), _recv >= 0 ? () => F.E.Get(_recv) : null, () =>
             {
                 foreach (var (l, _) in _args) F.E.Get(l);
                 F.E.Get(v);
+                if (handOver >= 0 && F._consume is { } cc && (cc.Mask & (1 << sm.Parameters[^1].Ordinal)) != 0 && SymbolEqualityComparer.Default.Equals(sm.Parameters[^1].ContainingSymbol, cc.M))
+                {
+                    cc.Temps.Add(handOver);
+                    cc.Moved |= 1 << sm.Parameters[^1].Ordinal;
+                }
                 RecordIndexArgs(sm);
                 if (sm.Parameters.Length > 0) F.RecordParam(sm, sm.Parameters[^1], _valueSrcs ?? [TopSrc(vt)]);
             }, null, pr.Syntax);
