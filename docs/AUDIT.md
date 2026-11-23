@@ -2281,7 +2281,7 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     the loop without its move 32.1-32.5 against 30.9-31.0.
   - **Checked** on the homelab. The suite at ba966f6 (the last change to the compiler is 25e2f1b; tests 208, 209
     and 260 in it): 239 passed, 0 failed, 2 known gaps (244, 247), checked and as shipped (489 s); before it at
-    c459a81 (ColdExits on, as first built) 237 and 2, at 25e2f1b 238 and 2. Stress (`tools/stress-tests.sh` 208, 209, 260, 127 and 139, 200 loaded runs a mode): queued on the homelab behind other jobs when this was written (STRESS-PENDING). The self-host check at cb43eb9 (`bash tools/selfhost-check.sh
+    c459a81 (ColdExits on, as first built) 237 and 2, at 25e2f1b 238 and 2. Stress (`tools/stress-tests.sh` 208, 209, 260, 127 and 139, 200 loaded runs a mode): 208, 209, 260 and 139 printed the same in every run of both modes; 127 differed in 1 of 200 as shipped and 2 of 200 checked, its "async 5 / pending 1" (the load flake on record: 3 to 7 of 400 on main). The self-host check at cb43eb9 (`bash tools/selfhost-check.sh
     CS2WASM_INLINE_READERS=80 CS2WASM_NO_STORE_FORWARD=1`, new: tools/selfhost-switch.sh, then tools/selfdet.mjs on
     four programs): the self-hosted compiler built in 246 s both ways, 32,970,943 bytes against 32,969,222 with
     the two switches; hello world in 8.29-8.34 s against 8.25-8.35, exit 0, peak memory 272.0 MB both, the same

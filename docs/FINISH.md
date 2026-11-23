@@ -1161,6 +1161,6 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   at ba966f6 239 passed, 0 failed, 2 known gaps, checked and as shipped; the self-host check at cb43eb9 (new:
   `tools/selfhost-check.sh`): built in 246 s, 32,970,943 bytes, hello world in 8.29-8.34 s (8.25-8.35 with the two
   changes switched off), peak 272.0 MB, and 145, 220, 193 and 088 each "self-1 = net, byte for byte"; stress:
-  queued on the homelab behind other jobs when this was written (STRESS-PENDING). `tools/field-hoist-proof.sh` with the setter inlined: as before. Not built: the header's word. Not
+  208, 209, 260 and 139 the same in every one of 200 loaded runs a mode, 127 differed in 3 of 400 (its "async 5 / pending 1", as on main); `tools/field-hoist-proof.sh` with the setter inlined: as before. Not built: the header's word. Not
   checked: the suite with ColdExits on at the last commit (tests 190 to 209 on the desk, the whole suite at its
   first commit).
