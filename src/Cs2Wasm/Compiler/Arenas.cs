@@ -296,11 +296,15 @@ internal sealed partial class Arenas
         return r;
     }
 
-    /// <summary>The site for the elements of an array of references.</summary>
+    /// <summary>The site for the elements of an array of references, of any rank (until 2026-11-22 of rank one
+    /// only: an array of two dimensions had no site, so it was never a group's member and its elements were counted
+    /// references to members that no link knew of: a `Node[,]` in a member's field kept its group for good, test
+    /// 246. CS2WASM_NO_RANK_SITES=1: as it was).</summary>
+    static readonly bool s_noRankSites = Environment.GetEnvironmentVariable("CS2WASM_NO_RANK_SITES") == "1";
     public Site? ArraySite(IArrayTypeSymbol at)
     {
         var et = D.Types.Canonical(at.ElementType);
-        if (!Types.IsRef(et) || at.Rank != 1) return null;
+        if (!Types.IsRef(et) || at.Rank != 1 && s_noRankSites) return null;
         var t = D.Types.Canonical(at);
         var s = Get("a " + Types.Key(t), t, true, 0);
         s.SlotType ??= et;

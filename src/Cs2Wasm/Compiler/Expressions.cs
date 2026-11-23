@@ -1050,6 +1050,8 @@ sealed partial class FunctionCompiler
             int a = E.AddLocal(ValType.I32);
             E.Tee(a);
             if (!IsKnownNonNull(ae.ArrayReference)) NullCheck(); else E.Op(Op.Drop);
+            // (the array itself for the store's link: the container of the element, Arenas.ArraySite)
+            if (keepArray >= 0) { E.Get(a); E.Set(keepArray); }
             var idxs = new int[at.Rank];
             for (int i = 0; i < at.Rank; i++) { idxs[i] = E.AddLocal(ValType.I32); EmitIndex(ae.Indices[i]); E.Set(idxs[i]); }
             int lin = E.AddLocal(ValType.I32);
