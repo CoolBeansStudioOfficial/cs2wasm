@@ -39,7 +39,7 @@ internal sealed class Library
     {
         var sw = s_times ? System.Diagnostics.Stopwatch.StartNew() : null;
         var needed = UpstreamSources.Needed(program);
-        if (sw != null) { Console.Error.WriteLine($"    library: {sw.ElapsedMilliseconds,6} ms  what the program needs ({needed.Count} libraries)"); sw.Restart(); }
+        if (sw != null) { Console.Error.WriteLine($"    library: {sw.ElapsedMilliseconds,6} ms  what the program needs ({needed.Count} libraries{UpstreamSources.NeededWhy})"); sw.Restart(); }
         All = Upstream(needed);
         if (sw != null) Console.Error.WriteLine($"    library: {sw.ElapsedMilliseconds,6} ms  read and parsed in all");
         Compilation = All[0];
@@ -421,6 +421,9 @@ internal static class UpstreamSources
         ["System.IO.Compression.ZipFile"] = "System.IO.Compression",
     };
 
+    /// <summary>For CS2WASM_TIMES: what made the last library of the list needed.</summary>
+    public static string NeededWhy = "";
+
     /// <summary>CS2WASM_ALL_CORE_LIBS=1: the first <see cref="CoreCount"/> libraries for every program, used or not.</summary>
     static readonly bool s_allCore = Environment.GetEnvironmentVariable("CS2WASM_ALL_CORE_LIBS") == "1";
 
@@ -432,6 +435,7 @@ internal static class UpstreamSources
     /// Roslyn reports as used.</summary>
     public static IReadOnlyList<string> Needed(CSharpCompilation program)
     {
+        NeededWhy = "";
         // (a core library is compiled against those before it and no other, so the ones after the last the program
         // uses cannot be reached: their files are not read)
         int count = s_allCore ? CoreCount : 1;
@@ -449,7 +453,7 @@ internal static class UpstreamSources
                 need = nss.Any(n => text.Contains(n, StringComparison.Ordinal));
             }
             if (need && Standalone.Contains(lib)) standalone.Add(lib);
-            else if (need) count = i + 1;
+            else if (need) { count = i + 1; NeededWhy = "; the last for its name in the text: " + lib; }
         }
         // and the libraries whose reference assemblies the program's code uses, whatever its text says (a type
         // named in full: `new System.Net.Sockets.Socket(...)`); a reference assembly is its library's, or one of these
@@ -459,7 +463,7 @@ internal static class UpstreamSources
             if (s_referenceLibrary.TryGetValue(asm, out var mapped)) asm = mapped;
             int i = Array.IndexOf(Libraries, asm);
             if (i < count) continue;
-            if (Standalone.Contains(asm)) standalone.Add(asm); else count = i + 1;
+            if (Standalone.Contains(asm)) standalone.Add(asm); else { count = i + 1; NeededWhy = "; the last for a reference used: " + asm; }
         }
         // (a standalone library's references come with it: Library.Upstream builds them)
         return Libraries.Where((l, i) => i < count && !Standalone.Contains(l) || standalone.Contains(l)).ToList();
