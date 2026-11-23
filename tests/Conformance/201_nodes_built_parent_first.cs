@@ -13,7 +13,9 @@
 // one; a node added to another parent than its field names; the parent field set after the add; a node whose list
 // a local or a static holds; nodes with finalizers; a node moved after it was built, and one in two lists; a
 // build that throws half way; a parent only the node's field refers to; a node with two slots that hold members;
-// a child that refers to the node above its parent; new objects with content stored into plain ones.
+// a child that refers to the node above its parent; new objects with content stored into plain ones; a node
+// whose own parent is a plain object still (Rt.PlainParents, CS2WASM_NO_PLAIN_PARENTS=1), with a parent that
+// holds a new node with content. tools/node-path-breaks.sh leaves each rule out in turn.
 // The trees whose parts may stay until their group goes (a node that refers to a node beside it) are counted when
 // they have gone.
 using System;
@@ -254,6 +256,28 @@ static class P
         c.Side = null;
     }
 
+    // A node whose own parent is a plain object still when its first child joins (every first descent of a tree
+    // built parent first), where that parent holds, besides its list, a new node of its own with content (a list
+    // of its own): not something the parent can take as its own in one step. Then a child under that new node.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Node First(Node up) { var e = new Node(6, ++s_ids) { Up = up }; e.Kids.Add(Leaf(e, 6)); return e; }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static long Sided()
+    {
+        long sum = 0;
+        for (int i = 0; i < 3; i++)
+        {
+            var top = new Node(6, ++s_ids) { Side = new Node(6, ++s_ids) };
+            if (i == 2) top.Up = new Node(6, ++s_ids);
+            top.Kids.Add(First(top));
+            var side = top.Side;
+            side.Kids.Add(Leaf(side, 6));
+            if (i == 1) side.Kids.Add(First(side));
+            sum += top.Sum() + side.Sum();
+        }
+        return sum;
+    }
+
     // new objects with content stored into plain objects that then close a cycle
     [MethodImpl(MethodImplOptions.NoInlining)]
     static long Plain()
@@ -332,7 +356,7 @@ static class P
         for (int r = 0; r < 6; r++) { Replace(r); Say("replaced"); }
         Console.WriteLine("orphans " + Orphans()); Say("orphans");
         OnlyTree(); Say("only field");
-        BuildOdd(); OnlyOdd(); Console.WriteLine("plain " + Plain()); Say("odd");
+        BuildOdd(); OnlyOdd(); Console.WriteLine("plain " + Plain() + " " + Sided()); Say("odd");
         Holder(false); Say("held"); HolderGone(); Say("holder gone");
         Holder(true); Say("held twice"); HolderGone(); Say("holder gone");
         Crossed(); Say("crossed"); Uncross(); Say("uncrossed");

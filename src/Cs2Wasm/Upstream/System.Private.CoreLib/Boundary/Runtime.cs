@@ -737,8 +737,14 @@ namespace Cs2Wasm.Runtime
         /// array of any type come from nowhere).</summary>
         [Intrinsic] static extern int ArrayRankAt(int array);
         [Intrinsic] static extern int ArrayElementSizeAt(int array);
-        /// <summary>Reevaluate visits the object by its type; CS2WASM_SLOT_WALK=1 (at compile time): by its slot bits (off by default: Calls.cs).</summary>
+        /// <summary>CS2WASM_NO_SLOT_WALK=1 (at compile time): Reevaluate visits the object by its type, not by its slot
+        /// bits. (The walk was off from round 2 of the rebuild to round 10, for one long frame of the strings
+        /// scene that turned out to be the host's own collection, and because it gained nothing then; with the
+        /// node's add written out, Rt.AddNode, it is what is left of that step: docs/AUDIT.md A3.5, round 10.)</summary>
         [Intrinsic] static extern bool NoSlotWalk();
+        /// <summary>CS2WASM_SLOT_WALK_BREAK=1 (at compile time, tools/slot-walk-breaks.sh): the walk leaves the
+        /// member's first counted slot out.</summary>
+        [Intrinsic] static extern bool SlotWalkBreak();
         // CS2WASM_DROP_STATS=1 (a diagnosis, at compile time): the check at the drop counts what it does and says so
         [Intrinsic] static extern bool DropStats();
         /// <summary>CS2WASM_STALE_HOLDS=1 (at compile time, an experiment): an owned member keeps a hold once made, without
@@ -858,8 +864,8 @@ namespace Cs2Wasm.Runtime
         }
         // (and, with it, how often each path of the arena operations runs: OpStat's numbers, printed with DsPrint)
         static int s_opStats;
-        const int OpN = 40;
-        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,give-back-early,link-pinned,give-back-last,join-fused,join-node,join-pair,node-up,node-add";
+        const int OpN = 44;
+        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,give-back-early,link-pinned,give-back-last,join-fused,join-node,join-pair,node-up,node-add,plain-parents,part-left,part-link";
         // (a constant test where it is asked, so that without the diagnosis nothing is left of it, not even a call)
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static void OpStat(int k) { if (DropStats()) OpStatCount(k); }
@@ -2893,6 +2899,7 @@ namespace Cs2Wasm.Runtime
             {
                 if ((PL(v, 24) & Elems) != 0) return;
                 int w = PL(v, 28) & 0x55555555;
+                if (SlotWalkBreak()) w &= w - 1;
                 for (int k = 0; w != 0; k++, w = (int)((uint)w >> 2))
                     if ((w & 1) != 0) ReevaluateSlot(v, k, Mem.LoadI32(v + 12 + 4 * k));
                 return;
@@ -3880,8 +3887,10 @@ namespace Cs2Wasm.Runtime
                         }
                         continue;
                     }
-                    // (a plain object that code still refers to: the one reference up)
+                    // (a plain object that code still refers to: the one reference up; not a member's plain part,
+                    // PlainPart: its holder's slot is linked as it joins, the general way)
                     if ((e | up) != 0) return false;
+                    if (PL(child, 12) != 0 && PlainPartsBreak() != 4 && PartHolder(child) != 0) return false;
                     e = child;
                     continue;
                 }
@@ -3897,7 +3906,7 @@ namespace Cs2Wasm.Runtime
                 }
                 up = 1;
             }
-            int t = 0, ed = 0, ts = 0, others = 0;
+            int t = 0, ed = 0, ts = 0, others = 0, pe = 0, pes = 0;
             if (e != 0)
             {
                 if (NoEarlyGiveBack()) return false;
@@ -3912,12 +3921,21 @@ namespace Cs2Wasm.Runtime
                     int c = Mem.LoadI32(e + 8 + ((w & 15) << 2));
                     if (c == 0) continue;
                     if (c == t) { ts = w & 15; continue; }
-                    // (a plain object of the group of classes in another slot: the general way, its slots are not known)
-                    if (Mem.LoadI32(c) > 0 && Mem.LoadI32(c + 8) >= 0 && SccOf(Mem.LoadI32(c + 4)) == g) return false;
+                    // (a plain object of the group of classes in another slot: the node's own parent, a plain
+                    // object still, PlainParents; anything else the general way, its slots are not known)
+                    if (Mem.LoadI32(c) > 0 && Mem.LoadI32(c + 8) >= 0 && SccOf(Mem.LoadI32(c + 4)) == g)
+                    {
+                        if (pe != 0 || Mem.LoadI32(c) < 2) return false;
+                        // (not a member's plain part: PartHolder)
+                        if (PL(c, 12) != 0 && PlainPartsBreak() != 4 && PartHolder(c) != 0) return false;
+                        pe = c; pes = w & 15;
+                        continue;
+                    }
                     // (the node's other slots that hold members: one alone can take NodeUp)
                     if (Mem.LoadI32(c) <= 0) others++;
                 }
                 if (ts == 0) return false;
+                if (pe != 0 && (others != 0 || !PlainParents(pe, e, val, ar, g, false))) return false;
             }
             OpStat(29); OpStat(35);
             JoinOne(ar, val, container);
@@ -3940,6 +3958,17 @@ namespace Cs2Wasm.Runtime
                     if (Mem.LoadI32(child + 8) < 0 || SccOf(Mem.LoadI32(child + 4)) != g) continue;
                     if (cc == 1)
                     {
+                        // (its own new object, with nothing to link in it: left a plain object, PlainPart)
+                        // (not one of a class with a finalizer, which runs with the group's; not one a weak handle
+                        // refers to, or whose finalizer was suppressed: ObjectMarks, PartMarked)
+                        if (!NoPlainParts() && (ArenaFinType(Mem.LoadI32(child + 4)) == 0 || PlainPartsBreak() == 6)
+                            && ((Mem.LoadI32(child + 8) & ObjectMarks.MarkedBit) == 0 || PlainPartsBreak() == 7))
+                        {
+                            OpStat(41);
+                            PS(child, 12, val);
+                            PS(child, 8, val + 12 + (n << 2));
+                            continue;
+                        }
                         OpStat(29);
                         JoinOne(ar, child, val);
                         bits |= 1 << (2 * n);
@@ -3984,8 +4013,242 @@ namespace Cs2Wasm.Runtime
                 }
                 s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_joinVisit = 0;
                 if (s_linkN == 0 && s_reevN != 0) LinkWaiting();
+                if (pe != 0) { SetSlotBits(e, pes - 1, 1); PlainParents(pe, e, val, ar, g, true); }
             }
             return true;
+        }
+
+        /// <summary>CS2WASM_NO_PLAIN_PARENTS=1 (at compile time): JoinFresh refuses a node whose own parent is a
+        /// plain object still (the general way joins the chain of plain parents).</summary>
+        [Intrinsic] static extern bool NoPlainParents();
+
+        /// <summary>JoinFresh's node e (a plain object whose list takes its first item) holds, in its one other
+        /// slot that can be linked, a plain object that code still refers to: its own parent, made before it and
+        /// not yet a member, because no child of it has a child (in a tree built parent first, each node's first
+        /// child: 625 a build of the scene tree of tools/frames.mjs, and with them every plain parent above).
+        /// The general way: e's visit joins the parent through e's field as a counted reference that waits for
+        /// an owner (side words, a pair for LinkWaiting); the parent's visit joins its new objects with nothing
+        /// to link (its list), and its own parent the same way, level after level, up to a parent that is a
+        /// member (linked as LinkJoinedSlot links it: the merge, NodeUp's outcome), or none; then LinkWaiting's
+        /// pairs from the bottom: each parent, without an owner, is its child's (TakeOwnership). Each level's
+        /// slots hold, asked before a word is written (`write` false): nothing to link, new objects of the
+        /// level's own whose slots hold nothing to link, and at most one reference up, to a plain object that
+        /// code still refers to (the next level; none twice) or to a member that code refers to (the end: its
+        /// group not busy or merged, with more members than the node's so that the merge ends in it, no note of
+        /// a failed check alive). Written (`write` true), level by level in the order of the general way's
+        /// joins: the level a member with the counts it had less the field's, nothing's, referred to once from
+        /// inside; its new objects its own; the next level joined as its slot comes; its bits; the member's
+        /// link by NodeUp; and the level its child's. Not made: the levels' side words (they would hold
+        /// nothing after LinkWaiting). `below`: the member whose slot holds the first level (e), already
+        /// joined; `item`: the new item, for the walk's end.</summary>
+        static bool PlainParents(int first, int below, int item, int ar, int g, bool write)
+        {
+            if (!write && (NoPlainParents() || NoNodePath() || s_failedTops != 0)) return false;
+            int b = below, joined = 0;
+            if (write)
+            {
+                // (the first level joins as e's slot is visited)
+                int c0 = Mem.LoadI32(first);
+                OpStat(4);
+                Mem.StoreI32(first, -(c0 + 1)); PS(first, 16, ar); PS(first, 4, 1); RingAdd(ar, first);
+                Mem.StoreI32(ar, Mem.LoadI32(ar) + 1);
+            }
+            for (int a = first, level = 0; a != 0; level++)
+            {
+                if (!write)
+                {
+                    if (level == ChainMax || a == item || PL(a, 24) != 0) return false;
+                    // (no level twice)
+                    for (int x = first, k = 0; k < level; k++)
+                    {
+                        if (x == a) return false;
+                        x = PlainUp(x, g);
+                    }
+                    if (a == below) return false;
+                }
+                int da = ArenaSlots(Mem.LoadI32(a + 4));
+                if (da == 0) return false;
+                int up = 0, m = 0, ms = 0, bits = 0;
+                for (int w = da; w != 0; w = (int)((uint)w >> 4))
+                {
+                    int k = (w & 15) - 1, c = Mem.LoadI32(a + 12 + (k << 2));
+                    if (c == 0) continue;
+                    int cc = Mem.LoadI32(c);
+                    if (SccOf(Mem.LoadI32(c + 4)) != g) continue;
+                    // (the next level, joined in the write pass as this slot came: a member by now)
+                    if (write && c == up) continue;
+                    if (cc > 0)
+                    {
+                        if (Mem.LoadI32(c + 8) < 0) continue;
+                        if (cc == 1)
+                        {
+                            if (write) { OpStat(29); JoinOne(ar, c, a); bits |= 1 << (2 * k); continue; }
+                            // (a new object of the level's own: its slots hold nothing to link)
+                            int d2 = ArenaSlots(Mem.LoadI32(c + 4));
+                            if (d2 == 0 || PL(c, 24) != 0) return false;
+                            if (NodePathBreak() != 8)
+                                for (; d2 != 0; d2 = (int)((uint)d2 >> 4))
+                                {
+                                    int c2 = Mem.LoadI32(c + 8 + ((d2 & 15) << 2));
+                                    if (c2 != 0 && (Mem.LoadI32(c2) <= 0 || Mem.LoadI32(c2 + 8) >= 0)) return false;
+                                }
+                            joined++;
+                            continue;
+                        }
+                        if (up != 0 || m != 0) return false;
+                        // (not a member's plain part: PartHolder)
+                        if (!write && PL(c, 12) != 0 && PlainPartsBreak() != 4 && PartHolder(c) != 0) return false;
+                        up = c;
+                        if (write)
+                        {
+                            OpStat(4);
+                            Mem.StoreI32(c, -(cc + 1)); PS(c, 16, ar); PS(c, 4, 1); RingAdd(ar, c);
+                            Mem.StoreI32(ar, Mem.LoadI32(ar) + 1);
+                            bits |= 1 << (2 * k);
+                        }
+                        continue;
+                    }
+                    // (a member: the end of the plain parents)
+                    if (up != 0 || m != 0 || cc > -3) return false;
+                    m = c; ms = k;
+                    if (write)
+                    {
+                        // (linked as its slot comes: the merge is the general way's, with the members it has then,
+                        // and what joins after it joins the group that is left)
+                        PS(a, 28, bits);
+                        if (!NodeUp(m, a, a + 12 + (ms << 2))) LinkJoinedSlot(m, a + 12 + (ms << 2));
+                        bits = PL(a, 28);
+                        ar = PL(m, 16);
+                    }
+                }
+                joined++;
+                if (m != 0 && !write)
+                {
+                    if ((PL(m, 24) & (Dying | Queued)) != 0 || PL(m, 20) == a) return false;
+                    int am = PL(m, 16);
+                    if (Mem.LoadI64(am + 12) != 0) return false;
+                    if (am != ar && Mem.LoadI32(am + 8) <= Mem.LoadI32(ar + 8) + joined + 10) return false;
+                }
+                if (write)
+                {
+                    PS(a, 28, bits);
+                    TakeOwnership(a, b);
+                }
+                b = a;
+                a = up;
+            }
+            if (write) OpStat(40);
+            return true;
+        }
+
+        /// <summary>PlainParents, before anything is written: the plain object of the group that code still refers to
+        /// in a slot of the level (its reference up), or 0.</summary>
+        static int PlainUp(int a, int g)
+        {
+            for (int w = ArenaSlots(Mem.LoadI32(a + 4)); w != 0; w = (int)((uint)w >> 4))
+            {
+                int c = Mem.LoadI32(a + 8 + ((w & 15) << 2));
+                if (c != 0 && Mem.LoadI32(c) > 1 && Mem.LoadI32(c + 8) >= 0 && SccOf(Mem.LoadI32(c + 4)) == g) return c;
+            }
+            return 0;
+        }
+
+        /// <summary>CS2WASM_NO_PLAIN_PARTS=1 (at compile time): JoinFresh joins a new object's own new object with
+        /// it, a member (PartHolder).</summary>
+        [Intrinsic] static extern bool NoPlainParts();
+        /// <summary>CS2WASM_PLAIN_PARTS_BREAK=n (at compile time, test 202's): one rule of the plain parts is not
+        /// asked. 1: ArenaLinkCore, a part that joins as a container is not linked to its holder; 2: the same
+        /// for one that joins as a value; 3: JoinPair takes a part as its container; 4: JoinFresh takes a part
+        /// as its node; 5: PartHolder does not ask that the holder's slot still holds the part; 6: an object of
+        /// a class with a finalizer is left a part; 7: a part a weak handle refers to stays one (JoinFresh's
+        /// test of the mark, and PartMarked).</summary>
+        [Intrinsic] static extern int PlainPartsBreak();
+        /// <summary>rt.part_weak: PartMarked in a program with groups, nothing in any other (RuntimeGen.cs).</summary>
+        [Intrinsic] internal static extern void PartWeak(int addr);
+
+        /// <summary>A weak handle was made for the object (ObjectMarks.SetAt). The weak references to the members
+        /// of a group that goes are cleared before a finalizer of any runs (WeakDyingAll, test 245); a plain
+        /// part is released with its holder's clear, after them. So a part that gets a weak handle becomes the
+        /// member it would have been, here: the store `holder.slot = part` once more, by the general way (its
+        /// words cleared first: the link finds a plain object in a member's slot, and the unlink of the slot's
+        /// old value, the same object, gives the plain reference's count back).</summary>
+        public static void PartMarked(int x)
+        {
+            if (NoPlainParts() || ThreadMode() || PlainPartsBreak() == 7) return;
+            if (x == 0 || Mem.LoadI32(x) <= 0 || SccOf(Mem.LoadI32(x + 4)) == 0 || PL(x, 12) == 0) return;
+            int hs = PartHolder(x);
+            if (hs == 0) return;
+            int h = PL(x, 12);
+            PS(x, 12, 0); PS(x, 8, 0);
+            Retain(Borrow<object>(x));
+            int v = ArenaLink(x, h, hs);
+            Mem.StoreI32(hs, v);
+            ArenaUnlink(x, h, hs);
+        }
+
+        /// <summary>A plain part (docs/AUDIT.md A3.5, the build, round 10). JoinFresh joins a new object and, with
+        /// it, each new object of its own that only its slot refers to and that holds nothing to link (an
+        /// entity's empty list): a second member for every leaf of a tree, joined, and destroyed as a member
+        /// when the leaf goes, though nothing can be linked through it while it holds nothing. Such an object
+        /// is left a plain object instead: the member's slot holds it by a plain counted reference (bits 0, as
+        /// a reference to a pinned object or to one of another group of classes), it is released as one when
+        /// the member is cleared, and it keeps, in the two words a member has its place on the ring in (free
+        /// while it is plain, written by every join), the member that holds it and the slot.
+        /// "A member refers to no plain object of its group of classes" was what kept a cycle from closing
+        /// unseen: a plain object that joins has its slots linked, and a member's slots are linked already.
+        /// With a part that holds for every part but one that joins later (a store into it of something that can
+        /// be linked: the list's first array; a store of it where a cycle can close): the holder's slot must be
+        /// linked then, or two members have a counted reference between them that no link knows of, and what
+        /// hangs below the part, with a reference back up, never goes. So wherever a plain object that code
+        /// still refers to becomes a member (ArenaLinkCore, for the container and for the value; JoinFresh's
+        /// node and JoinPair's container, which refuse it and so come to ArenaLinkCore), its two words are
+        /// asked, and the holder's slot is linked first, as the store `holder.slot = part` it stands for
+        /// (PartLink): from there on the part is the member it would have been.
+        /// The words can be stale (the holder's slot stored over, the holder gone or a plain object again, the
+        /// part taken by another object; nothing clears them then), so they are a hint, checked by what is
+        /// there: the slot's address is a slot of a living object of a group (SlotOwner: the allocator's
+        /// answer for the address, then the type's), that object the one named, a member, the slot one it has
+        /// bits for, the bits 0, and the slot holds the part. A member that passes holds the part by a plain
+        /// counted reference in a slot a cycle can close through: whatever wrote the words, linking it is
+        /// right. A part whose one count is its holder's (JoinOwned's and JoinFresh's own new objects) has no
+        /// other holder: its words are stale and the join writes over them.
+        /// Not an object of a class with a finalizer (it would run at the holder's clear, not with the group's),
+        /// not with threads (JoinFresh is not taken there). Returns the holder's slot, or 0 with the words
+        /// cleared.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static int PartHolder(int x)
+        {
+            int h = PL(x, 12), hs = PL(x, 8);
+            if (h != 0 && hs != 0 && !ThreadMode())
+            {
+                bool sa = t_slotArray;
+                int c = SlotOwner(hs);
+                t_slotArray = sa;
+                if (c == h && Mem.LoadI32(h) < -1)
+                {
+                    int i = SlotIndex(h, hs);
+                    if (i >= 0 && SlotBits(h, i) == 0 && (Mem.LoadI32(hs) == x || PlainPartsBreak() == 5)) return hs;
+                }
+            }
+            PS(x, 12, 0); PS(x, 8, 0);
+            return 0;
+        }
+
+        /// <summary>A plain part is about to join an arena: its holder's slot (hs, PartHolder's answer) is linked
+        /// now, as the store of the part into that slot would have been: a part only that slot refers to joins
+        /// as the holder's (JoinOwned); one that code refers to as well goes ArenaLinkCore's way. Its slots are
+        /// linked with those of whatever else joins in the link under way (ArenaJoin's list).</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void PartLink(int x, int hs)
+        {
+            int h = PL(x, 12);
+            PS(x, 12, 0); PS(x, 8, 0);
+            OpStat(42);
+            // (the holder's slot is a field, whatever the visit under way is going through)
+            int se = s_visitElem;
+            s_visitElem = 0;
+            if (Mem.LoadI32(x) != 1 || !JoinOwned(x, h, hs, false)) ArenaLinkCore(x, h, hs);
+            s_visitElem = se;
         }
 
         /// <summary>CS2WASM_NO_NODE_PATH=1 (at compile time): the three steps of a node of a tree built parent first
@@ -3996,8 +4259,9 @@ namespace Cs2Wasm.Runtime
         /// rule: NodeUp gives the parent's last count from outside back as LinkMembers does;) 4: NodeUp, that the node has no other slot to
         /// link; 5: NodeUp, whether the parent has an owner; 6: AddNode, that the store's count is the node's one
         /// reference from outside; 7: AddNode, that the member the node owns above the array has no up-reference
-        /// below it and holds nothing. (Test 201's lines change with 1, 2 and 6; 3, 4 and 5 are reached there and
-        /// leave its lines as they are: the general path's later checks mend what they leave; 7 is not reached.)</summary>
+        /// below it and holds nothing; 8: PlainParents, what a new object of a plain parent's own holds.
+        /// (tools/node-path-breaks.sh: test 201's lines change with 1, 2 and 6 as they are, and with 4, 5, 7 and 8,
+        /// which leave what the check at the drop mends later, when that check is off on both sides.)</summary>
         [Intrinsic] static extern int NodePathBreak();
 
         /// <summary>The node path, 1 of 3 (docs/AUDIT.md A3.5, the build, round 9). A tree built parent first
@@ -4019,6 +4283,8 @@ namespace Cs2Wasm.Runtime
             int ca = Mem.LoadI32(container);
             if (ca <= 0 || val == container || (s_linkN | s_joinVisit | s_visitElem | s_reevN) != 0) return false;
             if (Mem.LoadI32(container + 8) < 0 || Mem.LoadI32(val + 8) < 0 || (PL(container, 24) | PL(val, 24)) != 0) return false;
+            // (a member's plain part, PlainPart: it joins as its holder's, ArenaLinkCore)
+            if (PL(container, 12) != 0 && PlainPartsBreak() != 3 && PartHolder(container) != 0) return false;
             int i = SlotIndex(container, slot);
             if (i < 0) return false;
             int g = SccOf(Mem.LoadI32(container + 4));
@@ -4234,6 +4500,14 @@ namespace Cs2Wasm.Runtime
             }
             if (ca > 0 && Mem.LoadI32(container + 8) < 0) return val; // pinned
             if (cv > 0 && Mem.LoadI32(val + 8) < 0) return val;
+            // (a member's plain part, PlainPart, is about to join: its holder's slot is linked first, as the store
+            // it stands for)
+            if (!NoPlainParts() && !ThreadMode())
+            {
+                if (ca > 0 && PL(container, 12) != 0 && PlainPartsBreak() != 1) { int hs = PartHolder(container); if (hs != 0) { PartLink(container, hs); ca = Mem.LoadI32(container); } }
+                if (cv > 0 && val != container && PL(val, 12) != 0 && PlainPartsBreak() != 2) { int hs = PartHolder(val); if (hs != 0) { PartLink(val, hs); cv = Mem.LoadI32(val); } }
+                if (cv == -1 || cv == 0 || ca == -1 || ca == 0) return val;
+            }
             int ra = ca < -1 ? ArenaOf(container) : 0, rv = cv < -1 ? ArenaOf(val) : 0;
             if (ra != 0 && (Mem.LoadI32(ra + 12) & ArenaBusy) != 0) return val;
             if (rv != 0 && (Mem.LoadI32(rv + 12) & ArenaBusy) != 0) return val;

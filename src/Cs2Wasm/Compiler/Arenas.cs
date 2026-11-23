@@ -792,7 +792,7 @@ internal sealed partial class Arenas
     static readonly (string name, int arity)[] RuntimeMethods =
         [("ArenaLink", 3), ("ArenaUnlink", 3), ("ArenaVisitElement", 1), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
          ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 3), ("ArenaUnlinkFresh", 3), ("ArenaLinkOwned", 3),
-         ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3), ("ArenaGrowArray", 4), ("ArenaBeforeFinalizer", 0)];
+         ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3), ("ArenaGrowArray", 4), ("ArenaBeforeFinalizer", 0), ("PartMarked", 1)];
 
     /// <summary>Queues the library's arena runtime for compilation (only when some site is cyclic).</summary>
     public void RequestRuntime()
@@ -804,6 +804,8 @@ internal sealed partial class Arenas
 
     /// <summary>Replaces placeholder calls in every function: arena calls at cyclic sites, plain counting elsewhere.</summary>
     static readonly bool s_noInlineLinks = Environment.GetEnvironmentVariable("CS2WASM_NO_INLINE_LINKS") == "1";
+    static readonly bool s_noUnlinkSkip = Environment.GetEnvironmentVariable("CS2WASM_NO_UNLINK_SKIP") == "1";
+    static readonly bool s_unlinkSkipBreak = Environment.GetEnvironmentVariable("CS2WASM_UNLINK_SKIP_BREAK") == "1";
 
     SubtypeIndex? _cycleIndex;
     int _cycleIndexed;
@@ -862,6 +864,16 @@ internal sealed partial class Arenas
             ue.Get(1); ue.I32Addr(new LateAddr(() => D.HeapBase)); ue.Op(Op.I32LtU);
             ue.If(); ue.Get(0); ue.Call(D.Rt.Release); ue.Op(Op.Return); ue.End();
             ue.Get(0); ue.Get(1); ue.Call(RuntimeFn("ArenaUnlinkAt", 2));
+        }
+        // (Rt.t_backN's place among the thread's statics: the unlink's first question, written at the store. Not in a
+        // program with threads, whose unlink also ends the store's locked region)
+        int backOff = -1, prevOff = -1;
+        if (Enabled && !D.ThreadMode && !s_noUnlinkSkip
+            && D.LibType("Cs2Wasm.Runtime.Rt").GetMembers("t_backN").OfType<IFieldSymbol>().FirstOrDefault() is { } backField
+            && D.LibType("Cs2Wasm.Runtime.Rt").GetMembers("t_prevSlot").OfType<IFieldSymbol>().FirstOrDefault() is { } prevField)
+        {
+            backOff = D.ThreadStaticOffset(D.LibType("Cs2Wasm.Runtime.Rt"), backField, backField.Type);
+            prevOff = D.ThreadStaticOffset(D.LibType("Cs2Wasm.Runtime.Rt"), prevField, prevField.Type);
         }
         var holdsCyclic = new Dictionary<string, bool>();
         bool HoldsCyclic(ITypeSymbol slotType)
@@ -923,17 +935,37 @@ internal sealed partial class Arenas
                         // (old, container) -> ()
                         if (Enabled && ph.site!.Cyclic)
                         {
-                            if (ph.kind == Kind.Unlink || s_noInlineLinks) { x.Ref = ph.kind == Kind.Unlink ? unlink : unlinkFresh; body.Add(x); break; }
-                            // Rt.ArenaUnlinkFresh, likewise: a plain container's old value is released as any
+                            if ((ph.kind == Kind.Unlink && backOff < 0) || s_noInlineLinks) { x.Ref = ph.kind == Kind.Unlink ? unlink : unlinkFresh; body.Add(x); break; }
                             int slot = f.Type.Params.Length + f.Locals.Count; f.Locals.Add(ValType.I32);
                             int cont = slot + 1; f.Locals.Add(ValType.I32);
                             int old = slot + 2; f.Locals.Add(ValType.I32);
                             void A(Op op, long imm = 0, object? r = null) => body.Add(new Instr { Op = op, Imm = imm, Imm2 = op == Op.I32Load ? 2 : 0, Ref = r, Pos = ins.Pos });
                             A(Op.LocalSet, slot); A(Op.LocalSet, cont); A(Op.LocalSet, old);
+                            // Rt.ArenaUnlink over a slot that held nothing does one thing: it gives back the counts
+                            // the store's link kept until the slot was written (Rt.AfterStore, t_backN of them).
+                            // Asked here: no old value and nothing kept, no call; the slot ArenaLink noted for
+                            // this unlink is cleared as the call would have cleared it (t_prevSlot: a note is
+                            // there only between a link and its unlink).
+                            // CS2WASM_NO_UNLINK_SKIP=1: the call, always. CS2WASM_UNLINK_SKIP_BREAK=1 (test 204's):
+                            // the kept counts are not asked.
+                            void Pending() { A(Op.LocalGet, old); if (!s_unlinkSkipBreak) { A(Op.GlobalGet, 0, D.TlsBase); A(Op.I32Load, backOff); A(Op.I32Or); } }
+                            void NoNote() { A(Op.GlobalGet, 0, D.TlsBase); A(Op.I32Const, 0); body.Add(new Instr { Op = Op.I32Store, Imm = prevOff, Imm2 = 2, Pos = ins.Pos }); }
+                            if (ph.kind == Kind.Unlink)
+                            {
+                                Pending();
+                                A(Op.If);
+                                A(Op.LocalGet, old); A(Op.LocalGet, cont); A(Op.LocalGet, slot); A(Op.Call, 0, unlink);
+                                A(Op.Else);
+                                NoNote();
+                                A(Op.End);
+                                break;
+                            }
+                            // Rt.ArenaUnlinkFresh, likewise: a plain container's old value is released as any
                             A(Op.Block);
                             A(Op.Block);
                             A(Op.LocalGet, cont); A(Op.I32Eqz); A(Op.BrIf, 0);
                             A(Op.LocalGet, cont); A(Op.I32Load); A(Op.I32Const, 0); A(Op.I32GtS); A(Op.BrIf, 0);
+                            if (backOff >= 0) { Pending(); A(Op.If); A(Op.Else); NoNote(); A(Op.Br, 2); A(Op.End); }
                             A(Op.LocalGet, old); A(Op.LocalGet, cont); A(Op.LocalGet, slot); A(Op.Call, 0, unlink);
                             A(Op.Br, 1);
                             A(Op.End);

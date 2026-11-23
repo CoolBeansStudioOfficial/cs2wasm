@@ -38,9 +38,9 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
-| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.11x to 0.22x NativeAOT's with `--js-young 32`, quiet); tree: on main cb287fb, quiet, p99.9 2.55 to 2.57 ms vs 2.38 to 2.41 (1.06x to 1.08x), worst 0.87x to 0.88x; with the node path (main 189b8c6, the machine loaded by three sessions) p99.9 0.97x and 1.08x, worst 1.08x and 1.27x; switch on and off in turn on 7d36995, busy: p99.9 1.03x to 1.16x on, 1.15x to 1.22x off; on the homelab alone 2.80 to 2.83 ms on, 3.05 to 3.07 off. To be taken again quiet | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`). The owner's bar since the evening of 2026-11-22: churn and tree may be slightly slower as long as it is faster overall, the self-hosted compiler is fast enough to be practical, and everything is fully correct and deterministic | churn 1.17x to 1.22x on claude/churn-5 (2026-11-23; its mean frame 1.12x to 1.17x), 1.32x to 1.35x on main 189b8c6 (was 1.58x, 2.16x, 3.47x), tree 1.57x to 1.60x (was 1.64x, 2.56x), collections 0.99x to 1.03x, strings 0.87x to 0.89x, bigdrop 0.88x to 0.94x (main 189b8c6 and cb287fb). The whole run (mean frame, pauses and rebuilds in it; `frames.mjs` prints it): geometric mean over the scenes 0.72x to 0.74x NativeAOT-LLVM's; churn 1.18x to 1.29x, tree 1.32x to 1.38x, collections 0.77x to 0.83x, strings 0.75x to 0.80x, bigdrop 0.20x; the five means summed 0.98x. bench.mjs 0.92x | faster overall; churn and tree slightly slower accepted |
-| 4 | Hello world size (test 145) | 27,783 B (claude/churn-5, 2026-11-23); 27,089 B (main dca1f9c) | < 28,383 B |
+| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.11x to 0.22x NativeAOT's with `--js-young 32`, quiet); tree: on main cb287fb, quiet, p99.9 2.55 to 2.57 ms vs 2.38 to 2.41 (1.06x to 1.08x), worst 0.87x to 0.88x; with the node path (main 189b8c6, the machine loaded by three sessions) p99.9 0.97x and 1.08x, worst 1.08x and 1.27x; switch on and off in turn on 7d36995, busy: p99.9 1.03x to 1.16x on, 1.15x to 1.22x off; on the homelab alone 2.80 to 2.83 ms on, 3.05 to 3.07 off. To be taken again quiet. Branch claude/tree-3 (round 10 of the build, not merged), the desk loaded, the round's six switches off and on in turn, five pairs: tree p99.9 0.76x to 0.85x NativeAOT-LLVM's with them on (2.00 to 2.46 ms against 2.39 to 3.24), 0.95x to 1.14x off; worst 0.68x to 0.78x in four pairs, 3.340 against 3.328 ms in the fifth | worst frame and p99.9 not above NativeAOT's on every scene |
+| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`). The owner's bar since the evening of 2026-11-22: churn and tree may be slightly slower as long as it is faster overall, the self-hosted compiler is fast enough to be practical, and everything is fully correct and deterministic | churn 1.17x to 1.22x on claude/churn-5 (2026-11-23; its mean frame 1.12x to 1.17x), 1.32x to 1.35x on main 189b8c6 (was 1.58x, 2.16x, 3.47x), tree 1.57x to 1.60x (was 1.64x, 2.56x), collections 0.99x to 1.03x, strings 0.87x to 0.89x, bigdrop 0.88x to 0.94x (main 189b8c6 and cb287fb). The whole run (mean frame, pauses and rebuilds in it; `frames.mjs` prints it): geometric mean over the scenes 0.72x to 0.74x NativeAOT-LLVM's; churn 1.18x to 1.29x, tree 1.32x to 1.38x, collections 0.77x to 0.83x, strings 0.75x to 0.80x, bigdrop 0.20x; the five means summed 0.98x. bench.mjs 0.92x. Branch claude/tree-3 (not merged), the same five pairs: tree 1.27x to 1.43x (0.038 to 0.043 ms; 1.52x to 1.68x with the round's steps off), its mean frame 1.03x to 1.12x; the other scenes as they were; the mean frame's geometric mean over the five 0.70x | faster overall; churn and tree slightly slower accepted |
+| 4 | Hello world size (test 145) | 27,783 B (claude/churn-5, 2026-11-23); 27,784 B (claude/round-9 d430594 and claude/tree-3); 27,089 B (main dca1f9c) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 8.20 s vs 3.96 s, 2.1x (claude/selfhost-speed-1, 2026-11-22, the homelab, nine interleaved rounds; NativeAOT-LLVM's build is of 2026-11-20 and reads all fifteen core libraries, the self-hosted compiler nine); before: 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 272.0 MB vs 322.2 MB (claude/selfhost-speed-1, with nine libraries read, 344.2 MB with all fifteen; NativeAOT-LLVM's figure is the one on record, of its build that reads fifteen, not measured again); before: 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 39.5 MB vs 129 MB (main ad4c99e) | met; next waste: code (36.2 MB) |
@@ -1156,6 +1156,37 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   traps in about 1 run of 100 when four run at once on the desk (`operation does not support unaligned accesses`
   in rt.retain under Interlocked.Exchange(object, object) in Task.FinishContinuations); 088's timer line and
   085's oracle under load.
+- 2026-11-22 to 23, the build, round 10 (branch claude/tree-3 from claude/round-9 d430594, not merged when this was
+  written; docs/AUDIT.md A3.5 "The build, round 10"). The tree scene, measured by phase and by step before anything
+  was changed. **In:** `foreach` over a List<T> with the size's test first, the list's fields read once before the loop
+  and the changed list's throw on an enumerator made on the spot (the walk is three fifths of a frame: no frame,
+  no handler and no reads in its loop any more; test 203, `tools/list-foreach-breaks.sh`); a new member's own
+  empty object (an entity's list) left a plain object and linked to its holder when it joins later
+  (`Rt.PartHolder`, test 202, `tools/plain-parts-breaks.sh`); round 9's `Rt.PlainParents` from its side branch;
+  Rt.ArenaUnlink not called for a store over a slot that held nothing unless the link kept a count to give back
+  (test 204, `tools/unlink-skip-breaks.sh`: the largest step for the build); Rt.Reevaluate by slot bits the
+  default again (`tools/slot-walk-breaks.sh`). Each has its switch (`CS2WASM_NO_LIST_TEST_FIRST`,
+  `_NO_LIST_THROW_PATH`, `_NO_PLAIN_PARTS`, `_NO_PLAIN_PARENTS`, `_NO_UNLINK_SKIP`, `_NO_SLOT_WALK`). **Numbers**
+  (the desk against NativeAOT-LLVM, the six switches off and on in turn, five pairs): tree median 0.045 to 0.052
+  ms off and 0.038 to 0.043 on (1.52x to 1.68x, then 1.27x to 1.43x); **p99.9 2.26 to 3.26 off and 2.00 to 2.46
+  on: 0.76x to 0.85x NativeAOT-LLVM's, below it in every pair** (0.95x to 1.14x off); worst frame 0.68x to
+  0.78x in four pairs and 3.340 against 3.328 ms in one; the tree's mean frame 1.03x to 1.12x; the other four
+  scenes as they were; the mean frame's geometric mean over the five 0.70x. tools/tree-build.cs: build 1.52 to
+  1.63 ms off, 1.29 to 1.31 on; drop 0.37 to 0.39 and 0.32 to 0.37. bench.mjs 0.89x to 0.92x both ways. Hello
+  world 27,784 bytes. **Not reached: the tree's median** (1.3x to 1.4x: the build and the store of a frame are
+  15 us against NativeAOT-LLVM's 2.4, and this side's walk, now the faster of the two, does not make up for
+  it); the audit item says where an entity's 71 ns are and what was measured and left.
+  Under heavy load on the desk later (fourteen pairs) the tree's median is 1.28x to 1.46x and its p99.9 0.71x to
+  1.50x NativeAOT-LLVM's (0.92x to 1.79x with the steps off): below NativeAOT-LLVM's in every run only on the
+  quieter desk. Checked (the code is cd93b54): the homelab's suite at 5fb8575 239 passed, 0 failed, 2 known
+  gaps, both modes; at 1d4abf2 238 the same; the self-hosted compiler at e92a608 (before the unlink's step and
+  the slot walk) built with and without four switches, hello world in 8.2 to 8.6 s either way, 272 MB, the same
+  module, self = net byte for byte on test 145; on the desk the five scripts of breaks and tests 12x, 13x, 19x,
+  20x both ways. **Queued on the homelab at 25b5f6b and not run when this was written:**
+  `tools/overnight-check.sh` (the suite again, the self-hosted compiler with all six switches and selfdet for
+  220, 193, 088, 202 to 204, and `tools/stress-trees.sh`); the scene's frames by step on the homelab were not
+  measured.
+
 - 2026-11-23, 00:00, claude/selfhost-speed-1 and claude/known-diffs-1 merged (main d430594; their entries above),
   checked again before the merge. Homelab at d430594: suite 236 passed, 0 failed, 2 known gaps, checked and as
   shipped; the self-hosted compiler built (350 s, 32,920,709 bytes), its module byte for byte the .NET-hosted
@@ -1189,6 +1220,16 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   checks off and paid them down later (NoteDebt) was refused here as deferred work; its session is building the
   number kept right at the one event that changes it, and test 219 still leaks in 2 to 4 loaded runs of 300 to 400
   with that so far.
+- 2026-11-23, 05:00, claude/tree-3 merged with main eba0f0d (37c6b15) and checked there (docs/AUDIT.md A3.5,
+  round 10, the last two items). Homelab at 37c6b15: suite 241 passed, 0 failed, 2 known gaps, checked and as
+  shipped; the self-hosted compiler built (286 s, 33,203,338 bytes), hello world by it in 8.6 to 9.0 s, 272.0 MB,
+  the same module with the six switches off; self-1 = net byte for byte on 145, 220, 193, 088, 202, 203, 204;
+  stress 200 loaded runs a mode: 139, 192 to 199, 201 to 203 the same in every run, 127 `async 5` / `pending 1` in
+  3 and 4 of 200 (the open item 2 of the table; not compared with main the same hour). Frames, main against the
+  branch, nine pairs: the tree's median 1.49x to 1.65x NativeAOT-LLVM's on main and 1.30x to 1.50x on the branch
+  (1.30x to 1.37x on a quieter desk), its p99.9 below NativeAOT-LLVM's in every pair on the branch (0.70x to
+  0.92x), its worst frame above in four of nine on a loaded desk; the other four scenes as on main; bench.mjs
+  0.91x to 0.93x on both. Not reached: the tree's median at NativeAOT-LLVM's. Not merged into main by this session.
 - 2026-11-23, claude/load-flakes-safe (from main 00d78fe): of claude/load-flakes-1, what is sound and costs the
   self-hosted compiler nothing. Async iterators' promise counted while it is completed (test 087's trap in
   rt.retain: test 217 without it traps in 24 runs of 24, with it in none of 1,200; test 087 checked 2,400 of 2,400,
@@ -1248,3 +1289,23 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   4cf95fe on the desk, in turn, five rounds: 9.68 to 12.12 s for 9.80 to 12.19, the same module: level. The last
   session's uncommitted DrainKills change: parked untested on claude/known-diffs-2-drainkills. Stress of the new
   tests and 127, 139: queued on the homelab at 05:45, not run when this was written.
+- 2026-11-23, 05:40, main 4cf95fe checked whole on the homelab (claude/main-check-1): suite 241 passed, 0
+  failed, 2 known gaps, checked and as shipped; tools/selfhost-check.sh: the self-hosted compiler built (247 s,
+  32,978,189 bytes), hello world in 8.32 to 8.50 s (peak 272 MB), its module byte for byte the .NET-hosted
+  compiler's on 145, 220, 193 and 088. The churn merge was checked on its own branch by its session and on the
+  merge only by tests here until this run. The standing leave to stop stuck jobs on the homelab was used three
+  times in the night: twice for this session's own leftover self-host runs of branches that were not merged, once
+  (04:25) for four queued jobs of the load-flakes session that it had superseded and was not allowed to stop.
+  At about 03:44 the overnight sessions' model began to fail (overloaded, then its limit): tree-3,
+  selfhost-speed-2, load-flakes-1, known-diffs-2 and threads-1 were taken over in their worktrees by sessions on
+  another model; churn-5 had handed back first.
+- 2026-11-23, 06:30, claude/tree-3 merged with main again (e682484: main 4cf95fe, claude/churn-5's steps) and
+  checked there (docs/AUDIT.md A3.5 round 10, its last items). Homelab at e682484: suite 244 passed, 0 failed, 2
+  known gaps, both modes; the self-hosted compiler byte for byte on 145, 220, 193, 088, 202, 203, 204, 208, 209,
+  hello world by it in 10.2 to 11.4 s on a loaded homelab (8.6 to 9.0 s at 37c6b15 before; the build without
+  the branch's six steps as slow; not timed against main side by side), 272.0 MB; stress of 139, 192 to 199,
+  201 to 203 the same in every run, 127's open line in 3 and 1 of 200 (main 4cf95fe the same hour: 3 and 4 of
+  400). Desk: the five scripts of breaks exit 0; tests 19x, 20x, 26x, 145 both modes. Frames, main 4cf95fe
+  against the merge, six pairs on a loaded desk: tree median 1.53x and 1.54x on main against 1.33x and 1.35x in
+  the two quiet pairs, lower on the branch in five of six; churn as on main. Not merged into main by this
+  session; the tree's median is not at NativeAOT-LLVM's.

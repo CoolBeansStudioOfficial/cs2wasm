@@ -128,6 +128,8 @@ namespace Cs2Wasm.Runtime
                 ref int w = ref Mem.RefI32(a + 8);
                 while (true) { int v = Atomic.Load32(ref w); if ((v & MarkedBit) != 0 || Atomic.CompareExchange32(ref w, v, v | MarkedBit) == v) break; }
             }
+            // (a member's plain part becomes a member: Rt.PartMarked)
+            if ((flag & Weak) != 0) Rt.PartWeak(a);
         }
 
         public static void Clear(object o, int flag) => ClearAt(Rt.AddressOf(o), flag);

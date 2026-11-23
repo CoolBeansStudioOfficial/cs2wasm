@@ -582,6 +582,10 @@ internal sealed partial class RuntimeFns
     /// <summary>rt.array_grow(container, old, to, n): Rt.ArenaGrowArray where arrays can be on a cycle, else 0 (RuntimeGen.cs).</summary>
     public WasmFunction ArrayGrowFn => _arrayGrow ??= M.AddFunction("rt.array_grow", FT([I, I, I, I], [I]));
     public WasmFunction? ArrayGrowIfMade => _arrayGrow;
+    WasmFunction? _partWeak;
+    /// <summary>rt.part_weak(obj): Rt.PartMarked in a program with groups, nothing in any other (RuntimeGen.cs).</summary>
+    public WasmFunction PartWeakFn => _partWeak ??= M.AddFunction("rt.part_weak", FT([I], []));
+    public WasmFunction? PartWeakIfMade => _partWeak;
 
     // arenas (section 4.3): dispatch on the type id of a member; bodies are emitted with the type graph
     WasmFunction? _arenaClear, _arenaFree, _arenaVisit, _sccOf;
