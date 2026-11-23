@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- tools/BuildCoreLib: il2wasm's System.Private.CoreLib as an IL assembly, built ahead of time from dotnet/runtime's
+       sources with src/Il2Wasm/Upstream/System.Private.CoreLib/manifest.txt, and the framework directory the IL front
+       end loads (that CoreLib plus the stock IL of the browser-wasm runtime pack). See docs/CORELIB.md. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- the stock libraries above CoreLib: the Mono browser-wasm runtime pack of the release our sources are from
+         (dotnet/runtime v11.0.0, deae2e32; the pack's nuspec names dotnet/dotnet 297acf93, whose source manifest
+         pins runtime at deae2e32). NuGet fetches and verifies it into its cache when this tool is restored. -->
+    <BrowserPackId>Microsoft.NETCore.App.Runtime.Mono.browser-wasm</BrowserPackId>
+    <BrowserPackVersion>11.0.0</BrowserPackVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.12.0" />
+    <PackageDownload Include="$(BrowserPackId)" Version="[$(BrowserPackVersion)]" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyMetadata Include="BrowserPackId" Value="$(BrowserPackId)" />
+    <AssemblyMetadata Include="BrowserPackVersion" Value="$(BrowserPackVersion)" />
+    <AssemblyMetadata Include="NuGetPackageRoot" Value="$(NuGetPackageRoot)" />
+  </ItemGroup>
+</Project>

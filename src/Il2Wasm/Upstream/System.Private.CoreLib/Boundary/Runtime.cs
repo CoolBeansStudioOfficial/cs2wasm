@@ -491,7 +491,7 @@ namespace Il2Wasm.Runtime
                         // a few at a time); a page looked at and left goes to the back. When there is none, an
                         // empty page, unless memory would have to grow for it: then the front page as it is, as
                         // before.
-                        int cap = (PageSize - PageHead) / size, take = 0;
+                        int pageCap = (PageSize - PageHead) / size, take = 0;
                         // (first the pages at the back, whose first block was freed last: one a quarter of which is
                         // free already was freed in one go, a subtree let go, and is still in the cache; the tree
                         // scene's frames, with other programs at work on the machine, took a tenth longer without)
@@ -512,26 +512,26 @@ namespace Il2Wasm.Runtime
                             // (HoldPages: a page that was passed over below is at the back too, and is not one whose
                             // first block was freed last: [12] says so)
                             if (HoldPages() && Mem.LoadI32(back + 12) != 0) break;
-                            if (Mem.LoadI32(back + 16) <= cap - (cap >> StillShift)) { take = back; break; }
+                            if (Mem.LoadI32(back + 16) <= pageCap - (pageCap >> StillShift)) { take = back; break; }
                             if (back == q) break;
                             back = Mem.LoadI32(back + 8);
                         }
                         for (int k = 0; k < RipeLook && take == 0; k++)
                         {
                             int inUse = Mem.LoadI32(q + 16);
-                            if ((!HoldPages() || over) && inUse <= (cap >> RipeShift)) { take = q; break; }
+                            if ((!HoldPages() || over) && inUse <= (pageCap >> RipeShift)) { take = q; break; }
                             int seen = Mem.LoadI32(q + 12);
                             if (HoldPages())
                             {
                                 // [12]: the blocks in use when the page was last seen to have lost one, plus one, in
                                 // 12 bits, and above them the size's count of takes then
                                 bool same = seen != 0 && inUse == (seen & 0xFFF) - 1;
-                                if (same && inUse <= cap - (cap >> StillShift) && (over || ((now - (int)((uint)seen >> 12)) & 0xFFFFF) >= StillTakes)) { take = q; break; }
+                                if (same && inUse <= pageCap - (pageCap >> StillShift) && (over || ((now - (int)((uint)seen >> 12)) & 0xFFFFF) >= StillTakes)) { take = q; break; }
                                 if (!same) Mem.StoreI32(q + 12, (now << 12) | (inUse + 1));
                             }
                             else
                             {
-                                if (seen != 0 && inUse == seen - 1 && inUse <= cap - (cap >> StillShift)) { take = q; break; }
+                                if (seen != 0 && inUse == seen - 1 && inUse <= pageCap - (pageCap >> StillShift)) { take = q; break; }
                                 Mem.StoreI32(q + 12, inUse + 1);
                             }
                             q = Mem.LoadI32(q + 4);
