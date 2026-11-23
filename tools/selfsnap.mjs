@@ -43,7 +43,8 @@ function build(kind, label, program, cmd, cmdArgs, extraEnv, quiet) {
   const r = spawnSync(cmd, [...cmdArgs, selfPath(program), ...(process.platform === 'win32' ? ['--pathmap', '/=/'] : []), '-o', selfPath(target)],
     { env: { ...env, ...extraEnv }, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 600000 });
   const s = (performance.now() - t0) / 1000;
-  const err = r.stderr || '';
+  // (the compiler's own lines are on the standard output: a module's Console.Error is the engine's log too)
+  const err = (r.stdout || '') + (r.stderr || '');
   const pages = /memory: (\d+) pages/.exec(err)?.[1];
   const notes = err.split('\n').filter((l) => l.startsWith('[snapshot]')).map((l) => l.slice(11)).join('; ');
   if (r.status !== 0 || !existsSync(target)) {
@@ -94,7 +95,7 @@ for (let r = 1; r <= rounds; r++) {
   build('snap', 'with the phases printed, writing', first, 'node', selfCmd, snap2, true);
   const r = build('snap', 'with the phases printed, on the snapshot', first, 'node', selfCmd, snap2, true);
   console.log('--- the phases of a build on the snapshot (CS2WASM_TIMES=1 CS2WASM_HOST_TIMES=1)');
-  console.log(r.err.split('\n').filter((l) => l.trim() && !/^\s+library:.*files, /.test(l)).map((l) => l.slice(0, 170)).join('\n'));
+  console.log(r.err.split('\n').filter((l) => l.trim() && !/^\s+library:.*files, |^ +\d+ ms +\d+ MB +(finish|arenas|static)/.test(l)).map((l) => l.slice(0, 170)).join('\n'));
 }
 if (programs.length > 1) console.log('--- other programs on the same snapshot, each twice, then the first again');
 for (const p of programs.slice(1)) { warm(p, 1); warm(p, 2); }

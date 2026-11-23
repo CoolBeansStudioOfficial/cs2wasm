@@ -34,70 +34,83 @@ cat $D/out.txt
 cat > $D/expected.txt <<EOF
 --- 1: no snapshot: from the start, written
 call 1, mode m1
+call 1 on the error stream
 [snapshot] written: N pages, 0 paths (0 new)
 exit 0
 --- 2: on the snapshot: the second call
 [snapshot] restored N pages and 7 globals; 0 paths checked
 call 2, mode m1
+call 2 on the error stream
 exit 0
 --- 3: a file the command line names is read every time and is no dependency: nothing new, not written
 [snapshot] restored N pages and 7 globals; 0 paths checked
 given /$D/lib/a.txt: one
 call 2, mode m1
+call 2 on the error stream
 exit 0
 --- 4: so still the second call
 [snapshot] restored N pages and 7 globals; 0 paths checked
 call 2, mode m1
+call 2 on the error stream
 exit 0
 --- 5: the named file changed: the snapshot holds
 [snapshot] restored N pages and 7 globals; 0 paths checked
 given /$D/lib/a.txt: one-changed
 call 2, mode m1
+call 2 on the error stream
 exit 0
 --- 6: another environment: from the start
 [snapshot] not used: another environment (...)
 call 1, mode m2
+call 1 on the error stream
 [snapshot] written: N pages, 0 paths (0 new)
 exit 0
 --- 7: and on its snapshot
 [snapshot] restored N pages and 7 globals; 0 paths checked
 call 2, mode m2
+call 2 on the error stream
 exit 0
 --- 8: a file not named (the environment differs too: from the start): read, kept, a dependency
 [snapshot] not used: another environment (...)
 read /$D/lib/b.txt
 kept /$D/lib/b.txt: two
 call 1, mode m1
+call 1 on the error stream
 [snapshot] written: N pages, 1 paths (1 new)
 exit 0
 --- 9: on the snapshot: kept, not read
 [snapshot] restored N pages and 7 globals; 1 paths checked
 kept /$D/lib/b.txt: two
 call 2, mode m1
+call 2 on the error stream
 exit 0
 --- 10: that file changed: the snapshot is let go, read again
 [snapshot] not used: changed: $(node -e "console.log(require('path').join(process.env.CS2WASM_FS_ROOT,'$D','lib','b.txt'))")
 read /$D/lib/b.txt
 kept /$D/lib/b.txt: three
 call 1, mode m1
+call 1 on the error stream
 [snapshot] written: N pages, 1 paths (1 new)
 exit 0
 --- 11: on the new one
 [snapshot] restored N pages and 7 globals; 1 paths checked
 kept /$D/lib/b.txt: three
 call 2, mode m1
+call 2 on the error stream
 exit 0
 --- 12: an entry that returns 1: nothing written
 [snapshot] restored N pages and 7 globals; 1 paths checked
 kept /$D/lib/b.txt: three
 given /$D/lib/fail.txt: bad
 call 2, mode m1
+call 2 on the error stream
 exit 0
 --- 13: the module changed: from the start
 [snapshot] not used: another module
 read /$D/lib/b.txt
 kept /$D/lib/b.txt: three
 call 1, mode m1
+call 1 on the error stream
 [snapshot] written: N pages, 1 paths (1 new)
 exit 0
 --- 14: a snapshot cut short is an error, not a wrong run

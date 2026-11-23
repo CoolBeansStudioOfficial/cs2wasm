@@ -6,7 +6,7 @@
 # the exit code and the peak memory; then whether the two wrote the same module, and the phases of each
 # (CS2WASM_TIMES=1 CS2WASM_HOST_TIMES=1, one more run each).
 #   bash tools/selfenv-ab.sh CS2WASM_NO_LIB_DOC_SKIP=1          (BUILD=0: the build already there; NAMES=1: with names;
-#   VERIFY=1: then tools/selfdet.mjs on four programs with the build as it is)
+#   VERIFY=1: then tools/selfdet.mjs on four programs with the build as it is; SNAP=1: then tools/selfsnap.mjs with it)
 #   on the homelab: bash tools/homelab.sh <branch> env ROUNDS=5 bash tools/selfenv-ab.sh CS2WASM_NO_LIB_DOC_SKIP=1
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1
@@ -55,4 +55,7 @@ if [ "${VERIFY:-0}" = 1 ]; then
     [ ${PIPESTATUS[0]} = 0 ] || rc=1
   done
   echo "verify: $([ $rc = 0 ] && echo all the same || echo FAILED)"
+fi
+if [ "${SNAP:-0}" = 1 ]; then
+  node tools/selfsnap.mjs --self $OUT/as-is.wasm --rounds ${ROUNDS:-5} --naot "$(cygpath -m $NAOT 2>/dev/null || echo $NAOT)" tests/Conformance/145_size_hello.cs tests/Conformance/220_*.cs tests/Conformance/193_*.cs tests/Conformance/088_*.cs
 fi

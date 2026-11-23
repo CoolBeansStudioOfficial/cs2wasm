@@ -27,6 +27,8 @@ static class P
         // the files the command line names: read on every call
         foreach (var a in args) Console.WriteLine("given " + a + ": " + File.ReadAllText(a).Trim());
         Console.WriteLine($"call {s_runs}, mode {s_mode}");
+        // (the error stream too: what a compiler writes its messages to)
+        Console.Error.WriteLine($"call {s_runs} on the error stream");
         return args.Length > 0 && args[0].EndsWith("fail.txt") ? 1 : 0;
     }
 }
