@@ -943,7 +943,8 @@ sealed partial class FunctionCompiler
             // (a static readonly field's object stays out of groups, Rt.ArenaPin; any other static's is a member like
             // any other; but the store of a field's initializer pins whatever the field: the first object of
             // `static Node s_root = new Node(0);` is never freed once it is in a cycle, docs/AUDIT.md)
-            if (f.IsStatic) { if (f.IsReadOnly || s_pinStaticInit) pin = D.Arenas.Pin(ft); }
+            // (threads: the one write of a static readonly field, its initializer's, fixes the object: Arenas.PinFixed)
+            if (f.IsStatic) { if (f.IsReadOnly || s_pinStaticInit) pin = D.ThreadMode && !Arenas.NoFixedPins && initializer && D.StaticWrittenOnce(f) ? D.Arenas.PinFixed(ft) : D.Arenas.Pin(ft); }
             else if ((site = D.Arenas.FieldSite(Owner(f), T.Field(f, Map))) != null) site.AddValue(valueType, srcs);
         }
         if (f.IsStatic) Sh?.Static(Driver.StaticKey(T.Canonical(Owner(f)), f), ft, IsThreadStatic(f), srcs ?? [TopSrc(valueType)]);

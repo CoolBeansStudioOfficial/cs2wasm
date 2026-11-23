@@ -512,6 +512,8 @@ sealed partial class RuntimeGen
         D.LibMethod("Cs2Wasm.Runtime.Rt", "AllocFirst", 1);
         if (D.ThreadMode && RuntimeFns.ShareCheckOn) D.LibMethod("Cs2Wasm.Runtime.Rt", "ShareCheckFail", 1);
         if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "PendDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "NextPending", 0); D.LibMethod("Cs2Wasm.Runtime.Rt", "RunDeferredDestroys", 0); }
+        // (threads: a static readonly field's one write, Arenas.PinFixed)
+        if (D.ThreadMode && !Arenas.NoFixedPins) D.LibMethod("Cs2Wasm.Runtime.Rt", "ArenaPinFixed", 1);
         // (the stores into slots that can close a cycle, Arenas.Resolve: the runtime lock while the container is a member)
         if (D.ThreadMode) { D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockIf", 2); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreLockAtIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "StoreUnlockIf", 1); D.LibMethod("Cs2Wasm.Runtime.Rt", "RegionExchange", 2); D.LibMethod("Cs2Wasm.Runtime.Rt", "LocksHeld", 0);
             // (the counts' slow paths, rt.retain and rt.release and rt.load_retain: asked for here, with the program, not when

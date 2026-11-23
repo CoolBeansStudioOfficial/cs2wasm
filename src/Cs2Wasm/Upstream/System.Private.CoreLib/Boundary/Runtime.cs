@@ -3888,6 +3888,8 @@ namespace Cs2Wasm.Runtime
                 int child = Mem.LoadI32(val + 8 + ((w & 15) << 2));
                 if (child == 0) continue;
                 int cc = Mem.LoadI32(child);
+                // (threads: immortal, ArenaPinFixed: linked to nothing)
+                if (ThreadMode() && cc == -1) continue;
                 if (cc > 0)
                 {
                     // (pinned, or of another group of classes: linked to nothing)
@@ -3903,7 +3905,7 @@ namespace Cs2Wasm.Runtime
                         for (; d2 != 0; d2 = (int)((uint)d2 >> 4))
                         {
                             int c2 = Mem.LoadI32(child + 8 + ((d2 & 15) << 2));
-                            if (c2 != 0 && (Mem.LoadI32(c2) <= 0 || Mem.LoadI32(c2 + 8) >= 0)) return false;
+                            if (c2 != 0 && (ThreadMode() ? Mem.LoadI32(c2) != -1 && (Mem.LoadI32(c2) <= 0 || Mem.LoadI32(c2 + 8) >= 0) : Mem.LoadI32(c2) <= 0 || Mem.LoadI32(c2 + 8) >= 0)) return false;
                         }
                         continue;
                     }
@@ -4094,6 +4096,7 @@ namespace Cs2Wasm.Runtime
                     int k = (w & 15) - 1, c = Mem.LoadI32(a + 12 + (k << 2));
                     if (c == 0) continue;
                     int cc = Mem.LoadI32(c);
+                    if (ThreadMode() && cc == -1) continue;
                     if (SccOf(Mem.LoadI32(c + 4)) != g) continue;
                     // (the next level, joined in the write pass as this slot came: a member by now)
                     if (write && c == up) continue;
@@ -4110,7 +4113,7 @@ namespace Cs2Wasm.Runtime
                                 for (; d2 != 0; d2 = (int)((uint)d2 >> 4))
                                 {
                                     int c2 = Mem.LoadI32(c + 8 + ((d2 & 15) << 2));
-                                    if (c2 != 0 && (Mem.LoadI32(c2) <= 0 || Mem.LoadI32(c2 + 8) >= 0)) return false;
+                                    if (c2 != 0 && (ThreadMode() ? Mem.LoadI32(c2) != -1 && (Mem.LoadI32(c2) <= 0 || Mem.LoadI32(c2 + 8) >= 0) : Mem.LoadI32(c2) <= 0 || Mem.LoadI32(c2 + 8) >= 0)) return false;
                                 }
                             joined++;
                             continue;
@@ -4358,6 +4361,7 @@ namespace Cs2Wasm.Runtime
         static bool SlotEmpty(int c, int g)
         {
             if (c == 0) return true;
+            if (ThreadMode() && Mem.LoadI32(c) == -1) return true;
             return Mem.LoadI32(c) > 0 && (Mem.LoadI32(c + 8) < 0 || SccOf(Mem.LoadI32(c + 4)) != g);
         }
 
@@ -4885,6 +4889,23 @@ namespace Cs2Wasm.Runtime
             return val;
         }
 
+        /// <summary>Threads: the one write of a static readonly field (Compiler/Arenas.cs PinFixed): pinned, and an
+        /// array with no element made immortal. It holds nothing and the field holds it to the program's end, so
+        /// nothing changes but that its count is not written again by every thread that counts it (the empty array
+        /// every new list starts with: eight threads that each made lists took its cache line from each other at
+        /// every count, and every read of it, a leaf's list's length, waited for that). An immortal object joins no
+        /// group (ArenaLinkCore, JoinFresh). CS2WASM_EXP_FIXED_PINS_ANY=1 (a test of the tests): any object.</summary>
+        public static int ArenaPinFixed(int val)
+        {
+            ArenaPin(val);
+            if (val == 0) return val;
+            if (!ExpFixedPinsAny() && (TypeInfo.ElementId(Mem.LoadI32(val + 4)) < 0 || Mem.LoadI32(val + 12) != 0)) return val;
+            int c;
+            do { c = Atomic.Load32(ref Mem.RefI32(val)); if (c <= 0) return val; } while (Atomic.CompareExchange32(ref Mem.RefI32(val), c, -1) != c);
+            return val;
+        }
+        [Intrinsic] static extern bool ExpFixedPinsAny();
+
         // ------------------------------------------------------------------
         // A store that has only the slot's address: through a `ref`, a span, a pointer, a struct's own method, an
         // exchange. Which object the slot is in is the allocator's to say (ObjectOf), and whether the slot is one a
@@ -5045,6 +5066,7 @@ namespace Cs2Wasm.Runtime
                 // (a pinned object, the empty array every new list has: it joins nothing, ArenaLinkCore's answer
                 // after its questions about the two types)
                 if (cc > 1 && Mem.LoadI32(child + 8) < 0) return;
+                if (ThreadMode() && cc == -1) return;
                 if (cc == 1) { if (JoinOwned(child, o, slot, false)) return; }
                 else if (cc < -1 && Mem.LoadI32(o) < -1)
                 {

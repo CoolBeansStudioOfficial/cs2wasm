@@ -994,6 +994,7 @@ sealed partial class FunctionCompiler
             case "Rt.Release": E.Call(Rt.Release); return Own.None;
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
             case "Rt.SccLocal": E.Call(Rt.SccLocalFn); return Own.None;
+            case "Rt.ExpFixedPinsAny": E.I32(Arenas.ExpFixedPinsAny ? 1 : 0); return Own.None;
             case "Rt.NoEmptyPin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_LOCAL_GROUPS") == "1" || Environment.GetEnvironmentVariable("CS2WASM_EXP_NO_EMPTY_PIN") == "1" ? 1 : 0); return Own.None;
             case "Rt.ArenaSlots": E.Call(Rt.ArenaSlotsFn); return Own.None;
             case "Rt.NoWaitingTop": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_WAITING_TOP") == "1" ? 1 : 0); return Own.None;

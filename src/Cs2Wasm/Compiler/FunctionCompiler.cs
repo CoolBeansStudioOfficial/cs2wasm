@@ -2594,7 +2594,7 @@ sealed partial class FunctionCompiler
             switch (op)
             {
                 case IFieldInitializerOperation fi:
-                    foreach (var f in fi.InitializedFields) EmitStoreField(f, null, fi.Value);
+                    foreach (var f in fi.InitializedFields) EmitStoreField(f, null, fi.Value, initializer: true);
                     break;
                 case IPropertyInitializerOperation pi:
                     foreach (var p in pi.InitializedProperties)

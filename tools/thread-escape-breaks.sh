@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tests 275 to 279, 290 and the rules of the thread escape analysis (Compiler/Sharing.cs: which objects another thread can
+# Tests 275 to 279, 290, 291 and the rules of the thread escape analysis (Compiler/Sharing.cs: which objects another thread can
 # reach): each test compiled as shipped with CS2WASM_SHARE_CHECK=1 (a plain count of an object another thread made
 # stops the program) must print what it prints without the check; compiled with its rule deliberately weakened it
 # must not (the check names the object), and with the rule switched off it must again.
@@ -33,6 +33,8 @@ one 279_private_work_and_handed_results CS2WASM_SHARING_NONE=1 CS2WASM_NO_SAME_T
 # (groups of cycle-capable objects that are each one thread's, Arenas.LocalScc: an array with no element pinned as it
 # is made, or every group taken for one thread's)
 one 290_groups_of_one_thread CS2WASM_EXP_NO_EMPTY_PIN=1 CS2WASM_NO_LOCAL_GROUPS=1
+# (a static readonly field's one write fixes an array with no element: every pinned object fixed, a let-go one stays)
+one 291_fixed_empty_arrays CS2WASM_EXP_FIXED_PINS_ANY=1 CS2WASM_NO_FIXED_PINS=1
 # (the foreach over a list of the thread's own, which borrows the list and each element: off, the same output. No
 # weakened build of this rule is shown to break: an element of a list every thread can reach that another thread
 # lets go of stays until the borrowing thread's next safe point, and a safe point inside the loop is a store the

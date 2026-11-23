@@ -110,7 +110,7 @@ internal sealed partial class Arenas
         }
     }
 
-    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh, LinkOwned, LinkAt, UnlinkAt, MoveAt, LinkIso, StoreLock, StoreUnlock }
+    enum Kind { Link, Unlink, Pin, LinkFresh, UnlinkFresh, LinkOwned, LinkAt, UnlinkAt, MoveAt, LinkIso, StoreLock, StoreUnlock, PinFixed }
 
     readonly Dictionary<string, Site> _sites = [];
     readonly Dictionary<WasmFunction, (Kind kind, Site? site, ITypeSymbol? pinType)> _placeholders = [];
@@ -372,6 +372,28 @@ internal sealed partial class Arenas
             _pins[k] = f = Placeholder("arena.pin " + k, new FuncType([I], [I]), Kind.Pin, null, fieldType);
         return f;
     }
+
+    /// <summary>CS2WASM_NO_FIXED_PINS=1: a static readonly field's initializer pins its object as any static's
+    /// (PinFixed is not asked for).</summary>
+    public static readonly bool NoFixedPins = Environment.GetEnvironmentVariable("CS2WASM_NO_FIXED_PINS") == "1";
+    /// <summary>CS2WASM_EXP_FIXED_PINS_ANY=1 (a test of the tests, unsound): every pinned object is fixed, whatever
+    /// the field and the object (Rt.ArenaPinFixed).</summary>
+    public static readonly bool ExpFixedPinsAny = Environment.GetEnvironmentVariable("CS2WASM_EXP_FIXED_PINS_ANY") == "1";
+
+    /// <summary>Threads: the store of a static readonly field's initializer, the one write of the field
+    /// (Driver.StaticWrittenOnce): the object is the field's for the rest of the program. An array with no element
+    /// so stored (`List&lt;T&gt;.s_emptyArray`, which every list starts with, on every thread) is made immortal
+    /// (Rt.ArenaPinFixed): its count is never written again, so the threads that count it do not take its cache line
+    /// from each other at every list they make and let go.</summary>
+    public WasmFunction PinFixed(ITypeSymbol fieldType)
+    {
+        fieldType = D.Types.Canonical(fieldType);
+        var k = Types.Key(fieldType);
+        if (!_pinsFixed.TryGetValue(k, out var f))
+            _pinsFixed[k] = f = Placeholder("arena.pin_fixed " + k, new FuncType([I], [I]), Kind.PinFixed, null, fieldType);
+        return f;
+    }
+    readonly Dictionary<string, WasmFunction> _pinsFixed = [];
 
     readonly Dictionary<string, WasmFunction> _linkAt = [], _unlinkAt = [];
     WasmFunction? _linkAtFn, _unlinkAtFn;
@@ -1050,6 +1072,10 @@ internal sealed partial class Arenas
                             var d = x; d.Op = Op.Drop; d.Ref = null; body.Add(d); body.Add(d); body.Add(d);
                             body.Add(new Instr { Op = Op.I32Const, Imm = 0, Pos = ins.Pos });
                         }
+                        break;
+                    case Kind.Pin when ExpFixedPinsAny && D.ThreadMode:
+                    case Kind.PinFixed:
+                        if (Enabled && PinsCyclic(w, ph.pinType!)) { x.Ref = RuntimeFn("ArenaPinFixed", 1); body.Add(x); }
                         break;
                     case Kind.Pin:
                         if (Enabled && PinsCyclic(w, ph.pinType!)) { x.Ref = pin; body.Add(x); }

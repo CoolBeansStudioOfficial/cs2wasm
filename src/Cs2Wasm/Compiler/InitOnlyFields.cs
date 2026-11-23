@@ -25,6 +25,17 @@ internal sealed partial class Driver
         if (storage is IFieldSymbol f) _borrowFields.TryAdd(key, f);
         if (type != null) _borrowFieldTypes.TryAdd(key, type);
     }
+    /// <summary>A static readonly field whose one write is its initializer: no static constructor of its type names
+    /// it (Arenas.PinFixed).</summary>
+    internal bool StaticWrittenOnce(IFieldSymbol f)
+    {
+        if (!f.IsStatic || !f.IsReadOnly || f.IsConst) return false;
+        foreach (var ctor in f.ContainingType.StaticConstructors)
+            foreach (var r in ctor.DeclaringSyntaxReferences)
+                if (r.GetSyntax().DescendantNodes().OfType<IdentifierNameSyntax>().Any(n => n.Identifier.ValueText == f.Name)) return false;
+        return true;
+    }
+
     /// <summary>Whether a borrow key names a static field.</summary>
     internal bool IsStaticKey(string key) => _borrowFields.TryGetValue(key, out var f) && f.IsStatic;
     /// <summary>The name of the function a type's static initializer's code is in, before the type's key.</summary>
