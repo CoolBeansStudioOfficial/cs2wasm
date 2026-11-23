@@ -707,12 +707,20 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     finds both due and hands the 50 ms one to the pool first (TimerQueue.FireNextTimers). 235cf87 had made both
     give the same value; now the far one is 2 s off and the first to complete is checked again (2,400 of 2,400 loaded runs). 127's lock on the
     list its four continuations add to stays: by List's contract several writers are not supported, but .NET
-    frees everything all the same and the runtime does not (next).
-  - **Open: List.Add from four threads at once.** tests/Load/219_no_lock.cs leaves a round's five objects for
-    good in 65 runs of 300 (the desk; checked build 57 of 200, no trap), with every fix above and with the trials.
-    In the three traced runs the arena report itself failed while walking the group's ring after the array that
-    Task.WhenAll returned (memory access out of bounds), which the same report never did in the runs with the
-    lock: the ring of members is damaged, not only a check missed. Not found.
+    frees everything all the same, and the lock is out again since the runtime does too (next).
+  - **List.Add from four threads at once (closed the same day, aeda59c).** tests/Load/219_no_lock.cs left a round's
+    five objects for good in 65 runs of 300, then 14, 11 and 9 of 200 with the fixes above (the desk); with lists
+    that never grow, none of 200. Two threads each put an array of their own in the list, and the one replaced
+    had an item by then. That array, let go by the list, is a top that still holds the list (its item refers up to
+    the parent); the item is also in the array Task.WhenAll returned, which the parent keeps. The two structures
+    refer into each other, each check failed by the other's one reference and left a note, and the trial took
+    another top in only where the top itself was referred to. Dropped's first pass now takes in the top above a
+    member the set refers to, or above an owner one of the set holds, when that top's own check failed by
+    references from outside and no code refers to it (TakeInAbove; any top above, tried first, stopped test 215's
+    four-results trial at a structure a static holds a member of: 7 objects left). After: none of 300; test 127
+    without its lock again, 400 of 400 on the desk (the homelab's runs at aeda59c: not back when this was written). The arena report that failed in three traced runs
+    earlier (read then as a damaged ring) printed the whole group in nine traced runs that leaked on the later
+    code, and the checked build never trapped: a leak by two notes that waited on each other is what is shown.
   - **Test 139, two nodes left without the engine's stack checks (one run of 3,000).** Not reproduced: 4,000 of 4,000 runs as shipped without the stack checks ended `16 1` (59a6c4a);
     test 218 (its rounds, 3,200 thread ends a run) none in 3,200 runs, with and without the AfterLocks change of
     b02ce58 (1,200 on the desk). No cause is shown.
