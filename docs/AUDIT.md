@@ -728,7 +728,12 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     (wasm-function[71], under ArenaVisitObject's dispatch, under TrVisit, under Dropped), is 88.3 s of the
     branch's 237 s of work there against 3.6 s on main, and Dropped is called almost only from ArenaRelease under
     rt.release from the program's code: the checks at the drop of a last reference from code, each going through
-    far more members than on main. Variants on the homelab (tools/selfhost-variants.sh, 088, against 177 s
+    far more members than on main, or many more of them. Inclusive, the checks (Dropped) are 107.3 s of the
+    branch's 237.5 s busy against 4.2 s of main's 120.5 s: 103 of the 117 s the branch adds. The memory as
+    CS2WASM_TIMES prints it is higher too, from the first compile pass on: 859, 1,140 and 1,223 MB at the ends of
+    the two passes and the encoding against main's 696, 850 and 923 (the same with the holds off): the branch
+    keeps more alive while it compiles, or for longer, and the checks then go through larger structures. Which
+    structure that is was not found. Variants on the homelab (tools/selfhost-variants.sh, 088, against 177 s
     plain): CS2WASM_NO_TURN_HOLD=1 with CS2WASM_NO_SURVIVOR_HOLD=1 153.8 s; CS2WASM_NO_STALE_NOTE=1 157.2 s;
     CS2WASM_NO_TAKE_IN_ABOVE=1 no end in 300 s. Neither the holds nor the notes is the bulk alone, and the trial
     without TakeInAbove is worse still. Tried and taken out the same hour: TakeInAbove taking a top in only once the

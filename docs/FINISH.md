@@ -1095,8 +1095,9 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   passed, 0 failed both modes. Test 088 through the self-hosted compiler on the desk 171.4 s against 91.6 s with
   main's runtime: the checks at the drop from rt.release go through far more members (the trial's visit of a
   reference 88 s against 3.6 s by the profile); the holds off 153.8 s, the notes off 157.2 s, TakeInAbove off no
-  end (the homelab). Not removed; docs/AUDIT.md A3.5, "Test 088 through the self-hosted compiler". The branch
-  stays off main until it is.
+  end (the homelab); its memory 1,223 MB at the end against 923. Not removed; docs/AUDIT.md A3.5, "Test 088
+  through the self-hosted compiler". The branch stays off main until it is. On the desk at 2fc2262, as shipped,
+  400 runs each, eight at once (tools/stress-cycles.sh): 187, 219, 127, 131, 215, 216 the same in all 400.
   Open: test 139's two nodes without the engine's stack checks, not seen again, its cause not shown.
 - 2026-11-22, the node path, second part (branch claude/tree-node-path-2 from claude/tree-node-path 35ddb45, not
   merged; AUDIT A3.5, the build, round 9, second part). The first part's queued checks came back clean (selfdet
