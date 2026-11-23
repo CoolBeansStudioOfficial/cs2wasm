@@ -1250,7 +1250,7 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   without threads byte for byte main's (145 27,786 bytes, 220, 193, 201, 208, 209, tools/frames). frames-threads,
   main's compiler -> this branch's, median ms (NativeAOT-LLVM without threads): idle churn 2.02 -> 0.096-0.100
   (0.050-0.052), idle tree 0.94-0.99 -> 0.122-0.126 (0.033-0.035), private churn at eight 3.09-3.27 -> 0.160
-  (0.049), private tree at eight 0.243-0.259 -> 0.056 (0.006), shared at four 0.26 -> 0.31 (0.105). The desk on
+  (0.049), private tree at eight 0.243-0.259 -> 0.056 (0.006), shared at four 0.26-0.30 and 0.18-0.33 from run to run on either (0.105). The desk on
   the merged code: thread-share-check 61 of 61 the same, thread-escape-breaks as before, 275 to 279 300 loaded runs
   each all the same, 139, 218, 215b, 131, 127 200 each all the same with this branch's compiler and with main's,
   187 3 of 200 with each.

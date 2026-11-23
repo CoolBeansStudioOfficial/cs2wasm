@@ -2504,9 +2504,10 @@ threads in the time of one): private churn 1.75-1.86, 3.06-3.22, 4.76-5.38 at 2,
 4.14-4.20); arithmetic alone 1.73, 3.43, 5.64. The parts on a worker, us (main -> this branch; NativeAOT without
 threads): 20,000 particles made 1,074-1,088 -> 294-303 (159-161), a pass 1,445-1,465 -> 125-129 (103-109), let go
 316-320 -> 315-327 (4); a tree of 3,906 built 2,582 -> 1,648-1,703 (42), walked 558 -> 15 (17), 100 subtrees
-replaced 2,317-2,335 -> 1,553-1,601 (33), dropped 202-211 -> 201-204 (0). The shared scene with four workers is
-slower here than on main (0.309-0.316 against 0.260-0.262; two workers as fast or faster): not looked into; its
-frame is mostly the workers' wake. Against NativeAOT-LLVM without threads (its build with threads does not link
+replaced 2,317-2,335 -> 1,553-1,601 (33), dropped 202-211 -> 201-204 (0). The shared scene with four workers
+looked slower here than on main (0.309-0.316 against 0.260-0.262); timed alone in turn it is not a difference of
+the builds: main 0.256-0.304, the merge 0.242-0.331, the branch before the merge (3f73a93) 0.179 and 0.313, from
+run to run of one build (its frame is mostly the workers' wake). Against NativeAOT-LLVM without threads (its build with threads does not link
 here), at or below its median only in the shared scene with one or two workers in their best runs; everywhere
 else 1.7x to 9x: what is left is the list above (the groups with threads, types reached by their type).
 Checks on the merged code (the desk): `bash tools/thread-share-check.sh` 61 programs with threads (main brought
