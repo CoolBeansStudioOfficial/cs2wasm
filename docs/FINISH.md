@@ -1303,3 +1303,19 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   against the merge, six pairs on a loaded desk: tree median 1.53x and 1.54x on main against 1.33x and 1.35x in
   the two quiet pairs, lower on the branch in five of six; churn as on main. Not merged into main by this
   session; the tree's median is not at NativeAOT-LLVM's.
+- 2026-11-23 morning, claude/selfhost-speed-2 checked again after main was merged (4746983 on main 4a42328;
+  docs/AUDIT.md, the entry's item "Checked again after main was merged"). One homelab turn
+  (`tools/selfhost-speed-2-verify.sh`, others beside). The suite 245 passed, 0 failed, 2 known gaps, checked and
+  as shipped. The self-hosted compiler built (253 s, 33,265,837 bytes): hello world 6.77 to 7.20 s, 241.8 MB
+  (8.11 to 8.15 s, 272.0 MB with both switches; the same module); NativeAOT-LLVM's build 3.76 to 3.96 s;
+  `tools/selfdet.mjs` self = net byte for byte on 145, 220, 193 and 088. The snapshot (`CS2WASM_SNAPSHOT=<file>`,
+  off unless set): `tools/selfsnap.mjs` every module on a snapshot byte for byte the .NET-hosted compiler's (145
+  five times, then 220, 193, 088, 139 and 197 twice each, hello world again on the snapshot 088 left);
+  `tools/selfsnap-stale.mjs` all eleven steps as expected (a new version of the source read anew; a source that
+  needs System.Linq; another build of the compiler, another reference directory, a reference assembly's time of
+  change and a file added to that directory each let the snapshot go); `tools/snapshot-check.sh` as expected.
+  Not covered: a file rewritten with the same size and time of change (by design), `-r` references (not tried).
+  Hello world in turn, five rounds, loaded: from the start 9.61 s median (9.39 to 10.47), on a snapshot 3.54
+  (3.41 to 3.83), NativeAOT-LLVM's build 5.24 (5.15 to 5.92). **Not finished when written** (still running in
+  the same turn): test 088 timed from the start and on a snapshot beside NativeAOT-LLVM's; stress of 250, 127 and
+  139; `tools/libs-rules-check.sh`.

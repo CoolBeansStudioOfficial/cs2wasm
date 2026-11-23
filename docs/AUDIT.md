@@ -4011,6 +4011,28 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     entry if they came: `tools/libs-rules-check.sh` (every conformance and benchmark program compiled with the two
     rules and with both switches: the same bytes; here it was run on some twenty programs, all the same),
     thirty more programs on a snapshot, and a profile of a build on a snapshot (`tools/selfsnap-prof.sh`).
+  - **Checked again after main was merged (4746983, main 4a42328), 2026-11-23 morning, one homelab turn
+    (`tools/selfhost-speed-2-verify.sh`; other sessions' jobs beside).** The suite 245 passed, 0 failed, 2 known
+    gaps, checked and as shipped. The self-hosted compiler built (253 s, 33,265,837 bytes); hello world 6.77 to
+    7.20 s as it is against 8.11 to 8.15 with `CS2WASM_NO_LIB_DOC_SKIP=1 CS2WASM_NO_LIB_RESTART=1` (the same
+    module, 27,731 bytes), peak 241.8 MB against 272.0; NativeAOT-LLVM's build of 2026-11-20 3.76 to 3.96 s (three
+    rounds in turn); four builds in one instance 11.4, 1.16, 1.10, 1.09 s, the fourth the same module.
+    `tools/selfdet.mjs`: self = net byte for byte on 145 (27,743), 220 (279,559), 193 (262,743), 088 (1,616,137).
+    **The snapshot, what is checked:** (a) `tools/selfsnap.mjs`: every module written on a snapshot is the
+    .NET-hosted compiler's byte for byte: hello world five times, then on hello world's snapshot 220, 193, 088 and
+    two programs with threads (139 and 197), each twice (088 read more and wrote the snapshot again; the second
+    088, 139, 197 and hello world after them on that larger snapshot); the builds from the start also equal. (b)
+    `tools/selfsnap-stale.mjs` (results in docs/FINISH.md's entry): another version of the source at the same path
+    (read anew, the snapshot holds, the new module), a source that needs System.Linq, then the first again; another
+    build of the compiler (let go); another reference directory (let go); a reference assembly's time of change
+    (let go); a file added to the reference directory (let go); every module the .NET-hosted compiler's. (c)
+    `tools/snapshot-check.sh` (the host's rules on a small module, on the desk at the merge): as expected. **Not
+    covered:** a file rewritten with the same size and the same time of change (a path's state is size and time,
+    as make and MSBuild judge; by design); references given with `-r`, which are named on the command line and so
+    read anew (not tried); the threaded compiler and the browser's host have no snapshot. The snapshot is used only
+    when `CS2WASM_SNAPSHOT=<file>` is set: off by default. Timed in turn (five rounds, the homelab loaded): hello
+    world from the start 9.39 to 10.47 s (median 9.61), on the snapshot 3.41 to 3.83 (3.54), NativeAOT-LLVM's
+    build 5.15 to 5.92 (5.24): on a snapshot 0.68x NativeAOT-LLVM's, from the start 1.83x.
   - **Not done, not reached, not measured.**
     - The ratio at equal work: the counts (rt.retain, rt.release, the struct copies), the arena functions and the
       cost of a call are where they were. Leads the profiles give, none built: a member's first outside reference
