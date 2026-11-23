@@ -286,6 +286,7 @@ public sealed class Importer
     {
         if (!m.Signature.IsStatic || m.Signature.Length != 0 || m.HasInstantiation && m.IsCanonicalMethod(CanonicalFormKind.Any)) return null;
         if (Constants.OfIntrinsic(m) is long k) return k;
+        if (Constants.Known(m) is long kn) return kn;
         if (!(m.Signature.ReturnType.IsWellKnownType(WellKnownType.Boolean) || m.Signature.ReturnType.IsWellKnownType(WellKnownType.Int32))) return null;
         if (m.OwningType is MetadataType ot && ot.HasStaticConstructor && !ot.IsBeforeFieldInit) return null;
         if (m.GetTypicalMethodDefinition() is not Internal.TypeSystem.Ecma.EcmaMethod em || em.IsPInvoke || em.IsInternalCall || em.IsAbstract) return null;
@@ -1133,6 +1134,14 @@ public sealed class Importer
         void Call(MethodDesc m, bool virt)
         {
             if (_constrained == null && Importer.ConstantGetter(m) is long cv) { Push(Const(VK.I32, cv)); return; }
+            // typeof(T).IsValueType and its kind: known for the instantiation (as the JIT and NativeAOT fold it)
+            if (S.Count > 0 && S[^1].Op == Opc.TypeOf && !m.Signature.IsStatic && m.Signature.Length == 0 && m.OwningType is MetadataType { Name: var _ } tt0 && tt0.GetName() == "Type"
+                && S[^1].X is TypeDesc known && TypeQuery(m.GetName(), known) is bool q)
+            {
+                Pop();
+                Push(Const(VK.I32, q ? 1 : 0));
+                return;
+            }
             // typeof(A) == typeof(B), both known: a constant (as NativeAOT and ILLink fold it)
             if (m.GetName() is "op_Equality" or "op_Inequality" && m.OwningType is MetadataType ot && ot.GetName() == "Type" && S.Count >= 2
                 && S[^1].Op == Opc.TypeOf && S[^2].Op == Opc.TypeOf)
@@ -1183,6 +1192,19 @@ public sealed class Importer
             c.X = m; c.Sub = (byte)kind; c.Ovf = virt && !sig.IsStatic;
             if (!rt.IsVoid) Push(c);
         }
+
+        static bool? TypeQuery(string getter, TypeDesc t) => getter switch
+        {
+            "get_IsValueType" => t.IsValueType,
+            "get_IsEnum" => t.IsEnum,
+            "get_IsPrimitive" => t.IsPrimitive && !t.IsEnum,
+            "get_IsInterface" => t.IsInterface,
+            "get_IsArray" => t.IsArray,
+            "get_IsByRef" => t.IsByRef,
+            "get_IsPointer" => t.IsPointer,
+            "get_IsClass" => !t.IsValueType && !t.IsInterface,
+            _ => null,
+        };
 
         /// <summary>The method a constrained call reaches on the type (a generic method instantiated as called).</summary>
         MethodDesc? ResolveOn(TypeDesc ct, MethodDesc m, bool isStatic)

@@ -27,6 +27,29 @@ public static class Constants
         return Switch(name);
     }
 
+    /// <summary>The members the target fixes (as Folding.cs's KnownBool): no SIMD instructions are emitted yet, so the
+    /// scalar paths are taken; no event tracing, no code generation at run time, no debugger, no startup hooks;
+    /// invariant globalization (SPEC 9).</summary>
+    public static long? Known(MethodDesc m)
+    {
+        if (m.OwningType is not MetadataType t) return null;
+        var outer = t;
+        while (outer.ContainingType is MetadataType c) outer = c;
+        var ns = outer.GetNamespace();
+        var owner = (t.ContainingType is MetadataType ct ? (ct.GetNamespace() + "." + ct.GetName() + ".") : (t.GetNamespace().Length > 0 ? t.GetNamespace() + "." : "")) + t.GetName();
+        switch (m.GetName())
+        {
+            case "get_IsHardwareAccelerated" when ns is "System.Runtime.Intrinsics" or "System.Numerics": return 0;
+            case "get_IsSupported" when ns.StartsWith("System.Runtime.Intrinsics."): return 0;
+            case "get_IsSupported" when owner is "System.Diagnostics.Tracing.EventSource" or "System.StartupHookProvider": return 0;
+            case "get_IsDynamicCodeSupported" or "get_IsDynamicCodeCompiled" when owner == "System.Runtime.CompilerServices.RuntimeFeature": return 0;
+            case "get_IsAttached" when owner == "System.Diagnostics.Debugger": return 0;
+            case "get_Invariant" when owner is "System.Globalization.GlobalizationMode" or "System.Globalization.GlobalizationMode.Settings": return 1;
+            case "get_UseNls" when owner == "System.Globalization.GlobalizationMode": return 0;
+        }
+        return null;
+    }
+
     /// <summary>Rt.No*, the *Break test hooks and the reports: IL2WASM_* at compile time (0 when unset).</summary>
     public static long? Switch(string name)
     {

@@ -38,6 +38,10 @@ public sealed partial class IlCompiler
         return b;
     }
 
+    WasmFunction? _trace;
+    /// <summary>IL2WASM_IL_TRACE's import (a debugging aid): il2wasm_trace.enter(a, b, c).</summary>
+    internal WasmFunction TraceImport => _trace ??= Module.AddImport("il2wasm_trace", "enter", "trace", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
+
     Blob? _emptyTable;
     /// <summary>A table of no entries (its count, 0, then zeros).</summary>
     internal Blob EmptyTable => _emptyTable ??= DataBlob(new byte[16], 4);

@@ -41,7 +41,7 @@ public sealed partial class IlCompiler
     readonly Dictionary<TypeDesc, WasmFunction> _isinst = new(), _cast = new(), _unbox = new(), _init = new();
     readonly Dictionary<string, (IAddress addr, int index)> _literals = new();
     readonly List<string> _literalOrder = [];
-    readonly Dictionary<(TypeDesc, bool), int> _staticBlockAt = new();
+    readonly Dictionary<(TypeDesc, int), int> _staticBlockAt = new();
     readonly List<(TypeDesc t, bool gc, int size, int align)> _staticBlocks = [];
     readonly Dictionary<TypeDesc, IAddress> _initFlags = new();
     int _dataEnd, _staticsBase, _staticsEnd, _heapBase;
@@ -52,6 +52,11 @@ public sealed partial class IlCompiler
     /// <summary>A static method of no arguments returning an int, exported as il2wasm_live (the tests' leak check: the
     /// blocks the allocator holds).</summary>
     public MethodDesc? LiveCounter;
+    /// <summary>Count the objects the runtime allocates and frees (Rt.AllocObject, FreeObject, FreeFixed), exported as
+    /// il2wasm_live: the tests' leak check on the IL CoreLib (IL2WASM_IL_COUNT_OBJECTS=1).</summary>
+    public bool CountObjects = Environment.GetEnvironmentVariable("IL2WASM_IL_COUNT_OBJECTS") == "1";
+    bool _countWrapping;
+    IAddress? _counted;
     /// <summary>What is not compiled yet traps where it is reached (each one a warning), instead of failing the build:
     /// to measure how far a program gets (IL2WASM_IL_LENIENT=1).</summary>
     public bool Lenient = Environment.GetEnvironmentVariable("IL2WASM_IL_LENIENT") == "1";
@@ -149,6 +154,22 @@ public sealed partial class IlCompiler
             f = Module.AddImport((string)imp.FixedArguments[0].Value!, (string)imp.FixedArguments[1].Value!, m.ToString(), Sig(m));
             _functions[m] = f;
             return f;
+        }
+        // (CountObjects: the runtime's allocation and free of objects counted, il2wasm_live reads the count)
+        if (CountObjects && m.OwningType is MetadataType { Name: var _ } rtt && rtt.GetName() == "Rt" && rtt.GetNamespace() == "Il2Wasm.Runtime"
+            && m.GetName() is "AllocObject" or "FreeObject" or "FreeFixed" && !_countWrapping)
+        {
+            _countWrapping = true;
+            var inner = FunctionFor(m);
+            _countWrapping = false;
+            var w = Module.AddFunction("counted " + m, inner.Type);
+            _functions[m] = w;
+            _counted ??= NamedStatic("il2wasm.live", 4, 4);
+            var e = new Emitter(w);
+            for (int i = 0; i < inner.Type.Params.Length; i++) e.Get(i);
+            e.Call(inner);
+            e.I32Addr(_counted); e.I32Addr(_counted); e.Load(WOp.I32Load); e.I32(m.GetName() == "AllocObject" ? 1 : -1); e.Op(WOp.I32Add); e.Store(WOp.I32Store);
+            return w;
         }
         // a P/Invoke or an internal call: the runtime's method that serves it (or what .NET throws)
         if (m.GetTypicalMethodDefinition() is EcmaMethod nm && (nm.IsPInvoke || nm.IsInternalCall) && NativeFunction(m, nm) is { } native)
@@ -330,16 +351,25 @@ public sealed partial class IlCompiler
 
     // ------------------------------------------------------------------ statics and initializers
 
-    IAddress StaticBlock(TypeDesc owner, bool gc)
+    /// <summary>A type's block of statics: 0 plain, 1 references, 2 thread-static plain, 3 thread-static references
+    /// (one thread for now: a thread static is a static of its own block).</summary>
+    IAddress StaticBlock(TypeDesc owner, int kind)
     {
-        if (!_staticBlockAt.TryGetValue((owner, gc), out int i))
+        if (!_staticBlockAt.TryGetValue((owner, kind), out int i))
         {
             var dt = (DefType)owner;
-            int size = gc ? dt.GCStaticFieldSize.AsInt : dt.NonGCStaticFieldSize.AsInt;
-            int align = gc ? 4 : Math.Max(4, dt.NonGCStaticFieldAlignment.AsInt);
+            int size = kind switch
+            {
+                0 => dt.NonGCStaticFieldSize.AsInt, 1 => dt.GCStaticFieldSize.AsInt,
+                2 => dt.ThreadNonGcStaticFieldSize.AsInt, _ => dt.ThreadGcStaticFieldSize.AsInt,
+            };
+            int align = kind switch
+            {
+                0 => Math.Max(4, dt.NonGCStaticFieldAlignment.AsInt), 2 => Math.Max(8, dt.ThreadNonGcStaticFieldAlignment.AsInt), _ => 8,
+            };
             i = _staticBlocks.Count;
-            _staticBlockAt[(owner, gc)] = i;
-            _staticBlocks.Add((owner, gc, size, align));
+            _staticBlockAt[(owner, kind)] = i;
+            _staticBlocks.Add((owner, kind != 0, size, align));
         }
         int idx = i;
         return new LateAddr(() => _blockOffsets[idx]);
@@ -350,7 +380,9 @@ public sealed partial class IlCompiler
     internal IAddress StaticAddress(FieldDesc f)
     {
         if (f.IsLiteral) throw new NotSupportedException($"a load of the literal field {f}");
-        var block = StaticBlock(f.OwningType, f.HasGCStaticBase);
+        // (a field with data in the image: "..."u8, array initializers: the data itself)
+        if (f.HasRva) return FieldData(f);
+        var block = StaticBlock(f.OwningType, (f.IsThreadStatic ? 2 : 0) + (f.HasGCStaticBase ? 1 : 0));
         int off = f.Offset.AsInt;
         return new LateAddr(() => block.Address + off);
     }
@@ -692,7 +724,15 @@ public sealed partial class IlCompiler
         if (TryCoreMethod("Il2Wasm.Runtime", "Rt", "ReportUnhandled") is { } report) { e.Get(ex); e.Call(FunctionFor(report)); }
         e.Get(ex); e.Call(Rt.Release);
 
-        if (LiveCounter != null)
+        if (CountObjects)
+        {
+            var lf = Module.AddFunction("il2wasm_live", new FuncType([], [ValType.I32]));
+            lf.Exports.Add("il2wasm_live");
+            _counted ??= NamedStatic("il2wasm.live", 4, 4);
+            var le = new Emitter(lf);
+            le.I32Addr(_counted); le.Load(WOp.I32Load);
+        }
+        else if (LiveCounter != null)
         {
             var lf = Module.AddFunction("il2wasm_live", new FuncType([], [ValType.I32]));
             lf.Exports.Add("il2wasm_live");

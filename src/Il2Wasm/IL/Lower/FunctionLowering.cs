@@ -105,6 +105,7 @@ sealed class FunctionLowering
     }
 
     int _frameSize, _fb = -1;
+    static readonly string? s_trace = Environment.GetEnvironmentVariable("IL2WASM_IL_TRACE") is { Length: > 0 } t ? t : null;
 
     /// <summary>A variable's value on the stack.</summary>
     void VarGet(int i)
@@ -161,6 +162,14 @@ sealed class FunctionLowering
 
     public void Run()
     {
+        // (IL2WASM_IL_TRACE=name: a call of the host's il2wasm_trace.enter(the method's number, its first three i32
+        // arguments) on entry to each method whose name contains it; host/run.mjs logs any import it does not know)
+        if (s_trace != null && _body.Method.ToString()!.Contains(s_trace))
+        {
+            var ps = _fn.Type.Params;
+            for (int i = 0; i < 3; i++) { if (i < ps.Length && ps[i] == ValType.I32) E.Get(i); else E.I32(0); }
+            E.Call(C.TraceImport);
+        }
         bool hasRefs = _own.RefValues.Count > 0 || _body.Vars.Any(v => v.Kind == VK.Ref) || _fb >= 0;
         if (_fb >= 0)
         {
