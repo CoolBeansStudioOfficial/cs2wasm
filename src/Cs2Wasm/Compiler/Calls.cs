@@ -990,8 +990,12 @@ sealed partial class FunctionCompiler
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
             case "Rt.ArenaSlots": E.Call(Rt.ArenaSlotsFn); return Own.None;
             case "Rt.NoWaitingTop": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_WAITING_TOP") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoPlainParents": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_PLAIN_PARENTS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoNodePath": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_NODE_PATH") == "1" ? 1 : 0); return Own.None;
             case "Rt.NodePathBreak": E.I32(int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_NODE_PATH_BREAK"), out int npb) ? npb : 0); return Own.None; // (a test's: one rule of the node path left out, tests/Conformance/201)
+            case "Rt.PartWeak": E.Call(Rt.PartWeakFn); return Own.None;
+            case "Rt.NoPlainParts": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_PLAIN_PARTS") == "1" ? 1 : 0); return Own.None;
+            case "Rt.PlainPartsBreak": E.I32(int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_PLAIN_PARTS_BREAK"), out int ppb) ? ppb : 0); return Own.None; // (a test: one rule of the plain parts left out, tests/Conformance/202)
             case "Rt.NoFusedJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FUSED_JOIN") == "1" ? 1 : 0); return Own.None;
             case "Cs2WasmArrays.BoxesElements": D.MarkBoxedElements(); return Own.None;
             case "Rt.ArenaFinalizeObject": E.Call(Rt.ArenaFinFn); return Own.None;
@@ -1017,7 +1021,8 @@ sealed partial class FunctionCompiler
             case "Rt.StaleHolds": E.I32(Environment.GetEnvironmentVariable("CS2WASM_STALE_HOLDS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoTakeIn": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TAKE_IN") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoFreshJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_JOIN") == "1" ? 1 : 0); return Own.None;
-            case "Rt.NoSlotWalk": E.I32(Environment.GetEnvironmentVariable("CS2WASM_SLOT_WALK") == "1" ? 0 : 1); return Own.None; // (off by default: with it the strings scene of tools/frames.mjs has one 0.6 ms frame, cause not found; tree the same either way)
+            case "Rt.SlotWalkBreak": E.I32(Environment.GetEnvironmentVariable("CS2WASM_SLOT_WALK_BREAK") == "1" ? 1 : 0); return Own.None; // (a test: the walk leaves the member's first counted slot out, tools/slot-walk-breaks.sh)
+            case "Rt.NoSlotWalk": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_SLOT_WALK") == "1" ? 1 : 0); return Own.None; // (on since round 10; the long frame of the strings scene laid to it in round 1 was the host's own collection, round 2)
             case "Rt.ArrayRankAt": E.Call(Rt.ArrayRank); return Own.None;
             case "Rt.ArrayElementSizeAt": E.Call(Rt.ArrayElemSize); return Own.None;
             case "Rt.ArrayGrow": E.Call(Rt.ArrayGrowFn); return Own.None;
