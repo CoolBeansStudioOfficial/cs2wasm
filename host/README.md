@@ -29,3 +29,17 @@ Every embedder must therefore start the module's threads from a worker that runs
 The page's own thread must not block either: a module run on it, such as a Godot game in the web export without
 threads, is told so (`mainCanBlock: false`, the import `main_can_block`), and `web/cs2wasm-web.mjs` without a pool
 starts no threads for it (`thread_spawn` fails with `NotSupportedException`).
+
+## A module's state kept between processes
+
+`CS2WASM_SNAPSHOT=<file> node host/run.mjs module.wasm main -- ...` (`snapshot.mjs`): when the entry has returned 0
+the module's memory and mutable globals are written to the file, and a later process puts them back in place of
+`init` and calls the entry on them: the second call of the entry in one process, in a new one (SPEC sections 7.2 and
+7.6). For the self-hosted compiler its libraries stay parsed and bound from one build to the next, as under `--watch`.
+A snapshot is used only while what it was made from is unchanged: the module's bytes, the environment the module is
+given, and every path the module asked the file system about while the state was made (size and time of change),
+except the paths its command line names and those it wrote, which the entry reads anew on every call. None is taken
+of a module that started a thread, has a file open, moved its working directory or used HTTP.
+`CS2WASM_SNAPSHOT_WHY=1` says what was done; `tools/snapshot-check.sh` proves each rule; `tools/selfsnap.mjs` compares
+the compiler's modules on a snapshot with the .NET-hosted compiler's and times them. `CS2WASM_REPEAT=n` calls the
+entry n times in one instance (what an embedder that keeps the module pays for a later call).
