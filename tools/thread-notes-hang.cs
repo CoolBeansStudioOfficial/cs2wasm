@@ -7,6 +7,11 @@
 // for the runtime lock). Not looked into further: the read
 // that counts, the last release and the finalizer's hold are the runtime's (Limbo, rt.load_retain, rt.store_ref).
 //   cs2wasmc tools/thread-notes-hang.cs -o hang.wasm; node tools/stress.mjs hang.wasm --runs 400 --par 8 --timeout 20000
+// Root cause (claude/thread-hangs-1, 2026-11-23): the finalizer's temporary count of 1 was taken back by a plain
+// store of 0 (RuntimeGen.EmitDestroy), over a count another thread's lock-free read (rt.load_retain) had taken on
+// a reference read before the store that let the note go; its release then fell on the next object made in the
+// freed block, and a read spun on a place that held a freed object. Now an exchange; test 285. 800 loaded runs:
+// before 51 hung, 1 other output, 1 trap; after 0.
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;

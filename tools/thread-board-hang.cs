@@ -5,6 +5,10 @@
 // with a count. Found while writing test 279; not a conformance test (it would hang the suite). The groups' locks
 // are the other session's (claude/load-flakes-1).
 //   cs2wasmc tools/thread-board-hang.cs --checked -o hang.wasm; timeout 40 node host/run.mjs hang.wasm main
+// Root cause (claude/thread-hangs-1, 2026-11-23): not the groups' locks. The hung runs' stacks (CS2WASM_HANG_DUMP=15,
+// host/hangdump.mjs) showed a worker making the OutOfMemoryException GrowFor keeps, under the heap's lock, and the
+// others waiting for that lock: the first-growth deadlock that b859008 (main 4cf95fe, test 217) fixed. 1b16778 4 of
+// 100 hung, 3f73a93 15 of 150, 3f73a93 with b859008 alone 0 of 300; main 0 of 1,200 on the homelab (24 at once).
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
