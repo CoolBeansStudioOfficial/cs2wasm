@@ -1144,3 +1144,20 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   for each goal of the spec not met: claude/selfhost-speed-2 (proof 4: the parse at 2x, the binding at 4.4x, library
   work not needed), claude/tree-3, claude/churn-5 (the header word among it), claude/known-diffs-2 (no known gap
   left), claude/threads-1 (a first comparison with threads; what is off with threads), claude/load-flakes-1.
+- 2026-11-23, 03:20, claude/load-flakes-safe merged (main 68f3eb5 with this entry after it): the part of
+  claude/load-flakes-1 that touches nothing of the cycle runtime's checks and notes. An async iterator's promise
+  counted while it is completed (8577829: test 087's trap under load, 7 of 1,200 checked runs before; test 217
+  trapped 24 of 24 without it); the out-of-memory exception not made under the heap's lock (a80a658); the statics
+  laid out by cache lines in a program with threads (5837122: test 139 at ten times its length 3.26 to 2.84 s);
+  test 072's server on a free port and each suite runner in its own directory (f75de80); tests 088, 135, 127, 187
+  with bounded waits where .NET promises no point in time (by .NET's sources: .NET itself gave the usual output in
+  400 of 400 loaded runs of each as they were), test 218, tests/Load, tools (oracle-load.sh, selfhost-time.sh, which
+  times the self-hosted compiler with a limit, selfdet-tests.sh). By its session, homelab at 68f3eb5: suite 238
+  passed, 0 failed, 2 known gaps, both ways; the self-hosted compiler's hello world in 12.7 and 14.1 s on the
+  loaded homelab, its module byte for byte the .NET-hosted compiler's on 145, 220, 193 and 088 (112 s). Here on the
+  merge: tests 21x, 087, 127 and 145 both ways. Open as before, on main: tests 127, 131 and 187 differ in about one
+  loaded run of a hundred. Their fixes (claude/load-flakes-1: a stale note's upkeep) made the self-hosted compiler
+  run for minutes: a full check again at every ownership taken or let go under a noted top. A queue that put those
+  checks off and paid them down later (NoteDebt) was refused here as deferred work; its session is building the
+  number kept right at the one event that changes it, and test 219 still leaks in 2 to 4 loaded runs of 300 to 400
+  with that so far.
