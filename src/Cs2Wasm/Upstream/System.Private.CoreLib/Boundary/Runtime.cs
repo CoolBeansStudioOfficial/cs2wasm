@@ -2959,7 +2959,7 @@ namespace Cs2Wasm.Runtime
             PS(val, 24, PL(val, 24) | Owned | MultOne);
             // (only a counted reference in one of its own slots can become an up-reference)
             if ((PL(val, 28) & 0x55555555) != 0 && (PL(val, 24) & Elems) == 0) Reevaluate(val);
-            if (s_failedTops != 0 && !NoStaleNote()) StaleNote(container);
+            if (s_failedTops != 0 && !NoStaleNote() && (Tune() & 1) == 0) StaleNote(container);
             if (turned != 0 && !NoTurnHold() && Mem.LoadI32(turned) == -2 && (PL(turned, 24) & (Owned | Dying)) == 0) TurnHold(turned);
         }
 
@@ -3006,6 +3006,8 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_NO_STALE_NOTE=1 (at compile time, a measurement): a top's note is not looked at again when
         /// a member comes under it (StaleNote).</summary>
         [Intrinsic] static extern bool NoStaleNote();
+        /// <summary>CS2WASM_TUNE=n (at compile time, a measurement of 2026-11-23, to go): parts of the notes' upkeep off.</summary>
+        [Intrinsic] static extern int Tune();
 
         /// <summary>CS2WASM_TURN_CHECK=1, CS2WASM_SURVIVOR_CHECK=1 (at compile time, trials, off): a check queued in the
         /// thread's list (DrainKills) for the member an ownership that turned round leaves on top, and for a
@@ -3304,7 +3306,7 @@ namespace Cs2Wasm.Runtime
             PS(old, 24, fl);
             if ((fl & Held) == 0) PS(old, 20, 0);
             if (ArenaReport()) RepEv(2, old, container, (fl & Held) != 0 ? 1 : 0);
-            if (s_failedTops != 0 && PLM(old) != 0 && !NoStaleNote()) StaleNote(container, 1);
+            if (s_failedTops != 0 && PLM(old) != 0 && !NoStaleNote() && (Tune() & 2) == 0) StaleNote(container, 1);
         }
 
         // ---- The check at the drop (the owner's decision of 2026-11-18) ----
@@ -3552,7 +3554,7 @@ namespace Cs2Wasm.Runtime
                 // from members outside what it owns are left into it, NoteOutside)
                 // (of the references from outside what it owns, those from the tops that were taken in and what they
                 // own, NoteSome: garbage with it once the others are gone, which only a look can tell)
-                int some = ownLeft1 < 0 || NoStaleNote() ? 0 : outside - ownLeft1;
+                int some = ownLeft1 < 0 || NoStaleNote() || (Tune() & 8) != 0 ? 0 : outside - ownLeft1;
                 if (some < 0) some = 0;
                 if (some > NoteSome || outside > 0x7FFFFF) some = NoteSome;
                 if (outside > 0x7FFFFF) outside = 0x7FFFFF;
@@ -4922,7 +4924,7 @@ namespace Cs2Wasm.Runtime
         /// refer into.</summary>
         static void DyingNote(int child, int obj)
         {
-            if (NoStaleNote()) return;
+            if (NoStaleNote() || (Tune() & 4) != 0) return;
             int back = NoteOutside(child, obj, -1);
             if (back != 0) QueueCheck(back);
         }
