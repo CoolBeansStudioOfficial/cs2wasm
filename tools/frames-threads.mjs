@@ -9,7 +9,7 @@
 //   shared   64 work items a frame made on the main thread, handed to N workers through a queue under a lock, their
 //            results handed back through another (objects made on one thread and freed on another), against the main
 //            thread doing the items itself in the programs without threads
-//   parts    the churn's parts each timed by itself, on a worker and without threads (us for 20,000 particles)
+//   parts    the churn's and the tree's parts each timed by itself, on a worker and without threads
 // NativeAOT-LLVM's WebAssembly with threads does not link with the packages on this machine (its runtime libraries
 // are built without atomics: wasm-ld refuses --shared-memory), so that side is its program without threads; say
 // --aot-threads to try the build again (tools/frames-threads-naot-wasm, -p:Threads=true).
@@ -91,7 +91,9 @@ function runAot(js, dir, scene) {
 }
 // a row: the scene with threads, the same work without (cs2wasm's and NativeAOT's scene names)
 const rows = [];
-if (groups.includes('idle')) for (const s of ['churn', 'collections', 'strings', 'tree', 'bigdrop']) rows.push({ scene: 'idle_' + s, base: s, group: 'idle' });
+// (idle_<scene>: the scene called by name; aidle_<scene>: handed over as an Action, the delegate type the workers of
+// other scenes invoke too)
+if (groups.includes('idle')) for (const s of ['churn', 'collections', 'strings', 'tree', 'bigdrop']) { rows.push({ scene: 'idle_' + s, base: s, group: 'idle' }); rows.push({ scene: 'aidle_' + s, base: s, group: 'idle' }); }
 if (groups.includes('private')) for (const k of ['pchurn', 'ptree']) for (const n of [1, 2, 4, 8]) rows.push({ scene: k + n, base: k + '0', group: 'private', n });
 if (groups.includes('shared')) for (const n of [1, 2, 4]) rows.push({ scene: 'shared' + n, base: 'shared0', group: 'shared', n });
 const res = {};
@@ -152,6 +154,21 @@ if (groups.includes('parts')) {
   console.log(`  cs2wasm, no threads                         ${us(ps.make)} ${us(ps.pass)} ${us(ps.drop)}`);
   console.log(`  cs2wasm, on a worker                        ${us(pt.make)} ${us(pt.pass)} ${us(pt.drop)}`);
   if (pt.check !== ps.check || pa && pa.check !== ps.check) { bad++; console.log('  CHECKSUM DIFFERS'); }
+  // the tree's parts
+  const tpart = (text) => { const m = /^tparts \S+ build (\d+) walk (\d+) replace (\d+) drop (\d+) check (-?\d+)/m.exec(text); return m ? { build: +m[1], walk: +m[2], replace: +m[3], drop: +m[4], check: m[5] } : null; };
+  const lowT = (a, b) => { if (!a) return b; for (const k of ['build', 'walk', 'replace', 'drop']) a[k] = Math.min(a[k], b[k]); return a; };
+  let tt = null, ts = null, ta = null;
+  for (let i = 0; i < runs; i++) {
+    tt = lowT(tt, tpart(runWasm(threads, 'tparts1').text));
+    ts = lowT(ts, tpart(runWasm(single, 'tparts0').text));
+    if (!noAot) ta = lowT(ta, tpart(runAot(aotJs, aotDir, 'tparts0').text));
+  }
+  res.tparts = { threads: tt, single: ts, aot: ta };
+  console.log('the tree in parts, us for 3,906 entities        build    walk replace    drop');
+  if (ta) console.log(`  NativeAOT, no threads                       ${us(ta.build)} ${us(ta.walk)} ${us(ta.replace)} ${us(ta.drop)}`);
+  console.log(`  cs2wasm, no threads                         ${us(ts.build)} ${us(ts.walk)} ${us(ts.replace)} ${us(ts.drop)}`);
+  console.log(`  cs2wasm, on a worker                        ${us(tt.build)} ${us(tt.walk)} ${us(tt.replace)} ${us(tt.drop)}`);
+  if (tt.check !== ts.check || ta && ta.check !== ts.check) { bad++; console.log('  CHECKSUM DIFFERS'); }
 }
 const json = opt('--json', null);
 if (json) writeFileSync(json, JSON.stringify(res, null, 1));
