@@ -5,6 +5,7 @@ import { readFileSync, writeSync } from 'node:fs';
 import { cs2wasmImports, threadImports } from './engine.mjs';
 import { startIo } from './http.mjs';
 import { openSnapshot } from './snapshot.mjs';
+import { startHangDump } from './hangdump.mjs';
 
 const args = process.argv.slice(2);
 const file = args[0];
@@ -74,6 +75,8 @@ for (const imp of WebAssembly.Module.imports(module)) {
 if (WebAssembly.Module.exports(module).some((x) => x.name === '__thread_entry')) imports.cs2wasm.__prewarm();
 startIo(module, memory);
 if (snapshot) for (const k of Object.keys(imports.cs2wasm)) if (k.startsWith('http_')) { const f = imports.cs2wasm[k]; imports.cs2wasm[k] = (...a) => { httpUsed = true; return f(...a); }; }
+// CS2WASM_HANG_DUMP=<seconds>: every thread's stack printed when the run lasts that long (host/hangdump.mjs)
+if (process.env.CS2WASM_HANG_DUMP) startHangDump(process.env.CS2WASM_HANG_DUMP);
 const t0 = performance.now();
 const instance = new WebAssembly.Instance(module, imports);
 const restored = snapshot?.restore(instance, memory) ?? false;

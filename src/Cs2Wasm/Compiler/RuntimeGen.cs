@@ -608,6 +608,8 @@ sealed partial class RuntimeGen
     /// <summary>CS2WASM_NO_FLAT_DESTROY=1: a release that names its class goes straight to the class's destruction
     /// only where that frees the object and nothing else (a leaf), as before.</summary>
     static readonly bool s_noFlatDestroy = Environment.GetEnvironmentVariable("CS2WASM_NO_FLAT_DESTROY") == "1";
+    /// <summary>CS2WASM_NO_FIN_EXCHANGE=1 (a deliberate break, for test 285): with threads, the finalizer's temporary count taken back by a plain store (EmitDestroy).</summary>
+    static readonly bool s_noFinExchange = Environment.GetEnvironmentVariable("CS2WASM_NO_FIN_EXCHANGE") == "1";
     HashSet<int>? _flat;
 
     /// <summary>The classes whose destruction is flat: it frees the object after letting go of fields that each hold
@@ -771,18 +773,28 @@ sealed partial class RuntimeGen
                     e.End();
                     return;
                 }
-                e.Get(0); e.I32(1); e.Store(Op.I32Store);
+                // (threads: the temporary count is a count like any other to another thread's read that counts
+                // without a lock (rt.load_retain), which may hold a reference read before the store that let the
+                // object go: it counts the object now and gives the count back when it sees the place changed. So
+                // the count is taken back from 1 to 0 by an exchange: a plain store of 0 over such a count lost it,
+                // and its release then fell on the freed block, or on the next object made there, which went while
+                // a place still held it: tools/thread-notes-hang.cs, the read spun on that place for good, or a
+                // note was never finalized. CS2WASM_NO_FIN_EXCHANGE=1: the plain store, for the test, 285.)
+                bool exch = D.ThreadMode && !s_noFinExchange;
+                e.Get(0); e.I32(1); if (exch) e.Emit(Op.I32AtomicStore, 0, 2); else e.Store(Op.I32Store);
                 e.Call(rt.FinHold); e.Call(rt.BeforeFin); CallFinalizers(e, fin); e.Call(rt.FinUnhold);
                 if (finalizer != 1)
                 {
                     // the finalizer stored the object somewhere (its count is more than the temporary one): it
-                    // lives on, as under .NET; the temporary count goes like any other
-                    e.Get(0); e.Load(Op.I32Load); e.I32(1); e.Op(Op.I32Ne);
+                    // lives on, as under .NET; the temporary count goes like any other (with threads also a count
+                    // another thread took meanwhile, above: its release destroys the object, not finalized again)
+                    if (exch) { e.Get(0); e.I32(1); e.I32(0); e.Emit(Op.I32AtomicRmwCmpxchg, 0, 2); e.I32(1); e.Op(Op.I32Ne); }
+                    else { e.Get(0); e.Load(Op.I32Load); e.I32(1); e.Op(Op.I32Ne); }
                     e.If();
                     e.Get(0); e.Call(rt.Release); e.Op(Op.Return);
                     e.End();
                 }
-                e.Get(0); e.I32(0); e.Store(Op.I32Store);
+                if (!exch) { e.Get(0); e.I32(0); e.Store(Op.I32Store); }
                 e.End();
                 e.End();
                 // (it goes: the weak handles left)
