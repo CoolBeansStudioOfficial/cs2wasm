@@ -1537,7 +1537,15 @@ sealed partial class FunctionCompiler
             E.End();
             // (the list's end: the enumerator's last MoveNext looks at the version before it says so.
             // CS2WASM_LIST_FOREACH_BREAK=1, test 203's: not asked)
-            if (testFirst) { E.End(); if (s_listForEachBreak != 1) Changed(); }
+            // (a loop that took no turn ran nothing since the version was read: not asked, CS2WASM_LIST_FOREACH_BREAK=3:
+            // asked all the same; with threads another thread may have changed the list: asked)
+            if (testFirst)
+            {
+                E.End();
+                if (s_listForEachBreak == 1) { }
+                else if (D.ThreadMode || s_listForEachBreak == 3 || s_noListTestFirst) Changed();
+                else { E.Get(i); E.If(); Changed(); E.End(); }
+            }
             E.End();
             PopScope();
             return;

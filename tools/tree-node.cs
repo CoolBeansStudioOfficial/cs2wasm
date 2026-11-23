@@ -35,15 +35,17 @@ static class Tn
 
     static void Round(int k, bool cap, out long build, out long drop)
     {
-        var holder = s_root!.Children[0];
+        Entity? holder = s_root!.Children[0];
         long t0 = Stopwatch.GetTimestamp();
         for (int i = 0; i < N; i++) holder.Children.Add(Node(holder, k, cap));
         long t1 = Stopwatch.GetTimestamp();
+        holder = null;
         var fresh = new Entity { Parent = s_root };
         fresh.Children.Capacity = N;
+        long t1b = Stopwatch.GetTimestamp();
         s_root.Children[0] = fresh;
         long t2 = Stopwatch.GetTimestamp();
-        build = t1 - t0; drop = t2 - t1;
+        build = t1 - t0; drop = t2 - t1b;
     }
 
     static void Measure(string name, int k, bool cap)
@@ -55,7 +57,7 @@ static class Tn
             if (b < bb) bb = b;
             if (d < dd) dd = d;
         }
-        Console.WriteLine(name + ": " + (bb * 1000000000.0 / Stopwatch.Frequency / N).ToString("F0") + " ns a node, drop " + (dd * 1000000000.0 / Stopwatch.Frequency / N).ToString("F0"));
+        Console.WriteLine(name + ": " + (bb * 1000000000.0 / Stopwatch.Frequency / N).ToString("F0") + " ns a node, drop " + (dd * 1000000000.0 / Stopwatch.Frequency / N).ToString("F0") + " (" + (dd * 1000000000.0 / Stopwatch.Frequency / N / (k + 1)).ToString("F1") + " an entity)");
     }
 
     [UnmanagedCallersOnly(EntryPoint = "main")]
