@@ -182,7 +182,7 @@ namespace Cs2Wasm.Runtime
             // while its group is still held)
             if (s_killN != 0) DrainKills();
             ReleaseTo(mark);
-            if (t_lkN == 0 && (t_relN | t_pendN | t_defN) != 0) AfterLocks();
+            if (t_lkN == 0 && (t_relN | t_pendN | t_defN | t_turnN) != 0) AfterLocks();
         }
 
         /// <summary>The thread holds no group's lock: the releases that waited for that, then the destructions
@@ -195,8 +195,16 @@ namespace Cs2Wasm.Runtime
             bool more = true;
             while (more)
             {
-                while (t_relN > 0)
+                while (t_relN > 0 || (t_turnN > 0 && s_destroying == 0))
                 {
+                    // (the references the runtime held on tops an ownership that turned round left, Rt.TurnHold:
+                    // their release makes the check at the drop; not inside a destruction, where it would make none)
+                    while (t_turnN > 0 && s_destroying == 0)
+                    {
+                        t_turnN--;
+                        Release(Borrow<object>(Mem.LoadI32(t_turnQ + 4 * t_turnN)));
+                    }
+                    if (t_relN == 0) continue;
                     t_relN--;
                     Release(Borrow<object>(Mem.LoadI32(t_relQ + 4 * t_relN)));
                 }
@@ -204,7 +212,15 @@ namespace Cs2Wasm.Runtime
                 // (not the counts a store gives back, AfterStore: those wait for the store to be written, its unlink)
                 // (the destructions: rt.lock_exit runs them when the runtime lock is not this thread's, else its exit;
                 // once: inside a destruction it leaves them to the destruction's own loop)
-                if ((t_pendN != 0 || t_defN != 0) && !RuntimeLockHeld() && t_defRunning == 0) { RuntimeLock(); RuntimeUnlock(); more = t_relN != 0; }
+                if ((t_pendN != 0 || t_defN != 0) && !RuntimeLockHeld() && t_defRunning == 0)
+                {
+                    RuntimeLock(); RuntimeUnlock();
+                    // (again too when a group's destruction was left for later after the lock's exit had run those
+                    // there were, by a destruction that exit ran itself: its own AfterLocks ends at once, inside this
+                    // one, and the group's finalizers would wait for whatever makes this thread give a lock back
+                    // next. By reading only: not seen in 600 loaded runs of test 139 that counted it)
+                    more = t_relN != 0 || t_defN != 0 || (t_turnN != 0 && s_destroying == 0);
+                }
             }
             t_after = 0;
         }
@@ -302,7 +318,7 @@ namespace Cs2Wasm.Runtime
             t_regionC = 0;
             t_regionMk = -1;
             if (mk >= 0) { Atomic.Store32(ref Mem.RefI32(t_regionP), 0); ReleaseTo(mk); }
-            if (t_lkN == 0 && (t_relN | t_pendN | t_defN) != 0) AfterLocks();
+            if (t_lkN == 0 && (t_relN | t_pendN | t_defN | t_turnN) != 0) AfterLocks();
         }
 
         /// <summary>The store's region, at its link or its unlink (the first of them): the container's group and the
@@ -595,6 +611,7 @@ namespace Cs2Wasm.Runtime
             if (t_wsTab != 0) { Free(t_wsTab, t_wsCap * 8); t_wsTab = 0; t_wsCap = 0; }
             if (t_missQ != 0) { Free(t_missQ, Stripes * 4); t_missQ = 0; }
             if (s_killQ != 0) { Free(s_killQ, s_killCap * 4); s_killQ = 0; s_killCap = 0; }
+            if (t_turnQ != 0) { Free(t_turnQ, t_turnCap * 4); t_turnQ = 0; t_turnCap = 0; }
             if (s_linkQ != 0) { Free(s_linkQ, s_linkCap * 4); s_linkQ = 0; s_linkCap = 0; }
             if (s_cutQ != 0) { Free(s_cutQ, s_cutCap * 8); s_cutQ = 0; s_cutCap = 0; }
             if (s_trQ != 0) { Free(s_trQ, s_trCap * 4); s_trQ = 0; s_trCap = 0; }

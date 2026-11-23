@@ -46,10 +46,12 @@ internal sealed class MethodInst
     public int OutBorrow;
 }
 
-sealed class StaticSlot(Driver d, int offset) : IAddress
+sealed class StaticSlot(Driver d, int offset, bool program = false) : IAddress
 {
     public int Offset = offset;
-    public int Address => d.StaticBase + Offset;
+    /// <summary>With threads: one of the program's statics, which lie after the runtime's (Driver.StaticAddress).</summary>
+    public readonly bool Program = program;
+    public int Address => d.StaticBase + (Program ? d.ProgramStatics : 0) + Offset;
 }
 
 /// <summary>A piece of the data section (a string literal, a blob): moved or dropped by the final layout
@@ -128,6 +130,19 @@ internal sealed partial class Driver
     public readonly SortedSet<int> Constructed = [];
     readonly Dictionary<string, StaticSlot> _statics = [];
     int _staticSize;
+    // (with threads: the size of the program's statics, which lie after the runtime's, and where they start)
+    int _programStaticSize;
+    public int ProgramStatics;
+    /// <summary>The runtime's words that every thread writes, each lock's on a cache line of its own at the start of
+    /// the statics (with threads): the runtime lock's, the heap lock's, and the number of tops whose check failed.
+    /// See StaticAddress.</summary>
+    static readonly Dictionary<string, int> s_ownLine = new()
+    {
+        ["rt.lock.owner"] = 0, ["rt.lock.depth"] = 4, ["rt.lock.waiters"] = 8,
+        ["F:Cs2Wasm.Runtime.Rt::s_heapOwner"] = 64, ["F:Cs2Wasm.Runtime.Rt::s_heapDepth"] = 68, ["F:Cs2Wasm.Runtime.Rt::s_heapWaiters"] = 72,
+        ["F:Cs2Wasm.Runtime.Rt::s_failedTops"] = 128,
+    };
+    const int OwnLineBytes = 192;
     readonly Dictionary<string, IAddress> _literals = [];
     public readonly DataSegment Data = new();
     public readonly Dictionary<string, VirtualStub> Stubs = [];
@@ -401,10 +416,42 @@ internal sealed partial class Driver
     }
 
     // ---------------- statics ----------------
+    /// <summary>CS2WASM_NO_STATIC_LINES=1 (a measurement): the statics in the order they are first named, wherever
+    /// the data ends, as before.</summary>
+    static readonly bool NoStaticLines = Environment.GetEnvironmentVariable("CS2WASM_NO_STATIC_LINES") == "1";
     public IAddress StaticAddress(string key, int size, int align)
     {
         if (!_statics.TryGetValue(key, out var s))
         {
+            // With threads the statics are laid out by cache lines (64 bytes; LayoutMemory starts them on one), so
+            // that where a word falls does not depend on how long the program's strings are:
+            // - the runtime's statics first, the program's after them, from a line of their own. A static of the
+            //   program that every thread writes (a counter) then shares its line with other statics of the
+            //   program, as in any program, and not with the words the allocator reads at every object;
+            // - the words of the runtime that every thread writes on lines of their own (s_ownLine).
+            // Test 139 at ten times its length (16 threads; its Node.Live is counted up and down at every node):
+            // 3.00 s with the statics 16 bytes further on and 3.43 to 3.47 s with them at 0, 32 or 48, by the same
+            // code (CS2WASM_STATIC_PAD); Node.Live was on one line with Rt.s_cur, s_top, s_runLo and
+            // ThrowHelpers.s_oomWanted in the slow ones. Any change that added a string moved them.
+            if (ThreadMode && !NoStaticLines)
+            {
+                if (s_ownLine.TryGetValue(key, out int at)) s = new StaticSlot(this, at);
+                else if (key.StartsWith("rt.", StringComparison.Ordinal) || key.StartsWith("F:Cs2Wasm.Runtime.", StringComparison.Ordinal))
+                {
+                    if (_staticSize < OwnLineBytes) _staticSize = OwnLineBytes;
+                    _staticSize = (_staticSize + align - 1) / align * align;
+                    s = new StaticSlot(this, _staticSize);
+                    _staticSize += size;
+                }
+                else
+                {
+                    _programStaticSize = (_programStaticSize + align - 1) / align * align;
+                    s = new StaticSlot(this, _programStaticSize, program: true);
+                    _programStaticSize += size;
+                }
+                _statics[key] = s;
+                return s;
+            }
             _staticSize = (_staticSize + align - 1) / align * align;
             s = new StaticSlot(this, _staticSize);
             _staticSize += size;
@@ -1564,8 +1611,16 @@ internal sealed partial class Driver
     {
         CompactData();
         while (Data.Bytes.Count % 16 != 0) Data.Bytes.Add(0);
+        // (with threads the statics start on a cache line, and the program's on one after the runtime's: StaticAddress)
+        bool lines = ThreadMode && !NoStaticLines;
+        while (lines && (DataBase + Data.Bytes.Count) % 64 != 0) Data.Bytes.Add(0);
+        // (CS2WASM_STATIC_PAD=n, a measurement: the statics n bytes further on)
+        for (int pad = int.Parse(Environment.GetEnvironmentVariable("CS2WASM_STATIC_PAD") ?? "0"); pad > 0; pad--) Data.Bytes.Add(0);
         StaticBase = DataBase + Data.Bytes.Count;
-        int staticEnd = StaticBase + (_staticSize + 15) / 16 * 16;
+        ProgramStatics = lines ? (Math.Max(_staticSize, OwnLineBytes) + 63) / 64 * 64 : 0;
+        // (CS2WASM_PRINT_STATICS=1: every static's address and cache line)
+        if (Environment.GetEnvironmentVariable("CS2WASM_PRINT_STATICS") == "1") foreach (var (key, v) in _statics.OrderBy(x => x.Value.Address)) Console.Error.WriteLine($"static {v.Address} line {v.Address / 64} {key}");
+        int staticEnd = StaticBase + ProgramStatics + ((lines ? _programStaticSize : _staticSize) + 15) / 16 * 16;
         // (the first thread's stack lies above the statics; a frame is taken from it by rt.frame, which traps when
         // the stack has not that much left: Wasm/Frames.cs)
         StackTop = staticEnd + Options.StackSize;
