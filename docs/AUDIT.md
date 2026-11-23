@@ -3071,6 +3071,21 @@ medians idle churn 0.093/0.093 against 0.092/0.094 ms, idle tree 0.113/0.113 aga
 at four 0.107/0.109 against 0.106/0.117, private tree at four 0.025/0.027 against 0.029/0.026, shared at two
 0.080/0.081 against 0.082/0.081: within the run-to-run spread.
 
+*Garbage a program with threads kept (claude/thread-leaks-1, the same day).* The threads-speed session's
+CS2WASM_EXP_THREADMODE=1 (every program compiled for threads) left in tests 220, 132 and 185 cycle garbage that .NET
+frees ("live 800", "left 2265", "red 400"), the same with its local groups off. Not the cycle runtime: a program that
+starts a thread does it on main too (tests 287 to 289 are 185, 220 and 132 with a thread started and joined first;
+main's compiler fails all three). Reduced to one getter, `Red Child(int i, int w) => _kids[i] ??= new Red(this, w)`:
+in a program with threads a method that returns a field's value borrowed (Driver.ThreadLocalReturn; ReturnsField
+takes the target of a `??=` for the field) read the value back after the store with a read that counts
+(FunctionCompiler.EmitValue asks Sharing.UnsharedPlace, which knew a field and an element but not the `??=` whose
+value is its target's), and so returned a counted reference its callers took as borrowed: a count too many on
+every child made, and each tree a group that never went. The library's lazy getters have the shape (220, 132). Now
+UnsharedPlace answers for a `??=` as for its target. `CS2WASM_NO_COALESCE_PLACE=1` the counted read back: 287
+"red 400", 288 "live 800 of 6144", 289 "left 2265"; fixed, each .NET's output, and 185, 220, 132 under
+CS2WASM_EXP_THREADMODE=1 the same as without it. Programs without threads compile as before (asked only with
+threads).
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
