@@ -5337,3 +5337,19 @@ Not done:
 - [JSExport] binding;
 - FS.mmap's EACCES check;
 - the homelab suite and the self-host check (left to the coordinator).
+
+### il2wasm step 1c: zlib-ng's inflate ported (claude/il-corelib, 2026-11-23)
+
+`Natives/ZLibNgInflate.cs` is zlib-ng 2.2.5's inflate.c, inftrees.c and inffast_tpl.h in C#, with the licence notice.
+It replaces the managed inflater.
+
+Measured with tests/CoreLibNatives against .NET's shipped native zlib-ng: 72,240 inflate runs identical
+(2,568,441,758 output bytes, 833,572 calls). Each call's return code, stream positions and error message matched.
+
+- The runs cover every stream of the deflate corpus, read eight ways: DeflateStream's way, random chunks and
+  flushes, auto-detect, truncated, with trailing bytes, and four bit-flip corruptions.
+- 18 distinct zlib-ng error messages came up.
+- Deflate is still identical on its 30,690 cases. CoreLib rebuilds byte-identical, and all 56 bindings hold.
+- Desk: 145 and 070 pass both ways; hello world is unchanged.
+
+Not run: the homelab suite and the self-host check on this commit.

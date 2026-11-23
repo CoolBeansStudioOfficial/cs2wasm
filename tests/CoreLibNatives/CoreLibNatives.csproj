@@ -12,6 +12,6 @@
     <Compile Include="../../src/Il2Wasm/Upstream/System.Private.CoreLib/Boundary/Natives/ZLibNgDeflate.cs" Link="Natives/ZLibNgDeflate.cs" />
     <Compile Include="../../src/Il2Wasm/Upstream/System.Private.CoreLib/Boundary/Natives/Errno.g.cs" Link="Natives/Errno.g.cs" />
     <Compile Include="../../src/Il2Wasm/Upstream/System.Private.CoreLib/Boundary/Natives/CompressionNative.cs" Link="Natives/CompressionNative.cs" />
-    <Compile Include="../../src/Il2Wasm/Upstream/System.Private.CoreLib/Boundary/Natives/ZLibInflate.cs" Link="Natives/ZLibInflate.cs" />
+    <Compile Include="../../src/Il2Wasm/Upstream/System.Private.CoreLib/Boundary/Natives/ZLibNgInflate.cs" Link="Natives/ZLibNgInflate.cs" />
   </ItemGroup>
 </Project>

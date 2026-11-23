@@ -277,8 +277,7 @@ with a bad signature, 0 unbound):
   - The random bytes are CoreLib's: the host's seeded import, stretched with splitmix64.
   - Not reproduced: FS.mmap's EACCES for a shared writable map of a file not opened read-write. The host does not
     report how a descriptor was opened.
-- **libSystem.IO.Compression.Native, all 9 entry points**: deflate is a port of zlib-ng and inflate the managed
-  inflater (section 7.1).
+- **libSystem.IO.Compression.Native, all 9 entry points**: deflate and inflate are ports of zlib-ng (section 7.1).
 - **System.Console's internal call** `ConsolePal.Clear` goes to the host import `console_clear`, as Mono calls the
   console's own clear.
 - **The 11 JavaScript-interop internal calls** (`Natives/InternalCalls.cs`):
@@ -331,15 +330,35 @@ same calls.
     desk is a sound oracle for the browser build here.
 - CRC-32 is checked against `CompressionNative_Crc32`, including zlib-ng's rule that a null buffer gives 0.
 
-**Inflate is the managed inflater** of the old System.IO.Compression boundary, moved into CoreLib
-(`Natives/ZLibInflate.cs`). It is not a port of zlib-ng's inflate.c.
+**Inflate is zlib-ng 2.2.5's too, ported** (`Natives/ZLibNgInflate.cs`, with the licence notice, marked as an
+altered version).
 
-- On the same corpus (3,000 streams read with DeflateStream's read loop), the output and the final result are
-  identical to native zlib-ng.
-- **The per-call stream positions differ in 737 of the 3,000 streams.** The managed inflater reads up to 32 bits of
-  input ahead; zlib-ng's does not. That shows only in how much input a single call reports consumed. Its error texts
-  are also not zlib-ng's.
-- A port of zlib-ng's inflate (inflate.c, inftrees.c, inffast_tpl.h) would close both. It is not done.
+- It ports inflate.c, inftrees.c and inffast_tpl.h in its generic form. lenfix and distfix are built at start-up by
+  inflate_table, as zlib's makefixed builds them.
+- zlib-ng's chunked copies (chunkcopy_safe, CHUNKCOPY, CHUNKMEMSET, CHUNKUNROLL) become byte copies. Each writes the
+  bytes that an LZ77 copy of that length and distance gives.
+
+**Verified** with the same harness, against native `CompressionNative_Inflate*`. The inputs are every stream the
+deflate corpus produced, each read eight ways:
+
+- as DeflateStream reads (8192-byte input, 4096-byte output);
+- with random input and output sizes and flushes (Z_SYNC_FLUSH, Z_FINISH, Z_BLOCK);
+- auto-detected (windowBits 47);
+- truncated at a random point;
+- with bytes after the stream;
+- with 1 to 3 bits flipped, four times over.
+
+**Result: 72,240 inflate runs identical.** That is 2,568,441,758 output bytes and 833,572 calls. In each call the
+return code, `avail_in`, `avail_out` and `msg` matched native.
+
+18 distinct error messages came up, each matching native:
+- header crc mismatch, incorrect data check, incorrect header check, incorrect length check;
+- invalid bit length repeat, invalid block type, invalid code -- missing end-of-block, invalid code lengths set;
+- invalid distance code, invalid distance too far back, invalid distances set;
+- invalid literal/length code, invalid literal/lengths set, invalid stored block lengths;
+- invalid window size, too many length or distance symbols, unknown compression method, unknown header flags set.
+
+The old managed inflater, `ZLibInflate.cs`, is removed from CoreLib.
 
 **The browser pack's own wasm libz.a was not needed as an oracle.** No case differed between the desk's x64 zlib-ng
 and the port.

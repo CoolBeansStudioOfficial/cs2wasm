@@ -35,7 +35,7 @@ static unsafe class Program
         Crc32Checks();
         DeflateChecks(args.Contains("--quick"));
         Console.WriteLine($"{s_cases} cases, {s_failed} failed; deflate: {s_bytes} compressed bytes and {s_calls} calls compared");
-        Console.WriteLine($"inflate: {s_inflateCases} streams; per-call positions differ from native in {s_inflateTraceDiffs}");
+        Console.WriteLine($"inflate: {s_inflateCases} runs, {s_inflateBytes} output bytes, {s_inflateCalls} calls compared; data errors seen: {string.Join(" | ", s_inflateErrors)}");
         return s_failed == 0 ? 0 : 1;
     }
 
@@ -172,14 +172,17 @@ static unsafe class Program
     [DllImport(Lib)] static extern int CompressionNative_Inflate(PalZStream* s, int flush);
     [DllImport(Lib)] static extern int CompressionNative_InflateEnd(PalZStream* s);
 
-    static int s_inflateTraceDiffs, s_inflateCases;
+    static int s_inflateCases;
 
-    /// <summary>Inflate as DeflateStream reads: 8192-byte input buffers, the caller's output buffer (here 4096).</summary>
-    static (byte[] Out, List<string> Trace) InflateRun(bool native, byte[] input, int windowBits)
+    /// <summary>Inflate. seed 0: as DeflateStream reads (8192-byte input buffers, a 4096-byte output buffer: inflate;
+    /// output: return it; none and the input used up: read more, or stop at its end). Otherwise random input and output
+    /// sizes, from that seed.</summary>
+    static (byte[] Out, List<string> Trace) InflateRun(bool native, byte[] input, int windowBits, int seed)
     {
+        var rng = new Random(seed);
         var output = new List<byte>();
         var trace = new List<string>();
-        byte* outp = (byte*)NativeMemory.Alloc(4096);
+        byte* outp = (byte*)NativeMemory.Alloc(70000);
         byte* inp = (byte*)NativeMemory.Alloc((nuint)Math.Max(1, input.Length));
         input.CopyTo(new Span<byte>(inp, input.Length));
         PalZStream* zp = (PalZStream*)NativeMemory.AllocZeroed((nuint)sizeof(PalZStream));
@@ -189,21 +192,25 @@ static unsafe class Program
             int r = native ? CompressionNative_InflateInit2_(zp, windowBits) : CompressionNative.CompressionNative_InflateInit2_(pz, windowBits);
             trace.Add("init " + r);
             int fed = 0, guard = 0;
-            // (DeflateStream.ReadCore: inflate; output: return it; none and the input used up: read more, or stop at its end)
-            while (guard++ < 1000000)
+            while (r == 0 && guard++ < 2000000)
             {
-                zp->NextOut = outp; zp->AvailOut = 4096;
-                r = native ? CompressionNative_Inflate(zp, 0) : CompressionNative.CompressionNative_Inflate(pz, 0);
-                int produced = 4096 - (int)zp->AvailOut;
+                uint room = seed == 0 ? 4096u : (uint)rng.Next(1, rng.Next(2) == 0 ? 40 : 66000);
+                zp->NextOut = outp; zp->AvailOut = room;
+                int flush = seed == 0 ? 0 : rng.Next(8) switch { 0 => 2, 1 => 4, 2 => 5, _ => 0 };
+                r = native ? CompressionNative_Inflate(zp, flush) : CompressionNative.CompressionNative_Inflate(pz, flush);
+                int produced = (int)(room - zp->AvailOut);
                 for (int i = 0; i < produced; i++) output.Add(outp[i]);
-                trace.Add($"inflate {r} in {zp->AvailIn} out {zp->AvailOut}");
+                string msg = zp->Msg == null ? "-" : Marshal.PtrToStringAnsi((IntPtr)zp->Msg)!;
+                trace.Add($"inflate {flush} {r} in {zp->AvailIn} out {zp->AvailOut} msg {msg}");
                 if (r != 0 && r != -5) break;
-                if (produced != 0) continue;
-                if (zp->AvailIn == 0)
+                r = 0;
+                if (produced != 0 && seed == 0) continue;
+                if (zp->AvailIn == 0 || (seed != 0 && rng.Next(4) == 0))
                 {
-                    if (fed >= input.Length) break;
-                    int n = Math.Min(8192, input.Length - fed);
-                    zp->NextIn = inp + fed; zp->AvailIn = (uint)n; fed += n;
+                    if (fed >= input.Length) { if (produced == 0) break; continue; }
+                    int n = Math.Min(seed == 0 ? 8192 : rng.Next(1, rng.Next(2) == 0 ? 20 : 30000), input.Length - fed);
+                    // (the bytes not taken yet stay where they are: the next buffer follows them)
+                    zp->NextIn = inp + fed - zp->AvailIn; zp->AvailIn += (uint)n; fed += n;
                 }
             }
             trace.Add("end " + (native ? CompressionNative_InflateEnd(zp) : CompressionNative.CompressionNative_InflateEnd(pz)));
@@ -215,15 +222,47 @@ static unsafe class Program
         return (output.ToArray(), trace);
     }
 
-    static void InflateCheck(byte[] compressed, byte[] original, int windowBits, string what)
+    static void InflateCompare(byte[] stream, int windowBits, int seed, string what)
     {
-        var a = InflateRun(true, compressed, windowBits);
-        var b = InflateRun(false, compressed, windowBits);
+        var a = InflateRun(true, stream, windowBits, seed);
+        var b = InflateRun(false, stream, windowBits, seed);
         s_inflateCases++;
-        Check(a.Out.AsSpan().SequenceEqual(original) && b.Out.AsSpan().SequenceEqual(original), "inflate output " + what);
-        // (the final return code is part of the output's meaning; the stream positions of each call are reported)
-        Check(a.Trace[^2].Split(' ')[1] == b.Trace[^2].Split(' ')[1], $"inflate result {what}: {a.Trace[^2]} / {b.Trace[^2]}");
-        if (!a.Trace.SequenceEqual(b.Trace)) s_inflateTraceDiffs++;
+        s_inflateBytes += a.Out.Length; s_inflateCalls += a.Trace.Count;
+        bool same = a.Out.AsSpan().SequenceEqual(b.Out) && a.Trace.SequenceEqual(b.Trace);
+        if (!same)
+        {
+            int t = 0;
+            while (t < a.Trace.Count && t < b.Trace.Count && a.Trace[t] == b.Trace[t]) t++;
+            what += $": native {a.Out.Length} bytes, port {b.Out.Length}; call {t}: {(t < a.Trace.Count ? a.Trace[t] : "-")} / {(t < b.Trace.Count ? b.Trace[t] : "-")}";
+        }
+        Check(same, "inflate " + what);
+        var last = a.Trace.Count >= 2 ? a.Trace[^2] : "";
+        if (last.Contains(" -3 ")) s_inflateErrors.Add(last[(last.IndexOf("msg ") + 4)..]);
+    }
+
+    static long s_inflateBytes, s_inflateCalls;
+    static readonly SortedSet<string> s_inflateErrors = new(StringComparer.Ordinal);
+
+    /// <summary>A stream as it is, read in chunks, auto-detected, truncated, with bytes after it, and corrupted.</summary>
+    static void InflateCheck(byte[] compressed, int windowBits, string what, int seed)
+    {
+        var rng = new Random(seed);
+        InflateCompare(compressed, windowBits, 0, what);
+        InflateCompare(compressed, windowBits, seed * 7 + 1, what + " chunked");
+        if (windowBits > 0) InflateCompare(compressed, 47, 0, what + " auto");
+        if (compressed.Length > 1)
+        {
+            int cut = rng.Next(1, compressed.Length);
+            InflateCompare(compressed[..cut], windowBits, 0, what + " truncated at " + cut);
+            InflateCompare([.. compressed, .. new byte[] { 1, 2, 3, 0x1f, 0x8b }], windowBits, seed * 7 + 2, what + " with bytes after it");
+        }
+        for (int k = 0; k < 4 && compressed.Length > 0; k++)
+        {
+            var bad = (byte[])compressed.Clone();
+            int flips = 1 + rng.Next(3);
+            for (int f = 0; f < flips; f++) bad[rng.Next(bad.Length)] ^= (byte)(1 << rng.Next(8));
+            InflateCompare(bad, windowBits, k == 0 ? 0 : seed * 7 + 3 + k, what + " corrupted " + k);
+        }
     }
 
     static void DeflateChecks(bool quick)
@@ -258,7 +297,7 @@ static unsafe class Program
                                     what += $": native {a.Out.Length} bytes, port {b.Out.Length}, first difference at byte {at}; trace {(t < a.Trace.Count ? a.Trace[t] : "-")} / {(t < b.Trace.Count ? b.Trace[t] : "-")}";
                                 }
                                 Check(same, what);
-                                if (pattern == 0 && strategy == 0 && a.Trace[0] == "init 0") InflateCheck(a.Out, input, wb, what);
+                                if (pattern != 1 && (strategy == 0 || level == 6) && a.Trace[0] == "init 0") InflateCheck(a.Out, wb, what, seed * 131 + level * 7 + strategy);
                             }
             }
     }

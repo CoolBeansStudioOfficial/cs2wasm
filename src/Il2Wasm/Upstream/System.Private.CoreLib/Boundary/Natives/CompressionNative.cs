@@ -1,10 +1,9 @@
 // il2wasm: libSystem.IO.Compression.Native's entry points (natives.txt), as its pal_zlib.c is over zlib: the
-// PAL_ZStream's fields go into the stream and come back after each call. Deflate is zlib-ng's, ported
-// (ZLibNgDeflate.cs: the same bytes as the browser runtime's); inflate is ZLibInflate.cs.
+// PAL_ZStream's fields go into the stream and come back after each call. Deflate and inflate are zlib-ng's, ported
+// (ZLibNgDeflate.cs, ZLibNgInflate.cs: as the browser runtime's, call for call).
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using Il2Wasm.Runtime.Natives.Inflate;
 
 namespace Il2Wasm.Runtime.Natives
 {
@@ -24,7 +23,7 @@ namespace Il2Wasm.Runtime.Natives
         sealed class ZStream
         {
             public ZngDeflate? Deflate;
-            public ManagedInflater? Inflate;
+            public ZngInflate? Inflate;
         }
 
         static ZStream? Of(PalZStream* s) => s->InternalState == null ? null : GCHandle.FromIntPtr((IntPtr)s->InternalState).Target as ZStream;
@@ -117,26 +116,33 @@ namespace Il2Wasm.Runtime.Natives
         public static int CompressionNative_InflateInit2_(PalZStream* stream, int windowBits)
         {
             Init(stream);
-            Of(stream)!.Inflate = new ManagedInflater(windowBits);
-            stream->Msg = null;
-            return ZConst.Z_OK;
+            int r = ZngInflate.Init2(windowBits, out var i);
+            Of(stream)!.Inflate = i;
+            if (i != null) Out(i, stream);
+            else stream->Msg = null;
+            return r;
         }
 
         public static int CompressionNative_Inflate(PalZStream* stream, int flush)
         {
             var i = Of(stream)?.Inflate;
             if (i == null) return ZConst.Z_STREAM_ERROR;
-            byte* nextIn = stream->NextIn, nextOut = stream->NextOut;
-            uint availIn = stream->AvailIn, availOut = stream->AvailOut;
-            int r = i.Inflate(&nextIn, &availIn, &nextOut, &availOut);
-            stream->NextIn = nextIn; stream->AvailIn = availIn;
-            stream->NextOut = nextOut; stream->AvailOut = availOut;
+            In(stream, i);
+            int r = i.Inflate(flush);
+            Out(i, stream);
             return r;
         }
 
         public static int CompressionNative_InflateEnd(PalZStream* stream)
         {
-            int r = Of(stream)?.Inflate != null ? ZConst.Z_OK : ZConst.Z_STREAM_ERROR;
+            var i = Of(stream)?.Inflate;
+            int r = ZConst.Z_STREAM_ERROR;
+            if (i != null)
+            {
+                In(stream, i);
+                r = i.End();
+                i.Free();
+            }
             End(stream);
             return r;
         }
@@ -145,8 +151,10 @@ namespace Il2Wasm.Runtime.Natives
         {
             var i = Of(stream)?.Inflate;
             if (i == null) return ZConst.Z_STREAM_ERROR;
-            i.Reset(windowBits);
-            return ZConst.Z_OK;
+            In(stream, i);
+            int r = i.Reset2(windowBits);
+            Out(i, stream);
+            return r;
         }
 
         public static uint CompressionNative_Crc32(uint crc, byte* buffer, int len) => Crc32.Update(crc, buffer, len);
