@@ -5271,3 +5271,38 @@ What was agreed for decisions 1 and 2:
     about twenty, the drop check, TopHeld and the holds, would have to see such an exchange or exclude it, a lock per
     member at least for the count word and the hold's words); and finding what still makes the parser's arrays
     members (CS2WASM_DROP_STATS's op counts on a threaded build).
+
+### il2wasm step 1: the core library as IL (claude/il-corelib, 2026-11-23)
+
+What was done:
+
+- `tools/BuildCoreLib` (and `tools/build-corelib.mjs`) builds `System.Private.CoreLib.dll` and its PDB ahead of time
+  with Roslyn. The inputs are the old `Library`'s: the manifest, the edits and il2wasm's own files. The manifest's
+  156 substitutions are applied as source bodies.
+- The framework directory holds that CoreLib and the 180 stock IL assemblies of
+  Microsoft.NETCore.App.Runtime.Mono.browser-wasm 11.0.0, which is built from runtime deae2e32, our v11.0.0 tag.
+- docs/CORELIB.md covers the build, the pack, the reference check, the native entry points and hello world's reach.
+  docs/CORELIB-INTRINSICS.md lists the 220 intrinsics, the 39 intrinsic fields, the 40 upstream intrinsics and the
+  host imports, with what the old compiler emitted for each.
+
+Measured:
+
+- **Build.** About 10 s. Byte-identical on rebuild (`node tools/build-corelib.mjs --check`: 183 files).
+- **Reference check.** 0 of 12,172 TypeRefs and 0 of 29,032 MemberRefs from the stock libraries are missing or not
+  public. The checker reports 37 types and 51 members missing against .NET 8's CoreLib.
+- **Native entry points.** 28 in the stock libraries:
+  - 19 in libSystem.Native, of which hello world reaches `SystemNative_Write` and 3 error helpers;
+  - 9 in libSystem.IO.Compression.Native (zlib).
+
+  Our CoreLib has no P/Invoke.
+- **Hello world** reaches CoreLib and System.Console, nothing else.
+
+Runtime change: one local in `Rt.AllocObjectSlow` is renamed (CS0136, which emit refuses and binding tolerated). The
+old compiler's hello world module is byte-identical with and without it (checked and as shipped, 27,784 B).
+
+Not done:
+
+- the IL front end (claude/il-frontend);
+- runtime bodies for the 28 native entry points;
+- hybrid-globalization `GetLocaleInfo`;
+- the full homelab suite and the self-host check. They were not run, because the only runtime change is that rename.

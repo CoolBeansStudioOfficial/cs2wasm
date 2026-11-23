@@ -1428,3 +1428,11 @@ with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   selfhost-speed-2): suite 264 passed, 0 failed, both ways (896 s); self-host check all the same: built in 275 s
   (33,809,524 bytes), hello world 7.30 to 7.56 s at 241.8 MB, the switched build the same module, byte for byte on
   145, 220, 193, 088. The morning report is docs/REPORT-2026-11-23.md.
+- 2026-11-23, claude/il-corelib: il2wasm step 1, the core library as IL (docs/CORELIB.md, AUDIT "il2wasm step 1").
+  - CoreLib builds ahead of time to IL in about 10 s, byte-identical on rebuild.
+  - The stock pack chosen is Mono.browser-wasm 11.0.0, built from runtime deae2e32 = v11.0.0.
+  - The stock libraries reference 12,172 types and 29,032 members of CoreLib, and none is missing or not public.
+  - The stock libraries have 28 native entry points.
+  - Hello world reaches CoreLib and System.Console only.
+  - Old-compiler hello world: byte-identical before and after the one runtime rename.
+  - Not run: the homelab suite and the self-host check (the rename only).
