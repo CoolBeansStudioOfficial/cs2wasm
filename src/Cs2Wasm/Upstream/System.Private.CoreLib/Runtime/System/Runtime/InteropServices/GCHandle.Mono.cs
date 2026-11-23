@@ -28,7 +28,9 @@ namespace System.Runtime.InteropServices
         static void Store(int slot, object value)
         {
             Cs2Wasm.Runtime.Rt.Share(value);
-            if (IsWeakKind(Cs2Wasm.Runtime.Mem.LoadI32(slot + 4))) Cs2Wasm.Runtime.WeakSlots.Link(slot, value);
+            // (a handle that tracks resurrection is cleared when its target is freed, a short one before its finalizer)
+            if (Cs2Wasm.Runtime.Mem.LoadI32(slot + 4) == (int)GCHandleType.WeakTrackResurrection) Cs2Wasm.Runtime.WeakSlots.LinkLong(slot, value);
+            else if (IsWeakKind(Cs2Wasm.Runtime.Mem.LoadI32(slot + 4))) Cs2Wasm.Runtime.WeakSlots.Link(slot, value);
             else { Cs2Wasm.Runtime.Rt.Retain(value); Cs2Wasm.Runtime.Mem.StoreI32(slot, Cs2Wasm.Runtime.Rt.AddressOf(value)); }
         }
 

@@ -534,6 +534,11 @@ internal sealed partial class RuntimeFns
     WasmFunction? _onDestroy;
     public WasmFunction OnDestroy => _onDestroy ??= M.AddFunction("rt.on_destroy", FT([I], [I]));
     public WasmFunction? OnDestroyIfMade => _onDestroy;
+    WasmFunction? _onFinalize;
+    /// <summary>rt.on_finalize(p): before p's finalizer: the short weak handles to p cleared, the others left for
+    /// rt.on_destroy; 1 if the finalizer runs (ObjectMarks.OnFinalize; `1` in a program that sets no mark).</summary>
+    public WasmFunction OnFinalize => _onFinalize ??= M.AddFunction("rt.on_finalize", FT([I], [I]));
+    public WasmFunction? OnFinalizeIfMade => _onFinalize;
     WasmFunction? _weakAny, _weakDying;
     /// <summary>rt.weak_any(): whether any object is a weak handle's target now (0 in a program that sets no mark); rt.weak_dying(obj):
     /// the weak references to a member of a group that is going are cleared (ObjectMarks.WeakDying; nothing in a

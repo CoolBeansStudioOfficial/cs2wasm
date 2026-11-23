@@ -748,7 +748,9 @@ sealed partial class RuntimeGen
             else
             {
             // weak references to it are cleared first; GC.SuppressFinalize can skip the finalizer
-            e.Get(0); e.Call(rt.OnDestroy);
+            // (before a finalizer the short ones only: one that tracks resurrection, and a ConditionalWeakTable's
+            // entry, go when the object does, below)
+            e.Get(0); e.Call(fin != null ? rt.OnFinalize : rt.OnDestroy);
             if (fin != null)
             {
                 e.If();
@@ -783,9 +785,13 @@ sealed partial class RuntimeGen
                 e.Get(0); e.I32(0); e.Store(Op.I32Store);
                 e.End();
                 e.End();
+                // (it goes: the weak handles left)
+                e.Get(0); e.Call(rt.OnDestroy); e.Op(Op.Drop);
             }
             else e.Op(Op.Drop);
             }
+            // (a group's member with a finalizer, cleared after the finalizers: the weak handles left)
+            if (finalizer == -1 && clear && FindFinalizer(type) != null) { e.Get(0); e.Call(rt.OnDestroy); e.Op(Op.Drop); }
             if (finalizer == 1) return;
             foreach (var fs in l.Fields)
             {
@@ -1210,7 +1216,7 @@ sealed partial class RuntimeGen
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
         {
-            D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
+            D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1); D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnFinalize", 1);
             // (and a group that goes clears the weak references to all its members first: Rt.WeakDyingAll)
             D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "WeakDying", 1); D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "Any", 0);
         }
@@ -1631,6 +1637,17 @@ sealed partial class RuntimeGen
             var m = D.AllMethods.FirstOrDefault(x => x.Sym.Name == "WeakDying" && x.Sym.ContainingType?.Name == "ObjectMarks" && x.Compiled);
             // (an object without a mark, which is nearly every one: nothing to ask; ObjectMarks.MarkedBit)
             if (m != null) { var de = new Emitter(dying); de.Get(0); de.Load(Op.I32Load, 8); de.I32(0x40000000); de.Op(Op.I32And); de.If(); de.Get(0); de.Call(m.Fn); de.End(); }
+        }
+        if (D.Rt.OnFinalizeIfMade is { } onFin)
+        {
+            var m = D.AllMethods.FirstOrDefault(x => x.Sym.Name == "OnFinalize" && x.Sym.ContainingType?.Name == "ObjectMarks" && x.Compiled);
+            var fe = new Emitter(onFin);
+            if (m != null)
+            {
+                fe.Get(0); fe.Load(Op.I32Load, 8); fe.I32(0x40000000); fe.Op(Op.I32And); fe.Op(Op.I32Eqz);
+                fe.If(ValType.I32); fe.I32(1); fe.Else(); fe.Get(0); fe.Call(m.Fn); fe.End();
+            }
+            else fe.I32(1);
         }
         var f = D.Rt.OnDestroyIfMade;
         if (f == null) return;
