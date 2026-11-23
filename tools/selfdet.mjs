@@ -32,13 +32,16 @@ const out = join(root, 'tests', 'out', 'selfdet');
 rmSync(out, { recursive: true, force: true });
 const env = { ...selfEnv(), CS2WASM_REFERENCE_DIR: selfPath(referenceDir()), CS2WASM_CACHE: selfPath(cache) };
 const runs = [];
+// (a compiler that does not end, as the self-hosted one now and then does not, would hold its turn on the homelab for good)
+const limit = 1000 * +(process.env.SELFDET_TIMEOUT ?? 600);
 function build(name, cmd, cmdArgs, extraEnv) {
   const dir = join(out, name);
   mkdirSync(dir, { recursive: true });
   const target = join(dir, 'program.wasm');
   const t0 = performance.now();
-  const r = spawnSync(cmd, [...cmdArgs, ...prog, '-o', selfPath(target)], { env: { ...env, ...extraEnv }, encoding: 'utf8', maxBuffer: 1 << 28 });
+  const r = spawnSync(cmd, [...cmdArgs, ...prog, '-o', selfPath(target)], { env: { ...env, ...extraEnv }, encoding: 'utf8', maxBuffer: 1 << 28, timeout: limit });
   const s = ((performance.now() - t0) / 1000).toFixed(1);
+  if (r.error && r.error.code === 'ETIMEDOUT') { console.log(`selfdet: ${name}: no end in ${s} s (stopped; SELFDET_TIMEOUT seconds, 600)`); process.exit(1); }
   if (r.status !== 0 || !existsSync(target)) { console.log(`selfdet: ${name}: failed (exit ${r.status}) in ${s} s\n${(r.stderr || r.stdout || '').slice(-2000)}`); process.exit(1); }
   console.log(`selfdet: ${name}: ${readFileSync(target).length.toLocaleString('en-US')} bytes in ${s} s`);
   runs.push({ name, target });

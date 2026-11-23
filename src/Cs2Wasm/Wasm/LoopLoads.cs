@@ -37,7 +37,10 @@ static class LoopLoads
     static bool Throws(in Instr x) => x.Op == Op.Call && x.Ref is WasmFunction h && h.Name.Contains("ThrowHelpers.", StringComparison.Ordinal);
 
     /// <summary>Returns whether the function changed.</summary>
-    public static bool Run(WasmFunction f)
+    /// <param name="nullSafe">A word read before the loop from a null is made null (a select on the local): what
+    /// address 0 and the program's data after it hold is no reference, and FieldLoads.cs, which runs after this
+    /// and reads a field of the object such a local holds before the loop too, would read anywhere through it.</param>
+    public static bool Run(WasmFunction f, bool nullSafe = false)
     {
         var b = f.Body;
         int n = b.Count;
@@ -163,6 +166,12 @@ static class LoopLoads
                         pre.Add(new Instr { Op = Op.LocalGet, Imm = a.Base, Pos = x.Pos });
                         if (a.Off != 0) { pre.Add(new Instr { Op = Op.I32Const, Imm = a.Off, Pos = x.Pos }); pre.Add(new Instr { Op = Op.I32Add, Pos = x.Pos }); }
                         pre.Add(x);
+                        if (nullSafe && x.Op == Op.I32Load)
+                        {
+                            pre.Add(new Instr { Op = Op.I32Const, Imm = 0, Pos = x.Pos });
+                            pre.Add(new Instr { Op = Op.LocalGet, Imm = a.Base, Pos = x.Pos });
+                            pre.Add(new Instr { Op = Op.Select, Pos = x.Pos });
+                        }
                         pre.Add(new Instr { Op = Op.LocalSet, Imm = h, Pos = x.Pos });
                         (replace ??= [])[i] = h;
                         stack.Add(new Sym("H" + h, [], -1, 0));

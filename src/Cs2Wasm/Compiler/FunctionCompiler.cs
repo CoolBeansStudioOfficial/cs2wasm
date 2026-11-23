@@ -299,7 +299,7 @@ sealed partial class FunctionCompiler
         }
         else body.InsertRange(0, prologue);
         for (int i = 0; i < body.Count; i++) if (ReferenceEquals(body[i].Ref, FrameMarker)) body[i] = body[i] with { Ref = null };
-        E.Fn.Body.RemoveAll(i => i.Op == Op.Nop && i.Ref is not (Driver.WriteMark or Driver.ThrowPath));
+        E.Fn.Body.RemoveAll(i => i.Op == Op.Nop && i.Ref is not (Driver.WriteMark or Driver.ThrowPath or FieldStoreMark));
     }
 
     readonly List<Instr> _entryCode = [];
@@ -2603,6 +2603,7 @@ sealed partial class FunctionCompiler
                 else
                 {
                     E.Load(Types.LoadOp(ft), off);
+                    if (!bf.IsStatic && !M.ContainingType.IsValueType) TagFieldLoad(bf, ft);
                     if (Types.IsRef(ft)) E.Call(Rt.Retain);
                     _retLocal = E.AddLocal(Types.WasmType(ft)!.Value); E.Set(_retLocal);
                     EmitReturnSequence(true);

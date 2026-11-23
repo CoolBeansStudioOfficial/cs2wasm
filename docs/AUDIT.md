@@ -1683,6 +1683,142 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     their keys die while the table lives** (25 keys dropped, 25 values still alive after collections; .NET 0).
   - Checked: On the homelab at 66374eb (the last commit that changes code): suite 224/224 checked and as shipped (343 s); 088 alone both ways (at 97f3772 the suite was 222/223 both ways, 088's timer line; at 9e254f8 221/224 both ways, tests 055, 058 and 107 not compiled, "consumed struct parameter not moved in Dictionary<string, ResourceLocator>.Add": the owned insert for a value that is a struct, fixed in 66374eb, test 237 has the case; the earlier stages 222/222 at a7918b9, c5395a0 and 0e981fa). Stress, 200 loaded runs a mode: 235, 222 and 236 at 9e254f8 and 237 at 66374eb the same in every run of both modes; 139 the same in every run and 127 differing in 7 of 400 at 9b4639b (its "async 5" line, main's rate; 4 of 400 at a671855). The self-hosted compiler at 66374eb, built as it is and with `CS2WASM_NO_FLAT_DESTROY=1 CS2WASM_NO_OWNED_INSERT=1` (tools/selfhost-switch.sh: 32,558,663 and 32,292,082 bytes, 0.8% larger): both compile hello world to the same module (27,709 bytes), 9.18 to 9.48 s as it is and 9.22 to 9.47 s switched, three rounds in turn, peak memory 344 MB both; tools/selfdet.mjs: self = net, byte for byte (27,721 bytes); the same at 0e981fa and 97f3772. Not run on the homelab: frames.mjs (it has no Emscripten); nothing was measured with threads.
 
+- **Field loads by the field's identity (2026-11-22 to 23, branch claude/field-loads-1, merged with main 3dbef69;
+  the homelab for the pass against itself and for the checks, the desk for NativeAOT-LLVM).** V8 does not carry a load from memory across a store or a call: it cannot know the store is
+  to another place. The compiler knows which field every load and every store by name touches.
+  - **Built** (`CS2WASM_NO_FIELD_HOIST=1`: the module from before; Compiler/FieldLoads.cs decides, Wasm/FieldLoads.cs
+    rewrites). A load of a class's instance field by name carries the field's tag (by declaration: one field for
+    every instantiation), a store by name leaves a mark, each loop's instruction names the fields stored inside it
+    (with what the inliner puts there), a call is asked through the summary of all stores the borrows use (direct,
+    indirect by its type, the host by what it can call back, a release by what destruction can run). **Stage A:** a
+    field of the object in a local the loop does not assign (or a copy of one, made before every read) is read once
+    before the loop when nothing the loop runs can store that field of any object; an array's length likewise.
+    **Stage B** (`CS2WASM_NO_FIELD_REUSE=1`): the same load of the same unchanged local, with nothing between that
+    can store the field and the first on every way to the second, is the first one's value. **The inliner**
+    (`CS2WASM_INLINE_READERS=0`): a callee of up to 80 instructions that reads fields of an object it is given (a
+    list's indexer) goes into loops, so that its reads are the loop's own. A `readonly` field that only
+    constructors of its own class store is asked about the loop's own code alone.
+  - **What takes a field out**, and the line of tests 230 to 234 that prints something else when the condition is
+    taken out (`CS2WASM_FIELD_HOIST_WITHOUT=<condition>`, `bash tools/field-hoist-proof.sh`): its address taken
+    (`ref`, `out`, `in`, `fixed`, Interlocked, Volatile, Unsafe, a span over it, a ref return: `address`, 231 "ref
+    local"), and with it every field of the same object (`walk`, below: 231 "walked", 207 "through a ref"); a class with [StructLayout] or a field with [FieldOffset] (`layout`, 231 "overlap"); reflection can set
+    it (`reflection`, 232 "reflected"); a program with threads, unless the field is readonly (`threads`, 234: the
+    wait under a lock never ends); the loop's own store, also through another reference to the same object, a
+    handler's, a constructor's own (`loop`: 230 "own", 232 "handlers", 233 "generics", 234 "constructed"); a callee's
+    store, a finalizer's, an iterator's, a filter's through rt.first_pass (`calls`: 230 "callee", 232 "delegates", 233
+    "iterators"); a function pointer's target (`indirect`, 232 "pointers"); the local assigned in the loop
+    (`assigned`: 230, 232, 234) and a copy that does not come before every read (`dominance`, 230 "copies"); bodies
+    made one that differ in their tags (`merge`, 230 "merged"); a setter inlined into the loop (`inline`, 230
+    "inlined"). **By construction, no switch:** a struct's field and a field of a struct's type have no tag (a struct
+    assigned as a whole over the field read, a struct's method on it: 231 "structs" stays as it is); a captured
+    variable, an iterator's or an async method's local, a primary constructor's parameter are fields the compiler
+    makes, without tags. **Not shown by any loop:** `volatile` (a volatile field is read with other instructions,
+    and no program with threads has a tag on a field that is not readonly: the condition is the third guard);
+    `machine` (a state machine's own function is left alone: its filters are calls in its own code, which the
+    calls' rule sees, and a caller's filter runs before the machine's finally reads, as .NET has it, with the rule
+    and without: tried, 233 "machines"; the rule stays as a guard). **What rests on the program not doing it,** as
+    the borrows do: an object read through another class than its own (Unsafe.As), a constructor run a second time
+    on an object that exists.
+  - **Found in this round, 1: a field of a field of a null read anywhere.** `for (...) s += n.A.T` with n null: A
+    was read once before the loop from address 0 plus A's offset, where the program's data is (the module's data
+    starts at address 16: 0xffffffff at 16 and at 40, a string's characters after), and T then once before the loop
+    through that word: "memory access out of bounds" from a loop that takes no turn, or in place of the
+    NullReferenceException of its first turn. LoopLoads.cs (on main, before this pass in the order) made the first
+    read and this pass the second; this pass alone does the same in its second round. Both now put null in place
+    of a word-sized value read from a null (a select on the local: three instructions before the loop, none in
+    it), LoopLoads.cs only while this pass is on. `CS2WASM_FIELD_HOIST_WITHOUT=null`: test 230 traps at "null
+    chains" (twelve offsets, one loop a call, do-while loops, a null and an object whose fields are null).
+  - **Found, 2: a loop that takes no turn paid for what its turns read, and the tree scene was slower.** The
+    homelab, with and without the pass in turn (five rounds, then three, `tools/measure-switch.sh`): churn's median
+    0.093 ms against 0.103 and 0.089 against 0.100, but tree's 0.064 against 0.060 and 0.062 against 0.059, and
+    `tools/tree-frame.cs`: the walk 39.1 to 39.5 us against 35.3 to 35.6, the indexed walk 26.8 to 27.4 against
+    23.8 to 24.2. The walk is entered once a node and most nodes are leaves: each entry read the list's array, its
+    length and the node's X and Y for a loop that took no turn. **Now a place the loop reads before its first test
+    (`i < list.Count`: the size, on every entry) is read before the loop as it is, and a place it reads only after
+    the test is read inside `test; if (the loop goes on) { ... }` before the loop**, the test's instructions copied
+    as the loop will have them. They are copied only when they can be run twice for once: no store, no call (a
+    check that throws aside), no local given a value made from its own (`i++ < n`): `CS2WASM_FIELD_HOIST_WITHOUT=
+    twice` and 230 "tested" prints another number. A loop whose first instructions are no such test (an
+    enumerator's MoveNext, a do-while) reads before it only what it reads on every entry. The benchmark program:
+    63 fields and 66 lengths read before a loop, 58 loops with reads behind their test, 214 loads a second time
+    (every place before its loop, as before: 168 fields and 75 lengths). On the desk after it, with and without in
+    turn (four rounds, other sessions beside): tree-frame's walk 29.0 to 29.9 us against 29.2 to 30.7 (a foreach:
+    nothing is read before it now), the indexed walk **16.9 to 17.8 against 18.1 to 19.2**, without the floats
+    14.6 to 15.7 against 17.1 to 18.7; build, store and move the same. The scenes themselves on the desk
+    after it (`tools/frames-ab.mjs`, six rounds in turn): **tree 0.0480 to 0.0487 ms with the pass and 0.0471 to
+    0.0494 without: level**; churn 0.0674 to 0.0695 against 0.0800 to 0.0821. The homelab's five rounds after
+    this change, on a loaded homelab, do not agree for the tree scene: under Checked.
+  - **Found, 3: a reference to one field walked to the next.** The suite (test 207, main's, for
+    SameBaseLoads.cs): `ref byte rb = ref p.B0; byte c = p.B2; Unsafe.Add(ref rb, 2) = 77; byte d = p.B2;` read B2
+    once: only B0 had its address taken. A reference to a field reaches the fields beside it (Unsafe.Add, a
+    pointer's arithmetic, a span made over more than the field), so the class of a field whose address some code
+    has is noted, and every field of that class, of its bases and of the classes derived from any of them has no
+    tag. `CS2WASM_FIELD_HOIST_WITHOUT=walk`: 207 "through a ref" and 231 "walked" print something else. The
+    benchmark program after it: 1 field and 60 lengths read before a loop, 28 loops with reads behind their test,
+    128 loads a second time (63, 66, 58 and 214 before the rule); the churn scene and `tools/churn-array.cs` as
+    before it (below).
+  - **Found, 4, and not this pass: collections that grow by moving broke the self-hosted compiler on every
+    program larger than hello world; fixed here.** tools/measure-switch.sh was made to compile test 230 with the
+    self-hosted compiler: "memory access out of bounds" in Inliner.RunOnce, with the pass and without it
+    (`CS2WASM_NO_FIELD_HOIST=1` at the build is the code main makes), on tests 207, 220, 222, 230, 232 alike; once
+    no end at all (a core busy for half an hour: tools/selfdet.mjs now stops a compiler after ten minutes). Built
+    with `CS2WASM_NO_ARRAY_MOVE=1` it compiled them byte for byte. With every function named
+    (`CS2WASM_NAMES=1`): Rt.RunUnlink under AllocHuge under AllocObjectArena under `List<Instr>.List(int)` under
+    Inliner.RunOnce, and rt.retain under ArenaUnlinkAt under an Instr's copy. **The cause: Rt.MoveItems
+    (Boundary/ArrayMoves.cs, claude/colstr-2) leaves the old array an array of bytes, so that its end counts
+    nothing off; an array whose type can be on a cycle is allocated with the arena's 32 bytes before its header
+    (AllocObjectArena) and its block is freed with them by its own type's destroy function alone
+    (FreeObjectArena): as byte[] it went to FreeObject at the header's address, 32 bytes into its block and 32
+    short.** It takes such an array that is still a plain object with one count when its collection grows: a new
+    list, dictionary or set made with a capacity, filled past it with items that refer to no member of a cycle,
+    given to its owner afterwards: Inliner.RunOnce's `new List<Instr>(f.Body.Count + 32)`. (Items that refer to a
+    member make the array a linked one, which MoveItems refused already: test 220 and the first small programs
+    tried here never moved one.) **Fixed: MoveItems refuses an array whose type can be on a cycle (SccOf of its
+    type), and the collection copies as upstream;** `CS2WASM_ARRAY_MOVE_CYCLE=1`: the old move. Test 240 (lists,
+    dictionaries and sets of such a struct grown among large blocks of other kinds that are kept and checked):
+    with the old move "memory access out of bounds" in the allocator under the .NET-hosted compiler, with the fix
+    the same as .NET both ways. **The self-hosted compiler with the fix (and with this pass), on the homelab at
+    601c0e1: tests 145, 207, 220, 222, 230 and 232 byte for byte the .NET-hosted compiler's; the same source built
+    with the old move: hello world alone.** `tools/selfhost-variants.sh` builds the compiler once a set of
+    switches and runs each on some tests (SHOW=1: the stack); `tools/selfstack.mjs` pauses a compiler that does
+    not end and prints its stack (written for this, not needed in the end).
+  - **Numbers, with and without the pass.** `tools/churn-array.cs` (the churn scene's loop over a list and over an
+    array; us a frame): the homelab before the change above, list 94.5 to 95.8 against 104.4 to 105.6, array 90.1
+    to 91.5 against 94.1 to 95.6; the desk after it, list 73.6 to 74.9 against 85.3 to 87.9, array 72.4 to 74.4
+    against 76.5 to 77.6: **the list's loop is the array's now** (its size, its array and the array's length are
+    read once). `frames.mjs --runs 3 --js-young 32` on the desk, three rounds in turn, other sessions beside
+    (NativeAOT-LLVM's churn 0.052 to 0.055 where a quiet desk gave 0.049): **churn 0.069 to 0.071 ms, 1.33x to
+    1.35x NativeAOT-LLVM's, against 0.083 to 0.086, 1.56x to 1.60x, without** (main: 1.58x); tree 0.051 to 0.059,
+    1.68x to 1.80x, against 0.049 to 0.056, 1.60x to 1.70x: the desk's spread in those runs (the six rounds
+    above, the two builds alone, are level; main: 1.63x; p99.9 1.14x to 1.26x both ways: not reached, as on main); collections 1.00x to 1.05x against
+    0.95x to 1.03x and strings 0.89x against 0.84x to 0.90x: **nothing** (`tools/colstr-parts.cs`: the whole frame
+    6.50 to 6.65 us against 6.55 to 6.64, the map's set 1.92 to 1.97 against 1.98 to 2.00); bigdrop 0.89x to 0.91x
+    both; memory 16.0 MB both. `bench.mjs` on the desk, twice each in turn: 0.88x and 0.91x against 0.93x and
+    0.93x, but cs2wasm's own times are the same within their spread (linq 13.2 and 13.9 ms against 13.9 and 13.3)
+    and NativeAOT-LLVM's side moved: on the homelab, five rounds, the geometric mean without the pass is 1.006x
+    the one with it: **nothing a benchmark shows.** Size: hello world 27,657 bytes against 27,642 (below 28,383),
+    the frames' module 224,213 against 223,882, the benchmarks' 359,315 against 358,467, the self-hosted compiler
+    32,351,700 against 32,171,871 (0.56%; before the third rule). Build: the self-hosted compiler in 246 s with the pass and 250 s without
+    (the homelab's quiet pair; 279 and 550, 373 and 267 with other jobs beside). The self-hosted compiler's run on
+    hello world: 9.0 to 9.3 s against 9.1 to 10.3, peak memory 344 MB both: **the same.**
+  - **Checked.** The homelab at 7393522 (the last change to the compiler and the tests; tools and docs after it):
+    the suite 226 of 227 checked and 227 of 227 as shipped, the one 088's timer line (alone it passes both ways).
+    Before that the desk at 512c366, one runner a mode: 227 of 228 both ways, the one test 207's "through a ref":
+    the third thing found above, fixed since. Stress, 200 loaded runs a mode: 230 to 234, 240 and 139 the same
+    in every run; 127 differed in 4 of 400 (main: 6 and 7 of 400). `bash tools/field-hoist-proof.sh` at the
+    last commit: every condition but `volatile` and `machine` changes a line. The self-hosted compiler: above
+    (601c0e1: six programs byte for byte). The homelab at the last commit, with and without the pass in turn (five rounds, other sessions' jobs beside: the rounds spread by a third): churn's median 0.095 ms against 0.107; **tree 0.069 against 0.065, the pass's higher in four rounds of five, where the desk's two sets were level: not explained** (the scene's Build and Walk are the same code in both modules, 345 and 356 bytes, Tree(int) 18 bytes shorter with the pass; tree-frame.cs there: build 17.9 to 19.2 us against 17.5 to 18.0, walk 37.3 to 40.3 and once 43.8 against 38.2 to 40.4, the indexed walk 24.0 to 25.4 and once 29.0 against 25.9 to 27.7); collections 0.0076 against 0.0070 and strings 0.0085 against 0.0084 at their lowest, inside the rounds' spread; bench-ab's geometric mean 1.004x without the pass; churn-array's list 94.8 to 99.1 us (once 109.8) against 104.9 to 111.2. The self-hosted compiler there: built in 259 s with the pass and 249 s without, 32,298,942 bytes against 32,189,404 (0.34%), hello world in 9.4 to 9.5 s against 9.4 to 10.0, peak memory 344 MB both, and built either way it compiles 145, 207 and 220 (with the pass 230 too) byte for byte as the .NET-hosted one.
+    **Not checked or not done:** a host that calls an export back while a loop runs is covered by a rule (the
+    host's calls are asked what every export and every table entry can store) and by no test: the suite's host
+    calls nothing back. Main's own checkout was not built with the fix for the moved arrays (the branch's
+    source built with `CS2WASM_NO_FIELD_HOIST=1` stands for it). What the third rule costs was counted (the
+    benchmark program's reads before a loop) but not looked into class by class: a class with one field whose
+    address is taken loses all of them, where only a walk from that field could reach the others.
+  - **What is left for the churn loop** (round 4's list): the NaN tests (4 us of its 8), the loop's shape (the
+    test at the bottom: the copy of the test made here is the first half of a rotation, the loop keeps its own
+    test at the top), the object's size. A foreach reads nothing before its loop: MoveNext is no test that can be
+    copied, so the tree scene's walk still reads the node's X and Y on every turn.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**

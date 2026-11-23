@@ -307,7 +307,7 @@ internal sealed partial class Driver
         foreach (var f in Module.Functions)
         {
             if (f.IsImport) continue;
-            f.Body.RemoveAll(x => x.Op == Op.Nop && x.Ref is WriteMark or ThrowPath);
+            f.Body.RemoveAll(x => x.Op == Op.Nop && x.Ref is WriteMark or ThrowPath or FieldStoreMark);
             // (and the indirect calls' buckets: bodies that differ only there are the same code)
             var b = f.Body;
             for (int i = 0; i < b.Count; i++) if (b[i].Op == Op.CallIndirect && b[i].Imm2 != 0) b[i] = b[i] with { Imm2 = 0 };
@@ -625,7 +625,9 @@ internal sealed partial class Driver
         PrintReachWhy();
         // (the statics a loop can read once: StaticLoads.cs)
         var staticLoads = StaticLoadCandidates();
-        if (FieldBorrows.Count == 0 && _tempBorrows.Count == 0 && staticLoads.Count == 0) { StripWriteMarks(); return; }
+        // (the fields a loop can read once: FieldLoads.cs)
+        bool fieldLoads = PrepareFieldLoads();
+        if (FieldBorrows.Count == 0 && _tempBorrows.Count == 0 && staticLoads.Count == 0 && _hoistCount == 0) { FinishFieldLoads(null); StripWriteMarks(); return; }
         var byFn = FieldBorrows.GroupBy(b => b.fn).ToDictionary(g => g.Key, g => g.ToList());
         bool threads = UsesThreads, safePoints = false;
         // what each function may store, with everything it can call (an indirect call: any function in the table)
@@ -836,6 +838,7 @@ internal sealed partial class Driver
         var dead = markers.Keys.Concat(FieldBorrows.Select(b => b.marker)).ToHashSet();
         Module.Functions.RemoveAll(dead.Contains);
         ResolveStaticLoads(staticLoads, summary!);
+        if (fieldLoads) FinishFieldLoads(summary);
         StripWriteMarks();
     }
 
@@ -1009,7 +1012,9 @@ internal sealed partial class Driver
             // (the keys asked about with all their stores, by the field's own key)
             Dictionary<string, int>? all = null;
             foreach (var (k, ki) in _key) if (k.StartsWith(AllStoresPrefix, StringComparison.Ordinal)) (all ??= [])[k[AllStoresPrefix.Length..]] = ki;
-            int words = Math.Max(1, (_key.Count + 63) / 64);
+            // (the fields a loop would read once, FieldLoads.cs: by number, after the keys)
+            _hoistBase = _key.Count;
+            int words = Math.Max(1, (_key.Count + d._hoistCount + 63) / 64);
             var fns = d.Module.Functions;
             for (int i = 0; i < fns.Count; i++) _node[fns[i]] = i;
             int table = fns.Count, n = fns.Count + 1 + d._bucketFns.Count;
@@ -1023,6 +1028,8 @@ internal sealed partial class Driver
                         {
                             int bk = ins.Imm2 > 0 && ins.Imm2 < d._bucketFns.Count ? (int)ins.Imm2 : 0;
                             if (!_typed.ContainsKey((bk, sig))) _typed[(bk, sig)] = n++;
+                            // (FieldLoads.cs asks once the buckets are gone from the calls: by the type alone)
+                            if (d._hoistCount > 0 && !_typed.ContainsKey((0, sig))) _typed[(0, sig)] = n++;
                         }
             // what writes only memory no program code can reach: the runtime's throw helpers (bounds, null and cast
             // checks: the exception they make), the allocator (fresh or freed blocks), the arenas' and the marks'
@@ -1062,6 +1069,13 @@ internal sealed partial class Driver
                             if (ReferenceEquals(_bits[i], none)) _bits[i] = new ulong[words];
                             _bits[i][ki >> 6] |= 1UL << (ki & 63);
                         }
+                if (d._hoistOwn != null && d._hoistOwn.TryGetValue(f, out var ho))
+                    foreach (int id in ho)
+                    {
+                        int ki = _hoistBase + id - 1;
+                        if (ReferenceEquals(_bits[i], none)) _bits[i] = new ulong[words];
+                        _bits[i][ki >> 6] |= 1UL << (ki & 63);
+                    }
                 // (every store of a static a loop would read once, StaticLoads.cs: those that only replace a null too;
                 // the initializer's own left out as above, the loop is asked about the type's initialization itself)
                 if (all != null && d.FieldWrites.TryGetValue(f, out var fw))
@@ -1169,6 +1183,22 @@ internal sealed partial class Driver
             int bk = call.Imm2 > 0 && call.Imm2 < buckets ? (int)call.Imm2 : 0;
             if (call.Ref is FuncType sig && _typed.TryGetValue((bk, sig), out int t)) return t;
             return bk > 0 ? _table + bk : _table;
+        }
+
+        readonly int _hoistBase;
+        public bool Knows(WasmFunction f) => _node.ContainsKey(f);
+        /// <summary>Whether f, with what it calls, stores the field with this number (FieldLoads.cs).</summary>
+        public bool HasId(WasmFunction f, int id)
+        {
+            int k = _hoistBase + id - 1;
+            return _node.TryGetValue(f, out int i) && (_bits[i][k >> 6] & (1UL << (k & 63))) != 0;
+        }
+        /// <summary>An indirect call of this type (null: any), whatever its bucket was.</summary>
+        public bool HasIndirectId(FuncType? sig, int id)
+        {
+            int k = _hoistBase + id - 1;
+            int node = sig != null && _typed.TryGetValue((0, sig), out int t) ? t : _table;
+            return (_bits[node][k >> 6] & (1UL << (k & 63))) != 0;
         }
 
         public bool Has(WasmFunction f, string key) => key == SafePointKey ? Safe?.Contains(f) == true :
