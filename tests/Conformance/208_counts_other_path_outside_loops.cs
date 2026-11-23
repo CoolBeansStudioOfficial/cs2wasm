@@ -1,12 +1,13 @@
-// A count's other path taken in the middle of a loop (Wasm/ColdExits.cs: the call it makes is written after the loop,
-// with what was left of the turn, and the loop is entered again): loops that store references into arrays, lists and
-// fields, where the stored value is a literal (never freed: its count is not changed in place), a member of a group
-// (objects that can refer to each other), or null, and where the value written over had its last reference there (it
-// ends, and what it refers to) or was a literal. After the store the turn goes on in every way a turn can: more
+// A count's other path taken in the middle of a loop: loops that store references into arrays, lists and fields,
+// where the stored value is a literal (never freed: its count is not changed in place), a member of a group (objects
+// that can refer to each other), or null, and where the value written over had its last reference there (it ends,
+// and what it refers to) or was a literal. After the store the turn goes on in every way a turn can: more
 // statements, a second and a third store, a value chosen by ?: or ??, a break, a continue, a goto past the code after
 // the loop, a switch, a return out of the loop, an exception caught outside it. Every loop's arrays are printed after
-// it. With a rule of the pass taken out (CS2WASM_COLD_EXITS_WITHOUT=rest, labels) lines differ; without `stack` the
-// module is not valid.
+// it. Wasm/ColdExits.cs (CS2WASM_COLD_EXITS=1: the call such a path makes written after the loop, with what was left
+// of the turn, and the loop entered again) must leave every line as it is, and with one of its rules taken out lines
+// differ or the module is not valid: tools/cold-exits-proof.sh. No loop here calls anything else (a remainder is a
+// call), so that each is one the pass takes.
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;

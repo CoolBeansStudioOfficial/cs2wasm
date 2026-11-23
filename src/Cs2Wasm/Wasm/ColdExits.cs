@@ -10,7 +10,7 @@ namespace Cs2Wasm.Wasm;
 /// turn, tools/churn-count.cs: the same loop with its counts by hand and no call 39 us a frame, the compiler's 43).
 /// A call that never comes back does not cost that (NoReturn.cs); a call that does cannot be marked.
 /// What the engine does keep in registers: a loop whose body has no such call. So the loop is given an outer loop
-/// and two locals, P and C:
+/// and locals P (which other path), C and I0:
 ///     P = 0
 ///     block X { loop O { block H { br_if H (P)
 ///                                  loop L { the body; at a count's other path: P = j, br O }
@@ -18,8 +18,8 @@ namespace Cs2Wasm.Wasm;
 ///                        block S { P = 0; path j's own code, then what was left of the turn: the rest of each block
 ///                                  it was in, as blocks again, and the rest of the body; a branch to L there is a
 ///                                  branch to S; br X }
-///                        C = 4
-///                        loop L2 { if (C == 0) br O; C--; the body as it was, each other path setting C = 8 }
+///                        br_if O (no turn to run in L2)
+///                        loop L2 { br_if O (enough turns without an other path); the body as it was }
 ///                        br X } }
 /// The other path's code runs at the same point of the program with the same locals: only the place of the code
 /// changes (the control flow is the same, no value moves). What it uses of the turn reaches it as the outer loop's
@@ -28,17 +28,26 @@ namespace Cs2Wasm.Wasm;
 /// turn has on the operand stack at the count (the address an element is stored at) is also put into a local where
 /// it is made (a branch drops it), and pushed again before the path's code.
 /// L2, the loop as it was: leaving L costs more than the call in it did (tools/drop-range.cs: an array of objects
-/// that all end where they are cleared, 36 us with the call in the loop, 45 when every turn left L). So after a
-/// turn that took the other path the next four run in L2, and each that takes it there makes that eight: where the
-/// other path is the usual one the loop runs as it always did, where it is rare L is entered again at once.
+/// that all end where they are cleared, 36 us with the call in the loop, 45 when every turn left L). A loop with a
+/// counter (`i += c; br L` its last instructions, nothing else assigning i) remembers the turn of its last other
+/// path in I0: one taken within 8 turns of the last goes on in L2, which is left when 8 turns took none. A loop
+/// without one runs C = 4 turns in L2 after each, 8 more after each taken there.
 /// Only where it is exact and of use: an innermost loop without a result or a try_table inside, every value on the
 /// stack at the count of a type that is known, and no other call in the loop that comes back (then the values are
-/// in memory anyway, and nothing is done). CS2WASM_NO_COLD_EXITS=1: off. CS2WASM_COLD_EXITS_WITHOUT=stack, rest or
-/// labels: a rule taken out (test 208 then prints something else, or the module is not valid).
+/// in memory anyway, and nothing is done); not a container's own end (a destroy function: its values' last
+/// references are the usual case).
+/// OFF unless CS2WASM_COLD_EXITS=1. What it gives and takes (docs/AUDIT.md A3.5, "The churn loop, round 5"): the
+/// counted store of tools/churn-count.cs 45.7-46.3 us a frame to 40.5-41.1 (the counts by hand without a call
+/// 40.7-42.3), a range cleared whose objects do not end 14.8 to 10.5; but every turn that leaves L pays for it (the
+/// loop's values through three loop tops, 5 to 7 ns), so a loop whose other path is taken once in 4 to 50 turns is 3
+/// to 17% slower (tools/drop-range.cs), the churn scene, where one particle in 48 ends, the same with and without
+/// (0.0578-0.0585 ms against 0.0582-0.0591), tools/bench's list_sort 3 to 4% slower: not on by default.
+/// CS2WASM_COLD_EXITS_WITHOUT=stack, rest or labels: a rule taken out (test 208, compiled with the pass, then prints
+/// something else or the module is not valid: tools/cold-exits-proof.sh).
 /// </summary>
 static class ColdExits
 {
-    static readonly bool s_off = Environment.GetEnvironmentVariable("CS2WASM_NO_COLD_EXITS") == "1";
+    static readonly bool s_off = Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS") != "1";
     static readonly string s_without = Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS_WITHOUT") ?? "";
     static readonly bool s_stats = Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS_STATS") == "1";
     static readonly int s_maxBody = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS_BODY"), out var mb) ? mb : 400;
@@ -46,6 +55,9 @@ static class ColdExits
     // (the turns in the loop as it was after a turn took the other path; and after one took it there)
     static readonly int s_turns = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS_TURNS"), out var tn) ? tn : 4;
     static readonly int s_stay = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS_STAY"), out var st) ? st : 8;
+    // (a loop with a counter: an other path taken less than this many turns after the last one is "near"; 0: the
+    // counter is not looked for)
+    static readonly int s_near = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS_NEAR"), out var nr) ? nr : 8;
     internal static int Loops, Points;
 
     sealed class Frame
@@ -256,8 +268,17 @@ static class ColdExits
         foreach (var pt in points) if (pt.Else == 0 || pt.End == 0) return Why(f, ls, le, 9);
 
         int np = f.Type.Params.Length;
-        int P = np + f.Locals.Count, C = P + 1;
-        f.Locals.Add(ValType.I32); f.Locals.Add(ValType.I32);
+        int P = np + f.Locals.Count, C = P + 1, I0 = P + 2;
+        f.Locals.Add(ValType.I32); f.Locals.Add(ValType.I32); f.Locals.Add(ValType.I32);
+        // the loop's counter, when it has one: a local that its last instructions step by a constant (`i++; br L`)
+        // and nothing else in it assigns. By it an other path knows how many turns ago the last one was taken.
+        int iv = -1; long step = 0;
+        if (le - ls > 6 && s_near > 0 && b[le - 1].Op == Op.Br && b[le - 1].Imm == 0 && b[le - 2].Op == Op.LocalSet && b[le - 3].Op == Op.I32Add
+            && b[le - 4].Op == Op.I32Const && b[le - 4].Ref == null && b[le - 4].Imm != 0 && b[le - 4].Imm is > -4096 and < 4096 && b[le - 5].Op == Op.LocalGet && b[le - 5].Imm == b[le - 2].Imm)
+        {
+            iv = (int)b[le - 2].Imm; step = b[le - 4].Imm;
+            for (int i = ls + 1; i < le - 2; i++) if (b[i].Op is Op.LocalSet or Op.LocalTee && b[i].Imm == iv) { iv = -1; break; }
+        }
         var elses = new HashSet<int>();
         foreach (var pt in points) elses.Add(pt.Else);
         // the stack's values at each count: a local each, set where the value is made
@@ -316,11 +337,17 @@ static class ColdExits
                 }
                 if (!slow) { One(i, ins); continue; }
                 o.Add(ins);
-                if (ins.Op == Op.Else && elses.Contains(i)) { o.Add(new Instr { Op = Op.I32Const, Imm = s_stay, Pos = ins.Pos, Inl = ins.Inl }); o.Add(new Instr { Op = Op.LocalSet, Imm = C, Pos = ins.Pos, Inl = ins.Inl }); }
+                if (ins.Op == Op.Else && elses.Contains(i))
+                {
+                    if (iv >= 0) { o.Add(new Instr { Op = Op.LocalGet, Imm = iv, Pos = ins.Pos, Inl = ins.Inl }); o.Add(new Instr { Op = Op.LocalSet, Imm = I0, Pos = ins.Pos, Inl = ins.Inl }); }
+                    else { o.Add(new Instr { Op = Op.I32Const, Imm = s_stay, Pos = ins.Pos, Inl = ins.Inl }); o.Add(new Instr { Op = Op.LocalSet, Imm = C, Pos = ins.Pos, Inl = ins.Inl }); }
+                }
             }
         }
 
         A(Op.I32Const, 0); A(Op.LocalSet, P);
+        // (the turn of the last other path: far back at the start)
+        if (iv >= 0) { A(Op.LocalGet, iv); A(Op.I32Const, step > 0 ? 0x40000000 : -0x40000000); A(Op.I32Sub); A(Op.LocalSet, I0); }
         A(Op.Block);          // X
         A(Op.Loop);           // O
         A(Op.Block);          // H
@@ -359,6 +386,16 @@ static class ColdExits
             pos = b[pt.If].Pos; inl = b[pt.If].Inl;
             if (!last) { A(Op.LocalGet, P); A(Op.I32Const, j + 1); A(Op.I32Eq); A(Op.If); }
             A(Op.I32Const, 0); A(Op.LocalSet, P);
+            // the turns to run in the loop as it was after this one: by the counter, none when the last other path
+            // was not near (the loop without calls is entered again at once), else as many as there; without a
+            // counter, a few
+            if (iv >= 0)
+            {
+                if (step > 0) { A(Op.LocalGet, iv); A(Op.LocalGet, I0); } else { A(Op.LocalGet, I0); A(Op.LocalGet, iv); }
+                A(Op.I32Sub); A(Op.I32Const, s_near * Math.Abs(step)); A(Op.I32LtU); A(Op.LocalSet, C);
+                A(Op.LocalGet, iv); A(Op.LocalSet, I0);
+            }
+            else { A(Op.I32Const, s_turns); A(Op.LocalSet, C); }
             int n = pt.Chain.Length;
             for (int k = 0; k <= n; k++)
             {
@@ -388,10 +425,19 @@ static class ColdExits
         // ends) leaving the loop for each would cost more than the calls in it did. A turn that takes no other
         // path counts down; at zero the loop above is entered again.
         pos = b[ls].Pos; inl = b[ls].Inl;
-        A(Op.I32Const, s_turns); A(Op.LocalSet, C);
+        A(Op.LocalGet, C); A(Op.I32Eqz); A(Op.BrIf, 0);   // no turn to run there: O
         o.Add(b[ls]);         // L2
-        A(Op.LocalGet, C); A(Op.I32Eqz); A(Op.BrIf, 1);
-        A(Op.LocalGet, C); A(Op.I32Const, 1); A(Op.I32Sub); A(Op.LocalSet, C);
+        if (iv >= 0)
+        {
+            // (with a counter: until the last other path is `stay` turns back; nothing is written on a turn that takes none)
+            if (step > 0) { A(Op.LocalGet, iv); A(Op.LocalGet, I0); } else { A(Op.LocalGet, I0); A(Op.LocalGet, iv); }
+            A(Op.I32Sub); A(Op.I32Const, s_stay * Math.Abs(step)); A(Op.I32GeU); A(Op.BrIf, 1);
+        }
+        else
+        {
+            A(Op.LocalGet, C); A(Op.I32Eqz); A(Op.BrIf, 1);
+            A(Op.LocalGet, C); A(Op.I32Const, 1); A(Op.I32Sub); A(Op.LocalSet, C);
+        }
         Copy(ls + 1, le, 0, 0, 2, slow: true);
         o.Add(b[le]);         // L2's end
         A(Op.Br, 1);          // the loop ran out
