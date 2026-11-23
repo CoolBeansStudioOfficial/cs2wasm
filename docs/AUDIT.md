@@ -733,7 +733,8 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     CS2WASM_TIMES prints it is higher too, from the first compile pass on: 859, 1,140 and 1,223 MB at the ends of
     the two passes and the encoding against main's 696, 850 and 923 (the same with the holds off): the branch
     keeps more alive while it compiles, or for longer, and the checks then go through larger structures. Which
-    structure that is was not found. Variants on the homelab (tools/selfhost-variants.sh, 088, against 177 s
+    structure that is was not found. It grows with the program: on the desk, main's runtime against the branch's,
+    test 220 18.8 against 22.9 s (+22%), test 193 18.4 against 21.1 s (+14%), test 088 +87%. Variants on the homelab (tools/selfhost-variants.sh, 088, against 177 s
     plain): CS2WASM_NO_TURN_HOLD=1 with CS2WASM_NO_SURVIVOR_HOLD=1 153.8 s; CS2WASM_NO_STALE_NOTE=1 157.2 s;
     CS2WASM_NO_TAKE_IN_ABOVE=1 no end in 300 s. Neither the holds nor the notes is the bulk alone, and the trial
     without TakeInAbove is worse still. Tried and taken out the same hour: TakeInAbove taking a top in only once the
