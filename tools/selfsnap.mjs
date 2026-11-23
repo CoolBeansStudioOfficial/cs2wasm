@@ -61,7 +61,7 @@ function build(kind, label, program, cmd, cmdArgs, extraEnv, quiet) {
     if (readFileSync(target).equals(readFileSync(ref))) same = ', = net byte for byte';
     else { same = ', DIFFERS from net'; failed = true; }
   }
-  if (!quiet) console.log(`${label}: ${s.toFixed(2)} s, ${statSync(target).size.toLocaleString('en-US')} bytes${same}${pages ? `, memory ${(pages * 65536 / 1048576).toFixed(1)} MB` : ''}${notes ? ` [${notes}]` : ''}`);
+  if (!quiet) console.log(`${label}: ${s.toFixed(2)} s, ${statSync(target).size.toLocaleString('en-US')} bytes${same}${pages ? `, memory ${(pages * 65536 / 1e6).toFixed(1)} MB` : ''}${notes ? ` [${notes}]` : ''}`);
   (times[label.replace(/ \d+$/, '')] ??= []).push(s);
   return { s, err };
 }
@@ -87,7 +87,7 @@ for (const p of programs) net(p);
 console.log(`--- ${basename(first)}: the build that writes the snapshot, then in turn`);
 warm(first, 'writing');
 const size = existsSync(snap) ? statSync(snap).size : 0;
-console.log(`the snapshot: ${(size / 1048576).toFixed(1)} MB`);
+console.log(`the snapshot: ${(size / 1e6).toFixed(1)} MB`);
 for (let r = 1; r <= rounds; r++) {
   cold(first, r);
   warm(first, r);
@@ -104,7 +104,7 @@ for (let r = 1; r <= rounds; r++) {
 }
 if (programs.length > 1) console.log('--- other programs on the same snapshot, each twice, then the first again');
 for (const p of programs.slice(1)) { warm(p, 1); warm(p, 2); }
-if (programs.length > 1) { warm(first, 'after the others'); console.log(`the snapshot: ${(statSync(snap).size / 1048576).toFixed(1)} MB`); }
+if (programs.length > 1) { warm(first, 'after the others'); console.log(`the snapshot: ${(statSync(snap).size / 1e6).toFixed(1)} MB`); }
 console.log('--- seconds, lowest to highest (median)');
 for (const [k, v] of Object.entries(times)) {
   if (v.length < 2) continue;
