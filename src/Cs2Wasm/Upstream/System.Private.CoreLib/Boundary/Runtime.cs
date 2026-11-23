@@ -4058,7 +4058,12 @@ namespace Cs2Wasm.Runtime
             int g = SccOf(Mem.LoadI32(val + 4));
             if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return val;
             // (one whose finalizer is running, or that waits for the others': a counted reference, FinPhase)
-            if (((PL(val, 24) | PL(container, 24)) & Dying) != 0) return val;
+            if (((PL(val, 24) | PL(container, 24)) & Dying) != 0)
+            {
+                // (a member that lives on took a dying one into a slot: noted for FinRevive)
+                if (s_finDepth != 0 && ca < -1 && (PL(container, 24) & Dying) == 0) FinRecord(container);
+                return val;
+            }
             if (ca > 0 && Mem.LoadI32(container + 8) < 0) return val; // pinned
             if (cv > 0 && Mem.LoadI32(val + 8) < 0) return val;
             int ra = ca < -1 ? ArenaOf(container) : 0, rv = cv < -1 ? ArenaOf(val) : 0;
@@ -4201,7 +4206,9 @@ namespace Cs2Wasm.Runtime
                     PS(val, 20, container);
                     PS(val, 24, fl | Owned | MultOne);
                 }
-                else if (ow == 0) TakeOwnership(val, container);
+                // (FinRevive: a member that code still refers to is not made the property of one that came back: let
+                // go, the one that came back would be kept by the check at the drop for what it owns that code holds)
+                else if (ow == 0) { if (s_reviving == 0 || Mem.LoadI32(val) >= (later ? -3 : -2)) TakeOwnership(val, container); }
                 // (the first other container that holds it is the one to own it next: a later one, a task's
                 // result, a temporary array, is as often gone by then)
                 else if (PLW(val) == 0) { ClearMark(val); PSW(val, container); }
@@ -4601,6 +4608,14 @@ namespace Cs2Wasm.Runtime
             // (13 to 15, Dropped: what the member owns; a counted reference to one of them off, and back on)
             if (s_visitMode >= 13)
             {
+                // (21, FinRevive: a slot of a member that lives on which holds one of the members coming back)
+                if (s_visitMode == 21)
+                {
+                    if (child == 0 || SccOf(Mem.LoadI32(child + 4)) == 0) return;
+                    int tc = Mem.LoadI32(child);
+                    if (tc >= FinTag + FinBias && tc < FinTag + 2 * FinBias && (PL(child, 24) & Dying) != 0) FixPush(s_visitObj, slot, s_visitElem, child);
+                    return;
+                }
                 if (child == 0 || Mem.LoadI32(child) >= -1) return;
                 if (ThreadMode() && !GroupHeld(child)) return;
                 int cf = PL(child, 24);
@@ -4813,6 +4828,8 @@ namespace Cs2Wasm.Runtime
             int cutEnd = s_cutN;
             CutsBack(cutBase, cutEnd);
             WeakDyingAll(first, link);
+            int recBase = s_frN;
+            s_finDepth++;
             for (int m = first; m != 0; m = FinNext(m, end, link)) ArenaFinalizeObject(m);
             FinVisit(first, link, 10);
             bool back = false;
@@ -4820,15 +4837,184 @@ namespace Cs2Wasm.Runtime
             if (back)
             {
                 FinVisit(first, link, 11);
-                for (int m = first; m != 0;) { int next = FinNext(m, end, link); Mem.StoreI32(m, -1); m = next; }
                 s_cutN = cutBase;
+                if (NoFinRevive()) for (int m = first; m != 0;) { int next = FinNext(m, end, link); Mem.StoreI32(m, -1); m = next; }
+                else FinRevive(first, link, recBase);
+                FinDone();
                 return true;
             }
             FinVisit(first, link, 12);
             CutsOut(cutBase, cutEnd);
             s_cutN = cutBase;
             for (int m = first; m != 0; m = FinNext(m, end, link)) Mem.StoreI32(m, 0);
+            FinDone();
             return false;
+        }
+
+        /// <summary>CS2WASM_NO_FIN_REVIVE=1 (at compile time): members a reference was left to after their finalizers
+        /// are never freed, nor what they refer to (FinRevive).</summary>
+        [Intrinsic] static extern bool NoFinRevive();
+
+        // (FinPhase under way, how deep; the members that live on which took a dying member into a slot meanwhile,
+        // each counted once more while it is in the list; FinRevive's slots to link: container, slot, element, value)
+        static int s_finDepth, s_frQ, s_frN, s_frCap, s_fxQ, s_fxN, s_fxCap, s_reviving;
+        const int FinTag = 0x20000000;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void FinRecord(int c)
+        {
+            if (s_frN != 0 && Mem.LoadI32(s_frQ + 4 * (s_frN - 1)) == c) return;
+            if (s_frN == s_frCap)
+            {
+                int cap = s_frCap == 0 ? 16 : s_frCap * 2;
+                int nq = Alloc(cap * 4);
+                if (s_frQ != 0) { Mem.Copy(nq, s_frQ, s_frN * 4); Free(s_frQ, s_frCap * 4); }
+                s_frQ = nq; s_frCap = cap;
+            }
+            Mem.StoreI32(s_frQ + 4 * s_frN, c);
+            s_frN++;
+            Retain(Borrow<object>(c));
+        }
+
+        static void FixPush(int c, int slot, int elem, int child)
+        {
+            if (s_fxN == s_fxCap)
+            {
+                int cap = s_fxCap == 0 ? 16 : s_fxCap * 2;
+                int nq = Alloc(cap * 16);
+                if (s_fxQ != 0) { Mem.Copy(nq, s_fxQ, s_fxN * 16); Free(s_fxQ, s_fxCap * 16); }
+                s_fxQ = nq; s_fxCap = cap;
+            }
+            int e = s_fxQ + 16 * s_fxN;
+            Mem.StoreI32(e, c); Mem.StoreI32(e + 4, slot); Mem.StoreI32(e + 8, elem); Mem.StoreI32(e + 12, child);
+            s_fxN++;
+        }
+
+        /// <summary>A FinPhase is over: with the outermost, the members noted meanwhile are let go.</summary>
+        static void FinDone()
+        {
+            if (--s_finDepth != 0) return;
+            while (s_frN > 0)
+            {
+                s_frN--;
+                int c = Mem.LoadI32(s_frQ + 4 * s_frN);
+                if (c != 0) Release(Borrow<object>(c));
+            }
+        }
+
+        /// <summary>After the finalizers of members that die together, a reference to one of them is left that is
+        /// not one of their own (FinPhase; their own are back on the counts): a finalizer stored one where the
+        /// program can reach it, or into an object it made, which may itself be reachable only from them (a list
+        /// of a dying member that grew: the new array, the new items that refer back; test 244). Which of the two
+        /// is not looked for. The members become what they were before any store linked them: plain objects,
+        /// each reference counted where it is held (the finalizers ran while every reference to and from a dying
+        /// member was a counted one, ArenaLinkCore). Then the references are linked as the stores they stand
+        /// for would have been: a slot of a member that lives on which took one of them (noted at the store,
+        /// FinRecord), and each one's own slots (ArenaLinkContents; an object a finalizer made is linked as it
+        /// joins). Then the count each was given for the while is let go: what the program can reach lives on as
+        /// any object does (its finalizer has run: not again, unless GC.ReRegisterForFinalize asks), and the rest
+        /// goes by the counts, at once or as a group of its own with the finalizers of the objects made
+        /// meanwhile, as .NET frees it at its next collection. (Until 2026-11-23 the members were never freed.)</summary>
+        static void FinRevive(int first, int link, int recBase)
+        {
+            int end = link == 12 ? first : 0, n = 0;
+            // (a noted member nothing else refers to any more, a list's array that was grown out of since: it goes
+            // now, before anything is linked to it. Left until the end, it kept what it owned from the member
+            // that holds the same items now, and the members coming back, referred to from under it, stayed)
+            if (s_finDepth == 1)
+                for (int r = recBase; r < s_frN; r++)
+                {
+                    int c = Mem.LoadI32(s_frQ + 4 * r);
+                    if (c == 0 || Mem.LoadI32(c) != -3 || PL(c, 4) != 0) continue;
+                    for (int q = r; q < s_frN; q++) if (Mem.LoadI32(s_frQ + 4 * q) == c) Mem.StoreI32(s_frQ + 4 * q, 0);
+                    Release(Borrow<object>(c));
+                }
+            for (int m = first; m != 0; m = FinNext(m, end, link)) n++;
+            int list = Alloc(n * 4 + 4);
+            // (the list from the top down: a part's members are listed last dead first, a whole group's as they
+            // joined. Bit 0 of an entry: the member had an owner among them, and is linked from above)
+            int at = 0;
+            for (int m = first; m != 0; m = FinNext(m, end, link))
+            {
+                int ow = PL(m, 20);
+                int under = (PL(m, 24) & Owned) != 0 && ow != 0 && Mem.LoadI32(ow) >= FinBias && (PL(ow, 24) & Dying) != 0 ? 1 : 0;
+                Mem.StoreI32(list + 4 * (link == 12 ? at : n - 1 - at), m | under);
+                at++;
+            }
+            for (int i = 0; i < n; i++) { int m = Mem.LoadI32(list + 4 * i) & ~1; Mem.StoreI32(m, Mem.LoadI32(m) + FinTag); }
+            // the slots of members that live on which hold one of them (each such member once)
+            int fx0 = s_fxN;
+            int sa = s_visitArena, sm = s_visitMode, so = s_visitObj, se = s_visitElem;
+            for (int r = recBase; r < s_frN; r++)
+            {
+                int c = Mem.LoadI32(s_frQ + 4 * r);
+                if (c == 0 || Mem.LoadI32(c) >= -1 || (PL(c, 24) & Dying) != 0) continue;
+                bool seen = false;
+                for (int q = recBase; q < r && !seen; q++) seen = Mem.LoadI32(s_frQ + 4 * q) == c;
+                if (seen) continue;
+                s_visitMode = 21; s_visitObj = c; s_visitElem = 0;
+                ArenaVisitObject(c);
+            }
+            s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se;
+            // plain objects again, each with its counts and one more for the while
+            for (int i = 0; i < n; i++)
+            {
+                int m = Mem.LoadI32(list + 4 * i) & ~1;
+                int c = Mem.LoadI32(m) - FinTag - FinBias + 1;
+                MemberWordsFree(m);
+                Mem.StoreI32(m, c);
+            }
+            // (one nothing refers to goes now, as the plain object it is)
+            for (int i = 0; i < n; i++)
+            {
+                int m = Mem.LoadI32(list + 4 * i) & ~1;
+                if (Mem.LoadI32(m) != 1) continue;
+                Mem.StoreI32(list + 4 * i, 0);
+                Release(Borrow<object>(m));
+            }
+            s_reviving++;
+            // the links, a container's before those of what it holds, as the program made them: the members that
+            // had no owner among the others, each with all that its slots reach
+            for (int i = 0; i < n; i++)
+            {
+                int e = Mem.LoadI32(list + 4 * i);
+                if (e != 0 && (e & 1) == 0 && Mem.LoadI32(e) > 0) ArenaLinkContents(e);
+            }
+            // then the slots of the members that live on
+            int outer = s_storeSlot;
+            for (int i = fx0; i < s_fxN; i++)
+            {
+                int e = s_fxQ + 16 * i;
+                int c = Mem.LoadI32(e), slot = Mem.LoadI32(e + 4), child = Mem.LoadI32(e + 12);
+                if (Mem.LoadI32(slot) != child || Mem.LoadI32(c) >= -1) continue;
+                sa = s_visitArena; sm = s_visitMode; so = s_visitObj; se = s_visitElem;
+                s_visitArena = c; s_visitMode = 4; s_visitObj = c; s_visitElem = Mem.LoadI32(e + 8); s_storeSlot = slot;
+                LinkJoinedSlot(child, slot);
+                s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_visitElem = se;
+                if (s_linkN != 0) ArenaLinkJoined();
+                s_storeSlot = outer;
+            }
+            s_fxN = fx0;
+            if (s_killN != 0) DrainKills();
+            if (t_backN != 0) AfterStore();
+            // then what none of that reached
+            for (int i = 0; i < n; i++)
+            {
+                int m = Mem.LoadI32(list + 4 * i) & ~1;
+                if (m != 0 && Mem.LoadI32(m) > 0) ArenaLinkContents(m);
+            }
+            s_reviving--;
+            // (the noted members let go before the ones coming back are: as above)
+            if (s_finDepth == 1)
+                while (s_frN > recBase)
+                {
+                    s_frN--;
+                    int c = Mem.LoadI32(s_frQ + 4 * s_frN);
+                    if (c != 0) Release(Borrow<object>(c));
+                }
+            // (from the bottom up: the top's count is the last to go)
+            for (int i = n - 1; i >= 0; i--) { int m = Mem.LoadI32(list + 4 * i) & ~1; if (m != 0) Release(Borrow<object>(m)); }
+            Free(list, n * 4 + 4);
         }
 
         /// <summary>FinPhase with the cut references in a block (q, from..to). `unlocked`: run after the runtime lock
@@ -5312,7 +5498,8 @@ namespace Cs2Wasm.Runtime
                 if (!SingleThreaded()) { Defer(first, 12, ar, fin, cutBase); return; }
                 // (a finalizer stored one of them where the program can reach it: as in ArenaDestroyFrom; the
                 // arena's record stays, busy, for the words of its members that name it)
-                if (fin && FinPhase(first, 12, cutBase)) return;
+                // (with CS2WASM_NO_FIN_REVIVE=1 the record stays, busy, for the words of its members that name it)
+                if (fin && FinPhase(first, 12, cutBase)) { if (NoFinRevive()) return; { MemStatsRecord(-1); ReportForget(ar); Free(ar, ArenaRecord); } return; }
                 if (!fin) WeakDyingAll(first, 12);
                 m = first;
                 do { ArenaClearObject(m); m = PL(m, 12); } while (m != first);
