@@ -1045,6 +1045,7 @@ sealed partial class FunctionCompiler
             case "Rt.NoAdoptCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_ADOPT_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDyingNote": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DYING_NOTE") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoShedHolds": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_SHED_HOLDS") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoTurnOver": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TURN_OVER") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDyingUp": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DYING_UP") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDestroyByBits": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DESTROY_BY_BITS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoStoreWaits": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_STORE_WAITS") == "1" ? 1 : 0); return Own.None;

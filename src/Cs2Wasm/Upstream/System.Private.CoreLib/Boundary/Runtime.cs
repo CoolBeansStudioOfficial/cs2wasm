@@ -806,7 +806,7 @@ namespace Cs2Wasm.Runtime
             for (int e = from; e < s_repEvN; e++)
             {
                 int i = e & 8191, k = Mem.LoadI32(s_repEv + 16 * i);
-                ChkSay("ev " + e + " " + (k == 1 ? "check" : k == 2 ? "ownerless" : k == 3 ? "adopted" : "queued") + " " + Mem.LoadI32(s_repEv + 16 * i + 4) + " " + Mem.LoadI32(s_repEv + 16 * i + 8) + " " + Mem.LoadI32(s_repEv + 16 * i + 12));
+                ChkSay("ev " + e + " " + (k == 1 ? "check" : k == 2 ? "ownerless" : k == 3 ? "adopted" : k == 5 ? "turned over" : "queued") + " " + Mem.LoadI32(s_repEv + 16 * i + 4) + " " + Mem.LoadI32(s_repEv + 16 * i + 8) + " " + Mem.LoadI32(s_repEv + 16 * i + 12));
             }
             for (int i = 0; i < s_repN; i++)
             {
@@ -3326,6 +3326,82 @@ namespace Cs2Wasm.Runtime
             return n != 0 && n == (int)((uint)cf >> UShift) ? 2 : 0;
         }
 
+        /// <summary>CS2WASM_NO_TURN_OVER=1 (at compile time): a member its owner let go while code holds it keeps
+        /// holding the old owner for as long as another container refers to it (TurnOver).</summary>
+        [Intrinsic] static extern bool NoTurnOver();
+
+        /// <summary>A member (x) its owner (the container) let go at an unlink while code still holds it, and that
+        /// another member refers to, the container waiting to own it: `root.Kids.Remove(a)` where `root.Tag` holds
+        /// `a` too and `a.Prev` is root. It held its old owner, for its up-references, for as long as anything but an
+        /// owner referred to it, and with no owner everything is such: the container waiting kept it, and it kept
+        /// the old owner, for good. When the root was let go, its check at the drop failed by that hold (a reference
+        /// into what the root owns from a member outside it, x, which code held); when code let x go too, nothing
+        /// looked again: no number of a note counts the code's references to a member outside what the top owns.
+        /// Freed only with the group, never when a static kept the group (an object in the root's list): the root,
+        /// x and the rest of the tree, where .NET frees them at that release.
+        /// So the container waiting takes x over here, as it would when the hold went (UpdateHold, Adopt): x's
+        /// up-references, all in its own slots (nothing it owns refers up), become counted ones, so it holds
+        /// nothing; it has no owner then and the waiting container owns it, its references to what is above that
+        /// one up-references again (TakeOwnership, Reevaluate). The tree is a tree of owners again, x in it, and
+        /// the check at the root's drop counts x among the members code holds (TopHeld at x's release).
+        /// Constant work: the member's sixteen slot bits, and the walks up a store makes (Top, UpPath). Nothing done
+        /// unless all of it holds: the waiting container a living member of the group, not under x; every up-reference
+        /// of x's in its own slots; with threads, all of them in the group the unlink has locked; when the waiting
+        /// container is under another top than the old owner, no note of a check on x or its targets and none of the
+        /// outside kind on that top (what x brings under it would leave its number too high, NoteOutside). Under the
+        /// same top no number changes: x leaves what it owns and comes back under it.
+        /// Not reached (as before): a member that owns what refers up, and a top of the outside kind elsewhere.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void TurnOver(int x, int container)
+        {
+            if (NoTurnOver() || (s_destroying | s_trial | s_joinVisit | s_visitElem | s_linkN) != 0) return;
+            int fl = PL(x, 24);
+            if ((fl & (Owned | Dying | Queued | Elems | Far)) != 0 || (uint)fl < UOne) return;
+            int w = PLW(x);
+            if (w == 0 || (w & 1) != 0 || w == container || Mem.LoadI32(w) >= -1) return;
+            // (threads: all of them in the group whose lock the unlink holds)
+            if (ThreadMode() && (!GroupHeld(x) || !GroupHeld(w))) return;
+            if ((PL(w, 24) & Dying) != 0 || Under(w, x)) return;
+            int ar = ArenaOf(x);
+            if (Mem.LoadI64(ar + 12) != 0 || ArenaOf(w) != ar) return;
+            // (a check's notes: when x stays under the top it was under, in no number does anything change; else
+            // none on x or its targets, and none of the outside kind on the top it comes under)
+            bool apart = false;
+            if (s_failedTops != 0)
+            {
+                int top = Top(w);
+                if (top == 0) return;
+                if (top != Top(container))
+                {
+                    if (PLM(x) != 0 || (PLM(top) & 3) == 3) return;
+                    apart = true;
+                }
+            }
+            // (its up-references: all in its own slots)
+            int bits = PL(x, 28), n = 0;
+            for (int ub = bits, i = 0; ub != 0; ub = (int)((uint)ub >> 2), i++)
+            {
+                if ((ub & 3) != 2) continue;
+                n++;
+                int t = Mem.LoadI32(x + 12 + 4 * i);
+                if (t == 0 || Mem.LoadI32(t) >= -1) return;
+                if (ThreadMode() && !GroupHeld(t)) return;
+                if (apart && PLM(t) != 0) return;
+            }
+            if (n == 0 || n != (int)((uint)fl >> UShift)) return;
+            if (ArenaReport()) RepEv(5, x, w, container);
+            for (int ub = bits, i = 0; ub != 0; ub = (int)((uint)ub >> 2), i++)
+            {
+                if ((ub & 3) != 2) continue;
+                int t = Mem.LoadI32(x + 12 + 4 * i);
+                SetSlotBits(x, i, 1);
+                PS(t, 4, PL(t, 4) + 1);
+                // (the last one lets the hold go: x has no owner, and the waiting container adopts it, UpdateHold)
+                UpPath(x, t, -1);
+                if (!HoldSettled(t)) UpdateHold(t);
+            }
+        }
+
         // ---- The check at the drop (the owner's decision of 2026-11-18) ----
         // A member that something besides its owner refers to holds its owner (above), since that other may be
         // outside the tree. When it is inside (a child in its parent's list and in its parent's dictionary), the tree
@@ -4809,6 +4885,9 @@ namespace Cs2Wasm.Runtime
                 // scene tree of tools/frames.mjs, a subtree replaced under a node that later took more children: a
                 // third of the group.)
                 if (n != 0 || co != -2) OwnerLetGo(old, container);
+                // (let go by its owner while code holds it, and held by another container waiting to own it: that one
+                // takes it over now, TurnOver)
+                if (n != 0 && co != -2 && (PL(old, 24) & (Owned | Held)) == Held && PL(old, 20) == container) TurnOver(old, container);
                 // (a container replaced by another in the same slot, a list's array by a larger one: what it owned is
                 // the new one's from here on)
                 if (owned && n > 0 && slot != 0) { Handover(old, Mem.LoadI32(slot), container); n = PL(old, 4); }
