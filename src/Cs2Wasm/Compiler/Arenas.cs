@@ -788,7 +788,7 @@ internal sealed partial class Arenas
     static readonly (string name, int arity)[] RuntimeMethods =
         [("ArenaLink", 3), ("ArenaUnlink", 3), ("ArenaVisitElement", 1), ("ArenaPin", 1), ("ArenaRetain", 1), ("ArenaRelease", 1), ("ArenaArrayCopy", 5), ("ArenaArrayClear", 3), ("ArenaVisit", 1),
          ("AllocObjectArena", 2), ("FreeObjectArena", 2), ("ArenaLinkContents", 1), ("ArenaLinkFresh", 3), ("ArenaUnlinkFresh", 3), ("ArenaLinkOwned", 3),
-         ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3), ("ArenaGrowArray", 4), ("ArenaBeforeFinalizer", 0)];
+         ("ArenaLinkAt", 2), ("ArenaUnlinkAt", 2), ("ArenaMove", 3), ("ArenaGrowArray", 4), ("ArenaBeforeFinalizer", 0), ("ArenaLateChecks", 0)];
 
     /// <summary>Queues the library's arena runtime for compilation (only when some site is cyclic).</summary>
     public void RequestRuntime()
