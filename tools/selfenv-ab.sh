@@ -46,6 +46,8 @@ echo "=== the phases, as it is"
 one as-is a CS2WASM_TIMES=1 CS2WASM_HOST_TIMES=1 > /dev/null; grep -v -E "^ +[0-9]+ ms +[0-9]+ MB +(finish|arenas|static)|library: +[0-9]+ ms  System\.[A-OQ-Z]" $T | cut -c1-200
 echo "=== the phases, with $*"
 one with b CS2WASM_TIMES=1 CS2WASM_HOST_TIMES=1 "$@" > /dev/null; grep -v -E "^ +[0-9]+ ms +[0-9]+ MB +(finish|arenas|static)|library: +[0-9]+ ms  System\.[A-OQ-Z]" $T | cut -c1-200
+echo "=== the program built four times in one instance (CS2WASM_REPEAT=4: what an embedder that keeps the compiler pays)"
+one repeat a CS2WASM_REPEAT=4 > /dev/null; grep -E "call [0-9]+ of main" $T; cmp $OUT/a/w42.wasm $OUT/b/w42.wasm && echo "the fourth wrote the same module"
 rm -f $T
 if [ "${VERIFY:-0}" = 1 ]; then
   rc=0

@@ -83,7 +83,15 @@ if (process.env.CS2WASM_HOST_TIMES) process.stderr.write(`[host] node up and the
 const fn = instance.exports[entry];
 if (!fn) { console.error(`no export '${entry}'`); process.exit(2); }
 let r, failed = true;
-try { r = fn(); failed = false; } finally { flush(); }
+// CS2WASM_REPEAT=n (a measurement): the entry called n times in this instance, each call's time on stderr: what an
+// embedder that keeps a module (a compiler) instantiated pays for a later call
+for (let n = +(process.env.CS2WASM_REPEAT || 1), i = 1; i <= n; i++) {
+  const t = performance.now();
+  failed = true;
+  try { r = fn(); failed = false; } finally { flush(); }
+  if (n > 1) process.stderr.write(`[host] call ${i} of ${entry}: ${(performance.now() - t).toFixed(0)} ms
+`);
+}
 const tReturned = performance.now();
 if (snapshot && entry === 'main') snapshot.save(instance, memory, { result: r, failed: failed || process.exitCode !== undefined, threads: threadsStarted, io: httpUsed });
 // (the process lasts while a thread that is not a background one runs, as in .NET)

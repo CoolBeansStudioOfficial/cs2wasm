@@ -35,7 +35,15 @@ export function fsImports(getMemory, root = process.env.CS2WASM_FS_ROOT ?? proce
   };
   const virt = (r) => '/' + path.relative(root, r).split(path.sep).filter(Boolean).join('/');
   // reads and writes through a copy (the module's memory may be shared, which the file system does not take)
-  const readInto = (fd, p, n, pos) => { const b = Buffer.alloc(n); const r = fs.readSync(fd, b, 0, n, pos); u8().set(b.subarray(0, r), p >>> 0); return r; };
+  // (one buffer kept for the reads, grown to the largest: a new zeroed one for each of a compiler's thousands of
+  // files was a tenth of its file reading)
+  let scratch = Buffer.allocUnsafe(1 << 16);
+  const readInto = (fd, p, n, pos) => {
+    if (scratch.length < n) scratch = Buffer.allocUnsafe(Math.max(n, 2 * scratch.length));
+    const r = fs.readSync(fd, scratch, 0, n, pos);
+    u8().set(r === scratch.length ? scratch : scratch.subarray(0, r), p >>> 0);
+    return r;
+  };
   const writeFrom = (fd, p, n, pos) => fs.writeSync(fd, Buffer.from(u8().slice(p >>> 0, (p >>> 0) + n)), 0, n, pos);
   const utf8Into = (s, p, size) => { const b = Buffer.from(s, 'utf8'); u8().set(b.subarray(0, Math.min(size, b.length)), p >>> 0); return b.length; };
   const statInto = (st, out) => {
