@@ -612,6 +612,7 @@ namespace Cs2Wasm.Runtime
             if (t_missQ != 0) { Free(t_missQ, Stripes * 4); t_missQ = 0; }
             if (s_killQ != 0) { Free(s_killQ, s_killCap * 4); s_killQ = 0; s_killCap = 0; }
             if (t_turnQ != 0) { Free(t_turnQ, t_turnCap * 4); t_turnQ = 0; t_turnCap = 0; }
+            if (t_nwQ != 0) { Free(t_nwQ, 4 * NoteWalk); t_nwQ = 0; }
             if (s_linkQ != 0) { Free(s_linkQ, s_linkCap * 4); s_linkQ = 0; s_linkCap = 0; }
             if (s_cutQ != 0) { Free(s_cutQ, s_cutCap * 8); s_cutQ = 0; s_cutCap = 0; }
             if (s_trQ != 0) { Free(s_trQ, s_trCap * 4); s_trQ = 0; s_trCap = 0; }

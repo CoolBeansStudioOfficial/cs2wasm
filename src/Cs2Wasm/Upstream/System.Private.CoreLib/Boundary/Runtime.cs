@@ -2826,38 +2826,58 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] static extern bool StaleNoteWhole();
 
         /// <summary>A member got an owner, the container, under a top whose check failed by references from outside
-        /// what it owns: the member's own references to members under that top (the slots its bits tell of) are
+        /// what it owns: the references into what that top owned from the member, and from what the member owns, are
         /// inside from here on, and come off the note's number; at what NoteOutside asks, the top is looked at again
-        /// (DrainKills). Not seen here, and left as they were before a8a50fc (the number stays too high and the top
-        /// is not looked at again): references from the elements of an array of structs, from slots past the sixteenth word, and
-        /// from what the member owns further down.</summary>
+        /// (DrainKills). What changed hands is gone through, not what the top owns: the member and what it owns, up
+        /// to NoteWalk members (a parent with its list, its arrays and the results under them, test 187's rounds;
+        /// past that the number stays too high and the top is not looked at again, as before a8a50fc), each by the
+        /// slots its bits tell of or, an array of references, by its elements.</summary>
+        const int NoteWalk = 64;
+        [System.ThreadStatic] static int t_nwQ;
         static void NoteCameUnder(int val, int container)
         {
-            int t = 0, k = 0;
-            if ((PL(val, 24) & Elems) != 0)
+            // (first the member alone, with no walk up: one that owns nothing and refers to no noted member, a new
+            // node put into a tree, has nothing to take off any number)
+            if ((PL(val, 24) & Elems) == 0)
             {
-                // (an array of references: each element, once, as the array changes hands; the array Task.WhenAll
-                // returned, which a parent takes over when the task dies: test 219 under load, 2 to 4 runs of 400)
-                if (PL(val, 28) == 0 || ArrayRankAt(val) != 1 || ArrayElementSizeAt(val) != 4) return;
-                int slot = val + 16, end = slot + 4 * Mem.LoadI32(val + 12);
-                for (; slot != end; slot += 4)
+                bool any = false;
+                int w0 = PL(val, 28);
+                for (int i = 0; w0 != 0 && !any; i++, w0 = (int)((uint)w0 >> 2))
                 {
-                    int child = Mem.LoadI32(slot);
-                    if (child == 0 || Mem.LoadI32(child) >= -1 || !OutsideMarked(PLM(child))) continue;
-                    if (t == 0) { t = Top(container); if (t == 0 || (PLM(t) & 3) != 3) return; }
-                    if (child == t || Under(child, t)) k++;
+                    if ((w0 & 3) == 0) continue;
+                    int c0 = Mem.LoadI32(val + 12 + 4 * i);
+                    if (c0 != 0 && Mem.LoadI32(c0) < -1 && (PLM(c0) != 0 || PL(c0, 20) == val)) any = true;
                 }
+                if (!any) return;
             }
-            else
+            else if (PL(val, 28) == 0) return;
+            int t = Top(container);
+            if (t == 0 || (PLM(t) & 3) != 3) return;
+            if (t_nwQ == 0) t_nwQ = Alloc(4 * NoteWalk);
+            int q = t_nwQ, head = 0, tail = 0, k = 0;
+            Mem.StoreI32(q, val); tail = 1;
+            while (head < tail)
             {
-                int w = PL(val, 28);
-                for (int i = 0; w != 0; i++, w = (int)((uint)w >> 2))
+                int m = Mem.LoadI32(q + 4 * head); head++;
+                int slot, end; int w = 0; bool array = (PL(m, 24) & Elems) != 0;
+                if (array)
                 {
-                    if ((w & 3) == 0) continue;
-                    int child = Mem.LoadI32(val + 12 + 4 * i);
-                    if (child == 0 || Mem.LoadI32(child) >= -1 || !OutsideMarked(PLM(child))) continue;
-                    if (t == 0) { t = Top(container); if (t == 0 || (PLM(t) & 3) != 3) return; }
-                    if (child == t || Under(child, t)) k++;
+                    if (PL(m, 28) == 0 || ArrayRankAt(m) != 1 || ArrayElementSizeAt(m) != 4) continue;
+                    slot = m + 16; end = slot + 4 * Mem.LoadI32(m + 12);
+                }
+                else { w = PL(m, 28); slot = m + 12; end = slot + 64; }
+                for (; slot != end; slot += 4, w = (int)((uint)w >> 2))
+                {
+                    if (!array && (w & 3) == 0) { if (w == 0) break; continue; }
+                    int child = Mem.LoadI32(slot);
+                    if (child == 0 || Mem.LoadI32(child) >= -1) continue;
+                    // (one the member owns: gone through too)
+                    if (PL(child, 20) == m && (PL(child, 24) & (Owned | Dying)) == Owned) { if (tail < NoteWalk) { Mem.StoreI32(q + 4 * tail, child); tail++; } continue; }
+                    if (!OutsideMarked(PLM(child))) continue;
+                    // (under the top and not under the member that came: one of the note's references)
+                    int v = child, hops = 0;
+                    while (v != 0 && v != val && v != t && hops < 4096 && (PL(v, 24) & Owned) != 0) { v = PL(v, 20); hops++; }
+                    if (v == t) k++;
                 }
             }
             if (k == 0) return;
