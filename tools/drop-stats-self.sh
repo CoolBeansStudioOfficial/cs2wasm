@@ -23,6 +23,6 @@ for v in "$@"; do
     r=$(SELFDET_STDOUT=$OUT/$n.$t.txt node tools/selfdet.mjs --self $OUT/$n.wasm tests/Conformance/$t.cs 2>&1 | grep '^selfdet: self' | tr '\n' ' ')
     echo "$n on $t: $(( $(date +%s) - s )) s: $r"
     # (the last table printed)
-    awk '/^drop checks /{blk=""} {if (/^drop checks |^why |^holds /) blk=blk $0 "\n"} END{printf "%s", blk}' $OUT/$n.$t.txt
+    awk '/^drop checks /{blk=""} {if (/^drop checks |^why |^holds |^tops by/) blk=blk $0 "\n"} END{printf "%s", blk}' $OUT/$n.$t.txt
   done
 done

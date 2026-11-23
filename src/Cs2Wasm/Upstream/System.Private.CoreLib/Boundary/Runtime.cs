@@ -895,6 +895,8 @@ namespace Cs2Wasm.Runtime
             DsNum(ref at, " from-release ", s_dsFromRelease); DsNum(ref at, " from-unlink ", s_dsFromUnlink);
             DsNum(ref at, " tops ", s_dsTops); DsNum(ref at, " top-hops ", s_dsTopHops); DsNum(ref at, " top-marked ", s_dsTopMarked); DsNum(ref at, " top-far ", s_dsTopFar);
             Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
+            DsNum(ref at, "tops by site 1 ", s_tsW1); DsNum(ref at, "/", s_tsS1); DsNum(ref at, " 2 ", s_tsW2); DsNum(ref at, "/", s_tsS2); DsNum(ref at, " 7 ", s_tsW7); DsNum(ref at, "/", s_tsS7);
+            Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
             if (s_dsKilled != 0)
             {
                 DsNum(ref at, "destroyed at a store or release: members ", s_dsKilled); DsNum(ref at, " us: visits ", s_dsKill / 1000); DsNum(ref at, " counts ", s_dsZero / 1000);
@@ -3409,6 +3411,16 @@ namespace Cs2Wasm.Runtime
             return 0;
         }
 
+        static long s_tsW1, s_tsS1, s_tsW2, s_tsS2, s_tsW7, s_tsS7;
+        static int TopS(int m, int site)
+        {
+            if (!DropStats()) return Top(m);
+            long h = s_dsTopHops;
+            int t = Top(m);
+            if (site == 1) { s_tsW1++; s_tsS1 += s_dsTopHops - h; } else if (site == 2) { s_tsW2++; s_tsS2 += s_dsTopHops - h; } else { s_tsW7++; s_tsS7 += s_dsTopHops - h; }
+            return t;
+        }
+
         /// <summary>The member is the top or one of what it owns, by the owners above it (within a reach of 64).</summary>
         static bool Under(int m, int top)
         {
@@ -3559,7 +3571,7 @@ namespace Cs2Wasm.Runtime
         static int TopHeld(int p, int d)
         {
             if (!HeldMarked(PLM(p))) return 0;
-            int t = Top(p);
+            int t = TopS(p, 1);
             if (t == 0) return 0;
             int o = PLM(t);
             if ((o & 3) != 1) return 0;
@@ -3574,7 +3586,7 @@ namespace Cs2Wasm.Runtime
         static int NoteOutside(int member, int container, int d)
         {
             if (!OutsideMarked(PLM(member))) return 0;
-            int t = Top(member);
+            int t = TopS(member, 2);
             if (t == 0) return 0;
             int o = PLM(t);
             if ((o & 3) != 3 || Under(container, t)) return 0;
@@ -4841,7 +4853,7 @@ namespace Cs2Wasm.Runtime
                     // stayed until its group went. CS2WASM_NO_ADOPT_CHECK=1: not asked)
                     if (!died && adopted && !NoAdoptCheck())
                     {
-                        int t = Top(old);
+                        int t = TopS(old, 7);
                         if (t != 0 && t != old && t != back && (PLM(t) & 1) == 0 && DropCandidate(t)) died = Dropped(t);
                     }
                     gone = died && s_watchHit != 0;
