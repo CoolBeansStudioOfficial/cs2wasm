@@ -2291,6 +2291,43 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     A job of this session is left in the homelab's queue by mistake: process 30140 there (`heavy.sh node
     tools/frames-ab.mjs ..`, the scene by step), whose session was closed; it will take a slot for some four
     minutes when its turn comes and its output goes nowhere.
+  - **Checked on the merge with main (37c6b15: main eba0f0d into the branch; the one conflict, docs/FINISH.md,
+    two appended entries, both kept; Runtime.cs merged by itself).** The queued `tools/overnight-check.sh` (with
+    the six switches) ran there: the homelab's worktree was moved to the merge and built before the job's turn
+    came, so what it checked is the merge. **Suite 241 passed, 0 failed, 2 known gaps, checked and as shipped
+    (595 s).** The self-hosted compiler built as it is (286 s, 33,203,338 bytes) and with the six switches off
+    (262 s, 32,944,300 bytes); **hello world by it in 8.59, 8.82 and 8.95 s** (switched 8.56 to 9.40), peak
+    272.0 MB both, the two modules the same (27,722 bytes); `tools/selfdet.mjs`: **self-1 = net, byte for byte on
+    145 (27,734 bytes), 220, 193, 088 (1,616,223 bytes, 82 s), 202, 203 and 204.** `tools/stress-trees.sh`, 200
+    loaded runs a mode: 139, 192 to 199, 201, 202 and 203 the same output in every run of both modes; **127
+    differed in 3 of 200 as shipped and 4 of 200 checked, each time `async 5` / `pending 1`**, the open gap of
+    docs/FINISH.md's table (item 2: about one run in a hundred on main, 22 of 2,400 and 3 to 5 of 400 in earlier
+    rounds); not run against main the same hour, so whether this branch's 7 of 400 is main's rate is not shown
+    here. Test 204 was not in the script's set (it takes 192 to 199 and 201 to 203); its own 200-run stress was
+    queued after. On the desk at the merge: the five scripts of breaks exit 0; tests 12x, 13x, 19x, 20x and 21x
+    pass checked and as shipped; hello world (145) passes its size limit as shipped.
+  - **Frames on the merge, main against the branch** (main eba0f0d and 37c6b15, `node tools/frames.mjs --runs 3
+    --js-young 32`, all five scenes, main and branch in turn, nine pairs in three sets of three; the desk loaded
+    in the first set: NativeAOT-LLVM's own tree median 0.031 to 0.037 there, 0.028 to 0.029 in the second, 0.028
+    to 0.036 in the third). **Tree, median: main 1.49x to 1.65x NativeAOT-LLVM's (0.044 to 0.061 ms), the branch
+    1.30x to 1.50x (0.038 to 0.049); in the six pairs of the second and third sets main 1.49x to 1.60x and the
+    branch 1.30x to 1.37x, lower in every pair.** p99.9 (the rebuild frame): main 0.81x to 1.40x (0.81x to 0.91x
+    in those six), the branch 0.70x to 0.92x (0.80x to 0.84x in those six): below NativeAOT-LLVM's in every pair
+    on the branch, above it in two of nine on main. Worst frame: main 0.67x to 1.32x, the branch 0.65x to 1.27x;
+    on the branch above NativeAOT-LLVM's in four of nine pairs, the three of the loaded set and the first of the
+    third (1.05x to 1.27x: frames.mjs flags them), at or below 0.81x in the five others; main above in three.
+    p99 in those six: the branch 1.23x to 1.50x, main 1.35x to 2.30x. The tree's mean frame 1.08x to 1.12x on
+    the branch and 1.23x to 1.31x on main in those six (1.14x to 1.41x and 1.28x to 1.63x in the loaded set).
+    The other scenes, the same on both within the desk's spread (second set: churn median 1.33x to 1.34x,
+    collections 1.02x, strings 0.88x to 0.89x, bigdrop 0.90x to 0.94x; their p99.9 and worst 0.10x to 0.37x on
+    both); the mean frame's geometric mean over the five 0.69x to 0.74x on the branch, 0.70x to 0.86x on main
+    (0.70x to 0.71x and 0.73x in the second set). `node tools/bench.mjs`, two pairs: geometric mean 0.93x and 0.91x on main, 0.92x and
+    0.92x on the branch (`tree` 7.4 to 7.5 ms both); the bench module 335.5 KB on main and 339.0 on the branch.
+    **Not reached, as the round says: the median (1.30x to 1.37x on a quiet desk), and the worst frame is not
+    below NativeAOT-LLVM's in every run on a loaded desk.** No further step of the "not built" list was taken:
+    each is a per cent or two of a frame by the measurements above (the old array of a growth freed without its
+    clear and dispatches about 10 ns a node, 8 us of a 1.3 ms build), below what the desk can show, and each
+    would have needed a second full check on a homelab whose queue held nine to thirteen jobs this night.
 
 - **Known differences from .NET, taken in turn (2026-11-22, branch claude/known-diffs-1, from main cb287fb; the
   desk for the work, the homelab for the checks; not merged when this was written).** Seven differences earlier

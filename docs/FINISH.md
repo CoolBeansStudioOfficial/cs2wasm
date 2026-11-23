@@ -1192,3 +1192,13 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   checks off and paid them down later (NoteDebt) was refused here as deferred work; its session is building the
   number kept right at the one event that changes it, and test 219 still leaks in 2 to 4 loaded runs of 300 to 400
   with that so far.
+- 2026-11-23, 05:00, claude/tree-3 merged with main eba0f0d (37c6b15) and checked there (docs/AUDIT.md A3.5,
+  round 10, the last two items). Homelab at 37c6b15: suite 241 passed, 0 failed, 2 known gaps, checked and as
+  shipped; the self-hosted compiler built (286 s, 33,203,338 bytes), hello world by it in 8.6 to 9.0 s, 272.0 MB,
+  the same module with the six switches off; self-1 = net byte for byte on 145, 220, 193, 088, 202, 203, 204;
+  stress 200 loaded runs a mode: 139, 192 to 199, 201 to 203 the same in every run, 127 `async 5` / `pending 1` in
+  3 and 4 of 200 (the open item 2 of the table; not compared with main the same hour). Frames, main against the
+  branch, nine pairs: the tree's median 1.49x to 1.65x NativeAOT-LLVM's on main and 1.30x to 1.50x on the branch
+  (1.30x to 1.37x on a quieter desk), its p99.9 below NativeAOT-LLVM's in every pair on the branch (0.70x to
+  0.92x), its worst frame above in four of nine on a loaded desk; the other four scenes as on main; bench.mjs
+  0.91x to 0.93x on both. Not reached: the tree's median at NativeAOT-LLVM's. Not merged into main by this session.
