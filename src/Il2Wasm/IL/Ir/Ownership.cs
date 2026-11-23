@@ -44,10 +44,10 @@ public static class Ownership
         Liveness(body, info);
         foreach (var b in body.Blocks) Insert(body, b, info);
         // the arguments are counted on entry
+        // (each right after its argument: before the release of an argument nothing uses, which follows it)
         var entry = body.Blocks[0];
-        int at = entry.Code.FindLastIndex(n => n.Op == Opc.Arg) + 1;
         foreach (var a in body.Args)
-            if (IsRef(a)) entry.Code.Insert(at++, new Node { Op = Opc.Retain, Kind = VK.Void, A = [a], Block = entry, Id = body.NextId() });
+            if (IsRef(a)) entry.Code.Insert(entry.Code.IndexOf(a) + 1, new Node { Op = Opc.Retain, Kind = VK.Void, A = [a], Block = entry, Id = body.NextId() });
         return info;
     }
 
