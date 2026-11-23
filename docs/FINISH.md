@@ -1089,6 +1089,6 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   eight at once, 500 runs each as shipped: 187, 219, tests/Load/219_no_lock.cs, 127 (no lock) and 131 the same in
   all 500; tests 132, 133, 215, 215b, 216 pass; test 139 at ten times its length 2.90 s against main's 3.29.
   The self-hosted compiler at 43202b7 (hello world's time, selfdet on 145, 220, 193, 088), the homelab's suite
-  and stress: not back when this was written (the counts in the row above are from 59a6c4a, before this change).
+  and stress: hello world 10.1 s twice (9.3 s with all of the branch off, measured the evening before), byte for byte the .NET-hosted compiler's module on 145, 220, 193 and 088; test 088 in 177 s where it took 102 s with the branch off and 112 s on claude/load-flakes-safe: not at main's time. Which part costs it is not separated yet. The homelab's suite and stress at this commit: not back when this was written.
   claude/load-flakes-safe (from main 00d78fe) carries what is independent of the notes; see its own entry.
   Open: test 139's two nodes without the engine's stack checks, not seen again, its cause not shown.
