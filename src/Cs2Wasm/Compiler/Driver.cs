@@ -232,7 +232,7 @@ internal sealed partial class Driver
         return main.AddSyntaxTrees(CSharpSyntaxTree.ParseText(text, po, path: "cs2wasm/godot/GodotPlugins.cs"));
     }
 
-    public Driver(CSharpCompilation main, CompileOptions options)
+    public Driver(CSharpCompilation main, CompileOptions options, bool allLibraries = false)
     {
         // dynamic operations: call sites in a generated class of the program (DynamicLowering.cs)
         main = AddGodotPlugins(main);
@@ -241,7 +241,7 @@ internal sealed partial class Driver
         Main = main;
         Options = options;
         _inputs = [main, .. options.AdditionalCompilations];
-        Lib = new Library(main);
+        Lib = new Library(main, allLibraries);
         Types = new Types(this);
         StackPointer = new WasmGlobal("__stack_pointer", ValType.I32, true, 0) { Export = "__stack_pointer" };
         Module.Globals.Add(StackPointer);

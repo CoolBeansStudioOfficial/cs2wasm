@@ -25,4 +25,4 @@ bash /c/Users/Levi/Documents/GitHub/cs2wasm/tests/out/heavy.sh $CMD
 EOF
 )
 # (the homelab's ssh shell is PowerShell: hand the script to Git Bash on stdin)
-echo "$REMOTE" | ssh -o BatchMode=yes homelab '& "C:\Program Files\Git\bin\bash.exe" -l -s' 2>&1 | grep -v -E "post-quantum|store now, decrypt|server may need to be upgraded"
+echo "$REMOTE" | ssh -o BatchMode=yes homelab '& "C:\Program Files\Git\bin\bash.exe" -l -s' 2>&1 | grep --line-buffered -v -E "post-quantum|store now, decrypt|server may need to be upgraded"

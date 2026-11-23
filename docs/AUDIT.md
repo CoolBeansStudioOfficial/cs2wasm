@@ -4244,6 +4244,227 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     (4) NativeAOT-LLVM's build of today's compiler, for its time with the same rule (by its share of the
     characters about 0.6 s less than its 4.0).
 
+- **The self-hosted compiler's build time, second round: what it reads, what it keeps from one build to the next,
+  and where the gap to NativeAOT-LLVM is (2026-11-23, branch claude/selfhost-speed-2 on claude/round-9 d430594).**
+  Measured first, on the homelab, with `tools/selfphases.sh` (named build, `node --cpu-prof` of each side) and the
+  new `tools/selfprof-report.sh` (the two profiles by phase, who calls the runtime's functions, the two sides method
+  by method); the self-hosted compiler without threads on one processor, NativeAOT-LLVM's WebAssembly build of
+  2026-11-20 in the same Node (it reads fifteen libraries and parses their documentation comments; it cannot be
+  built on the homelab and was not built again).
+  - **Where the time is, one hello-world compile, profiled** (after the documentation comments below; self-hosted /
+    NativeAOT-LLVM, milliseconds): everything 7,740 / 4,073; compiled code 4,858 / 2,548; the runtime's memory
+    management 2,424 (counts, arena functions, allocation) / 923 (its collector); the host's functions 329 / 539.
+    The 230 methods both profiles name take 1,540 / 1,326 (1.16x): `Lexer.QuickScanSyntaxToken` 156 / 192,
+    `SyntaxNodeCache.TryGetNode` 48 / 85. So the gap is in no one function: it is the memory management (2.6x the
+    collector's cost) and the long tail of small functions, where a call costs what NativeAOT-LLVM's inlining
+    removed (`StringTable.TextEquals` 23 / 2: `span.Equals(span, Ordinal)` through three calls that pass spans in
+    memory; `IsCurrentTokenDefinitelyPartialModifier` 21 / 2: a method with a captured variable, see the leads).
+    - The parse (under `Library.BuildOne`): 3,291 / 2,923, at unequal work (ours without the documentation
+      comments, theirs with them and six more libraries). Ours: counting 134 (`rt.release`) + 81 (`rt.retain`) + 75
+      (`rt.release_range` of the parser's token window, cleared whole after each file: 4,096 elements for each of
+      1,813 files, which NativeAOT-LLVM clears as memory, 41) + 56 (`SyntaxParser._currentNode = default`, a
+      struct of references assigned for every token), the arena functions about 150, dispatch stubs 39
+      (`GreenNode.GetSlot`); theirs: the collector 650 (relocate 193, mark 143 + 29, cards 86 + 59, plan 74,
+      compact 30). For the parse the two memory managements cost about the same.
+    - The first drain (under `Driver.Drain`): 2,370 / 488. Ours by self time: the arena functions 21%
+      (`ArenaRelease` 117, `ArenaRetain` 84, `ArenaLink` 67, `LinkMembers` 67, `ArenaVisit` 50, `SlotOwner` 42,
+      `ArenaUnlinkOld` 36), counting 5%, the rest flat over Roslyn's binder and the compiler. Who calls
+      `ArenaRetain` and `ArenaRelease`: getters that return a member (`Symbol.ContainingSymbol`, virtual, 12% of
+      `ArenaRetain`; `LexerCache.LookupToken`; `Binder.FieldsBeingBound`): the member's first reference from
+      outside comes and goes around each use, a call into the runtime each way. `SlotOwner`:
+      `Interlocked.CompareExchange` on a field of a pooled object (`ObjectPool<T>.Allocate` and `Free`) 28%.
+    - `Driver.ConsumingOf` binds each callee's body through the semantic model of its tree, which keeps what it
+      bound: the compile of that callee then finds it bound, so the work is done once; and the libraries' models
+      are kept for the process (`Driver.s_libModels`), so a later build in the same process, or on a snapshot
+      (below), finds the bodies of the last one bound: the first drain 2.1 s to 1.3 to 1.4 s.
+    - One exception is thrown in a hello-world compile: Roslyn's `CaseInsensitiveComparison` tries
+      `new CultureInfo("en")` and falls back to the invariant culture, as under any runtime with invariant
+      globalization. The throw asks the host for three stacks, and the first made it read all of the module's
+      debug sections: 232 ms (`CS2WASM_HOST_TIMES=1` now counts them; `=2` prints each stack taken).
+    - The engine's tiers: a build on a snapshot runs mostly in the baseline tier (its entry 2.1 to 2.3 s, where
+      the same build as a later call in an instance that stayed is 0.64 to 0.68 s); `--wasm-tiering-budget=1300000`
+      gave nothing there (3.52 to 4.52 s against 3.00 to 4.02, five rounds in turn). Node cannot keep a module's
+      compiled code (`v8.serialize` of a module does not come back); a browser's cache of compiled WebAssembly
+      would.
+  - **Changed, each with its switch. No generated code changes: every module is byte for byte what it was.**
+    - **The libraries' documentation comments are passed over as plain comments** (`Library.BuildOne`: the
+      libraries are parsed with `DocumentationMode.None`; `CS2WASM_NO_LIB_DOC_SKIP=1`: parsed, as before). Parsed,
+      every `///` comment is an XML tree made by Roslyn's second parser, and nothing reads them; the trees' text,
+      the positions and the symbols are the same. CoreLib's parse 3,658 to 2,278 ms self-hosted (2.9 to 2.2 s
+      under .NET on one processor), the peak memory 272.0 to 241.8 MB.
+    - **A library Roslyn reports as used only for a candidate is left out at the start, and the program is
+      compiled again with every reported library when it meets a type that one left out may hold**
+      (`UpstreamSources.Needed`, `Library.Lookup` and `TypeByMetadataName`, `Cs2WasmCompiler.Compile`;
+      `CS2WASM_NO_LIB_RESTART=1`: every reported library from the start, as before). A call written as an
+      extension reports every assembly that has an extension method of that name: `xs.Select(...)` reports
+      System.Linq.Queryable, System.Linq.Parallel and System.Collections.Immutable (`ImmutableArrayExtensions`
+      is in the namespace System.Linq), and with the last came the thirteen libraries before it. At the start a
+      reported assembly that has extension methods is taken only when the program's text has a word that names
+      it: one of its public top-level types, or the last part of a namespace it has public types in, which no
+      reported assembly earlier in library order has too (`Linq` is System.Linq's; `Queryable`, `ImmutableArray`
+      and `Frozen` are their own); an assembly without extension methods is taken as reported. Why the result is
+      the same: the libraries read are those all reported would give, without a tail (in library order, the
+      standalone ones aside), so a reference assembly's type that the search finds visible in a library before
+      the first one left out is the type the search over all of them finds (it goes in library order and stops at
+      the first visible type). Anything else a reference assembly's type comes to (none, or one not visible, which
+      a later library's would replace), and a type asked for by name that is not found, or found past the first
+      library left out, sets `Library.NeedsAll` and throws; `Compile` then compiles the program with every
+      reported library, which is the compile of before. The one question exempt is whether System.Linq.Queryable
+      has kept generic instances, which exist only when the program reached its type. A program's own types are
+      not asked about (they were not before either: the rule of the core libraries has the same gap).
+      `CS2WASM_BREAK_LIB_RESTART=1` takes what the libraries read give and compiles nothing again: test 250 (a
+      queryable sequence reached only through `AsQueryable()`, begun with 13 libraries) then gets
+      PlatformNotSupportedException where it passes with the rule, and with the rule it builds the same module as
+      with `CS2WASM_NO_LIB_RESTART=1`. A program that calls System.Linq as extensions: 9 libraries where it had
+      22 (tests 008, 193, 220), 13 for test 088 (expression trees).
+    - **The host keeps a module's state from one process to the next** (`host/snapshot.mjs`,
+      `CS2WASM_SNAPSHOT=<file>`; SPEC 7.2 and 7.6). When the entry has returned 0 the module's memory (the pages
+      that are not zero) and its mutable globals are written to the file; a later process puts them back in
+      place of `init` and calls the entry on them. That is the second call of the entry in one process, in a new
+      one: for the compiler, what `--watch` does, the libraries parsed and their bodies bound. A snapshot is used
+      only while what it was made from is unchanged: the module's bytes (their hash), the environment block the
+      module is given (every variable: a module reads it once), and every path the module asked the file system
+      about while the state was made (opened, listed, asked whether there: the same size and time of change, or
+      still absent), except the paths its command line names (an argument that is no option and no `name=value`,
+      those under it, those in an `@file`) and the paths it wrote, which the entry reads anew on every call. None
+      is taken of a module that started a thread (a thread's stack is not in memory), has a file open, moved its
+      working directory or used HTTP. After a run on a snapshot the file is written again only when the module
+      read files the snapshot does not cover (a library the earlier programs did not need), so otherwise every
+      build starts from the same state; `CS2WASM_SNAPSHOT_KEEP=1` never writes one that holds again. One cut
+      short, or larger than the memory may grow, is not used. `tools/snapshot-check.sh` proves each rule on a
+      small module (nineteen steps against expected output); `tools/selfsnap.mjs` builds programs on a snapshot
+      and compares each module with the .NET-hosted compiler's. It is the host's, for any module; nothing in the
+      compiler knows of it.
+    - **The host reads a module's debug sections when a stack asks** (`host/engine.mjs`, `debugInfo`, and its
+      copy for the browser): names are decoded for the frames shown, the tables are numbers in typed arrays, and
+      a throw's two frame counts need neither names nor lines. Compared with the reader of before at every code
+      offset of four modules: the same frames. The compile's three stacks 232 to 143 ms. And one buffer for the
+      file reads, where each read made a new zeroed one.
+    - `CS2WASM_TIMES=1` also prints the time of the compilation that is thrown away when the start of a thread is
+      met; `CS2WASM_REPEAT=n` (host) calls the entry n times in one instance.
+  - **Tried and taken out: compiling for threads at once.** A program that starts threads is compiled without
+    them up to the start of a thread, then begun again for threads: 6 to 9.5 s of test 088's 26 to 36 s under
+    .NET on the desk, 17.0 of its 80 s self-hosted (4,632 of its 14,054 functions). Beginning for threads at
+    once, when the text names a thread's start or awaits, or when the last build of that name in the process
+    started one (kept only when the compilation does start one, so the module is the same: an API check proved
+    it), was no faster under .NET: 47 to 56 s of processor time either way, three runs each, and the same within
+    the noise by the clock. Much of what the first compilation does is Roslyn's first binding of what it
+    touches, which the one that follows uses. Not measured on the self-hosted compiler (the job was withdrawn for
+    the homelab's queue): by its phases about 5 of test 088's 80 s (the compilation for threads that has
+    everything bound takes 14.7 s for the 14,054 functions, so the 4,632 thrown away are about 4.9 s of code
+    generation in their 17.0; the rest is first binding, which is used). The two
+    commits are decfc45 and 34c315c.
+  - **Measured** (the homelab, other sessions' jobs beside, at times heavily; the self-hosted compiler built at
+    d4ac9d6 without threads, 32,934,974 bytes in 252 s, told one processor; wall time of the process; "as it was":
+    the same build with `CS2WASM_NO_LIB_DOC_SKIP=1 CS2WASM_NO_LIB_RESTART=1`; NativeAOT-LLVM's build of
+    2026-11-20; seconds, lowest to highest and the median):
+
+    | hello world (test 145) | self-hosted | NativeAOT-LLVM in the same rounds | peak memory |
+    |---|---|---|---|
+    | as it was, from the start (five rounds in turn) | 8.13 to 9.01 (8.45) | 3.88 to 4.37 (4.06) | 272.0 MB |
+    | now, from the start (the same rounds) | 6.79 to 8.32 (7.19) | | 241.8 MB |
+    | now, on a snapshot (five rounds, the build of a2ef8de) | 2.34 to 3.01 (2.65) | 3.89 to 5.13 (4.07) | 241.8 MB |
+    | now, on a snapshot (five rounds, the build of d4ac9d6, the machine loaded) | 3.00 to 4.02 (3.66) | 4.49 to 5.95 (4.78) | 241.8 MB |
+    | now, the second to fourth build in one instance (`CS2WASM_REPEAT=4`) | 0.68, 0.66, 0.64 (the first 6.99) | | |
+
+    The phases from the start, as it was / now (ms): the libraries read and parsed 4,463 / 3,020, library ready
+    5,144 / 3,716, first drain 2,178 / 2,093, encode 235 / 191, the compiler's total 7,974 / 6,412. On a
+    snapshot: what the program needs 98, library ready 142, first drain 1,443, second drain 120, encode 375, the
+    entry 2,301, the process 2,503; the snapshot 233.8 MB, written in about 200 ms, put back in 50 to 90 ms with
+    its 2,023 paths checked.
+    Larger programs, three rounds in turn while the machine was loaded (as it was / now / NativeAOT-LLVM): test
+    220 (System.Linq as extensions: 22 libraries / 9) 27.2 to 28.7 / 23.8 to 29.8 (23.8, 24.2, 29.8) / 10.2 to
+    10.5 s, peak memory 435.6 / 344.2 MB, library ready 10.6 / 6.5 s, the first drain 11.1 / 11.6 s (2,817
+    functions); test 088 (22 / 13 libraries; threads) 79.9 to 87.5 / 78.2 to 91.0 / 92.9 to 94.9 s, 993 MB
+    either way. On the snapshot hello world wrote (two builds each, loaded): 220 11.9 and 11.4 s; 193 9.9 and
+    10.2; 088 76.4 (it reads four more libraries and the snapshot is written again: 915 MB, the size of that
+    compile's memory) then 66.4; hello world on that snapshot 4.9 s at 993 MB. Test 220 built four times in one
+    instance: 22.1, then 7.3, 7.2 and 6.1 s.
+  - **What the numbers say.** From the start hello world is 1.77x NativeAOT-LLVM's build as it stands (it was
+    2.1x), and that build does more work (fifteen libraries, their documentation comments): at equal work the
+    ratio is not better than the 2.3x of the note above, because nothing here changed the code the compiler
+    makes. What changed is the work. A build from the start does less of it, and a later build does not read the
+    libraries at all: on a snapshot hello world is 0.65x to 0.77x NativeAOT-LLVM's build from its start, and in an
+    instance that is kept it is two thirds of a second. That is the budget's "a few seconds" for a small
+    program, for every build but the first. A middle-sized program stays at its own compile: test 220's later
+    builds are 6 to 7 s for 2,817 functions with everything bound and the code optimized, two milliseconds a
+    function of the compiler's own work, and from the start it is 2.3x NativeAOT-LLVM's. The largest, test 088,
+    is below NativeAOT-LLVM's build (0.86x by the medians; its collector on a gigabyte of heap).
+  - **Checked.** On the homelab. The suite at 713fdb0 (the last commit that changes code or the host; the compiler is
+    d4ac9d6's): 237 passed, 0 failed and the 2 known gaps, checked and as shipped (493 s; test 250 among them, and
+    test 145's limit of 28,383 bytes: hello world is 27,741). The self-hosted compiler built at d4ac9d6
+    (32,934,974 bytes in 252 s) writes hello world, 220, 193 and 088 byte for byte as the .NET-hosted compiler
+    (`tools/selfdet.mjs`: 27,741, 276,629, 258,686 and 1,617,407 bytes; hello world in 6.9 s), and so does every
+    build on a snapshot (`tools/selfsnap.mjs`: those four, each on hello world's snapshot twice, and hello world
+    again on the snapshot test 088 left), and the fourth build in one instance. Stress
+    (`tools/stress-also.sh`, 200 loaded runs a mode, at b4f0840): test 250 and test 139 the same in every run of
+    both modes; test 127 differed in 5 of 200 as shipped and 3 of 200 checked, each with `async 5 / pending 1`,
+    the open item of docs/FINISH.md's table (nothing here changes its module). `tools/snapshot-check.sh`: as
+    expected. The host's new reader of the debug sections: the same frames as the old one at every offset of four
+    modules, and the suite's trace tests. Queued on the homelab when this was written, results in docs/FINISH.md's
+    entry if they came: `tools/libs-rules-check.sh` (every conformance and benchmark program compiled with the two
+    rules and with both switches: the same bytes; here it was run on some twenty programs, all the same),
+    thirty more programs on a snapshot, and a profile of a build on a snapshot (`tools/selfsnap-prof.sh`).
+  - **Checked again after main was merged (4746983, main 4a42328), 2026-11-23 morning, one homelab turn
+    (`tools/selfhost-speed-2-verify.sh`; other sessions' jobs beside).** The suite 245 passed, 0 failed, 2 known
+    gaps, checked and as shipped. The self-hosted compiler built (253 s, 33,265,837 bytes); hello world 6.77 to
+    7.20 s as it is against 8.11 to 8.15 with `CS2WASM_NO_LIB_DOC_SKIP=1 CS2WASM_NO_LIB_RESTART=1` (the same
+    module, 27,731 bytes), peak 241.8 MB against 272.0; NativeAOT-LLVM's build of 2026-11-20 3.76 to 3.96 s (three
+    rounds in turn); four builds in one instance 11.4, 1.16, 1.10, 1.09 s, the fourth the same module.
+    `tools/selfdet.mjs`: self = net byte for byte on 145 (27,743), 220 (279,559), 193 (262,743), 088 (1,616,137).
+    **The snapshot, what is checked:** (a) `tools/selfsnap.mjs`: every module written on a snapshot is the
+    .NET-hosted compiler's byte for byte: hello world five times, then on hello world's snapshot 220, 193, 088 and
+    two programs with threads (139 and 197), each twice (088 read more and wrote the snapshot again; the second
+    088, 139, 197 and hello world after them on that larger snapshot); the builds from the start also equal. (b)
+    `tools/selfsnap-stale.mjs` (results in docs/FINISH.md's entry): another version of the source at the same path
+    (read anew, the snapshot holds, the new module), a source that needs System.Linq, then the first again; another
+    build of the compiler (let go); another reference directory (let go); a reference assembly's time of change
+    (let go); a file added to the reference directory (let go); every module the .NET-hosted compiler's. (c)
+    `tools/snapshot-check.sh` (the host's rules on a small module, on the desk at the merge): as expected. **Not
+    covered:** a file rewritten with the same size and the same time of change (a path's state is size and time,
+    as make and MSBuild judge; by design); references given with `-r`, which are named on the command line and so
+    read anew (not tried); the threaded compiler and the browser's host have no snapshot. The snapshot is used only
+    when `CS2WASM_SNAPSHOT=<file>` is set: off by default. Timed in turn (five rounds, the homelab loaded): hello
+    world from the start 9.39 to 10.47 s (median 9.61), on the snapshot 3.41 to 3.83 (3.54), NativeAOT-LLVM's
+    build 5.15 to 5.92 (5.24): on a snapshot 0.68x NativeAOT-LLVM's, from the start 1.83x.
+  - **Not done, not reached, not measured.**
+    - The ratio at equal work: the counts (rt.retain, rt.release, the struct copies), the arena functions and the
+      cost of a call are where they were. Leads the profiles give, none built: a member's first outside reference
+      taken and given back around a getter's result (`ArenaRetain`/`ArenaRelease`, 0.3 s: a borrowed return for
+      virtual getters whose every implementation returns a field); a method with captured variables pays a frame,
+      a fill, a count on `this`, an exception region and a drop on every call, even when it returns at its first
+      test (`IsCurrentTokenDefinitelyPartialModifier`, 21 ms against 2: a frame display's `this` and unwritten
+      parameters need no count, and a display with nothing counted no region); `x = default` of a struct with
+      references retains and releases an empty temporary (`SyntaxParser._currentNode`, 56 ms); the token window
+      cleared element by element (`rt.release_range`, 75 ms: `CS2WASM_ZERO_SKIP=1` exists and was measured as no
+      gain before); spans passed in memory through small calls (`StringTable.TextEquals`, 23 ms against 2); the
+      compiler's own two milliseconds a function (under .NET's profiler `Types.Resolve`, `Canonical` and `Key`
+      are 10% of a drain, two thirds of it making a constructed symbol's key and weak-table entry anew; `PreScan`
+      14%; the callee analyses that bind bodies 26%. A memo of `Types.Resolve` per map and type symbol was
+      written and gave the same modules; the loaded desk could not resolve its gain, and it was not kept).
+    - NativeAOT-LLVM's build of today's compiler (it needs the Emscripten SDK, which only the desk has, and the
+      desk takes no heavy work): its time with the same rules is not measured. By its profile the documentation
+      comments are 0.5 to 0.7 s of its 2.9 s parse and the six libraries about 0.6 s, so about 2.8 s for hello
+      world where it measures 4.0.
+    - A program with a standalone library (GodotSharp) that calls System.Linq as extensions is compiled again
+      with every reported library at its first Godot type (found past the first library left out): no gain
+      there, and the little done before that type is lost. Telling that no library left out has a visible type
+      of that name needs each one's type names without reading it. No Godot program was built here.
+    - The snapshot is the Node host's. The browser's host (`host/web`) has none; a compiler kept in a worker
+      does not need one between builds (`CS2WASM_REPEAT` measures that), a page opened anew would. The threaded
+      build of the compiler starts threads, so no snapshot is taken of it. A snapshot is the memory as the last
+      build left it: 234 MB after hello world, 915 MB after test 088, and a build on it starts at that size.
+    - Binaryen's optimizer over the self-hosted compiler's module, to see what a general WebAssembly optimizer
+      finds: the version here (117) stops at `try_table`.
+    - `tools/frames.mjs` and `tools/bench.mjs` were not run: no module changed (the rules' check compiles every
+      conformance and benchmark program both ways to the same bytes).
+    - The browser check of proof 5 (`tests/Godot/proof5_hello2d/check/browser.mjs`), which reads the debug
+      sections through `host/web/debuginfo.mjs`: the copy is in step with `host/engine.mjs` (its own rule), the
+      check itself was not run (no Godot on the homelab).
+    - Found beside: `Queryable.Sum(IQueryable<int>)` and `Max` without a selector fail in
+      `EnumerableRewriter.FindEnumerableMethodForQueryable` (IndexOutOfRangeException), with either rule of the
+      libraries; test 250 does not use them.
+
 - **Shared generic code (2026-11-21, on main fbe7688, branch claude/canon-sharing).** Round 5's pass shares bodies
   equal but for i32 constants and calls of one shared group; what it could not share, measured with the new
   `CS2WASM_SHARE_WHY=1` (families of instantiations still several bodies after sharing, the first instruction that

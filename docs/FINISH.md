@@ -41,8 +41,8 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.11x to 0.22x NativeAOT's with `--js-young 32`, quiet); tree: on main cb287fb, quiet, p99.9 2.55 to 2.57 ms vs 2.38 to 2.41 (1.06x to 1.08x), worst 0.87x to 0.88x; with the node path (main 189b8c6, the machine loaded by three sessions) p99.9 0.97x and 1.08x, worst 1.08x and 1.27x; switch on and off in turn on 7d36995, busy: p99.9 1.03x to 1.16x on, 1.15x to 1.22x off; on the homelab alone 2.80 to 2.83 ms on, 3.05 to 3.07 off. To be taken again quiet. Branch claude/tree-3 (round 10 of the build, not merged), the desk loaded, the round's six switches off and on in turn, five pairs: tree p99.9 0.76x to 0.85x NativeAOT-LLVM's with them on (2.00 to 2.46 ms against 2.39 to 3.24), 0.95x to 1.14x off; worst 0.68x to 0.78x in four pairs, 3.340 against 3.328 ms in the fifth | worst frame and p99.9 not above NativeAOT's on every scene |
 | 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`). The owner's bar since the evening of 2026-11-22: churn and tree may be slightly slower as long as it is faster overall, the self-hosted compiler is fast enough to be practical, and everything is fully correct and deterministic | churn 1.17x to 1.22x on claude/churn-5 (2026-11-23; its mean frame 1.12x to 1.17x), 1.32x to 1.35x on main 189b8c6 (was 1.58x, 2.16x, 3.47x), tree 1.57x to 1.60x (was 1.64x, 2.56x), collections 0.99x to 1.03x, strings 0.87x to 0.89x, bigdrop 0.88x to 0.94x (main 189b8c6 and cb287fb). The whole run (mean frame, pauses and rebuilds in it; `frames.mjs` prints it): geometric mean over the scenes 0.72x to 0.74x NativeAOT-LLVM's; churn 1.18x to 1.29x, tree 1.32x to 1.38x, collections 0.77x to 0.83x, strings 0.75x to 0.80x, bigdrop 0.20x; the five means summed 0.98x. bench.mjs 0.92x. Branch claude/tree-3 (not merged), the same five pairs: tree 1.27x to 1.43x (0.038 to 0.043 ms; 1.52x to 1.68x with the round's steps off), its mean frame 1.03x to 1.12x; the other scenes as they were; the mean frame's geometric mean over the five 0.70x | faster overall; churn and tree slightly slower accepted |
 | 4 | Hello world size (test 145) | 27,783 B (claude/churn-5, 2026-11-23); 27,784 B (claude/round-9 d430594 and claude/tree-3); 27,089 B (main dca1f9c) | < 28,383 B |
-| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 8.20 s vs 3.96 s, 2.1x (claude/selfhost-speed-1, 2026-11-22, the homelab, nine interleaved rounds; NativeAOT-LLVM's build is of 2026-11-20 and reads all fifteen core libraries, the self-hosted compiler nine); before: 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
-| 4 | Same: peak memory | 272.0 MB vs 322.2 MB (claude/selfhost-speed-1, with nine libraries read, 344.2 MB with all fifteen; NativeAOT-LLVM's figure is the one on record, of its build that reads fifteen, not measured again); before: 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
+| 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 7.19 s vs 4.06 s from the start, 1.77x (claude/selfhost-speed-2, 2026-11-23, the homelab, five interleaved rounds; NativeAOT-LLVM's build is of 2026-11-20 and does more work: fifteen libraries with their documentation comments, the self-hosted compiler nine without). A later build: on the host's snapshot 2.65 s vs 4.07 (0.65x; 3.66 vs 4.78 with the machine loaded), in an instance that is kept 0.66 s. Before: 8.20 s vs 3.96 s, 2.1x (claude/selfhost-speed-1, 2026-11-22, the homelab, nine interleaved rounds; NativeAOT-LLVM's build is of 2026-11-20 and reads all fifteen core libraries, the self-hosted compiler nine); before: 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
+| 4 | Same: peak memory | 241.8 MB vs 322.2 MB (claude/selfhost-speed-2: the libraries' documentation comments not parsed; NativeAOT-LLVM's figure is the one on record); before: 272.0 MB vs 322.2 MB (claude/selfhost-speed-1, with nine libraries read, 344.2 MB with all fifteen; NativeAOT-LLVM's figure is the one on record, of its build that reads fifteen, not measured again); before: 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 39.5 MB vs 129 MB (main ad4c99e) | met; next waste: code (36.2 MB) |
 | 4 | Programs with threads: frames against NativeAOT's (`node tools/frames-threads.mjs`; NativeAOT-LLVM's WebAssembly with threads does not link here, so against its program without threads) | claude/threads-1, 2026-11-23, median frame: one idle worker 1.65x to 2.8x NativeAOT's (churn 0.100 ms against 0.050; before 1.99), the tree 3.6x (0.120 against 0.034; before 1.21); a worker's private churn 2.2x (before 49x), its private tree 3.6x; work handed between threads 0.8x to 2.6x. Worst frames below NativeAOT's except the tree's rebuild (17 ms against 3.7). Private churn scales 5.3 at eight threads, private trees 3.2 | < 1.0x; open: the groups with threads (build 6x the program without), types reachable only by their type (strings) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock. Homelab (16 threads), branch threads-scale: 15.5 / 12.9 / 15.1 / 15.9 / 18.2 s on 1 / 4 / 12 / 16 / 24 against main's 15.7 / 13.2 / 16.8 / 17.7 / 18.1 | faster with threads |
@@ -1157,6 +1157,35 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   traps in about 1 run of 100 when four run at once on the desk (`operation does not support unaligned accesses`
   in rt.retain under Interlocked.Exchange(object, object) in Task.FinishContinuations); 088's timer line and
   085's oracle under load.
+- 2026-11-23, the self-hosted compiler's build time, second round (branch claude/selfhost-speed-2 on
+  claude/round-9 d430594, not merged when written; docs/AUDIT.md, "The self-hosted compiler's build time, second
+  round"). Measured first, both sides profiled by phase (`tools/selfprof-report.sh`): one hello-world compile
+  7,740 ms self-hosted against 4,073 NativeAOT-LLVM's, of it compiled code 4,858 / 2,548, the runtime's memory
+  management 2,424 / 923, the host 329 / 539; the 230 methods both name 1.16x; the parse 3,291 / 2,923 at unequal
+  work, the first drain 2,370 / 488. So the gap is the memory management and the long tail of small calls, in no
+  one function. **Changed, with no change to any module:** (1) the libraries' documentation comments are passed
+  over (`CS2WASM_NO_LIB_DOC_SKIP=1`): CoreLib's parse 3.7 to 2.3 s self-hosted, 30 MB less; (2) a library Roslyn
+  reports as used only for a candidate is left out at the start and the program is compiled again with all when
+  it meets a type one left out may hold (`CS2WASM_NO_LIB_RESTART=1`; test 250): System.Linq as extensions reads 9
+  libraries where it read 22; (3) the Node host keeps a module's state from one process to the next
+  (`CS2WASM_SNAPSHOT=<file>`, `host/snapshot.mjs`, SPEC 7.2 and 7.6): a later build of hello world 2.34 to 3.01 s
+  where a build from the start is 7.2 and NativeAOT-LLVM's 3.9 to 5.1; (4) the host reads a module's debug
+  sections when a stack asks (the compile's one throw 232 to 143 ms), and reads files through one buffer. Hello
+  world from the start 8.45 to 7.19 s (medians, five interleaved rounds; NativeAOT-LLVM's build 4.06), memory
+  272.0 to 241.8 MB; the second to fourth build in one instance 0.64 to 0.68 s; test 220 27.2-28.7 to 23.8-29.8 s
+  (NativeAOT-LLVM 10.2-10.5; a later build in one instance 6 to 7 s), memory 435.6 to 344.2 MB; test 088
+  79.9-87.5 and 78.2-91.0 s, NativeAOT-LLVM's build 92.9-94.9 (the machine loaded for both). Tried and taken
+  out: compiling for threads at once (no faster under .NET; not measured self-hosted). **Checked:**
+  on the homelab, the suite at 713fdb0 237 passed, 0 failed, 2 known gaps, checked and as shipped (493 s); the
+  self-hosted compiler built at d4ac9d6 (32,934,974 bytes, 252 s) writes hello world, 220, 193 and 088 byte for byte
+  as the .NET-hosted one, from the start, on a snapshot and as the fourth build in one instance; stress, 200 loaded
+  runs a mode: tests 250 and 139 the same every run, test 127 with its open `async 5 / pending 1` in 5 of 200 as
+  shipped and 3 of 200 checked; `tools/snapshot-check.sh` as expected. Queued when written:
+  `tools/libs-rules-check.sh` over every program (some twenty run here: the same modules), thirty more programs on
+  a snapshot, a profile of a build on a snapshot. **Not done:** the ratio at equal work (the counts, the arena functions, the cost of a call:
+  unchanged; leads in the note); NativeAOT-LLVM's build of today's compiler (about 2.8 s for hello world by its
+  profile, not measured); a snapshot for the browser's host and for the threaded compiler; GodotSharp programs
+  gain nothing from (2); tools/frames.mjs and tools/bench.mjs not run (no module changed).
 - 2026-11-22 to 23, the build, round 10 (branch claude/tree-3 from claude/round-9 d430594, not merged when this was
   written; docs/AUDIT.md A3.5 "The build, round 10"). The tree scene, measured by phase and by step before anything
   was changed. **In:** `foreach` over a List<T> with the size's test first, the list's fields read once before the loop
@@ -1367,3 +1396,19 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   Not merged: main 4a42328 (claude/tree-3's foreach over a List<T>, which meets this branch's list loops), since
   this check had started. Not run on the merged code before the hand-back: the threaded self-hosted compiler
   (`tools/thread-scale.sh`), the homelab's stress of 127, 218, 215b, 187, 131, 275, 277 to 279 (the desk's above).
+- 2026-11-23 morning, claude/selfhost-speed-2 checked again after main was merged (4746983 on main 4a42328;
+  docs/AUDIT.md, the entry's item "Checked again after main was merged"). One homelab turn
+  (`tools/selfhost-speed-2-verify.sh`, others beside). The suite 245 passed, 0 failed, 2 known gaps, checked and
+  as shipped. The self-hosted compiler built (253 s, 33,265,837 bytes): hello world 6.77 to 7.20 s, 241.8 MB
+  (8.11 to 8.15 s, 272.0 MB with both switches; the same module); NativeAOT-LLVM's build 3.76 to 3.96 s;
+  `tools/selfdet.mjs` self = net byte for byte on 145, 220, 193 and 088. The snapshot (`CS2WASM_SNAPSHOT=<file>`,
+  off unless set): `tools/selfsnap.mjs` every module on a snapshot byte for byte the .NET-hosted compiler's (145
+  five times, then 220, 193, 088, 139 and 197 twice each, hello world again on the snapshot 088 left);
+  `tools/selfsnap-stale.mjs` all eleven steps as expected (a new version of the source read anew; a source that
+  needs System.Linq; another build of the compiler, another reference directory, a reference assembly's time of
+  change and a file added to that directory each let the snapshot go); `tools/snapshot-check.sh` as expected.
+  Not covered: a file rewritten with the same size and time of change (by design), `-r` references (not tried).
+  Hello world in turn, five rounds, loaded: from the start 9.61 s median (9.39 to 10.47), on a snapshot 3.54
+  (3.41 to 3.83), NativeAOT-LLVM's build 5.24 (5.15 to 5.92). **Not finished when written** (still running in
+  the same turn): test 088 timed from the start and on a snapshot beside NativeAOT-LLVM's; stress of 250, 127 and
+  139; `tools/libs-rules-check.sh`.

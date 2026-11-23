@@ -29,7 +29,7 @@ DN=${DOTNET_ROOT:-/c/Program Files/dotnet}; DN=$(cygpath -u "$DN" 2>/dev/null ||
 REF=$(ls -d "$DN/packs/Microsoft.NETCore.App.Ref/"*/ref/net11.0 | tail -1)
 CACHE=/Users/$USERNAME/AppData/Local/cs2wasm
 NAOT=$MAIN/tests/out/self2/naot-wasm-measure
-self() { CS2WASM_TIMES=1 CS2WASM_HOST_TIMES=1 CS2WASM_PRINT_MEMORY=1 CS2WASM_PROCESSORS=1 SELF="$ROOT/$OUT/self.wasm" timeout 900 bash tools/selfrun.sh "$@" $NODE_FLAGS -- $W/w42.cs -o $W/w42-self.wasm; }
+self() { CS2WASM_TIMES=1 CS2WASM_HOST_TIMES=${HOST_TIMES:-1} CS2WASM_PRINT_MEMORY=1 CS2WASM_PROCESSORS=1 SELF="$ROOT/$OUT/self.wasm" timeout 900 bash tools/selfrun.sh "$@" $NODE_FLAGS -- $W/w42.cs -o $W/w42-self.wasm; }
 naot() { (cd $NAOT && CS2WASM_TIMES=1 CS2WASM_CACHE=/c$CACHE CS2WASM_REFERENCE_DIR="$REF" timeout 900 node "$@" cs2wasmc-naot.js /c$W/w42.cs -o /c$W/w42-naot.wasm); }
 net() { CS2WASM_TIMES=1 CS2WASM_CACHE=$CACHE CS2WASM_REFERENCE_DIR="${REF#/c}" timeout 900 $OUT/cli/cs2wasmc.exe $W/w42.cs -o $W/w42-net.wasm --pathmap /=/; }
 timed() { # label, command...
