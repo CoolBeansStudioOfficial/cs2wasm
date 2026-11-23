@@ -593,7 +593,9 @@ sealed partial class FunctionCompiler
         if (consts == null && _clone == null && !dispatch && m.Parameters.Length > 0 && !D.IsIntrinsic(m) && !IsStaticInterfaceMember(m)
             && D.ConsumingOf(m).Mask is var cmask && cmask != 0 && D.CanSpecializeOwnership(m)
             // (List<T>.Add's item moves into an element, which only a reference does: OwnedParams.cs, IsListAdd)
-            && (!Driver.IsListAdd(m.OriginalDefinition) || Types.IsRef(T.Canonical(m.Parameters[0].Type))))
+            && (!Driver.IsListAdd(m.OriginalDefinition) || Types.IsRef(T.Canonical(m.Parameters[0].Type)))
+            // (and Dictionary's value, the second parameter of TryInsert, Add, TryAdd and the indexer's setter: IsMapInsert)
+            && (!Driver.IsMapInsert(m.OriginalDefinition) || m.Parameters.Length > 1 && Types.IsRef(T.Canonical(m.Parameters[1].Type))))
             cc = new CallConsume(m, cmask);
         var savedConsume = _consume;
         _consume = cc;

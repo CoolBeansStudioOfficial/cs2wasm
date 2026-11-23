@@ -22,6 +22,8 @@ sealed class Item
     public override string ToString() => "#" + Id;
 }
 
+struct Pair { public Item? A; public int N; public string? S; }
+
 sealed class Touchy
 {
     public static bool ThrowOnHash, ThrowOnEquals;
@@ -102,6 +104,19 @@ static class Program
         sum = 0;
         foreach (var kv in t) sum += kv.Value.Id;
         Console.WriteLine($"touchy {t.Count} {sum} hash {hash} equals {equals}");
+        // a value that is a struct with references, and one that is a number: nothing to hand over, counted as before
+        var p = new Dictionary<string, Pair>();
+        for (int i = 0; i < 60; i++) p["p" + i] = new Pair { A = new Item(9500 + i), N = i, S = "s" + i };
+        for (int i = 0; i < 60; i += 4) p["p" + i] = new Pair { A = Make(9600 + i), N = -i };
+        int dup = 0;
+        for (int i = 0; i < 10; i++) { try { p.Add("p" + i, new Pair { A = new Item(9700 + i) }); } catch (ArgumentException) { dup++; } }
+        p.TryAdd("p0", new Pair { A = new Item(9800) }); p.TryAdd("new", new Pair { A = new Item(9801), S = "n" });
+        var n = new Dictionary<int, int>();
+        for (int i = 0; i < 50; i++) { n[i] = i * 3; n.TryAdd(i, 7); }
+        sum = 0;
+        foreach (var kv in p) sum += kv.Value.A!.Id + kv.Value.N + (kv.Value.S?.Length ?? 0);
+        foreach (var kv in n) sum += kv.Value;
+        Console.WriteLine($"structs {p.Count} {n.Count} {sum} threw {dup}");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

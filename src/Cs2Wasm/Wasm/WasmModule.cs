@@ -873,7 +873,8 @@ internal sealed class WasmModule
             changed.Add(f);
         }
         // (a class's name on a release has no use from here on: without it the bodies that differ by nothing else are
-        // the same again for the merge)
+        // the same again for the merge; CS2WASM_NO_HINT_CLEAR=1: left on)
+        if (Environment.GetEnvironmentVariable("CS2WASM_NO_HINT_CLEAR") == "1") return changed;
         foreach (var f in Functions)
         {
             if (f.IsImport) continue;
