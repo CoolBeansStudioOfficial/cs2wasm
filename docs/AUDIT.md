@@ -2285,6 +2285,19 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     once on the desk (`operation does not support unaligned accesses` in rt.retain under
     Interlocked.Exchange(object, object) in Task.FinishContinuations), the same with every switch of this branch
     off; 088's timer line; 085's oracle (.NET had not collected yet).
+  - **Checked at the merge with main 4cf95fe (1cae0b2, the branch's last code; the homelab unless said).** The suite
+    255 passed, 0 failed, **no `known-gap` test**, checked and as shipped (1,088 s, the machine shared). The
+    self-hosted compiler (`tools/selfhost-check.sh`): built in 251 s, 33,041,673 bytes; hello world in 13.1 to
+    13.6 s on the loaded homelab (two slots in use), peak 272.0 MB, the same module with the switches; 145
+    (27,740 bytes), 220 (283,039), 193 (266,314) and 088 (1,618,568) each "self-1 = net, byte for byte". The time
+    against main's: main 4cf95fe's self-hosted compiler (claude/main-check-1's build) and this one's, copied to the
+    desk and run in turn on hello world, five rounds: main 9.80 to 12.19 s, this branch 9.68 to 12.12 s, the same
+    module (27,785 bytes): level, the homelab's 13 s is its load. On the desk, the merge: the tests matching 24,
+    26, 27 and 208, 209, 260 pass both ways (12, 8, 7, 1, 1, 1). **Stress (`tools/stress-cycles.sh`, the new tests
+    and 127, 139): queued on the homelab at 05:45 behind seven jobs; not run when this was written.**
+    The last session's uncommitted change (DrainKills looks again only at a top whose DyingNote brought its
+    number to zero) was not finished (no switch, no test, not measured): parked untested on
+    claude/known-diffs-2-drainkills (9145a28).
 - **The churn loop, round 5: 1.35x to 1.17x-1.22x, what the engine does with a call in a loop, and what is left by
   measurement (2026-11-22 to 23, branch claude/churn-5, from claude/round-9 d430594; the desk machine, shared with
   other sessions' timings: ranges, runs in turn, the lowest of several rounds where said; the homelab for the
