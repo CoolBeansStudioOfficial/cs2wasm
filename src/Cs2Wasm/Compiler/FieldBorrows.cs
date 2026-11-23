@@ -100,8 +100,10 @@ sealed partial class FunctionCompiler
     /// (no threads: a static is any thread's to store), else null.</summary>
     string? StaticArrayKey(IOperation ar)
     {
-        if (D.ThreadMode || ar is not IFieldReferenceOperation { Field: { IsStatic: true, IsVolatile: false } sf } sfr
+        if (ar is not IFieldReferenceOperation { Field: { IsStatic: true, IsVolatile: false } sf } sfr
             || !Types.IsRef(T.Resolve(sf.Type, Map)) || IsThreadStatic(StorageField(sf))) return null;
+        // (threads: a static only the engine thread's code names)
+        if (D.ThreadMode && !EngineStatic(sf)) return null;
         var key = Driver.FieldKey(Owner(sfr.Field), StorageField(sfr.Field));
         D.NoteBorrowField(key, StorageField(sfr.Field), T.Resolve(sf.Type, Map));
         return key;

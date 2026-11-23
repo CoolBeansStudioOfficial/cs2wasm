@@ -1112,13 +1112,19 @@ sealed partial class FunctionCompiler
     /// <summary>Threads: an object of this static type is one no other thread can reach (the last compilation's answer).</summary>
     bool UnsharedContainer(ITypeSymbol t) => D.ThreadMode && D.Sharing is { } s && s.PriorThreadLocal(t);
 
+    /// <summary>Threads: a static that only the engine thread's code names (Sharing.PriorEngineStatic): no other
+    /// thread reads or stores it, and the code that does runs on one thread. It is read, borrowed from and read once
+    /// by a loop as a static of a program without threads is.</summary>
+    bool EngineStatic(IFieldSymbol f) =>
+        D.ThreadMode && f.IsStatic && !f.IsVolatile && D.Sharing is { } s && s.PriorEngineStatic(Driver.StaticKey(T.Canonical(Owner(f)), StorageField(f)));
+
     /// <summary>Threads: the place an expression reads is one no other thread stores: a field of an object of such a
     /// type, an element of such an array, a thread's own static.</summary>
     bool UnsharedPlace(IOperation op)
     {
         switch (op)
         {
-            case IFieldReferenceOperation { Field.IsStatic: true } sf: return IsThreadStatic(StorageField(sf.Field));
+            case IFieldReferenceOperation { Field.IsStatic: true } sf: return IsThreadStatic(StorageField(sf.Field)) || EngineStatic(sf.Field);
             case IFieldReferenceOperation { Instance: { Type: not null } inst } when !TypeOf(inst).IsValueType: return UnsharedContainer(TypeOf(inst));
             case IArrayElementReferenceOperation { ArrayReference.Type: not null } ae: return UnsharedContainer(TypeOf(ae.ArrayReference));
             default: return false;

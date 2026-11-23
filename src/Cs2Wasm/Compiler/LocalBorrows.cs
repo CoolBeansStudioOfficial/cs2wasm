@@ -101,7 +101,7 @@ sealed partial class FunctionCompiler
                 return IsStableBase(e);
             // a static: it keeps its object until it is stored again, which the scope's code must not do
             case IFieldReferenceOperation { Field: { IsStatic: true, IsVolatile: false } sf } sfr
-                when !D.ThreadMode && Types.IsRef(T.Resolve(sf.Type, Map)) && !IsThreadStatic(StorageField(sf)):
+                when (!D.ThreadMode || EngineStatic(sf)) && Types.IsRef(T.Resolve(sf.Type, Map)) && !IsThreadStatic(StorageField(sf)):
                 {
                     var key = Driver.FieldKey(Owner(sfr.Field), StorageField(sfr.Field));
                     D.NoteBorrowField(key, StorageField(sfr.Field), T.Resolve(sf.Type, Map));

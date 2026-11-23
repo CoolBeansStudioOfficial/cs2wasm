@@ -832,7 +832,7 @@ sealed partial class FunctionCompiler
         E.Load(Types.LoadOp(ft), off);
         if (!f.Field.IsStatic && f.Instance != null && !TypeOf(f.Instance).IsValueType) TagFieldLoad(StorageField(f.Field), ft);
         // (a static's reference, read with a plain load: a loop that cannot store it reads it once, StaticLoads.cs)
-        if (f.Field.IsStatic && off == 0 && Types.IsRef(ft) && !D.ThreadMode && !f.Field.IsVolatile && !IsThreadStatic(StorageField(f.Field))
+        if (f.Field.IsStatic && off == 0 && Types.IsRef(ft) && (!D.ThreadMode || EngineStatic(f.Field)) && !f.Field.IsVolatile && !IsThreadStatic(StorageField(f.Field))
             && E.Fn.Body.Count >= 2 && E.Fn.Body[^1].Op == Op.I32Load && E.Fn.Body[^2] is { Op: Op.I32Const, Imm: 0, Ref: StaticSlot slot })
             D.NoteStaticRefRead(slot, Driver.FieldKey(Owner(f.Field), StorageField(f.Field)), D.StaticInit((INamedTypeSymbol)T.Resolve(T.Canonical(Owner(f.Field)), Map))?.flag);
         // (a readonly field is written by its object's constructors only, before the object is anyone else's)
