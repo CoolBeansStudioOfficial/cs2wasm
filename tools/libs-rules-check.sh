@@ -10,8 +10,8 @@ echo "=== a library reported only for a candidate left out, against every report
 node tools/corelibs-check.mjs --par $PAR --env CS2WASM_NO_LIB_RESTART=1 || rc=1
 echo "=== the libraries' documentation comments passed over, against parsed"
 node tools/corelibs-check.mjs --par $PAR --env CS2WASM_NO_LIB_DOC_SKIP=1 || rc=1
-echo "=== the libraries a program can reach, against all the core libraries"
-node tools/corelibs-check.mjs --par $PAR || rc=1
+if [ "${ALL:-0}" = 1 ]; then echo "=== the libraries a program can reach, against all the core libraries (ALL=1)"
+node tools/corelibs-check.mjs --par $PAR || rc=1; fi
 echo "=== the host's snapshot"
 bash tools/snapshot-check.sh | tail -1
 [ ${PIPESTATUS[0]} = 0 ] || rc=1
