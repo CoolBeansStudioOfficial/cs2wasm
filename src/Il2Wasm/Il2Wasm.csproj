@@ -12,6 +12,12 @@
   <ItemGroup>
     <Compile Remove="Upstream/**" />
     <Compile Remove="Godot/**" />
+    <!-- the IL front end is its own project (IL/Il2Wasm.IL.csproj) while the operation-tree front end is here -->
+    <Compile Remove="IL/**" />
+    <EmbeddedResource Remove="IL/**" />
+    <None Remove="IL/**" />
+    <InternalsVisibleTo Include="Il2Wasm.IL" />
+    <InternalsVisibleTo Include="Il2Wasm.IL.Tests" />
     <EmbeddedResource Include="Godot/*.cs" LogicalName="godot/%(Filename)%(Extension)" />
     <EmbeddedResource Include="Upstream/**/*.cs;Upstream/**/manifest.txt" LogicalName="upstream/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>

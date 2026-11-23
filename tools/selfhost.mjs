@@ -29,7 +29,7 @@ const src = join(root, 'src', 'Il2Wasm');
 const rel = (p) => relative(src, p).replaceAll('\\', '/');
 const lines = [];
 // the compiler's sources (as Il2Wasm.csproj compiles them), the command line, the entry
-for (const f of walk(src).filter((f) => f.endsWith('.cs') && !/^(Upstream|Godot)\//.test(rel(f))).sort()) lines.push(f);
+for (const f of walk(src).filter((f) => f.endsWith('.cs') && !/^(Upstream|Godot|IL)\//.test(rel(f))).sort()) lines.push(f);
 lines.push(join(root, 'src', 'Il2Wasm.Cli', 'Cli.cs'), ...walk(join(root, 'src', 'Il2Wasm.Wasm')).filter((f) => f.endsWith('.cs')).sort());
 // the plugin passes compiled in: their sources, and the other part of Entry, which makes them known by name
 for (const p of pluginSources) lines.push(...(statSync(p).isDirectory() ? walk(p).filter((f) => f.endsWith('.cs')).sort() : [p]));

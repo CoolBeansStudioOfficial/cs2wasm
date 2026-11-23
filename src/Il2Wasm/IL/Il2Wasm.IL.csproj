@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The IL front end (docs/IL-FRONTEND.md): NativeAOT's type system (TypeSystem/, MIT, see its README), the IL
+       importer to the SSA IR, structuring, and lowering to the back end's instruction lists (Wasm/Ir.cs). It is its
+       own project while the operation-tree front end is still in Il2Wasm.csproj. -->
+  <PropertyGroup>
+    <RootNamespace>Il2Wasm.IL</RootNamespace>
+    <AssemblyName>Il2Wasm.IL</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <DefineConstants>$(DefineConstants);DISABLE_UNMANAGED_PDB_SYMBOLS</DefineConstants>
+    <!-- (the type system's own warnings: it is built as upstream builds it) -->
+    <NoWarn>$(NoWarn);CS1591;CS0618;CS8632;CA1859;CS0162;CS0219;CS0168;CS0649;CS0414;CS8981</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Update="TypeSystem/TypeSystem/Common/Properties/Resources.resx" LogicalName="Internal.TypeSystem.Strings.resources" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Il2Wasm.csproj" />
+  </ItemGroup>
+</Project>

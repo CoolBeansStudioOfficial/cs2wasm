@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Il2Wasm/IL/Il2Wasm.IL.csproj" />
+    <!-- the stub CoreLib and the test programs are compiled by the tests (Roslyn), not into them -->
+    <Compile Remove="CoreLibStub/**;Programs/**" />
+    <None Include="CoreLibStub/**;Programs/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
