@@ -895,7 +895,7 @@ namespace Cs2Wasm.Runtime
             DsNum(ref at, " from-release ", s_dsFromRelease); DsNum(ref at, " from-unlink ", s_dsFromUnlink);
             DsNum(ref at, " tops ", s_dsTops); DsNum(ref at, " top-hops ", s_dsTopHops); DsNum(ref at, " top-marked ", s_dsTopMarked); DsNum(ref at, " top-far ", s_dsTopFar);
             Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
-            DsNum(ref at, "tops by site 1 ", s_tsW1); DsNum(ref at, "/", s_tsS1); DsNum(ref at, " 2 ", s_tsW2); DsNum(ref at, "/", s_tsS2); DsNum(ref at, " 7 ", s_tsW7); DsNum(ref at, "/", s_tsS7);
+            DsNum(ref at, "tops by site 1 ", s_tsW1); DsNum(ref at, "/", s_tsS1); DsNum(ref at, " 2 ", s_tsW2); DsNum(ref at, "/", s_tsS2); DsNum(ref at, " 7 ", s_tsW7); DsNum(ref at, "/", s_tsS7); DsNum(ref at, " visits ", s_tsVis);
             Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
             if (s_dsKilled != 0)
             {
@@ -3411,6 +3411,7 @@ namespace Cs2Wasm.Runtime
             return 0;
         }
 
+        static long s_tsVis;
         static long s_tsW1, s_tsS1, s_tsW2, s_tsS2, s_tsW7, s_tsS7;
         static int TopS(int m, int site)
         {
@@ -3444,6 +3445,7 @@ namespace Cs2Wasm.Runtime
             for (int i = from; i < s_trN; i++)
             {
                 int m = Mem.LoadI32(s_trQ + 4 * i);
+                if (DropStats()) s_tsVis++;
                 s_visitMode = mode; s_visitObj = m; s_visitElem = 0;
                 // (a member under a top taken in that code refers to: the set cannot die, and what other tops own is
                 // not gone through further, Dropped. A live structure that small ones refer into would be at each of
