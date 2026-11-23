@@ -14,7 +14,8 @@ if [ "${BUILD:-1}" = 1 ]; then rm -rf $OUT/cli && cp -r src/Cs2Wasm.Cli/bin/Rele
 cp tests/Conformance/145_size_hello.cs $OUT/w42.cs
 W="${ROOT#?:}/$OUT"
 bad=0; first=1
-for v in plain= "$@"; do
+# (PLAIN=0: only the builds with switches, the first of them in the place of the one as it is)
+for v in $([ "${PLAIN:-1}" = 1 ] && echo plain=) "$@"; do
   n=${v%%=*}; sw=${v#*=}
   if [ "${BUILD:-1}" = 1 ]; then
     s=$(date +%s)
