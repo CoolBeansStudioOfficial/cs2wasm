@@ -38,8 +38,8 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
-| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.12x to 0.30x NativeAOT's with `--js-young 32`); tree worst 2.81 to 3.00 ms vs 3.14 to 3.16 (0.90x to 0.95x), p99.9 2.56 to 2.70 vs 2.44 to 2.47 (1.05x to 1.09x), its rebuild (main 8577d9e, this machine quiet, two runs of 3, 2026-11-23; AUDIT A3.5) | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`, the owner's first measure since 2026-11-22: close to the same speed or faster) | churn 1.58x (0.077 ms vs 0.049; was 1.77x, 2.16x, 3.47x; what counting a moved reference costs is 14 us of a frame against the collector's 3.5: AUDIT A3.5, the churn loop, round 3), tree 1.63x to 1.64x (0.047 vs 0.029; was 2.56x), collections 1.03x (p99 0.93x to 0.94x), strings 0.89x, bigdrop 0.91x (main 8577d9e, this machine quiet, two runs of 3) | close to 1.0x on every scene |
+| 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.11x to 0.22x NativeAOT's with `--js-young 32`, quiet); tree: on main cb287fb, quiet, p99.9 2.55 to 2.57 ms vs 2.38 to 2.41 (1.06x to 1.08x), worst 0.87x to 0.88x; with the node path (main 189b8c6, the machine loaded by three sessions) p99.9 0.97x and 1.08x, worst 1.08x and 1.27x; switch on and off in turn on 7d36995, busy: p99.9 1.03x to 1.16x on, 1.15x to 1.22x off; on the homelab alone 2.80 to 2.83 ms on, 3.05 to 3.07 off. To be taken again quiet | worst frame and p99.9 not above NativeAOT's on every scene |
+| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`). The owner's bar since the evening of 2026-11-22: churn and tree may be slightly slower as long as it is faster overall, the self-hosted compiler is fast enough to be practical, and everything is fully correct and deterministic | churn 1.32x to 1.35x (was 1.58x, 2.16x, 3.47x), tree 1.57x to 1.60x (was 1.64x, 2.56x), collections 0.99x to 1.03x, strings 0.87x to 0.89x, bigdrop 0.88x to 0.94x (main 189b8c6 and cb287fb). The whole run (mean frame, pauses and rebuilds in it; `frames.mjs` prints it): geometric mean over the scenes 0.72x to 0.74x NativeAOT-LLVM's; churn 1.18x to 1.29x, tree 1.32x to 1.38x, collections 0.77x to 0.83x, strings 0.75x to 0.80x, bigdrop 0.20x; the five means summed 0.98x. bench.mjs 0.92x | faster overall; churn and tree slightly slower accepted |
 | 4 | Hello world size (test 145) | 27,089 B (main dca1f9c) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
@@ -1039,3 +1039,62 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   timer line; alone it passes) and 227 of 227 as shipped; stress, 200 loaded runs a mode: 230 to 234, 240, 139
   the same in every run, 127 differed in 4 of 400. The homelab at the last commit, with and without the pass in turn (five rounds, other sessions' jobs beside: the rounds spread by a third): churn's median 0.095 ms against 0.107; **tree 0.069 against 0.065, the pass's higher in four rounds of five, where the desk's two sets were level: not explained** (the scene's Build and Walk are the same code in both modules, 345 and 356 bytes, Tree(int) 18 bytes shorter with the pass; tree-frame.cs there: build 17.9 to 19.2 us against 17.5 to 18.0, walk 37.3 to 40.3 and once 43.8 against 38.2 to 40.4, the indexed walk 24.0 to 25.4 and once 29.0 against 25.9 to 27.7); collections 0.0076 against 0.0070 and strings 0.0085 against 0.0084 at their lowest, inside the rounds' spread; bench-ab's geometric mean 1.004x without the pass; churn-array's list 94.8 to 99.1 us (once 109.8) against 104.9 to 111.2. The self-hosted compiler there: built in 259 s with the pass and 249 s without, 32,298,942 bytes against 32,189,404 (0.34%), hello world in 9.4 to 9.5 s against 9.4 to 10.0, peak memory 344 MB both, and built either way it compiles 145, 207 and 220 (with the pass 230 too) byte for byte as the .NET-hosted one. Not done: a test
   with a host that calls back; main's own checkout with the fix.
+- 2026-11-22, the node path of a tree built parent first (branch claude/tree-node-path from main 4ac4519, not
+  merged; AUDIT A3.5, the build, round 9). The three runtime calls a node makes each written out for the shape it
+  finds, with the general path's end state and a refusal before any write otherwise (`CS2WASM_NO_NODE_PATH=1` for
+  the general way): Rt.JoinPair (a list's first array into a plain list: the two a group of their own, no visit),
+  Rt.NodeUp (the node's parent field linked as the node joins at its first child: the merge, the count and the
+  parent's ownership in order, no waiting list, no side words), Rt.AddNode (the node into its parent's list: one
+  walk for four). tools/tree-build.cs variant 0, off and on in turn three times: build 1.66 to 1.70 ms to 1.40 to
+  1.48 (NativeAOT-LLVM 0.26), variants 1, 2, 3, 5 each 0.1 to 0.25 ms shorter, 4 the same; tools/tree-frame.cs
+  build 15.3 to 15.6 us to 13.5 to 13.8; frames.mjs on a loaded desk: tree median 0.049 to 0.050 ms off, 0.047 to
+  0.049 on (NativeAOT-LLVM 0.029 to 0.032), p99.9 2.91 to 3.09 off, 2.65 to 2.99 on (NativeAOT-LLVM 2.98 to 3.24
+  in the same invocations); bench.mjs 0.94x and 0.93x; hello world 27,642 bytes. **Not reached: a node does not
+  cost what a leaf costs**; what is left needs the intermediate states changed (the list and array no group before
+  the node joins, the node provisionally under its parent), not attempted. Test 201 (the cases of the brief,
+  against .NET, the same with the switch off); of the seven rules left out by hand three change its lines (1, 2,
+  6), three are reached and do not (3, 4, 5), one is not reached (7).
+  Checked. On the homelab at 1e71501 (the three steps; the commit after it, 38e971c, adds test 201 and takes one unused test of the break's number out, which a constant folds away): the suite 222/222 checked and 222/222 as shipped (326 s); the self-hosted compiler built with and without the switch (`tools/selfhost-switch.sh CS2WASM_NO_NODE_PATH=1`: 234 s each, 32,014,434 and 32,012,829 bytes; hello world in 9.2 to 9.5 s either way, peak 344 MB, the two the same module, and self = net byte for byte, 27,597 bytes); `node tools/selfdet.mjs --self <as-is> tests/Conformance/220_collections_grow_by_moving.cs`: self = net byte for byte (271,882 bytes, 18.4 s), and the same for test 193 (252,953 bytes, 18.9 s). On the desk: test 201 and tests 190 to 199 checked and as shipped; test 201 with the switch off and with each break (above). **Not finished when this was written: selfdet for test 088 and `tools/stress-trees.sh` (127, 139, 201, 192 to 199, 200 runs a mode) were started on the homelab and had not come back (their output: tests/out/np/hl-selfdet.txt and hl-stress.txt in the branch's worktree on the desk); the suite was not run again at 38e971c (test 201 passed on the desk both ways); frames.mjs on a quiet desk.** Threads: none of the three steps runs in a program with threads (test 197 and 139 take the general way).
+- 2026-11-22, the node path, second part (branch claude/tree-node-path-2 from claude/tree-node-path 35ddb45, not
+  merged; AUDIT A3.5, the build, round 9, second part). The first part's queued checks came back clean (selfdet
+  for 088 byte for byte; stress, 200 runs a mode, every test the same in every run). Test 201 proves each rule of
+  the steps now (`tools/node-path-breaks.sh`): rule 3 is no rule any more (Rt.NodeUp takes a parent whose last
+  count from outside is the field's, as LinkMembers does it), 1, 2 and 6 change the test's lines, 4, 5 and 7
+  (what the check at the drop frees later) change them with that check off on both sides, where on and off still
+  agree. The owner stopped the tree's speed work during the round. Built and left on a side branch, not checked
+  on the homelab (claude/tree-node-path-2-plain-parents, a3ce95f): Rt.PlainParents, the first leaf of a node whose
+  own parent is a plain object still, 597 of 625 a build, 0.03 to 0.08 ms. Built, measured as no gain and taken out: (c), a list and its
+  first array without a group of their own (1.44 to 1.51 ms and 1.49 to 1.52). **Not built: direction (a)** (its
+  small form saves two writes and pays side words; its large form, a node owned by an array that does not hold
+  it, breaks what the growth, the handover and the destroy rest on: a change of the model, argued in AUDIT), the
+  lists' growth. **The build is 1.40 to 1.50 ms against 1.67 to 1.72 without the node path and NativeAOT-LLVM's
+  0.26: the target is not reached**, and by the variants it is the leaf's own cost (the objects 0.47 ms, the
+  19,530 up-references 0.35, the growth 0.1 to 0.2) that keeps it there. frames.mjs, quiet desk, three pairs on
+  the side branch (the branch itself: median 0.048 to 0.050 off, 0.045 to 0.048 on; p99.9 2.92 to 3.09 off, 2.69
+  to 2.90 on, against 2.47 to 2.61): tree median 0.049 to 0.050 ms off, 0.047 to 0.048 on (NativeAOT-LLVM 0.030); p99.9 3.04 to 3.12
+  off, 2.62 to 2.72 on (2.58 to 2.64: 1.01x to 1.05x, still above); worst 3.29 to 3.69 off, 2.69 to 2.86 on
+  (3.32 to 3.38). The first part's worst-frame spikes were the machine: on the homelab the worst tree frame is
+  lower with the step in every pair. bench.mjs 0.94x and 0.93x; hello world 27,642 bytes.
+  Checked, on the homelab at 88f2a6e (the branch's code: the first part, NodeUp's last count, test 201's new cases, the script): the suite 223/223 checked and 223/223 as shipped (435 s); the self-hosted compiler built with and without the node path (`tools/selfhost-switch.sh CS2WASM_NO_NODE_PATH=1`: 32,014,763 and 32,013,104 bytes; hello world in 14.1 to 15.4 s either way on a loaded machine, peak 344 MB, the two the same module, self = net byte for byte, 27,599 bytes); `selfdet` with that compiler for tests 220 (271,925 bytes), 193 (252,996) and 088 (1,613,340): self = net byte for byte each; `tools/stress-trees.sh`, 200 loaded runs a mode: 139, 192 to 199 and 201 the same in every run of both modes; **127 differed in 4 of 200 as shipped and 5 of 200 checked (`async 5` for 0: the kind and the rate earlier rounds give for main, 1 to 4 in 200; it starts threads and takes none of these steps; in the first part's run at 1e71501 it differed in none; not followed here)**. On the desk: `tools/node-path-breaks.sh` exits 0 (on and off the same with and without the check at the drop; each of the six breaks changes the lines). Not checked: the side branch on the homelab; the suite with `CS2WASM_NO_NODE_PATH=1` for every program (the switch is checked by test 201, the two trees' tools and the self-hosted compiler); frames.mjs on the homelab at this commit (the four pairs above are the first part's code).
+- 2026-11-23 (the evening of 2026-11-22 by the owner's clock), four merges and the owner's bar restated. The bar:
+  churn and tree may be slightly slower as long as (1) it is faster overall, (2) the self-hosted compiler is fast
+  enough to be practical, (3) everything is fully correct and deterministic; cross-platform determinism is a must
+  (the NaN test at float stores stays). Merged, each checked on the homelab with the suite both ways, stress, and
+  the self-hosted compiler's module byte for byte the .NET-hosted compiler's on hello world and on larger tests:
+  claude/free-path-1 (main 3f32acf: suite 224/225 both ways, 088's timer line; selfdet on 207, 220, 222, 240, 193,
+  088; here the queue's move, Rt.MoveItemsRotated, was given the refusal of a cycle-capable array that Rt.MoveItems
+  has, and test 240 a queue: it trapped the same way); claude/field-loads-1 (main cb287fb: suite 230/230 both ways,
+  stress of 230 to 234, 240, 207, 235 to 237, 222 the same in every run, 127 differed in 5 of 400; selfdet on 230,
+  232, 207, 220, 222, 240, 193, 088; the self-hosted compiler 11.7 to 12.3 s against 10.4 to 10.9 without it on the
+  loaded homelab, level by its session's runs: to be timed again quiet; frames here, quiet: churn 0.065 ms against
+  0.049, 1.33x to 1.34x from 1.58x); claude/tree-node-path (7d36995: suite 230/231 both ways, 088's timer line;
+  stress of 201, 192 to 194, 198, 199, 240, 230 the same in every run; selfdet on 201, 230, 232, 207, 220, 222,
+  240, 193, 088) and claude/tree-node-path-2 (main 189b8c6: by its session suite 223/223 both ways, selfdet on 220,
+  193, 088; here tests 19x, 201 and 145 on the merge). Not merged: claude/tree-build-8 (exclusive parts: no gain as
+  built, wrong in two cases, off). frames.mjs now prints the mean frame; on main 189b8c6 with three sessions at
+  work: churn 0.071 ms against 0.053 (1.32x to 1.35x), tree 0.049 to 0.051 against 0.031 to 0.032 (1.57x to
+  1.60x), p99.9 3.14 and 3.36 against 3.25 and 3.10; the whole run 0.72x to 0.74x. Open against the bar, with
+  sessions on each: the tests that differ under load (claude/load-flakes-1: causes and fixes for 187, 131, 127, 087;
+  a racing List.Add that leaves objects and damages a group's ring, open); the known differences from .NET
+  (claude/known-diffs-1); the self-hosted compiler's time, 9 to 10 s for hello world against the .NET-hosted
+  compiler's 4 to 5 (claude/selfhost-speed-1).

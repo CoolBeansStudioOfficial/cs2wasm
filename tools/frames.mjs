@@ -61,9 +61,9 @@ function stats(text, scene) {
   // (--worst N: the N slowest frames, as frame number (after the warm-up) and time, to tell what they did)
   if (worstN) console.error(`${scene}: slowest frames ${raw.map((v, i) => [i, v]).sort((a, b) => b[1] - a[1]).slice(0, worstN).map(([i, v]) => `${i}:${(v / 1e6).toFixed(2)}`).join(' ')}`);
   const q = (p) => t[Math.min(t.length - 1, Math.floor(p * t.length))];
-  return { median: q(0.5), p99: q(0.99), p999: q(0.999), worst: t[t.length - 1], check: new RegExp(`^check ${scene} (-?\\d+)`, 'm').exec(text)?.[1] };
+  return { mean: raw.reduce((x, y) => x + y, 0) / raw.length, median: q(0.5), p99: q(0.99), p999: q(0.999), worst: t[t.length - 1], check: new RegExp(`^check ${scene} (-?\\d+)`, 'm').exec(text)?.[1] };
 }
-const low = (a, b) => { if (!a) return { ...b }; for (const k of ['median', 'p99', 'p999', 'worst', 'peak']) a[k] = Math.min(a[k], b[k]); return a; };
+const low = (a, b) => { if (!a) return { ...b }; for (const k of ['mean', 'median', 'p99', 'p999', 'worst', 'peak']) a[k] = Math.min(a[k], b[k]); return a; };
 const res = {};
 for (const scene of scenes) {
   let aot = null, mod = null;
@@ -96,6 +96,12 @@ for (const [scene, { aot, cs2wasm }] of Object.entries(res)) {
   for (const [side, s] of [['NativeAOT', aot], ['cs2wasm', cs2wasm]])
     console.log(`${(side === 'NativeAOT' ? scene : '').padEnd(12)} ${side.padEnd(10)} ${ms(s.median)} ${ms(s.p99)} ${ms(s.p999)} ${ms(s.worst)}  ${mb(s.peak)}`);
   console.log(`${''.padEnd(12)} ${'ratio'.padEnd(10)} ${(cs2wasm.median / aot.median).toFixed(2).padStart(7)}x ${(cs2wasm.p99 / aot.p99).toFixed(2).padStart(7)}x ${(cs2wasm.p999 / aot.p999).toFixed(2).padStart(7)}x ${(cs2wasm.worst / aot.worst).toFixed(2).padStart(7)}x  ${(cs2wasm.peak / aot.peak).toFixed(2).padStart(5)}x${over ? '   SPIKES ABOVE NATIVEAOT' : ''}${differs ? `   CHECKSUM DIFFERS: ${aot.check} vs ${cs2wasm.check}` : ''}`);
+}
+// (the mean frame, with the collector's pauses and the rebuilds in it: what a whole run takes)
+if (!noAot) {
+  let g = 1, n = 0;
+  console.log('mean frame ms ' + Object.entries(res).map(([scene, { aot, cs2wasm }]) => { g *= cs2wasm.mean / aot.mean; n++; return `${scene} ${(cs2wasm.mean / 1e6).toFixed(4)} vs ${(aot.mean / 1e6).toFixed(4)} (${(cs2wasm.mean / aot.mean).toFixed(2)}x)`; }).join(', '));
+  console.log(`mean frame, geometric mean over the scenes: cs2wasm takes ${Math.pow(g, 1 / n).toFixed(2)}x NativeAOT's; medians: ${Math.pow(Object.values(res).reduce((x, { aot, cs2wasm }) => x * cs2wasm.median / aot.median, 1), 1 / n).toFixed(2)}x`);
 }
 const json = opt('--json', null);
 if (json) writeFileSync(json, JSON.stringify(res, null, 1));

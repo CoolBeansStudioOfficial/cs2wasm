@@ -1819,6 +1819,234 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     test at the top), the object's size. A foreach reads nothing before its loop: MoveNext is no test that can be
     copied, so the tree scene's walk still reads the node's X and Y on every turn.
 
+- **The build, round 9: the node path, three direct steps with the general path's end state (2026-11-22, branch
+  claude/tree-node-path, from main 4ac4519; the desk machine, shared; not merged when this was written).** Rounds 6
+  to 8 measured the node of a tree built parent first as the largest part of a build and built none of it. Built
+  here: not a new kind of ownership, but each of the three runtime calls a node makes written out for the shape it
+  finds, refused before a write for any other. **A build is 0.24 ms shorter (14%), not at a leaf's cost: what is
+  left of a node is below.**
+  - **What a node does, call by call** (tools/tree-build.cs variant 0, `CS2WASM_DROP_STATS=1`, a build: 3,906
+    nodes, 15,625 leaves; and a profile with names, `node --no-wasm-inlining --cpu-prof`, 600 builds, 2,634 ms, of
+    which under Rt.ArenaLink 1,127 and under List.Capacity's setter 430).
+    1. `_items = new T[4]` in List.Add, the list and the array plain objects, the node plain (3,125 a build: the
+       nodes above leaves; the 781 above them have a list that joined from below already and take JoinOwned).
+       Found: container count 1 (its node's slot), value count 1, the list's other slots empty, the array's
+       elements null. Done by ArenaLinkCore: a record, two ArenaJoins with a note each for a visit, LinkMembers
+       (count given back as for an object that joined, owner without a walk), ArenaLinkJoined's two visits by
+       type, which find nothing. Changed: both members of a new group, the list its top with outside count 1,
+       the array the list's.
+    2. `arr[0] = leaf` (2,500 with a member for the node's parent, round 6's JoinFresh; 625 with a plain parent,
+       the general way, which joins every plain ancestor in that one step). JoinFresh joins the leaf, its list,
+       the node (nothing's) and makes the list the node's, then links the node's parent field by LinkJoinedSlot:
+       ArenaLinkCore's questions, ArenaMerge (five members' record words, the record freed), LinkMembers (the
+       field's count given back; not on the node's chain: a counted reference; the parent has no owner while it
+       is being filled: Waiting, side words for the parent, a pair in LinkWaiting's list), then LinkWaiting's
+       turn of the pair: the node, without an owner, takes the parent (TakeOwnership, Reevaluate of the
+       parent's slots). So between its first child and its add each child-node owns its parent.
+    3. `parentArr[k] = node` (3,905). Found: the node a member, count -3 (the store's alone), no owner, its
+       parent field a counted reference to the member three owners above the array, which the node owns.
+       LinkMembers: EarlyGiveBack (two walks up the array's owners: is the node above it, and which member is
+       right below the node; that one has no up-reference below it and holds nothing: yes), a counted element,
+       TakeOwnership (the same two walks; the parent stops being the node's, the array owns the node),
+       Reevaluate (the parent field becomes an up-reference: OnChain, UpPath over three members, UpdateHold).
+    By the profile's inclusive times, in its doubled milliseconds: ArenaLinkCore 218, LinkJoinedSlot 181,
+    ArenaLinkJoined 220, TakeOwnership 208, LinkMembers from ArenaLink (the add) 207, LinkWaiting 97, ArenaMerge
+    34: about 600 of the 2,076 under Build, 0.45 ms of a build's 1.65 on the desk.
+  - **Done** (`CS2WASM_NO_NODE_PATH=1` at compile time for the general way; none of it with threads: JoinPair and
+    AddNode ask ThreadMode, NodeUp is reached from JoinFresh, which does).
+    `Rt.JoinPair` (call 1): asked before a write: the container a plain object, not pinned, its words clear, the
+    slot one it has bits for, its other slots (by the type's word, Rt.ArenaSlots) empty or holding what a visit
+    passes by (a pinned object, one of another group of classes); the value's slots likewise, or, for an array
+    of one reference an element, every element null; nothing waiting in the lists of a link under way. Then the
+    record and the two joins written as ArenaJoinOnly and LinkMembers leave them, no visit.
+    `Rt.NodeUp` (call 2's link of the parent field): only when that slot is the node's one other slot that holds
+    a member (LinkWaiting runs after all of them: with one, its turn is this pair's alone), the parent has more
+    references from outside than the field's (the count given back is not its last: nothing to decide), no note
+    of a failed check is alive, the node has no owner, neither group is busy or merged. Then ArenaMerge as
+    ArenaLinkCore calls it, the count, the slot's bits, and for a parent without an owner TakeOwnership at once
+    (what Waiting and LinkWaiting come to for one pair); for a parent with one (a new subtree's top under a
+    living node), the node noted as the container waiting to own it and its hold, as LinkMembers has it. The
+    one difference to the general path's words: a parent nothing owns gets no side words (the general way makes
+    them for the waiting owner and clears that word in the same link; they hold nothing after).
+    `Rt.AddNode` (call 3): the node's count -3, no owner, not held, owned, queued, dying or an array, the group
+    alive by other members, no note of a failed check; one walk up the array's owners, eight at most, that
+    either finds the node (then the member right below it must have no up-reference below it and hold nothing:
+    EarlyGiveBack's and TakeOwnership's own test) or ends at a member without an owner (the node is not above
+    the array: a new subtree's top stored into a living tree). Then the count given back, the element counted,
+    the turn, the owner, and Reevaluate and the hold by the general functions.
+    By the counts of a build: join-pair 3,125, node-up 2,500, node-add 3,905; link-core 3,125 to 0, joined-visit
+    10,516 to 4,266, take-ownership 8,435 to 4,530, give-back-early 7,030 to 3,125; merges, joins, Reevaluates,
+    hold changes and releases as before (the end state is the same).
+  - **Numbers** (the desk, the switch off and on in turn three times; the ranges of the three).
+    tools/tree-build.cs: variant 0 build 1.66 to 1.70 ms off, 1.40 to 1.48 on, drop 0.37 both; 1 (no parent)
+    1.17 to 1.20 and 1.07 to 1.08; 2 (the parent after the add) 1.96 to 1.99 and 1.82 to 1.90; 3 (capacity
+    first) 1.48 to 1.54 and 1.23 to 1.24; 4 (objects alone) 0.47 and 0.47 to 0.48; 5 (fan 4) 1.71 to 1.78 and
+    1.48 to 1.53. tools/tree-frame.cs, an ordinary frame's medians: build 15.3 to 15.6 us off, 13.5 to 13.8 on;
+    store 4.3 to 4.4 and 4.3; walk 30.6 to 31.1 and 30.8 to 31.2. tools/tree-store.cs: build 91.0 to 92.3 ns an
+    entity off, 77.6 to 78.8 on; store 11.7 to 13.1 ns a member and 11.1 to 12.2.
+    `node tools/frames.mjs --runs 3 --js-young 32` against NativeAOT-LLVM, off and on in turn three times (all
+    five scenes the first time, the tree after; the desk was loaded by other sessions: NativeAOT-LLVM's own tree
+    p99.9 was 2.98 to 3.24 ms in these six invocations, 2.38 to 2.47 on a quiet desk): tree median 0.049, 0.049,
+    0.050 ms off and 0.049, 0.047, 0.048 on (NativeAOT-LLVM 0.029 to 0.032: 1.54x to 1.63x either way); p99.9
+    2.912, 3.025, 3.090 off and 2.790, 2.650, 2.985 on (each below NativeAOT-LLVM's of its own invocation: 0.95x
+    to 0.98x off, 0.86x to 0.95x on); worst 3.05 to 3.47 off and 2.91, 4.25, 4.47 on (NativeAOT-LLVM 3.55 to
+    4.22: two of the three `on` invocations had one frame above NativeAOT-LLVM's worst, on a machine that was
+    not quiet; not shown to be the step's or the machine's). The other scenes, one pair: churn median 0.080 and
+    0.079, collections 0.007 both, strings 0.007 both, bigdrop 0.003 both, their p99.9 and worst within each
+    other's spread. bench.mjs: 0.94x off and 0.93x on, one run each (its module 328.5 to 330.1 KB). Hello world (test 145) 27,642 bytes, as on main
+    (the limit 28,383); a module with groups is 1.6 KB larger (tools/tree-build.cs 223,918 to 225,515 bytes).
+  - **Not reached, and what is left of a node.** A node does not cost what a leaf costs. With the three steps a
+    build is 1.40 to 1.48 ms against NativeAOT-LLVM's 0.26; the tree scene's median is where it was within the
+    desk's spread (the ordinary frame's build is 1.8 us shorter of 49), its p99.9 0.1 to 0.3 ms lower in each
+    pair on a loaded desk. The steps take the general path's questions and walks out; they leave what the
+    general path's end state itself asks for, because that state was kept exactly: the group of its own for a
+    list and its first array (a record made, merged into the tree's five members later, freed: 3,125 a build),
+    the node made its parent's owner at its first child and the turn at the add (the parent's owner word
+    written twice a child), Reevaluate and UpPath for the node's parent field at the add, the 625 first leaves
+    under a plain parent with the whole chain of plain ancestors joined the general way, and each list's growth
+    from four to eight. To take those out the intermediate states have to change (the list and its array not a
+    group before the node joins; the node provisionally under its parent from its first child on, the direction
+    of this round's brief called (a)): then a node dropped before its add, a build that throws, and a parent
+    let go meanwhile reach other states than today's, each to be argued and tested. Not attempted in this
+    round's time. No floor is claimed: round 7's estimate (25 to 30 ns an entity, 0.5 to 0.6 ms a build) stands
+    as the estimate it was.
+  - **Test 201** (nodes built parent first: the scene's order; a node dropped before the add, under a tree
+    being built and under a living one; a node added to another parent than its field names; the parent set
+    after the add; a list a local or a static holds; nodes with finalizers; a node moved and one in two lists;
+    a build that throws half way; a parent only the node's field refers to; a node with two slots that hold
+    members; a child that refers to the node above its parent, the node then taken out; new objects with
+    content stored into plain ones; counted against .NET while the trees live and when they have gone). The
+    same lines with the switch off, checked and as shipped. With a rule left out by hand
+    (`CS2WASM_NODE_PATH_BREAK=n`): JoinPair's two questions (1: what the new object holds, 2: the container's
+    other slots) each leave six objects at the end; AddNode's count (6) traps at the first replaced subtree.
+    **Three rules are reached by the test and leave its lines as they are when left out** (3: NodeUp, the
+    field's count the parent's last from outside; 4: NodeUp with a second slot to link; 5: NodeUp, the parent's
+    owner not asked: the general path's later checks, the check at the drop among them, mend what they leave,
+    more slowly), **and one is not reached** (7: AddNode's turn with an up-reference below the member the node
+    owns). So the test proves three of seven rules, not each of them.
+  - Checked. On the homelab at 1e71501 (the three steps; the commit after it, 38e971c, adds test 201 and takes one unused test of the break's number out, which a constant folds away): the suite 222/222 checked and 222/222 as shipped (326 s); the self-hosted compiler built with and without the switch (`tools/selfhost-switch.sh CS2WASM_NO_NODE_PATH=1`: 234 s each, 32,014,434 and 32,012,829 bytes; hello world in 9.2 to 9.5 s either way, peak 344 MB, the two the same module, and self = net byte for byte, 27,597 bytes); `node tools/selfdet.mjs --self <as-is> tests/Conformance/220_collections_grow_by_moving.cs`: self = net byte for byte (271,882 bytes, 18.4 s), and the same for test 193 (252,953 bytes, 18.9 s). On the desk: test 201 and tests 190 to 199 checked and as shipped; test 201 with the switch off and with each break (above). **Not finished when this was written: selfdet for test 088 and `tools/stress-trees.sh` (127, 139, 201, 192 to 199, 200 runs a mode) were started on the homelab and had not come back (their output: tests/out/np/hl-selfdet.txt and hl-stress.txt in the branch's worktree on the desk); the suite was not run again at 38e971c (test 201 passed on the desk both ways); frames.mjs on a quiet desk.** Threads: none of the three steps runs in a program with threads (test 197 and 139 take the general way).
+
+- **The build, round 9, second part: the node path's rules proven, the list's own group measured as no cost, the
+  plain parents built but left on a side branch, and the spikes settled (2026-11-22, branch claude/tree-node-path-2, from
+  claude/tree-node-path 35ddb45; the desk, quieter, and the homelab; not merged when this was written).** The owner
+  stopped the tree's speed work during this round: what is in the branch is the tests and one correction of
+  NodeUp. Of the three further levers one was built and measured as no gain and taken out ((c), the list and its
+  array without a group), one was built, measured at a few hundredths of a millisecond and left on a side branch
+  because it was not checked on the homelab (the first leaves under a plain parent), and direction (a) was not
+  built (why, below). **The build is 1.40 to 1.50 ms; a node does not cost what a leaf costs, and the
+  target of 0.6 ms is not in reach of exact-state steps.**
+  - **What the first part's queued checks said** (homelab, at 1e71501's code): `selfdet` for test 088 self = net
+    byte for byte (1,613,357 bytes, 134.6 s); `tools/stress-trees.sh`, 200 loaded runs a mode: 127, 139, 192 to
+    199 and 201 the same in every run of both modes (127 too: none differing this time).
+  - **Test 201 now proves each rule** (`tools/node-path-breaks.sh`, new: the test compiled with each rule left out
+    against the plain build; exit 1 when a break leaves the lines as they are). Rule 3 is gone, not proven:
+    Rt.NodeUp takes a parent whose last count from outside is the field's and gives it back as LinkMembers does
+    (EarlyGiveBack, or after the store), the parent then the node's at once, as the general way has it for a
+    parent that does not wait. Breaks 1, 2 and 6 change the test's lines as before. Breaks 4, 5, 7 (and 8, of
+    the side branch's step below) are about who owns a member or what a joined object still holds unlinked, and what they
+    leave is found and freed later by the check at the drop (Rt.Dropped): the program prints the same, more
+    slowly. They are therefore compared with that check off on both sides (`CS2WASM_NO_DROP_CHECK=1`): the node
+    path and the general way still print the same there, and each of those breaks does not. New cases for
+    them: a node built under a node that another node's list owns, that node's own parent field then set to
+    its holder and the holder let go (break 5: the parent's owner not asked; break 4, with the new node
+    referring to the parent by two slots at its first child, one cleared before); a child that comes to refer
+    to the node above its top before the node is put into the top's list, the node then taken out of the list
+    and read through the child (break 7: reached now, the add refused because an up-reference passes the
+    member the node owns); a plain parent that holds a new node with content (break 8). A small tree of the
+    same group is kept so that nothing goes because its whole group does.
+  - **Built, not in the branch: `Rt.PlainParents`** (branch claude/tree-node-path-2-plain-parents, commit
+    a3ce95f, `CS2WASM_NO_PLAIN_PARENTS=1`; lever 3's first half; on the desk tests 127, 139, 187, 19x, 20x and 201
+    pass with it both ways and test 201 prints the same with it off; **not run on the homelab: no suite, no
+    stress, no self-hosted compiler**). JoinFresh refused a node
+    whose one other slot holds a plain object of its group: its own parent, not yet a member because no child
+    of it has a child (every node's first child; 625 a build, and the chain of plain parents above: by the
+    profile's inclusive times ArenaLinkJoined 240 and ArenaLinkCore 85 of the 2,353 doubled milliseconds under
+    Build were these). Now, asked before a write, level by level up to a member or to none: the level's slots
+    hold nothing to link, new objects of its own with nothing to link (its list), and at most one reference
+    up, to a plain object that code still refers to (the next level, no level twice, eight at most) or to a
+    member that code refers to (its group not busy or merged and the larger of the two, no note of a failed
+    check alive). Written in the order of the general way's joins: each level a member with the counts it had
+    less the field's, nothing's, referred to once from inside; its new objects its own; the next level joined
+    as its slot comes; the member linked by NodeUp at its slot (the merge with the members the general way has
+    by then); and each level its child's (TakeOwnership, from the bottom, as LinkWaiting's pairs come). Not
+    made: the levels' side words. By the counts of a build: 597 of the 625 take it (the rest: the member's
+    group the smaller one, at the top of a new tree), joined-visit 4,266 to 977.
+  - **(c), the list and its first array without a group of their own: built, measured, taken out.** As built
+    (not in the tree): `Rt.LeavePlain`, a new empty array stored into a plain object stays a plain counted
+    reference (the state `new List<T>(4)` leaves; no cycle can close through an array that holds nothing and
+    that one slot refers to; whatever stores into it or stores its container next joins it); `Rt.JoinFirst`,
+    at `arr[0] = leaf` with the array plain: the array, the leaf, its list, the node and the node's list made
+    members of the node's parent's group at once, in the general way's ring order from that state, no record,
+    no merge, the parent's link by NodeUp. By the counts of a build: join-first 2,500, leave-plain 3,125, merges
+    3,124 to 624. tools/tree-build.cs variant 0, the first part's build and this one in turn three times: build
+    1.51, 1.44, 1.46 ms and 1.52, 1.49, 1.50; drop 0.39, 0.38, 0.37 and 0.40, 0.34, 0.35. **No gain: the record
+    made, merged and freed for each node is not a cost worth a path** (about 2,500 times a few tens of
+    nanoseconds, and from the lazier state the first leaves under a plain parent went the whole general way
+    with two more visits each), and it would change what every program's plain list of such items is until
+    its first growth (the list no member, the growth from four to eight the general copy and handover instead
+    of ArenaGrowArray). Not kept, not even switched off.
+  - **Direction (a), the node under its parent from its first child on: not built, and what stands against
+    it.** Two forms were worked through.
+    The small one: the parent of a node that gets its first child is not made the node's (no TakeOwnership),
+    only noted as waited for (the word a parent that has an owner gets today); the add then finds the node
+    not above the array and nothing to turn. The open state: the parent without an owner, referred to by the
+    node's field as a counted reference, the node named in the parent's side word. It resolves at the add as
+    today (the node is the array's, its field becomes an up-reference, the side word cleared: the same words
+    after the add); a node dropped before the add or a build that throws releases the field as any counted
+    reference; a node added elsewhere leaves the parent free for the list that takes it next (today it stays
+    the node's). But it saves only the two writes of the parent's owner word and one Reevaluate of the
+    parent, and pays side words for every parent (8 bytes, an allocation): no gain to expect, and round 1's
+    reverted attempt (ownership decided at the last release from outside: test 127's async nodes and a
+    pending task's waiter left, held by counted references no owner took) is the warning that members
+    without an owner that are referred to by counted references are what the check at the drop cannot free.
+    The large one, which would take the add's cost out (Reevaluate of the node, UpPath over the node, the
+    array and the list, the holds: what a leaf's up-reference costs too): the node the property of its
+    parent's array from its first child on, its field an up-reference then, the add only a counted element.
+    The open state is a member owned by an array that does not hold it. That breaks what the growth and the
+    handover rest on (ArenaGrowArray and ReplaceArray take an array's property to be exactly its linked
+    elements and move the owner word of those: the provisional node would keep an array that is freed; the
+    list has no array at all before its first Add), and what the destroy of a subtree rests on (members
+    reached through their owners' slots). Each needs its own rule and its own tests; it is a change of the
+    ownership model, not a path, and was not started in the time of this round.
+    By the variants the prize is bounded: with every node at a leaf's cost a build would be about 0.15 ms
+    shorter. Where a build's 1.42 ms is, by tools/tree-build.cs's variants: the objects alone 0.47 (variant
+    4), the parent fields 0.35 (variant 0 less 1: 18 ns for each of the 19,530 up-references, a leaf's too:
+    three members' u and their holds), the lists' growth 0.1 to 0.2 (variant 0 less 3), the joins and links
+    the rest. **So the leaf's own cost, not the node's, is what keeps the build at five times
+    NativeAOT-LLVM's 0.26.**
+  - **Not attempted:** the lists' growth (ArenaGrowArray: its tail already frees the old array without the
+    general destroy; what is left is the allocation, the move and the checks).
+  - **Numbers** (the desk; `CS2WASM_NO_NODE_PATH=1` off and on in turn three times; **measured on the side
+    branch, PlainParents in**; the branch itself, without it, is the first part's code but for NodeUp's last
+    count: tools/tree-build.cs variant 0 1.70 to 1.71 ms off and 1.46 to 1.49 on, tools/tree-frame.cs's build
+    15.6 to 15.8 us and 13.8 to 14.2, and frames.mjs as in the next item). tools/tree-build.cs: variant 0 build 1.67 to 1.72 ms off, 1.40 to 1.50 on; 1: 1.15 to 1.20 and
+    1.04 to 1.11; 2: 1.88 to 2.14 and 1.80 to 1.92; 3: 1.43 to 1.53 and 1.27 to 1.39; 4: 0.45 to 0.48 both; 5:
+    1.65 to 1.75 and 1.35 to 1.45. PlainParents alone, before and after in turn three times: 1.45, 1.58, 1.47
+    and 1.42, 1.50, 1.44 (0.03 to 0.08 ms; within the desk's spread in the table above). tools/tree-frame.cs:
+    build 15.0 to 15.8 us off, 13.1 to 13.5 on; tools/tree-store.cs: build 92.3 to 96.2 ns an entity off, 73.7
+    to 79.5 on, the store 13.4 ns a member and 11.1 to 12.0. `node tools/frames.mjs --runs 3 --js-young
+    32` against NativeAOT-LLVM, the quiet desk, three pairs: tree median 0.050, 0.050, 0.049 ms off and 0.047,
+    0.047, 0.048 on (NativeAOT-LLVM 0.030: 1.63x to 1.67x and 1.57x to 1.60x); p99.9 3.039, 3.047, 3.118 off
+    and 2.618, 2.641, 2.716 on (NativeAOT-LLVM 2.579 to 2.635: 1.16x to 1.19x off, 1.01x to 1.05x on: **0.03 to
+    0.14 ms above it still**); worst 3.430, 3.294, 3.686 off and 2.752, 2.694, 2.857 on (NativeAOT-LLVM 3.319
+    to 3.378: 0.80x to 0.85x on). All five scenes once with the steps: churn 0.079 (0.050), collections 0.007
+    (0.006), strings 0.007 (0.008), bigdrop 0.003 (0.003), tree 0.047 (0.030) with p99.9 2.841 (2.660).
+    bench.mjs 0.94x off and 0.93x on, one run each (its module 329.2 and 331.7 KB). Hello world (test 145)
+    27,642 bytes (the limit 28,383); a module with groups is 2.5 KB larger with the steps (tools/tree-build.cs 224,628 bytes off, 227,111 on).
+  - **The spikes: the machine.** The first part saw two of three `on` invocations of frames.mjs with a worst
+    frame above NativeAOT-LLVM's on a loaded desk. On the homelab, this side alone (`node tools/frames.mjs
+    --no-aot --runs 3 --js-young 32 tree`, off and on in turn four times, the first part's code): median 0.059,
+    0.058, 0.058, 0.058 ms off and 0.056, 0.057, 0.056, 0.057 on; p99.9 3.072, 3.067, 3.052, 3.072 off and
+    2.803, 2.802, 2.805, 2.834 on; worst 3.141, 3.120, 3.107, 3.127 off and 2.885, 2.930, 2.848, 2.882 on:
+    **the worst frame is 0.2 to 0.3 ms lower with the step in every pair, the rebuild frame 0.25 ms shorter
+    (8%), the median 3%.** On the quieter desk against NativeAOT-LLVM, three pairs (the first part's code):
+    tree median 0.048, 0.050, 0.049 ms off and 0.048, 0.048, 0.045 on (NativeAOT-LLVM 0.029 to 0.030: 1.62x to
+    1.65x off, 1.53x to 1.61x on); p99.9 3.001, 3.090, 2.917 off and 2.895, 2.712, 2.694 on (NativeAOT-LLVM
+    2.474 to 2.610: 1.14x to 1.21x off, 1.05x to 1.12x on); worst 3.277, 3.288, 3.290 off and 3.218, 2.920,
+    3.024 on (NativeAOT-LLVM 3.174 to 3.357: 0.98x to 1.03x off, 0.88x to 0.97x on). **p99.9 is still above
+    NativeAOT-LLVM's in every invocation (frames.mjs flags it), the median 1.5x to 1.6x.**
+  - Checked, on the homelab at 88f2a6e (the branch's code: the first part, NodeUp's last count, test 201's new cases, the script): the suite 223/223 checked and 223/223 as shipped (435 s); the self-hosted compiler built with and without the node path (`tools/selfhost-switch.sh CS2WASM_NO_NODE_PATH=1`: 32,014,763 and 32,013,104 bytes; hello world in 14.1 to 15.4 s either way on a loaded machine, peak 344 MB, the two the same module, self = net byte for byte, 27,599 bytes); `selfdet` with that compiler for tests 220 (271,925 bytes), 193 (252,996) and 088 (1,613,340): self = net byte for byte each; `tools/stress-trees.sh`, 200 loaded runs a mode: 139, 192 to 199 and 201 the same in every run of both modes; **127 differed in 4 of 200 as shipped and 5 of 200 checked (`async 5` for 0: the kind and the rate earlier rounds give for main, 1 to 4 in 200; it starts threads and takes none of these steps; in the first part's run at 1e71501 it differed in none; not followed here)**. On the desk: `tools/node-path-breaks.sh` exits 0 (on and off the same with and without the check at the drop; each of the six breaks changes the lines). Not checked: the side branch on the homelab; the suite with `CS2WASM_NO_NODE_PATH=1` for every program (the switch is checked by test 201, the two trees' tools and the self-hosted compiler); frames.mjs on the homelab at this commit (the four pairs above are the first part's code).
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
