@@ -980,3 +980,19 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   222, 240, 193 and 088 (1,613,207 bytes); its hello world in 10.1 to 10.8 s against 9.8 to 10.0 before and
   NativeAOT-LLVM's 4.6 to 5.0. From here every merge's self-host check compiles those larger tests too. Not done: the
   full suite and frames.mjs at 4781226 (the fix is four lines in ArrayMoves.cs; tests 22x and 240 passed here).
+- 2026-11-22, the node path of a tree built parent first (branch claude/tree-node-path from main 4ac4519, not
+  merged; AUDIT A3.5, the build, round 9). The three runtime calls a node makes each written out for the shape it
+  finds, with the general path's end state and a refusal before any write otherwise (`CS2WASM_NO_NODE_PATH=1` for
+  the general way): Rt.JoinPair (a list's first array into a plain list: the two a group of their own, no visit),
+  Rt.NodeUp (the node's parent field linked as the node joins at its first child: the merge, the count and the
+  parent's ownership in order, no waiting list, no side words), Rt.AddNode (the node into its parent's list: one
+  walk for four). tools/tree-build.cs variant 0, off and on in turn three times: build 1.66 to 1.70 ms to 1.40 to
+  1.48 (NativeAOT-LLVM 0.26), variants 1, 2, 3, 5 each 0.1 to 0.25 ms shorter, 4 the same; tools/tree-frame.cs
+  build 15.3 to 15.6 us to 13.5 to 13.8; frames.mjs on a loaded desk: tree median 0.049 to 0.050 ms off, 0.047 to
+  0.049 on (NativeAOT-LLVM 0.029 to 0.032), p99.9 2.91 to 3.09 off, 2.65 to 2.99 on (NativeAOT-LLVM 2.98 to 3.24
+  in the same invocations); bench.mjs 0.94x and 0.93x; hello world 27,642 bytes. **Not reached: a node does not
+  cost what a leaf costs**; what is left needs the intermediate states changed (the list and array no group before
+  the node joins, the node provisionally under its parent), not attempted. Test 201 (the cases of the brief,
+  against .NET, the same with the switch off); of the seven rules left out by hand three change its lines (1, 2,
+  6), three are reached and do not (3, 4, 5), one is not reached (7).
+  Checked. On the homelab at 1e71501 (the three steps; the commit after it, 38e971c, adds test 201 and takes one unused test of the break's number out, which a constant folds away): the suite 222/222 checked and 222/222 as shipped (326 s); the self-hosted compiler built with and without the switch (`tools/selfhost-switch.sh CS2WASM_NO_NODE_PATH=1`: 234 s each, 32,014,434 and 32,012,829 bytes; hello world in 9.2 to 9.5 s either way, peak 344 MB, the two the same module, and self = net byte for byte, 27,597 bytes); `node tools/selfdet.mjs --self <as-is> tests/Conformance/220_collections_grow_by_moving.cs`: self = net byte for byte (271,882 bytes, 18.4 s). On the desk: test 201 and tests 190 to 199 checked and as shipped; test 201 with the switch off and with each break (above). **Not finished when this was written: selfdet for tests 193 and 088 and `tools/stress-trees.sh` (127, 139, 201, 192 to 199, 200 runs a mode) were started on the homelab and had not come back; the suite was not run again at 38e971c (test 201 passed on the desk both ways); frames.mjs on a quiet desk.** Threads: none of the three steps runs in a program with threads (test 197 and 139 take the general way).
