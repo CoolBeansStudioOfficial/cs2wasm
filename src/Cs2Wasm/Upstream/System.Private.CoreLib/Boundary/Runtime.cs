@@ -3710,31 +3710,38 @@ namespace Cs2Wasm.Runtime
             if ((PLM(member) & MarkOutside) == 0) return;
             if (DropStats()) DsAdd(260, 1);
             int t = NoTakeInStop() ? Top(member) : TopToTake(member);
+            // (a member on the way that code refers to: the take-in stops, as the visit of that member would have
+            // stopped it, TrVisit)
+            if (t < 0) { t = -t; if (t != member && Mem.LoadI32(t) == -2 && (PL(t, 24) & (Owned | Dying)) == 0 && (PLM(t) & 3) == 3 && (!ThreadMode() || GroupHeld(t))) s_trExt = -1; return; }
             if (t == 0 || t == member || Mem.LoadI32(t) != -2 || (PL(t, 24) & (Owned | Dying)) != 0 || (PLM(t) & 3) != 3) return;
             if (ThreadMode() && !GroupHeld(t)) return;
             PS(t, 24, PL(t, 24) | Dying); TkPush(t); s_trExt++;
         }
 
-        /// <summary>TakeInAbove's walk to the top, which stops (0) where taking the top in cannot help: at a member on the
-        /// way, the member itself included, that code refers to (taken in, its visit would stop the take-in, TrVisit:
-        /// the top lives, and what it refers to in the set with it), and at one in the trial already (Dying: the set's
-        /// own, or a top taken in or one of what it owns). Each was a walk up from every reference into a structure
-        /// that lives, and then a visit of that structure up to the member code refers to, at every check of a small
-        /// one that refers into it: in the self-hosted compiler on test 088 about a billion walks to a top (13.5 to 16
-        /// billion steps) and some 330 member visits for each of the million checks at a release, whose sets were 10
-        /// members on average. CS2WASM_NO_TAKE_IN_STOP=1 (at compile time): the whole walk, Top.</summary>
+        /// <summary>TakeInAbove's walk to the top: the top, 0 where the walk meets a member in the trial already (Dying: the
+        /// set's own, or a top taken in or one of what it owns: nothing to take in), or minus the top when a member on
+        /// the way, the member itself included, is one that code refers to. Such a top, taken in, had its members
+        /// visited until that one, whose visit stops every take-in of the trial (TrVisit): TakeInAbove stops them
+        /// here, with no visit, the same outcome. That was, at every check of a small structure that refers into one
+        /// that lives, a visit of the living one: in the self-hosted compiler on test 088 some 330 member visits for
+        /// each of the million checks at a release, whose sets were 10 members on average, and a walk up from every
+        /// reference of the set after it (TakeInAbove asks nothing once the take-in has stopped).
+        /// CS2WASM_NO_TAKE_IN_STOP=1 (at compile time): Top, and the visit.
+        /// (Stopping the walk at the member that code refers to, the top left out but the take-in going on, was tried:
+        /// the trials then took in and went through other living structures whole, 2.9 billion visits for 0.4.)</summary>
         static int TopToTake(int m)
         {
-            int v = m, mark = m, step = 0, lap = 64;
+            int v = m, mark = m, step = 0, lap = 64, held = 0;
             if (DropStats()) DsAdd(258, 1);
             while (true)
             {
                 if (DropStats()) DsAdd(259, 1);
                 // (CS2WASM_TAKE_IN_STOP_BREAK=1, a test: stopped at the member whatever code does, test 280)
-                if (Mem.LoadI32(v) != -2 || TakeInStopBreak()) return 0;
-                if ((PL(v, 24) & Owned) == 0) return v;
+                if (TakeInStopBreak()) return 0;
+                if (Mem.LoadI32(v) != -2) held = 1;
+                if ((PL(v, 24) & Owned) == 0) return held != 0 ? -v : v;
                 int w = PL(v, 20);
-                if (w == 0 || Mem.LoadI32(w) >= -1) return v;
+                if (w == 0 || Mem.LoadI32(w) >= -1) return held != 0 ? -v : v;
                 if ((PL(w, 24) & Dying) != 0) return 0;
                 v = w;
                 if (v == mark) return 0;
