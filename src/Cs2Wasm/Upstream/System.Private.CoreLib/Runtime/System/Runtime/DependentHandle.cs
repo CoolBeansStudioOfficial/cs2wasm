@@ -9,38 +9,51 @@ namespace System.Runtime
         public object? Value;
     }
 
-    //
-    // Instead of dependent handles, mono uses arrays of Ephemeron objects.
-    //
+    // cs2wasm (2026-11-22; before, Mono's Ephemeron[] with the key counted: a ConditionalWeakTable kept every key
+    // and every value while it lived). A handle is the address of a slot of the runtime's own memory,
+    // [target's address, dependent's address]: the target is not counted, the dependent is. When the target is
+    // destroyed (its last reference goes: Cs2Wasm.Runtime.ObjectMarks.OnDestroy, before its finalizer, as .NET clears
+    // a short weak reference) the slot's target is cleared and the dependent let go (WeakSlots.Cleared). As in
+    // .NET the slot itself lives until Dispose (ConditionalWeakTable's container disposes its entries' handles).
+    // Like a GC handle the slot is global: what it holds is shared (section 4.5).
+    // Not .NET's: a dependent that holds its own target (directly or through other objects) keeps both, as any
+    // cycle of counted references not known to the compiler does; .NET's collector frees both (docs/AUDIT.md).
     public struct DependentHandle : IDisposable
     {
-        private Ephemeron[]? _data;
+        private int _slot;
 
         public DependentHandle(object? target, object? dependent)
         {
-            _data = new Ephemeron[1];
-            _data[0].Key = target;
-            _data[0].Value = dependent;
-            GC.register_ephemeron_array(_data);
+            int slot = Cs2Wasm.Runtime.Rt.Alloc(8);
+            Cs2Wasm.Runtime.Mem.StoreI32(slot, 0);
+            Cs2Wasm.Runtime.Mem.StoreI32(slot + 4, 0);
+            _slot = slot;
+            if (target is null) return;
+            Cs2Wasm.Runtime.Rt.Share(target);
+            if (dependent is not null)
+            {
+                Cs2Wasm.Runtime.Rt.Share(dependent);
+                Cs2Wasm.Runtime.Rt.Retain(dependent);
+                Cs2Wasm.Runtime.Mem.StoreI32(slot + 4, Cs2Wasm.Runtime.Rt.AddressOf(dependent));
+            }
+            Cs2Wasm.Runtime.WeakSlots.LinkDependent(slot, target);
         }
 
-        public bool IsAllocated => _data is not null;
+        public bool IsAllocated => _slot != 0;
 
         public object? Target
         {
             get => UnsafeGetTarget();
             set
             {
-                Ephemeron[]? data = _data;
-
-                if (data is null || value is not null)
+                if (_slot == 0 || value is not null)
                 {
                     ThrowHelper.ThrowInvalidOperationException();
 
                     return;
                 }
 
-                data[0].Key = null;
+                UnsafeSetTargetToNull();
             }
         }
 
@@ -62,41 +75,59 @@ namespace System.Runtime
 
         internal object? UnsafeGetTarget()
         {
-            Ephemeron[]? data = _data;
+            int slot = _slot;
 
-            if (data is null)
+            if (slot == 0)
             {
                 ThrowHelper.ThrowInvalidOperationException();
 
                 return default;
             }
 
-            object? key = data[0].Key;
-
-            return key != GC.EPHEMERON_TOMBSTONE ? key : null;
+            if (Cs2Wasm.Runtime.Rt.SingleThreaded())
+            {
+                int v = Cs2Wasm.Runtime.Mem.LoadI32(slot);
+                return v == 0 ? null : Cs2Wasm.Runtime.Rt.Borrow<object>(v);
+            }
+            // threads: the target may be on its way out on another thread (the slot holds no count of it); it is
+            // counted here only if it is still alive, under the lock the clearing of the slot takes
+            Cs2Wasm.Runtime.Rt.RuntimeLock();
+            int a = Cs2Wasm.Runtime.Mem.LoadI32(slot);
+            bool alive = a != 0 && Cs2Wasm.Runtime.Rt.TryRetain(a);
+            Cs2Wasm.Runtime.Rt.RuntimeUnlock();
+            return alive ? Cs2Wasm.Runtime.Rt.Take<object>(a) : null;
         }
 
         internal object? UnsafeGetDependent()
         {
-            Ephemeron[]? data = _data;
+            int slot = _slot;
 
-            if (data is null)
+            if (slot == 0)
             {
                 ThrowHelper.ThrowInvalidOperationException();
 
                 return default;
             }
 
-            Ephemeron e = data[0];
-
-            return e.Key != GC.EPHEMERON_TOMBSTONE && e.Key is not null ? e.Value : null;
+            if (Cs2Wasm.Runtime.Rt.SingleThreaded())
+            {
+                int v = Cs2Wasm.Runtime.Mem.LoadI32(slot) == 0 ? 0 : Cs2Wasm.Runtime.Mem.LoadI32(slot + 4);
+                return v == 0 ? null : Cs2Wasm.Runtime.Rt.Borrow<object>(v);
+            }
+            // threads: the slot's count of the dependent is there while the lock is held (the clearing lets it go
+            // after taking the dependent out of the slot under the lock)
+            Cs2Wasm.Runtime.Rt.RuntimeLock();
+            int d = Cs2Wasm.Runtime.Mem.LoadI32(slot) == 0 ? 0 : Cs2Wasm.Runtime.Mem.LoadI32(slot + 4);
+            if (d != 0) Cs2Wasm.Runtime.Rt.Retain(Cs2Wasm.Runtime.Rt.Borrow<object>(d));
+            Cs2Wasm.Runtime.Rt.RuntimeUnlock();
+            return d != 0 ? Cs2Wasm.Runtime.Rt.Take<object>(d) : null;
         }
 
         internal object? UnsafeGetTargetAndDependent(out object? dependent)
         {
-            Ephemeron[]? data = _data;
+            int slot = _slot;
 
-            if (data is null)
+            if (slot == 0)
             {
                 ThrowHelper.ThrowInvalidOperationException();
 
@@ -105,51 +136,68 @@ namespace System.Runtime
                 return null;
             }
 
-            Ephemeron e = data[0];
-
-            if (e.Key != GC.EPHEMERON_TOMBSTONE && e.Key is not null)
+            if (Cs2Wasm.Runtime.Rt.SingleThreaded())
             {
-                dependent = e.Value;
-
-                return e.Key;
+                int v = Cs2Wasm.Runtime.Mem.LoadI32(slot);
+                if (v == 0) { dependent = null; return null; }
+                int dv = Cs2Wasm.Runtime.Mem.LoadI32(slot + 4);
+                dependent = dv == 0 ? null : Cs2Wasm.Runtime.Rt.Borrow<object>(dv);
+                return Cs2Wasm.Runtime.Rt.Borrow<object>(v);
             }
-
-            dependent = null;
-
-            return null;
+            Cs2Wasm.Runtime.Rt.RuntimeLock();
+            int a = Cs2Wasm.Runtime.Mem.LoadI32(slot);
+            bool alive = a != 0 && Cs2Wasm.Runtime.Rt.TryRetain(a);
+            int d = alive ? Cs2Wasm.Runtime.Mem.LoadI32(slot + 4) : 0;
+            if (d != 0) Cs2Wasm.Runtime.Rt.Retain(Cs2Wasm.Runtime.Rt.Borrow<object>(d));
+            Cs2Wasm.Runtime.Rt.RuntimeUnlock();
+            dependent = d != 0 ? Cs2Wasm.Runtime.Rt.Take<object>(d) : null;
+            return alive ? Cs2Wasm.Runtime.Rt.Take<object>(a) : null;
         }
 
         internal void UnsafeSetTargetToNull()
         {
-            Ephemeron[]? data = _data;
+            int slot = _slot;
 
-            if (data is null)
+            if (slot == 0)
             {
                 ThrowHelper.ThrowInvalidOperationException();
 
                 return;
             }
 
-            data[0].Key = null;
+            // (the dependent goes with the target: nothing is to keep it any more)
+            Cs2Wasm.Runtime.WeakSlots.UnlinkDependent(slot);
         }
 
         internal void UnsafeSetDependent(object? dependent)
         {
-            Ephemeron[]? data = _data;
+            int slot = _slot;
 
-            if (data is null)
+            if (slot == 0)
             {
                 ThrowHelper.ThrowInvalidOperationException();
 
                 return;
             }
 
-            data[0].Value = dependent;
+            if (dependent is not null)
+            {
+                Cs2Wasm.Runtime.Rt.Share(dependent);
+                Cs2Wasm.Runtime.Rt.Retain(dependent);
+            }
+            // (a target that is gone keeps no dependent)
+            int old = Cs2Wasm.Runtime.WeakSlots.ExchangeDependent(slot, dependent is null ? 0 : Cs2Wasm.Runtime.Rt.AddressOf(dependent), out bool stored);
+            if (old != 0) Cs2Wasm.Runtime.Rt.Release(Cs2Wasm.Runtime.Rt.Borrow<object>(old));
+            if (!stored && dependent is not null) Cs2Wasm.Runtime.Rt.Release(dependent);
         }
 
         public void Dispose()
         {
-            _data = null;
+            int slot = _slot;
+            if (slot == 0) return;
+            _slot = 0;
+            Cs2Wasm.Runtime.WeakSlots.UnlinkDependent(slot);
+            Cs2Wasm.Runtime.Rt.Free(slot, 8);
         }
     }
 }

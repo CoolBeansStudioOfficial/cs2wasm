@@ -996,6 +996,8 @@ sealed partial class FunctionCompiler
             case "Cs2WasmArrays.BoxesElements": D.MarkBoxedElements(); return Own.None;
             case "Rt.ArenaFinalizeObject": E.Call(Rt.ArenaFinFn); return Own.None;
             case "Rt.ArenaFinType": E.Call(Rt.ArenaFinTypeFn); return Own.None;
+            case "Rt.WeakAny": E.Call(Rt.WeakAnyFn); return Own.None;
+            case "Rt.WeakDying": E.Call(Rt.WeakDyingFn); return Own.None;
             case "Rt.SingleThreaded": E.Call(Rt.SingleThreadedFn); return Own.None;
             case "Rt.WideSizes": E.Call(Rt.WideSizesFn); return Own.None;
             case "Rt.FirstChanceWanted": E.Call(Rt.FirstChanceFn); return Own.None;

@@ -26,9 +26,14 @@ namespace Cs2Wasm.Compiler;
 //   struct a constructor fills; the ref struct an instance method is called on;
 // - a virtual or interface method when it, or any override or implementation in the program, is one of those; a
 //   delegate that returns or gives out such a type (its target is not known: always kept).
+// The locals are the function's own (found before its body is compiled: PreScan, and a state machine's graph), so
+// a call in an inner scope (`if (c) span = f(list);`) keeps for the rest of the function; until 2026-11-22 only a
+// state machine's calls were found beforehand, and a keep made in an inner scope ended with that scope (test 241,
+// "nested": the span read the freed array after the `if`).
 // What flows where inside a body is not followed: a body that makes such a call anywhere counts for all its ways
 // out. That keeps an array a little longer than .NET needs it (to the calling function's return), never shorter.
-// Not covered: a function pointer. CS2WASM_NO_STORAGE_KEEP=1: none; CS2WASM_STORAGE_KEEP_SHALLOW=1: the calls
+// A function pointer (`delegate*<List<T>, Span<T>>`) whose signature returns or gives out such a type likewise
+// (since 2026-11-22, test 241; CS2WASM_NO_FNPTR_STORAGE_KEEP=1: not). CS2WASM_NO_STORAGE_KEEP=1: none; CS2WASM_STORAGE_KEEP_SHALLOW=1: the calls
 // themselves and their direct wrappers by return value only (as it was, and what test 222's deeper cases fail on).
 internal sealed partial class Driver
 {
@@ -71,6 +76,7 @@ internal sealed partial class Driver
     }
 
     static readonly bool s_noStorageKeep = Environment.GetEnvironmentVariable("CS2WASM_NO_STORAGE_KEEP") == "1";
+    static readonly bool s_noFnPtrStorageKeep = Environment.GetEnvironmentVariable("CS2WASM_NO_FNPTR_STORAGE_KEEP") == "1";
     static readonly bool s_shallowStorageKeep = Environment.GetEnvironmentVariable("CS2WASM_STORAGE_KEEP_SHALLOW") == "1";
     readonly Dictionary<ISymbol, bool> _exposesStorage = new(SymbolEqualityComparer.Default);
     readonly HashSet<ISymbol> _exposing = new(SymbolEqualityComparer.Default);
@@ -94,6 +100,8 @@ internal sealed partial class Driver
         var def = (m.ReducedFrom ?? m).OriginalDefinition;
         if (IsStorageCall(def)) return true;
         if (!StorageWayOut(def)) return false;
+        // (a function pointer's signature: the target is not known, always kept)
+        if (def.MethodKind == MethodKind.FunctionPointerSignature) return !s_shallowStorageKeep && !s_noFnPtrStorageKeep;
         if (s_shallowStorageKeep)
         {
             if (!(def.ReturnsByRef || def.ReturnsByRefReadonly || def.ReturnType.IsRefLikeType) || def.DeclaringSyntaxReferences.Length != 1 || IsLibrary(def)) return false;
@@ -205,12 +213,18 @@ sealed partial class FunctionCompiler
         IInvocationOperation inv => inv.TargetMethod,
         IPropertyReferenceOperation pr => pr.Property.GetMethod,
         IObjectCreationOperation oc => oc.Constructor,
+        // (a function pointer: its type's signature; the target is not known, as a delegate's is not)
+        IFunctionPointerInvocationOperation { Target.Type: IFunctionPointerTypeSymbol fp } => fp.Signature,
         _ => null,
     };
 
-    void NoteStorageSite(IOperation op)
+    void NoteStorageSite(IOperation op, IOperation root)
     {
-        if (StorageCallee(op) is { } m && D.ExposesStorage(m)) _storageSites.Add(op);
+        if (StorageCallee(op) is not { } m || !D.ExposesStorage(m)) return;
+        // (in a lambda or a local function: that function's own site)
+        for (var p = op.Parent; p != null && p != root && p.Syntax != root.Syntax; p = p.Parent)
+            if (p is IAnonymousFunctionOperation or ILocalFunctionOperation) return;
+        _storageSites.Add(op);
     }
 
     /// <summary>Where the references are in a ref struct (a span's `_reference`, a `ref` field, the same inside the
@@ -250,7 +264,7 @@ sealed partial class FunctionCompiler
         foreach (var site in _storageSites)
         {
             if (_storageKeeps.ContainsKey(site.Syntax)) continue;
-            var (ret, self, args) = StoragePlan(SubstMethod(StorageCallee(site)!));
+            var (ret, self, args) = StoragePlan(site is IFunctionPointerInvocationOperation fpi ? ((IFunctionPointerTypeSymbol)TypeOf(fpi.Target)).Signature : SubstMethod(StorageCallee(site)!));
             var locals = new List<int>();
             for (int n = ret + self + args.Sum(); n > 0; n--)
             {

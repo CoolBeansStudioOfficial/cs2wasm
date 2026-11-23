@@ -595,6 +595,7 @@ sealed partial class FunctionCompiler
         _closure!.ParamLocal = 0;
         foreach (var p in M.Parameters) _vars.Remove(p);
         PushScope();
+        PrepareStorageKeeps();
         _dispatchStateOff = info.Machine.ExtraSlots["state"].offset;
         _curLocal = E.AddLocal(ValType.I32);
         for (int i = 0; i < _cfg.Blocks.Length; i++) _segments.Add((i, i, 0, 0));

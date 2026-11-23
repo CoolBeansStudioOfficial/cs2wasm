@@ -41,8 +41,17 @@ sealed partial class FunctionCompiler
         foreach (var p in sig.Parameters) ps.Add(p.RefKind != RefKind.None ? ValType.I32 : Types.WasmType(T.Resolve(p.Type, Map)) ?? ValType.I32);
         var ret = sig.ReturnsByRef || sig.ReturnsByRefReadonly ? ValType.I32 : Types.WasmType(rt);
         E.Emit(Op.CallIndirect, 0, 0, new FuncType([.. ps], sret || ret == null ? [] : [ret.Value]));
+        // (a reference into a collection's storage can come out: the storage kept, StorageKeeps.cs)
+        bool keeps = D.ExposesStorage(sig);
+        if (keeps && !(sig.ReturnsByRef || sig.ReturnsByRefReadonly))
+        {
+            if (sret) { E.Get(_fb); E.I32(sretOff); E.Op(Op.I32Add); }
+            KeepStorage(sig, fpi.Syntax, false, null, args);
+            if (sret) E.Op(Op.Drop);
+        }
         if (sig.ReturnsByRef || sig.ReturnsByRefReadonly)
         {
+            if (keeps) KeepStorage(sig, fpi.Syntax, true, null, args);
             if (_wantRefReturnAddress) { _wantRefReturnAddress = false; return Own.None; }
             if (Types.IsStruct(rt)) return Own.None;
             E.Load(Types.LoadOp(rt));

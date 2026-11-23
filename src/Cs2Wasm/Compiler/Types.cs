@@ -230,6 +230,10 @@ internal sealed class Types
                 return _d.LibCompilation.CreateArrayTypeSymbol(Substitute(a.ElementType, map), a.Rank);
             case IPointerTypeSymbol p:
                 return _d.LibCompilation.CreatePointerTypeSymbol(Substitute(p.PointedAtType, map));
+            // (a function pointer in generic code, `delegate*<List<T>, Span<T>>`: its signature's types)
+            case IFunctionPointerTypeSymbol { Signature: var sig } when HasTypeParams(t):
+                return _d.LibCompilation.CreateFunctionPointerTypeSymbol(Substitute(sig.ReturnType, map), sig.RefKind,
+                    System.Collections.Immutable.ImmutableArray.CreateRange(sig.Parameters.Select(x => Substitute(x.Type, map))), System.Collections.Immutable.ImmutableArray.CreateRange(sig.Parameters.Select(x => x.RefKind)), sig.CallingConvention);
             case INamedTypeSymbol n:
                 {
                     if (!HasTypeParams(n)) return n;
@@ -253,6 +257,7 @@ internal sealed class Types
         ITypeParameterSymbol => true,
         IArrayTypeSymbol a => HasTypeParams(a.ElementType),
         IPointerTypeSymbol p => HasTypeParams(p.PointedAtType),
+        IFunctionPointerTypeSymbol f => HasTypeParams(f.Signature.ReturnType) || f.Signature.Parameters.Any(x => HasTypeParams(x.Type)),
         INamedTypeSymbol n => n.TypeArguments.Any(HasTypeParams) || (n.ContainingType != null && HasTypeParams(n.ContainingType)),
         _ => false,
     };

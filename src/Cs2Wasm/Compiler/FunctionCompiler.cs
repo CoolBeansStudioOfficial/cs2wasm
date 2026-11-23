@@ -365,7 +365,7 @@ sealed partial class FunctionCompiler
                 case IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None, Initializer: { } init }: MarkAddr(init.Value); break;
                 case ISimpleAssignmentOperation { IsRef: true } sa: MarkAddr(sa.Value); break;
                 // (a call that gives a reference into a collection's storage: StorageKeeps.cs)
-                case IInvocationOperation or IPropertyReferenceOperation or IObjectCreationOperation: NoteStorageSite(op); MarkNestedWrite(op); break;
+                case IInvocationOperation or IPropertyReferenceOperation or IObjectCreationOperation or IFunctionPointerInvocationOperation: NoteStorageSite(op, tree); MarkNestedWrite(op); break;
                 default: MarkNestedWrite(op); break;
             }
     }
@@ -398,6 +398,8 @@ sealed partial class FunctionCompiler
                 case IReturnOperation { ReturnedValue: { } rv } when M.ReturnsByRef || M.ReturnsByRefReadonly: MarkAddr(rv); break;
             }
             MarkNestedWrite(op);
+            // (a call that gives a reference into a collection's storage: StorageKeeps.cs)
+            if (op is IInvocationOperation or IPropertyReferenceOperation or IObjectCreationOperation or IFunctionPointerInvocationOperation) NoteStorageSite(op, body);
             if (op is IAssignmentOperation asg && asg.Target is IParameterReferenceOperation pr) _assignedParams.Add(pr.Parameter);
             if (op is IIncrementOrDecrementOperation inc && inc.Target is IParameterReferenceOperation pr2) _assignedParams.Add(pr2.Parameter);
             if (op is IDeconstructionAssignmentOperation da)
