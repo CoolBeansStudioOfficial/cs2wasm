@@ -763,14 +763,14 @@ sealed partial class RuntimeGen
                     // (a group's member: what the finalizers of the others counted on it meanwhile stays, and so
                     // does what its own counts: the group's destruction looks at the counts afterwards)
                     e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Add); e.Store(Op.I32Store);
-                    e.Call(rt.FinHold); e.Call(rt.BeforeFin); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
+                    e.Call(rt.FinHold); e.Call(rt.BeforeFin); CallFinalizers(e, fin); e.Call(rt.FinUnhold);
                     e.Get(0); e.Get(0); e.Load(Op.I32Load); e.I32(0x40000000); e.Op(Op.I32Sub); e.Store(Op.I32Store);
                     e.End();
                     e.End();
                     return;
                 }
                 e.Get(0); e.I32(1); e.Store(Op.I32Store);
-                e.Call(rt.FinHold); e.Call(rt.BeforeFin); e.Get(0); e.Call(D.Method(fin).Fn); e.Call(rt.FinUnhold);
+                e.Call(rt.FinHold); e.Call(rt.BeforeFin); CallFinalizers(e, fin); e.Call(rt.FinUnhold);
                 if (finalizer != 1)
                 {
                     // the finalizer stored the object somewhere (its count is more than the temporary one): it
@@ -1170,6 +1170,17 @@ sealed partial class RuntimeGen
                 return (null, w);
             });
         };
+    }
+
+    /// <summary>The object's finalizer and then each base class's, most derived first: what the C# compiler writes
+    /// into a destructor for .NET (`try { body } finally { base.Finalize(); }`; test 242. Until 2026-11-22 only the
+    /// most derived ran). An exception out of a finalizer ends the program in .NET, so no later one is owed.</summary>
+    void CallFinalizers(Emitter e, IMethodSymbol fin)
+    {
+        for (IMethodSymbol? f = fin; f != null; f = f.ContainingType.BaseType is { } bt ? FindFinalizer(D.Types.Canonical(bt)) : null)
+        {
+            e.Get(0); e.Call(D.Method(f).Fn);
+        }
     }
 
     IMethodSymbol? FindFinalizer(ITypeSymbol t)
