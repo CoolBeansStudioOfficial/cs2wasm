@@ -2738,7 +2738,8 @@ namespace Cs2Wasm.Runtime
                     && (Mem.LoadI32(ArenaOf(w) + 12) & ArenaBusy) == 0) ArenaDestroyFrom(w, 0);
                 // (a destruction's survivor, QueueCheck: kept by what it owns alone? A top whose check failed is looked at
                 // again by its note's number)
-                else if (StickyHolds() && (PLM(w) & 1) == 0 && DropCandidate(w)) Dropped(w);
+                // (or a top whose number of references from outside came to zero as their holders died, DyingNote)
+                else if ((StickyHolds() ? (PLM(w) & 1) == 0 : (PLM(w) & 3) == 3) && DropCandidate(w)) Dropped(w);
             }
         }
 
@@ -4371,7 +4372,8 @@ namespace Cs2Wasm.Runtime
                 if (n == 0 && co == -2) ArenaDestroyFrom(old, 0);
                 else
                 {
-                    if (PL(old, 20) == 0) Adopt(old);
+                    bool adopted = false;
+                    if (PL(old, 20) == 0) { Adopt(old); adopted = PL(old, 20) != 0; }
                     if (!HoldSettled(old)) UpdateHold(old);
                     // (left with what it owns alone, or under a top that a check failed for: the check at the drop)
                     s_watch = container;
@@ -4386,6 +4388,16 @@ namespace Cs2Wasm.Runtime
                     int back = s_failedTops != 0 && OutsideMarked(PLM(old)) ? NoteOutside(old, container, -1) : 0;
                     bool died = back != 0 && Dropped(back);
                     if (!died && back != old && (ownerEdge || (PLM(old) & 1) == 0) && DropCandidate(old)) died = Dropped(old);
+                    // (let go by its owner, it is now the property of another container that holds it, and that one
+                    // may be its own: an array it owns whose element refers back to it, `n.Raw[6] = n`, test 247.
+                    // The ownership has turned round, the array is the top, nothing's, with no reference from
+                    // outside, kept by what it owns alone: the check is the new top's. Without it the member
+                    // stayed until its group went. CS2WASM_NO_ADOPT_CHECK=1: not asked)
+                    if (!died && adopted && !NoAdoptCheck())
+                    {
+                        int t = Top(old);
+                        if (t != 0 && t != old && t != back && (PLM(t) & 1) == 0 && DropCandidate(t)) died = Dropped(t);
+                    }
                     gone = died && s_watchHit != 0;
                     s_watch = 0;
                     if (!died && old != container && LeaveCandidate(old)) TryLeave(old);
@@ -4717,9 +4729,28 @@ namespace Cs2Wasm.Runtime
             OwnerLetGo(child, obj);
             if (PL(child, 20) == 0) Adopt(child);
             UpdateHold(child);
+            if (s_failedTops != 0 && OutsideMarked(PLM(child))) DyingNote(child, obj);
             // (a survivor of the cut that nothing outside refers to may be kept by stale holds of what it owns alone:
             // checked at the drop when the destruction is done, DrainKills)
             if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
+        }
+
+        /// <summary>CS2WASM_NO_DYING_NOTE=1 (at compile time): a reference that goes with its dying holder is not
+        /// taken off the number of a top whose check failed (DyingNote).</summary>
+        [Intrinsic] static extern bool NoDyingNote();
+
+        /// <summary>A dying member (obj) referred to a member that lives on (child) under a top whose check at the
+        /// drop failed by references from outside what it owns: this was one of them, and it is gone, as at an
+        /// unlink (ArenaUnlinkOld asks NoteOutside the same). At zero the top is checked again once the
+        /// destruction is done (DrainKills). Until 2026-11-23 only a store took such a reference off the number:
+        /// a ring of cells kept by one cell of another array stayed, when that array went, until the group did
+        /// (test 249).</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void DyingNote(int child, int obj)
+        {
+            if (NoDyingNote()) return;
+            int t = NoteOutside(child, obj, -1);
+            if (t != 0 && (PL(t, 24) & (Dying | Queued)) == 0) { KillPush(t); PS(t, 24, PL(t, 24) | Queued); }
         }
 
         /// <summary>The target is above the dying member on its chain, and every member between them is dying:
@@ -4854,6 +4885,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_NO_FIN_REVIVE=1 (at compile time): members a reference was left to after their finalizers
         /// are never freed, nor what they refer to (FinRevive).</summary>
         [Intrinsic] static extern bool NoFinRevive();
+        [Intrinsic] static extern bool NoAdoptCheck();
 
         // (FinPhase under way, how deep; the members that live on which took a dying member into a slot meanwhile,
         // each counted once more while it is in the list; FinRevive's slots to link: container, slot, element, value)
@@ -5342,6 +5374,7 @@ namespace Cs2Wasm.Runtime
             OwnerLetGo(child, m);
             if (PL(child, 20) == 0) Adopt(child);
             UpdateHold(child);
+            if (s_failedTops != 0 && OutsideMarked(PLM(child))) DyingNote(child, m);
             if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
             return s_visitDead;
         }
