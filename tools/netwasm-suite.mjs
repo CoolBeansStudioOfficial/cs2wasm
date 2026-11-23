@@ -279,7 +279,8 @@ const observed = (r) => r.timedOut ? `${r.stdout}timeout\n` : `${r.stdout}exit $
 
 async function oracle(cases) {
   const built = readJson(join(work, 'build.json'), {});
-  const todo = cases.filter((c) => built[c.dir]?.ok && (force || !existsSync(join(work, 'oracle', `${c.dir}.json`))));
+  // (a record is redone when the case's program, its driver or the stand-in changed since: its hash)
+  const todo = cases.filter((c) => built[c.dir]?.ok && (force || readJson(join(work, 'oracle', `${c.dir}.json`), {}).hash !== c.hash));
   console.log(`oracle: ${todo.length} cases x ${runs} runs under .NET ${rid} (${par} at once)`);
   await pool(todo, par, async (c) => {
     const results = [];
@@ -289,7 +290,7 @@ async function oracle(cases) {
     const outs = results.map(observed);
     const variants = [...new Set(outs.slice(0, runs))];
     const rec = {
-      id: c.id, dir: c.dir,
+      id: c.id, dir: c.dir, hash: c.hash,
       stable: variants.length === 1 && !results.slice(0, runs).some((r) => r.timedOut),
       timedOut: results.slice(0, runs).some((r) => r.timedOut),
       variants: variants.length,
@@ -321,7 +322,7 @@ async function runIl2wasm(cases) {
   console.log(`run: ${todo.length} case-modes (${standin ? 'the .NET build standing in for the module' : compileCmd}), ${par} at once${repeat > 1 ? `, each run ${repeat} times at once` : ''}`);
   await pool(todo, par, async ({ c, o, mode }) => {
     const key = `${c.dir}|${mode}`;
-    if (!force && results[key]?.status === 'pass' && results[key].compiler === compileCmd) return;
+    if (!force && results[key]?.status === 'pass' && results[key].compiler === compileCmd && results[key].hash === o.hash) return;
     const out = join(work, 'modules', mode, `${c.dir}.wasm`);
     mkdirSync(dirname(out), { recursive: true });
     const vars = { dll: dllPath(c), project: join(work, 'cases', c.dir, 'case.csproj'), casedir: join(work, 'cases', c.dir), out, mode, checked: mode === 'checked' ? '--checked' : '', root };
@@ -339,11 +340,15 @@ async function runIl2wasm(cases) {
       const words = template(runCmd, vars);
       return run(words[0], words.slice(1), { cwd: binDir(c) });
     };
-    const rs = await Promise.all(Array.from({ length: repeat }, runOnce));
+    // under load: the repeats at once, except for a case that uses state of the machine all its runs share
+    // (isolated storage, drives): those one after another
+    let rs = [];
+    if (c.tags.includes('machine-state')) for (let k = 0; k < repeat; k++) rs.push(await runOnce());
+    else rs = await Promise.all(Array.from({ length: repeat }, runOnce));
     const outs = rs.map(observed);
     const bad = outs.findIndex((x) => x !== o.expected);
     const status = bad < 0 ? 'pass' : rs[bad].timedOut ? 'timeout' : 'fail';
-    results[key] = { status, compiler: compileCmd, compileMs: compile.ms, ms: rs.map((r) => r.ms), oracleStable: o.stable, ...(bad >= 0 ? { diff: diff(o.expected, outs[bad]), stderr: rs[bad].stderr.slice(-2000) } : {}) };
+    results[key] = { status, compiler: compileCmd, hash: o.hash, compileMs: compile.ms, ms: rs.map((r) => r.ms), oracleStable: o.stable, ...(bad >= 0 ? { diff: diff(o.expected, outs[bad]), stderr: rs[bad].stderr.slice(-2000) } : {}) };
   });
   writeJson(join(work, 'results.json'), results);
 }

@@ -14,6 +14,9 @@ sealed record Signature(string? Problem, string TypeName = "", string ReturnType
 
 static class Driver
 {
+    // bumped whenever the generated driver changes, so oracle results recorded with an older one are redone
+    public const string Version = "1";
+
     public static Signature Analyze(CaseInfo c)
     {
         var parse = new CSharpParseOptions(LanguageVersion.Preview);

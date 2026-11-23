@@ -299,6 +299,8 @@ void Add(CaseInfo c)
     var key = Hash(string.Join("\0", c.Sources.Select(s => s.Name + "\0" + s.Text)) + "\0" + c.Namespace + "\0" + c.Entry + "\0" + string.Join(",", c.Inputs) + "\0" + string.Join(",", c.Packages.Select(p => p.Item1 + p.Item2)) + c.CallbackEntry);
     if (byHash.TryGetValue(key, out var first)) { first.Aliases.Add(c.Id); return; }
     byHash[key] = c;
+    // what the oracle's record is valid for: the case's program and the driver and stand-in it is built with
+    c.Hash = Hash(key + (c.ShimPath is null ? "" : File.ReadAllText(c.ShimPath)) + Driver.Version);
     c.Dir = Unique(Sanitize(c.Id));
     Classify(c);
     cases.Add(c);
@@ -336,6 +338,8 @@ void Classify(CaseInfo c)
     if (Regex.IsMatch(text, @"\bThread\b|\bTask\.Run\b|Parallel\.|ThreadPool|\bTimer\b|async\b")) c.Tags.Add("threads-or-async");
     if (Regex.IsMatch(text, @"\bfloat\b|\bdouble\b|\bMath\.|\bMathF\.|\bHalf\b")) c.Tags.Add("floating-point");
     if (c.Skipped) c.Tags.Add("skipped-by-netwasm");
+    // state of the machine every run shares (isolated storage, drives, watched directories): its runs cannot overlap
+    if (Regex.IsMatch(text, @"IsolatedStorage|DriveInfo|FileSystemWatcher|\bMutex\b|MemoryMappedFile")) c.Tags.Add("machine-state");
 }
 
 void WriteProject(CaseInfo c)
@@ -389,7 +393,7 @@ sealed class CaseInfo
 {
     public string Id = "", Origin = "", File = "", Name = "", Namespace = "", Entry = "Run", DesktopEntry = "Run", Dir = "";
     public List<int> Inputs = [];
-    public string? ShimPath;
+    public string? ShimPath, Hash;
     public int Tests;
     public List<(string Name, string Text)> Sources = [];
     public List<(string, string)> Packages = [];
@@ -399,7 +403,7 @@ sealed class CaseInfo
     public SortedSet<string> Tags = new(StringComparer.Ordinal);
     public JsonObject ToJson() => new()
     {
-        ["id"] = Id, ["dir"] = Dir, ["origin"] = Origin, ["file"] = File, ["name"] = Name, ["namespace"] = Namespace,
+        ["id"] = Id, ["dir"] = Dir, ["hash"] = Hash, ["origin"] = Origin, ["file"] = File, ["name"] = Name, ["namespace"] = Namespace,
         ["entry"] = Entry, ["desktopEntry"] = DesktopEntry, ["inputs"] = Origin == "library" ? Tests : Inputs.Count,
         ["sources"] = new JsonArray(Sources.Select(s => (JsonNode?)s.Name).ToArray()),
         ["packages"] = new JsonArray(Packages.Select(p => (JsonNode?)$"{p.Item1} {p.Item2}").ToArray()),
