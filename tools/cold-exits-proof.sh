@@ -19,7 +19,7 @@ if cmp -s $O/plain.txt $O/on.txt && [ "$n" -gt 5 ]; then echo "with the pass ($n
 for w in stack rest labels; do
   rm -f $O/$w.wasm
   if CS2WASM_COLD_EXITS=1 CS2WASM_COLD_EXITS_WITHOUT=$w CS2WASM_VALIDATE=1 $C $T -o $O/$w.wasm > $O/$w.build.txt 2>&1 && [ -f $O/$w.wasm ]; then
-    node host/run.mjs $O/$w.wasm main > $O/$w.txt 2>&1
+    timeout 60 node host/run.mjs $O/$w.wasm main > $O/$w.txt 2>&1   # (a module with a rule out may not end)
     if cmp -s $O/plain.txt $O/$w.txt; then echo "without $w: the same output: FAILS"; rc=1; else echo "without $w: $(diff $O/plain.txt $O/$w.txt | grep -c '^<') lines differ"; fi
   else
     echo "without $w: the module is not valid ($(grep -m1 -o 'invalid code[^:]*: [^:]*: [^(]*' $O/$w.build.txt | cut -c1-90))"
