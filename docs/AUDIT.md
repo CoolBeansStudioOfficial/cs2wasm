@@ -5271,3 +5271,37 @@ What was agreed for decisions 1 and 2:
     about twenty, the drop check, TopHeld and the holds, would have to see such an exchange or exclude it, a lock per
     member at least for the count word and the hold's words); and finding what still makes the parser's arrays
     members (CS2WASM_DROP_STATS's op counts on a threaded build).
+
+### IL front end, steps 2 and 3 (claude/il-frontend, 2026-11-23)
+
+- Type system: NativeAOT's (dotnet/runtime v11.0.0, deae2e32, ILCompiler.TypeSystem's 231 files, MIT) in
+  `src/Il2Wasm/IL/TypeSystem`, one change marked `// il2wasm:` (a class with layout over an auto-layout base is laid
+  out as auto, as CoreCLR does: the IL CoreLib's SafeHandle). `Types/IlContext.cs`: wasm32 (pointers of 4 bytes),
+  System.Object laid out as the 12-byte header so NativeAOT's offsets are il2wasm's, canonical forms over __Canon.
+  A long is 8-aligned in structs and classes (as NativeAOT's wasm32 and ARM32; x86 .NET aligns it to 4), kept for
+  the WASM atomics.
+- IR and importer (`src/Il2Wasm/IL/Ir`): SSA by Braun et al.'s construction over locals, arguments and stack slots at
+  joins, ECMA's stack types checked, exception regions as a tree. Locals written in a protected region or a finally
+  are variables (no SSA value names their value at a handler); address-taken locals and every struct local are in a
+  frame on the shadow stack. Struct values are copies of their own in the frame.
+- Ownership, naive (`Ir/Ownership.cs`): every reference value (and struct with references) owned from definition to
+  last use, by SSA liveness with handlers as successors of their try's blocks; each value's local zero when it holds
+  no count, which makes the releases at block entries, handler entries and exceptional exits path-independent.
+- Structuring and lowering (`src/Il2Wasm/IL/Lower`): per region a graph of its blocks and of try compounds, Ramsey's
+  "Beyond Relooper" on it, a dispatch loop when it is irreducible; try_table with catch_ref and type tests in order;
+  finally and fault over catch_all_ref with a leave local. A branch into a try's start from outside (a loop headed
+  by a try, a catch's leave back to its try) is an ordinary edge into the compound, so no rewrite is needed.
+  The back end's passes need `br` after a try_table's end, not `unreachable` (with `unreachable`, a pass cut the
+  function's body): the old front end's shape is kept.
+- Results [run, desk, tests/Il2Wasm.IL.Tests against a hand-written stub CoreLib]: 67 of 67 checks, 8 programs equal
+  to .NET (run in process as the oracle), each with 0 allocator blocks live at its end, back end optimization on and
+  off. The old front end's 145_size_hello still passes (narrow suite, desk).
+- The IL CoreLib (claude/il-corelib's artifacts/framework) with `Console.WriteLine(42)`, compiled leniently
+  (IL2WASM_IL_LENIENT=1: what is missing traps, as a warning): 335 warnings, 28 missing intrinsics (TypeInfo.*,
+  Il2WasmArrays.*, TextScan.Eq16*, Rt.Sqrt, Rt.SccOf, Rt.MarkConstructed, Rt.ArrayRankAt, Rt.ArrayElementSizeAt,
+  Rt.ArrayMoveMode, Rt.MemStatsHash, Atomic.Add64), about 300 methods that need Type objects (typeof other than a
+  comparison of two known types, which folds), 3 ldftn. Not run: the module traps where those are reached.
+- Not done: Type objects and the rest of ldtoken (RuntimeHelpers.InitializeArray and CreateSpan over field data),
+  delegates and function pointers (ldftn, ldvirtftn, calli), generic sharing (everything is instantiated), generic
+  virtual methods, two-pass filters (one pass now), thread-safe static constructors, array-store covariance checks,
+  floating-point remainder, finalizers and weak references, stack traces and the line table from the PDB.

@@ -52,6 +52,9 @@ public sealed class IlCompiler
     /// <summary>A static method of no arguments returning an int, exported as il2wasm_live (the tests' leak check: the
     /// blocks the allocator holds).</summary>
     public MethodDesc? LiveCounter;
+    /// <summary>What is not compiled yet traps where it is reached (each one a warning), instead of failing the build:
+    /// to measure how far a program gets (IL2WASM_IL_LENIENT=1).</summary>
+    public bool Lenient = Environment.GetEnvironmentVariable("IL2WASM_IL_LENIENT") == "1";
     /// <summary>IL2WASM_IL_DUMP=name: the IR of the methods whose name contains it, on stderr.</summary>
     static readonly string? s_dump = Environment.GetEnvironmentVariable("IL2WASM_IL_DUMP") is { Length: > 0 } d ? d : null;
 
@@ -175,7 +178,9 @@ public sealed class IlCompiler
         }
         catch (Exception e) when (e is NotSupportedException or InvalidProgramException)
         {
-            throw new InvalidOperationException($"{m}: {e.Message}", e);
+            if (!Lenient) throw new InvalidOperationException($"{m}: {e.Message}", e);
+            Warnings.Add("not compiled: " + e.Message);
+            f.Body.Clear(); f.Locals.Clear(); new Emitter(f).Op(WOp.Unreachable);
         }
     }
 
@@ -411,11 +416,44 @@ public sealed class IlCompiler
             case "Rt.TypeIdOf": e.Tid(TypeId(m.Instantiation[0])); break;
             case "Rt.HeapBase": e.I32Addr(new LateAddr(() => _heapBase)); break;
             case "Rt.Unreachable": e.Op(WOp.Unreachable); break;
+            case "Mem.RefI32": break;
+            case "Rt.I32Clz": e.Op(WOp.I32Clz); break;
+            case "Rt.I32Ctz": e.Op(WOp.I32Ctz); break;
+            case "Rt.I32Popcnt": e.Op(WOp.I32Popcnt); break;
+            case "Rt.IsReference": e.I32(Kinds.Of(m.Instantiation[0]) == VK.Ref ? 1 : 0); break;
+            case "Rt.ContainsReferences": e.I32(Kinds.Counted(m.Instantiation[0]) ? 1 : 0); break;
+            case "Rt.SizeOf": e.I32(Kinds.Of(m.Instantiation[0]) == VK.Struct ? ((DefType)m.Instantiation[0]).InstanceFieldSize.AsInt : Kinds.SizeOf(m.Instantiation[0])); break;
+            case "Rt.ReleaseElements": e.Call(Rt.Range(m.Instantiation[0], false)); break;
+            case "Rt.RetainElements": e.Call(Rt.Range(m.Instantiation[0], true)); break;
+            // (the program as compiled here: one thread, no groups, the allocator's narrow size steps; the runtime's
+            // switches at their defaults)
+            case "Rt.ThreadMode": case "Rt.ShareCheck": case "Rt.Checked": case "Rt.MemStatsOn": case "Rt.WideSizes": case "Rt.RuntimeLockHeld": e.I32(0); break;
+            case "Rt.SingleThreaded": case "Rt.RipePages": case "Rt.HoldPages": e.I32(1); break;
+            case "Rt.ThreadId": e.I32(1); break;
+            case "Rt.BulkEnter": case "Rt.BulkExit": case "Rt.HoldEpoch": case "Rt.ReleaseEpoch": case "Rt.RuntimeLock": case "Rt.RuntimeUnlock": case "Rt.MemStatsGrow": break;
+            case "Rt.PartWeak": e.Op(WOp.Drop); break;
+            case "Rt.MoveRefs": e.Op(WOp.Drop); e.Op(WOp.Drop); e.Op(WOp.Drop); e.I32(0); break;
+            // (one thread: the atomic operations are plain ones)
+            case "Atomic.Load32": e.Load(WOp.I32Load); break;
+            case "Atomic.Store32": e.Store(WOp.I32Store); break;
+            case "Atomic.Add32": e.Call(Rt.PlainRmw(false)); break;
+            case "Atomic.CompareExchange32": e.Call(Rt.PlainRmw(true)); break;
+            case "Atomic.Wait32": e.Op(WOp.Drop); e.Op(WOp.Drop); e.Op(WOp.Drop); e.I32(2); break; // ("timed out": no other thread can change it)
+            case "Atomic.Notify": e.Op(WOp.Drop); e.Op(WOp.Drop); e.I32(0); break;
+            case "Rt.TypeName":
+                e.Call(Rt.NonNull); e.Load(WOp.I32Load, 4);
+                _nameTable ??= StaticNameTable();
+                e.I32(2); e.Op(WOp.I32Shl); e.I32Addr(_nameTable); e.Op(WOp.I32Add); e.Load(WOp.I32Load);
+                break;
             case "Rt.TypeNameById":
                 _nameTable ??= StaticNameTable();
                 e.I32(2); e.Op(WOp.I32Shl); e.I32Addr(_nameTable); e.Op(WOp.I32Add); e.Load(WOp.I32Load);
                 break;
-            default: throw new NotSupportedException($"the intrinsic {key}");
+            default:
+                if (!Lenient) throw new NotSupportedException($"the intrinsic {key}");
+                Warnings.Add("missing intrinsic " + key);
+                e.Op(WOp.Unreachable);
+                return true;
         }
         fl.SetResult(n);
         return true;
@@ -824,6 +862,38 @@ public sealed class IlCompiler
                 if (to != VK.I64) e.Op(WOp.I32WrapI64);
             });
         }
+
+        /// <summary>(addr, count): the counts of count elements of T from addr (nothing for a T without references).</summary>
+        public WasmFunction Range(TypeDesc t, bool retain) => Cached((retain ? "rt.retain_range " : "rt.release_range ") + t, FT([I, I], []), e =>
+        {
+            if (!Kinds.Counted(t)) return;
+            int size = Kinds.SizeOf(t), i = e.AddLocal(I);
+            var brk = e.Block(); var loop = e.Loop();
+            e.Get(i); e.Get(1); e.Op(WOp.I32GeU); e.BrIf(brk);
+            e.Get(0); e.Get(i); e.I32(size); e.Op(WOp.I32Mul); e.Op(WOp.I32Add);
+            if (Kinds.Of(t) == VK.Ref) { e.Load(WOp.I32Load); if (retain) { e.Call(Retain); e.Op(WOp.Drop); } else e.Call(Release); }
+            else e.Call(StructCounts(t, retain));
+            e.Get(i); e.I32(1); e.Op(WOp.I32Add); e.Set(i); e.Br(loop);
+            e.End(); e.End();
+        });
+
+        /// <summary>One thread: (location, value) -> old, location += value; (location, expected, replacement) -> old,
+        /// replaced when it was the expected.</summary>
+        public WasmFunction PlainRmw(bool cmpxchg) => cmpxchg
+            ? Cached("rt.plain_cmpxchg", FT([I, I, I], [I]), e =>
+            {
+                int old = e.AddLocal(I);
+                e.Get(0); e.Load(WOp.I32Load); e.Set(old);
+                e.Get(old); e.Get(1); e.Op(WOp.I32Eq); e.If(); e.Get(0); e.Get(2); e.Store(WOp.I32Store); e.End();
+                e.Get(old);
+            })
+            : Cached("rt.plain_add", FT([I, I], [I]), e =>
+            {
+                int old = e.AddLocal(I);
+                e.Get(0); e.Load(WOp.I32Load); e.Set(old);
+                e.Get(0); e.Get(old); e.Get(1); e.Op(WOp.I32Add); e.Store(WOp.I32Store);
+                e.Get(old);
+            });
 
         /// <summary>(address of a struct): each reference in it retained or released, nested structs too.</summary>
         public WasmFunction RetainStruct(TypeDesc t) => StructCounts(t, true);

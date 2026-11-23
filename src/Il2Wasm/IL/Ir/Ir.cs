@@ -17,7 +17,7 @@ public enum Opc : byte
     // values
     Const, Arg, Phi, Bin, Un, Cmp, Conv, LdNull, LdStr, LdToken, Call, NewObj, NewArr, LdLen, LdElem, StElem, LdElemA,
     LdFld, StFld, LdFldA, LdSFld, StSFld, LdSFldA, LdInd, StInd, CastClass, IsInst, Box, UnboxAny, VarLd, VarSt,
-    CatchVal, Intrinsic, CheckFinite, Retain, Release, LocA, LdObj, InitObj, Unbox, SizeOf,
+    CatchVal, Intrinsic, CheckFinite, Retain, Release, LocA, LdObj, InitObj, Unbox, SizeOf, LocAlloc, TypeOf,
     // terminators
     Br, BrIf, Switch, Ret, Throw, Rethrow, Leave, EndFinally, EndFilter, Unreachable,
 }
@@ -122,6 +122,8 @@ public sealed class Body
     /// <summary>The IL locals and arguments that are not SSA values (written in a protected region or a finally, or
     /// whose address is taken): variables of their own, read and written by VarLd and VarSt.</summary>
     public readonly List<Var> Vars = [];
+    /// <summary>The method allocates on the shadow stack (localloc): it has a frame.</summary>
+    public bool UsesLocAlloc;
     int _nextId;
     public int NextId() => _nextId++;
     public int ValueCount => _nextId;

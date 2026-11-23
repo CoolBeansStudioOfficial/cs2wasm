@@ -1428,3 +1428,9 @@ with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   selfhost-speed-2): suite 264 passed, 0 failed, both ways (896 s); self-host check all the same: built in 275 s
   (33,809,524 bytes), hello world 7.30 to 7.56 s at 241.8 MB, the switched build the same module, byte for byte on
   145, 220, 193, 088. The morning report is docs/REPORT-2026-11-23.md.
+- 2026-11-23, 17:10, claude/il-frontend (IL front end steps 2 and 3): NativeAOT's type system for wasm32; IL to an
+  SSA IR with exception regions; naive counting as an IR pass; structuring and lowering to the existing back end.
+  tests/Il2Wasm.IL.Tests 67 of 67 (8 programs equal to .NET, 0 blocks live at the end, optimization on and off), on the
+  stub CoreLib. The IL CoreLib's hello world compiles only leniently (335 gaps: Type objects, 28 intrinsics, ldftn).
+  Not run: the homelab suite, stress, self-host check, frames and bench (the old front end and the back end are
+  unchanged apart from host/run.mjs's IL2WASM_PRINT_LIVE; 145_size_hello passes on the desk).

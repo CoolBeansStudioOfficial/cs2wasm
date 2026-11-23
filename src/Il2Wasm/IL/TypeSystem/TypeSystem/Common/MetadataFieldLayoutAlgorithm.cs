@@ -75,7 +75,8 @@ namespace Internal.TypeSystem
                 MetadataType baseType = type.BaseType;
                 if (!baseType.IsObject && baseType.IsAutoLayout)
                 {
-                    ThrowHelper.ThrowTypeLoadException(ExceptionStringID.ClassLoadBadFormat, type);
+                    // il2wasm: not an error: such a class is laid out as auto, as CoreCLR does (il2wasm's CoreLib has
+                    // SafeHandle, sequential, over CriticalFinalizerObject, auto). Il2WasmFieldLayout does that.
                 }
             }
 

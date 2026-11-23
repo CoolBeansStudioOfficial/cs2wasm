@@ -51,6 +51,7 @@ sealed class FunctionLowering
                     for (int i = 0; i < n.A.Length; i++) if (n.A[i].Kind == VK.Struct) _argSlot[(n, i)] = Reserve(n.A[i].Type!);
             }
         _frameSize = (_frameSize + 15) & ~15;
+        if (body.UsesLocAlloc && _frameSize == 0) _frameSize = 16;
         if (_frameSize > 0) _fb = E.AddLocal(ValType.I32);
     }
 
@@ -522,6 +523,17 @@ sealed class FunctionLowering
                 return;
             }
             case Opc.LocA: VarAddr((int)n.I); Set(n); return;
+            case Opc.LocAlloc:
+            {
+                // below the frame on the shadow stack, zeroed (C# sets localsinit); given back with the frame
+                int sz = Temp(ValType.I32);
+                Get(n.A[0]); E.I32(15); E.Op(WOp.I32Add); E.I32(-16); E.Op(WOp.I32And); E.Set(sz);
+                E.GGet(C.StackPointer); E.Get(sz); E.Op(WOp.I32Sub); E.GSet(C.StackPointer);
+                E.GGet(C.StackPointer); E.I32(0); E.Get(sz); E.Emit(WOp.MemoryFill);
+                E.GGet(C.StackPointer); Set(n);
+                return;
+            }
+            case Opc.TypeOf: throw new NotSupportedException($"{_body.Method}: typeof({n.X}) as a Type object (Type objects are not made yet)");
             case Opc.VarLd when n.Kind == VK.Struct: VarAddr((int)n.I); LoadStruct(n); return;
             case Opc.VarSt when _body.Vars[(int)n.I].Kind == VK.Struct:
             {

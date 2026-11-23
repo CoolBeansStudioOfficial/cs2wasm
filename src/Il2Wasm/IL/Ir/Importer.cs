@@ -938,6 +938,31 @@ public sealed class Importer
                     Push(Const(VK.I32, Kinds.Of(t) == VK.Struct ? ((DefType)t).InstanceFieldSize.AsInt : Kinds.SizeOf(t)));
                     return true;
                 }
+                case ILOpcode.localloc:
+                {
+                    var size = Pop();
+                    if (S.Count != 0) throw Invalid("localloc with values on the stack");
+                    I._body.UsesLocAlloc = true;
+                    Push(Add(Opc.LocAlloc, VK.Ptr, StackType.NativeInt, Ctx.GetWellKnownType(WellKnownType.IntPtr), size));
+                    return true;
+                }
+                case ILOpcode.ldtoken:
+                {
+                    var tok = I._il.GetObject(rd.ReadILToken());
+                    // typeof(T): ldtoken T, call Type.GetTypeFromHandle; known types compared with == fold to a constant
+                    if (tok is TypeDesc tt && rd.HasNext && rd.PeekILOpcode() == ILOpcode.call)
+                    {
+                        int back = rd.Offset;
+                        rd.ReadILOpcode();
+                        if (I._il.GetObject(rd.ReadILToken()) is MethodDesc gth && gth.GetName() == "GetTypeFromHandle")
+                        {
+                            Push(Add(Opc.TypeOf, VK.Ref, StackType.ObjRef, Ctx.SystemModule.GetType("System"u8, "Type"u8)).WithX(tt));
+                            return true;
+                        }
+                        rd.Seek(back);
+                    }
+                    throw new NotSupportedException($"{I._method}: ldtoken of {tok} (only typeof compared with == is imported yet)");
+                }
                 default: throw new NotSupportedException($"{I._method}: IL {op} at IL_{_at:x4} is not imported yet");
             }
         }
@@ -992,6 +1017,8 @@ public sealed class Importer
 
         Node CompareWith(CmpOp op, Node a, Node b)
         {
+            // (typeof(A) and typeof(B) compared as references: the same Type object exactly when the same type)
+            if (a.Op == Opc.TypeOf && b.Op == Opc.TypeOf && op is CmpOp.Eq or CmpOp.Ne) return Const(VK.I32, (op == CmpOp.Eq) == (a.X == b.X) ? 1 : 0);
             bool ok = a.SType == b.SType && a.SType != StackType.None
                 || a.SType is StackType.Int32 or StackType.NativeInt && b.SType is StackType.Int32 or StackType.NativeInt
                 || a.SType is StackType.ByRef or StackType.NativeInt && b.SType is StackType.ByRef or StackType.NativeInt;
@@ -1018,6 +1045,15 @@ public sealed class Importer
 
         void Call(MethodDesc m, bool virt)
         {
+            // typeof(A) == typeof(B), both known: a constant (as NativeAOT and ILLink fold it)
+            if (m.GetName() is "op_Equality" or "op_Inequality" && m.OwningType is MetadataType ot && ot.GetName() == "Type" && S.Count >= 2
+                && S[^1].Op == Opc.TypeOf && S[^2].Op == Opc.TypeOf)
+            {
+                var b2 = Pop(); var a2 = Pop();
+                bool same = a2.X == b2.X;
+                Push(Const(VK.I32, (m.GetName() == "op_Equality") == same ? 1 : 0));
+                return;
+            }
             var sig = m.Signature;
             int n = sig.Length + (sig.IsStatic ? 0 : 1);
             var args = new Node[n];

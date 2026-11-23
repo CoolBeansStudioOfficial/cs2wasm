@@ -115,6 +115,9 @@ sealed class Il2WasmFieldLayout : MetadataFieldLayoutAlgorithm
     protected override ComputedInstanceFieldLayout ComputeInstanceFieldLayout(MetadataType type, int numInstanceFields)
     {
         var lm = type.GetClassLayout();
+        // (a class with layout over a base without it: auto, as CoreCLR lays it out)
+        if (!type.IsValueType && type.BaseType is MetadataType { IsObject: false, IsAutoLayout: true })
+            return ComputeAutoFieldLayout(type, numInstanceFields, lm);
         return lm.Kind switch
         {
             MetadataLayoutKind.Explicit => ComputeExplicitFieldLayout(type, numInstanceFields, lm),

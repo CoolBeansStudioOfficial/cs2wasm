@@ -10,4 +10,5 @@ Paths: `TypeSystem/`, `Internal/` and `System/` are `src/coreclr/tools/Common/..
 
 Changes made for il2wasm are marked `// il2wasm:` where they are made, and listed here:
 
-- (none yet)
+- `TypeSystem/Common/MetadataFieldLayoutAlgorithm.cs`: a class with sequential or explicit layout over a base with auto
+  layout is not a load error; it is laid out as auto (as CoreCLR does), by `Types/IlContext.cs`.

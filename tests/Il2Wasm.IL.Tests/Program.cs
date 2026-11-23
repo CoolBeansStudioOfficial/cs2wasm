@@ -9,6 +9,21 @@ if (args.Length == 3 && args[0] == "compile")
     File.WriteAllBytes(args[2], EndToEnd.Compile(args[1], File.ReadAllText(Build.Here("Programs/" + args[1] + ".cs"))));
     return 0;
 }
+if (args.Length == 4 && args[0] == "framework")
+{
+    // (a program against a framework directory, the IL CoreLib and the stock libraries: framework <dir> <program.cs> out.wasm)
+    var dir = args[1];
+    var refs = Directory.GetFiles(dir, "*.dll");
+    var dll = Build.Compile(Path.GetFileNameWithoutExtension(args[2]), [File.ReadAllText(args[2])], refs.Where(r => !Path.GetFileName(r).StartsWith("System.Private.CoreLib")).Append(Path.Combine(dir, "System.Private.CoreLib.dll")).ToArray());
+    var ctx = new Il2Wasm.IL.Types.IlContext();
+    ctx.AddAssemblies(refs.Append(dll));
+    ctx.SetCoreLib();
+    var entry = ctx.Load(Path.GetFileNameWithoutExtension(args[2])).EntryPoint!;
+    var comp = new Il2Wasm.IL.Lower.IlCompiler(ctx);
+    File.WriteAllBytes(args[3], comp.Compile(entry));
+    foreach (var w in comp.Warnings.Distinct().OrderBy(w => w)) Console.Error.WriteLine("warning: " + w);
+    return 0;
+}
 var filter = args.Length > 0 ? args[0] : "";
 var c = new Checks(filter);
 try
