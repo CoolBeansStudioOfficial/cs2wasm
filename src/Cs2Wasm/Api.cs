@@ -89,7 +89,14 @@ public static class Cs2WasmCompiler
         options ??= new CompileOptions();
         if (compilation is not CSharpCompilation cs)
             return new CompileResult { Diagnostics = [Diagnostic.Create(Diags.NotCSharp, Location.None)] };
-        var d = new Driver(cs, options);
+        // (compiled with the libraries the program is seen to need; when it meets a type that one left out may
+        // hold, once more with all that Roslyn reports as used: Library.NeedsAll)
+        return CompileWith(cs, options, false) ?? CompileWith(cs, options, true)!;
+    }
+
+    static CompileResult? CompileWith(CSharpCompilation cs, CompileOptions options, bool allLibraries)
+    {
+        var d = new Driver(cs, options, allLibraries);
         byte[]? bytes = null; string? map = null;
         try
         {
@@ -101,7 +108,7 @@ public static class Cs2WasmCompiler
             if (threads || d.UsesThreads && !Driver.s_expNoThreadMode && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
             {
                 d = null!;
-                d = new Driver(cs, options) { ThreadMode = true };
+                d = new Driver(cs, options, allLibraries) { ThreadMode = true };
                 d.Run();
                 // Section 4.5: compiled again knowing which types another thread can reach, so that objects no other
                 // thread can reach are read and borrowed from as without threads. The new compilation's own answer
@@ -113,19 +120,25 @@ public static class Cs2WasmCompiler
                     for (int round = 0; round < 3; round++)
                     {
                         d = null!;
-                        d = new Driver(cs, options) { ThreadMode = true, SharingPrior = prior };
+                        d = new Driver(cs, options, allLibraries) { ThreadMode = true, SharingPrior = prior };
                         d.Run();
                         if (d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error) || d.Sharing is not { Done: true } again) break;
                         var extra = again.SharedTypeSymbols().Select(Types.Key).Where(k => !sharedKeys.Contains(k)).ToList();
                         if (extra.Count == 0) break;
-                        if (round == 2) { d = new Driver(cs, options) { ThreadMode = true }; d.Run(); break; }
+                        if (round == 2) { d = new Driver(cs, options, allLibraries) { ThreadMode = true }; d.Run(); break; }
                         prior = again.PriorMap(prior);
                         sharedKeys.UnionWith(extra);
                     }
                 }
             }
+            if (d.Lib.NeedsAll) return null;
             if (!d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
                 (bytes, map) = d.Emit();
+            if (d.Lib.NeedsAll) return null;
+        }
+        catch (Exception) when (d.Lib.NeedsAll)
+        {
+            return null;
         }
         catch (CompileException ex)
         {

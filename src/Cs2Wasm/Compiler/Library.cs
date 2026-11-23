@@ -35,11 +35,34 @@ internal sealed class Library
             ["SYSLIB5006"] = ReportDiagnostic.Suppress, ["SYSLIB5007"] = ReportDiagnostic.Suppress, ["SYSLIB5008"] = ReportDiagnostic.Suppress, ["SYSLIB5009"] = ReportDiagnostic.Suppress, ["SYSLIB5010"] = ReportDiagnostic.Suppress,
         });
 
-    public Library(CSharpCompilation program)
+    /// <summary>The first library (its index in <see cref="UpstreamSources.Libraries"/>) that was left out although
+    /// Roslyn reports its reference as used (int.MaxValue: none was): see <see cref="UpstreamSources.Needed"/>.</summary>
+    readonly int _firstLeftOut = int.MaxValue;
+    /// <summary>Set when the compilation met a type that one of the libraries left out may hold: the program is then
+    /// compiled again with all of them (Cs2WasmCompiler.Compile).</summary>
+    public volatile bool NeedsAll;
+    /// <summary>Thrown where that is found.</summary>
+    public sealed class MoreLibraries(string what) : Exception("a library that was left out may be needed: " + what) { }
+    /// <summary>CS2WASM_NO_LIB_RESTART=1: every library Roslyn reports as used is read at the start, as before.</summary>
+    static readonly bool s_noRestart = Environment.GetEnvironmentVariable("CS2WASM_NO_LIB_RESTART") == "1";
+    /// <summary>CS2WASM_BREAK_LIB_RESTART=1 (to prove the rule by breaking it): a type the libraries read do not
+    /// settle is taken as they have it, and nothing is compiled again.</summary>
+    static readonly bool s_breakRestart = Environment.GetEnvironmentVariable("CS2WASM_BREAK_LIB_RESTART") == "1";
+
+    MoreLibraries More(string what)
+    {
+        NeedsAll = true;
+        return new MoreLibraries(what);
+    }
+
+    static int IndexOfLibrary(INamedTypeSymbol t) => Array.IndexOf(UpstreamSources.Libraries, t.ContainingAssembly?.Name ?? "");
+
+    public Library(CSharpCompilation program, bool allReported = false)
     {
         var sw = s_times ? System.Diagnostics.Stopwatch.StartNew() : null;
-        var needed = UpstreamSources.Needed(program);
-        if (sw != null) { Console.Error.WriteLine($"    library: {sw.ElapsedMilliseconds,6} ms  what the program needs ({needed.Count} libraries{UpstreamSources.NeededWhy})"); sw.Restart(); }
+        var needed = UpstreamSources.Needed(program, allReported || s_noRestart, out _firstLeftOut);
+        if (s_breakRestart) _firstLeftOut = int.MaxValue;
+        if (sw != null) { Console.Error.WriteLine($"    library: {sw.ElapsedMilliseconds,6} ms  what the program needs ({needed.Count} libraries{UpstreamSources.NeededWhy}{(_firstLeftOut != int.MaxValue ? "; left out until a type of theirs is met: " + UpstreamSources.Libraries[_firstLeftOut] + " and after" : allReported ? "; again, with every library reported" : "")})"); sw.Restart(); }
         All = Upstream(needed);
         if (sw != null) Console.Error.WriteLine($"    library: {sw.ElapsedMilliseconds,6} ms  read and parsed in all");
         Compilation = All[0];
@@ -309,6 +332,13 @@ internal sealed class Library
             else if (!IsVisible(found) && IsVisible(t)) { found = t; break; }
             if (IsVisible(found)) break;
         }
+        // Libraries were left out: the answer is the one all of them would give only when it is a visible type of a
+        // library before the first one left out (the search is in library order and stops at the first visible
+        // type). Anything else a reference assembly's type comes to (none, or one that is not visible, which a later
+        // library's visible type would replace) is not settled: compiled again with all of them.
+        if (_firstLeftOut != int.MaxValue && !def.Locations.Any(l => l.IsInSource)
+            && !(found != null && IsVisible(found) && IndexOfLibrary(found) < _firstLeftOut))
+            throw More(name);
         lock (_types) _types[name] = found!;
         return found;
     }
@@ -338,9 +368,18 @@ internal sealed class Library
     }
 
     /// <summary>A library type by metadata name, the corlib's first.</summary>
-    public INamedTypeSymbol? TypeByMetadataName(string name)
+    public INamedTypeSymbol? TypeByMetadataName(string name, bool probe = false)
     {
-        foreach (var c in All) if (c.Assembly.GetTypeByMetadataName(name) is { } t) return t;
+        foreach (var c in All)
+            if (c.Assembly.GetTypeByMetadataName(name) is { } t)
+            {
+                // (libraries left out: one of them, earlier in the order than where this was found, may have it too)
+                if (!probe && _firstLeftOut != int.MaxValue && IndexOfLibrary(t) >= _firstLeftOut) throw More(name);
+                return t;
+            }
+        // (not found: one of the libraries left out may have it. `probe`: a question whose answer the caller uses
+        // only for types the program reached, which Lookup settles)
+        if (!probe && _firstLeftOut != int.MaxValue) throw More(name);
         return null;
     }
 
@@ -437,9 +476,10 @@ internal static class UpstreamSources
     /// or in CoreLib (CS2WASM_REF_LIBS=1 lists them), and what the C# compiler itself calls for a construct
     /// (a `dynamic` operation's binders, an expression tree's factories, a query's methods) is among the references
     /// Roslyn reports as used.</summary>
-    public static IReadOnlyList<string> Needed(CSharpCompilation program)
+    public static IReadOnlyList<string> Needed(CSharpCompilation program, bool allReported, out int firstLeftOut)
     {
         NeededWhy = "";
+        firstLeftOut = int.MaxValue;
         // (a core library is compiled against those before it and no other, so the ones after the last the program
         // uses cannot be reached: their files are not read)
         int count = s_allCore ? CoreCount : 1;
@@ -461,16 +501,105 @@ internal static class UpstreamSources
         }
         // and the libraries whose reference assemblies the program's code uses, whatever its text says (a type
         // named in full: `new System.Net.Sockets.Socket(...)`); a reference assembly is its library's, or one of these
+        var reported = new List<(int Index, string Lib, IAssemblySymbol? Asm)>();
         foreach (var r in program.GetUsedAssemblyReferences())
         {
             var asm = Path.GetFileNameWithoutExtension(r.Display ?? "");
             if (s_referenceLibrary.TryGetValue(asm, out var mapped)) asm = mapped;
-            int i = Array.IndexOf(Libraries, asm);
-            if (i < count) continue;
-            if (Standalone.Contains(asm)) standalone.Add(asm); else { count = i + 1; NeededWhy = "; the last for a reference used: " + asm; }
+            reported.Add((Array.IndexOf(Libraries, asm), asm, program.GetAssemblyOrModuleSymbol(r) as IAssemblySymbol));
+        }
+        // every library reported (what the program is compiled with when a type of one left out is met)
+        int countAll = count;
+        var standaloneAll = new HashSet<string>(standalone);
+        string whyAll = NeededWhy;
+        foreach (var (i, asm, _) in reported)
+        {
+            if (i < countAll) continue;
+            if (Standalone.Contains(asm)) standaloneAll.Add(asm); else { countAll = i + 1; whyAll = "; the last for a reference used: " + asm; }
+        }
+        if (allReported) { count = countAll; standalone = standaloneAll; NeededWhy = whyAll; }
+        else
+        {
+            // Roslyn reports a reference as used also when only a candidate came from it: a call written as an
+            // extension (`xs.Select(...)`) reports every assembly with an extension method of that name
+            // (System.Linq.Queryable, System.Linq.Parallel, System.Collections.Immutable for System.Linq's), and
+            // with the last of them come all the libraries before it. So a reported assembly that has extension
+            // methods is taken at the start only when the program's text has a word that names it: one of its
+            // public top-level types, or the last part of a namespace it has public types in, which no reported
+            // assembly earlier in library order has too (`Linq` is System.Linq's, though the three others have
+            // types in that namespace; `ImmutableArray`, `Frozen`, `Queryable` are their own). One left out
+            // wrongly is found when the compilation meets a type of it (Library.Lookup), and the program is
+            // compiled again with all that are reported. In library order; a reference that is no library's
+            // (System.Runtime: its types are CoreLib's) first.
+            var ordered = reported.OrderBy(x => x.Index).ToList();
+            // (the assemblies without extension methods first: reported for what they are)
+            foreach (var (i, asm, sym) in ordered)
+            {
+                if (i < count || sym == null || sym.MightContainExtensionMethods) continue;
+                if (Standalone.Contains(asm)) standalone.Add(asm); else { count = i + 1; NeededWhy = "; the last for a reference used: " + asm; }
+            }
+            if (ordered.Any(x => x.Index >= count && x.Asm is { MightContainExtensionMethods: true }))
+            {
+                var words = Words(program);
+                var earlier = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var (i, asm, sym) in ordered)
+                {
+                    if (sym == null) continue;
+                    var own = PublicNames(sym);
+                    bool named = i >= count && sym.MightContainExtensionMethods && own.Any(n => !earlier.Contains(n) && words.Contains(n));
+                    earlier.UnionWith(own);
+                    if (!named) continue;
+                    if (Standalone.Contains(asm)) standalone.Add(asm); else { count = i + 1; NeededWhy = "; the last for a reference used and named: " + asm; }
+                }
+            }
         }
         // (a standalone library's references come with it: Library.Upstream builds them)
-        return Libraries.Where((l, i) => i < count && !Standalone.Contains(l) || standalone.Contains(l)).ToList();
+        var result = Libraries.Where((l, i) => i < count && !Standalone.Contains(l) || standalone.Contains(l)).ToList();
+        if (count != countAll || standalone.Count != standaloneAll.Count)
+            for (int i = 0; i < Libraries.Length; i++)
+                if ((i < countAll && !Standalone.Contains(Libraries[i]) || standaloneAll.Contains(Libraries[i])) && !result.Contains(Libraries[i])) { firstLeftOut = i; break; }
+        return result;
+    }
+
+    /// <summary>The names of an assembly's public top-level types and the last parts of the namespaces they are in.</summary>
+    static HashSet<string> PublicNames(IAssemblySymbol asm)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        var work = new Stack<INamespaceSymbol>();
+        work.Push(asm.GlobalNamespace);
+        while (work.Count > 0)
+        {
+            var ns = work.Pop();
+            foreach (var n in ns.GetNamespaceMembers()) work.Push(n);
+            bool any = false;
+            foreach (var t in ns.GetTypeMembers())
+            {
+                if (t.DeclaredAccessibility != Accessibility.Public) continue;
+                names.Add(t.Name);
+                any = true;
+            }
+            if (any && !ns.IsGlobalNamespace) names.Add(ns.Name);
+        }
+        return names;
+    }
+
+    /// <summary>The words of the program's text (letters, digits and '_', whatever they are part of: a comment's or a
+    /// string's words count, which errs to taking a library).</summary>
+    static HashSet<string> Words(CSharpCompilation program)
+    {
+        var words = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var tree in program.SyntaxTrees)
+        {
+            var text = tree.GetText().ToString();
+            for (int i = 0; i < text.Length; )
+            {
+                if (!(char.IsLetter(text[i]) || text[i] == '_')) { i++; continue; }
+                int s = i;
+                while (i < text.Length && (char.IsLetterOrDigit(text[i]) || text[i] == '_')) i++;
+                words.Add(text[s..i]);
+            }
+        }
+        return words;
     }
 
     public const string Repository = "https://github.com/dotnet/runtime.git";

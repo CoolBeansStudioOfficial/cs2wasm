@@ -218,7 +218,7 @@ internal sealed partial class Driver
         foreach (var (t, inst) in _keepInstancesFromTrees) keep.KeepInstance(t, inst);
         // EnumerableQuery runs a Queryable operator as the Enumerable one of its name, made with the same type
         // arguments (System.Linq.Queryable's EnumerableRewriter)
-        if (Lib.TypeByMetadataName("System.Linq.Queryable") is { } qt && keep.GenericInstances.TryGetValue(Compiler.Types.Key(qt), out var qinsts) && Lib.TypeByMetadataName("System.Linq.Enumerable") is { } en)
+        if (Lib.TypeByMetadataName("System.Linq.Queryable", probe: true) is { } qt && keep.GenericInstances.TryGetValue(Compiler.Types.Key(qt), out var qinsts) && Lib.TypeByMetadataName("System.Linq.Enumerable") is { } en)
             foreach (var qi in qinsts.ToList())
                 foreach (var em in en.GetMembers(qi.Name).OfType<IMethodSymbol>())
                     if (em.IsGenericMethod && em.Arity == qi.Arity)

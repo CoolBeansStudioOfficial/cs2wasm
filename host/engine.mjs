@@ -192,6 +192,8 @@ export function cs2wasmImports(module, getMemory, out) {
     utc_offset_minutes: () => 0,
     capture_stack: (ptr, cap) => {
       const text = visibleFrames().map(f => `   at ${f.name}` + (f.loc ? ` in ${f.loc.file}:line ${f.loc.line}` : '')).join('\n');
+      // (CS2WASM_HOST_TIMES=2: each stack the module took, which is where it threw: what a run's exceptions are)
+      if (process.env.CS2WASM_HOST_TIMES === '2') writeSync(2, `[host] stack taken:\n${text.split('\n').slice(0, 12).join('\n')}\n`);
       const n = Math.min(text.length, cap);
       const u16 = new Uint16Array(getMemory().buffer, ptr >>> 0, n);
       for (let i = 0; i < n; i++) u16[i] = text.charCodeAt(i);
