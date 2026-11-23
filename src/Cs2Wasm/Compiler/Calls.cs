@@ -1026,7 +1026,6 @@ sealed partial class FunctionCompiler
             case "Rt.ArrayRankAt": E.Call(Rt.ArrayRank); return Own.None;
             case "Rt.ArrayElementSizeAt": E.Call(Rt.ArrayElemSize); return Own.None;
             case "Rt.ArrayGrow": E.Call(Rt.ArrayGrowFn); return Own.None;
-            case "Rt.LateChecks": E.Call(Rt.LateChecksFn); return Own.None;
             case "Rt.NoMergeRepoint": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_MERGE_REPOINT") == "1" ? 1 : 0); return Own.None;
             case "Rt.FusedDrop": E.I32(RuntimeGen.FusedDrop(D) ? 1 : 0); return Own.None;
             case "Rt.NoFreeList": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FREE_LIST") == "1" ? 1 : 0); return Own.None;

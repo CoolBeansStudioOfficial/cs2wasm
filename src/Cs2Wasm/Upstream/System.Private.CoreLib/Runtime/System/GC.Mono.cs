@@ -88,8 +88,6 @@ namespace System
         public static void Collect()
         {
             // (CS2WASM_ARENA_REPORT=1: what arenas are left, a diagnosis)
-            // (the checks at the drop a thread put off are made now: Rt.ArenaLateChecks, NoteDebt)
-            Cs2Wasm.Runtime.Rt.CollectNow();
             if (Cs2Wasm.Runtime.Rt.ArenaReportOn()) Cs2Wasm.Runtime.Rt.ArenaReportNow();
             InternalCollect(MaxGeneration);
         }

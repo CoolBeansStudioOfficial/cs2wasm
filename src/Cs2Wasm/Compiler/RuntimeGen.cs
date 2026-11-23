@@ -854,8 +854,6 @@ sealed partial class RuntimeGen
             e.End();
             e.End();
         }
-        // (GC.Collect: the checks a thread put off, Rt.ArenaLateChecks)
-        if (rt.LateChecksIfMade is { } late && late.Body.Count == 0) new Emitter(late).Call(ar.RuntimeFn("ArenaLateChecks", 0));
         // Array.Copy / Array.Clear into arrays whose elements can close a cycle go element by element
         if (ar.AnyArrayCycle)
         {

@@ -2763,41 +2763,20 @@ namespace Cs2Wasm.Runtime
             for (int i = 0; i < t_lateN; i++) if (Mem.LoadI32(t_lateQ + 4 * i) == m) Mem.StoreI32(t_lateQ + 4 * i, 0);
         }
 
-        // NoteDebt: a top whose note went stale is checked again where an ownership is taken under it and where an
-        // owner under it lets a member go (StaleNote), and the check walks all the top owns. Under a top that lives
-        // on (no code refers to it, members elsewhere do) every node put into the structure, and every array a list
-        // let go as it grew, walked the whole of it: the self-hosted compiler did not end Console.WriteLine(42) in
-        // ten minutes; 31 s with the first of the two off, 11.5 s with both, 9.3 s before the branch (2026-11-23,
-        // the homelab; the suite's programs are too small to show it). So such checks are paid for: one that fails
-        // over more than NoteFree members adds what it walked to the thread's debt, every ownership taken pays
-        // NoteCredit of it off, and while there is debt the next such check is not made at once.
-        // Without threads it waits in a list of its own (still marked as waiting, so a destruction takes it off,
-        // Unqueue) and is made when the debt is paid or the program asks for a collection (GC.Collect:
-        // ArenaLateChecks), so what GC.Collect leaves is what it left before.
-        // With threads it is not made at all: a member that waits across operations can be destroyed by another
-        // thread, which does not know this thread's list. The top keeps its stale note then, as every such top
-        // did before a8a50fc, until something else looks at it.
-        // A structure of up to NoteFree members is checked at once, as before; so are the checks DyingNote asks
-        // for. CS2WASM_STALE_NOTE_WHOLE=1 (at compile time, a measurement): no debt, every check at once.
+        // NoteDebt: a top whose note went stale is checked again (StaleNote: at every ownership taken under it), and
+        // the check walks all the top owns. Under a top that lives on (no code refers to it, members elsewhere do)
+        // every node put into the structure walked the whole of it: the self-hosted compiler did not end
+        // Console.WriteLine(42) in ten minutes, 9 to 12 s without (2026-11-23; the suite's programs are too small
+        // to show it). So such checks are paid for: one that fails over more than NoteFree members adds what it
+        // walked to the thread's debt, every ownership taken pays NoteCredit of it off, and while there is debt
+        // the next such check (one asked for by an ownership taken; those asked for where an owner lets go or a
+        // holder dies are made at once: test 216 takes members out of 3,000 one by one and counts right after)
+        // waits in a list of its own (still marked as waiting, so a destruction takes it off,
+        // Unqueue) and is made when the debt is paid. A structure of up to NoteFree members is checked at once, as
+        // before. CS2WASM_STALE_NOTE_WHOLE=1 (at compile time, a measurement): no debt, every check at once.
         const int NoteFree = 256, NoteCredit = 8;
         [System.ThreadStatic] static int t_noteDebt, t_lateQ, t_lateN, t_lateCap;
         [Intrinsic] static extern bool StaleNoteWhole();
-
-        /// <summary>rt.late_checks, GC.Collect: the checks NoteDebt put off are made now, whatever the debt (without
-        /// threads; with threads there are none waiting).</summary>
-        public static void ArenaLateChecks()
-        {
-            t_noteDebt = 0;
-            if (ThreadMode() || t_lateN == 0 || s_destroying != 0 || s_trial != 0) return;
-            RuntimeLock();
-            KillPush(0);
-            DrainKills();
-            RuntimeUnlock();
-        }
-        /// <summary>GC.Collect's call: rt.late_checks, which is ArenaLateChecks in a program with groups and nothing in
-        /// any other (RuntimeGen.cs).</summary>
-        [Intrinsic] static extern void LateChecks();
-        public static void CollectNow() => LateChecks();
 
         static void StaleCheck(int w)
         {
@@ -2840,7 +2819,7 @@ namespace Cs2Wasm.Runtime
                 // again by its note's number)
                 // (a top whose note's number went stale, StaleNote, DyingNote: the check again)
                 // (when such checks have walked more than the ownerships taken since pay for, later: NoteDebt)
-                else if ((PLM(w) & 1) != 0 && DropCandidate(w) && !NoStaleNote()) { if (!paid || StaleNoteWhole()) Dropped(w); else if (t_noteDebt <= 0) StaleCheck(w); else if (!ThreadMode()) LateCheck(w); }
+                else if ((PLM(w) & 1) != 0 && DropCandidate(w) && !NoStaleNote()) { if (!paid || StaleNoteWhole()) Dropped(w); else if (t_noteDebt > 0) LateCheck(w); else StaleCheck(w); }
                 // (such a top that code refers to meanwhile, so that no check is made now: its note goes. The number
                 // is stale all the same, and a top that has a note is passed over when its last reference from
                 // outside goes, ArenaRelease; without one that release makes the check. Test 131 under load, and
@@ -2853,7 +2832,7 @@ namespace Cs2Wasm.Runtime
                 else if (DropCandidate(w) && (TurnCheck() || SurvivorCheck())) Dropped(w);
             }
             // (the checks put off, one at a time while the debt is paid)
-            while (!ThreadMode() && t_lateN > 0 && t_noteDebt <= 0)
+            while (t_lateN > 0 && t_noteDebt <= 0)
             {
                 t_lateN--;
                 int w = Mem.LoadI32(t_lateQ + 4 * t_lateN);
@@ -2887,9 +2866,8 @@ namespace Cs2Wasm.Runtime
         static void StaleNote(int container, int kinds = 3)
         {
             int t = Top(container);
-            // (asked at an ownership taken, TakeOwnership, or where an owner lets go, OwnerLetGo: at every one of them
-            // under the top, so the check is one of those paid for, NoteDebt)
-            if (t != 0 && (PLM(t) & kinds) == kinds && DropCandidate(t)) QueueCheck(t, 1);
+            // (kinds 3: asked at an ownership taken, TakeOwnership: the check is one of those paid for, NoteDebt)
+            if (t != 0 && (PLM(t) & kinds) == kinds && DropCandidate(t)) QueueCheck(t, kinds == 3 ? 1 : 0);
         }
 
         /// <summary>A member to check at the drop once the operation under way is done (a destruction's survivor).</summary>
