@@ -3195,6 +3195,109 @@ namespace Cs2Wasm.Runtime
             if (ArenaReport()) RepEv(2, old, container, (fl & Held) != 0 ? 1 : 0);
         }
 
+        /// <summary>CS2WASM_NO_SHED_HOLDS=1 (at compile time): a container kept by the holds of its own items stays
+        /// with all its items (ShedHolds).</summary>
+        [Intrinsic] static extern bool NoShedHolds();
+
+        /// <summary>A container (an array, a node) that its owner and the code have let go, kept only by the holds
+        /// of items of its own that something else still refers to (a member with an up-reference below it that
+        /// another than its owner refers to holds its owner): `g.A = null` where one cell of the array is also in
+        /// `g.One`, each cell referring back to g. Until 2026-11-23 the array stayed, and with it every other
+        /// cell, until the held one was let go (three cells of four for .NET's none: test 274). Each held item
+        /// has a container waiting to own it (the first other member that took a reference to it, Owners), and
+        /// when that one is the container's own owner or below it, every member the item and what it owns refer
+        /// up to is above the waiting container too: the item changes owner now, as it would at the container's
+        /// destruction (Adopt), its hold given back, the up-references that pass it counted on the members from
+        /// its new owner up to the old one's owner in place of the old one. With no hold left the container has
+        /// no reference and the caller destroys it, with the items nothing else refers to.
+        /// Nothing done unless all of it holds: the holds are all its references; every item is owned once and
+        /// none refers up to the container itself (told by the counts, as Handover: the up-references that pass
+        /// the container are all its items'); no check at the drop has a note on any of them; without threads.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static void ShedHolds(int a)
+        {
+            if (NoShedHolds() || ThreadMode() || (s_destroying | s_trial | s_joinVisit | s_visitElem | s_linkN) != 0) return;
+            int af = PL(a, 24);
+            if ((af & (Owned | Dying | Queued | Far)) != 0 || Mem.LoadI32(a) != -2) return;
+            // (the owner it still holds: the place its items are under)
+            int up = PL(a, 20);
+            if (up == 0 || Mem.LoadI32(up) >= -1 || (PL(up, 24) & Dying) != 0) return;
+            if (s_failedTops != 0 && PLM(a) != 0) return;
+            int ar = ArenaOf(a);
+            if (Mem.LoadI64(ar + 12) != 0) return;
+            bool array = (af & Elems) != 0;
+            if (array && ArrayElementSizeAt(a) != 4) return;
+            // (its items: an array's elements, of any rank, or the slots its bits say hold a counted reference)
+            int rank = array ? ArrayRankAt(a) : 1;
+            int first = array ? a + (rank == 1 ? 16 : (16 + 4 * rank + 7) / 8 * 8) : a + 12, count = array ? Mem.LoadI32(a + 12) : 16, bits = array ? 0 : PL(a, 28);
+            int sumU = 0, held = 0;
+            for (int k = 0; k < count; k++)
+            {
+                if (!array && ((bits >> (2 * k)) & 3) != 1) continue;
+                int c = Mem.LoadI32(first + 4 * k);
+                if (c == 0 || Mem.LoadI32(c) >= -1) continue;
+                int cf = PL(c, 24);
+                if (PL(c, 20) != a || (cf & Owned) == 0) continue;
+                if ((cf & (Dying | Queued)) != 0 || (cf & MultMask) != MultOne) return;
+                sumU += (int)((uint)cf >> UShift);
+                if ((cf & Held) == 0) continue;
+                if (s_failedTops != 0 && PLM(c) != 0) return;
+                if (ShedWay(c, cf, a, up) == 0) return;
+                held++;
+            }
+            if (held == 0 || held != PL(a, 4) || (int)((uint)af >> UShift) != sumU) return;
+            for (int k = 0; k < count; k++)
+            {
+                if (!array && ((bits >> (2 * k)) & 3) != 1) continue;
+                int c = Mem.LoadI32(first + 4 * k);
+                if (c == 0 || Mem.LoadI32(c) >= -1) continue;
+                int cf = PL(c, 24);
+                if (PL(c, 20) != a || (cf & (Owned | Held)) != (Owned | Held)) continue;
+                int uc = (int)((uint)cf >> UShift);
+                if (ShedWay(c, cf, a, up) == 2)
+                {
+                    // (its references up, all in its own slots, are counted ones from here on: with none below it
+                    // it holds nothing, UpPath lets the hold go; whoever owns it next finds the references on its
+                    // chain again, Reevaluate)
+                    for (int ub = PL(c, 28), i = 0; ub != 0; ub = (int)((uint)ub >> 2), i++)
+                    {
+                        if ((ub & 3) != 2) continue;
+                        int t = Mem.LoadI32(c + 12 + 4 * i);
+                        if (t == 0 || Mem.LoadI32(t) >= -1) continue;
+                        SetSlotBits(c, i, 1);
+                        PS(t, 4, PL(t, 4) + 1);
+                        if (s_failedTops != 0 && OutsideMarked(PLM(t))) NoteOutside(t, c, 1);
+                        UpPath(c, t, -1);
+                        if (!HoldSettled(t)) UpdateHold(t);
+                    }
+                    continue;
+                }
+                int w = PLW(c);
+                PSW(c, 0);
+                PS(c, 24, cf & ~Held);
+                PS(c, 20, w);
+                PS(a, 4, PL(a, 4) - 1);
+                PS(a, 24, PL(a, 24) - uc * UOne);
+                for (int v = w, h = 0; v != up && v != 0 && h <= ChainMax; v = PL(v, 20), h++) PS(v, 24, PL(v, 24) + uc * UOne);
+                // (the container's own reference to it is another's than its owner's now, until the container goes)
+                if (!HoldSettled(c)) UpdateHold(c);
+                for (int v = w, h = 0; v != up && v != 0 && h <= ChainMax; h++) { int next = PL(v, 20); if (!HoldSettled(v)) UpdateHold(v); v = next; }
+            }
+        }
+
+        /// <summary>ShedHolds, how a held item (c, its flags cf) of the container a lets its hold go: 1 the container
+        /// waiting to own it is the container's owner (up) or below it, and takes it; 2 it owns nothing that
+        /// refers up (its references up are all in its own slots), and they become counted ones; 0 neither.</summary>
+        static int ShedWay(int c, int cf, int a, int up)
+        {
+            int w = PLW(c);
+            if (w != 0 && (w & 1) == 0 && w != a && Mem.LoadI32(w) < -1 && (PL(w, 24) & Dying) == 0 && OnChainOwned(w, up) && !Under(w, a)) return 1;
+            if ((cf & (Elems | Far)) != 0) return 0;
+            int n = 0;
+            for (int ub = PL(c, 28); ub != 0; ub = (int)((uint)ub >> 2)) if ((ub & 3) == 2) n++;
+            return n != 0 && n == (int)((uint)cf >> UShift) ? 2 : 0;
+        }
+
         // ---- The check at the drop (the owner's decision of 2026-11-18) ----
         // A member that something besides its owner refers to holds its owner (above), since that other may be
         // outside the tree. When it is inside (a child in its parent's list and in its parent's dictionary), the tree
@@ -3511,6 +3614,8 @@ namespace Cs2Wasm.Runtime
                 if (total == 0) { ArenaFree(ar); return; }
             }
             if ((Mem.LoadI32(ar + 12) & ArenaBusy) != 0) return;
+            // (let go by its owner before, by the code now, kept by the holds of its own items alone: ShedHolds)
+            if (w == -2 && PL(p, 4) != 0 && (PL(p, 24) & (Owned | Dying)) == 0) ShedHolds(p);
             // (no reference of either kind: it goes now, with what only it referred to)
             if (w == -2 && PL(p, 4) == 0) { ArenaDestroyFrom(p, 0); DrainKills(); return; }
             // (kept by what it owns alone, or under a top that was: the check at the drop)
@@ -4406,6 +4511,8 @@ namespace Cs2Wasm.Runtime
                 // (a container replaced by another in the same slot, a list's array by a larger one: what it owned is
                 // the new one's from here on)
                 if (owned && n > 0 && slot != 0) { Handover(old, Mem.LoadI32(slot), container); n = PL(old, 4); }
+                // (let go by its owner and by the code, kept by the holds of its own items alone: ShedHolds)
+                if (n > 0 && co == -2 && (PL(old, 24) & (Owned | Dying)) == 0) { ShedHolds(old); n = PL(old, 4); }
                 bool gone = false;
                 if (n == 0 && co == -2) ArenaDestroyFrom(old, 0);
                 else

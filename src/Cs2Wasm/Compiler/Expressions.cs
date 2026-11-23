@@ -887,6 +887,8 @@ sealed partial class FunctionCompiler
         };
     }
 
+    static readonly bool s_pinStaticInit = Environment.GetEnvironmentVariable("CS2WASM_PIN_STATIC_INIT") == "1";
+
     void EmitStoreField(IFieldSymbol f, Action? recv, IOperation value, bool initializer = false)
     {
         var ft = T.Resolve(f.Type, Map);
@@ -935,7 +937,11 @@ sealed partial class FunctionCompiler
         Arenas.Site? site = null; WasmFunction? pin = null;
         if (Types.IsRef(ft))
         {
-            if (f.IsStatic) pin = D.Arenas.Pin(ft);
+            // (a static readonly field's object stays out of groups, Rt.ArenaPin; any other static's is a member like
+            // any other, also when the store is the field's initializer: pinned there too until 2026-11-23, the first
+            // object of `static Node s_root = new Node(0);` was never freed once it was in a cycle, test 273)
+            // (CS2WASM_PIN_STATIC_INIT=1: as before)
+            if (f.IsStatic) { if (f.IsReadOnly || s_pinStaticInit) pin = D.Arenas.Pin(ft); }
             else if ((site = D.Arenas.FieldSite(Owner(f), T.Field(f, Map))) != null) site.AddValue(valueType, srcs);
         }
         if (f.IsStatic) Sh?.Static(Driver.StaticKey(T.Canonical(Owner(f)), f), ft, IsThreadStatic(f), srcs ?? [TopSrc(valueType)]);
@@ -2919,7 +2925,7 @@ sealed partial class FunctionCompiler
                     Arenas.Site? psite = null; WasmFunction? ppin = null;
                     if (Types.IsRef(ft))
                     {
-                        if (bf.IsStatic) ppin = D.Arenas.Pin(ft);
+                        if (bf.IsStatic) { if (bf.IsReadOnly || s_pinStaticInit) ppin = D.Arenas.Pin(ft); }
                         else if (pr.Instance != null && !TypeOf(pr.Instance).IsValueType) psite = D.Arenas.FieldSite(owner, T.FieldIn(owner, bf));
                     }
                     return new MemLV(this, ft, () =>
