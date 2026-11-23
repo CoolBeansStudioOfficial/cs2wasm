@@ -1209,7 +1209,11 @@ sealed partial class RuntimeGen
         }
         // marks exist (weak references, SuppressFinalize): the destroy path asks ObjectMarks
         if (D.AllMethods.Any(m => m.Sym.Name == "Set" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled))
+        {
             D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "OnDestroy", 1);
+            // (and a group that goes clears the weak references to all its members first: Rt.WeakDyingAll)
+            D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "WeakDying", 1); D.LibMethod("Cs2Wasm.Runtime.ObjectMarks", "Any", 0);
+        }
         // CS2WASM_MEMSTATS=1: the heap's report, which the host prints at the end (Runtime.cs, MemStatsReport)
         if (Environment.GetEnvironmentVariable("CS2WASM_MEMSTATS") == "1")
             Export("cs2wasm_memstats", D.LibMethod("Cs2Wasm.Runtime.Rt", "MemStatsReport", 0));
@@ -1616,6 +1620,17 @@ sealed partial class RuntimeGen
     /// result is dropped are removed.</summary>
     void EmitOnDestroy()
     {
+        if (D.Rt.WeakAnyIfMade is { } any)
+        {
+            var m = D.AllMethods.FirstOrDefault(x => x.Sym.Name == "Any" && x.Sym.ContainingType?.Name == "ObjectMarks" && x.Compiled);
+            var ae = new Emitter(any);
+            if (m != null) ae.Call(m.Fn); else ae.I32(0);
+        }
+        if (D.Rt.WeakDyingIfMade is { } dying)
+        {
+            var m = D.AllMethods.FirstOrDefault(x => x.Sym.Name == "WeakDying" && x.Sym.ContainingType?.Name == "ObjectMarks" && x.Compiled);
+            if (m != null) { var de = new Emitter(dying); de.Get(0); de.Call(m.Fn); }
+        }
         var f = D.Rt.OnDestroyIfMade;
         if (f == null) return;
         var marks = D.AllMethods.FirstOrDefault(m => m.Sym.Name == "OnDestroy" && m.Sym.ContainingType?.Name == "ObjectMarks" && m.Compiled);

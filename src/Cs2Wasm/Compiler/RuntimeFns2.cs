@@ -534,6 +534,14 @@ internal sealed partial class RuntimeFns
     WasmFunction? _onDestroy;
     public WasmFunction OnDestroy => _onDestroy ??= M.AddFunction("rt.on_destroy", FT([I], [I]));
     public WasmFunction? OnDestroyIfMade => _onDestroy;
+    WasmFunction? _weakAny, _weakDying;
+    /// <summary>rt.weak_any(): whether any object has a mark now (0 in a program that sets none); rt.weak_dying(obj):
+    /// the weak references to a member of a group that is going are cleared (ObjectMarks.WeakDying; nothing in a
+    /// program that sets no mark). Written at the end (RuntimeGen.EmitOnDestroy).</summary>
+    public WasmFunction WeakAnyFn => _weakAny ??= M.AddFunction("rt.weak_any", FT([], [I]));
+    public WasmFunction WeakDyingFn => _weakDying ??= M.AddFunction("rt.weak_dying", FT([I], []));
+    public WasmFunction? WeakAnyIfMade => _weakAny;
+    public WasmFunction? WeakDyingIfMade => _weakDying;
 
     WasmFunction? _clamp;
     /// <summary>(v, lo, hi) → v clamped to [lo, hi].</summary>

@@ -142,6 +142,31 @@ namespace Cs2Wasm.Runtime
             Rt.RuntimeUnlock();
         }
 
+        /// <summary>Whether any object has a mark now.</summary>
+        public static int Any() => s_count != 0 ? 1 : 0;
+
+        /// <summary>The member of a group that is going, at `addr`: the weak handles to it are cleared now, before
+        /// any finalizer of the group runs and before any of its members is cleared (as .NET clears the short weak
+        /// references to everything that became unreachable together before the first finalizer). Its other marks
+        /// stay for its own destruction (OnDestroy). The dependents of dependent handles wait in the thread's list
+        /// (WeakSlots.Hold) until every member's handles are cleared.</summary>
+        public static void WeakDying(int addr)
+        {
+            if (s_count == 0 || t_busy != 0) return;
+            if ((Mem.LoadI32(addr + 8) & MarkedBit) == 0) return;
+            Rt.RuntimeLock();
+            t_busy++;
+            bool has = IntMap.TryGet(s_marks, addr, out int f) && (f & Weak) != 0;
+            if (has)
+            {
+                f &= ~Weak;
+                if (f == 0) { IntMap.Remove(s_marks, addr); s_count--; } else IntMap.Set(s_marks, addr, f);
+            }
+            t_busy--;
+            Rt.RuntimeUnlock();
+            if (has) WeakSlots.Cleared(addr);
+        }
+
         /// <summary>The object at `addr` is dying: clear weak handles to it; 0 if its finalizer must not run.</summary>
         public static int OnDestroy(int addr)
         {
@@ -192,6 +217,24 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(slot + 4, stored ? dependent : 0);
             Rt.RuntimeUnlock();
             return old;
+        }
+
+        [System.ThreadStatic] static int t_hold, t_held;
+
+        /// <summary>From here to Release the dependents of cleared handles are kept, not let go.</summary>
+        internal static void Hold() { t_hold++; }
+
+        /// <summary>The dependents kept since Hold are let go (the outermost Release).</summary>
+        internal static void Release()
+        {
+            if (--t_hold != 0) return;
+            while (t_held != 0)
+            {
+                int n = t_held, d = Mem.LoadI32(n);
+                t_held = Mem.LoadI32(n + 4);
+                Rt.Free(n, 8);
+                Rt.Release(Rt.Borrow<object>(d));
+            }
         }
 
         static void LinkAs(int slot, object target, int kind)
@@ -252,6 +295,12 @@ namespace Cs2Wasm.Runtime
                 }
             }
             Rt.RuntimeUnlock();
+            // (a group's members one after the other: the dependents wait until all are cleared, Release)
+            if (t_hold != 0)
+            {
+                while (dependents != 0) { int n = dependents; dependents = Mem.LoadI32(n + 4); Mem.StoreI32(n + 4, t_held); t_held = n; }
+                return;
+            }
             while (dependents != 0)
             {
                 int n = dependents, d = Mem.LoadI32(n);
