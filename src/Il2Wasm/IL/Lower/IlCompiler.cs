@@ -166,8 +166,11 @@ public sealed partial class IlCompiler
             _functions[m] = w;
             _counted ??= NamedStatic("il2wasm.live", 4, 4);
             var e = new Emitter(w);
+            // (IL2WASM_IL_WATCH=address: a free of that block traps, so its stack shows who)
+            if (m.GetName() != "AllocObject") WatchEvent(e, 4);
             for (int i = 0; i < inner.Type.Params.Length; i++) e.Get(i);
             e.Call(inner);
+            if (m.GetName() == "AllocObject") { int res = e.AddLocal(ValType.I32); e.Tee(res); e.Set(res); WatchEvent(e, 3, res); e.Get(res); }
             e.I32Addr(_counted); e.I32Addr(_counted); e.Load(WOp.I32Load); e.I32(m.GetName() == "AllocObject" ? 1 : -1); e.Op(WOp.I32Add); e.Store(WOp.I32Store);
             return w;
         }
@@ -785,6 +788,8 @@ public sealed partial class IlCompiler
                 e.Op(WOp.Return);
                 e.End();
             }
+            // (IL2WASM_IL_TRACE_DISPATCH=1: the type id no case had, the object's count and address, before the trap)
+            if (Environment.GetEnvironmentVariable("IL2WASM_IL_TRACE_DISPATCH") == "1") { e.Get(tid); e.Get(0); e.Load(WOp.I32Load); e.Get(0); e.Call(TraceImport); }
             e.Op(WOp.Unreachable);
         }
         // type tests: the constructed types that cast to the target
@@ -992,6 +997,7 @@ public sealed partial class IlCompiler
                 _retain = M.AddFunction("rt.retain", FT([I], [I]));
                 var e = new Emitter(_retain);
                 int r = e.AddLocal(I);
+                c.WatchEvent(e, 1);
                 e.Get(0); e.If();
                 e.Get(0); e.Load(WOp.I32Load); e.Tee(r); e.I32(0); e.Op(WOp.I32GtS);
                 e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(WOp.I32Add); e.Store(WOp.I32Store); e.End();
@@ -1010,6 +1016,9 @@ public sealed partial class IlCompiler
                 _release = M.AddFunction("rt.release", FT([I], []));
                 var e = new Emitter(_release);
                 int r = e.AddLocal(I);
+                // (IL2WASM_IL_WATCH=address, a debugging aid: each release of that object logged, and the one that
+                // frees it traps, so its stack shows who)
+                c.WatchEvent(e, 2);
                 e.Get(0); e.If();
                 e.Get(0); e.Load(WOp.I32Load); e.Tee(r); e.I32(1); e.Op(WOp.I32GtS);
                 e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(WOp.I32Sub); e.Store(WOp.I32Store);

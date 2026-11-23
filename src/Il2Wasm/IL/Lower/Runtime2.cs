@@ -42,6 +42,25 @@ public sealed partial class IlCompiler
     /// <summary>IL2WASM_IL_TRACE's import (a debugging aid): il2wasm_trace.enter(a, b, c).</summary>
     internal WasmFunction TraceImport => _trace ??= Module.AddImport("il2wasm_trace", "enter", "trace", new FuncType([ValType.I32, ValType.I32, ValType.I32], []));
 
+    static readonly int? s_watch = int.TryParse(Environment.GetEnvironmentVariable("IL2WASM_IL_WATCH"), out int w) ? w : null;
+    static readonly int s_watchAt = int.TryParse(Environment.GetEnvironmentVariable("IL2WASM_IL_WATCH_AT"), out int wa) ? wa : -1;
+    WasmGlobal? _watchCount;
+
+    /// <summary>IL2WASM_IL_WATCH=address (a debugging aid): each event on the object at that address logged through
+    /// the trace import as (kind, its count word, the event's number); kind 1 retain, 2 release, 3 allocated, 4 freed.
+    /// IL2WASM_IL_WATCH_AT=n traps at event n (its stack shows who).</summary>
+    internal void WatchEvent(Emitter e, int kind, int addrLocal = 0)
+    {
+        if (s_watch is not int watch) return;
+        if (_watchCount == null) { _watchCount = new WasmGlobal("il2wasm.watch", ValType.I32, true, 0); Module.Globals.Add(_watchCount); }
+        e.Get(addrLocal); e.I32(watch); e.Op(WOp.I32Eq);
+        e.If();
+        e.GGet(_watchCount); e.I32(1); e.Op(WOp.I32Add); e.GSet(_watchCount);
+        e.I32(kind * 1000); e.Get(addrLocal); e.Load(WOp.I32Load, 4); e.I32(65536); e.Op(WOp.I32Mul); e.Get(addrLocal); e.Load(WOp.I32Load); e.Op(WOp.I32Add); e.Op(WOp.I32Add); e.GGet(_watchCount); e.I32(0); e.Call(TraceImport);
+        e.GGet(_watchCount); e.I32(s_watchAt); e.Op(WOp.I32Eq); e.If(); e.Op(WOp.Unreachable); e.End();
+        e.End();
+    }
+
     Blob? _emptyTable;
     /// <summary>A table of no entries (its count, 0, then zeros).</summary>
     internal Blob EmptyTable => _emptyTable ??= DataBlob(new byte[16], 4);
