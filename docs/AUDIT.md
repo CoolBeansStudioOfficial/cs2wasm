@@ -2263,8 +2263,8 @@ at work): the private churn's 5.3 at eight is most of it, the private trees' 3.2
 both (the known one under load) and 277's hang above; the self-host check (`tools/selfhost-switch.sh`): the
 self-hosted compiler built in 340 s (33,404,357 bytes), hello world in 8.7 to 9.4 s, peak 272.0 MB, self-1 = net
 byte for byte on 145. The desk: `tools/thread-escape-breaks.sh` as said above, on the final tests;
-`tools/thread-share-check.sh` (every conformance test that is a program with threads, once as it is and once
-under the share check). Queued on the homelab when this was written, and in docs/FINISH.md's entry when in:
+`tools/thread-share-check.sh` (every conformance test that is a program with threads, 59 of them, once as it is and once
+under the share check): all 59 print the same. Queued on the homelab when this was written, and in docs/FINISH.md's entry when in:
 `tools/stress-cycles.sh` (127, 139; 139 without the engine's stack checks), `tools/stress-threads.sh` (275 to
 279, 187, 131), `tools/thread-scale.sh` (the threaded self-hosted compiler, not yet built with this analysis),
 `tools/selfdet-set.sh` (220, 193, 088 through the self-hosted compiler), 088 and 275 to 279 alone.
