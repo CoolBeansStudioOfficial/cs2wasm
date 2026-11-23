@@ -858,8 +858,8 @@ namespace Cs2Wasm.Runtime
         }
         // (and, with it, how often each path of the arena operations runs: OpStat's numbers, printed with DsPrint)
         static int s_opStats;
-        const int OpN = 40;
-        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,give-back-early,link-pinned,give-back-last,join-fused,join-node,join-pair,node-up,node-add";
+        const int OpN = 44;
+        const string OpNames = "link,link-plain,link-same,link-core,join,merge,joined-visit,unlink,unlink-plain,unlink-up,unlink-inside,leave-visit,leave,reevaluate,retain-slow,release-slow,update-hold,handover,link-at,unlink-at,take-ownership,unlink-top,destroy,link-up,hold-change,hold-up,retain-fast,release-fast,array-replace,join-owned,fresh-join,array-grow,give-back-early,link-pinned,give-back-last,join-fused,join-node,join-pair,node-up,node-add,plain-parents";
         // (a constant test where it is asked, so that without the diagnosis nothing is left of it, not even a call)
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static void OpStat(int k) { if (DropStats()) OpStatCount(k); }
@@ -3715,7 +3715,7 @@ namespace Cs2Wasm.Runtime
                 }
                 up = 1;
             }
-            int t = 0, ed = 0, ts = 0, others = 0;
+            int t = 0, ed = 0, ts = 0, others = 0, pe = 0, pes = 0;
             if (e != 0)
             {
                 if (NoEarlyGiveBack()) return false;
@@ -3730,12 +3730,19 @@ namespace Cs2Wasm.Runtime
                     int c = Mem.LoadI32(e + 8 + ((w & 15) << 2));
                     if (c == 0) continue;
                     if (c == t) { ts = w & 15; continue; }
-                    // (a plain object of the group of classes in another slot: the general way, its slots are not known)
-                    if (Mem.LoadI32(c) > 0 && Mem.LoadI32(c + 8) >= 0 && SccOf(Mem.LoadI32(c + 4)) == g) return false;
+                    // (a plain object of the group of classes in another slot: the node's own parent, a plain
+                    // object still, PlainParents; anything else the general way, its slots are not known)
+                    if (Mem.LoadI32(c) > 0 && Mem.LoadI32(c + 8) >= 0 && SccOf(Mem.LoadI32(c + 4)) == g)
+                    {
+                        if (pe != 0 || Mem.LoadI32(c) < 2) return false;
+                        pe = c; pes = w & 15;
+                        continue;
+                    }
                     // (the node's other slots that hold members: one alone can take NodeUp)
                     if (Mem.LoadI32(c) <= 0) others++;
                 }
                 if (ts == 0) return false;
+                if (pe != 0 && (others != 0 || !PlainParents(pe, e, val, ar, g, false))) return false;
             }
             OpStat(29); OpStat(35);
             JoinOne(ar, val, container);
@@ -3802,8 +3809,142 @@ namespace Cs2Wasm.Runtime
                 }
                 s_visitArena = sa; s_visitMode = sm; s_visitObj = so; s_joinVisit = 0;
                 if (s_linkN == 0 && s_reevN != 0) LinkWaiting();
+                if (pe != 0) { SetSlotBits(e, pes - 1, 1); PlainParents(pe, e, val, ar, g, true); }
             }
             return true;
+        }
+
+        /// <summary>CS2WASM_NO_PLAIN_PARENTS=1 (at compile time): JoinFresh refuses a node whose own parent is a
+        /// plain object still (the general way joins the chain of plain parents).</summary>
+        [Intrinsic] static extern bool NoPlainParents();
+
+        /// <summary>JoinFresh's node e (a plain object whose list takes its first item) holds, in its one other
+        /// slot that can be linked, a plain object that code still refers to: its own parent, made before it and
+        /// not yet a member, because no child of it has a child (in a tree built parent first, each node's first
+        /// child: 625 a build of the scene tree of tools/frames.mjs, and with them every plain parent above).
+        /// The general way: e's visit joins the parent through e's field as a counted reference that waits for
+        /// an owner (side words, a pair for LinkWaiting); the parent's visit joins its new objects with nothing
+        /// to link (its list), and its own parent the same way, level after level, up to a parent that is a
+        /// member (linked as LinkJoinedSlot links it: the merge, NodeUp's outcome), or none; then LinkWaiting's
+        /// pairs from the bottom: each parent, without an owner, is its child's (TakeOwnership). Each level's
+        /// slots hold, asked before a word is written (`write` false): nothing to link, new objects of the
+        /// level's own whose slots hold nothing to link, and at most one reference up, to a plain object that
+        /// code still refers to (the next level; none twice) or to a member that code refers to (the end: its
+        /// group not busy or merged, with more members than the node's so that the merge ends in it, no note of
+        /// a failed check alive). Written (`write` true), level by level in the order of the general way's
+        /// joins: the level a member with the counts it had less the field's, nothing's, referred to once from
+        /// inside; its new objects its own; the next level joined as its slot comes; its bits; the member's
+        /// link by NodeUp; and the level its child's. Not made: the levels' side words (they would hold
+        /// nothing after LinkWaiting). `below`: the member whose slot holds the first level (e), already
+        /// joined; `item`: the new item, for the walk's end.</summary>
+        static bool PlainParents(int first, int below, int item, int ar, int g, bool write)
+        {
+            if (!write && (NoPlainParents() || NoNodePath() || s_failedTops != 0)) return false;
+            int b = below, joined = 0;
+            if (write)
+            {
+                // (the first level joins as e's slot is visited)
+                int c0 = Mem.LoadI32(first);
+                OpStat(4);
+                Mem.StoreI32(first, -(c0 + 1)); PS(first, 16, ar); PS(first, 4, 1); RingAdd(ar, first);
+                Mem.StoreI32(ar, Mem.LoadI32(ar) + 1);
+            }
+            for (int a = first, level = 0; a != 0; level++)
+            {
+                if (!write)
+                {
+                    if (level == ChainMax || a == item || PL(a, 24) != 0) return false;
+                    // (no level twice)
+                    for (int x = first, k = 0; k < level; k++)
+                    {
+                        if (x == a) return false;
+                        x = PlainUp(x, g);
+                    }
+                    if (a == below) return false;
+                }
+                int da = ArenaSlots(Mem.LoadI32(a + 4));
+                if (da == 0) return false;
+                int up = 0, m = 0, ms = 0, bits = 0;
+                for (int w = da; w != 0; w = (int)((uint)w >> 4))
+                {
+                    int k = (w & 15) - 1, c = Mem.LoadI32(a + 12 + (k << 2));
+                    if (c == 0) continue;
+                    int cc = Mem.LoadI32(c);
+                    if (SccOf(Mem.LoadI32(c + 4)) != g) continue;
+                    // (the next level, joined in the write pass as this slot came: a member by now)
+                    if (write && c == up) continue;
+                    if (cc > 0)
+                    {
+                        if (Mem.LoadI32(c + 8) < 0) continue;
+                        if (cc == 1)
+                        {
+                            if (write) { OpStat(29); JoinOne(ar, c, a); bits |= 1 << (2 * k); continue; }
+                            // (a new object of the level's own: its slots hold nothing to link)
+                            int d2 = ArenaSlots(Mem.LoadI32(c + 4));
+                            if (d2 == 0 || PL(c, 24) != 0) return false;
+                            if (NodePathBreak() != 8)
+                                for (; d2 != 0; d2 = (int)((uint)d2 >> 4))
+                                {
+                                    int c2 = Mem.LoadI32(c + 8 + ((d2 & 15) << 2));
+                                    if (c2 != 0 && (Mem.LoadI32(c2) <= 0 || Mem.LoadI32(c2 + 8) >= 0)) return false;
+                                }
+                            joined++;
+                            continue;
+                        }
+                        if (up != 0 || m != 0) return false;
+                        up = c;
+                        if (write)
+                        {
+                            OpStat(4);
+                            Mem.StoreI32(c, -(cc + 1)); PS(c, 16, ar); PS(c, 4, 1); RingAdd(ar, c);
+                            Mem.StoreI32(ar, Mem.LoadI32(ar) + 1);
+                            bits |= 1 << (2 * k);
+                        }
+                        continue;
+                    }
+                    // (a member: the end of the plain parents)
+                    if (up != 0 || m != 0 || cc > -3) return false;
+                    m = c; ms = k;
+                    if (write)
+                    {
+                        // (linked as its slot comes: the merge is the general way's, with the members it has then,
+                        // and what joins after it joins the group that is left)
+                        PS(a, 28, bits);
+                        if (!NodeUp(m, a, a + 12 + (ms << 2))) LinkJoinedSlot(m, a + 12 + (ms << 2));
+                        bits = PL(a, 28);
+                        ar = PL(m, 16);
+                    }
+                }
+                joined++;
+                if (m != 0 && !write)
+                {
+                    if ((PL(m, 24) & (Dying | Queued)) != 0 || PL(m, 20) == a) return false;
+                    int am = PL(m, 16);
+                    if (Mem.LoadI64(am + 12) != 0) return false;
+                    if (am != ar && Mem.LoadI32(am + 8) <= Mem.LoadI32(ar + 8) + joined + 10) return false;
+                }
+                if (write)
+                {
+                    PS(a, 28, bits);
+                    TakeOwnership(a, b);
+                }
+                b = a;
+                a = up;
+            }
+            if (write) OpStat(40);
+            return true;
+        }
+
+        /// <summary>PlainParents, before anything is written: the plain object of the group that code still refers to
+        /// in a slot of the level (its reference up), or 0.</summary>
+        static int PlainUp(int a, int g)
+        {
+            for (int w = ArenaSlots(Mem.LoadI32(a + 4)); w != 0; w = (int)((uint)w >> 4))
+            {
+                int c = Mem.LoadI32(a + 8 + ((w & 15) << 2));
+                if (c != 0 && Mem.LoadI32(c) > 1 && Mem.LoadI32(c + 8) >= 0 && SccOf(Mem.LoadI32(c + 4)) == g) return c;
+            }
+            return 0;
         }
 
         /// <summary>CS2WASM_NO_NODE_PATH=1 (at compile time): the three steps of a node of a tree built parent first
@@ -3814,8 +3955,9 @@ namespace Cs2Wasm.Runtime
         /// rule: NodeUp gives the parent's last count from outside back as LinkMembers does;) 4: NodeUp, that the node has no other slot to
         /// link; 5: NodeUp, whether the parent has an owner; 6: AddNode, that the store's count is the node's one
         /// reference from outside; 7: AddNode, that the member the node owns above the array has no up-reference
-        /// below it and holds nothing. (Test 201's lines change with 1, 2 and 6; 3, 4 and 5 are reached there and
-        /// leave its lines as they are: the general path's later checks mend what they leave; 7 is not reached.)</summary>
+        /// below it and holds nothing; 8: PlainParents, what a new object of a plain parent's own holds.
+        /// (tools/node-path-breaks.sh: test 201's lines change with 1, 2 and 6 as they are, and with 4, 5, 7 and 8,
+        /// which leave what the check at the drop mends later, when that check is off on both sides.)</summary>
         [Intrinsic] static extern int NodePathBreak();
 
         /// <summary>The node path, 1 of 3 (docs/AUDIT.md A3.5, the build, round 9). A tree built parent first
