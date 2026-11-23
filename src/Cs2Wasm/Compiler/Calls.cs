@@ -1012,6 +1012,7 @@ sealed partial class FunctionCompiler
             case "Rt.NoTakeIn": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TAKE_IN") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoStaleNote": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_STALE_NOTE") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDyingQueued": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DYING_QUEUED") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoTurnHold": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TURN_HOLD") == "1" ? 1 : 0); return Own.None;
             case "Rt.TurnCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_TURN_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.SurvivorCheck": E.I32(Environment.GetEnvironmentVariable("CS2WASM_SURVIVOR_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoFreshJoin":E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FRESH_JOIN") == "1" ? 1 : 0); return Own.None;

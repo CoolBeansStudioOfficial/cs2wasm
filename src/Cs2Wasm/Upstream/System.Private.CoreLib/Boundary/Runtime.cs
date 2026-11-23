@@ -2777,6 +2777,12 @@ namespace Cs2Wasm.Runtime
                 // destruction's survivor left without an owner)
                 else if (DropCandidate(w) && (TurnCheck() || SurvivorCheck())) Dropped(w);
             }
+            // (TurnHold's references go; with threads after the locks, AfterLocks)
+            while (!ThreadMode() && t_turnN > 0)
+            {
+                t_turnN--;
+                ArenaRelease(Mem.LoadI32(t_turnQ + 4 * t_turnN));
+            }
         }
 
         /// <summary>A member got an owner (the container): when that is under a top whose check failed by references
@@ -2905,6 +2911,7 @@ namespace Cs2Wasm.Runtime
         static void TakeOwnership(int val, int container)
         {
             OpStat(20);
+            int turned = 0;
             if (OnChain(container, val))
             {
                 int x = container;
@@ -2914,6 +2921,14 @@ namespace Cs2Wasm.Runtime
                 PS(x, 24, xf & ~(Owned | MultMask));
                 PS(x, 20, 0);
                 if (Mem.LoadI32(x) == -2 && TurnCheck()) QueueCheck(x);
+                turned = x;
+                // (x is the top of what the two are in from here on, and when no code refers to it nothing else
+                // looks at it: TurnHold below, which makes the check once the operation is done. It was open until
+                // 2026-11-22: a check queued in the thread's list here, at every such turn or only where an owner
+                // dies, left test 133 with 4,934 objects, a check that leaves no note when it fails too: with
+                // threads that list is gone through under the store's locks.)
+                if (Mem.LoadI32(x) == -2 && TurnCheck()) QueueCheck(x);
+                turned = x;
                 // (Open: x is the top of what the two are in from here on, and when no code refers to it nothing
                 // looks at it again: a result made referring to its parent and owned by another member (its task),
                 // then put in the parent's list, the list's array taking it over when that owner dies after the
@@ -2931,18 +2946,55 @@ namespace Cs2Wasm.Runtime
             // (only a counted reference in one of its own slots can become an up-reference)
             if ((PL(val, 28) & 0x55555555) != 0 && (PL(val, 24) & Elems) == 0) Reevaluate(val);
             if (s_failedTops != 0 && !NoStaleNote()) StaleNote(container);
+            if (turned != 0 && !NoTurnHold() && Mem.LoadI32(turned) == -2 && (PL(turned, 24) & (Owned | Dying)) == 0) TurnHold(turned);
+        }
+
+        // TurnHold: the member an ownership that turned round left on top (TakeOwnership), when no code refers to
+        // it, is referred to by the runtime until the operation under way is done, and let go then: a last
+        // reference from outside that goes, which makes the check at the drop as for any top, by ArenaRelease.
+        // Let go: with threads when the thread's last group lock has gone and no destruction is under way
+        // (AfterLocks), as the releases that could not have a lock (inside a destruction the release would make no
+        // check: the turn comes where a task that dies hands its result to the list that held it too); without
+        // threads when the operation's list is gone through (DrainKills). With
+        // threads that list is gone through while the store's locks are held and the counts the store gives back
+        // still wait: the check made there left test 133 with 4,934 objects (four members referred to from outside
+        // for good, their group with them), the check made after the locks leaves none.
+        // Nothing looked at such a top before: a result made referring to its parent (the result owns the parent),
+        // owned itself by its task, then put in the parent's list; the parent let go while the task lives (owned,
+        // so no check); the task dies, the list's array adopts the result, the ownership turns round, and the
+        // parent is on top of a structure that is garbage. Test 215's one-result case, every time (3 objects left);
+        // test 187's rounds under load, 6 and 10 runs of 1,000 on the homelab (`result 3 ... rounds 1`): there the
+        // task dies on its pool thread after the main thread let the tree go.
+        // (A check queued in the thread's list, CS2WASM_TURN_CHECK=1, a trial: test 133 with 4,934 objects, as above.)
+        // CS2WASM_NO_TURN_HOLD=1 (at compile time, a measurement): none.
+        [Intrinsic] static extern bool NoTurnHold();
+        [System.ThreadStatic] static int t_turnQ, t_turnN, t_turnCap;
+
+        static void TurnHold(int x)
+        {
+            if (t_turnN == t_turnCap)
+            {
+                int cap = t_turnCap == 0 ? 8 : t_turnCap * 2;
+                int nq = Alloc(cap * 4);
+                if (t_turnQ != 0) { Mem.Copy(nq, t_turnQ, t_turnN * 4); Free(t_turnQ, t_turnCap * 4); }
+                t_turnQ = nq; t_turnCap = cap;
+            }
+            ArenaRetain(x);
+            Mem.StoreI32(t_turnQ + 4 * t_turnN, x);
+            t_turnN++;
+            // (without threads, so that the list is gone through: the callers ask whether anything waits by s_killN)
+            if (!ThreadMode()) KillPush(0);
         }
 
         /// <summary>CS2WASM_NO_STALE_NOTE=1 (at compile time, a measurement): a top's note is not looked at again when
         /// a member comes under it (StaleNote).</summary>
         [Intrinsic] static extern bool NoStaleNote();
 
-        /// <summary>CS2WASM_TURN_CHECK=1, CS2WASM_SURVIVOR_CHECK=1 (at compile time, trials, off): the check of the
-        /// member an ownership that turned round leaves on top, and of a destruction's survivor left without an
-        /// owner, when no code refers to them (queued, DrainKills). The first frees the shape said open at
-        /// TakeOwnership (test 215's one-result case, taken out of the test: 3 objects left without) and leaves
-        /// test 133 with 4,934 objects, cause not found; the second passes test 133 since DyingQueued (it left 1)
-        /// and frees nothing more in tests/Load/219_no_lock.cs.</summary>
+        /// <summary>CS2WASM_TURN_CHECK=1, CS2WASM_SURVIVOR_CHECK=1 (at compile time, trials, off): a check queued in the
+        /// thread's list (DrainKills) for the member an ownership that turned round leaves on top, and for a
+        /// destruction's survivor left without an owner, when no code refers to them. The first is what TurnHold
+        /// does at another moment, and leaves test 133 with 4,934 objects; the second passes test 133 since
+        /// DyingQueued (it left 1) and frees nothing more in tests/Load/219_no_lock.cs.</summary>
         [Intrinsic] static extern bool TurnCheck();
         [Intrinsic] static extern bool SurvivorCheck();
 

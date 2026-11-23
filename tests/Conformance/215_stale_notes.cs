@@ -115,6 +115,7 @@ static class P
         HolderDies(false); Say("holder dies");
         HolderDies(true); Say("holder dies, an array");
         TwoHolders(); Say("two holders");
+        HolderComesUnder(1); Say("holder comes under");
         HolderComesUnder(4); Say("four come under");
         HeldPlace(); Say("held place");
         TwoStructures(true); Say("two structures");
