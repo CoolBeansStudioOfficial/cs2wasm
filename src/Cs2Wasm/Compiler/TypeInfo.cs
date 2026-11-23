@@ -97,8 +97,13 @@ sealed partial class RuntimeGen
         var leafSet = walk.Where(IsLeafDestroy).ToHashSet();
         // (object, when the program makes none: no object has its number)
         D.LeafTypeCount = (IsLeafDestroy(0) || !HasDestroy(0)) && IsLeafDestroy(1) ? 2 + leafSet.Count : 0;
+        // (then the classes whose destruction is flat, RuntimeGen.IsFlatDestroy: it lets go of leaves and frees the
+        // object, so rt.destroy tells them by their number too and counts no nesting for them; a class's own are
+        // three ranges at most then)
+        var flatSet = D.LeafTypeCount == 0 ? [] : walk.Where(id => !leafSet.Contains(id) && IsFlatDestroy(id)).ToHashSet();
+        D.FlatTypeCount = D.LeafTypeCount + flatSet.Count;
         D.SetTypeNumbers(D.LeafTypeCount == 0 ? [.. order.Where(id => id <= 1), .. walk]
-            : [.. order.Where(id => id <= 1), .. walk.Where(leafSet.Contains), .. walk.Where(id => !leafSet.Contains(id))]);
+            : [.. order.Where(id => id <= 1), .. walk.Where(leafSet.Contains), .. walk.Where(flatSet.Contains), .. walk.Where(id => !leafSet.Contains(id) && !flatSet.Contains(id))]);
     }
 
     /// <summary>Gives ids to the types the requested tables refer to.</summary>

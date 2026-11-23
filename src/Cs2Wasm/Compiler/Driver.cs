@@ -296,6 +296,9 @@ internal sealed partial class Driver
     public int TypeCount;
     /// <summary>The types numbered below this hold no reference: destroying one frees it (RuntimeGen.AssignTypeIds).</summary>
     public int LeafTypeCount;
+    /// <summary>The types numbered from LeafTypeCount up to this are classes whose destruction lets go of leaves and
+    /// frees the object (RuntimeGen.IsFlatDestroy): no nesting to count for them either.</summary>
+    public int FlatTypeCount;
     public void SetTypeNumbers(List<int> internals)
     {
         _intId = internals;

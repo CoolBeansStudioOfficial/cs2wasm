@@ -965,6 +965,54 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   world byte for byte the .NET-hosted compiler's (27,584 bytes), 14.4 to 15.3 s against 14.6 to 16.2 before on the
   loaded homelab (NativeAOT-LLVM's 6.1 to 6.3). Not covered yet, by its session's report: a span or ref returned up
   through two frames (one level of wrapper is); given to the session on the free path.
+- 2026-11-23, a corruption of the heap that claude/colstr-2's move brought to main (20cb183 to 3dbef69), found by
+  the session on claude/field-loads-1 and fixed (main 4781226: its commits 601c0e1 and 7393522 picked). A collection
+  that grows by moving left its old array retyped as byte[], to be freed without counting anything off; an array of
+  a type that can be on a cycle has the arena's 32 bytes before its header and is freed with them only by its own
+  type's destruction, so as byte[] it was freed 32 bytes into its block and 32 short. It takes such an array that
+  is still a plain object when the collection grows (made with a capacity, filled past it with items that refer to
+  no member): the inliner's `new List<Instr>(n)`. The self-hosted compiler then trapped, looped (one such run held
+  the homelab's slot for half an hour) or failed on every program larger than hello world; the suite did not show
+  it, and the check made before each merge compiled hello world only. Rt.MoveItems now refuses those arrays (they are
+  copied as before; CS2WASM_ARRAY_MOVE_CYCLE=1 for the old move); test 240 traps in the allocator with the old move
+  under the .NET-hosted compiler and passes with the fix, here and by that session. Homelab at 4781226: the
+  self-hosted compiler's module byte for byte the .NET-hosted compiler's for hello world and for tests 207, 220,
+  222, 240, 193 and 088 (1,613,207 bytes); its hello world in 10.1 to 10.8 s against 9.8 to 10.0 before and
+  NativeAOT-LLVM's 4.6 to 5.0. From here every merge's self-host check compiles those larger tests too. Not done: the
+  full suite and frames.mjs at 4781226 (the fix is four lines in ArrayMoves.cs; tests 22x and 240 passed here).
+- 2026-11-22, the free path taken apart (branch claude/free-path-1 from claude/round-6d a15be27, not merged when
+  this was written; AUDIT A3.5, "The free path taken apart"). A free was about twenty loads, ten stores, twenty
+  branches, a jump through the table of types and a call: 4 ns over NativeAOT-LLVM's store on a quiet machine.
+  Measured parts: the nesting depth 1 ns; what the engine inlines decides the rest (V8 inlines no call it has not
+  counted before it compiled the caller, and keeps a small function in baseline code for a long time: a release
+  that called its class's destruction directly was slower than the dispatch, 568 to 757 ns for 100 objects, where
+  the loop was compiled before the first object died). Built: flat destructions (`CS2WASM_NO_FLAT_DESTROY=1`: a
+  class that lets go of leaves and frees itself; rt.destroy counts no nesting for it), written in place in loops
+  and in functions of at most 60 instructions (`CS2WASM_NO_DESTROY_IN_PLACE=1`, `CS2WASM_IN_PLACE_SMALL=n`) with
+  the free of a known size as `Rt.FreeFixed`; the class named at more releases, among them a store in generic code
+  by the type it is compiled for, for a sealed class that looks flat (`CS2WASM_NO_STORE_HINT=1`: List<T>'s and
+  Dictionary<K,V>'s stores, where the scenes' frees are); Dictionary takes a fresh value's count
+  (`CS2WASM_NO_OWNED_INSERT=1`: `map[key] = new Item()`, Add, TryAdd). Without threads only.
+  `tools/alloc-parts.cs`, ns, NativeAOT-LLVM / before / now: made over old ones 226 / 600 / 300, let go 100 / 500 /
+  233. `tools/colstr-parts.cs`: the collections frame 6,405 to 6,101 against 5,961 (1.07x to 1.02x). frames.mjs,
+  three quiet pairs at the last commit, before / now: collections 1.03x-1.05x / 1.00x-1.03x, churn 1.57x-1.58x /
+  1.56x-1.58x (**not moved, not reached**), tree 1.62x-1.63x / 1.62x-1.65x (**not moved, not reached**), strings
+  0.89x-0.91x / 0.86x-0.87x, bigdrop 0.90x-0.94x / 0.90x-0.97x; bench.mjs 0.92x-0.93x both; hello world 27,642 to 27,757 bytes.
+  Tried and not kept: the dispatch's cases in place (no scene moved, hello world 30,177 bytes); a string's or an
+  array's class named at stores in generic code (the self-hosted compiler 3% slower). Tests 235 (two break
+  switches) and 237.
+  **References into a collection's storage, complete** (`Compiler/StorageKeeps.cs`): any number of frames by a
+  fixed point over the calls, every way out of a call (the result, an `out`/`ref` ref struct, a constructor's ref
+  struct, the ref struct a method is called on, virtual and interface methods, delegates), the library's methods
+  as the program's: LINQ's First, Last and Any over a list whose predicate grew it read the freed array, on main
+  too. Not covered: a function pointer. `CS2WASM_STORAGE_KEEP_SHALLOW=1`; test 222 extended.
+  **A queue that grows moves its items** (`Rt.MoveRotated`, an edit of Queue.cs): 4,096 enqueues with ten growths
+  31 us to 21; test 236.
+  **Not done:** the count on TryInsert's `entries` local (collections is 1.02x to 1.03x NativeAOT-LLVM's by
+  colstr-parts, 1.00x to 1.02x by frames.mjs: not below it), the lookups' `out` value in that tool's loop,
+  `String.Join`'s counted reads (read, not built), Dequeue's and Pop's count pair (seen, not built). **Found, not
+  fixed, on main too:** a ConditionalWeakTable's values are not let go when their keys die while the table lives.
+  On the homelab at 66374eb (the last commit that changes code): suite 224/224 checked and as shipped (343 s); 088 alone both ways (at 97f3772 the suite was 222/223 both ways, 088's timer line; at 9e254f8 221/224 both ways, tests 055, 058 and 107 not compiled, "consumed struct parameter not moved in Dictionary<string, ResourceLocator>.Add": the owned insert for a value that is a struct, fixed in 66374eb, test 237 has the case; the earlier stages 222/222 at a7918b9, c5395a0 and 0e981fa). Stress, 200 loaded runs a mode: 235, 222 and 236 at 9e254f8 and 237 at 66374eb the same in every run of both modes; 139 the same in every run and 127 differing in 7 of 400 at 9b4639b (its "async 5" line, main's rate; 4 of 400 at a671855). The self-hosted compiler at 66374eb, built as it is and with `CS2WASM_NO_FLAT_DESTROY=1 CS2WASM_NO_OWNED_INSERT=1` (tools/selfhost-switch.sh: 32,558,663 and 32,292,082 bytes, 0.8% larger): both compile hello world to the same module (27,709 bytes), 9.18 to 9.48 s as it is and 9.22 to 9.47 s switched, three rounds in turn, peak memory 344 MB both; tools/selfdet.mjs: self = net, byte for byte (27,721 bytes); the same at 0e981fa and 97f3772. Not run on the homelab: frames.mjs (it has no Emscripten); nothing was measured with threads.
 - 2026-11-22, claude/load-flakes-1 (from main 1f7a807, merged with main 3dbef69): the tests that differ under load
   (docs/AUDIT.md A3.5, "Tests that differ under load"). Runtime: a stale note on a top that code still holds is
   taken off (DrainKills), so its last release checks; the top an ownership that turns round leaves is held by the

@@ -621,8 +621,17 @@ internal sealed class WasmModule
             if (body[i].Op == Op.Call && body[i].Ref is WasmFunction g)
             {
                 int guard = 0;
-                while (g.ForwardTo != null && guard++ < 64) g = g.ForwardTo;
+                long hint = body[i].Imm2;
+                while (g.ForwardTo != null && guard++ < 64)
+                {
+                    // (a forwarder whose own call names the class of the object it releases, RuntimeGen.ReleaseOfField:
+                    // the call that takes its place names it too)
+                    int np = g.Type.Params.Length;
+                    if (hint == 0 && g.Body.Count > np && g.Body[np].Op == Op.Call && ReferenceEquals(g.Body[np].Ref, g.ForwardTo)) hint = g.Body[np].Imm2;
+                    g = g.ForwardTo;
+                }
                 body[i].Ref = g;
+                body[i].Imm2 = hint;
             }
     }
 
@@ -686,6 +695,23 @@ internal sealed class WasmModule
     /// (null otherwise): set by the compiler for programs without threads.</summary>
     public WasmFunction? ReleaseFn;
     public Func<int, WasmFunction?>? LeafDestroy;
+    /// <summary>For a type's id the destruction of its objects when it is flat and not a leaf's (it lets go of
+    /// leaves, then frees the object: RuntimeGen.IsFlatDestroy), null otherwise.</summary>
+    public Func<int, WasmFunction?>? FlatDestroy;
+    /// <summary>Rt.FreeObject, and Rt.FreeFixed where a free of a known small size may be written as it (a program
+    /// without threads, not checked, no share check), else null.</summary>
+    public WasmFunction? FreeFn, FreeFixedFn;
+    /// <summary>CS2WASM_NO_DESTROY_IN_PLACE=1: in a loop a release that names its class calls the class's destruction
+    /// (a function of a few instructions of its own), as before; a flat class's goes through rt.release.</summary>
+    /// <summary>A flat class's destruction is written in place outside loops too in a function of no more than this
+    /// many instructions (CS2WASM_IN_PLACE_SMALL=n, 0 for none): an accessor the engine puts into its callers' loops,
+    /// List&lt;T&gt;'s indexer compiled for a sealed class above all (tools/alloc-parts.cs through a List: made over old
+    /// ones 600 ns to 400, let go 700 to 570-600; modules 0.3% larger).</summary>
+    static readonly int s_inPlaceSmall = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_IN_PLACE_SMALL"), out var ips) ? ips : 60;
+    static readonly bool s_noDestroyInPlace = Environment.GetEnvironmentVariable("CS2WASM_NO_DESTROY_IN_PLACE") == "1";
+    /// <summary>CS2WASM_DESTROY_IN_PLACE_BREAK=1 (test 235's proof that the copy written in place is the destruction):
+    /// the copy leaves out the releases of the object's fields.</summary>
+    static readonly bool s_destroyInPlaceBreak = Environment.GetEnvironmentVariable("CS2WASM_DESTROY_IN_PLACE_BREAK") == "1";
 
     /// <summary>A release whose call says what class the object is of exactly (FunctionCompiler.ReleaseOf), where
     /// destroying such an object only frees it: the count's test and the class's own destruction, in place of the
@@ -702,10 +728,46 @@ internal sealed class WasmModule
             if (!destroyOf.TryGetValue(hint, out var d)) destroyOf[hint] = d = LeafDestroy((int)hint - 1);
             return d;
         }
+        // A flat class (not a leaf): only in a loop, and only with its destruction written out in place. A class's
+        // own destruction is a function of a few instructions with few callers. Where the engine has compiled the
+        // loop before the first object died there (no call counted: it inlines nothing), every free is a call of
+        // it, and the engine's baseline code runs such a function for its first several hundred thousand calls (its
+        // budget for the optimizing tier is counted in the function's size): slower than the shared rt.release and
+        // rt.destroy_now, which every release of the program has made hot (tools/colstr-parts.cs "(100 objects
+        // alone)": 568 ns to 757 with the call, tools/alloc-parts.cs "made over old ones" the same; written out:
+        // see docs/AUDIT.md). Written out, what is left to call is Rt.FreeObject, shared and hot as well.
+        var flatOf = new Dictionary<long, WasmFunction?>();
+        WasmFunction? FlatOf(long hint)
+        {
+            if (s_noDestroyInPlace || FlatDestroy == null) return null;
+            if (!flatOf.TryGetValue(hint, out var d)) flatOf[hint] = d = FlatDestroy((int)hint - 1);
+            return d;
+        }
+        // (the body of a destruction that can be written out where it is called: straight-line code over its one
+        // parameter, a few instructions)
+        var inPlace = new Dictionary<WasmFunction, bool>();
+        bool InPlace(WasmFunction destroy)
+        {
+            if (s_noDestroyInPlace) return false;
+            if (inPlace.TryGetValue(destroy, out bool ok)) return ok;
+            ok = destroy.Type.Params.Length == 1 && destroy.Type.Results.Length == 0 && destroy.Locals.Count == 0 && destroy.Body.Count <= 40;
+            foreach (var x in destroy.Body)
+            {
+                if (!ok) break;
+                ok = x.Op switch
+                {
+                    Op.LocalGet => x.Imm == 0,
+                    Op.I32Load or Op.I32Const or Op.I32Add or Op.I32Mul or Op.I32Shl or Op.Call or Op.Drop or Op.Nop => true,
+                    _ => false,
+                };
+            }
+            return inPlace[destroy] = ok;
+        }
         // (in a loop the test is written out; elsewhere it is a call of the one function that does it for the type,
         // no larger than the call it replaces)
         var releaseOf = new Dictionary<WasmFunction, WasmFunction>();
-        void Sequence(List<Instr> o, WasmFunction destroy, int t, int c, int pos)
+        var leafOfRelease = new Dictionary<WasmFunction, WasmFunction>();
+        void Sequence(List<Instr> o, WasmFunction destroy, int t, int c, int pos, bool inLoop, int t2, int c2)
         {
             void Add(Op op, long imm = 0, object? r = null) => o.Add(new Instr { Op = op, Imm = imm, Imm2 = op is Op.I32Load or Op.I32Store ? 2 : 0, Ref = r, Pos = pos });
             Add(Op.LocalTee, t);
@@ -717,7 +779,39 @@ internal sealed class WasmModule
             Add(Op.LocalGet, c); Add(Op.I32Const, 1); Add(Op.I32Eq);
             Add(Op.If);
             Add(Op.LocalGet, t); Add(Op.I32Const, 0); Add(Op.I32Store);
-            Add(Op.LocalGet, t); Add(Op.Call, 0, destroy);
+            if (inLoop && InPlace(destroy))
+            {
+                // (the destruction itself: its parameter is t. A release in it that names a leaf's class is written
+                // out in its turn, one level, with the second pair of locals: a string field that is shared or a
+                // literal costs a test, no call. The free of a known small size is Rt.FreeFixed, which the inliner
+                // puts here: a few instructions, the block kept aside for the next allocation of its size)
+                var b = destroy.Body;
+                for (int i = 0; i < b.Count; i++)
+                {
+                    var x = b[i];
+                    if (x.Op == Op.Nop) continue;
+                    if (x.Op == Op.LocalGet) { o.Add(x with { Imm = t }); continue; }
+                    if (x.Op == Op.I32Const && FreeFixedFn is { Body.Count: > 0 } && i + 1 < b.Count && b[i + 1].Op == Op.Call && ReferenceEquals(b[i + 1].Ref, FreeFn)
+                        && i > 0 && b[i - 1].Op == Op.LocalGet && ((x.Imm + 3) & ~3L) is var fs && fs <= 128 && fs >= 8)
+                    {
+                        o.Add(x with { Imm = fs });
+                        o.Add(b[i + 1] with { Ref = FreeFixedFn });
+                        i++;
+                        continue;
+                    }
+                    if (s_destroyInPlaceBreak && x.Op == Op.Call && t != t2 && (x.Imm2 != 0 && ReferenceEquals(x.Ref, ReleaseFn) || x.Ref is WasmFunction bw && leafOfRelease.ContainsKey(bw))) { o.Add(x with { Op = Op.Drop, Imm2 = 0, Ref = null }); continue; }
+                    if (x.Op == Op.Call && x.Imm2 != 0 && ReferenceEquals(x.Ref, ReleaseFn) && DestroyOf(x.Imm2) is { } leaf)
+                    {
+                        if (t2 >= 0 && t != t2) Sequence(o, leaf, t2, c2, pos, true, -1, -1);
+                        else o.Add(x with { Imm2 = 0, Ref = ReleaseOf(leaf) });
+                        continue;
+                    }
+                    // (the same release where this pass has been over the destruction already)
+                    if (x.Op == Op.Call && x.Ref is WasmFunction w && leafOfRelease.TryGetValue(w, out var leaf2) && t2 >= 0 && t != t2) { Sequence(o, leaf2, t2, c2, pos, true, -1, -1); continue; }
+                    o.Add(x);
+                }
+            }
+            else { Add(Op.LocalGet, t); Add(Op.Call, 0, destroy); }
             Add(Op.End);
             Add(Op.End);
             Add(Op.End);
@@ -728,7 +822,8 @@ internal sealed class WasmModule
             r = AddFunction("rt.release of " + destroy.Name, new FuncType([ValType.I32], []));
             r.Locals.Add(ValType.I32);
             r.Body.Add(new Instr { Op = Op.LocalGet, Imm = 0, Pos = -1 });
-            Sequence(r.Body, destroy, 0, 1, -1);
+            Sequence(r.Body, destroy, 0, 1, -1, false, -1, -1);
+            leafOfRelease[r] = destroy;
             return releaseOf[destroy] = r;
         }
         foreach (var f in Functions.ToList())
@@ -736,10 +831,10 @@ internal sealed class WasmModule
             if (f.IsImport) continue;
             bool any = false;
             foreach (var ins in f.Body)
-                if (ins.Op == Op.Call && ins.Imm2 != 0 && ReferenceEquals(ins.Ref, ReleaseFn) && DestroyOf(ins.Imm2) != null) { any = true; break; }
+                if (ins.Op == Op.Call && ins.Imm2 != 0 && ReferenceEquals(ins.Ref, ReleaseFn) && (DestroyOf(ins.Imm2) != null || FlatOf(ins.Imm2) != null)) { any = true; break; }
             if (!any) continue;
             int np = f.Type.Params.Length;
-            int t = -1, c = -1;
+            int t = -1, c = -1, t2 = -1, c2 = -1;
             var o = new List<Instr>(f.Body.Count + 32);
             var open = new List<bool>();
             int loops = 0;
@@ -751,19 +846,41 @@ internal sealed class WasmModule
                     case Op.Block or Op.If or Op.TryTable: open.Add(false); break;
                     case Op.End when open.Count > 0: if (open[^1]) loops--; open.RemoveAt(open.Count - 1); break;
                 }
-                if (ins.Op != Op.Call || ins.Imm2 == 0 || !ReferenceEquals(ins.Ref, ReleaseFn) || DestroyOf(ins.Imm2) is not { } destroy) { o.Add(ins); continue; }
+                if (ins.Op != Op.Call || ins.Imm2 == 0 || !ReferenceEquals(ins.Ref, ReleaseFn)) { o.Add(ins); continue; }
+                var destroy = DestroyOf(ins.Imm2);
+                if (destroy == null)
+                {
+                    // (a flat class: in a loop or a small function, written out; elsewhere the release it was)
+                    if (loops == 0 && f.Body.Count > s_inPlaceSmall || s_countRc || FlatOf(ins.Imm2) is not { } flat || !InPlace(flat)) { o.Add(ins); continue; }
+                    destroy = flat;
+                }
                 // (CS2WASM_COUNT_RC: a call in loops too, where the site counters see it)
-                if (loops == 0 || s_countRc) { o.Add(ins with { Imm2 = 0, Ref = ReleaseOf(destroy) }); continue; }
+                else if (loops == 0 || s_countRc) { o.Add(ins with { Imm2 = 0, Ref = ReleaseOf(destroy) }); continue; }
                 if (t < 0)
                 {
                     f.Locals.Add(ValType.I32); t = np + f.Locals.Count - 1;
                     f.Locals.Add(ValType.I32); c = np + f.Locals.Count - 1;
                 }
-                Sequence(o, destroy, t, c, ins.Pos);
+                if (t2 < 0 && InPlace(destroy) && destroy.Body.Any(x => x.Op == Op.Call && !ReferenceEquals(x.Ref, FreeFn)))
+                {
+                    f.Locals.Add(ValType.I32); t2 = np + f.Locals.Count - 1;
+                    f.Locals.Add(ValType.I32); c2 = np + f.Locals.Count - 1;
+                }
+                Sequence(o, destroy, t, c, ins.Pos, true, t2, c2);
                 continue;
             }
             f.Body = o;
             changed.Add(f);
+        }
+        // (a class's name on a release has no use from here on: without it the bodies that differ by nothing else are
+        // the same again for the merge; CS2WASM_NO_HINT_CLEAR=1: left on)
+        if (Environment.GetEnvironmentVariable("CS2WASM_NO_HINT_CLEAR") == "1") return changed;
+        foreach (var f in Functions)
+        {
+            if (f.IsImport) continue;
+            var b = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(f.Body);
+            for (int i = 0; i < b.Length; i++)
+                if (b[i].Op == Op.Call && b[i].Imm2 != 0 && ReferenceEquals(b[i].Ref, ReleaseFn)) b[i].Imm2 = 0;
         }
         return changed;
     }

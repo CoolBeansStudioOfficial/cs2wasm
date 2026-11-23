@@ -229,7 +229,7 @@ sealed partial class FunctionCompiler
         int ob = thisByValue || D.ConsumingOf(m).Mask != 0 ? -1 : OutBorrowCall(m, virt, args);
         bool wantRefAddress = _wantRefReturnAddress;
         var r = CallWith(m, virt, pushThis, () => { PushArgs(m, args); if (ob >= 0) _outBorrowNext = ob + 1; }, null, syntax, ob >= 0 ? null : ConstArgsFor(m, args), stableRecv: instance != null && IsStableBase(instance), thisByValue: thisByValue);
-        if (D.ExposesStorage(m)) KeepStorage(m, syntax, wantRefAddress);
+        if (D.ExposesStorage(m)) KeepStorage(m, syntax, wantRefAddress, instance, args);
         E.CurrentPos = save;
         return r;
     }
@@ -523,7 +523,7 @@ sealed partial class FunctionCompiler
         }
         CallWith(m, virt, pushThis, () => PushArgs(m, inv.Arguments.Cast<IOperation>().ToList()), pushDst, inv.Syntax);
         // (a span over a collection's storage, written where it goes: the storage kept, StorageKeeps.cs)
-        if (D.ExposesStorage(m)) { pushDst(); KeepStorage(m, inv.Syntax, false); E.Op(Op.Drop); }
+        if (D.ExposesStorage(m)) { pushDst(); KeepStorage(m, inv.Syntax, false, inv.Instance, inv.Arguments.Cast<IOperation>().ToList()); E.Op(Op.Drop); }
     }
 
     static IOperation StripConversions(IOperation o) { while (o is IConversionOperation c) o = c.Operand; return o; }
@@ -593,7 +593,9 @@ sealed partial class FunctionCompiler
         if (consts == null && _clone == null && !dispatch && m.Parameters.Length > 0 && !D.IsIntrinsic(m) && !IsStaticInterfaceMember(m)
             && D.ConsumingOf(m).Mask is var cmask && cmask != 0 && D.CanSpecializeOwnership(m)
             // (List<T>.Add's item moves into an element, which only a reference does: OwnedParams.cs, IsListAdd)
-            && (!Driver.IsListAdd(m.OriginalDefinition) || Types.IsRef(T.Canonical(m.Parameters[0].Type))))
+            && (!Driver.IsListAdd(m.OriginalDefinition) || Types.IsRef(T.Canonical(m.Parameters[0].Type)))
+            // (and Dictionary's value, the second parameter of TryInsert, Add, TryAdd and the indexer's setter: IsMapInsert)
+            && (!Driver.IsMapInsert(m.OriginalDefinition) || m.Parameters.Length > 1 && Types.IsRef(T.Canonical(m.Parameters[1].Type))))
             cc = new CallConsume(m, cmask);
         var savedConsume = _consume;
         _consume = cc;
@@ -1030,7 +1032,7 @@ sealed partial class FunctionCompiler
             case "Rt.NoDestroyByBits": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DESTROY_BY_BITS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoStoreWaits": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_STORE_WAITS") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoEarlyGiveBack": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_EARLY_GIVE_BACK") == "1" ? 1 : 0); return Own.None;
-            case "Rt.ArrayMoveMode": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_ARRAY_MOVE") == "1" ? 1 : Environment.GetEnvironmentVariable("CS2WASM_ARRAY_MOVE_BREAK") == "1" ? 2 : 0); return Own.None;
+            case "Rt.ArrayMoveMode": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_ARRAY_MOVE") == "1" ? 1 : Environment.GetEnvironmentVariable("CS2WASM_ARRAY_MOVE_BREAK") == "1" ? 2 : Environment.GetEnvironmentVariable("CS2WASM_ARRAY_MOVE_CYCLE") == "1" ? 3 : 0); return Own.None;
             case "Rt.NoArrayReplace": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_ARRAY_REPLACE") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoDropCheck":E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_DROP_CHECK") == "1" ? 1 : 0); return Own.None;
             case "Rt.RefLock": E.Call(Rt.RefLock); return Own.None;
@@ -1312,6 +1314,8 @@ sealed partial class FunctionCompiler
         {
             var ctor = SubstMethod(oc.Constructor);
             CallWith(ctor, false, pushDst, () => PushArgs(ctor, oc.Arguments.Cast<IOperation>().ToList()), null, oc.Syntax);
+            // (a ref struct whose constructor puts a reference into a collection's storage in it: StorageKeeps.cs)
+            if (D.ExposesStorage(ctor)) KeepStorageOfNew(ctor, oc.Syntax, pushDst, oc.Arguments.Cast<IOperation>().ToList());
         }
         if (oc.Initializer != null)
         {
