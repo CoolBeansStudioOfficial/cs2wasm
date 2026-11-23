@@ -181,11 +181,23 @@ function loadCases() {
 
 // ---- setup: the oracle's runtime ----
 
+// Every .NET run of a case goes through tools/netwasm-suite/Launcher, which turns Windows' fault dialogs off for it
+// (SetErrorMode, inherited): a crash (FailFast, a stack overflow, an access violation) ends the process with its exit
+// code, recorded as the observation, and shows nothing on the desk.
+const launcherProj = join(root, 'tools', 'netwasm-suite', 'Launcher');
+const launcherDll = join(launcherProj, 'bin', 'Release', 'net11.0', 'launch.dll');
+async function buildLauncher() {
+  const b = await run('dotnet', ['build', launcherProj, '-c', 'Release', '-v', 'q', '-nologo'], { timeout: 600_000 });
+  if (b.code !== 0 || !existsSync(launcherDll)) { console.error(b.stdout + b.stderr); process.exit(1); }
+}
+const runDotnet = (exe, o) => run('dotnet', [launcherDll, exe], o);
+
 // A .NET root for the oracle's runtime identifier, assembled from the runtime pack NuGet restores (no machine-wide
 // install): host/fxr/<v>/hostfxr.dll and shared/Microsoft.NETCore.App/<v>/. The case's apphost finds it through
 // DOTNET_ROOT_<ARCH>.
 const dotnetRoot = join(cache, `dotnet-${rid}`);
 async function setup() {
+  await buildLauncher();
   if (!existsSync(join(dotnetRoot, 'host', 'fxr'))) await assembleRuntime();
   // the check: a framework-dependent program, built and run as the cases are, says which runtime it ran on
   const checkFile = join(dotnetRoot, 'check.txt');
@@ -196,7 +208,7 @@ async function setup() {
     writeFileSync(join(dir, 'Check.cs'), 'System.Console.WriteLine(".NET " + System.Environment.Version + ", " + System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture + ", IntPtr.Size " + System.IntPtr.Size + ", from " + System.IO.Path.GetDirectoryName(typeof(object).Assembly.Location));\n');
     const b = await run('dotnet', ['build', dir, '-c', config, '-v', 'q', '-nologo'], { timeout: 600_000 });
     if (b.code !== 0) { console.error(b.stdout + b.stderr); process.exit(1); }
-    const r = await run(join(dir, 'bin', config, 'net11.0', rid, process.platform === 'win32' ? 'check.exe' : 'check'), [], { env: oracleEnv() });
+    const r = await runDotnet(join(dir, 'bin', config, 'net11.0', rid, process.platform === 'win32' ? 'check.exe' : 'check'), { env: oracleEnv() });
     if (r.code !== 0) { console.error(`the oracle's runtime does not start: ${r.stdout}${r.stderr}`); process.exit(1); }
     writeFileSync(checkFile, r.stdout);
   }
@@ -232,6 +244,9 @@ const oracleEnv = () => ({
   [`DOTNET_ROOT_${rid.split('-')[1].toUpperCase()}`]: dotnetRoot,
   ...(rid === 'win-x86' ? { 'DOTNET_ROOT(x86)': dotnetRoot } : {}),
   DOTNET_CLI_TELEMETRY_OPTOUT: '1',
+  // no just-in-time debugger for an unhandled exception (with the launcher's error mode: no dialog on the desk)
+  DOTNET_DbgJITDebugLaunchSetting: '1',
+  COMPlus_DbgJITDebugLaunchSetting: '1',
 });
 
 // ---- build ----
@@ -284,9 +299,9 @@ async function oracle(cases) {
   console.log(`oracle: ${todo.length} cases x ${runs} runs under .NET ${rid} (${par} at once)`);
   await pool(todo, par, async (c) => {
     const results = [];
-    for (let k = 0; k < runs; k++) results.push(await run(exePath(c), [], { cwd: binDir(c), env: oracleEnv() }));
+    for (let k = 0; k < runs; k++) results.push(await runDotnet(exePath(c), { cwd: binDir(c), env: oracleEnv() }));
     // the open-source programs: once more with hardware intrinsics off (a library's portable paths must agree)
-    if (c.origin === 'sut') results.push({ ...(await run(exePath(c), [], { cwd: binDir(c), env: { ...oracleEnv(), DOTNET_EnableHWIntrinsic: '0' } })), variant: 'no-hw-intrinsics' });
+    if (c.origin === 'sut') results.push({ ...(await runDotnet(exePath(c), { cwd: binDir(c), env: { ...oracleEnv(), DOTNET_EnableHWIntrinsic: '0' } })), variant: 'no-hw-intrinsics' });
     const outs = results.map(observed);
     const variants = [...new Set(outs.slice(0, runs))];
     const rec = {
@@ -336,7 +351,7 @@ async function runIl2wasm(cases) {
       }
     }
     const runOnce = () => {
-      if (standin) return run(exePath(c), [], { cwd: binDir(c), env: oracleEnv() });
+      if (standin) return runDotnet(exePath(c), { cwd: binDir(c), env: oracleEnv() });
       const words = template(runCmd, vars);
       return run(words[0], words.slice(1), { cwd: binDir(c) });
     };
@@ -385,7 +400,10 @@ function report(cases) {
         platformNotSupported: lines.filter((l) => /PlatformNotSupportedException/.test(l)).length,
         libraryFails: lines.filter((l) => l.startsWith('FAIL ')).length,
         exit: o.exit?.[0],
+        // how the process ended, when not by returning from Main
+        ended: { 197: 'unhandled exception on another thread', [-1073741571]: 'stack overflow', 3221225725: 'stack overflow', [-2146232797]: 'Environment.FailFast', 2148734499: 'Environment.FailFast', [-1073741819]: 'access violation', 3221225477: 'access violation', [-532462766]: 'unhandled exception', 3762504530: 'unhandled exception' }[o.exit?.[0]],
       };
+      if (row.dotnet.ended) (t.processEnded ??= {})[row.dotnet.ended] = ((t.processEnded ?? {})[row.dotnet.ended] ?? 0) + 1;
       if (row.dotnet.libraryFails) { t.libraryFailsUnderDotnet = (t.libraryFailsUnderDotnet ?? 0) + row.dotnet.libraryFails; }
       if (row.dotnet.platformNotSupported) t.casesWithDotnetPns = (t.casesWithDotnetPns ?? 0) + 1;
     }
@@ -406,6 +424,7 @@ function report(cases) {
   console.log(`   built ${t.built}, did not build ${t.buildFailed}; oracle ran ${t.oracle}: ${t.stable} stable over ${runs} runs, ${t.unstable} unstable, ${t.oracleTimeout} timed out${t.hwDependent ? `, ${t.hwDependent} differ without hardware intrinsics` : ''}`);
   console.log(`   classification (none skipped; expected output is .NET's): ${Object.entries(rep.classification).map(([k, n]) => `${k} ${n}`).join(', ')}`);
   if (t.libraryFailsUnderDotnet || t.casesWithDotnetPns) console.log(`   under .NET: ${t.libraryFailsUnderDotnet ?? 0} library tests fail (they assert NetWasm's behaviour), ${t.casesWithDotnetPns ?? 0} cases throw PlatformNotSupportedException`);
+  for (const r of rows.filter((r) => r.dotnet?.ended)) console.log(`   ended under .NET: ${r.id}: ${r.dotnet.ended} (exit ${r.dotnet.exit})`);
   for (const [mode, m] of Object.entries(t.modes))
     console.log(`== ${mode}: ${m.pass} passed, ${m.fail} failed, ${m.compileFail} did not compile, ${m.timeout} timed out (${m.passOfStable} of ${m.stable} with a stable oracle)`);
   const show = +opt('--show', 40);

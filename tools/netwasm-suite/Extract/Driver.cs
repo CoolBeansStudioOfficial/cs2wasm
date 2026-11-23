@@ -15,7 +15,7 @@ sealed record Signature(string? Problem, string TypeName = "", string ReturnType
 static class Driver
 {
     // bumped whenever the generated driver changes, so oracle results recorded with an older one are redone
-    public const string Version = "1";
+    public const string Version = "2";
 
     public static Signature Analyze(CaseInfo c)
     {
@@ -79,11 +79,22 @@ static class Driver
                 {
                     private static readonly int[] Inputs = new int[] { {{inputs}} };
 
+                    private static int current;
+
                     private static int Main()
                     {
+                        // an exception that escapes on another thread (or a finalizer): recorded as the observation of
+                        // the input that was running, then the process ends with a fixed code
+                        global::System.AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+                        {
+                            Write(current, "unhandled " + (e.ExceptionObject is global::System.Exception x ? Describe(x) : "" + e.ExceptionObject));
+                            global::System.Console.Out.Flush();
+                            global::System.Environment.Exit(197);
+                        };
                         foreach (var input in Inputs)
                         {
                             string line;
+                            current = input;
                             try { {{value}} }
                             catch (global::System.Exception e) { line = "throw " + Describe(e); }
                             Write(input, line);
@@ -203,8 +214,18 @@ static class Driver
                 {
                     private static int passed, failed;
 
+                    private static string current = "";
+
                     private static async global::System.Threading.Tasks.Task<int> Main()
                     {
+                        // an exception that escapes on another thread (or a finalizer): recorded against the test that
+                        // was running, then the process ends with a fixed code
+                        global::System.AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+                        {
+                            Write("UNHANDLED " + current + ": " + (e.ExceptionObject is global::System.Exception x ? Describe(x) : "" + e.ExceptionObject));
+                            global::System.Console.Out.Flush();
+                            global::System.Environment.Exit(197);
+                        };
 
             """);
         sb.Append(calls);
@@ -216,6 +237,7 @@ static class Driver
 
                     private static async global::System.Threading.Tasks.Task Test(string name, global::System.Func<global::System.Threading.Tasks.Task> body)
                     {
+                        current = name;
                         try { await body(); passed++; Write("PASS " + name); }
                         catch (global::System.Exception e) { failed++; Write("FAIL " + name + ": " + Describe(e)); }
                     }
