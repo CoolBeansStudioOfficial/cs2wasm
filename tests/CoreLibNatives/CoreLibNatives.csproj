@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- tests/CoreLibNatives: the runtime's native-library methods (src/Il2Wasm/Upstream/System.Private.CoreLib/Boundary/Natives)
+       run under .NET against .NET's own native libraries: zlib-ng's deflate port against the shipped
+       System.IO.Compression.Native (zlib-ng 2.2.5), the errno tables against their sources. `dotnet run -c Release`. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <NoWarn>$(NoWarn);CS8500</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Il2Wasm/Upstream/System.Private.CoreLib/Boundary/Natives/ZLibNgDeflate.cs" Link="Natives/ZLibNgDeflate.cs" />
+    <Compile Include="../../src/Il2Wasm/Upstream/System.Private.CoreLib/Boundary/Natives/Errno.g.cs" Link="Natives/Errno.g.cs" />
+    <Compile Include="../../src/Il2Wasm/Upstream/System.Private.CoreLib/Boundary/Natives/CompressionNative.cs" Link="Natives/CompressionNative.cs" />
+    <Compile Include="../../src/Il2Wasm/Upstream/System.Private.CoreLib/Boundary/Natives/ZLibInflate.cs" Link="Natives/ZLibInflate.cs" />
+  </ItemGroup>
+</Project>

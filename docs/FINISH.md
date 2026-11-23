@@ -1436,3 +1436,4 @@ with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   - Hello world reaches CoreLib and System.Console only.
   - Old-compiler hello world: byte-identical before and after the one runtime rename.
   - Not run: the homelab suite and the self-host check (the rename only).
+- 2026-11-23, claude/il-corelib: the runtime side of the stock libraries' native calls (docs/CORELIB.md section 7). All 56 stock P/Invokes and internal calls bound (BuildCoreLib bindings). Deflate is a C# port of zlib-ng 2.2.5 and is identical to .NET's shipped zlib-ng on 30,690 cases (611,069,290 bytes, every return code and position). Inflate is the managed inflater: same output and result on 3,000 streams, per-call positions differ in 737. errno is now Emscripten's. Desk suite 145, 070, 088, 152, 220, 193 pass both ways; hello world unchanged. Homelab suite and self-host check not run (left to the coordinator).

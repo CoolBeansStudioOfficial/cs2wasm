@@ -260,8 +260,8 @@ lines whose targets are its WASM exports instead of CoreLib methods; the rule ab
 `internalcall A T N` row in the same way. Without a row it is a build error where it is reached, as today's
 `MissingCapability` is.
 
-**What is bound** (`BuildCoreLib bindings`: 41 of the stock libraries' P/Invokes and internal calls bound, 0 with a
-bad signature):
+**What is bound** (`BuildCoreLib bindings`: all 56 of the stock libraries' P/Invokes and internal calls bound, 0
+with a bad signature, 0 unbound):
 
 - **libSystem.Native, all 19 entry points**, in `Boundary/Natives/SystemNative.cs`. Each behaves as System.Native's C
   does in the browser runtime, built with Emscripten 6.0.2:
@@ -277,6 +277,8 @@ bad signature):
   - The random bytes are CoreLib's: the host's seeded import, stretched with splitmix64.
   - Not reproduced: FS.mmap's EACCES for a shared writable map of a file not opened read-write. The host does not
     report how a descriptor was opened.
+- **libSystem.IO.Compression.Native, all 9 entry points**: deflate is a port of zlib-ng and inflate the managed
+  inflater (section 7.1).
 - **System.Console's internal call** `ConsolePal.Clear` goes to the host import `console_clear`, as Mono calls the
   console's own clear.
 - **The 11 JavaScript-interop internal calls** (`Natives/InternalCalls.cs`):
@@ -296,3 +298,59 @@ bad signature):
 (`ConvertErrorPlatformToPal` was the identity). They are now Emscripten's numbers, as in the browser runtime.
 `Marshal.GetLastPInvokeError()` and `IOException.HResult` change accordingly. `Interop.Sys.GetErrNo` and `SetErrNo`,
 missing before, are the thread's errno.
+
+### 7.1 libSystem.IO.Compression.Native
+
+All 9 entry points are in `Boundary/Natives/CompressionNative.cs`. The layer is pal_zlib.c's: the PAL_ZStream's
+fields go into the stream and come back after each call, and `msg` points at a C string of zlib's error text.
+
+**Deflate is zlib-ng 2.2.5 ported to C#** (`Natives/ZLibNgDeflate.cs`, with zlib-ng's licence notice, marked as an
+altered version).
+
+- It is the version dotnet/runtime v11.0.0 vendors: zlib-ng commit d54e3769, pinned by the runtime's cgmanifest.
+- It ports the generic C paths the WASM build compiles: deflate.c, the stored, fast, medium, slow, quick, huff and rle
+  strategies, trees.c, both insert_string variants, longest_match and its slow variant, compare256, slide_hash,
+  CRC-32 and Adler-32.
+- The gzip header's OS byte is Emscripten's: 3, "Unix" (zutil.h's `OS_CODE`).
+
+**Verified** by `tests/CoreLibNatives` (`dotnet run -c Release`). Each case runs on .NET's own shipped
+`System.IO.Compression.Native` (zlib-ng 2.2.5, win-x64) and on the port, through the same PAL entry points with the
+same calls.
+
+- The cases cover:
+  - 6 kinds of data (zeros, random, text, runs, mixed, periodic);
+  - 10 sizes from 0 to 300,000 bytes;
+  - levels 0 to 9 and all 5 strategies;
+  - windowBits -15, 15, 31, -9 and 12;
+  - three call patterns: DeflateStream's, and random input and output chunks with sync, full, partial and block
+    flushes.
+- **Result: 30,690 deflate cases identical.** That is 611,069,290 compressed bytes and 893,536 calls. In each case
+  every return code, `avail_in`, `avail_out` and `msg` was the same.
+  - The one byte compared differently is the gzip header's OS byte, by design: 10 on Windows, 3 on Emscripten.
+  - x64's SIMD variants of compare256 and longest_match give the generic code's matches on this whole corpus. So the
+    desk is a sound oracle for the browser build here.
+- CRC-32 is checked against `CompressionNative_Crc32`, including zlib-ng's rule that a null buffer gives 0.
+
+**Inflate is the managed inflater** of the old System.IO.Compression boundary, moved into CoreLib
+(`Natives/ZLibInflate.cs`). It is not a port of zlib-ng's inflate.c.
+
+- On the same corpus (3,000 streams read with DeflateStream's read loop), the output and the final result are
+  identical to native zlib-ng.
+- **The per-call stream positions differ in 737 of the 3,000 streams.** The managed inflater reads up to 32 bits of
+  input ahead; zlib-ng's does not. That shows only in how much input a single call reports consumed. Its error texts
+  are also not zlib-ng's.
+- A port of zlib-ng's inflate (inflate.c, inftrees.c, inffast_tpl.h) would close both. It is not done.
+
+**The browser pack's own wasm libz.a was not needed as an oracle.** No case differed between the desk's x64 zlib-ng
+and the port.
+
+### 7.2 errno tests
+
+`tests/CoreLibNatives` also spot-checks `Errno.g.cs` against the sources:
+- Emscripten's numbers (EBADF 8, ENOENT 44, EINVAL 28, EAGAIN 6, ENOTSUP 138);
+- the PAL codes, and the round trips;
+- the default ENONSTANDARD;
+- musl's messages, including "Unknown error" for codes it has no message for.
+
+The SystemNative_* methods themselves call host imports, so they are not run under .NET. They are compiled into
+CoreLib and their bindings are checked by `BuildCoreLib bindings`.

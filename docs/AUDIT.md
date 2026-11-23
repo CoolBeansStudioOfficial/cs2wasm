@@ -5306,3 +5306,34 @@ Not done:
 - runtime bodies for the 28 native entry points;
 - hybrid-globalization `GetLocaleInfo`;
 - the full homelab suite and the self-host check. They were not run, because the only runtime change is that rename.
+
+### il2wasm step 1b: the runtime side of the stock libraries' native calls (claude/il-corelib, 2026-11-23)
+
+What was done:
+
+- `natives.txt` is the binding table the IL front end reads: (library, entry point) and internal calls mapped to
+  CoreLib methods (docs/CORELIB.md section 7). `BuildCoreLib bindings` shows all 56 of the stock libraries'
+  P/Invokes and internal calls bound, with matching WASM signatures, and none unbound.
+- libSystem.Native's 19 entry points behave as the browser runtime's System.Native over Emscripten 6.0.2.
+- errno is Emscripten's (generated from the headers), and CoreLib's own boundary moves to it from PAL codes.
+- The JavaScript interop's internal calls are host imports; today's hosts throw on them, since they do not implement
+  Mono's protocol.
+- GetLocaleInfo has a body under invariant globalization.
+- libSystem.IO.Compression.Native: deflate is a C# port of zlib-ng 2.2.5; inflate is the managed inflater.
+
+Measured:
+
+- **Deflate.** tests/CoreLibNatives: 30,690 cases identical to .NET's shipped zlib-ng in output (611,069,290 bytes),
+  return codes and stream positions, over every level, strategy and window, with random chunking and flushes. The
+  only byte compared differently is the gzip header's OS byte, by design (Windows 10, Emscripten 3).
+- **Inflate.** 3,000 streams with the same output and final result. The per-call positions differ in 737 of them.
+- **Desk suite.** 145, 070, 088, 152, 220 and 193 pass both ways. Hello world is unchanged (27,784 B, the same hash).
+- **CoreLib build.** Still byte-identical on rebuild (184 files).
+
+Not done:
+
+- a port of zlib-ng's inflate (positions and error texts);
+- the hosts' side of Mono's JavaScript interop;
+- [JSExport] binding;
+- FS.mmap's EACCES check;
+- the homelab suite and the self-host check (left to the coordinator).
