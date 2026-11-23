@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- NativeAOT compiled to WebAssembly (NativeAOT-LLVM, browser-wasm) for tools/frames-threads.mjs: the program
+       without a thread (default) or, with -p:Threads=true, the one with threads (WasmEnableThreads). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+    <Nullable>enable</Nullable>
+    <LangVersion>preview</LangVersion>
+    <PublishTrimmed>true</PublishTrimmed>
+    <SelfContained>true</SelfContained>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Optimize>true</Optimize>
+    <AssemblyName>ft-naot</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <MSBuildEnableWorkloadResolver>false</MSBuildEnableWorkloadResolver>
+    <WasmEnableThreads Condition="'$(Threads)' == 'true'">true</WasmEnableThreads>
+    <IntermediateOutputPath Condition="'$(Threads)' == 'true'">obj/threads/</IntermediateOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../frames/Frames.cs" />
+    <Compile Include="../frames-threads/Work.cs" />
+    <Compile Include="../frames-threads/AotMainSingle.cs" Condition="'$(Threads)' != 'true'" />
+    <Compile Include="../frames-threads/Threaded.cs" Condition="'$(Threads)' == 'true'" />
+    <Compile Include="../frames-threads/AotMainThreads.cs" Condition="'$(Threads)' == 'true'" />
+    <PackageReference Include="Microsoft.DotNet.ILCompiler.LLVM" Version="10.0.0-*" />
+    <PackageReference Include="runtime.$(NETCoreSdkPortableRuntimeIdentifier).Microsoft.DotNet.ILCompiler.LLVM" Version="10.0.0-*" />
+  </ItemGroup>
+</Project>

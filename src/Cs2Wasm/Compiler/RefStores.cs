@@ -33,6 +33,8 @@ internal sealed partial class Arenas
     readonly List<(IMethodSymbol at, List<ITypeSymbol> slots)> _rawAs = [];
     /// <summary>Values stored through pointers: into any slot; the runtime's array code's only into arrays' elements.</summary>
     readonly Dictionary<string, ITypeSymbol> _wildValues = [], _wildArrayValues = [];
+    /// <summary>For each of _wildArrayValues (by key): the types of the pointers it was stored through (their keys).</summary>
+    readonly Dictionary<string, List<string>> _wildArraySlots = [];
 
     /// <summary>A store of a reference through an address the code does not know the object of.</summary>
     public void RefStore(ITypeSymbol slotType, ITypeSymbol? valueType, bool viaPointer = false)
@@ -40,6 +42,7 @@ internal sealed partial class Arenas
         if (!Types.IsRef(slotType) || Types.IsImmortalType(slotType)) return;
         var st = D.Types.Canonical(slotType);
         var vt = valueType != null && valueType.TypeKind != TypeKind.Error && Types.IsRef(valueType) ? D.Types.Canonical(valueType) : st;
+        var k0 = Types.Key(st);
         if (viaPointer)
         {
             if (s_arenaDebug && !_wildValues.ContainsKey(Types.Key(vt))) Console.Error.WriteLine($"by address: a store of {vt} through a pointer in {D.Compiling?.Sym.ToDisplayString()}");
@@ -49,7 +52,12 @@ internal sealed partial class Arenas
             // name, which holds its declared type, or an array's element. Meta.CopyBack: a reflective call's by-ref
             // argument written back into the invoker's slot for it, the same kinds of place)
             if (D.Compiling?.Sym.ContainingType is { Name: "Cs2WasmArrays" or "TypeInfo" or "Meta" } rct && rct.ContainingNamespace?.ToDisplayString() == "Cs2Wasm.Runtime")
+            {
                 _wildArrayValues.TryAdd(Types.Key(vt), vt);
+                // (the pointer's type: the store's sources are recorded under its node, Sharing.PtrNode)
+                if (!_wildArraySlots.TryGetValue(Types.Key(vt), out var slots)) _wildArraySlots[Types.Key(vt)] = slots = [];
+                if (!slots.Contains(k0)) slots.Add(k0);
+            }
             else _wildValues.TryAdd(Types.Key(vt), vt);
             return;
         }
@@ -160,6 +168,15 @@ internal sealed partial class Arenas
             return into[k] = r;
         }
         Dictionary<string, ITypeSymbol>? ValuesFor(ITypeSymbol slot) => ValuesInto(Types.Key(slot));
+        // (the slot types ValuesInto goes through from k: k and what it was seen as, and what those were seen as)
+        List<string> SlotsInto(string k)
+        {
+            var seen = new List<string> { k };
+            for (int i = 0; i < seen.Count; i++)
+                if (_refAs.TryGetValue(seen[i], out var more))
+                    foreach (var y in more) if (!seen.Contains(y)) seen.Add(y);
+            return seen;
+        }
         if (s_arenaDebug)
             Console.Error.WriteLine($"by address: anywhere: through pointers {string.Join(", ", _wildValues.Keys)}; raw memory seen as {string.Join(", ", _wildSlots)}");
         // (what a store of a value of static type v through a pointer can leave in a slot of type x: v's objects that
@@ -178,8 +195,20 @@ internal sealed partial class Arenas
             var ws = wildArrays.Values.Select(v => Fit(v, et)).OfType<ITypeSymbol>().ToList();
             if (vs == null && ws.Count == 0) continue;
             var s = ArraySite(at)!;
-            if (vs != null) foreach (var v in vs.Values) s.AddValue(v);
-            foreach (var v in ws) s.AddValue(v);
+            // (for Sharing.Analyze, where these come from: the stores through refs of the slot types that can land
+            // here, each recorded with its sources under the type's ref node; and, for a value the runtime's array
+            // code stores through a pointer, the sources of those stores under the pointer's node. A value stored
+            // through a pointer anywhere else stays any object of its type)
+            if (vs != null)
+            {
+                bool first = true;
+                foreach (var v in vs.Values) { s.AddByAddress(v, first ? SlotsInto(Types.Key(et)).Select(k => new Sharing.Src(Sharing.K.Node, "ref " + k, Type: et)) : []); first = false; }
+            }
+            foreach (var (vk, v) in wildArrays)
+            {
+                if (Fit(v, et) is not { } fit) continue;
+                s.AddByAddress(fit, !wild.ContainsKey(vk) && _wildArraySlots.TryGetValue(vk, out var ps) ? ps.Select(k => new Sharing.Src(Sharing.K.Node, "ptr " + k, Type: fit)) : null);
+            }
             arrays++;
             if (s_arenaDebug) Console.Error.WriteLine($"by address: site {s.Key} holds {string.Join(", ", (vs?.Keys.AsEnumerable() ?? []).Concat(ws.Select(Types.Key)).Distinct().Take(6))}");
         }

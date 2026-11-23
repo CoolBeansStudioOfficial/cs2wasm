@@ -175,13 +175,24 @@ internal sealed partial class Sharing
     public void Add(string node, IEnumerable<Src> srcs)
     {
         if (!_nodes.TryGetValue(node, out var l)) _nodes[node] = l = [];
-        foreach (var s in srcs) l.Add(s);
+        foreach (var s in srcs) { l.Add(s); if (s_addWhy != null) AddWhy(node, s); }
     }
 
     public void Add(string node, Src s)
     {
         if (!_nodes.TryGetValue(node, out var l)) _nodes[node] = l = [];
         l.Add(s);
+        if (s_addWhy != null) AddWhy(node, s);
+    }
+
+    /// <summary>CS2WASM_SHARING_ADD=text (a diagnosis): every source recorded for a node whose name has the text, with
+    /// the method being compiled and the compiler's own stack.</summary>
+    static readonly string? s_addWhy = Environment.GetEnvironmentVariable("CS2WASM_SHARING_ADD") is { Length: > 0 } aw ? aw : null;
+    void AddWhy(string node, Src s)
+    {
+        if (!node.Contains(s_addWhy!)) return;
+        Console.Error.WriteLine($"sharing-add {node}: {s.Kind} {s.Key} #{s.Index} {(s.Type != null ? Types.Key(s.Type) : "-")} in {(D.Compiling != null ? D.Compiling.Sym.ToDisplayString() : "?")}");
+        Console.Error.WriteLine(string.Join("\n", Environment.StackTrace.Split('\n').Skip(3).Take(6)));
     }
 
     /// <summary>A store into a static field.</summary>
@@ -214,6 +225,31 @@ internal sealed partial class Sharing
     /// <summary>Whether an object another thread can reach can be in a place of this static type.</summary>
     /// <summary>CS2WASM_SHARING_NONE=1 (to see the share check trap, a test of the test): no type is shared.</summary>
     static readonly bool s_none = Environment.GetEnvironmentVariable("CS2WASM_SHARING_NONE") == "1";
+
+    /// <summary>The array types another thread can reach only as an array with no element (EmptyArrayTag): such an
+    /// object is counted by several threads, and has no slot any of them could read or store.</summary>
+    HashSet<int>? _emptyOnly;
+    readonly Dictionary<string, bool> _maySlotsBeShared = [];
+
+    /// <summary>Whether a slot of an object another thread can reach (a field, an element) can be in an object in a
+    /// place of this static type: as MayBeShared, without the arrays of no element. Asked where a read or a store
+    /// of a slot is decided (a read that counts, a store's lock, a borrow); a count asks MayBeShared.</summary>
+    public bool MaySlotsBeShared(ITypeSymbol t)
+    {
+        if (_shared == null || _emptyOnly == null || _emptyOnly.Count == 0) return MayBeShared(t);
+        if (s_none) return false;
+        if (t.TypeKind == TypeKind.Error || !Types.IsRef(t)) return false;
+        var k = Types.Key(t);
+        if (_maySlotsBeShared.TryGetValue(k, out var r)) return r;
+        r = false;
+        bool Is(int id) => _shared.Contains(id) && !_emptyOnly.Contains(id) && IdIs(id, t);
+        var ix = Index();
+        foreach (var id in ix.Candidates(t)) if (Is(id)) { r = true; break; }
+        if (!r) foreach (var id in ix.Special) if (Is(id)) { r = true; break; }
+        _sharedUnindexed ??= _shared.Where(id => !_indexed.Contains(id)).ToList();
+        if (!r) foreach (var id in _sharedUnindexed) if (Is(id)) { r = true; break; }
+        return _maySlotsBeShared[k] = r;
+    }
 
     public bool MayBeShared(ITypeSymbol t)
     {
@@ -253,6 +289,70 @@ internal sealed partial class Sharing
         return _index;
     }
 
+    /// <summary>The statics that are roots: named by code a worker thread can run (or their address goes where a ref
+    /// of it may be kept, or their slot is unknown). Every other static that holds references is the engine
+    /// thread's own: only code no worker can run reads or writes it (Driver.WorkerStaticSlots), so what it holds is
+    /// reachable by another thread only if something else hands it over.</summary>
+    HashSet<string>? _staticRoots;
+    /// <summary>CS2WASM_NO_ENGINE_STATICS=1: every static is a root, as before.</summary>
+    static readonly bool s_noEngineStatics = Environment.GetEnvironmentVariable("CS2WASM_NO_ENGINE_STATICS") == "1";
+    /// <summary>CS2WASM_EXP_ALL_ENGINE_STATICS=1 (a test of the tests, unsound): no static is a root.</summary>
+    static readonly bool s_allEngineStatics = Environment.GetEnvironmentVariable("CS2WASM_EXP_ALL_ENGINE_STATICS") == "1";
+    public const string StaticPrior = "static ";
+    /// <summary>The tag (an Exact source's Key) of a delegate made of a lambda at one place of the text; Index is the
+    /// lambda site (Driver.LambdaSites). Reaching such a delegate reaches its own closure, and makes its lambda code
+    /// a worker thread can run; a delegate with no tag is any of its type, with every closure and every lambda the
+    /// type's delegates were made with. For every other reader of the sources it is a delegate of its exact type.
+    /// CS2WASM_NO_LAMBDA_SITES=1: no tag, as before. CS2WASM_EXP_LAMBDA_SITES_UNREACHED=1 (a test of the tests,
+    /// unsound): a tagged delegate reaches nothing and makes no code a worker's.</summary>
+    public const string LambdaTag = "lambda";
+    internal static readonly bool s_noLambdaSites = Environment.GetEnvironmentVariable("CS2WASM_NO_LAMBDA_SITES") == "1";
+    /// <summary>CS2WASM_EXP_NO_LAMBDA_RUNS=1 (a test of the tests, unsound): no lambda is code a worker runs by a delegate.</summary>
+    static readonly bool s_expNoLambdaRuns = Environment.GetEnvironmentVariable("CS2WASM_EXP_NO_LAMBDA_RUNS") == "1";
+    static readonly bool s_expLambdaUnreached = Environment.GetEnvironmentVariable("CS2WASM_EXP_LAMBDA_SITES_UNREACHED") == "1";
+    /// <summary>In the map the next compilation is given: whether a slot of an object another thread can reach can be
+    /// in an object in a place of the type (MaySlotsBeShared).</summary>
+    public const string SlotsPrior = "slots ";
+    /// <summary>The tag (a Top source's Key) of a value Arenas.AddRefStores gave a slot: Site.ByAddress has where it
+    /// comes from. CS2WASM_NO_BY_ADDRESS_SOURCES=1: any object of its type, as before.</summary>
+    public const string ByAddressTag = "by address";
+    /// <summary>The tag (an Exact source's Key) of an array made with no element (`new T[0]`, an empty collection
+    /// expression): no store can be made into it, so reaching it reaches nothing more. For every other reader of the
+    /// sources it is an array of its exact type. CS2WASM_NO_EMPTY_ARRAYS=1: for Analyze too, as before.</summary>
+    public const string EmptyArrayTag = "no element";
+    static readonly bool s_noEmptyArrays = Environment.GetEnvironmentVariable("CS2WASM_NO_EMPTY_ARRAYS") == "1";
+    /// <summary>CS2WASM_EXP_EVERY_ARRAY_EMPTY=1 (a test of the tests, unsound): every array made is taken as one with
+    /// no element.</summary>
+    /// <summary>CS2WASM_EXP_NO_PTR=1 (a test of the tests, unsound): a store through a pointer leaves nothing in an array.</summary>
+    static readonly bool s_expNoPtr = Environment.GetEnvironmentVariable("CS2WASM_EXP_NO_PTR") == "1";
+    /// <summary>CS2WASM_EXP_DISPLAY_FIRST_ONLY=1 (a test of the tests, unsound): a captured local holds only what its
+    /// first write in the text stores.</summary>
+    internal static readonly bool s_expDisplayFirstOnly = Environment.GetEnvironmentVariable("CS2WASM_EXP_DISPLAY_FIRST_ONLY") == "1";
+    internal static readonly bool s_expEveryArrayEmpty =Environment.GetEnvironmentVariable("CS2WASM_EXP_EVERY_ARRAY_EMPTY") == "1";
+    static readonly bool s_noByAddress =Environment.GetEnvironmentVariable("CS2WASM_NO_BY_ADDRESS_SOURCES") == "1";
+    static readonly bool s_noNullSites = Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_SITES") == "1";
+
+    /// <summary>Everything this compilation found another thread can reach, as keys: the types (SharedTypeSymbols)
+    /// and the statics that are roots.</summary>
+    public HashSet<string> SharedKeys()
+    {
+        var r = SharedTypeSymbols().Select(Types.Key).ToHashSet();
+        if (_staticRoots != null) foreach (var k in _staticRoots) r.Add(StaticPrior + k);
+        // (and the types whose objects' slots can be: every one but an array type reached only with no element)
+        if (_shared != null)
+            foreach (var id in _shared)
+                if (!D.DisplayById.ContainsKey(id) && !D.SyntheticById.ContainsKey(id) && id < D.TypeById.Count && !(_emptyOnly != null && _emptyOnly.Contains(id)))
+                    r.Add(SlotsPrior + Types.Key(D.TypeById[id]));
+        return r;
+    }
+
+    /// <summary>While compiling: whether the last compilation found that only the engine thread's code names this
+    /// static (key: Driver.StaticKey). Then this compilation's code that names it is the engine thread's too (were it
+    /// not, the static is a root now and the program is compiled again: Api.Compile), and it reads and writes the
+    /// static as a program without threads does.</summary>
+    public bool PriorEngineStatic(string key) =>
+        D.SharingPrior is { } prior && !s_off && !s_noEngineStatics && prior.TryGetValue(StaticPrior + key, out var shared) && !shared;
+
     /// <summary>The types another thread can reach (not the closures' and state machines' own, which have no symbol).</summary>
     public List<ITypeSymbol> SharedTypeSymbols() =>
         _shared == null ? [] : _shared.Where(id => !D.DisplayById.ContainsKey(id) && !D.SyntheticById.ContainsKey(id) && id < D.TypeById.Count).Select(id => D.TypeById[id]).ToList();
@@ -273,8 +373,15 @@ internal sealed partial class Sharing
                 var k = Types.Key(b);
                 if (r.ContainsKey(k)) break;
                 r[k] = MayBeShared(b);
+                r[SlotsPrior + k] = MaySlotsBeShared(b);
                 if (b is IArrayTypeSymbol) break;
             }
+        }
+        // (the statics that hold references, each a root or the engine thread's own)
+        if (_staticRoots != null)
+        {
+            foreach (var k in _nodes.Keys) if (k.StartsWith("s ") && !_threadStatics.Contains(k[2..])) r[StaticPrior + k[2..]] = _staticRoots.Contains(k[2..]);
+            foreach (var k in _structStatics.Keys) if (!_threadStatics.Contains(k)) r[StaticPrior + k] = _staticRoots.Contains(k);
         }
         if (merge != null) foreach (var (k, v) in merge) r[k] = r.TryGetValue(k, out var x) ? x || v : v;
         return r;
@@ -289,7 +396,8 @@ internal sealed partial class Sharing
         if (container.TypeKind is TypeKind.Error or TypeKind.TypeParameter || !Types.IsRef(container)) return false;
         // (object and the interfaces any closure or state machine may be: their objects are taken as shared)
         if (Types.IsObject(container) || container.TypeKind == TypeKind.Interface) return false;
-        return prior.TryGetValue(Types.Key(D.Types.Canonical(container)), out var shared) && !shared;
+        // (a slot of such an object: an array type reached only as an array with no element has none, SlotsPrior)
+        return prior.TryGetValue(SlotsPrior + Types.Key(D.Types.Canonical(container)), out var shared) && !shared;
     }
 
     /// <summary>Whether an object of this type id (a closure's or state machine's) can be reached by another thread.</summary>
@@ -396,7 +504,13 @@ internal sealed partial class Sharing
         var refNodes = _nodes.Keys.Where(k => k.StartsWith("ref ")).ToList();
 
         var shared = new HashSet<int>();
+        // (array types reached only as an array with no element: EmptyArrayTag)
+        var emptyOnly = new HashSet<int>();
+        // (delegate types reached only as delegates of lambda sites, and those sites: LambdaTag)
+        var delegateOnly = new HashSet<int>();
+        var lambdaShared = new HashSet<int>();
         var seenNodes = new HashSet<string>();
+        var ptrSeen = new HashSet<(Arenas.Site, string?)>();
         var seenTops = new HashSet<string>();
         // (filter: what the slot can hold whatever is stored through a wider type, an array's element type)
         var work = new Stack<(Src src, string why, ITypeSymbol? filter)>();
@@ -435,10 +549,34 @@ internal sealed partial class Sharing
         void SiteNode(Arenas.Site s, ITypeSymbol? declared, string why)
         {
             var saved = filter;
-            if (!Visit("site " + s.Key)) return;
-            if (s.Sources.Count > 0) foreach (var x in s.Sources) Push(x, why);
+            // (the values stores by address can leave here: by where those stores' values come from, Site.ByAddress)
+            bool byAddress = !s_noByAddress && s.ByAddress.Count > 0;
+            // The values stored through a pointer (the runtime's array code): the types such a value can be
+            // (PtrIds), of which the slot takes its own. Done for every filter the slot is reached with, before the
+            // visit below, which past a few filters goes on with none: with none, every such type would be taken.
+            if (byAddress && !s_noPtrIds && ptrSeen.Add((s, filter != null ? Types.Key(filter) : null)) && !(filter != null && ptrSeen.Contains((s, null))))
+                foreach (var x in s.ByAddress)
+                {
+                    if (x.Kind != K.Node || !x.Key!.StartsWith("ptr ")) continue;
+                    var ids = PtrIds(x.Key, x.Type, uncertified, implsOf, arraySites);
+                    string w = s_debug ? why + " (stored through a pointer)" : "";
+                    if (filter == null) foreach (var id in ids) AddType(id, w);
+                    else
+                    {
+                        foreach (var id in TopIds(filter)) if (ids.Contains(id)) AddType(id, w);
+                        foreach (var id in ids) if (!_allIdSet!.Contains(id)) AddType(id, w);
+                    }
+                }
+            if (!Visit("site " + s.Key)) { filter = saved; return; }
+            if (s.Sources.Count > 0) foreach (var x in s.Sources) { if (byAddress && x.Kind == K.Top && x.Key == ByAddressTag) continue; Push(x, why); }
+            if (byAddress)
+                foreach (var x in s.ByAddress)
+                    if (!(x.Kind == K.Node && x.Key!.StartsWith("ptr ") && !s_noPtrIds)) Push(x, why + " (by address)");
             foreach (var id in s.TargetIds) Push(new Src(K.Display, Index: id), why);
-            if (s.Sources.Count == 0 && s.TargetIds.Count == 0 && declared != null) Push(new Src(K.Top, Type: declared), why + " (nothing recorded)");
+            // (no source: every store compiled into the slot stored null or the default, each recorded with what it
+            // stores. Only a slot with no store recorded at all, or one whose address is taken, is taken to hold
+            // anything. CS2WASM_NO_NULL_SITES=1: any slot with no source, as before)
+            if (s.Sources.Count == 0 && s.TargetIds.Count == 0 && declared != null && !(s.Stored && !s.AddressTaken && !s_noNullSites)) Push(new Src(K.Top, Type: declared), why + " (nothing recorded)");
             filter = saved;
         }
         // what an array of type `a` holds: stores through its own type, and through a wider one (an object[] that is
@@ -547,16 +685,52 @@ internal sealed partial class Sharing
         }
 
         // the roots: what the statics hold, the thread a thread start hands over, what a static struct's fields hold
-        foreach (var k in _nodes.Keys.Where(k => k.StartsWith("s ")))
-            if (!_threadStatics.Contains(k[2..])) Node(k, null, "static " + k[2..]);
-        foreach (var (k, t) in _structStatics)
-            if (!_threadStatics.Contains(k))
-                StructFields(t, "static " + k);
+        // A static is a root only if code a worker thread can run names it (StaticIsRoot): one that only the engine
+        // thread's code reads and writes hands nothing to another thread.
+        // Which code a worker can run depends on which delegates a worker can reach (a lambda runs on a worker only
+        // if a delegate made of it there, or by code a worker runs, exists: Driver.WorkerReachable), and which
+        // delegates it can reach depends on the statics its code names: both grow together until neither does.
+        // The roots are added as the worker's code is found to name them; everything only grows.
+        var staticRoots = new HashSet<string>();
+        var refStatics = _nodes.Keys.Where(k => k.StartsWith("s ") && !_threadStatics.Contains(k[2..])).Select(k => k[2..]).ToList();
+        var structStatics = _structStatics.Where(kv => !_threadStatics.Contains(kv.Key)).ToList();
+        bool LambdaRuns(WasmFunction fn)
+        {
+            if (s_expNoLambdaRuns) return false;
+            foreach (var (dt, site) in D.DelegatesMade[fn])
+            {
+                if (lambdaShared.Contains(site)) return true;
+                // (any delegate of the type can be reached: one with no tag was)
+                if (D.ExistingTypeId(dt) is not int did || shared.Contains(did)) return true;
+            }
+            return false;
+        }
+        // (true when a root was added)
+        bool AddStaticRoots()
+        {
+            filter = null;
+            var workerSlots = s_noEngineStatics ? null : D.WorkerStaticSlots(s_noLambdaSites ? null : LambdaRuns);
+            bool IsRoot(string key) => !s_allEngineStatics && (workerSlots == null || D.StaticSlotOf(key) is not { } slot || workerSlots.Contains(slot) || NodeRefsReach(StaticNode(key)));
+            bool any = false;
+            foreach (var k in refStatics)
+                if (!staticRoots.Contains(k) && IsRoot(k)) { staticRoots.Add(k); Node(StaticNode(k), null, "static " + k); any = true; }
+            foreach (var (k, t) in structStatics)
+                if (!staticRoots.Contains("struct " + k) && IsRoot(k)) { staticRoots.Add("struct " + k); staticRoots.Add(k); StructFields(t, "static " + k); any = true; }
+            return any;
+        }
         var threadType = D.LibType("System.Threading.Thread");
         Push(new Src(K.Top, Type: threadType), "a thread start");
 
-        int steps = 0;
-        while (work.Count > 0)
+        int steps = 0, rounds = 0;
+        while (true)
+        {
+        if (work.Count == 0)
+        {
+            // (what is reached so far: the statics a worker's code names now; none new: done)
+            rounds++;
+            if (!AddStaticRoots() && work.Count == 0) break;
+            if (work.Count == 0) continue;
+        }
         {
             var (s, why, f) = work.Pop();
             filter = f;
@@ -565,7 +739,24 @@ internal sealed partial class Sharing
             switch (s.Kind)
             {
                 case K.Exact:
-                    if (s.Type != null && D.ExistingTypeId(D.Types.Canonical(s.Type)) is int eid and > 0 && !Types.IsImmortalType(s.Type)) AddType(eid, why);
+                    if (s.Type != null && D.ExistingTypeId(D.Types.Canonical(s.Type)) is int eid and > 0 && !Types.IsImmortalType(s.Type))
+                    {
+                        // (an array with no element: the object can be reached, nothing through it; its type is
+                        // one another thread can reach, its elements' slots are not followed for it)
+                        if (s.Key == EmptyArrayTag && !s_noEmptyArrays) { if ((filter == null || IdIs(eid, filter)) && !shared.Contains(eid) && emptyOnly.Add(eid) && whyType != null) whyType[eid] = why + " (an array with no element)"; }
+                        else if (s.Key == LambdaTag && !s_noLambdaSites && s.Index < D.LambdaSites.Count && D.LambdaSites[s.Index] is { Unsure: false, Fn: not null } ls)
+                        {
+                            // (a delegate made of one lambda: the delegate, the closure it was made with and what that
+                            // holds; not the closures of the type's other delegates, which its target's slot stands for)
+                            if ((filter == null || IdIs(eid, filter)) && !s_expLambdaUnreached)
+                            {
+                                lambdaShared.Add(s.Index);
+                                if (!shared.Contains(eid) && delegateOnly.Add(eid) && whyType != null) whyType[eid] = why + " (a lambda's delegate)";
+                                if (ls.Env is { TypeId: > 0 } lenv) { var f0 = filter; filter = null; AddType(lenv.TypeId, why + " (the closure of the lambda " + ls.Fn.Name + ")"); filter = f0; }
+                            }
+                        }
+                        else AddType(eid, why);
+                    }
                     else if (s.Type != null && Types.IsRef(s.Type)) Push(new Src(K.Top, Type: s.Type), why);
                     break;
                 case K.Display:
@@ -616,14 +807,127 @@ internal sealed partial class Sharing
                     }
             }
         }
+        }
+        _staticRoots = staticRoots;
+        int engineStatics = refStatics.Count(k => !staticRoots.Contains(k)) + structStatics.Count(kv => !staticRoots.Contains(kv.Key));
+        if (s_debug) foreach (var k in refStatics.Concat(structStatics.Select(kv => kv.Key)).Where(k => !staticRoots.Contains(k))) Console.Error.WriteLine("engine-thread static " + k);
+        emptyOnly.RemoveWhere(shared.Contains);
+        foreach (var id in emptyOnly) shared.Add(id);
+        foreach (var id in delegateOnly) shared.Add(id);
+        _emptyOnly = emptyOnly;
         _shared = shared;
-        D.Mark($"    sharing: {shared.Count} types another thread can reach, {steps} steps, {sw.ElapsedMilliseconds} ms");
+        D.Mark($"    sharing: {shared.Count} types another thread can reach, {engineStatics} statics only the engine thread's code names, {lambdaShared.Count} of {D.LambdaSites.Count} lambdas' delegates, {steps} steps, {rounds} rounds, {sw.ElapsedMilliseconds} ms");
         if (whyType != null)
         {
             Console.Error.WriteLine($"sharing: {shared.Count} of {TopIds(D.ObjectType).Count} types reachable by another thread; {uncertified.Count} methods called from elsewhere");
             foreach (var id in shared.Order())
                 Console.Error.WriteLine("  " + (D.DisplayById.ContainsKey(id) ? "display " + id : Types.Key(D.TypeById[id])) + "   <- " + whyType[id]);
         }
+    }
+
+    readonly Dictionary<string, HashSet<int>> _ptrIds = [];
+    static readonly bool s_noPtrIds = Environment.GetEnvironmentVariable("CS2WASM_NO_PTR_IDS") == "1";
+
+    /// <summary>The exact types the values stored through pointers of one type can be (the node PtrNode: the stores
+    /// the runtime's array code makes, Array.SetValue and Array.Copy across element types, into any array): a walk
+    /// over the sources, as ArrayIdsOf, for every type. Kept as a set of types, not walked with the slot's filter:
+    /// the node is reached from every array, and past a few filters a node is visited with none (Analyze), which
+    /// took every such value into every array.
+    /// What Cs2WasmArrays.GetBoxed returns (Array.Copy's read of an element across element types) is an element of
+    /// some array of references, or a new box of a value array's element type (a struct with references: it throws):
+    /// what the stores into the arrays of the program put there, and those boxes; not any object.</summary>
+    HashSet<int> PtrIds(string start, ITypeSymbol? declared, HashSet<string> uncertified, Dictionary<string, List<string>> implsOf, List<Arenas.Site> arraySites)
+    {
+        if (_ptrIds.TryGetValue(start, out var known)) return known;
+        if (s_expNoPtr) return _ptrIds[start] = [];
+        var r = new HashSet<int>();
+        var seen = new HashSet<string>();
+        var work = new Stack<Src>();
+        string? getBoxed = D.AllMethods.FirstOrDefault(m => m.Compiled && m.Sym.Name == "GetBoxed" && m.Sym.ContainingType is { Name: "Cs2WasmArrays", ContainingNamespace: { } ns } && ns.ToDisplayString() == "Cs2Wasm.Runtime") is { } gb ? Types.MethodKey(gb.Sym) : null;
+        void Top(ITypeSymbol? t) { if (t != null && seen.Add("top " + Types.Key(t))) foreach (var id in TopIds(t)) r.Add(id); }
+        void Node(string key, ITypeSymbol? type)
+        {
+            if (!seen.Add(key)) return;
+            if (_nodes.TryGetValue(key, out var l) && l.Count > 0) foreach (var x in l) work.Push(x);
+            else Top(type);
+        }
+        void Site(Arenas.Site s, ITypeSymbol? type)
+        {
+            if (!seen.Add("site " + s.Key)) return;
+            bool byAddress = !s_noByAddress && s.ByAddress.Count > 0;
+            foreach (var x in s.Sources) { if (byAddress && x.Kind == K.Top && x.Key == ByAddressTag) continue; work.Push(x); }
+            if (byAddress) foreach (var x in s.ByAddress) work.Push(x);
+            foreach (var id in s.TargetIds) r.Add(id);
+            if (s.Sources.Count == 0 && s.TargetIds.Count == 0 && !(s.Stored && !s.AddressTaken && !s_noNullSites)) Top(type);
+        }
+        // (what an array of this type holds: Analyze's ArrayContents, with no filter)
+        void Contents(ITypeSymbol a)
+        {
+            if (!seen.Add("contents " + Types.Key(a))) return;
+            var et = D.Types.Canonical(((IArrayTypeSymbol)a).ElementType);
+            bool any = false;
+            foreach (var s in arraySites)
+                if (Types.Key(s.Container) == Types.Key(a) || D.Types.IsSubtype(a, s.Container)) { Site(s, null); any = true; }
+            if (!any) Top(et);
+            var k = RefNode(et);
+            if (_nodes.ContainsKey(k)) Node(k, null);
+            if (_refAliases.TryGetValue(k, out var al)) foreach (var x in al) if (_nodes.ContainsKey(x)) Node(x, null);
+        }
+        Node(start, declared);
+        while (work.Count > 0)
+        {
+            var s = work.Pop();
+            switch (s.Kind)
+            {
+                case K.Exact:
+                    if (s.Type != null && D.ExistingTypeId(D.Types.Canonical(s.Type)) is int eid and > 0 && !Types.IsImmortalType(s.Type)) r.Add(eid);
+                    else if (s.Type != null && Types.IsRef(s.Type)) Top(s.Type);
+                    break;
+                case K.Display: r.Add(s.Index); break;
+                case K.Top: Top(s.Type); break;
+                case K.Param:
+                    if (uncertified.Contains(s.Key!)) Top(s.Type); else Node(ParamNode(s.Key!, s.Index), null);
+                    break;
+                case K.Ret:
+                    {
+                        if (getBoxed != null && s.Key == getBoxed)
+                        {
+                            if (!seen.Add("boxed elements")) break;
+                            foreach (var id in D.Constructed.Order())
+                            {
+                                if (id <= 0 || id >= D.TypeById.Count || D.DisplayById.ContainsKey(id) || D.TypeById[id] is not IArrayTypeSymbol at) continue;
+                                var et = D.Types.Canonical(at.ElementType);
+                                if (Types.IsRef(et)) Contents(D.TypeById[id]);
+                                else if (D.ExistingTypeId(et) is int bid and > 0) r.Add(bid);
+                            }
+                            break;
+                        }
+                        bool dispatched = s.Index == 1 && implsOf.TryGetValue(s.Key!, out var impls) && impls.Count > 0;
+                        var keys = new List<string> { s.Key! };
+                        if (dispatched) keys.AddRange(implsOf[s.Key!]);
+                        foreach (var k in keys)
+                            if (BodyRets.Contains(k)) Node(RetNode(k), null);
+                            else if (!(dispatched && k == s.Key)) Top(s.Type);
+                        break;
+                    }
+                case K.Node:
+                    if (s.Key!.StartsWith("site ")) { if (D.Arenas.SiteByKey(s.Key[5..]) is { } site) Site(site, s.Type); else Top(s.Type); }
+                    else Node(s.Key, s.Type);
+                    break;
+                case K.RefParam: Top(s.Type); break;
+                case K.Elem:
+                    {
+                        if (s.Type is not IArrayTypeSymbol sat) break;
+                        var ids = s.Key != null ? ArrayIdsOf(s.Key, uncertified, implsOf) : null;
+                        bool any = false;
+                        foreach (var id in (IEnumerable<int>?)ids ?? TopIds(sat)) if (D.TypeById[id] is IArrayTypeSymbol && IdIs(id, sat)) { Contents(D.TypeById[id]); any = true; }
+                        if (!any && ids == null) { var k = RefNode(D.Types.Canonical(sat.ElementType)); if (_nodes.ContainsKey(k)) Node(k, null); }
+                        break;
+                    }
+            }
+        }
+        if (s_debug) Console.Error.WriteLine($"stored through a pointer ({start}): {r.Count} types; went through {string.Join(", ", seen.Where(k => !k.StartsWith("site ") && !k.StartsWith("contents ")).Take(40))}");
+        return _ptrIds[start] = r;
     }
 
     readonly Dictionary<string, HashSet<int>> _arrayIds = [];
@@ -905,13 +1209,19 @@ sealed partial class FunctionCompiler
     /// <summary>Threads: an object of this static type is one no other thread can reach (the last compilation's answer).</summary>
     bool UnsharedContainer(ITypeSymbol t) => D.ThreadMode && D.Sharing is { } s && s.PriorThreadLocal(t);
 
+    /// <summary>Threads: a static that only the engine thread's code names (Sharing.PriorEngineStatic): no other
+    /// thread reads or stores it, and the code that does runs on one thread. It is read, borrowed from and read once
+    /// by a loop as a static of a program without threads is.</summary>
+    bool EngineStatic(IFieldSymbol f) =>
+        D.ThreadMode && f.IsStatic && !f.IsVolatile && D.Sharing is { } s && s.PriorEngineStatic(Driver.StaticKey(T.Canonical(Owner(f)), StorageField(f)));
+
     /// <summary>Threads: the place an expression reads is one no other thread stores: a field of an object of such a
     /// type, an element of such an array, a thread's own static.</summary>
     bool UnsharedPlace(IOperation op)
     {
         switch (op)
         {
-            case IFieldReferenceOperation { Field.IsStatic: true } sf: return IsThreadStatic(StorageField(sf.Field));
+            case IFieldReferenceOperation { Field.IsStatic: true } sf: return IsThreadStatic(StorageField(sf.Field)) || EngineStatic(sf.Field);
             case IFieldReferenceOperation { Instance: { Type: not null } inst } when !TypeOf(inst).IsValueType: return UnsharedContainer(TypeOf(inst));
             case IArrayElementReferenceOperation { ArrayReference.Type: not null } ae: return UnsharedContainer(TypeOf(ae.ArrayReference));
             default: return false;
@@ -965,9 +1275,71 @@ sealed partial class FunctionCompiler
 
     /// <summary>The values a local is ever assigned in this body; null when that is not all it can hold (captured,
     /// passed by reference, a ref local, a foreach or out or pattern variable).</summary>
-    List<IOperation>? LocalSources(ILocalSymbol l)
+    List<IOperation>? LocalSources(ILocalSymbol l) => _sharingBody == null || l.IsRef || IsCaptured(l) ? null : AssignedValues(l);
+
+    /// <summary>A local of this body that lambdas or local functions capture lives in a closure's slot. Where the
+    /// slot's values come from, when every write of the local is one this body's text shows: its declaration's
+    /// initializer and plain assignments, here and in the nested functions (their bodies are part of this body), an
+    /// `out` argument of a known callee. Not for a local a ref is made of, a parameter, `this`, or a state machine's
+    /// variable: those slots hold any object of their type, as before (Arenas.AddDisplaySites).
+    /// CS2WASM_NO_DISPLAY_SOURCES=1: every slot so.</summary>
+    void RecordCapturedSources()
     {
-        if (_sharingBody == null || l.IsRef || IsCaptured(l)) return null;
+        if (Sh == null || !D.ThreadMode || _sharingBody == null || _capturedHere.Count == 0 || Driver.s_noDisplaySources || _machine != null) return;
+        HashSet<ISymbol>? refd = null;
+        foreach (var (sym, d) in _capturedHere)
+        {
+            // (a parameter no code of the body writes: the slot holds what the method was called with)
+            if (sym is IParameterSymbol { RefKind: RefKind.None } cp && SharingKey is { } ckey && !Sharing.s_noLambdaSites
+                && SymbolEqualityComparer.Default.Equals(cp.ContainingSymbol?.OriginalDefinition, M.OriginalDefinition) && !ParamWritten(cp)
+                && d.Slots.TryGetValue(sym, out var pslot) && Types.IsRef(pslot.type))
+            {
+                D.Arenas.DisplaySources[(d, pslot.offset)] = [new Sharing.Src(Sharing.K.Param, ckey, cp.Ordinal, pslot.type)];
+                continue;
+            }
+            if (sym is not ILocalSymbol { IsRef: false } l || !d.Slots.TryGetValue(sym, out var slot) || !Types.IsRef(slot.type)) continue;
+            if (AssignedValues(l) is not { } vals) continue;
+            // (a ref of the local, kept in a ref local, returned or chosen by a ref conditional: stores through it)
+            if (refd == null)
+            {
+                refd = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+                foreach (var op in _sharingBody.DescendantsAndSelf())
+                {
+                    if (op is not ILocalReferenceOperation lr) continue;
+                    bool asRef = lr.Parent switch
+                    {
+                        IVariableInitializerOperation { Parent: IVariableDeclaratorOperation { Symbol.RefKind: not RefKind.None } } => true,
+                        IConditionalOperation { IsRef: true } => true,
+                        IReturnOperation => true,
+                        IArgumentOperation { Parameter.RefKind: not RefKind.None } => OutCallee(lr.Parent) == null,
+                        IAddressOfOperation => true,
+                        _ => false,
+                    };
+                    // (a value returned is a read, unless the function returns by reference: that is not looked up
+                    // here, so only a local that is never returned keeps its sources)
+                    if (asRef) refd.Add(lr.Local);
+                }
+            }
+            if (refd.Contains(l)) continue;
+            var srcs = new List<Sharing.Src>();
+            foreach (var v in Sharing.s_expDisplayFirstOnly ? vals.Take(1) : vals) FlowSrcsInto(v, srcs, 1);
+            if (_localOutSources != null && _localOutSources.TryGetValue(l, out var outs)) srcs.AddRange(outs);
+            D.Arenas.DisplaySources[(d, slot.offset)] = srcs;
+        }
+    }
+
+    Dictionary<SyntaxNode, int>? _lambdaSiteAt;
+    /// <summary>The lambda site of a lambda in this method's text (Driver.LambdaSites), made when first asked for:
+    /// by the code that makes the delegate, or by a source that names it before that code is compiled.</summary>
+    int LambdaSiteAt(SyntaxNode lambda)
+    {
+        _lambdaSiteAt ??= [];
+        if (!_lambdaSiteAt.TryGetValue(lambda, out int site)) _lambdaSiteAt[lambda] = site = D.NewLambdaSite();
+        return site;
+    }
+
+    List<IOperation>? AssignedValues(ILocalSymbol l)
+    {
         if (_localSources == null)
         {
             _localSources = new Dictionary<ISymbol, List<IOperation>?>(SymbolEqualityComparer.Default);
@@ -1154,6 +1526,17 @@ sealed partial class FunctionCompiler
         switch (v)
         {
             case IDefaultValueOperation:
+                return;
+            // (an array of no element: `new T[0]`, of one dimension, with no initializer)
+            // (a lambda made into a delegate: the delegate of this place in the text, Sharing.LambdaTag)
+            case IDelegateCreationOperation { Target: IAnonymousFunctionOperation laf } when D.ThreadMode && !Sharing.s_noLambdaSites && t.TypeKind == TypeKind.Delegate:
+                r.Add(new Sharing.Src(Sharing.K.Exact, Sharing.LambdaTag, LambdaSiteAt(laf.Syntax), t));
+                return;
+            // (in a program with threads: the sources of one without are what they were)
+            case IArrayCreationOperation { DimensionSizes: [{ ConstantValue: { HasValue: true, Value: 0 } }], Initializer: null or { ElementValues.Length: 0 } } when D.ThreadMode && t is IArrayTypeSymbol { Rank: 1 }:
+            case IArrayCreationOperation when D.ThreadMode && Sharing.s_expEveryArrayEmpty && t is IArrayTypeSymbol:
+            case ICollectionExpressionOperation { Elements.Length: 0 } when D.ThreadMode && t is IArrayTypeSymbol { Rank: 1 }:
+                r.Add(new Sharing.Src(Sharing.K.Exact, Sharing.EmptyArrayTag, Type: t));
                 return;
             case IObjectCreationOperation or ITypeParameterObjectCreationOperation or IArrayCreationOperation or IDelegateCreationOperation or IAnonymousObjectCreationOperation:
                 r.Add(t.TypeKind is TypeKind.Interface or TypeKind.TypeParameter || t is INamedTypeSymbol { IsAbstract: true } ? TopSrc(t) : new Sharing.Src(Sharing.K.Exact, Type: t));
@@ -1387,6 +1770,13 @@ sealed partial class FunctionCompiler
         if (callee.IsExtern || callee.IsAbstract || callee.IsVirtual || callee.IsOverride || callee.ContainingType.TypeKind == TypeKind.Interface) return null;
         return Types.MethodKey(callee) + " " + p.Ordinal;
     }
+
+    /// <summary>A library method whose `ref T` parameters and result are all of its one type argument, and which only
+    /// copies T's between such places or gives a ref of another: Unsafe.Add, Unsafe.Subtract, Buffer.Memmove.</summary>
+    static bool SameTypeRefs(IMethodSymbol m) =>
+        m.TypeArguments.Length == 1 && m.ContainingType is { ContainingType: null } ct
+        && (m.Name is "Add" or "Subtract" && ct.Name == "Unsafe" && ct.ContainingNamespace?.ToDisplayString() == "System.Runtime.CompilerServices"
+            || m.Name == "Memmove" && ct.Name == "Buffer" && ct.ContainingNamespace?.ToDisplayString() == "System");
 
     /// <summary>Every reference field of the struct (and of the structs in it) may hold any object of its type.</summary>
     void StructLeavesAnything(ITypeSymbol st, int depth = 0)

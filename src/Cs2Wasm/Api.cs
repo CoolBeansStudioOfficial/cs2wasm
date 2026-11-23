@@ -109,14 +109,16 @@ public static class Cs2WasmCompiler
                 if (!s_noSecondPass && d.Sharing is { Done: true } first && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
                 {
                     var prior = first.PriorMap();
-                    var sharedKeys = first.SharedTypeSymbols().Select(Types.Key).ToHashSet();
+                    // (the types, and the statics a worker's code names: Sharing.SharedKeys)
+                    var sharedKeys = first.SharedKeys();
                     for (int round = 0; round < 3; round++)
                     {
                         d = null!;
                         d = new Driver(cs, options) { ThreadMode = true, SharingPrior = prior };
                         d.Run();
                         if (d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error) || d.Sharing is not { Done: true } again) break;
-                        var extra = again.SharedTypeSymbols().Select(Types.Key).Where(k => !sharedKeys.Contains(k)).ToList();
+                        var extra = again.SharedKeys().Where(k => !sharedKeys.Contains(k)).ToList();
+                        if (Environment.GetEnvironmentVariable("CS2WASM_SHARING_ROUNDS") == "1") Console.Error.WriteLine($"sharing: round {round}: {extra.Count} more than the compilation was given{(extra.Count > 0 ? ": " + string.Join(", ", extra.Take(12)) : "")}");
                         if (extra.Count == 0) break;
                         if (round == 2) { d = new Driver(cs, options) { ThreadMode = true }; d.Run(); break; }
                         prior = again.PriorMap(prior);

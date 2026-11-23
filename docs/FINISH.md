@@ -44,6 +44,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 8.20 s vs 3.96 s, 2.1x (claude/selfhost-speed-1, 2026-11-22, the homelab, nine interleaved rounds; NativeAOT-LLVM's build is of 2026-11-20 and reads all fifteen core libraries, the self-hosted compiler nine); before: 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 272.0 MB vs 322.2 MB (claude/selfhost-speed-1, with nine libraries read, 344.2 MB with all fifteen; NativeAOT-LLVM's figure is the one on record, of its build that reads fifteen, not measured again); before: 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 39.5 MB vs 129 MB (main ad4c99e) | met; next waste: code (36.2 MB) |
+| 4 | Programs with threads: frames against NativeAOT's (`node tools/frames-threads.mjs`; NativeAOT-LLVM's WebAssembly with threads does not link here, so against its program without threads) | claude/threads-1, 2026-11-23, median frame: one idle worker 1.65x to 2.8x NativeAOT's (churn 0.100 ms against 0.050; before 1.99), the tree 3.6x (0.120 against 0.034; before 1.21); a worker's private churn 2.2x (before 49x), its private tree 3.6x; work handed between threads 0.8x to 2.6x. Worst frames below NativeAOT's except the tree's rebuild (17 ms against 3.7). Private churn scales 5.3 at eight threads, private trees 3.2 | < 1.0x; open: the groups with threads (build 6x the program without), types reachable only by their type (strings) |
 | 5 | Threaded self-hosted compiler: more threads not slower | 18.7 s on 1, 17.0 on 4, 26.6 on 12, 26.7 on 24 (main before: 16.3, 23.6, 37.7, 39.4); Roslyn's one group of 19,847 types is one lock. Homelab (16 threads), branch threads-scale: 15.5 / 12.9 / 15.1 / 15.9 / 18.2 s on 1 / 4 / 12 / 16 / 24 against main's 15.7 / 13.2 / 16.8 / 17.7 / 18.1 | faster with threads |
 | 5 | Game built in the browser by the self-hosted compiler (proof 5 item 1) | met 2026-11-21: `node tools/proof5.mjs toolchain`, `web`, `check`: built in headless Chrome in 220.9 s, its 1,667 log lines (1,669 with `--panic`) equal stock Godot .NET's | plays, log equals the oracle's |
 | 5 | Self-hosted output equals the .NET-hosted compiler's, on 1 and 4 cores (`node tools/selfdet.mjs [--self t.wasm] [--cores 1,4] <program.cs> [-r x.dll]`) | met 2026-11-21: 021_threads and the GodotSharp Hello (4,060,330 B) byte-identical, no-threads toolchain and threaded on 1 and 4 cores | byte-identical |
@@ -1320,3 +1321,49 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   off and on in turn, two rounds: tree median 0.038/0.037 ms off for 0.039/0.038 on, p99.9 2.01/2.03 for
   1.97/1.93, the other scenes the same. The homelab's suite, self-host check and stress are those of 1cae0b2 (the
   entry above); nothing of this merge was run there.
+- 2026-11-23, programs with threads (branch claude/threads-1 from claude/round-9 d430594; not merged into main;
+  docs/AUDIT.md A3.6). The measurement that was missing: `node tools/frames-threads.mjs`, the frames scenes in a
+  program with threads (one idle worker; N workers with private worlds; work handed between threads; the churn's
+  and the tree's parts alone), against the same work without threads, cs2wasm's and NativeAOT-LLVM's
+  (NativeAOT-LLVM's WebAssembly with threads does not link here: its runtime libraries are built without atomics).
+  Found: having one idle thread cost the churn scene 29x (1.99 ms a frame against 0.068), a worker's private churn
+  33x, because the thread escape analysis (Compiler/Sharing.cs) answered "every type" for any program with a
+  thread. Seven places that stood for any object now say where their values come from (struct refs that keep their
+  type, slots only ever stored null, stores by address into arrays, captured locals and parameters, arrays of no
+  element, statics only the engine thread's code names, delegates by the lambda they were made of), and three
+  things the types then allowed are on (a list's foreach and a getter borrow from objects no other thread can
+  reach; the runtime's own lists are out of the store summary, which had every release count as a store of an
+  element). Median frame, before -> now (NativeAOT without threads): churn with one idle worker 1.99 -> 0.100 ms
+  (0.050), collections 0.065 -> 0.012 (0.007), strings 0.032 -> 0.013 (0.008), tree 1.21 -> 0.120 (0.034),
+  bigdrop 0.031 -> 0.009 (0.003); a worker's private churn 2.33 -> 0.107 (0.048), four at once 3.12 -> 0.116,
+  eight 3.15 -> 0.158; a private tree 0.160 -> 0.022 (0.006), eight 0.246 -> 0.056; work handed to one, two, four
+  workers 0.170 -> 0.113, 0.231 -> 0.081, 0.405 -> 0.264 (0.102 done by the main thread itself). Worst frames
+  below NativeAOT's except the tree's rebuild (17.4 ms against 3.7; 35.3 before) and the private trees. Programs
+  without threads are compiled byte for byte as by the base (145, 220, 193, 201, tools/frames; hello world 27,784
+  bytes by the command line): `node tools/frames.mjs --runs 3 --js-young 32` gives the mean frame 0.74x NativeAOT's
+  over the five scenes (medians churn 1.35x, collections 1.02x, strings 0.88x, tree 1.57x, bigdrop 0.97x; worst
+  frames 0.12x to 0.81x), `node tools/bench.mjs` 0.95x, 16 MB against 71.3, 335.5 KB against 1,328 + 170.
+  Tests 275 to 279; `bash tools/thread-escape-breaks.sh`: each with CS2WASM_SHARE_CHECK=1 prints the same, each
+  with its rule weakened is stopped by the check (seven weakenings), each with its rule off prints the same. A
+  fault of the analysis found by test 278 on the way (a pointer store's types taken with the first visit's filter).
+  Measured and taken out again: field loads read once by a loop and plain counts written out in loops (no gain);
+  the groups' stripes left out when no cycle-capable type is reached (never the case: Thread is one).
+  Open, by cost: the groups with threads (a tree's build 6x the program without threads; the node path is off;
+  the runtime lock at a member's first and last outside reference; private trees scale 3.2 at eight threads);
+  types reached by their type only (the churn's drop is the atomic release of each particle's string, 316 us
+  against 40); a delegate with no tag is any of its type; the threaded self-hosted compiler (check 5) not
+  touched. `tools/thread-board-hang.cs` hangs one run in six, with the base's compiler too.
+- 2026-11-23, claude/threads-1 merged with main 4cf95fe (612cd56; docs/AUDIT.md A3.6, "On the merge"). Programs
+  without threads byte for byte main's (145 27,786 bytes, 220, 193, 201, 208, 209, tools/frames). frames-threads,
+  main's compiler -> this branch's, median ms (NativeAOT-LLVM without threads): idle churn 2.02 -> 0.096-0.100
+  (0.050-0.052), idle tree 0.94-0.99 -> 0.122-0.126 (0.033-0.035), private churn at eight 3.09-3.27 -> 0.160
+  (0.049), private tree at eight 0.243-0.259 -> 0.056 (0.006), shared at four 0.26-0.30 and 0.18-0.33 from run to run on either (0.105). The desk on
+  the merged code: thread-share-check 61 of 61 the same, thread-escape-breaks as before, 275 to 279 300 loaded runs
+  each all the same, 139, 218, 215b, 131, 127 200 each all the same with this branch's compiler and with main's,
+  187 3 of 200 with each. The homelab on the merged code (612cd56 and its docs commit c1f0859): suite 246 passed,
+  0 failed, 2 known gaps, checked and as shipped; `tools/selfhost-check.sh`: the self-hosted compiler built in
+  431 s (33,455,890 bytes), hello world in 8.3 to 8.5 s, peak 272.0 MB, self-1 = net byte for byte on 145, 220,
+  193 and 088; 139 without the engine's stack checks 200 loaded runs a mode all the same; 276 200 a mode the same.
+  Not merged: main 4a42328 (claude/tree-3's foreach over a List<T>, which meets this branch's list loops), since
+  this check had started. Not run on the merged code before the hand-back: the threaded self-hosted compiler
+  (`tools/thread-scale.sh`), the homelab's stress of 127, 218, 215b, 187, 131, 275, 277 to 279 (the desk's above).

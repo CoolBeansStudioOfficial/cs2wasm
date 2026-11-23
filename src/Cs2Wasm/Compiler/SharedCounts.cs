@@ -72,8 +72,43 @@ internal sealed partial class RuntimeFns
     internal void NoteStructCopy(WasmFunction f, ITypeSymbol t) => _structCopies.Add((f, t));
 }
 
+/// <summary>A lambda made into a delegate at one place of the text, in one compilation of its method (Sharing.cs:
+/// a delegate value's source names the place, so the closure that is reached with the delegate is that lambda's, not
+/// every closure a delegate of the type was ever made with). Unsure: emitted more than once with another closure, or
+/// never emitted: such a delegate is any of its type.</summary>
+internal sealed class LambdaSite
+{
+    public WasmFunction? Fn;
+    public ITypeSymbol? Type;
+    public Display? Env;
+    public bool Unsure;
+}
+
 internal sealed partial class Driver
 {
+    internal readonly List<LambdaSite> LambdaSites = [];
+    /// <summary>For a function delegates were made with (FunctionCompiler.NewDelegate): each delegate type, and the
+    /// lambda site (-1: a method group's or a local function's, which code can also name otherwise).</summary>
+    internal readonly Dictionary<WasmFunction, List<(ITypeSymbol dt, int site)>> DelegatesMade = [];
+    internal int NewLambdaSite() { lock (LambdaSites) { LambdaSites.Add(new LambdaSite()); return LambdaSites.Count - 1; } }
+    internal void FillLambdaSite(int site, WasmFunction fn, ITypeSymbol dt, Display? env)
+    {
+        lock (LambdaSites)
+        {
+            var ls = LambdaSites[site];
+            if (ls.Fn == null) { ls.Fn = fn; ls.Type = dt; ls.Env = env; }
+            else if (!ReferenceEquals(ls.Fn, fn) || !ReferenceEquals(ls.Env, env) || Types.Key(ls.Type!) != Types.Key(dt)) ls.Unsure = true;
+        }
+    }
+    internal void NoteDelegateMade(WasmFunction fn, ITypeSymbol dt, int site)
+    {
+        lock (LambdaSites)
+        {
+            if (!DelegatesMade.TryGetValue(fn, out var l)) DelegatesMade[fn] = l = [];
+            l.Add((dt, site));
+        }
+    }
+
     public WasmGlobal? StackLo, StackHi;
     /// <summary>How deep the destroy functions are nested on this thread, and the objects whose destruction waits for
     /// the outermost one to finish (RuntimeGen.EmitDestroyDispatch).</summary>

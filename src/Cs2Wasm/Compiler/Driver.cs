@@ -208,6 +208,10 @@ internal sealed partial class Driver
     public sealed class ThreadsSeen : Exception { }
     /// <summary>CS2WASM_EXP_NO_THREADMODE=1 (a measurement, unsafe: the program must then run on one thread): a program
     /// that starts threads is compiled as one that does not, to see what compiling for threads costs.</summary>
+    /// <summary>CS2WASM_NO_SAME_TYPE_REFS=1: a struct's place handed to Unsafe.Add or Buffer.Memmove may again hold any
+    /// object in its reference fields (FunctionCompiler.SameTypeRefs).</summary>
+    internal static readonly bool s_noSameTypeRefs = Environment.GetEnvironmentVariable("CS2WASM_NO_SAME_TYPE_REFS") == "1";
+    internal static readonly bool s_noDisplaySources = Environment.GetEnvironmentVariable("CS2WASM_NO_DISPLAY_SOURCES") == "1";
     internal static readonly bool s_expNoThreadMode = Environment.GetEnvironmentVariable("CS2WASM_EXP_NO_THREADMODE") == "1";
     public readonly WasmTag ExceptionTag;
     readonly List<SourcePos> _positions = [];
@@ -692,7 +696,7 @@ internal sealed partial class Driver
         fn.RefFamily = fn.Family != null && AllRefArgs(m);
         _methods[key] = mi;
         bool returnsThis = impl == MethodImpl.Body && ReturnsThis(m);
-        if (returnsThis || impl == MethodImpl.Body && !ThreadMode && ReturnsField(m))
+        if (returnsThis || impl == MethodImpl.Body && (!ThreadMode || ThreadLocalReturn(m)) && ReturnsField(m))
         {
             // the body returns `this`, or a field's value, borrowed; the method's own function retains it for indirect
             // callers (section 4.1: a getter costs what the field's load costs)
@@ -857,6 +861,45 @@ internal sealed partial class Driver
     /// <summary>A type whose values hold no count (and contain none): numbers, bools, chars, enums, pointers.</summary>
     static bool Uncounted(ITypeSymbol t) => t.TypeKind is TypeKind.Enum or TypeKind.Pointer or TypeKind.FunctionPointer
         || t.SpecialType is (>= SpecialType.System_Boolean and <= SpecialType.System_Double) or SpecialType.System_IntPtr or SpecialType.System_UIntPtr;
+
+    /// <summary>CS2WASM_NO_LOCAL_GETTERS=1: in a program with threads no method returns a field's value borrowed, as before.</summary>
+    static readonly bool s_noLocalGetters = Environment.GetEnvironmentVariable("CS2WASM_NO_LOCAL_GETTERS") == "1";
+
+    /// <summary>Threads: a method that returns a field's value (ReturnsField) may return it borrowed, as in a program
+    /// without threads, when every place the value is read from on the way is in an object no other thread can reach:
+    /// `this`, each field's object and each array on the path, by the last compilation's answer for their static
+    /// types (Sharing.PriorThreadLocal; this instantiation's: List&lt;Particle&gt;'s indexer, not List&lt;Job&gt;'s). No
+    /// other thread stores such a place, so the borrowed value lasts as it does without threads.</summary>
+    bool ThreadLocalReturn(IMethodSymbol m)
+    {
+        if (s_noLocalGetters || Sharing is not { } sh || SharingPrior == null) return false;
+        var def = m.OriginalDefinition;
+        if (def.IsStatic || def.ContainingType.TypeKind != TypeKind.Class || def.DeclaringSyntaxReferences.Length != 1) return false;
+        if (BorrowableReturns(def) is not { } values) return false;
+        var map = TypeMap.For(m);
+        if (!sh.PriorThreadLocal(Types.Resolve(def.ContainingType, map))) return false;
+        foreach (var r in values)
+        {
+            var v = r;
+            while (v is IConversionOperation { OperatorMethod: null } c) v = c.Operand;
+            if (v is ICoalesceAssignmentOperation { Target: var lazy }) v = lazy;
+            if (values.Count > 1 && v.ConstantValue is { HasValue: true, Value: null }) continue;
+            while (true)
+            {
+                while (v is IConversionOperation { OperatorMethod: null } c2) v = c2.Operand;
+                if (v is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }) break;
+                if (v is IArrayElementReferenceOperation ae)
+                {
+                    if (ae.ArrayReference.Type is not { } art || !sh.PriorThreadLocal(Types.Resolve(art, map))) return false;
+                    v = ae.ArrayReference; continue;
+                }
+                if (v is not IFieldReferenceOperation { Field: { IsStatic: false } f, Instance: { } inst } || f.ContainingType.TypeKind != TypeKind.Class) return false;
+                if (!sh.PriorThreadLocal(Types.Resolve(f.ContainingType, map))) return false;
+                v = inst;
+            }
+        }
+        return true;
+    }
 
     /// <summary>The fields the value a ReturnsField method returns came through, as FieldBorrows keys (a line each; the
     /// elements' key for an array's element): only when the path starts at `this` of a class and every field on it is an

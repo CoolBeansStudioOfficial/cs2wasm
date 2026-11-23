@@ -2818,6 +2818,208 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     threads for the two changes that are in (the stored value read back is the pass's own proof, which holds for a
     field another thread may write only as far as any plain read does; the suite's thread tests pass).
 
+**A3.6 Programs with threads: the measurement, and the thread escape analysis made to hold (2026-11-23, branch
+claude/threads-1 from claude/round-9 d430594). [run]** SPEC 1 asks for threads that are worth using and for every
+program to be faster than under NativeAOT; until now every speed figure was of a program without threads, and the
+optimizations of the last days are switched off in one with.
+
+*The measurement.* `node tools/frames-threads.mjs` (sources in tools/frames-threads; `tools/frames-threads-quick.mjs`
+for one module without NativeAOT's side): tools/frames's five scenes on the main thread while one worker waits on a
+monitor (idle_*; aidle_*: the scene's work handed over as an `Action`), N threads each with a particle system or a
+scene tree of its own made on that thread (pchurnN, ptreeN, N = 1, 2, 4, 8), 64 work items a frame made on the main
+thread and handed to N workers through a queue under a lock, their results back through another (sharedN), and the
+churn's and the tree's parts each timed alone on a worker (parts1, tparts1). Each against the same work in a program
+without threads, cs2wasm's and NativeAOT-LLVM's. **NativeAOT-LLVM's WebAssembly with threads does not link here**:
+`-p:WasmEnableThreads=true` reaches the linker, which refuses `--shared-memory` because the package's runtime
+libraries are built without atomics (`allocheap.cpp.o`); so the comparison is with NativeAOT without threads, said
+on every line. Median frame, ms, the desk, three runs, lowest (before: the base's compiler on the same sources):
+
+| scene | NativeAOT, no threads | cs2wasm, no threads | threads, before | threads, now | now against NativeAOT |
+|---|---|---|---|---|---|
+| churn, one idle worker | 0.050 | 0.068 | 1.99 | 0.100 | 2.0x |
+| collections, idle | 0.007 | 0.006 | 0.065 | 0.012 | 1.8x |
+| strings, idle | 0.008 | 0.007 | 0.032 | 0.013 | 1.65x |
+| tree, idle | 0.034 | 0.046 | 1.21 | 0.120 | 3.6x |
+| bigdrop, idle | 0.003 | 0.003 | 0.031 | 0.009 | 2.8x |
+| private churn, 1 worker | 0.048 | 0.070 | 2.33 | 0.107 | 2.2x |
+| private churn, 4 workers | | | 3.12 | 0.116 | 2.4x |
+| private churn, 8 workers | | | 3.15 | 0.158 | 3.3x |
+| private tree, 1 worker | 0.006 | 0.009 | 0.160 | 0.022 | 3.6x |
+| private tree, 4 workers | | | 0.199 | 0.034 | 5.6x |
+| private tree, 8 workers | | | 0.246 | 0.056 | 9.2x |
+| shared, 1 worker | 0.102 | 0.071 | 0.170 | 0.113 | 1.1x |
+| shared, 2 workers | | | 0.231 | 0.081 | 0.8x |
+| shared, 4 workers | | | 0.405 | 0.264 | 2.6x |
+
+Worst frames now against NativeAOT's without threads: below it in churn (0.57x), collections (0.49x), bigdrop
+(0.30x) and the private churn (0.53x to 0.88x); above in the tree (17.4 ms against 3.7: the whole tree rebuilt,
+35.3 before), in strings in one of the two forms (0.58 against 0.30 ms; 0.23 the other), and in the private tree
+(3.5 to 11.3 ms against 2.9). Memory 16 MB (32 to 48 with four and eight workers) against NativeAOT's 59 to 71.
+Scaling of private work (the work of N threads in the time of one, N the ideal): churn 1.94, 3.23, 5.28 at 2, 4,
+8; tree 1.89, 2.44, 3.20 (before: churn 1.98, 3.40, 6.4 of a frame thirty times as long; tree 1.99, 2.76, 4.1).
+The shared scene's medians move between 0.11 and 0.20 ms from run to run on one build: the wake of a worker is
+most of its frame, and four workers for 64 small items are slower than two.
+The parts on a worker, us (before -> now; without threads; NativeAOT): 20,000 particles made 1,073 -> 296 (194;
+159), a pass over them 1,450 -> 130 (112; 110), let go 315 -> 316 (40; 4); a tree of 3,906 built 2,600 -> 1,638
+(270; 42), walked 555 -> 15 (15; 17), 100 subtrees replaced 2,350 -> 1,541 (316; 33), dropped 204 -> 195 (59; 0).
+
+*What the cost was.* Not the atomic counts as such. Sharing.cs decides at compile time which types' objects another
+thread can reach, and code for the others is as without threads; for the scenes' program it answered **every type**
+(156 of the 155 ids its count is taken against). Each cause was found by asking the analysis why (CS2WASM_SHARING_DEBUG=1; new:
+CS2WASM_SHARING_ADD and CS2WASM_SITE_ADD print where a source was recorded) and each now says where its values come
+from instead of "any object of the type"; each has its switch:
+- a struct's place handed to `Unsafe.Add`, `Unsafe.Subtract`, `Buffer.Memmove` (and inside those): the ref stays of
+  the struct's type, a copy adds nothing to what its fields hold (the values of every AsyncLocal were any object).
+  CS2WASM_NO_SAME_TYPE_REFS.
+- a slot whose every compiled store stored null (`Thread.StartHelper._startArg`): nothing. CS2WASM_NO_NULL_SITES.
+- what stores by address can leave in an array (Arenas.AddRefStores gave any object of the element type to every
+  array): the sources of the stores through refs of the type; for the runtime's `Array.SetValue` and `Array.Copy`
+  across element types, the types those values can be (Sharing.PtrIds: what `Cs2WasmArrays.GetBoxed` returns is an
+  element of some array or a box of a value array's element type), of which each array takes its own. Kept as a
+  set of types: the walk's own filters are dropped after four at a node. CS2WASM_NO_BY_ADDRESS_SOURCES,
+  CS2WASM_NO_PTR_IDS.
+- a closure's slot of a captured local whose every write the declaring body shows, and of a parameter no code
+  writes (an `object gate` a thread's lambda captures was any object). CS2WASM_NO_DISPLAY_SOURCES.
+- an array made with no element (`List<T>.s_emptyArray`, a static every thread reads): the type can be reached,
+  nothing through it; and such a type has no slot another thread could read or store, so reads and stores of a
+  worker's own `T[]` are plain (Sharing.MaySlotsBeShared against MayBeShared: a count asks the second).
+  CS2WASM_NO_EMPTY_ARRAYS.
+- a static is a root only if code a worker thread can run names its slot (Driver.WorkerStaticSlots, over what
+  `__thread_entry` reaches); the engine thread's own statics are read with a plain load, borrowed from, and read
+  once by a loop, as without threads. CS2WASM_NO_ENGINE_STATICS.
+- a delegate made of a lambda is a source that names the place in the text (Sharing.LambdaTag): reaching it
+  reaches that lambda's closure, not every closure a delegate of the type was made with; and a lambda is code a
+  worker can run only if a delegate of it, or any delegate of its type, can be reached by another thread, or code
+  a worker runs makes it. Without this, handing the main thread's work over as an `Action` in a program whose
+  workers invoke an `Action` put the idle scenes back at 1.96 ms a frame of churn. The roots and the worker's code
+  grow together in rounds (two here). CS2WASM_NO_LAMBDA_SITES.
+Now 113 of 155; the scenes' own types (the particles, the entities, their lists, each worker's world) are no
+other thread's, and 17 statics are the engine thread's.
+Then, with the types known, what still cost (each found by timing the parts, not by reading code: field loads read
+once by a loop and the plain counts written out in loops were built on a reading, measured at no gain and taken
+out again):
+- `foreach` over a `List<T>` counted each element: a walk over a tree took the group's locks at every child (30x).
+  It borrows the list and each element when neither the list nor its array can be reached by another thread.
+  CS2WASM_NO_LOCAL_LIST_LOOPS.
+- with threads every release reaches `Rt.PendDestroy` (the thread's list of objects that wait for the outermost
+  destruction), whose raw store the store summary took for a store of an array's element: nothing was borrowed
+  across any call that may release, in any program with threads. The same for `Rt.RegionExchange`, the exchange
+  of every store in its region. Both are the runtime's own now (StoreSummary.Internal), as Rt.Alloc and Rt.Free
+  are. (No switch: it is a correction of what the summary takes for a store.)
+- a getter that returns a field (List<T>'s indexer) returned it counted; borrowed now when `this` and every
+  object on the way are no other thread's. CS2WASM_NO_LOCAL_GETTERS.
+
+*A fault of the analysis, found by its test.* Sharing.Analyze took the types a pointer store can leave in an array
+with the filter of the visit that reached the array's slot first; a later visit with a wider filter was refused as
+seen. Test 278 (a `Gem` stored by `Array.SetValue` into an `object[]` a static holds) ran a worker's plain count on
+it: the check stopped it, the build without the check hung. Now once for each filter.
+
+*Tests.* 275 to 279 (the engine thread's statics; captured locals; arrays of no element; `Array.Copy` and
+`SetValue`; private work and handed results), each racing, each printing the same whatever the interleaving.
+`bash tools/thread-escape-breaks.sh`: each compiled with CS2WASM_SHARE_CHECK=1 (a plain count of an object another
+thread made stops the program) prints the same; with its rule deliberately weakened (CS2WASM_EXP_ALL_ENGINE_STATICS,
+_DISPLAY_FIRST_ONLY, _EVERY_ARRAY_EMPTY, _NO_PTR, _LAMBDA_SITES_UNREACHED, _NO_LAMBDA_RUNS, CS2WASM_SHARING_NONE)
+the check stops it; with the rule off it prints the same. The two borrows (the list's loop, the getter) rest on the
+list being no other thread's, which CS2WASM_SHARING_NONE breaks; a weakened form of their own (every list's
+foreach borrows) was not made to fail: an element another thread lets go of stays until the borrowing thread's next
+safe point, and a safe point inside the loop is a store the borrow is refused for.
+
+*Programs without threads are compiled as before*: 145, 220, 193, 201 and tools/frames's module byte for byte the
+base compiler's, as shipped and checked (hello world 27,784 bytes by the command line, the same).
+
+*Not done, in the order of what it costs.*
+- **The groups with threads.** A tree's build and a subtree's replacement are 5 to 6 times the program without
+  threads (1,638 against 270 us; the whole tree's rebuild is the idle tree's worst frame, 17 ms), and private
+  trees scale 3.2 at eight threads. The node path and the fused steps are off with threads; a store into a member
+  takes LinkLock's walk, and a member's first and last reference from outside the runtime lock, which every
+  thread shares. What eight private trees wait for, by the profile (`node tools/profsum.mjs`, `profcallers.mjs`):
+  `Rt.StripeWait` is the first function, 14.5% of all samples, called from LinkLock under ArenaLink under the
+  build and the lists' Add: objects that are no members take the stripe their address gives, of 256, so threads
+  that share nothing meet on stripes. (Tried on a reading and measured at nothing: the skip of the pinned empty
+  array every new list starts with, which a program without threads has in ArenaLink, allowed with threads.)
+  Leaving the groups' stripes out when no cycle-capable type can be reached by another thread was
+  built and measured (build 1,790 -> 1,170 us with every stripe off): never the case as a whole (Thread, its start
+  helper and the thread's closure are cycle-capable and reached in every program with threads), so it needs the
+  answer by group of types (the runtime's SccOf), a change in GroupLocks.cs, the other session's file tonight.
+- **Strings and other types every thread can reach by their type.** The churn's drop is the atomic release of each
+  particle's string (316 against 40 us) and its making the locked read of a `string[]` element; the type is one
+  another thread can reach, the objects here are not. This needs the answer by where an object is made, not by
+  its type.
+- **A delegate with no tag** (a method group's, a local function's, a clone made by `Delegate.Combine`) is still
+  any delegate of its type: every lambda of the type is then a worker's code and every closure reached.
+- **The threaded self-hosted compiler** (docs/FINISH.md check 5): not touched; Roslyn's one group is one lock.
+- `tools/thread-board-hang.cs`: four workers storing small trees over the elements of a list a static holds
+  (through its span) while the main thread's foreach reads them hangs in about one run of six, with the base's
+  compiler too (2 of 12). Not looked into: the groups' locks.
+- claude/load-flakes-1's layout of the statics by cache lines (5837122) is on this branch (cherry-picked, 43f1dd1).
+
+*A hang of the base's that the new tests met.* The homelab's suite at 170ac22 stopped test 277 as shipped at the
+time limit, nothing printed. On the desk (`node tools/stress.mjs`, 8 at once) the test's first form hangs in 7 of
+300 runs, built by the base's compiler d430594 in 5 of 300, and with each of this branch's rules off in 2 to 8 of
+300: not this branch's code. The shape: threads that read and replace, unsynchronized, the elements of an array a
+static holds, whose class has a finalizer (`tools/thread-notes-hang.cs`). Variants built by the base's compiler,
+400 loaded runs each: the notes alone 5 hangs; no finalizer 0; the read and the store under a lock 0; the store
+without the read 0. In 600 runs of the notes alone, 14 hangs and one run that ended with a note never finalized;
+with CS2WASM_DEADLOCK_DUMP=1 the hung runs say nothing. Test 275's first form had the shape too (1 of 300). Both
+tests take a lock around the shared objects now (what they test is the counting, not the race; test 139 has the
+racing stores): 500 loaded runs a mode each all the same, 276, 278 and 279 300 each. Not looked into further.
+
+*What the machine gives.* N threads of arithmetic alone (scenes spinN, beside the private scenes' scaling in the
+tool's output): about 1.9, 3.3 and 6.3 at 2, 4 and 8 threads on the desk (24 logical processors, other sessions
+at work): the private churn's 5.3 at eight is most of it, the private trees' 3.2 half.
+
+*Checks* (the code is 170ac22; later commits are tests, tools and these documents). The homelab: the suite, checked
+240 passed, 1 failed, 2 known gaps, as shipped 239 passed, 2 failed, 2 known gaps (961 s): 088's timer line in
+both (the known one under load) and 277's hang above; the self-host check (`tools/selfhost-switch.sh`): the
+self-hosted compiler built in 340 s (33,404,357 bytes), hello world in 8.7 to 9.4 s, peak 272.0 MB, self-1 = net
+byte for byte on 145. The desk: `tools/thread-escape-breaks.sh` as said above, on the final tests;
+`tools/thread-share-check.sh` (every conformance test that is a program with threads, 59 of them, once as it is and once
+under the share check): all 59 print the same. Queued on the homelab when this was written, and in docs/FINISH.md's entry when in:
+`tools/stress-cycles.sh` (127, 139; 139 without the engine's stack checks), `tools/stress-threads.sh` (275 to
+279, 187, 131), `tools/thread-scale.sh` (the threaded self-hosted compiler, not yet built with this analysis),
+`tools/selfdet-set.sh` (220, 193, 088 through the self-hosted compiler), 088 and 275 to 279 alone.
+
+*On the merge with main 4cf95fe (612cd56; the session that took over, 2026-11-23 04:40 to 07:45).* Main's code
+since the base (claude/churn-5: a list's setter in loops, the stored value read back, ColdExits off) merged
+without a conflict in code. Programs without threads are compiled byte for byte as by main's compiler 4cf95fe:
+145 (27,786 bytes), 220, 193, 201, 208, 209 and tools/frames's module (230,417 bytes); so `tools/frames.mjs` is
+main's: `--runs 3 --js-young 32` on the desk, medians churn 1.23x, collections 1.02x, strings 0.89x, tree 1.61x
+(worst 1.21x: tree's spikes above NativeAOT's, as on main), bigdrop 0.97x; the mean frame 0.74x NativeAOT's.
+`node tools/frames-threads.mjs --runs 3 --js-young 32`, the desk, main's compiler (before, two runs) and this
+branch's (after, three runs) in turn; median frame, ms, the range over the runs (NativeAOT-LLVM without threads):
+
+| scene | NativeAOT, no threads | cs2wasm, no threads | threads, main | threads, this branch |
+|---|---|---|---|---|
+| churn, one idle worker | 0.050-0.052 | 0.061-0.063 | 2.016-2.030 | 0.096-0.100 |
+| collections, idle | 0.006 | 0.006 | 0.039-0.040 | 0.012-0.013 |
+| strings, idle | 0.008 | 0.007 | 0.021 | 0.013 |
+| tree, idle | 0.033-0.035 | 0.046-0.049 | 0.937-0.986 | 0.122-0.126 |
+| bigdrop, idle | 0.003 | 0.003 | 0.028 | 0.009 |
+| private churn, 1 / 4 / 8 workers | 0.049-0.050 | 0.066 | 1.90 / 2.49-2.59 / 3.09-3.27 | 0.104-0.108 / 0.110-0.114 / 0.160-0.161 |
+| private tree, 1 / 4 / 8 workers | 0.006 | 0.009 | 0.160 / 0.174-0.198 / 0.243-0.259 | 0.022-0.023 / 0.034-0.042 / 0.056-0.057 |
+| shared, 1 / 2 / 4 workers | 0.104-0.106 | 0.072 | 0.174-0.191 / 0.101-0.176 / 0.260-0.262 | 0.111-0.170 / 0.082-0.170 / 0.309-0.316 |
+
+Worst frames, this branch: idle churn 0.29 to 0.52 ms (NativeAOT's 1.24 to 1.79), idle tree 16.3 to 23.2 ms
+(3.7 to 3.8; main's 21 to 32), private churn at eight 0.8 to 5.5 ms (main's 10 to 39). Scaling (the work of N
+threads in the time of one): private churn 1.75-1.86, 3.06-3.22, 4.76-5.38 at 2, 4, 8 (main 1.78-1.88, 2.88-3.05,
+4.67-4.70, of frames twenty times as long); private tree 1.57-2.00, 2.19-2.75, 3.04-3.55 (main 1.85-1.98, 2.73,
+4.14-4.20); arithmetic alone 1.73, 3.43, 5.64. The parts on a worker, us (main -> this branch; NativeAOT without
+threads): 20,000 particles made 1,074-1,088 -> 294-303 (159-161), a pass 1,445-1,465 -> 125-129 (103-109), let go
+316-320 -> 315-327 (4); a tree of 3,906 built 2,582 -> 1,648-1,703 (42), walked 558 -> 15 (17), 100 subtrees
+replaced 2,317-2,335 -> 1,553-1,601 (33), dropped 202-211 -> 201-204 (0). The shared scene with four workers
+looked slower here than on main (0.309-0.316 against 0.260-0.262); timed alone in turn it is not a difference of
+the builds: main 0.256-0.304, the merge 0.242-0.331, the branch before the merge (3f73a93) 0.179 and 0.313, from
+run to run of one build (its frame is mostly the workers' wake). Against NativeAOT-LLVM without threads (its build with threads does not link
+here), at or below its median only in the shared scene with one or two workers in their best runs; everywhere
+else 1.7x to 9x: what is left is the list above (the groups with threads, types reached by their type).
+Checks on the merged code (the desk): `bash tools/thread-share-check.sh` 61 programs with threads (main brought
+217 and 218), all the same under the share check; `bash tools/thread-escape-breaks.sh` every test the same under
+the check, every weakened rule (seven) stopped, every rule off the same; `node tools/suite.mjs --shards 2` 27x,
+145, 208, 209, 260, 139 pass both modes; 300 loaded runs each of 275 to 279 (8 at once), all the same; 200 loaded
+runs each, this branch's compiler and main's in turn: 139, 218, 215b, 131, 127 all the same on both, 187 3 of 200
+on both (`rounds: result 3`, the open leak of the row in docs/FINISH.md). The homelab's jobs: docs/FINISH.md's
+entry.
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
