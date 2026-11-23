@@ -5271,3 +5271,34 @@ What was agreed for decisions 1 and 2:
     about twenty, the drop check, TopHeld and the holds, would have to see such an exchange or exclude it, a lock per
     member at least for the count word and the hold's words); and finding what still makes the parser's arrays
     members (CS2WASM_DROP_STATS's op counts on a threaded build).
+
+### NetWasm's suite as il2wasm's main suite (SPEC 13), 2026-11-23, claude/netwasm-suite
+
+- The harness: `tools/netwasm-suite.mjs` with `tools/netwasm-suite/Extract` (the case extractor), `Shim` (an il2wasm-owned
+  stand-in for the part of TUnit's API that tests/libraries uses) and `Launcher` (starts each .NET run with Windows'
+  fault dialogs off). All of it is MIT and il2wasm's own. No NetWasm file is in the repository. The pinned commit
+  (d0cecda45cc8) is fetched into `%LOCALAPPDATA%/il2wasm/netwasm`, and the harness refuses a cache inside the repository.
+- Extraction: a small evaluator over C# syntax walks tests/NetWasm.Compiler.Tests and recovers each `runner.Run(...)`
+  case (theories through InlineData and MemberData, helpers, `with`, extension methods, embedded resources). It also
+  takes the fixtures with a JSON manifest, eng/open-source-suts and tests/libraries. Each case becomes a net11.0 console
+  project whose generated Main prints ASCII observation lines. NetWasm's stored expectations are never read.
+  474 cases: 375 runner, 70 fixture, 6 open-source programs, 23 library suites (350 tests); 78,073 inputs; 169
+  duplicates folded (the same program at NetWasm's optimisation levels). Not extracted: 31 test methods. 10 of those are
+  IL emitted by the harness (no C# source), 1 is an xUnit project that compiles NetWasm's own library sources, and the
+  rest are tests of NetWasm's harness itself.
+- Oracle: .NET 11.0.0 win-x86 (IntPtr.Size 4), from a .NET root assembled out of the NuGet runtime pack (no machine-wide
+  install), run three times per case. It runs only on the homelab (`--oracle-here`), because a library fixture calls
+  Debugger.Launch/Break, which opened Visual Studio's JIT-debugger dialog on the desk. Homelab, d508471: 473 of 474 built
+  (1 has top-level statements: a harness test) and 473 of 473 were stable over three runs. `sut:imagesharp`'s WebP lossy
+  encoding differs with hardware intrinsics off (760 against 756 bytes); the expected output is with intrinsics on.
+- il2wasm's step: a command template (`--compile`, `IL2WASM_COMPILE`; `{dll}` `{out}` `{mode}` `{checked}`
+  `{project}`). The module runs under host/run.mjs and is compared byte for byte (stdout and exit code), checked and as
+  shipped, `--repeat n` at once. Not yet run with il2wasm: the IL front end cannot compile these yet. The plumbing is
+  proven with `--compile dotnet-standin`: 473 of 473 passed in both modes, 4 at once each.
+- Classification (none skipped; the expected output is .NET's): accepted differences 7 (KnownNonBugCorpusPartitioner);
+  PlatformNotSupportedException in the source 17 (3 throw it under .NET); type names 13; GC-dependent 144; needs GC
+  semantics 114; collects at every allocation 88; pointer size 65; desktop carve-outs 6; desktop entry differs 10;
+  NetWasm-only API 6; machine state 4; debugger 1. 39 library tests fail under .NET: they assert NetWasm's behaviour
+  (compression bytes, crypto, file system, PlatformNotSupportedException expectations).
+- Open for the owner: outputs that depend on the host OS. Compression bytes, the file system and crypto are .NET on
+  Windows here. il2wasm on WASI must match which .NET?

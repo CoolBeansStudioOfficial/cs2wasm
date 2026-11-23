@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- il2wasm's own extractor for NetWasm's differential test cases (MIT, like the rest of this repository). It reads a
+       pinned NetWasm checkout in a cache outside the repository and writes standalone console projects there; no
+       NetWasm file is copied into this repository. tools/netwasm-suite.mjs builds and runs it. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup><PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.12.0" /></ItemGroup>
+</Project>
