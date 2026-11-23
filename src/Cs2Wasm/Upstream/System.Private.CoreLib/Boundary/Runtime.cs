@@ -915,7 +915,7 @@ namespace Cs2Wasm.Runtime
                     for (int c = 0; c < 8; c++) DsNum(ref at, " ", DsGet(why * 8 + c));
                     Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
                 }
-                DsNum(ref at, "holds turn ", DsGet(256)); DsNum(ref at, " survivor ", DsGet(257)); DsNum(ref at, " take-in-above ", DsGet(260)); DsNum(ref at, " its walks ", DsGet(258)); DsNum(ref at, " steps ", DsGet(259));
+                DsNum(ref at, "holds turn ", DsGet(256)); DsNum(ref at, " survivor ", DsGet(257)); DsNum(ref at, " take-in-above ", DsGet(260)); DsNum(ref at, " its walks ", DsGet(258)); DsNum(ref at, " steps ", DsGet(259)); DsNum(ref at, " cached ", DsGet(261));
                 Mem.StoreU16(s_dsBuf + 2 * at, 10); at++;
                 DsNum(ref at, "tops by site", 0);
                 for (int k = 1; k < 8; k++) { DsNum(ref at, " ", DsGet(270 + k)); DsNum(ref at, "/", DsGet(280 + k)); }
@@ -3748,13 +3748,41 @@ namespace Cs2Wasm.Runtime
         /// the trials then took in and went through other living structures whole, 2.9 billion visits for 0.4.)</summary>
         static int TopToTake(int m)
         {
+            // (the member itself and its owner, then the walk from the owner: the same for every member of that owner the
+            // set refers to, TakeInCache)
+            // (CS2WASM_TAKE_IN_STOP_BREAK=1, a test: no top taken in from above, test 215's two structures left)
+            if (TakeInStopBreak()) return 0;
+            bool mHeld = Mem.LoadI32(m) != -2;
+            if ((PL(m, 24) & Owned) == 0) return mHeld ? -m : m;
+            int w0 = PL(m, 20);
+            if (w0 == 0 || Mem.LoadI32(w0) >= -1) return mHeld ? -m : m;
+            if ((PL(w0, 24) & Dying) != 0) return 0;
+            int r;
+            if ((w0 == s_ttW || TakeInCacheBreak() && s_ttW != 0) && !NoTakeInCache()) { r = s_ttR; if (DropStats()) DsAdd(261, 1); }
+            else
+            {
+                r = TopToTakeFrom(w0);
+                if (!ThreadMode()) { s_ttW = w0; s_ttR = r; }
+            }
+            return mHeld && r > 0 ? -r : r;
+        }
+
+        // TakeInCache: the last owner TopToTake walked up from in this trial, and what it found. Nothing changes owner
+        // or count during a trial's first pass (without threads); what becomes Dying meanwhile is a top taken in, which
+        // TakeInAbove asks for itself, and what it owns. (Set to 0 by Dropped; with threads never set.)
+        // CS2WASM_NO_TAKE_IN_CACHE=1 (at compile time): the walk every time.
+        static int s_ttW, s_ttR;
+        [Intrinsic] static extern bool NoTakeInCache();
+        /// <summary>CS2WASM_TAKE_IN_CACHE_BREAK=1 (at compile time, a test): the last walk's result is taken for any owner.</summary>
+        [Intrinsic] static extern bool TakeInCacheBreak();
+
+        static int TopToTakeFrom(int m)
+        {
             int v = m, mark = m, step = 0, lap = 64, held = 0;
             if (DropStats()) DsAdd(258, 1);
             while (true)
             {
                 if (DropStats()) DsAdd(259, 1);
-                // (CS2WASM_TAKE_IN_STOP_BREAK=1, a test: stopped at the member whatever code does, test 280)
-                if (TakeInStopBreak()) return 0;
                 if (Mem.LoadI32(v) != -2) held = 1;
                 if ((PL(v, 24) & Owned) == 0) return held != 0 ? -v : v;
                 int w = PL(v, 20);
@@ -3865,6 +3893,7 @@ namespace Cs2Wasm.Runtime
             int ar = ArenaOf(x);
             if (Mem.LoadI64(ar + 12) != 0) { if (ArenaReport()) { s_repRefused++; s_repRefusedFlags |= Mem.LoadI32(ar + 12); } return false; }
             ClearMark(x);
+            s_ttW = 0;
             long vis0 = s_dsVis;
             s_trial = 1;
             int held, outside; bool inside, dead;
