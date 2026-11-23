@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- tools/netwasm-suite.mjs starts every .NET run of a case through this, so a crash shows no Windows dialog -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>launch</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+</Project>

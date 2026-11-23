@@ -119,6 +119,9 @@ IEEE 754 as WASM gives it. Determinism rules are in section 7.
 
 **Pointers are 32-bit (owner).** The module is wasm32: `IntPtr.Size` and `sizeof(nint)` are 4, as on 32-bit .NET.
 Where a test's output depends on the pointer size, the oracle is 32-bit .NET (x86).
+Fields of 8-byte types (`long`, `ulong`, `double`) are 8-byte aligned in classes and structs (owner), as in
+NativeAOT's WASM build and 32-bit ARM .NET, because WASM atomics need natural alignment; where a struct's size or
+field offsets are observable, the expected value is that layout's, not 32-bit x86's.
 
 ---
 
