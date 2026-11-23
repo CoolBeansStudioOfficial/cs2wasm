@@ -965,3 +965,29 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   world byte for byte the .NET-hosted compiler's (27,584 bytes), 14.4 to 15.3 s against 14.6 to 16.2 before on the
   loaded homelab (NativeAOT-LLVM's 6.1 to 6.3). Not covered yet, by its session's report: a span or ref returned up
   through two frames (one level of wrapper is); given to the session on the free path.
+- 2026-11-23, claude/field-loads-1 (merged with main 3dbef69; not merged into main; docs/AUDIT.md A3.5 "Field loads
+  by the field's identity"): a field of an object in a local read once before a loop that nothing in it can store,
+  an array's length likewise, a field read a second time with nothing between that can store it, and a callee
+  that reads fields of an object it is given inlined into loops (`CS2WASM_NO_FIELD_HOIST=1`; tests 230 to 234).
+  Things found and fixed on the way: a field of a field of a null was read through whatever address 0 holds
+  ("memory access out of bounds" from a loop that takes no turn), and a loop that takes no turn paid for what its
+  turns read (the tree scene's median 5% to 7% up on the homelab): what a loop reads only after its test is now
+  read behind a copy of the test; and the suite found test 207's reference to one field walked to the next
+  (Unsafe.Add): a field's address taken now takes every field of that object out. The churn scene on the desk, with and without in turn: 0.069 to 0.071 ms, 1.33x
+  to 1.35x NativeAOT-LLVM's, against 0.083 to 0.086, 1.56x to 1.60x (main: 1.58x): **not reached, two fifths of the
+  distance closed**; on the homelab before the second fix 0.089 to 0.093 against 0.100 to 0.103. Tree after the second fix, the two
+  builds in turn on the desk: 0.0480 to 0.0487 ms against 0.0471 to 0.0494, level (against NativeAOT-LLVM on the
+  loaded desk 1.68x to 1.80x and 1.60x to 1.70x; main: 1.63x; on the loaded homelab at the end 0.069 against 0.065, below: not explained); collections, strings, bigdrop and bench.mjs: nothing (the homelab's
+  geometric mean 1.006x without the pass). Hello world 27,657 bytes (27,642 without); the self-hosted compiler
+  0.56% larger, built in the same time, as fast (9.0 to 9.3 s against 9.1 to 10.3). Each condition that takes a
+  field out has a line of the tests that changes without it (tools/field-hoist-proof.sh), but `volatile` and
+  `machine`, which stay as guards. **Found by the way and fixed here, main's: collections that grow by
+  moving (claude/colstr-2) broke the self-hosted compiler on every program larger than hello world**
+  (Rt.MoveItems left an array whose type can be on a cycle an array of bytes, which is freed 32 bytes into the
+  block such an array has; with the pass and without it: tests 207, 220, 222, 230, 232 trapped, one run did not
+  end): such an array is copied now (`CS2WASM_ARRAY_MOVE_CYCLE=1`: the old move), test 240 shows it under the
+  .NET-hosted compiler, and the self-hosted compiler compiles 145, 207, 220, 222, 230 and 232 byte for byte as
+  the .NET-hosted one (homelab, 601c0e1). Checked on the homelab at 7393522: suite 226 of 227 checked (088's
+  timer line; alone it passes) and 227 of 227 as shipped; stress, 200 loaded runs a mode: 230 to 234, 240, 139
+  the same in every run, 127 differed in 4 of 400. The homelab at the last commit, with and without the pass in turn (five rounds, other sessions' jobs beside: the rounds spread by a third): churn's median 0.095 ms against 0.107; **tree 0.069 against 0.065, the pass's higher in four rounds of five, where the desk's two sets were level: not explained** (the scene's Build and Walk are the same code in both modules, 345 and 356 bytes, Tree(int) 18 bytes shorter with the pass; tree-frame.cs there: build 17.9 to 19.2 us against 17.5 to 18.0, walk 37.3 to 40.3 and once 43.8 against 38.2 to 40.4, the indexed walk 24.0 to 25.4 and once 29.0 against 25.9 to 27.7); collections 0.0076 against 0.0070 and strings 0.0085 against 0.0084 at their lowest, inside the rounds' spread; bench-ab's geometric mean 1.004x without the pass; churn-array's list 94.8 to 99.1 us (once 109.8) against 104.9 to 111.2. The self-hosted compiler there: built in 259 s with the pass and 249 s without, 32,298,942 bytes against 32,189,404 (0.34%), hello world in 9.4 to 9.5 s against 9.4 to 10.0, peak memory 344 MB both, and built either way it compiles 145, 207 and 220 (with the pass 230 too) byte for byte as the .NET-hosted one. Not done: a test
+  with a host that calls back; main's own checkout with the fix.
