@@ -669,6 +669,25 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     against 1.14 to 1.18). What the memory model leaves open: the order in memory, which only more memory buys
     without moving objects (pages used again only when empty: 76.3 for 80.3, and 1.6 times the particles' pages);
     the list setter's checks beside the counts (about 1); the read loop's 3 to 4.
+- **Tests that differ under load, the part that is on main (2026-11-23, claude/load-flakes-safe).** How such a
+  test is hunted: tools/stress-cycles.sh for rates; a test made of many rounds of the one that fails rarely
+  (tests/Load/219: 3 runs in 100 where test 131 gave 1 in 600); a build with CS2WASM_ARENA_REPORT=1 whose whole
+  output is kept for the runs that fail; tools/oracle-load.sh for what .NET itself prints when eight processes run
+  the test at once; and tools/selfhost-time.sh after any change of the runtime, because the suite's programs are
+  too small to show a check that walks a whole structure at every store (a8a50fc's did: the self-hosted compiler
+  did not end hello world in ten minutes, and nothing in the suite or the stress said so).
+  - Test 087's trap: an async iterator's promise was completed without a count of its own; the consumer, on
+    another thread, let it go while the completing thread was still inside its TrySetResult.
+  - Where the statics fall: with threads they start on a cache line, the runtime's first and the program's
+    after them, the locks' words and s_failedTops on lines of their own (Driver.StaticAddress). Test 139 at ten
+    times its length was 3.00 s or 3.43 to 3.47 s by the same code, by whether the test's Node.Live shared a
+    line with the allocator's words (CS2WASM_STATIC_PAD, CS2WASM_PRINT_STATICS).
+  - What tests asked that .NET does not promise (088's timer, 135's two timers, 127's and 187's count right
+    after Task.WhenAll): by .NET's sources; .NET's own output never differed in 400 loaded runs of each.
+  - Open, with their programs in tests/Load: a parent and its children left for good when a task dies on its
+    pool thread after the main thread let the tree go (219, 215b: closed on claude/load-flakes-1 by Rt.TurnHold,
+    the stale note taken off a held top and Rt.TakeInAbove, not merged: see docs/FINISH.md's row); List.Add from
+    four threads at once (219_no_lock).
 - **The rebuild, round 5, and test 139's trap (2026-11-23, branch claude/tree-rebuild-5, from main 77b2aad; the desk
   machine, shared with another session's timings; not merged when this was written).**
   - **Test 139's trap under load is the engine's view of a grown memory, not the cycle runtime's.** The trace was on

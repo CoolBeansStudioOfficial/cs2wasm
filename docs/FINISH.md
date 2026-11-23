@@ -33,7 +33,7 @@ Each requirement is done when its check passes. A check that does not exist yet 
 | 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 236 passed, 0 failed, 2 known gaps (244: a finalizer that grows a list of its own dying group; 247: a member that refers to itself through an array's element or a far field), both ways (main d430594, the homelab, 2026-11-23) | all pass, no `known-gap` |
 | 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (stream E's tests); reflection on compiler-made methods closed 2026-11-21 (tests 155, 156: names with Roslyn's ordinals, declaring classes, attributes, MoveNext); open: a capture-free lambda's `Delegate.Target` (`<>c` in .NET), the generated classes' own member lists, generic generated classes as constructed types; .NET's own library frames (not reproducible from source) | none |
 | 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20) | none in 200 loaded runs |
-| 2 | Test 127 under load (`tools/stress-cycles.sh`) | open: `async 5 / pending 1` in about 1% of loaded runs (main 6e60243: 22 of 2,400; main d4b331e: 4 of 400; main dca1f9c: 3 of 400, the homelab); the 2026-11-21 fix made it rarer, not gone. Test 187 as shipped differs under load at about 2.5% (19 of 800 on main bc06ea9, 20 of 800 on dca1f9c) | none |
+| 2 | Test 127 under load (`tools/stress-cycles.sh`) | open: `async 5 / pending 1` in about 1% of loaded runs (main 6e60243: 22 of 2,400; main d4b331e: 4 of 400; main dca1f9c: 3 of 400, the homelab); the 2026-11-21 fix made it rarer, not gone. Test 187 as shipped differs under load at about 2.5% (19 of 800 on main bc06ea9, 20 of 800 on dca1f9c) | none |. 2026-11-23 (claude/load-flakes-safe): tests 127 and 187 now wait, bounded, for the pool thread that completed the last async method before they count (what they asked right after Task.WhenAll came back .NET does not promise, by its sources; not shown by .NET's output in 400 loaded runs); the leak itself is open as before, about one loaded run of a hundred of 127, 131, 187. Its causes are found and closed on claude/load-flakes-1 (a stale note on a top that code still holds; the top an ownership that turns round leaves; two structures that refer into each other), but the upkeep of the notes there (a8a50fc) kept the self-hosted compiler from ending, and the form that does not (the numbers kept at the events) still leaves test 187's rounds in 3 to 8 loaded runs of 400: not merged
 | 2 | Test 139 under load, a trap | the cause found and guarded (main 80ae1ce): the engine lets a thread go on with the memory size it last saw after another thread grew the memory, and checks atomic accesses, copies and fills against it; Wasm/MemSync.cs refreshes it before those (test 197, with the engine's stack checks off: 60 of 60 trap without the pass, none with it; test 139 so run 7 of 1,000 without, none of 3,000 with). Open: one of those 3,000 ended with two nodes left (`16 3`), none such in 34,400 with stack checks; not followed | none |
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
@@ -1161,3 +1161,19 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   checks off and paid them down later (NoteDebt) was refused here as deferred work; its session is building the
   number kept right at the one event that changes it, and test 219 still leaks in 2 to 4 loaded runs of 300 to 400
   with that so far.
+- 2026-11-23, claude/load-flakes-safe (from main 00d78fe): of claude/load-flakes-1, what is sound and costs the
+  self-hosted compiler nothing. Async iterators' promise counted while it is completed (test 087's trap in
+  rt.retain: test 217 without it traps in 24 runs of 24, with it in none of 1,200; test 087 checked 2,400 of 2,400,
+  7 of 1,200 trapped on main); the out-of-memory exception not made under the heap's lock (test 217 hung in 3 to 5
+  runs of 480); with threads the statics laid out by cache lines (test 139 at ten times its length 2.7 to 2.8 s
+  against main's 3.1 to 3.3 on the desk, where it had been 3.0 or 3.45 s by how long the program's strings were);
+  test 072's server on a free port and each suite runner in a directory of its own. Tests: 088 waits for the
+  timer's first tick; 135's far task is 2 s off and the first to complete is checked (2,400 of 2,400 loaded
+  runs); 127 and 187 wait, bounded, before they count; 218 (test 139 in rounds). These four changes rest on
+  .NET's sources, not its output: .NET gave the usual output in 400 loaded runs of each test as it was
+  (tools/oracle-load.sh, tests/Load). On the homelab at 68f3eb5: suite 238 passed, 0 failed, 2 known gaps,
+  checked and as shipped; the self-hosted compiler (tools/selfhost-time.sh, new: its time on hello world with a
+  limit, since a change that makes it never end does not show in the suite) 12.7 and 14.1 s on hello world with
+  the homelab loaded, and byte for byte the .NET-hosted compiler's module on tests 145, 220, 193 and 088 (112 s).
+  Not on this branch, open: the leaks of tests 127, 131 and 187 under load (the row above); test 139's two nodes
+  left without the engine's stack checks, not seen again in 4,000 runs, cause not shown.
