@@ -1215,6 +1215,7 @@ sealed partial class FunctionCompiler
     bool EngineStatic(IFieldSymbol f) =>
         D.ThreadMode && f.IsStatic && !f.IsVolatile && D.Sharing is { } s && s.PriorEngineStatic(Driver.StaticKey(T.Canonical(Owner(f)), StorageField(f)));
 
+    static readonly bool s_noCoalescePlace = Environment.GetEnvironmentVariable("CS2WASM_NO_COALESCE_PLACE") == "1";
     /// <summary>Threads: the place an expression reads is one no other thread stores: a field of an object of such a
     /// type, an element of such an array, a thread's own static.</summary>
     bool UnsharedPlace(IOperation op)
@@ -1224,6 +1225,10 @@ sealed partial class FunctionCompiler
             case IFieldReferenceOperation { Field.IsStatic: true } sf: return IsThreadStatic(StorageField(sf.Field)) || EngineStatic(sf.Field);
             case IFieldReferenceOperation { Instance: { Type: not null } inst } when !TypeOf(inst).IsValueType: return UnsharedContainer(TypeOf(inst));
             case IArrayElementReferenceOperation { ArrayReference.Type: not null } ae: return UnsharedContainer(TypeOf(ae.ArrayReference));
+            // (`x ??= v`'s value is read back from x: as x is read; a getter that returns it borrowed (Driver.ReturnsField
+            // takes such a target for the field) counted it here, and the count was never given back: tests 185, 287.
+            // CS2WASM_NO_COALESCE_PLACE=1: as before, a deliberate break)
+            case ICoalesceAssignmentOperation { Target: var target } when !s_noCoalescePlace: return UnsharedPlace(target);
             default: return false;
         }
     }
