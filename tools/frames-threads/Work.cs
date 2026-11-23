@@ -167,6 +167,40 @@ static class Report
     public static long Now() => (long)(Stopwatch.GetTimestamp() * (1000000000.0 / Stopwatch.Frequency));
 }
 
+/// <summary>The churn's parts, each timed by itself (scene parts0 in the program without threads, parts1 on a worker of
+/// the program with threads): making 20,000 particles into a list, ten passes over the list (each element read,
+/// changed and stored back), letting them all go. Prints the lowest time of each part over the rounds, in ns.</summary>
+static class Parts
+{
+    public static void Run(string scene)
+    {
+        var words = "ore wood stone iron".Split(' ');
+        var list = new List<WParticle>();
+        long make = long.MaxValue, pass = long.MaxValue, drop = long.MaxValue, sum = 0;
+        for (int round = 0; round < 60; round++)
+        {
+            long t0 = Report.Now();
+            for (int i = 0; i < 20000; i++) list.Add(new WParticle { X = i, Life = 100, Tag = words[i & 3] });
+            long t1 = Report.Now();
+            for (int k = 0; k < 10; k++)
+            {
+                int w = 0;
+                for (int i = 0; i < list.Count; i++)
+                {
+                    var p = list[i];
+                    p.X += p.Vx; p.Y += 0.1f;
+                    if (--p.Life > 0) { list[w++] = p; sum += p.Tag.Length; }
+                }
+            }
+            long t2 = Report.Now();
+            list.RemoveRange(0, list.Count);
+            long t3 = Report.Now();
+            make = Math.Min(make, t1 - t0); pass = Math.Min(pass, (t2 - t1) / 10); drop = Math.Min(drop, t3 - t2);
+        }
+        Console.WriteLine("parts " + scene + " make " + make + " pass " + pass + " drop " + drop + " check " + sum);
+    }
+}
+
 /// <summary>The scenes on one thread, in a program with no thread in it.</summary>
 static class Single
 {

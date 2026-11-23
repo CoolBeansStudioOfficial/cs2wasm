@@ -20,6 +20,8 @@ static class Threaded
         t.Join();
     }
 
+    public static void OnWorker(Action work) { var t = new Thread(() => work()); t.Start(); t.Join(); }
+
     public static void Private(string scene, bool tree, int n)
     {
         var times = new long[n][];

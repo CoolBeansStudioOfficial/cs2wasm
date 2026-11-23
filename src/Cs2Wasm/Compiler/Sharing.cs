@@ -226,6 +226,31 @@ internal sealed partial class Sharing
     /// <summary>CS2WASM_SHARING_NONE=1 (to see the share check trap, a test of the test): no type is shared.</summary>
     static readonly bool s_none = Environment.GetEnvironmentVariable("CS2WASM_SHARING_NONE") == "1";
 
+    /// <summary>The array types another thread can reach only as an array with no element (EmptyArrayTag): such an
+    /// object is counted by several threads, and has no slot any of them could read or store.</summary>
+    HashSet<int>? _emptyOnly;
+    readonly Dictionary<string, bool> _maySlotsBeShared = [];
+
+    /// <summary>Whether a slot of an object another thread can reach (a field, an element) can be in an object in a
+    /// place of this static type: as MayBeShared, without the arrays of no element. Asked where a read or a store
+    /// of a slot is decided (a read that counts, a store's lock, a borrow); a count asks MayBeShared.</summary>
+    public bool MaySlotsBeShared(ITypeSymbol t)
+    {
+        if (_shared == null || _emptyOnly == null || _emptyOnly.Count == 0) return MayBeShared(t);
+        if (s_none) return false;
+        if (t.TypeKind == TypeKind.Error || !Types.IsRef(t)) return false;
+        var k = Types.Key(t);
+        if (_maySlotsBeShared.TryGetValue(k, out var r)) return r;
+        r = false;
+        bool Is(int id) => _shared.Contains(id) && !_emptyOnly.Contains(id) && IdIs(id, t);
+        var ix = Index();
+        foreach (var id in ix.Candidates(t)) if (Is(id)) { r = true; break; }
+        if (!r) foreach (var id in ix.Special) if (Is(id)) { r = true; break; }
+        _sharedUnindexed ??= _shared.Where(id => !_indexed.Contains(id)).ToList();
+        if (!r) foreach (var id in _sharedUnindexed) if (Is(id)) { r = true; break; }
+        return _maySlotsBeShared[k] = r;
+    }
+
     public bool MayBeShared(ITypeSymbol t)
     {
         if (s_none) return false;
@@ -274,6 +299,9 @@ internal sealed partial class Sharing
     /// <summary>CS2WASM_EXP_ALL_ENGINE_STATICS=1 (a test of the tests, unsound): no static is a root.</summary>
     static readonly bool s_allEngineStatics = Environment.GetEnvironmentVariable("CS2WASM_EXP_ALL_ENGINE_STATICS") == "1";
     public const string StaticPrior = "static ";
+    /// <summary>In the map the next compilation is given: whether a slot of an object another thread can reach can be
+    /// in an object in a place of the type (MaySlotsBeShared).</summary>
+    public const string SlotsPrior = "slots ";
     /// <summary>The tag (a Top source's Key) of a value Arenas.AddRefStores gave a slot: Site.ByAddress has where it
     /// comes from. CS2WASM_NO_BY_ADDRESS_SOURCES=1: any object of its type, as before.</summary>
     public const string ByAddressTag = "by address";
@@ -284,7 +312,12 @@ internal sealed partial class Sharing
     static readonly bool s_noEmptyArrays = Environment.GetEnvironmentVariable("CS2WASM_NO_EMPTY_ARRAYS") == "1";
     /// <summary>CS2WASM_EXP_EVERY_ARRAY_EMPTY=1 (a test of the tests, unsound): every array made is taken as one with
     /// no element.</summary>
-    internal static readonly bool s_expEveryArrayEmpty = Environment.GetEnvironmentVariable("CS2WASM_EXP_EVERY_ARRAY_EMPTY") == "1";
+    /// <summary>CS2WASM_EXP_NO_PTR=1 (a test of the tests, unsound): a store through a pointer leaves nothing in an array.</summary>
+    static readonly bool s_expNoPtr = Environment.GetEnvironmentVariable("CS2WASM_EXP_NO_PTR") == "1";
+    /// <summary>CS2WASM_EXP_DISPLAY_FIRST_ONLY=1 (a test of the tests, unsound): a captured local holds only what its
+    /// first write in the text stores.</summary>
+    internal static readonly bool s_expDisplayFirstOnly = Environment.GetEnvironmentVariable("CS2WASM_EXP_DISPLAY_FIRST_ONLY") == "1";
+    internal static readonly bool s_expEveryArrayEmpty =Environment.GetEnvironmentVariable("CS2WASM_EXP_EVERY_ARRAY_EMPTY") == "1";
     static readonly bool s_noByAddress =Environment.GetEnvironmentVariable("CS2WASM_NO_BY_ADDRESS_SOURCES") == "1";
     static readonly bool s_noNullSites = Environment.GetEnvironmentVariable("CS2WASM_NO_NULL_SITES") == "1";
 
@@ -294,6 +327,11 @@ internal sealed partial class Sharing
     {
         var r = SharedTypeSymbols().Select(Types.Key).ToHashSet();
         if (_staticRoots != null) foreach (var k in _staticRoots) r.Add(StaticPrior + k);
+        // (and the types whose objects' slots can be: every one but an array type reached only with no element)
+        if (_shared != null)
+            foreach (var id in _shared)
+                if (!D.DisplayById.ContainsKey(id) && !D.SyntheticById.ContainsKey(id) && id < D.TypeById.Count && !(_emptyOnly != null && _emptyOnly.Contains(id)))
+                    r.Add(SlotsPrior + Types.Key(D.TypeById[id]));
         return r;
     }
 
@@ -324,6 +362,7 @@ internal sealed partial class Sharing
                 var k = Types.Key(b);
                 if (r.ContainsKey(k)) break;
                 r[k] = MayBeShared(b);
+                r[SlotsPrior + k] = MaySlotsBeShared(b);
                 if (b is IArrayTypeSymbol) break;
             }
         }
@@ -346,7 +385,8 @@ internal sealed partial class Sharing
         if (container.TypeKind is TypeKind.Error or TypeKind.TypeParameter || !Types.IsRef(container)) return false;
         // (object and the interfaces any closure or state machine may be: their objects are taken as shared)
         if (Types.IsObject(container) || container.TypeKind == TypeKind.Interface) return false;
-        return prior.TryGetValue(Types.Key(D.Types.Canonical(container)), out var shared) && !shared;
+        // (a slot of such an object: an array type reached only as an array with no element has none, SlotsPrior)
+        return prior.TryGetValue(SlotsPrior + Types.Key(D.Types.Canonical(container)), out var shared) && !shared;
     }
 
     /// <summary>Whether an object of this type id (a closure's or state machine's) can be reached by another thread.</summary>
@@ -456,6 +496,7 @@ internal sealed partial class Sharing
         // (array types reached only as an array with no element: EmptyArrayTag)
         var emptyOnly = new HashSet<int>();
         var seenNodes = new HashSet<string>();
+        var ptrSeen = new HashSet<(Arenas.Site, string?)>();
         var seenTops = new HashSet<string>();
         // (filter: what the slot can hold whatever is stored through a wider type, an array's element type)
         var work = new Stack<(Src src, string why, ITypeSymbol? filter)>();
@@ -494,31 +535,29 @@ internal sealed partial class Sharing
         void SiteNode(Arenas.Site s, ITypeSymbol? declared, string why)
         {
             var saved = filter;
-            if (!Visit("site " + s.Key)) return;
             // (the values stores by address can leave here: by where those stores' values come from, Site.ByAddress)
             bool byAddress = !s_noByAddress && s.ByAddress.Count > 0;
+            // The values stored through a pointer (the runtime's array code): the types such a value can be
+            // (PtrIds), of which the slot takes its own. Done for every filter the slot is reached with, before the
+            // visit below, which past a few filters goes on with none: with none, every such type would be taken.
+            if (byAddress && !s_noPtrIds && ptrSeen.Add((s, filter != null ? Types.Key(filter) : null)) && !(filter != null && ptrSeen.Contains((s, null))))
+                foreach (var x in s.ByAddress)
+                {
+                    if (x.Kind != K.Node || !x.Key!.StartsWith("ptr ")) continue;
+                    var ids = PtrIds(x.Key, x.Type, uncertified, implsOf, arraySites);
+                    string w = s_debug ? why + " (stored through a pointer)" : "";
+                    if (filter == null) foreach (var id in ids) AddType(id, w);
+                    else
+                    {
+                        foreach (var id in TopIds(filter)) if (ids.Contains(id)) AddType(id, w);
+                        foreach (var id in ids) if (!_allIdSet!.Contains(id)) AddType(id, w);
+                    }
+                }
+            if (!Visit("site " + s.Key)) { filter = saved; return; }
             if (s.Sources.Count > 0) foreach (var x in s.Sources) { if (byAddress && x.Kind == K.Top && x.Key == ByAddressTag) continue; Push(x, why); }
             if (byAddress)
                 foreach (var x in s.ByAddress)
-                {
-                    if (x.Kind == K.Node && x.Key!.StartsWith("ptr ") && !s_noPtrIds)
-                    {
-                        // (the types such a store's value can be, of which the slot takes its own: with the filter
-                        // this slot was reached with, whatever the visit made of it)
-                        var ids = PtrIds(x.Key, x.Type, uncertified, implsOf, arraySites);
-                        var f0 = filter;
-                        filter = saved;
-                        string w = s_debug ? why + " (stored through a pointer)" : "";
-                        if (filter == null) foreach (var id in ids) AddType(id, w);
-                        else
-                        {
-                            foreach (var id in TopIds(filter)) if (ids.Contains(id)) AddType(id, w);
-                            foreach (var id in ids) if (!_allIdSet!.Contains(id)) AddType(id, w);
-                        }
-                        filter = f0;
-                    }
-                    else Push(x, why + " (by address)");
-                }
+                    if (!(x.Kind == K.Node && x.Key!.StartsWith("ptr ") && !s_noPtrIds)) Push(x, why + " (by address)");
             foreach (var id in s.TargetIds) Push(new Src(K.Display, Index: id), why);
             // (no source: every store compiled into the slot stored null or the default, each recorded with what it
             // stores. Only a slot with no store recorded at all, or one whose address is taken, is taken to hold
@@ -719,7 +758,9 @@ internal sealed partial class Sharing
                     }
             }
         }
+        emptyOnly.RemoveWhere(shared.Contains);
         foreach (var id in emptyOnly) shared.Add(id);
+        _emptyOnly = emptyOnly;
         _shared = shared;
         D.Mark($"    sharing: {shared.Count} types another thread can reach, {engineStatics} statics only the engine thread's code names, {steps} steps, {sw.ElapsedMilliseconds} ms");
         if (whyType != null)
@@ -744,6 +785,7 @@ internal sealed partial class Sharing
     HashSet<int> PtrIds(string start, ITypeSymbol? declared, HashSet<string> uncertified, Dictionary<string, List<string>> implsOf, List<Arenas.Site> arraySites)
     {
         if (_ptrIds.TryGetValue(start, out var known)) return known;
+        if (s_expNoPtr) return _ptrIds[start] = [];
         var r = new HashSet<int>();
         var seen = new HashSet<string>();
         var work = new Stack<Src>();
@@ -830,6 +872,7 @@ internal sealed partial class Sharing
                     }
             }
         }
+        if (s_debug) Console.Error.WriteLine($"stored through a pointer ({start}): {r.Count} types; went through {string.Join(", ", seen.Where(k => !k.StartsWith("site ") && !k.StartsWith("contents ")).Take(40))}");
         return _ptrIds[start] = r;
     }
 
@@ -1217,7 +1260,7 @@ sealed partial class FunctionCompiler
             }
             if (refd.Contains(l)) continue;
             var srcs = new List<Sharing.Src>();
-            foreach (var v in vals) FlowSrcsInto(v, srcs, 1);
+            foreach (var v in Sharing.s_expDisplayFirstOnly ? vals.Take(1) : vals) FlowSrcsInto(v, srcs, 1);
             if (_localOutSources != null && _localOutSources.TryGetValue(l, out var outs)) srcs.AddRange(outs);
             D.Arenas.DisplaySources[(d, slot.offset)] = srcs;
         }
