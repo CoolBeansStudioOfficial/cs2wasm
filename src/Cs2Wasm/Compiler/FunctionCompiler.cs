@@ -1409,6 +1409,17 @@ sealed partial class FunctionCompiler
             // The element comes straight from the list's array: one copy where the enumerator made two (into its
             // Current, then into the variable), and a reference borrows from the array as an array's element does
             // (section 4.1), unless something the loop runs stores elements or the list's array.
+            // Written with the size's test first (CS2WASM_NO_LIST_TEST_FIRST=1: as above):
+            //   for (i = 0; ; i++) { if (i >= list._size) { if (version != list._version) throw; break; } if (version != list._version) throw; .. }
+            // Both tests read and write nothing else, so which comes first cannot be told: a changed list throws
+            // whatever its size says, an unchanged one goes by its size. With the size's test first the loop
+            // starts with a test Wasm/FieldLoads.cs can copy before it, and the loads here carry their fields'
+            // tags as loads by name do: a loop that stores none of the list's fields (by its own code or its
+            // calls) reads the size, the version, the array, its length and the body's own fields once.
+            // And the path of a changed list ends in the enumerator's throw (MoveNextThrows), so its enumerator
+            // is made there, on the stack below the function's frame, counts nothing and is never released: the
+            // function needs no frame slot and no handler for it (CS2WASM_NO_LIST_THROW_PATH=1: a temporary of
+            // the statement, as before). A walk over a tree enters such a loop once a node.
             BeginTemps();
             var o = EmitValue(coll);
             int list = E.AddLocal(ValType.I32);
@@ -1425,12 +1436,47 @@ sealed partial class FunctionCompiler
             EndTemps();
             E.Get(list); NullCheck();
             int version = E.AddLocal(ValType.I32), i = E.AddLocal(ValType.I32), items = E.AddLocal(ValType.I32);
-            E.Get(list); E.Load(Op.I32Load, lVersion.Offset); E.Set(version);
+            bool testFirst = !s_noListTestFirst;
+            var throwsBy = s_noListThrowPath ? null : MoveNextThrows(lEnum, lMoveNext);
+            E.Get(list); E.Load(Op.I32Load, lVersion.Offset); if (testFirst) TagFieldLoad((IFieldSymbol)lVersion.Symbol, lVersion.Type); E.Set(version);
             E.I32(0); E.Set(i);
             var brk = E.Block();
+            var done = testFirst ? E.Block() : brk;
             var top = E.Loop();
-            E.Get(list); E.Load(Op.I32Load, lVersion.Offset); E.Get(version); E.Op(Op.I32Ne);
+            void Changed()
+            {
+            E.Get(list); E.Load(Op.I32Load, lVersion.Offset); if (testFirst) TagFieldLoad((IFieldSymbol)lVersion.Symbol, lVersion.Type); E.Get(version); E.Op(Op.I32Ne);
             E.If();
+            if (throwsBy != null)
+            {
+                // the list was changed: the enumerator's own MoveNext throws (its frames are the trace's), on an
+                // enumerator in the state this loop is in, made here: below the stack's pointer, which the catch
+                // that takes the exception puts back (RuntimeGen.RestoreStackAtCatches); it refers to the list
+                // without a count, as nothing releases it
+                BeginTemps();
+                var el = T.LayoutOf(lEnum);
+                int ea = E.AddLocal(ValType.I32), bytes = (T.StorageOf(lEnum).size + 15) / 16 * 16;
+                E.GGet(D.StackPointer); E.I32(bytes); E.Op(Op.I32Sub); E.Tee(ea); E.GSet(D.StackPointer);
+                E.Get(ea); E.I32(0); E.I32(bytes); E.Op(Op.MemoryFill);
+                foreach (var f in el.Fields)
+                {
+                    int src = f.Symbol.Name switch { "_list" => list, "_index" => i, "_version" => version, _ => -1 };
+                    if (src < 0) continue;
+                    E.Get(ea); E.Get(src);
+                    // (CS2WASM_LIST_FOREACH_BREAK=2, test 203's: the enumerator with the list's version as it is now)
+                    if (f.Symbol.Name == "_version" && s_listForEachBreak == 2) { E.Op(Op.Drop); E.Get(list); E.Load(Op.I32Load, lVersion.Offset); }
+                    E.Store(Op.I32Store, f.Offset);
+                }
+                CallWith(D.CanonicalMethod(lMoveNext), false, () => { E.Get(ea); }, () => { }, null, fe.Syntax);
+                // (a call that only throws: what it stores is what the throwing function stores, so a borrow across
+                // a call of the function this loop is in survives it; FieldBorrows.StoresOf)
+                if (E.Body[^1].Op == Op.Call && E.Body[^1].Ref is WasmFunction called && called.Name.Contains("MoveNext"))
+                { E.Emit(Op.Nop, 0, 0, new Driver.ThrowPath(throwsBy)); E.Body[^1] = E.Body[^1] with { Pos = -1 }; }
+                E.Op(Op.Drop);
+                EndTemps();
+                E.Op(Op.Unreachable);
+            }
+            else
             {
                 // the list was changed: the enumerator's own MoveNext throws (its frames are the trace's), on an
                 // enumerator in the state this loop is in
@@ -1456,11 +1502,14 @@ sealed partial class FunctionCompiler
                 EndTemps();
             }
             E.End();
-            E.Get(i); E.Get(list); E.Load(Op.I32Load, lSize.Offset); E.Op(Op.I32GeU); E.BrIf(brk);
+            }
+            if (!testFirst) Changed();
+            E.Get(i); E.Get(list); E.Load(Op.I32Load, lSize.Offset); if (testFirst) TagFieldLoad((IFieldSymbol)lSize.Symbol, lSize.Type); E.Op(Op.I32GeU); E.BrIf(done);
+            if (testFirst) Changed();
             // (the array as it is now, and the index within it: a list another thread changes may have a shorter one)
-            E.Get(list); E.Load(Op.I32Load, lItems.Offset); E.Set(items);
+            E.Get(list); E.Load(Op.I32Load, lItems.Offset); if (testFirst) TagFieldLoad((IFieldSymbol)lItems.Symbol, lItems.Type); E.Set(items);
             E.Get(items); NullCheck();
-            E.Get(i); E.Get(items); E.Load(Op.I32Load, 12); E.Op(Op.I32GeU);
+            E.Get(i); E.Get(items); if (testFirst) E.Emit(Op.I32Load, 12, 2, Loops.Length); else E.Load(Op.I32Load, 12); E.Op(Op.I32GeU);
             E.If(); E.Call(D.LibMethod("Cs2Wasm.Runtime.ThrowHelpers", "IndexOutOfRange", 0).Fn); E.Op(Op.Unreachable); E.End();
             var cont = E.Block();
             var c = PushLoop(fe, brk, cont);
@@ -1485,7 +1534,11 @@ sealed partial class FunctionCompiler
             E.End();
             E.Get(i); E.I32(1); E.Op(Op.I32Add); E.Set(i);
             E.Br(top);
-            E.End(); E.End();
+            E.End();
+            // (the list's end: the enumerator's last MoveNext looks at the version before it says so.
+            // CS2WASM_LIST_FOREACH_BREAK=1, test 203's: not asked)
+            if (testFirst) { E.End(); if (s_listForEachBreak != 1) Changed(); }
+            E.End();
             PopScope();
             return;
         }
@@ -1640,6 +1693,9 @@ sealed partial class FunctionCompiler
 
     /// <summary>Declares and assigns the foreach iteration variable from the value produced by <paramref name="produce"/>.</summary>
     static readonly bool s_listForEach = Environment.GetEnvironmentVariable("CS2WASM_NO_LIST_FOREACH") != "1";
+    static readonly bool s_noListTestFirst = Environment.GetEnvironmentVariable("CS2WASM_NO_LIST_TEST_FIRST") == "1";
+    static readonly bool s_noListThrowPath = Environment.GetEnvironmentVariable("CS2WASM_NO_LIST_THROW_PATH") == "1";
+    static readonly int s_listForEachBreak = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_LIST_FOREACH_BREAK"), out int lfb) ? lfb : 0;
 
     /// <summary>The parts of the library's List&lt;T&gt; a `foreach` over one reads (EmitForEach): its array, size and
     /// version fields, T, and its enumerator's type and MoveNext. Null for any other type.</summary>
