@@ -2,8 +2,10 @@
 // the scene as tools/frames/Frames.cs has it, and the same scene with every particle also held by a second list
 // that is cleared outside the timed loop (after it, every frame): the same births, the same moves, the same branch
 // taken for the same particles, but no particle's last reference is the slot written over. Then the scene with
-// particles whose string is made (it ends with its particle) instead of a literal. Median ns a frame of the loop
-// alone, and the mean of the clearing.
+// particles whose string is made (it ends with its particle) instead of a literal; and with every particle given the
+// same life, so that a frame's dead are the frame's oldest, side by side at the list's start (the processor predicts
+// the branch, and the path that lets an object go runs 400 times in a row instead of once in 48 turns). Median ns a
+// frame of the loop alone, and the mean of the clearing.
 //   cs2wasmc tools/churn-deaths.cs -o cd.wasm   then   node host/run.mjs cd.wasm
 using System;
 using System.Collections.Generic;
@@ -19,8 +21,8 @@ static class ChurnDeaths
     static readonly string[] s_words = "ore wood stone iron gold gem fish meat herb cloth rope nail plank brick glass coal".Split(' ');
     static List<Particle> s_particles = new();
     static List<Particle> s_hold = new();
-    static bool s_held, s_made;
-    static Particle Make() => new Particle { X = Next() % 640, Y = Next() % 480, Vx = (int)(Next() % 7) - 3, Vy = (int)(Next() % 7) - 3, Life = 20 + (int)(Next() % 60), Tag = s_made ? string.Concat(s_words[Next() & 15], "!") : s_words[Next() & 15] };
+    static bool s_held, s_made, s_sameLife;
+    static Particle Make() => new Particle { X = Next() % 640, Y = Next() % 480, Vx = (int)(Next() % 7) - 3, Vy = (int)(Next() % 7) - 3, Life = s_sameLife ? 50 + (int)(Next() % 60) * 0 : 20 + (int)(Next() % 60), Tag = s_made ? string.Concat(s_words[Next() & 15], "!") : s_words[Next() & 15] };
     static void Birth()
     {
         int born = 300 + (int)(Next() % 200);
@@ -77,6 +79,9 @@ static class ChurnDeaths
         Scene("the scene");
         s_held = true; Scene("the scene, its dead held until after the loop");
         s_held = false; s_made = true; Scene("the scene, each particle's string its own");
+        s_held = true; Scene("the same, its dead held until after the loop");
+        s_made = false; s_sameLife = true;
+        s_held = false; Scene("every life the same: the dead side by side");
         s_held = true; Scene("the same, its dead held until after the loop");
     }
 }

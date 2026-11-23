@@ -2,7 +2,11 @@
 // tools/churn-raw.cs (an array of 19,392 particles in order, every survivor moved 400 slots down) with the counted
 // store written by hand in its parts, the count read and written through a pointer at the object's first word. For
 // cs2wasm only: the count's place is its own (every particle is also held by s_master, so no count reaches zero and
-// the hand's counts are the program's). Median ns a frame.
+// the hand's counts are the program's). Then the shapes tried for the calls a count makes on its other path, which
+// the engine pays for on every turn while they are in the loop (Wasm/ColdExits.cs): a call there (the variant with
+// calls also has the compiler's own count of the particle across them: not the engine's cost alone), the calls after
+// the loop reached by leaving it, at the top of an outer loop, and after the loop reached from the outer loop's top.
+// Median ns a frame.
 //   cs2wasmc tools/churn-count.cs -o cc.wasm   then   node host/run.mjs cc.wasm
 using System;
 using System.Diagnostics;
@@ -284,44 +288,7 @@ static unsafe class ChurnCount
         s_w = w;
         return sum;
     }
-    // (the read loop with each float stored as its bits, the NaN's bits chosen by a select on integers: no branch)
-    static long LoopNoStoreBits(Particle[] a)
-    {
-        long sum = 0;
-        int w = 0;
-        nint[] raw = Unsafe.As<nint[]>(a);
-        for (int i = 0; i < a.Length; i++)
-        {
-            var p = a[i];
-            float x = p.X + p.Vx, vy = p.Vy, y = p.Y + vy, v2 = vy + 0.1f;
-            int* q = (int*)raw[i];
-            q[3] = x == x ? BitConverter.SingleToInt32Bits(x) : unchecked((int)0xFFC00000);
-            q[4] = y == y ? BitConverter.SingleToInt32Bits(y) : unchecked((int)0xFFC00000);
-            q[6] = v2 == v2 ? BitConverter.SingleToInt32Bits(v2) : unchecked((int)0xFFC00000);
-            if (p.Life > 0) { w++; sum += p.Tag.Length; }
-        }
-        s_w = w;
-        return sum;
-    }
-    // (and with no NaN test at all: the bits as they are)
-    static long LoopNoStoreRaw(Particle[] a)
-    {
-        long sum = 0;
-        int w = 0;
-        nint[] raw = Unsafe.As<nint[]>(a);
-        for (int i = 0; i < a.Length; i++)
-        {
-            var p = a[i];
-            float x = p.X + p.Vx, vy = p.Vy, y = p.Y + vy, v2 = vy + 0.1f;
-            int* q = (int*)raw[i];
-            q[3] = BitConverter.SingleToInt32Bits(x);
-            q[4] = BitConverter.SingleToInt32Bits(y);
-            q[6] = BitConverter.SingleToInt32Bits(v2);
-            if (p.Life > 0) { w++; sum += p.Tag.Length; }
-        }
-        s_w = w;
-        return sum;
-    }
+    // (the read loop with the three sums made before the first store)
     static long LoopNoStoreOnce(Particle[] a)
     {
         long sum = 0;
@@ -476,14 +443,14 @@ static unsafe class ChurnCount
         s_seed = 12345;
         for (int i = 0; i < N; i++) { s_master[i] = Make(); s_master[i].Life = i < 400 ? 0 : 50; }
         long sum = 0;
-        string[] names = { "no store", "counted store", "the reference written, nothing else", "the counts by hand, as compiled", "the counts without their tests", "the counts, the zero test alone", "one added only", "the old value read, one taken only", "the old value read and tested, no count", "no store, a pointer stepped, a count down", "the counts by hand, calls on the paths not taken", "the counts by hand, the calls outside the loop", "the same, the turn's values used after the call", "the calls at the top of an outer loop", "the calls after the loop, reached from the outer loop's top", "no store, the sums made first", "no store, the floats stored as bits chosen by a select", "no store, the floats stored as their bits, no NaN test" };
+        string[] names = { "no store", "counted store", "the reference written, nothing else", "the counts by hand, as compiled", "the counts without their tests", "the counts, the zero test alone", "one added only", "the old value read, one taken only", "the old value read and tested, no count", "no store, a pointer stepped, a count down", "the counts by hand, calls on the paths not taken", "the counts by hand, the calls outside the loop", "the same, the turn's values used after the call", "the calls at the top of an outer loop", "the calls after the loop, reached from the outer loop's top", "no store, the sums made first" };
         for (int kind = 0; kind < names.Length; kind++)
         {
             for (int r = 0; r < 3000; r++)
             {
                 Array.Copy(s_master, s_a, N);
                 long t0 = Stopwatch.GetTimestamp();
-                sum += kind switch { 0 => LoopNoStore(s_a), 1 => LoopCounted(s_a), 2 => LoopRawOnly(s_a), 3 => LoopByHand(s_a), 4 => LoopNoTests(s_a), 5 => LoopPlain(s_a), 6 => LoopAddOnly(s_a), 7 => LoopTakeOnly(s_a), 8 => LoopOldRead(s_a), 9 => LoopPointer(s_a), 10 => LoopByHandCalls(s_a), 11 => LoopExit(s_a), 12 => LoopExitLive(s_a), 13 => LoopPending(s_a), 14 => LoopPendingAfter(s_a), 15 => LoopNoStoreOnce(s_a), 16 => LoopNoStoreBits(s_a), _ => LoopNoStoreRaw(s_a) };
+                sum += kind switch { 0 => LoopNoStore(s_a), 1 => LoopCounted(s_a), 2 => LoopRawOnly(s_a), 3 => LoopByHand(s_a), 4 => LoopNoTests(s_a), 5 => LoopPlain(s_a), 6 => LoopAddOnly(s_a), 7 => LoopTakeOnly(s_a), 8 => LoopOldRead(s_a), 9 => LoopPointer(s_a), 10 => LoopByHandCalls(s_a), 11 => LoopExit(s_a), 12 => LoopExitLive(s_a), 13 => LoopPending(s_a), 14 => LoopPendingAfter(s_a), _ => LoopNoStoreOnce(s_a) };
                 long t1 = Stopwatch.GetTimestamp();
                 if (r >= 1000) s_t[s_n++] = t1 - t0;
                 nint[] raw = Unsafe.As<nint[]>(s_a), from = Unsafe.As<nint[]>(s_master);
