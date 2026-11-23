@@ -1625,7 +1625,7 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     and one debug line): 222/222 checked and 221/222 as shipped, the one test 088 at its timer line (line 7, the
     second answer False), which run alone there at 1fcd88b passed both ways. `tools/stress-cycles.sh` at 1fcd88b,
     200 loaded runs a mode: 139 the same in every run of both modes; 127 differed in 3 of 200 as shipped and in
-    none of 200 checked (main's rate; it starts threads, and nothing of the parts runs). Tests 200 (as the suite builds it, parts off), 192 and 193: the same in every run of both modes; 194 to 199 were still waiting for the homelab when this was written (FINISH.md's entry has what came after). The self-hosted
+    none of 200 checked (main's rate; it starts threads, and nothing of the parts runs). Tests 200 (as the suite builds it, parts off) and 192 to 199: the same in every run of both modes. The self-hosted
     compiler: **the first try did not build** (`error CW0101: Microsoft.CodeAnalysis.Operations.CommonConversion
     has no ToString in cs2wasm's library yet`, a debug line of the parts' proof that printed a conversion; taken
     out, 1fcd88b). At 1fcd88b (`tools/selfhost-switch.sh CS2WASM_EXCLUSIVE_PARTS=1`): as it is, built in 406 s,

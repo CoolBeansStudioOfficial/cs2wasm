@@ -991,7 +991,7 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   self-hosted compiler with parts on.** The tree scene stays where main has it: median 1.63x NativeAOT-LLVM's,
   p99.9 1.05x to 1.09x.
   On the homelab, merged with main: suite 222/222 checked and 221/222 as shipped (088's timer line, which passes
-  alone); stress, 200 loaded runs a mode: 139 the same in every run, 127 differed in 3 of 400; 200, 192 and 193 the same in every run (194 to 199 still waiting for the homelab when this was written); the self-hosted
+  alone); stress, 200 loaded runs a mode: 139 the same in every run, 127 differed in 3 of 400; 200 and 192 to 199 the same in every run; the self-hosted
   compiler did not build at first (a debug line of the proof used a ToString the library has not: taken out),
   then builds and writes hello world byte for byte as the .NET-hosted one (27,595 bytes, 9.0 to 9.2 s, 344 MB).
   **Built with exclusive parts on, the self-hosted compiler does not run** (exit code 1 after 7 s).
