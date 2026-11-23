@@ -46,7 +46,7 @@ async function worker() {
     mkdirSync(a, { recursive: true }); mkdirSync(b, { recursive: true });
     const ra = await run(f, join(a, 'p.wasm'), { CS2WASM_TIMES: '1' });
     const rb = await run(f, join(b, 'p.wasm'), { CS2WASM_ALL_CORE_LIBS: '1' });
-    const n = /what the program needs \((\d+) libraries\)/.exec(ra.err)?.[1] ?? '?';
+    const n = /what the program needs \((\d+) libraries/.exec(ra.err)?.[1] ?? '?';
     counts.set(n, (counts.get(n) ?? 0) + 1);
     // (the first run's phase lines are not part of what is compared)
     const errA = ra.err.split('\n').filter((l) => !/^\s+(library:|\d+ ms|of it binding|static initializers again:|memory layout:)/.test(l) && !/^cs2wasm: heap after/.test(l)).join('\n').replaceAll(join(a, 'p.wasm'), 'OUT');
