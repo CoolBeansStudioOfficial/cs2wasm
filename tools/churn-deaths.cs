@@ -6,7 +6,7 @@
 // same life, so that a frame's dead are the frame's oldest, side by side at the list's start (the processor predicts
 // the branch, and the path that lets an object go runs 400 times in a row instead of once in 48 turns). Median ns a
 // frame of the loop alone, and the mean of the clearing.
-//   cs2wasmc tools/churn-deaths.cs -o cd.wasm   then   node host/run.mjs cd.wasm
+//   il2wasm tools/churn-deaths.cs -o cd.wasm   then   node host/run.mjs cd.wasm
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

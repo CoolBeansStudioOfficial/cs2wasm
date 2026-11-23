@@ -8,4 +8,4 @@ Stream K round 5 diagnosis scripts (scratch tools, kept as a record; paths in ro
 - dups.mjs a.wasm: byte-identical bodies, and identical up to calls of identical functions.
 - fnlist.mjs a.wasm: sections and per-function body sizes (diff two modules).
 - lend.cs: exceptions thrown through 35 library paths that call back into user code; its output must be the same
-  with CS2WASM_SHARE=0 and the default (it exercises a lending shared body).
+  with IL2WASM_SHARE=0 and the default (it exercises a lending shared body).

@@ -19,7 +19,7 @@ let self = join(root, 'tests', 'out', 'selfsw', 'as-is.wasm');
 let refSelf = false;
 for (let i = 0; i < args.length; i++) if (args[i] === '--self') self = resolve(args[++i]); else if (args[i] === '--ref-self') refSelf = true;
 if (!existsSync(self)) { console.error(`selfsnap-stale: no compiler at ${self}`); process.exit(2); }
-const exe = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
+const exe = join(root, 'src', 'Il2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'il2wasm.exe' : 'il2wasm');
 const out = join(root, 'tests', 'out', 'selfsnap-stale');
 rmSync(out, { recursive: true, force: true });
 mkdirSync(join(out, 'src'), { recursive: true });
@@ -38,9 +38,9 @@ function net(refDir, tag) {
   // build of the compiler older than the checkout)
   const r = refSelf
     ? spawnSync('node', [join(root, 'host', 'run.mjs'), self, 'main', '--', selfPath(prog), ...(process.platform === 'win32' ? ['--pathmap', '/=/'] : []), '-o', selfPath(target)],
-      { env: { ...selfEnv(), CS2WASM_REFERENCE_DIR: selfPath(refDir), CS2WASM_CACHE: selfPath(cache), CS2WASM_PROCESSORS: '1' }, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 600000 })
+      { env: { ...selfEnv(), IL2WASM_REFERENCE_DIR: selfPath(refDir), IL2WASM_CACHE: selfPath(cache), IL2WASM_PROCESSORS: '1' }, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 600000 })
     : spawnSync(exe, [selfPath(prog), ...(process.platform === 'win32' ? ['--pathmap', '/=/'] : []), '-o', selfPath(target)],
-    { env: { ...process.env, CS2WASM_REFERENCE_DIR: refDir }, encoding: 'utf8', timeout: 600000 });
+    { env: { ...process.env, IL2WASM_REFERENCE_DIR: refDir }, encoding: 'utf8', timeout: 600000 });
   if (r.status !== 0) { console.log(`net ${tag}: FAILED ${r.stdout}${r.stderr}`); process.exit(1); }
   return readFileSync(target);
 }
@@ -48,7 +48,7 @@ function net(refDir, tag) {
 function step(what, { module = self, snap, refDir = referenceDir(), expect, ref, notRef }) {
   const target = join(out, `s${++n}`, 'w.wasm');
   mkdirSync(join(out, `s${n}`), { recursive: true });
-  const env = { ...selfEnv(), CS2WASM_REFERENCE_DIR: selfPath(refDir), CS2WASM_CACHE: selfPath(cache), CS2WASM_PROCESSORS: '1', CS2WASM_SNAPSHOT: snap, CS2WASM_SNAPSHOT_WHY: '1' };
+  const env = { ...selfEnv(), IL2WASM_REFERENCE_DIR: selfPath(refDir), IL2WASM_CACHE: selfPath(cache), IL2WASM_PROCESSORS: '1', IL2WASM_SNAPSHOT: snap, IL2WASM_SNAPSHOT_WHY: '1' };
   const t0 = performance.now();
   const r = spawnSync('node', [join(root, 'host', 'run.mjs'), module, 'main', '--', selfPath(prog), ...(process.platform === 'win32' ? ['--pathmap', '/=/'] : []), '-o', selfPath(target)],
     { env, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 600000 });
@@ -95,7 +95,7 @@ cpSync(refDir, refCopy, { recursive: true, preserveTimestamps: true });
 copyFileSync(keep, S); const S3 = S;
 const netCopy = net(refCopy, 'copy');
 console.log(`the .NET-hosted compiler with the copy: ${netCopy.equals(net1) ? 'the same module' : 'another module'}`);
-step('another reference directory (the same files): another environment, let go', { snap: S3, refDir: refCopy, expect: /^not used: another environment \(CS2WASM_REFERENCE_DIR\); written: /, ref: netCopy });
+step('another reference directory (the same files): another environment, let go', { snap: S3, refDir: refCopy, expect: /^not used: another environment \(IL2WASM_REFERENCE_DIR\); written: /, ref: netCopy });
 step('on its snapshot', { snap: S3, refDir: refCopy, expect: /^restored .*paths checked$/, ref: netCopy });
 const norm = (p) => p.replaceAll('\\', '/').toLowerCase();
 const inCopy = (p) => norm(p).startsWith(norm(refCopy) + '/');

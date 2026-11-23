@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- The NativeAOT side of tools/bench.mjs: the same programs cs2wasm compiles (WasmMain.cs is cs2wasm's entry). -->
+  <!-- The NativeAOT side of tools/bench.mjs: the same programs il2wasm compiles (WasmMain.cs is il2wasm's entry). -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net11.0</TargetFramework>

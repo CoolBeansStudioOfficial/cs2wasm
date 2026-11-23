@@ -1,5 +1,5 @@
 // The stack has room for ordinary recursion with large frames, and stackalloc of a size the program computes.
-// (Running out of it ends the instance, as it ends the process under .NET: tests/Cs2Wasm.Tests/ApiChecks.cs.)
+// (Running out of it ends the instance, as it ends the process under .NET: tests/Il2Wasm.Tests/ApiChecks.cs.)
 using System;
 using System.Runtime.InteropServices;
 

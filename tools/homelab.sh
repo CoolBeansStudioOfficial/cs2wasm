@@ -3,7 +3,7 @@
 # work (the suite, self-hosted builds, timings) does not compete with this machine's.
 # usage: bash tools/homelab.sh <branch> [command...]     (default command: node tools/suite.mjs)
 # The branch must be pushed to GitHub (git push origin <branch>). On the homelab each branch gets its own worktree
-# (C:/Users/Levi/hl/<branch>), is built (src/Cs2Wasm.Cli, Release), and the command runs there through the homelab's
+# (C:/Users/Levi/hl/<branch>), is built (src/Il2Wasm.Cli, Release), and the command runs there through the homelab's
 # own heavy lock (tests/out/heavy.sh: one slot per checkout, two at once). The output comes back on stdout.
 set -e
 BR=${1:?branch}; shift
@@ -20,7 +20,7 @@ if [ ! -d "\$W" ]; then mkdir -p /c/Users/Levi/hl; git worktree add -q --detach 
 cd "\$W"
 git checkout -q --detach "\$C"
 echo "[homelab] \$(git log --oneline -1 | cut -c1-80)"
-dotnet build src/Cs2Wasm.Cli -c Release -v q -nologo 2>&1 | grep -E " error |Elapsed" || true
+dotnet build src/Il2Wasm.Cli -c Release -v q -nologo 2>&1 | grep -E " error |Elapsed" || true
 bash /c/Users/Levi/Documents/GitHub/cs2wasm/tests/out/heavy.sh $CMD
 EOF
 )

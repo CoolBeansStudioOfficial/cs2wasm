@@ -3,7 +3,7 @@
 // SetValue is given. Here coins made on the main thread go from a Coin[] into an object[] a static holds
 // (Array.Copy from a derived element type), and gems go in by SetValue; workers then read them, and the main thread
 // counts the same objects meanwhile.
-// CS2WASM_EXP_NO_PTR=1 takes those stores to leave nothing: with CS2WASM_SHARE_CHECK=1 the first coin a worker
+// IL2WASM_EXP_NO_PTR=1 takes those stores to leave nothing: with IL2WASM_SHARE_CHECK=1 the first coin a worker
 // counts stops the program (tools/thread-escape-breaks.sh).
 using System;
 using System.Runtime.CompilerServices;

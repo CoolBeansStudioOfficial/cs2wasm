@@ -4,7 +4,7 @@
 // stack of structs that hold nodes (SyntaxNodeOrToken's shape), and by a visitor that keeps nodes in locals. Every
 // store of the walks is a store into an arena member's slot; every local a count of a member. Parts of the tree are let
 // go and made again. Best of five printed.
-//   cs2wasmc tools/arena-bench.cs -o ab.wasm   (CS2WASM_NO_THREADS=1, as NativeAOT-LLVM)
+//   il2wasm tools/arena-bench.cs -o ab.wasm   (IL2WASM_NO_THREADS=1, as NativeAOT-LLVM)
 //   node --liftoff-only host/run.mjs ab.wasm main
 using System;
 using System.Collections.Generic;

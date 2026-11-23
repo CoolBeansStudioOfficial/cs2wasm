@@ -114,7 +114,7 @@ for (;;) {
     if (Atomics.load(c, at) !== 2) continue;
     const args = Array.from(c.subarray(at + 2, at + 14));
     let r = 0;
-    try { r = handlers[c[at + 1]](...args) | 0; } catch (e) { process.stderr.write(`cs2wasm I/O: ${e && e.stack || e}
+    try { r = handlers[c[at + 1]](...args) | 0; } catch (e) { process.stderr.write(`il2wasm I/O: ${e && e.stack || e}
 `); }
     c[at + 15] = r;
     Atomics.store(c, at, 3);

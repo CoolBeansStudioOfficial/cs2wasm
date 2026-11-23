@@ -3,7 +3,7 @@
 // `e.Kids.Add(Tree(e, ..))` but counted for the length of the call; the same when a local or a static holds the
 // list. The list and the node then both wait for their owner as the first child joins (Rt.LinkWaiting), and the
 // node must end up above its list and its child, not below the child with the list on top (Rt.WaitingTop,
-// CS2WASM_NO_WAITING_TOP=1 for the pairs strictly in their order: every subtree stored over then stays until its
+// IL2WASM_NO_WAITING_TOP=1 for the pairs strictly in their order: every subtree stored over then stays until its
 // tree goes, `replaced` below 161 and more for 121). Counted against .NET while the trees live: subtrees stored
 // over, children taken out and moved, a node of a replaced part held meanwhile, nodes with finalizers that see
 // their parent and children as they go.

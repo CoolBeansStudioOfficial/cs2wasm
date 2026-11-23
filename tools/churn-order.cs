@@ -3,7 +3,7 @@
 // random within windows of 454 particles (a 16 KB page of them) and of 113 (4 KB); and in passes, as a page's freed
 // blocks are used again: each window visited P times, a P-th of its particles each time, in address order or at
 // random. Mean microseconds x1000 a run of the loop.
-//   cs2wasmc tools/churn-order.cs -o co.wasm   then   node host/run.mjs co.wasm
+//   il2wasm tools/churn-order.cs -o co.wasm   then   node host/run.mjs co.wasm
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

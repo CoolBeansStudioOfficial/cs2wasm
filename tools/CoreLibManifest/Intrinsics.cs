@@ -3,7 +3,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 // CoreLibManifest intrinsics <runtime-root> <upstream-dir>: the library's [Intrinsic] members whose C# body is not
-// what they do (it throws PlatformNotSupportedException, or calls itself: the JIT supplies the code). cs2wasm's
+// what they do (it throws PlatformNotSupportedException, or calls itself: the JIT supplies the code). il2wasm's
 // compiler has to implement each of these that a program reaches.
 static class Intrinsics
 {

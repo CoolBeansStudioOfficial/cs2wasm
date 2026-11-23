@@ -2,7 +2,7 @@
 // Roslyn's green nodes are one cycle group, shared through static caches. A cache of nodes that are all members of one
 // arena; each work item reads nodes from the cache (a member's first and last outside reference), makes new nodes
 // that refer to them (each joins the arena), and puts some into the cache (a store into a pinned array, its old value
-// a member). Run with CS2WASM_PROCESSORS=n; prints the checksum and the milliseconds.
+// a member). Run with IL2WASM_PROCESSORS=n; prints the checksum and the milliseconds.
 using System;
 using System.Diagnostics;
 using System.Linq;

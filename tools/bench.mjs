@@ -1,5 +1,5 @@
 // Speed, peak memory and size against NativeAOT (SPEC sections 1, 7.6, 10) on the same target: NativeAOT compiled to
-// WebAssembly (NativeAOT-LLVM, tools/bench-naot-wasm, linked by Emscripten) and cs2wasm's module, both run in Node (V8).
+// WebAssembly (NativeAOT-LLVM, tools/bench-naot-wasm, linked by Emscripten) and il2wasm's module, both run in Node (V8).
 // Builds tools/bench with both, runs both, and prints the comparison. Run it after every change that can move speed:
 //   node tools/bench.mjs [--runs N] [--rebuild-aot] [--json file]
 // NativeAOT's side needs the Emscripten SDK 3.1.56 (EMSDK, or C:/tools/emsdk).
@@ -41,9 +41,9 @@ const codeSize = (file) => {
   return n;
 };
 
-// cs2wasm
-const cli = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
-execFileSync('dotnet', ['build', join(root, 'src', 'Cs2Wasm.Cli'), '-c', 'Release', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
+// il2wasm
+const cli = join(root, 'src', 'Il2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'il2wasm.exe' : 'il2wasm');
+execFileSync('dotnet', ['build', join(root, 'src', 'Il2Wasm.Cli'), '-c', 'Release', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
 const wasm = join(out, 'bench.wasm');
 const t0 = Date.now();
 execFileSync(cli, [join(src, 'Programs.cs'), join(src, 'WasmMain.cs'), '-o', wasm], { stdio: ['ignore', 'ignore', 'inherit'] });
@@ -72,7 +72,7 @@ for (let i = 0; i < runs; i++) {
   best(aot, parse(a.stdout));
   const pk = /peak_bytes=(\d+)/.exec(a.stdout);
   if (pk) aotPeak = Math.max(aotPeak, +pk[1]);
-  const w = spawnSync(process.execPath, [join(root, 'host', 'run.mjs'), wasm, 'main'], { encoding: 'utf8', env: { ...process.env, CS2WASM_PRINT_MEMORY: '1' } });
+  const w = spawnSync(process.execPath, [join(root, 'host', 'run.mjs'), wasm, 'main'], { encoding: 'utf8', env: { ...process.env, IL2WASM_PRINT_MEMORY: '1' } });
   if (w.status !== 0) { console.error(w.stdout, w.stderr); throw new Error('the module failed to run'); }
   best(mod, parse(w.stdout));
   const pg = /memory: (\d+) pages/.exec(w.stderr);
@@ -81,7 +81,7 @@ for (let i = 0; i < runs; i++) {
 
 const ms = (us) => (us / 1000).toFixed(1).padStart(9);
 let logSum = 0, n = 0, bad = 0;
-console.log('benchmark     NativeAOT wasm ms  cs2wasm ms   ratio   cs2wasm first ms');
+console.log('benchmark     NativeAOT wasm ms  il2wasm ms   ratio   il2wasm first ms');
 for (const k of Object.keys(aot)) {
   const a = aot[k], w = mod[k];
   if (!w) { console.log(`${k.padEnd(14)} ${ms(a.best)}      (no result from the module)`); bad++; continue; }
@@ -93,10 +93,10 @@ for (const k of Object.keys(aot)) {
 }
 const geo = n ? Math.exp(logSum / n) : 0;
 const mb = (b) => (b / 1048576).toFixed(1) + ' MB';
-console.log(`\ntime, geometric mean: cs2wasm takes ${geo.toFixed(2)}x NativeAOT's (below 1 is faster)`);
-console.log(`peak memory (the module's linear memory): NativeAOT ${mb(aotPeak)}, cs2wasm ${mb(wasmPeak)} (16 MB at least)`);
+console.log(`\ntime, geometric mean: il2wasm takes ${geo.toFixed(2)}x NativeAOT's (below 1 is faster)`);
+console.log(`peak memory (the module's linear memory): NativeAOT ${mb(aotPeak)}, il2wasm ${mb(wasmPeak)} (16 MB at least)`);
 const kb = (b) => (b / 1024).toFixed(1) + ' KB';
-console.log(`size (module without custom sections): NativeAOT ${kb(codeSize(aotWasm))} + ${kb(statSync(aotJs).size)} of JavaScript, cs2wasm ${kb(codeSize(wasm))}; cs2wasm build ${buildMs} ms`);
+console.log(`size (module without custom sections): NativeAOT ${kb(codeSize(aotWasm))} + ${kb(statSync(aotJs).size)} of JavaScript, il2wasm ${kb(codeSize(wasm))}; il2wasm build ${buildMs} ms`);
 const json = opt('--json', null);
-if (json) writeFileSync(json, JSON.stringify({ aot, cs2wasm: mod, geomean: geo, aotPeak, wasmPeak, aotSize: codeSize(aotWasm), aotJsSize: statSync(aotJs).size, wasmSize: codeSize(wasm), buildMs }, null, 1));
+if (json) writeFileSync(json, JSON.stringify({ aot, il2wasm: mod, geomean: geo, aotPeak, wasmPeak, aotSize: codeSize(aotWasm), aotJsSize: statSync(aotJs).size, wasmSize: codeSize(wasm), buildMs }, null, 1));
 process.exit(bad ? 1 : 0);

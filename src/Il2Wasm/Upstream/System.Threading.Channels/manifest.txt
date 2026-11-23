@@ -1,0 +1,55 @@
+# System.Threading.Channels for il2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.
+# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: il2wasm supplies its own)
+# | replaced <path> (an upstream file il2wasm replaces with its own)
+# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for il2wasm's features)
+#   (a value =>Type.Method: the body calls that boundary method) | edit<TAB><path><TAB><text><TAB><replacement> (an exact change to an upstream file)
+define NET
+define NETCOREAPP
+define NET11_0
+define RELEASE
+define NET5_0_OR_GREATER
+define NET6_0_OR_GREATER
+define NET7_0_OR_GREATER
+define NET8_0_OR_GREATER
+define NET9_0_OR_GREATER
+define NET10_0_OR_GREATER
+define NET11_0_OR_GREATER
+define NETCOREAPP1_0_OR_GREATER
+define NETCOREAPP1_1_OR_GREATER
+define NETCOREAPP2_0_OR_GREATER
+define NETCOREAPP2_1_OR_GREATER
+define NETCOREAPP2_2_OR_GREATER
+define NETCOREAPP3_0_OR_GREATER
+define NETCOREAPP3_1_OR_GREATER
+reference System.Collections
+reference System.Collections.Concurrent
+reference System.Memory
+reference System.Threading
+file src/libraries/System.Threading.Channels/src/System/VoidResult.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/AsyncOperation.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/BoundedChannel.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/BoundedChannelFullMode.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/Channel.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/ChannelClosedException.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/ChannelOptions.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/ChannelReader.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/ChannelUtilities.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/ChannelWriter.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/Channel_1.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/Channel_2.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/IDebugEnumerator.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/RendezvousChannel.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/SingleConsumerUnboundedChannel.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/UnboundedChannel.cs
+file src/libraries/Common/src/Internal/Padding.cs
+file src/libraries/Common/src/System/Collections/Concurrent/IProducerConsumerQueue.cs
+file src/libraries/Common/src/System/Collections/Concurrent/MultiProducerMultiConsumerQueue.cs
+file src/libraries/Common/src/System/Collections/Concurrent/SingleProducerSingleConsumerQueue.cs
+file src/libraries/Common/src/System/Collections/Generic/Deque.cs
+file src/libraries/Common/src/System/Obsoletions.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/AsyncOperation.netcoreapp.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/Channel.netcoreapp.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/ChannelOptions.netcoreapp.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/ChannelUtilities.netcoreapp.cs
+file src/libraries/System.Threading.Channels/src/System/Threading/Channels/UnboundedPriorityChannel.cs
+file src/libraries/Common/src/System/SR.cs

@@ -1,7 +1,7 @@
 // Threads (section 4.5): what a thread's lambda captures is handed to that thread. A captured local holds what the
 // writes of it in the declaring body store, each of them: here a local of type object and one of a base class, both
 // assigned twice (the second time inside a lambda), read by workers while the main thread counts the same objects.
-// CS2WASM_EXP_DISPLAY_FIRST_ONLY=1 takes only the first write of each: with CS2WASM_SHARE_CHECK=1 the object the
+// IL2WASM_EXP_DISPLAY_FIRST_ONLY=1 takes only the first write of each: with IL2WASM_SHARE_CHECK=1 the object the
 // second write stored stops the program when a worker counts it (tools/thread-escape-breaks.sh).
 using System;
 using System.Runtime.InteropServices;

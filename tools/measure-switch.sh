@@ -4,12 +4,12 @@
 # own (tools/ab-switch.sh), the self-hosted compiler built both ways and timed (tools/selfhost-switch.sh: build time,
 # run time, memory, the two outputs), and the self-hosted compiler as it is against the .NET-hosted one, byte for
 # byte (tools/selfdet.mjs).
-#   bash tools/measure-switch.sh CS2WASM_NO_FIELD_HOIST=1 [X=1,Y=1 ... : more builds for the frames and the benchmarks] [program.cs ...]
-#   on the homelab: bash tools/homelab.sh <branch> bash tools/measure-switch.sh CS2WASM_NO_FIELD_HOIST=1 tools/churn-array.cs
+#   bash tools/measure-switch.sh IL2WASM_NO_FIELD_HOIST=1 [X=1,Y=1 ... : more builds for the frames and the benchmarks] [program.cs ...]
+#   on the homelab: bash tools/homelab.sh <branch> bash tools/measure-switch.sh IL2WASM_NO_FIELD_HOIST=1 tools/churn-array.cs
 #   SELF=0: without the self-hosted compiler's part (a quarter of an hour less). FRAMES=0: without the frames and the
 #   benchmarks. ROUNDS=5. SELFDET="<test> ...": the tests the self-hosted compiler compiles besides hello world.
 cd "$(dirname "$0")/.."
-S=${1:?the switch, e.g. CS2WASM_NO_X=1}; shift
+S=${1:?the switch, e.g. IL2WASM_NO_X=1}; shift
 R=${ROUNDS:-5}
 extra=(); programs=()
 i=0
@@ -21,9 +21,9 @@ for x in "$@"; do
 done
 if [ "${FRAMES:-1}" = 1 ]; then
 echo "== frames (as it is; switched: $S; ${extra[*]})"
-node tools/frames-ab.mjs --rounds $R --js-young 32 as-is= "switched=$S" "${extra[@]}" 2>&1 | grep -v "CW0202\|^cs2wasm:"
+node tools/frames-ab.mjs --rounds $R --js-young 32 as-is= "switched=$S" "${extra[@]}" 2>&1 | grep -v "CW0202\|^il2wasm:"
 echo "== benchmarks"
-node tools/bench-ab.mjs --rounds $R as-is= "switched=$S" "${extra[@]}" 2>&1 | grep -v "CW0202\|^cs2wasm:"
+node tools/bench-ab.mjs --rounds $R as-is= "switched=$S" "${extra[@]}" 2>&1 | grep -v "CW0202\|^il2wasm:"
 fi
 for p in "${programs[@]}"; do
   echo "== $p"

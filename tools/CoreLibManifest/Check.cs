@@ -6,7 +6,7 @@ using Microsoft.CodeAnalysis.CSharp;
 // and summarizes the errors (what the runtime layer still has to provide). CHECK_ALL=1 prints every error.
 static class Check
 {
-    /// <summary>A library's compilation: the manifest's files, then cs2wasm's own (everything under
+    /// <summary>A library's compilation: the manifest's files, then il2wasm's own (everything under
     /// upstream-dir/Library), with the libraries before it as references (CoreLib is the corlib).</summary>
     public static CSharpCompilation Compile(string root, string upstream, string lib, IReadOnlyDictionary<string, CSharpCompilation> built, string? exclude = null, string? excludeAlso = null)
     {

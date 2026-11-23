@@ -1,5 +1,5 @@
 // Game-like frame loops for tools/frames.mjs: each scene runs warm-up frames, then measured frames, timing every frame
-// with Stopwatch and printing the times (ns) and a checksum. The same source is compiled by cs2wasm and by NativeAOT-LLVM
+// with Stopwatch and printing the times (ns) and a checksum. The same source is compiled by il2wasm and by NativeAOT-LLVM
 // for WebAssembly; both run in Node (V8). What a frame does is fixed by a seeded generator, so both sides do the same work.
 //   churn       a particle system: a few hundred objects (with a string each) born and dying every frame
 //   collections a list and a dictionary that grow over 300 frames and are cleared, a queue that fills and drains

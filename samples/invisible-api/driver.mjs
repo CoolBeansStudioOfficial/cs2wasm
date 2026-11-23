@@ -1,4 +1,4 @@
-// Runs the Invisible API sample (the game compiled by cs2wasm with the plugin) as a server would: plays a scripted
+// Runs the Invisible API sample (the game compiled by il2wasm with the plugin) as a server would: plays a scripted
 // input sequence through the game's exports and asks the plugin's generated server code along the way.
 //   node samples/invisible-api/driver.mjs arena.wasm script.txt
 // Script lines (# starts a comment):
@@ -18,7 +18,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const { cs2wasmImports, threadImports } = await import('file://' + join(root, 'host', 'engine.mjs').replace(/\\/g, '/'));
+const { il2wasmImports, threadImports } = await import('file://' + join(root, 'host', 'engine.mjs').replace(/\\/g, '/'));
 
 const [file, scriptFile] = process.argv.slice(2);
 const bytes = readFileSync(file);
@@ -52,7 +52,7 @@ const out = {
   write: (s) => { text += s; },
   error: (type, message, stack) => { text += `Unhandled exception. ${type}: ${message}\n`; process.exitCode = 3; },
 };
-const imports = { env: { memory }, cs2wasm: { ...cs2wasmImports(module, () => memory, out), ...threadImports(module, memory, out, () => {}) } };
+const imports = { env: { memory }, il2wasm: { ...il2wasmImports(module, () => memory, out), ...threadImports(module, memory, out, () => {}) } };
 for (const imp of WebAssembly.Module.imports(module)) {
   if (imp.kind !== 'function') continue;
   imports[imp.module] ??= {};

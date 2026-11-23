@@ -2,7 +2,7 @@
 // instantiations, runtime helpers, destroy and arena functions, dispatch stubs, reflection, initializers, copies);
 // and its data segment (expanded when packed) split into string literals, manifest resources and the rest (type
 // tables, reflection records, blobs). For the size of large programs (the self-hosted compiler).
-// The module must carry a name section for every function: build it with CS2WASM_NAMES=1.
+// The module must carry a name section for every function: build it with IL2WASM_NAMES=1.
 // usage: node tools/size-report.mjs module.wasm [--rsp <the build's .rsp, to find its resources>] [--top N]
 //        [--group <prefix>] (types under one namespace prefix, by type) [--packed] (the data is packed: for a module
 //        without names, where rt.unpack_data cannot be seen)
@@ -51,7 +51,7 @@ const MB = (n) => (n / 1048576).toFixed(2).padStart(7) + ' MB';
 const pct = (n, t) => (100 * n / t).toFixed(1).padStart(5) + '%';
 console.log(`${file}: ${MB(b.length)}`);
 for (const [l, s] of sections) if (s > 1024) console.log(`  ${MB(s)} ${pct(s, b.length)}  ${l}`);
-if (names.size < 1000) console.log('(few function names: build with CS2WASM_NAMES=1 for the code breakdown)');
+if (names.size < 1000) console.log('(few function names: build with IL2WASM_NAMES=1 for the code breakdown)');
 
 // ---- code ----
 const fns = [];
@@ -64,7 +64,7 @@ const kindOf = (n) =>
   : /^arena\.|^rt\.arena/.test(n) ? 'arena (cycle) machinery'
   : /^rt\.isinst|^rt\.cast|^rt\.type|^rt\.meta|^rt\.reflect|^rt\.manifest|^rt\.assembl|^reflect|^invoke /.test(n) ? 'type tests, reflection'
   : n.startsWith('static init') ? 'static initializers'
-  : n.startsWith('rt.') || n.startsWith('Cs2Wasm.Runtime.') ? 'runtime helpers'
+  : n.startsWith('rt.') || n.startsWith('Il2Wasm.Runtime.') ? 'runtime helpers'
   : n.startsWith('thunk ') || n.startsWith('frameobj.') || n.startsWith('export ') ? 'thunks'
   : /\[own \d+\]/.test(n) || / \[this by value\]$/.test(n) || /\[\d+:[^\]]*\]$/.test(n) ? 'specialized copies'
   : n.startsWith('MoveNext of ') ? 'iterators, async state machines'

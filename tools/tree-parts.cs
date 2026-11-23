@@ -3,7 +3,7 @@
 // of 19,531 new entities, and the store into the static that lets the old tree go (its drop, of the old tree and of
 // whatever let-go part stayed with its group). Prints the lowest and the median of the 22 rebuilds after the first,
 // the median and p99 of the other frames, and how many entities the last old tree had.
-//   cs2wasmc tools/tree-parts.cs -o tp.wasm   then   node host/run.mjs tp.wasm
+//   il2wasm tools/tree-parts.cs -o tp.wasm   then   node host/run.mjs tp.wasm
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

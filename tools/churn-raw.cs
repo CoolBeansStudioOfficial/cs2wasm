@@ -5,7 +5,7 @@
 // written without a count, the slot it came from set to null, and what the destination held let go only when it is
 // not null (a dead particle; here counted, not freed). The third is written with the array seen as nint[]: it is a
 // measurement of the instructions, not something a program should do (the counts are put right outside the timing).
-// Median ns a frame.   cs2wasmc tools/churn-raw.cs -o cr.wasm   then   node host/run.mjs cr.wasm
+// Median ns a frame.   il2wasm tools/churn-raw.cs -o cr.wasm   then   node host/run.mjs cr.wasm
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;

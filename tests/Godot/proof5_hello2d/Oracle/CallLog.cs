@@ -24,8 +24,8 @@ internal static unsafe class CallLog
     [ModuleInitializer]
     internal static void Install()
     {
-        var path = Environment.GetEnvironmentVariable("CS2WASM_CALL_LOG");
-        var api = Environment.GetEnvironmentVariable("CS2WASM_GODOT_API");
+        var path = Environment.GetEnvironmentVariable("IL2WASM_CALL_LOG");
+        var api = Environment.GetEnvironmentVariable("IL2WASM_GODOT_API");
         if (path == null || api == null) return;
         s_out = new StreamWriter(path) { AutoFlush = true };
         var lookups = new List<(string cls, string name, ulong hash)>();

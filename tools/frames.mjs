@@ -1,13 +1,13 @@
 // Frame-time spikes against NativeAOT (FINISH.md requirement 4, "no frame-time spikes"): game-like frame loops
-// (tools/frames/Frames.cs) compiled by cs2wasm and by NativeAOT-LLVM for WebAssembly (tools/frames-naot-wasm), each
+// (tools/frames/Frames.cs) compiled by il2wasm and by NativeAOT-LLVM for WebAssembly (tools/frames-naot-wasm), each
 // run in its own Node (V8) process, default tiers: 1,000 warm-up frames (the engine's optimizing tier has the code
 // after them), then 6,000 frames each timed with Stopwatch inside the module. Per scene: median, p99, p99.9 and worst
 // frame, and peak memory (the module's linear memory at exit; it never shrinks). Each statistic is the lowest over the
 // runs (a spike the program makes comes back every run; a pause of the machine does not).
 //   node tools/frames.mjs [--runs N] [--rebuild-aot] [--no-build] [--no-aot] [--worst N] [--json file] [--js-young MB] [scene...]
-// --no-aot: cs2wasm's side alone (a machine without the Emscripten SDK: two builds of this side against each other,
+// --no-aot: il2wasm's side alone (a machine without the Emscripten SDK: two builds of this side against each other,
 // by a compiler switch in the environment); nothing is compared, exit 0.
-// --js-young MB: both sides' Node processes with a young generation of that size (V8's semi-space). cs2wasm's host
+// --js-young MB: both sides' Node processes with a young generation of that size (V8's semi-space). il2wasm's host
 // returns the clock as a BigInt (monotonic_ns is an i64), two a frame for the Stopwatch here: one scavenge of Node's
 // own heap in a run, 0.3 to 0.9 ms, at the same frame of every run of a module (strings 2995, collections 3175, churn
 // 3270), inside the timed part of the frame or not by how many allocations came before it (the module's size, the
@@ -48,8 +48,8 @@ if (!noAot && (args.includes('--rebuild-aot') || !existsSync(aotJs) || statSync(
   if (nd) env.EMSDK_NODE = join(nd, process.platform === 'win32' ? 'node.exe' : 'bin/node');
   execFileSync('dotnet', ['publish', join(root, 'tools', 'frames-naot-wasm', 'frames-naot-wasm.csproj'), '-c', 'Release', '-o', aotDir, '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'], env });
 }
-const cli = join(root, 'src', 'Cs2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc');
-if (!args.includes('--no-build')) execFileSync('dotnet', ['build', join(root, 'src', 'Cs2Wasm.Cli'), '-c', 'Release', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
+const cli = join(root, 'src', 'Il2Wasm.Cli', 'bin', 'Release', 'net11.0', process.platform === 'win32' ? 'il2wasm.exe' : 'il2wasm');
+if (!args.includes('--no-build')) execFileSync('dotnet', ['build', join(root, 'src', 'Il2Wasm.Cli'), '-c', 'Release', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
 const wasm = join(out, 'frames.wasm');
 execFileSync(cli, [join(src, 'Frames.cs'), join(src, 'WasmMain.cs'), '-o', wasm], { stdio: ['ignore', 'ignore', 'inherit'] });
 
@@ -75,33 +75,33 @@ for (const scene of scenes) {
       sa.peak = +(/peak_bytes=(\d+)/.exec(a.stdout)?.[1] ?? 0);
       aot = low(aot, sa);
     }
-    const w = spawnSync(process.execPath, [...nodeFlags, join(root, 'host', 'run.mjs'), wasm, scene], { encoding: 'utf8', env: { ...process.env, CS2WASM_PRINT_MEMORY: '1' }, maxBuffer: 1 << 26 });
+    const w = spawnSync(process.execPath, [...nodeFlags, join(root, 'host', 'run.mjs'), wasm, scene], { encoding: 'utf8', env: { ...process.env, IL2WASM_PRINT_MEMORY: '1' }, maxBuffer: 1 << 26 });
     const sw = w.status === 0 && stats(w.stdout, scene);
-    if (!sw) { console.error(w.stdout.slice(-2000), w.stderr); throw new Error(`cs2wasm's module failed on ${scene}`); }
+    if (!sw) { console.error(w.stdout.slice(-2000), w.stderr); throw new Error(`il2wasm's module failed on ${scene}`); }
     sw.peak = +(/memory: (\d+) pages/.exec(w.stderr)?.[1] ?? 0) * 65536;
     mod = low(mod, sw);
   }
-  res[scene] = { aot, cs2wasm: mod };
+  res[scene] = { aot, il2wasm: mod };
 }
 
 const ms = (ns) => (ns / 1e6).toFixed(3).padStart(8);
 const mb = (b) => (b / 1048576).toFixed(1).padStart(6);
 let bad = 0;
 console.log('scene        side        median ms   p99 ms  p99.9 ms  worst ms   peak MB');
-for (const [scene, { aot, cs2wasm }] of Object.entries(res)) {
-  if (noAot) { console.log(`${scene.padEnd(12)} ${'cs2wasm'.padEnd(10)} ${ms(cs2wasm.median)} ${ms(cs2wasm.p99)} ${ms(cs2wasm.p999)} ${ms(cs2wasm.worst)}  ${mb(cs2wasm.peak)}`); continue; }
-  const over = cs2wasm.worst > aot.worst || cs2wasm.p999 > aot.p999;
-  const differs = aot.check !== cs2wasm.check;
+for (const [scene, { aot, il2wasm }] of Object.entries(res)) {
+  if (noAot) { console.log(`${scene.padEnd(12)} ${'il2wasm'.padEnd(10)} ${ms(il2wasm.median)} ${ms(il2wasm.p99)} ${ms(il2wasm.p999)} ${ms(il2wasm.worst)}  ${mb(il2wasm.peak)}`); continue; }
+  const over = il2wasm.worst > aot.worst || il2wasm.p999 > aot.p999;
+  const differs = aot.check !== il2wasm.check;
   if (over || differs) bad++;
-  for (const [side, s] of [['NativeAOT', aot], ['cs2wasm', cs2wasm]])
+  for (const [side, s] of [['NativeAOT', aot], ['il2wasm', il2wasm]])
     console.log(`${(side === 'NativeAOT' ? scene : '').padEnd(12)} ${side.padEnd(10)} ${ms(s.median)} ${ms(s.p99)} ${ms(s.p999)} ${ms(s.worst)}  ${mb(s.peak)}`);
-  console.log(`${''.padEnd(12)} ${'ratio'.padEnd(10)} ${(cs2wasm.median / aot.median).toFixed(2).padStart(7)}x ${(cs2wasm.p99 / aot.p99).toFixed(2).padStart(7)}x ${(cs2wasm.p999 / aot.p999).toFixed(2).padStart(7)}x ${(cs2wasm.worst / aot.worst).toFixed(2).padStart(7)}x  ${(cs2wasm.peak / aot.peak).toFixed(2).padStart(5)}x${over ? '   SPIKES ABOVE NATIVEAOT' : ''}${differs ? `   CHECKSUM DIFFERS: ${aot.check} vs ${cs2wasm.check}` : ''}`);
+  console.log(`${''.padEnd(12)} ${'ratio'.padEnd(10)} ${(il2wasm.median / aot.median).toFixed(2).padStart(7)}x ${(il2wasm.p99 / aot.p99).toFixed(2).padStart(7)}x ${(il2wasm.p999 / aot.p999).toFixed(2).padStart(7)}x ${(il2wasm.worst / aot.worst).toFixed(2).padStart(7)}x  ${(il2wasm.peak / aot.peak).toFixed(2).padStart(5)}x${over ? '   SPIKES ABOVE NATIVEAOT' : ''}${differs ? `   CHECKSUM DIFFERS: ${aot.check} vs ${il2wasm.check}` : ''}`);
 }
 // (the mean frame, with the collector's pauses and the rebuilds in it: what a whole run takes)
 if (!noAot) {
   let g = 1, n = 0;
-  console.log('mean frame ms ' + Object.entries(res).map(([scene, { aot, cs2wasm }]) => { g *= cs2wasm.mean / aot.mean; n++; return `${scene} ${(cs2wasm.mean / 1e6).toFixed(4)} vs ${(aot.mean / 1e6).toFixed(4)} (${(cs2wasm.mean / aot.mean).toFixed(2)}x)`; }).join(', '));
-  console.log(`mean frame, geometric mean over the scenes: cs2wasm takes ${Math.pow(g, 1 / n).toFixed(2)}x NativeAOT's; medians: ${Math.pow(Object.values(res).reduce((x, { aot, cs2wasm }) => x * cs2wasm.median / aot.median, 1), 1 / n).toFixed(2)}x`);
+  console.log('mean frame ms ' + Object.entries(res).map(([scene, { aot, il2wasm }]) => { g *= il2wasm.mean / aot.mean; n++; return `${scene} ${(il2wasm.mean / 1e6).toFixed(4)} vs ${(aot.mean / 1e6).toFixed(4)} (${(il2wasm.mean / aot.mean).toFixed(2)}x)`; }).join(', '));
+  console.log(`mean frame, geometric mean over the scenes: il2wasm takes ${Math.pow(g, 1 / n).toFixed(2)}x NativeAOT's; medians: ${Math.pow(Object.values(res).reduce((x, { aot, il2wasm }) => x * il2wasm.median / aot.median, 1), 1 / n).toFixed(2)}x`);
 }
 const json = opt('--json', null);
 if (json) writeFileSync(json, JSON.stringify(res, null, 1));

@@ -1,11 +1,11 @@
 // A library that the compiler leaves out at the start and then needs. The C# compiler reports a reference as used
-// also when only a candidate of a call came from it, so cs2wasm takes such a library at the start only when the text
+// also when only a candidate of a call came from it, so il2wasm takes such a library at the start only when the text
 // has a word that names it (a type of it, or a namespace only it has), and compiles again with every reported library
 // when it meets a type of one it left out (UpstreamSources.Needed, Library.Lookup). Here nothing names the library
 // of the queries over expression trees: its only use is a call written as an extension whose name is no type's, on
 // a value whose type is declared in another library.
-// CS2WASM_BREAK_LIB_RESTART=1 (nothing is compiled again): the calls throw PlatformNotSupportedException;
-// CS2WASM_NO_LIB_RESTART=1 (every reported library from the start) builds the same module.
+// IL2WASM_BREAK_LIB_RESTART=1 (nothing is compiled again): the calls throw PlatformNotSupportedException;
+// IL2WASM_NO_LIB_RESTART=1 (every reported library from the start) builds the same module.
 using System;
 using System.Collections.Generic;
 using System.Linq;

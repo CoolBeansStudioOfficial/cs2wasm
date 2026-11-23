@@ -84,7 +84,7 @@ static class Program
     // ("timing", the timer: it waits for the first tick, with a bound, where it slept 30 ms and then asked whether one had
     // come. A timer's due time is the earliest it fires, not the latest: .NET on Windows gives the first tick of a
     // 1 ms timer at 10 to 30 ms on a quiet machine (the clock's 15.6 ms), and at 30 to 100 ms in 114 runs of 400 with
-    // eight processes on four cores; cs2wasm's is later still when the timer's thread is started right after others
+    // eight processes on four cores; il2wasm's is later still when the timer's thread is started right after others
     // (a Node worker takes 20 to 40 ms to start, and only one is kept ready). The line was False in one loaded run
     // of the suite in eight.)
     [UnmanagedCallersOnly(EntryPoint = "main")]

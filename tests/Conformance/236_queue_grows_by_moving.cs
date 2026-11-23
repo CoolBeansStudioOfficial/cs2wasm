@@ -4,7 +4,7 @@
 // finalizer: none is lost, none freed early, all freed when the queue goes), strings, and structs with references;
 // a queue trimmed and given room (not full: copied); and the case in which something else still holds the old
 // array (taken by reflection, as a debugger or a serializer would): .NET's old array keeps its items, and so must
-// this one (with CS2WASM_ARRAY_MOVE_BREAK=1, the items moved whoever holds the old array, the "held" line differs).
+// this one (with IL2WASM_ARRAY_MOVE_BREAK=1, the items moved whoever holds the old array, the "held" line differs).
 using System;
 using System.Collections.Generic;
 using System.Reflection;

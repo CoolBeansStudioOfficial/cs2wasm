@@ -1,4 +1,4 @@
-// What a thread sees of a shared memory another thread has grown (the engine's behaviour that src/Cs2Wasm/Wasm/MemSync.cs
+// What a thread sees of a shared memory another thread has grown (the engine's behaviour that src/Il2Wasm/Wasm/MemSync.cs
 // answers; found as test 139's one trap in some tens of thousands of loaded runs: `memory access out of bounds` at an
 // atomic load of a word that was there).
 // One worker runs a long straight-line wasm function (no loop, no call: no stack check after its entry) that polls a

@@ -1,4 +1,4 @@
-// The code size of each function of two modules built with CS2WASM_NAMES=1, by name: what grew, what shrank, what
+// The code size of each function of two modules built with IL2WASM_NAMES=1, by name: what grew, what shrank, what
 // came and went. For finding where a change's bytes are.
 // usage: node tools/fnsizes.mjs old.wasm new.wasm [lines]
 import { readFileSync } from 'node:fs';

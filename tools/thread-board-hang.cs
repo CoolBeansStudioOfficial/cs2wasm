@@ -4,7 +4,7 @@
 // (CollectionsMarshal.AsSpan: no change of the list's version), while the main thread's foreach reads each element
 // with a count. Found while writing test 279; not a conformance test (it would hang the suite). The groups' locks
 // are the other session's (claude/load-flakes-1).
-//   cs2wasmc tools/thread-board-hang.cs --checked -o hang.wasm; timeout 40 node host/run.mjs hang.wasm main
+//   il2wasm tools/thread-board-hang.cs --checked -o hang.wasm; timeout 40 node host/run.mjs hang.wasm main
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;

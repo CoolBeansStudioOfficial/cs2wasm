@@ -1,6 +1,6 @@
 // Thread scaling of cycle-capable objects (docs/FINISH.md, stream C): a PLINQ query that makes 3,000 trees of 200
 // nodes, each with a parent reference (a cycle-capable type), and lets each go. Every node's stores are arena
-// operations. Run with CS2WASM_PROCESSORS=n; prints the checksum and the milliseconds.
+// operations. Run with IL2WASM_PROCESSORS=n; prints the checksum and the milliseconds.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

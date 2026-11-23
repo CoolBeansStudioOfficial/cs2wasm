@@ -1,10 +1,10 @@
 // Proof 5, what the page serves (node tools/proof5.mjs web [--retrace] [--no-export] [--no-toolchain] [--no-compress]), in
 // tests/out/proof5/site:
-//   godot/        the web variant of the project (no C# scripts: each scripted node has cs2wasm_node.gd and its C#
-//                 script's path in metadata; the autoload Cs2Wasm is the bridge's engine end), exported for the web
+//   godot/        the web variant of the project (no C# scripts: each scripted node has il2wasm_node.gd and its C#
+//                 script's path in metadata; the autoload Il2Wasm is the bridge's engine end), exported for the web
 //                 with the stock templates (the build without threads): the stock editor writes the pack, and the
 //                 template's files are put beside it here (see the note at that step)
-//   toolchain/    the self-hosted compiler (cs2wasm.wasm), the files it reads to build a Godot script (library.pack:
+//   toolchain/    the self-hosted compiler (il2wasm.wasm), the files it reads to build a Godot script (library.pack:
 //                 the .NET library's sources and GodotSharp's from the cache, the reference assemblies, GodotSharp.dll),
 //                 and the engine's method signatures for the bridge (signatures.json); each also Brotli-compressed
 //   game/         the game's C# sources
@@ -25,9 +25,9 @@ export const site = join(outDir, 'site');
 const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]));
 const kb = (n) => `${n.toLocaleString('en-US')} bytes`;
 
-/** The stock export templates' directory (CS2WASM_GODOT_TEMPLATES, or the editor's own place for them). */
+/** The stock export templates' directory (IL2WASM_GODOT_TEMPLATES, or the editor's own place for them). */
 function templates() {
-  if (process.env.CS2WASM_GODOT_TEMPLATES) return process.env.CS2WASM_GODOT_TEMPLATES;
+  if (process.env.IL2WASM_GODOT_TEMPLATES) return process.env.IL2WASM_GODOT_TEMPLATES;
   const data = process.platform === 'win32' ? join(process.env.APPDATA ?? '', 'Godot') : process.platform === 'darwin' ? join(process.env.HOME ?? '', 'Library', 'Application Support', 'Godot') : join(process.env.HOME ?? '', '.local', 'share', 'godot');
   return join(data, 'export_templates', version + '.stable.mono');
 }
@@ -56,14 +56,14 @@ export function webVariant(dir) {
   let settings = readFileSync(join(project, 'project.godot'), 'utf8').replaceAll('\r\n', '\n');
   settings = settings.replace('PackedStringArray("4.7", "C#")', 'PackedStringArray("4.7")')
     .replace(/\[dotnet\]\n\n[^\[]*/, '')
-    .replace('[autoload]\n\n', '[autoload]\n\nCs2Wasm="*res://cs2wasm_bridge.gd"\n');
+    .replace('[autoload]\n\n', '[autoload]\n\nIl2Wasm="*res://il2wasm_bridge.gd"\n');
   writeFileSync(join(dir, 'project.godot'), settings);
   let scene = readFileSync(join(project, 'main.tscn'), 'utf8').replaceAll('\r\n', '\n');
   const parsed = parseScene(scene);
   let proxied = 0;
   const csharp = new Map([...parsed.ext].filter(([, res]) => res.type === 'Script' && res.path.endsWith('.cs')));
   for (const [id, res] of csharp)
-    scene = scene.replace(`[ext_resource type="Script" path="${res.path}" id="${id}"]`, `[ext_resource type="Script" path="res://cs2wasm_node.gd" id="${id}"]`);
+    scene = scene.replace(`[ext_resource type="Script" path="${res.path}" id="${id}"]`, `[ext_resource type="Script" path="res://il2wasm_node.gd" id="${id}"]`);
   // a scripted node: the script's line, then (as the editor writes a scene) the values of the script's properties.
   // Those go into metadata with the C# script's path: the export keeps of a node only what its class or the script
   // standing there declares.
@@ -71,8 +71,8 @@ export function webVariant(dir) {
   let script = null, values = [];
   const close = () => {
     if (script) {
-      out.push(`metadata/cs2wasm_script = "${script}"`);
-      if (values.length) out.push(`metadata/cs2wasm_properties = { ${values.map(([k, v]) => `"${k}": ${v}`).join(', ')} }`);
+      out.push(`metadata/il2wasm_script = "${script}"`);
+      if (values.length) out.push(`metadata/il2wasm_properties = { ${values.map(([k, v]) => `"${k}": ${v}`).join(', ')} }`);
       proxied++;
     }
     script = null; values = [];
@@ -88,7 +88,7 @@ export function webVariant(dir) {
   scene = out.join('\n');
   writeFileSync(join(dir, 'main.tscn'), scene);
   for (const f of ['driver.gd', 'icon.svg']) cpSync(join(project, f), join(dir, f));
-  for (const f of ['cs2wasm_bridge.gd', 'cs2wasm_node.gd']) cpSync(join(root, 'host', 'web', 'godot', f), join(dir, f));
+  for (const f of ['il2wasm_bridge.gd', 'il2wasm_node.gd']) cpSync(join(root, 'host', 'web', 'godot', f), join(dir, f));
   writeFileSync(join(dir, 'export_presets.cfg'), `[preset.0]
 
 name="Web"
@@ -138,7 +138,7 @@ function trace(file, compiler) {
   const self = join(project, 'check', 'self.mjs');
   // (the module the site serves, told it has one core: with more, a build of this size did not end in several
   // minutes here, its threads idle; see the README)
-  const env = { ...process.env, CS2WASM_SELF: compiler, CS2WASM_PROCESSORS: '1' };
+  const env = { ...process.env, IL2WASM_SELF: compiler, IL2WASM_PROCESSORS: '1' };
   let t0 = performance.now();
   // (the source's path is in the module's line table: mapped to the path the page gives the same file)
   if (run('node', [self, hello, '--pathmap', join(project, 'repro') + '=/game', '-o', join(outDir, 'hello-self.wasm')], { env }) !== 0) throw new Error('the self-hosted compiler failed under Node');
@@ -156,7 +156,7 @@ export async function web(args) {
   // 1. the game's sources, and the module the .NET-hosted compiler makes of them (to compare with). The page gives the
   // toolchain the arguments that compiler gets: Godot's source generators are compiled into the toolchain
   // (tools/selfhost.mjs --generators), and `-a Godot.SourceGenerators.dll` names them (the file is not read).
-  if (run(compilerExe(), [...buildArgs(), '-o', join(outDir, 'game-net.wasm')]) !== 0) { console.error('web: cs2wasmc failed'); return 1; }
+  if (run(compilerExe(), [...buildArgs(), '-o', join(outDir, 'game-net.wasm')]) !== 0) { console.error('web: il2wasm failed'); return 1; }
   rmSync(join(site, 'game'), { recursive: true, force: true });
   mkdirSync(join(site, 'game'), { recursive: true });
   const sources = [];
@@ -185,12 +185,12 @@ export async function web(args) {
     run(editor(), ['--headless', '--path', variant, '--import']);
     const status = run(editor(), ['--headless', '--path', variant, '--export-pack', 'Web', join(godot, 'index.pck')]);
     if (!existsSync(join(godot, 'index.pck'))) { console.error(`web: the pack's export failed (the editor exited ${status})`); return 1; }
-    // CS2WASM_GODOT_WEB_TEMPLATE: the web template archive to use, in place of the stock one where the editor keeps it
-    const archive = process.env.CS2WASM_GODOT_WEB_TEMPLATE ?? join(templates(), 'web_nothreads_release.zip');
+    // IL2WASM_GODOT_WEB_TEMPLATE: the web template archive to use, in place of the stock one where the editor keeps it
+    const archive = process.env.IL2WASM_GODOT_WEB_TEMPLATE ?? join(templates(), 'web_nothreads_release.zip');
     if (!existsSync(archive)) { console.error('web: no web template at ' + archive); return 1; }
     const template = unzip(readFileSync(archive));
     if (!template.some(([name]) => name === 'godot.wasm') || !template.some(([name]) => name === 'godot.js')) {
-      console.error(`web: ${archive} is not a web export template (it has no godot.wasm and godot.js; its first file is ${template[0]?.[0]}). Set CS2WASM_GODOT_WEB_TEMPLATE to a web_nothreads_release.zip of Godot ${version}.`);
+      console.error(`web: ${archive} is not a web export template (it has no godot.wasm and godot.js; its first file is ${template[0]?.[0]}). Set IL2WASM_GODOT_WEB_TEMPLATE to a web_nothreads_release.zip of Godot ${version}.`);
       return 1;
     }
     for (const [name, bytes] of template) {
@@ -211,9 +211,9 @@ export async function web(args) {
   const traceFile = join(outDir, 'trace.txt');
   // The compiler's module, with its memory's greatest size raised (check/raise-memory.mjs says why): 4 GiB.
   const raised = raiseMemory(readFileSync(selfHosted()), 65536);
-  writeFileSync(join(toolchain, 'cs2wasm.wasm'), raised.bytes);
-  console.log(`web: toolchain/cs2wasm.wasm: ${selfHosted()} with the greatest memory ${raised.old} -> 65536 pages`);
-  if (flags.has('--retrace') || !existsSync(traceFile) || !existsSync(join(outDir, 'hello-self.wasm'))) trace(traceFile, join(toolchain, 'cs2wasm.wasm'));
+  writeFileSync(join(toolchain, 'il2wasm.wasm'), raised.bytes);
+  console.log(`web: toolchain/il2wasm.wasm: ${selfHosted()} with the greatest memory ${raised.old} -> 65536 pages`);
+  if (flags.has('--retrace') || !existsSync(traceFile) || !existsSync(join(outDir, 'hello-self.wasm'))) trace(traceFile, join(toolchain, 'il2wasm.wasm'));
   const refs = resolve(referenceDir()), cacheDir = resolve(cache);
   const packed = new Map(), wasOpened = new Set();
   for (const line of readFileSync(traceFile, 'utf8').split('\n')) {
@@ -238,7 +238,7 @@ export async function web(args) {
   cpSync(join(project, 'repro', 'Hello.cs'), join(site, 'hello', 'Hello.cs'));
   writeFileSync(join(site, 'hello', 'sources.json'), JSON.stringify({ sources: [{ path: '/game/Hello.cs', url: 'hello/Hello.cs' }], args: [], run: 'main' }));
   if (!flags.has('--no-compress')) {
-    for (const f of ['cs2wasm.wasm', 'library.pack']) {
+    for (const f of ['il2wasm.wasm', 'library.pack']) {
       const t0 = performance.now();
       const raw = readFileSync(join(toolchain, f));
       const br = brotliCompressSync(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 9, [constants.BROTLI_PARAM_LGWIN]: 24, [constants.BROTLI_PARAM_SIZE_HINT]: raw.length } });

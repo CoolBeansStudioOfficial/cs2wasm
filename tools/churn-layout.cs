@@ -3,7 +3,7 @@
 // how many 16 KB pages and how many 64-byte lines they are in, how many steps of the walk go to another line that is
 // not the next one or the one before (a line the engine's and the processor's read-ahead did not have), how many
 // lines the walk comes back to after it has been elsewhere, and then the loop's time over that layout.
-//   cs2wasmc tools/churn-layout.cs -o cl.wasm   then   node host/run.mjs cl.wasm
+//   il2wasm tools/churn-layout.cs -o cl.wasm   then   node host/run.mjs cl.wasm
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

@@ -6,7 +6,7 @@ static class Program
     [UnmanagedCallersOnly(EntryPoint = "main")]
     static void Main()
     {
-        Console.WriteLine("Hello from cs2wasm");
+        Console.WriteLine("Hello from il2wasm");
         int x = 6 * 7;
         Console.WriteLine(x);
         Console.WriteLine("sum: " + (x + 8));

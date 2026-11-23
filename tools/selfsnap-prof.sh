@@ -11,8 +11,8 @@ OUT=tests/out/selfph
 N=${1:-70}
 cp ${PROG:-tests/Conformance/145_size_hello.cs} $OUT/w42.cs
 W="${ROOT#?:}/$OUT"
-export CS2WASM_SNAPSHOT="$ROOT/$OUT/prof.snap" CS2WASM_SNAPSHOT_WHY=1 CS2WASM_PROCESSORS=1 CS2WASM_TIMES=1 CS2WASM_HOST_TIMES=1 SELF="$ROOT/$OUT/self.wasm"
-rm -f "$CS2WASM_SNAPSHOT"; rm -rf $OUT/prof-snap
+export IL2WASM_SNAPSHOT="$ROOT/$OUT/prof.snap" IL2WASM_SNAPSHOT_WHY=1 IL2WASM_PROCESSORS=1 IL2WASM_TIMES=1 IL2WASM_HOST_TIMES=1 SELF="$ROOT/$OUT/self.wasm"
+rm -f "$IL2WASM_SNAPSHOT"; rm -rf $OUT/prof-snap
 timeout 900 bash tools/selfrun.sh $W/w42.cs -o $W/w42-snap.wasm 2>&1 | grep -E "snapshot|bytes in"
 timeout 900 bash tools/selfrun.sh $W/w42.cs -o $W/w42-snap.wasm 2>&1 | grep -E "snapshot|bytes in|^ +[0-9]+ ms +[0-9]+ MB  [a-z]|host\]" | cut -c1-150
 timeout 900 bash tools/selfrun.sh --cpu-prof --cpu-prof-dir=$ROOT/$OUT/prof-snap -- $W/w42.cs -o $W/w42-snap.wasm 2>&1 | grep -E "snapshot|bytes in"

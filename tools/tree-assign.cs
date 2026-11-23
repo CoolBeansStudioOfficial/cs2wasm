@@ -1,11 +1,11 @@
 // A subtree stored over another, in a program that assigns a node's list of children somewhere (the line in Main,
-// never run): .NET frees the old subtree at each store. Until round 7 cs2wasm kept every one of them until the whole
-// tree went (`built 121 replaced 161 again 201 gone 0`; `121 121 121 0` now, and with CS2WASM_NO_WAITING_TOP=1 the
+// never run): .NET frees the old subtree at each store. Until round 7 il2wasm kept every one of them until the whole
+// tree went (`built 121 replaced 161 again 201 gone 0`; `121 121 121 0` now, and with IL2WASM_NO_WAITING_TOP=1 the
 // old figures). With a second place that stores the field, the list is not borrowed across
 // `e.Kids.Add(Tree(e, ..))`: P.Tree counts it for the length of the call, so the list waits for its owner as the
 // node does when the first child joins, and Rt.LinkWaiting took (child, node) before (node, list): the child became
 // the node's owner and the list the top of the structure (Rt.WaitingTop; test 199).
-//   cs2wasmc tools/tree-assign.cs -o ta.wasm   then   node host/run.mjs ta.wasm
+//   il2wasm tools/tree-assign.cs -o ta.wasm   then   node host/run.mjs ta.wasm
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;

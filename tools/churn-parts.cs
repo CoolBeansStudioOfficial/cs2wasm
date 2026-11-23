@@ -1,9 +1,9 @@
-// The churn scene of tools/frames.mjs in parts, for both sides (cs2wasm, and NativeAOT-LLVM with a Main that calls
+// The churn scene of tools/frames.mjs in parts, for both sides (il2wasm, and NativeAOT-LLVM with a Main that calls
 // ChurnParts.Run): the scene's read loop over 19,392 particles allocated in order, then over 800 (in the cache) in
 // its forms (the static list, the list in a local, an array, without the float fields, rotated, with the element
 // store), in picoseconds a particle; then the scene itself, its frame by phase (birth, the loop, the removal, and the
 // loop again without the move), mean microseconds x1000 a frame.
-//   cs2wasmc tools/churn-parts.cs -o cp.wasm   then   node host/run.mjs cp.wasm
+//   il2wasm tools/churn-parts.cs -o cp.wasm   then   node host/run.mjs cp.wasm
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

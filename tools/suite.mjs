@@ -1,4 +1,4 @@
-// Runs the conformance suite in shards side by side (tests/Cs2Wasm.Tests --shard k/n), checked and as shipped at
+// Runs the conformance suite in shards side by side (tests/Il2Wasm.Tests --shard k/n), checked and as shipped at
 // once, and prints the failures and the totals: the whole suite in a few minutes instead of a quarter of an hour.
 //   node tools/suite.mjs [--shards n] [--checked-only | --unchecked-only] [filter] [-- extra runner args]
 // Each runner holds a compiler (1 to 2 GB at the largest programs): the default, 5 per mode, keeps ten of them under
@@ -18,17 +18,17 @@ const dd = args.indexOf('--');
 const extra = dd >= 0 ? args.slice(dd + 1) : [];
 const filter = args.slice(0, dd >= 0 ? dd : args.length).find((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--shards');
 
-execFileSync('dotnet', ['build', join(root, 'tests', 'Cs2Wasm.Tests'), '-c', 'Debug', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
+execFileSync('dotnet', ['build', join(root, 'tests', 'Il2Wasm.Tests'), '-c', 'Debug', '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'] });
 const t0 = Date.now();
 const runs = [];
 for (const unchecked of modes)
   for (let k = 0; k < shards; k++)
     runs.push(new Promise((done) => {
-      const a = ['run', '--project', join(root, 'tests', 'Cs2Wasm.Tests'), '--no-build', '--', ...(filter ? [filter] : []), '--shard', `${k}/${shards}`, ...(unchecked ? ['--unchecked'] : []), ...extra];
+      const a = ['run', '--project', join(root, 'tests', 'Il2Wasm.Tests'), '--no-build', '--', ...(filter ? [filter] : []), '--shard', `${k}/${shards}`, ...(unchecked ? ['--unchecked'] : []), ...extra];
       // (a working directory of its own: the programs that write files, 070 and 088, write them there, in the .NET
       // run and in the module's, and the two modes run the same program at the same time; in one directory a run
       // found the other's file open, or gone)
-      const cwd = mkdtempSync(join(tmpdir(), 'cs2wasm-suite-'));
+      const cwd = mkdtempSync(join(tmpdir(), 'il2wasm-suite-'));
       const p = spawn('dotnet', a, { cwd });
       let out = '';
       p.stdout.on('data', (d) => { out += d; });

@@ -2,7 +2,7 @@
 // list one by one, and only then is the node put into its parent's list. Each node takes three direct steps of the
 // runtime where the general link would come to the same words (Rt.JoinPair: the list's first array into the list,
 // while both are plain objects; Rt.NodeUp: the node's parent field linked as the node joins at its first child;
-// Rt.AddNode: the node into its parent's list; CS2WASM_NO_NODE_PATH=1 for the general way). The steps rest on:
+// Rt.AddNode: the node into its parent's list; IL2WASM_NO_NODE_PATH=1 for the general way). The steps rest on:
 // the new array and the list's other slots holding nothing a visit would link (JoinPair); the parent being
 // referred to by code besides the node's field, the node having no second slot to link in the same step, and the
 // parent's owner being asked (NodeUp); the store's count being the node's one reference from outside, and the
@@ -14,7 +14,7 @@
 // a local or a static holds; nodes with finalizers; a node moved after it was built, and one in two lists; a
 // build that throws half way; a parent only the node's field refers to; a node with two slots that hold members;
 // a child that refers to the node above its parent; new objects with content stored into plain ones; a node
-// whose own parent is a plain object still (Rt.PlainParents, CS2WASM_NO_PLAIN_PARENTS=1), with a parent that
+// whose own parent is a plain object still (Rt.PlainParents, IL2WASM_NO_PLAIN_PARENTS=1), with a parent that
 // holds a new node with content. tools/node-path-breaks.sh leaves each rule out in turn.
 // The trees whose parts may stay until their group goes (a node that refers to a node beside it) are counted when
 // they have gone.

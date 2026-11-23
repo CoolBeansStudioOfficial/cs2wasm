@@ -81,9 +81,9 @@ static class Program
         Console.WriteLine(r.Count + " " + r.Sum() + " " + string.Join(",", r.Take(12)));
         Console.WriteLine(Enumerable.Range(1, 100).AsParallel().Where(i => i % 3 == 0).Sum());
 
-        Console.WriteLine((Environment.GetEnvironmentVariables().Count > 0) + " " + (Environment.GetEnvironmentVariable("CS2WASM_073_UNSET") == null));
-        Environment.SetEnvironmentVariable("CS2WASM_073", "set");
-        Console.WriteLine(Environment.GetEnvironmentVariable("CS2WASM_073") + " " + Environment.GetEnvironmentVariables().Contains("CS2WASM_073"));
+        Console.WriteLine((Environment.GetEnvironmentVariables().Count > 0) + " " + (Environment.GetEnvironmentVariable("IL2WASM_073_UNSET") == null));
+        Environment.SetEnvironmentVariable("IL2WASM_073", "set");
+        Console.WriteLine(Environment.GetEnvironmentVariable("IL2WASM_073") + " " + Environment.GetEnvironmentVariables().Contains("IL2WASM_073"));
 
         var sb = new System.Text.StringBuilder();
         for (int i = 0; i < 8; i++)

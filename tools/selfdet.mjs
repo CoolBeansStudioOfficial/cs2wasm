@@ -1,10 +1,10 @@
 // The self-hosted compiler's output is the .NET-hosted compiler's, byte for byte, on any number of cores (SPEC 7.3):
-// one program built by the .NET build of cs2wasmc and by a self-hosted toolchain told each core count, with the same
+// one program built by the .NET build of il2wasm and by a self-hosted toolchain told each core count, with the same
 // paths (on Windows given without the drive, as the self-hosted compiler sees them: host/fs.mjs) and the same output
 // file name (it is the assembly's name); exits 1 when any module differs, with where (tools/wasmdiff.mjs).
-// usage: node tools/selfdet.mjs [--self toolchain.wasm] [--cores 1,4] <program.cs>... [cs2wasmc options: -r x.dll ...]
+// usage: node tools/selfdet.mjs [--self toolchain.wasm] [--cores 1,4] <program.cs>... [il2wasm options: -r x.dll ...]
 // --self: default tests/out/proof5/toolchain.wasm (node tools/proof5.mjs toolchain [--threads]); a toolchain without
-// threads is told one core whatever --cores says (it starts none). Environment: CS2WASM_REFERENCE_DIR, CS2WASM_CACHE.
+// threads is told one core whatever --cores says (it starts none). Environment: IL2WASM_REFERENCE_DIR, IL2WASM_CACHE.
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -21,8 +21,8 @@ for (let i = 0; i < args.length; i++) {
   else rest.push(args[i]);
 }
 if (!existsSync(self)) { console.error(`selfdet: no toolchain at ${self}: node tools/proof5.mjs toolchain`); process.exit(2); }
-const exe = ['Release', 'Debug'].map((c) => join(root, 'src', 'Cs2Wasm.Cli', 'bin', c, 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc')).find(existsSync);
-if (!exe) { console.error('selfdet: no cs2wasmc: dotnet build src/Cs2Wasm.Cli -c Release'); process.exit(2); }
+const exe = ['Release', 'Debug'].map((c) => join(root, 'src', 'Il2Wasm.Cli', 'bin', c, 'net11.0', process.platform === 'win32' ? 'il2wasm.exe' : 'il2wasm')).find(existsSync);
+if (!exe) { console.error('selfdet: no il2wasm: dotnet build src/Il2Wasm.Cli -c Release'); process.exit(2); }
 // (a path argument made absolute, then as the self-hosted compiler sees it: both compilers get the same strings)
 const prog = rest.map((a) => (existsSync(a) ? selfPath(resolve(a)) : a));
 // (Windows: the .NET build takes a drive-less path as on the current drive and writes C:..., the module writes /...:
@@ -30,7 +30,7 @@ const prog = rest.map((a) => (existsSync(a) ? selfPath(resolve(a)) : a));
 if (process.platform === 'win32' && !prog.includes('--pathmap')) prog.push('--pathmap', '/=/');
 const out = join(root, 'tests', 'out', 'selfdet');
 rmSync(out, { recursive: true, force: true });
-const env = { ...selfEnv(), CS2WASM_REFERENCE_DIR: selfPath(referenceDir()), CS2WASM_CACHE: selfPath(cache) };
+const env = { ...selfEnv(), IL2WASM_REFERENCE_DIR: selfPath(referenceDir()), IL2WASM_CACHE: selfPath(cache) };
 const runs = [];
 // (a compiler that does not end, as the self-hosted one now and then does not, would hold its turn on the homelab for good)
 const limit = 1000 * +(process.env.SELFDET_TIMEOUT ?? 600);
@@ -47,7 +47,7 @@ function build(name, cmd, cmdArgs, extraEnv) {
   runs.push({ name, target });
 }
 build('net', exe, [], {});
-for (const n of cores) build(`self-${n}`, 'node', [join(root, 'host', 'run.mjs'), self, 'main', '--'], { CS2WASM_PROCESSORS: String(n) });
+for (const n of cores) build(`self-${n}`, 'node', [join(root, 'host', 'run.mjs'), self, 'main', '--'], { IL2WASM_PROCESSORS: String(n) });
 let failed = false;
 const ref = readFileSync(runs[0].target);
 for (const r of runs.slice(1)) {

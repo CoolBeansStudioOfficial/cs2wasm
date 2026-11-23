@@ -4,7 +4,7 @@
 // .NET has it: the object's strings and arrays go with it (weak references see them go); a weak reference to the
 // object itself is cleared; a class with a finalizer still runs
 // it; a place of a class that is NOT sealed may hold an object of a derived class, whose own fields and finalizer
-// must not be passed over (with CS2WASM_FLAT_DESTROY_BREAK=1, a class named Unsealed* taken as exact, the "derived"
+// must not be passed over (with IL2WASM_FLAT_DESTROY_BREAK=1, a class named Unsealed* taken as exact, the "derived"
 // lines differ); a long chain of objects that each hold such an object is let go without running out of stack.
 using System;
 using System.Collections.Generic;

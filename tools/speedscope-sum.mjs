@@ -1,7 +1,7 @@
 // A speedscope profile (dotnet-trace collect --format speedscope) summed: the frames by self time and, with a
 // second argument, by inclusive time under frames whose name contains it (each frame once per sample).
 // usage: node tools/speedscope-sum.mjs <file.speedscope.json> [under-name] [lines=40] [only names containing]
-//   dotnet-trace collect --format speedscope -o t.nettrace -- cs2wasmc.exe program.cs -o out.wasm
+//   dotnet-trace collect --format speedscope -o t.nettrace -- il2wasm.exe program.cs -o out.wasm
 import { readFileSync } from 'node:fs';
 const [file, under, linesArg, only] = process.argv.slice(2);
 const lines = +(linesArg ?? 40);

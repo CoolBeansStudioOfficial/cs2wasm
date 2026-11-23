@@ -1,4 +1,4 @@
-// ExceptionDispatchInfo.SetCurrentStackTrace: the trace of where it is called, as .NET writes it (cs2wasm wrote
+// ExceptionDispatchInfo.SetCurrentStackTrace: the trace of where it is called, as .NET writes it (il2wasm wrote
 // nothing: .NET's own text reads each frame's MethodBase, and frames had none).
 using System;
 using System.Runtime.CompilerServices;

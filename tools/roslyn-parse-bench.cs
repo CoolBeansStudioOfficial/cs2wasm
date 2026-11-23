@@ -1,7 +1,7 @@
 // Roslyn's parser over 400 generated classes (doc comments, async, switch expressions), parsed and walked four times,
 // best time printed: a baseline-tier proxy for the self-hosted compiler's library parse that builds in a minute.
-//   cs2wasmc tools/roslyn-parse-bench.cs -r <bin>/Microsoft.CodeAnalysis.dll -r <bin>/Microsoft.CodeAnalysis.CSharp.dll -o pb.wasm
-//   node --liftoff-only host/run.mjs pb.wasm main     (CS2WASM_NO_THREADS=1 when compiling: no threads, as NativeAOT-LLVM)
+//   il2wasm tools/roslyn-parse-bench.cs -r <bin>/Microsoft.CodeAnalysis.dll -r <bin>/Microsoft.CodeAnalysis.CSharp.dll -o pb.wasm
+//   node --liftoff-only host/run.mjs pb.wasm main     (IL2WASM_NO_THREADS=1 when compiling: no threads, as NativeAOT-LLVM)
 using System;
 using System.Diagnostics;
 using System.Linq;

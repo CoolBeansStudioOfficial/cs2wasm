@@ -1,4 +1,4 @@
-// The Invisible API's first slice (docs/FINISH.md 9.4) as a cs2wasm plugin against interface version 7. It reads a
+// The Invisible API's first slice (docs/FINISH.md 9.4) as an il2wasm plugin against interface version 7. It reads a
 // game written in plain C# (../Game/Arena.cs) and turns it into a server's view of it without changing the game:
 //
 //  1. Classifies each write of the game's state: by the paths of calls that reach it (PathConditions), whether it
@@ -17,7 +17,7 @@
 //
 // Everything is registered from RunBeforeCompile, so the program is compiled once with its hooks.
 using System.Text;
-using Cs2Wasm;
+using Il2Wasm;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;

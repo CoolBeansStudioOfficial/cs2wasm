@@ -6,7 +6,7 @@
 // 3 a subtree that is a group of its own, held by a static (let go whole: the group's drop, for comparison);
 // 4 as 0, and a node of the old subtree held by a local over the store (the old subtree stays until the local goes).
 //   sed "s/const int Variant = 0;/const int Variant = 3;/" tools/tree-store.cs > ts3.cs
-//   cs2wasmc ts3.cs -o ts3.wasm   then   node host/run.mjs ts3.wasm
+//   il2wasm ts3.cs -o ts3.wasm   then   node host/run.mjs ts3.wasm
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

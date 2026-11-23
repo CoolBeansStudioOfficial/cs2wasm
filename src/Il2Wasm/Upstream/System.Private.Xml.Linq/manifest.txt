@@ -1,0 +1,65 @@
+# System.Private.Xml.Linq for il2wasm, evaluated from dotnet/runtime's projects by tools/CoreLibManifest.
+# define <symbol> | reference <library> | file <path> (compiled) | runtime <path> (Mono's runtime half: il2wasm supplies its own)
+# | replaced <path> (an upstream file il2wasm replaces with its own)
+# | substitute<TAB>method|field<TAB><type><TAB><signature or name><TAB><value> (the trimmer's, for il2wasm's features)
+#   (a value =>Type.Method: the body calls that boundary method) | edit<TAB><path><TAB><text><TAB><replacement> (an exact change to an upstream file)
+define NET
+define NETCOREAPP
+define NET11_0
+define RELEASE
+define NET5_0_OR_GREATER
+define NET6_0_OR_GREATER
+define NET7_0_OR_GREATER
+define NET8_0_OR_GREATER
+define NET9_0_OR_GREATER
+define NET10_0_OR_GREATER
+define NET11_0_OR_GREATER
+define NETCOREAPP1_0_OR_GREATER
+define NETCOREAPP1_1_OR_GREATER
+define NETCOREAPP2_0_OR_GREATER
+define NETCOREAPP2_1_OR_GREATER
+define NETCOREAPP2_2_OR_GREATER
+define NETCOREAPP3_0_OR_GREATER
+define NETCOREAPP3_1_OR_GREATER
+reference System.Collections
+reference System.Linq
+reference System.Memory
+reference System.ObjectModel
+reference System.Private.Xml
+reference System.Threading
+file src/libraries/Common/src/System/Collections/Generic/EnumerableHelpers.cs
+file src/libraries/Common/src/System/Text/StringBuilderCache.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/BaseUriAnnotation.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/Extensions.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/LineInfoAnnotation.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/LineInfoEndElementAnnotation.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XAttribute.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XCData.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XComment.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XContainer.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XDeclaration.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XDocument.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XDocumentType.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XElement.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XHashtable.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XHelper.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XLinq.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XName.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNamespace.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNode.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNodeBuilder.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNodeDocumentOrderComparer.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNodeEqualityComparer.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNodeReader.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XObject.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XObjectChangeAnnotation.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XObjectChangeEventArgs.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XProcessingInstruction.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XStreamingElement.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XText.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/Schema/XNodeValidator.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/XPath/XNodeNavigator.cs
+file src/libraries/System.Private.Xml.Linq/src/System/Xml/XPath/XObjectExtensions.cs
+file src/libraries/Common/src/System/SR.cs
+edit	src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNamespace.cs	refNamespace = s_namespaces.Add(new WeakReference<XNamespace>(new XNamespace(namespaceName.Substring(index, count))));	var made = new XNamespace(namespaceName.Substring(index, count)); refNamespace = s_namespaces.Add(new WeakReference<XNamespace>(made)); if (refNamespace != null && refNamespace.TryGetTarget(out XNamespace? own) && ReferenceEquals(own, made)) return own;
+edit	src/libraries/System.Private.Xml.Linq/src/System/Xml/Linq/XNamespace.cs	Interlocked.CompareExchange(ref refNmsp, new WeakReference<XNamespace>(new XNamespace(namespaceName)), refOld);	var made = new XNamespace(namespaceName); if (Interlocked.CompareExchange(ref refNmsp, new WeakReference<XNamespace>(made), refOld) == refOld) return made;

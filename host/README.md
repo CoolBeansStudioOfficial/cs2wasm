@@ -1,12 +1,12 @@
 # Hosts
 
-A cs2wasm module imports its memory (`env.memory`, shared when it has threads) and the `cs2wasm.*` functions
+An il2wasm module imports its memory (`env.memory`, shared when it has threads) and the `il2wasm.*` functions
 (`engine.mjs` lists them). These are the hosts in this repository:
 
 | Host | Files | What it gives a module |
 |---|---|---|
 | Node | `run.mjs` (entry), `engine.mjs`, `fs.mjs`, `http.mjs` + `io.mjs`, `spawner.mjs` + `worker.mjs` | console, time, files (a directory of the machine as `/`), HTTP, threads |
-| Browser | `web/run-module.mjs` (page), `web/module-worker.mjs`, `web/cs2wasm-web.mjs`, `web/vfs.mjs`, `web/server.mjs` | console, time, files in memory (packs), threads from a fixed pool; no HTTP yet |
+| Browser | `web/run-module.mjs` (page), `web/module-worker.mjs`, `web/il2wasm-web.mjs`, `web/vfs.mjs`, `web/server.mjs` | console, time, files in memory (packs), threads from a fixed pool; no HTTP yet |
 | Godot | `godot-bridge.mjs` with `godot-replay.mjs` (no engine) or `web/godot-web.mjs` (stock web export) | the `godot.*` imports (GodotSharp's `NativeFuncs`) |
 
 ## Threads: never start a thread from a busy worker
@@ -27,12 +27,12 @@ Every embedder must therefore start the module's threads from a worker that runs
   (`processors`: .NET's thread pool, PLINQ and Roslyn's concurrent build follow `Environment.ProcessorCount`).
 
 The page's own thread must not block either: a module run on it, such as a Godot game in the web export without
-threads, is told so (`mainCanBlock: false`, the import `main_can_block`), and `web/cs2wasm-web.mjs` without a pool
+threads, is told so (`mainCanBlock: false`, the import `main_can_block`), and `web/il2wasm-web.mjs` without a pool
 starts no threads for it (`thread_spawn` fails with `NotSupportedException`).
 
 ## A module's state kept between processes
 
-`CS2WASM_SNAPSHOT=<file> node host/run.mjs module.wasm main -- ...` (`snapshot.mjs`): when the entry has returned 0
+`IL2WASM_SNAPSHOT=<file> node host/run.mjs module.wasm main -- ...` (`snapshot.mjs`): when the entry has returned 0
 the module's memory and mutable globals are written to the file, and a later process puts them back in place of
 `init` and calls the entry on them: the second call of the entry in one process, in a new one (SPEC sections 7.2 and
 7.6). For the self-hosted compiler its libraries stay parsed and bound from one build to the next, as under `--watch`.
@@ -41,7 +41,7 @@ given, and every path the module asked the file system about while the state was
 except the paths its command line names and those it wrote, which the entry reads anew on every call. None is taken
 of a module that started a thread, has a file open, moved its working directory or used HTTP.
 What is written is the memory as the entry left it, so after a large program the snapshot is large;
-`CS2WASM_SNAPSHOT_KEEP=1` never writes one that holds again (one made with a small program stays small).
-`CS2WASM_SNAPSHOT_WHY=1` says what was done; `tools/snapshot-check.sh` proves each rule; `tools/selfsnap.mjs` compares
-the compiler's modules on a snapshot with the .NET-hosted compiler's and times them. `CS2WASM_REPEAT=n` calls the
+`IL2WASM_SNAPSHOT_KEEP=1` never writes one that holds again (one made with a small program stays small).
+`IL2WASM_SNAPSHOT_WHY=1` says what was done; `tools/snapshot-check.sh` proves each rule; `tools/selfsnap.mjs` compares
+the compiler's modules on a snapshot with the .NET-hosted compiler's and times them. `IL2WASM_REPEAT=n` calls the
 entry n times in one instance (what an embedder that keeps the module pays for a later call).

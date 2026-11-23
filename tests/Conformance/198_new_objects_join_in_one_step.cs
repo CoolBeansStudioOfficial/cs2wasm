@@ -1,5 +1,5 @@
 // A new object put into a slot of a structure that can hold a cycle joins it with its own slots linked in one step
-// where what they hold says what the links come to (Rt.JoinFresh, CS2WASM_NO_FUSED_JOIN=1 for the general way: the
+// where what they hold says what the links come to (Rt.JoinFresh, IL2WASM_NO_FUSED_JOIN=1 for the general way: the
 // join, then a visit of the object's slots, each as the store it stands for). The step rests on: the type's word
 // naming every slot a cycle can close through (Rt.ArenaSlots: a slot it left out would stay a counted reference
 // no link knows of, and its group would never go); a new object of the object's own being taken as its own only when

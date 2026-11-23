@@ -23,9 +23,9 @@ jobs:
           node-version: 24
       - uses: actions/cache@v4
         with:
-          path: ~\AppData\Local\cs2wasm
-          key: cs2wasm-sources-${{ hashFiles('src/Cs2Wasm/Compiler/Library.cs') }}
+          path: ~\AppData\Local\il2wasm
+          key: il2wasm-sources-${{ hashFiles('src/Il2Wasm/Compiler/Library.cs') }}
       - run: dotnet build -c Debug --nologo
-      - run: dotnet run --project tests/Cs2Wasm.Tests
+      - run: dotnet run --project tests/Il2Wasm.Tests
       # (and as shipped: a checked build never uses freed memory again, so only this run reuses it)
-      - run: dotnet run --project tests/Cs2Wasm.Tests --no-build -- --unchecked
+      - run: dotnet run --project tests/Il2Wasm.Tests --no-build -- --unchecked

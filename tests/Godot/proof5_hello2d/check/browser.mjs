@@ -12,7 +12,7 @@
 //   --headed               a browser window to watch; --keep: leave the server and the browser up at the end
 //   --processors <n>       the cores the compiler is told it has (default: the page's choice, one)
 //   --times                the compiler's phase times in the page's output (tests/out/proof5/browser-output.txt)
-// The browser: CS2WASM_BROWSER, else Chrome or Edge where they are installed.
+// The browser: IL2WASM_BROWSER, else Chrome or Edge where they are installed.
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, cpSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -23,11 +23,11 @@ import { site } from './web.mjs';
 import { serve } from '../../../../host/web/server.mjs';
 
 function browserPath() {
-  const candidates = [process.env.CS2WASM_BROWSER, 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  const candidates = [process.env.IL2WASM_BROWSER, 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
     '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'];
   const found = candidates.find((p) => p && existsSync(p));
-  if (!found) throw new Error('no browser: set CS2WASM_BROWSER to a Chrome or Edge executable');
+  if (!found) throw new Error('no browser: set IL2WASM_BROWSER to a Chrome or Edge executable');
   return found;
 }
 
@@ -64,12 +64,12 @@ export async function check(args) {
   for (const f of ['index.html', 'main.mjs']) cpSync(join(project, 'web', f), join(site, f));
   for (const f of ['oracle-calls.txt', 'oracle-calls-panic.txt']) cpSync(join(project, f), join(site, f)); // (the page compares with them too)
   cpSync(join(root, 'host', 'godot-bridge.mjs'), join(site, 'host', 'godot-bridge.mjs'));
-  for (const f of ['cs2wasm-web.mjs', 'debuginfo.mjs', 'godot-web.mjs', 'module-worker.mjs', 'run-module.mjs', 'vfs.mjs']) cpSync(join(root, 'host', 'web', f), join(site, 'host', 'web', f));
+  for (const f of ['il2wasm-web.mjs', 'debuginfo.mjs', 'godot-web.mjs', 'module-worker.mjs', 'run-module.mjs', 'vfs.mjs']) cpSync(join(root, 'host', 'web', f), join(site, 'host', 'web', f));
   // host/web/debuginfo.mjs is host/engine.mjs's reader of the debug sections: the two must not drift
   {
     const norm = (s) => s.replaceAll('\r\n', '\n');
     const engine = norm(readFileSync(join(root, 'host', 'engine.mjs'), 'utf8')), copy = norm(readFileSync(join(root, 'host', 'web', 'debuginfo.mjs'), 'utf8'));
-    const part = engine.slice(engine.indexOf('function readU32'), engine.indexOf('export function cs2wasmImports'));
+    const part = engine.slice(engine.indexOf('function readU32'), engine.indexOf('export function il2wasmImports'));
     if (!copy.endsWith(part)) { console.error('check: host/web/debuginfo.mjs is not host/engine.mjs\'s debugInfo any more: copy it again'); return 1; }
   }
   const query = new URLSearchParams();
@@ -82,7 +82,7 @@ export async function check(args) {
   const game = opt.game ?? 'game';
 
   const server = await serve(site, 0);
-  const profile = mkdtempSync(join(tmpdir(), 'cs2wasm-proof5-'));
+  const profile = mkdtempSync(join(tmpdir(), 'il2wasm-proof5-'));
   const exe = browserPath();
   const browser = spawn(exe, [...(opt.headed ? [] : ['--headless=new']), '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',

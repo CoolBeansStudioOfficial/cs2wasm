@@ -10,12 +10,12 @@ cd "$(dirname "$0")/.."
 PAR=${1:-4}
 rc=0
 echo "=== as it was: every reported library from the start, the libraries' documentation comments parsed"
-node tools/corelibs-check.mjs --par $PAR --env CS2WASM_NO_LIB_RESTART=1 --env CS2WASM_NO_LIB_DOC_SKIP=1 || rc=1
+node tools/corelibs-check.mjs --par $PAR --env IL2WASM_NO_LIB_RESTART=1 --env IL2WASM_NO_LIB_DOC_SKIP=1 || rc=1
 if [ "${EACH:-0}" = 1 ]; then
   echo "=== a library reported only for a candidate left out, against every reported library from the start"
-  node tools/corelibs-check.mjs --par $PAR --env CS2WASM_NO_LIB_RESTART=1 || rc=1
+  node tools/corelibs-check.mjs --par $PAR --env IL2WASM_NO_LIB_RESTART=1 || rc=1
   echo "=== the libraries' documentation comments passed over, against parsed"
-  node tools/corelibs-check.mjs --par $PAR --env CS2WASM_NO_LIB_DOC_SKIP=1 || rc=1
+  node tools/corelibs-check.mjs --par $PAR --env IL2WASM_NO_LIB_DOC_SKIP=1 || rc=1
 fi
 if [ "${ALL:-0}" = 1 ]; then
   echo "=== the libraries a program can reach, against all the core libraries (ALL=1)"

@@ -1,8 +1,8 @@
-// The tree scene of tools/frames.mjs, its frames that are not a rebuild, by phase, for both sides (cs2wasm, and
+// The tree scene of tools/frames.mjs, its frames that are not a rebuild, by phase, for both sides (il2wasm, and
 // NativeAOT-LLVM with a Main that calls TreeFrame.Run): the new subtree's build, its store over the old one (which lets
 // the old one go), the move, the walk, and the walk again indexed and without the floats; median and mean, microseconds
 // x1000 a frame.
-//   cs2wasmc tools/tree-frame.cs -o tf.wasm   then   node host/run.mjs tf.wasm
+//   il2wasm tools/tree-frame.cs -o tf.wasm   then   node host/run.mjs tf.wasm
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

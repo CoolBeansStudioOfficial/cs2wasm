@@ -3,10 +3,10 @@
 // replace the elements of an array a static holds, unsynchronized, and the elements' class has a finalizer. Found
 // by test 277's first form on the homelab (a timeout in the suite). What takes it away, each 0 of 400: no
 // finalizer; the read and the store under a lock; the store without the read. One run in 600 ended with a note
-// left over instead ("0 1": never finalized). With CS2WASM_DEADLOCK_DUMP=1 the hung runs say nothing (not a wait
+// left over instead ("0 1": never finalized). With IL2WASM_DEADLOCK_DUMP=1 the hung runs say nothing (not a wait
 // for the runtime lock). Not looked into further: the read
 // that counts, the last release and the finalizer's hold are the runtime's (Limbo, rt.load_retain, rt.store_ref).
-//   cs2wasmc tools/thread-notes-hang.cs -o hang.wasm; node tools/stress.mjs hang.wasm --runs 400 --par 8 --timeout 20000
+//   il2wasm tools/thread-notes-hang.cs -o hang.wasm; node tools/stress.mjs hang.wasm --runs 400 --par 8 --timeout 20000
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;

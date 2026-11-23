@@ -4,7 +4,7 @@
 // and what it refers to) or was a literal. After the store the turn goes on in every way a turn can: more
 // statements, a second and a third store, a value chosen by ?: or ??, a break, a continue, a goto past the code after
 // the loop, a switch, a return out of the loop, an exception caught outside it. Every loop's arrays are printed after
-// it. Wasm/ColdExits.cs (CS2WASM_COLD_EXITS=1: the call such a path makes written after the loop, with what was left
+// it. Wasm/ColdExits.cs (IL2WASM_COLD_EXITS=1: the call such a path makes written after the loop, with what was left
 // of the turn, and the loop entered again) must leave every line as it is, and with one of its rules taken out lines
 // differ or the module is not valid: tools/cold-exits-proof.sh. No loop here calls anything else (a remainder is a
 // call), so that each is one the pass takes.

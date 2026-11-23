@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- tools/roslyn-bind-bench compiled by NativeAOT to WebAssembly (NativeAOT-LLVM, browser-wasm, linked by Emscripten
        with the host's files visible through tools/selfhost-naot-wasm/pre.js), as tools/selfhost-naot-wasm builds the
-       compiler itself: the side tools/roslyn-bind-bench.sh compares cs2wasm's build with. -->
+       compiler itself: the side tools/roslyn-bind-bench.sh compares il2wasm's build with. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>

@@ -1,10 +1,10 @@
 // The churn scene's move (tools/frames/Frames.cs: `s_particles[w++] = p`) apart from the order in memory and from the
-// frees, for both sides (cs2wasm, and NativeAOT-LLVM with a Main that calls ChurnMove.Run): a particle's allocation
+// frees, for both sides (il2wasm, and NativeAOT-LLVM with a Main that calls ChurnMove.Run): a particle's allocation
 // and its free alone; the scene's loop over 19,392 particles allocated in order, none dead (every store into the
 // element's own slot), then with the first 400 dead and held by an array (every survivor moves 400 slots down, no
 // free); then the scene itself, its loop as it is and with the list in a local on alternate frames. Mean
 // microseconds x1000 a frame, picoseconds a particle for the first.
-//   cs2wasmc tools/churn-move.cs -o cm.wasm   then   node host/run.mjs cm.wasm
+//   il2wasm tools/churn-move.cs -o cm.wasm   then   node host/run.mjs cm.wasm
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;

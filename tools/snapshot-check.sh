@@ -1,15 +1,15 @@
 #!/bin/bash
-# The host's snapshot (host/snapshot.mjs, CS2WASM_SNAPSHOT) on a small module with state that lasts between calls of
+# The host's snapshot (host/snapshot.mjs, IL2WASM_SNAPSHOT) on a small module with state that lasts between calls of
 # its entry (tools/snapshot-check.cs): what is kept, and each rule that lets go of a snapshot. Prints each step's
 # output and compares the whole with what is expected; exits 1 when it differs.
-#   bash tools/snapshot-check.sh          (from the checkout's root; needs src/Cs2Wasm.Cli built, Release)
+#   bash tools/snapshot-check.sh          (from the checkout's root; needs src/Il2Wasm.Cli built, Release)
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1
 D=tests/out/snapshot-check
 rm -rf $D; mkdir -p $D/lib
-src/Cs2Wasm.Cli/bin/Release/net11.0/cs2wasmc.exe tools/snapshot-check.cs -o $D/m.wasm 2> $D/build.txt || { cat $D/build.txt; exit 1; }
+src/Il2Wasm.Cli/bin/Release/net11.0/il2wasm.exe tools/snapshot-check.cs -o $D/m.wasm 2> $D/build.txt || { cat $D/build.txt; exit 1; }
 echo one > $D/lib/a.txt; echo two > $D/lib/b.txt; echo bad > $D/lib/fail.txt
-export CS2WASM_FS_ROOT="$(pwd -W 2>/dev/null || pwd)" CS2WASM_SNAPSHOT=$D/m.snap CS2WASM_SNAPSHOT_WHY=1 SNAP_MODE=m1
+export IL2WASM_FS_ROOT="$(pwd -W 2>/dev/null || pwd)" IL2WASM_SNAPSHOT=$D/m.snap IL2WASM_SNAPSHOT_WHY=1 SNAP_MODE=m1
 r() { node host/run.mjs $D/m.wasm main -- "$@" 2>&1 | sed -E 's/ in [0-9]+ ms//; s/[0-9]+ pages \([0-9]+ (not zero|written)\)/N pages/; s/\(SNAP_[A-Z, _]*\)/(...)/'; echo "exit ${PIPESTATUS[0]}"; }
 {
 echo "--- 1: no snapshot: from the start, written"; r
@@ -31,8 +31,8 @@ echo "--- 14: a snapshot cut short is not used: from the start"; node -e "
 const fs=require('fs');const b=fs.readFileSync('$D/m.snap');fs.writeFileSync('$D/m.snap',b.subarray(0,b.length-70000));"; r
 echo "--- 15: on a snapshot, a file read that it does not cover (no path the command line names): written again"; r keep=/$D/lib/a.txt
 echo "--- 16: on that one: both kept"; r
-export CS2WASM_SNAPSHOT_KEEP=1
-echo "--- 17: CS2WASM_SNAPSHOT_KEEP=1 (another environment: from the start)"; r
+export IL2WASM_SNAPSHOT_KEEP=1
+echo "--- 17: IL2WASM_SNAPSHOT_KEEP=1 (another environment: from the start)"; r
 echo "--- 18: a file it does not cover is read, and the snapshot is not written again"; r keep=/$D/lib/a.txt
 echo "--- 19: so it is as step 17 left it"; r
 } > $D/out.txt 2>&1
@@ -91,7 +91,7 @@ call 2, mode m1
 call 2 on the error stream
 exit 0
 --- 10: that file changed: the snapshot is let go, read again
-[snapshot] not used: changed: $(node -e "console.log(require('path').join(process.env.CS2WASM_FS_ROOT,'$D','lib','b.txt'))")
+[snapshot] not used: changed: $(node -e "console.log(require('path').join(process.env.IL2WASM_FS_ROOT,'$D','lib','b.txt'))")
 read /$D/lib/b.txt
 kept /$D/lib/b.txt: three
 call 1, mode m1
@@ -143,8 +143,8 @@ kept /$D/lib/b.txt: three
 call 3, mode m1
 call 3 on the error stream
 exit 0
---- 17: CS2WASM_SNAPSHOT_KEEP=1 (another environment: from the start)
-[snapshot] not used: another environment (CS2WASM_SNAPSHOT_KEEP)
+--- 17: IL2WASM_SNAPSHOT_KEEP=1 (another environment: from the start)
+[snapshot] not used: another environment (IL2WASM_SNAPSHOT_KEEP)
 read /$D/lib/b.txt
 kept /$D/lib/b.txt: three
 call 1, mode m1
@@ -158,7 +158,7 @@ kept /$D/lib/a.txt: one-changed
 kept /$D/lib/b.txt: three
 call 2, mode m1
 call 2 on the error stream
-[snapshot] not written again (CS2WASM_SNAPSHOT_KEEP): 1 paths it does not cover were read
+[snapshot] not written again (IL2WASM_SNAPSHOT_KEEP): 1 paths it does not cover were read
 exit 0
 --- 19: so it is as step 17 left it
 [snapshot] restored N pages and 7 globals; 1 paths checked

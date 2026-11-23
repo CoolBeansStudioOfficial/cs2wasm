@@ -1,4 +1,9 @@
-# cs2wasm: audit findings and plan
+# il2wasm (formerly cs2wasm): audit findings and plan
+
+Renamed il2wasm on 2026-11-23 (docs/SPEC.md section 12). The entries below are history and keep the names they were
+written with: read `cs2wasm` as il2wasm, `cs2wasmc` as the command line `il2wasm`, a `CS2WASM_*` switch as
+`IL2WASM_*`, `src/Cs2Wasm*` and `tests/Cs2Wasm.Tests` as `src/Il2Wasm*` and `tests/Il2Wasm.Tests`, the namespace
+`Cs2Wasm` as `Il2Wasm` (the import module `cs2wasm` is `il2wasm`).
 
 Audit of 2026-11-18 against `docs/SPEC.md`, the Invisible API design (`bazoodle/docs/invisible-api.md`) and the three
 production goals:

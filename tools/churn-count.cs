@@ -1,13 +1,13 @@
 // What the two counts of a moved reference are made of (docs/AUDIT.md A3.5, "The churn loop, round 5"): the loop of
 // tools/churn-raw.cs (an array of 19,392 particles in order, every survivor moved 400 slots down) with the counted
 // store written by hand in its parts, the count read and written through a pointer at the object's first word. For
-// cs2wasm only: the count's place is its own (every particle is also held by s_master, so no count reaches zero and
+// il2wasm only: the count's place is its own (every particle is also held by s_master, so no count reaches zero and
 // the hand's counts are the program's). Then the shapes tried for the calls a count makes on its other path, which
 // the engine pays for on every turn while they are in the loop (Wasm/ColdExits.cs): a call there (the variant with
 // calls also has the compiler's own count of the particle across them: not the engine's cost alone), the calls after
 // the loop reached by leaving it, at the top of an outer loop, and after the loop reached from the outer loop's top.
 // Median ns a frame.
-//   cs2wasmc tools/churn-count.cs -o cc.wasm   then   node host/run.mjs cc.wasm
+//   il2wasm tools/churn-count.cs -o cc.wasm   then   node host/run.mjs cc.wasm
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;

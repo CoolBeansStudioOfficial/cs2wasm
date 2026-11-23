@@ -3,5 +3,5 @@ obj/
 *.wasm
 *.wasm.map
 tests/out/
-!src/Cs2Wasm.Wasm/
+!src/Il2Wasm.Wasm/
 .claude/

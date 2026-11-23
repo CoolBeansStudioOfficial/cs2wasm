@@ -2,7 +2,7 @@
 // Wasm/ColdExits.cs writes that path after the loop): an array of 20,000 objects cleared, every one of them ending
 // there (the range's release: each turn takes the other path), one in 2, 4, 10 and 50 of them at random places, none
 // (each has a second reference); and a loop that stores into an array whose old values end at those rates. Median ns a run.
-//   cs2wasmc tools/drop-range.cs -o dr.wasm   then   node host/run.mjs dr.wasm
+//   il2wasm tools/drop-range.cs -o dr.wasm   then   node host/run.mjs dr.wasm
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;

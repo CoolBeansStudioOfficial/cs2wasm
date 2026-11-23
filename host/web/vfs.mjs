@@ -1,5 +1,5 @@
 // A module's file system in a browser (SPEC section 8: every module gets files over its host's file system; here the
-// host has none, so it is memory): the cs2wasm.fs_* imports (host/fs.mjs has their Node form), over
+// host has none, so it is memory): the il2wasm.fs_* imports (host/fs.mjs has their Node form), over
 //   - a pack: one SharedArrayBuffer of read-only files with an index of paths, the same bytes for every thread of the
 //     module (the toolchain's inputs: library sources, reference assemblies, the program's sources);
 //   - files written at run time, kept by the thread that wrote them (the engine thread writes the output; a worker
@@ -89,7 +89,7 @@ export function vfsImports(getMemory, shared, options) {
     return 0;
   };
   const sizeOf = (path) => (written.has(path) ? written.get(path).size : files.has(path) ? files.get(path)[1] : -1);
-  const refuse = (what, path) => { options.out?.writeError?.(`cs2wasm file system: ${what} ${path} from a worker thread is not supported in this host\n`); return -E.EROFS; };
+  const refuse = (what, path) => { options.out?.writeError?.(`il2wasm file system: ${what} ${path} from a worker thread is not supported in this host\n`); return -E.EROFS; };
   const content = (f) => (f.w ? f.w.data.subarray(0, f.w.size) : pack.subarray(f.at, f.at + f.len));
   const readAt = (f, p, n, pos) => {
     const c = content(f), k = Math.max(0, Math.min(n, c.length - pos));
@@ -199,6 +199,6 @@ export function vfsImports(getMemory, shared, options) {
   };
   // the rest of host/fs.mjs's functions (links, modes, times): not in this host
   for (const name of ['fs_rmdir', 'fs_rename', 'fs_link', 'fs_symlink', 'fs_readlink', 'fs_chmod', 'fs_fchmod', 'fs_utimens', 'fs_futimens'])
-    imports[name] = () => { options.out?.writeError?.(`cs2wasm file system: ${name} is not supported in this host\n`); return -E.ENOSYS; };
+    imports[name] = () => { options.out?.writeError?.(`il2wasm file system: ${name} is not supported in this host\n`); return -E.ENOSYS; };
   return { imports, written };
 }
