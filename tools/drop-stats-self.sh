@@ -4,6 +4,7 @@
 # by references from outside, checks of 1,000 members or more and their visits, the largest).
 #   bash tools/drop-stats-self.sh <test,test> <name>=<SWITCH=1,SWITCH2=1> ...     (`as=`: as it is)
 #   on the homelab: bash tools/homelab.sh <branch> bash tools/drop-stats-self.sh 088_feature_sweep_2 as= off=CS2WASM_NO_STALE_NOTE=1
+# STATS=0: a plain build (no counts); tests `-`: build only.
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1
 ROOT="$(pwd -W 2>/dev/null || pwd)"
@@ -15,10 +16,10 @@ for v in "$@"; do
   n=${v%%=*}; sw=${v#*=}
   if [ "${BUILD:-1}" = 1 ]; then
     s=$(date +%s)
-    env CS2WASM_NO_THREADS=1 DOTNET_GCHeapHardLimit=0x380000000 CS2WASM_DROP_STATS=1 X=1 $(echo "$sw" | tr ',' ' ') node tools/selfhost.mjs $OUT/cli/cs2wasmc.exe $OUT/$n.wasm --pathmap "$ROOT=/src" > $OUT/$n.build.txt 2>&1
+    env CS2WASM_NO_THREADS=1 DOTNET_GCHeapHardLimit=0x380000000 CS2WASM_DROP_STATS=${STATS:-1} X=1 $(echo "$sw" | tr ',' ' ') node tools/selfhost.mjs $OUT/cli/cs2wasmc.exe $OUT/$n.wasm --pathmap "$ROOT=/src" > $OUT/$n.build.txt 2>&1
     echo "built $n ($sw): rc=$? $(( $(date +%s) - s )) s, $(stat -c %s $OUT/$n.wasm 2>/dev/null) bytes"
   fi
-  for t in $(echo "$T" | tr ',' ' '); do
+  for t in $(echo "$T" | tr , " " | sed "s/^-$//"); do
     s=$(date +%s)
     r=$(SELFDET_STDOUT=$OUT/$n.$t.txt node tools/selfdet.mjs --self $OUT/$n.wasm tests/Conformance/$t.cs 2>&1 | grep '^selfdet: self' | tr '\n' ' ')
     echo "$n on $t: $(( $(date +%s) - s )) s: $r"
