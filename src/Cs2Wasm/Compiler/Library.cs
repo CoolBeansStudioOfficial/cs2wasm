@@ -37,7 +37,11 @@ internal sealed class Library
 
     public Library(CSharpCompilation program)
     {
-        All = Upstream(UpstreamSources.Needed(program));
+        var sw = s_times ? System.Diagnostics.Stopwatch.StartNew() : null;
+        var needed = UpstreamSources.Needed(program);
+        if (sw != null) { Console.Error.WriteLine($"    library: {sw.ElapsedMilliseconds,6} ms  what the program needs ({needed.Count} libraries)"); sw.Restart(); }
+        All = Upstream(needed);
+        if (sw != null) Console.Error.WriteLine($"    library: {sw.ElapsedMilliseconds,6} ms  read and parsed in all");
         Compilation = All[0];
         foreach (var c in All)
         {
@@ -126,6 +130,10 @@ internal sealed class Library
     }
 
     static readonly object s_lock = new();
+    /// <summary>CS2WASM_TIMES=1: each library's files read and parsed, in milliseconds (summed over the threads that
+    /// parse, so on several processors more than the time that passed).</summary>
+    static readonly bool s_times = Environment.GetEnvironmentVariable("CS2WASM_TIMES") == "1";
+    static long s_readTicks, s_parseTicks, s_chars;
     static readonly Dictionary<string, CSharpCompilation> s_built = [];
     static List<(string Name, string Text)>? s_own;
 
@@ -220,6 +228,7 @@ internal sealed class Library
                 // (read at once: asking first whether it is there is a second trip to the file system for each of
                 // some thousands of files)
                 string text;
+                long t0 = s_times ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                 try { text = File.ReadAllText(path); }
                 catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { throw new CompileException($"library source missing: {path}"); }
                 if (edits.TryGetValue(f, out var es))
@@ -228,14 +237,28 @@ internal sealed class Library
                         if (!text.Contains(from)) throw new CompileException($"library edit no longer applies: {f}: '{from}'");
                         text = text.Replace(from, to);
                     }
-                return CSharpSyntaxTree.ParseText(text, po, path: UpstreamSources.DisplayPrefix(root) + f);
+                if (!s_times) return CSharpSyntaxTree.ParseText(text, po, path: UpstreamSources.DisplayPrefix(root) + f);
+                long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+                var tree = CSharpSyntaxTree.ParseText(text, po, path: UpstreamSources.DisplayPrefix(root) + f);
+                long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
+                Interlocked.Add(ref s_readTicks, t1 - t0); Interlocked.Add(ref s_parseTicks, t2 - t1); Interlocked.Add(ref s_chars, text.Length);
+                return tree;
             };
+            var swLib = s_times ? System.Diagnostics.Stopwatch.StartNew() : null;
+            s_readTicks = s_parseTicks = s_chars = 0;
             var trees = (many ? files.AsParallel().AsOrdered().Select(parse) : files.Select(parse)).ToList();
             var ownFiles = own.Where(r => r.Name.StartsWith(prefix) && r.Name.EndsWith(".cs"));
             trees.AddRange(many ? ownFiles.AsParallel().AsOrdered().Select(r => CSharpSyntaxTree.ParseText(r.Text, po, path: "cs2wasm/" + r.Name))
                                 : ownFiles.Select(r => CSharpSyntaxTree.ParseText(r.Text, po, path: "cs2wasm/" + r.Name)));
-            return CSharpCompilation.Create(lib, trees, built.Select(b => (MetadataReference)b.ToMetadataReference()),
+            long tTrees = swLib?.ElapsedMilliseconds ?? 0;
+            var made = CSharpCompilation.Create(lib, trees, built.Select(b => (MetadataReference)b.ToMetadataReference()),
                 nullable ? s_options.WithNullableContextOptions(NullableContextOptions.Enable) : s_options);
+            if (swLib != null)
+            {
+                long f = System.Diagnostics.Stopwatch.Frequency;
+                Console.Error.WriteLine($"    library: {swLib.ElapsedMilliseconds,6} ms  {lib}: {trees.Count} files, {s_chars / 1000000.0:F1}M characters; reading {s_readTicks * 1000 / f} ms, parsing {s_parseTicks * 1000 / f} ms (both summed over threads), all its trees {tTrees} ms, the compilation {swLib.ElapsedMilliseconds - tTrees} ms");
+            }
+            return made;
         }
     }
 

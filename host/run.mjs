@@ -17,7 +17,9 @@ for (let i = 1; i < args.length; i++) {
 }
 
 const bytes = readFileSync(file);
+const tRead = performance.now();
 const module = new WebAssembly.Module(bytes);
+const tModule = performance.now();
 // the memory the module asks for (its import of env.memory: at least, at most), unless the command line says more
 {
   const leb = (p) => { let r = 0, s = 0, x; do { x = bytes[p.i++]; r += (x & 0x7f) * 2 ** s; s += 7; } while (x & 0x80); return r; };
@@ -70,7 +72,7 @@ startIo(module, memory);
 const t0 = performance.now();
 const instance = new WebAssembly.Instance(module, imports);
 instance.exports.init();
-if (process.env.CS2WASM_HOST_TIMES) process.stderr.write(`[host] instantiate and init ${(performance.now() - t0).toFixed(0)} ms (since start ${performance.now().toFixed(0)} ms)
+if (process.env.CS2WASM_HOST_TIMES) process.stderr.write(`[host] node up and the file read ${tRead.toFixed(0)} ms, the module made ${(tModule - tRead).toFixed(0)} ms, instantiate and init ${(performance.now() - t0).toFixed(0)} ms (since start ${performance.now().toFixed(0)} ms)
 `);
 const fn = instance.exports[entry];
 if (!fn) { console.error(`no export '${entry}'`); process.exit(2); }
