@@ -810,6 +810,12 @@ sealed partial class RuntimeGen
         var ar = D.Arenas;
         var retainSlow = ar.RuntimeFn("ArenaRetain", 1);
         var releaseSlow = ar.RuntimeFn("ArenaRelease", 1);
+        // (a weak handle made for a member's plain part: Rt.PartMarked)
+        if (rt.PartWeakIfMade is { } partWeak && partWeak.Body.Count == 0)
+        {
+            var pe = new Emitter(partWeak);
+            pe.Get(0); pe.Call(ar.RuntimeFn("PartMarked", 1));
+        }
         // retain(p) -> p: count +1; a member (count word below -1) counts on its arena
         {
             var f = rt.Retain; f.Body.Clear(); f.Locals.Clear();

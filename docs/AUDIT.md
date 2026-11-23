@@ -669,6 +669,25 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     against 1.14 to 1.18). What the memory model leaves open: the order in memory, which only more memory buys
     without moving objects (pages used again only when empty: 76.3 for 80.3, and 1.6 times the particles' pages);
     the list setter's checks beside the counts (about 1); the read loop's 3 to 4.
+- **Tests that differ under load, the part that is on main (2026-11-23, claude/load-flakes-safe).** How such a
+  test is hunted: tools/stress-cycles.sh for rates; a test made of many rounds of the one that fails rarely
+  (tests/Load/219: 3 runs in 100 where test 131 gave 1 in 600); a build with CS2WASM_ARENA_REPORT=1 whose whole
+  output is kept for the runs that fail; tools/oracle-load.sh for what .NET itself prints when eight processes run
+  the test at once; and tools/selfhost-time.sh after any change of the runtime, because the suite's programs are
+  too small to show a check that walks a whole structure at every store (a8a50fc's did: the self-hosted compiler
+  did not end hello world in ten minutes, and nothing in the suite or the stress said so).
+  - Test 087's trap: an async iterator's promise was completed without a count of its own; the consumer, on
+    another thread, let it go while the completing thread was still inside its TrySetResult.
+  - Where the statics fall: with threads they start on a cache line, the runtime's first and the program's
+    after them, the locks' words and s_failedTops on lines of their own (Driver.StaticAddress). Test 139 at ten
+    times its length was 3.00 s or 3.43 to 3.47 s by the same code, by whether the test's Node.Live shared a
+    line with the allocator's words (CS2WASM_STATIC_PAD, CS2WASM_PRINT_STATICS).
+  - What tests asked that .NET does not promise (088's timer, 135's two timers, 127's and 187's count right
+    after Task.WhenAll): by .NET's sources; .NET's own output never differed in 400 loaded runs of each.
+  - Open, with their programs in tests/Load: a parent and its children left for good when a task dies on its
+    pool thread after the main thread let the tree go (219, 215b: closed on claude/load-flakes-1 by Rt.TurnHold,
+    the stale note taken off a held top and Rt.TakeInAbove, not merged: see docs/FINISH.md's row); List.Add from
+    four threads at once (219_no_lock).
 - **The rebuild, round 5, and test 139's trap (2026-11-23, branch claude/tree-rebuild-5, from main 77b2aad; the desk
   machine, shared with another session's timings; not merged when this was written).**
   - **Test 139's trap under load is the engine's view of a grown memory, not the cycle runtime's.** The trace was on
@@ -2047,6 +2066,316 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     NativeAOT-LLVM's in every invocation (frames.mjs flags it), the median 1.5x to 1.6x.**
   - Checked, on the homelab at 88f2a6e (the branch's code: the first part, NodeUp's last count, test 201's new cases, the script): the suite 223/223 checked and 223/223 as shipped (435 s); the self-hosted compiler built with and without the node path (`tools/selfhost-switch.sh CS2WASM_NO_NODE_PATH=1`: 32,014,763 and 32,013,104 bytes; hello world in 14.1 to 15.4 s either way on a loaded machine, peak 344 MB, the two the same module, self = net byte for byte, 27,599 bytes); `selfdet` with that compiler for tests 220 (271,925 bytes), 193 (252,996) and 088 (1,613,340): self = net byte for byte each; `tools/stress-trees.sh`, 200 loaded runs a mode: 139, 192 to 199 and 201 the same in every run of both modes; **127 differed in 4 of 200 as shipped and 5 of 200 checked (`async 5` for 0: the kind and the rate earlier rounds give for main, 1 to 4 in 200; it starts threads and takes none of these steps; in the first part's run at 1e71501 it differed in none; not followed here)**. On the desk: `tools/node-path-breaks.sh` exits 0 (on and off the same with and without the check at the drop; each of the six breaks changes the lines). Not checked: the side branch on the homelab; the suite with `CS2WASM_NO_NODE_PATH=1` for every program (the switch is checked by test 201, the two trees' tools and the self-hosted compiler); frames.mjs on the homelab at this commit (the four pairs above are the first part's code).
 
+- **The build, round 10: where a frame of the tree scene is, the walk's `foreach`, the unlink that is not called,
+  and a leaf's list left a plain object (2026-11-22 to 23, branch claude/tree-3, from claude/round-9 d430594; the
+  desk, shared and loaded most of the night, and the homelab; not merged when this was written).** The brief was
+  the build of the tree, part by part (the objects alone, the up-reference, the list's growth, the destroy at the
+  store). Measured first, by phase and by step, and the two largest things found were none of them: the walk's
+  `foreach`, and a call after every store that did nothing. **The tree's median frame is 0.038 to 0.043 ms where
+  it was 0.045 to 0.052 (1.27x to 1.43x NativeAOT-LLVM's, from 1.52x to 1.68x in the same pairs); the rebuild
+  frame, the scene's p99.9, was 0.76x to 0.85x NativeAOT-LLVM's in five pairs where it was 0.95x to 1.14x, and
+  on a desk under heavy load later the two sides could not be told apart at all. The median is not reached: the
+  build is not at NativeAOT's cost by any step that keeps the model.**
+  - **An ordinary frame by phase** (tools/tree-frame.cs, the desk, quiet: the new subtree's build 12.2 to 12.5 us,
+    its store over the old one 3.9, the move 0.6, the walk 27.6 to 28.8; NativeAOT-LLVM's, round 5: 2.3, 0.1,
+    29.3). **The walk is three fifths of the frame**, and it was level with NativeAOT-LLVM's only because both
+    paid for `foreach` over a List<T>. The build and the store are 16 us against 2.4: to bring the frame to
+    NativeAOT-LLVM's 30 us with the walk as it was they would have to be 2 us, less than NativeAOT-LLVM's own.
+    (`walk-indexed`, 16.4 to 17.3 us in the same tool, is not what the `foreach` walk could be: it runs second,
+    over memory the first walk left in the cache. With the lowering below the two loops are the same
+    instructions but for one compare, and the first walk is still 24 to 26 us.)
+  - **A node by its steps** (tools/tree-node.cs, new: N nodes with K leaves each made under a living node in the
+    scene's order; the desk, quiet): a leaf 34 ns (two allocations with their constructors about 12, the store
+    that joins it the rest); a node with one leaf 150; each further leaf 45; the fifth, with the list's growth
+    from four to eight, 108 (the growth 63: with the capacity set first a node of five is 329 for 392). So of a
+    scene node with five leaves, 392 ns: the leaves' joins 100 to 150, six allocations 70, the growth 63, and
+    what a node costs beyond a leaf (the list's first array as a group of its own, the merge, the parent's
+    ownership turned at the add, two Reevaluates) about 110. NativeAOT-LLVM: 13 ns an entity, 78 for the six.
+    A profile with the engine's inlining on (`node --cpu-prof`, 600 builds and drops, names; shares of the 2.5
+    ms a build and its drop took there): Rt.JoinFresh 16.6%, the program's Build 12.5, ArenaFree 7.8, ArenaLink
+    7.4, AllocObjectArena 6.8, ArenaVisit 6.4, ArenaFreeList 5.4, ArenaGrowArray 4.4, the clears 5.3,
+    List.AddWithResize 3.5, rt.release 3.4, and thirty more below 2. JoinFresh's own code was read as the
+    module has it (1,827 bytes, the type tables read in line, no call it does not need): nothing in it is
+    waste by its writing. **Tools/tree-build.cs's variant 4 (0.45 to 0.47 ms, "the objects alone") is a build
+    and the free of every object, as round 6 said: the allocations of a build are 0.19 ms, below
+    NativeAOT-LLVM's whole build of 0.26, and the brief's first item is not a cost above NativeAOT's.**
+  - **Done, 1: `foreach` over a List<T>** (FunctionCompiler; `CS2WASM_NO_LIST_TEST_FIRST=1`,
+    `CS2WASM_NO_LIST_THROW_PATH=1`). The lowering asked the version, then the size, at every turn, by loads
+    without a field's tag, and kept the enumerator for the changed list's throw as a temporary of the
+    statement. So every function with such a loop took a frame off the stack (rt.frame), cleared it, and had a
+    handler around its whole body for a path that runs when the program has a bug; and Wasm/FieldLoads.cs,
+    which copies a loop's test before it only when the loop starts with it, read nothing before the loop
+    ("a foreach reads nothing before its loop", the field loads' own item). Now: (1) the size's test first,
+    the version asked after it and once more where the list ends (not when no turn was taken: nothing ran
+    since it was read; with threads asked all the same). The two tests read two fields and write nothing, so
+    their order cannot be told; a changed list throws whatever its size says, as the enumerator's MoveNext
+    does. (2) The loads of `_version`, `_size`, `_items` and the array's length carry the tags a load by name
+    carries: a loop that stores none of them, by its own code or by what it calls, reads them once, and the
+    body's own fields with them (the node's X and Y in the walk). (3) The path of a changed list ends in
+    MoveNext's throw (MoveNextThrows reads that from List's source): its enumerator is made there, below the
+    stack's pointer (asked for room first: a trap otherwise, as a frame's), refers to the list without a
+    count and is never released; the catch that takes the exception puts the pointer back
+    (RuntimeGen.RestoreStackAtCatches). The walk's function has no frame and no handler: 356 bytes to 351, its
+    loop the indexed loop's.
+    Test 203 (a list changed by the body, by a call, through a static that refers to it, through another
+    instantiation, in the last round by a removal and by an addition, before a `break` and a `return`; the
+    capacity alone; nested loops, the inner's throw caught inside; a change far below a recursive walk, seen
+    when the walk is back; the node's own fields changed by the body and by a call; the exception's frames;
+    a function that catches its own loop's throw and goes on with structs on its stack; 3,000 throws one after
+    the other) and `tools/list-foreach-breaks.sh`: the same lines with each switch off, with the whole
+    lowering off and with the field loads off; other lines with `CS2WASM_LIST_FOREACH_BREAK=1` (the version
+    not asked at the list's end), `=2` (the enumerator handed to MoveNext with the list's present version)
+    and with the field loads' rules for calls and for the loop's own stores left out
+    (`CS2WASM_FIELD_HOIST_WITHOUT=calls`, `=loop`). Not proven by a break: that the stack's pointer comes back
+    after the throw. As shipped 3,000,000 such throws in a loop ran to their end in the stack's megabyte (16
+    bytes each would be 48 MB; a program outside the suite, within three minutes: a throw is some tens of
+    microseconds); the test has 3,000, because a checked build runs out of memory at 200,000 caught
+    exceptions of any kind (below, seen on the way).
+  - **Done, 2: a member's plain part** (`Rt.PartHolder`, `CS2WASM_NO_PLAIN_PARTS=1`; rounds 4 and 5 worked this
+    out as "a leaf's list left a plain object" and did not build it). JoinFresh joined a leaf's empty list with
+    the leaf: a second member for each of the 15,625 leaves of a build, with its place on the ring, destroyed
+    as a member when the leaf goes. A new object's own new object that only its slot refers to and that holds
+    nothing to link is now left a plain object: the member holds it by a plain counted reference (the slot's
+    bits 0, as a reference to a pinned object), it is released at the holder's clear, and it keeps the holder
+    and the slot in the two words a member has its ring in (free while it is plain, written by every join).
+    What that gives up is "a member refers to no plain object of its group of classes", which is what kept a
+    cycle from closing unseen. It holds again by one rule: **wherever a plain object that code still refers to
+    becomes a member, its note is asked and its holder's slot is linked first, as the store it stands for**
+    (ArenaLinkCore, for the container and for the value; JoinPair's container, JoinFresh's node and
+    PlainParents' levels refuse such an object and so come to ArenaLinkCore). The note can be stale (the slot
+    stored over, the holder gone or plain again): it is checked by what is there (the slot's address is a slot
+    of a living object of a group, by the allocator and the type: SlotOwner; that object the one named, a
+    member; the slot one it has bits for, the bits 0, the slot holding the part), and a member that passes
+    does hold the part unlinked, whatever wrote the note. A part only its holder refers to joins as the
+    holder's (JoinOwned), any other the general way. Not left a part: an object of a class with a finalizer
+    (it would run at the holder's clear, not with the group's), and one a weak handle refers to
+    (ObjectMarks' bit); a part that gets a weak handle later becomes a member there (ObjectMarks.SetAt,
+    rt.part_weak, Rt.PartMarked: the store of the part into its holder's slot once more, the general way),
+    because the weak references to the members of a group that goes are cleared before its finalizers run
+    (test 245) and a part is released after them. Not with threads (JoinFresh is not taken there).
+    By the counts of a build (tools/tree-build.cs, `CS2WASM_DROP_STATS=1`): joins 46,874 to 31,301, parts left
+    15,573, none linked later (the scene never puts a child into a leaf).
+    Test 202 (a leaf that gets children later and is then cut; a leaf's list a second node holds, filled
+    through either, the leaf cut, the loan let go; a part of another class with references back to its holder
+    and above it; a list taken out of its leaf, with the slot null, with another list, with the same list
+    again, filled through a local; a leaf that left its group; weak handles made before and after the leaf
+    joined, read by the finalizers of the group they die with; parts of a class with a finalizer; lists an
+    array holds; 300 frames of the scene's kind with leaves grown and lists lent; counted against .NET while
+    the structures live and when they have gone) and `tools/plain-parts-breaks.sh`: the same lines with the
+    parts off, with and without the check at the drop; other lines with each of
+    `CS2WASM_PLAIN_PARTS_BREAK=1` (a part that joins as a container is not linked to its holder), `2` (as a
+    value), `3` (JoinPair takes a part), `5` (the note is taken without asking that the slot still holds the
+    part), `7` (a part with a weak handle stays one). **Not proven by a break: 4** (JoinFresh's node or a plain
+    parent is a part: such an object would have to hold a member in a slot, and a store that puts one there
+    links the part first by rules 1 and 3; the test is kept as a second line) **and 6** (a part of a class
+    with a finalizer: the test has such parts and its lines are the same; what could differ is the order of
+    two finalizers of one group, which .NET does not fix).
+  - **Done, 3: `Rt.PlainParents` taken in from the side branch** (claude/tree-node-path-2-plain-parents a3ce95f,
+    round 9's, `CS2WASM_NO_PLAIN_PARENTS=1`, test 201's case and break 8, tools/node-path-breaks.sh): it had not
+    been run on the homelab then, and is now, with the rest. With the parts: a plain parent that is a member's
+    part with a living holder is refused, as JoinFresh's node is.
+  - **Done, 4: the unlink that is not called** (Compiler/Arenas.cs, `CS2WASM_NO_UNLINK_SKIP=1`). After every store
+    into a slot a cycle can close through, the compiler called Rt.ArenaUnlink with the slot's old value. For an
+    old value that is null (a list's Add, a field set once: 19,530 of the 23,436 stores of a build) that call
+    does one thing: it gives back the counts the store's link kept until the slot was written (Rt.AfterStore,
+    when `t_backN` is not zero; none in a build). It was two calls deep and read the thread's statics twice to
+    find that out. The two questions are asked at the store now (the old value, and `t_backN` at its place
+    among the thread's statics), and the call is made only for a yes; what ArenaLink noted of the slot's bits
+    stays noted, and the next unlink that reads the note follows a link that set it. Not in a program with
+    threads (the unlink ends the store's locked region there). **The largest step of the round for the
+    build: 0.14 to 0.17 ms of 1.75 on the homelab, 0.12 of 1.40 on the desk**, three times what the profile
+    gave the two functions (3.2%): a call that does nothing is not free in its caller either.
+    Test 204 (a member another member owns, stored by a temporary into an empty field, an empty element, a
+    new list; over a value; into a plain and a new object; groups that only such a store's value holds;
+    a thousand such statements in a row; counted against .NET after each) and `tools/unlink-skip-breaks.sh`:
+    the same lines with the skip off; with `CS2WASM_UNLINK_SKIP_BREAK=1` (the kept counts not asked) groups
+    stay alive until the next store that links something.
+  - **Done, 5: Rt.Reevaluate by the member's slot bits again** (`CS2WASM_NO_SLOT_WALK=1` for the visit by type;
+    it was `CS2WASM_SLOT_WALK=1` to turn it on). Round 1 wrote it, round 2 switched it off: a long frame of the
+    strings scene was laid to it (the host's own collection, found later in round 2) and it gained nothing in
+    the tree then. Found again here from the profile: Rt.ArenaVisit was 6% of a build and its drop, called
+    twice through the type's dispatch for each of the 7,866 Reevaluates of a build (a node's add, and the
+    parent a node takes at its first child). `tools/slot-walk-breaks.sh` (test 201: off the same lines;
+    `CS2WASM_SLOT_WALK_BREAK=1`, the walk without the member's first counted slot, other lines).
+  - **Numbers.** `node tools/frames.mjs --runs 3 --js-young 32` against NativeAOT-LLVM on the desk (loaded by
+    other sessions; the six switches of this round off and on in turn, five pairs, the first with all five
+    scenes). **Tree, median: 0.052, 0.051, 0.047, 0.045, 0.047 ms off and 0.040, 0.043, 0.038, 0.039, 0.042 on,
+    against NativeAOT-LLVM's 0.029 to 0.033: 1.52x to 1.68x off, 1.27x to 1.43x on. p99.9 (the rebuild frame):
+    2.919, 3.263, 2.522, 2.263, 2.922 off and 2.113, 2.416, 2.000, 2.111, 2.458 on, against NativeAOT-LLVM's
+    2.394 to 3.239 in the same ten invocations: 0.95x to 1.14x off, 0.76x to 0.85x on, below it in every
+    pair.** Worst frame: 5.815, 5.360, 3.040, 2.353, 4.559 off and 3.340, 2.834, 2.292, 2.405, 3.082 on, against
+    3.114 to 4.917: 0.68x to 0.78x in four invocations, and 3.340 against 3.328 in the fifth (frames.mjs flags
+    it; a desk on which the same invocation's `off` side had 5.8 ms). p99 0.060 to 0.093 on (0.067 to 0.198
+    off; NativeAOT-LLVM 0.047 to 0.074). The mean frame of the tree 1.03x to 1.12x NativeAOT-LLVM's (1.26x to
+    1.47x off). The other scenes, one pair: churn 0.070 ms both (NativeAOT-LLVM 0.052: 1.35x), collections
+    0.006 both, strings 0.007 both, bigdrop 0.003 both, their p99.9 and worst within each other's spread; the
+    mean frame's geometric mean over the five 0.74x off and 0.70x on, the medians' 1.14x and 1.07x.
+    An earlier set with the `foreach` and the parts alone (1d4abf2, four pairs): tree median 0.045 to 0.048 off
+    and 0.043 on in every one (NativeAOT-LLVM 0.029 to 0.031, 0.034 once); p99.9 not told apart there.
+    **The same on a desk under heavy load half an hour later** (cd93b54, fourteen pairs two minutes apart;
+    NativeAOT-LLVM's own median 0.030 to 0.066 ms and its p99.9 2.6 to 8.4 in them, where a quiet desk gives
+    0.029 and 2.4): median 1.28x to 1.46x on in the ten pairs where NativeAOT-LLVM's own was below 0.047 (1.54x
+    to 1.94x off); **p99.9 0.71x to 1.50x on (below NativeAOT-LLVM's in six pairs, 0.99x to 1.00x in three, above
+    in five) and 0.92x to 1.79x off (below in two): under that load the rebuild frame is not shown to be below
+    NativeAOT-LLVM's in every run, only lower than without the steps in eleven pairs of fourteen.** A quiet desk
+    was not had again before this was written.
+    On the homelab, this side alone (`node tools/frames-ab.mjs --rounds 5 --js-young 32`, at 1c47445, the
+    `foreach` alone): tree median 0.0541 ms on and 0.0565 off (each round's: 0.0541, 0.0571, 0.0543, 0.0551,
+    0.0543 and 0.0595, 0.0610, 0.0565, 0.0594, 0.0606), p99 0.074 and 0.080, worst 2.86 and 2.97; churn 0.0891
+    and 0.0888, collections 0.0065 both. **Not measured: the scene's frames by step on the homelab** (the job
+    waited forty minutes in its queue behind eight others and was given up for the checks below).
+    By step, `tools/tree-build.cs` variant 0 on the homelab (`tools/tree-ab.sh`, new; each switch against the
+    build with all steps, six pairs; that build is 1.57 to 1.62 ms there, its drop 0.39 to 0.43): the unlink
+    not called 0.14 to 0.17 ms of the build (1.73 to 1.79 without it); the plain parts 0.05 to 0.08 of the
+    build (1.61 to 1.67) and 0.07 of the drop (0.47 to 0.49); the plain parents 0.05 to 0.12 (1.61 to 1.73);
+    the slot walk 0.03 (1.57 to 1.62 by the visit, 1.54 to 1.59 by the walk, the lower in each of six pairs).
+    On the desk, the six off and on in turn three times: variant 0 build 1.52, 1.54, 1.63 ms off and 1.29,
+    1.30, 1.31 on (it was 1.40 to 1.48 at the start of the round), drop 0.37 to 0.39 and 0.32 to 0.37; variant
+    3 (capacity first) 1.22 to 1.37 and 1.14 to 1.16; variant 5 (fan 4) 1.56 to 1.62 and 1.26 to 1.30; variant
+    1 (no parent field) 1.05 to 1.06 and 0.99 to 1.10; variant 2 (the parent after the add) 1.79 to 1.88 and
+    1.72 to 1.82 (it takes the general way, which only the unlink's step touches); variant 4 0.45 to 0.49 both.
+    `tools/tree-store.cs`: a frame's build 12.5 to 12.8 us off and 11.1 to 11.3 on (80 to 82 ns an entity,
+    then 71 to 72), its store 4.0 to 5.2 and 3.6 to 3.8. `tools/tree-frame.cs`, before the desk was loaded:
+    the `foreach` alone took the walk from 30.2 to 32.9 us to 27.3 to 28.6 in each of four pairs (the desk
+    was 10% slower than in the quiet numbers above), the build and the store as they were.
+    By the counts of a build (`CS2WASM_DROP_STATS=1`, 19,531 entities): joins 46,874 to 31,301; visits of a
+    joined object 4,266 to 977 (the 781 first arrays of the nodes above the leaves' parents, and 196 more);
+    15,573 parts left, none linked later; 597 of 625 first leaves by the plain parents; unlinks called 23,436
+    to 3,906. The drop of a group (27,395 members where it had 42,968): the walk with the clears 0.26 to 0.28
+    ms where it was 0.29 to 0.30 (the parts are released there, one by one, through the generic release and
+    the dispatch on the type: rt.destroy_now is 4.7% of a build and its drop), the frees 0.065 where they
+    were 0.12.
+    `node tools/bench.mjs` on the desk, off and on in turn twice: 0.91x and 0.90x off, 0.92x and 0.89x on
+    (this side's own times within 0.2 ms of each other but `tree`, 7.4 to 7.6 ms both); its module 336.5 KB
+    off and 338.6 on. Hello world (test 145) 27,784 bytes, as at the branch's start (the limit 28,383).
+  - **Not reached: the median.** With all of it the tree's median frame is 1.27x to 1.43x NativeAOT-LLVM's, and
+    no step in sight ends that inside the model. A frame is now, by phase (the desk, from the tools above):
+    the walk 24 to 26 us (NativeAOT-LLVM's 29.3: this side's is the faster one now), the build 11.1 to 11.3,
+    the store 3.6 to 3.8, the move 0.6: 40. NativeAOT-LLVM's 30 are its walk and 2.4 for the build and the
+    store. To be level, the build and the store together would have to be 5 us, a third of what they are:
+    29 ns an entity for both where the build alone is 71. What an entity's 71 ns are, from tools/tree-node.cs
+    and the profile: two allocations with their constructors 12 (the engine does not put AllocObjectArena in
+    line: 6.4% of a build and its drop); a leaf's join with its up-reference about 15 (Rt.JoinFresh, the
+    largest function still, 19%); and for each node with children its list's first array as a group that is
+    merged a step later, the parent's ownership turned at the add, two Reevaluates, and the list's growth
+    from four to eight: about 170 ns a node, 30 an entity. Round 9's sentence stands: these are the general
+    path's own states, written out; to have less, the states must change (round 7's exclusive part, which
+    the brief of this round says not to build; a node under its parent from its first child on, round 9's
+    direction (a), which needs an owner that does not hold what it owns). **The brief's items 2 to 4 as
+    such were measured and not changed:** the up-reference is about 9 ns of a leaf's join (round 6's figure;
+    three members' u and four looks at a hold, each a few loads: nothing to take out but one look, 1 to 2
+    ns); the list's growth is 63 ns a node (an allocation, the move in one step, the old array's clear and
+    free by the dispatch on its type, the setter's count given back: the clear and the dispatches could go,
+    about 10 ns); the destroy at the store is 10 to 11 ns a member with the parts (it was 12).
+    Not built, each worth a per cent or two of a frame by these measurements: the old array of a growth
+    freed without its clear and the dispatches; AllocObjectArena's first case written at the allocation; a
+    part released by its class's own destruction where the field's class has no subclass in the program
+    (today only a sealed class is released so: Driver's ExactTypeHint); the first look at a hold left out
+    for an object that has just joined.
+  - **Seen on the way, not followed.** (1) A checked build runs out of memory in a loop of 200,000 caught
+    exceptions of any kind (`for (..) try { throw new InvalidOperationException("x"); } catch
+    (InvalidOperationException) { }`, nothing else in the program: `Insufficient memory`; with a changed
+    list's `foreach` the same, with this round's lowering and with the old one): something a checked build
+    keeps for each exception. As shipped the loops run, some tens of microseconds a throw (3,000,000 plain
+    ones had not finished after 100 seconds; 3,000,000 of a changed list's finished within three minutes).
+    Test 203 has 3,000 throws for that reason. (2) Test 236
+    (`236_queue_grows_by_moving`) printed `live 0` where .NET printed `live 191` once on the loaded desk
+    (the lines `after grow` and `after held`), and passed when run again and in both homelab suites.
+    (3) tools/tree-node.cs's first figure (`k=0`, a lone leaf) is 35 to 38 ns in some runs and 48 to 53 in
+    others, whatever the switches: the engine's tiers during the first measurement, not a step's.
+    (4) `walk-indexed` of tools/tree-frame.cs runs after the walk, over a warm cache: it is not what the
+    walk could be (the first item).
+  - Checked. The code is cd93b54 (the commits after it are tools and these documents). On the homelab: the suite
+    at 1d4abf2 (the `foreach` and the parts) 238 passed, 0 failed and the 2 known gaps, checked and as shipped
+    (499 s); at 5fb8575 (all five steps; cd93b54 differs from it by the three instructions that clear the
+    unlink's note) 239 passed, 0 failed, 2 known gaps, both modes (493 s). The self-hosted compiler at e92a608
+    (the `foreach`, the parts, the plain parents; before the unlink's step and the slot walk),
+    `tools/selfhost-switch.sh` with those four switches: built in 262 s and 244 s, 32,933,542 and 32,934,950
+    bytes; hello world in 8.27 to 8.55 s as it is and 8.21 to 8.37 s switched, peak memory 272.0 MB both; the
+    two wrote the same module, and `tools/selfdet.mjs` for test 145: self = net byte for byte (27,731 bytes,
+    8.1 s). The per-switch builds of tools/tree-build.cs above, at 860ce82. On the desk, at cd93b54: the five
+    scripts of breaks (`tools/list-foreach-breaks.sh`, `plain-parts-breaks.sh`, `node-path-breaks.sh`,
+    `unlink-skip-breaks.sh`, `slot-walk-breaks.sh`) exit 0; tests 190 to 199, 200 to 207, 120 to 129 and 130 to
+    139 pass checked and as shipped; tests 202, 203 and 204 as shipped 60 runs each, six at once, one output.
+    **Queued on the homelab when this was written, at 25b5f6b (cd93b54's code), not yet run:**
+    `env SET=202_,203_,204_,145_ bash tools/overnight-check.sh` with the six switches: the suite in both modes
+    again, the self-hosted compiler with and without the six switches and `tools/selfdet.mjs` for tests 220, 193,
+    088, 202, 203, 204 and 145, and `tools/stress-trees.sh` (127, 139, 192 to 199, 201 to 204; 200 loaded runs a
+    mode). Its output: tests/out/overnight/ in the homelab's worktree of this branch (C:/Users/Levi/hl/claude_tree-3)
+    and the session's log. **So for cd93b54 itself: the suite, the self-host check with the unlink's step and the
+    slot walk in it, selfdet beyond test 145, and every stress run are not done yet; the next entry of
+    docs/FINISH.md's log says how they came out.** Threads: none of the steps runs in a program with threads but
+    the `foreach`'s size-first loop and its throw path (the tags are not given there; the version is asked at
+    the list's end whatever the turns); tests 139, 143, 197 and 234 are in the suites above.
+    A job of this session is left in the homelab's queue by mistake: process 30140 there (`heavy.sh node
+    tools/frames-ab.mjs ..`, the scene by step), whose session was closed; it will take a slot for some four
+    minutes when its turn comes and its output goes nowhere.
+  - **Checked on the merge with main (37c6b15: main eba0f0d into the branch; the one conflict, docs/FINISH.md,
+    two appended entries, both kept; Runtime.cs merged by itself).** The queued `tools/overnight-check.sh` (with
+    the six switches) ran there: the homelab's worktree was moved to the merge and built before the job's turn
+    came, so what it checked is the merge. **Suite 241 passed, 0 failed, 2 known gaps, checked and as shipped
+    (595 s).** The self-hosted compiler built as it is (286 s, 33,203,338 bytes) and with the six switches off
+    (262 s, 32,944,300 bytes); **hello world by it in 8.59, 8.82 and 8.95 s** (switched 8.56 to 9.40), peak
+    272.0 MB both, the two modules the same (27,722 bytes); `tools/selfdet.mjs`: **self-1 = net, byte for byte on
+    145 (27,734 bytes), 220, 193, 088 (1,616,223 bytes, 82 s), 202, 203 and 204.** `tools/stress-trees.sh`, 200
+    loaded runs a mode: 139, 192 to 199, 201, 202 and 203 the same output in every run of both modes; **127
+    differed in 3 of 200 as shipped and 4 of 200 checked, each time `async 5` / `pending 1`**, the open gap of
+    docs/FINISH.md's table (item 2: about one run in a hundred on main, 22 of 2,400 and 3 to 5 of 400 in earlier
+    rounds); not run against main the same hour, so whether this branch's 7 of 400 is main's rate is not shown
+    here. Test 204 was not in the script's set (it takes 192 to 199 and 201 to 203); its own 200-run stress was
+    queued after. On the desk at the merge: the five scripts of breaks exit 0; tests 12x, 13x, 19x, 20x and 21x
+    pass checked and as shipped; hello world (145) passes its size limit as shipped.
+  - **Frames on the merge, main against the branch** (main eba0f0d and 37c6b15, `node tools/frames.mjs --runs 3
+    --js-young 32`, all five scenes, main and branch in turn, nine pairs in three sets of three; the desk loaded
+    in the first set: NativeAOT-LLVM's own tree median 0.031 to 0.037 there, 0.028 to 0.029 in the second, 0.028
+    to 0.036 in the third). **Tree, median: main 1.49x to 1.65x NativeAOT-LLVM's (0.044 to 0.061 ms), the branch
+    1.30x to 1.50x (0.038 to 0.049); in the six pairs of the second and third sets main 1.49x to 1.60x and the
+    branch 1.30x to 1.37x, lower in every pair.** p99.9 (the rebuild frame): main 0.81x to 1.40x (0.81x to 0.91x
+    in those six), the branch 0.70x to 0.92x (0.80x to 0.84x in those six): below NativeAOT-LLVM's in every pair
+    on the branch, above it in two of nine on main. Worst frame: main 0.67x to 1.32x, the branch 0.65x to 1.27x;
+    on the branch above NativeAOT-LLVM's in four of nine pairs, the three of the loaded set and the first of the
+    third (1.05x to 1.27x: frames.mjs flags them), at or below 0.81x in the five others; main above in three.
+    p99 in those six: the branch 1.23x to 1.50x, main 1.35x to 2.30x. The tree's mean frame 1.08x to 1.12x on
+    the branch and 1.23x to 1.31x on main in those six (1.14x to 1.41x and 1.28x to 1.63x in the loaded set).
+    The other scenes, the same on both within the desk's spread (second set: churn median 1.33x to 1.34x,
+    collections 1.02x, strings 0.88x to 0.89x, bigdrop 0.90x to 0.94x; their p99.9 and worst 0.10x to 0.37x on
+    both); the mean frame's geometric mean over the five 0.69x to 0.74x on the branch, 0.70x to 0.86x on main
+    (0.70x to 0.71x and 0.73x in the second set). `node tools/bench.mjs`, two pairs: geometric mean 0.93x and 0.91x on main, 0.92x and
+    0.92x on the branch (`tree` 7.4 to 7.5 ms both); the bench module 335.5 KB on main and 339.0 on the branch.
+    **Not reached, as the round says: the median (1.30x to 1.37x on a quiet desk), and the worst frame is not
+    below NativeAOT-LLVM's in every run on a loaded desk.** No further step of the "not built" list was taken:
+    each is a per cent or two of a frame by the measurements above (the old array of a growth freed without its
+    clear and dispatches about 10 ns a node, 8 us of a 1.3 ms build), below what the desk can show, and each
+    would have needed a second full check on a homelab whose queue held nine to thirteen jobs this night.
+  - **Test 127 against main the same hour** (main 4cf95fe on the homelab, `env TESTS=127_ RUNS=400 bash
+    tools/stress-cycles.sh`): `async 5` / `pending 1` in 3 of 400 as shipped and 4 of 400 checked, against the
+    branch's 3 of 200 and 4 of 200 above. Seven of 800 on main and seven of 400 on the branch: twice the rate in
+    one sample each, counts too small to tell apart (a Poisson spread of seven is 2 to 13). Not followed further.
+  - **Merged with main again (e682484: main 4cf95fe, claude/churn-5's ColdExits, the store forwarding and the
+    setter in loops).** Conflicts: docs/FINISH.md (the table's three rows that both changed, each side's words
+    kept; the appended entries both kept) and tools/selfhost-check.sh, which the two sessions wrote the same
+    night: one script now, the switches passed on, hello world, 220, 193 and 088 and SET's tests by selfdet,
+    main's last line ("selfhost-check: all the same"). On the desk at the merge: the five scripts of breaks
+    exit 0, tests 19x, 20x (with 208 and 209), 26x and 145 checked and as shipped. Frames, main 4cf95fe and the
+    merge in turn, six pairs, a desk loaded by other sessions in most of them (NativeAOT-LLVM's own churn median
+    0.049 to 0.088 ms): in the two pairs where both sides' NativeAOT-LLVM tree median was 0.029 to 0.030, tree
+    median 1.53x and 1.54x on main and 1.33x and 1.35x on the branch, p99.9 0.82x and 0.91x against 0.80x and
+    0.86x, worst 0.67x and 0.89x against 0.66x and 0.77x, churn 1.22x to 1.24x on the branch and 1.23x and
+    1.36x on main (its NativeAOT-LLVM churn 0.088 ms in the second: the desk); over all six the tree's
+    median lower on the branch in five (1.30x to 1.59x against 1.41x to 1.96x). The worst frame of the tree on
+    the branch was above NativeAOT-LLVM's in two of the six (1.45x, 1.21x, both on the loaded desk).
+    **Checked on the homelab at e682484** (`env SET=202_,203_,204_,208_,209_ bash tools/overnight-check.sh` with
+    the six switches): **suite 244 passed, 0 failed, 2 known gaps, checked and as shipped (772 s)**; the
+    self-hosted compiler built as it is (323 s, 33,252,200 bytes) and switched (456 s, 32,994,322 bytes: the
+    homelab under other sessions' builds), **hello world by it in 10.2 to 11.4 s** (switched 10.0 to 10.3; 8.6 to
+    9.0 s at 37c6b15 an hour and a half before on a quieter homelab, and main's own session gave 8.29 to 8.34 s
+    for 4cf95fe's code: not measured here side by side, so whether the merge costs the self-hosted compiler
+    anything is not shown; the switched build, without this branch's six steps, is as slow, which lays the
+    difference to the homelab or to main's side), peak 272.0 MB, the two modules the same (27,721 bytes);
+    **self-1 = net, byte for byte on 145 (27,733 bytes), 220, 193, 088, 202, 203, 204, 208 and 209**. Stress, 200
+    loaded runs a mode: 139, 192 to 199, 201 to 203 the same in every run; 127 `async 5` / `pending 1` in 3 of
+    200 as shipped and 1 of 200 checked (the open gap, as above).
+
 - **Known differences from .NET, taken in turn (2026-11-22, branch claude/known-diffs-1, from main cb287fb; the
   desk for the work, the homelab for the checks; not merged when this was written).** Seven differences earlier
   sessions had found and left. Five are closed, each with a test that fails without the fix; two are left, with a
@@ -2107,6 +2436,195 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     a living member (`var old = b.Cells; b.Cells = new Cell[4];`), which refer back to that member, stay until
     the member's group goes (test 246 does not count them while the board lives).
   - Checked: each closed item's test fails without its fix (241 with `CS2WASM_NO_FNPTR_STORAGE_KEEP=1` and before the scan, the generic and the `ref` fixes; 246 with `CS2WASM_NO_RANK_SITES=1`; 242, 243 and 245 on the commit before theirs) and passes checked and as shipped. The branch was merged with main 7932c93 (the node path; no conflict) at 14779aa, and what follows is of that commit unless said. On the homelab: the suite 236 passed, 0 failed and the 2 known gaps, checked and as shipped (460 s; the job was queued at a46bd11 and its first line names that commit, the checkout was at 14779aa when it ran: tests 201, 244 and 247 are in its count); the self-hosted compiler (`tools/selfhost-switch.sh CS2WASM_NO_RANK_SITES=1`): built in 240 s, 32,886,612 bytes, hello world in 9.06 to 9.17 s, peak memory 344 MB, the same module with and without the switch, and `tools/selfdet.mjs`: self = net byte for byte on 145 (27,738 bytes), 220 (276,626), 193 (258,680) and 088 (1,617,408); before the merge, at a63e075 (item 1 alone) the suite 231/231 checked and as shipped, and at dbae95a (items 1 to 3) the self-hosted compiler byte for byte on 145 (9.3 to 10.2 s, 344 MB). **Not run: `tools/stress-cycles.sh`** (127 and 139, and the new tests, 200 runs a mode): queued on the homelab behind other sessions for forty minutes and not started when this was written; the desk refuses heavy work. On the desk, the merge: tests 241 to 247 (244 and 247 as known gaps), 030 to 039, 190 to 207, 220 to 222, 020, 086, 087, 125, 127, 139, 143, 180 and 187 and the five of 22x pass both ways; hello world 27,784 bytes as shipped (the limit 28,383; the same number at the first commit of the branch). `node tools/frames.mjs --runs 3 --js-young 32 --no-aot`, main and the merge built in turn, two rounds each (main first): tree median 0.048 and 0.048 ms against 0.047 and 0.048, p99 0.073 and 0.070 against 0.070 and 0.070, p99.9 2.78 and 2.83 against 2.70 and 2.66, worst 3.33 and 3.14 against 2.96 and 2.97; churn median 0.066 and 0.067 against 0.068 and 0.067, p99 0.076 and 0.076 against 0.090 and 0.082 (main's own in a full run half an hour before: 0.140; the scene has no group, no weak reference and no finalizer, and none of its code changed), p99.9 0.116 and 0.100 against 0.124 and 0.124; bigdrop median 0.003 both, p99.9 1.09 against 1.08 to 1.11: level. With NativeAOT-LLVM beside it, before the merge (bd6177b): churn 1.34x its median, collections 0.97x, strings 0.89x, tree 1.69x (p99.9 1.27x, the node path not yet in), bigdrop 0.94x. Nothing was measured with threads beyond tests 139, 143 and 197 in the suite.
+
+- **The churn loop, round 5: 1.35x to 1.17x-1.22x, what the engine does with a call in a loop, and what is left by
+  measurement (2026-11-22 to 23, branch claude/churn-5, from claude/round-9 d430594; the desk machine, shared with
+  other sessions' timings: ranges, runs in turn, the lowest of several rounds where said; the homelab for the
+  checks).** Asked for: the churn scene's median at or below NativeAOT-LLVM's, or every nanosecond that is left
+  shown to be a floor. **Not reached: `frames.mjs` churn 0.063-0.064 ms against 0.051-0.054 (1.17x to 1.22x; it
+  was 0.068-0.070 against 0.050-0.052, 1.35x to 1.36x, in the same hour); the mean frame 1.12x to 1.17x (was 1.24x
+  to 1.25x).** Two changes are in (a list's setter in loops, a stored value read back); one pass is built and off by
+  default because it gives the scene nothing (the calls of a count's other path outside the loop); three things were
+  tried and not kept; the header's word is not built, with what stands in its way.
+  - **Measured first, both sides** (us a frame, cs2wasm against NativeAOT-LLVM; `tools/churn-parts.cs`,
+    `churn-raw.cs`, `churn-move.cs`, built for NativeAOT-LLVM from the same files). The scene by phase: births 4.0
+    against 7.7, the loop 66.0 against 44.1, the removal 0.4 against 0.2, **the loop without its move 29.4 against
+    29.7** (level: field loads and the cheaper free path closed the read loop in the scene). `churn-raw` (an array in
+    order, every survivor moved 400 slots down): no store 28.3 against 23.0, the reference written and nothing else
+    32.0 against 26.4, the store as each side makes it 42.8 against 29.5; the read loop rotated by hand 29.2-29.6
+    against 23.7, **slower than as it is on both sides** (round 4 had 1.7 us for it: FieldLoads reads the length
+    once now, and what was left of "the loop's shape" is nothing here; a pointer stepped along the array cannot be
+    written by hand without `fixed`, whose pin is counted: not measured). `churn-move` (through the list, particles
+    in order, none dying): no store 27.5 against 29.8, every survivor into its own slot **55.3 against 40.5**: the
+    array's store costs 14.5 on top of the read loop, the list's 27.8, where NativeAOT-LLVM's list costs it 4 more
+    than its array. So the first thing was in the list, not in the count.
+  - **Built: a list's setter goes into loops as its getter does** (`CS2WASM_INLINE_READERS` 80 to 96;
+    Wasm/Inliner.cs). FieldLoads' inliner takes a callee of up to 80 instructions that reads fields of an object it
+    is given; List<T>'s setter for a class's elements is 81 to 90 with its two counts, so the getter went in and the
+    setter stayed a call, which the engine inlines itself but with the size, the array and its length read again,
+    and with its counts' calls in the loop (below). `churn-move`: own slot 55.5 to 45.9, 400 slots down 58.0 to
+    47.0-50.9, the scene's loop 69.9 to 61.7; the frames module 55 bytes larger, hello world the same. No new rule:
+    the conditions are FieldLoads' own (tests 230 to 234, `inline` among them).
+  - **Built: a value stored and read back is the stored value** (`CS2WASM_NO_STORE_FORWARD=1`;
+    Wasm/SameBaseLoads.cs). `--p.Life > 0` stores the field and reads it again for the test: the engine's code had
+    the store and then two loads of the place. By the pass's own proof (the same local plus the same constant, the
+    local not assigned since, also not inside the stored value's own code; every store between to other bytes of
+    that object; no call) the read is the value that was stored, kept in a local before the store. Only a store of
+    the place's whole width read with the load of the same type (a byte's or a short's store keeps part of the
+    value: left as it is). `CS2WASM_SAME_BASE_WITHOUT=overlap|other|calls|assigned|value|address` takes one of the
+    pass's rules out (the switches are new; round 4 proved its rules by editing): test 207 (loads) prints something
+    else for overlap, other, calls, assigned and address, test 209 (new: stores read back in loops, narrow places,
+    NaNs, the variable assigned, stores between through other variables, overlapping fields, refs, pointers, calls)
+    for overlap, other and calls; `value` (the variable assigned inside the stored value's code) no program shows:
+    the compiler keeps the address in a temporary there. It stays as a guard. Hello world one byte smaller.
+  - **The two together** (`tools/frames-ab.mjs`, eight rounds in turn, each round's median, ms): churn before
+    0.0652-0.0681, the setter alone 0.0624-0.0660, the stored value alone 0.0631-0.0660, **both 0.0589-0.0631**;
+    collections 0.0062 all four, strings 0.0068-0.0069, tree 0.0472-0.0489, bigdrop 0.0031-0.0032: nothing else
+    moved. `bench-ab.mjs`, four rounds: 0.999x and 0.991x of before (level). `frames.mjs --runs 3 --js-young 32`,
+    before (the two switches) and after in turn, median / p99 / p99.9 / worst ms and the ratio to NativeAOT-LLVM's
+    median: churn before 0.068 / 0.090 / 0.121 / 0.145 (1.36x) and 0.070 / 0.112 / 0.170 / 0.283 (1.35x), after
+    0.063 / 0.089 / 0.120 / 0.143 (1.22x), 0.064 / 0.112 / 0.197 / 0.207 (1.22x), 0.063 / 0.142 / 0.262 / 0.348
+    (1.17x) and 0.064 / 0.107 / 0.125 / 0.147 (1.22x); collections 0.006 / 0.021-0.024 / 0.165-0.178 / 0.294-0.304
+    before and after (1.00x to 1.03x); strings 0.007-0.008 / 0.010-0.014 / 0.019-0.032 / 0.046-0.120 (0.88x to
+    0.93x); tree 0.045-0.048 / 0.062-0.102 / 2.29-3.04 / 2.58-4.59 before, 0.047 / 0.074-0.080 / 2.34-2.55 /
+    2.58-3.10 after (1.54x to 1.58x, p99.9 0.91x to 1.11x: the desk's spread, not this round's); bigdrop 0.003 /
+    0.007-0.008 / 1.02-1.18 / 1.05-1.74 (0.94x to 0.97x); memory 16.0 MB against 59.3 (71.1). The mean frame: churn
+    1.24x-1.25x to 1.12x-1.17x; the geometric mean over the scenes 0.74x-0.76x to 0.72x-0.73x. `bench.mjs`: 0.91x
+    before, 0.93x after (one run each; its two sides move by more).
+  - **The engine's own code read** (new for this record: `node --print-wasm-code host/run.mjs m.wasm` prints V8's
+    machine code for every function, by name with `CS2WASM_NAMES=1`; the optimizing tier's listing is the one
+    marked TurboFan). The counted store's loop in `churn-raw` had, on the path every survivor takes, **five stores
+    of the loop's values to the stack and one load back a turn** (the sum, the particle, the write index, the read
+    index, the old value), beside the loads and stores the loop itself asks for. They are there for the calls on the paths
+    that are not taken (rt.retain for an object in a group or never freed, rt.on_destroy, Rt.FreeObject for a
+    string, Rt.FreeSmallOld): the engine writes a value that is alive across a call to memory where the value is
+    made, on every turn, unless the call's block ends in `unreachable` (NoReturn.cs is about that case) or the
+    value is a loop's own (a phi at its top), which it writes only where the call is. By hand in
+    `tools/churn-count.cs` (new: the counted store in its parts, the count read and written through a pointer; us
+    a frame): no store 28.3, the reference written 31.7, **the counts by hand as the compiler tests them 38.7, the
+    compiler's own 42.4**; without their tests 37.2, one added only 34.6, the old value read and one taken 34.7,
+    the old value read and tested alone 33.3. So of the counted store's 10.7 on top of a bare store: **the two
+    counts 5.5 (a load and a store each), their tests 1.5, the engine's writes for the calls 3.7.** NativeAOT-LLVM's
+    store with its card mark costs 3.1 on top of its bare store: counting a moved reference is 2.4 above the
+    collector's barrier at the least, without a proof that it is a move (rounds 2 and 3: none is sound). **The two
+    counts sharing work for a class known to be plain** (sealed, flat: the retain without its test, the release
+    with the zero test alone): 39.5 by hand against 38.7 with the tests as they are: nothing to share, the tests
+    are a compare each that the processor predicts. **A range's release in one pass** (RemoveRange, Clear): with
+    the free's usual case written out in the range's loop the 396 particles of the scene that end after the loop
+    go in 1.5 us for 2.4 (the side branch, below), but 20,000 objects cleared in a loop that runs often
+    (`drop-range.cs`, all ending) in 35.4 for 34.3: a gain only where the release runs cold; and the churn scene's
+    own RemoveRange lets none go (its tail holds survivors that were moved, counted twice, and the frame's
+    newborn). Not built.
+  - **Built, and off by default: the calls of a count's other path outside the loop** (`CS2WASM_COLD_EXITS=1`;
+    Wasm/ColdExits.cs, its summary has the shape). Shapes were tried by hand first (`churn-count.cs`): the calls
+    after the loop, reached by leaving it: nothing (what the turn made and the call's code uses is written where
+    it is made, and the engine shares an address computed in the loop with the code after it); at the top of an
+    outer loop: no writes, but what the loop does not change was read from the stack on every turn (the engine
+    moves a value's place in memory up to the top of the loop that has the call when no use lies between); **after
+    the loop, reached from the outer loop's top by its branch back: 40-41 us, the hand's 39-40**: what the call's
+    code uses then comes to it as the outer loop's own values. The pass does that for an innermost loop: the
+    path's code and what was left of the turn are written after the loop, the loop is entered again; control flow
+    only, the same code at the same point with the same locals; a value on the operand stack there is kept in a
+    local where it is made. The counted store 45.7-46.3 to **40.5-41.1**; a range cleared whose objects do not end
+    14.8 to 10.5. **But a turn that leaves the loop pays 5 to 7 ns** (the loop's values through three loop tops):
+    `tools/drop-range.cs` (new: an array of 20,000 objects cleared or stored over, all of them, one in 2, 4, 10,
+    50 or none ending there), all ending 36 us with the call in the loop, 45 with every turn leaving it. So the
+    loop as it was is kept as a second copy for the turns after such a path (a loop with a counter goes there when
+    the last one was within 8 turns and comes back after 8 without; one without a counter stays 4 turns, 8 more
+    after each). With that, cleared and stored over, against the call in the loop: all ending 38.9 against 33.8
+    and 44.4 against 42.6 (15% and 4% slower; with the turns counted down in a local instead, 34.5-36.3 and
+    44.9-49), one in 4 25-26 against 21.6 and 37.3 against 31.9 (17%), one in 10 33.0 against 34.2 and 46.9 against
+    43.5, one in 50 16.7 against 19.0 and 31.1 against 30.3, none 10.5 against 14.8 (30% faster) and 25.1 against
+    25.6. **The
+    churn scene: 0.0578-0.0585 ms with it against 0.0582-0.0591 without, eight rounds in turn: nothing** (one
+    particle in 48 ends in the loop: what the survivors' turns gain, 2 us, the 400 that end give back); the other
+    scenes the same; `bench-ab.mjs` level but for list_sort, 3 to 4% slower in every round. A gain where the other
+    path is rare, a loss where it is taken every few turns, and the compiler does not know which: **off by
+    default.** Test 208 (loops whose stores take the other path in every way a turn can go on: more stores, `?:`,
+    break, continue, a goto past the code after the loop, switch, return, exceptions) passes with and without;
+    `bash tools/cold-exits-proof.sh`: with the pass (24 of its loops) the same output, without `stack` or `rest`
+    the module is not valid, without `labels` all 26 lines differ. The self-hosted compiler built with the pass on
+    (commit 0b50ec9, where it was on): 33,103,522 bytes against 32,966,301, hello world in 8.64-9.33 s against
+    8.61-8.69, byte for byte the .NET-hosted compiler's.
+  - **What a particle that ends inside the loop costs** (`tools/churn-deaths.cs`, new, both sides: the scene, and
+    the scene with its dead held by a second list until after the loop; us a frame of the loop alone): cs2wasm
+    55.6-58.1 and **50.1-52.9**, NativeAOT-LLVM 45.2-46.3 and 45.5-48.5; letting the 396 go after the loop 2.4-2.9
+    (7 ns each; NativeAOT-LLVM 0.2). So **the 400 ends cost the loop 6 us where the same work after it costs 2.5
+    to 3, and in a loop where every object ends under 1 ns each** (`drop-range.cs`: stored over, all ending 43.5
+    us against 26 for none, 20,000 objects): what the scene pays for is the branch the processor cannot predict
+    (one particle in 48, at random) and a path of about 80 instructions and two calls run once in 48 turns.
+    NativeAOT-LLVM pays none of it in the median: its collector frees in its pauses, **5.5 to 6 us a frame in the
+    mean** (its mean frame 0.0566-0.0580 ms against its median 0.051-0.052; cs2wasm's 0.0645-0.0673 against
+    0.063-0.064). Freeing after the loop would be a deferred free: not done. With every particle given the same life (the tool's last two scenes: a frame's dead are its oldest, side by side at the list's start, so the branch is predicted and the path runs 400 times in a row) the loop was 54.3 us with the dead ending in it against 53.6 with them held: **one sample, on a loaded desk; not repeated** (a quiet run was waited for and did not come before this was written).
+  - **Tried for the ends, and not kept** (branch claude/churn-5-free-inline, the code as it was when measured;
+    its suite was not run). (1) The pass on by default only for loops whose every call is rare by what it is (the
+    retain of an object of a flat sealed class, said by the compiler on the call; rt.on_destroy behind its own
+    test of the mark; the frees' slow cases), with the two calls a free makes written out in the loop
+    (Rt.FreeSmallOld's and Rt.FreeObject's usual cases as functions, Rt.FreeBack and Rt.FreeSmall), so that an
+    object ends in the loop without a call: `churn-deaths` 55.6-56.5 to 53.3-54.5 with the string's free left a
+    call, **57.8-59.0 with it written out too** (its values are more than the engine has registers for beside the
+    loop's own: three of the loop's values written at its top on every turn, by the listing); the range's release
+    of the 396 after the loop 2.4 to 1.5 us; **the frames scene itself 0.0604-0.0665 ms against 0.0598-0.0613:
+    nothing.** (2) What no call on that path at all would give, measured by leaving the block unfreed (a leak, for
+    the measurement only): 51.1-53.7; with the frees in, the tool's 53.3-54.5 was the most that came of it. (3)
+    rt.on_destroy's call behind the test of the mark's bit at every end written out in a loop: 58.4 against 59.0,
+    eight rounds: nothing (the engine inlines the function). Test 260 (objects with weak references and table
+    keys that end inside loops) was written for it and stays as a test of those paths.
+  - **The NaN tests**: `CS2WASM_NO_CANON=1` (measurement only) on `churn-raw`: the read loop 29.9 to 27.1, the
+    counted store 40.4 to 37.3: **2.8 to 3.1 us**. The test as a select on the bits, stored as an integer (no
+    branch in the engine's code): slower, 29.9 to 34.8; the float select stays. The owner ruled that the
+    canonical NaN stays: a floor.
+  - **The header's third word: not built; what stands in its way, found by reading the runtime for it.** (1) Bit
+    31 of the word (pinned by a static) is read on about fifteen arena paths (`Mem.LoadI32(x + 8) < 0`), several
+    before the object's type is asked: with two header sizes each must ask the type first. (2) Bit 30 (a mark:
+    weak references, a suppressed finalizer) is read at every end (rt.on_destroy). A side table by address needs
+    one bit an object that has an entry: the type word is compared whole at every cast and dispatch; the count
+    word's negative values are the arenas' and the immortal objects', and wherever the runtime tells a plain
+    object from a member by the count's sign (about twenty places) a plain object with a negative count would be
+    read as a member, its arena header taken from the words before it. A bit a page ("an object here has an
+    entry") would do for blocks in pages, at a second load an end and a lookup for every end in such a page, but
+    small blocks are not all in pages and frame objects and data objects are in none. (3) SPEC 7.3's identity
+    hash is a counter in the order hashes are first asked for, kept in the word: made from the address it would be
+    other numbers (a freed address's next object the same hash), which is a change to the specification's text,
+    and kept in a table it needs (2)'s bit to be taken out at the end. (4) So only a class's own choice is left: a
+    two-word header for a hierarchy that has no class that can be on a cycle and none with a finalizer (the pinned
+    and finalized bits are never set there), the hash and the mark in tables with a page's bit, and every read of
+    the word in the runtime behind a test of the type's header size (HashOf, ClearFinalized, the marks, the
+    statics' pin, the memory statistics, the share check's thread, MemberwiseClone's first byte, boxes, the
+    reflection's field offsets, the free list's link at +8 in a block of 8). That is a change to every object's
+    layout and to the end's path, a day's work with the self-hosted compiler's rebuild after each step, for
+    round 3's 1.5 to 2 us of this frame (4 bytes of 36) and the memory of small objects. **Not started this
+    round; no measurement says it is a loss.**
+  - **What is left of the churn frame, by measurement** (0.063-0.064 ms against 0.051-0.054; cs2wasm's births are
+    3.7 ahead, its read loop level): **the particles that end in the loop 6 us** (5.6 to 7: the collector's 0 in
+    the median, 5.5 to 6 in its mean; a floor while frees are not deferred, of which the calls' share, 1 to 1.5,
+    is what (1) above could not turn into a gain); **the NaN tests 2.8 to 3.1** (a floor by the owner's ruling);
+    **the two counts of a moved reference 5.5, 2.4 above the card mark** (a floor without a proof of the move);
+    their tests 1.5 and the engine's writes for the calls 2 to 3.7 (what ColdExits takes away in a loop where no
+    object ends, and gives back where one in 48 does); the header's word 1.5 to 2 (unbuilt). The scene's worst
+    frame stays a tenth of NativeAOT-LLVM's (0.14-0.35 ms against 1.17-1.48).
+  - Sizes: hello world 27,784 to 27,783 bytes (limit 28,383); the frames module 230,372 to 230,417; the
+    benchmarks' 366,131 to 366,120; the self-hosted compiler 32,969,222 to 32,970,943.
+  - **After, by phase** (`churn-parts.cs`, us a frame, the desk busier than for the first table): births 4.4-4.5
+    against 8.5, the loop 58.6-59.4 against 45.9-46.1 (it was 66.0 against 44.1), the removal 0.46 against 0.21,
+    the loop without its move 32.1-32.5 against 30.9-31.0.
+  - **Checked** on the homelab. The suite at ba966f6 (the last change to the compiler is 25e2f1b; tests 208, 209
+    and 260 in it): 239 passed, 0 failed, 2 known gaps (244, 247), checked and as shipped (489 s); before it at
+    c459a81 (ColdExits on, as first built) 237 and 2, at 25e2f1b 238 and 2. Stress (`tools/stress-tests.sh` 208, 209, 260, 127 and 139, 200 loaded runs a mode): 208, 209, 260 and 139 printed the same in every run of both modes; 127 differed in 1 of 200 as shipped and 2 of 200 checked, its "async 5 / pending 1" (the load flake on record: 3 to 7 of 400 on main). The self-host check at cb43eb9 (`bash tools/selfhost-check.sh
+    CS2WASM_INLINE_READERS=80 CS2WASM_NO_STORE_FORWARD=1`, new: tools/selfhost-switch.sh, then tools/selfdet.mjs on
+    four programs): the self-hosted compiler built in 246 s both ways, 32,970,943 bytes against 32,969,222 with
+    the two switches; hello world in 8.29-8.34 s against 8.25-8.35, exit 0, peak memory 272.0 MB both, the same
+    module; **145_size_hello, 220_collections_grow_by_moving, 193_subtrees_replaced_and_moved and
+    088_feature_sweep_2 each "self-1 = net, byte for byte"** (27,731, 276,608, 259,824 and 1,617,302 bytes; the
+    self-hosted compiler 8.1, 18.7, 16.8 and 79.6 s). `bash tools/field-hoist-proof.sh` with the setter inlined:
+    every condition but `volatile` and `machine` changes a line, as before. `bash tools/cold-exits-proof.sh`:
+    above. On the desk, with `CS2WASM_COLD_EXITS=1`: the suite's 21 tests whose names have 19 or 20 in them pass
+    both ways. **Not checked or not done:** the suite and the stress runs with
+    ColdExits on beyond that (it is off by default; the suite at c459a81 ran with it on, as first built, without
+    the second copy of the loop and the counter); the side branch claude/churn-5-free-inline (no suite); the
+    scenes on a quiet machine (every figure above is from the shared desk, with its ranges); a program with
+    threads for the two changes that are in (the stored value read back is the pass's own proof, which holds for a
+    field another thread may write only as far as any plain read does; the suite's thread tests pass).
 
 ### A4. Plugins (goal 3)
 
