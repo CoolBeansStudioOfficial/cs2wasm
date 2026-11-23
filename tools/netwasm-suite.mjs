@@ -21,6 +21,7 @@
 //   report     print the totals and failures from the last run; write report.json
 //   all        fetch, extract, setup, build, oracle, run (if a compiler is given), report
 //   homelab <branch> [options]   run `all` on the homelab through tools/homelab.sh (the heavy-run mode)
+//   pull-oracle  copy the homelab's oracle records (scp homelab:, the same cache path) here, for a local il2wasm run
 // options:
 //   --cache <dir>       default %LOCALAPPDATA%/il2wasm/netwasm (or $IL2WASM_NETWASM_CACHE)
 //   --commit <sha>      default the pinned commit below
@@ -36,6 +37,9 @@
 //   --modes <list>      checked,shipped (default both)
 //   --repeat <n>        run each module n times at once, every run must match (under load; default 1)
 //   --force             redo oracle runs and compiles that already have results
+//   --oracle-here       allow .NET runs of the cases on this machine (the oracle, and the dotnet-standin): only on the
+//                       homelab (`homelab` passes it). Some cases call Debugger.Launch/Break, which opens the JIT
+//                       debugger's dialog on a desk with Visual Studio; without the flag those steps are refused
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, cpSync, rmSync, statSync } from 'node:fs';
 import { cpus, homedir } from 'node:os';
@@ -329,11 +333,14 @@ async function runIl2wasm(cases) {
   const standin = compileCmd === 'dotnet-standin';
   const results = readJson(join(work, 'results.json'), {});
   const todo = [];
+  let stale = 0;
   for (const c of cases) {
     const o = readJson(join(work, 'oracle', `${c.dir}.json`), null);
     if (!o) continue;
+    if (o.hash !== c.hash) { stale++; continue; } // recorded for another version of the case: run the oracle again
     for (const mode of modes) todo.push({ c, o, mode });
   }
+  if (stale) console.log(`run: ${stale} cases have an oracle record for another version of the case (pull-oracle after the homelab's run)`);
   console.log(`run: ${todo.length} case-modes (${standin ? 'the .NET build standing in for the module' : compileCmd}), ${par} at once${repeat > 1 ? `, each run ${repeat} times at once` : ''}`);
   await pool(todo, par, async ({ c, o, mode }) => {
     const key = `${c.dir}|${mode}`;
@@ -454,8 +461,18 @@ if (command === 'homelab') {
   const branch = argv[1];
   if (!branch) { console.error('usage: node tools/netwasm-suite.mjs homelab <pushed branch> [options]'); process.exit(2); }
   const rest = argv.slice(2);
-  const p = spawn('bash', [join(root, 'tools', 'homelab.sh'), branch, 'node', 'tools/netwasm-suite.mjs', 'all', ...rest], { stdio: 'inherit' });
+  const p = spawn('bash', [join(root, 'tools', 'homelab.sh'), branch, 'node', 'tools/netwasm-suite.mjs', 'all', '--oracle-here', ...rest], { stdio: 'inherit' });
   p.on('close', (code) => process.exit(code ?? 1));
+} else if (command === 'pull-oracle') {
+  // the homelab keeps its cache at the same path (the same user on both machines, as tools/homelab.sh assumes)
+  const remote = `${opt('--remote', 'homelab')}:${work.replace(/\\/g, '/')}`;
+  mkdirSync(work, { recursive: true });
+  for (const part of ['oracle', 'expected']) {
+    rmSync(join(work, part), { recursive: true, force: true });
+    const r = await run('scp', ['-q', '-r', '-o', 'BatchMode=yes', `${remote}/${part}`, work], { timeout: 1_800_000 });
+    if (r.code !== 0) { console.error(`scp ${remote}/${part}: ${r.stderr}`); process.exit(1); }
+  }
+  console.log(`pulled ${readdirSync(join(work, 'oracle')).length} oracle records from ${remote}`);
 } else {
   const t0 = Date.now();
   if (command === 'fetch' || command === 'all') await fetchCheckout();
@@ -463,6 +480,11 @@ if (command === 'homelab') {
   if (command === 'setup' || command === 'all' || command === 'build' || command === 'oracle' || command === 'run') await setup();
   const cases = ['build', 'oracle', 'run', 'report', 'all'].includes(command) ? loadCases() : [];
   if (command === 'build' || command === 'all') await build(cases);
+  const dotnetRuns = command === 'oracle' || command === 'all' || (command === 'run' && compileCmd === 'dotnet-standin');
+  if (dotnetRuns && !flag('--oracle-here')) {
+    console.error('the .NET runs of the cases (oracle, dotnet-standin) run only on the homelab: node tools/netwasm-suite.mjs homelab <pushed branch> [options] (or pass --oracle-here there)');
+    process.exit(2);
+  }
   if (command === 'oracle' || command === 'all') await oracle(cases);
   if (command === 'run' || command === 'all') await runIl2wasm(cases);
   if (['report', 'all', 'run', 'oracle'].includes(command)) {

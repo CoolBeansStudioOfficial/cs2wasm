@@ -340,6 +340,9 @@ void Classify(CaseInfo c)
     if (c.Skipped) c.Tags.Add("skipped-by-netwasm");
     // state of the machine every run shares (isolated storage, drives, watched directories): its runs cannot overlap
     if (Regex.IsMatch(text, @"IsolatedStorage|DriveInfo|FileSystemWatcher|\bMutex\b|MemoryMappedFile")) c.Tags.Add("machine-state");
+    // Debugger.Launch and Debugger.Break: under .NET they start the machine's just-in-time debugger (a dialog on a
+    // desk with Visual Studio); the result depends on the machine's debugger setup
+    if (Regex.IsMatch(text, @"Debugger\.(Launch|Break)\(")) c.Tags.Add("debugger");
 }
 
 void WriteProject(CaseInfo c)
