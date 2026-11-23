@@ -1414,11 +1414,13 @@ sealed partial class FunctionCompiler
             var o = EmitValue(coll);
             int list = E.AddLocal(ValType.I32);
             if (o == Own.Owned) { E.Set(list); AddOwned(new Slot { Local = list, Type = collType }); }
-            else if (o == Own.Unstable && !D.ThreadMode && _lastFieldLoad is var (fat, fkey) && fat == E.Fn.Body.Count)
+            else if (o == Own.Unstable && (!D.ThreadMode || LocalListLoops && UnsharedPlace(coll)) && _lastFieldLoad is var (fat, fkey) && fat == E.Fn.Body.Count)
             {
                 // a field of a stable object (`foreach (var c in node.Children)`): the field keeps the list for the
                 // loop unless something the loop runs stores that field (FieldBorrows.cs decides, as for a temporary)
+                // (threads: a field of an object no other thread can reach, which no other thread stores)
                 var (retain, release) = D.NewFieldBorrow(E.Fn, fkey);
+                if (D.ThreadMode) D.ThreadLocalBorrows.Add(retain);
                 E.Call(retain); E.Set(list);
                 AddOwned(new Slot { Local = list, Type = collType, ReleaseMarker = release });
             }
@@ -1470,7 +1472,11 @@ sealed partial class FunctionCompiler
             var listType = (INamedTypeSymbol)collType;
             string itemsKey = Driver.FieldKey(listType, lItems.Symbol);
             D.NoteBorrowField(itemsKey, lItems.Symbol, lItems.Type);
-            AssignLoopVariable(fe, lElem, borrowElement: !D.ThreadMode, borrowKeys: Driver.ElementsKey + "\n" + itemsKey, produce: () =>
+            // (threads: the element borrows from the array of a list no other thread can reach, neither the list
+            // nor its array: no other thread stores the array's elements or the list's field, and this thread's
+            // stores are looked for as without threads. CS2WASM_NO_LOCAL_LIST_LOOPS=1: counted, as before)
+            bool localList = D.ThreadMode && LocalListLoops && (s_expEveryListLocal || UnsharedContainer(collType) && UnsharedContainer(lItems.Type));
+            AssignLoopVariable(fe, lElem, borrowElement: !D.ThreadMode || localList, threadLocal: localList, borrowKeys: Driver.ElementsKey + "\n" + itemsKey, produce: () =>
             {
                 E.Get(items); E.Get(i); var sz = T.StorageOf(lElem).size;
                 if (sz != 1) { E.I32(sz); E.Op(Op.I32Mul); }
@@ -1686,7 +1692,14 @@ sealed partial class FunctionCompiler
         return D.Method(helper).Fn;
     }
 
-    void AssignLoopVariable(IForEachLoopOperation fe, ITypeSymbol valueType, Func<Own> produce, IOperation? conversion = null, bool borrowElement = false, string? borrowKeys = null)
+    /// <summary>CS2WASM_NO_LOCAL_LIST_LOOPS=1: in a program with threads a foreach over a List counts its list and each
+    /// element, as before.</summary>
+    static readonly bool s_noLocalListLoops = Environment.GetEnvironmentVariable("CS2WASM_NO_LOCAL_LIST_LOOPS") == "1";
+    /// <summary>CS2WASM_EXP_EVERY_LIST_LOCAL=1 (a test of the tests, unsound): every list's foreach borrows.</summary>
+    static readonly bool s_expEveryListLocal = Environment.GetEnvironmentVariable("CS2WASM_EXP_EVERY_LIST_LOCAL") == "1";
+    static bool LocalListLoops => !s_noLocalListLoops;
+
+    void AssignLoopVariable(IForEachLoopOperation fe, ITypeSymbol valueType, Func<Own> produce, IOperation? conversion = null, bool borrowElement = false, string? borrowKeys = null, bool threadLocal = false)
     {
         if (fe.LoopControlVariable is not IVariableDeclaratorOperation decl)
         {
@@ -1723,6 +1736,8 @@ sealed partial class FunctionCompiler
                 var marker = D.Module.AddFunction("borrow? []", new FuncType([ValType.I32], [ValType.I32]));
                 E.Call(marker);
                 E.Set(v.Local);
+                // (threads: an element of a list no other thread can reach, FieldBorrows.ThreadKeys)
+                if (threadLocal) D.ThreadLocalBorrows.Add(marker);
                 D.FieldBorrows.Add((E.Fn, v.Local, borrowKeys ?? Driver.ElementsKey, marker));
             }
             else StoreVar(v, o);

@@ -30,4 +30,10 @@ one 276_captured_locals_between_threads CS2WASM_EXP_DISPLAY_FIRST_ONLY=1 CS2WASM
 one 277_empty_arrays_every_thread_reads CS2WASM_EXP_EVERY_ARRAY_EMPTY=1 CS2WASM_NO_EMPTY_ARRAYS=1
 one 278_array_copies_between_threads CS2WASM_EXP_NO_PTR=1 CS2WASM_NO_PTR_IDS=1
 one 279_private_work_and_handed_results CS2WASM_SHARING_NONE=1 CS2WASM_NO_SAME_TYPE_REFS=1
+# (the foreach over a list of the thread's own, which borrows the list and each element: off, the same output. No
+# weakened build of this rule is shown to break: an element of a list every thread can reach that another thread
+# lets go of stays until the borrowing thread's next safe point, and a safe point inside the loop is a store the
+# borrow is refused for; the one program that got past both hangs for another reason, tools/thread-board-hang.cs)
+build 279_private_work_and_handed_results t279-nolist CS2WASM_NO_LOCAL_LIST_LOOPS=1
+cmp -s $O/t279.txt $O/t279-nolist.txt && echo "279 with CS2WASM_NO_LOCAL_LIST_LOOPS=1: the same" || { echo "279 with CS2WASM_NO_LOCAL_LIST_LOOPS=1: DIFFERS"; bad=1; }
 exit $bad

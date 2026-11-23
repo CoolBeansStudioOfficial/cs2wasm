@@ -8,6 +8,7 @@ static class AotMainSingle
         else if (s == "ptree0") Single.Private(s, true);
         else if (s == "shared0") Single.Shared(s);
         else if (s == "parts0") Parts.Run(s);
+        else if (s == "tparts0") TreeParts.Run(s);
         else Frames.Run(s);
     }
 }

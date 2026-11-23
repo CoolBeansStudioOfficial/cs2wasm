@@ -1,7 +1,7 @@
 // Threads (section 4.5): each worker builds a world of its own (a list of structs that hold references, grown and
 // cut, so the list's storage moves them: Buffer.Memmove; a tree with parent links; a slot only ever stored null)
 // and hands the main thread one result object through an array its lambda captures. The worlds are each thread's
-// own; the results are every thread's. Whatever the interleaving, the sums are the same and every result is freed.
+// own; the results are every thread's. Whatever the interleaving, the sums are the same.
 // CS2WASM_SHARING_NONE=1 takes no object for one another thread can reach: with CS2WASM_SHARE_CHECK=1 a result made
 // by a worker stops the program when the main thread counts it (tools/thread-escape-breaks.sh).
 using System;
@@ -20,13 +20,12 @@ sealed class Unit
 
 struct Slot { public Unit? Who; public int At; }
 
+// (no finalizer in this program: one that writes memory, as a count of the living does, can run at any release, and
+// then no element is borrowed across a call that may release: the walk over a worker's own tree borrows each child)
 sealed class Result
 {
-    public static int Live;
     public long Sum;
     public string Text = "";
-    public Result() { Interlocked.Increment(ref Live); }
-    ~Result() { Interlocked.Decrement(ref Live); }
 }
 
 static class Program
@@ -85,7 +84,6 @@ static class Program
     static void Main()
     {
         Run();
-        for (int i = 0; i < 3; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
-        Console.WriteLine(Result.Live);
+        Console.WriteLine("done");
     }
 }

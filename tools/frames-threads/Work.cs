@@ -201,6 +201,49 @@ static class Parts
     }
 }
 
+/// <summary>The tree's parts, each timed by itself (tparts0 without threads, tparts1 on a worker): building a tree of
+/// 3,906 entities with parent links and child lists, a walk over it, 100 subtrees of 31 replaced, the whole tree let
+/// go. Prints the lowest time of each part over the rounds, in ns.</summary>
+static class TreeParts
+{
+    static int s_ids;
+    static WEntity Build(WEntity? parent, int depth, int fan)
+    {
+        var e = new WEntity { Parent = parent, Id = s_ids++, X = depth, Y = fan };
+        if (depth > 0) for (int i = 0; i < fan; i++) e.Children.Add(Build(e, depth - 1, fan));
+        return e;
+    }
+    static long Walk(WEntity e, float px, float py)
+    {
+        long s = e.Id + (long)(px + py);
+        foreach (var c in e.Children) s += Walk(c, px + e.X, py + e.Y);
+        return s;
+    }
+    public static void Run(string scene)
+    {
+        long build = long.MaxValue, walk = long.MaxValue, replace = long.MaxValue, drop = long.MaxValue, sum = 0;
+        for (int round = 0; round < 60; round++)
+        {
+            s_ids = 0;
+            long t0 = Report.Now();
+            WEntity? root = Build(null, 5, 5);
+            long t1 = Report.Now();
+            for (int k = 0; k < 4; k++) sum += Walk(root, 0, 0) & 1023;
+            long t2 = Report.Now();
+            for (int i = 0; i < 100; i++)
+            {
+                var b = root.Children[i % 5].Children[(i / 5) % 5];
+                b.Children[i % 5] = Build(b, 2, 5);
+            }
+            long t3 = Report.Now();
+            root = null;
+            long t4 = Report.Now();
+            build = Math.Min(build, t1 - t0); walk = Math.Min(walk, (t2 - t1) / 4); replace = Math.Min(replace, t3 - t2); drop = Math.Min(drop, t4 - t3);
+        }
+        Console.WriteLine("tparts " + scene + " build " + build + " walk " + walk + " replace " + replace + " drop " + drop + " check " + sum);
+    }
+}
+
 /// <summary>The scenes on one thread, in a program with no thread in it.</summary>
 static class Single
 {

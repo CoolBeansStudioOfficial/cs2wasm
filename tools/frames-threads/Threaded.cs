@@ -9,18 +9,48 @@ using System.Threading;
 
 static class Threaded
 {
+    // (each scene's work is called by name, not handed over as a delegate: a delegate type that a worker invokes
+    // makes every lambda of that type one a worker's code can run, tools/frames-threads.mjs's note)
     public static void Idle(string scene)
     {
-        var gate = new object();
-        var done = new bool[1];
-        var t = new Thread(() => { lock (gate) { while (!done[0]) Monitor.Wait(gate); } });
-        t.Start();
+        var idle = new IdleWorker();
         Frames.Run(scene);
-        lock (gate) { done[0] = true; Monitor.PulseAll(gate); }
+        idle.Stop();
+    }
+
+    /// <summary>The churn's or the tree's parts on the calling thread while one worker waits on a monitor.</summary>
+    public static void PartsWithIdle(bool tree)
+    {
+        var idle = new IdleWorker();
+        if (tree) TreeParts.Run("tparts_main"); else Parts.Run("parts_main");
+        idle.Stop();
+    }
+
+    /// <summary>The churn's or the tree's parts on a worker.</summary>
+    public static void PartsOnWorker(bool tree)
+    {
+        var t = new Thread(() => { if (tree) TreeParts.Run("tparts1"); else Parts.Run("parts1"); });
+        t.Start();
         t.Join();
     }
 
-    public static void OnWorker(Action work) { var t = new Thread(() => work()); t.Start(); t.Join(); }
+    /// <summary>A worker that waits on a monitor until it is stopped.</summary>
+    sealed class IdleWorker
+    {
+        readonly object _gate = new();
+        bool _done;
+        readonly Thread _thread;
+        public IdleWorker()
+        {
+            _thread = new Thread(() => { lock (_gate) { while (!_done) Monitor.Wait(_gate); } });
+            _thread.Start();
+        }
+        public void Stop()
+        {
+            lock (_gate) { _done = true; Monitor.PulseAll(_gate); }
+            _thread.Join();
+        }
+    }
 
     public static void Private(string scene, bool tree, int n)
     {

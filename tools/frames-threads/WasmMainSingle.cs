@@ -10,5 +10,6 @@ static class WasmMainSingle
     [UnmanagedCallersOnly(EntryPoint = "pchurn0")] static void PChurn() => Single.Private("pchurn0", false);
     [UnmanagedCallersOnly(EntryPoint = "ptree0")] static void PTree() => Single.Private("ptree0", true);
     [UnmanagedCallersOnly(EntryPoint = "parts0")] static void Parts0() => Parts.Run("parts0");
+    [UnmanagedCallersOnly(EntryPoint = "tparts0")] static void TParts0() => TreeParts.Run("tparts0");
     [UnmanagedCallersOnly(EntryPoint = "shared0")] static void Shared() => Single.Shared("shared0");
 }

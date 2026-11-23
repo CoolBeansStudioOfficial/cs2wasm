@@ -1017,7 +1017,12 @@ internal sealed partial class Driver
     sealed class StoreSummary
     {
         // (Rt.StringOf, Rt.Prefix: a string they make, its characters)
-        static readonly string[] s_internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.StringOf(", "Cs2Wasm.Runtime.Rt.Prefix(", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.FreeObject(", "Cs2Wasm.Runtime.Rt.FreeObjectArena(", "Cs2Wasm.Runtime.Rt.FreeBlock(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks."];
+        static readonly string[] s_internals = ["Cs2Wasm.Runtime.ThrowHelpers.", "Cs2Wasm.Runtime.Rt.StringOf(", "Cs2Wasm.Runtime.Rt.Prefix(", "Cs2Wasm.Runtime.Rt.Alloc", "Cs2Wasm.Runtime.Rt.Free(", "Cs2Wasm.Runtime.Rt.FreeObject(", "Cs2Wasm.Runtime.Rt.FreeObjectArena(", "Cs2Wasm.Runtime.Rt.FreeBlock(", "Cs2Wasm.Runtime.Rt.Arena", "Cs2Wasm.Runtime.ObjectMarks.",
+            // (threads: the list of the thread's own that rt.destroy keeps the objects waiting for the outermost destruction in: memory from Rt.Alloc)
+            "Cs2Wasm.Runtime.Rt.PendDestroy(", "Cs2Wasm.Runtime.Rt.NextPending(", "Cs2Wasm.Runtime.Rt.LocksHeld(",
+            // (threads: the exchange of a store in its region, called by generated code where the store is, which notes the
+            // write itself; besides that it takes the region's locks, words of the runtime's own)
+            "Cs2Wasm.Runtime.Rt.RegionExchange("];
         public static bool Internal(WasmFunction f) => s_internals.Any(p => f.Name.StartsWith(p, StringComparison.Ordinal));
 
         readonly Dictionary<string, int> _key = [];
