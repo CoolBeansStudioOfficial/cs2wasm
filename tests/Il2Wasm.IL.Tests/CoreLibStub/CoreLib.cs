@@ -22,6 +22,8 @@ namespace System
     {
         readonly int _id;
         internal Type(int id) { _id = id; }
+        // (Object.GetType and typeof: the compiler calls this, as the IL CoreLib's RuntimeType.FromId)
+        internal static Type FromId(int id) => new Type(id);
         internal string FullNameForToString() => Il2Wasm.Runtime.Rt.TypeNameById(_id);
         public override string ToString() => FullNameForToString();
         public string Name => Il2Wasm.Runtime.Rt.TypeNameById(_id);

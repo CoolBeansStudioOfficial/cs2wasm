@@ -17,7 +17,7 @@ public enum Opc : byte
     // values
     Const, Arg, Phi, Bin, Un, Cmp, Conv, LdNull, LdStr, LdToken, Call, NewObj, NewArr, LdLen, LdElem, StElem, LdElemA,
     LdFld, StFld, LdFldA, LdSFld, StSFld, LdSFldA, LdInd, StInd, CastClass, IsInst, Box, UnboxAny, VarLd, VarSt,
-    CatchVal, Intrinsic, CheckFinite, Retain, Release, LocA, LdObj, InitObj, Unbox, SizeOf, LocAlloc, TypeOf,
+    CatchVal, Intrinsic, CheckFinite, Retain, Release, LocA, LdObj, InitObj, Unbox, SizeOf, LocAlloc, TypeOf, InitArray, CreateSpan, LdFtn, LdVirtFtn, CallI,
     // terminators
     Br, BrIf, Switch, Ret, Throw, Rethrow, Leave, EndFinally, EndFilter, Unreachable,
 }

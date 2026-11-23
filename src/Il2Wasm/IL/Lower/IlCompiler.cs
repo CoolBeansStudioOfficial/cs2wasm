@@ -20,7 +20,7 @@ sealed class LateAddr(Func<int> f) : IAddress { public int Address => f(); }
 /// (naively) and lowered to the back end's WasmModule; then the whole-program parts are made (type ids, the dispatch
 /// stubs over the constructed types, type tests, the destroy function, statics and literals, init and main), and the
 /// module is encoded by the existing back end.</summary>
-public sealed class IlCompiler
+public sealed partial class IlCompiler
 {
     readonly IlContext _ctx;
     internal readonly WasmModule Module = new();
@@ -150,14 +150,34 @@ public sealed class IlCompiler
             _functions[m] = f;
             return f;
         }
+        // a P/Invoke or an internal call: the runtime's method that serves it (or what .NET throws)
+        if (m.GetTypicalMethodDefinition() is EcmaMethod nm && (nm.IsPInvoke || nm.IsInternalCall) && NativeFunction(m, nm) is { } native)
+        {
+            _functions[m] = native;
+            return native;
+        }
         f = Module.AddFunction(m.ToString(), Sig(m));
         _functions[m] = f;
         _queue.Enqueue((m, f));
+        _why[m] = _compiling;
         return f;
+    }
+
+    readonly Dictionary<MethodDesc, MethodDesc?> _why = new();
+    MethodDesc? _compiling;
+
+    /// <summary>For an error's message: the chain of methods whose code first reached this one.</summary>
+    string WhyReached(MethodDesc m)
+    {
+        var sb = new StringBuilder();
+        var seen = new HashSet<MethodDesc>();
+        for (var x = _why.GetValueOrDefault(m); x != null && seen.Add(x) && seen.Count < 25; x = _why.GetValueOrDefault(x)) sb.Append("\n    ").Append(x);
+        return sb.ToString();
     }
 
     void CompileMethod(MethodDesc m, WasmFunction f)
     {
+        _compiling = m;
         var typical = m.GetTypicalMethodDefinition() as EcmaMethod;
         MethodIL? il = typical != null ? EcmaMethodIL.Create(typical) : null;
         if (il != null && m != typical) il = new InstantiatedMethodIL(m, il);
@@ -178,7 +198,7 @@ public sealed class IlCompiler
         }
         catch (Exception e) when (e is NotSupportedException or InvalidProgramException)
         {
-            if (!Lenient) throw new InvalidOperationException($"{m}: {e.Message}", e);
+            if (!Lenient) throw new InvalidOperationException($"{m}: {e.Message}\n  reached from: {WhyReached(m)}", e);
             Warnings.Add("not compiled: " + e.Message);
             f.Body.Clear(); f.Locals.Clear(); new Emitter(f).Op(WOp.Unreachable);
         }
@@ -217,7 +237,27 @@ public sealed class IlCompiler
     {
         if (_impl.TryGetValue((x, slot), out var r)) return r;
         MethodDesc? impl = null;
-        if (x.CanCastTo(slot.OwningType))
+        if (x is ArrayType arr && x.CanCastTo(slot.OwningType))
+        {
+            // an array: the generic collection interfaces through SZArrayHelper (with the interface's element type, so
+            // IList<Base> on a Derived[] works), the rest through System.Array's own methods
+            var owner = slot.OwningType;
+            if (owner.IsInterface && owner.HasInstantiation && arr.IsSzArray)
+            {
+                var helper = _ctx.SystemModule.GetType("System"u8, "SZArrayHelper"u8, throwIfNotFound: false);
+                var name = slot.GetName();
+                var hm = helper?.GetMethods().FirstOrDefault(h => h.GetName() == name && h.Signature.Length == slot.Signature.Length + 1);
+                if (hm != null) impl = _ctx.GetInstantiatedMethod(hm, new Instantiation(owner.Instantiation[0]));
+            }
+            else if (owner.IsInterface)
+            {
+                for (var c = x.BaseType; c != null && impl == null; c = c.BaseType) impl = c.ResolveInterfaceMethodToVirtualMethodOnType(slot);
+                if (impl != null && impl.IsVirtual) impl = x.BaseType!.FindVirtualFunctionTargetMethodOnObjectType(impl) ?? impl;
+            }
+            else impl = x.BaseType!.FindVirtualFunctionTargetMethodOnObjectType(slot);
+            if (impl != null && impl.IsAbstract) impl = null;
+        }
+        else if (x.CanCastTo(slot.OwningType))
         {
             if (slot.OwningType.IsInterface)
             {
@@ -315,6 +355,19 @@ public sealed class IlCompiler
         return new LateAddr(() => block.Address + off);
     }
 
+    readonly Dictionary<string, IAddress> _named = new();
+
+    /// <summary>A zeroed static block of the runtime's own, by name.</summary>
+    internal IAddress NamedStatic(string name, int size, int align)
+    {
+        if (_named.TryGetValue(name, out var a)) return a;
+        int i = _staticBlocks.Count;
+        _staticBlocks.Add((null!, false, size, align));
+        a = new LateAddr(() => _blockOffsets[i]);
+        _named[name] = a;
+        return a;
+    }
+
     IAddress InitFlag(TypeDesc t)
     {
         if (_initFlags.TryGetValue(t, out var a)) return a;
@@ -386,11 +439,155 @@ public sealed class IlCompiler
 
     internal bool TryIntrinsic(Emitter e, MethodDesc m, Node n, FunctionLowering fl)
     {
-        if (m.GetTypicalMethodDefinition() is not EcmaMethod em || !em.HasCustomAttribute("Il2Wasm.Runtime", "IntrinsicAttribute")) return false;
+        if (m.GetTypicalMethodDefinition() is not EcmaMethod em) return false;
+        if (!em.HasCustomAttribute("Il2Wasm.Runtime", "IntrinsicAttribute")) return TryUpstreamIntrinsic(e, m, n, fl);
         var key = ((MetadataType)m.OwningType).GetName() + "." + m.GetName();
         fl.PushArgs(n);
+        if (key.StartsWith("TypeInfo.") && TryTypeInfo(e, key[9..])) { fl.SetResult(n); return true; }
         switch (key)
         {
+            // (reflection's tables, empty for now: no assembly, resource, name or instance records are kept yet; a
+            // type has no reflection record and no generic parameter is a type with an id)
+            case "TypeInfo.AssemblyNames": case "TypeInfo.ManifestResources": case "TypeInfo.NameTable": case "TypeInfo.Instances": case "TypeInfo.ProgramTypes":
+                e.I32Addr(EmptyTable); fl.SetResult(n); return true;
+            case "TypeInfo.Nested": case "TypeInfo.GenericConstraints": e.Op(WOp.Drop); e.I32Addr(EmptyTable); fl.SetResult(n); return true;
+            case "TypeInfo.GenericParam": e.Op(WOp.Drop); e.I32(-1); fl.SetResult(n); return true;
+            case "TypeInfo.GenericParamMethod": case "TypeInfo.Meta": e.Op(WOp.Drop); e.I32(0); fl.SetResult(n); return true;
+            case "TypeInfo.Invoke": case "TypeInfo.ResourceInit": case "TypeInfo.ResourceUnpack":
+                // (reached only through a reflection record or a resource, which the module has none of yet)
+                e.Op(WOp.Unreachable); return true;
+        }
+        switch (key)
+        {
+            case "Rt.Sqrt": e.Op(WOp.F64Sqrt); break;
+            case "Rt.Floor": e.Op(WOp.F64Floor); break;
+            case "Rt.Ceiling": e.Op(WOp.F64Ceil); break;
+            case "Rt.Truncate": e.Op(WOp.F64Trunc); break;
+            case "Rt.RoundEven": e.Op(WOp.F64Nearest); break;
+            case "Rt.Abs": e.Op(WOp.F64Abs); break;
+            case "Rt.Min": e.Op(WOp.F64Min); break;
+            case "Rt.Max": e.Op(WOp.F64Max); break;
+            case "Rt.CopySign": e.Call(Rt.CanonF64); e.Op(WOp.F64Copysign); break;
+            case "Rt.SqrtF": e.Op(WOp.F32Sqrt); break;
+            case "Rt.FloorF": e.Op(WOp.F32Floor); break;
+            case "Rt.CeilingF": e.Op(WOp.F32Ceil); break;
+            case "Rt.TruncateF": e.Op(WOp.F32Trunc); break;
+            case "Rt.RoundEvenF": e.Op(WOp.F32Nearest); break;
+            case "Rt.AbsF": e.Op(WOp.F32Abs); break;
+            case "Rt.MinF": e.Op(WOp.F32Min); break;
+            case "Rt.MaxF": e.Op(WOp.F32Max); break;
+            case "Rt.F64Bits": e.Op(WOp.I64ReinterpretF64); break;
+            case "Rt.F64FromBits": e.Op(WOp.F64ReinterpretI64); break;
+            case "Rt.F32Bits": e.Op(WOp.I32ReinterpretF32); break;
+            case "Rt.F32FromBits": e.Op(WOp.F32ReinterpretI32); break;
+            case "Rt.I64Clz": e.Op(WOp.I64Clz); break;
+            case "Rt.I64Ctz": e.Op(WOp.I64Ctz); break;
+            case "Rt.I64Popcnt": e.Op(WOp.I64Popcnt); break;
+            case "Rt.I32Rotl": e.Op(WOp.I32Rotl); break;
+            case "Rt.I32Rotr": e.Op(WOp.I32Rotr); break;
+            case "Rt.I64Rotl": e.Op(WOp.I64Rotl); break;
+            case "Rt.I64Rotr": e.Op(WOp.I64Rotr); break;
+            case "Rt.Retain": e.Call(Rt.Retain); e.Op(WOp.Drop); break;
+            case "Rt.Release": e.Call(Rt.Release); break;
+            case "Rt.RetainContents": e.Call(Rt.RetainContents); break;
+            case "Rt.IsInstanceOf": e.Call(IsInstFn(m.Instantiation[0])); e.I32(0); e.Op(WOp.I32Ne); break;
+            case "Rt.BoxDataOffset": e.I32(IlContext.ObjectHeader); break;
+            case "Rt.NullRef": e.I32(0); break;
+            case "Rt.Share": e.Op(WOp.Drop); break; // (one thread: nothing is shared)
+            case "Rt.Rethrow": e.Call(Rt.Retain); e.Emit(WOp.Throw, 0, 0, ExceptionTag); break;
+            case "Rt.TlsBase": case "Rt.TlsSize": case "Rt.TakeThrowSite": case "Rt.FirstChanceWanted": case "Rt.FramesWanted": case "Rt.WeakAny": case "Rt.DeadlockDump":
+                e.I32(0); break;
+            case "Rt.FusedDrop": e.I32(1); break;
+            // (decided by the instantiation: the string is a literal naming a generic definition in CoreLib)
+            case "Generics.IsNullable": e.I32(m.Instantiation[0].IsNullable ? 1 : 0); break;
+            case "Generics.IsEnum": e.I32(m.Instantiation[0].IsEnum ? 1 : 0); break;
+            case "Generics.Implements":
+            {
+                e.Op(WOp.Drop);
+                var gi = GenericDefinition(n.A[0]);
+                var t = m.Instantiation[0];
+                e.I32(t.CanCastTo(gi.MakeInstantiatedType(t)) ? 1 : 0);
+                break;
+            }
+            case "Generics.New": case "Generics.NewOfNullableArg":
+            {
+                e.Op(WOp.Drop);
+                var gd = GenericDefinition(n.A[0]);
+                var args = Enumerable.Range(0, m.Instantiation.Length).Select(i => m.Instantiation[i]).ToArray();
+                // (an instantiation the code's own test rules out, IsNullable<T>, is never reached)
+                if (key == "Generics.NewOfNullableArg")
+                {
+                    if (!args[0].IsNullable) { e.Op(WOp.Unreachable); break; }
+                    args = [args[0].Instantiation[0]];
+                }
+                var t = (DefType)gd.MakeInstantiatedType(args);
+                if (t.GetDefaultConstructor() is not { } ctor) { e.Op(WOp.Unreachable); break; }
+                Constructed(t);
+                int o = e.AddLocal(ValType.I32);
+                e.I32(IlContext.InstanceSize(t)); e.Tid(TypeId(t)); e.Call(Rt.AllocObject); e.Set(o);
+                e.Get(o); e.Call(FunctionFor(ctor));
+                e.Get(o);
+                break;
+            }
+            case "Rt.PlaceLockWord":
+                // (the lock word of a place: (addr >> 2 & 63) * 64 in a table of 64 words, each on a line of its own)
+                e.I32(2); e.Op(WOp.I32ShrU); e.I32(63); e.Op(WOp.I32And); e.I32(6); e.Op(WOp.I32Shl);
+                e.I32Addr(NamedStatic("rt.ref.locks", 64 * 64, 64)); e.Op(WOp.I32Add);
+                break;
+            // (no groups yet: a store through an address is a plain one)
+            case "Rt.LinkAt": e.Op(WOp.Drop); break;
+            case "Rt.UnlinkAt": e.Op(WOp.Drop); e.Call(Rt.Release); break;
+            case "Rt.ArenaIsSlot": e.Op(WOp.Drop); e.Op(WOp.Drop); e.I32(0); break;
+            // (no type is cycle-capable yet: no object is ever a group's member, and these are never reached at run time)
+            case "Rt.ArenaClearObject": case "Rt.ArenaFinalizeObject": case "Rt.ArenaFreeObject": case "Rt.ArenaVisitObject": e.Op(WOp.Drop); break;
+            case "Rt.ArenaFinType": case "Rt.ArenaSlots": e.Op(WOp.Drop); e.I32(0); break;
+            case "Rt.ThrowSites": case "Rt.FrameMethods": e.I32(0); break;
+            case "Rt.ArrayGrow": e.Op(WOp.Drop); e.Op(WOp.Drop); e.Op(WOp.Drop); e.Op(WOp.Drop); e.I32(0); break;
+            case "Rt.ReleaseThreadStatics": case "Rt.RefLock": case "Rt.RefUnlock": break;
+            case "Rt.WeakDying": case "Rt.FirstChance": case "Rt.MemStatsRecord": e.Op(WOp.Drop); if (n.HasValue) e.I32(0); break;
+            case var sw when IsSwitch(sw, out int value): e.I32(value); break;
+            case "Rt.SccOf": e.Op(WOp.Drop); e.I32(0); break; // (no type is cycle-capable yet: no groups)
+            case "Rt.MemStatsHash": e.Op(WOp.Drop); break;
+            case "Rt.ArrayMoveMode": e.I32(0); break;
+            case "Rt.MarkConstructed": Constructed(m.Instantiation[0]); e.Tid(TypeId(m.Instantiation[0])); break;
+            case "Rt.ArrayRankAt": case "Il2WasmArrays.RankOf": e.Call(ArrayFn("rank")); break;
+            case "Rt.ArrayElementSizeAt": case "Il2WasmArrays.ElementSize": e.Call(ArrayFn("elem_size")); break;
+            case "Il2WasmArrays.HasCountedElements": e.Call(ArrayFn("counted")); break;
+            case "Il2WasmArrays.CopyElements": e.Call(ArrayFn("copy")); break;
+            case "Il2WasmArrays.ClearElements": e.Call(ArrayFn("clear")); break;
+            case "Il2WasmArrays.BoxesElements": break;
+            case "TextScan.Eq16":
+            {
+                int v = e.AddLocal(ValType.I32);
+                e.Set(v); e.Emit(WOp.V128Load); e.Get(v); e.Op(WOp.I16x8Splat); e.Op(WOp.I16x8Eq); e.Op(WOp.I16x8Bitmask);
+                break;
+            }
+            case "TextScan.Upper16": case "TextScan.Lower16":
+            {
+                // eight chars: the ASCII letters' case changed (x -/+ 32 where x - base <u 26) into dst; the lanes above
+                // 127 of src as a mask
+                bool up = key == "TextScan.Upper16";
+                int d = e.AddLocal(ValType.I32), s = e.AddLocal(ValType.I32);
+                e.Set(d); e.Set(s);
+                e.Get(d);
+                e.Get(s); e.Emit(WOp.V128Load);
+                e.Get(s); e.Emit(WOp.V128Load); e.I32(up ? 'a' : 'A'); e.Op(WOp.I16x8Splat); e.Op(WOp.I16x8Sub);
+                e.I32(26); e.Op(WOp.I16x8Splat); e.Op(WOp.I16x8LtU); e.I32(32); e.Op(WOp.I16x8Splat); e.Op(WOp.V128And);
+                e.Op(up ? WOp.I16x8Sub : WOp.I16x8Add);
+                e.Emit(WOp.V128Store);
+                e.Get(s); e.Emit(WOp.V128Load); e.I32(127); e.Op(WOp.I16x8Splat); e.Op(WOp.I16x8GtU); e.Op(WOp.I16x8Bitmask);
+                break;
+            }
+            case "TextScan.Eq16Any3":
+            {
+                int c = e.AddLocal(ValType.I32), b = e.AddLocal(ValType.I32), a = e.AddLocal(ValType.I32), ad = e.AddLocal(ValType.I32);
+                e.Set(c); e.Set(b); e.Set(a); e.Set(ad);
+                e.Get(ad); e.Emit(WOp.V128Load); e.Get(a); e.Op(WOp.I16x8Splat); e.Op(WOp.I16x8Eq);
+                e.Get(ad); e.Emit(WOp.V128Load); e.Get(b); e.Op(WOp.I16x8Splat); e.Op(WOp.I16x8Eq); e.Op(WOp.V128Or);
+                e.Get(ad); e.Emit(WOp.V128Load); e.Get(c); e.Op(WOp.I16x8Splat); e.Op(WOp.I16x8Eq); e.Op(WOp.V128Or);
+                e.Op(WOp.I16x8Bitmask);
+                break;
+            }
             case "Mem.LoadI32": e.Load(WOp.I32Load); break;
             case "Mem.LoadU8": e.Load(WOp.I32Load8U); break;
             case "Mem.LoadI8": e.Load(WOp.I32Load8S); break;
@@ -433,11 +630,18 @@ public sealed class IlCompiler
             case "Rt.BulkEnter": case "Rt.BulkExit": case "Rt.HoldEpoch": case "Rt.ReleaseEpoch": case "Rt.RuntimeLock": case "Rt.RuntimeUnlock": case "Rt.MemStatsGrow": break;
             case "Rt.PartWeak": e.Op(WOp.Drop); break;
             case "Rt.MoveRefs": e.Op(WOp.Drop); e.Op(WOp.Drop); e.Op(WOp.Drop); e.I32(0); break;
-            // (one thread: the atomic operations are plain ones)
-            case "Atomic.Load32": e.Load(WOp.I32Load); break;
-            case "Atomic.Store32": e.Store(WOp.I32Store); break;
-            case "Atomic.Add32": e.Call(Rt.PlainRmw(false)); break;
-            case "Atomic.CompareExchange32": e.Call(Rt.PlainRmw(true)); break;
+            // (the shared memory's atomic instructions: right with one thread, and with more)
+            case "Atomic.Load32": e.Load(WOp.I32AtomicLoad); break;
+            case "Atomic.Store32": e.Store(WOp.I32AtomicStore); break;
+            case "Atomic.Add32": case "Atomic.CountAdd32": e.Load(WOp.I32AtomicRmwAdd); break;
+            case "Atomic.Exchange32": e.Load(WOp.I32AtomicRmwXchg); break;
+            case "Atomic.CompareExchange32": case "Atomic.CountCompareExchange32": e.Load(WOp.I32AtomicRmwCmpxchg); break;
+            case "Atomic.Load64": e.Load(WOp.I64AtomicLoad); break;
+            case "Atomic.Store64": e.Store(WOp.I64AtomicStore); break;
+            case "Atomic.Add64": e.Load(WOp.I64AtomicRmwAdd); break;
+            case "Atomic.Exchange64": e.Load(WOp.I64AtomicRmwXchg); break;
+            case "Atomic.CompareExchange64": e.Load(WOp.I64AtomicRmwCmpxchg); break;
+            case "Atomic.Fence": e.Emit(WOp.AtomicFence); break;
             case "Atomic.Wait32": e.Op(WOp.Drop); e.Op(WOp.Drop); e.Op(WOp.Drop); e.I32(2); break; // ("timed out": no other thread can change it)
             case "Atomic.Notify": e.Op(WOp.Drop); e.Op(WOp.Drop); e.I32(0); break;
             case "Rt.TypeName":
@@ -505,6 +709,7 @@ public sealed class IlCompiler
     void GenerateLate()
     {
         // type ids: 1 is string's (CoreLib's contract); the others in a preorder of the class hierarchy from 2
+        CloseTypeIds();
         foreach (var t in _types.ToList()) StringLiteral(TypeName(t));
         var order = new List<TypeDesc>();
         var children = new Dictionary<TypeDesc, List<TypeDesc>>();
@@ -519,6 +724,7 @@ public sealed class IlCompiler
         void Pre(TypeDesc t) { order.Add(t); if (children.TryGetValue(t, out var l)) foreach (var c in l) Pre(c); }
         foreach (var r in roots) Pre(r);
         _finalIds = new int[_types.Count];
+        var byFinal = new TypeDesc?[_types.Count + 2];
         _finalIds[_typeIds[_ctx.GetWellKnownType(WellKnownType.String)]] = 1;
         for (int i = 0; i < order.Count; i++) _finalIds[_typeIds[order[i]]] = i + 2;
         int Final(TypeDesc t) => _finalIds[_typeIds[t]];
@@ -574,6 +780,7 @@ public sealed class IlCompiler
                         e.Get(i); e.I32(1); e.Op(WOp.I32Add); e.Set(i); e.Br(loop);
                         e.End(); e.End();
                     }
+                    else if (Kinds.Counted(at.ElementType)) { e.Get(0); e.I32(16); e.Op(WOp.I32Add); e.Get(0); e.Load(WOp.I32Load, 12); e.Call(Rt.Range(at.ElementType, false)); }
                     e.Get(0); e.Get(0); e.Load(WOp.I32Load, 12); e.I32(es); e.Op(WOp.I32Mul); e.I32(16); e.Op(WOp.I32Add);
                 }
                 else if (x.IsString)
@@ -584,7 +791,11 @@ public sealed class IlCompiler
                 {
                     for (TypeDesc? c = x; c != null; c = c.BaseType)
                         foreach (var fd in c.GetFields())
-                            if (!fd.IsStatic && Kinds.Of(fd.FieldType) == VK.Ref) { e.Get(0); e.Load(WOp.I32Load, IlContext.FieldOffset(fd)); e.Call(Rt.Release); }
+                        {
+                            if (fd.IsStatic) continue;
+                            if (Kinds.Of(fd.FieldType) == VK.Ref) { e.Get(0); e.Load(WOp.I32Load, IlContext.FieldOffset(fd)); e.Call(Rt.Release); }
+                            else if (Kinds.Of(fd.FieldType) == VK.Struct && Kinds.Counted(fd.FieldType)) { e.Get(0); e.I32(IlContext.FieldOffset(fd)); e.Op(WOp.I32Add); e.Call(Rt.ReleaseStruct(fd.FieldType)); }
+                        }
                     if (Kinds.Of(x) == VK.Struct && Kinds.Counted(x)) { e.Get(0); e.I32(IlContext.ObjectHeader); e.Op(WOp.I32Add); e.Call(Rt.ReleaseStruct(x)); }
                     e.Get(0); e.I32(x.IsValueType ? IlContext.ObjectHeader + Math.Max(4, Kinds.SizeOf(x)) : IlContext.InstanceSize((DefType)x));
                 }
@@ -592,9 +803,47 @@ public sealed class IlCompiler
                 e.End();
             }
         }
+        // retain_contents: each constructed type's references counted (an object copied whole: MemberwiseClone)
+        if (Rt.RetainContentsIfMade is { } rcf)
+        {
+            var e = new Emitter(rcf);
+            int tid = e.AddLocal(ValType.I32);
+            e.Get(0); e.Load(WOp.I32Load, 4); e.Set(tid);
+            foreach (var x in _constructedOrder)
+            {
+                if (x is ArrayType at)
+                {
+                    if (!Kinds.Counted(at.ElementType)) continue;
+                    e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
+                    e.Get(0); e.I32(16); e.Op(WOp.I32Add); e.Get(0); e.Load(WOp.I32Load, 12); e.Call(Rt.Range(at.ElementType, true));
+                    e.Op(WOp.Return); e.End();
+                    continue;
+                }
+                if (x.IsValueType)
+                {
+                    if (!Kinds.Counted(x)) continue;
+                    e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
+                    e.Get(0); e.I32(IlContext.ObjectHeader); e.Op(WOp.I32Add); e.Call(Rt.RetainStruct(x)); e.Op(WOp.Return); e.End();
+                    continue;
+                }
+                var refs = new List<FieldDesc>();
+                for (TypeDesc? c = x; c != null; c = c.BaseType)
+                    foreach (var fd in c.GetFields()) if (!fd.IsStatic && Kinds.Counted(fd.FieldType)) refs.Add(fd);
+                if (refs.Count == 0) continue;
+                e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
+                foreach (var fd in refs)
+                {
+                    if (Kinds.Of(fd.FieldType) == VK.Ref) { e.Get(0); e.Load(WOp.I32Load, IlContext.FieldOffset(fd)); e.Call(Rt.Retain); e.Op(WOp.Drop); }
+                    else { e.Get(0); e.I32(IlContext.FieldOffset(fd)); e.Op(WOp.I32Add); e.Call(Rt.RetainStruct(fd.FieldType)); }
+                }
+                e.Op(WOp.Return); e.End();
+            }
+        }
         // the type name table, in final id order
         _typeNamesByFinal = new string[_types.Count + 2];
-        foreach (var t in _types) _typeNamesByFinal[Final(t)] = TypeName(t);
+        foreach (var t in _types) { _typeNamesByFinal[Final(t)] = TypeName(t); byFinal[Final(t)] = t; }
+        EmitTypeTables(Final, _types.Count + 2, byFinal);
+        EmitArrayFns(Final);
     }
 
     string?[] _typeNamesByFinal = [];
@@ -639,6 +888,19 @@ public sealed class IlCompiler
         Align(4);
         _nameTableAt = dataBase + data.Count;
         foreach (var name in _typeNamesByFinal) I32(name != null ? _literalOffsets[_literals[name].index] : 0);
+        // the blobs (field data, type tables), then their addresses patched in
+        foreach (var b in _blobs)
+        {
+            Align(Math.Max(1, b.Align));
+            b.Offset = dataBase + data.Count;
+            data.AddRange(b.Bytes);
+        }
+        foreach (var b in _blobs)
+            foreach (var (off, a) in b.Relocs)
+            {
+                var v = BitConverter.GetBytes(a.Address);
+                for (int k = 0; k < 4; k++) data[b.Offset - dataBase + off + k] = v[k];
+            }
         _dataEnd = dataBase + data.Count;
         int at = (_dataEnd + 15) & ~15;
         _staticsBase = at;
@@ -909,6 +1171,26 @@ public sealed class IlCompiler
                 if (k == VK.Ref) { e.Get(0); e.Load(WOp.I32Load, IlContext.FieldOffset(f)); if (retain) { e.Call(Retain); e.Op(WOp.Drop); } else e.Call(Release); }
                 else if (k == VK.Struct && Kinds.Counted(ft)) { e.Get(0); e.I32(IlContext.FieldOffset(f)); e.Op(WOp.I32Add); e.Call(StructCounts(ft, retain)); }
             }
+        });
+
+        /// <summary>(f64) -> the same, a NaN made the canonical one (SPEC 7.3).</summary>
+        public WasmFunction CanonF64 => Cached("rt.canon_f64", FT([ValType.F64], [ValType.F64]), e =>
+        {
+            e.Get(0); e.Get(0); e.Op(WOp.F64Ne);
+            e.If(ValType.F64); e.I64(0x7FF8000000000000L); e.Op(WOp.F64ReinterpretI64); e.Else(); e.Get(0); e.End();
+        });
+
+        WasmFunction? _retainContents;
+        /// <summary>(object): a count for each reference in it (its body: by type, when the program's types are known).</summary>
+        public WasmFunction RetainContents => _retainContents ??= M.AddFunction("rt.retain_contents", FT([I], []));
+        public WasmFunction? RetainContentsIfMade => _retainContents;
+
+        public WasmFunction PlainAdd64 => Cached("rt.plain_add64", FT([I, L], [L]), e =>
+        {
+            int old = e.AddLocal(L);
+            e.Get(0); e.Load(WOp.I64Load); e.Set(old);
+            e.Get(0); e.Get(old); e.Get(1); e.Op(WOp.I64Add); e.Store(WOp.I64Store);
+            e.Get(old);
         });
 
         public WasmFunction FRem(bool d) => throw new NotSupportedException("the remainder of floating-point values");
