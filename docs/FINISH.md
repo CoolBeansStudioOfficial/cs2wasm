@@ -965,6 +965,21 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   world byte for byte the .NET-hosted compiler's (27,584 bytes), 14.4 to 15.3 s against 14.6 to 16.2 before on the
   loaded homelab (NativeAOT-LLVM's 6.1 to 6.3). Not covered yet, by its session's report: a span or ref returned up
   through two frames (one level of wrapper is); given to the session on the free path.
+- 2026-11-23, a corruption of the heap that claude/colstr-2's move brought to main (20cb183 to 3dbef69), found by
+  the session on claude/field-loads-1 and fixed (main 4781226: its commits 601c0e1 and 7393522 picked). A collection
+  that grows by moving left its old array retyped as byte[], to be freed without counting anything off; an array of
+  a type that can be on a cycle has the arena's 32 bytes before its header and is freed with them only by its own
+  type's destruction, so as byte[] it was freed 32 bytes into its block and 32 short. It takes such an array that
+  is still a plain object when the collection grows (made with a capacity, filled past it with items that refer to
+  no member): the inliner's `new List<Instr>(n)`. The self-hosted compiler then trapped, looped (one such run held
+  the homelab's slot for half an hour) or failed on every program larger than hello world; the suite did not show
+  it, and the check made before each merge compiled hello world only. Rt.MoveItems now refuses those arrays (they are
+  copied as before; CS2WASM_ARRAY_MOVE_CYCLE=1 for the old move); test 240 traps in the allocator with the old move
+  under the .NET-hosted compiler and passes with the fix, here and by that session. Homelab at 4781226: the
+  self-hosted compiler's module byte for byte the .NET-hosted compiler's for hello world and for tests 207, 220,
+  222, 240, 193 and 088 (1,613,207 bytes); its hello world in 10.1 to 10.8 s against 9.8 to 10.0 before and
+  NativeAOT-LLVM's 4.6 to 5.0. From here every merge's self-host check compiles those larger tests too. Not done: the
+  full suite and frames.mjs at 4781226 (the fix is four lines in ArrayMoves.cs; tests 22x and 240 passed here).
 - 2026-11-23, claude/field-loads-1 (merged with main 3dbef69; not merged into main; docs/AUDIT.md A3.5 "Field loads
   by the field's identity"): a field of an object in a local read once before a loop that nothing in it can store,
   an array's length likewise, a field read a second time with nothing between that can store it, and a callee
