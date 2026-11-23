@@ -88,7 +88,7 @@ internal sealed partial class Driver
     {
         CheckGeneratedNames();
         var keep = new ReflectionKeep();
-        bool wantsDelegateMethod = false;
+        bool wantsDelegateMethod = false, wantsDelegateTarget = false;
         var delegateRefs = new List<IMethodSymbol>();
         // a type's field and property initializers (static: its static initializer, compiled apart; instance: its
         // constructors')
@@ -157,6 +157,8 @@ internal sealed partial class Driver
                     if (op is IPropertyReferenceOperation { Property: { Name: "Method", ContainingType: { Name: "Delegate", ContainingNamespace.Name: "System" } } }
                         or IInvocationOperation { TargetMethod: { Name: "GetMethodInfo", ContainingType.Name: "RuntimeReflectionExtensions" } })
                         wantsDelegateMethod = true;
+                    if (op is IPropertyReferenceOperation { Property: { Name: "Target", ContainingType: { Name: "Delegate", ContainingNamespace.Name: "System" } } })
+                        wantsDelegateTarget = true;
                     if (op is IMethodReferenceOperation { Parent: IDelegateCreationOperation } mr && mr.Method.MethodKind != MethodKind.LocalFunction)
                     {
                         var rm = mr.Method;
@@ -224,6 +226,9 @@ internal sealed partial class Driver
                     if (em.IsGenericMethod && em.Arity == qi.Arity)
                         try { keep.KeepInstance(en, em.Construct([.. qi.TypeArguments])); } catch (ArgumentException) { }
         _wantsDelegateMethod = wantsDelegateMethod;
+        _wantsDelegateTarget = wantsDelegateTarget;
+        // (the singletons of the `<>c` classes are objects whose virtual methods are Object's: GeneratedReflection.cs)
+        if (wantsDelegateTarget) MarkConstructed(ObjectType);
         if (keep.Types.Count == 0 && !FramesAsked) return;
         _reflect = keep;
         // thunks for the kept members (compiled in the next round)
@@ -543,7 +548,7 @@ internal sealed partial class Driver
     internal void EmitReflectionTables()
     {
         PatchDisplayFields();
-        if (_metaOf == null && !WantsGenerated) return;
+        if (_metaOf == null && !WantsGenTypes) return;
         var records = new Dictionary<int, IAddress>();
         if (_reflect != null)
             foreach (var (t, all, names, ctors) in _reflect.Types.Values)
@@ -552,7 +557,8 @@ internal sealed partial class Driver
                 records[id] = TypeRecord(t, KeptMembers(t, all, names, ctors).ToList());
             }
         // (what the C# compiler makes: after the types' records, a frame of MoveNext is its own, not the kickoff's)
-        if (WantsGenerated) { GeneratedTypeRecords(records); EmitGeneratedMethods(); }
+        if (WantsGenTypes) GeneratedTypeRecords(records);
+        if (WantsGenerated) EmitGeneratedMethods();
         EmitFrameMethods();
         if (_metaOf == null) return;
         var e = new Emitter(_metaOf);

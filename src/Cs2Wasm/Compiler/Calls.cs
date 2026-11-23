@@ -1048,6 +1048,7 @@ sealed partial class FunctionCompiler
             case "Rt.DynamicInvokeRaw": E.Call(D.DynamicInvokeFn); return Own.Owned;
             case "Rt.DelegateArity": E.Call(D.DelegateArityFn); return Own.None;
             case "Rt.DelegateMethodEntry": E.Call(D.DelegateMethodFn); return Own.None;
+            case "Delegate.TargetOf": E.Call(D.DelegateSingletonFn); return Own.Owned;
             case "Rt.FrameMethods": E.Call(D.FrameMethodsFn); return Own.None;
             case "Rt.ArenaClearObject": E.Call(Rt.ArenaClearFn); return Own.None;
             case "Rt.ArenaFreeObject": E.Call(Rt.ArenaFreeFn); return Own.None;
