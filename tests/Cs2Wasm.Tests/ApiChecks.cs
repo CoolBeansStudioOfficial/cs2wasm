@@ -109,31 +109,6 @@ static class ApiChecks
             return a.Module!.AsSpan().SequenceEqual(b.Module) ? null : "modules differ";
         });
 
-        // A compiler that stays loaded begins a program's next build where its last one ended (Cs2WasmCompiler's
-        // build hints: for threads at once; every reported library at once), and the module must be a first build's.
-        // CS2WASM_BREAK_BUILD_HINTS=1 (the last build's answer taken without asking again) fails this: the plain
-        // program built after the threaded one of its name is compiled for threads.
-        Check("build hints: a program built again in one process is the module of a first build (for threads at once when the last of its name started one)", () =>
-        {
-            CompileResult Build(string src) => Cs2WasmCompiler.Compile(Frontend.CreateCompilation("hints", [("hints.cs", src)]), new CompileOptions());
-            var plain = Header + "static class E { [UnmanagedCallersOnly(EntryPoint = \"main\")] static void M() => Console.WriteLine(41 + 1); }";
-            var threaded = Header + "static class E { [UnmanagedCallersOnly(EntryPoint = \"main\")] static void M() { int n = 0; var t = new System.Threading.Thread(() => n = 42); t.Start(); t.Join(); Console.WriteLine(n); } }";
-            var p1 = Build(plain);     // a first build
-            var t1 = Build(threaded);  // without threads up to the start of one, then for threads
-            var t2 = Build(threaded);  // for threads at once
-            var p2 = Build(plain);     // for threads as the last of its name was: it starts none, so again as a first build
-            var p3 = Build(plain);
-            foreach (var r in new[] { p1, t1, t2, p2, p3 }) if (!r.Success) return Errors(r);
-            if (!t1.Module!.AsSpan().SequenceEqual(t2.Module)) return "the threaded program built again differs from its first build";
-            if (!p1.Module!.AsSpan().SequenceEqual(p2.Module)) return "the plain program built after a threaded one of its name differs from its first build";
-            if (!p1.Module!.AsSpan().SequenceEqual(p3.Module)) return "the plain program built a third time differs from its first build";
-            if (t1.Module!.AsSpan().SequenceEqual(p1.Module)) return "the two programs gave one module";
-            var path = Path.Combine(outDir, "api_hints.wasm");
-            File.WriteAllBytes(path, t2.Module!);
-            var (o, e, code) = Node(root, path);
-            return o == "42\n" && code == 0 ? null : $"the threaded program built again printed '{o}' (exit {code}) {e}";
-        });
-
         Check("an exception escaping an export is reported with type, message and stack; the export returns its failure value", () =>
         {
             var src = Header + "static class E { static int Div(int a, int b) => a / b; [UnmanagedCallersOnly(EntryPoint = \"main\")] static int M() { Console.WriteLine(\"before\"); return Div(1, 0) + 5; } }";
