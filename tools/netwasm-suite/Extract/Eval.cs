@@ -424,7 +424,11 @@ sealed class Evaluator
                 foreach (var c in istr.Contents)
                     switch (c)
                     {
-                        case InterpolatedStringTextSyntax t: sb.Append(t.TextToken.ValueText); break;
+                        // (in a non-raw interpolated string the token keeps the escapes {{ and }})
+                        case InterpolatedStringTextSyntax t:
+                            sb.Append(istr.StringStartToken.Kind() is SyntaxKind.InterpolatedStringStartToken or SyntaxKind.InterpolatedVerbatimStringStartToken
+                                ? t.TextToken.ValueText.Replace("{{", "{").Replace("}}", "}") : t.TextToken.ValueText);
+                            break;
                         case InterpolationSyntax h:
                         {
                             var v = Eval(h.Expression, scope);

@@ -371,6 +371,19 @@ function report(cases) {
     if (b?.ok) t.built++; else if (b) t.buildFailed++;
     if (o) { t.oracle++; if (o.stable) t.stable++; else if (o.timedOut) t.oracleTimeout++; else t.unstable++; if (o.hwDependent) t.hwDependent++; }
     const row = { id: c.id, dir: c.dir, origin: c.origin, file: c.file, tags: c.tags, aliases: c.aliases, build: b?.ok ? 'ok' : b ? b.reason : 'not built', oracle: o ? (o.stable ? 'stable' : o.timedOut ? 'timeout' : `unstable (${o.variants} outputs)`) : 'not run', results: {} };
+    // what .NET itself did: exceptions that escaped an input, PlatformNotSupportedException among them, and the
+    // library tests that fail under .NET (they assert NetWasm's behaviour, not .NET's: the expected output is .NET's)
+    if (o) {
+      const lines = o.expected.split('\n');
+      row.dotnet = {
+        throws: lines.filter((l) => / throw /.test(l)).length,
+        platformNotSupported: lines.filter((l) => /PlatformNotSupportedException/.test(l)).length,
+        libraryFails: lines.filter((l) => l.startsWith('FAIL ')).length,
+        exit: o.exit?.[0],
+      };
+      if (row.dotnet.libraryFails) { t.libraryFailsUnderDotnet = (t.libraryFailsUnderDotnet ?? 0) + row.dotnet.libraryFails; }
+      if (row.dotnet.platformNotSupported) t.casesWithDotnetPns = (t.casesWithDotnetPns ?? 0) + 1;
+    }
     for (const mode of modes) {
       const r = results[`${c.dir}|${mode}`];
       if (!r) continue;
@@ -386,6 +399,8 @@ function report(cases) {
   if (opt('--json')) writeJson(resolve(opt('--json')), rep);
   console.log(`== NetWasm ${commit.slice(0, 12)} against .NET ${rid}: ${t.cases} cases (${t.inputs} inputs), ${notExtracted.length} test methods not extracted`);
   console.log(`   built ${t.built}, did not build ${t.buildFailed}; oracle ran ${t.oracle}: ${t.stable} stable over ${runs} runs, ${t.unstable} unstable, ${t.oracleTimeout} timed out${t.hwDependent ? `, ${t.hwDependent} differ without hardware intrinsics` : ''}`);
+  console.log(`   classification (none skipped; expected output is .NET's): ${Object.entries(rep.classification).map(([k, n]) => `${k} ${n}`).join(', ')}`);
+  if (t.libraryFailsUnderDotnet || t.casesWithDotnetPns) console.log(`   under .NET: ${t.libraryFailsUnderDotnet ?? 0} library tests fail (they assert NetWasm's behaviour), ${t.casesWithDotnetPns ?? 0} cases throw PlatformNotSupportedException`);
   for (const [mode, m] of Object.entries(t.modes))
     console.log(`== ${mode}: ${m.pass} passed, ${m.fail} failed, ${m.compileFail} did not compile, ${m.timeout} timed out (${m.passOfStable} of ${m.stable} with a stable oracle)`);
   const show = +opt('--show', 40);
