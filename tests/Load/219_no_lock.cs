@@ -1,8 +1,14 @@
-// Test 131's four async methods that attach a child to one parent, in many rounds: what test 131 shows once in some
-// hundred loaded runs (the parent and its children left for good) has two hundred chances here. The children are
-// added under a lock (List<T> is not for several writers, in .NET either); the rounds wait, bounded, for the pool
-// thread that completed the last method to be out of it (its state machine holds the parent until then, in .NET
-// too: test 127's note), so only what is never freed counts.
+// Test 131's four async methods that attach a child to one parent, in two hundred rounds, with and without the
+// array of results kept by the parent and with and without a first yield: what test 131 shows once in some hundred
+// loaded runs, the parent and its children left for good, showed here in 3 runs of 100. (A result adopted by its
+// parent's list when its task died on a pool thread, while the state machine of the method that was ending still
+// held the parent, whose check at the drop had failed by that result's reference: the check that the adoption asks
+// for was not made, the parent being held, and the parent's note, stale, kept its last release from checking.)
+// The children are added under a lock here; tests/Load/219_no_lock.cs is this test without it (List.Add from four
+// threads at once, which .NET frees whole all the same: a round's five objects were left in one run of fifteen to
+// one of five until Rt.TakeInAbove).
+// The rounds wait, bounded, for the pool thread that completed the last method to be out of it (its state machine
+// holds the parent until then, in .NET too: test 127's note), so only what is never freed counts.
 using System;
 using System.Collections.Generic;
 using System.Linq;

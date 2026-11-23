@@ -2982,6 +2982,9 @@ namespace Cs2Wasm.Runtime
         // (A check queued in the thread's list, CS2WASM_TURN_CHECK=1, a trial: test 133 with 4,934 objects, as above.)
         // CS2WASM_NO_TURN_HOLD=1 (at compile time, a measurement): none.
         [Intrinsic] static extern bool NoTurnHold();
+        /// <summary>CS2WASM_NO_TAKE_IN_ABOVE=1 (at compile time, a measurement): the trial takes in another top only
+        /// where it is referred to itself, not where a member it owns is (Dropped's visit).</summary>
+        [Intrinsic] static extern bool NoTakeInAbove();
         [System.ThreadStatic] static int t_turnQ, t_turnN, t_turnCap;
 
         static void TurnHold(int x)
@@ -3413,6 +3416,19 @@ namespace Cs2Wasm.Runtime
             return false;
         }
 
+        /// <summary>Dropped's first pass: the member is referred to by the set (or held by one of it) and is under a top
+        /// that is not in the trial. When that top's own check failed by references from outside what it owns (its
+        /// note says so) and no code refers to it, it is in the trial too, with what it owns: the two may be one
+        /// garbage structure. Only such a top: one whose check failed by members that code holds, or that was never
+        /// checked, may be alive, and a live top stops the whole trial.</summary>
+        static void TakeInAbove(int member)
+        {
+            int t = Top(member);
+            if (t == 0 || t == member || Mem.LoadI32(t) != -2 || (PL(t, 24) & (Owned | Dying)) != 0 || (PLM(t) & 3) != 3) return;
+            if (ThreadMode() && !GroupHeld(t)) return;
+            PS(t, 24, PL(t, 24) | Dying); TkPush(t); s_trExt++;
+        }
+
         static void TrVisit(int mode) => TrVisit(mode, 0);
 
         static void TrVisit(int mode, int from)
@@ -3427,6 +3443,16 @@ namespace Cs2Wasm.Runtime
                 // their checks)
                 if (mode == 13 && s_trOwn != 0 && i >= s_trOwn && Mem.LoadI32(m) != -2) { s_trExt = -1; break; }
                 ArenaVisitObject(m);
+                // (13: a member that holds an owner that is not in the trial refers into that owner's structure)
+                if (mode == 13 && s_trExt > 0 && (PL(m, 24) & Held) != 0 && !NoTakeInAbove())
+                {
+                    int w = PL(m, 20);
+                    if (w != 0 && Mem.LoadI32(w) < -1 && (PL(w, 24) & Dying) == 0 && (!ThreadMode() || GroupHeld(w)))
+                    {
+                        if ((PL(w, 24) & Owned) != 0) TakeInAbove(w);
+                        else if (Mem.LoadI32(w) == -2 && (PLM(w) & 3) == 3) { PS(w, 24, PL(w, 24) | Dying); TkPush(w); s_trExt++; }
+                    }
+                }
                 // (what it holds of its owner is a counted reference too)
                 if (mode != 13 && (PL(m, 24) & Held) != 0)
                 {
@@ -4785,6 +4811,13 @@ namespace Cs2Wasm.Runtime
                     // still holds it: tasks' results, test 127)
                     else if (s_trExt > 0 && (cf & (Owned | Dying)) == 0 && Mem.LoadI32(child) == -2)
                     { PS(child, 24, cf | Dying); TkPush(child); s_trExt++; }
+                    // (or one that such a top owns, however far below it: the top above it in the trial, with what it
+                    // owns. A list's array that a racing growth replaced while it held an item, tests/Load/219_no_lock.cs:
+                    // the array, let go by the list, is a top that still holds the list by its item's reference up;
+                    // the item is in the array Task.WhenAll returned, which the parent keeps. The parent's tree refers
+                    // into the array's by that reference to the item, a member the array owns, and the array's into the
+                    // parent's by its hold: each tried alone failed by the other's one reference, for good)
+                    else if (s_trExt > 0 && (cf & (Owned | Dying)) == Owned && !NoTakeInAbove()) TakeInAbove(child);
                     return;
                 }
                 if ((cf & Dying) == 0) return;

@@ -4,8 +4,9 @@
 // parent's list when its task died on a pool thread, while the state machine of the method that was ending still
 // held the parent, whose check at the drop had failed by that result's reference: the check that the adoption asks
 // for was not made, the parent being held, and the parent's note, stale, kept its last release from checking.)
-// The children are added under a lock here: with List.Add from four threads at once (tests/Load/219_no_lock.cs,
-// which .NET frees whole all the same) the runtime still leaves a round's five objects in one run of five, open.
+// The children are added under a lock here; tests/Load/219_no_lock.cs is this test without it (List.Add from four
+// threads at once, which .NET frees whole all the same: a round's five objects were left in one run of fifteen to
+// one of five until Rt.TakeInAbove).
 // The rounds wait, bounded, for the pool thread that completed the last method to be out of it (its state machine
 // holds the parent until then, in .NET too: test 127's note), so only what is never freed counts.
 using System;
