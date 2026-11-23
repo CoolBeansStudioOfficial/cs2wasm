@@ -1031,6 +1031,8 @@ sealed partial class FunctionCompiler
             case "Rt.NoTakeIn": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TAKE_IN") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoTakeInCache": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TAKE_IN_CACHE") == "1" ? 1 : 0); return Own.None;
             case "Rt.TakeInCacheBreak": E.I32(Environment.GetEnvironmentVariable("CS2WASM_TAKE_IN_CACHE_BREAK") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoTakeInDrop": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TAKE_IN_DROP") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoTopSelf": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TOP_SELF") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoTakeInStop": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_TAKE_IN_STOP") == "1" ? 1 : 0); return Own.None;
             case "Rt.TakeInStopBreak": E.I32(Environment.GetEnvironmentVariable("CS2WASM_TAKE_IN_STOP_BREAK") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoStaleNote": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_STALE_NOTE") == "1" ? 1 : 0); return Own.None;
