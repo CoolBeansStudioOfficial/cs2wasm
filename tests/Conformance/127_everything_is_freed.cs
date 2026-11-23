@@ -104,6 +104,9 @@ static class P
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void Tasks()
     {
+        // (the four continuations add to one list from pool threads at once, with no lock, as the test always did;
+        // .NET frees everything all the same. Here the tree is still left for good in about one loaded run of a
+        // hundred: open, the fixes are on claude/load-flakes-1; tests/Load/219_no_lock.cs has it in 200 rounds)
         static async Task<Node> MakeAsync(Node parent) { await Task.Yield(); var n = new Node("async") { Parent = parent }; await Task.Delay(1); parent.Children.Add(n); return n; }
         var root = new Node("async");
         var all = Task.WhenAll(Enumerable.Range(0, 4).Select(_ => MakeAsync(root))).GetAwaiter().GetResult();
@@ -119,6 +122,12 @@ static class P
     {
         Shapes(); Temporaries(); Tasks();
         for (int i = 0; i < 3; i++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
+        // (The pool thread that completed the last async method may not be out of it yet: Task.WhenAll's waiter is woken
+        // from inside the method's SetResult, and the state machine, which holds `parent`, is cleared after that, in
+        // .NET too (AsyncStateMachineBox.MoveNext, ClearStateUponCompletion); a thread stopped between the two keeps the
+        // tree reachable, and no collection frees it. .NET gives no point at which the pool has let go, so: until
+        // nothing is left but what the statics keep, for a bounded time. What is never freed still shows below.)
+        for (int waited = 0; waited < 5000 && Tracked.Live.Sum() > 2; waited++) { System.Threading.Thread.Sleep(1); GC.Collect(); GC.WaitForPendingFinalizers(); }
         foreach (var kind in Tracked.Kinds.OrderBy(k => k, StringComparer.Ordinal)) Console.WriteLine(kind + " " + Tracked.Live[Tracked.Kinds.IndexOf(kind)]);
     }
 }

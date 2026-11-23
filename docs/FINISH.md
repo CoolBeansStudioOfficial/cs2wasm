@@ -30,17 +30,17 @@ Each requirement is done when its check passes. A check that does not exist yet 
 
 | # | Check | Now | Goal |
 |---|---|---|---|
-| 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 180/180 | all pass, no `known-gap` |
+| 1 | Suite, checked and as shipped (`node tools/suite.mjs`) | 236 passed, 0 failed, 2 known gaps (244: a finalizer that grows a list of its own dying group; 247: a member that refers to itself through an array's element or a far field), both ways (main d430594, the homelab, 2026-11-23) | all pass, no `known-gap` |
 | 1 | Behaviour differences on record (AUDIT open items) | GetMethod, TargetSite, GetCurrentMethod, FirstChanceException and 6 trace differences closed (stream E's tests); reflection on compiler-made methods closed 2026-11-21 (tests 155, 156: names with Roslyn's ordinals, declaring classes, attributes, MoveNext); open: a capture-free lambda's `Delegate.Target` (`<>c` in .NET), the generated classes' own member lists, generic generated classes as constructed types; .NET's own library frames (not reproducible from source) | none |
 | 2 | Leaks: test 139 under load, 127, 131 | 139: none in 400 loaded runs, checked and as shipped (was 2 nodes in ~1 run of 45; fixed 2026-11-20) | none in 200 loaded runs |
-| 2 | Test 127 under load (`tools/stress-cycles.sh`) | open: `async 5 / pending 1` in about 1% of loaded runs (main 6e60243: 22 of 2,400; main d4b331e: 4 of 400; main dca1f9c: 3 of 400, the homelab); the 2026-11-21 fix made it rarer, not gone. Test 187 as shipped differs under load at about 2.5% (19 of 800 on main bc06ea9, 20 of 800 on dca1f9c) | none |
+| 2 | Test 127 under load (`tools/stress-cycles.sh`) | open: `async 5 / pending 1` in about 1% of loaded runs (main 6e60243: 22 of 2,400; main d4b331e: 4 of 400; main dca1f9c: 3 of 400, the homelab); the 2026-11-21 fix made it rarer, not gone. Test 187 as shipped differs under load at about 2.5% (19 of 800 on main bc06ea9, 20 of 800 on dca1f9c) | none |. 2026-11-23 (claude/load-flakes-safe): tests 127 and 187 now wait, bounded, for the pool thread that completed the last async method before they count (what they asked right after Task.WhenAll came back .NET does not promise, by its sources; not shown by .NET's output in 400 loaded runs); the leak itself is open as before, about one loaded run of a hundred of 127, 131, 187. Its causes are found and closed on claude/load-flakes-1 (a stale note on a top that code still holds; the top an ownership that turns round leaves; two structures that refer into each other), but the upkeep of the notes there (a8a50fc) kept the self-hosted compiler from ending, and the form that does not (the numbers kept at the events) still leaves test 187's rounds in 3 to 8 loaded runs of 400: not merged
 | 2 | Test 139 under load, a trap | the cause found and guarded (main 80ae1ce): the engine lets a thread go on with the memory size it last saw after another thread grew the memory, and checks atomic accesses, copies and fills against it; Wasm/MemSync.cs refreshes it before those (test 197, with the engine's stack checks off: 60 of 60 trap without the pass, none with it; test 139 so run 7 of 1,000 without, none of 3,000 with). Open: one of those 3,000 ended with two nodes left (`16 3`), none such in 34,400 with stack checks; not followed | none |
 | 3 | Closed-form solver (A4.6), its four examples against running the ticks | pass (API check "plugin v6", version 6) | pass |
 | 3 | Invisible API slice (9.4), `samples/invisible-api` (owner, 2026-11-20: a sample here, not in Bazoodle) | pass (suite "invisible-api slice", both modes; interface version 7) | builds and gates one interaction |
 | 4 | `tools/bench.mjs`, optimizing tier: time, memory | 0.96x, 16 MB vs 71 MB | < 1.0x, less memory |
 | 4 | Frame-time spikes: worst frame of a long run against NativeAOT's (`node tools/frames.mjs`) | 4 of 5 scenes below (worst frames 0.11x to 0.22x NativeAOT's with `--js-young 32`, quiet); tree: on main cb287fb, quiet, p99.9 2.55 to 2.57 ms vs 2.38 to 2.41 (1.06x to 1.08x), worst 0.87x to 0.88x; with the node path (main 189b8c6, the machine loaded by three sessions) p99.9 0.97x and 1.08x, worst 1.08x and 1.27x; switch on and off in turn on 7d36995, busy: p99.9 1.03x to 1.16x on, 1.15x to 1.22x off; on the homelab alone 2.80 to 2.83 ms on, 3.05 to 3.07 off. To be taken again quiet | worst frame and p99.9 not above NativeAOT's on every scene |
-| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`). The owner's bar since the evening of 2026-11-22: churn and tree may be slightly slower as long as it is faster overall, the self-hosted compiler is fast enough to be practical, and everything is fully correct and deterministic | churn 1.32x to 1.35x (was 1.58x, 2.16x, 3.47x), tree 1.57x to 1.60x (was 1.64x, 2.56x), collections 0.99x to 1.03x, strings 0.87x to 0.89x, bigdrop 0.88x to 0.94x (main 189b8c6 and cb287fb). The whole run (mean frame, pauses and rebuilds in it; `frames.mjs` prints it): geometric mean over the scenes 0.72x to 0.74x NativeAOT-LLVM's; churn 1.18x to 1.29x, tree 1.32x to 1.38x, collections 0.77x to 0.83x, strings 0.75x to 0.80x, bigdrop 0.20x; the five means summed 0.98x. bench.mjs 0.92x | faster overall; churn and tree slightly slower accepted |
-| 4 | Hello world size (test 145) | 27,089 B (main dca1f9c) | < 28,383 B |
+| 4 | Frame medians against NativeAOT's (`node tools/frames.mjs`). The owner's bar since the evening of 2026-11-22: churn and tree may be slightly slower as long as it is faster overall, the self-hosted compiler is fast enough to be practical, and everything is fully correct and deterministic | churn 1.17x to 1.22x on claude/churn-5 (2026-11-23; its mean frame 1.12x to 1.17x), 1.32x to 1.35x on main 189b8c6 (was 1.58x, 2.16x, 3.47x), tree 1.57x to 1.60x (was 1.64x, 2.56x), collections 0.99x to 1.03x, strings 0.87x to 0.89x, bigdrop 0.88x to 0.94x (main 189b8c6 and cb287fb). The whole run (mean frame, pauses and rebuilds in it; `frames.mjs` prints it): geometric mean over the scenes 0.72x to 0.74x NativeAOT-LLVM's; churn 1.18x to 1.29x, tree 1.32x to 1.38x, collections 0.77x to 0.83x, strings 0.75x to 0.80x, bigdrop 0.20x; the five means summed 0.98x. bench.mjs 0.92x | faster overall; churn and tree slightly slower accepted |
+| 4 | Hello world size (test 145) | 27,783 B (claude/churn-5, 2026-11-23); 27,089 B (main dca1f9c) | < 28,383 B |
 | 4 | Self-hosted compiler on `Console.WriteLine(42)`, no threads: time | 8.20 s vs 3.96 s, 2.1x (claude/selfhost-speed-1, 2026-11-22, the homelab, nine interleaved rounds; NativeAOT-LLVM's build is of 2026-11-20 and reads all fifteen core libraries, the self-hosted compiler nine); before: 9.51 s vs 3.82 s, 2.49x (main ad4c99e, the homelab, quiet, 3 interleaved rounds; this machine measured 1.98x under load, which slows NativeAOT's run more) | < NativeAOT-LLVM |
 | 4 | Same: peak memory | 272.0 MB vs 322.2 MB (claude/selfhost-speed-1, with nine libraries read, 344.2 MB with all fifteen; NativeAOT-LLVM's figure is the one on record, of its build that reads fifteen, not measured again); before: 306.0 MB vs 322.2 MB, 0.95x (main ad4c99e, homelab; unchanged by the reflection merge) | < NativeAOT-LLVM's, same measure |
 | 4 | Same: module size | 39.5 MB vs 129 MB (main ad4c99e) | met; next waste: code (36.2 MB) |
@@ -1129,6 +1129,91 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   ConditionalWeakTable value that holds its own key keeps both while the table has the entry; a finalizer of a
   plain object reads a weak reference to an object only it holds as alive; the items of a replaced array that
   refer back to the array's holder stay until the group goes. Checked: each closed item's test fails without its fix (241 with `CS2WASM_NO_FNPTR_STORAGE_KEEP=1` and before the scan, the generic and the `ref` fixes; 246 with `CS2WASM_NO_RANK_SITES=1`; 242, 243 and 245 on the commit before theirs) and passes checked and as shipped. The branch was merged with main 7932c93 (the node path; no conflict) at 14779aa, and what follows is of that commit unless said. On the homelab: the suite 236 passed, 0 failed and the 2 known gaps, checked and as shipped (460 s; the job was queued at a46bd11 and its first line names that commit, the checkout was at 14779aa when it ran: tests 201, 244 and 247 are in its count); the self-hosted compiler (`tools/selfhost-switch.sh CS2WASM_NO_RANK_SITES=1`): built in 240 s, 32,886,612 bytes, hello world in 9.06 to 9.17 s, peak memory 344 MB, the same module with and without the switch, and `tools/selfdet.mjs`: self = net byte for byte on 145 (27,738 bytes), 220 (276,626), 193 (258,680) and 088 (1,617,408); before the merge, at a63e075 (item 1 alone) the suite 231/231 checked and as shipped, and at dbae95a (items 1 to 3) the self-hosted compiler byte for byte on 145 (9.3 to 10.2 s, 344 MB). **Not run: `tools/stress-cycles.sh`** (127 and 139, and the new tests, 200 runs a mode): queued on the homelab behind other sessions for forty minutes and not started when this was written; the desk refuses heavy work. On the desk, the merge: tests 241 to 247 (244 and 247 as known gaps), 030 to 039, 190 to 207, 220 to 222, 020, 086, 087, 125, 127, 139, 143, 180 and 187 and the five of 22x pass both ways; hello world 27,784 bytes as shipped (the limit 28,383; the same number at the first commit of the branch). `node tools/frames.mjs --runs 3 --js-young 32 --no-aot`, main and the merge built in turn, two rounds each (main first): tree median 0.048 and 0.048 ms against 0.047 and 0.048, p99 0.073 and 0.070 against 0.070 and 0.070, p99.9 2.78 and 2.83 against 2.70 and 2.66, worst 3.33 and 3.14 against 2.96 and 2.97; churn median 0.066 and 0.067 against 0.068 and 0.067, p99 0.076 and 0.076 against 0.090 and 0.082 (main's own in a full run half an hour before: 0.140; the scene has no group, no weak reference and no finalizer, and none of its code changed), p99.9 0.116 and 0.100 against 0.124 and 0.124; bigdrop median 0.003 both, p99.9 1.09 against 1.08 to 1.11: level. With NativeAOT-LLVM beside it, before the merge (bd6177b): churn 1.34x its median, collections 0.97x, strings 0.89x, tree 1.69x (p99.9 1.27x, the node path not yet in), bigdrop 0.94x. Nothing was measured with threads beyond tests 139, 143 and 197 in the suite.
+- 2026-11-23, 00:00, claude/selfhost-speed-1 and claude/known-diffs-1 merged (main d430594; their entries above),
+  checked again before the merge. Homelab at d430594: suite 236 passed, 0 failed, 2 known gaps, checked and as
+  shipped; the self-hosted compiler built (350 s, 32,920,709 bytes), its module byte for byte the .NET-hosted
+  compiler's on hello world and on tests 243, 245, 127, 201, 230, 232, 207, 220, 222, 240, 193, 088; hello world in
+  17.0 to 21.4 s against 18.9 to 19.3 for the build before and NativeAOT-LLVM's 6.9 to 12.0 on a homelab under
+  several sessions' load (its session: 8.20 s against 9.11, quiet medians), peak 272.0 MB against 344.2. Not run:
+  stress of 241 to 246. NOT merged: claude/load-flakes-1 (causes and fixes for tests 187, 131, 127, 087 under load
+  and a racing List.Add; its suite 237/237 both ways and every stress count clean on the merge e1cb12a): with it
+  the self-hosted compiler runs hello world for minutes (two builds here, each stopped after four minutes and more
+  at full load; its own session saw the same), which the suite cannot show; its session is to find which of its
+  changes it is. From here a merge's self-host check times the self-hosted compiler too. The owner gave until the
+  morning (about 08:45) and standing leave to stop stuck jobs of the sessions on the homelab: used once, for this
+  session's own runs of the slow builds (selfhost-ab on t17 and t18, t16's build). Sessions through the night, one
+  for each goal of the spec not met: claude/selfhost-speed-2 (proof 4: the parse at 2x, the binding at 4.4x, library
+  work not needed), claude/tree-3, claude/churn-5 (the header word among it), claude/known-diffs-2 (no known gap
+  left), claude/threads-1 (a first comparison with threads; what is off with threads), claude/load-flakes-1.
+- 2026-11-23, 03:20, claude/load-flakes-safe merged (main 68f3eb5 with this entry after it): the part of
+  claude/load-flakes-1 that touches nothing of the cycle runtime's checks and notes. An async iterator's promise
+  counted while it is completed (8577829: test 087's trap under load, 7 of 1,200 checked runs before; test 217
+  trapped 24 of 24 without it); the out-of-memory exception not made under the heap's lock (a80a658); the statics
+  laid out by cache lines in a program with threads (5837122: test 139 at ten times its length 3.26 to 2.84 s);
+  test 072's server on a free port and each suite runner in its own directory (f75de80); tests 088, 135, 127, 187
+  with bounded waits where .NET promises no point in time (by .NET's sources: .NET itself gave the usual output in
+  400 of 400 loaded runs of each as they were), test 218, tests/Load, tools (oracle-load.sh, selfhost-time.sh, which
+  times the self-hosted compiler with a limit, selfdet-tests.sh). By its session, homelab at 68f3eb5: suite 238
+  passed, 0 failed, 2 known gaps, both ways; the self-hosted compiler's hello world in 12.7 and 14.1 s on the
+  loaded homelab, its module byte for byte the .NET-hosted compiler's on 145, 220, 193 and 088 (112 s). Here on the
+  merge: tests 21x, 087, 127 and 145 both ways. Open as before, on main: tests 127, 131 and 187 differ in about one
+  loaded run of a hundred. Their fixes (claude/load-flakes-1: a stale note's upkeep) made the self-hosted compiler
+  run for minutes: a full check again at every ownership taken or let go under a noted top. A queue that put those
+  checks off and paid them down later (NoteDebt) was refused here as deferred work; its session is building the
+  number kept right at the one event that changes it, and test 219 still leaks in 2 to 4 loaded runs of 300 to 400
+  with that so far.
+- 2026-11-23, claude/load-flakes-safe (from main 00d78fe): of claude/load-flakes-1, what is sound and costs the
+  self-hosted compiler nothing. Async iterators' promise counted while it is completed (test 087's trap in
+  rt.retain: test 217 without it traps in 24 runs of 24, with it in none of 1,200; test 087 checked 2,400 of 2,400,
+  7 of 1,200 trapped on main); the out-of-memory exception not made under the heap's lock (test 217 hung in 3 to 5
+  runs of 480); with threads the statics laid out by cache lines (test 139 at ten times its length 2.7 to 2.8 s
+  against main's 3.1 to 3.3 on the desk, where it had been 3.0 or 3.45 s by how long the program's strings were);
+  test 072's server on a free port and each suite runner in a directory of its own. Tests: 088 waits for the
+  timer's first tick; 135's far task is 2 s off and the first to complete is checked (2,400 of 2,400 loaded
+  runs); 127 and 187 wait, bounded, before they count; 218 (test 139 in rounds). These four changes rest on
+  .NET's sources, not its output: .NET gave the usual output in 400 loaded runs of each test as it was
+  (tools/oracle-load.sh, tests/Load). On the homelab at 68f3eb5: suite 238 passed, 0 failed, 2 known gaps,
+  checked and as shipped; the self-hosted compiler (tools/selfhost-time.sh, new: its time on hello world with a
+  limit, since a change that makes it never end does not show in the suite) 12.7 and 14.1 s on hello world with
+  the homelab loaded, and byte for byte the .NET-hosted compiler's module on tests 145, 220, 193 and 088 (112 s).
+  Not on this branch, open: the leaks of tests 127, 131 and 187 under load (the row above); test 139's two nodes
+  left without the engine's stack checks, not seen again in 4,000 runs, cause not shown.
+- 2026-11-22 to 23, the churn loop, round 5 (branch claude/churn-5, from claude/round-9 d430594; docs/AUDIT.md A3.5
+  "The churn loop, round 5"). Asked for: churn's median at or below NativeAOT-LLVM's, or what is left shown to be a
+  floor. **`frames.mjs` churn 1.35x-1.36x to 1.17x-1.22x (0.068-0.070 ms to 0.063-0.064 against 0.050-0.054; by
+  `frames-ab.mjs`, eight rounds, 0.0652-0.0681 to 0.0589-0.0631), its mean frame 1.24x-1.25x to 1.12x-1.17x; not at
+  NativeAOT-LLVM's.** The other scenes and `bench.mjs` as they were (0.91x and 0.93x, `bench-ab.mjs` 0.991x of before).
+  In: (1) a list's setter goes into loops as its getter does (`CS2WASM_INLINE_READERS` 80 to 96: it was 81 to 90
+  instructions and stayed a call; `churn-move`, the store through the list 55 us a frame to 46 against
+  NativeAOT-LLVM's 40.5); (2) a value stored and read back is the stored value (`CS2WASM_NO_STORE_FORWARD=1`,
+  Wasm/SameBaseLoads.cs: `--p.Life > 0` read the field twice after storing it; test 209, and
+  `CS2WASM_SAME_BASE_WITHOUT=...` takes each of the pass's rules out for tests 207 and 209). Built and **off by
+  default** (`CS2WASM_COLD_EXITS=1`, Wasm/ColdExits.cs, test 208, `tools/cold-exits-proof.sh`): the calls of a
+  count's other path written after the loop. Found with the engine's own listing (`node --print-wasm-code`): a
+  call that comes back, on a path never taken, makes V8 write every value that is alive across it to the stack
+  where the value is made, five stores a turn in the counted store's loop; without them the store is 40.5 us a
+  frame for 46 (`tools/churn-count.cs`), but each turn that leaves the loop pays 5 to 7 ns, so a loop whose other
+  path is taken once in 4 to 50 turns is up to 17% slower (`tools/drop-range.cs`), list_sort 3 to 4% slower, and
+  the churn scene, where one particle in 48 ends in the loop, the same with and without. Tried and not kept (branch
+  claude/churn-5-free-inline): an object's end in the loop without a call (the frees' usual cases written out, the
+  rare calls outside): the tool's loop 2 us shorter, the frames scene not; the mark's bit tested before
+  rt.on_destroy: nothing; the NaN test as a select on the bits: slower. **What is left, by measurement** (us of a
+  63 against 51 to 54): the particles that end inside the loop 6 (`tools/churn-deaths.cs`: 15 ns each there, 7 after
+  the loop, under 1 where every object ends: an unpredicted branch and a path run once in 48 turns; NativeAOT-LLVM
+  pays it in its pauses, 5.5 to 6 us a frame of its mean); the NaN tests 2.8 to 3.1 (the owner's ruling); the two
+  counts of a moved reference 5.5, 2.4 above the card mark (no sound proof of a move); their tests 1.5 and the
+  engine's stores for the calls 2 to 3.7; the header's third word 1.5 to 2, **not built**: the pinned bit is read
+  on fifteen arena paths before the type is known, the mark bit at every end, the count's sign and the type word
+  have no bit to spare, SPEC 7.3's hash is a counter kept in the word (AUDIT has the design that is left: a
+  two-word header for hierarchies without a cycle-capable or finalizable class). The loop's shape: the read loop
+  rotated by hand is slower now on both sides, and the scene's loop without its move is level with NativeAOT-LLVM's
+  (29.4 against 29.7): nothing to build. Hello world 27,783 bytes. **Checked** on the homelab: the suite
+  at ba966f6 239 passed, 0 failed, 2 known gaps, checked and as shipped; the self-host check at cb43eb9 (new:
+  `tools/selfhost-check.sh`): built in 246 s, 32,970,943 bytes, hello world in 8.29-8.34 s (8.25-8.35 with the two
+  changes switched off), peak 272.0 MB, and 145, 220, 193 and 088 each "self-1 = net, byte for byte"; stress:
+  208, 209, 260 and 139 the same in every one of 200 loaded runs a mode, 127 differed in 3 of 400 (its "async 5 / pending 1", as on main); `tools/field-hoist-proof.sh` with the setter inlined: as before. Not built: the header's word. Not
+  checked: the suite with ColdExits on at the last commit (tests 190 to 209 on the desk, the whole suite at its
+  first commit).
 - 2026-11-23, programs with threads (branch claude/threads-1 from claude/round-9 d430594; not merged into main;
   docs/AUDIT.md A3.6). The measurement that was missing: `node tools/frames-threads.mjs`, the frames scenes in a
   program with threads (one idle worker; N workers with private worlds; work handed between threads; the churn's
