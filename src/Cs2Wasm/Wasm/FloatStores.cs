@@ -10,6 +10,7 @@ namespace Cs2Wasm.Wasm;
 /// </summary>
 static class FloatStores
 {
+    static readonly bool s_bits = Environment.GetEnvironmentVariable("CS2WASM_CANON_BITS") == "1";
     public static void Run(List<WasmFunction> functions, Func<bool, WasmFunction> canon)
     {
         // (CS2WASM_NO_CANON=1, measurement only: what the stores cost)
@@ -42,6 +43,16 @@ static class FloatStores
                         void Add(Op o, long imm = 0) => nb.Add(new Instr { Op = o, Imm = imm, Pos = b[i].Pos });
                         // x == x ? x : NaN
                         Add(Op.LocalTee, t);
+                        if (s_bits)
+                        {
+                            // (the bits chosen, as integers: a select the engine makes without a branch)
+                            Add(d ? Op.I64ReinterpretF64 : Op.I32ReinterpretF32);
+                            if (d) Add(Op.I64Const, unchecked((long)0xFFF8000000000000)); else Add(Op.I32Const, unchecked((int)0xFFC00000));
+                            Add(Op.LocalGet, t); Add(Op.LocalGet, t); Add(d ? Op.F64Eq : Op.F32Eq);
+                            Add(Op.Select);
+                            nb.Add(b[i] with { Op = d ? Op.I64Store : Op.I32Store });
+                            continue;
+                        }
                         if (d) Add(Op.F64Const, unchecked((long)0xFFF8000000000000)); else Add(Op.F32Const, unchecked((int)0xFFC00000));
                         Add(Op.LocalGet, t); Add(Op.LocalGet, t); Add(d ? Op.F64Eq : Op.F32Eq);
                         Add(Op.Select);
