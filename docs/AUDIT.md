@@ -2347,6 +2347,34 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     each is a per cent or two of a frame by the measurements above (the old array of a growth freed without its
     clear and dispatches about 10 ns a node, 8 us of a 1.3 ms build), below what the desk can show, and each
     would have needed a second full check on a homelab whose queue held nine to thirteen jobs this night.
+  - **Test 127 against main the same hour** (main 4cf95fe on the homelab, `env TESTS=127_ RUNS=400 bash
+    tools/stress-cycles.sh`): `async 5` / `pending 1` in 3 of 400 as shipped and 4 of 400 checked, against the
+    branch's 3 of 200 and 4 of 200 above. Seven of 800 on main and seven of 400 on the branch: twice the rate in
+    one sample each, counts too small to tell apart (a Poisson spread of seven is 2 to 13). Not followed further.
+  - **Merged with main again (e682484: main 4cf95fe, claude/churn-5's ColdExits, the store forwarding and the
+    setter in loops).** Conflicts: docs/FINISH.md (the table's three rows that both changed, each side's words
+    kept; the appended entries both kept) and tools/selfhost-check.sh, which the two sessions wrote the same
+    night: one script now, the switches passed on, hello world, 220, 193 and 088 and SET's tests by selfdet,
+    main's last line ("selfhost-check: all the same"). On the desk at the merge: the five scripts of breaks
+    exit 0, tests 19x, 20x (with 208 and 209), 26x and 145 checked and as shipped. Frames, main 4cf95fe and the
+    merge in turn, six pairs, a desk loaded by other sessions in most of them (NativeAOT-LLVM's own churn median
+    0.049 to 0.088 ms): in the two pairs where both sides' NativeAOT-LLVM tree median was 0.029 to 0.030, tree
+    median 1.53x and 1.54x on main and 1.33x and 1.35x on the branch, p99.9 0.82x and 0.91x against 0.80x and
+    0.86x, worst 0.67x and 0.89x against 0.66x and 0.77x, churn 1.22x to 1.24x on the branch and 1.23x and
+    1.36x on main (its NativeAOT-LLVM churn 0.088 ms in the second: the desk); over all six the tree's
+    median lower on the branch in five (1.30x to 1.59x against 1.41x to 1.96x). The worst frame of the tree on
+    the branch was above NativeAOT-LLVM's in two of the six (1.45x, 1.21x, both on the loaded desk).
+    **Checked on the homelab at e682484** (`env SET=202_,203_,204_,208_,209_ bash tools/overnight-check.sh` with
+    the six switches): **suite 244 passed, 0 failed, 2 known gaps, checked and as shipped (772 s)**; the
+    self-hosted compiler built as it is (323 s, 33,252,200 bytes) and switched (456 s, 32,994,322 bytes: the
+    homelab under other sessions' builds), **hello world by it in 10.2 to 11.4 s** (switched 10.0 to 10.3; 8.6 to
+    9.0 s at 37c6b15 an hour and a half before on a quieter homelab, and main's own session gave 8.29 to 8.34 s
+    for 4cf95fe's code: not measured here side by side, so whether the merge costs the self-hosted compiler
+    anything is not shown; the switched build, without this branch's six steps, is as slow, which lays the
+    difference to the homelab or to main's side), peak 272.0 MB, the two modules the same (27,721 bytes);
+    **self-1 = net, byte for byte on 145 (27,733 bytes), 220, 193, 088, 202, 203, 204, 208 and 209**. Stress, 200
+    loaded runs a mode: 139, 192 to 199, 201 to 203 the same in every run; 127 `async 5` / `pending 1` in 3 of
+    200 as shipped and 1 of 200 checked (the open gap, as above).
 
 - **Known differences from .NET, taken in turn (2026-11-22, branch claude/known-diffs-1, from main cb287fb; the
   desk for the work, the homelab for the checks; not merged when this was written).** Seven differences earlier

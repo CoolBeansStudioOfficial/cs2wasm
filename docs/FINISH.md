@@ -1254,3 +1254,13 @@ with CS2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   208, 209, 260 and 139 the same in every one of 200 loaded runs a mode, 127 differed in 3 of 400 (its "async 5 / pending 1", as on main); `tools/field-hoist-proof.sh` with the setter inlined: as before. Not built: the header's word. Not
   checked: the suite with ColdExits on at the last commit (tests 190 to 209 on the desk, the whole suite at its
   first commit).
+- 2026-11-23, 06:30, claude/tree-3 merged with main again (e682484: main 4cf95fe, claude/churn-5's steps) and
+  checked there (docs/AUDIT.md A3.5 round 10, its last items). Homelab at e682484: suite 244 passed, 0 failed, 2
+  known gaps, both modes; the self-hosted compiler byte for byte on 145, 220, 193, 088, 202, 203, 204, 208, 209,
+  hello world by it in 10.2 to 11.4 s on a loaded homelab (8.6 to 9.0 s at 37c6b15 before; the build without
+  the branch's six steps as slow; not timed against main side by side), 272.0 MB; stress of 139, 192 to 199,
+  201 to 203 the same in every run, 127's open line in 3 and 1 of 200 (main 4cf95fe the same hour: 3 and 4 of
+  400). Desk: the five scripts of breaks exit 0; tests 19x, 20x, 26x, 145 both modes. Frames, main 4cf95fe
+  against the merge, six pairs on a loaded desk: tree median 1.53x and 1.54x on main against 1.33x and 1.35x in
+  the two quiet pairs, lower on the branch in five of six; churn as on main. Not merged into main by this
+  session; the tree's median is not at NativeAOT-LLVM's.
