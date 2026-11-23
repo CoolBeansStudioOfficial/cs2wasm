@@ -2108,6 +2108,146 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     the member's group goes (test 246 does not count them while the board lives).
   - Checked: each closed item's test fails without its fix (241 with `CS2WASM_NO_FNPTR_STORAGE_KEEP=1` and before the scan, the generic and the `ref` fixes; 246 with `CS2WASM_NO_RANK_SITES=1`; 242, 243 and 245 on the commit before theirs) and passes checked and as shipped. The branch was merged with main 7932c93 (the node path; no conflict) at 14779aa, and what follows is of that commit unless said. On the homelab: the suite 236 passed, 0 failed and the 2 known gaps, checked and as shipped (460 s; the job was queued at a46bd11 and its first line names that commit, the checkout was at 14779aa when it ran: tests 201, 244 and 247 are in its count); the self-hosted compiler (`tools/selfhost-switch.sh CS2WASM_NO_RANK_SITES=1`): built in 240 s, 32,886,612 bytes, hello world in 9.06 to 9.17 s, peak memory 344 MB, the same module with and without the switch, and `tools/selfdet.mjs`: self = net byte for byte on 145 (27,738 bytes), 220 (276,626), 193 (258,680) and 088 (1,617,408); before the merge, at a63e075 (item 1 alone) the suite 231/231 checked and as shipped, and at dbae95a (items 1 to 3) the self-hosted compiler byte for byte on 145 (9.3 to 10.2 s, 344 MB). **Not run: `tools/stress-cycles.sh`** (127 and 139, and the new tests, 200 runs a mode): queued on the homelab behind other sessions for forty minutes and not started when this was written; the desk refuses heavy work. On the desk, the merge: tests 241 to 247 (244 and 247 as known gaps), 030 to 039, 190 to 207, 220 to 222, 020, 086, 087, 125, 127, 139, 143, 180 and 187 and the five of 22x pass both ways; hello world 27,784 bytes as shipped (the limit 28,383; the same number at the first commit of the branch). `node tools/frames.mjs --runs 3 --js-young 32 --no-aot`, main and the merge built in turn, two rounds each (main first): tree median 0.048 and 0.048 ms against 0.047 and 0.048, p99 0.073 and 0.070 against 0.070 and 0.070, p99.9 2.78 and 2.83 against 2.70 and 2.66, worst 3.33 and 3.14 against 2.96 and 2.97; churn median 0.066 and 0.067 against 0.068 and 0.067, p99 0.076 and 0.076 against 0.090 and 0.082 (main's own in a full run half an hour before: 0.140; the scene has no group, no weak reference and no finalizer, and none of its code changed), p99.9 0.116 and 0.100 against 0.124 and 0.124; bigdrop median 0.003 both, p99.9 1.09 against 1.08 to 1.11: level. With NativeAOT-LLVM beside it, before the merge (bd6177b): churn 1.34x its median, collections 0.97x, strings 0.89x, tree 1.69x (p99.9 1.27x, the node path not yet in), bigdrop 0.94x. Nothing was measured with threads beyond tests 139, 143 and 197 in the suite.
 
+- **Known differences from .NET, second round (2026-11-23, branch claude/known-diffs-2, from claude/round-9
+  d430594; the desk for the work, the homelab for the checks; not merged when this was written).** The two known
+  gaps of the round before are closed (the suite has no `known-gap` test), three more differences that were on
+  record are closed or narrowed, and a sweep of small programs around them found one large one, which is closed
+  for the program's own code. What is left is listed at the end, each with its smallest program.
+  - **1. A finalizer that grows a list of its own dying group (closed, test 244; and test 248).** The members'
+    counts after the finalizers, beyond their own references, were read as "stored where the program can reach
+    it", and the whole set was made immortal (count -1): a real resurrection was never freed either. Which of the
+    two it is is no longer asked. `Rt.FinRevive`: the members become what they were before any store linked them,
+    plain objects with every reference counted where it is held (during the finalizers every reference to and
+    from a dying member is a counted one already: ArenaLinkCore refuses the link). Then the references are linked
+    as the stores they stand for: (a) each member that had no owner among the others, with all that its slots
+    reach, top down (ArenaLinkContents: a container's links before those of what it holds, as the program made
+    them); (b) the slots of members that live on which took a dying member during the finalizers: noted where the
+    link was refused (`FinRecord`, the container counted once more while it is in the list), found by one visit
+    of each noted container (mode 21) while the dying members carry a tag on their counts, so nothing is walked
+    that the finalizers did not touch; (c) what neither reached. The count each member was given for the while is
+    let go last, bottom up. What the program can reach then lives on as any object does and is freed when it is
+    let go later (its finalizer not run again unless GC.ReRegisterForFinalize asked: Rt.FinalizedBit); the rest
+    goes by the counts at once, or as a group of its own whose finalizer phase runs the finalizers of the objects
+    made meanwhile with every reference in place: .NET's next collection. Three things the tests found on the
+    way: a noted container nothing else refers to any more (an array a list grew out of during the finalizer) is
+    let go before the links, else it kept what it owned from the array that holds the same items now; during
+    these links a member that code still refers to is not made the property of one that came back (the garbage
+    owned the living root it referred to, and the check at the drop, finding a member code holds under it, kept
+    it); the record of a whole group that came back is freed (it stayed, busy, for good).
+    `CS2WASM_NO_FIN_REVIVE=1`: as before. Without threads only: with threads FinPhaseCuts is as it was (the
+    members never freed).
+  - **2. A member that refers back to itself through an array's element (closed, test 247).** Let go by its
+    owner, the member is adopted by the other container that holds it (Adopt), here an array it owns itself: the
+    ownership turns round, the array is the top, nothing's, with no reference from outside, kept by what it owns
+    alone, and nothing asked the check at the drop of it (the member is owned, so no candidate).
+    ArenaUnlinkOld asks it of the new top (`CS2WASM_NO_ADOPT_CHECK=1`: not). The far fields of the test (a field
+    past the sixteenth word, a field of a wide struct) were freed already once this was; the test's last line was
+    .NET's own artefact (the first node's reference stayed in a slot of Main's frame: made in a method of its own
+    now).
+  - **5. The cells of a replaced array that refer back to the array's holder (closed, test 249).** One, two and
+    three dimensions, jagged, lists, with and without a local across the store: all freed already but one shape,
+    a ring of cells kept for a while by a cell of another array. The ring's top failed its check by that one
+    reference from outside what it owns, and the number the note keeps is taken down only at a store
+    (NoteOutside at the unlink): when the other array was let go and its cell destroyed, the reference went with
+    its holder and the number stayed. VisitDying and DyingSurvivor ask NoteOutside as the unlink does
+    (`Rt.DyingNote`), and DrainKills checks the top when the destruction is done (`CS2WASM_NO_DYING_NOTE=1`: not).
+    Rt's NoteOutside itself is unchanged (it is called from one more place).
+  - **3 and weak handles (narrowed, tests 265, 266, 248).** .NET clears a short weak reference before the
+    finalizer, but a handle that tracks resurrection and a dependent handle (a ConditionalWeakTable's entry) only
+    when the object is freed. All were cleared before the finalizer: a finalizer did not find its own table
+    entry, and an object brought back had lost its entry and its long weak references. Now a chain block has a
+    bit for a long handle (WeakSlots.LinkLong), `Cleared(addr, all)` clears the short ones or all;
+    ObjectMarks.OnFinalize (rt.on_finalize, before a finalizer) and WeakDying clear the short ones, OnDestroy all
+    (after the finalizer of an object that did not come back, and in a group member's clear function when its
+    class has a finalizer). **A value that is its own key** (`table.Add(k, k)`, Roslyn's and the compiler's
+    tables of a type that is its own canonical form) is not counted by the slot, so the key is freed. **Left: a
+    value that holds its key through a field** (see the end).
+  - **6. Reflection on compiler-made classes (one of three closed, test 270; branch
+    claude/known-diffs-2-reflection, merged).** `Delegate.Target` of a capture-free lambda is the `<>c` singleton
+    (one object a class, its type the method's declaring type), of a lambda that captures `this` alone the object,
+    of a capture-free local function null, of a lambda made further in the method's display: the delegate's
+    layout and call are unchanged, the property asks a function the compiler writes (rt.delegate_target, a
+    compare on the delegate's function; the singleton a 16-byte immortal object in the data). Gated on the
+    program reading Delegate.Target: hello world the same bytes, +31 B where the property is reachable and not
+    asked, +291 B on test 155.
+  - **7. Test 139 with the engine's stack checks off (not reproduced).** 6,000 runs as shipped, 24 at once,
+    `--no-wasm-stack-checks`, on the homelab (562 s): every run `16 1`. With the 4,000 of the round before: one
+    `16 3` in 13,000. Not followed further.
+  - **8. The sweep, and what it found: a span or a `ref` did not keep its object (closed for the program's own
+    code, tests 271, 272, 268).** `Make().AsSpan()`, `ReadOnlySpan<T> s = h.Arr; h.Arr = other;`,
+    `var s = a.AsSpan(); a = other;`, `ref T r = ref h.Arr[i];`, `Span<T> F() { var a = new T[3]; return a; }`,
+    `F(ref h.Arr[0], h)` where F replaces `h.Arr` (test 272): under .NET the span or the place keeps the array. Here neither
+    holds a count (StorageKeeps kept a collection's storage only), and the array went with its last holder: of 38
+    small programs 34 read freed memory, a trap or another object's bytes, checked and as shipped. The remedy is
+    StorageKeeps' own, widened, in the functions of the program (the core library's code is compiled as it was):
+    - the site counts the object the reference that came out points into (Rt.ObjectOf) into a local of the
+      function, let go at its return, for a call, property, constructor, conversion operator or the language's
+      own span conversion through which a reference can come out, unless what it is given is stable for the
+      function (a parameter or local never written again, `this`, a constant, a static readonly field; a local
+      of an inner block only where the result stays in its statement) and the callee is one of the library's
+      that give out only what they got (a ref struct's members, MemoryExtensions, MemoryMarshal, Unsafe, string,
+      Memory, ReadOnlyMemory, ArraySegment); and for a `ref` local or `ref` assignment whose target is a place in
+      an object that is not stable (FunctionCompiler.NoteSpanSites, after the captures are known);
+    - a function that returns a span, a ref struct or a `ref` counts what the result points into before it lets
+      go of its locals and temporaries (Rt.ReturnKeep, four at a time), and the calling site, which counts it for
+      itself, gives that count back (Rt.ReturnDone);
+    - a place passed by reference (`ref`, `out`, `in`, the struct a method is called on) that is in an object
+      read from a field, an element or a call keeps that object for the statement, as a reference argument is
+      kept (ToCallSafe, with the field borrow's own decision whether the count is needed).
+    `CS2WASM_NO_SPAN_KEEP=1`: none of the three (tests 271 and 272 trap). The sweep's other programs: finalizers
+    of plain objects with inheritance, brought back from the derived or the base finalizer, asked again,
+    suppressed (267); ConditionalWeakTable enumerated, cleared, replaced, with values that hold other keys, keys
+    in cycles and under a living tree (266); spans and refs into collections across growth through every way of
+    passing them (268; its one failure was the span over `stack.ToArray()`, the case above); function pointers,
+    generic, by `ref`, in fields, arrays and generic classes (269): the same as .NET but for what is listed below.
+  - **9. Two more the sweep found (closed, tests 273, 274).** (a) *A static's initializer pinned its object*:
+    the object of `static Node s_root = new Node(0);` was kept out of groups (Rt.ArenaPin) as a static readonly
+    field's is, by the initializer's store alone (EmitStoreField pinned any static; a later assignment to the same
+    field did not): once in a cycle it was never freed when the static was set again. Pinned only when the field
+    is readonly (`CS2WASM_PIN_STATIC_INIT=1`: as before). (b) *A container let go while one of its items is held
+    from elsewhere*: `g.A = null` where one cell of the array is also in `g.One` and each cell refers back to g:
+    the other cells stayed until the held one was let go (three of four for .NET's none), because the held
+    cell, with an up-reference below it and a holder other than its owner, holds the array. `Rt.ShedHolds`,
+    asked where a member is let go by its owner (ArenaUnlinkOld) or by the code (ArenaRelease) and only its
+    items' holds are left: each held item changes owner to the container waiting to own it, when that one is the
+    array's owner or below it (its up-references then pass the same members: the u of the members between is
+    moved), or, when it owns nothing that refers up, has its own up-references made counted ones (Reevaluate
+    makes them up-references again under its next owner); the array then has no reference and goes with the
+    items nothing else holds. Arrays of any rank and members by their slot bits; nothing done when an item
+    refers up to the container itself, has a note of a failed check, or with threads.
+    `CS2WASM_NO_SHED_HOLDS=1`: not (test 274 fails).
+  - **Left, each with its smallest program.**
+    (a) *A table's value that holds its key through a field*: `var k = new K(); table.Add(k, new V { Key = k });`
+    and k let go: .NET frees both (the ephemeron rule), here both stay while the table has the entry (`keys 1
+    values 1` for `keys 0 values 0`). The slot's count on the value and the value's on the key are a cycle no
+    link knows of; to free it the key's last reference from elsewhere would have to be told from the value's at
+    every release of a key.
+    (b) *What only a dying finalizable object holds*: `sealed class P { public object Q = new(); ~P() { .. W.TryGetTarget(out _) .. } }`
+    with W a weak reference to `p.Q`: the finalizer reads True where .NET reads False (the short weak references
+    to everything that became unreachable together are cleared before the first finalizer); and of the same
+    kind, when the finalizer brings its object back, what the object holds has been finalized under .NET at that
+    collection (it was unreachable with it), here it is finalized when it is freed (tests 265 and 267 do not
+    count such objects meanwhile). For a group's members both are as .NET (test 245). For plain objects it needs
+    a pass over what the dying object alone holds before its finalizer: not made.
+    (c) *GC.ReRegisterForFinalize twice on an object not yet finalized*: .NET runs its finalizer twice (two
+    entries in its queue), here once.
+    (d) *Reflection*: `typeof(delegate*<int, void>).IsFunctionPointer` is False; the compiler-made classes' own
+    member lists (`GetNestedTypes`, `GetFields` of `<>c`, of a display class, of a state machine: empty; .NET
+    lists Roslyn's delegate caches and hoisted locals), generic compiler-made classes as constructed types (the
+    definition is reported, and a capture-free lambda of a generic method has one Target for all instantiations),
+    `MethodInfo.Invoke` and `Delegate.CreateDelegate` on a compiler-made method (NotSupportedException), a
+    capture-free lambda evaluated twice (two delegate objects; Roslyn caches one).
+    (e) *With threads*: FinRevive is not applied (the members a reference was left to are never freed, as
+    before).
+    (f) *Spans in the core library's own code* are compiled as before (no case of it is known: the suite and the
+    self-hosted compiler run the library's paths).
+    (g) *Compositions of the held-item shape*: an item taken out of its array while a plain copy of the array
+    holds it, then the copy stored in the array's place and let go
+    (`var copy = (Cell[,])g.A.Clone(); g.A[0, 1] = null; g.A = copy; .. g.A = null;` with cells that refer back
+    to g and to each other across arrays): cells stay until the group goes (3 of 21 in the program test 274 was
+    cut down from; the item holds its old array without being in it, so ShedHolds does not find it).
+    (h) *A place passed by reference in the core library's own code*, as (f).
+
 ### A4. Plugins (goal 3)
 
 **A4.1 Generated code cannot reach private members. [read]**
