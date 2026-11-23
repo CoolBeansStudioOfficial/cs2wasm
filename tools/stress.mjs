@@ -1,6 +1,8 @@
 // Runs one built module many times, several at once, and counts its distinct outputs: for rare failures that show
 // only under load (test 139's leak, 072_http's out of bounds).
-//   node tools/stress.mjs <module.wasm> [--runs n] [--par k] [--expect "text"] [--node-flags "--liftoff-only ..."]
+//   node tools/stress.mjs <module.wasm> [--runs n] [--par k] [--expect "text"] [--node-flags "--liftoff-only ..."] [--key-re regex]
+// --key-re: runs are told apart by their output lines that match the regex alone (a module built with a report that
+// differs from run to run, CS2WASM_ARENA_REPORT=1: its addresses), and kept whole all the same.
 // --node-flags: flags for each run's Node (the engine's tiers, for what only one of them does: tools/grow-race.mjs).
 // A run that exits with an error has its output and whole stderr appended to <module.wasm>.fail.txt at once. At the
 // end the whole output and stderr of every run that differed (from --expect, or from the most frequent output; the
@@ -20,6 +22,7 @@ const wasm = args[0];
 const runs = +opt('--runs', 100), par = +opt('--par', 15);
 const expect = opt('--expect', null);
 const timeout = +opt('--timeout', 120000);
+const keyRe = opt('--key-re', null) ? new RegExp(opt('--key-re', null)) : null;
 const nodeFlags = (opt('--node-flags', '') ?? '').split(/[\s,]+/).filter(Boolean);
 const counts = new Map();
 const kept = new Map();   // distinct output -> the first runs that printed it, whole
@@ -37,7 +40,7 @@ function one() {
     p.on('close', (code) => {
       clearTimeout(timer);
       finished++;
-      const o = out.trim();
+      const o = keyRe ? out.split(/\r?\n/).filter((l) => keyRe.test(l)).join('\n') : out.trim();
       const key = `${o}${code ? ` [exit ${code}] ${err.trim().split(/\r?\n/).slice(-6).join(' | ')}` : ''}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
       if (!kept.has(key)) kept.set(key, []);
