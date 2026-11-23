@@ -734,7 +734,19 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     the two passes and the encoding against main's 696, 850 and 923 (the same with the holds off): the branch
     keeps more alive while it compiles, or for longer, and the checks then go through larger structures. Which
     structure that is was not found. It grows with the program: on the desk, main's runtime against the branch's,
-    test 220 18.8 against 22.9 s (+22%), test 193 18.4 against 21.1 s (+14%), test 088 +87%. Variants on the homelab (tools/selfhost-variants.sh, 088, against 177 s
+    test 220 18.8 against 22.9 s (+22%), test 193 18.4 against 21.1 s (+14%), test 088 +87%.
+    A desk-sized stand-in that shows the same direction: repro/RoslynBindProbe.cs (CoreLib's sources from the cache,
+    System/Text's 1,125 bodies bound, the operations kept). Binding, two runs each: all four switches off 5.8 and
+    5.9 s, as it is 6.5 and 6.6, CS2WASM_NO_STALE_NOTE=1 6.2 and 6.3, the holds off 6.3 and 6.3, TakeInAbove off
+    7.8 and 7.8 (worse, as on the self-hosted compiler). CS2WASM_DROP_STATS=1: off 98,335 checks walking 1.14
+    million members (the largest 6,695); notes and holds off with TakeInAbove on 102,401 and 1.19 million (6,695);
+    as it is 136,795 and 1.40 million (17,399); TakeInAbove off 135,168 and 11.5 million (17,399). So the notes and
+    the holds add about 35,000 checks and a larger one, and the take-in keeps them from going through ten times
+    as many members. By where each check came from (a count put in for the measurement and taken out): the holds'
+    releases about 33,000 of the added checks, small ones (2 to 3 members each), a stale note's check again
+    (DrainKills) about 3,100 of 20 members each, and the checks from an unlink whose note's number came down to
+    its share (NoteOutside) 63,000 members more. Which of these is the self-hosted compiler's 100 s needs the same
+    count there (a build on the homelab with CS2WASM_DROP_STATS=1): not done. Variants on the homelab (tools/selfhost-variants.sh, 088, against 177 s
     plain): CS2WASM_NO_TURN_HOLD=1 with CS2WASM_NO_SURVIVOR_HOLD=1 153.8 s; CS2WASM_NO_STALE_NOTE=1 157.2 s;
     CS2WASM_NO_TAKE_IN_ABOVE=1 no end in 300 s. Neither the holds nor the notes is the bulk alone, and the trial
     without TakeInAbove is worse still. Tried and taken out the same hour: TakeInAbove taking a top in only once the
