@@ -83,6 +83,10 @@ public static class Cs2WasmCompiler
 
     /// <summary>CS2WASM_NO_SECOND_PASS=1: a program with threads is compiled once, taking every object as shared.</summary>
     static readonly bool s_noSecondPass = Environment.GetEnvironmentVariable("CS2WASM_NO_SECOND_PASS") == "1";
+    /// <summary>CS2WASM_EXP_THREADMODE=1 (a test of the runtime): every program is compiled as one with threads,
+    /// whether it starts one or not; run on one thread, every group of classes is then one thread's (Arenas.LocalScc),
+    /// so the whole suite goes through the runtime's code for threads with the groups' single-thread paths.</summary>
+    static readonly bool s_expThreadMode = Environment.GetEnvironmentVariable("CS2WASM_EXP_THREADMODE") == "1";
     static readonly bool s_times = Environment.GetEnvironmentVariable("CS2WASM_TIMES") == "1";
 
     public static CompileResult Compile(Compilation compilation, CompileOptions? options = null)
@@ -112,7 +116,7 @@ public static class Cs2WasmCompiler
             try { d.Run(); }
             catch (Driver.ThreadsSeen) { threads = true; }
             if (threads && sw != null) Console.Error.WriteLine($"    {sw.ElapsedMilliseconds,6} ms  compiled without threads until the start of a thread was met ({d.AllMethods.Count(m => m.Compiled)} functions): begun again for threads");
-            if (threads || d.UsesThreads && !Driver.s_expNoThreadMode && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
+            if (threads || (d.UsesThreads || s_expThreadMode) && !Driver.s_expNoThreadMode && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
             {
                 d = null!;
                 d = new Driver(cs, options, allLibraries) { ThreadMode = true };

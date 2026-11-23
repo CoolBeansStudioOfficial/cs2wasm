@@ -1539,6 +1539,7 @@ sealed partial class RuntimeGen
             if (D.Rt.SccOfIfMade is { } scc0 && scc0.Body.Count == 0) new Emitter(scc0).I32(0);
             if (D.Rt.ArenaSlotsIfMade is { } sl0 && sl0.Body.Count == 0) new Emitter(sl0).I32(0);
             if (D.Rt.ArenaIsSlotFnIfMade is { } is0 && is0.Body.Count == 0) new Emitter(is0).I32(0);
+            if (D.Rt.ArenaFinTypeIfMade is { } ft0 && ft0.Body.Count == 0) new Emitter(ft0).I32(0);
         }
         // (no array that can be on a cycle, or the switch: a list's growth is the copy and the store)
         if (D.Rt.ArrayGrowIfMade is { } grow0 && grow0.Body.Count == 0) new Emitter(grow0).I32(0);
@@ -1561,6 +1562,12 @@ sealed partial class RuntimeGen
         D.Mark("  finish: EmitTypeNames");
         // (every function exists: what another thread can reach is known, and so which counts are atomic)
         D.ResolveSharing();
+        // (which groups of classes are each one thread's, Arenas.LocalScc: known with the sharing)
+        if (D.Rt.SccLocalIfMade is { } sccLocal && sccLocal.Body.Count == 0)
+        {
+            if (D.Arenas.Enabled) EmitIdTable(sccLocal, D.TypeById.Count, i => (null, D.Arenas.LocalScc(D.Arenas.SccOf(i)) ? 1 : 0));
+            else new Emitter(sccLocal).I32(0);
+        }
         ExpandThreadLocalReleases();
         D.Mark("  finish: sharing");
         // (every function exists: what each can store is known)

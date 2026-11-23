@@ -652,6 +652,11 @@ internal sealed partial class RuntimeFns
     public WasmFunction ArenaIsSlotFn => _arenaIsSlot ??= M.AddFunction("rt.arena_is_slot", FT([I, I], [I]));
     public WasmFunction? ArenaIsSlotFnIfMade => _arenaIsSlot;
     public WasmFunction? SccOfIfMade => _sccOf;
+    WasmFunction? _sccLocal;
+    /// <summary>rt.scc_local(type id): 1 when the type's group of classes is one whose groups are each one thread's
+    /// (Arenas.LocalScc; a program with threads).</summary>
+    public WasmFunction SccLocalFn => _sccLocal ??= MarkHinted(M.AddFunction("rt.scc_local", FT([I], [I])));
+    public WasmFunction? SccLocalIfMade => _sccLocal;
     WasmFunction? _arenaSlots;
     /// <summary>rt.arena_slots(type id): the cycle-capable slots of an object of the type, a nibble each (the slot's
     /// index among the words after the header, plus one), or 0 for a type the word cannot say them for (RuntimeGen).</summary>

@@ -231,6 +231,12 @@ internal sealed partial class Sharing
     HashSet<int>? _emptyOnly;
     readonly Dictionary<string, bool> _maySlotsBeShared = [];
 
+    /// <summary>Whether an object of exactly this type id can be reached by another thread than the one that made it,
+    /// as a group's member could be (Arenas.LocalScc): not for an array type reached only as an array with no element,
+    /// which a program with threads pins as it is made (Rt.AllocArray: it never joins a group). True until the
+    /// analysis is done.</summary>
+    public bool MemberIdShared(int id) => !s_none && (_shared == null || _shared.Contains(id) && !(_emptyOnly?.Contains(id) ?? false));
+
     /// <summary>Whether a slot of an object another thread can reach (a field, an element) can be in an object in a
     /// place of this static type: as MayBeShared, without the arrays of no element. Asked where a read or a store
     /// of a slot is decided (a read that counts, a store's lock, a borrow); a count asks MayBeShared.</summary>

@@ -993,6 +993,7 @@ sealed partial class FunctionCompiler
             case "Rt.Retain": E.Call(Rt.Retain); E.Op(Op.Drop); return Own.None;
             case "Rt.Release": E.Call(Rt.Release); return Own.None;
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
+            case "Rt.SccLocal": E.Call(Rt.SccLocalFn); return Own.None;
             case "Rt.ArenaSlots": E.Call(Rt.ArenaSlotsFn); return Own.None;
             case "Rt.NoWaitingTop": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_WAITING_TOP") == "1" ? 1 : 0); return Own.None;
             case "Rt.NoPlainParents": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_PLAIN_PARENTS") == "1" ? 1 : 0); return Own.None;

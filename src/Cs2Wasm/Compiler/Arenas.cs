@@ -122,6 +122,30 @@ internal sealed partial class Arenas
     public int SccOf(int id) => id < _scc.Length ? _scc[id] : 0;
     public bool AnyArrayCycle { get; private set; }
 
+    /// <summary>CS2WASM_NO_LOCAL_GROUPS=1: every group of a program with threads is locked as one another thread may
+    /// reach.</summary>
+    static readonly bool s_noLocalGroups = Environment.GetEnvironmentVariable("CS2WASM_NO_LOCAL_GROUPS") == "1";
+    HashSet<int>? _localScc;
+    /// <summary>A program with threads: whether the groups of this group of classes (an SCC) are each one thread's
+    /// (section 4.5, decided at compile time): no object of any of its types can be reached by another thread than
+    /// the one that made it (Sharing.MemberIdShared), so every member of such a group, and every object that may join it
+    /// (of the same classes), is the making thread's alone. Its operations take no group's lock and walk nothing
+    /// for the locks (Rt.KeyStripe, GroupLocks.cs: the stripe LocalStripe, always the thread's own).</summary>
+    public bool LocalScc(int scc)
+    {
+        if (scc == 0 || !D.ThreadMode || s_noLocalGroups || D.Sharing is not { Done: true } sh) return false;
+        if (_localScc == null)
+        {
+            var shared = new HashSet<int>();
+            foreach (var id in CycleTypes) if (sh.MemberIdShared(id)) shared.Add(_scc[id]);
+            _localScc = CycleTypes.Select(id => _scc[id]).Where(g => !shared.Contains(g)).ToHashSet();
+            if (Sharing.Debug || Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1")
+                foreach (var g in CycleTypes.GroupBy(id => _scc[id]))
+                    Console.Error.WriteLine($"arena group {g.Key} {(_localScc.Contains(g.Key) ? "one thread's" : "shared by " + string.Join(", ", g.Where(sh.MemberIdShared).Take(4).Select(id => Types.Key(D.TypeById[id]))))}: " + string.Join(", ", g.Take(6).Select(id => Types.Key(D.TypeById[id]))));
+        }
+        return _localScc.Contains(scc);
+    }
+
     static readonly ValType I = ValType.I32;
 
     WasmFunction Placeholder(string name, FuncType t, Kind k, Site? s, ITypeSymbol? pin = null)

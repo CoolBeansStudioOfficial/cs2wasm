@@ -1969,7 +1969,17 @@ namespace Cs2Wasm.Runtime
             if (total > 0x7FFF0000L) ThrowHelpers.OutOfMemory();
             int a = AllocObject((int)total, typeId);
             Mem.StoreI32(a + 12, length);
+            if (ThreadMode() && length == 0) PinEmpty(a);
             return a;
+        }
+
+        /// <summary>Threads: an array with no element, of a type whose elements can close a cycle, is pinned as it is made
+        /// (ArenaPin: it never joins a group). Nothing can be on a cycle through an object with no slot, and such an
+        /// array is one several threads may count (`List&lt;T&gt;.s_emptyArray`, an `Array.Empty`): so a group that one
+        /// thread's objects make never takes in an object another thread can reach (Sharing.MemberIdShared, Arenas.LocalScc).</summary>
+        static void PinEmpty(int a)
+        {
+            if (SccOf(Mem.LoadI32(a + 4)) != 0) Mem.StoreI32(a + 8, Mem.LoadI32(a + 8) | int.MinValue);
         }
 
         /// <summary>A store into an array that is not of the type the storing code names (a string[] used as an
@@ -1997,6 +2007,7 @@ namespace Cs2Wasm.Runtime
             if (total > 0x7FFF0000L) ThrowHelpers.OutOfMemory();
             int a = AllocObject((int)total, typeId);
             Mem.StoreI32(a + 12, length);
+            if (ThreadMode() && length == 0) PinEmpty(a);
             return a;
         }
 
@@ -2207,6 +2218,8 @@ namespace Cs2Wasm.Runtime
         }
 
         [Intrinsic] static extern int SccOf(int typeId);
+        /// <summary>Threads: the type's group of classes is one whose groups are each one thread's (Arenas.LocalScc).</summary>
+        [Intrinsic] static extern bool SccLocal(int typeId);
         [Intrinsic] static extern void ArenaClearObject(int addr);
         [Intrinsic] static extern void ArenaFinalizeObject(int addr);
         [Intrinsic] static extern int ArenaFinType(int typeId);
@@ -2551,7 +2564,8 @@ namespace Cs2Wasm.Runtime
             // group of five for each node with children, the node, its list, the array and the first child with its
             // list, merged into the tree's as the node's parent field is linked: 3,124 a build in the scene tree of
             // tools/frames.mjs.)
-            if (!ThreadMode() && !NoMergeRepoint() && hb != 0 && Mem.LoadI32(b + 8) <= MergeRepoint)
+            // (threads: in a group that is one thread's alone, LocalStripe: nothing else reads the records)
+            if ((!ThreadMode() || hb != 0 && SccLocal(Mem.LoadI32(hb + 4))) && !NoMergeRepoint() && hb != 0 && Mem.LoadI32(b + 8) <= MergeRepoint)
             {
                 int m = hb, moved = 0;
                 do { if (PL(m, 16) == b) { PS(m, 16, a); moved++; } m = PL(m, 12); } while (m != hb);
@@ -2559,7 +2573,7 @@ namespace Cs2Wasm.Runtime
                 Mem.StoreI32(a + 20, Mem.LoadI32(a + 20) + moved);
             }
             // (threads: b's members take a's stripe; this thread holds both)
-            if (ThreadMode() && hb != 0 && Mem.LoadI32(a + 28) != Mem.LoadI32(b + 28))
+            if (ThreadMode() && hb != 0 && !SccLocal(Mem.LoadI32(hb + 4)) && Mem.LoadI32(a + 28) != Mem.LoadI32(b + 28))
             {
                 int sw = Mem.LoadI32(a + 28) + 1, m = hb;
                 do { PS(m, LockWord, sw); m = PL(m, 12); } while (m != hb);
@@ -2895,7 +2909,7 @@ namespace Cs2Wasm.Runtime
             // (its counted slots are those its bits say, the first sixteen words: read here, with no visit of the
             // object by its type. An array has none, its elements are never up-references. In the scene tree of
             // tools/frames.mjs a node that takes its place is looked at four times: 14,000 visits a build)
-            if (!ThreadMode() && !NoSlotWalk())
+            if ((!ThreadMode() || SccLocal(Mem.LoadI32(v + 4))) && !NoSlotWalk())
             {
                 if ((PL(v, 24) & Elems) != 0) return;
                 int w = PL(v, 28) & 0x55555555;
@@ -3024,7 +3038,7 @@ namespace Cs2Wasm.Runtime
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static bool ReplaceArray(int to, int container, int slot)
         {
-            if (NoArrayReplace() || ThreadMode()) return false;
+            if (NoArrayReplace() || ThreadMode() && !SccLocal(Mem.LoadI32(container + 4))) return false;
             int old = Mem.LoadI32(slot);
             if (old == 0 || Mem.LoadI32(old) != -2) return false;
             int of = PL(old, 24);
@@ -3131,7 +3145,7 @@ namespace Cs2Wasm.Runtime
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         public static int ArenaGrowArray(int container, int old, int to, int n)
         {
-            if (ThreadMode()) return 0;
+            if (ThreadMode() && (container == 0 || !SccLocal(Mem.LoadI32(container + 4)))) return 0;
             if (old == 0 || to == 0 || n <= 0 || Mem.LoadI32(old) != -2 || Mem.LoadI32(to) != 1 || Mem.LoadI32(container) >= -1) return 0;
             int of = PL(old, 24);
             if ((of & (Elems | Owned | MultMask | Dying | Queued)) != (Elems | Owned | MultOne) || PL(old, 20) != container) return 0;
@@ -3244,7 +3258,7 @@ namespace Cs2Wasm.Runtime
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static void ShedHolds(int a)
         {
-            if (NoShedHolds() || ThreadMode() || (s_destroying | s_trial | s_joinVisit | s_visitElem | s_linkN) != 0) return;
+            if (NoShedHolds() || ThreadMode() && !SccLocal(Mem.LoadI32(a + 4)) || (s_destroying | s_trial | s_joinVisit | s_visitElem | s_linkN) != 0) return;
             int af = PL(a, 24);
             if ((af & (Owned | Dying | Queued | Far)) != 0 || Mem.LoadI32(a) != -2) return;
             // (the owner it still holds: the place its items are under)
@@ -3592,7 +3606,7 @@ namespace Cs2Wasm.Runtime
             // record not merged into another (ArenaOf would follow it), under no top whose number of held members is
             // kept (TopHeld has nothing to do), and its hold settled: with no up-reference below it, or holding its owner
             // already, as one more outside reference wants (UpdateHold has nothing to do))
-            if (!ThreadMode())
+            if (!ThreadMode() || SccLocal(Mem.LoadI32(p + 4)))
             {
                 int ar0 = PL(p, 16), fl0 = PL(p, 24);
                 if (Mem.LoadI32(p) == -2 && Mem.LoadI32(ar0 + 16) == 0 && (s_failedTops == 0 || !HeldMarked(PLM(p)))
@@ -3619,7 +3633,7 @@ namespace Cs2Wasm.Runtime
             // drop is not for it), under no top whose number of held members is kept (TopHeld), and its hold settled:
             // with no up-reference below it and not holding, or holding while others than its owner still refer to it
             // from inside (UpdateHold))
-            if (!ThreadMode() && !Checked())
+            if ((!ThreadMode() || SccLocal(Mem.LoadI32(p + 4))) && !Checked())
             {
                 int ar0 = PL(p, 16), fl0 = PL(p, 24), total0 = Mem.LoadI32(ar0) - 1, in0 = PL(p, 4);
                 if (Mem.LoadI32(p) == -3 && Mem.LoadI32(ar0 + 16) == 0 && total0 != 0 && (Mem.LoadI32(ar0 + 12) & ArenaBusy) == 0 && in0 != 0
@@ -3697,7 +3711,7 @@ namespace Cs2Wasm.Runtime
             // reference, ArenaLinkCore's answer after the lock and its questions about the two, with what ArenaLink
             // notes for the unlink that follows. The empty array every new list starts with, stored by List<T>'s
             // constructor: once for each entity of the scene tree of tools/frames.mjs, 19,531 a build.)
-            if (can && !ThreadMode() && !NoPinnedSkip() && t_backN == 0 && Mem.LoadI32(container) > 0 && Mem.LoadI32(val) > 0 && Mem.LoadI32(val + 8) < 0)
+            if (can && (!ThreadMode() || SccLocal(Mem.LoadI32(container + 4))) && !NoPinnedSkip() && t_backN == 0 && Mem.LoadI32(container) > 0 && Mem.LoadI32(val) > 0 && Mem.LoadI32(val + 8) < 0)
             {
                 OpStat(33);
                 t_prevSlot = slot; t_prevBits = slot != 0 ? 0 : -1;
@@ -3786,7 +3800,7 @@ namespace Cs2Wasm.Runtime
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static bool JoinOwned(int val, int container, int slot, bool can)
         {
-            if (NoFreshJoin() || ThreadMode()) return false;
+            if (NoFreshJoin() || ThreadMode() && !SccLocal(Mem.LoadI32(container + 4))) return false;
             if (Mem.LoadI32(container) >= -1) return false;
             if (!can) { int g = SccOf(Mem.LoadI32(val + 4)); if (g == 0 || g != SccOf(Mem.LoadI32(container + 4))) return false; }
             if (((PL(val, 24) | PL(container, 24)) & Dying) != 0 || Mem.LoadI32(val + 8) < 0) return false;
@@ -3853,7 +3867,7 @@ namespace Cs2Wasm.Runtime
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static bool JoinFresh(int val, int container, int slot)
         {
-            if (NoFusedJoin() || NoFreshJoin() || NoOwnedChain() || ThreadMode()) return false;
+            if (NoFusedJoin() || NoFreshJoin() || NoOwnedChain() || ThreadMode() && !SccLocal(Mem.LoadI32(container + 4))) return false;
             if (Mem.LoadI32(container) >= -1 || (s_linkN | s_joinVisit | s_visitElem | s_reevN) != 0) return false;
             int ar = PL(container, 16);
             if (Mem.LoadI64(ar + 12) != 0 || (PL(container, 24) & Dying) != 0) return false;
@@ -4282,7 +4296,7 @@ namespace Cs2Wasm.Runtime
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static bool JoinPair(int val, int container, int slot)
         {
-            if (NoNodePath() || NoFreshJoin() || ThreadMode()) return false;
+            if (NoNodePath() || NoFreshJoin() || ThreadMode() && !SccLocal(Mem.LoadI32(container + 4))) return false;
             int ca = Mem.LoadI32(container);
             if (ca <= 0 || val == container || (s_linkN | s_joinVisit | s_visitElem | s_reevN) != 0) return false;
             if (Mem.LoadI32(container + 8) < 0 || Mem.LoadI32(val + 8) < 0 || (PL(container, 24) | PL(val, 24)) != 0) return false;
@@ -4406,7 +4420,7 @@ namespace Cs2Wasm.Runtime
         /// array, is being destroyed, a note of a failed check anywhere, threads.</summary>
         static bool AddNode(int val, int container, int ar)
         {
-            if (NoNodePath() || ThreadMode() || NoEarlyGiveBack()) return false;
+            if (NoNodePath() || ThreadMode() && !SccLocal(Mem.LoadI32(container + 4)) || NoEarlyGiveBack()) return false;
             if ((s_failedTops | s_joinVisit | s_visitElem) != 0 || val == container) return false;
             int fl = PL(val, 24);
             if (PL(val, 20) != 0 || (fl & (Owned | Held | Dying | Queued | MultMask | Elems)) != 0) return false;
@@ -4674,7 +4688,7 @@ namespace Cs2Wasm.Runtime
         /// CS2WASM_NO_EARLY_GIVE_BACK=1: after the store, always.</summary>
         static bool EarlyGiveBack(int val, int container, int i, int ar)
         {
-            if (ThreadMode() || NoEarlyGiveBack() || val == container) return false;
+            if (ThreadMode() && !SccLocal(Mem.LoadI32(container + 4)) || NoEarlyGiveBack() || val == container) return false;
             if (PL(val, 20) != 0 || (PL(val, 24) & (Owned | Held | Dying | Queued)) != 0) return false;
             if (Mem.LoadI32(ar) <= 1 || Mem.LoadI64(ar + 12) != 0) return false;
             if (s_failedTops != 0 && (PLM(val) != 0 || PLM(container) != 0)) return false;
@@ -4700,7 +4714,7 @@ namespace Cs2Wasm.Runtime
         /// member whose one reference from outside is that local's is noted for the link.</summary>
         public static void ArenaLastBegin(int c)
         {
-            if (c != 0 && Mem.LoadI32(c) == -3 && !ThreadMode()) s_lastC = c;
+            if (c != 0 && Mem.LoadI32(c) == -3 && (!ThreadMode() || SccLocal(Mem.LoadI32(c + 4)))) s_lastC = c;
         }
 
         /// <summary>After that link: 0 when the local's count was given back (the local is cleared: the release at
@@ -6024,7 +6038,7 @@ namespace Cs2Wasm.Runtime
             // refers to it, so no element closes a cycle, and each is a plain counted store, as ArenaLinkOwned's. The
             // array's elements are linked when it is stored where a cycle can close: ArenaJoin links what a joining
             // object holds)
-            if (src != dst && !ThreadMode() && Mem.LoadI32(dst) == 1)
+            if (src != dst && (!ThreadMode() || SccLocal(Mem.LoadI32(dst + 4))) && Mem.LoadI32(dst) == 1)
             {
                 for (int k = 0; k < length; k++)
                 {

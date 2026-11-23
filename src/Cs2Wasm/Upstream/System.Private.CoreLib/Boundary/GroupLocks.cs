@@ -23,6 +23,11 @@ namespace Cs2Wasm.Runtime
         // its last stripe goes (AfterLocks), as with the runtime lock.
         // ------------------------------------------------------------------
         const int Stripes = 256, StripeBytes = 64, LockWord = 36;
+        // The stripe of an object of a group of classes whose groups are each one thread's (Arenas.LocalScc, decided at
+        // compile time: no object of those classes can be reached by another thread than the one that made it): no
+        // word of the table, always the thread's own. Taken, it is only pushed (the thread's count of what it holds,
+        // which the destructions wait for); below every stripe, it changes no order. CS2WASM_NO_LOCAL_GROUPS=1: none.
+        const int LocalStripe = -2;
         // (the table: made before the first thread starts, Threads.SpawnCore; until then one thread runs and no
         // stripe is taken, though the thread's count of what it holds is kept)
         static int s_stripes;
@@ -52,6 +57,7 @@ namespace Cs2Wasm.Runtime
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static int KeyStripe(int x)
         {
+            if (SccLocal(Mem.LoadI32(x + 4))) return LocalStripe;
             if (Atomic.Load32(ref Mem.RefI32(x)) < -1)
             {
                 // (the lock word is in the member's block, before its header: 0 until it joins a group)
@@ -65,8 +71,9 @@ namespace Cs2Wasm.Runtime
         static bool StripeMine(int s)
         {
             int t = s_stripes;
-            // (no other thread yet: every object is this thread's to read, as without threads)
-            if (t == 0) return true;
+            // (no other thread yet: every object is this thread's to read, as without threads; a group that is one
+            // thread's, LocalStripe)
+            if (t == 0 || s < 0) return true;
             return Atomic.Load32(ref Mem.RefI32(t + s * StripeBytes)) == ThreadId();
         }
 
@@ -99,7 +106,7 @@ namespace Cs2Wasm.Runtime
         static bool StripeLock(int s, bool mayWait)
         {
             int t = s_stripes;
-            if (t != 0)
+            if (t != 0 && s >= 0)
             {
                 int w = t + s * StripeBytes, me = ThreadId();
                 if (Atomic.Load32(ref Mem.RefI32(w)) == me) Mem.StoreI32(w + 4, Mem.LoadI32(w + 4) + 1);
@@ -160,7 +167,7 @@ namespace Cs2Wasm.Runtime
         static void StripeUnlock(int s)
         {
             int t = s_stripes;
-            if (t == 0) return;
+            if (t == 0 || s < 0) return;
             int w = t + s * StripeBytes;
             int d = Mem.LoadI32(w + 4) - 1;
             Mem.StoreI32(w + 4, d);
@@ -228,6 +235,7 @@ namespace Cs2Wasm.Runtime
         static bool LockGroupOf(int x, bool mayFail)
         {
             if (x == 0) return true;
+            if (ShareCheck() && SccLocal(Mem.LoadI32(x + 4))) LocalGroupCheck(x);
             // (a loop with its result in a local: the compiler closes no endless loop of a function with a value)
             int got = -1;
             while (got < 0)
@@ -360,6 +368,15 @@ namespace Cs2Wasm.Runtime
             {
                 if (val != 0) StripeLock(KeyStripe(val), true);
                 if (container != 0) StripeLock(KeyStripe(container), true);
+                return mark;
+            }
+            // (a container of a group of classes whose groups are each one thread's: so is the value, if it can be
+            // linked at all; nothing another thread can touch, as before the first thread. CS2WASM_NO_LOCAL_GROUPS=1:
+            // the walk and the locks)
+            if (container != 0 && SccLocal(Mem.LoadI32(container + 4)))
+            {
+                if (ShareCheck()) LocalGroupCheck(container);
+                LkPush(LocalStripe);
                 return mark;
             }
             // (a value that cannot be on a cycle with the container is linked to nothing: CanLink; read nothing of)
@@ -584,6 +601,20 @@ namespace Cs2Wasm.Runtime
                 GroupUnlock(mark);
             }
             return got;
+        }
+
+        /// <summary>CS2WASM_SHARE_CHECK: an object of a group of classes whose groups are each one thread's (LocalStripe)
+        /// that another thread made, locked here: a fault of the analysis (Arenas.LocalScc). A pinned one is any
+        /// thread's (an array with no element, Rt.AllocArray).</summary>
+        static unsafe void LocalGroupCheck(int x)
+        {
+            int c = Atomic.Load32(ref Mem.RefI32(x));
+            if (c > 0 && Mem.LoadI32(x + 8) < 0) return;
+            int maker = (Mem.LoadI32(x + 8) >> 24) & 0x1F;
+            if (maker == (ThreadId() & 0x1F)) return;
+            string m = "share check: a group's lock left out for an object of " + TypeInfo.Type(Mem.LoadI32(x + 4)).ToString() + " made by thread " + maker.ToString() + ", on thread " + ThreadId().ToString() + "\n";
+            fixed (char* p = m) Engine.Write((int)p, m.Length);
+            Mem.StoreI32(-4, 0);
         }
 
         /// <summary>A thread ends: its lists go.</summary>
