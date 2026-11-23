@@ -125,6 +125,9 @@ internal sealed partial class Arenas
     /// <summary>CS2WASM_NO_LOCAL_GROUPS=1: every group of a program with threads is locked as one another thread may
     /// reach.</summary>
     static readonly bool s_noLocalGroups = Environment.GetEnvironmentVariable("CS2WASM_NO_LOCAL_GROUPS") == "1";
+    /// <summary>CS2WASM_EXP_ALL_GROUPS_LOCAL=1 (a test of the tests, unsound): every group of classes is taken for one
+    /// whose groups are each one thread's.</summary>
+    static readonly bool s_expAllGroupsLocal = Environment.GetEnvironmentVariable("CS2WASM_EXP_ALL_GROUPS_LOCAL") == "1";
     HashSet<int>? _localScc;
     /// <summary>A program with threads: whether the groups of this group of classes (an SCC) are each one thread's
     /// (section 4.5, decided at compile time): no object of any of its types can be reached by another thread than
@@ -137,7 +140,7 @@ internal sealed partial class Arenas
         if (_localScc == null)
         {
             var shared = new HashSet<int>();
-            foreach (var id in CycleTypes) if (sh.MemberIdShared(id)) shared.Add(_scc[id]);
+            if (!s_expAllGroupsLocal) foreach (var id in CycleTypes) if (sh.MemberIdShared(id)) shared.Add(_scc[id]);
             _localScc = CycleTypes.Select(id => _scc[id]).Where(g => !shared.Contains(g)).ToHashSet();
             if (Sharing.Debug || Environment.GetEnvironmentVariable("CS2WASM_ARENA_DEBUG") == "1")
                 foreach (var g in CycleTypes.GroupBy(id => _scc[id]))

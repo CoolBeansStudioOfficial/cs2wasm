@@ -375,7 +375,7 @@ namespace Cs2Wasm.Runtime
             // the walk and the locks)
             if (container != 0 && SccLocal(Mem.LoadI32(container + 4)))
             {
-                if (ShareCheck()) LocalGroupCheck(container);
+                if (ShareCheck()) { LocalGroupCheck(container); if (val != 0 && SccLocal(Mem.LoadI32(val + 4))) LocalGroupCheck(val); }
                 LkPush(LocalStripe);
                 return mark;
             }

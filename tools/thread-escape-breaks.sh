@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tests 275 to 279 and the rules of the thread escape analysis (Compiler/Sharing.cs: which objects another thread can
+# Tests 275 to 279, 290 and the rules of the thread escape analysis (Compiler/Sharing.cs: which objects another thread can
 # reach): each test compiled as shipped with CS2WASM_SHARE_CHECK=1 (a plain count of an object another thread made
 # stops the program) must print what it prints without the check; compiled with its rule deliberately weakened it
 # must not (the check names the object), and with the rule switched off it must again.
@@ -30,6 +30,9 @@ one 276_captured_locals_between_threads CS2WASM_EXP_DISPLAY_FIRST_ONLY=1 CS2WASM
 one 277_empty_arrays_every_thread_reads CS2WASM_EXP_EVERY_ARRAY_EMPTY=1 CS2WASM_NO_EMPTY_ARRAYS=1
 one 278_array_copies_between_threads CS2WASM_EXP_NO_PTR=1 CS2WASM_NO_PTR_IDS=1
 one 279_private_work_and_handed_results CS2WASM_SHARING_NONE=1 CS2WASM_NO_SAME_TYPE_REFS=1
+# (groups of cycle-capable objects that are each one thread's, Arenas.LocalScc: an array with no element pinned as it
+# is made, or every group taken for one thread's)
+one 290_groups_of_one_thread CS2WASM_EXP_NO_EMPTY_PIN=1 CS2WASM_NO_LOCAL_GROUPS=1
 # (the foreach over a list of the thread's own, which borrows the list and each element: off, the same output. No
 # weakened build of this rule is shown to break: an element of a list every thread can reach that another thread
 # lets go of stays until the borrowing thread's next safe point, and a safe point inside the loop is a store the
@@ -52,4 +55,5 @@ more() { # test, the weakening switch, the rule's off switch
 }
 more 276_captured_locals_between_threads CS2WASM_EXP_LAMBDA_SITES_UNREACHED=1 CS2WASM_NO_LAMBDA_SITES=1
 more 275_engine_thread_statics CS2WASM_EXP_NO_LAMBDA_RUNS=1 CS2WASM_NO_LAMBDA_SITES=1
+more 290_groups_of_one_thread CS2WASM_EXP_ALL_GROUPS_LOCAL=1 CS2WASM_NO_LOCAL_GROUPS=1
 exit $bad

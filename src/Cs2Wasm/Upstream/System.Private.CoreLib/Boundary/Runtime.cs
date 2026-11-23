@@ -1979,8 +1979,12 @@ namespace Cs2Wasm.Runtime
         /// thread's objects make never takes in an object another thread can reach (Sharing.MemberIdShared, Arenas.LocalScc).</summary>
         static void PinEmpty(int a)
         {
-            if (SccOf(Mem.LoadI32(a + 4)) != 0) Mem.StoreI32(a + 8, Mem.LoadI32(a + 8) | int.MinValue);
+            if (!NoEmptyPin() && SccOf(Mem.LoadI32(a + 4)) != 0) Mem.StoreI32(a + 8, Mem.LoadI32(a + 8) | int.MinValue);
         }
+
+        /// <summary>CS2WASM_NO_LOCAL_GROUPS=1, or CS2WASM_EXP_NO_EMPTY_PIN=1 (a test of the tests, unsound with the
+        /// groups that are one thread's): an array with no element is not pinned as it is made (PinEmpty).</summary>
+        [Intrinsic] static extern bool NoEmptyPin();
 
         /// <summary>A store into an array that is not of the type the storing code names (a string[] used as an
         /// object[]): the value must be of the array's own element type.</summary>
@@ -3184,7 +3188,9 @@ namespace Cs2Wasm.Runtime
             // referred to by the container's slot and its items' holds, nothing else)
             if (items == 0 || PL(old, 28) != items || (int)((uint)of >> UShift) != sumU || PL(old, 4) != 1 + held) return 0;
             OpStat(31);
-            RuntimeLock();
+            // (threads: a group that is one thread's, LocalStripe: counted as held, as a link's; given back at the end,
+            // what is taken in between is given back by what took it)
+            if (ThreadMode()) LkPush(LocalStripe); else RuntimeLock();
             // (the new array: a member the caller's local refers to from outside; what the old array held of the
             // container, it holds)
             ArenaJoinOnly(ar, to);
@@ -3208,7 +3214,7 @@ namespace Cs2Wasm.Runtime
             PS(old, 4, 0);
             // (ArenaDestroyFrom for a member that refers to no member, holds nothing and is in no list, where no
             // member has a finalizer: off the ring, no longer a member, what else it holds released, freed)
-            if (SingleThreaded() && Mem.LoadI32(ar + 24) == 0)
+            if (ThreadMode() ? SccLocal(Mem.LoadI32(old + 4)) && Mem.LoadI32(ar + 24) == 0 : SingleThreaded() && Mem.LoadI32(ar + 24) == 0)
             {
                 ArenaTakeOut(ArenaOf(old), old);
                 Mem.StoreI32(old, 0); PS(old, 16, 0); ClearMark(old);
@@ -3217,7 +3223,7 @@ namespace Cs2Wasm.Runtime
             }
             else ArenaDestroyFrom(old, 0);
             if (s_killN != 0) DrainKills();
-            RuntimeUnlock();
+            if (ThreadMode()) GroupUnlock(t_lkN - 1); else RuntimeUnlock();
             return 1;
         }
 
@@ -5611,7 +5617,9 @@ namespace Cs2Wasm.Runtime
             OpStat(22);
             int ar = ArenaOf(p);
             ArenaTakeOut(ar, p);
-            if (SingleThreaded() && !NoFastDestroy() && !ArenaReport() && Mem.LoadI32(ar + 24) == 0) { ArenaDestroyPlain(p, rest, ar); return; }
+            // (threads: in a group that is one thread's, as without: nothing another thread can see of it)
+            if (ThreadMode() ? SccLocal(Mem.LoadI32(p + 4)) && !NoFastDestroy() && !ArenaReport() && Mem.LoadI32(ar + 24) == 0
+                : SingleThreaded() && !NoFastDestroy() && !ArenaReport() && Mem.LoadI32(ar + 24) == 0) { ArenaDestroyPlain(p, rest, ar); return; }
             // (rest: members that die with it whatever their counts, Dropped; marked and off the ring already)
             PS(p, 12, rest);
             PS(p, 24, PL(p, 24) | Dying);
@@ -5790,7 +5798,8 @@ namespace Cs2Wasm.Runtime
             WeakDyingAll(done, 8);
             for (int m = done; m != 0; m = PL(m, 8)) { ArenaClearObject(m); if (DropStats()) s_dsKilled++; }
             long t3 = DropStats() ? Engine.MonotonicNs() : 0;
-            if (ShareCheck() || Checked() || NoFreeList())
+            // (threads: each block back the way of its kind, FreeLocal)
+            if (ThreadMode() || ShareCheck() || Checked() || NoFreeList())
             {
                 for (int m = done; m != 0;) { int next = PL(m, 8); ArenaFreeObject(m); m = next; }
             }
@@ -5913,7 +5922,7 @@ namespace Cs2Wasm.Runtime
             Mem.StoreI32(ar + 12, flags | ArenaBusy);
             int first = Mem.LoadI32(ar + 4);
             bool fin0 = Mem.LoadI32(ar + 24) != 0;
-            if (first != 0 && !fin0 && SingleThreaded())
+            if (ThreadMode() ? first != 0 && !fin0 && SccLocal(Mem.LoadI32(first + 4)) : first != 0 && !fin0 && SingleThreaded())
             {
                 // No member has a finalizer: three passes, none of which reads another member. Each member's count
                 // word is zero first (being destroyed), so releasing it is nothing (rt.release does nothing at zero):
