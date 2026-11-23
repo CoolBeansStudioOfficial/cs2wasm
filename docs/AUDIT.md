@@ -705,7 +705,7 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     and asked whether a 1 ms timer had fired: a due time is the earliest; it waits for the first tick, bounded
     (1,000 loaded runs a mode the same). 135: WhenAny of a 50 ms and a 1 ms delay; a timer thread 49 ms late
     finds both due and hands the 50 ms one to the pool first (TimerQueue.FireNextTimers). 235cf87 had made both
-    give the same value; now the far one is 2 s off and the first to complete is checked again. 127's lock on the
+    give the same value; now the far one is 2 s off and the first to complete is checked again (2,400 of 2,400 loaded runs). 127's lock on the
     list its four continuations add to stays: by List's contract several writers are not supported, but .NET
     frees everything all the same and the runtime does not (next).
   - **Open: List.Add from four threads at once.** tests/Load/219_no_lock.cs leaves a round's five objects for
@@ -718,7 +718,7 @@ GC pause. Whether it counts as a spike is the owner's decision (deferring is rul
     b02ce58 (1,200 on the desk). No cause is shown.
   - **Test 087's trap** (rt.retain from Interlocked.Exchange in Task.FinishContinuations): an async iterator's
     promise was completed without a count of its own (8577829). Test 217 without that change traps in 24 runs of
-    24, with it in none of 1,200; test 087 checked 600/600 as shipped and 600/600 checked at 35019ac (7 of 1,200 on main); a run of 2,400 was not finished when this was written.
+    24, with it in none of 1,200; test 087 checked 2,400 of 2,400 at 59a6c4a, 600/600 as shipped and 600/600 checked at 35019ac (7 of 1,200 on main).
   - **Test 072 and the suite's runners.** Each runner's HTTP server listens on a free port (they all took 18765);
     each runner has a working directory of its own (070 and 088 write files there; the two modes ran them at
     once in one directory, and .NET's own run of 088 failed so in 31 of 400 when eight ran at once).
