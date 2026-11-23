@@ -23,9 +23,12 @@ static class P
             s_files[lib] = File.ReadAllText(lib).Trim();
             Console.WriteLine("read " + lib);
         }
+        // (and one given as `keep=<file>`, which is no path the command line names: read once and kept too)
+        foreach (var a in args)
+            if (a.StartsWith("keep=") && !s_files.ContainsKey(a[5..])) { s_files[a[5..]] = File.ReadAllText(a[5..]).Trim(); Console.WriteLine("read " + a[5..]); }
         foreach (var kv in s_files) Console.WriteLine("kept " + kv.Key + ": " + kv.Value);
         // the files the command line names: read on every call
-        foreach (var a in args) Console.WriteLine("given " + a + ": " + File.ReadAllText(a).Trim());
+        foreach (var a in args) if (!a.StartsWith("keep=")) Console.WriteLine("given " + a + ": " + File.ReadAllText(a).Trim());
         Console.WriteLine($"call {s_runs}, mode {s_mode}");
         // (the error stream too: what a compiler writes its messages to)
         Console.Error.WriteLine($"call {s_runs} on the error stream");

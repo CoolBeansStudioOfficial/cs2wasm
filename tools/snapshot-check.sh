@@ -29,6 +29,12 @@ echo "--- 13: the module changed: from the start"; printf '\0asm' > /dev/null; c
 const fs=require('fs');const b=fs.readFileSync('$D/m.wasm');const n=Buffer.from([0,5,4,115,110,97,112]);fs.writeFileSync('$D/m.wasm',Buffer.concat([b,n]));"; r
 echo "--- 14: a snapshot cut short is not used: from the start"; node -e "
 const fs=require('fs');const b=fs.readFileSync('$D/m.snap');fs.writeFileSync('$D/m.snap',b.subarray(0,b.length-70000));"; r
+echo "--- 15: on a snapshot, a file read that it does not cover (no path the command line names): written again"; r keep=/$D/lib/a.txt
+echo "--- 16: on that one: both kept"; r
+export CS2WASM_SNAPSHOT_KEEP=1
+echo "--- 17: CS2WASM_SNAPSHOT_KEEP=1 (another environment: from the start)"; r
+echo "--- 18: a file it does not cover is read, and the snapshot is not written again"; r keep=/$D/lib/a.txt
+echo "--- 19: so it is as step 17 left it"; r
 } > $D/out.txt 2>&1
 cat $D/out.txt
 cat > $D/expected.txt <<EOF
@@ -120,6 +126,45 @@ kept /$D/lib/b.txt: three
 call 1, mode m1
 call 1 on the error stream
 [snapshot] written: N pages, 1 paths (1 new)
+exit 0
+--- 15: on a snapshot, a file read that it does not cover (no path the command line names): written again
+[snapshot] restored N pages and 7 globals; 1 paths checked
+read /$D/lib/a.txt
+kept /$D/lib/a.txt: one-changed
+kept /$D/lib/b.txt: three
+call 2, mode m1
+call 2 on the error stream
+[snapshot] written: N pages, 2 paths (1 new)
+exit 0
+--- 16: on that one: both kept
+[snapshot] restored N pages and 7 globals; 2 paths checked
+kept /$D/lib/a.txt: one-changed
+kept /$D/lib/b.txt: three
+call 3, mode m1
+call 3 on the error stream
+exit 0
+--- 17: CS2WASM_SNAPSHOT_KEEP=1 (another environment: from the start)
+[snapshot] not used: another environment (CS2WASM_SNAPSHOT_KEEP)
+read /$D/lib/b.txt
+kept /$D/lib/b.txt: three
+call 1, mode m1
+call 1 on the error stream
+[snapshot] written: N pages, 1 paths (1 new)
+exit 0
+--- 18: a file it does not cover is read, and the snapshot is not written again
+[snapshot] restored N pages and 7 globals; 1 paths checked
+read /$D/lib/a.txt
+kept /$D/lib/a.txt: one-changed
+kept /$D/lib/b.txt: three
+call 2, mode m1
+call 2 on the error stream
+[snapshot] not written again (CS2WASM_SNAPSHOT_KEEP): 1 paths it does not cover were read
+exit 0
+--- 19: so it is as step 17 left it
+[snapshot] restored N pages and 7 globals; 1 paths checked
+kept /$D/lib/b.txt: three
+call 2, mode m1
+call 2 on the error stream
 exit 0
 EOF
 if diff <(tr -d '\r' < $D/out.txt) <(tr -d '\r' < $D/expected.txt) > $D/diff.txt; then echo "snapshot-check: as expected"; else echo "snapshot-check: DIFFERS"; cat $D/diff.txt; exit 1; fi

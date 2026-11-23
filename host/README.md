@@ -40,6 +40,8 @@ A snapshot is used only while what it was made from is unchanged: the module's b
 given, and every path the module asked the file system about while the state was made (size and time of change),
 except the paths its command line names and those it wrote, which the entry reads anew on every call. None is taken
 of a module that started a thread, has a file open, moved its working directory or used HTTP.
+What is written is the memory as the entry left it, so after a large program the snapshot is large;
+`CS2WASM_SNAPSHOT_KEEP=1` never writes one that holds again (one made with a small program stays small).
 `CS2WASM_SNAPSHOT_WHY=1` says what was done; `tools/snapshot-check.sh` proves each rule; `tools/selfsnap.mjs` compares
 the compiler's modules on a snapshot with the .NET-hosted compiler's and times them. `CS2WASM_REPEAT=n` calls the
 entry n times in one instance (what an embedder that keeps the module pays for a later call).

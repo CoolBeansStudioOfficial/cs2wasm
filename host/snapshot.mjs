@@ -20,6 +20,10 @@
 // a file or directory open, moved its working directory, or uses HTTP (the host's side of those is not in memory).
 // After a run on a snapshot the file is written again only when the module read files the snapshot did not cover
 // (a library the earlier programs did not need); otherwise every build starts from the same state.
+// What is written is the memory as the entry left it, the last build's own leftovers with the libraries: after a
+// large program the snapshot is large, and every later run starts at that size.
+//   CS2WASM_SNAPSHOT_KEEP=1: a snapshot that holds is never written again (one made with a small program stays
+//   small; a program that needs more libraries then reads them on every run)
 //   CS2WASM_SNAPSHOT_WHY=1: why a snapshot was not used, and what was written, on stderr
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -145,6 +149,8 @@ export function openSnapshot(file, moduleBytes, programArgs) {
       const restored = header != null;
       const fresh = [...seen].filter(([p]) => !written.has(p) && !isNamed(p));
       if (restored && fresh.length === 0) return;
+      // (CS2WASM_SNAPSHOT_KEEP=1: a snapshot that holds is never written again)
+      if (restored && process.env.CS2WASM_SNAPSHOT_KEEP === '1') { why(`not written again (CS2WASM_SNAPSHOT_KEEP): ${fresh.length} paths it does not cover were read`); return; }
       const no = state.failed ? 'the entry failed' : state.result !== 0 && state.result !== undefined ? `the entry returned ${state.result}` : state.threads ? 'the module started a thread'
         : state.io ? 'the module uses HTTP' : open !== 0 ? 'a file is open' : unsafe;
       if (no) { why(`not written: ${no}`); return; }
