@@ -10,23 +10,31 @@ namespace Cs2Wasm.Wasm;
 /// turn, tools/churn-count.cs: the same loop with its counts by hand and no call 39 us a frame, the compiler's 43).
 /// A call that never comes back does not cost that (NoReturn.cs); a call that does cannot be marked.
 /// What the engine does keep in registers: a loop whose body has no such call. So the loop is given an outer loop
-/// and a local P:
+/// and two locals, P and C:
 ///     P = 0
 ///     block X { loop O { block H { br_if H (P)
 ///                                  loop L { the body; at a count's other path: P = j, br O }
 ///                                  br X }
-///                        P = 0; path j's own code, then what was left of the turn: the rest of each block it was
-///                        in, as blocks again, and the rest of the body; a branch to L there is a branch to O; br X } }
+///                        block S { P = 0; path j's own code, then what was left of the turn: the rest of each block
+///                                  it was in, as blocks again, and the rest of the body; a branch to L there is a
+///                                  branch to S; br X }
+///                        C = 4
+///                        loop L2 { if (C == 0) br O; C--; the body as it was, each other path setting C = 8 }
+///                        br X } }
 /// The other path's code runs at the same point of the program with the same locals: only the place of the code
 /// changes (the control flow is the same, no value moves). What it uses of the turn reaches it as the outer loop's
 /// own values (the engine's phis at O), which the engine writes to memory only where the call is; written after L
 /// in the code's order, so that what L uses and the loop does not change stays in registers through L. A value the
 /// turn has on the operand stack at the count (the address an element is stored at) is also put into a local where
 /// it is made (a branch drops it), and pushed again before the path's code.
+/// L2, the loop as it was: leaving L costs more than the call in it did (tools/drop-range.cs: an array of objects
+/// that all end where they are cleared, 36 us with the call in the loop, 45 when every turn left L). So after a
+/// turn that took the other path the next four run in L2, and each that takes it there makes that eight: where the
+/// other path is the usual one the loop runs as it always did, where it is rare L is entered again at once.
 /// Only where it is exact and of use: an innermost loop without a result or a try_table inside, every value on the
 /// stack at the count of a type that is known, and no other call in the loop that comes back (then the values are
-/// in memory anyway, and nothing is done). CS2WASM_NO_COLD_EXITS=1: off. CS2WASM_COLD_EXITS_WITHOUT=stack|rest|
-/// labels|inner: a rule taken out (test 208 then prints something else, or the module is not valid).
+/// in memory anyway, and nothing is done). CS2WASM_NO_COLD_EXITS=1: off. CS2WASM_COLD_EXITS_WITHOUT=stack, rest or
+/// labels: a rule taken out (test 208 then prints something else, or the module is not valid).
 /// </summary>
 static class ColdExits
 {
@@ -35,6 +43,9 @@ static class ColdExits
     static readonly bool s_stats = Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS_STATS") == "1";
     static readonly int s_maxBody = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS_BODY"), out var mb) ? mb : 400;
     static readonly int s_maxPoints = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS_POINTS"), out var mp) ? mp : 4;
+    // (the turns in the loop as it was after a turn took the other path; and after one took it there)
+    static readonly int s_turns = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS_TURNS"), out var tn) ? tn : 4;
+    static readonly int s_stay = int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_COLD_EXITS_STAY"), out var st) ? st : 8;
     internal static int Loops, Points;
 
     sealed class Frame
@@ -113,6 +124,8 @@ static class ColdExits
     public static bool Run(WasmFunction f)
     {
         if (s_off || f.IsImport || f.ForwardTo != null) return false;
+        // (a container's end lets each of its values go: the last reference of most, the other path the usual one)
+        if (f.Name.StartsWith("destroy ", StringComparison.Ordinal) || f.Name.StartsWith("rt.destroy", StringComparison.Ordinal)) return false;
         var b = f.Body;
         // the innermost loops, last first (a change moves only what comes after it)
         var loops = new List<(int start, int end)>();
@@ -124,7 +137,7 @@ static class ColdExits
                 if (Opens(op))
                 {
                     // (a loop or a try_table inside a loop: that loop is left alone)
-                    if (op is Op.Loop or Op.TryTable && s_without != "inner") for (int k = 0; k < open.Count; k++) open[k] = (open[k].at, false);
+                    if (op is Op.Loop or Op.TryTable) for (int k = 0; k < open.Count; k++) open[k] = (open[k].at, false);
                     open.Add((i, op == Op.Loop));
                 }
                 else if (op == Op.End && open.Count > 0)
@@ -243,8 +256,10 @@ static class ColdExits
         foreach (var pt in points) if (pt.Else == 0 || pt.End == 0) return Why(f, ls, le, 9);
 
         int np = f.Type.Params.Length;
-        int P = np + f.Locals.Count;
-        f.Locals.Add(ValType.I32);
+        int P = np + f.Locals.Count, C = P + 1;
+        f.Locals.Add(ValType.I32); f.Locals.Add(ValType.I32);
+        var elses = new HashSet<int>();
+        foreach (var pt in points) elses.Add(pt.Else);
         // the stack's values at each count: a local each, set where the value is made
         var keep = new Dictionary<int, List<int>>();
         foreach (var pt in points)
@@ -276,8 +291,9 @@ static class ColdExits
         }
 
         // a copy of b[from..to) whose first instruction is `depth` blocks inside L: a branch to L or past it by `shiftL`
-        // and `shiftOut` more
-        void Copy(int from, int to, int depth, int shiftL, int shiftOut)
+        // and `shiftOut` more. slow: the loop as it was, for the turns after the other path was taken (no value kept;
+        // a turn that takes the other path there makes it stay)
+        void Copy(int from, int to, int depth, int shiftL, int shiftOut, bool slow = false)
         {
             for (int i = from; i < to; i++)
             {
@@ -298,7 +314,9 @@ static class ColdExits
                             break;
                         }
                 }
-                One(i, ins);
+                if (!slow) { One(i, ins); continue; }
+                o.Add(ins);
+                if (ins.Op == Op.Else && elses.Contains(i)) { o.Add(new Instr { Op = Op.I32Const, Imm = s_stay, Pos = ins.Pos, Inl = ins.Inl }); o.Add(new Instr { Op = Op.LocalSet, Imm = C, Pos = ins.Pos, Inl = ins.Inl }); }
             }
         }
 
@@ -332,6 +350,7 @@ static class ColdExits
         pos = b[le].Pos; inl = b[le].Inl;
         A(Op.Br, 2);          // the loop ran out: past the other paths
         A(Op.End);            // H
+        A(Op.Block);          // S: the other paths; a turn that ends in one goes on in the loop as it was, below
         for (int j = 0; j < points.Count; j++)
         {
             var pt = points[j];
@@ -347,7 +366,7 @@ static class ColdExits
                 if (!noStack) foreach (int local in pt.Saved[k]) A(Op.LocalGet, local);
             }
             A(Op.Block);
-            Copy(pt.Else + 1, pt.End, n + 1, d, d + 1);
+            Copy(pt.Else + 1, pt.End, n + 1, d, d + 2);
             A(Op.End);
             // what is left of each block the count was in, innermost first
             int child = pt.End;
@@ -355,15 +374,27 @@ static class ColdExits
             {
                 int start = pt.Chain[k];
                 int stop = !pt.ChainElse[k] && elseOf.TryGetValue(start, out int el) ? el : endOf[start];
-                if (!noRest) Copy(child + 1, stop, k + 1, d, d + 1);
+                if (!noRest) Copy(child + 1, stop, k + 1, d, d + 2);
                 One(endOf[start], b[endOf[start]]);
                 child = endOf[start];
             }
-            Copy(child + 1, le, 0, d, d + 1);
+            Copy(child + 1, le, 0, d, d + 2);
             pos = b[le].Pos; inl = b[le].Inl;
-            A(Op.Br, d + 1);   // the loop ran out
+            A(Op.Br, d + 2);   // the loop ran out
             if (!last) A(Op.End);
         }
+        A(Op.End);            // S
+        // the loop as it was, for the next turns: where the other path is the usual one (a range whose every object
+        // ends) leaving the loop for each would cost more than the calls in it did. A turn that takes no other
+        // path counts down; at zero the loop above is entered again.
+        pos = b[ls].Pos; inl = b[ls].Inl;
+        A(Op.I32Const, s_turns); A(Op.LocalSet, C);
+        o.Add(b[ls]);         // L2
+        A(Op.LocalGet, C); A(Op.I32Eqz); A(Op.BrIf, 1);
+        A(Op.LocalGet, C); A(Op.I32Const, 1); A(Op.I32Sub); A(Op.LocalSet, C);
+        Copy(ls + 1, le, 0, 0, 2, slow: true);
+        o.Add(b[le]);         // L2's end
+        A(Op.Br, 1);          // the loop ran out
         A(Op.End);            // O
         A(Op.End);            // X
         for (int i = le + 1; i < b.Count; i++) o.Add(b[i]);
