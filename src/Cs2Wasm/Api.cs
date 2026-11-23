@@ -83,6 +83,7 @@ public static class Cs2WasmCompiler
 
     /// <summary>CS2WASM_NO_SECOND_PASS=1: a program with threads is compiled once, taking every object as shared.</summary>
     static readonly bool s_noSecondPass = Environment.GetEnvironmentVariable("CS2WASM_NO_SECOND_PASS") == "1";
+    static readonly bool s_times = Environment.GetEnvironmentVariable("CS2WASM_TIMES") == "1";
 
     public static CompileResult Compile(Compilation compilation, CompileOptions? options = null)
     {
@@ -90,26 +91,74 @@ public static class Cs2WasmCompiler
         if (compilation is not CSharpCompilation cs)
             return new CompileResult { Diagnostics = [Diagnostic.Create(Diags.NotCSharp, Location.None)] };
         // (compiled with the libraries the program is seen to need; when it meets a type that one left out may
-        // hold, once more with all that Roslyn reports as used: Library.NeedsAll)
-        return CompileWith(cs, options, false) ?? CompileWith(cs, options, true)!;
+        // hold, once more with all that Roslyn reports as used: Library.NeedsAll. A program of the same name that
+        // needed them all the last time in this process is given them at once: the module is the same either way)
+        string name = cs.AssemblyName ?? "";
+        bool all;
+        lock (s_before) all = !s_noBuildHints && s_before.TryGetValue(name, out var b) && b.AllLibraries;
+        var result = (all ? null : CompileWith(cs, options, false, name)) ?? CompileWith(cs, options, all = true, name)!;
+        if (result.Success)
+            lock (s_before) s_before[name] = s_before.GetValueOrDefault(name) with { AllLibraries = all };
+        return result;
     }
 
-    static CompileResult? CompileWith(CSharpCompilation cs, CompileOptions options, bool allLibraries)
+    /// <summary>What the last build of a program of a name came to, in this process (a compiler that stays loaded:
+    /// `--watch`, an embedder's worker, a host's snapshot): whether it started threads, and whether it needed every
+    /// reported library. The next build of that name begins there instead of finding it out again by a compilation
+    /// that is thrown away; what it is compiled as is decided as before (CompileWith). CS2WASM_NO_BUILD_HINTS=1:
+    /// every build begins as the first.</summary>
+    static readonly Dictionary<string, (bool Threads, bool AllLibraries)> s_before = [];
+    static readonly bool s_noBuildHints = Environment.GetEnvironmentVariable("CS2WASM_NO_BUILD_HINTS") == "1";
+    /// <summary>CS2WASM_BREAK_BUILD_HINTS=1 (to prove the rule by breaking it): a program is compiled for threads
+    /// when the last of its name was, without asking whether it starts one.</summary>
+    static readonly bool s_breakBuildHints = Environment.GetEnvironmentVariable("CS2WASM_BREAK_BUILD_HINTS") == "1";
+
+    static CompileResult? CompileWith(CSharpCompilation cs, CompileOptions options, bool allLibraries, string name)
     {
-        var d = new Driver(cs, options, allLibraries);
+        Driver d = null!;
         byte[]? bytes = null; string? map = null;
+        // The last build of this name started threads: this one is compiled for threads at once, where it would be
+        // compiled without them up to the start of a thread and then begun again. It is kept only when it does
+        // start one and has no error (the same functions are reached with and without threads, so that is when the
+        // compilation without them would have stopped at one); anything else is compiled as a first build is.
+        bool threadsFirst = false;
+        lock (s_before) threadsFirst = !s_noBuildHints && !Driver.s_expNoThreadMode && s_before.TryGetValue(name, out var before) && before.Threads;
+        if (threadsFirst)
+        {
+            var sw0 = s_times ? System.Diagnostics.Stopwatch.StartNew() : null;
+            try
+            {
+                d = new Driver(cs, options, allLibraries) { ThreadMode = true };
+                d.Run();
+                threadsFirst = s_breakBuildHints || d.UsesThreads && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error);
+            }
+            catch (Exception) { threadsFirst = false; }
+            if (d != null && d.Lib.NeedsAll) return null;
+            if (!threadsFirst && sw0 != null) Console.Error.WriteLine($"    {sw0.ElapsedMilliseconds,6} ms  compiled for threads, as the last build of '{name}' was: it starts none (or failed): begun again");
+        }
+        if (!threadsFirst) d = new Driver(cs, options, allLibraries);
+        bool forThreads = threadsFirst;
         try
         {
             // a program that starts threads is compiled as one (Driver.ThreadMode): known when the compilation
             // reaches the start of a thread, where it stops and begins again
             bool threads = false;
+            var sw = s_times ? System.Diagnostics.Stopwatch.StartNew() : null;
+            if (!threadsFirst)
+            {
             try { d.Run(); }
             catch (Driver.ThreadsSeen) { threads = true; }
-            if (threads || d.UsesThreads && !Driver.s_expNoThreadMode && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
+            }
+            if (threads && sw != null) Console.Error.WriteLine($"    {sw.ElapsedMilliseconds,6} ms  compiled without threads until the start of a thread was met ({d.AllMethods.Count(m => m.Compiled)} functions): begun again for threads");
+            if (threadsFirst || threads || d.UsesThreads && !Driver.s_expNoThreadMode && !d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
             {
+                forThreads = true;
+                if (!threadsFirst)
+                {
                 d = null!;
                 d = new Driver(cs, options, allLibraries) { ThreadMode = true };
                 d.Run();
+                }
                 // Section 4.5: compiled again knowing which types another thread can reach, so that objects no other
                 // thread can reach are read and borrowed from as without threads. The new compilation's own answer
                 // must name no type the one it used did not (else again, with both), so every decision holds.
@@ -135,6 +184,8 @@ public static class Cs2WasmCompiler
             if (!d.Diagnostics.Any(x => x.Severity == DiagnosticSeverity.Error))
                 (bytes, map) = d.Emit();
             if (d.Lib.NeedsAll) return null;
+            if (bytes != null)
+                lock (s_before) s_before[name] = s_before.GetValueOrDefault(name) with { Threads = forThreads };
         }
         catch (Exception) when (d.Lib.NeedsAll)
         {
