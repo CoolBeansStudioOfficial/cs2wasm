@@ -2777,7 +2777,7 @@ namespace Cs2Wasm.Runtime
                 // (a destruction's survivor, QueueCheck: kept by what it owns alone? A top whose check failed is looked at
                 // again by its note's number)
                 // (or a top whose number of references from outside came to zero as their holders died, DyingNote)
-                else if ((StickyHolds() ? (PLM(w) & 1) == 0 : (PLM(w) & 3) == 3) && DropCandidate(w)) Dropped(w);
+                else if ((StickyHolds() ? (PLM(w) & 1) == 0 : PLM(w) == 3) && DropCandidate(w)) Dropped(w);
             }
         }
 
@@ -4898,7 +4898,9 @@ namespace Cs2Wasm.Runtime
         {
             if (NoDyingNote()) return;
             int t = NoteOutside(child, obj, -1);
-            if (t != 0 && (PL(t, 24) & (Dying | Queued)) == 0) { KillPush(t); PS(t, 24, PL(t, 24) | Queued); }
+            // (its note says so, number zero: a top that waits in the list for another reason is not looked at again,
+            // each look goes through all it owns)
+            if (t != 0 && (PL(t, 24) & Dying) == 0) { PSM(t, 3); if ((PL(t, 24) & Queued) == 0) { KillPush(t); PS(t, 24, PL(t, 24) | Queued); } }
         }
 
         /// <summary>The target is above the dying member on its chain, and every member between them is dying:
