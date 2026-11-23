@@ -20,6 +20,9 @@ if (files.length === 0) {
     const p = join(root, 'tools', d);
     if (existsSync(p)) files.push(p);
   }
+  // (programs without Console, which the conformance programs all use: CoreLib alone, with System.Collections, with System.Linq)
+  const own = join(root, 'tools', 'corelibs');
+  files.push(...readdirSync(own).filter((f) => f.endsWith('.cs')).sort().map((f) => join(own, f)));
 }
 const exe = ['Release', 'Debug'].map((c) => join(root, 'src', 'Cs2Wasm.Cli', 'bin', c, 'net11.0', process.platform === 'win32' ? 'cs2wasmc.exe' : 'cs2wasmc')).find(existsSync);
 if (!exe) { console.error('corelibs-check: no cs2wasmc: dotnet build src/Cs2Wasm.Cli -c Release'); process.exit(2); }
