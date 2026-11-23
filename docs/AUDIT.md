@@ -3239,6 +3239,98 @@ offset loads beside `Types.ObjectHeader`; `WasmModule.Encode` is 298 lines of pi
     (6,768) and rt.retain (2,160). Conclusion: the budget is spent on counts; the lever is fewer count calls (borrows,
     counts elided at compile time), not larger budgets or inlining by hand.
 
+- **The self-hosted compiler's phases on the three sides, and the libraries a program is compiled with (2026-11-22,
+  branch claude/selfhost-speed-1 on main cb287fb).** Measured before anything was changed: one compile of
+  `tests/Conformance/145_size_hello.cs` by the self-hosted compiler (built without threads, one processor), by
+  NativeAOT-LLVM's WebAssembly build of the compiler in the same Node (the build of 2026-11-20: the homelab has no
+  Emscripten SDK and this machine refuses heavy work, so it was not built again), and by the compiler under .NET on
+  one processor (`DOTNET_PROCESSOR_COUNT=1`) and on all sixteen. `CS2WASM_TIMES=1` now splits the library's part
+  (what the program needs; each library's files, characters, reading, parsing; the compilation), and
+  `CS2WASM_HOST_TIMES` the module made from its instantiation; `tools/selfphases.sh` runs the sides in turn
+  (`NAMES=1 PROF=1`: a profile of each; `ALLCORE=1`: both library rules; `VERIFY=1`: `tools/selfhost-verify.sh`).
+  The homelab, the last of six interleaved rounds, milliseconds; "15" is every core library read (as it was, and
+  as `CS2WASM_ALL_CORE_LIBS=1` still does), "9" the new rule below:
+
+  | phase | self-hosted, 15 | self-hosted, 9 | NativeAOT-LLVM, 15 | .NET one processor, 15 | .NET one processor, 9 | .NET all, 9 |
+  |---|---|---|---|---|---|---|
+  | node up and the file read, the module made, instantiate and init | 23 + 29 + 18 | 23 + 29 + 18 | not split | | | |
+  | what the program needs (Roslyn's used references) | 223 | 225 | in the next line | 453 | 451 | 472 |
+  | the libraries read and parsed | 5,153 | 4,253 | in the next line | 4,851 | 3,775 | 843 |
+  | library ready (the two above, the program's own parse, the references) | 5,916 | 4,963 | 2,977 | 5,758 | 4,727 | 1,766 |
+  | program diagnostics, roots | 16 | 16 | 4 | 27 | 28 | 31 |
+  | compile (first drain; 490 functions) | 1,979 | 1,951 | 447 | 1,085 | 1,102 | 1,158 |
+  | exports, reflection (second drain) | 43 | 40 | 8 | 27 | 27 | 27 |
+  | static initializers again, arenas, finish | 9 | 7 | 3 | 9 | 8 | 9 |
+  | encode (the Step phases of WasmModule) | 192 | 192 | 59 | 381 | 361 | 320 |
+  | the compiler's own total | 8,641 | 7,593 | 3,640 | 7,617 | 6,581 | 3,640 |
+
+  - Where the gap to NativeAOT-LLVM is (like for like, 15 libraries): the library's part 5.9 s against 3.0 (2.0x,
+    2.9 s of the 5.0 s between them), the first drain 2.0 s against 0.45 (4.4x, 1.5 s), the encoder 0.19 against
+    0.06. Not at the start: Node, the module (made lazily) and the instantiation are 70 ms.
+  - The engine's tiers (the build of a sibling branch, hello world, three interleaved rounds beside other sessions'
+    jobs): as it is 10.4 to 11.0 s; `--wasm-tiering-budget=1300000` 10.1 to 10.8; `=130000` 9.5 to 10.2 (about 5%
+    less: the optimizing tier at a hundredth of the default budget); `--no-wasm-lazy-compilation` 10.3 to 11.0;
+    `--no-liftoff` 30.7 to 31.9; `--liftoff-only` 18.5 to 19.1. Nothing a host should set: the one that gains
+    is an engine's tuning number, and its gain is inside the load's spread.
+  - The profile (named build, `node --cpu-prof`, a run of 15.5 s beside other jobs, 14.0 s of it busy): counting
+    1.77 s (rt.release 0.51, rt.retain 0.37, the BlendedNode copies 0.32), the arena functions 1.8 s
+    (Rt.ArenaRelease 0.35, ArenaUnlinkOld 0.28, ArenaLink 0.25, LinkMembers 0.19, SlotOwner 0.16, ArenaRetain 0.16,
+    ArenaUnlinkAt 0.14, ArenaVisit 0.13), dispatch stubs 0.50, allocation 0.26; the rest flat over Roslyn, its
+    largest function `Lexer.QuickScanSyntaxToken` 253 ms where NativeAOT-LLVM's is 235 ms. NativeAOT-LLVM's 6.8 s
+    profiled: its collector 1.5 s (relocate 0.42 and 0.05, mark 0.35 and 0.07, cards 0.30, plan 0.13, compact
+    0.09), the file calls 0.66, `SyntaxNodeCache.TryGetNode` 0.17 (ours 0.23), `Array.Clear` 0.09 (0.08). So the
+    runtime's own share is 3.6 s of ours against 1.5 s of theirs, and the compiled code 10.4 s against 4.6 in
+    these two profiled runs, spread over everything.
+  - The first drain, where the ratio is largest (`tools/proftree.mjs`, new: a profile under a function by what it
+    calls, inclusive): of 3.3 s profiled under `Driver.Drain`, Roslyn's `GetOperation` is 1.96 s, 1.11 s of it
+    through `Driver.ConsumingOf` (`ComputeConsuming` binds each callee's body for the ownership of its parameters;
+    the "binding bodies" line of CS2WASM_TIMES counts only the 245 ms of the bodies compiled), `MakeAllMembers`
+    0.61 s, `LoadAndValidateAttributes` 0.51 s; by self time a quarter is the arena functions. Binding makes and
+    links symbols and binders, which are members of the one large group (Step 7); parsing makes green nodes, which
+    are not. Not changed here.
+  - **Changed: a program is compiled with the core libraries it can reach, not all fifteen.** Every program had
+    the first fifteen libraries read and parsed, 35.3 million characters, whatever it used: for hello world
+    System.Runtime.Numerics, System.Threading.Tasks.Parallel, System.Text.RegularExpressions,
+    System.Linq.Expressions, Microsoft.CSharp and System.Linq.Queryable are 7.5 million characters parsed for
+    nothing. `UpstreamSources.Needed` now starts from CoreLib and takes the libraries up to the last one whose
+    reference assembly the program's code uses (Roslyn's `GetUsedAssemblyReferences`, which already found the
+    optional libraries). Why that is all a program can reach: a core library is compiled against those before it
+    and no other (`Library.References`), so none after the last one used is referenced by any that is read; a
+    reference assembly's public types are in the core library of its own name or in CoreLib and in no other core
+    library (`CS2WASM_REF_LIBS=1` lists, for every reference assembly, the libraries its types are found in: checked
+    over the 176 of the pack); and what the C# compiler itself calls for a construct (a `dynamic` operation's
+    binders, an expression tree's factories, a query's methods) is among the references Roslyn reports, which errs
+    to the other side: a call written as an extension (`xs.Select(...)`) reports every assembly with a candidate
+    of that name, so a program that uses System.Linq that way is reported as using System.Collections.Immutable
+    and is given 22 libraries, as before (the same call written `Enumerable.Select(xs, ...)`: 8). A program that
+    needs an optional library has every core library, as before. `CS2WASM_ALL_CORE_LIBS=1`: all fifteen.
+  - The check, `tools/corelibs-check.mjs`: every conformance program, the benchmark programs (frames, bench, micro)
+    and six programs without Console compiled
+    both ways give the same module byte for byte: 202 of 202 on the homelab at 01fea5b (127 of them with 9
+    libraries, 13 with 10 to 16, 62 with 22 or more), and six more here, without Console (`tools/corelibs/`:
+    CoreLib alone and System.Collections' types 2 libraries, BigInteger 10, an expression tree 13, a `dynamic`
+    operation 14, System.Linq 22). So no module
+    changes: hello world's size and the frame and bench scenes' code are what they were.
+  - Measured (the homelab, nine interleaved rounds over two builds, 66fd2b1 and ffc44b3, other sessions' jobs
+    beside; hello world, wall time of the process): the self-hosted compiler 8.08 to 8.72 s (median 8.20)
+    against 8.90 to 11.25 (median 9.11) with all fifteen; .NET on one processor 6.64 to 7.06 (6.69) against 7.57
+    to 8.31 (7.72); .NET on all processors 3.73 to 4.07; NativeAOT-LLVM's build of 2026-11-20, which reads all
+    fifteen, 3.76 to 4.66 (median 3.96). The self-hosted
+    compiler's peak memory 344.2 MB to 272.0 MB (5,252 to 4,151 pages; NativeAOT-LLVM's 322.2 MB is the figure on record, not measured again). Test
+    088 (22 libraries either way, so the same work as before): 82.7 s self-hosted against 30.9 s under .NET;
+    tests 220 and 193: 18.4 and 17.2 s against 8.6 and 8.0.
+  - Checked: the self-hosted compiler built at ffc44b3 (32,886,996 bytes, built in 244 s; the build at 66fd2b1 likewise) writes hello world, 220, 193 and 088 byte for byte as the .NET-hosted compiler (`tools/selfhost-verify.sh`: 27,741, 273,319, 255,397 and 1,616,434 bytes; hello world below the 28,383 of test 145, which the suite runs). The suite on the homelab at ffc44b3: 230 of 230 checked and 230 of 230 as shipped (349 s). Not run: tools/frames.mjs and tools/bench.mjs (their programs' modules are byte for byte what they were).
+  - Not done, in the order of what they would give: (1) a program that calls System.Linq's
+    methods as extensions (48 of the conformance programs are given exactly 22 libraries; most real programs
+    would be) still reads 22 libraries, 38.4 million characters where 27.8 would do: the libraries Roslyn
+    reports only for candidates. A rule that stays right: begin without the libraries reported but not
+    named, and begin again with them when the compiler meets a type whose library was left out
+    (`Types.Canonical`, where `Library.FindType` finds none), as it begins again for threads. (2) CoreLib itself
+    is 25.7 of every program's characters; nothing here reads less of it. (3) The first drain's 4.4x and the
+    parser's 2x are the group machinery and the counts (Step 7's value sources, 4.1's borrows), unchanged.
+    (4) NativeAOT-LLVM's build of today's compiler, for its time with the same rule (by its share of the
+    characters about 0.6 s less than its 4.0).
+
 - **Shared generic code (2026-11-21, on main fbe7688, branch claude/canon-sharing).** Round 5's pass shares bodies
   equal but for i32 constants and calls of one shared group; what it could not share, measured with the new
   `CS2WASM_SHARE_WHY=1` (families of instantiations still several bodies after sharing, the first instruction that
