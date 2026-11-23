@@ -990,6 +990,8 @@ sealed partial class FunctionCompiler
             case "Rt.SccOf": E.Call(Rt.SccOfFn); return Own.None;
             case "Rt.ArenaSlots": E.Call(Rt.ArenaSlotsFn); return Own.None;
             case "Rt.NoWaitingTop": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_WAITING_TOP") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NoNodePath": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_NODE_PATH") == "1" ? 1 : 0); return Own.None;
+            case "Rt.NodePathBreak": E.I32(int.TryParse(Environment.GetEnvironmentVariable("CS2WASM_NODE_PATH_BREAK"), out int npb) ? npb : 0); return Own.None; // (a test's: one rule of the node path left out, tests/Conformance/201)
             case "Rt.NoFusedJoin": E.I32(Environment.GetEnvironmentVariable("CS2WASM_NO_FUSED_JOIN") == "1" ? 1 : 0); return Own.None;
             case "Cs2WasmArrays.BoxesElements": D.MarkBoxedElements(); return Own.None;
             case "Rt.ArenaFinalizeObject": E.Call(Rt.ArenaFinFn); return Own.None;
