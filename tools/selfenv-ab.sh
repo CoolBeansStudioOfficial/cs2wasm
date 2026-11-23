@@ -59,5 +59,5 @@ if [ "${VERIFY:-0}" = 1 ]; then
   echo "verify: $([ $rc = 0 ] && echo all the same || echo FAILED)"
 fi
 if [ "${SNAP:-0}" = 1 ]; then
-  node tools/selfsnap.mjs --self $OUT/as-is.wasm --rounds ${ROUNDS:-5} --naot "$(cygpath -m $NAOT 2>/dev/null || echo $NAOT)" tests/Conformance/145_size_hello.cs tests/Conformance/220_*.cs tests/Conformance/193_*.cs tests/Conformance/088_*.cs
+  node tools/selfsnap.mjs --self $OUT/as-is.wasm --rounds ${ROUNDS:-5} --naot "$(cygpath -m $NAOT 2>/dev/null || echo $NAOT)" ${SNAP_NODE:+--node "$SNAP_NODE"} tests/Conformance/145_size_hello.cs tests/Conformance/220_*.cs tests/Conformance/193_*.cs tests/Conformance/088_*.cs
 fi

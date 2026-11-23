@@ -5,6 +5,8 @@
 // usage: node tools/selfsnap.mjs [--self toolchain.wasm] [--rounds 3] [--naot <dir of cs2wasmc-naot.js>] first.cs [other.cs...]
 //   first.cs: the program whose build writes the snapshot and is timed; the others are then built on that snapshot
 //   (one that needs more libraries reads them and the snapshot is written again), each twice, and the first again.
+//   --node "<options>": also, in each round, a build on the snapshot with these Node options (the engine's tiering
+//   numbers, to see what a short run leaves in the baseline tier)
 // exits 1 when a module differs or a build fails.
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join, resolve, basename } from 'node:path';
@@ -14,12 +16,13 @@ import { selfPath, selfEnv, referenceDir, cache } from '../tests/Godot/proof5_he
 
 const root = join(fileURLToPath(import.meta.url), '..', '..');
 const args = process.argv.slice(2);
-let self = join(root, 'tests', 'out', 'selfph', 'self.wasm'), rounds = 3, naot = null;
+let self = join(root, 'tests', 'out', 'selfph', 'self.wasm'), rounds = 3, naot = null, nodeOptions = null;
 const programs = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--self') self = resolve(args[++i]);
   else if (args[i] === '--rounds') rounds = +args[++i];
   else if (args[i] === '--naot') naot = resolve(args[++i]);
+  else if (args[i] === '--node') nodeOptions = args[++i].split(' ').filter(Boolean);
   else programs.push(resolve(args[i]));
 }
 if (!existsSync(self) || programs.length === 0) { console.error('usage: node tools/selfsnap.mjs [--self toolchain.wasm] [--rounds n] [--naot dir] first.cs [other.cs...]'); process.exit(2); }
@@ -65,6 +68,7 @@ function build(kind, label, program, cmd, cmdArgs, extraEnv, quiet) {
 const net = (p) => build('net', `net ${basename(p, '.cs')}`, p, exe, [], {});
 const selfCmd = [join(root, 'host', 'run.mjs'), self, 'main', '--'];
 const cold = (p, n) => build('cold', `from the start ${basename(p, '.cs')} ${n}`, p, 'node', selfCmd, {});
+const tuned = (p, n) => build('snap', `on the snapshot, node ${nodeOptions.join(' ')}, ${basename(p, '.cs')} ${n}`, p, 'node', [...nodeOptions, ...selfCmd], { CS2WASM_SNAPSHOT: snap, CS2WASM_SNAPSHOT_WHY: '1' });
 const warm = (p, n, extra = {}) => build('snap', `on the snapshot ${basename(p, '.cs')} ${n}`, p, 'node', selfCmd, { CS2WASM_SNAPSHOT: snap, CS2WASM_SNAPSHOT_WHY: '1', ...extra });
 // NativeAOT-LLVM's build of the compiler (as tools/selfhost-ab.sh runs it: the drive under /c)
 function native(p, n) {
@@ -87,6 +91,7 @@ console.log(`the snapshot: ${(size / 1048576).toFixed(1)} MB`);
 for (let r = 1; r <= rounds; r++) {
   cold(first, r);
   warm(first, r);
+  if (nodeOptions) tuned(first, r);
   if (naot && existsSync(join(naot, 'cs2wasmc-naot.js'))) native(first, r);
 }
 // the phases of a build on the snapshot (CS2WASM_TIMES is another environment: its own snapshot)
