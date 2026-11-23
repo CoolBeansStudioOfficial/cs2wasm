@@ -2759,7 +2759,43 @@ namespace Cs2Wasm.Runtime
             int fl = PL(m, 24);
             if ((fl & Queued) == 0) return;
             PS(m, 24, fl & ~Queued);
-            for (int i = 0; i < s_killN; i++) if (Mem.LoadI32(s_killQ + 4 * i) == m) Mem.StoreI32(s_killQ + 4 * i, 0);
+            for (int i = 0; i < s_killN; i++) if ((Mem.LoadI32(s_killQ + 4 * i) & ~1) == m) Mem.StoreI32(s_killQ + 4 * i, 0);
+            for (int i = 0; i < t_lateN; i++) if (Mem.LoadI32(t_lateQ + 4 * i) == m) Mem.StoreI32(t_lateQ + 4 * i, 0);
+        }
+
+        // NoteDebt: a top whose note went stale is checked again (StaleNote: at every ownership taken under it), and
+        // the check walks all the top owns. Under a top that lives on (no code refers to it, members elsewhere do)
+        // every node put into the structure walked the whole of it: the self-hosted compiler did not end
+        // Console.WriteLine(42) in ten minutes, 9 to 12 s without (2026-11-23; the suite's programs are too small
+        // to show it). So such checks are paid for: one that fails over more than NoteFree members adds what it
+        // walked to the thread's debt, every ownership taken pays NoteCredit of it off, and while there is debt
+        // the next such check (one asked for by an ownership taken; those asked for where an owner lets go or a
+        // holder dies are made at once: test 216 takes members out of 3,000 one by one and counts right after)
+        // waits in a list of its own (still marked as waiting, so a destruction takes it off,
+        // Unqueue) and is made when the debt is paid. A structure of up to NoteFree members is checked at once, as
+        // before. CS2WASM_STALE_NOTE_WHOLE=1 (at compile time, a measurement): no debt, every check at once.
+        const int NoteFree = 256, NoteCredit = 8;
+        [System.ThreadStatic] static int t_noteDebt, t_lateQ, t_lateN, t_lateCap;
+        [Intrinsic] static extern bool StaleNoteWhole();
+
+        static void StaleCheck(int w)
+        {
+            if (!Dropped(w) && s_trN > NoteFree) t_noteDebt += s_trN;
+        }
+
+        static void LateCheck(int w)
+        {
+            for (int i = 0; i < t_lateN; i++) if (Mem.LoadI32(t_lateQ + 4 * i) == w) { PS(w, 24, PL(w, 24) | Queued); return; }
+            if (t_lateN == t_lateCap)
+            {
+                int cap = t_lateCap == 0 ? 16 : t_lateCap * 2;
+                int nq = Alloc(cap * 4);
+                if (t_lateQ != 0) { Mem.Copy(nq, t_lateQ, t_lateN * 4); Free(t_lateQ, t_lateCap * 4); }
+                t_lateQ = nq; t_lateCap = cap;
+            }
+            Mem.StoreI32(t_lateQ + 4 * t_lateN, w);
+            t_lateN++;
+            PS(w, 24, PL(w, 24) | Queued);
         }
 
         static void DrainKills()
@@ -2773,13 +2809,17 @@ namespace Cs2Wasm.Runtime
                 int w = Mem.LoadI32(s_killQ + 4 * s_killN);
                 // (0: destroyed since, with another; and it may be referred to again)
                 if (w == 0) continue;
+                // (its low bit: queued by an ownership taken under it, StaleNote: the checks that are paid for, NoteDebt)
+                bool paid = (w & 1) != 0;
+                w &= ~1;
                 PS(w, 24, PL(w, 24) & ~Queued);
                 if (Mem.LoadI32(w) == -2 && PL(w, 4) == 0 && (PL(w, 24) & Dying) == 0
                     && (Mem.LoadI32(ArenaOf(w) + 12) & ArenaBusy) == 0) ArenaDestroyFrom(w, 0);
                 // (a destruction's survivor, QueueCheck: kept by what it owns alone? A top whose check failed is looked at
                 // again by its note's number)
                 // (a top whose note's number went stale, StaleNote, DyingNote: the check again)
-                else if ((PLM(w) & 1) != 0 && DropCandidate(w) && !NoStaleNote()) Dropped(w);
+                // (when such checks have walked more than the ownerships taken since pay for, later: NoteDebt)
+                else if ((PLM(w) & 1) != 0 && DropCandidate(w) && !NoStaleNote()) { if (!paid || StaleNoteWhole()) Dropped(w); else if (t_noteDebt > 0) LateCheck(w); else StaleCheck(w); }
                 // (such a top that code refers to meanwhile, so that no check is made now: its note goes. The number
                 // is stale all the same, and a top that has a note is passed over when its last reference from
                 // outside goes, ArenaRelease; without one that release makes the check. Test 131 under load, and
@@ -2790,6 +2830,18 @@ namespace Cs2Wasm.Runtime
                 // (the trials, TurnCheck and SurvivorCheck: a member an ownership that turned round left on top, a
                 // destruction's survivor left without an owner)
                 else if (DropCandidate(w) && (TurnCheck() || SurvivorCheck())) Dropped(w);
+            }
+            // (the checks put off, one at a time while the debt is paid)
+            while (t_lateN > 0 && t_noteDebt <= 0)
+            {
+                t_lateN--;
+                int w = Mem.LoadI32(t_lateQ + 4 * t_lateN);
+                if (w == 0) continue;
+                PS(w, 24, PL(w, 24) & ~Queued);
+                if (Mem.LoadI32(w) == -2 && PL(w, 4) == 0 && (PL(w, 24) & Dying) == 0
+                    && (Mem.LoadI32(ArenaOf(w) + 12) & ArenaBusy) == 0) ArenaDestroyFrom(w, 0);
+                else if ((PLM(w) & 1) != 0 && DropCandidate(w)) StaleCheck(w);
+                else if ((PLM(w) & 1) != 0 && Mem.LoadI32(w) != -2 && (PL(w, 24) & (Owned | Dying)) == 0) ClearMark(w);
             }
             // (TurnHold's references go; with threads after the locks, AfterLocks)
             while (!ThreadMode() && t_turnN > 0)
@@ -2814,15 +2866,17 @@ namespace Cs2Wasm.Runtime
         static void StaleNote(int container, int kinds = 3)
         {
             int t = Top(container);
-            if (t != 0 && (PLM(t) & kinds) == kinds && DropCandidate(t)) QueueCheck(t);
+            // (kinds 3: asked at an ownership taken, TakeOwnership: the check is one of those paid for, NoteDebt)
+            if (t != 0 && (PLM(t) & kinds) == kinds && DropCandidate(t)) QueueCheck(t, kinds == 3 ? 1 : 0);
         }
 
         /// <summary>A member to check at the drop once the operation under way is done (a destruction's survivor).</summary>
-        static void QueueCheck(int w)
+        static void QueueCheck(int w) => QueueCheck(w, 0);
+        static void QueueCheck(int w, int paid)
         {
             int fl = PL(w, 24);
             if ((fl & (Dying | Queued)) != 0) return;
-            KillPush(w);
+            KillPush(w | paid);
             PS(w, 24, fl | Queued);
             if (ArenaReport()) RepEv(4, w, 0, 0);
         }
@@ -2838,7 +2892,12 @@ namespace Cs2Wasm.Runtime
             if (Mem.LoadI32(p) >= -1) return;
             // (as the first container to hold it would have: the ownership turns round where the member owns
             // what is above the container, a parent it referred to before it was in the parent's list)
+            // (TurnHold only for a turn made here: a member that lost its owner taken over by a container that held it
+            // too. At a store, code is at work on the structure; a check at every such turn, each a walk of all the
+            // top owns, is a tree's size squared when it is built from below)
+            t_adopting++;
             TakeOwnership(v, p);
+            t_adopting--;
             if (ArenaReport()) RepEv(3, v, p, PL(v, 20));
         }
 
@@ -2925,6 +2984,8 @@ namespace Cs2Wasm.Runtime
         static void TakeOwnership(int val, int container)
         {
             OpStat(20);
+            // (NoteDebt: paid off; with the last of it, the list of what waits is gone through)
+            if (t_noteDebt > 0) { t_noteDebt -= NoteCredit; if (t_noteDebt <= 0 && t_lateN != 0) KillPush(0); }
             int turned = 0;
             if (OnChain(container, val))
             {
@@ -2959,8 +3020,8 @@ namespace Cs2Wasm.Runtime
             PS(val, 24, PL(val, 24) | Owned | MultOne);
             // (only a counted reference in one of its own slots can become an up-reference)
             if ((PL(val, 28) & 0x55555555) != 0 && (PL(val, 24) & Elems) == 0) Reevaluate(val);
-            if (s_failedTops != 0 && !NoStaleNote() && (Tune() & 1) == 0) StaleNote(container);
-            if (turned != 0 && !NoTurnHold() && Mem.LoadI32(turned) == -2 && (PL(turned, 24) & (Owned | Dying)) == 0) TurnHold(turned);
+            if (s_failedTops != 0 && !NoStaleNote()) StaleNote(container);
+            if (turned != 0 && t_adopting != 0 && !NoTurnHold() && Mem.LoadI32(turned) == -2 && (PL(turned, 24) & (Owned | Dying)) == 0) TurnHold(turned);
         }
 
         // TurnHold: the member an ownership that turned round left on top (TakeOwnership), when no code refers to
@@ -2985,7 +3046,7 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_NO_TAKE_IN_ABOVE=1 (at compile time, a measurement): the trial takes in another top only
         /// where it is referred to itself, not where a member it owns is (Dropped's visit).</summary>
         [Intrinsic] static extern bool NoTakeInAbove();
-        [System.ThreadStatic] static int t_turnQ, t_turnN, t_turnCap;
+        [System.ThreadStatic] static int t_turnQ, t_turnN, t_turnCap, t_adopting;
 
         static void TurnHold(int x)
         {
@@ -3006,9 +3067,6 @@ namespace Cs2Wasm.Runtime
         /// <summary>CS2WASM_NO_STALE_NOTE=1 (at compile time, a measurement): a top's note is not looked at again when
         /// a member comes under it (StaleNote).</summary>
         [Intrinsic] static extern bool NoStaleNote();
-        /// <summary>CS2WASM_TUNE=n (at compile time, a measurement of 2026-11-23, to go): parts of the notes' upkeep off.</summary>
-        [Intrinsic] static extern int Tune();
-
         /// <summary>CS2WASM_TURN_CHECK=1, CS2WASM_SURVIVOR_CHECK=1 (at compile time, trials, off): a check queued in the
         /// thread's list (DrainKills) for the member an ownership that turned round leaves on top, and for a
         /// destruction's survivor left without an owner, when no code refers to them. The first is what TurnHold
@@ -3306,7 +3364,7 @@ namespace Cs2Wasm.Runtime
             PS(old, 24, fl);
             if ((fl & Held) == 0) PS(old, 20, 0);
             if (ArenaReport()) RepEv(2, old, container, (fl & Held) != 0 ? 1 : 0);
-            if (s_failedTops != 0 && PLM(old) != 0 && !NoStaleNote() && (Tune() & 2) == 0) StaleNote(container, 1);
+            if (s_failedTops != 0 && PLM(old) != 0 && !NoStaleNote()) StaleNote(container, 1);
         }
 
         // ---- The check at the drop (the owner's decision of 2026-11-18) ----
@@ -3554,7 +3612,7 @@ namespace Cs2Wasm.Runtime
                 // from members outside what it owns are left into it, NoteOutside)
                 // (of the references from outside what it owns, those from the tops that were taken in and what they
                 // own, NoteSome: garbage with it once the others are gone, which only a look can tell)
-                int some = ownLeft1 < 0 || NoStaleNote() || (Tune() & 8) != 0 ? 0 : outside - ownLeft1;
+                int some = ownLeft1 < 0 || NoStaleNote() ? 0 : outside - ownLeft1;
                 if (some < 0) some = 0;
                 if (some > NoteSome || outside > 0x7FFFFF) some = NoteSome;
                 if (outside > 0x7FFFFF) outside = 0x7FFFFF;
@@ -4924,7 +4982,7 @@ namespace Cs2Wasm.Runtime
         /// refer into.</summary>
         static void DyingNote(int child, int obj)
         {
-            if (NoStaleNote() || (Tune() & 4) != 0) return;
+            if (NoStaleNote()) return;
             int back = NoteOutside(child, obj, -1);
             if (back != 0) QueueCheck(back);
         }
