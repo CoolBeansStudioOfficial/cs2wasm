@@ -3059,7 +3059,7 @@ namespace Cs2Wasm.Runtime
             if (tn < n) return false;
             int s = old + 16, d = to + 16;
             int items = 0, sumU = 0, held = 0, last = 0;
-            bool notes = s_failedTops != 0;
+            bool notes = (ThreadMode() ? t_failedLocal : s_failedTops) != 0;
             if (notes && PLM(old) != 0) return false;
             for (int k = 0; k < n; k++)
             {
@@ -3169,7 +3169,7 @@ namespace Cs2Wasm.Runtime
             if (slot == 0) return 0;
             int s = old + 16, d = to + 16;
             int items = 0, sumU = 0, held = 0;
-            bool notes = s_failedTops != 0;
+            bool notes = (ThreadMode() ? t_failedLocal : s_failedTops) != 0;
             if (notes && PLM(old) != 0) return 0;
             for (int k = 0; k < n; k++)
             {
@@ -3270,7 +3270,7 @@ namespace Cs2Wasm.Runtime
             // (the owner it still holds: the place its items are under)
             int up = PL(a, 20);
             if (up == 0 || Mem.LoadI32(up) >= -1 || (PL(up, 24) & Dying) != 0) return;
-            if (s_failedTops != 0 && PLM(a) != 0) return;
+            if ((ThreadMode() ? t_failedLocal : s_failedTops) != 0 && PLM(a) != 0) return;
             int ar = ArenaOf(a);
             if (Mem.LoadI64(ar + 12) != 0) return;
             bool array = (af & Elems) != 0;
@@ -3289,7 +3289,7 @@ namespace Cs2Wasm.Runtime
                 if ((cf & (Dying | Queued)) != 0 || (cf & MultMask) != MultOne) return;
                 sumU += (int)((uint)cf >> UShift);
                 if ((cf & Held) == 0) continue;
-                if (s_failedTops != 0 && PLM(c) != 0) return;
+                if ((ThreadMode() ? t_failedLocal : s_failedTops) != 0 && PLM(c) != 0) return;
                 if (ShedWay(c, cf, a, up) == 0) return;
                 held++;
             }
@@ -3314,7 +3314,7 @@ namespace Cs2Wasm.Runtime
                         if (t == 0 || Mem.LoadI32(t) >= -1) continue;
                         SetSlotBits(c, i, 1);
                         PS(t, 4, PL(t, 4) + 1);
-                        if (s_failedTops != 0 && OutsideMarked(PLM(t))) NoteOutside(t, c, 1);
+                        if ((ThreadMode() ? t_failedLocal : s_failedTops) != 0 && OutsideMarked(PLM(t))) NoteOutside(t, c, 1);
                         UpPath(c, t, -1);
                         if (!HoldSettled(t)) UpdateHold(t);
                     }
@@ -3359,6 +3359,10 @@ namespace Cs2Wasm.Runtime
         [Intrinsic] static int s_trQ, s_trN, s_trCap, s_trial, s_watch, s_watchHit;
         // (every group's: threads count it atomically)
         static int s_failedTops;
+        /// <summary>Threads: s_failedTops for the groups that are each one thread's (Arenas.LocalScc), this thread's:
+        /// a top of another thread's or of a shared group with a failed check left every other group's single-thread
+        /// paths that look for notes off (AddNode, NodeUp, PlainParents: one idle worker's, tools/frames-threads).</summary>
+        [System.ThreadStatic] static int t_failedLocal;
         // (Dropped: 0, the trial takes in nothing but what the top owns; else one more than how many other tops it took
         // in, with what they own. Zero by default: an initial value would give Rt a static constructor. Each thread's
         // own, as the trial's lists: a plain static, the check of one thread's group set it to zero while another's
@@ -3409,7 +3413,7 @@ namespace Cs2Wasm.Runtime
         {
             if ((PLM(m) & 1) == 0) return;
             PSM(m, MarkHeld | MarkOutside);
-            if (!ThreadMode()) s_failedTops--; else Atomic.Add32(ref s_failedTops, -1);
+            if (!ThreadMode()) s_failedTops--; else if (SccLocal(Mem.LoadI32(m + 4))) t_failedLocal--; else Atomic.Add32(ref s_failedTops, -1);
         }
 
         /// <summary>The member above all its owners (itself when it has none); 0 when that is far.</summary>
@@ -3554,7 +3558,7 @@ namespace Cs2Wasm.Runtime
                 // (the note: odd; bit 1 clear, how many of them outside code holds, TopHeld; set, how many references
                 // from members outside what it owns are left into it, NoteOutside)
                 PSM(x, inside ? (held << 2) | 1 : (outside << 2) | 3);
-                if (!ThreadMode()) s_failedTops++; else Atomic.Add32(ref s_failedTops, 1);
+                if (!ThreadMode()) s_failedTops++; else if (SccLocal(Mem.LoadI32(x + 4))) t_failedLocal++; else Atomic.Add32(ref s_failedTops, 1);
                 s_trial = 0;
                 return false;
             }
@@ -3615,7 +3619,7 @@ namespace Cs2Wasm.Runtime
             if (!ThreadMode() || SccLocal(Mem.LoadI32(p + 4)))
             {
                 int ar0 = PL(p, 16), fl0 = PL(p, 24);
-                if (Mem.LoadI32(p) == -2 && Mem.LoadI32(ar0 + 16) == 0 && (s_failedTops == 0 || !HeldMarked(PLM(p)))
+                if (Mem.LoadI32(p) == -2 && Mem.LoadI32(ar0 + 16) == 0 && ((ThreadMode() ? t_failedLocal : s_failedTops) == 0 || !HeldMarked(PLM(p)))
                     && ((uint)fl0 < UOne ? (fl0 & Held) == 0 : (fl0 & Held) != 0 && PL(p, 4) - ((fl0 & MultMask) >> 3) + 1 > 0))
                 {
                     Mem.StoreI32(p, -3);
@@ -3625,7 +3629,7 @@ namespace Cs2Wasm.Runtime
                 }
             }
             int old = Atomic.CountAdd32(ref Mem.RefI32(p), -1);
-            if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); if (s_failedTops != 0 && HeldMarked(PLM(p))) TopHeld(p, 1); }
+            if (old == -2) { int ar = ArenaOf(p); Mem.StoreI32(ar, Mem.LoadI32(ar) + 1); if ((ThreadMode() && SccLocal(Mem.LoadI32(p + 4)) ? t_failedLocal : s_failedTops) != 0 && HeldMarked(PLM(p))) TopHeld(p, 1); }
             if ((uint)PL(p, 24) >= UOne && !HoldSettled(p)) UpdateHold(p);
         }
 
@@ -3643,7 +3647,7 @@ namespace Cs2Wasm.Runtime
             {
                 int ar0 = PL(p, 16), fl0 = PL(p, 24), total0 = Mem.LoadI32(ar0) - 1, in0 = PL(p, 4);
                 if (Mem.LoadI32(p) == -3 && Mem.LoadI32(ar0 + 16) == 0 && total0 != 0 && (Mem.LoadI32(ar0 + 12) & ArenaBusy) == 0 && in0 != 0
-                    && (fl0 & (Owned | Dying)) == Owned && (s_failedTops == 0 || !HeldMarked(PLM(p)))
+                    && (fl0 & (Owned | Dying)) == Owned && ((ThreadMode() ? t_failedLocal : s_failedTops) == 0 || !HeldMarked(PLM(p)))
                     && ((uint)fl0 < UOne ? (fl0 & Held) == 0 : ((fl0 & Held) != 0) == (in0 - ((fl0 & MultMask) >> 3) > 0)))
                 {
                     Mem.StoreI32(p, -2);
@@ -3672,7 +3676,7 @@ namespace Cs2Wasm.Runtime
             // (kept by what it owns alone, or under a top that was: the check at the drop)
             if (w == -2)
             {
-                int t = s_failedTops != 0 && HeldMarked(PLM(p)) ? TopHeld(p, -1) : 0;
+                int t = (ThreadMode() && SccLocal(Mem.LoadI32(p + 4)) ? t_failedLocal : s_failedTops) != 0 && HeldMarked(PLM(p)) ? TopHeld(p, -1) : 0;
                 if (DropStats()) s_dsFromRelease++;
                 if (t != 0 && Dropped(t)) { DrainKills(); return; }
                 // (a top a check failed for: again only when the number of its members outside code holds is zero, TopHeld)
@@ -4065,7 +4069,7 @@ namespace Cs2Wasm.Runtime
         /// joined; `item`: the new item, for the walk's end.</summary>
         static bool PlainParents(int first, int below, int item, int ar, int g, bool write)
         {
-            if (!write && (NoPlainParents() || NoNodePath() || s_failedTops != 0)) return false;
+            if (!write && (NoPlainParents() || NoNodePath() || (ThreadMode() ? t_failedLocal : s_failedTops) != 0)) return false;
             int b = below, joined = 0;
             if (write)
             {
@@ -4380,7 +4384,7 @@ namespace Cs2Wasm.Runtime
         /// LinkJoinedSlot then.</summary>
         static bool NodeUp(int p, int e, int sl)
         {
-            if (NoNodePath() || (s_failedTops | s_reevN | s_linkN) != 0) return false;
+            if (NoNodePath() || ((ThreadMode() ? t_failedLocal : s_failedTops) | s_reevN | s_linkN) != 0) return false;
             int cp = Mem.LoadI32(p);
             if (cp > -3) return false;
             if (p == e || PL(e, 20) != 0 || PL(e, 24) != 0) return false;
@@ -4431,7 +4435,7 @@ namespace Cs2Wasm.Runtime
         static bool AddNode(int val, int container, int ar)
         {
             if (NoNodePath() || ThreadMode() && !SccLocal(Mem.LoadI32(container + 4)) || NoEarlyGiveBack()) return false;
-            if ((s_failedTops | s_joinVisit | s_visitElem) != 0 || val == container) return false;
+            if (((ThreadMode() ? t_failedLocal : s_failedTops) | s_joinVisit | s_visitElem) != 0 || val == container) return false;
             int fl = PL(val, 24);
             if (PL(val, 20) != 0 || (fl & (Owned | Held | Dying | Queued | MultMask | Elems)) != 0) return false;
             if (Mem.LoadI32(ar) <= 1) return false;
@@ -4624,7 +4628,7 @@ namespace Cs2Wasm.Runtime
                 return val;
             }
             PS(val, 4, PL(val, 4) + 1);
-            if (s_failedTops != 0 && OutsideMarked(PLM(val))) NoteOutside(val, container, 1);
+            if ((ThreadMode() && SccLocal(Mem.LoadI32(val + 4)) ? t_failedLocal : s_failedTops) != 0 && OutsideMarked(PLM(val))) NoteOutside(val, container, 1);
             if (i >= 0) SetSlotBits(container, i, 1);
             else if (slot == 0 || s_visitElem != 0)
             {
@@ -4701,7 +4705,7 @@ namespace Cs2Wasm.Runtime
             if (ThreadMode() && !SccLocal(Mem.LoadI32(container + 4)) || NoEarlyGiveBack() || val == container) return false;
             if (PL(val, 20) != 0 || (PL(val, 24) & (Owned | Held | Dying | Queued)) != 0) return false;
             if (Mem.LoadI32(ar) <= 1 || Mem.LoadI64(ar + 12) != 0) return false;
-            if (s_failedTops != 0 && (PLM(val) != 0 || PLM(container) != 0)) return false;
+            if ((ThreadMode() ? t_failedLocal : s_failedTops) != 0 && (PLM(val) != 0 || PLM(container) != 0)) return false;
             if (!OnChain(container, val)) return true;
             // (above the container. In one of the container's own slots the reference is an up-reference, not counted:
             // the value then has the store's count alone. In an array's element the ownership turns round, if
@@ -4756,7 +4760,7 @@ namespace Cs2Wasm.Runtime
             int ar = PL(c, 16), fl = PL(c, 24), total = Mem.LoadI32(ar) - 1;
             if (Mem.LoadI32(c) != -3 || total == 0 || Mem.LoadI64(ar + 12) != 0 || PL(c, 4) == 0) return;
             if ((fl & (Owned | Held | Dying | Queued)) != Owned || (uint)fl >= UOne) return;
-            if (s_failedTops != 0 && (PLM(c) != 0 || PLM(val) != 0)) return;
+            if ((ThreadMode() ? t_failedLocal : s_failedTops) != 0 && (PLM(c) != 0 || PLM(val) != 0)) return;
             if (PL(val, 4) == 0 && Mem.LoadI32(val) >= (later ? -3 : -2)) return;
             OpStat(34);
             Mem.StoreI32(c, -2);
@@ -4855,7 +4859,7 @@ namespace Cs2Wasm.Runtime
                     // through it at each move)
                     // (NoteOutside looks at the member's note before it walks to the top: most members have none. The
                     // walk to the top here first, to see it was not far, was a million walks of six hops a parse)
-                    int back = s_failedTops != 0 && OutsideMarked(PLM(old)) ? NoteOutside(old, container, -1) : 0;
+                    int back = (ThreadMode() && SccLocal(Mem.LoadI32(old + 4)) ? t_failedLocal : s_failedTops) != 0 && OutsideMarked(PLM(old)) ? NoteOutside(old, container, -1) : 0;
                     bool died = back != 0 && Dropped(back);
                     if (!died && back != old && (ownerEdge || (PLM(old) & 1) == 0) && DropCandidate(old)) died = Dropped(old);
                     // (let go by its owner, it is now the property of another container that holds it, and that one
@@ -5217,7 +5221,7 @@ namespace Cs2Wasm.Runtime
             OwnerLetGo(child, obj);
             if (PL(child, 20) == 0) Adopt(child);
             UpdateHold(child);
-            if (s_failedTops != 0 && OutsideMarked(PLM(child))) DyingNote(child, obj);
+            if ((ThreadMode() && SccLocal(Mem.LoadI32(child + 4)) ? t_failedLocal : s_failedTops) != 0 && OutsideMarked(PLM(child))) DyingNote(child, obj);
             // (a survivor of the cut that nothing outside refers to may be kept by stale holds of what it owns alone:
             // checked at the drop when the destruction is done, DrainKills)
             if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
@@ -5865,7 +5869,7 @@ namespace Cs2Wasm.Runtime
             OwnerLetGo(child, m);
             if (PL(child, 20) == 0) Adopt(child);
             UpdateHold(child);
-            if (s_failedTops != 0 && OutsideMarked(PLM(child))) DyingNote(child, m);
+            if ((ThreadMode() ? t_failedLocal : s_failedTops) != 0 && OutsideMarked(PLM(child))) DyingNote(child, m);
             if (StickyHolds() && Mem.LoadI32(child) == -2 && (PL(child, 24) & Owned) == 0) QueueCheck(child);
             return s_visitDead;
         }
