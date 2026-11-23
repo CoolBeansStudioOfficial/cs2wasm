@@ -1456,6 +1456,9 @@ sealed partial class FunctionCompiler
                 BeginTemps();
                 var el = T.LayoutOf(lEnum);
                 int ea = E.AddLocal(ValType.I32), bytes = (T.StorageOf(lEnum).size + 15) / 16 * 16;
+                // (more than the stack has left: a trap, as a frame's: Wasm/Frames.cs)
+                E.I32(bytes); E.GGet(D.StackPointer); E.GGet(D.StackLo!); E.Op(Op.I32Sub); E.Op(Op.I32GtU);
+                E.If(); E.Op(Op.Unreachable); E.End();
                 E.GGet(D.StackPointer); E.I32(bytes); E.Op(Op.I32Sub); E.Tee(ea); E.GSet(D.StackPointer);
                 E.Get(ea); E.I32(0); E.I32(bytes); E.Op(Op.MemoryFill);
                 foreach (var f in el.Fields)
