@@ -1651,7 +1651,7 @@ file src/libraries/System.Private.CoreLib/src/System/Void.cs
 file src/libraries/System.Private.CoreLib/src/System/WeakReference.cs
 file src/libraries/System.Private.CoreLib/src/System/WeakReference.T.cs
 file src/libraries/System.Private.CoreLib/src/System/ComAwareWeakReference.cs
-file src/libraries/Common/src/Interop/Browser/Interop.Locale.Mono.cs
+replaced src/libraries/Common/src/Interop/Browser/Interop.Locale.Mono.cs  # hybrid globalization's internal call into the browser's JavaScript: under invariant globalization, Boundary/Natives/JsGlobalization.cs
 file src/libraries/Common/src/Interop/Interop.Calendar.cs
 file src/libraries/Common/src/Interop/Interop.Casing.cs
 file src/libraries/Common/src/Interop/Interop.Collation.cs

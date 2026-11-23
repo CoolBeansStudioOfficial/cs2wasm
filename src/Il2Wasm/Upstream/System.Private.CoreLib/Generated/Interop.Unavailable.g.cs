@@ -145,10 +145,6 @@ unsafe partial class Sys {
     internal static partial void FreeLibrary(nint @handle) => throw new global::System.PlatformNotSupportedException();
     [global::Il2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetDefaultSearchOrderPseudoHandle)")]
     internal static partial nint GetDefaultSearchOrderPseudoHandle() => throw new global::System.PlatformNotSupportedException();
-    [global::Il2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetErrNo)")]
-    internal static partial int GetErrNo() => throw new global::System.PlatformNotSupportedException();
-    [global::Il2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_SetErrNo)")]
-    internal static partial void SetErrNo(int @errorCode) => throw new global::System.PlatformNotSupportedException();
     [global::Il2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_GetCpuUtilization)")]
     internal static partial double GetCpuUtilization(ref global::Interop.Sys.ProcessCpuInformation @previousCpuInfo) => throw new global::System.PlatformNotSupportedException();
     [global::Il2Wasm.Runtime.MissingCapability("platform invoke (libSystem.Native!SystemNative_Pipe)")]

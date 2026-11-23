@@ -54,20 +54,19 @@ internal static partial class Interop
         /// <summary>No environment exists in the sandbox: every variable is unset.</summary>
         internal static unsafe partial byte* GetEnv(string name) => null;
 
-        internal static partial Error ConvertErrorPlatformToPal(int platformErrno) => (Error)platformErrno;
+        // errno is the browser runtime's: Emscripten's numbers, System.Native's conversions, musl's messages
+        // (Natives/Errno.g.cs); the last error the boundary sets is such a number, as the stock libraries'
+        // generated marshalling would have read it from errno
+        internal static partial Error ConvertErrorPlatformToPal(int platformErrno) => (Error)Il2Wasm.Runtime.Natives.Errno.PlatformToPal(platformErrno);
 
-        internal static partial int ConvertErrorPalToPlatform(Error error) => (int)error;
+        internal static partial int ConvertErrorPalToPlatform(Error error) => Il2Wasm.Runtime.Natives.Errno.PalToPlatform((int)error);
 
-        private static unsafe partial byte* StrErrorR(int platformErrno, byte* buffer, int bufferSize)
-        {
-            // "error <n>", ASCII, null-terminated
-            if (bufferSize <= 0) return buffer;
-            string s = "error " + platformErrno.ToString();
-            int n = Math.Min(s.Length, bufferSize - 1);
-            for (int i = 0; i < n; i++) buffer[i] = (byte)s[i];
-            buffer[n] = 0;
-            return buffer;
-        }
+        private static unsafe partial byte* StrErrorR(int platformErrno, byte* buffer, int bufferSize) => Il2Wasm.Runtime.Natives.SystemNative.SystemNative_StrErrorR(platformErrno, buffer, bufferSize);
+
+        /// <summary>errno, the thread's own (Marshal.GetLastSystemError and SetLastSystemError are these).</summary>
+        [ThreadStatic] static int t_errno;
+        internal static partial int GetErrNo() => t_errno;
+        internal static partial void SetErrNo(int errorCode) => t_errno = errorCode;
 
         // ---------------- native memory (NativeMemory, Marshal.AllocHGlobal): blocks of the module's heap ----------------
         // header before the block: [-8] bytes taken from the heap, [-4] offset of the block from what was taken

@@ -52,8 +52,9 @@ static class Program
                 case "refs": return RefCheck.Run(args.Contains("--stock") ? PackCoreLib : Path.Combine(rest.FirstOrDefault() ?? DefaultOut, "System.Private.CoreLib.dll"), PackLib);
                 case "natives": return Natives.Run(Path.Combine(rest.FirstOrDefault() ?? DefaultOut, "System.Private.CoreLib.dll"), PackLib);
                 case "reach": return Reach.Run(rest[0], rest.Count > 1 ? rest[1] : DefaultOut);
+                case "bindings": return Bindings.Run(rest.FirstOrDefault() ?? DefaultOut);
                 default:
-                    Console.Error.WriteLine("usage: BuildCoreLib build [--out DIR] | refs [DIR] [--stock] | natives [DIR] | reach PROGRAM.dll [DIR]");
+                    Console.Error.WriteLine("usage: BuildCoreLib build [--out DIR] | refs [DIR] [--stock] | natives [DIR] | bindings [DIR] | reach PROGRAM.dll [DIR]");
                     return 2;
             }
         }

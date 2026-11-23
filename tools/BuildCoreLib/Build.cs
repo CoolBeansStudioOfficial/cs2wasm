@@ -99,6 +99,8 @@ static class Build
         File.WriteAllLines(Path.Combine(outDir, "il2wasm.substitutions.txt"),
             ["# the manifest's substitute lines (already applied to CoreLib's source as bodies; kept for call-site folding)", .. substitutions.Select(p => string.Join('\t', p))]);
 
+        // the runtime's native bindings (docs/CORELIB.md section 7)
+        File.Copy(Path.Combine(UpstreamDir, Lib, "natives.txt"), Path.Combine(outDir, "il2wasm.natives.txt"), true);
         Layout(outDir);
         Console.Error.WriteLine($"corelib: {sw.ElapsedMilliseconds,6} ms  framework laid out in {outDir}");
         return 0;

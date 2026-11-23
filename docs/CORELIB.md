@@ -223,3 +223,76 @@ world needs.
 **What changes from today.** Under SPEC 9, `System.Console` is the stock one: the old compiler's
 `Upstream/System.Console/Boundary` replacement goes. Its stdout write then arrives as a P/Invoke of
 `SystemNative_Write(fd, buf, len)`, which il2wasm's runtime implements over `Engine.Write`.
+
+## 7. Runtime-provided native libraries: the binding table
+
+`src/Il2Wasm/Upstream/System.Private.CoreLib/natives.txt` is copied into the framework directory as
+`il2wasm.natives.txt`. It tells the IL front end which of CoreLib's own methods stand behind a P/Invoke or an
+internal call.
+
+Format: tab-separated lines; `#` starts a comment. Type names are metadata names (`Namespace.Type`, nested types after
+`/`). Every target is a static method of System.Private.CoreLib.
+
+```
+library       <module name>                                           the runtime provides this native library
+pinvoke       <module name>  <entry point>  <target type>  <target method>
+internalcall  <assembly>  <declaring type>  <method>  <target type>  <target method>
+```
+
+**The front end's rule for a method with an ImplMap** (module M, entry point E: the ImplMap's import name, or the
+method's own name when that is empty):
+
+1. If a `pinvoke M E` row exists, the call is a direct call of the target. The marshalling around it is already IL
+   (LibraryImport's generated stub); the inner DllImports of the stock libraries are blittable.
+   - The target's WASM signature equals the P/Invoke's: pointers, byrefs, `IntPtr`/`UIntPtr`, `nint` and function
+     pointers are i32; an enum is its underlying type; the other primitives are themselves.
+   - `BuildCoreLib bindings` checks every row and every stock P/Invoke against this rule.
+   - `SetLastError=true` needs nothing more from the front end. The generated stub reads
+     `Marshal.GetLastSystemError()`, which is CoreLib's per-thread errno (`Interop.Sys.GetErrNo`), and the targets
+     set that errno.
+2. If no row exists but a `library M` line does, the call throws `EntryPointNotFoundException`.
+3. If M is named nowhere, the call throws `DllNotFoundException`, and the build warns (SPEC 8).
+
+**The same mechanism serves packages' native WASM libraries later.** A package's library adds `library` and `pinvoke`
+lines whose targets are its WASM exports instead of CoreLib methods; the rule above stays the same.
+
+**Internal calls.** A method with `MethodImplAttributes.InternalCall` in assembly A, type T, named N is bound by an
+`internalcall A T N` row in the same way. Without a row it is a build error where it is reached, as today's
+`MissingCapability` is.
+
+**What is bound** (`BuildCoreLib bindings`: 41 of the stock libraries' P/Invokes and internal calls bound, 0 with a
+bad signature):
+
+- **libSystem.Native, all 19 entry points**, in `Boundary/Natives/SystemNative.cs`. Each behaves as System.Native's C
+  does in the browser runtime, built with Emscripten 6.0.2:
+  - errno uses Emscripten's numbers, with System.Native's two conversions and musl's messages (`Natives/Errno.g.cs`,
+    made by `tools/gen-errno.mjs` from the runtime's and Emscripten's headers).
+  - Write: descriptors 0 to 2 go to the engine's log import, other descriptors go to the host's files.
+  - FStat, Stat, Unlink and FTruncate go over the host's file system imports.
+  - Memory maps follow `emscripten_mmap.c`: no fixed address; anonymous maps zeroed and aligned to a WASM page; file
+    maps are copies, written back by msync or munmap when shared and writable; munmap needs the exact start and
+    length.
+  - SysConf: page size 65,536 and 100 clock ticks, as Emscripten gives them.
+  - ShmOpen, ShmUnlink and MemfdCreate set ENOTSUP; IsMemfdSupported returns 0; MAdvise(DONTFORK) sets ENOTSUP.
+  - The random bytes are CoreLib's: the host's seeded import, stretched with splitmix64.
+  - Not reproduced: FS.mmap's EACCES for a shared writable map of a file not opened read-write. The host does not
+    report how a descriptor was opened.
+- **System.Console's internal call** `ConsolePal.Clear` goes to the host import `console_clear`, as Mono calls the
+  console's own clear.
+- **The 11 JavaScript-interop internal calls** (`Natives/InternalCalls.cs`):
+  - BindJSImportST, InvokeJSImportST, InvokeJSFunction, CancelPromise, ResolveOrRejectPromise and
+    ReleaseCSOwnedObject are host imports (`js_*`) with the same arguments. The 41 `[JSImport]` methods reach
+    JavaScript only through these. A host implements them as `dotnet.runtime.js` does, reading the
+    JSMarshalerArgument buffers in linear memory. **Today's hosts do not implement them: they throw.**
+  - RegisterGCRoot and DeregisterGCRoot are handles and nothing else, because there is no collector.
+  - The three `[JSExport]` calls (BindAssemblyExports, GetAssemblyExport, AssemblyGetEntryPoint) throw
+    PlatformNotSupportedException. That binding is the compiler's to make.
+- **CoreLib's `JsGlobalization.GetLocaleInfo`** (hybrid globalization). It now has a body, by replacing
+  `Interop.Locale.Mono.cs`. Under invariant globalization CultureData never calls it, as .NET's invariant mode never
+  does; if called, it answers with the invariant culture's names (`Invariant Language##Invariant Country`) and no
+  exception.
+
+**A behaviour change in CoreLib's own boundary.** The last P/Invoke error and errno were PAL codes before
+(`ConvertErrorPlatformToPal` was the identity). They are now Emscripten's numbers, as in the browser runtime.
+`Marshal.GetLastPInvokeError()` and `IOException.HResult` change accordingly. `Interop.Sys.GetErrNo` and `SetErrNo`,
+missing before, are the thread's errno.

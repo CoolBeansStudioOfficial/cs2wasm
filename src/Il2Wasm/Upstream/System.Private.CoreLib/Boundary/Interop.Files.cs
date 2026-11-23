@@ -12,7 +12,7 @@ internal static partial class Interop
 {
     internal static unsafe partial class Sys
     {
-        static class Fs
+        internal static class Fs
         {
             [Import("il2wasm", "fs_open")] public static extern int Open(char* path, int len, int flags, int mode);
             [Import("il2wasm", "fs_close")] public static extern int Close(int fd);
@@ -53,14 +53,14 @@ internal static partial class Interop
         static int R(int r)
         {
             if (r >= 0) return r;
-            Marshal.SetLastPInvokeError(-r);
+            Marshal.SetLastPInvokeError(Il2Wasm.Runtime.Natives.Errno.PalToPlatform(-r));
             return -1;
         }
 
         static long R(long r)
         {
             if (r >= 0) return r;
-            Marshal.SetLastPInvokeError((int)-r);
+            Marshal.SetLastPInvokeError(Il2Wasm.Runtime.Natives.Errno.PalToPlatform((int)-r));
             return -1;
         }
 
@@ -131,7 +131,7 @@ internal static partial class Interop
         internal static partial int FSync(SafeFileHandle fd) => R(Fs.FSync(Fd(fd)));
 
         /// <summary>Emscripten's file system has no preallocation (posix_fallocate reports it unsupported).</summary>
-        internal static partial int FAllocate(SafeFileHandle fd, long offset, long length) { Marshal.SetLastPInvokeError((int)Error.EOPNOTSUPP); return -1; }
+        internal static partial int FAllocate(SafeFileHandle fd, long offset, long length) { Marshal.SetLastPInvokeError(Il2Wasm.Runtime.Natives.Errno.PalToPlatform((int)Error.EOPNOTSUPP)); return -1; }
 
         internal static partial int PosixFAdvise(SafeFileHandle fd, long offset, long length, FileAdvice advice) => 0;
 
@@ -166,7 +166,7 @@ internal static partial class Interop
         }
 
         // ---------------- status ----------------
-        static void FromStat(long* s, out FileStatus o)
+        internal static void FromStat(long* s, out FileStatus o)
         {
             o = default;
             o.Mode = (int)s[0];
@@ -247,9 +247,9 @@ internal static partial class Interop
         internal static unsafe partial int FUTimens(SafeHandle fd, TimeSpec* times) => R(Fs.FUTimens(Fd(fd), (long*)times));
 
         /// <summary>Emscripten's file system keeps no BSD flags: setting none succeeds, others are unsupported.</summary>
-        internal static partial int LChflags(string path, uint flags) { if (flags == 0) return 0; Marshal.SetLastPInvokeError((int)Error.ENOTSUP); return -1; }
+        internal static partial int LChflags(string path, uint flags) { if (flags == 0) return 0; Marshal.SetLastPInvokeError(Il2Wasm.Runtime.Natives.Errno.PalToPlatform((int)Error.ENOTSUP)); return -1; }
 
-        internal static partial int FChflags(SafeHandle fd, uint flags) { if (flags == 0) return 0; Marshal.SetLastPInvokeError((int)Error.ENOTSUP); return -1; }
+        internal static partial int FChflags(SafeHandle fd, uint flags) { if (flags == 0) return 0; Marshal.SetLastPInvokeError(Il2Wasm.Runtime.Natives.Errno.PalToPlatform((int)Error.ENOTSUP)); return -1; }
 
         // ---------------- directories ----------------
         /// <summary>An open directory: the host's handle, and the buffer its current entry's name is in (valid until
@@ -307,7 +307,7 @@ internal static partial class Interop
         {
             int n = Fs.GetCwd(buffer, bufferLength);
             if (n < 0) { R(n); return null; }
-            if (n >= bufferLength) { Marshal.SetLastPInvokeError((int)Error.ERANGE); return null; }
+            if (n >= bufferLength) { Marshal.SetLastPInvokeError(Il2Wasm.Runtime.Natives.Errno.PalToPlatform((int)Error.ERANGE)); return null; }
             buffer[n] = 0;
             return buffer;
         }
