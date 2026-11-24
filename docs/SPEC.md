@@ -145,6 +145,10 @@ heap) are unacceptable for games and interactive pages on throttled devices.
   instead. Behaviour never changes, only cost.
 - **Specialization by ownership.** A function is specialized for the ownership its callers need. Large functions and
   virtual-dispatch groups get one shared, borrow-first specialization. Return values are owned.
+- **Calls (owner).** A call is the statement that ends a last-use argument's life: by default the caller lends it
+  and releases it right after the call returns. When the callee keeps running after its own last use of that
+  argument (a loop or further calls follow that use), the caller hands its ownership over instead, so the object is
+  freed at the callee's last use (an object a long-running call such as a main loop stopped using is not kept).
 - **Nothing is rejected.** Where Lobster reports an ownership error, the compiler inserts a run-time count increase.
 - **The analysis is compile-time only.** No run-time "is this shared" checks decide a borrow.
 
@@ -168,11 +172,21 @@ heap) are unacceptable for games and interactive pages on throttled devices.
 - Compile-time proofs (a back reference to the owner, an exclusive part, a store that goes down a structure) take
   types or stores out of the group machinery where they hold; the run-time structure is the fallback where they do
   not.
+- **The proofs are the core, the fallback is measured (owner).** No run-time scheme can free an arbitrary cut-off
+  mutable cycle at the cutting statement in bounded work (Sotoudeh 2025; docs/research/rc-literature-review.md), so the
+  owner-chain proofs carry the design. How many stores they cover and what the fallback costs are measured on the
+  self-hosted compiler and the game, and the cases left are brought to the owner with those numbers before any other
+  rule is adopted for them.
 
 ### 4.4 Finalizers and weak references
 
 - **Finalizers run** when an object's last owner releases it (or with its group), exactly once. Any timing the CLR
   allows is fine; a finalizer that never runs is a leak.
+- **Finalizers run inline (owner)**, at the store or release that frees their object, never on a separate thread or
+  later. Inside a finalizer, `Thread.CurrentThread` and `ManagedThreadId` report a finalizer thread, and locks the
+  interrupted code holds are not the finalizer's own; a finalizer that would block on such a lock (it would wait under
+  CoreCLR) throws or is reported. In a group, the order is: clear the group's short weak references, run all its
+  finalizers, keep the group if a finalizer gave it an outside reference again, otherwise free it.
 - **Weak references** (`WeakReference`, `WeakReference<T>`, weak and resurrection-tracking `GCHandle`s,
   `ConditionalWeakTable`, `DependentHandle`) keep .NET's observable meaning: a short weak reference reads empty before
   any finalizer of the objects that became unreachable with its target runs.
