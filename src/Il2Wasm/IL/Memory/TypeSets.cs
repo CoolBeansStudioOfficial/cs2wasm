@@ -130,13 +130,16 @@ public sealed partial class ProgramSolution
         var roots = externalRoots.ToHashSet();
         bool virtualRoot = roots.Any(r => r.IsVirtual), cctorRoot = roots.Any(r => r.IsStaticConstructor);
         var irCallees = new HashSet<MethodDesc>();
+        // (each slot and receiver type once: many call sites share them)
+        var slotCalls = virtualRoot ? new HashSet<(MethodDesc, TypeDesc?)>() : null;
         foreach (var m in Methods.Items)
             if (Summary(m) is { } su)
             {
                 foreach (var c in su.Calls) if (roots.Contains(c)) irCallees.Add(c);
-                if (virtualRoot) foreach (var (slot, recv, _) in su.SlotCalls) foreach (var c in Targets(slot, recv)) if (roots.Contains(c)) irCallees.Add(c);
+                if (slotCalls != null) foreach (var (slot, recv, _) in su.SlotCalls) slotCalls.Add((slot, recv));
                 if (cctorRoot) foreach (var t in su.Initializes) if (t.GetStaticConstructor() is { } cc && roots.Contains(cc)) irCallees.Add(cc);
             }
+        if (slotCalls != null) foreach (var (slot, recv) in slotCalls) foreach (var c in Targets(slot, recv)) if (roots.Contains(c)) irCallees.Add(c);
         var ext = _externalParams = [.. externalRoots.Where(r => !irCallees.Contains(r))];
         long irMs = clock.ElapsedMilliseconds;
         foreach (var m in Methods.Items)
