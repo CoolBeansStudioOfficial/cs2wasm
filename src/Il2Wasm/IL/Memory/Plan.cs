@@ -43,7 +43,7 @@ public static class Plan
     internal static readonly ConditionalWeakTable<Body, HashSet<Node>> KnownKeeps = new();
 
     /// <summary>Counters for the report (all plans of the process).</summary>
-    public static int Keepers, MissedKeepers, Takes, Flips, Plans;
+    public static int Keepers, MovedKeepers, MissedKeepers, Takes, Flips, Plans;
 
     /// <summary>IL2WASM_PLAN_STATS=1: the counters, and each method whose returned address keeps a base the protocol
     /// does not reach, on stderr when the process exits.</summary>
@@ -55,7 +55,7 @@ public static class Plan
         if (s_stats)
             AppDomain.CurrentDomain.ProcessExit += (_, _) =>
             {
-                Console.Error.WriteLine($"plan: {Plans} plans, {Keepers} keepers held, {Takes} takes, {MissedKeepers} keeps not handed on, {Flips} flips, {Verify.Checked} verified");
+                Console.Error.WriteLine($"plan: {Plans} plans, {Keepers} keepers held ({MovedKeepers} moved), {Takes} takes, {MissedKeepers} keeps not handed on, {Flips} flips, {InitStores.Found} init stores, {Verify.Checked} verified");
                 foreach (var m in s_missed) Console.Error.WriteLine("plan: keep not handed on: " + m);
             };
     }
@@ -163,6 +163,24 @@ public static class Plan
     }
     static readonly Dictionary<TypeSystemContext, (MethodDesc, MethodDesc)?> s_keeperCalls = new();
 
+    /// <summary>IL2WASM_NO_KEEP_MOVE=1: a hold always counts the object again and the function's own count of it goes
+    /// after (3 count operations a keeper, against 1 with the move).</summary>
+    static readonly bool s_noKeepMove = Environment.GetEnvironmentVariable("IL2WASM_NO_KEEP_MOVE") == "1";
+
+    /// <summary>Rt.ReturnKeepers.HoldFrom (null without it, or with IL2WASM_NO_KEEP_MOVE=1).</summary>
+    internal static MethodDesc? HoldFromCall(TypeSystemContext c)
+    {
+        if (s_noKeepMove || KeeperCalls(c) is not { } kc) return null;
+        lock (s_holdFrom)
+        {
+            if (s_holdFrom.TryGetValue(c, out var r)) return r;
+            r = ((MetadataType)kc.Hold.OwningType).GetMethods().FirstOrDefault(x => x.GetName() == "HoldFrom");
+            s_holdFrom.Add(c, r);
+            return r;
+        }
+    }
+    static readonly Dictionary<TypeSystemContext, MethodDesc?> s_holdFrom = new();
+
     /// <summary>The method may hand its caller a keeper (7.4): it is in the solution, returns an address, and either makes
     /// an object (a type that can be on the heap: a byref-like struct cannot), calls what it cannot see (calli, a
     /// delegate), calls something whose result is counted (Unsafe's forwarding casts aside), or calls a target that
@@ -246,11 +264,13 @@ public static class Plan
         ParamConv[]? _conv;
         (MethodDesc Hold, MethodDesc Take)? _keeper;
         bool _mayKeep;
+        HashSet<Node> _init = [];
 
         public Planner(PlanContext ctx) { _ctx = ctx; _body = ctx.Body; }
 
         public MethodPlan Run()
         {
+            _init = InitStores.Find(_ctx);
             var info = Ownership.Analyze(_body);
             var borrows = Borrows.Analyze(_ctx, info);
             _conv = ConventionOf(_ctx.Solution, _ctx.Method, _ctx.Entry);
@@ -732,6 +752,17 @@ public static class Plan
                 MarkInserted(addr);
                 hold.Add(addr);
             }
+            // (one kept base, a reference: its own count is moved into the hold, which keeps it when the address points
+            // into it; no count is taken and none let go: HoldFrom)
+            if (kept.Count == 1 && kept[0].Kind == VK.Ref && HoldFromCall(_ctx.Method.Context) is { } hf)
+            {
+                var hm = new Node { Op = Opc.Call, Sub = (byte)CallKind.Direct, Kind = VK.Void, X = hf, A = [addr, kept[0]], Block = b, Id = _body.NextId(), ILOffset = -1, Moves = 1u << 1 };
+                MarkInserted(hm);
+                hold.Add(hm);
+                before.InsertRange(0, hold);
+                Keepers++; MovedKeepers++;
+                return;
+            }
             var h = new Node { Op = Opc.Call, Sub = (byte)CallKind.Direct, Kind = VK.Void, X = kc.Hold, A = [addr], Block = b, Id = _body.NextId(), ILOffset = -1 };
             MarkInserted(h);
             hold.Add(h);
@@ -763,6 +794,8 @@ public static class Plan
             foreach (var (n, c) in _args) plan.Args[n] = c;
             foreach (var (n, v) in _variant) if (v != Variant.Entry) plan.Callees[n] = v;
             foreach (var (n, c) in _cat) plan.Categories[n] = c;
+            // (5.3's Init: a store into an object only this code knows, whose field is still null)
+            foreach (var n in _init) plan.Stores[n] = StoreKind.Init;
             if (_keeps.Count > 0) KnownKeeps.AddOrUpdate(_body, _keeps);
             else KnownKeeps.Remove(_body);
             return plan;

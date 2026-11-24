@@ -135,7 +135,7 @@ public static class Verify
                                 if (owns != (c is ArgConv.HandOver or ArgConv.KeepAlive)) throw Fail($"argument {j}: its convention {c} does not match the variant {v} (check 8)", n, b);
                             }
                         }
-                        else if (moved && !Ownership.Consumes(n, j)) throw Fail($"operand {j} moved where it is not consumed (check 6)", n, b);
+                        else if (moved && !Ownership.Consumes(n, j) && !(j == 1 && Plan.IsInserted(n) && n.X is MethodDesc hm && hm == Plan.HoldFromCall(_ctx.Method.Context))) throw Fail($"operand {j} moved where it is not consumed (check 6)", n, b);
                         else if (n.Op == Opc.Ret && _ctx.Entry.Kind == VariantKind.BorrowReturn && Plan.IsRef(a) && !Plan.IsTrivial(a) && Kind(a) == OwnKind.Owned)
                             throw Fail("a borrowed-return entry returns an Owned value (its result must be a borrow of a parameter's path)", a, b);
                     }
