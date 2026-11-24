@@ -93,6 +93,8 @@ public sealed partial class IlCompiler
     public byte[] Compile(MethodDesc entry)
     {
         var main = FunctionFor(entry);
+        // il-runtime: [UnmanagedCallersOnly(EntryPoint)] exports, wrapped (Exports.cs)
+        if (entry.OwningType is MetadataType { Module: EcmaModule em }) RootExports(em);
         for (; ; )
         {
             while (_queue.Count > 0) { var (m, f) = _queue.Dequeue(); CompileMethod(m, f); }
