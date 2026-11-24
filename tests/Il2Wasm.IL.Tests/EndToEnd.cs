@@ -33,7 +33,7 @@ static class EndToEnd
         c.LiveCounter = ctx.SystemModule.GetType("Il2Wasm.Runtime"u8, "Rt"u8).GetMethods().First(x => x.GetName() == "get_LiveBlocks");
         var bytes = c.Compile(entry);
         warnings?.AddRange(c.Warnings);
-        return bytes;
+        return Dump(name, bytes);
     }
 
     public static string Run(byte[] wasm, string name, bool live = true)
@@ -104,7 +104,15 @@ static class EndToEnd
         var entry = ctx.Load(name).EntryPoint!;
         var comp = new IlCompiler(ctx);
         if (File.Exists(Path.Combine(dir, "il2wasm.natives.txt"))) comp.LoadNatives(Path.Combine(dir, "il2wasm.natives.txt"));
-        return comp.Compile(entry);
+        return Dump("fw." + name, comp.Compile(entry));
+    }
+
+    /// <summary>IL2WASM_IL_TESTS_DUMP=dir: every module the tests compile is also written there by name (to compare two
+    /// compilers' output byte for byte).</summary>
+    public static byte[] Dump(string name, byte[] wasm)
+    {
+        if (Environment.GetEnvironmentVariable("IL2WASM_IL_TESTS_DUMP") is { Length: > 0 } d) { Directory.CreateDirectory(d); File.WriteAllBytes(Path.Combine(d, name + ".wasm"), wasm); }
+        return wasm;
     }
 
     /// <summary>The programs of FrameworkPrograms/*.cs (the IL features the NetWasm suite's failures came down to, each

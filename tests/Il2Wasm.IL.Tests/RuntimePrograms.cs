@@ -41,7 +41,7 @@ static class RuntimePrograms
         if (File.Exists(Path.Combine(dir, "il2wasm.natives.txt"))) comp.LoadNatives(Path.Combine(dir, "il2wasm.natives.txt"));
         var bytes = comp.Compile(entry);
         warnings?.AddRange(comp.Warnings);
-        return bytes;
+        return EndToEnd.Dump("rt." + name + (isChecked ? ".checked" : ""), bytes);
     }
 
     const string ExportsProgram = """
