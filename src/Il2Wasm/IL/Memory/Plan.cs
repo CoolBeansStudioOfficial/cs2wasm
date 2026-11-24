@@ -384,7 +384,7 @@ public static class Plan
                     if (!IsRef(a)) continue;
                     int p = ParamOf(n, k);
                     if (p >= 32) continue;
-                    if (Signatures.CallRule(_ctx, n, k, !liveAfter.Contains(a)) is ArgConv.HandOver or ArgConv.KeepAlive) mask |= 1u << p;
+                    if (Signatures.CallRule(_ctx, n, k, !liveAfter.Contains(a)) == ArgConv.HandOver) mask |= 1u << p;
                 }
                 v = Signatures.ChooseVariant(_ctx, n, mask);
                 // (an owned entry for parameters that are not there, or a callee outside the solution: the entry)
