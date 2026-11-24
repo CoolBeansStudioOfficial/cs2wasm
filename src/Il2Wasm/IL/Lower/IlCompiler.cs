@@ -315,6 +315,7 @@ public sealed partial class IlCompiler
                 if (Implementation(x, slot) is { } impl && !_functions.ContainsKey(impl)) { FunctionFor(impl); any = true; }
             }
         if (RequestFinalizers()) any = true;
+        if (RequestActivation()) any = true;
         return any || _queue.Count > 0;
     }
 
@@ -870,6 +871,7 @@ public sealed partial class IlCompiler
         foreach (var t in _types) { _typeNamesByFinal[Final(t)] = TypeName(t); byFinal[Final(t)] = t; }
         EmitTypeTables(Final, _types.Count + 2, byFinal);
         EmitArrayFns(Final);
+        EmitCreateInstance(Final);
     }
 
     string?[] _typeNamesByFinal = [];

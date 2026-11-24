@@ -546,6 +546,7 @@ sealed class FunctionLowering
             }
             case Opc.TypeOf:
                 // the type's one RuntimeType (CoreLib's, by its id: immortal)
+                C.NoteTypeOf((TypeDesc)n.X!);
                 E.Tid(C.TypeId((TypeDesc)n.X!)); E.Call(C.FunctionFor(C.CoreMethod("System", "Type", "FromId"))); Set(n);
                 return;
             case Opc.LdToken:
