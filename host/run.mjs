@@ -77,7 +77,8 @@ if (snapshot) for (const k of Object.keys(imports.il2wasm)) if (k.startsWith('ht
 const t0 = performance.now();
 const instance = new WebAssembly.Instance(module, imports);
 // (a module built by the IL front end with IL2WASM_COUNT_RC=1, Lower/RcStats.cs: its count sites' table written at
-// exit, however the program ends: to IL2WASM_RCSTATS_OUT as JSON for tools/il-rcstats.mjs, else a summary on stderr)
+// exit, however the program ends: to IL2WASM_RCSTATS_OUT as JSON for tools/il-rcstats.mjs; with IL2WASM_RCSTATS_PRINT=1
+// a summary on stderr; nothing otherwise, as the test harnesses read stderr)
 if (instance.exports.il2wasm_rcstats) process.on('exit', () => {
   const x = instance.exports, n = x.il2wasm_rcstats_sites(), at = x.il2wasm_rcstats();
   const hist = Array.from(new BigInt64Array(memory.buffer, at, 18), Number), entered = { retain: hist[16], release: hist[17] };
@@ -91,7 +92,7 @@ if (instance.exports.il2wasm_rcstats) process.on('exit', () => {
   }
   const out = process.env.IL2WASM_RCSTATS_OUT;
   if (out) writeFileSync(out, JSON.stringify({ version: 1, sites: n, buckets: { retain: hist.slice(0, 7), release: hist.slice(8, 15) }, entered, counts: sites, live }));
-  else {
+  else if (process.env.IL2WASM_RCSTATS_PRINT === "1") {
     let r = 0, rl = 0;
     for (let i = 0; i < 7; i++) { r += hist[i]; rl += hist[8 + i]; }
     process.stderr.write(`[rcstats] ${r} retains, ${rl} releases run at ${sites.length} of ${n} sites (IL2WASM_RCSTATS_OUT=file for tools/il-rcstats.mjs)${r !== entered.retain || rl !== entered.release ? `; but ${entered.retain} and ${entered.release} entered the functions` : ''}\n`);
