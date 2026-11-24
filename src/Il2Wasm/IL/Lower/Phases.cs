@@ -102,7 +102,8 @@ public sealed partial class IlCompiler : IReachHost
                 if (Pipeline.Verify) Verify.Check(ctx, plan);
             }
             // (an inlined callee's facts are the caller's now: recorded as its own lowering would have recorded them)
-            foreach (var c in Inline.InlinedInto(plan)) if (Solution.Summary(c) is { } s) Facts.Merge(s);
+            foreach (var c in Inline.InlinedInto(plan))
+                if (Solution.Summary(c) is { } s) { Facts.Merge(s); Facts.AddDirectCallees(m, s.Direct); }
         }
         if (Pipeline.Verify) Verify.Check(ctx, plan);
         return plan;
