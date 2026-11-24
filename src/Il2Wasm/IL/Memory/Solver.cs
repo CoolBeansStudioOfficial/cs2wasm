@@ -168,8 +168,11 @@ public sealed class Solver
     public void Late(ImportedMethod u)
     {
         LateImports++; LateMethods.Add(u.Method); _late.Add(u.Method);
-        // (the type sets did not see its stores and calls: another round must be made)
-        if (_typeSets) NeedsAnotherRound = true;
+        if (s_lateTrace) Console.Error.WriteLine("mem: late import " + u.Method);
+        // (the type sets did not see its stores and calls: another round must be made; not for one with no reference
+        // in it, operand or value, which can change no type set: Rt.InitFrameObject, which lowering calls for a frame
+        // object, imported late in the last round. A method it calls that is new is imported late itself)
+        if (_typeSets && !RefFree(u)) NeedsAnotherRound = true;
         if (ProgramState.IsDependentSetter(u.Method))
         {
             // (from now on the program has dependents; this round's solve left their releases out, so its plans may be
@@ -180,6 +183,9 @@ public sealed class Solver
     }
 
     bool _skipDependents, _typeSets;
+
+    static bool RefFree(ImportedMethod u) => u.Body is { } b && b.Blocks.All(bl => bl.Phis.Concat(bl.Code).All(n =>
+        n.Kind != VK.Ref && !(n.Kind == VK.Ptr && n.Type is ByRefType) && n.A.All(a => a.Kind != VK.Ref && !(a.Kind == VK.Ptr && a.Type is ByRefType))));
 
     /// <summary>This round's module must not be the one encoded: its solve left out releases a late import showed can
     /// happen (ObjectMarks' [ReleasesDependents]). The round loop goes on (IlCompiler.Compile).</summary>
@@ -192,6 +198,7 @@ public sealed class Solver
             throw new InvalidOperationException("release effects: a dependent handle's setter was imported late in the last round, after its solve left dependents' releases out (raise IL2WASM_IL_ROUNDS)");
     }
     static readonly bool s_verify = Environment.GetEnvironmentVariable("IL2WASM_VERIFY") == "1";
+    static readonly bool s_lateTrace = Environment.GetEnvironmentVariable("IL2WASM_LATE_TRACE") == "1";
     readonly HashSet<MethodDesc> _late = [];
 
     /// <summary>The methods lowering imported itself, in order: the next round's reach phase starts from them too, so

@@ -273,6 +273,21 @@ static class SolverChecks
                 solver.Reach();
                 var sol = solver.Solve();
                 c.True($"{name}: a further round still leaves them out", !sol.DependentsReleased);
+                {
+                    // (a late import with no reference in it, Rt.InitFrameObject that lowering calls for a frame object,
+                    // changes no type set: no other round; one with references does ask for one)
+                    var rt = (Internal.TypeSystem.MetadataType)ctx.SystemModule.GetType("Il2Wasm.Runtime"u8, "Rt"u8);
+                    var ifo = rt.GetMethods().Single(m => m.GetName() == "InitFrameObject");
+                    var il = Internal.IL.EcmaMethodIL.Create((Internal.TypeSystem.Ecma.EcmaMethod)ifo);
+                    var late = new Solver(comp);
+                    late.Root(entry);
+                    late.Reach();
+                    late.Solve();
+                    late.Late(new ImportedMethod(ifo) { Il = il, Body = Il2Wasm.IL.Ir.Importer.Import(ifo, il) });
+                    c.True($"{name}: a late import with no reference in it asks for no other round", !late.NeedsAnotherRound);
+                    late.Late(new ImportedMethod(rt.GetMethods().First(m => m.GetName() == "Release")));
+                    c.True($"{name}: one the type sets may not have seen does", late.NeedsAnotherRound);
+                }
                 var ws = (Internal.TypeSystem.MetadataType)ctx.SystemModule.GetType("Il2Wasm.Runtime"u8, "WeakSlots"u8);
                 var link = ws.GetMethods().Single(m => m.GetName() == "LinkDependent");
                 bool threw = false;
