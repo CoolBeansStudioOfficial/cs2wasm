@@ -221,6 +221,12 @@ public static class IntrinsicSignatures
     /// its own writes, joined with every key when it releases and a release can run program code.</summary>
     public static KeySet Effects(ProgramSolution solution, MethodDesc m, bool releasesRunCode) => Effects(solution, null, m, releasesRunCode);
 
+    static readonly bool s_noReleaseNodes = System.Environment.GetEnvironmentVariable("IL2WASM_NO_RELEASE_NODES_FOR_INTRINSICS") == "1";
+
+    /// <summary>Rt.Release and Rt.ReleaseElements, whose releases the solve's release nodes count.</summary>
+    static bool CountedByReleaseNodes(MethodDesc m) => m.GetName() is "Release" or "ReleaseElements"
+        && m.OwningType is MetadataType t && t.GetName() == "Rt" && t.GetNamespace() == "Il2Wasm.Runtime";
+
     /// <summary>As <see cref="Effects(ProgramSolution, MethodDesc, bool)"/>, for a call in <paramref name="caller"/>:
     /// a raw Mem store, copy or fill there writes the caller type's private key (<see cref="PrivateKey"/>).</summary>
     public static KeySet Effects(ProgramSolution solution, MethodDesc? caller, MethodDesc m, bool releasesRunCode)
@@ -228,7 +234,12 @@ public static class IntrinsicSignatures
         var s = Of(m);
         if (s.Writes == IntrinsicWrites.Wild && !s.Releases && m.OwningType is MetadataType { } mt && mt.GetName() == "Mem" && PrivateKey(caller) is { } pk)
             return new KeySet(solution.Pool.Of(solution.Keys.Intern(pk)), false);
-        if (s.Releases && releasesRunCode) return KeySet.All;
+        // (Rt.Release(o) and Rt.ReleaseElements<T>: the solve's release nodes already count what they release, by the
+        // operand's static type and by T (Solver.ReleasedTypes, MEMORY-IR 3.6), so their own effects add nothing.
+        // That holds while every such operand is a counted value of a released type, not an object made from an address
+        // with a narrower type: ProgramSolution.ReleaseViolations checks it in every solve with IL2WASM_VERIFY=1, and
+        // SolverChecks on every body of its programs. IL2WASM_NO_RELEASE_NODES_FOR_INTRINSICS=1: All, as before)
+        if (s.Releases && releasesRunCode && !(CountedByReleaseNodes(m) && !s_noReleaseNodes)) return KeySet.All;
         switch (s.Writes)
         {
             case IntrinsicWrites.None: return KeySet.Empty;

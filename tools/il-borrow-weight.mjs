@@ -7,33 +7,40 @@
 //
 // The naive plan retains every counted load right after it, so the executed count of a load's retain site is how
 // often the load ran. borrows.tsv lists each function's loads in node order with their decision (borrowed, flip:<why>,
-// generic); il-rcstats' sites.tsv lists each function's retain sites in module order with their role (field,
-// element, static, local). The two are zipped per (function, role). A (function, role) whose numbers of loads and
-// sites differ (the back end inlined or merged sites) is reported as unmatched, with its executed count.
+// generic) and kind (field, element, static: a load from memory; local-frame: a frame variable, also in memory; local:
+// a variable in a wasm local). il-rcstats' sites.tsv lists each function's retain sites in module order with the
+// instructions around them. The loads from memory are zipped, per function, with the retain sites right after an
+// i32.load (the lowering's role tags are not used: they can sit on a neighbouring call). Register locals are counted
+// apart, unmatched. A function whose numbers of loads and such sites differ (the back end inlined or merged sites) is
+// reported as unmatched, with its executed count.
 import { readFileSync } from 'node:fs';
 
 const [sitesFile, runFile, borrowsFile, ...rest] = process.argv.slice(2);
 if (!borrowsFile) { console.error('usage: il-borrow-weight.mjs sites.tsv run.json borrows.tsv [--top N]'); process.exit(2); }
 const top = rest.includes('--top') ? +rest[rest.indexOf('--top') + 1] : 10;
-const roles = new Set(['field', 'element', 'static', 'local']);
+const memory = new Set(['field', 'element', 'static', 'local-frame']);
 const norm = fn => fn.replace(/^shared /, '');
 
 const exec = new Map();
 for (const [id, n] of JSON.parse(readFileSync(runFile, 'utf8')).counts) exec.set(id, n);
-const sites = new Map(); // fn\trole -> [executed...] in id order
+const sites = new Map(); // fn -> [executed...] of retains right after a load, in id order
 for (const line of readFileSync(sitesFile, 'utf8').split(/\r?\n/)) {
   if (!line || line.startsWith('#')) continue;
   const f = line.split('\t');
-  if (f[1] !== 'retain' || !roles.has(f[3])) continue;
-  const key = norm(f[5]) + '\t' + f[3];
+  if (f[1] !== 'retain') continue;
+  const ctx = f[7] ?? '';
+  if (!/I32Load[^;]* ; \[Call rt\.retain\]/.test(ctx)) continue;
+  const key = norm(f[5]);
   if (!sites.has(key)) sites.set(key, []);
   sites.get(key).push(exec.get(+f[0]) ?? 0);
 }
-const loads = new Map(); // fn\trole -> [decision...]
+const loads = new Map(); // fn -> [decision...] of loads from memory
+let register = 0;
 for (const line of readFileSync(borrowsFile, 'utf8').split(/\r?\n/)) {
   if (!line) continue;
   const [fn, role, d] = line.split('\t');
-  const key = norm(fn) + '\t' + role;
+  if (!memory.has(role)) { register++; continue; }
+  const key = norm(fn);
   if (!loads.has(key)) loads.set(key, []);
   loads.get(key).push(d);
 }
@@ -48,9 +55,9 @@ for (const [key, ds] of loads) {
   ds.forEach((d, i) => { add(d, ex[i]); if (ex[i]) hot.push([ex[i], key, d]); });
 }
 const pct = n => total ? (100 * n / total).toFixed(1) + '%' : '-';
-console.log(`executed counted loads (matched): ${total.toLocaleString()}; unmatched ${unmatched.toLocaleString()} in ${unmatchedKeys} function-roles (${matchedKeys} matched)`);
+console.log(`executed loads from memory (matched): ${total.toLocaleString()}; unmatched ${unmatched.toLocaleString()} in ${unmatchedKeys} functions (${matchedKeys} matched); ${register} register-local loads not weighed`);
 const borrowed = by.get('borrowed') ?? 0;
 console.log(`  borrowed ${borrowed.toLocaleString()} (${pct(borrowed)})`);
 for (const [d, n] of [...by].filter(([d]) => d !== 'borrowed').sort((a, b) => b[1] - a[1])) console.log(`  ${d.padEnd(16)} ${n.toLocaleString().padStart(14)} (${pct(n)})`);
 console.log('hottest loads:');
-for (const [n, key, d] of hot.sort((a, b) => b[0] - a[0]).slice(0, top)) console.log(`  ${n.toLocaleString().padStart(12)}  ${d.padEnd(16)} ${key.replace('\t', ' ')}`);
+for (const [n, key, d] of hot.sort((a, b) => b[0] - a[0]).slice(0, top)) console.log(`  ${n.toLocaleString().padStart(12)}  ${d.padEnd(16)} ${key}`);
