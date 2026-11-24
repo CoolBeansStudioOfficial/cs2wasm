@@ -42,6 +42,7 @@ sealed partial class FunctionLowering
             int size = Math.Max(4, Kinds.SizeOf(v.Type)), align = Math.Min(8, size);
             _frameSize = (_frameSize + align - 1) / align * align;
             v.Offset = _frameSize;
+            _frameSlots.Add((_frameSize, size));
             _frameSize += size;
         }
         // struct values: a copy each in the frame (and one per struct argument of a call, the callee's to change)
@@ -58,8 +59,27 @@ sealed partial class FunctionLowering
             }
         _frameSize = (_frameSize + 15) & ~15;
         if (body.UsesLocAlloc && _frameSize == 0) _frameSize = 16;
-        if (_frameSize > 0) _fb = E.AddLocal(ValType.I32);
+        if (_frameSize > 0) { _fb = E.AddLocal(ValType.I32); _spEntry = E.AddLocal(ValType.I32); }
+        // (no frame, but handlers: the stack pointer at entry, which a catch puts back, RestoreFrame)
+        else if (body.Regions.Count > 1 && !NoSpAtCatch) _spEntry = E.AddLocal(ValType.I32);
     }
+
+    /// <summary>IL2WASM_NO_SP_AT_CATCH=1: every function with a frame unwinds it in a handler of its own (the try_table
+    /// around its body), as before; otherwise a catch puts the stack pointer back (RestoreFrame), so a function whose
+    /// only cleanup is its frame has no handler, and the back end can promote its frame and inline it.</summary>
+    static readonly bool NoSpAtCatch = Environment.GetEnvironmentVariable("IL2WASM_NO_SP_AT_CATCH") == "1";
+    /// <summary>Break twin (tests/Il2Wasm.IL.Tests/FrameworkPrograms/f25_struct_codegen.cs): a catch leaves the stack
+    /// pointer where the exception left it.</summary>
+    static readonly bool SpAtCatchBreak = Environment.GetEnvironmentVariable("IL2WASM_SP_AT_CATCH_BREAK") == "1";
+
+    /// <summary>The frame's places (variables, value copies, argument copies, frame objects), for the back end's
+    /// promotion of frame slots to locals (Wasm/FrameSlots.cs).</summary>
+    readonly List<(int off, int size)> _frameSlots = [];
+    /// <summary>The frame's base went somewhere as a value (a try's record for the first pass, Filters.cs): its slots
+    /// stay in memory.</summary>
+    bool _frameBaseEscapes;
+    /// <summary>The stack pointer on entry (a frame, or handlers): the frame is given back by setting it again.</summary>
+    int _spEntry = -1;
 
     readonly Dictionary<Node, int> _slot = new();
     readonly Dictionary<(Node, int), int> _argSlot = new();
@@ -70,6 +90,7 @@ sealed partial class FunctionLowering
         int size = Math.Max(4, dt.InstanceFieldSize.AsInt), align = Math.Max(4, Math.Min(8, dt.InstanceFieldAlignment.AsInt));
         _frameSize = (_frameSize + align - 1) / align * align;
         int at = _frameSize;
+        _frameSlots.Add((at, size));
         _frameSize += size;
         return at;
     }
@@ -132,7 +153,7 @@ sealed partial class FunctionLowering
     }
 
     /// <summary>The frame given back (before a return, and when an exception leaves).</summary>
-    void PopFrame() { if (_fb >= 0) { E.Get(_fb); E.I32(_frameSize); E.Op(WOp.I32Add); E.GSet(C.StackPointer); } }
+    void PopFrame() { if (_fb >= 0) { E.Get(_spEntry); E.GSet(C.StackPointer); } }
 
     public static ValType ValOf(VK k) => k switch { VK.I64 => ValType.I64, VK.F32 => ValType.F32, VK.F64 => ValType.F64, _ => ValType.I32 };
 
@@ -176,12 +197,18 @@ sealed partial class FunctionLowering
             for (int i = 0; i < 3; i++) { if (i < ps.Length && ps[i] == ValType.I32) E.Get(i); else E.I32(0); }
             E.Call(C.TraceImport);
         }
-        bool hasRefs = _own.CountedValues.Count > 0 || _body.Vars.Any(v => v.Kind == VK.Ref) || _fb >= 0;
+        // (a handler around the body when the function holds counts an exception must let go; a frame alone is put
+        // back where the exception is caught: RestoreFrame)
+        bool hasRefs = _own.CountedValues.Count > 0 || _frameObjOrder.Count > 0
+            || _body.Vars.Any(v => v.Kind == VK.Ref || v.Kind == VK.Struct && v.ArgIndex < 0 && Kinds.Counted(v.Type))
+            || _fb >= 0 && NoSpAtCatch;
         if (_fb >= 0)
         {
-            E.GGet(C.StackPointer); E.I32(_frameSize); E.Op(WOp.I32Sub); E.Tee(_fb); E.GSet(C.StackPointer);
+            // (the shape the back end's frame promotion knows: Wasm/FrameSlots.cs)
+            E.GGet(C.StackPointer); E.Tee(_spEntry); E.I32(_frameSize); E.Op(WOp.I32Sub); E.Tee(_fb); E.GSet(C.StackPointer);
             E.Get(_fb); E.I32(0); E.I32(_frameSize); E.Emit(WOp.MemoryFill);
         }
+        else if (_spEntry >= 0) { E.GGet(C.StackPointer); E.Set(_spEntry); }
         // (pre-create the locals of the reference values: the cleanup below names them all)
         foreach (var v in _own.CountedValues) if (v.Op != Opc.Const && v.Kind != VK.Struct) L(v);
         // (the shape the back end's passes know: block $ok, block $c (exnref), try_table, the body, br $ok)
@@ -222,6 +249,7 @@ sealed partial class FunctionLowering
             E.End();
         }
         E.Op(WOp.Unreachable);
+        if (_fb >= 0 && _frameSlots.Count > 0) { if (_frameBaseEscapes) _fn.NoFramePromotion = true; else _fn.FrameSlots = [.. _frameSlots]; }
         if (Stats) CountStats();
     }
 
@@ -555,7 +583,12 @@ sealed partial class FunctionLowering
     }
 
     /// <summary>After a catch, the stack pointer is this frame's again (the callees' frames the exception left are gone).</summary>
-    void RestoreFrame() { if (_fb >= 0) { E.Get(_fb); E.GSet(C.StackPointer); } }
+    void RestoreFrame()
+    {
+        if (SpAtCatchBreak) return;
+        if (_fb >= 0) { E.Get(_fb); E.GSet(C.StackPointer); }
+        else if (_spEntry >= 0) { E.Get(_spEntry); E.GSet(C.StackPointer); }
+    }
 
     // ------------------------------------------------------------------ operations
 

@@ -39,8 +39,14 @@ namespace Il2Wasm.IL.Ir;
 ///   - Static constructors: a callee whose call would trigger one (ECMA-335 II.10.5.3.1, Statics.CctorCheckForCall)
 ///     is not inlined. Static field accesses keep their own checks in lowering.
 ///   - Exception regions, filters, struct arguments, byrefs and pinned locals:
-///     - a callee with regions of its own, variables (pinned locals and locals in the frame are variables), localloc,
-///       a struct argument (passed as the address of a copy) or a struct result is not inlined;
+///     - a callee with regions of its own, variables (pinned locals and locals in the frame are variables) or localloc
+///       is not inlined;
+///     - struct arguments and results (IL2WASM_NO_INLINE_STRUCTS=1: none): a struct with no references in it, which
+///       holds no counts. A struct argument is the address of the caller's copy, the callee's own: a callee that
+///       only reads it (its variable read whole, or its address read by ldfld; StructReads.cs) reads the caller's
+///       value instead, which nothing writes while the inlined body runs (a struct value's copy is written only where
+///       it is made). A callee that writes its parameter, or lets its address go anywhere else, is not inlined. A
+///       struct result is the returned value, a struct value of the caller's;
 ///     - a call site inside a filter is not inlined;
 ///     - an inlined body inside a try, a catch or a finally becomes part of that region, so its exceptions go to the
 ///       caller's handlers as the callee's frame would have passed them on;
@@ -81,6 +87,10 @@ public static class Inline
     static readonly bool s_traceBreak = Environment.GetEnvironmentVariable("IL2WASM_INLINE_TRACE_BREAK") == "1";
     static readonly int s_limit = int.TryParse(Environment.GetEnvironmentVariable("IL2WASM_INLINE_LIMIT"), out var lim) ? lim : int.MaxValue;
     static readonly bool s_nullBreak = Environment.GetEnvironmentVariable("IL2WASM_INLINE_NULL_BREAK") == "1";
+    static readonly bool s_noStructs = Environment.GetEnvironmentVariable("IL2WASM_NO_INLINE_STRUCTS") == "1";
+    /// <summary>Break twin (tests): a callee that writes its struct parameter through its address (stfld) is inlined
+    /// too, writing the caller's value.</summary>
+    static readonly bool s_structsBreak = Environment.GetEnvironmentVariable("IL2WASM_INLINE_STRUCTS_BREAK") == "1";
 
     /// <summary>Sites inlined since the process started (all compilations).</summary>
     public static int SitesInlined;
@@ -280,8 +290,8 @@ public static class Inline
 
     static bool SiteFits(Node call, Proto p, bool knownNonNull)
     {
-        // (struct values: a struct argument is a copy at an address; a struct result is written to the caller's)
-        if (call.Kind == VK.Struct) return false;
+        // (struct values: only those with no references, whose arguments the callee only reads: Shaped)
+        if (call.Kind == VK.Struct && (s_noStructs || Kinds.Counted(call.Type!))) return false;
         // (a call's address result keeps the objects of its arguments to the result's last use, by Ownership's
         // rules for calls: a returned byref or pointer, and the runtime's integer addresses Rt.AddressOf, ArrayData and
         // StringData. Inlined, only the derivations the body shows would keep them: an object could be freed under
@@ -289,7 +299,12 @@ public static class Inline
         if (call.Kind == VK.Ptr || IsAddressOf(p.Body.Method)) return false;
         var args = p.Body.Args;
         if (args.Length != call.A.Length) return false;
-        for (int i = 0; i < args.Length; i++) if (call.A[i].Kind != args[i].Kind || call.A[i].Kind == VK.Struct) return false;
+        for (int i = 0; i < args.Length; i++)
+        {
+            // (a struct argument is the address of a copy in the callee: its variable, which it only reads)
+            if (call.A[i].Kind == VK.Struct) { if (s_noStructs || args[i].Kind != VK.Ptr || Kinds.Counted(call.A[i].Type!) || !p.Body.Vars.Any(v => v.ArgIndex == i)) return false; }
+            else if (call.A[i].Kind != args[i].Kind) return false;
+        }
         bool refThis = args.Length > 0 && !p.Body.Method.Signature.IsStatic && args[0].Kind == VK.Ref;
         if (refThis && call.Ovf && !knownNonNull && !p.FirstEffectDerefsThis && !s_nullBreak) return false;
         if (p.Hidden && !s_noHidden) return true;
@@ -387,8 +402,42 @@ public static class Inline
         return p;
     }
 
-    /// <summary>A body the splice can copy: no regions but its root, no variables, no localloc.</summary>
-    static bool Shaped(Body b) => b.Regions.Count <= 1 && b.Vars.Count == 0 && !b.UsesLocAlloc && !b.FiltersOnePass;
+    /// <summary>A body the splice can copy: no regions but its root, no localloc, and no variables but struct
+    /// arguments it only reads.</summary>
+    static bool Shaped(Body b)
+    {
+        if (b.Regions.Count > 1 || b.UsesLocAlloc || b.FiltersOnePass) return false;
+        if (b.Vars.Count == 0) return true;
+        if (s_noStructs) return false;
+        for (int i = 0; i < b.Vars.Count; i++)
+        {
+            var v = b.Vars[i];
+            if (v.ArgIndex < 0 || v.Kind != VK.Struct || Kinds.Counted(v.Type)) return false;
+        }
+        // (each use of a variable: read whole, or its address the base of an ldfld and nothing else)
+        foreach (var x in b.Blocks)
+            foreach (var n in x.Phis.Concat(x.Code))
+            {
+                if (n.Op == Opc.VarSt) return false;
+                for (int k = 0; k < n.A.Length; k++)
+                    if (n.A[k].Op == Opc.LocA && !(n.Op == Opc.LdFld && k == 0) && !(s_structsBreak && n.Op is Opc.StFld or Opc.LdFldA && k == 0)) return false;
+            }
+        return true;
+    }
+
+    /// <summary>The struct arguments' variables read in the callee's copy: the caller's values (VarLd and LocA of
+    /// argument i, the copy at an address, become the struct value the call passes).</summary>
+    static void StructArgs(Body cb, Node call, Dictionary<Node, Node> subst, HashSet<Node> gone)
+    {
+        if (cb.Vars.Count == 0) return;
+        foreach (var x in cb.Blocks)
+            foreach (var n in x.Code)
+                if (n.Op is Opc.VarLd or Opc.LocA && cb.Vars[(int)n.I].ArgIndex is int ai and >= 0)
+                {
+                    subst[n] = call.A[ai];
+                    gone.Add(n);
+                }
+    }
 
     /// <summary>A call of it runs a .cctor check (Statics.CctorCheckForCall).</summary>
     static bool TriggersCctor(MethodDesc m) =>
@@ -422,6 +471,7 @@ public static class Inline
             case Opc.Br: case Opc.BrIf: case Opc.Switch: case Opc.Ret: case Opc.Retain: case Opc.Release:
             case Opc.IsInst: case Opc.Box: case Opc.SizeOf: case Opc.LdFtn: case Opc.LdInd: case Opc.StInd:
             case Opc.LdObj: case Opc.InitObj: case Opc.CpBlk: case Opc.InitBlk:
+            case Opc.VarLd: case Opc.LocA: // (a struct argument's variable, read: Shaped)
                 return n.Op is Opc.LdObj or Opc.InitObj or Opc.LdInd or Opc.StInd && n.A.Length > 0 && n.A[0].Kind == VK.Ref ? Effect.MayThrow : Effect.None;
             case Opc.Bin:
                 if (n.Ovf) return Effect.MayThrow;
@@ -433,6 +483,9 @@ public static class Inline
                 return n.A[0] == thisArg ? Effect.DerefThis : Effect.MayThrow;
             case Opc.LdSFld: case Opc.StSFld: case Opc.LdSFldA:
                 return n.X is FieldDesc f && f.OwningType.GetStaticConstructor() == null ? Effect.None : Effect.MayThrow;
+            case Opc.NewObj when n.Kind == VK.Struct && n.X is MethodDesc ctor && !s_noStructs:
+                // (a struct made by its constructor: a direct call on the new value's address)
+                return TriggersCctor(ctor) || sol.Summary(ctor) is not { MayThrow: false, ObservesLifetime: false } ? Effect.MayThrow : Effect.None;
             case Opc.Call when n.X is MethodDesc t && (CallKind)n.Sub == CallKind.Direct:
                 // (the local summary is enough: any call makes a summary MayThrow, so one that is not makes no calls, and its
                 // solved facts are its own; reading them here does not start the whole-program solve)
@@ -491,12 +544,14 @@ public static class Inline
         // the callee's blocks, in the call's region; its arguments are the call's operands
         var subst = new Dictionary<Node, Node>();
         for (int i = 0; i < cb.Args.Length; i++) subst[cb.Args[i]] = call.A[i];
+        var gone = new HashSet<Node>();
+        StructArgs(cb, call, subst, gone);
         var rets = new List<(Block, Node?)>();
         foreach (var x in cb.Blocks)
         {
             x.Id = body.Blocks.Count; x.ILStart = -1; x.Region = region;
             region.Blocks.Add(x); body.Blocks.Add(x);
-            x.Code.RemoveAll(n => n.Op == Opc.Arg);
+            x.Code.RemoveAll(n => n.Op == Opc.Arg || gone.Contains(n));
             foreach (var n in x.Phis.Concat(x.Code))
             {
                 n.Id = body.NextId(); n.ILOffset = call.ILOffset;
@@ -563,6 +618,7 @@ public static class Inline
         var root = new Region { Kind = RegionKind.Root, Start = src.Root.Start, End = src.Root.End };
         var dst = new Body { Method = src.Method, Root = root };
         dst.Regions.Add(root);
+        foreach (var v in src.Vars) dst.Vars.Add(new Var { Kind = v.Kind, Type = v.Type, InFrame = v.InFrame, ArgIndex = v.ArgIndex });
         var bmap = new Dictionary<Block, Block>();
         foreach (var x in src.Blocks) { var y = new Block { Id = x.Id, ILStart = x.ILStart, Region = root }; bmap[x] = y; root.Blocks.Add(y); }
         root.Entry = bmap[src.Blocks[0]];

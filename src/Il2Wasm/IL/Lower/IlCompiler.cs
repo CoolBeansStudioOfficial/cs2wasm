@@ -70,6 +70,8 @@ public sealed partial class IlCompiler
         _ctx = ctx;
         Module.Tags.Add(ExceptionTag);
         Module.Globals.Add(StackPointer);
+        // (the back end's frame promotion follows it: Wasm/FrameSlots.cs; FunctionLowering records each frame's places)
+        Module.StackPointer = StackPointer;
         Rt = new RtFns(this);
         Facts.Resolve = Implementation;
         if (RcStats.On) RcStats = new RcStats(this);
