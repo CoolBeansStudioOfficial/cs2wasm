@@ -6200,12 +6200,12 @@ Not run: the homelab suite and the self-host check on this commit.
 - Identical sets: IL2WASM_TYPESETS_DUMPALL (Memory/TypeSetsDump.cs: every variable's, value's and virtual call's
   set, sorted, per solve) against the reference (the first stage, 1f11ae8): the same on hello world, ListSort, Linq
   and sut-simdcodecs (725,517 lines), and sut-simdcodecs' module byte-identical.
-- Time [homelab, sut-simdcodecs, 5 solves in a 56-60 s compile]: the reference 3.67 s (1,126-1,142 ms, then
-  593-749 ms per solve; 6.1% of the compile), now 2.0 s (578-626 ms, then 310-420 ms; 3.6%). A round is about
-  9.3 s, so a steady solve is 3.3-4% of one; the first carries the JIT. The desk is too loaded to time: wall and
-  thread CPU moved by 40% between runs of the same build. Phases per steady solve: setup about 60 ms (whether a
-  root is called from the IR: 35, the bodies' scan for function pointers and raw stores: 23), first evaluations
-  145-180 ms, later ones 74-110 ms.
+- Time [homelab, sut-simdcodecs, 5 solves in a 55-60 s compile]: the reference 3.67 s (1,126-1,142 ms, then
+  593-749 ms per solve; 6.1% of the compile), now 1.72-1.78 s (483-513 ms, then 260-423 ms; 3.1-3.2%, with the
+  field escapes' extra sinks). A round is about 9.3 s, so a steady solve is 2.8-3.4% of one; the first carries the
+  JIT. The desk is too loaded to time: wall and thread CPU moved by 40% between runs of the same build. Phases per
+  steady solve: setup about 60 ms (whether a root is called from the IR: 38, the bodies' scan for function pointers
+  and raw stores: 20), first evaluations 120-130 ms, later ones 70-110 ms.
 - The raw-write contracts: the trust boundary is recorded next to DeclaredEffects (row a's section above):
   `[Il2Wasm.Runtime.RawStores("elements" | "frame")]` on Il2WasmArrays.SetBoxed, Meta.CopyBack, TypeInfo.Set.
 - A soundness fix found on the way: an element store (StElem, Elem(T)) did not reach a read through a reference the
