@@ -1056,7 +1056,7 @@ sealed class FunctionLowering
             int tOff = IlContext.FieldOffset(IlCompiler.DelegateFieldOf(t, "_target")), fOff = IlContext.FieldOffset(IlCompiler.DelegateFieldOf(t, "_fn"));
             E.Get(L(n)); Get(target); if (target.Kind == VK.Ref) E.Call(C.Rt.Retain); E.Store(WOp.I32Store, tOff);
             var fm = (MethodDesc)n.A[1].X!;
-            E.Get(L(n)); E.I32Fn(C.Module, C.DelegateTargetFn(fm, n.A[1].Op == Opc.LdVirtFtn)); E.Store(WOp.I32Store, fOff);
+            E.Get(L(n)); E.I32Fn(C.Module, C.DelegateTargetFn(fm, n.A[1].Op == Opc.LdVirtFtn, t)); E.Store(WOp.I32Store, fOff);
             return;
         }
         if (t.IsValueType)

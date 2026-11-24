@@ -665,9 +665,13 @@ public sealed partial class IlCompiler
     /// <summary>The function a delegate of this method holds (called with the target first, as Invoke calls it): the
     /// method itself for an instance method of a class; a thunk that drops the target for a static method, or that
     /// passes a boxed struct's data.</summary>
-    internal WasmFunction DelegateTargetFn(MethodDesc m, bool virtualCall)
+    internal WasmFunction DelegateTargetFn(MethodDesc m, bool virtualCall, TypeDesc? delegateType = null)
     {
         if (!m.Signature.IsStatic && !m.OwningType.IsValueType) return virtualCall && m.IsVirtual && !m.IsFinal ? DispatchFor(m) : FunctionFor(m);
+        // (a static method closed over its first argument, an extension method's delegate: the target is that argument)
+        if (m.Signature.IsStatic && delegateType != null && delegateType.GetMethods().FirstOrDefault(x => x.GetName() == "Invoke") is { } inv
+            && m.Signature.Length == inv.Signature.Length + 1)
+            return FunctionFor(m);
         if (_thunks.TryGetValue(m, out var f)) return f;
         var inner = Sig(m);
         var ps = new List<ValType>();

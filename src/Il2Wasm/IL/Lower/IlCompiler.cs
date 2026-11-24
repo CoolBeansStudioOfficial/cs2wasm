@@ -150,6 +150,9 @@ public sealed partial class IlCompiler
     {
         if (_functions.TryGetValue(m, out var f)) return f;
         if (m is ArrayMethod am) return MdArrayMethod(am);
+        // (a delegate type's Invoke has no IL: the generated invoke, also as a function value, a delegate of a
+        // delegate's Invoke)
+        if (IsDelegateInvoke(m) && m.GetTypicalMethodDefinition() is EcmaMethod { IsRuntimeImplemented: true }) return _functions[m] = DelegateInvoke(m);
         if (m.GetTypicalMethodDefinition() is EcmaMethod em && em.GetDecodedCustomAttribute("Il2Wasm.Runtime", "ImportAttribute") is { } imp)
         {
             f = Module.AddImport((string)imp.FixedArguments[0].Value!, (string)imp.FixedArguments[1].Value!, m.ToString(), Sig(m));
@@ -1129,11 +1132,17 @@ public sealed partial class IlCompiler
                     case BinOp.Add: e.Get(0); e.Get(res); e.Op(WOp.I64Xor); e.Get(1); e.Get(res); e.Op(WOp.I64Xor); e.Op(WOp.I64And); e.I64(0); e.Op(WOp.I64LtS); break;
                     case BinOp.Sub: e.Get(0); e.Get(1); e.Op(WOp.I64Xor); e.Get(0); e.Get(res); e.Op(WOp.I64Xor); e.Op(WOp.I64And); e.I64(0); e.Op(WOp.I64LtS); break;
                     default:
-                        // a * b overflows when a != 0 and res / a != b (and the one signed case the division cannot see)
+                        // a * b overflows when a != 0 and res / a != b; signed, a = -1 overflows only for b = MinValue
+                        // (and res / -1 would trap there: MinValue / -1)
                         e.Get(0); e.I64(0); e.Op(WOp.I64Ne);
                         e.If(ValType.I32);
-                        e.Get(res); e.Get(0); e.Op(un ? WOp.I64DivU : WOp.I64DivS); e.Get(1); e.Op(WOp.I64Ne);
-                        if (!un) { e.Get(0); e.I64(-1); e.Op(WOp.I64Eq); e.Get(1); e.I64(long.MinValue); e.Op(WOp.I64Eq); e.Op(WOp.I32And); e.Op(WOp.I32Or); }
+                        if (!un)
+                        {
+                            e.Get(0); e.I64(-1); e.Op(WOp.I64Eq);
+                            e.If(ValType.I32); e.Get(1); e.I64(long.MinValue); e.Op(WOp.I64Eq);
+                            e.Else(); e.Get(res); e.Get(0); e.Op(WOp.I64DivS); e.Get(1); e.Op(WOp.I64Ne); e.End();
+                        }
+                        else { e.Get(res); e.Get(0); e.Op(WOp.I64DivU); e.Get(1); e.Op(WOp.I64Ne); }
                         e.Else(); e.I32(0); e.End();
                         break;
                 }
@@ -1159,7 +1168,8 @@ public sealed partial class IlCompiler
                     int d = e.AddLocal(ValType.F64); e.Set(d);
                     // (truncation first: -0.9 converts to 0)
                     e.Get(d); e.Op(WOp.F64Trunc); e.F64((double)lo); e.Op(WOp.F64Lt);
-                    e.Get(d); e.Op(WOp.F64Trunc); e.F64((double)hi); e.Op(WOp.F64Gt); e.Op(WOp.I32Or);
+                    // (the bound past the largest, exact as a double: 2^63 - 1 is not one, 2^63 is)
+                    e.Get(d); e.Op(WOp.F64Trunc); e.F64((double)(hi + 1)); e.Op(WOp.F64Ge); e.Op(WOp.I32Or);
                     e.Get(d); e.Get(d); e.Op(WOp.F64Ne); e.Op(WOp.I32Or);
                     e.If(); e.Call(Throw("Overflow")); e.End();
                     e.Get(d);

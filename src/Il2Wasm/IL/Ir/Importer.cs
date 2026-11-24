@@ -977,6 +977,13 @@ public sealed class Importer
                 case ILOpcode.ldftn:
                 {
                     var fm = (MethodDesc)I._il.GetObject(rd.ReadILToken());
+                    if (_constrained != null)
+                    {
+                        // constrained. T ldftn: a static virtual's implementation on T (a delegate of T.M)
+                        var ct = _constrained;
+                        _constrained = null;
+                        fm = ResolveOn(ct, fm, fm.Signature.IsStatic) ?? throw new InvalidProgramException($"{I._method}: {ct} does not implement {fm}");
+                    }
                     Push(Add(Opc.LdFtn, VK.Ptr, StackType.NativeInt, Ctx.GetWellKnownType(WellKnownType.IntPtr)).WithX(fm));
                     return true;
                 }
