@@ -68,6 +68,28 @@ static class SolverChecks
         }
         """;
 
+    // (G's address escapes into a span; F's does not: a store through the span is a Slot(object) store)
+    const string FieldEscape = """
+        using System;
+        using System.Runtime.CompilerServices;
+        using System.Runtime.InteropServices;
+        sealed class Holder { public object F; public object G; }
+        sealed class Marker { public override string ToString() => "m"; }
+        sealed class Other { public override string ToString() => "o"; }
+        static class P
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)] static object ReadF(Holder h) => h.F;
+            [MethodImpl(MethodImplOptions.NoInlining)] static object ReadG(Holder h) => h.G;
+            static void Main()
+            {
+                var h = new Holder { F = new Other(), G = new Other() };
+                Span<object> s = MemoryMarshal.CreateSpan(ref h.G, 1);
+                s[0] = new Marker();
+                Console.WriteLine(ReadF(h) + "" + ReadG(h));
+            }
+        }
+        """;
+
     static void MetadataTypeOf(ProgramSolution sol, string name, out Internal.TypeSystem.TypeDesc? t) =>
         t = sol.Methods.Items.Select(m => m.OwningType).FirstOrDefault(x => x is Internal.TypeSystem.MetadataType mt && mt.GetName() == name)
             ?? sol.Constructed.FirstOrDefault(x => x is Internal.TypeSystem.MetadataType mt && mt.GetName() == name);
@@ -138,6 +160,23 @@ static class SolverChecks
                 sol.TypeSetsSolved && slotMarker != null && slotMarker.Any(t => t.EndsWith("Marker")));
             c.True("type sets: under [RawStores(\"elements\")] it lands in Elem(its type): Elem(Other) " + Show(elemOther) + ", Slot(Other) " + Show(slotOther),
                 sol.TypeSetsSolved && elemOther != null && elemOther.Any(t => t.EndsWith("Other")) && slotOther != null && !slotOther.Any(t => t.EndsWith("Other")));
+        }
+        {
+            // a field's read sees the Slot keys' stores only once its address escaped (TypeSets.EscapeKeys; before, every
+            // reference field's read joined Slot(object), which in every program on the CoreLib is unknown)
+            var sol = SecondSolve(dir, "typesets_escape", FieldEscape);
+            List<string>? ReadOf(string method, string field)
+            {
+                var m = sol.Methods.Items.First(x => x.GetName() == method && x.OwningType.ToString()!.EndsWith("P"));
+                var ld = sol.BodyOf(m)?.Blocks.SelectMany(b => b.Code).FirstOrDefault(n => n.Op == Il2Wasm.IL.Ir.Opc.LdFld && n.X is Internal.TypeSystem.FieldDesc f && f.GetName() == field);
+                return ld == null ? ["(no load)"] : sol.ExactTypes(m, ld)?.Select(t => t.ToString()!).ToList();
+            }
+            string Show(List<string>? l) => l == null ? "unknown" : "{" + string.Join(", ", l) + "}";
+            var f = ReadOf("ReadF", "F"); var g = ReadOf("ReadG", "G");
+            c.True("type sets: a field whose address does not escape is read as what is stored in it: h.F " + Show(f),
+                sol.TypeSetsSolved && f != null && f.Count == 1 && f[0].EndsWith("Other"));
+            c.True("type sets: one whose address escaped into a span sees the span's store: h.G " + Show(g),
+                sol.TypeSetsSolved && (g == null || g.Any(t => t.EndsWith("Marker"))));
         }
         foreach (var (name, source, hasDependents) in new[] { ("solver_plain", Plain, false), ("solver_dependents", Dependents, true) })
         {

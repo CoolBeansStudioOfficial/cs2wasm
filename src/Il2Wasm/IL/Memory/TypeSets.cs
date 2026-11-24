@@ -86,6 +86,9 @@ public sealed partial class ProgramSolution
         public readonly List<int> SlotLike = [];
         public readonly HashSet<int> ReadKeys = [];
         public readonly List<int> ReadKeyList = [];
+        /// <summary>The field and static keys whose address reached what the solve cannot follow (EscapeKeys): only they
+        /// share their memory with the Slot keys.</summary>
+        public readonly HashSet<int> Escaped = [];
         public bool RawRefStore;
     }
 
@@ -277,9 +280,61 @@ public sealed partial class ProgramSolution
         if (nw is { } ns && old is { } os && ns.Equals(os)) return;
         st.Sets[id] = nw;
         Notify(st, id, enqueue);
-        if (v.Kind == VarKind.Key && v.Key.Kind is KeyKind.Slot or KeyKind.Elem)
+        if (v.Kind == VarKind.Key && (v.Key.Kind is KeyKind.Slot or KeyKind.Elem || st.Escaped.Contains(id)))
             foreach (int rk in ReadersOfWrite(st, id)) Notify(st, rk, enqueue);
     }
+
+    static readonly bool s_noFieldEscapes = Environment.GetEnvironmentVariable("IL2WASM_NO_FIELD_ESCAPES") == "1";
+
+    /// <summary>A field's or a static's address reached what the solve cannot follow (an intrinsic's arithmetic, a span
+    /// made over it, a pointer, a method whose address parameter is unknown): its memory may be read and written
+    /// through references the solve cannot place, the Slot keys. From now on its reads see the Slots' stores and the
+    /// Slot reads see its stores. IL2WASM_NO_FIELD_ESCAPES=1: every field and static is taken as escaped (the rule
+    /// before: a field's read saw every Slot's stores of a type it can hold).</summary>
+    void EscapeKeys(State st, IdSet? keys, Action<MethodDesc> enqueue)
+    {
+        if (keys is not { } ks) return;
+        foreach (int k in ks.Items)
+        {
+            if (k == LocalKey) continue;
+            var key = Keys[k];
+            if (key.Kind is not (KeyKind.Field or KeyKind.Static)) continue;
+            int id = VarId(st, new Var(VarKind.Key, null, 0, key));
+            if (!st.Escaped.Add(id)) continue;
+            // (it aliases the Slots now: its own alias list is made again, the Slots' writers' lists too, and it joins
+            // the slot-like keys the Slot reads see; its readers and theirs run again)
+            if (_aliasesOf.TryGetValue(id, out var own)) { own.Ids.Clear(); own.Seen = 0; }
+            _aliasesOfWrite.Clear();
+            st.SlotLike.Add(id);
+            Notify(st, id, enqueue);
+            foreach (int rk in ReadersOfWrite(st, id)) Notify(st, rk, enqueue);
+        }
+    }
+
+    /// <summary>A byref operand of a node the solve follows: a read or a write through it, a call's argument (its
+    /// address parameter), a return, a phi, a forward (Unsafe.As, AsRef), the reference-slot methods, a field's address
+    /// inside the struct it names, a comparison. Any other use lets the address go where the solve cannot follow.</summary>
+    bool Follows(MethodDesc m, Node n, int k)
+    {
+        switch (n.Op)
+        {
+            case Opc.LdInd or Opc.LdObj or Opc.InitObj when k == 0: return true;
+            case Opc.StInd when k == 0: return true;
+            case Opc.Phi or Opc.Ret or Opc.Cmp: return true;
+            case Opc.LdFldA or Opc.LdFld when k == 0: return true;
+            case Opc.StFld when k == 0: return true;
+            case Opc.NewObj: return true;
+            case Opc.Call when n.X is MethodDesc cm:
+            {
+                if (RefSlotApi(cm) != null && k == 0) return true;
+                if (!IsIntrinsic(m, cm)) return true;
+                if (cm.OwningType is MetadataType ut && ut.GetName() == "Unsafe" && cm.GetName() is "As" or "AsRef" or "AreSame" or "IsNullRef") return true;
+                return IntrinsicSignatures.WritesThroughFirstRef(cm) && k == 0;
+            }
+        }
+        return false;
+    }
+
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] IdSet? ReadVar(State st, Var v, MethodDesc reader)
     {
@@ -306,6 +361,14 @@ public sealed partial class ProgramSolution
     {
         MemKey r = st.Vars[rid].Key, w = st.Vars[wid].Key;
         if (w.Kind == KeyKind.Elem && r.Kind is KeyKind.Field or KeyKind.Static) return false;
+        // (a field or a static and a Slot: the same memory only once the field's address escaped; two fields never)
+        if (!s_noFieldEscapes)
+        {
+            bool rf = r.Kind is KeyKind.Field or KeyKind.Static, wf = w.Kind is KeyKind.Field or KeyKind.Static;
+            if (rf && wf) return false;
+            if (rf && w.Kind == KeyKind.Slot && !st.Escaped.Contains(rid)) return false;
+            if (wf && r.Kind == KeyKind.Elem) return false;
+        }
         long k = (long)rid << 32 | (uint)wid;
         if (_aliasById.TryGetValue(k, out var known)) return known;
         return _aliasById[k] = KeysMayAlias(r, w);
@@ -318,7 +381,7 @@ public sealed partial class ProgramSolution
         // cannot place, a Slot, may be of an element: a span over an array)
         if (w.Kind == KeyKind.Elem && r.Kind is KeyKind.Field or KeyKind.Static) return false;
         var rt = r.Kind switch { KeyKind.Field or KeyKind.Static => ((FieldDesc)r.Target!).FieldType, KeyKind.Elem or KeyKind.Slot => (TypeDesc)r.Target!, _ => null };
-        var wt = (TypeDesc)w.Target!;
+        var wt = w.Kind is KeyKind.Field or KeyKind.Static ? ((FieldDesc)w.Target!).FieldType : (TypeDesc)w.Target!;
         if (rt == null) return false;
         if (rt == wt) return true;
         if (rt.IsValueType || wt.IsValueType || rt.IsPointer || wt.IsPointer || rt.IsByRef || wt.IsByRef) return false;
@@ -407,6 +470,7 @@ public sealed partial class ProgramSolution
     int LocalKey => _localKey >= 0 ? _localKey : _localKey = Keys.Intern(MemKey.Var(-1));
 
     static bool IsRef(Node n) => n.Kind == VK.Ptr && n.Type is ByRefType;
+    static bool HasByRef(Node n) { foreach (var a in n.A) if (IsRef(a)) return true; return false; }
 
     /// <summary>A reference's address set: the key ids it may point at, or null (unknown: a raw pointer, address
     /// arithmetic, an intrinsic it does not know).</summary>
@@ -459,7 +523,8 @@ public sealed partial class ProgramSolution
     {
         int id = VarId(st, v);
         var old = st.Sets[id];
-        if (old == null) return;
+        // (into a parameter or a result whose addresses are unknown: what it gets goes where the solve cannot follow)
+        if (old == null) { if (!s_noFieldEscapes) EscapeKeys(st, add, enqueue); return; }
         var nw = JoinAddr(old, add);
         if (nw is { } ns && old is { } os && ns.Equals(os)) return;
         st.Sets[id] = nw;
@@ -652,7 +717,7 @@ public sealed partial class ProgramSolution
         // (only a reference value or a virtual call computes anything here, and only a store, a return, an allocation or a
         // call flows into a variable: the others are neither run nor sunk)
         void Push(Node n) { if (!queued[n.Id] && (n.Kind == VK.Ref || n.Op == Opc.Call && (CallKind)n.Sub != CallKind.Direct)) { queued[n.Id] = true; work.Enqueue(n); } }
-        void Sink(Node n) { if (!isSink[n.Id] && n.Op is Opc.StFld or Opc.StSFld or Opc.StElem or Opc.StInd or Opc.Ret or Opc.NewObj or Opc.Call) { isSink[n.Id] = true; sinks.Add(n); } }
+        void Sink(Node n) { if (!isSink[n.Id] && (n.Op is Opc.StFld or Opc.StSFld or Opc.StElem or Opc.StInd or Opc.Ret or Opc.NewObj or Opc.Call || !s_noFieldEscapes && HasByRef(n))) { isSink[n.Id] = true; sinks.Add(n); } }
         if (first)
             foreach (var bl in ms.Blocks)
             {
@@ -847,6 +912,9 @@ public sealed partial class ProgramSolution
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] void Sinks(MethodDesc m, Node n, State st, Func<Node, IdSet?> of, Action<MethodDesc> enqueue, Dictionary<int, IdSet?> addrs)
     {
         void Key(MemKey k, Node v) { if (v.Kind == VK.Ref) Write(st, new Var(VarKind.Key, null, 0, k), of(v), enqueue); }
+        if (!s_noFieldEscapes)
+            for (int k = 0; k < n.A.Length; k++)
+                if (IsRef(n.A[k]) && !Follows(m, n, k)) EscapeKeys(st, AddrOf(m, n.A[k], st, addrs), enqueue);
         void Args(MethodDesc target, Node call, int skip, IdSet? self)
         {
             if (self != null || skip == 1 && call.Op == Opc.NewObj) Write(st, new Var(VarKind.Param, target, 0, default), self, enqueue);

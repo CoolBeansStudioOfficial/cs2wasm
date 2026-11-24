@@ -102,6 +102,7 @@ public sealed class Solver
 
     bool _marksRooted;
     static readonly bool s_noMarksRoots = Environment.GetEnvironmentVariable("IL2WASM_NO_MARKS_ROOTS") == "1";
+    static readonly bool s_noStubSummaries = Environment.GetEnvironmentVariable("IL2WASM_NO_STUB_SUMMARIES") == "1";
 
     void Construct(TypeDesc t)
     {
@@ -225,8 +226,15 @@ public sealed class Solver
         state.Solves++;
         _skipDependents = skip;
         sol.DependentsReleased = !skip;
-        foreach (var m in _order) if (_units[m] is { Summary: { } s } u) sol.AddMethod(m, s, null, null,
-            u.Body is { } tb ? CalledInTry(tb) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null);
+        foreach (var m in _order)
+        {
+            // (an ILLink substitution's stub: it returns its constant and does nothing else, so it is in the solution with
+            // no effects; out of it, every call of it was a call the solve cannot see, Wild. EventSource.IsEnabled is
+            // one, on ArrayPool's paths. IL2WASM_NO_STUB_SUMMARIES=1: left out)
+            if (_units[m] is { Summary: null, Substituted: true, Error: null } su && !s_noStubSummaries) su.Summary = new MethodSummary(m) { MayReturn = true };
+            if (_units[m] is { Summary: { } s } u) sol.AddMethod(m, s, null, null,
+                u.Body is { } tb ? CalledInTry(tb) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null);
+        }
         foreach (var t in _constructed) sol.AddConstructed(t);
         foreach (var slot in _slots) sol.AddSlot(slot);
         sol.Freeze();
