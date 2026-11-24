@@ -5686,3 +5686,14 @@ Not run: the homelab suite and the self-host check on this commit.
   - Not run: the NetWasm suite with the switch off. It is byte-identical by construction: RcStats is null when off,
     and the IL tests' modules matched. Also not run: the homelab suite, stress and the self-host check (no runtime,
     back end or old front end change).
+- Diagnosis of the findings [run, desk, small repros, naive counting as on main].
+  - SortedList: a cycle. A SortedList<int,int> whose Keys are read stays live with its KeyList; one whose Keys are
+    not read is freed. `keyList ??= new KeyList(this)` caches the view, and KeyList keeps the list in `_dict`.
+    S2's groups cover it.
+  - collector-retention: `static ref int F() => ref new Payload().Number` (IR: `v1 = NewObj; v2 = LdFldA v1;
+    Ret v2`). Ownership.Insert's keep rule drops the base's release at a Ret of a byref into an object only the
+    function holds. This is MEMORY-IR 7.4's keeper return.
+  - RuntimeType.FromId in GenericArraySortHelper<int>.LessThan: the importer folds `typeof(T) == typeof(X)` to a
+    constant (Importer.cs ~1219), but the two TypeOf nodes it already added stay in the block with no use. Naive
+    counting releases them, and each is lowered as a call of Type.FromId: about 24 dead calls per comparison. The fix
+    is removing pure TypeOf nodes the fold leaves unused.
