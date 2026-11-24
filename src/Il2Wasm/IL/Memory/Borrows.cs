@@ -565,7 +565,7 @@ sealed class Analyzer
             if (!planned && r.From == 0)
                 foreach (var pr in b.Preds)
                     foreach (var v in live.LiveOut[pr])
-                        if (!live.LiveIn[b].Contains(v) && !members.Contains(v) && Counted(v) && Release(g, alias, v.Type)) return;
+                        if (!live.LiveIn[b].Contains(v) && !members.Contains(v) && Counted(v) && ReleaseOf(g, alias, v)) return;
             for (int i = Math.Max(r.From, 0); i <= r.To && i < b.Code.Count; i++)
             {
                 var n = b.Code[i];
@@ -578,9 +578,9 @@ sealed class Analyzer
                         var a = n.A[k];
                         if (!Counted(a) || members.Contains(a) || lastUse!.GetValueOrDefault(a, -1) != i || Ownership.Consumes(n, k)) continue;
                         if (Array.IndexOf(n.A, a) != k) continue;
-                        if (Release(g, alias, a.Type)) return;
+                        if (ReleaseOf(g, alias, a)) return;
                     }
-                    if (Counted(n) && !members.Contains(n) && !live.LiveOut[b].Contains(n) && !lastUse!.ContainsKey(n) && !n.IsTerminator && Release(g, alias, n.Type)) return;
+                    if (Counted(n) && !members.Contains(n) && !live.LiveOut[b].Contains(n) && !lastUse!.ContainsKey(n) && !n.IsTerminator && ReleaseOf(g, alias, n)) return;
                 }
             }
         }
@@ -590,6 +590,18 @@ sealed class Analyzer
 
     // (a type object is immortal too: its release frees nothing)
     static bool Counted(Node v) => v.Op is not (Opc.LdNull or Opc.LdStr or Opc.TypeOf) && (v.Kind == VK.Ref || v.Kind == VK.Struct && v.Type != null && Kinds.Counted(v.Type));
+
+    /// <summary>A release of a value: of its exact types when the type sets know them (ProgramSolution.ExactTypes),
+    /// else of its static type.</summary>
+    bool ReleaseOf(Group g, AliasSet alias, Node v)
+    {
+        if (_ctx.Solution.ExactTypes(_ctx.Method, v) is { } ts)
+        {
+            foreach (var t in ts) if (Release(g, alias, t)) return true;
+            return false;
+        }
+        return Release(g, alias, v.Type);
+    }
 
     bool Release(Group g, AliasSet alias, TypeDesc? t)
     {
@@ -638,13 +650,13 @@ sealed class Analyzer
                 // (an argument whose count the call takes, at its last use: the callee may free it, and a callee's
                 // release effects leave out its parameters, Solver.ReleasedTypes: it is this call's release)
                 for (int mk = 0; mk < n.A.Length; mk++)
-                    if ((n.Moves & (1u << mk)) != 0 && Counted(n.A[mk]) && !members.Contains(n.A[mk]) && Release(g, alias, n.A[mk].Type)) return true;
+                    if ((n.Moves & (1u << mk)) != 0 && Counted(n.A[mk]) && !members.Contains(n.A[mk]) && ReleaseOf(g, alias, n.A[mk])) return true;
                 var (e, intrinsic) = CallEffect(n, members);
                 if (alias.Hits(e)) { if (Borrows.Trace) _cause = n.Op + " " + (n.X as MethodDesc)?.ToString(); Fail(g, e.Wild ? (intrinsic ? Borrows.Stat.FlipIntrinsic : Borrows.Stat.FlipCallWild) : Borrows.Stat.FlipCallKey, new BorrowEvidence(e, false, false)); return true; }
                 break;
             }
             case Opc.Release when n.A.Length > 0 && !members.Contains(n.A[0]) && Counted(n.A[0]):
-                if (Release(g, alias, n.A[0].Type)) return true;
+                if (ReleaseOf(g, alias, n.A[0])) return true;
                 break;
         }
         // a static constructor this node may start
@@ -685,7 +697,7 @@ sealed class Analyzer
             return (ProgramSolution.IntrinsicEffects(_ctx.Solution, _ctx.Method, m), true);
         }
         bool full = Borrows.NoReturnMods || Ownership.ExceptionSuccs(n.Block).Any(h => _info!.LiveIn.TryGetValue(h, out var li) && li.Overlaps(members));
-        return (_pb.CallEffects(n, full), false);
+        return (_pb.CallEffects(n, full, _ctx.Method), false);
     }
 
     /// <summary>Per block, where the value is live: from after its definition (or the block's start) to its last use
@@ -932,9 +944,10 @@ sealed class ProgramBorrows
 
     /// <summary>Mods ∪ ReleaseEffects of every target (<paramref name="full"/>), or only what they may write on the runs
     /// that return: their ReturnMods ∪ ReleaseEffects, and nothing for a target that never returns.</summary>
-    public KeySet CallEffects(Node call, bool full = true)
+    public KeySet CallEffects(Node call, bool full = true, MethodDesc? caller = null)
     {
-        var targets = _s.CallTargets(call);
+        // (a virtual call's targets over its receiver's type set, when the type sets know it)
+        var targets = (caller != null && call.Op == Opc.Call && (CallKind)call.Sub != CallKind.Direct ? _s.CallTargetsOf(caller, call.Id) : null) ?? _s.CallTargets(call);
         // (no target known: a call the solve cannot see through)
         if (targets.Count == 0) return KeySet.All;
         var e = KeySet.Empty;

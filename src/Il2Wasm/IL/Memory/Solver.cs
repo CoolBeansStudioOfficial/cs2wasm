@@ -48,8 +48,14 @@ public sealed class Solver
 
     // ------------------------------------------------------------------ phase 1: reach
 
+    /// <summary>The methods rooted before the reach began (the entry, the exports, the round before's seeds: what
+    /// code outside the IR calls), for the type sets' unknown parameters.</summary>
+    readonly List<MethodDesc> _externalRoots = [];
+    bool _reaching;
+
     public void Root(MethodDesc m)
     {
+        if (!_reaching) _externalRoots.Add(m);
         if (_units.ContainsKey(m)) return;
         _units[m] = null;
         _order.Add(m);
@@ -59,6 +65,7 @@ public sealed class Solver
     /// <summary>Reaches the program from the roots given: imports every method reached, to a fixed point.</summary>
     public void Reach()
     {
+        _reaching = true;
         for (; ; )
         {
             while (_work.Count > 0)
@@ -141,6 +148,8 @@ public sealed class Solver
     public void Late(ImportedMethod u)
     {
         LateImports++; LateMethods.Add(u.Method); _late.Add(u.Method);
+        // (the type sets did not see its stores and calls: another round must be made)
+        if (_typeSets) NeedsAnotherRound = true;
         if (ProgramState.IsDependentSetter(u.Method))
         {
             // (from now on the program has dependents; this round's solve left their releases out, so its plans may be
@@ -150,7 +159,7 @@ public sealed class Solver
         }
     }
 
-    bool _skipDependents;
+    bool _skipDependents, _typeSets;
 
     /// <summary>This round's module must not be the one encoded: its solve left out releases a late import showed can
     /// happen (ObjectMarks' [ReleasesDependents]). The round loop goes on (IlCompiler.Compile).</summary>
@@ -197,17 +206,24 @@ public sealed class Solver
         state.Solves++;
         _skipDependents = skip;
         sol.DependentsReleased = !skip;
-        foreach (var m in _order) if (_units[m] is { Summary: { } s } u) sol.AddMethod(m, s, u.Body is { } b ? ProgramSolution.ReleasedTypes(b, skip) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null,
-            u.Body is { } rb ? ProgramSolution.ReleasedOnReturn(rb, skip, NeverReturns) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null,
+        foreach (var m in _order) if (_units[m] is { Summary: { } s } u) sol.AddMethod(m, s, null, null,
             u.Body is { } tb ? CalledInTry(tb) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null);
-        if (s_verify)
-            foreach (var m in _order)
-                if (_units[m] is { Body: { } vb } && ProgramSolution.ReleaseViolations(vb, skip) is { Count: > 0 } bad)
-                    throw new InvalidOperationException("release effects: " + m + ": " + string.Join("; ", bad));
         foreach (var t in _constructed) sol.AddConstructed(t);
         foreach (var slot in _slots) sol.AddSlot(slot);
         sol.Freeze();
         sol.HeldBodies = m => _units.TryGetValue(m, out var u) && u is { Error: null, Substituted: false } ? u.Body : null;
+        // (the type sets from round 1 on: round 0 cannot know its own late imports, whose stores they do not see)
+        if (state.Solves > 1) sol.SolveTypeSets(_externalRoots);
+        _typeSets = sol.TypeSetsSolved;
+        foreach (var m in _order)
+            if (_units[m] is { Summary: { } } u)
+            {
+                Func<Il2Wasm.IL.Ir.Node, IEnumerable<TypeDesc>?>? exact = sol.TypeSetsSolved ? n => sol.ExactTypes(m, n) : null;
+                sol.SetReleased(m, u.Body is { } b ? ProgramSolution.ReleasedTypes(b, skip, exact: exact) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null,
+                    u.Body is { } rb ? ProgramSolution.ReleasedOnReturn(rb, skip, NeverReturns, exact) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null);
+                if (s_verify && u.Body is { } vb && ProgramSolution.ReleaseViolations(vb, skip, exact) is { Count: > 0 } bad)
+                    throw new InvalidOperationException("release effects: " + m + ": " + string.Join("; ", bad));
+            }
         if (s_trace) Console.Error.WriteLine($"mem: solved {sol.Methods.Count} methods, {sol.Slots.Count} slots; {_clock.ElapsedMilliseconds} ms");
         _solution = sol;
         return sol;
@@ -248,7 +264,7 @@ public sealed class Solver
 /// dense and in a stable order (by the method's printed identity, 3.5); the may-facts are solved when first asked for
 /// (Mods and release effects over the call graph's strongly connected components, callees first), so a build that
 /// asks for none pays nothing. Facts for a method outside the solution (a late import) are the top: unknown.</summary>
-public sealed class ProgramSolution
+public sealed partial class ProgramSolution
 {
     readonly IReachHost _host;
     /// <summary>A covered method's body before lowering takes it (Signatures.Compute reads it; null once taken or when there is none).
@@ -277,6 +293,11 @@ public sealed class ProgramSolution
     bool _frozen;
 
     internal ProgramSolution(IReachHost host) { _host = host; }
+
+    internal void SetReleased(MethodDesc m, TypeDesc[]? released, (TypeDesc, int, FieldDesc?, MethodDesc?)[]? releasedReturning)
+    {
+        _released[m] = released; _releasedReturning[m] = releasedReturning;
+    }
 
     internal void AddMethod(MethodDesc m, MethodSummary s, TypeDesc[]? released = null, (TypeDesc, int, FieldDesc?, MethodDesc?)[]? releasedReturning = null, HashSet<MethodDesc>? calledInTry = null)
     {
@@ -341,9 +362,9 @@ public sealed class ProgramSolution
     /// none; a struct with references) and every counted slot it stores (the old value goes).</summary>
     /// <summary>The types released on the runs that return (ReleasedTypes over the blocks that can still return), each
     /// with the parameter it is the value of (an Arg, or a cast of one), or -1.</summary>
-    internal static (TypeDesc, int, FieldDesc?, MethodDesc?)[] ReleasedOnReturn(Il2Wasm.IL.Ir.Body body, bool skipDependents, Func<MethodDesc, bool>? neverReturns = null)
+    internal static (TypeDesc, int, FieldDesc?, MethodDesc?)[] ReleasedOnReturn(Il2Wasm.IL.Ir.Body body, bool skipDependents, Func<MethodDesc, bool>? neverReturns = null, Func<Il2Wasm.IL.Ir.Node, IEnumerable<TypeDesc>?>? exact = null)
     {
-        var all = ReleasedTypes(body, skipDependents, onlyReturning: true, argsApart: true, neverReturns: neverReturns);
+        var all = ReleasedTypes(body, skipDependents, onlyReturning: true, argsApart: true, neverReturns: neverReturns, exact: exact);
         var r = new List<(TypeDesc, int, FieldDesc?, MethodDesc?)>();
         foreach (var t in all) r.Add((t, -1, null, null));
         var obj = body.Method.Context.GetWellKnownType(WellKnownType.Object);
@@ -354,10 +375,10 @@ public sealed class ProgramSolution
             {
                 if (n.Kind != Il2Wasm.IL.Ir.VK.Ref) continue;
                 var nt = n.Type == null ? obj : !n.Type.IsValueType ? n.Type : n.Type;
-                if (StaticReadOnlyLoad(n) is { } sf) r.Add((nt, -1, sf, null));
+                if (StaticReadOnlyLoad(n) is { } sf) foreach (var et in exact?.Invoke(n) ?? [nt]) r.Add((et, -1, sf, null));
                 // (the result of a direct call, apart: a getter of a persistent static returns an object a release
                 // cannot free, ProgramSolution.PersistentGetter)
-                else if (GetterCall(n) is { } gm) r.Add((nt, -1, null, gm));
+                else if (GetterCall(n) is { } gm) foreach (var et in exact?.Invoke(n) ?? [nt]) r.Add((et, -1, null, gm));
             }
         return r.Distinct().OrderBy(e => StableKey.Of(e.Item1), StringComparer.Ordinal).ThenBy(e => e.Item2)
             .ThenBy(e => e.Item3 == null ? "" : StableKey.Of(e.Item3), StringComparer.Ordinal).ThenBy(e => e.Item4 == null ? "" : StableKey.Of(e.Item4), StringComparer.Ordinal).ToArray();
@@ -499,7 +520,7 @@ public sealed class ProgramSolution
     static bool IsForward(Il2Wasm.IL.Ir.Node n) => n.Op is Il2Wasm.IL.Ir.Opc.CastClass or Il2Wasm.IL.Ir.Opc.IsInst
         || n.Op == Il2Wasm.IL.Ir.Opc.Call && n.A.Length == 1 && n.X is MethodDesc m && m.GetName() == "As" && m.OwningType is MetadataType t && t.GetName() == "Unsafe";
 
-    internal static TypeDesc[] ReleasedTypes(Il2Wasm.IL.Ir.Body body, bool skipDependents = false, bool onlyReturning = false, bool argsApart = false, Func<MethodDesc, bool>? neverReturns = null)
+    internal static TypeDesc[] ReleasedTypes(Il2Wasm.IL.Ir.Body body, bool skipDependents = false, bool onlyReturning = false, bool argsApart = false, Func<MethodDesc, bool>? neverReturns = null, Func<Il2Wasm.IL.Ir.Node, IEnumerable<TypeDesc>?>? exact = null)
     {
         // (onlyReturning: the blocks from which a return is reachable, through branches and handlers; a block that can
         // only end in a throw releases on the way out by its exception)
@@ -557,7 +578,9 @@ public sealed class ProgramSolution
                 if (n.Op == Il2Wasm.IL.Ir.Opc.Call && n.X is MethodDesc nm && MethodSummary.NewByName(nm, n) is { } made) { set.Add(made.OwningType); continue; }
                 // (one lowering makes a trap: no value, nothing to release)
                 if (n.Op == Il2Wasm.IL.Ir.Opc.Call && n.X is MethodDesc tm && MethodSummary.NewTraps(tm, n)) continue;
-                Add(n.Type, n.Kind);
+                // (a reference whose exact types the type sets know: those, not its static type's cone)
+                if (n.Kind == Il2Wasm.IL.Ir.VK.Ref && exact?.Invoke(n) is { } ets) foreach (var et in ets) set.Add(et);
+                else Add(n.Type, n.Kind);
                 switch (n.Op)
                 {
                     case Il2Wasm.IL.Ir.Opc.StFld or Il2Wasm.IL.Ir.Opc.StSFld when n.X is FieldDesc f: Slot(f.FieldType); break;
@@ -612,10 +635,10 @@ public sealed class ProgramSolution
     /// address with a type narrower than object (Rt.Borrow&lt;T&gt;, Unsafe.As of an int), which would claim less than
     /// the object may be. Dependents' releases left out by the [ReleasesDependents] rule are exempt. The problems, or
     /// none. Run in every solve with IL2WASM_VERIFY=1.</summary>
-    public static List<string> ReleaseViolations(Il2Wasm.IL.Ir.Body body, bool skipDependents)
+    public static List<string> ReleaseViolations(Il2Wasm.IL.Ir.Body body, bool skipDependents, Func<Il2Wasm.IL.Ir.Node, IEnumerable<TypeDesc>?>? exact = null)
     {
         var bad = new List<string>();
-        var types = ReleasedTypes(body, skipDependents).ToHashSet();
+        var types = ReleasedTypes(body, skipDependents, exact: exact).ToHashSet();
         bool dependents = skipDependents && ReleasesDependents(body.Method);
         var obj = body.Method.Context.GetWellKnownType(WellKnownType.Object);
         foreach (var b in body.Blocks)
@@ -636,7 +659,7 @@ public sealed class ProgramSolution
                     if (dependents && IsBorrow(x)) break;
                     if (x.Kind != Il2Wasm.IL.Ir.VK.Ref) { bad.Add($"{rm.GetName()} of v{x.Id}, not a reference"); break; }
                     var st = x.Type == null ? obj : !x.Type.IsValueType ? x.Type : x.Type.IsNullable ? x.Type.Instantiation[0] : x.Type;
-                    if (!types.Contains(st)) { bad.Add($"{rm.GetName()} of v{x.Id} ({st}) not among the released types"); break; }
+                    if (exact?.Invoke(x) is { } xs ? !xs.All(types.Contains) : !types.Contains(st)) { bad.Add($"{rm.GetName()} of v{x.Id} ({st}) not among the released types"); break; }
                     if (IsBorrow(x) && x.X is MethodDesc bm && bm.HasInstantiation && !bm.Instantiation[0].IsObject) { bad.Add($"{rm.GetName()} of Rt.Borrow<{bm.Instantiation[0]}>: narrower than the object may be"); break; }
                     if (x.Op is Il2Wasm.IL.Ir.Opc.CastClass or Il2Wasm.IL.Ir.Opc.IsInst || x.Op == Il2Wasm.IL.Ir.Opc.Call && x.A.Length == 1 && x.X is MethodDesc am && am.GetName() == "As" && am.OwningType is MetadataType ut && ut.GetName() == "Unsafe") { x = x.A[0]; continue; }
                     break;
@@ -822,7 +845,8 @@ public sealed class ProgramSolution
             }
             var callees = new List<int>();
             foreach (var c in s.Calls) Callee(c, callees, ref wild, f);
-            foreach (var (slot, recv) in s.SlotCalls) foreach (var c in Targets(slot, recv)) Callee(c, callees, ref wild, f);
+            // (a virtual call's targets over its receiver's type set, when the type sets know it)
+            foreach (var (slot, recv, nid) in s.SlotCalls) foreach (var c in (nid >= 0 ? CallTargetsOf(m, nid) : null) ?? Targets(slot, recv)) Callee(c, callees, ref wild, f);
             // (the static constructors a use in the body may start run inside it: their effects are the method's)
             foreach (var t in s.Initializes) if (t.GetStaticConstructor() is { } cctor) Callee(cctor, callees, ref wild, f);
             f.Mods = wild ? KeySet.All : new KeySet(Pool.Of(keys), false);
@@ -838,7 +862,7 @@ public sealed class ProgramSolution
                     rs.Add((j, full));
                 }
                 foreach (var c in s.Calls) Ret(c, inTry == null || inTry.Contains(c));
-                foreach (var (slot, recv) in s.SlotCalls) { bool full = inTry == null || inTry.Contains(slot); foreach (var c in Targets(slot, recv)) Ret(c, full); }
+                foreach (var (slot, recv, nid) in s.SlotCalls) { bool full = inTry == null || inTry.Contains(slot); foreach (var c in (nid >= 0 ? CallTargetsOf(m, nid) : null) ?? Targets(slot, recv)) Ret(c, full); }
                 // (a static constructor started outside every try: if it throws, the method leaves by the exception)
                 foreach (var t in s.Initializes) if (t.GetStaticConstructor() is { } cctor) Ret(cctor, inTry == null || inTry.Contains(cctor));
                 rsucc[i] = rs;
@@ -994,7 +1018,7 @@ public sealed class ProgramSolution
                 chain.Reverse();
                 return why + ": " + string.Join(" -> ", chain);
             }
-            var next = s!.Calls.Concat(s.SlotCalls.SelectMany(x => Targets(x.Slot, x.Receiver))).Concat(s.Initializes.Select(t => t.GetStaticConstructor()).Where(c => c != null)!).ToList();
+            var next = s!.Calls.Concat(s.SlotCalls.SelectMany(x => (x.NodeId >= 0 ? CallTargetsOf(m, x.NodeId) : null) ?? Targets(x.Slot, x.Receiver))).Concat(s.Initializes.Select(t => t.GetStaticConstructor()).Where(c => c != null)!).ToList();
             foreach (var c in next) if (c != null && MethodId(c) >= 0 && Facts(c).Mods.Wild | Facts(c).ReleaseEffects.Wild && parent.TryAdd(c, m)) q.Enqueue(c);
             if (_released.GetValueOrDefault(m) is var types)
                 foreach (var t in types ?? [Object]) foreach (int j in DestroyTargets(t)) if (j >= 0 && parent.TryAdd(Methods[j], m)) q.Enqueue(Methods[j]);
