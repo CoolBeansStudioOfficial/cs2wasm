@@ -93,6 +93,9 @@ public sealed class MethodSummary
     public readonly List<MethodDesc> Calls = [];
     /// <summary>Virtual and interface slots called (each a dispatch over the constructed types).</summary>
     public readonly List<MethodDesc> Slots = [];
+    /// <summary>Each virtual or interface call's slot with its receiver's static type (null: not a reference, or none),
+    /// in node order: the targets are the slot's implementations over the constructed types the receiver admits.</summary>
+    public readonly List<(MethodDesc Slot, TypeDesc? Receiver)> SlotCalls = [];
     public readonly List<TypeDesc> Constructs = [];
     /// <summary>Types whose static constructor a use may start.</summary>
     public readonly List<TypeDesc> Initializes = [];
@@ -107,6 +110,10 @@ public sealed class MethodSummary
     public bool CallsUnknown;
     /// <summary>Calls lowering expands itself (intrinsics): their effects come from the intrinsic table.</summary>
     public readonly List<MethodDesc> Intrinsics = [];
+    /// <summary>The intrinsics that write only through their first argument, a ref (Interlocked.Exchange,
+    /// CompareExchange, Atomic.*: IntrinsicSignatures' RefSlot), every call of which here passes the address of a known
+    /// field, static or element: the keys they write are in <see cref="Stores"/>, not any slot of the type.</summary>
+    public readonly HashSet<MethodDesc> IntrinsicsByAddress = [];
     public bool MayThrow, MayReturn, ObservesLifetime;
 
     /// <summary>Builds the summary of a method. <paramref name="first"/> and <paramref name="sccp"/> are the first
@@ -185,7 +192,19 @@ public sealed class MethodSummary
                 switch (n.Op)
                 {
                     case Opc.Call when n.X is MethodDesc m:
-                        if (host.LoweredInline(m)) { Intrinsics.Add(m); MayThrow = true; break; }
+                        if (host.LoweredInline(m))
+                        {
+                            Intrinsics.Add(m); MayThrow = true;
+                            if (IntrinsicSignatures.WritesThroughFirstRef(m))
+                            {
+                                if (n.A.Length > 0 && AddressKey(n.A[0]) is { } ak) { Stores.Add(ak); if (!_unaddressed.Contains(m)) IntrinsicsByAddress.Add(m); }
+                                else { _unaddressed.Add(m); IntrinsicsByAddress.Remove(m); }
+                            }
+                            // (Generics.New<T..>("Name`n"): lowering allocates Name<T..> and calls its default
+                            // constructor, IlCompiler.cs: a constructed type and a call edge like a newobj's)
+                            if (NewByName(m, n) is { } made) { Constructs.Add(made.OwningType); Calls.Add(made); }
+                            break;
+                        }
                         MayThrow = true;
                         if (Il2Wasm.IL.Lower.IlCompiler.IsDelegateInvoke(m) && m.GetTypicalMethodDefinition() is Internal.TypeSystem.Ecma.EcmaMethod { IsRuntimeImplemented: true }) { CallsUnknown = true; break; }
                         if ((CallKind)n.Sub == CallKind.Direct)
@@ -193,7 +212,7 @@ public sealed class MethodSummary
                             Calls.Add(m);
                             if (!m.IsStaticConstructor && (m.Signature.IsStatic || m.IsConstructor || m.OwningType.IsValueType) && m.OwningType is MetadataType { IsBeforeFieldInit: false } it) Initializes.Add(it);
                         }
-                        else Slots.Add(m);
+                        else { Slots.Add(m); SlotCalls.Add((m, n.A.Length > 0 && n.A[0].Kind == VK.Ref ? n.A[0].Type : null)); }
                         if (m.OwningType is MetadataType gc && gc.GetName() == "GC" && gc.GetNamespace() == "System" && m.GetName() == "KeepAlive") ObservesLifetime = true;
                         break;
                     case Opc.CallI:
@@ -215,7 +234,7 @@ public sealed class MethodSummary
                         Calls.Add(fm);
                         break;
                     case Opc.LdVirtFtn when n.X is MethodDesc vm:
-                        if (vm.IsVirtual && !vm.IsFinal) Slots.Add(vm); else Calls.Add(vm);
+                        if (vm.IsVirtual && !vm.IsFinal) { Slots.Add(vm); SlotCalls.Add((vm, n.A.Length > 0 && n.A[0].Kind == VK.Ref ? n.A[0].Type : null)); } else Calls.Add(vm);
                         break;
                     case Opc.NewArr when n.Type is ArrayType at:
                         Constructs.Add(at); MayThrow = true;
@@ -254,6 +273,44 @@ public sealed class MethodSummary
                         break;
                 }
     }
+
+    /// <summary>The default constructor Generics.New or NewOfNullableArg calls (the type named by its literal over the
+    /// call's type arguments, as IlCompiler's lowering makes it), or null (no literal, no such type or constructor).</summary>
+    /// <summary>A Generics.New or NewOfNullableArg call that lowering makes a trap (IlCompiler.cs: NewOfNullableArg of a
+    /// type argument that is not a Nullable, a type with no default constructor): it never produces a value.</summary>
+    internal static bool NewTraps(MethodDesc m, Node n) => IsNew(m) && NewByName(m, n) == null && n.A.Length > 0 && n.A[0].Op == Opc.LdStr
+        && (m.GetName() == "NewOfNullableArg" && !m.Instantiation[0].IsNullable || NewDefinition(m, n) is { } gd && gd.Instantiation.Length == (m.GetName() == "NewOfNullableArg" ? 1 : m.Instantiation.Length));
+
+    static bool IsNew(MethodDesc m) => m.GetName() is "New" or "NewOfNullableArg" && m.OwningType is MetadataType g && g.GetName() == "Generics" && g.GetNamespace() == "Il2Wasm.Runtime";
+
+    static MetadataType? NewDefinition(MethodDesc m, Node n)
+    {
+        if (n.A.Length == 0 || n.A[0].Op != Opc.LdStr || n.A[0].X is not string name || name.LastIndexOf('.') is not (> 0 and var dot)) return null;
+        return m.Context.SystemModule.GetType(System.Text.Encoding.UTF8.GetBytes(name[..dot]), System.Text.Encoding.UTF8.GetBytes(name[(dot + 1)..]), throwIfNotFound: false) as MetadataType;
+    }
+
+    internal static MethodDesc? NewByName(MethodDesc m, Node n)
+    {
+        if (m.GetName() is not ("New" or "NewOfNullableArg") || m.OwningType is not MetadataType g || g.GetName() != "Generics" || g.GetNamespace() != "Il2Wasm.Runtime") return null;
+        if (n.A.Length == 0 || n.A[0].Op != Opc.LdStr || n.A[0].X is not string name || name.LastIndexOf('.') is not (> 0 and var dot)) return null;
+        if (m.Context.SystemModule.GetType(System.Text.Encoding.UTF8.GetBytes(name[..dot]), System.Text.Encoding.UTF8.GetBytes(name[(dot + 1)..]), throwIfNotFound: false) is not MetadataType gd) return null;
+        var args = Enumerable.Range(0, m.Instantiation.Length).Select(i => m.Instantiation[i]).ToArray();
+        if (m.GetName() == "NewOfNullableArg") { if (!args[0].IsNullable) return null; args = [args[0].Instantiation[0]]; }
+        if (args.Length != gd.Instantiation.Length) return null;
+        try { return ((DefType)gd.MakeInstantiatedType(args)).GetDefaultConstructor(); }
+        catch (Exception) { return null; }
+    }
+
+    readonly HashSet<MethodDesc> _unaddressed = [];
+
+    /// <summary>The key an address names when it is a field's, a static's or an element's (RefStores' rule), or null.</summary>
+    internal static MemKey? AddressKey(Node addr) => addr.Op switch
+    {
+        Opc.LdFldA when addr.X is FieldDesc f => f.IsStatic ? MemKey.Static(f) : MemKey.Field(f),
+        Opc.LdSFldA when addr.X is FieldDesc sf => MemKey.Static(sf),
+        Opc.LdElemA when addr.A.Length > 0 && addr.A[0].Type is ArrayType at => MemKey.Elem(at.ElementType),
+        _ => null,
+    };
 
     /// <summary>A store through an address: the key it names (RefStores' rule: a field's, an element's or a static's
     /// address names that key; any other ref T names every slot of type T; a raw pointer names anything).</summary>

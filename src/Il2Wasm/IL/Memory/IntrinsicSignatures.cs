@@ -98,11 +98,14 @@ public static class IntrinsicSignatures
             + "Rt.ArenaVisitObject Rt.LinkAt Rt.ObjectArrayDelegate"),
         (NoReturn, "Rt.Unreachable Rt.Rethrow"),
         // releases: a destroy may run (the release effects of 3.6)
-        (Release, "Rt.Release Rt.ReleaseElements Rt.UnlinkAt Rt.ArenaFreeObject"),
-        // releases that also write slots (old values cleared or moved; the group fallback's contracts, S2)
-        (RawRelease, "Rt.ArenaClearObject Rt.ArrayGrow Rt.MoveRefs Rt.ReleaseThreadStatics Rt.WeakDying Rt.PartWeak"),
-        // runs code the compiler does not see as an edge: first-chance handlers, a finalizer, a delegate
-        (RunsCode, "Rt.FirstChance Rt.ArenaFinalizeObject Rt.DynamicInvokeRaw"),
+        (Release, "Rt.Release Rt.ReleaseElements Rt.UnlinkAt"),
+        // the group fallback's and the thread statics' entry points, lowered as no-ops while no type is cycle-capable
+        // and there are no threads (S1, IlCompiler.cs's intrinsic cases: drops, a 0): nothing to write or release. When
+        // S2/S3 lower them for real they go back to RawRelease (old values cleared or moved) and RunsCode (a
+        // finalizer)
+        (Pure, "Rt.ArenaClearObject Rt.ArrayGrow Rt.MoveRefs Rt.ReleaseThreadStatics Rt.WeakDying Rt.PartWeak Rt.ArenaFreeObject Rt.ArenaFinalizeObject"),
+        // runs code the compiler does not see as an edge: first-chance handlers, a delegate
+        (RunsCode, "Rt.FirstChance Rt.DynamicInvokeRaw"),
         // ---- Atomic (15): through ref int / ref long
         (Pure, "Atomic.Load32 Atomic.Load64 Atomic.Fence Atomic.Notify"),
         (RefSlot, "Atomic.Store32 Atomic.Add32 Atomic.Exchange32 Atomic.CompareExchange32 Atomic.CountAdd32 Atomic.CountCompareExchange32 "
@@ -111,9 +114,10 @@ public static class IntrinsicSignatures
         // ---- Il2WasmArrays (6): copies and clears release the old elements of an array of any element type
         (Pure, "Il2WasmArrays.RankOf Il2WasmArrays.ElementSize Il2WasmArrays.HasCountedElements Il2WasmArrays.BoxesElements"),
         (RawRelease, "Il2WasmArrays.CopyElements Il2WasmArrays.ClearElements"),
-        // ---- Generics (6): folded by the instantiation, except New, which runs a constructor by name
-        (Pure, "Generics.Implements Generics.IsNullable Generics.IsEnum"),
-        (RunsCode, "Generics.New Generics.NewOfNullableArg"),
+        // ---- Generics (6): folded by the instantiation. New allocates and runs the default constructor of a type
+        // named by a literal: the constructor is a call edge of the caller's summary (Summary.cs), so the allocation
+        // itself writes nothing
+        (Pure, "Generics.Implements Generics.IsNullable Generics.IsEnum Generics.New Generics.NewOfNullableArg"),
         // ---- TextScan (4): Upper16/Lower16 write eight chars at dst
         (Pure, "TextScan.Eq16 TextScan.Eq16Any3"),
         (new IntrinsicSignature(IntrinsicWrites.Chars), "TextScan.Upper16 TextScan.Lower16"),
@@ -168,6 +172,9 @@ public static class IntrinsicSignatures
 
     /// <summary>The signature of an intrinsic (a method lowering expands: IReachHost.LoweredInline); Unknown when the
     /// table has no entry (sound: Wild, not cheap).</summary>
+    /// <summary>The intrinsic writes only through its first argument, a ref (RefSlot).</summary>
+    public static bool WritesThroughFirstRef(MethodDesc m) => Of(m).Writes == IntrinsicWrites.RefSlot;
+
     public static IntrinsicSignature Of(MethodDesc m)
     {
         if (m.OwningType is not MetadataType) return IntrinsicSignature.Unknown;
