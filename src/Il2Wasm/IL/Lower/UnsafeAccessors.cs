@@ -19,6 +19,14 @@ static class UnsafeAccessors
     public static MethodIL? Body(MethodDesc m)
     {
         if (m.GetTypicalMethodDefinition() is not EcmaMethod em) return null;
+        // (NativeAOT's own generator, with its type translation (UnsafeAccessorTypeAttribute) and every failure .NET
+        // reports, when CoreLib has the throw helpers its IL calls; this one otherwise, the stub CoreLib's case)
+        if (m.Context.SystemModule.GetType("Internal.Runtime.CompilerHelpers"u8, "ThrowHelpers"u8, throwIfNotFound: false) != null)
+        {
+            var nil = Internal.IL.UnsafeAccessors.TryGetIL(em);
+            if (nil == null) return null;
+            return m == em ? nil : new InstantiatedMethodIL(m, nil);
+        }
         var attr = em.GetDecodedCustomAttribute("System.Runtime.CompilerServices", "UnsafeAccessorAttribute");
         if (attr is not { } a || a.FixedArguments.Length < 1) return null;
         var kind = (Kind)(int)a.FixedArguments[0].Value!;

@@ -395,6 +395,10 @@ namespace Internal.IL
             if (targetType.HasInstantiation)
             {
                 Instantiation declClassInst = declaration.OwningType.Instantiation;
+                // il2wasm: an accessor whose class's arity is not the target's cannot satisfy it (invalid program,
+                // as CoreCLR reports), rather than an instantiation of the wrong arity
+                if (declClassInst.Length != targetType.GetTypeDefinition().Instantiation.Length)
+                    return false;
                 var instType = targetType.Context.GetInstantiatedType((MetadataType)targetType.GetTypeDefinition(), declClassInst);
                 if (!instType.CheckConstraints())
                 {
@@ -407,6 +411,9 @@ namespace Internal.IL
             if (targetMethod.HasInstantiation)
             {
                 Instantiation declMethodInst = declaration.Instantiation;
+                // il2wasm: the same for the method's arity
+                if (declMethodInst.Length != targetMethod.Instantiation.Length)
+                    return false;
                 var instMethod = targetType.Context.GetInstantiatedMethod(targetMethod, declMethodInst);
                 if (!instMethod.CheckConstraints())
                 {
