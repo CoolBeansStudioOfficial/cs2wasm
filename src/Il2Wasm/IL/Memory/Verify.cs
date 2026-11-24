@@ -197,7 +197,14 @@ public static class Verify
                 var exc = Ownership.ExceptionSuccs(b).ToList();
                 Run(b, s, exc.Count > 0 ? st => { foreach (var h in exc) Flow(h, st); } : null, check: false);
                 foreach (var t in b.Succs.Distinct()) Flow(t, Edge(b, t, s, check: false));
-                foreach (var t in ends.GetValueOrDefault(b) ?? []) Flow(t, s);
+                // (a finally's end continues to its leave targets; every path through it began at a leave, whose
+                // edge copied the target's phis first)
+                foreach (var t in ends.GetValueOrDefault(b) ?? [])
+                {
+                    var o = s.Copy();
+                    foreach (var phi in t.Phis) if (_index.TryGetValue(phi, out int i)) o.Set(i, true);
+                    Flow(t, o);
+                }
             }
             // (the checks, on the settled states)
             foreach (var b in _body.Blocks)
@@ -278,7 +285,7 @@ public static class Verify
             if (Plan.IsRef(x)) r.Add(x);
             else if (x.Op == Opc.Phi) foreach (var a in x.A) r.AddRange(DirectBases(a));
             else if (Ownership.Derives(x) && !Plan.IsInserted(x))
-                foreach (var a in x.A) { if (a.Kind == VK.Ref) { if (!Plan.IsTrivial(a)) r.Add(a); } else r.AddRange(DirectBases(a)); }
+                foreach (var a in x.A) { if (Plan.IsRef(a)) { if (!Plan.IsTrivial(a)) r.Add(a); } else r.AddRange(DirectBases(a)); }
             if (_plan.Bases.TryGetValue(x, out var bs)) foreach (var t in bs) if (Plan.IsInserted(t) && t.A.Length == 1 && (t.A[0] == x || t.A[0].A.Length == 1 && t.A[0].A[0] == x)) r.Add(t);
             l.AddRange(r.Distinct());
             return l;

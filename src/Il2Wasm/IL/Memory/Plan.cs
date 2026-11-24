@@ -66,11 +66,17 @@ public static class Plan
     public static MethodPlan Build(PlanContext ctx)
     {
         Strip(ctx.Body);
+        long t0 = s_slow > 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         var plan = new Planner(ctx).Run();
+        if (s_slow > 0 && System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds is var ms && ms >= s_slow)
+            Console.Error.WriteLine($"plan: {ms:F0} ms for {ctx.Method} ({ctx.Body.Blocks.Count} blocks, {ctx.Body.ValueCount} values)");
         System.Threading.Interlocked.Increment(ref Plans);
         if (s_dump != null && ctx.Method.ToString()!.Contains(s_dump)) Console.Error.WriteLine("plan of " + ctx.Method + " (" + ctx.Entry + "):" + Environment.NewLine + ctx.Body.Dump());
         return plan;
     }
+
+    /// <summary>IL2WASM_PLAN_SLOW=ms: each plan that takes at least that long, on stderr.</summary>
+    static readonly int s_slow = int.TryParse(Environment.GetEnvironmentVariable("IL2WASM_PLAN_SLOW"), out int ms) ? ms : 0;
 
     /// <summary>IL2WASM_PLAN_DUMP=text: the planned body of each method whose name contains it, on stderr.</summary>
     static readonly string? s_dump = Environment.GetEnvironmentVariable("IL2WASM_PLAN_DUMP") is { Length: > 0 } d ? d : null;
@@ -119,11 +125,9 @@ public static class Plan
         int n = m.Signature.Length + (m.Signature.IsStatic ? 0 : 1);
         var c = new ParamConv[n];
         if (v.Kind == VariantKind.Owned) { for (int i = 0; i < n; i++) if (Owns(v, i)) c[i] = ParamConv.HandOver; return c; }
-        if (v.Kind == VariantKind.BorrowReturn) return c;
-        var sig = Signatures.Of(sol, m);
-        // (the entry: every parameter Lend in S1; a HandOver here would need every caller, generated ones included,
-        // to hand its count over, so it is planned as the naive convention unless it comes from a variant)
-        for (int i = 0; i < n && i < sig.Params.Length; i++) c[i] = ParamConv.Lend;
+        // (the entry: every parameter Lend, Signatures.Of's convention; a HandOver here would need every caller,
+        // generated ones included, to hand its count over. Not asked of Signatures.Of, which reads the solved facts:
+        // their first use solves the whole program's Mods)
         return c;
     }
 
@@ -375,7 +379,8 @@ public static class Plan
         void Call(Node n, HashSet<Node> liveAfter)
         {
             var v = Variant.Entry;
-            if (DirectSite(n))
+            // (a callee with no variants is called at its entry: the call rule is not asked, as it reads the solved facts)
+            if (DirectSite(n) && _ctx.Solution.Covers((MethodDesc)n.X!) && Signatures.VariantsOf(_ctx.Solution, (MethodDesc)n.X!).Count > 0)
             {
                 uint mask = 0;
                 for (int k = 0; k < n.A.Length; k++)
@@ -471,7 +476,9 @@ public static class Plan
                         else if (Ownership.Derives(n) && !IsInserted(n))
                             foreach (var a in n.A)
                             {
-                                if (a.Kind == VK.Ref && !IsTrivial(a)) (l ??= []).Add(a);
+                                // (a struct with references is a base too: a span made from an ArraySegment points into
+                                // the array the segment holds; the naive plan followed references only)
+                                if (IsRef(a) && !IsTrivial(a)) (l ??= []).Add(a);
                                 else if (_bases.TryGetValue(a, out var ab)) (l ??= []).AddRange(ab);
                             }
                         if (_takes != null && _takes.TryGetValue(n, out var t)) (l ??= []).Add(t);
@@ -589,7 +596,9 @@ public static class Plan
                         for (int j = k; j < n.A.Length; j++) if (n.A[j] == v && Consumes(n, j)) n.Moves |= 1u << j;
                         continue;
                     }
-                    bool lastUse = kind == OwnKind.Owned && !live.Contains(v) && !through.Contains(v);
+                    bool lastUse = kind == OwnKind.Owned && !live.Contains(v);
+                    // (kept through another operand, a borrow or an address of it: released after, never moved in)
+                    bool movable = lastUse && !through.Contains(v);
                     bool moved = false;
                     for (int j = k; j < n.A.Length; j++)
                     {
@@ -597,12 +606,12 @@ public static class Plan
                         if (call && conv != null)
                         {
                             bool owns = DirectSite(n) && Owns(variant, ParamOf(n, j));
-                            if (owns && lastUse && !moved) { conv[j] = ArgConv.HandOver; n.Moves |= 1u << j; moved = true; }
+                            if (owns && movable && !moved) { conv[j] = ArgConv.HandOver; n.Moves |= 1u << j; moved = true; }
                             else conv[j] = owns ? ArgConv.KeepAlive : ArgConv.Lend;
                             continue;
                         }
                         if (!Consumes(n, j) || kind != OwnKind.Owned) continue;
-                        if (lastUse && !moved) { n.Moves |= 1u << j; moved = true; }
+                        if (movable && !moved) { n.Moves |= 1u << j; moved = true; }
                     }
                     if (lastUse && !moved)
                     {
@@ -654,6 +663,8 @@ public static class Plan
                     }
             dead.ExceptWith(_liveIn[b]);
             foreach (var phi in b.Phis) dead.Remove(phi);
+            // (a phi nothing uses: its count, moved or copied in, goes at once; the naive plan left it, a leak per pass)
+            foreach (var phi in b.Phis) if (Owned(phi) && !live.Contains(phi)) dead.Add(phi);
             foreach (var v in dead.OrderBy(v => v.Id)) output.Add(Count(Opc.Release, v, b, handler ? RcCategory.Unwind : RcCategory.Generic));
             output.Reverse();
             // (a handler's caught value comes first, before what its entry releases)
