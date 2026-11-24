@@ -106,14 +106,14 @@ public sealed partial class IlCompiler
         {
             var c = this;
             var main0 = Reach(entry);
-            var facts = c.Facts.Close(c.SlotImplementations());
+            var facts = c.Facts.Close(c.SlotImplementations(), c._constructedOrder);
             for (int r = 1; r < Il2Wasm.IL.Reach.RoundFacts.Rounds; r++)
             {
                 var next = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, Checked = Checked, _round = r };
                 foreach (var p in _nativePaths) next.LoadNatives(p);
                 next.Facts.Previous = facts;
                 var m = next.Reach(entry);
-                var nf = next.Facts.Close(next.SlotImplementations());
+                var nf = next.Facts.Close(next.SlotImplementations(), next._constructedOrder);
                 // (stable: the same facts, or the same reach and as many facts of each kind; an argument's value can
                 // change between rounds without changing what is reached, and every round's facts are sound)
                 bool stable = nf.SameAs(facts) || next._functions.Count == c._functions.Count && nf.ToString() == facts.ToString();
@@ -301,12 +301,25 @@ public sealed partial class IlCompiler
         return sb.ToString();
     }
 
+    /// <summary>A method's code; outside it no method is being compiled (what is reached then is reached by the generated
+    /// code, not by a call the constant propagation saw: ProgramFacts.MarkIndirect).</summary>
     void CompileMethod(MethodDesc m, WasmFunction f)
     {
+        try { CompileMethodCore(m, f); }
+        finally { _compiling = null; }
+    }
+
+    void CompileMethodCore(MethodDesc m, WasmFunction f)
+    {
         _compiling = m;
+        // (IL2WASM_IL_WHY=name: for each method whose name contains it, the chain of methods that first reached it)
+        if (Environment.GetEnvironmentVariable("IL2WASM_IL_WHY") is { Length: > 0 } why && m.ToString()!.Contains(why))
+            Console.Error.WriteLine($"why {m}:{WhyReached(m)}");
         var typical = m.GetTypicalMethodDefinition() as EcmaMethod;
         MethodIL? il = typical != null ? EcmaMethodIL.Create(typical) : null;
         if (il != null && m != typical) il = new InstantiatedMethodIL(m, il);
+        // ([UnsafeAccessor]: a body made for the instantiation)
+        il ??= UnsafeAccessors.Body(m);
         if (il == null)
         {
             Warnings.Add($"{m} has no IL body: it traps");
@@ -438,6 +451,7 @@ public sealed partial class IlCompiler
                 if (Implementation(x, slot) is { } impl && !_functions.ContainsKey(impl)) { _compiling = null; _dispatchWhy = (slot, x); FunctionFor(impl); _dispatchWhy = default; any = true; }
             }
         if (RequestFinalizers()) any = true;
+        if (RequestActivation()) any = true;
         return any || _queue.Count > 0;
     }
 
@@ -537,30 +551,6 @@ public sealed partial class IlCompiler
         return a;
     }
 
-    /// <summary>The type's static constructor runs before this access, once (single-threaded for now: SPEC 3's
-    /// thread-safe initialization needs the runtime's per-type lock, not yet here).</summary>
-    internal void CctorCheck(Emitter e, TypeDesc t)
-    {
-        if (t.GetStaticConstructor() is not { } cctor) return;
-        if (!_init.TryGetValue(t, out var f))
-        {
-            f = Module.AddFunction("init " + t, new FuncType([], []));
-            _init[t] = f;
-            var flag = InitFlag(t);
-            var b = new Emitter(f);
-            b.I32Addr(flag); b.Load(WOp.I32Load); b.If(); b.Op(WOp.Return); b.End();
-            b.I32Addr(flag); b.I32(1); b.Store(WOp.I32Store);
-            b.Call(FunctionFor(cctor));
-        }
-        e.I32Addr(InitFlag(t)); e.Load(WOp.I32Load); e.Op(WOp.I32Eqz); e.If(); e.Call(f); e.End();
-    }
-
-    /// <summary>A static method or a constructor of a type without beforefieldinit triggers its initializer.</summary>
-    internal void CctorCheckForCall(Emitter e, MethodDesc m)
-    {
-        if (m.IsStaticConstructor) return;
-        if (m.OwningType is MetadataType { IsBeforeFieldInit: false } t) CctorCheck(e, t);
-    }
 
     // ------------------------------------------------------------------ literals
 
@@ -1028,6 +1018,7 @@ public sealed partial class IlCompiler
         EmitTypeTables(Final, _types.Count + 2, byFinal);
         EmitArrayFns(Final);
         EmitAssemblyTables(Final);
+        EmitCreateInstance(Final);
     }
 
     string?[] _typeNamesByFinal = [];

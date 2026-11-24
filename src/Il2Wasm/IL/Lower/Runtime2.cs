@@ -180,6 +180,7 @@ public sealed partial class IlCompiler
     internal bool TryUpstreamIntrinsic(Emitter e, MethodDesc m, Node n, FunctionLowering fl)
     {
         if (m.OwningType is not MetadataType ot || ot.Module != _ctx.SystemModule) return false;
+        if (TryActivation(e, m, n, fl)) return true;
         var type = (ot.GetNamespace().Length > 0 ? ot.GetNamespace() + "." : "") + ot.GetName();
         var name = m.GetName();
         TypeDesc? T0() => m.Instantiation.Length > 0 ? m.Instantiation[0] : null;

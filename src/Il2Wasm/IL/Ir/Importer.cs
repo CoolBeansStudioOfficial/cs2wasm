@@ -879,6 +879,12 @@ public sealed class Importer
                     Push(Add(Opc.LdFldA, VK.Ptr, StackType.ByRef, f.FieldType.MakeByRefType(), o).WithX(f));
                     return true;
                 }
+                case ILOpcode.ldsfld when I._il.GetObject(new ILReader(I._code, rd.Offset).ReadILToken()) is FieldDesc { OwningType.IsString: true } fe && fe.GetName() == "Empty":
+                    // string.Empty: [Intrinsic], never initialized by its type (the runtime's empty string, as the JIT
+                    // and NativeAOT treat it): the literal ""
+                    rd.ReadILToken();
+                    Push(Add(Opc.LdStr, VK.Ref, StackType.ObjRef, Ctx.GetWellKnownType(WellKnownType.String)).WithX(""));
+                    return true;
                 case ILOpcode.ldsfld: { var f = (FieldDesc)I._il.GetObject(rd.ReadILToken()); Push(AddOfType(Opc.LdSFld, f.FieldType).WithX(f)); return true; }
                 case ILOpcode.stsfld: { var f = (FieldDesc)I._il.GetObject(rd.ReadILToken()); Add(Opc.StSFld, VK.Void, StackType.None, null, Coerce(Pop(), f.FieldType)).WithX(f); return true; }
                 case ILOpcode.ldsflda: { var f = (FieldDesc)I._il.GetObject(rd.ReadILToken()); Push(Add(Opc.LdSFldA, VK.Ptr, StackType.ByRef, f.FieldType.MakeByRefType()).WithX(f)); return true; }

@@ -6512,6 +6512,17 @@ namespace Il2Wasm.Runtime
             Rt.HoldEpoch(); var e = new System.MissingMethodException(SR.Format(SR.Activator_CannotCreateInstance, typeName, SR.Arg_NoDefCTorWithoutTypeName)); Rt.ReleaseEpoch();
             throw e;
         }
+        /// <summary>Activator.CreateInstance of a type (by id) that cannot be made this way (the IL front end's
+        /// rt.create_instance): why 1 abstract, 2 interface, 3 no public parameterless constructor, 4 string, other no
+        /// parameterless constructor; CoreCLR's messages.</summary>
+        public static void CannotCreate(int typeId, int why)
+        {
+            string name = System.Type.FromId(typeId).ToString();
+            string reason = why switch { 1 => SR.Acc_CreateAbst, 2 => SR.Acc_CreateInterface, 4 => SR.Argument_NoUninitializedStrings, _ => SR.Arg_NoDefCTorWithoutTypeName };
+            throw new System.MissingMethodException(why == 3 ? SR.Format(SR.Arg_NoDefCTor, name) : SR.Format(SR.Activator_CannotCreateInstance, name, reason));
+        }
+        /// <summary>A constructor Activator ran threw: the exception it passes on (wrapped, as reflection's invocations).</summary>
+        public static object InvocationFailed(object inner) => new System.Reflection.TargetInvocationException(inner as System.Exception);
         /// <summary>The exception a failed static initializer leaves: thrown now and at every later access.</summary>
         public static object TypeInitFailed(string typeName, object inner) =>
             new System.TypeInitializationException(typeName, inner as System.Exception);
