@@ -95,11 +95,15 @@ public sealed partial class IlCompiler : IReachHost
         var ctx = new PlanContext(m, body, Solution, Variant.Entry);
         var plan = Plan.Build(ctx);
         if (Pipeline.Inline)
+        {
             for (int step = 0; Inline.Step(ctx, plan, CalleeForInline) is { } site; step++)
             {
                 Canon.Run(ctx, plan, site);
                 if (Pipeline.Verify) Verify.Check(ctx, plan);
             }
+            // (an inlined callee's facts are the caller's now: recorded as its own lowering would have recorded them)
+            foreach (var c in Inline.InlinedInto(plan)) if (Solution.Summary(c) is { } s) Facts.Merge(s);
+        }
         if (Pipeline.Verify) Verify.Check(ctx, plan);
         return plan;
     }
