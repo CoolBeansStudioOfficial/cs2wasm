@@ -779,10 +779,49 @@ sealed class FunctionLowering
                 MovedOut(n);
                 return;
             }
+            // (a cast to Nullable<T> is one to T: a Nullable's box is its value's)
             case Opc.CastClass:
-                Get(n.A[0]); E.Call(C.CastFn((TypeDesc)n.X!)); E.Call(C.Rt.Retain); Set(n); return;
+                Get(n.A[0]); E.Call(C.CastFn(NonNullable((TypeDesc)n.X!))); E.Call(C.Rt.Retain); Set(n); return;
             case Opc.IsInst:
-                Get(n.A[0]); E.Call(C.IsInstFn((TypeDesc)n.X!)); E.Call(C.Rt.Retain); Set(n); return;
+                Get(n.A[0]); E.Call(C.IsInstFn(NonNullable((TypeDesc)n.X!))); E.Call(C.Rt.Retain); Set(n); return;
+            case Opc.Box when ((TypeDesc)n.X!).IsNullable:
+            {
+                // a Nullable<T> boxes as its value (a T's box), or as null when it has none (ECMA-335 III.4.1)
+                var t = (TypeDesc)n.X!;
+                var vt = t.Instantiation[0];
+                C.Constructed(vt);
+                var (hv, vf) = NullableFields(t);
+                int es = IlCompiler.SizeOfAny(vt);
+                Get(n.A[0]); E.Load(WOp.I32Load8U, hv);
+                E.If();
+                E.I32(IlContext.ObjectHeader + Math.Max(4, es)); E.Tid(C.TypeId(vt)); E.Call(C.Rt.AllocObject); Set(n);
+                Get(n); E.I32(IlContext.ObjectHeader); E.Op(WOp.I32Add); Get(n.A[0]); if (vf != 0) { E.I32(vf); E.Op(WOp.I32Add); } E.I32(es); E.Emit(WOp.MemoryCopy);
+                if (Kinds.Counted(vt) && (n.Moves & 1) == 0) { Get(n); E.I32(IlContext.ObjectHeader); E.Op(WOp.I32Add); StructCounts(vt, true); }
+                E.Else();
+                E.I32(0); Set(n);
+                E.End();
+                if ((n.Moves & 1) != 0 && Kinds.Counted(t)) Clear(n.A[0]);
+                return;
+            }
+            case Opc.UnboxAny when ((TypeDesc)n.X!).IsNullable:
+            {
+                // to a Nullable<T>: none from null, else the T's box's value (InvalidCastException for any other)
+                var t = (TypeDesc)n.X!;
+                var vt = t.Instantiation[0];
+                var (hv, vf) = NullableFields(t);
+                int es = IlCompiler.SizeOfAny(vt);
+                int o = E.AddLocal(ValType.I32);
+                Get(n.A[0]); E.Set(o);
+                Get(n); E.I32(0); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryFill);
+                E.Get(o);
+                E.If();
+                E.Get(o); E.Call(C.UnboxFn(vt)); E.Op(WOp.Drop);
+                Get(n); if (vf != 0) { E.I32(vf); E.Op(WOp.I32Add); } E.Get(o); E.I32(IlContext.ObjectHeader); E.Op(WOp.I32Add); E.I32(es); E.Emit(WOp.MemoryCopy);
+                Get(n); E.I32(1); E.Store(WOp.I32Store8, hv);
+                if (Kinds.Counted(vt)) { Get(n); if (vf != 0) { E.I32(vf); E.Op(WOp.I32Add); } StructCounts(vt, true); }
+                E.End();
+                return;
+            }
             case Opc.Box:
             {
                 var t = (TypeDesc)n.X!;
@@ -811,6 +850,15 @@ sealed class FunctionLowering
             }
         }
         throw new NotSupportedException($"{_body.Method}: IR {n.Op} is not lowered yet");
+    }
+
+    static TypeDesc NonNullable(TypeDesc t) => t.IsNullable ? t.Instantiation[0] : t;
+
+    /// <summary>A Nullable&lt;T&gt;'s hasValue and value offsets.</summary>
+    static (int hasValue, int value) NullableFields(TypeDesc t)
+    {
+        var fs = t.GetFields().Where(f => !f.IsStatic).ToList();
+        return (IlContext.FieldOffset(fs.First(f => f.GetName() == "hasValue")), IlContext.FieldOffset(fs.First(f => f.GetName() == "value")));
     }
 
     void ZeroOf(TypeDesc t)
