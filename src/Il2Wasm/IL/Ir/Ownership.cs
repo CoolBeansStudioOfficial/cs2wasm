@@ -84,7 +84,9 @@ public static class Ownership
                     else if (Derives(n))
                         foreach (var a in n.A)
                         {
-                            if (a.Kind == VK.Ref && a.Op is not (Opc.LdNull or Opc.LdStr)) (l ??= []).Add(a);
+                            // (a struct with references is a base too: a span made from an ArraySegment points into
+                            // the array the segment holds)
+                            if (IsRef(a) && a.Op is not (Opc.LdNull or Opc.LdStr)) (l ??= []).Add(a);
                             else if (info.Bases.TryGetValue(a, out var ab)) (l ??= []).AddRange(ab);
                         }
                     if (l == null) continue;
