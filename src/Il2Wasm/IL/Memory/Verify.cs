@@ -93,6 +93,11 @@ public static class Verify
         void Static()
         {
             bool threaded = _ctx.Threaded;
+            // (an owned variant's parameters are references: a struct parameter is an address the plan never counts, so a
+            // count handed over in one would never be released)
+            if (_ctx.Entry.Kind == VariantKind.Owned)
+                foreach (var a in _body.Args)
+                    if (Plan.Owns(_ctx.Entry, (int)a.I) && a.Kind != VK.Ref) throw Fail($"the variant {_ctx.Entry.Suffix} owns parameter {a.I}, which is not a reference (check 8)", a);
             foreach (var b in _body.Blocks)
             {
                 foreach (var phi in b.Phis)
@@ -113,6 +118,8 @@ public static class Verify
                     bool call = n.Op is Opc.Call or Opc.NewObj or Opc.CallI && !Plan.IsInserted(n);
                     var v = _plan.Callees[n];
                     if (v != Variant.Entry && !Plan.DirectSite(n)) throw Fail("a variant at a site that is not direct (check 8)", n, b);
+                    // (a constructor's this at a NewObj is the caller's new object, passed by no operand: nothing hands it over)
+                    if (n.Op == Opc.NewObj && Plan.Owns(v, 0)) throw Fail("a NewObj calls a variant that owns this, the caller's new object (check 8)", n, b);
                     for (int j = 0; j < n.A.Length; j++)
                     {
                         bool moved = (n.Moves >> j & 1) != 0;

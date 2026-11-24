@@ -171,6 +171,24 @@ public static class Signatures
                 }
             }
         }
+        // (IL2WASM_HANDOVER_ONLY=lo-hi, a bisect aid: only a method with a HandOver parameter whose name hashes into [lo, hi)
+        // of 65536 keeps its demand; IL2WASM_HANDOVER_LIST=1 lists them)
+        if (Environment.GetEnvironmentVariable("IL2WASM_HANDOVER_ONLY") is { Length: > 0 } only)
+        {
+            var parts = only.Split('-');
+            int lo = int.Parse(parts[0]), hi = int.Parse(parts[1]), j = 0;
+            for (int id = 0; id < n; id++)
+            {
+                var m = solution.Methods[id];
+                if (!demand[m].Params.Contains(ParamConv.HandOver)) continue;
+                uint h = 2166136261; foreach (char ch in m.ToString()!) h = (h ^ ch) * 16777619;
+                int b = (int)(h % 65536);
+                if (Environment.GetEnvironmentVariable("IL2WASM_HANDOVER_LIST") == "1" && b >= lo && b < hi) Console.Error.WriteLine($"handover: {b} {m} {demand[m]}");
+                if (b < lo || b >= hi) demand[m] = OwnershipSignature.Bottom(m);
+                j++;
+            }
+            Console.Error.WriteLine($"handover: {j} methods hand over");
+        }
         for (int id = 0; id < n; id++)
         {
             var m = solution.Methods[id];
@@ -210,7 +228,9 @@ public static class Signatures
         bool inst = !m.Signature.IsStatic;
         if (inst && i == 0) return !m.OwningType.IsValueType;
         var t = m.Signature[i - (inst ? 1 : 0)];
-        return Kinds.Counted(t);
+        // (a reference only: a struct parameter arrives as an address into the caller's copy, which the callee's plan
+        // does not count, so an owned variant would never release a struct handed over to it)
+        return Kinds.Of(t) == VK.Ref && Kinds.Counted(t);
     }
 
     /// <summary>The parameter (this = 0) a call operand is passed to: the operand index for a call, one more for a
@@ -559,12 +579,16 @@ public static class Signatures
         uint mask = handedOverMask & all;
         if (mask != 0 && s_handOverBreak) return Variant.Entry;
         int size = SizeOf(ctx.Solution, callee);
+        // (a NewObj's this is the new object: the caller holds its only count and no operand passes it, so no count
+        // could be handed over for it; a variant that owns it would release the caller's count. Such a site takes a
+        // variant without this, or the Entry)
+        bool thisFree = call.Op == Opc.NewObj;
         if (mask != 0 || size > LargeMethod && all != 0)
         {
             var want = new Variant(VariantKind.Owned, size <= SmallMethod && mask != 0 ? mask : all);
-            if (vs.Contains(want)) return want;
+            if (vs.Contains(want) && !(thisFree && Owns(want, 0))) return want;
             var full = new Variant(VariantKind.Owned, all);
-            if (vs.Contains(full)) return full;
+            if (vs.Contains(full) && !(thisFree && Owns(full, 0))) return full;
         }
         var br = new Variant(VariantKind.BorrowReturn);
         return mask == 0 && vs.Contains(br) ? br : Variant.Entry;
