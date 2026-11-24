@@ -466,7 +466,7 @@ public sealed partial class IlCompiler
         return f;
     }
 
-    static int Flags2(TypeDesc t)
+    public static int Flags2(TypeDesc t)
     {
         int f = 0;
         // (an open type, typeof(KeyValuePair<,>) or a signature variable's array: no layout, nothing counted)
@@ -477,7 +477,9 @@ public sealed partial class IlCompiler
             _ => t.IsValueType && Kinds.Counted(t),
         };
         if (counted) f |= 1;
-        if (t.IsByRefLike) f |= 2;
+        // (a signature variable, !0 of an open type's generic arguments: the type system cannot say whether it is
+        // ByRef-like until a substitution, and asserts if asked; as a generic parameter under .NET, it is not)
+        if (t is not SignatureVariable && t.IsByRefLike) f |= 2;
         if (t.HasInstantiation) f |= 4;
         if (t is MetadataType { ContainingType: not null }) f |= 8;
         if (t.IsDelegate) f |= 16;
