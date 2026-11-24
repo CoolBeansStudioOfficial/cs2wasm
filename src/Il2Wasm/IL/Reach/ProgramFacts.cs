@@ -20,7 +20,7 @@ public sealed class ProgramFacts : ISccpOracle
     public readonly PureCalls Pure;
     /// <summary>The round before's facts (null in the first round).</summary>
     public RoundFacts? Previous;
-    /// <summary>IL2WASM_IL_IMPORT_CACHE=1: imports kept across rounds (shared by the rounds of one compilation).</summary>
+    /// <summary>Imports kept (IL2WASM_NO_IMPORT_CACHE=1: none) across rounds (shared by the rounds of one compilation).</summary>
     public ImportCache? Cache;
 
     // this round's

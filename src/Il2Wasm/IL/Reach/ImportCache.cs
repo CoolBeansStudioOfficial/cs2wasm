@@ -6,7 +6,7 @@ using Internal.TypeSystem;
 
 namespace Il2Wasm.IL.Reach;
 
-/// <summary>Imports kept across the rounds of one compilation (IL2WASM_IL_IMPORT_CACHE=1; MEMORY-IR 3.4's phase 2).
+/// <summary>Imports kept across the rounds of one compilation (on by default, IL2WASM_NO_IMPORT_CACHE=1: off; MEMORY-IR 3.4's phase 2).
 /// A method's import is its IL, the substitutions and switches, the compile-time calls (PureCalls, whose answers are a
 /// function of the call since its memo is order-free) and the round before's facts. Of those only the facts change
 /// between rounds, and the import reads them through RoundFacts' accessors: each read, with its answer, is recorded.
@@ -16,7 +16,7 @@ namespace Il2Wasm.IL.Reach;
 /// (ProgramFacts.Meet copies), so one can serve again.</summary>
 public sealed class ImportCache
 {
-    public static readonly bool On = Environment.GetEnvironmentVariable("IL2WASM_IL_IMPORT_CACHE") == "1";
+    public static readonly bool On = Environment.GetEnvironmentVariable("IL2WASM_NO_IMPORT_CACHE") != "1";
 
     sealed record Entry(List<(char Kind, object Key, int Index, string Answer)> Reads, ImportFacts? Facts, Il2Wasm.IL.Memory.MethodSummary Summary);
 

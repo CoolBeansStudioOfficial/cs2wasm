@@ -5687,3 +5687,39 @@ Not run: the homelab suite and the self-host check on this commit.
   - the homelab suite and stress (no runtime or back-end change).
   Prototypes inside a recursive cycle depend on which member is asked for first (deterministic: lowering order is
   fixed).
+
+### Rounds: an import cache, solve-only rounds, the hybrid (claude/s1-inline, 2026-11-24)
+
+- What keeps changing on hello world (IL2WASM_IL_ROUNDS_DUMP) [run]: the round facts still change at round 4->5 (26
+  argument meets, 1 return). These are refinements as code removed in the round before drops callers: exception
+  constructors' message argument goes Bottom -> NonNull string, and `this` becomes typed. Module bytes by cap: 3:
+  1,387,288; 4: 1,375,438; 5: 1,374,751; 6: 1,374,328 (the default); 8: 1,374,030. A round (rounds 2-5) spends
+  0.9-1.1 s in reach (import) and 0.55-1.0 s in lowering. Capping rounds was rejected: it trades output for time.
+- PureCalls' memo is order-free (c2a095a): a result that met the depth bound, or a call into an evaluation in
+  progress, is kept only until the outermost evaluation ends. The first version kept none, and it blew up
+  exponentially on hello world. Bytes identical on hello world and all 50 IL-test modules.
+- Import cache, on by default (IL2WASM_NO_IMPORT_CACHE=1: off; Reach/ImportCache.cs):
+  - RoundFacts' accessors log every read an import makes, with its answer.
+  - A later round whose facts answer every read the same way imports the method once, with the decisions kept, and
+    reuses its summary. ProgramFacts.Meet copies argument arrays, so summaries are never written after they are
+    built.
+  - Hello world [run, desk, interleaved]: byte-identical; imports kept per round 0, 3,876, 4,114, 4,260, 4,261 of
+    about 4,350; 14.3-15.1 s against 16.3-16.8 s (about -10%). Peak working set: hello world 466-483 MB against
+    449-484 MB; f06_async_sync 594-599 MB against 545-579 MB (+4-9%), because the cache holds summaries and read logs.
+  - IL tests: all 50 modules byte-identical, with IL2WASM_MEM_PLAN=1 and by default. NetWasm suite, shipped, desk: every case compiled with the cache and without it, and all 443 modules that compile
+    are byte-identical (the 7 that do not compile fail both ways); 283 passed, 159 failed, 7 did not compile, 1 timed
+    out, all 450 case-modes the same status as main.
+- IL2WASM_IL_SOLVE_ROUNDS=1 (off): reach-and-solve rounds to the facts' fixed point (round 11 on hello world), then
+  one whole round. 1,374,441 B (+113 B against the default): 78 reached methods are never lowered (reflection and
+  attribute paths seeded from round 0, EqualityComparer<nint>), and their merged summaries weaken the facts.
+- IL2WASM_IL_SOLVE_ROUNDS=2, the hybrid (off; the option to revisit once rounds are cheap): after each solve-only
+  fixed point, a whole round re-derives the lowering-only marks (seeds still lowered, indirect marks, constructed
+  types), until a whole round's facts are the fixed point's.
+  - Hello world: 1,374,033 B, -295 B against the default and 3 B above cap 8's 1,374,030. Solve fixed point at 11,
+    whole round 12, fixed point at 14, whole round 15 settled. 19.7 s, about +20% with the cache.
+  - IL tests 111 of 111: all 50 compiles settle, using 91 whole rounds after round 0.
+- A pristine copy of each kept body, so that a hit is a copy instead of an import (tried, not kept), with the
+  cache, interleaved:
+  - hello world: no time gain (19.6-20.2 s against 19.5-20.0 s) and peak 456-517 MB against 466-483 MB;
+  - f06: no time gain (22.8-24.9 s against 22.7-24.1 s) and peak 633-660 MB against 594-599 MB.
+  A single import with the decisions kept is as cheap as the copy.
