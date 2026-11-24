@@ -93,6 +93,8 @@ public sealed partial class IlCompiler
     public byte[] Compile(MethodDesc entry)
     {
         var main = FunctionFor(entry);
+        // il-runtime: [UnmanagedCallersOnly(EntryPoint)] exports, wrapped (Exports.cs)
+        if (entry.OwningType is MetadataType { Module: EcmaModule em }) RootExports(em);
         for (; ; )
         {
             while (_queue.Count > 0) { var (m, f) = _queue.Dequeue(); CompileMethod(m, f); }
@@ -110,6 +112,7 @@ public sealed partial class IlCompiler
         Layout();
         Module.TypeIdMap = id => _finalIds[id];
         Module.ValidateAlways = true;
+        Module.PosShown = p => p >= 0 && p < _positions.Count; // il-runtime: positions are the program's own (DebugInfo.cs)
         // (IL2WASM_IL_BODY=name: the WASM bodies of the functions whose name contains it, before the back end's passes)
         if (Environment.GetEnvironmentVariable("IL2WASM_IL_BODY") is { Length: > 0 } wb)
             foreach (var f in Module.Functions.Where(f => f.Name.Contains(wb)))
@@ -132,7 +135,7 @@ public sealed partial class IlCompiler
             throw;
         }
         if (Module.ValidationProblems.Count > 0) throw new InvalidOperationException("invalid module:\n" + string.Join("\n", Module.ValidationProblems.Take(10)));
-        return enc.Bytes;
+        return WithDebugSections(enc); // il-runtime: the frames and lines sections (DebugInfo.cs)
     }
 
     static FuncType Sig(MethodDesc m)
@@ -185,6 +188,7 @@ public sealed partial class IlCompiler
             return native;
         }
         f = Module.AddFunction(m.ToString(), Sig(m));
+        SetFrame(f, m); // il-runtime: its frame in traces (DebugInfo.cs)
         _functions[m] = f;
         _queue.Enqueue((m, f));
         _why[m] = _compiling;
@@ -660,7 +664,8 @@ public sealed partial class IlCompiler
             case "Rt.RetainElements": e.Call(Rt.Range(m.Instantiation[0], true)); break;
             // (the program as compiled here: one thread, no groups, the allocator's narrow size steps; the runtime's
             // switches at their defaults)
-            case "Rt.ThreadMode": case "Rt.ShareCheck": case "Rt.Checked": case "Rt.MemStatsOn": case "Rt.WideSizes": case "Rt.RuntimeLockHeld": e.I32(0); break;
+            case "Rt.ThreadMode": case "Rt.ShareCheck": case "Rt.MemStatsOn": case "Rt.WideSizes": case "Rt.RuntimeLockHeld": e.I32(0); break;
+            case "Rt.Checked": e.I32(Checked ? 1 : 0); break; // il-runtime: the checked build (Checks.cs)
             case "Rt.SingleThreaded": case "Rt.RipePages": case "Rt.HoldPages": e.I32(1); break;
             case "Rt.ThreadId": e.I32(1); break;
             case "Rt.BulkEnter": case "Rt.BulkExit": case "Rt.HoldEpoch": case "Rt.ReleaseEpoch": case "Rt.RuntimeLock": case "Rt.RuntimeUnlock": case "Rt.MemStatsGrow": break;
@@ -745,6 +750,7 @@ public sealed partial class IlCompiler
         // the destroy function's callee
         Rt.Free = FunctionFor(CoreMethod("Il2Wasm.Runtime", "Rt", "FreeObject"));
         _ = Rt.NonNull;
+        _ = ThrowHook; _ = OnCatchFn; // il-runtime: throws the generated parts make (Filters.cs, DebugInfo.cs)
         // the names, for TypeNameById (made now: they are literals)
         foreach (var t in _types.ToList()) StringLiteral(TypeName(t));
     }
@@ -752,6 +758,8 @@ public sealed partial class IlCompiler
     /// <summary>The functions whose bodies need the whole program: dispatch stubs, type tests, destroy.</summary>
     void GenerateLate()
     {
+        // il-runtime: the first pass's functions (before the type tests: they make some)
+        EmitEhSupport();
         // type ids: 1 is string's (CoreLib's contract); the others in a preorder of the class hierarchy from 2
         CloseTypeIds();
         foreach (var t in _types.ToList()) StringLiteral(TypeName(t));
@@ -1001,6 +1009,7 @@ public sealed partial class IlCompiler
                 var e = new Emitter(_retain);
                 int r = e.AddLocal(I);
                 c.WatchEvent(e, 1);
+                c.CheckedCount(e, false); // il-runtime: the checked build traps on a freed object (Checks.cs)
                 e.Get(0); e.If();
                 e.Get(0); e.Load(WOp.I32Load); e.Tee(r); e.I32(0); e.Op(WOp.I32GtS);
                 e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(WOp.I32Add); e.Store(WOp.I32Store); e.End();
@@ -1022,6 +1031,7 @@ public sealed partial class IlCompiler
                 // (IL2WASM_IL_WATCH=address, a debugging aid: each release of that object logged, and the one that
                 // frees it traps, so its stack shows who)
                 c.WatchEvent(e, 2);
+                c.CheckedCount(e, true); // il-runtime: the checked build traps on a release too many (Checks.cs)
                 e.Get(0); e.If();
                 e.Get(0); e.Load(WOp.I32Load); e.Tee(r); e.I32(1); e.Op(WOp.I32GtS);
                 e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(WOp.I32Sub); e.Store(WOp.I32Store);

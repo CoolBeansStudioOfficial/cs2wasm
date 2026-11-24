@@ -13,7 +13,7 @@ namespace Il2Wasm.IL.Ir;
 /// arguments written inside a protected region or a finally, fault or filter are variables of their own (VarLd and
 /// VarSt): an exception can leave the region between any two instructions, so their value at the handler is the one
 /// last written, which no SSA value names. Every other variable keeps its try-entry value in the handlers.</summary>
-public sealed class Importer
+public sealed partial class Importer
 {
     readonly MethodDesc _method;
     readonly MethodIL _il;
@@ -226,6 +226,10 @@ public sealed class Importer
                 _body.Vars.Add(new Var { Kind = Kinds.Of(VarType(v)), Type = VarType(v) });
             }
         }
+        // il-runtime: what a filter uses is in the frame (the filter runs as a function of its own: FilterSlots.cs)
+        FilterSlots();
+        // il-runtime: a pinned local holds its object (Pinning.cs)
+        PinSlots();
     }
 
     // ---------------------------------------------------------------- the control flow graph
@@ -532,7 +536,7 @@ public sealed class Importer
 
     // ---------------------------------------------------------------- one block's instructions
 
-    sealed class BlockImporter
+    sealed partial class BlockImporter
     {
         readonly Importer I;
         readonly Block B;
@@ -582,6 +586,7 @@ public sealed class Importer
         void StoreVar(int v, Node val)
         {
             val = Coerce(val, I.VarType(v));
+            Pin(v, val); // il-runtime: Pinning.cs
             if (I._slotOf.TryGetValue(v, out int slot)) { var n = Add(Opc.VarSt, VK.Void, StackType.None, null, val); n.I = slot; return; }
             I.Write(v, B, val);
         }

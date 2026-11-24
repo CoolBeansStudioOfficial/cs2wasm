@@ -44,8 +44,44 @@ static class RuntimePrograms
         return bytes;
     }
 
+    const string ExportsProgram = """
+        using System;
+        using System.Runtime.InteropServices;
+        static class Program
+        {
+            static void Main() { Console.WriteLine("main"); }
+            [UnmanagedCallersOnly(EntryPoint = "add")]
+            static int Add() { Console.WriteLine("add " + (2 + 3)); return 5; }
+            [UnmanagedCallersOnly(EntryPoint = "fail")]
+            static int Fail() { Console.WriteLine("failing"); throw new InvalidOperationException("boom from export"); }
+        }
+        """;
+
+    /// <summary>SPEC 6.2: an [UnmanagedCallersOnly(EntryPoint)] method is an export; an exception that escapes it is
+    /// reported to the host (type, message, trace) and the export returns.</summary>
+    static void Exports(Checks c, string dir)
+    {
+        var dll = Assembly(dir, "r00_exports", ExportsProgram);
+        var wasm = Compile(dir, "r00_exports", dll, false);
+        var file = Path.Combine(Build.Dir, "r00_exports.wasm");
+        File.WriteAllBytes(file, wasm);
+        string RunExport(string export)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("node", [Path.Combine(EndToEnd.RepoRoot, "host", "run.mjs"), file, export]) { RedirectStandardOutput = true, RedirectStandardError = true };
+            using var p = System.Diagnostics.Process.Start(psi)!;
+            var o = p.StandardOutput.ReadToEndAsync(); var er = p.StandardError.ReadToEndAsync();
+            p.WaitForExit(60_000);
+            return (o.Result + er.Result).Replace("\r\n", "\n");
+        }
+        c.Eq("exports: add runs", RunExport("add"), "add 5\n");
+        var failed = RunExport("fail");
+        c.True("exports: an exception that escapes is reported with its type, message and trace (got: " + failed.Replace("\n", " | ") + ")",
+            failed.StartsWith("failing\nUnhandled exception. System.InvalidOperationException: boom from export\n") && failed.Contains("at Program.Fail()"));
+    }
+
     public static void Run(Checks c, string filter)
     {
+        if (Dir() is { } d0 && (filter is "" or "rt" || "r00".StartsWith(filter))) Exports(c, d0);
         c.Section("runtime: programs on the IL CoreLib under host/run.mjs, against .NET");
         var dir = Dir();
         if (dir == null) { c.Info("no artifacts/framework (node tools/build-corelib.mjs): skipped"); return; }

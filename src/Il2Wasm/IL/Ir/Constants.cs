@@ -11,6 +11,9 @@ namespace Il2Wasm.IL.Ir;
 /// folds them, so the code behind a switch that is off is never reached, as Folding.cs did.</summary>
 public static class Constants
 {
+    /// <summary>il-runtime: the module is the checked build (Rt.Checked is 1: Lower/Checks.cs).</summary>
+    public static bool CheckedBuild;
+
     public static long? OfIntrinsic(MethodDesc m)
     {
         if (m.Signature.Length != 0 || m.OwningType is not MetadataType ot || ot.GetName() != "Rt" || ot.GetNamespace() != "Il2Wasm.Runtime") return null;
@@ -18,7 +21,8 @@ public static class Constants
         var name = m.GetName();
         switch (name)
         {
-            case "ThreadMode": case "ShareCheck": case "Checked": case "MemStatsOn": case "WideSizes": case "RuntimeLockHeld":
+            case "Checked": return CheckedBuild ? 1 : 0; // il-runtime: the checked build (Lower/Checks.cs)
+            case "ThreadMode": case "ShareCheck": case "MemStatsOn": case "WideSizes": case "RuntimeLockHeld":
             case "FirstChanceWanted": case "FramesWanted": case "WeakAny": case "DeadlockDump": case "ArrayMoveMode":
                 return 0;
             case "SingleThreaded": case "RipePages": case "HoldPages": case "FusedDrop":

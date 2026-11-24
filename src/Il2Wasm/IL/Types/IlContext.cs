@@ -47,6 +47,9 @@ public sealed class IlContext : MetadataTypeSystemContext
         return m;
     }
 
+    /// <summary>The file an assembly was loaded from (by its simple name), or null.</summary>
+    public string? PathOf(string simpleName) => _paths.TryGetValue(simpleName, out var p) ? p : null;
+
     public void SetCoreLib(string simpleName = "System.Private.CoreLib") => SetSystemModule(Load(simpleName));
 
     public override ModuleDesc ResolveAssembly(AssemblyNameInfo name, bool throwIfNotFound) =>

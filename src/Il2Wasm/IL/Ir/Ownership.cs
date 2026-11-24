@@ -34,10 +34,28 @@ public static class Ownership
     /// conversion, and a call's returned byref (a span's, an array's data reference, an accessor's). A pointer loaded
     /// from memory points into nothing known here.</summary>
     static bool Derives(Node n) => n.Kind == VK.Ptr && n.Op is Opc.LdFldA or Opc.LdElemA or Opc.Unbox or Opc.Bin or Opc.Conv or Opc.Call or Opc.CallI
-        || ByRefLike(n) && n.Op is Opc.Call or Opc.CallI or Opc.NewObj or Opc.LdObj;
+        || ByRefLike(n) && n.Op is Opc.Call or Opc.CallI or Opc.NewObj or Opc.LdObj
+        || n.Kind == VK.I32 && n.Op == Opc.Call && IsAddressOf(n);
 
     /// <summary>A value of a byref-like struct (a Span: it holds an address into an object, so it keeps it as one).</summary>
     static bool ByRefLike(Node n) => n.Kind == VK.Struct && n.Type is Internal.TypeSystem.DefType { IsByRefLike: true };
+
+    /// <summary>il-runtime: the runtime's own addresses of an object as an int (Rt.AddressOf, ArrayData, StringData):
+    /// the runtime's C# was written for the operation-tree front end, which kept a local to the end of its scope, so
+    /// `Engine.Write(Rt.ArrayData(text), n)` relied on text living on; an int derived from them keeps the object as an
+    /// address does (the int itself: arithmetic on it is not followed).</summary>
+    static bool IsAddressOf(Node n) => n.X is Internal.TypeSystem.MethodDesc m && m.OwningType is Internal.TypeSystem.MetadataType t
+        && t.GetName() == "Rt" && t.GetNamespace() == "Il2Wasm.Runtime" && m.GetName() is "AddressOf" or "ArrayData" or "StringData";
+
+    /// <summary>il-runtime: the reference an address points into, as Derives follows it (a pinned local keeps it:
+    /// Importer's Pinning.cs), or null.</summary>
+    public static Node? RootOf(Node n)
+    {
+        if (n.Kind == VK.Ref) return n.Op is Opc.LdNull or Opc.LdStr ? null : n;
+        if (!Derives(n)) return null;
+        foreach (var a in n.A) if (RootOf(a) is { } r) return r;
+        return null;
+    }
 
     /// <summary>The bases of each derived address, in definition order (an address of an address has its bases).
     /// Phis are not followed: an address carried around a loop does not keep its object.</summary>
