@@ -22,7 +22,7 @@ namespace Il2Wasm.IL.Memory;
 ///   bit), KeepAlive (lowering's retain at the push) or Lend (a release after the call at the last use);
 /// - an address carried round a loop by a phi keeps its objects (7.3's one fix);
 /// - a returned span or byref over an object only this function holds hands that object to its caller (7.4):
-///   Rt.ReturnHold before the return, Rt.ReturnTake after the call, an Owned base of the result; where the keeper
+///   Rt.ReturnKeepers.Hold before the return, Rt.ReturnKeepers.Take after the call, an Owned base of the result; where the keeper
 ///   protocol does not reach (a callee outside the solution, the stub CoreLib), the naive keep stays (a leak, counted);
 /// - GC.KeepAlive's argument is held by a count of this frame to the call (a borrow with a root that may be written
 ///   flips to Owned).
@@ -43,7 +43,22 @@ public static class Plan
     internal static readonly ConditionalWeakTable<Body, HashSet<Node>> KnownKeeps = new();
 
     /// <summary>Counters for the report (all plans of the process).</summary>
-    public static int Keepers, MissedKeepers, Takes, Flips;
+    public static int Keepers, MissedKeepers, Takes, Flips, Plans;
+
+    /// <summary>IL2WASM_PLAN_STATS=1: the counters, and each method whose returned address keeps a base the protocol
+    /// does not reach, on stderr when the process exits.</summary>
+    static readonly bool s_stats = Environment.GetEnvironmentVariable("IL2WASM_PLAN_STATS") == "1";
+    static readonly SortedSet<string> s_missed = new(StringComparer.Ordinal);
+
+    static Plan()
+    {
+        if (s_stats)
+            AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+            {
+                Console.Error.WriteLine($"plan: {Plans} plans, {Keepers} keepers held, {Takes} takes, {MissedKeepers} keeps not handed on, {Flips} flips, {Verify.Checked} verified");
+                foreach (var m in s_missed) Console.Error.WriteLine("plan: keep not handed on: " + m);
+            };
+    }
 
     /// <summary>Plans one body for one entry: inserts the Retain and Release nodes and Node.Moves bits into the body,
     /// and fills the plan's tables (Own from Borrows.Analyze, Args from Signatures.CallRule, Callees from
@@ -51,8 +66,14 @@ public static class Plan
     public static MethodPlan Build(PlanContext ctx)
     {
         Strip(ctx.Body);
-        return new Planner(ctx).Run();
+        var plan = new Planner(ctx).Run();
+        System.Threading.Interlocked.Increment(ref Plans);
+        if (s_dump != null && ctx.Method.ToString()!.Contains(s_dump)) Console.Error.WriteLine("plan of " + ctx.Method + " (" + ctx.Entry + "):" + Environment.NewLine + ctx.Body.Dump());
+        return plan;
     }
+
+    /// <summary>IL2WASM_PLAN_DUMP=text: the planned body of each method whose name contains it, on stderr.</summary>
+    static readonly string? s_dump = Environment.GetEnvironmentVariable("IL2WASM_PLAN_DUMP") is { Length: > 0 } d ? d : null;
 
     /// <summary>Takes an earlier plan out of a body: its Retain and Release nodes, its keeper calls, its Moves bits.</summary>
     static void Strip(Body body)
@@ -121,10 +142,10 @@ public static class Plan
         {
             if (s_keeperCalls.TryGetValue(c, out var k)) return k;
             (MethodDesc, MethodDesc)? r = null;
-            if (c.SystemModule.GetType("Il2Wasm.Runtime"u8, "Rt"u8, throwIfNotFound: false) is MetadataType rt)
+            if (c.SystemModule.GetType("Il2Wasm.Runtime"u8, "Rt"u8, throwIfNotFound: false) is MetadataType rt && rt.GetNestedType("ReturnKeepers"u8) is MetadataType rk)
             {
-                var hold = rt.GetMethods().FirstOrDefault(x => x.GetName() == "ReturnHold");
-                var take = rt.GetMethods().FirstOrDefault(x => x.GetName() == "ReturnTake");
+                var hold = rk.GetMethods().FirstOrDefault(x => x.GetName() == "Hold");
+                var take = rk.GetMethods().FirstOrDefault(x => x.GetName() == "Take");
                 if (hold != null && take != null) r = (hold, take);
             }
             s_keeperCalls.Add(c, r);
@@ -133,21 +154,36 @@ public static class Plan
     }
     static readonly Dictionary<TypeSystemContext, (MethodDesc, MethodDesc)?> s_keeperCalls = new();
 
-    /// <summary>The method may hand its caller a keeper (7.4): it is in the solution, returns an address, and makes an
-    /// object or calls something whose result is counted (the only ways an object only it holds comes to be). The
-    /// callee hands a keeper only where this holds, and every caller of such a target takes after the call.</summary>
+    /// <summary>The method may hand its caller a keeper (7.4): it is in the solution, returns an address, and either makes
+    /// an object (a type that can be on the heap: a byref-like struct cannot), calls what it cannot see (calli, a
+    /// delegate), calls something whose result is counted (Unsafe's forwarding casts aside), or calls a target that
+    /// may itself hand it a keeper (the only ways an object only it holds comes to be). The callee hands a keeper only
+    /// where this holds, and every caller of such a target takes after the call. A least fixed point over the calls
+    /// (a recursion in progress counts as no keeper), memoized per solution.</summary>
     internal static bool MayKeep(ProgramSolution sol, MethodDesc m)
     {
-        if (!ReturnsAddress(m) || sol.Summary(m) is not { } s) return false;
-        if (s.Constructs.Count > 0 || s.CallsUnknown) return true;
-        foreach (var c in s.Calls) if (CountedResult(c)) return true;
-        foreach (var c in s.Slots) if (CountedResult(c)) return true;
-        foreach (var c in s.Intrinsics) if (CountedResult(c)) return true;
-        return false;
+        if (!ReturnsAddress(m) || sol.Summary(m) is null) return false;
+        Dictionary<MethodDesc, bool> memo;
+        lock (s_mayKeep) { if (!s_mayKeep.TryGetValue(sol, out memo!)) s_mayKeep.Add(sol, memo = new()); }
+        lock (memo) return MayKeep(sol, m, memo);
+    }
+
+    static readonly ConditionalWeakTable<ProgramSolution, Dictionary<MethodDesc, bool>> s_mayKeep = new();
+
+    static bool MayKeep(ProgramSolution sol, MethodDesc m, Dictionary<MethodDesc, bool> memo)
+    {
+        if (memo.TryGetValue(m, out bool r)) return r;
+        if (!ReturnsAddress(m) || sol.Summary(m) is not { } s) return memo[m] = false;
+        memo[m] = false;
+        r = s.CallsUnknown || s.Constructs.Any(t => t is not DefType { IsByRefLike: true })
+            || s.Calls.Concat(s.Intrinsics).Any(c => CountedResult(c) || ReturnsAddress(c) && MayKeep(sol, c, memo))
+            || s.Slots.Any(c => CountedResult(c) || ReturnsAddress(c) && sol.Targets(c).Any(t => MayKeep(sol, t, memo)));
+        return memo[m] = r;
     }
 
     static bool CountedResult(MethodDesc c)
     {
+        if (c.OwningType is MetadataType u && u.GetName() == "Unsafe" && u.GetNamespace() == "System.Runtime.CompilerServices") return false;
         try { return c.Signature.ReturnType is { } t && !t.IsVoid && Kinds.Counted(t); } catch { return true; }
     }
 
@@ -540,6 +576,7 @@ public static class Plan
                 // (the Owned values the operands keep through a borrow or an address: not moved at this operation)
                 var through = new HashSet<Node>();
                 foreach (var a in n.A) foreach (var k in Keep(a)) if (k != a && !Skip(k, n)) through.Add(k);
+                List<Node>? kept = null;
                 var seen = new HashSet<Node>();
                 for (int k = 0; k < n.A.Length; k++)
                 {
@@ -584,12 +621,13 @@ public static class Plan
                         if (v == a || Skip(v, n) || !seen.Add(v)) continue;
                         if (!live.Contains(v))
                         {
-                            if (n.Op == Opc.Ret && !IsRef(a) && KeepCase(v, a)) Keeper(v, b, before);
+                            if (n.Op == Opc.Ret && !IsRef(a) && KeepCase(v, a)) (kept ??= []).Add(v);
                             else (n.IsTerminator ? before : after).Add(Count(Opc.Release, v, b, RcCategory.Generic));
                         }
                         live.Add(v);
                     }
                 }
+                if (kept != null) Keeper(n, kept, b, before);
                 if (conv != null) _args[n] = conv;
                 after.Reverse();
                 output.AddRange(after);
@@ -639,21 +677,34 @@ public static class Plan
             return false;
         }
 
-        /// <summary>The keeper (7.4): the object goes to the caller (Rt.ReturnHold counts it until the caller's
-        /// ReturnTake), then this function's own count goes as usual; where the protocol does not reach, the naive keep.</summary>
-        void Keeper(Node v, Block b, List<Node> before)
+        /// <summary>The keeper (7.4): the object the returned address points into goes to the caller (Rt.ReturnKeepers.Hold
+        /// counts it, found from the address itself, until the caller's ReturnKeepers.Take), then this function's own counts go
+        /// as usual: one hold per return, whichever of the bases it turns out to be; where the protocol does not reach,
+        /// the naive keep.</summary>
+        void Keeper(Node ret, List<Node> kept, Block b, List<Node> before)
         {
-            if (!_mayKeep || _keeper is not { } kc || v.Kind != VK.Ref)
+            var a = ret.A[0];
+            FieldDesc? f = a.Kind == VK.Struct ? TakeField(a) : null;
+            if (!_mayKeep || _keeper is not { } kc || a.Kind == VK.Struct && f == null)
             {
-                _keeps.Add(v);
-                MissedKeepers++;
+                foreach (var v in kept) { _keeps.Add(v); MissedKeepers++; }
+                if (s_stats) lock (s_missed) s_missed.Add(_ctx.Method + (_keeper == null ? " (no keeper calls)" : !_mayKeep ? " (not MayKeep)" : " (no address field)"));
                 return;
             }
-            // (in the order they run, before the return: the hold, then the release)
-            var h = new Node { Op = Opc.Call, Sub = (byte)CallKind.Direct, Kind = VK.Void, X = kc.Hold, A = [v], Block = b, Id = _body.NextId(), ILOffset = -1 };
+            // (in the order they run, before the return: the hold, then the releases)
+            Node addr = a;
+            var hold = new List<Node>();
+            if (f != null)
+            {
+                addr = new Node { Op = Opc.LdFld, Kind = VK.Ptr, SType = StackType.ByRef, Type = f.FieldType, X = f, A = [a], Block = b, Id = _body.NextId() };
+                MarkInserted(addr);
+                hold.Add(addr);
+            }
+            var h = new Node { Op = Opc.Call, Sub = (byte)CallKind.Direct, Kind = VK.Void, X = kc.Hold, A = [addr], Block = b, Id = _body.NextId(), ILOffset = -1 };
             MarkInserted(h);
-            before.Add(h);
-            before.Add(Count(Opc.Release, v, b, RcCategory.Generic));
+            hold.Add(h);
+            before.InsertRange(0, hold);
+            foreach (var v in kept) before.Add(Count(Opc.Release, v, b, RcCategory.Generic));
             Keepers++;
         }
 

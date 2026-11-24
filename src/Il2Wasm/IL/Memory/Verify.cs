@@ -29,7 +29,7 @@ public sealed class PlanVerifyException(string message) : Exception(message);
 /// 8. a call's argument conventions match the variant it calls (HandOver or KeepAlive exactly at the variant's owned
 ///    parameters, HandOver with its Moves bit); only direct sites call variants;
 /// 9. in a build without threads, no Atomic count, load or access kinds;
-/// and every call to a target that may keep (7.4) is followed by its Rt.ReturnTake (after the releases that follow the
+/// and every call to a target that may keep (7.4) is followed by its Rt.ReturnKeepers.Take (after the releases that follow the
 /// call, nothing else between). (Check 4, a flip's retain at the
 /// definition, is lowering's: a flipped load is an Owned load, which lowering counts.)</summary>
 public static class Verify
@@ -139,7 +139,7 @@ public static class Verify
                     {
                         int t = i + 1;
                         while (t < b.Code.Count && (b.Code[t].Op is Opc.Release or Opc.Retain || b.Code[t].Op == Opc.LdFld && Plan.IsInserted(b.Code[t]))) t++;
-                        if (t >= b.Code.Count || b.Code[t].X != kc.Take || !Plan.IsInserted(b.Code[t])) throw Fail("a call that may return a keeper is not followed by Rt.ReturnTake (7.4)", n, b);
+                        if (t >= b.Code.Count || b.Code[t].X != kc.Take || !Plan.IsInserted(b.Code[t])) throw Fail("a call that may return a keeper is not followed by Rt.ReturnKeepers.Take (7.4)", n, b);
                     }
                 }
             }
@@ -279,7 +279,7 @@ public static class Verify
             else if (x.Op == Opc.Phi) foreach (var a in x.A) r.AddRange(DirectBases(a));
             else if (Ownership.Derives(x) && !Plan.IsInserted(x))
                 foreach (var a in x.A) { if (a.Kind == VK.Ref) { if (!Plan.IsTrivial(a)) r.Add(a); } else r.AddRange(DirectBases(a)); }
-            if (_plan.Bases.TryGetValue(x, out var bs)) foreach (var t in bs) if (Plan.IsInserted(t)) r.Add(t);
+            if (_plan.Bases.TryGetValue(x, out var bs)) foreach (var t in bs) if (Plan.IsInserted(t) && t.A.Length == 1 && (t.A[0] == x || t.A[0].A.Length == 1 && t.A[0].A[0] == x)) r.Add(t);
             l.AddRange(r.Distinct());
             return l;
         }
