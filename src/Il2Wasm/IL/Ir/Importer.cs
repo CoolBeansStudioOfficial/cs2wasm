@@ -228,6 +228,8 @@ public sealed partial class Importer
         }
         // il-runtime: what a filter uses is in the frame (the filter runs as a function of its own: FilterSlots.cs)
         FilterSlots();
+        // il-runtime: a pinned local holds its object (Pinning.cs)
+        PinSlots();
     }
 
     // ---------------------------------------------------------------- the control flow graph
@@ -534,7 +536,7 @@ public sealed partial class Importer
 
     // ---------------------------------------------------------------- one block's instructions
 
-    sealed class BlockImporter
+    sealed partial class BlockImporter
     {
         readonly Importer I;
         readonly Block B;
@@ -582,6 +584,7 @@ public sealed partial class Importer
         void StoreVar(int v, Node val)
         {
             val = Coerce(val, I.VarType(v));
+            Pin(v, val); // il-runtime: Pinning.cs
             if (I._slotOf.TryGetValue(v, out int slot)) { var n = Add(Opc.VarSt, VK.Void, StackType.None, null, val); n.I = slot; return; }
             I.Write(v, B, val);
         }

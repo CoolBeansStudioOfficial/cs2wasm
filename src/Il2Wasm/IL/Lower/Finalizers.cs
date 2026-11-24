@@ -23,10 +23,6 @@ namespace Il2Wasm.IL.Lower;
 // itself: Roslyn's operations leave the base call out).
 public sealed partial class IlCompiler
 {
-    /// <summary>The checked build (--checked): the runtime's checks that trap on a release too many, a count that goes
-    /// below zero, a free of a block twice (Checks.cs).</summary>
-    public bool Checked;
-
     readonly HashSet<TypeDesc> _finRequested = [];
     bool _marks;
     MethodDesc? _onDestroy, _onFinalize;

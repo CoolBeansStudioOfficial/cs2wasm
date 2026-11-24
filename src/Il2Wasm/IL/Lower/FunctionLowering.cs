@@ -366,6 +366,7 @@ sealed partial class FunctionLowering
                 var h = Enclosing(b.Region, RegionKind.Catch) ?? throw new InvalidProgramException("rethrow outside a catch");
                 // il-runtime: a rethrow's first pass (Filters.cs)
                 E.Get(_handlerLocals[h].obj); E.Call(C.FirstPass);
+                E.I32(0); E.Set(_handlerLocals[h].obj); // (its count goes on with the exception)
                 E.Get(_handlerLocals[h].exn); E.Op(WOp.ThrowRef);
                 return;
             }
@@ -465,6 +466,7 @@ sealed partial class FunctionLowering
         {
             int obj = E.AddLocal(ValType.I32), exn = E.AddLocal(ValType.ExnRef);
             // il-runtime: the try's record for the first pass (Filters.cs)
+            E.I32(0); E.Set(obj); // il-runtime: no exception held yet
             int rec = EhEnter(tr);
             var done = E.Block();
             var caught = E.Block(new FuncType([], [ValType.I32, ValType.ExnRef]));
@@ -504,13 +506,27 @@ sealed partial class FunctionLowering
                 }
                 // il-runtime: the catch took it: the exception's trace ends at this frame (DebugInfo.cs)
                 E.Get(obj); E.Call(C.OnCatchFn);
-                EmitLevel(new Level(h, h.Entry), (lv, done, exits));
+                // il-runtime: an exception out of the handler lets the one in flight go (a rethrow hands it on)
+                {
+                    int hx = E.AddLocal(ValType.ExnRef);
+                    var hdone = E.Block();
+                    var hcaught = E.Block(ValType.ExnRef);
+                    E.TryTable(null, (3, null, hcaught));
+                    EmitLevel(new Level(h, h.Entry), (lv, done, exits));
+                    E.End();
+                    E.Br(hdone);
+                    E.End();
+                    E.Set(hx); E.Get(obj); E.Call(C.Rt.Release); E.I32(0); E.Set(obj); E.Get(hx); E.Op(WOp.ThrowRef);
+                    E.End();
+                }
                 if (open) E.End();
                 else break;
             }
             E.Get(exn); E.Op(WOp.ThrowRef);
             E.End();
             EhLeave(rec);
+            // il-runtime: the handler left: the exception in flight goes
+            E.Get(obj); E.Call(C.Rt.Release); E.I32(0); E.Set(obj);
         }
         // where the leaves go
         if (exits.Count == 0) { E.Op(WOp.Unreachable); return; }
@@ -547,7 +563,10 @@ sealed partial class FunctionLowering
                 var h = _body.Regions.First(r => r.Entry == n.Block && (r.Kind is RegionKind.Catch or RegionKind.Filter) && _handlerLocals.ContainsKey(r));
                 E.Get(_handlerLocals[h].obj);
                 // (a filter's value is its own count: the exception in flight keeps one)
-                if (h.Kind == RegionKind.Filter) E.Call(C.Rt.Retain);
+                // (the value is a count of its own: the exception in flight keeps one, which the try's obj local holds
+                // until the handler leaves, rethrows or throws; il-runtime: a rethrow used the object after the handler
+                // let it go)
+                E.Call(C.Rt.Retain);
                 Set(n);
                 return;
             }

@@ -664,7 +664,8 @@ public sealed partial class IlCompiler
             case "Rt.RetainElements": e.Call(Rt.Range(m.Instantiation[0], true)); break;
             // (the program as compiled here: one thread, no groups, the allocator's narrow size steps; the runtime's
             // switches at their defaults)
-            case "Rt.ThreadMode": case "Rt.ShareCheck": case "Rt.Checked": case "Rt.MemStatsOn": case "Rt.WideSizes": case "Rt.RuntimeLockHeld": e.I32(0); break;
+            case "Rt.ThreadMode": case "Rt.ShareCheck": case "Rt.MemStatsOn": case "Rt.WideSizes": case "Rt.RuntimeLockHeld": e.I32(0); break;
+            case "Rt.Checked": e.I32(Checked ? 1 : 0); break; // il-runtime: the checked build (Checks.cs)
             case "Rt.SingleThreaded": case "Rt.RipePages": case "Rt.HoldPages": e.I32(1); break;
             case "Rt.ThreadId": e.I32(1); break;
             case "Rt.BulkEnter": case "Rt.BulkExit": case "Rt.HoldEpoch": case "Rt.ReleaseEpoch": case "Rt.RuntimeLock": case "Rt.RuntimeUnlock": case "Rt.MemStatsGrow": break;
@@ -1008,6 +1009,7 @@ public sealed partial class IlCompiler
                 var e = new Emitter(_retain);
                 int r = e.AddLocal(I);
                 c.WatchEvent(e, 1);
+                c.CheckedCount(e, false); // il-runtime: the checked build traps on a freed object (Checks.cs)
                 e.Get(0); e.If();
                 e.Get(0); e.Load(WOp.I32Load); e.Tee(r); e.I32(0); e.Op(WOp.I32GtS);
                 e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(WOp.I32Add); e.Store(WOp.I32Store); e.End();
@@ -1029,6 +1031,7 @@ public sealed partial class IlCompiler
                 // (IL2WASM_IL_WATCH=address, a debugging aid: each release of that object logged, and the one that
                 // frees it traps, so its stack shows who)
                 c.WatchEvent(e, 2);
+                c.CheckedCount(e, true); // il-runtime: the checked build traps on a release too many (Checks.cs)
                 e.Get(0); e.If();
                 e.Get(0); e.Load(WOp.I32Load); e.Tee(r); e.I32(1); e.Op(WOp.I32GtS);
                 e.If(); e.Get(0); e.Get(r); e.I32(1); e.Op(WOp.I32Sub); e.Store(WOp.I32Store);
