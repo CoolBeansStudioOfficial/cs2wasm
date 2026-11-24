@@ -25,6 +25,6 @@ static class Program
         Nothing().Wait();
         Console.WriteLine(log);
         Func<int> twice = "abc".Twice;
-        Console.WriteLine(twice() + " " + (twice.Target as string) + " " + twice.Method.Name);
+        Console.WriteLine(twice() + " " + (twice.Target as string));
     }
 }

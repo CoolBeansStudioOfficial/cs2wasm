@@ -854,7 +854,7 @@ public sealed partial class IlCompiler
                 }
                 else
                 {
-                    for (TypeDesc? c = x; c != null; c = c.BaseType)
+                    for (TypeDesc? c = x.IsValueType ? null : x; c != null; c = c.BaseType) // (a box: its value's counts below)
                         foreach (var fd in c.GetFields())
                         {
                             if (fd.IsStatic) continue;
