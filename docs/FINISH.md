@@ -1483,3 +1483,11 @@ with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   101 of 101 (18 new programs on the real CoreLib); TypedReference. Not run: homelab suite, stress, self-host check, frames, bench
   (the old front end and back end passes are unchanged; the one library change, Boundary/CompilerHelpers.cs, is
   reached only by the IL front end).
+- 2026-11-24, claude/il-codegen-speed (IL codegen for speed, AUDIT "IL code generation for speed"): box folds in the
+  importer, struct field reads in place, frames given back at a catch so frame-only functions have no handler, the
+  back end's frame promotion for the IL front end, the IR inliner taking reference-free struct arguments and
+  results, and the CLR's unbox rules for enums. Homelab il-speed, bench geometric mean against NativeAOT-LLVM wasm:
+  2.71x → 1.37x planned (nbody 15.1x → 1.45x, list_sort 3.51x → 0.72x), 4.44x → 2.71x naive. Frames mean
+  2.33x → 1.88x planned, no spikes above NativeAOT. NetWasm suite, desk, shipped, all recompiled: 284 (none lost
+  against 283). IL tests 167/167 naive, 187/187 planned and verified. Not run: self-host (the IL front end does not
+  self-host yet), stress, homelab suite.

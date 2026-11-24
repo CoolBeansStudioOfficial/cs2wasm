@@ -6158,3 +6158,110 @@ Not run: the homelab suite and the self-host check on this commit.
   - tools/il-speed.mjs (bench and frames by the IL front end against NativeAOT-LLVM wasm);
   - tools/il-live-oracle/run-kernels.sh;
   - IL2WASM_IL_CHECKED=1 in the IL tests.
+
+### IL code generation for speed: box folds, struct reads in place, frames, struct inlining (claude/il-codegen-speed, 2026-11-24)
+
+- What: the two IL front-end codegen causes S1-BARS named that were not count operations: cause 1 (box/unbox pairs
+  in the generic comparers), and NBody's 14.7x from struct lowering. Measured against main 7b71d43's modules (the
+  S1-BARS builds) and NativeAOT-LLVM's WebAssembly build.
+- In, each with a switch:
+  1. Ir/BoxFolds.cs (IL2WASM_NO_BOX_FOLD=1). The importer folds three shapes:
+     - box T then unbox.any T is the value, for a Nullable too, but only when nothing else has seen the box;
+     - a box of a non-Nullable value type compared with null (ceq, cgt.un, brtrue, brfalse) is a constant, and
+       LinkBlocks keeps one way;
+     - box T then isinst or castclass T is the box itself.
+
+     The folded box is removed when nothing uses it.
+  2. Ir/StructReads.cs (IL2WASM_NO_STRUCT_IN_PLACE=1). An ldarg, ldloc, ldfld, ldelem, ldsfld or ldobj of a
+     reference-free struct that the ldfld right after it reads becomes the address of the same storage, so there is
+     no copy. This covers chains like `a.B.X`. Null, index and initializer checks are kept.
+  3. Lowering: a function's handler only when it holds counts (IL2WASM_NO_SP_AT_CATCH=1 restores the old shape).
+     - A catch puts the stack pointer back (RestoreFrame), from a saved entry pointer when there is no frame.
+     - So a function whose only cleanup is its frame has no try_table.
+  4. Frame promotion. The back end's Wasm/FrameSlots.cs (the old front end's pass, IL2WASM_NO_FRAME_SLOTS=1) now
+     runs for the IL front end:
+     - the prologue and epilogue take its shape;
+     - each frame's places are recorded;
+     - Module.StackPointer is set;
+     - a frame base pushed to a try's record keeps the frame.
+
+     Struct slots become locals, and small non-throwing users of a frame address are inlined first.
+  5. Ir/Inline.cs takes struct arguments and results (IL2WASM_NO_INLINE_STRUCTS=1), for reference-free structs:
+     - a callee that only reads its struct parameter (its variable read whole, or its address read by ldfld) reads
+       the caller's value;
+     - a struct result is the returned value;
+     - a struct NewObj whose constructor cannot throw is not MayThrow.
+  6. Behaviour fixed on the way. unbox of an enum or a primitive follows the CLR's rules:
+     - an enum and its underlying type, both ways;
+     - two enums of the same underlying type;
+     - other sizes or signs still throw (IlCompiler.UnboxFn, UnboxableKind);
+     - a Nullable's unbox stays exact.
+
+     Before this, unbox.any int of a boxed enum threw InvalidCastException.
+- Tests (FrameworkPrograms, against .NET, naive and planned+verified):
+  - f24_box_folds, with break twin IL2WASM_BOX_FOLD_BREAK=1: a Nullable's box taken for not null, unbox.any across
+    types, and a stored and changed box all fail;
+  - f25_struct_codegen, with two break twins:
+    - IL2WASM_SP_AT_CATCH_BREAK=1: 200,000 catches leak the stack until a trap;
+    - IL2WASM_INLINE_STRUCTS_BREAK=1: an inlined callee writes the caller's struct, "bump 1 2 3" becomes
+      "bump 1 2 4";
+  - f26_enum_unbox.
+
+  StructReads has no break twin: its rule (nothing between the load and the ldfld, the value used once) is not
+  reachable from C#'s IL, where `ldloc; ldfld` are always adjacent.
+- Speed [run, homelab, built on the desk; il-speed.mjs, best of 5]. Bench kernels, as a multiple of NativeAOT-LLVM
+  wasm (main 7b71d43 planned → this branch planned):
+
+  | kernel | main planned | this branch planned |
+  |---|---|---|
+  | dictionary | 3.25x | 1.41x |
+  | word_count | 0.97x | 0.97x |
+  | strings | 2.08x | 1.50x |
+  | tree | 2.01x | 1.71x |
+  | list_sort | 3.51x | 0.72x |
+  | linq | 2.57x | 1.06x |
+  | nbody | 15.08x | 1.45x |
+  | shapes | 1.52x | 1.49x |
+  | linked_list | 2.92x | 2.89x |
+  | geometric mean | 2.71x | 1.37x |
+
+  - Naive: geometric mean 4.44x → 2.71x.
+  - Code: planned 1333.4 → 1276.9 KB; naive 1427.2 → 1366.3 KB.
+  - Frames, mean frame against NativeAOT, geometric mean over 4 scenes: planned 2.33x → 1.88x, naive 4.17x → 3.38x.
+  - No spikes above NativeAOT's. Bigdrop still overflows (destroy depth, another branch).
+- Which part did what [run, homelab, each switch off in turn from the planned build, best of 5]:
+  - the box folds: dictionary, list_sort, linq (geometric mean 1.92x without them);
+  - frame promotion: nbody (3.73x without it), strings, list_sort;
+  - the others are within the noise on these kernels.
+- The two regressions of the first run:
+  - Shapes, 1.48x → 1.67x. Programs.Shapes and its callees compile to the same code as main (only type ids and
+    function indices differ), and the switch-off builds read 1.34x to 1.55x across 5 runs. It is noise on a 1.9 ms
+    kernel, and the final run reads 1.49x against main's 1.52x.
+  - Churn, median 2.16x → 2.26x: noise as well. At 5 runs it is 2.17x against main's 2.17x, and every switch
+    reads 2.16-2.18x.
+- NetWasm suite, desk, shipped [run]: 284 passed, 158 failed, 7 did not compile, 1 timed out at 264bdb0, every case recompiled (--force); against the seeded mf-base record (283), none lost, one gained (FrozenDictionaryCompatibilityCorpusTests).
+  - The first run lost fixture-rtti.boxed-representation and fixture-rtti.dispatch-relationships. The cause was a
+    box kept in a local, changed through an interface and then unboxed, which the fold read as the value boxed.
+    The fold now needs an unseen box (264bdb0), and both cases pass.
+- IL tests [run, desk]: 167 of 167 naive, 187 of 187 planned and verified (264bdb0).
+- Executed count operations (il-rcstats, planned against naive) [run, desk]: planned operations run, S1-BARS's 7b71d43 against 264bdb0 (main's
+  own changes since are in both the planned and the naive figures):
+  - ListSort 18,795,962 → 2,278,673; its naive count falls too, 32,939,479 → 16,822,459, since the folds apply
+    to both;
+  - DictionaryInts 2,989,906 → 1,794,797;
+  - Linq 5,529,966 → 3,480,915;
+  - hello 300 → 252;
+  - NBody, Shapes, WordCount, Strings and LinkedNodes are unchanged;
+  - Tree 7,250,066 → 2,433,243, which is main's own work, not this branch's.
+
+  The removal shares are 86.5% ListSort, 81.4% DictionaryInts, 85.7% Linq and 72.9% hello (against S1-BARS's 42.9%,
+  72.5%, 79.1% and 67.6%).
+- Hello world, planned: 1,168,862 B (S1-BARS's 7b71d43: 1,204,423 B); naive 1,237,622 B (1,277,136 B).
+  - Compile time is not comparable on a shared desk: 18 to 31 s for these builds, while the suite ran.
+- Not done or not verified:
+  - self-host (the IL front end does not self-host yet; the coordinator skipped it);
+  - frames' zeroing: a frame that stays is still cleared whole. The promoted frames have no clear, and the zeroing
+    of the ones left was not measured;
+  - counted structs (with references) still copy on field reads and are not inlined with struct arguments: that is
+    the memory model's to decide;
+  - stress runs and the homelab suite (this branch changes only the IL front end and adds no threads).
