@@ -164,7 +164,15 @@ function shareText(x) {
 // names as .NET's, a generic's arguments in brackets, a nested type by its own name: the walk gives no outer type)
 const PRIM = { bool: 'System.Boolean', char: 'System.Char', int8: 'System.SByte', uint8: 'System.Byte', int16: 'System.Int16', uint16: 'System.UInt16', int32: 'System.Int32', uint32: 'System.UInt32', int64: 'System.Int64', uint64: 'System.UInt64', float32: 'System.Single', float64: 'System.Double', string: 'System.String', object: 'System.Object', 'native int': 'System.IntPtr', 'native uint': 'System.UIntPtr', void: 'System.Void' };
 export function typeKey(name) {
-  let n = name.replace(/\[[A-Za-z0-9_.\-]+\](?=[A-Za-z_<])/g, '').replace(/</g, '[').replace(/>/g, ']');
+  // (a generic's arguments, <...> after a name, in brackets; a compiler-generated name's own <>, as in <>c, kept)
+  let n = '', open = [];
+  const src = name.replace(/\[[A-Za-z0-9_.\-]+\](?=[A-Za-z_<])/g, '');
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '<') { const gen = i > 0 && /[A-Za-z0-9_`\]]/.test(src[i - 1]); open.push(gen); n += gen ? '[' : '<'; }
+    else if (ch === '>') n += open.pop() ? ']' : '>';
+    else n += ch;
+  }
   n = n.replace(/native u?int|[A-Za-z_][A-Za-z0-9_]*/g, (w, at) => (PRIM[w] && !/[.+`]$/.test(n.slice(0, at)) && !/^[.`]/.test(n.slice(at + w.length)) ? PRIM[w] : w));
   return n.replace(/[A-Za-z0-9_.`<>]*\+/g, '');
 }
@@ -180,7 +188,9 @@ export function live(a, oracle, asm) {
     const mine = new Map(), theirs = new Map(), program = new Set();
     for (const [k, n] of Object.entries(out.types)) mine.set(typeKey(k), (mine.get(typeKey(k)) ?? 0) + n);
     for (const [k, n] of Object.entries(oracle.types ?? oracle)) theirs.set(typeKey(k), (theirs.get(typeKey(k)) ?? 0) + n);
-    if (asm) for (const name of types.values()) if (name.startsWith(`[${asm}]`)) program.add(typeKey(name));
+    // (the program's types, but not the compiler's closure caches, <>c: the walk names every one of them, the library's
+    // too, by that short name)
+    if (asm) for (const name of types.values()) if (name.startsWith(`[${asm}]`) && !typeKey(name).startsWith('<')) program.add(typeKey(name));
     const diff = [];
     for (const k of new Set([...mine.keys(), ...theirs.keys()])) {
       const m = mine.get(k) ?? 0, o = theirs.get(k) ?? 0;
