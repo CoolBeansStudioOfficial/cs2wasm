@@ -38,6 +38,27 @@ public sealed class PureCalls
 
     public PureCalls(Substitutions subs) { _subs = subs; }
 
+    static readonly bool s_noGenericsFold = Environment.GetEnvironmentVariable("IL2WASM_NO_GENERICS_FOLD") == "1";
+
+    /// <summary>Generics.IsNullable&lt;T&gt;(), IsEnum&lt;T&gt;(), Implements&lt;T&gt;("Name`1") as lowering computes them
+    /// (IlCompiler.cs's intrinsic cases: the type argument's IsNullable, IsEnum, and CanCastTo of the named generic
+    /// definition over it), or null when it is not one of them or lowering would not get a value (no literal, no such
+    /// definition).</summary>
+    public static long? GenericsTest(MethodDesc m, Node call)
+    {
+        if (!m.HasInstantiation || m.OwningType is not MetadataType g || g.GetName() != "Generics" || g.GetNamespace() != "Il2Wasm.Runtime") return null;
+        var t = m.Instantiation[0];
+        switch (m.GetName())
+        {
+            case "IsNullable" when call.A.Length == 0: return t.IsNullable ? 1 : 0;
+            case "IsEnum" when call.A.Length == 0: return t.IsEnum ? 1 : 0;
+            case "Implements" when call.A.Length == 1 && call.A[0].Op == Opc.LdStr && call.A[0].X is string name && name.LastIndexOf('.') is > 0 and var dot:
+                if (m.Context.SystemModule.GetType(System.Text.Encoding.UTF8.GetBytes(name[..dot]), System.Text.Encoding.UTF8.GetBytes(name[(dot + 1)..]), throwIfNotFound: false) is not MetadataType gi) return null;
+                try { return t.CanCastTo(gi.MakeInstantiatedType(t)) ? 1 : 0; } catch (Exception) { return null; }
+        }
+        return null;
+    }
+
     /// <summary>(pure, value): the value is Bottom for a void method.</summary>
     /// <summary>valueOnly: the call stays (an instance method's, whose receiver the call checks), only its value is
     /// wanted; its arguments may be unknown, and the body must still not depend on them for its value.</summary>
@@ -155,6 +176,9 @@ public sealed class PureCalls
     {
         removable = false;
         if (call.X is not MethodDesc m || (CallKind)call.Sub != CallKind.Direct) return Val.Bottom;
+        // (Il2Wasm.Runtime.Generics' tests of the instantiation: the value lowering gives them, IlCompiler.cs, decided
+        // here so that the branch they guard goes, and what it alone reaches with it. IL2WASM_NO_GENERICS_FOLD=1: not)
+        if (!s_noGenericsFold && GenericsTest(m, call) is long g) { removable = true; return Val.Of(g); }
         if (m.Signature.IsStatic)
         {
             var (pure, v) = Evaluate(m, args);
