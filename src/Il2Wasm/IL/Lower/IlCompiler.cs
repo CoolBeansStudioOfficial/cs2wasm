@@ -206,6 +206,9 @@ public sealed partial class IlCompiler
     void CompileMethod(MethodDesc m, WasmFunction f)
     {
         _compiling = m;
+        // (IL2WASM_IL_WHY=name: for each method whose name contains it, the chain of methods that first reached it)
+        if (Environment.GetEnvironmentVariable("IL2WASM_IL_WHY") is { Length: > 0 } why && m.ToString()!.Contains(why))
+            Console.Error.WriteLine($"why {m}:{WhyReached(m)}");
         var typical = m.GetTypicalMethodDefinition() as EcmaMethod;
         MethodIL? il = typical != null ? EcmaMethodIL.Create(typical) : null;
         if (il != null && m != typical) il = new InstantiatedMethodIL(m, il);
