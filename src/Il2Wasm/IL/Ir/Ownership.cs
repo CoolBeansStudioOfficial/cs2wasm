@@ -83,6 +83,13 @@ public static class Ownership
         }
     }
 
+    /// <summary>A reference that something besides this function holds: an argument (the caller's), one loaded from
+    /// a field, element, static, variable or address, or a cast of one (castclass, isinst, Unsafe.As).</summary>
+    static bool HeldElsewhere(Node v) => v.Op is Opc.Arg or Opc.LdFld or Opc.LdElem or Opc.LdSFld or Opc.VarLd or Opc.LdInd
+        || v.Op is Opc.CastClass or Opc.IsInst && HeldElsewhere(v.A[0])
+        || v.Op == Opc.Call && v.A.Length == 1 && v.A[0].Kind == VK.Ref && v.X is Internal.TypeSystem.MethodDesc m && m.GetName() == "As"
+            && m.OwningType is Internal.TypeSystem.MetadataType { Name: var _ } ut && ut.GetName() == "Unsafe" && HeldElsewhere(v.A[0]);
+
     /// <summary>The counted values a use of operand a keeps alive: a itself, or the bases of an address.</summary>
     static IEnumerable<Node> Kept(Node a, Info info) => IsRef(a) ? [a] : info.Bases.TryGetValue(a, out var l) ? l : [];
 
@@ -260,7 +267,13 @@ public static class Ownership
                         if (!seen.Add(v)) continue;
                         // (a terminator's: before it, as nothing runs after it here; the address it returns or
                         // branches with points into an object its caller or successor keeps)
-                        if (!live.Contains(v)) (n.IsTerminator ? before : after).Add(Count(Opc.Release, v, b, body));
+                        // (but an object only this function holds, one it made or a call gave it, is not let go under
+                        // a span or byref it returns: the caller would get freed memory; it stays, as a GC keeps it.
+                        // A raw address returned, a native int, keeps nothing in .NET either)
+                        bool keep = n.IsTerminator && !HeldElsewhere(v)
+                            && !(n.A[k].Kind == VK.Ptr && n.A[k].Type is not Internal.TypeSystem.ByRefType);
+                        if (!live.Contains(v) && !keep)
+                            (n.IsTerminator ? before : after).Add(Count(Opc.Release, v, b, body));
                         live.Add(v);
                     }
                 }

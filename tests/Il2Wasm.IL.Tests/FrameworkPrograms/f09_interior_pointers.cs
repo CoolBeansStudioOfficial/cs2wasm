@@ -10,6 +10,13 @@ static class Program
 {
     static ref int First(int[] a) => ref a[0];
     static ref int FieldOf(Holder h) => ref h.V;
+    // (a span or byref returned over an object only the callee held: the caller's view must stay valid)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static Span<int> Fresh(int n) => new int[] { n, n + 1, n + 2 };
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static ReadOnlySpan<char> Made(int n) => (new string('m', 2) + n).AsSpan(1);
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static ref int Cell(int n) => ref new int[] { n * 3 }[0];
     // (a function that returns an address into an object it was given: the object is not kept by the address after
     // the return, here nor in .NET: the weak reference finds it dead once nothing holds it)
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
@@ -48,6 +55,14 @@ static class Program
         arr = null;
         var junk6 = new P[1];
         Console.WriteLine(rp.X + rp.S + junk6.Length);
+        long t2 = 0;
+        for (int i = 0; i < 1000; i++)
+        {
+            var f = Fresh(i); var m2 = Made(i); ref int c2 = ref Cell(i);
+            var junk7 = new int[] { 0, 0, 0 }; var junk8 = new string('z', 3) + i;
+            t2 += f[2] + m2.Length + m2[1] + c2 + junk7.Length + junk8.Length;
+        }
+        Console.WriteLine(t2);
         var w = Weak();
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
         Console.WriteLine(w.TryGetTarget(out _));
