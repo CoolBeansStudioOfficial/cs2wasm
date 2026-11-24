@@ -253,8 +253,8 @@ public sealed class Solver
             if (_units[m] is { Summary: { } } u)
             {
                 Func<Il2Wasm.IL.Ir.Node, IEnumerable<TypeDesc>?>? exact = sol.TypeSetsSolved ? n => sol.ExactTypes(m, n) : null;
-                sol.SetReleased(m, u.Body is { } b ? ProgramSolution.ReleasedTypes(b, skip, exact: exact) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null,
-                    u.Body is { } rb ? ProgramSolution.ReleasedOnReturn(rb, skip, NeverReturns, exact) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null);
+                sol.SetReleased(m, u.Body is { } b ? ProgramSolution.ReleasedTypes(b, skip, exact: exact, holds: sol) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null,
+                    u.Body is { } rb ? ProgramSolution.ReleasedOnReturn(rb, skip, NeverReturns, exact, sol) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null);
                 if (s_verify && u.Body is { } vb && ProgramSolution.ReleaseViolations(vb, skip, exact) is { Count: > 0 } bad)
                     throw new InvalidOperationException("release effects: " + m + ": " + string.Join("; ", bad));
             }
@@ -392,13 +392,16 @@ public sealed partial class ProgramSolution
     /// old values of the counted slots it stores. Null: not known (any type).</summary>
     readonly Dictionary<MethodDesc, TypeDesc[]?> _released = new();
 
+    /// <summary>The types a method's releases can destroy (null: unknown, every type).</summary>
+    public IReadOnlyList<TypeDesc>? ReleasedBy(MethodDesc m) => _released.GetValueOrDefault(m);
+
     /// <summary>The types a body may release: every counted value (a reference: its static type, object when the IR has
     /// none; a struct with references) and every counted slot it stores (the old value goes).</summary>
     /// <summary>The types released on the runs that return (ReleasedTypes over the blocks that can still return), each
     /// with the parameter it is the value of (an Arg, or a cast of one), or -1.</summary>
-    internal static (TypeDesc, int, FieldDesc?, MethodDesc?)[] ReleasedOnReturn(Il2Wasm.IL.Ir.Body body, bool skipDependents, Func<MethodDesc, bool>? neverReturns = null, Func<Il2Wasm.IL.Ir.Node, IEnumerable<TypeDesc>?>? exact = null)
+    internal static (TypeDesc, int, FieldDesc?, MethodDesc?)[] ReleasedOnReturn(Il2Wasm.IL.Ir.Body body, bool skipDependents, Func<MethodDesc, bool>? neverReturns = null, Func<Il2Wasm.IL.Ir.Node, IEnumerable<TypeDesc>?>? exact = null, ProgramSolution? holds = null)
     {
-        var all = ReleasedTypes(body, skipDependents, onlyReturning: true, argsApart: true, neverReturns: neverReturns, exact: exact);
+        var all = ReleasedTypes(body, skipDependents, onlyReturning: true, argsApart: true, neverReturns: neverReturns, exact: exact, holds: holds);
         var r = new List<(TypeDesc, int, FieldDesc?, MethodDesc?)>();
         foreach (var t in all) r.Add((t, -1, null, null));
         var obj = body.Method.Context.GetWellKnownType(WellKnownType.Object);
@@ -554,8 +557,11 @@ public sealed partial class ProgramSolution
     static bool IsForward(Il2Wasm.IL.Ir.Node n) => n.Op is Il2Wasm.IL.Ir.Opc.CastClass or Il2Wasm.IL.Ir.Opc.IsInst
         || n.Op == Il2Wasm.IL.Ir.Opc.Call && n.A.Length == 1 && n.X is MethodDesc m && m.GetName() == "As" && m.OwningType is MetadataType t && t.GetName() == "Unsafe";
 
-    internal static TypeDesc[] ReleasedTypes(Il2Wasm.IL.Ir.Body body, bool skipDependents = false, bool onlyReturning = false, bool argsApart = false, Func<MethodDesc, bool>? neverReturns = null, Func<Il2Wasm.IL.Ir.Node, IEnumerable<TypeDesc>?>? exact = null)
+    internal static TypeDesc[] ReleasedTypes(Il2Wasm.IL.Ir.Body body, bool skipDependents = false, bool onlyReturning = false, bool argsApart = false, Func<MethodDesc, bool>? neverReturns = null, Func<Il2Wasm.IL.Ir.Node, IEnumerable<TypeDesc>?>? exact = null, ProgramSolution? holds = null)
     {
+        // (holds: the solution whose type sets say what a field or an element can hold, for the old value a store of a
+        // reference into one releases; IL2WASM_NO_DESTROY_FIELD_SETS=1, or not solved: the declared type's cone)
+        if (s_noDestroyFieldSets || holds is { TypeSetsSolved: false }) holds = null;
         // (onlyReturning: the blocks from which a return is reachable, through branches and handlers; a block that can
         // only end in a throw releases on the way out by its exception)
         HashSet<Il2Wasm.IL.Ir.Block>? returning = null;
@@ -617,8 +623,17 @@ public sealed partial class ProgramSolution
                 else Add(n.Type, n.Kind);
                 switch (n.Op)
                 {
-                    case Il2Wasm.IL.Ir.Opc.StFld or Il2Wasm.IL.Ir.Opc.StSFld when n.X is FieldDesc f: Slot(f.FieldType); break;
-                    case Il2Wasm.IL.Ir.Opc.StElem: Slot(n.A[0].Type is ArrayType at ? at.ElementType : n.A[2].Type); break;
+                    case Il2Wasm.IL.Ir.Opc.StFld or Il2Wasm.IL.Ir.Opc.StSFld when n.X is FieldDesc f:
+                        if (holds != null && !f.FieldType.IsValueType && Il2Wasm.IL.Ir.Kinds.Of(f.FieldType) == Il2Wasm.IL.Ir.VK.Ref && holds.FieldHolds(f) is { } fh) foreach (var h in fh) set.Add(h);
+                        else Slot(f.FieldType);
+                        break;
+                    case Il2Wasm.IL.Ir.Opc.StElem:
+                    {
+                        var et = n.A[0].Type is ArrayType at ? at.ElementType : n.A[2].Type;
+                        if (holds != null && et is { IsValueType: false } && Il2Wasm.IL.Ir.Kinds.Of(et) == Il2Wasm.IL.Ir.VK.Ref && n.A[0].Type is ArrayType && holds.ElementsHold(et) is { } eh) foreach (var h in eh) set.Add(h);
+                        else Slot(et);
+                        break;
+                    }
                     case Il2Wasm.IL.Ir.Opc.VarSt:
                     {
                         // (a frame variable whose address is never taken holds only what this body stores into it:
@@ -1255,13 +1270,20 @@ public sealed partial class ProgramSolution
     static readonly bool s_noDestroyFieldSets = Environment.GetEnvironmentVariable("IL2WASM_NO_DESTROY_FIELD_SETS") == "1";
 
     /// <summary>What a constructed type's destroy can release: its counted children (ChildTypes), with a reference field
-    /// of a class narrowed to the types the type sets say a load of it gives (FieldHolds: what was stored into it, or
-    /// into the slots it may alias), when they are solved and know it. A destroy releases what a load would see:
+    /// of a class, or an array's reference elements, narrowed to the types the type sets say a load of it gives
+    /// (FieldHolds, ElementsHold: what was stored into it, or into the slots it may alias), when they are solved and know it. A destroy releases what a load would see:
     /// Exception._data, an IDictionary, is null or a ListDictionaryInternal, not every finalizable type there is.
     /// IL2WASM_NO_DESTROY_FIELD_SETS=1: the declared types.</summary>
     IEnumerable<TypeDesc> HeldTypes(TypeDesc x)
     {
-        if (s_noDestroyFieldSets || !TypeSetsSolved || x is ArrayType) { foreach (var c in ChildTypes(x)) yield return c; yield break; }
+        if (s_noDestroyFieldSets || !TypeSetsSolved) { foreach (var c in ChildTypes(x)) yield return c; yield break; }
+        if (x is ArrayType at)
+        {
+            if (!Il2Wasm.IL.Ir.Kinds.Counted(at.ElementType)) yield break;
+            if (!at.ElementType.IsValueType && ElementsHold(at.ElementType) is { } eh) { foreach (var h in eh) yield return h; }
+            else yield return at.ElementType;
+            yield break;
+        }
         for (var t = x as DefType; t != null; t = t.BaseType)
             foreach (var f in t.GetFields())
             {

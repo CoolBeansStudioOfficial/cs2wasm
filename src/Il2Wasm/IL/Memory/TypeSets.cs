@@ -65,13 +65,18 @@ public sealed partial class ProgramSolution
         return st.Sets[id] is { } set ? set.Items.ToArray().Select(i => _all![i]) : null;
     }
 
-    /// <summary>The constructed types a load of an instance field can give once the type sets are solved, as ReadKey
+    /// <summary>The constructed types a load of a field (or a static) can give once the type sets are solved, as ReadKey
     /// joins them: the field key's set and those of the slot-like keys it may alias. Null: not solved, or unknown (Top).</summary>
-    internal IEnumerable<TypeDesc>? FieldHolds(FieldDesc f)
+    internal IEnumerable<TypeDesc>? FieldHolds(FieldDesc f) => Holds(FKey(f));
+
+    /// <summary>The same for an array's elements (the key Elem of the element type).</summary>
+    internal IEnumerable<TypeDesc>? ElementsHold(TypeDesc elementType) => Holds(MemKey.Elem(elementType));
+
+    IEnumerable<TypeDesc>? Holds(MemKey k)
     {
         if (!TypeSetsSolved || _ts is not { } st) return null;
         // (a key no operation named: a fresh one, as a reader would make it, empty but for the slots it may alias)
-        int id = VarId(st, new Var(VarKind.Key, null, 0, FKey(f)));
+        int id = VarId(st, new Var(VarKind.Key, null, 0, k));
         IdSet? acc = st.Sets[id];
         foreach (int s in AliasesOf(st, id))
         {

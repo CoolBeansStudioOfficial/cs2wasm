@@ -118,10 +118,13 @@ static class SolverChecks
         static class P
         {
             static object s_keep;
+            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+            static void Set(Holder h, int i) { h.F = i.ToString(); }
             static void Main()
             {
                 var h = new Holder { F = "s" };
                 s_keep = new Fin();
+                Set(h, 1);
                 Console.WriteLine(h.F);
             }
         }
@@ -249,6 +252,11 @@ static class SolverChecks
             bool off = Environment.GetEnvironmentVariable("IL2WASM_NO_DESTROY_FIELD_SETS") == "1";
             c.True($"solver: a destroy of a holder whose object field holds only strings does not run Fin's finalizer (finalizer id {finId}, runs {runs})",
                 finId >= 0 && runs == off);
+            // (and a store into the field releases its old value, a string, not any object)
+            var set = sol.Methods.Items.First(m => m.GetName() == "Set" && m.OwningType.ToString()!.EndsWith("P"));
+            var rel = sol.ReleasedBy(set);
+            string relShow = rel == null ? "unknown" : string.Join(", ", rel);
+            c.True($"solver: the old value of the holder's field is a string ({relShow})", off ? rel == null || rel.Any(t => t.IsObject) : rel != null && !rel.Any(t => t.IsObject) && rel.Any(t => t.IsString));
         }
         foreach (var (name, source, hasDependents) in new[] { ("solver_plain", Plain, false), ("solver_dependents", Dependents, true) })
         {
