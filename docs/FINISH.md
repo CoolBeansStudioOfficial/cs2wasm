@@ -1483,3 +1483,8 @@ with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   101 of 101 (18 new programs on the real CoreLib); TypedReference. Not run: homelab suite, stress, self-host check, frames, bench
   (the old front end and back end passes are unchanged; the one library change, Boundary/CompilerHelpers.cs, is
   reached only by the IL front end).
+- 2026-11-24, claude/plan-2 (planner second stage, AUDIT "Planner, second stage"): Init stores, the returned-span
+  keeper's count moved into its hold, takes per entry, Unsafe.As forwarding, persistent statics and their getters
+  borrowed, frame objects; a terminator-borrow use-after-free fixed and the verifier made to see it. Removal share over
+  S1-BARS's 34 programs: mean 78.8% (was 72.5%), summed 71.2% (64.5%). IL tests 188/188 planned and verified (and
+  checked), 166/166 naive; NetWasm suite 283/160/7, none lost. Not run: speed, homelab suite, stress, self-host check.
