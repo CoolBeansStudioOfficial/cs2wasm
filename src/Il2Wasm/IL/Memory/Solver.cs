@@ -201,6 +201,7 @@ public sealed class Solver
             Console.Error.WriteLine($"mem: release effects Wild for {sol.Methods.Items.Count(m => sol.Facts(m).ReleaseEffects.Wild)} methods; {sol.DestroyReport}; facts {sol.FactsTime.Release} ms release targets ({sol.FactsTime.ReleaseNodes} release nodes), {sol.FactsTime.Graph} ms graph, {sol.FactsTime.Solve} ms fixed point");
             Console.Error.WriteLine($"mem: Mods not Wild for {tame} of {all} methods, {libTame} of {lib} CoreLib methods ({(lib == 0 ? 0 : 100.0 * libTame / lib):F1}%); facts solved in {_clock.ElapsedMilliseconds - t0} ms");
         }
+        if (Environment.GetEnvironmentVariable("IL2WASM_MEM_FACTS_DUMP") is { Length: > 0 } dump && _solution is { } ds && ds.Methods.Count > 0) ds.DumpFacts(dump);
         if (s_trace) Console.Error.WriteLine($"mem: lowering took {_taken.Count} reached methods, imported {LateImports} late; {Unused} reached methods never lowered; {_clock.ElapsedMilliseconds} ms since the reach phase began, live heap {(s_heap ? GC.GetTotalMemory(true) / (1 << 20) : -1)} MB, peak {System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64 >> 20} MB");
     }
 }
@@ -370,7 +371,8 @@ public sealed class ProgramSolution
     {
         if (_targets.TryGetValue(slot, out var r)) return r;
         var set = new HashSet<MethodDesc>();
-        for (int i = 0, k = ConstructedCount; i < k; i++) if (_host.Resolve(Types[i], slot) is { } impl) set.Add(impl);
+        // (only the constructed types the slot's owner admits can implement it: its cone)
+        foreach (int i in ConeOf(slot.OwningType)) if (_host.Resolve(_all![i], slot) is { } impl) set.Add(impl);
         r = set.OrderBy(m => StableKey.Of(m), StringComparer.Ordinal).ToArray();
         _targets[slot] = r;
         return r;
@@ -536,7 +538,6 @@ public sealed class ProgramSolution
 
     TypeDesc Object => _object ??= (_arrival.Count > 0 ? _arrival[0].Context : _constructed[0].Context).GetWellKnownType(WellKnownType.Object);
     TypeDesc? _object;
-    Dictionary<TypeDesc, SortedSet<int>>? _fins;
     List<TypeDesc>? _carriers;
     readonly Dictionary<TypeDesc, int[]> _destroyTargets = new();
     int _onDestroy = -2, _onFinalize = -2;
@@ -547,6 +548,21 @@ public sealed class ProgramSolution
     /// elements, over the constructed types) and, once a weak mark can be set (ObjectMarks.SetAt reached), of
     /// ObjectMarks.OnDestroy (every destroy) and OnFinalize (a finalizable one). Freeing writes no live object's field,
     /// so a type with none of these has no effect. Anything when one of them is outside the solution.</summary>
+    /// <summary>IL2WASM_MEM_FACTS_DUMP=file: every method's solved facts, one line each in method id order, appended per
+    /// solve (to compare two builds of the solver: the solution must not change).</summary>
+    internal void DumpFacts(string file)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("# solve of ").Append(Methods.Count).Append(" methods\n");
+        string Keys(KeySet k) => k.Wild ? "*" : string.Join(",", k.Keys.Items.ToArray().Select(i => this.Keys[i].ToString()).OrderBy(x => x, StringComparer.Ordinal));
+        for (int i = 0; i < Methods.Count; i++)
+        {
+            var f = Facts(Methods[i]);
+            sb.Append(StableKey.Of(Methods[i])).Append('\t').Append(Keys(f.Mods)).Append('\t').Append(Keys(f.ReleaseEffects)).Append('\t').Append(f.MayThrow ? 'T' : '-').Append(f.ObservesLifetime ? 'O' : '-').Append('\n');
+        }
+        System.IO.File.AppendAllText(file, sb.ToString());
+    }
+
     public KeySet DestroyEffects(TypeDesc? t)
     {
         SolveFacts();
@@ -567,9 +583,10 @@ public sealed class ProgramSolution
     int[] DestroyTargets(TypeDesc t)
     {
         if (_destroyTargets.TryGetValue(t, out var r)) return r;
-        if (_fins == null) PrepareDestroys();
+        if (_val == null) PrepareDestroys();
+        var bits = Below(t);
         var set = new SortedSet<int>();
-        Below(t, set, []);
+        for (int i = 0; i < _finIds!.Length; i++) if ((bits[i >> 6] & (1UL << (i & 63))) != 0) set.Add(_finIds[i]);
         if (_onDestroy != -2)
         {
             set.Add(_onDestroy);
@@ -580,35 +597,73 @@ public sealed class ProgramSolution
         return r;
     }
 
-    /// <summary>The finalizers the destroy of a value of type t can reach: a reference's, every constructed carrier the
-    /// type admits; a struct's, its counted fields'.</summary>
-    void Below(TypeDesc t, SortedSet<int> set, HashSet<TypeDesc> seen)
+    // The finalizers below each type, as bit sets over the program's finalizers (bit i is _finIds[i]): _val per
+    // constructed type (index in _all), a least fixed point; Below(t) for any static type, cached once the point is
+    // reached. Cones (the constructed types a static type admits) come from an index of base classes for a class, the
+    // whole set for object, CanCastTo for the rest (interfaces, arrays).
+    int[]? _finIds;
+    int _words;
+    ulong[][]? _val;
+    TypeDesc[]? _all;
+    Dictionary<TypeDesc, List<int>>? _byBase;
+    readonly Dictionary<TypeDesc, int[]> _cones = new();
+    readonly Dictionary<TypeDesc, ulong[]> _below = new();
+    bool _belowFinal;
+
+    /// <summary>The constructed types (indices in _all) a static type admits.</summary>
+    int[] ConeOf(TypeDesc t)
+    {
+        if (_cones.TryGetValue(t, out var r)) return r;
+        EnsureIndex();
+        if (t.IsObject) r = Enumerable.Range(0, _all!.Length).ToArray();
+        // (a generic delegate type can be variant: CanCastTo below)
+        else if (t is DefType { IsInterface: false } && !t.IsArray && !(t.IsDelegate && t.HasInstantiation)) r = _byBase!.TryGetValue(t, out var l) ? [.. l] : [];
+        else r = Enumerable.Range(0, _all!.Length).Where(i => _all[i].CanCastTo(t)).ToArray();
+        _cones[t] = r;
+        return r;
+    }
+
+    /// <summary>The finalizers a destroy of a value of static type t can reach: a reference's, those of every constructed
+    /// type it admits; a struct's, its counted fields'.</summary>
+    ulong[] Below(TypeDesc t)
+    {
+        if (_belowFinal && _below.TryGetValue(t, out var known)) return known;
+        var acc = new ulong[_words];
+        BelowInto(t, acc, []);
+        if (_belowFinal) _below[t] = acc;
+        return acc;
+    }
+
+    void BelowInto(TypeDesc t, ulong[] acc, HashSet<TypeDesc> seen)
     {
         if (!seen.Add(t)) return;
         if (t.IsValueType)
         {
             if (t is DefType dt && Il2Wasm.IL.Ir.Kinds.Counted(t))
-                foreach (var f in dt.GetFields()) if (!f.IsStatic && Il2Wasm.IL.Ir.Kinds.Counted(f.FieldType)) Below(f.FieldType, set, seen);
+                foreach (var f in dt.GetFields()) if (!f.IsStatic && Il2Wasm.IL.Ir.Kinds.Counted(f.FieldType)) BelowInto(f.FieldType, acc, seen);
             return;
         }
         if (t.IsPointer || t.IsByRef || t.IsFunctionPointer) return;
-        foreach (var x in ConeOf(t)) if (_fins![x].Count > 0) set.UnionWith(_fins[x]);
+        if (_belowFinal && _below.TryGetValue(t, out var k)) { for (int w = 0; w < _words; w++) acc[w] |= k[w]; return; }
+        foreach (int x in ConeOf(t)) { var v = _val![x]; for (int w = 0; w < _words; w++) acc[w] |= v[w]; }
     }
 
-    readonly Dictionary<TypeDesc, TypeDesc[]> _cones = new();
-    TypeDesc[]? _constructedArr;
-
-    /// <summary>The constructed types a static type admits (each asked once: the destroys' fixed point asks again).</summary>
-    TypeDesc[] ConeOf(TypeDesc t)
+    /// <summary>The constructed types in id order, and the index of their base classes (for the cones).</summary>
+    void EnsureIndex()
     {
-        if (_cones.TryGetValue(t, out var r)) return r;
-        r = (_constructedArr ??= [.. Constructed]).Where(x => x.CanCastTo(t)).ToArray();
-        _cones[t] = r;
-        return r;
+        if (_all != null) return;
+        var all = _all = [.. Constructed];
+        _byBase = new Dictionary<TypeDesc, List<int>>();
+        for (int i = 0; i < all.Length; i++)
+            for (var b = all[i]; b != null; b = b.BaseType)
+            {
+                if (!_byBase.TryGetValue(b, out var l)) _byBase[b] = l = [];
+                l.Add(i);
+            }
     }
 
     /// <summary>Per constructed type, the finalizers its destroy can run: its own, and those of what its counted fields
-    /// and elements can hold (a fixed point over the constructed types); the carriers are the types with any.</summary>
+    /// and elements can hold (a least fixed point over the constructed types).</summary>
     void PrepareDestroys()
     {
         bool IsMarks(MethodDesc m, string name) => m.GetName() == name && m.OwningType is MetadataType mt && mt.GetName() == "ObjectMarks" && mt.GetNamespace() == "Il2Wasm.Runtime";
@@ -618,30 +673,50 @@ public sealed class ProgramSolution
             _onDestroy = Methods.Items.FirstOrDefault(m => IsMarks(m, "OnDestroy")) is { } od ? MethodId(od) : -1;
             _onFinalize = Methods.Items.FirstOrDefault(m => IsMarks(m, "OnFinalize")) is { } of ? MethodId(of) : -1;
         }
-        var fins = new Dictionary<TypeDesc, SortedSet<int>>();
-        var all = Constructed;
-        foreach (var x in all)
+        EnsureIndex();
+        var all = _all!;
+        var own = new int[all.Length];
+        var ids = new SortedSet<int>();
+        for (int i = 0; i < all.Length; i++)
         {
-            var s = new SortedSet<int>();
-            if (FinalizerOf(x) is { } fin) s.Add(MethodId(fin) is int id and >= 0 ? id : -1);
-            fins[x] = s;
+            own[i] = FinalizerOf(all[i]) is { } fin ? (MethodId(fin) is int id and >= 0 ? id : -1) : -2;
+            if (own[i] != -2) ids.Add(own[i]);
         }
-        _fins = fins;
-        for (bool changed = true; changed;)
+        _finIds = [.. ids];
+        _words = Math.Max(1, (_finIds.Length + 63) / 64);
+        var bit = new Dictionary<int, int>();
+        for (int i = 0; i < _finIds.Length; i++) bit[_finIds[i]] = i;
+        _val = new ulong[all.Length][];
+        for (int i = 0; i < all.Length; i++)
         {
-            changed = false;
-            _carriers = all.Where(x => fins[x].Count > 0).ToList();
-            if (_carriers.Count == 0) break;
-            foreach (var x in all)
+            _val[i] = new ulong[_words];
+            if (own[i] != -2) { int k = bit[own[i]]; _val[i][k >> 6] |= 1UL << (k & 63); }
+        }
+        if (_finIds.Length > 0)
+        {
+            var children = new TypeDesc[all.Length][];
+            for (int i = 0; i < all.Length; i++) children[i] = ChildTypes(all[i]).Distinct().ToArray();
+            var acc = new ulong[_words];
+            for (bool changed = true; changed;)
             {
-                var s = fins[x];
-                int before = s.Count;
-                var seen = new HashSet<TypeDesc>();
-                foreach (var c in ChildTypes(x)) Below(c, s, seen);
-                if (s.Count != before) changed = true;
+                changed = false;
+                for (int i = 0; i < all.Length; i++)
+                {
+                    if (children[i].Length == 0) continue;
+                    Array.Clear(acc);
+                    var seen = new HashSet<TypeDesc>();
+                    foreach (var c in children[i]) BelowInto(c, acc, seen);
+                    var v = _val[i];
+                    for (int w = 0; w < _words; w++)
+                    {
+                        ulong nv = v[w] | acc[w];
+                        if (nv != v[w]) { v[w] = nv; changed = true; }
+                    }
+                }
             }
         }
-        _carriers ??= [];
+        _belowFinal = true;
+        _carriers = Enumerable.Range(0, all.Length).Where(i => _val[i].Any(w => w != 0)).Select(i => all[i]).ToList();
     }
 
     /// <summary>A constructed type's counted children: an array's element type, a class's instance fields (its base

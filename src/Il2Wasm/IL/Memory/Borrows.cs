@@ -274,7 +274,7 @@ sealed class Analyzer
                 foreach (var n in b.Code)
                 {
                     if (n.Kind != VK.Ref) continue;
-                    string? role = n.Op switch { Opc.LdFld => "field", Opc.LdElem => "element", Opc.LdSFld => "static", Opc.VarLd => "local", _ => null };
+                    string? role = n.Op switch { Opc.LdFld => "field", Opc.LdElem => "element", Opc.LdSFld => "static", Opc.VarLd => _body.Vars[(int)n.I].InFrame ? "local-frame" : "local", _ => null };
                     if (role == null) continue;
                     string d = Facts.Own[n].Kind == OwnKind.Guaranteed ? "borrowed" : Facts.Flipped[n] ? "flip:" + groups.First(g => g.Members.Contains(n)).Reason.ToString()[4..] : "generic";
                     lines.Add(fn + "\t" + role + "\t" + d);
