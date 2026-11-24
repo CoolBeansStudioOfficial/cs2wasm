@@ -36,22 +36,28 @@ public sealed partial class ProgramSolution
     public bool TypeSetsSolved { get; private set; }
     internal (long Ms, int Methods, int Evaluations, int Vars, int TopVars) TypeSetsTime;
 
-    // a set: null is Top (unknown); otherwise the constructed type indices (into _all), sorted. By (method, Node.Id):
-    // no body is kept alive by them
-    readonly Dictionary<(MethodDesc, int), IdSet?> _nodeTypes = new();
-    // a virtual call's or ldvirtftn's targets over its receiver's set, by (method, Node.Id)
-    readonly Dictionary<(MethodDesc, int), MethodDesc[]> _callTargets = new();
+    // a set: null is Top (unknown); otherwise the constructed type indices (into _all), sorted. A method's results
+    // by Node.Id (no body is kept alive by them): the values' sets (Has: the value has one) and the virtual calls'
+    // targets over their receivers' sets
+    sealed class MethodTypes
+    {
+        public IdSet?[] Types = [];
+        public bool[] Has = [];
+        public MethodDesc[]?[] Targets = [];
+    }
+    readonly Dictionary<MethodDesc, MethodTypes> _methodTypes = new();
 
     /// <summary>The exact types a value of a method's body can have (constructed types, in stable order), or null when
     /// not known (Top, or the sets were not solved): then the value's static type's cone is all one can say.</summary>
     public IEnumerable<TypeDesc>? ExactTypes(MethodDesc m, Node n)
     {
-        if (!TypeSetsSolved || !_nodeTypes.TryGetValue((m, n.Id), out var s) || s is not { } set) return null;
+        if (!TypeSetsSolved || !_methodTypes.TryGetValue(m, out var mt) || n.Id >= mt.Types.Length || mt.Types[n.Id] is not { } set) return null;
         return set.Items.ToArray().Select(i => _all![i]);
     }
 
     /// <summary>A virtual call's targets over its receiver's types (null: not solved; use the slot's).</summary>
-    public IReadOnlyList<MethodDesc>? CallTargetsOf(MethodDesc m, int nodeId) => TypeSetsSolved && _callTargets.TryGetValue((m, nodeId), out var r) ? r : null;
+    public IReadOnlyList<MethodDesc>? CallTargetsOf(MethodDesc m, int nodeId) =>
+        TypeSetsSolved && _methodTypes.TryGetValue(m, out var mt) && nodeId < mt.Targets.Length ? mt.Targets[nodeId] : null;
 
     // ------------------------------------------------------------------ the solve
 
@@ -65,10 +71,11 @@ public sealed partial class ProgramSolution
         public readonly Dictionary<Var, int> Ids = new();
         public readonly List<Var> Vars = [];
         public readonly List<IdSet?> Sets = [];
-        public readonly List<HashSet<MethodDesc>> Readers = [];
+        public readonly List<HashSet<MethodState>> Readers = [];
         /// <summary>The slot-like keys (Slot, Elem) written so far, and the read keys registered, for aliasing.</summary>
         public readonly List<int> SlotLike = [];
         public readonly HashSet<int> ReadKeys = [];
+        public readonly List<int> ReadKeyList = [];
         public bool RawRefStore;
     }
 
@@ -85,16 +92,27 @@ public sealed partial class ProgramSolution
         SolveTypeSetsOnce(externalRoots);
     }
 
+    /// <summary>The calling thread's CPU time (100 ns ticks; 0 off Windows), for the trace: wall time on a loaded
+    /// machine says little.</summary>
+    static long ThreadCpuTicks()
+    {
+        if (!OperatingSystem.IsWindows()) return 0;
+        return GetThreadTimes(GetCurrentThread(), out _, out _, out long k, out long u) ? k + u : 0;
+    }
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern IntPtr GetCurrentThread();
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern bool GetThreadTimes(IntPtr thread, out long creation, out long exit, out long kernel, out long user);
+
     void ResetTypeSets()
     {
-        _nodeTypes.Clear(); _callTargets.Clear(); _methodStates.Clear(); _aliasesOf.Clear(); _aliasesSeen = 0;
-        _tBuild = _tValue = _tTargets = _tLoop = _tSinks = _tStore = 0;
+        _methodTypes.Clear(); _methodStates.Clear(); _aliasesOf.Clear(); _aliasesSeen = 0; _aliasesOfWrite.Clear(); _readKeysSeen = 0; _aliasById.Clear();
+        _tBuild = _tValue = _tTargets = _tLoop = _tSinks = _tStore = _nValue = _nTargets = _nVisits = _nSinks = _nIds = 0;
         TypeSetsSolved = false;
     }
 
     void SolveTypeSetsOnce(IReadOnlyCollection<MethodDesc> externalRoots)
     {
         var clock = System.Diagnostics.Stopwatch.StartNew();
+        long cpu0 = s_typeSetsTrace ? ThreadCpuTicks() : 0;
         EnsureIndex();
         var st = _ts = new State();
         var bodies = new Dictionary<MethodDesc, Body>();
@@ -104,15 +122,20 @@ public sealed partial class ProgramSolution
         // is called by generated code only if it is one of the kinds below: lowering's own calls are to Il2Wasm.Runtime's
         // methods, finalizers, constructors (an allocation's this: seeded exact for every constructor below), attribute
         // constructors (from the metadata's thunks), Type.FromId (an int) and argument-less throw helpers)
+        // (only the roots' membership is asked: the slot calls' targets are worked out only when a root is virtual, the
+        // static constructors only when a root is one)
+        var roots = externalRoots.ToHashSet();
+        bool virtualRoot = roots.Any(r => r.IsVirtual), cctorRoot = roots.Any(r => r.IsStaticConstructor);
         var irCallees = new HashSet<MethodDesc>();
         foreach (var m in Methods.Items)
             if (Summary(m) is { } su)
             {
-                foreach (var c in su.Calls) irCallees.Add(c);
-                foreach (var (slot, recv, _) in su.SlotCalls) foreach (var c in Targets(slot, recv)) irCallees.Add(c);
-                foreach (var t in su.Initializes) if (t.GetStaticConstructor() is { } cc) irCallees.Add(cc);
+                foreach (var c in su.Calls) if (roots.Contains(c)) irCallees.Add(c);
+                if (virtualRoot) foreach (var (slot, recv, _) in su.SlotCalls) foreach (var c in Targets(slot, recv)) if (roots.Contains(c)) irCallees.Add(c);
+                if (cctorRoot) foreach (var t in su.Initializes) if (t.GetStaticConstructor() is { } cc && roots.Contains(cc)) irCallees.Add(cc);
             }
         var ext = _externalParams = [.. externalRoots.Where(r => !irCallees.Contains(r))];
+        long irMs = clock.ElapsedMilliseconds;
         foreach (var m in Methods.Items)
             if (m.OwningType is MetadataType ot && (ot.GetNamespace() == "Il2Wasm.Runtime" || m.IsConstructor && DerivesFrom(ot, "System", "Attribute"))) ext.Add(m);
         foreach (var x in _all!) if (FinalizerOf(x) is { } fin) ext.Add(fin);
@@ -140,9 +163,11 @@ public sealed partial class ProgramSolution
             Evaluate(m, bodies[m], st, Enqueue);
             if (firstEval) firstTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0; else laterTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
         }
+        foreach (var (m, ms) in _methodStates) _methodTypes[m] = new MethodTypes { Types = ms.Local, Has = ms.Has, Targets = ms.Targets };
+        _methodStates.Clear();
         static long Ms(long t) => t * 1000 / System.Diagnostics.Stopwatch.Frequency;
-        if (s_typeSetsTrace) Console.Error.WriteLine($"typesets: evaluate: build {Ms(_tBuild)}, loop {Ms(_tLoop - _tBuild)} (values {Ms(_tValue)}, targets {Ms(_tTargets)}), sinks {Ms(_tSinks)}, store {Ms(_tStore)} ms");
-        if (s_typeSetsTrace) Console.Error.WriteLine($"typesets: phases: setup {setupMs} ms, first evaluations {firstTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms, later {laterTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms");
+        if (s_typeSetsTrace) Console.Error.WriteLine($"typesets: evaluate: build {Ms(_tBuild)}, loop {Ms(_tLoop - _tBuild)} ({_nVisits} visits, {_nValue} values, {_nTargets} targets), sinks {Ms(_tSinks)} ({_nSinks}) ms, ids {_nIds}");
+        if (s_typeSetsTrace) Console.Error.WriteLine($"typesets: phases: setup {setupMs} ms (callees {irMs}), first evaluations {firstTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms, later {laterTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms");
         TypeSetsSolved = true;
         TypeSetsTime = (clock.ElapsedMilliseconds, bodies.Count, evaluations, st.Vars.Count, st.Sets.Count(x => x == null));
         if (s_typeSetsTrace)
@@ -159,7 +184,7 @@ public sealed partial class ProgramSolution
                     Console.Error.WriteLine("typesets: " + name + " = " + (st.Sets[i] is { } x ? "{" + string.Join(", ", x.Items.ToArray().Select(t => _all![t].ToString())) + "}" : "unknown") + (v.Kind == VarKind.Param && ext.Contains(v.Method!) ? " (external)" : ""));
                 }
         }
-        if (s_typeSetsTrace) Console.Error.WriteLine($"typesets: {bodies.Count} bodies, {evaluations} evaluations, {st.Vars.Count} variables ({TypeSetsTime.TopVars} unknown){(st.RawRefStore ? ", a reference stored through a raw pointer: every slot unknown" : "")}; {clock.ElapsedMilliseconds} ms");
+        if (s_typeSetsTrace) Console.Error.WriteLine($"typesets: {bodies.Count} bodies, {evaluations} evaluations, {st.Vars.Count} variables ({TypeSetsTime.TopVars} unknown){(st.RawRefStore ? ", a reference stored through a raw pointer: every slot unknown" : "")}; {clock.ElapsedMilliseconds} ms, cpu {(ThreadCpuTicks() - cpu0) / 10000} ms");
     }
 
     int VarId(State st, Var v)
@@ -196,14 +221,37 @@ public sealed partial class ProgramSolution
             for (int i = _aliasesSeen; i < st.SlotLike.Count; i++)
             {
                 int sk = st.SlotLike[i];
-                foreach (var (rid, l) in _aliasesOf) if (rid != sk && KeysMayAlias(st.Vars[rid].Key, st.Vars[sk].Key)) l.Add(sk);
+                foreach (var (rid, l) in _aliasesOf) if (rid != sk && KeysMayAlias(st, rid, sk)) l.Add(sk);
             }
             _aliasesSeen = st.SlotLike.Count;
         }
         if (_aliasesOf.TryGetValue(id, out var r)) return r;
         r = [];
-        foreach (int sk in st.SlotLike) if (sk != id && KeysMayAlias(st.Vars[id].Key, st.Vars[sk].Key)) r.Add(sk);
+        foreach (int sk in st.SlotLike) if (sk != id && KeysMayAlias(st, id, sk)) r.Add(sk);
         _aliasesOf[id] = r;
+        return r;
+    }
+
+    readonly Dictionary<int, List<int>> _aliasesOfWrite = new();
+    int _readKeysSeen;
+
+    /// <summary>The read keys a write to slot-like key id may reach (other than itself), kept up to date as read keys
+    /// appear.</summary>
+    List<int> ReadersOfWrite(State st, int id)
+    {
+        if (_readKeysSeen < st.ReadKeyList.Count)
+        {
+            for (int i = _readKeysSeen; i < st.ReadKeyList.Count; i++)
+            {
+                int rk = st.ReadKeyList[i];
+                foreach (var (wid, l) in _aliasesOfWrite) if (rk != wid && KeysMayAlias(st, rk, wid)) l.Add(rk);
+            }
+            _readKeysSeen = st.ReadKeyList.Count;
+        }
+        if (_aliasesOfWrite.TryGetValue(id, out var r)) return r;
+        r = [];
+        foreach (int rk in st.ReadKeyList) if (rk != id && KeysMayAlias(st, rk, id)) r.Add(rk);
+        _aliasesOfWrite[id] = r;
         return r;
     }
 
@@ -227,14 +275,13 @@ public sealed partial class ProgramSolution
         st.Sets[id] = nw;
         Notify(st, id, enqueue);
         if (v.Kind == VarKind.Key && v.Key.Kind is KeyKind.Slot or KeyKind.Elem)
-            foreach (int rk in st.ReadKeys)
-                if (rk != id && KeysMayAlias(st.Vars[rk].Key, v.Key)) Notify(st, rk, enqueue);
+            foreach (int rk in ReadersOfWrite(st, id)) Notify(st, rk, enqueue);
     }
 
     IdSet? ReadVar(State st, Var v, MethodDesc reader)
     {
         int id = VarId(st, v);
-        st.Readers[id].Add(reader);
+        st.Readers[id].Add(ReaderState(reader));
         NoteRead(id);
         return st.Sets[id];
     }
@@ -247,6 +294,18 @@ public sealed partial class ProgramSolution
     {
         if (_aliasCache.TryGetValue((r, w), out var known)) return known;
         return _aliasCache[(r, w)] = KeysMayAlias0(r, w);
+    }
+
+    readonly Dictionary<long, bool> _aliasById = new();
+
+    /// <summary>KeysMayAlias of two key variables, by their ids (an element store reaches elements only: no lookup).</summary>
+    bool KeysMayAlias(State st, int rid, int wid)
+    {
+        MemKey r = st.Vars[rid].Key, w = st.Vars[wid].Key;
+        if (w.Kind == KeyKind.Elem && r.Kind != KeyKind.Elem) return false;
+        long k = (long)rid << 32 | (uint)wid;
+        if (_aliasById.TryGetValue(k, out var known)) return known;
+        return _aliasById[k] = KeysMayAlias(r, w);
     }
 
     bool KeysMayAlias0(MemKey r, MemKey w)
@@ -269,9 +328,9 @@ public sealed partial class ProgramSolution
     IdSet? ReadKey(State st, MemKey k, TypeDesc? staticType, MethodDesc reader)
     {
         int id = VarId(st, new Var(VarKind.Key, null, 0, k));
-        st.Readers[id].Add(reader);
+        st.Readers[id].Add(ReaderState(reader));
         NoteRead(id);
-        st.ReadKeys.Add(id);
+        if (st.ReadKeys.Add(id)) st.ReadKeyList.Add(id);
         IdSet? acc = st.Sets[id];
         foreach (int s in AliasesOf(st, id))
         {
@@ -337,12 +396,12 @@ public sealed partial class ProgramSolution
 
     /// <summary>A reference's address set: the key ids it may point at, or null (unknown: a raw pointer, address
     /// arithmetic, an intrinsic it does not know).</summary>
-    IdSet? AddrOf(MethodDesc m, Node a, State st, Dictionary<Node, IdSet?> addrs)
+    IdSet? AddrOf(MethodDesc m, Node a, State st, Dictionary<int, IdSet?> addrs)
     {
-        if (addrs.TryGetValue(a, out var known))
+        if (addrs.TryGetValue(a.Id, out var known))
         {
             // (a memoised address: the variables it read count as the asking node's reads too)
-            if (_addrDeps.TryGetValue(a, out var deps)) foreach (int d in deps) NoteRead(d);
+            if (_addrDeps.TryGetValue(a.Id, out var deps)) foreach (int d in deps) NoteRead(d);
             return known;
         }
         var mine = new List<int>();
@@ -356,7 +415,7 @@ public sealed partial class ProgramSolution
             case Opc.Call when a.X is MethodDesc cm && IsRef(a):
             {
                 var su = Summary(m);
-                if (su != null && su.Intrinsics.Contains(cm))
+                if (IsIntrinsic(m, cm))
                     // (Unsafe.As<TFrom, TTo>(ref), Unsafe.AsRef: the same place, seen as another type)
                     r = cm.OwningType is MetadataType ut && ut.GetName() == "Unsafe" && cm.GetName() is "As" or "AsRef" && a.A.Length == 1 && IsRef(a.A[0]) ? AddrOf(m, a.A[0], st, addrs) : null;
                 else r = (CallKind)a.Sub == CallKind.Direct ? ReadVar(st, new Var(VarKind.AddrRet, cm, 0, default), m) : null;
@@ -364,7 +423,7 @@ public sealed partial class ProgramSolution
             }
             case Opc.Phi when IsRef(a):
             {
-                addrs[a] = IdSet.Empty; // (a cycle through phis: what the others add)
+                addrs[a.Id] = IdSet.Empty; // (a cycle through phis: what the others add)
                 IdSet? acc = IdSet.Empty;
                 foreach (var x in a.A) { acc = JoinAddr(acc, AddrOf(m, x, st, addrs)); if (acc == null) break; }
                 r = acc;
@@ -372,9 +431,9 @@ public sealed partial class ProgramSolution
             }
             default: r = null; break;
         }
-        addrs[a] = r;
+        addrs[a.Id] = r;
         _addrCollect.RemoveAt(_addrCollect.Count - 1);
-        _addrDeps[a] = mine;
+        _addrDeps[a.Id] = mine;
         if (_addrCollect.Count > 0) _addrCollect[^1].AddRange(mine);
         return r;
     }
@@ -396,16 +455,16 @@ public sealed partial class ProgramSolution
     /// <summary>A variable grew: its readers run again, from the nodes that read it.</summary>
     void Notify(State st, int id, Action<MethodDesc> enqueue)
     {
-        foreach (var r in st.Readers[id])
+        foreach (var rs in st.Readers[id])
         {
-            if (_methodStates.TryGetValue(r, out var rs)) rs.Changed.Add(id);
-            enqueue(r);
+            rs.Changed.Add(id);
+            enqueue(rs.Method);
         }
     }
 
     /// <summary>A read through a reference: the keys it may point at (unknown for a frame variable), or the slots of
     /// its type when its address set is unknown.</summary>
-    IdSet? ReadThrough(MethodDesc m, Node addr, TypeDesc? staticType, State st, Dictionary<Node, IdSet?> addrs)
+    IdSet? ReadThrough(MethodDesc m, Node addr, TypeDesc? staticType, State st, Dictionary<int, IdSet?> addrs)
     {
         if (AddrOf(m, addr, st, addrs) is { } keys)
         {
@@ -417,7 +476,7 @@ public sealed partial class ProgramSolution
     }
 
     /// <summary>A store through a reference.</summary>
-    void WriteThrough(MethodDesc m, Node addr, Node value, State st, Dictionary<Node, IdSet?> addrs, Func<Node, IdSet?> of, Action<MethodDesc> enqueue)
+    void WriteThrough(MethodDesc m, Node addr, Node value, State st, Dictionary<int, IdSet?> addrs, Func<Node, IdSet?> of, Action<MethodDesc> enqueue)
     {
         if (value.Kind != VK.Ref) return;
         if (AddrOf(m, addr, st, addrs) is { } keys)
@@ -425,39 +484,65 @@ public sealed partial class ProgramSolution
             foreach (int k in keys.Items) if (k != LocalKey) Write(st, new Var(VarKind.Key, null, 0, Keys[k]), of(value), enqueue);
             return;
         }
-        if (s_typeSetsTrace && Environment.GetEnvironmentVariable("IL2WASM_TYPESETS_SLOTS") == "1" && addr.Type is ByRefType sb && of(value) == null) Console.Error.WriteLine($"typesets: unknown into Slot {sb.ParameterType} from {m} (address {addr.Op} {addr.X})");
+        if (s_slotsTrace && addr.Type is ByRefType sb && of(value) == null) Console.Error.WriteLine($"typesets: unknown into Slot {sb.ParameterType} from {m} (address {addr.Op} {addr.X})");
         if (addr.Type is ByRefType br) Write(st, new Var(VarKind.Key, null, 0, MemKey.Slot(br.ParameterType)), of(value), enqueue);
         // (a raw pointer: RawRefStore made every slot unknown)
     }
 
-    /// <summary>A method's values between its evaluations: they only grow, so a later evaluation recomputes only the
-    /// nodes that read a variable that grew, and what uses them.</summary>
+    /// <summary>A method's values between its evaluations, by Node.Id: they only grow, so a later evaluation
+    /// recomputes only the nodes that read a variable that grew, and what uses them.</summary>
     sealed class MethodState
     {
-        public readonly Dictionary<Node, IdSet?> Local = new(ReferenceEqualityComparer.Instance);
-        public readonly Dictionary<int, HashSet<Node>> Reads = new();
-        public readonly Dictionary<Node, List<Node>> Users = new(ReferenceEqualityComparer.Instance);
+        public Node[] ById = [];
+        public IdSet?[] Local = [];
+        public bool[] Has = [];
+        public MethodDesc[]?[] Targets = [];
+        /// <summary>A value's users: its operands' users, and a stored variable's loads for the value stored.</summary>
+        public List<Node>?[] Users = [];
+        /// <summary>The nodes (ids) that read each solve variable.</summary>
+        public readonly Dictionary<int, HashSet<int>> Reads = new();
         public readonly Dictionary<int, List<Node>> SlotStores = new();
         public readonly HashSet<int> Taken = [];
         public List<Block> Blocks = [];
         public readonly HashSet<int> Changed = [];
+        public MethodSummary? Summary;
+        public HashSet<MethodDesc>? Intrinsics;
+        public MethodDesc Method = null!;
     }
 
     readonly Dictionary<MethodDesc, MethodState> _methodStates = new();
-    long _tBuild, _tValue, _tTargets, _tLoop, _tSinks, _tStore;
+    // (an evaluation's scratch, kept between them: the flags are cleared as they are used)
+    readonly Dictionary<int, IdSet?> _addrs = new();
+    readonly Queue<Node> _work = new();
+    readonly List<Node> _sinks = [];
+    bool[] _queued = [], _isSink = [];
+    long _tBuild, _tValue, _tTargets, _tLoop, _tSinks, _tStore, _nValue, _nTargets, _nVisits, _nSinks, _nIds;
     MethodState? _curState;
     Node? _curNode;
     // (the variables each memoised address read, and the addresses being worked out)
-    readonly Dictionary<Node, List<int>> _addrDeps = new(ReferenceEqualityComparer.Instance);
+    readonly Dictionary<int, List<int>> _addrDeps = new();
     readonly List<List<int>> _addrCollect = [];
+    static readonly bool s_slotsTrace = s_typeSetsTrace && Environment.GetEnvironmentVariable("IL2WASM_TYPESETS_SLOTS") == "1";
+    static readonly string? s_bodyDump = s_typeSetsTrace && Environment.GetEnvironmentVariable("IL2WASM_TYPESETS_DUMP") is { Length: > 0 } d ? d : null;
+
+    /// <summary>The call of cm in m is one of m's intrinsics (by the method state's set while m is evaluated).</summary>
+    bool IsIntrinsic(MethodDesc m, MethodDesc cm)
+    {
+        if (_curState is { } cs && _curMethod == m) return cs.Intrinsics?.Contains(cm) ?? false;
+        return Summary(m)?.Intrinsics.Contains(cm) ?? false;
+    }
+    MethodDesc? _curMethod;
+
+    /// <summary>The state of a method that reads a variable (the one being evaluated).</summary>
+    MethodState ReaderState(MethodDesc reader) => _curState is { } cs && _curMethod == reader ? cs : _methodStates[reader];
 
     /// <summary>Notes that the node being computed read a variable (it runs again when the variable grows).</summary>
     void NoteRead(int id)
     {
         if (_curState == null || _curNode == null) return;
         if (_addrCollect.Count > 0) _addrCollect[^1].Add(id);
-        if (!_curState.Reads.TryGetValue(id, out var l)) _curState.Reads[id] = l = new(ReferenceEqualityComparer.Instance);
-        l.Add(_curNode);
+        if (!_curState.Reads.TryGetValue(id, out var l)) _curState.Reads[id] = l = [];
+        l.Add(_curNode.Id);
     }
 
     /// <summary>One method's values, to their local fixed point, and what they flow into: the whole body the first time,
@@ -466,80 +551,99 @@ public sealed partial class ProgramSolution
     {
         bool first = !_methodStates.TryGetValue(m, out var ms);
         long tq0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        int count = body.ValueCount + 1;
+        _nIds += count;
         if (first)
         {
-            ms = _methodStates[m] = new MethodState();
+            ms = _methodStates[m] = new MethodState
+            {
+                ById = new Node[count], Local = new IdSet?[count], Has = new bool[count], Targets = new MethodDesc[]?[count],
+                Users = new List<Node>?[count], Summary = Summary(m), Method = m, Intrinsics = Summary(m) is { Intrinsics.Count: > 0 } isu ? [.. isu.Intrinsics] : null,
+            };
             foreach (var bl in body.Blocks) foreach (var n in bl.Code) if (n.Op == Opc.LocA) ms.Taken.Add((int)n.I);
             ms.Blocks = Reachable(body);
-            var varLds = new Dictionary<int, List<Node>>();
-            foreach (var bl in ms.Blocks)
-                foreach (var n in bl.Phis.Concat(bl.Code))
-                {
-                    foreach (var x in n.A) { if (!ms.Users.TryGetValue(x, out var u)) ms.Users[x] = u = []; u.Add(n); }
-                    if (n.Op == Opc.VarSt && n.A.Length > 0 && n.A[0].Kind == VK.Ref) { if (!ms.SlotStores.TryGetValue((int)n.I, out var l)) ms.SlotStores[(int)n.I] = l = []; l.Add(n.A[0]); }
-                    if (n.Op == Opc.VarLd) { if (!varLds.TryGetValue((int)n.I, out var l)) varLds[(int)n.I] = l = []; l.Add(n); }
-                }
+            Dictionary<int, List<Node>>? varLds = null;
+            void Index(Node n)
+            {
+                ms.ById[n.Id] = n;
+                foreach (var x in n.A) (ms.Users[x.Id] ??= []).Add(n);
+                if (n.Op == Opc.VarSt && n.A.Length > 0 && n.A[0].Kind == VK.Ref) { if (!ms.SlotStores.TryGetValue((int)n.I, out var l)) ms.SlotStores[(int)n.I] = l = []; l.Add(n.A[0]); }
+                if (n.Op == Opc.VarLd) { varLds ??= new(); if (!varLds.TryGetValue((int)n.I, out var l)) varLds[(int)n.I] = l = []; l.Add(n); }
+            }
+            foreach (var bl in ms.Blocks) { foreach (var n in bl.Phis) Index(n); foreach (var n in bl.Code) Index(n); }
             // (a stored value's readers through the variable: its VarLds)
-            foreach (var (slot, stores) in ms.SlotStores)
-                if (varLds.TryGetValue(slot, out var lds))
-                    foreach (var v in stores) { if (!ms.Users.TryGetValue(v, out var u)) ms.Users[v] = u = []; u.AddRange(lds); }
+            if (varLds != null)
+                foreach (var (slot, stores) in ms.SlotStores)
+                    if (varLds.TryGetValue(slot, out var lds))
+                        foreach (var v in stores) (ms.Users[v.Id] ??= []).AddRange(lds);
         }
         _tBuild += System.Diagnostics.Stopwatch.GetTimestamp() - tq0;
         var local = ms!.Local;
-        var addrs = new Dictionary<Node, IdSet?>(ReferenceEqualityComparer.Instance);
+        var has = ms.Has;
+        var addrs = _addrs;
+        addrs.Clear();
         _addrDeps.Clear();
-        IdSet? Of(Node v) => v.Op == Opc.LdNull ? IdSet.Empty : local.TryGetValue(v, out var s) ? s : IdSet.Empty;
-        _curState = ms;
-        var work = new Queue<Node>();
-        var queued = new HashSet<Node>(ReferenceEqualityComparer.Instance);
-        var sinks = new HashSet<Node>(ReferenceEqualityComparer.Instance);
-        void Push(Node n) { if (queued.Add(n)) work.Enqueue(n); }
+        IdSet? Of(Node v) => v.Op == Opc.LdNull ? IdSet.Empty : v.Id < local.Length && has[v.Id] ? local[v.Id] : IdSet.Empty;
+        _curState = ms; _curMethod = m;
+        var work = _work;
+        if (_queued.Length < count) { _queued = new bool[count * 2]; _isSink = new bool[count * 2]; }
+        var queued = _queued;
+        var isSink = _isSink;
+        var sinks = _sinks;
+        sinks.Clear();
+        // (only a reference value or a virtual call computes anything here, and only a store, a return, an allocation or a
+        // call flows into a variable: the others are neither run nor sunk)
+        void Push(Node n) { if (!queued[n.Id] && (n.Kind == VK.Ref || n.Op == Opc.Call && (CallKind)n.Sub != CallKind.Direct)) { queued[n.Id] = true; work.Enqueue(n); } }
+        void Sink(Node n) { if (!isSink[n.Id] && n.Op is Opc.StFld or Opc.StSFld or Opc.StElem or Opc.StInd or Opc.Ret or Opc.NewObj or Opc.Call) { isSink[n.Id] = true; sinks.Add(n); } }
         if (first)
-            foreach (var bl in ms.Blocks) foreach (var n in bl.Phis.Concat(bl.Code)) { Push(n); sinks.Add(n); }
+            foreach (var bl in ms.Blocks)
+            {
+                foreach (var n in bl.Phis) { Push(n); Sink(n); }
+                foreach (var n in bl.Code) { Push(n); Sink(n); }
+            }
         else
         {
-            foreach (int id in ms.Changed) if (ms.Reads.TryGetValue(id, out var ns)) foreach (var n in ns) { Push(n); sinks.Add(n); }
+            foreach (int id in ms.Changed) if (ms.Reads.TryGetValue(id, out var ns)) foreach (int ni in ns) { var n = ms.ById[ni]; Push(n); Sink(n); }
         }
         ms.Changed.Clear();
+        var su = ms.Summary;
         while (work.Count > 0)
         {
             var n = work.Dequeue();
-            queued.Remove(n);
+            queued[n.Id] = false; _nVisits++;
             bool changed = false;
             if (n.Kind == VK.Ref)
             {
                 _curNode = n;
                 // (unknown: the static type's cone when it is small)
-                long tv = System.Diagnostics.Stopwatch.GetTimestamp();
+                _nValue++;
                 var v = Value(m, body, n, st, Of, ms, addrs) ?? ConeSet(n.Type);
-                _tValue += System.Diagnostics.Stopwatch.GetTimestamp() - tv;
-                if (!local.TryGetValue(n, out var old) || !Same(old, v)) { local[n] = v; changed = true; }
+                if (!has[n.Id] || !Same(local[n.Id], v)) { local[n.Id] = v; has[n.Id] = true; changed = true; }
             }
-            if (n.Op == Opc.Call && (CallKind)n.Sub != CallKind.Direct && n.X is MethodDesc vm && !(Summary(m)?.Intrinsics.Contains(vm) ?? false))
+            if (n.Op == Opc.Call && (CallKind)n.Sub != CallKind.Direct && n.X is MethodDesc vm && !IsIntrinsic(m, vm))
             {
                 // (a virtual call's targets over its receiver's set: what reads their results and gets its arguments)
-                long tt = System.Diagnostics.Stopwatch.GetTimestamp();
+                _nTargets++;
                 var t = TargetsOver(vm, n.A.Length > 0 ? n.A[0] : null, Of).ToArray();
-                _tTargets += System.Diagnostics.Stopwatch.GetTimestamp() - tt;
-                if (!_callTargets.TryGetValue((m, n.Id), out var ot) || !ot.SequenceEqual(t)) { _callTargets[(m, n.Id)] = t; sinks.Add(n); if (!changed && n.Kind == VK.Ref && ot != null) { Push(n); } }
+                var ot = ms.Targets[n.Id];
+                if (ot == null || !ot.SequenceEqual(t)) { ms.Targets[n.Id] = t; Sink(n); if (!changed && n.Kind == VK.Ref && ot != null) { Push(n); } }
             }
-            if (changed && ms.Users.TryGetValue(n, out var users)) foreach (var u in users) { Push(u); sinks.Add(u); }
-            if (changed) sinks.Add(n);
+            if (changed && ms.Users[n.Id] is { } users) foreach (var u in users) { Push(u); Sink(u); }
+            if (changed) Sink(n);
         }
         _curNode = null;
         long ts = System.Diagnostics.Stopwatch.GetTimestamp();
         _tLoop += ts - tq0;
-        foreach (var n in sinks) { _curNode = n; Sinks(m, n, st, Of, enqueue, addrs); }
+        _nSinks += sinks.Count;
+        foreach (var n in sinks) { _curNode = n; isSink[n.Id] = false; Sinks(m, n, st, Of, enqueue, addrs); }
         _curNode = null;
         _curState = null;
-        long tst = System.Diagnostics.Stopwatch.GetTimestamp();
-        _tSinks += tst - ts;
-        foreach (var (n, v) in local) _nodeTypes[(m, n.Id)] = v;
-        _tStore += System.Diagnostics.Stopwatch.GetTimestamp() - tst;
-        if (s_typeSetsTrace && Environment.GetEnvironmentVariable("IL2WASM_TYPESETS_DUMP") is { Length: > 0 } dm && m.ToString()!.Contains(dm, StringComparison.Ordinal))
+        _tSinks += System.Diagnostics.Stopwatch.GetTimestamp() - ts;
+        if (s_bodyDump is { } dm && m.ToString()!.Contains(dm, StringComparison.Ordinal))
         {
             Console.Error.WriteLine("typesets: body of " + m + ": " + body.Dump());
-            foreach (var (n, v) in local) Console.Error.WriteLine("typesets:   v" + n.Id + " = " + (v is { } x ? "{" + string.Join(", ", x.Items.ToArray().Select(t => _all![t].ToString())) + "}" : "unknown"));
+            for (int i = 0; i < count; i++)
+                if (has[i]) Console.Error.WriteLine("typesets:   v" + i + " = " + (local[i] is { } x ? "{" + string.Join(", ", x.Items.ToArray().Select(t => _all![t].ToString())) + "}" : "unknown"));
         }
     }
 
@@ -593,7 +697,7 @@ public sealed partial class ProgramSolution
 
     static bool Same(IdSet? a, IdSet? b) => a is { } x ? b is { } y && x.Equals(y) : b == null;
 
-    IdSet? Value(MethodDesc m, Body body, Node n, State st, Func<Node, IdSet?> of, MethodState ms, Dictionary<Node, IdSet?> addrs)
+    IdSet? Value(MethodDesc m, Body body, Node n, State st, Func<Node, IdSet?> of, MethodState ms, Dictionary<int, IdSet?> addrs)
     {
         switch (n.Op)
         {
@@ -631,7 +735,7 @@ public sealed partial class ProgramSolution
                 // addresses: the slot's value)
                 if (RefSlotApi(cm) is "exchange" or "read" && n.A.Length > 0 && IsRef(n.A[0])) return ReadThrough(m, n.A[0], n.Type, st, addrs);
                 var su = Summary(m);
-                if (su != null && su.Intrinsics.Contains(cm))
+                if (IsIntrinsic(m, cm))
                 {
                     if (MethodSummary.NewByName(cm, n) is { } made) return Exact(made.OwningType);
                     if (MethodSummary.NewTraps(cm, n)) return IdSet.Empty;
@@ -652,7 +756,10 @@ public sealed partial class ProgramSolution
 
     /// <summary>The library's reference-slot methods: "exchange" (Interlocked.Exchange, CompareExchange: read the old
     /// value, maybe store the new one), "read" (Volatile.Read), "write" (Volatile.Write), or null.</summary>
-    static string? RefSlotApi(MethodDesc m)
+    readonly Dictionary<MethodDesc, string?> _refSlot = new();
+    string? RefSlotApi(MethodDesc m) { if (!_refSlot.TryGetValue(m, out var r)) _refSlot[m] = r = RefSlotApi0(m); return r; }
+
+    static string? RefSlotApi0(MethodDesc m)
     {
         if (m.OwningType is not MetadataType t || t.GetNamespace() != "System.Threading" || m.Signature.Length == 0 || m.Signature[0] is not ByRefType br || Kinds.Of(br.ParameterType) != VK.Ref) return null;
         return (t.GetName(), m.GetName()) switch
@@ -674,7 +781,7 @@ public sealed partial class ProgramSolution
         return r.OrderBy(x => StableKey.Of(x), StringComparer.Ordinal);
     }
 
-    void Sinks(MethodDesc m, Node n, State st, Func<Node, IdSet?> of, Action<MethodDesc> enqueue, Dictionary<Node, IdSet?> addrs)
+    void Sinks(MethodDesc m, Node n, State st, Func<Node, IdSet?> of, Action<MethodDesc> enqueue, Dictionary<int, IdSet?> addrs)
     {
         void Key(MemKey k, Node v) { if (v.Kind == VK.Ref) Write(st, new Var(VarKind.Key, null, 0, k), of(v), enqueue); }
         void Args(MethodDesc target, Node call, int skip, IdSet? self)
@@ -710,7 +817,7 @@ public sealed partial class ProgramSolution
                 // callee's own IL works on raw addresses, and the slot's readers see the value from here)
                 if (RefSlotApi(cm) is "exchange" or "write" && n.A.Length > 1 && IsRef(n.A[0])) { WriteThrough(m, n.A[0], n.A[1], st, addrs, of, enqueue); break; }
                 var su = Summary(m);
-                if (su != null && su.Intrinsics.Contains(cm))
+                if (IsIntrinsic(m, cm))
                 {
                     if (MethodSummary.NewByName(cm, n) is { } made) Write(st, new Var(VarKind.Param, made, 0, default), Exact(made.OwningType), enqueue);
                     // (Interlocked.Exchange(ref slot, v), CompareExchange(ref slot, v, c): v may go into the slot)

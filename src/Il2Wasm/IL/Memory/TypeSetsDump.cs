@@ -22,8 +22,8 @@ public sealed partial class ProgramSolution
                 _ => v.Kind + " " + StableKey.Of(v.Method!) + " #" + v.Index,
             };
             return v.Kind is VarKind.AddrParam or VarKind.AddrRet ? name : name + " = " + Set(st.Sets[i]);
-        }).Concat(_nodeTypes.Select(e => "node " + StableKey.Of(e.Key.Item1) + " v" + e.Key.Item2 + " = " + Set(e.Value)))
-          .Concat(_callTargets.Select(e => "targets " + StableKey.Of(e.Key.Item1) + " v" + e.Key.Item2 + " = " + string.Join(",", e.Value.Select(StableKey.Of).OrderBy(n => n, StringComparer.Ordinal))))
+        }).Concat(_methodTypes.SelectMany(e => Enumerable.Range(0, e.Value.Types.Length).Where(i => e.Value.Has[i]).Select(i => "node " + StableKey.Of(e.Key) + " v" + i + " = " + Set(e.Value.Types[i]))))
+          .Concat(_methodTypes.SelectMany(e => Enumerable.Range(0, e.Value.Targets.Length).Where(i => e.Value.Targets[i] != null).Select(i => "targets " + StableKey.Of(e.Key) + " v" + i + " = " + string.Join(",", e.Value.Targets[i]!.Select(StableKey.Of).OrderBy(n => n, StringComparer.Ordinal)))))
           .OrderBy(l => l, StringComparer.Ordinal);
         var sb = new StringBuilder("# type sets\n");
         foreach (var l in lines) sb.Append(l).Append('\n');
