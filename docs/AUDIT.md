@@ -5443,3 +5443,40 @@ Not run: the homelab suite and the self-host check on this commit.
   DelegateArity, others.
 - tools/netwasm-suite.mjs ran modules with a relative host/run.mjs from the case's directory (every module failed to
   start); it now gives the runner's absolute path.
+### IL front end: reachability to a fixed point, substitutions, assemblies' reflection records (claude/il-generics, 2026-11-23)
+
+- Measured first (IL2WASM_IL_REACH, IL2WASM_SIZES_FILE, tools/il-reach.mjs: each method's first-reach chain and its
+  subtree's bytes, the data by kind). Hello world on the IL CoreLib, 1,949,547 B, 7,930 methods: EventSource reached
+  from SharedArrayPool.Rent (IsEnabled() not folded, about 670 KB of subtree); StreamWriter's ctor reaching
+  ThrowIfNegativeOrZero -> SR.Format -> string.Format (about 1.2 MB); Stream.get_Position -> ResourceManager.
+- What is in (src/Il2Wasm/IL/Reach, Lower/Assemblies.cs; each rule has a switch):
+  - SCCP on the IR (Wegman and Zadeck; integers exact, nothing folded that would throw; references null, non-null,
+    exact type, null-or-exact) and a second import with its facts: branches that go one way are not imported
+    (Importer's ImportFacts hook) (IL2WASM_NO_SCCP).
+  - ILLink substitutions of every assembly (CoreLib's XMLs embedded as ILLink.Substitutions.xml by BuildCoreLib, as
+    the runtime's build does), applied under browser-wasm's feature defaults and the project's runtimeconfig.json
+    (IL2WASM_NO_SUBSTITUTIONS).
+  - Pure calls evaluated: provably no exception, no effect, no cycle, no static constructor, no intrinsic; never
+    removed when an argument is counted (a call is its argument's last use: GC.KeepAlive) (IL2WASM_NO_PURE_CALLS).
+  - Rounds: the program is reached again with the round before's facts until they stop changing (each round's facts
+    hold for the next, since every fact only removes code): unwritten statics (IL2WASM_NO_UNWRITTEN_STATICS),
+    constant arguments of methods reached only by direct calls (IL2WASM_NO_CONSTANT_ARGS), return values
+    (IL2WASM_NO_RETURN_VALUES), class instance fields' value sets with their default (IL2WASM_NO_FIELD_VALUES), a
+    virtual call's value over the constructed or exact receiver's implementations (IL2WASM_NO_DEVIRT_VALUES).
+  - Reflection records: type names only for reflectable types (IL2WASM_NO_REFLECTABLE_TYPES); the assembly table
+    (.NET's full names), assembly attributes kept when their type is a typeof/ldtoken target, with factories; manifest
+    resources of reflectable assemblies, so stock libraries' exception messages come from their .resources as under
+    .NET; arrays of types named straight into Array.CreateInstance/MakeArrayType (IL2WASM_NO_REFLECTED_ARRAYS).
+- Results [run, desk]: hello world 1,949,547 -> 845,943 B before merging main; on merged main 2,145,227 B with every
+  rule off, 970,075 B with them (it now carries System.Console's resources and the attribute factories). Compile
+  14.4-15.0 s with the rounds against 12.8-13.8 s without (the desk loaded by a suite run). Stub and runtime tests 85
+  of 85 (r50_reach_rules, r51_library_messages, r52_reflected_arrays new; r51 is il-codegen's probe:
+  LinkedList's ICollection.CopyTo message).
+- The 28,383 B bar is not reached and not near: what remains in hello world is the stock System.Console's real
+  error paths (SafeHandle.IsClosed in Flush, Encoding(int)'s ThrowIfNegative of a codePage no constant reaches),
+  which reach SR.Format, string.Format and the ResourceManager. Integer ranges and flow-sensitive field values are
+  the next general rules; the old front end's 27,784 B came with its own Console boundary.
+- NetWasm suite [run, desk, shipped, 4d29bf0: merged main, before the assembly records]: 224 passed, 214 failed, 11
+  did not compile, 1 timed out (main: 186 passed).
+- Not done: generic sharing (every instantiation is still its own code), Delegate.Method, DynamicInvoke,
+  DelegateArity (method reflection records), member reflection records beyond assemblies.
