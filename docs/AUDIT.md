@@ -6244,6 +6244,43 @@ Not run: the homelab suite and the self-host check on this commit.
   (claude/plan-2's file): a phi whose Owned inputs are all the group's root could stay a borrow of it.
 - Tests: SolverChecks (the span read, the raw stores with and without a contract, the marks' roots).
 
+### S1 row b: WebUtility's lost case, the loop phi, write-only variables, destroys by field sets (claude/s1-typesets, 2026-11-24)
+
+- WebUtilityCompatibility [9] (-108 for the input's bytes, main 118c572): a Span<byte> made over an array the method
+  owns, converted to ReadOnlySpan<byte> by the inlined op_Implicit (a load of the span's `_reference`, a byref field,
+  and a new span over it). The load had no base, so the array was let go at it, and the arrays made after it took its
+  memory: UrlEncodeToBytes read the result it was writing. Ownership.Derives now takes a byref field's load as derived
+  from what the span keeps. Bisect: only IL2WASM_NO_IR_INLINE and IL2WASM_NO_INLINE_STRUCTS passed; no trap under
+  --checked. Test: FrameworkPrograms f31_span_field_bases (fails without the fix).
+- A late import with no reference in it (Rt.InitFrameObject, which lowering calls for a frame object) asked for
+  another round under the type sets, and when that happened in the last round the compile failed ("a dependent
+  handle's setter was imported late in the last round"). Such an import changes no type set: Solver.Late asks for
+  another round only for one with references. IL2WASM_LATE_TRACE=1 lists them. Test: SolverChecks.
+- The loop phi (Plan.PhiRootInput; IL2WASM_NO_LOOP_PHI_ROOT=1: Owned; IL2WASM_LOOP_PHI_ROOT_BREAK=1 takes any Owned
+  input, and Verify check 7 rejects it): `for (n = head; n != null; n = n.Next)` stays a borrow of head when the phi's
+  only Owned input is its path's root. Tests: SignatureChecks (Walk), FrameworkPrograms f30_loop_phi_root.
+- Write-only variables (Plan.DeadVars, IL2WASM_NO_DEAD_VARS=1: none): a reference variable that no operation loads
+  or takes the address of, and whose every store is of a lent parameter or a trivial value, is neither stored into
+  nor released. This is string.GetNonRandomizedHashCode's pinned `this` (3 count operations per call). A borrow of a
+  field does not qualify: it could flip while the raw pointer, which no borrow tracks, is in use. WordCount went from
+  77.1% to 82.4%. Tests: SignatureChecks (Pin, PinField, PinNew), FrameworkPrograms f32_write_only_vars.
+- Destroys by field sets (Solver.HeldTypes, TypeSets.FieldHolds and ElementsHold; IL2WASM_NO_DESTROY_FIELD_SETS=1:
+  the declared types; IL2WASM_DESTROY_WHY=type prints the children that carry finalizers): a destroy releases what a
+  load of each reference field (an array's elements) would give under the type sets, not every type the declared
+  type admits, and the old value a store into a field or an element releases is likewise one of those
+  (ReleasedTypes). It relies on the type sets' loads being sound, the same trust as the call targets. An exception's
+  destroy reached every finalizer through `object`/`IDictionary` fields (`_data`, `_stackTrace`), so every throw
+  helper was Wild: WordCount's FindValue through ThrowHelper.ThrowArgumentNullException, then
+  AssemblyLoadContext.Finalize, then RaiseUnloadEvent's delegate. Mods that are not Wild on WordCount: 50.8% to 63.8%
+  of the CoreLib methods. Tests: SolverChecks (a holder whose object field holds only strings).
+- What still makes WordCount's FindValue Wild: Array.Clear(Array) from SharedArrayPool.Return runs
+  SpanHelpers.ClearWithoutReferences, a raw intrinsic, which is Wild. On return, SharedArrayPoolPartitions.TryPop
+  returns an element of an `Array[]`, whose set is unknown because Elem reads join Slot(object). Its release in Rent
+  is a destroy of any array.
+- Bars at 5771d59 [desk, fw2]: IL tests 186 naive, 214 planned, none failed; planned NetWasm suite 284 of 450
+  (none lost; FrozenDictionaryCompatibility gained with the main merge). Kernel removal shares: DictionaryInts 83.5%,
+  LinkedNodes 94.2%, Linq 88.8%, ListSort 87.9%, NBody 100%, Shapes 99.9%, Strings 75.1%, Tree 94.4%, WordCount 82.4%.
+
 ### IL destroy depth: the depth queue, the sealed tail, leaves and a br_table dispatch (claude/il-destroy-depth, 2026-11-24)
 
 - Bug [run, desk]: dropping a 200,000-item acyclic chain nested rt.release -> rt.destroy as deep as the chain, and
