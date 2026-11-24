@@ -182,7 +182,9 @@ public sealed class Sccp
         {
             case Opc.Const: return n.Kind is VK.I32 or VK.Ptr ? Val.Of((int)n.I) : n.Kind == VK.I64 ? Val.Of(n.I) : Val.Bottom;
             case Opc.LdNull: return Val.Null;
-            case Opc.Box: case Opc.TypeOf: return Val.NonNull;
+            // (a box of a Nullable<T> without a value is null)
+            case Opc.Box: return n.X is TypeDesc bt && bt.IsNullable || n.Type is { IsNullable: true } ? Val.Bottom : Val.NonNull;
+            case Opc.TypeOf: return Val.NonNull;
             case Opc.LdStr: case Opc.NewArr: return n.Type is { } st ? Val.Exact(st) : Val.NonNull;
             case Opc.NewObj: return n.Kind == VK.Ref ? (n.Type is { } nt ? Val.Exact(nt) : Val.NonNull) : Val.Bottom;
             case Opc.Arg: return _oracle.Arg(_body, (int)n.I);
