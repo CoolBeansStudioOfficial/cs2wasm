@@ -14,6 +14,10 @@ namespace System
         static RuntimeType?[] s_byId = new RuntimeType?[64];
         static int s_lock;
 
+        // ([DeclaredEffects]: FromId and ByRefOf only fill this type's tables of immortal type objects, s_byId, s_byRef and
+        // s_retired, which no code outside this file names; a table replaced by a bigger one is kept, and an entry once
+        // set is never replaced)
+        [Il2Wasm.Runtime.DeclaredEffects]
         internal static RuntimeType ByRefOf(int element)
         {
             while (Atomic.CompareExchange32(ref s_lock, 0, 1) != 0) { }
@@ -42,6 +46,7 @@ namespace System
         // by-ref types (Meta.ByRef), by element id
         static RuntimeType?[] s_byRef = [];
 
+        [Il2Wasm.Runtime.DeclaredEffects]
         internal static RuntimeType FromId(int id)
         {
             if ((id & Il2Wasm.Runtime.Meta.ByRef) != 0) return ByRefOf(id & ~Il2Wasm.Runtime.Meta.ByRef);

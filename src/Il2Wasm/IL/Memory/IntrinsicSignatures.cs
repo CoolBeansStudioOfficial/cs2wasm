@@ -16,6 +16,9 @@ public enum IntrinsicWrites : byte
     RefSlot,
     /// <summary>Char data through raw addresses (TextScan's case changes): char elements and char slots.</summary>
     Chars,
+    /// <summary>The runtime's table of type objects (RuntimeType.FromId's cache): <see cref="MemKey.Private"/> of
+    /// RuntimeType.</summary>
+    TypeTable,
     /// <summary>Raw memory, a block copy or fill, or code the compiler cannot see (a thunk, a delegate, a
     /// constructor called by name): any key.</summary>
     Wild,
@@ -146,8 +149,10 @@ public static class IntrinsicSignatures
             + "System.SpanHelpers.ClearWithoutReferences System.SpanHelpers.Memmove System.SpanHelpers.memmove System.SpanHelpers.memset"),
         // (the narrow overloads are intrinsic, through ref byte/ushort; the others run their IL, which is not an intrinsic)
         (RefSlot, "System.Threading.Interlocked.CompareExchange System.Threading.Interlocked.Exchange"),
-        // (Type.FromId: a method lowering calls, not an edge of the IR)
-        (RunsCode, "System.Object.GetType System.RuntimeType.CreateInstanceOfT System.RuntimeType.CreateInstanceMono System.RuntimeType.CallDefaultStructConstructor"));
+        // (Object.GetType's lowering calls Type.FromId, whose RuntimeType.FromId is [DeclaredEffects]: it fills the
+        // runtime's table of type objects, Private(RuntimeType))
+        (new IntrinsicSignature(IntrinsicWrites.TypeTable), "System.Object.GetType"),
+        (RunsCode, "System.RuntimeType.CreateInstanceOfT System.RuntimeType.CreateInstanceMono System.RuntimeType.CallDefaultStructConstructor"));
 
     /// <summary>The number of hand-written entries (for the report).</summary>
     public static int Count => s_il2wasm.Count + s_upstream.Count;
@@ -186,10 +191,20 @@ public static class IntrinsicSignatures
         return s.Cheap && !(s.Releases && releasesRunCode);
     }
 
-    /// <summary>The runtime's types that own private tables in memory of their own (no object, no program key): the
-    /// object marks and weak-handle chains (Boundary/ObjectMarks.cs: IntMap, ObjectMarks, WeakSlots). A raw store in
-    /// one of their methods writes those tables (or a dying object's header), which no program load reads.</summary>
-    static readonly HashSet<string> s_privateTypes = ["IntMap", "ObjectMarks", "WeakSlots"];
+    /// <summary>The runtime's types that own private tables in memory of their own (no object, no program key), by full
+    /// name. A raw store in one of their methods writes those tables (or a dying object's header), which no program
+    /// load reads (each read from their sources):
+    /// <list type="bullet">
+    /// <item>the object marks and weak-handle chains (Boundary/ObjectMarks.cs: IntMap, ObjectMarks, WeakSlots);</item>
+    /// <item>GCHandle's slots (GCHandle.Mono.cs: an 8-byte block of Rt.Alloc per handle, the target's address and the
+    /// kind);</item>
+    /// <item>Monitor's table of sync entries (Monitor.Mono.cs: s_table, a block of Rt.Alloc).</item>
+    /// </list></summary>
+    static readonly HashSet<string> s_privateTypes =
+    [
+        "Il2Wasm.Runtime.IntMap", "Il2Wasm.Runtime.ObjectMarks", "Il2Wasm.Runtime.WeakSlots",
+        "System.Runtime.InteropServices.GCHandle", "System.Threading.Monitor",
+    ];
 
     /// <summary>The private key a raw store of the caller writes, or null: the caller is a method of a private-table
     /// type (Rt's allocator is not one: it is part of Rt, whose other methods write program objects; its entry points
@@ -199,9 +214,7 @@ public static class IntrinsicSignatures
         if (caller?.OwningType is not MetadataType t || t.Module != t.Context.SystemModule) return null;
         var outer = t;
         while (outer.ContainingType is MetadataType ct) outer = ct;
-        if (outer.GetNamespace() != "Il2Wasm.Runtime") return null;
-        if (s_privateTypes.Contains(outer.GetName())) return MemKey.Private(outer);
-        return null;
+        return s_privateTypes.Contains(outer.GetNamespace() + "." + outer.GetName()) ? MemKey.Private(outer) : null;
     }
 
     /// <summary>The keys an intrinsic call may write, as dense keys of the solution (the IntrinsicEffects hook):
@@ -223,6 +236,9 @@ public static class IntrinsicSignatures
                 // (the location is the first parameter: ref T)
                 if (m.Signature.Length > 0 && m.Signature[0] is ByRefType br) return new KeySet(solution.Pool.Of(solution.Keys.Intern(MemKey.Slot(br.ParameterType))), false);
                 return KeySet.All;
+            case IntrinsicWrites.TypeTable:
+                return m.Context.SystemModule.GetType("System"u8, "RuntimeType"u8, throwIfNotFound: false) is MetadataType rt
+                    ? new KeySet(solution.Pool.Of(solution.Keys.Intern(MemKey.Private(rt))), false) : KeySet.All;
             case IntrinsicWrites.Chars:
             {
                 var ch = m.Context.GetWellKnownType(WellKnownType.Char);
@@ -239,7 +255,7 @@ public static class IntrinsicSignatures
     /// <summary>A method marked [Il2Wasm.Runtime.DeclaredEffects] (Boundary/Runtime.cs: the heap's entry points): the
     /// solver takes its effects as declared and does not solve its body. It writes only its type's private memory
     /// (<see cref="MemKey.Private"/> of the outermost type), may throw a fresh exception (control flow, not a program
-    /// write), returns fresh memory, runs no program code and releases nothing. Null: not declared.</summary>
+    /// write), runs no program code and releases nothing. Null: not declared.</summary>
     public static KeySet? DeclaredEffects(ProgramSolution solution, MethodDesc m)
     {
         if (m.GetTypicalMethodDefinition() is not EcmaMethod em || !em.HasCustomAttribute("Il2Wasm.Runtime", "DeclaredEffectsAttribute")) return null;

@@ -609,6 +609,9 @@ public static class Signatures
 
     // ------------------------------------------------------------------ the report
 
+    /// <summary>IL2WASM_SIG_ROOTS=1 (with IL2WASM_SIG_STATS=2): each method whose own intrinsic call makes it Wild.</summary>
+    static readonly bool s_rootsTrace = Environment.GetEnvironmentVariable("IL2WASM_SIG_ROOTS") == "1";
+
     static void Report(ProgramSolution sol, State st, int rounds, long ms)
     {
         int n = sol.Methods.Count, analyzed = 0, nonTrivial = 0, stores = 0, keeps = 0, borrowRet = 0, counted = 0, hoParams = 0;
@@ -654,12 +657,12 @@ public static class Signatures
         for (int id = 0; id < n; id++)
         {
             var m = sol.Methods[id];
-            if (sol.Summary(m) is not { } s) continue;
+            if (sol.Summary(m) is not { } s || IntrinsicSignatures.DeclaredEffects(sol, m) != null) continue;
             bool root = false;
             if (s.WildStores) { Note("raw store / block copy"); root = true; }
             if (s.CallsUnknown) { Note("calli / delegate invoke"); root = true; }
             foreach (var c in s.Calls.Concat(s.Slots.SelectMany(x => sol.Targets(x)))) if (!sol.Covers(c)) { Note("uncovered callee " + c.OwningType + "::" + c.GetName()); root = true; }
-            foreach (var im in s.Intrinsics) if (IntrinsicSignatures.Effects(sol, m, im, st.ReleasesRunCode).Wild) { Note("intrinsic " + im.OwningType.ToString()!.Split('.').Last() + "." + im.GetName()); root = true; }
+            foreach (var im in s.Intrinsics) if (IntrinsicSignatures.Effects(sol, m, im, st.ReleasesRunCode).Wild) { Note("intrinsic " + im.OwningType.ToString()!.Split('.').Last() + "." + im.GetName()); root = true; if (s_rootsTrace) Console.Error.WriteLine("sig: root " + m.OwningType + "::" + m.GetName() + " via " + im.OwningType.ToString()!.Split('.').Last() + "." + im.GetName()); }
             if (root) roots++;
         }
         foreach (var t in sol.Constructed)

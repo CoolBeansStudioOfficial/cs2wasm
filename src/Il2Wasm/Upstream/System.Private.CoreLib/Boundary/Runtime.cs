@@ -13,8 +13,8 @@ namespace Il2Wasm.Runtime
 
     /// <summary>On a method: the memory model takes its effects as declared instead of solving its body (docs/AUDIT.md
     /// lists every such method: the trust boundary). Declared: it writes only its type's private memory (the heap's
-    /// blocks, pages and records, or a dead or fresh object's words: no program key), may throw (a fresh exception:
-    /// out of memory, an overflow), returns fresh memory, runs no program code and releases nothing.</summary>
+    /// blocks, pages and records, a table of its own, or a dead or fresh object's words: no program key), may throw (a
+    /// fresh exception: out of memory, an overflow), runs no program code and releases nothing.</summary>
     [AttributeUsage(AttributeTargets.Method)]
     public sealed class DeclaredEffectsAttribute : Attribute { }
 
