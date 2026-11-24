@@ -6243,6 +6243,7 @@ Not run: the homelab suite and the self-host check on this commit.
   phi Owned when an input is Owned, and the loop's entry input is its root, `head`. That rule is the planner's
   (claude/plan-2's file): a phi whose Owned inputs are all the group's root could stay a borrow of it.
 - Tests: SolverChecks (the span read, the raw stores with and without a contract, the marks' roots).
+
 ### IL destroy depth: the depth queue, the sealed tail, leaves and a br_table dispatch (claude/il-destroy-depth, 2026-11-24)
 
 - Bug [run, desk]: dropping a 200,000-item acyclic chain nested rt.release -> rt.destroy as deep as the chain, and
