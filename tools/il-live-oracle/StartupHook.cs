@@ -29,6 +29,7 @@ internal sealed class HeapWalk : EventListener
 
     readonly ConcurrentDictionary<ulong, long> _countByType = new();
     readonly ConcurrentDictionary<ulong, string> _names = new();
+    readonly ConcurrentDictionary<string, int> _seen = new();
     long _lastEvent = Environment.TickCount64;
     int _nodes, _debugShown;
     EventSource? _runtime;
@@ -39,6 +40,8 @@ internal sealed class HeapWalk : EventListener
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
         using var w = new HeapWalk();
         w.Arm();
+        // (IL2WASM_LIVE_GC=1: a collection of our own as well, in case the keyword alone does not start the walk)
+        if (Environment.GetEnvironmentVariable("IL2WASM_LIVE_GC") == "1") { Thread.Sleep(500); GC.Collect(); }
         // (the walk's events arrive on the listener's thread: wait for them to stop coming)
         long start = Environment.TickCount64;
         while (Environment.TickCount64 - start < 60_000)
@@ -46,6 +49,7 @@ internal sealed class HeapWalk : EventListener
             Thread.Sleep(100);
             if (w._nodes > 0 && Environment.TickCount64 - Interlocked.Read(ref w._lastEvent) > 2000) break;
         }
+        if (s_debug) Console.Error.WriteLine("il-live-oracle: events " + string.Join(", ", w._seen.Select(p => p.Key + "=" + p.Value)) + (w._runtime == null ? "; no runtime source" : ""));
         var types = new SortedDictionary<string, long>(StringComparer.Ordinal);
         foreach (var (id, n) in w._countByType)
         {
@@ -74,6 +78,7 @@ internal sealed class HeapWalk : EventListener
     protected override void OnEventWritten(EventWrittenEventArgs e)
     {
         Interlocked.Exchange(ref _lastEvent, Environment.TickCount64);
+        if (s_debug) _seen.AddOrUpdate(e.EventName ?? "#" + e.EventId, 1, (_, n) => n + 1);
         if (s_debug && _debugShown < 40 && e.EventName is "GCBulkNode" or "GCBulkType")
         {
             _debugShown++;
