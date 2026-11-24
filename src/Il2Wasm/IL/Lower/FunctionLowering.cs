@@ -105,6 +105,7 @@ sealed class FunctionLowering
     }
 
     int _frameSize, _fb = -1;
+    static readonly string? s_trace = Environment.GetEnvironmentVariable("IL2WASM_IL_TRACE") is { Length: > 0 } t ? t : null;
 
     /// <summary>A variable's value on the stack.</summary>
     void VarGet(int i)
@@ -161,6 +162,14 @@ sealed class FunctionLowering
 
     public void Run()
     {
+        // (IL2WASM_IL_TRACE=name: a call of the host's il2wasm_trace.enter(the method's number, its first three i32
+        // arguments) on entry to each method whose name contains it; host/run.mjs logs any import it does not know)
+        if (s_trace != null && _body.Method.ToString()!.Contains(s_trace))
+        {
+            var ps = _fn.Type.Params;
+            for (int i = 0; i < 3; i++) { if (i < ps.Length && ps[i] == ValType.I32) E.Get(i); else E.I32(0); }
+            E.Call(C.TraceImport);
+        }
         bool hasRefs = _own.RefValues.Count > 0 || _body.Vars.Any(v => v.Kind == VK.Ref) || _fb >= 0;
         if (_fb >= 0)
         {
@@ -533,7 +542,63 @@ sealed class FunctionLowering
                 E.GGet(C.StackPointer); Set(n);
                 return;
             }
-            case Opc.TypeOf: throw new NotSupportedException($"{_body.Method}: typeof({n.X}) as a Type object (Type objects are not made yet)");
+            case Opc.TypeOf:
+                // the type's one RuntimeType (CoreLib's, by its id: immortal)
+                E.Tid(C.TypeId((TypeDesc)n.X!)); E.Call(C.FunctionFor(C.CoreMethod("System", "Type", "FromId"))); Set(n);
+                return;
+            case Opc.LdToken:
+            {
+                // a handle: its one field the type's id (a field's or method's: not used yet, 0)
+                Get(n); E.I32(0); E.I32(SizeOfStruct(n.Type!)); E.Emit(WOp.MemoryFill);
+                Get(n);
+                if (n.X is TypeDesc tt) E.Tid(C.TypeId(tt)); else E.I32(0);
+                E.Store(WOp.I32Store);
+                return;
+            }
+            case Opc.InitArray:
+            {
+                var data = C.FieldData((FieldDesc)n.X!);
+                Get(n.A[0]); E.Call(C.Rt.NonNull); E.I32(16); E.Op(WOp.I32Add);
+                E.I32Addr(data); E.I32(data.Bytes.Length); E.Emit(WOp.MemoryCopy);
+                return;
+            }
+            case Opc.CreateSpan:
+            {
+                // ReadOnlySpan<T> over the field's data: its reference and its length
+                var data = C.FieldData((FieldDesc)n.X!);
+                var st = (DefType)n.Type!;
+                var refField = st.GetFields().First(f => !f.IsStatic && f.FieldType.IsByRef);
+                var lenField = st.GetFields().First(f => !f.IsStatic && f.FieldType.IsWellKnownType(WellKnownType.Int32));
+                Get(n); E.I32Addr(data); E.Store(WOp.I32Store, IlContext.FieldOffset(refField));
+                Get(n); E.I32(data.Bytes.Length / Math.Max(1, (int)n.I)); E.Store(WOp.I32Store, IlContext.FieldOffset(lenField));
+                return;
+            }
+            case Opc.LdFtn: E.I32Fn(C.Module, C.FunctionFor((MethodDesc)n.X!)); Set(n); return;
+            case Opc.LdVirtFtn:
+            {
+                var vm = (MethodDesc)n.X!;
+                E.I32Fn(C.Module, vm.IsVirtual && !vm.IsFinal ? C.DispatchFor(vm) : C.FunctionFor(vm)); Set(n);
+                return;
+            }
+            case Opc.CallI:
+            {
+                var sig = (MethodSignature)n.X!;
+                var ps = new List<ValType>();
+                if (!sig.IsStatic) ps.Add(ValType.I32);
+                for (int i = 0; i < sig.Length; i++) ps.Add(ValOf(Kinds.Of(sig[i])));
+                bool sret = !sig.ReturnType.IsVoid && Kinds.Of(sig.ReturnType) == VK.Struct;
+                if (sret) ps.Add(ValType.I32);
+                var ft = new FuncType(ps.ToArray(), sig.ReturnType.IsVoid || sret ? [] : [ValOf(Kinds.Of(sig.ReturnType))]);
+                var fp = n.A[^1];
+                var args = new Node { Op = Opc.Call, A = n.A[..^1] };
+                for (int i = 0; i < args.A.Length; i++) if (args.A[i].Kind == VK.Struct) throw new NotSupportedException("calli with a struct argument");
+                foreach (var a in args.A) Get(a);
+                if (sret) Get(n);
+                Get(fp);
+                E.Emit(WOp.CallIndirect, 0, 0, ft);
+                if (n.HasValue && n.Kind != VK.Struct) Set(n);
+                return;
+            }
             case Opc.VarLd when n.Kind == VK.Struct: VarAddr((int)n.I); LoadStruct(n); return;
             case Opc.VarSt when _body.Vars[(int)n.I].Kind == VK.Struct:
             {
@@ -910,6 +975,15 @@ sealed class FunctionLowering
         var m = (MethodDesc)n.X!;
         if (C.TryIntrinsic(E, m, n, this)) return;
         var kind = (CallKind)n.Sub;
+        if (IlCompiler.IsDelegateInvoke(m) && m.GetTypicalMethodDefinition() is Internal.TypeSystem.Ecma.EcmaMethod { IsRuntimeImplemented: true })
+        {
+            PushCallArgs(n);
+            if (n.Kind == VK.Struct) Get(n);
+            E.Call(C.DelegateInvoke(m));
+            if (n.HasValue && n.Kind != VK.Struct) Set(n);
+            AfterCall(n);
+            return;
+        }
         if (kind == CallKind.Direct && n.Ovf && n.A.Length > 0 && n.A[0].Kind == VK.Ref) { Get(n.A[0]); E.Call(C.Rt.NonNull); E.Op(WOp.Drop); }
         if (kind == CallKind.Direct && m.Signature.IsStatic) C.CctorCheckForCall(E, m);
         PushCallArgs(n);
@@ -953,6 +1027,31 @@ sealed class FunctionLowering
     {
         var ctor = (MethodDesc)n.X!;
         var t = (DefType)ctor.OwningType;
+        if (t.IsString)
+        {
+            // string's constructors are its static Ctor methods (as NativeAOT maps them)
+            var sctor = t.GetMethods().FirstOrDefault(x => x.GetName() == "Ctor" && x.Signature.IsStatic && x.Signature.Length == ctor.Signature.Length
+                && Enumerable.Range(0, x.Signature.Length).All(i => x.Signature[i] == ctor.Signature[i]))
+                ?? throw new NotSupportedException($"string has no Ctor for {ctor}");
+            PushCallArgs(n);
+            E.Call(C.FunctionFor(sctor));
+            Set(n);
+            AfterCall(n);
+            return;
+        }
+        if (t.IsDelegate && ctor.Signature.Length == 2 && n.A[1].Op is Opc.LdFtn or Opc.LdVirtFtn)
+        {
+            // a delegate: its target and the function it calls with it
+            C.Constructed(t);
+            E.I32(IlContext.InstanceSize(t)); E.Tid(C.TypeId(t)); E.Call(C.Rt.AllocObject);
+            Set(n);
+            var target = n.A[0];
+            int tOff = IlContext.FieldOffset(IlCompiler.DelegateFieldOf(t, "_target")), fOff = IlContext.FieldOffset(IlCompiler.DelegateFieldOf(t, "_fn"));
+            E.Get(L(n)); Get(target); if (target.Kind == VK.Ref) E.Call(C.Rt.Retain); E.Store(WOp.I32Store, tOff);
+            var fm = (MethodDesc)n.A[1].X!;
+            E.Get(L(n)); E.I32Fn(C.Module, C.DelegateTargetFn(fm, n.A[1].Op == Opc.LdVirtFtn)); E.Store(WOp.I32Store, fOff);
+            return;
+        }
         if (t.IsValueType)
         {
             // a struct: made in its own copy, which the constructor gets the address of

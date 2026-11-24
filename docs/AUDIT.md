@@ -5416,3 +5416,30 @@ Measured with tests/CoreLibNatives against .NET's shipped native zlib-ng: 72,240
 - Desk: 145 and 070 pass both ways; hello world is unchanged.
 
 Not run: the homelab suite and the self-host check on this commit.
+
+### IL front end on the IL CoreLib, and the NetWasm suite's first number (claude/il-frontend-2, 2026-11-23)
+
+- Console.WriteLine(42) against claude/il-corelib's framework (a copy of artifacts/framework built 16:59) compiles
+  strictly and prints 42 under host/run.mjs [run, desk]; module 1,948,641 bytes (size not worked on). With
+  IL2WASM_IL_COUNT_OBJECTS=1, 44 objects are live at exit with one call and with three: nothing leaks per call; that
+  the 44 are exactly what statics hold is not shown.
+- What it took: the natives table (P/Invoke and internal calls bound to CoreLib methods; EntryPointNotFound and
+  DllNotFound as SPEC 8); the CORELIB-INTRINSICS methods hello world reaches (atomics, math, the runtime's switches
+  baked and folded at import, groups' entry points in their no-group form, Generics.*, TextScan, arrays' helpers,
+  TypeInfo tables by type id; reflection's own tables empty); upstream intrinsics by name; Type objects as CoreLib's
+  RuntimeType by id; ldtoken, InitializeArray, CreateSpan, field data; delegates, ldftn, ldvirtftn, calli; constrained
+  static virtuals and generic methods; string's Ctor methods; arrays' interfaces through SZArrayHelper; KnownBool's
+  members folded at import (SIMD off, EventSource off, invariant globalization) and typeof(T).IsValueType.
+- Bugs found by measurement: thread statics overlapped other static blocks; data fields read zeros; an unused
+  reference argument was released before its entry count (found with IL2WASM_IL_WATCH: the console's encoding freed
+  after its first line).
+- The command line il2wasm-il (src/Il2Wasm.IL.Cli): a dotnet build output, its neighbours and the framework.
+- NetWasm's suite on the desk with the oracle records pulled from the homelab, shipped mode only (the checked mode
+  builds the same module today) [run, desk, 450 case-modes: 23 cases had stale oracle records]: **161 passed**, 217
+  failed, 71 did not compile, 1 timed out. Failures by first difference: 112 a wrong value, 33 a trap
+  (unreachable), 8 stack overflow, 3 out-of-bounds, 10 NotSupportedException from CoreLib's "il2wasm: not supported
+  yet" paths, 10 NullReferenceException; did not compile: Delegate.TargetOf (19, added after the run, not re-run),
+  generic virtual methods, multi-dimensional arrays, calli with struct arguments, Rt.DelegateMethodEntry and
+  DelegateArity, others.
+- tools/netwasm-suite.mjs ran modules with a relative host/run.mjs from the case's directory (every module failed to
+  start); it now gives the runner's absolute path.

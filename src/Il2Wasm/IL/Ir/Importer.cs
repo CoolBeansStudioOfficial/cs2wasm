@@ -240,13 +240,21 @@ public sealed class Importer
             int end = _blockEnd[b];
             ILOpcode last = ILOpcode.nop;
             int lastAt = b.ILStart;
-            while (rd.Offset < end) { lastAt = rd.Offset; last = rd.ReadILOpcode(); rd.Skip(last); }
+            int prevAt = -1;
+            while (rd.Offset < end) { prevAt = lastAt; lastAt = rd.Offset; last = rd.ReadILOpcode(); rd.Skip(last); }
             rd.Seek(lastAt);
             rd.ReadILOpcode();
             if (IsBranch(last))
             {
                 var t = _blockAt[rd.ReadBranchDestination(last)];
                 if (last is ILOpcode.br or ILOpcode.br_s or ILOpcode.leave or ILOpcode.leave_s) Edge(b, t);
+                else if (last is ILOpcode.brtrue or ILOpcode.brtrue_s or ILOpcode.brfalse or ILOpcode.brfalse_s && prevAt >= b.ILStart && ConstantCallAt(prevAt) is long c)
+                {
+                    // a branch on a constant getter (IsSupported, IsHardwareAccelerated: CoreLib's substitutions): the
+                    // other way is never compiled
+                    bool taken = (c != 0) == (last is ILOpcode.brtrue or ILOpcode.brtrue_s);
+                    Edge(b, taken ? t : _blockAt[end]);
+                }
                 else { Edge(b, t); Edge(b, _blockAt[end]); }
             }
             else if (last == ILOpcode.switch_)
@@ -262,6 +270,33 @@ public sealed class Importer
                 Edge(b, _blockAt[end]);
             }
         }
+    }
+
+    /// <summary>The value of a call at this offset to a constant getter, or null.</summary>
+    long? ConstantCallAt(int at)
+    {
+        var rd = new ILReader(_code, at);
+        if (rd.ReadILOpcode() != ILOpcode.call) return null;
+        return _il.GetObject(rd.ReadILToken()) is MethodDesc m ? ConstantGetter(m) : null;
+    }
+
+    /// <summary>A static method of no arguments whose body is a constant and ret (what a substitution makes of a feature
+    /// switch, IsSupported, IsHardwareAccelerated), on a type whose initializer such a call cannot start: its value.</summary>
+    public static long? ConstantGetter(MethodDesc m)
+    {
+        if (!m.Signature.IsStatic || m.Signature.Length != 0 || m.HasInstantiation && m.IsCanonicalMethod(CanonicalFormKind.Any)) return null;
+        if (Constants.OfIntrinsic(m) is long k) return k;
+        if (Constants.Known(m) is long kn) return kn;
+        if (!(m.Signature.ReturnType.IsWellKnownType(WellKnownType.Boolean) || m.Signature.ReturnType.IsWellKnownType(WellKnownType.Int32))) return null;
+        if (m.OwningType is MetadataType ot && ot.HasStaticConstructor && !ot.IsBeforeFieldInit) return null;
+        if (m.GetTypicalMethodDefinition() is not Internal.TypeSystem.Ecma.EcmaMethod em || em.IsPInvoke || em.IsInternalCall || em.IsAbstract) return null;
+        if (em.HasCustomAttribute("Il2Wasm.Runtime", "IntrinsicAttribute")) return null;
+        var il = Internal.IL.EcmaMethodIL.Create(em);
+        if (il == null) return null;
+        var b = il.GetILBytes();
+        if (b.Length == 2 && b[1] == (byte)ILOpcode.ret && b[0] >= (byte)ILOpcode.ldc_i4_m1 && b[0] <= (byte)ILOpcode.ldc_i4_8) return b[0] - (byte)ILOpcode.ldc_i4_0;
+        if (b.Length == 3 && b[0] == (byte)ILOpcode.ldc_i4_s && b[2] == (byte)ILOpcode.ret) return (sbyte)b[1];
+        return null;
     }
 
     /// <summary>Reverse postorder over the flow edges, with each handler entered from its try's entry.</summary>
@@ -704,7 +739,9 @@ public sealed class Importer
                     if (op is ILOpcode.brfalse or ILOpcode.brfalse_s) cond = CompareWith(CmpOp.Eq, v, ZeroOf(v));
                     else if (v.Kind is not (VK.I32 or VK.Ptr)) cond = CompareWith(CmpOp.Ne, v, ZeroOf(v));
                     I.EndStack(B, S, B.Succs);
-                    Terminate(Opc.BrIf, cond);
+                    // (a branch on a constant getter: LinkBlocks kept only the way taken)
+                    if (B.Succs.Count == 1) Terminate(Opc.Br);
+                    else Terminate(Opc.BrIf, cond);
                     return false;
                 }
                 case >= ILOpcode.beq_s and <= ILOpcode.blt_un_s: case >= ILOpcode.beq and <= ILOpcode.blt_un:
@@ -872,7 +909,6 @@ public sealed class Importer
                     var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
                     var o = Pop();
                     if (o.Kind != VK.Ref) throw Invalid($"{op} of a {o.Kind}");
-                    if (t.IsValueType && !t.IsPrimitive && !t.IsEnum) throw new NotSupportedException($"{I._method}: {op} to the value type {t}");
                     Push(Add(op == ILOpcode.castclass ? Opc.CastClass : Opc.IsInst, VK.Ref, StackType.ObjRef, t, o).WithX(t));
                     return true;
                 }
@@ -938,6 +974,34 @@ public sealed class Importer
                     Push(Const(VK.I32, Kinds.Of(t) == VK.Struct ? ((DefType)t).InstanceFieldSize.AsInt : Kinds.SizeOf(t)));
                     return true;
                 }
+                case ILOpcode.ldftn:
+                {
+                    var fm = (MethodDesc)I._il.GetObject(rd.ReadILToken());
+                    Push(Add(Opc.LdFtn, VK.Ptr, StackType.NativeInt, Ctx.GetWellKnownType(WellKnownType.IntPtr)).WithX(fm));
+                    return true;
+                }
+                case ILOpcode.ldvirtftn:
+                {
+                    var fm = (MethodDesc)I._il.GetObject(rd.ReadILToken());
+                    var o = Pop();
+                    Push(Add(Opc.LdVirtFtn, VK.Ptr, StackType.NativeInt, Ctx.GetWellKnownType(WellKnownType.IntPtr), o).WithX(fm));
+                    return true;
+                }
+                case ILOpcode.calli:
+                {
+                    var csig = (MethodSignature)I._il.GetObject(rd.ReadILToken());
+                    var fp = Pop();
+                    int n = csig.Length + (csig.IsStatic ? 0 : 1);
+                    var args = new Node[n + 1];
+                    for (int i = n - 1; i >= 0; i--) args[i] = Pop();
+                    for (int i = 0; i < csig.Length; i++) args[i + (csig.IsStatic ? 0 : 1)] = Coerce(args[i + (csig.IsStatic ? 0 : 1)], csig[i]);
+                    args[n] = fp;
+                    var rt = csig.ReturnType;
+                    var c = rt.IsVoid ? Add(Opc.CallI, VK.Void, StackType.None, null, args) : AddOfType(Opc.CallI, rt, args);
+                    c.X = csig;
+                    if (!rt.IsVoid) Push(c);
+                    return true;
+                }
                 case ILOpcode.localloc:
                 {
                     var size = Pop();
@@ -961,7 +1025,31 @@ public sealed class Importer
                         }
                         rd.Seek(back);
                     }
-                    throw new NotSupportedException($"{I._method}: ldtoken of {tok} (only typeof compared with == is imported yet)");
+                    if (tok is FieldDesc fd && rd.HasNext && rd.PeekILOpcode() == ILOpcode.call)
+                    {
+                        // RuntimeHelpers.InitializeArray(array, field) and CreateSpan<T>(field): the field's data
+                        int back = rd.Offset;
+                        rd.ReadILOpcode();
+                        if (I._il.GetObject(rd.ReadILToken()) is MethodDesc init)
+                        {
+                            if (init.GetName() == "InitializeArray")
+                            {
+                                var arr = Pop();
+                                Add(Opc.InitArray, VK.Void, StackType.None, null, arr).WithX(fd);
+                                return true;
+                            }
+                            if (init.GetName() == "CreateSpan")
+                            {
+                                Push(AddOfType(Opc.CreateSpan, init.Signature.ReturnType).WithX(fd).WithI(Kinds.SizeOf(init.Instantiation[0])));
+                                return true;
+                            }
+                        }
+                        rd.Seek(back);
+                    }
+                    // a handle: RuntimeTypeHandle, RuntimeFieldHandle, RuntimeMethodHandle
+                    var ht = Ctx.SystemModule.GetType("System"u8, tok switch { TypeDesc => "RuntimeTypeHandle"u8, FieldDesc => "RuntimeFieldHandle"u8, _ => "RuntimeMethodHandle"u8 });
+                    Push(AddOfType(Opc.LdToken, ht).WithX(tok));
+                    return true;
                 }
                 default: throw new NotSupportedException($"{I._method}: IL {op} at IL_{_at:x4} is not imported yet");
             }
@@ -1045,6 +1133,15 @@ public sealed class Importer
 
         void Call(MethodDesc m, bool virt)
         {
+            if (_constrained == null && Importer.ConstantGetter(m) is long cv) { Push(Const(VK.I32, cv)); return; }
+            // typeof(T).IsValueType and its kind: known for the instantiation (as the JIT and NativeAOT fold it)
+            if (S.Count > 0 && S[^1].Op == Opc.TypeOf && !m.Signature.IsStatic && m.Signature.Length == 0 && m.OwningType is MetadataType { Name: var _ } tt0 && tt0.GetName() == "Type"
+                && S[^1].X is TypeDesc known && TypeQuery(m.GetName(), known) is bool q)
+            {
+                Pop();
+                Push(Const(VK.I32, q ? 1 : 0));
+                return;
+            }
             // typeof(A) == typeof(B), both known: a constant (as NativeAOT and ILLink fold it)
             if (m.GetName() is "op_Equality" or "op_Inequality" && m.OwningType is MetadataType ot && ot.GetName() == "Type" && S.Count >= 2
                 && S[^1].Op == Opc.TypeOf && S[^2].Op == Opc.TypeOf)
@@ -1063,14 +1160,20 @@ public sealed class Importer
             {
                 var ct = _constrained;
                 _constrained = null;
-                if (!ct.IsValueType)
+                if (sig.IsStatic)
+                {
+                    // a static virtual (an interface's static abstract member): the constrained type's own
+                    m = ResolveOn(ct, m, true) ?? throw new InvalidProgramException($"{I._method}: {ct} does not implement {m}");
+                    virt = false;
+                }
+                else if (!ct.IsValueType)
                 {
                     // (a reference type: the byref this is dereferenced, then a normal virtual call)
                     args[0] = AddOfType(Opc.LdInd, ct, args[0]);
                 }
                 else
                 {
-                    var impl = m.OwningType.IsInterface ? ct.ResolveInterfaceMethodToVirtualMethodOnType(m) : ct.FindVirtualFunctionTargetMethodOnObjectType(m);
+                    var impl = ResolveOn(ct, m, false);
                     if (impl != null && impl.OwningType == ct) { m = impl; virt = false; }
                     else
                     {
@@ -1088,6 +1191,39 @@ public sealed class Importer
             var c = rt.IsVoid ? Add(Opc.Call, VK.Void, StackType.None, null, args) : AddOfType(Opc.Call, rt, args);
             c.X = m; c.Sub = (byte)kind; c.Ovf = virt && !sig.IsStatic;
             if (!rt.IsVoid) Push(c);
+        }
+
+        static bool? TypeQuery(string getter, TypeDesc t) => getter switch
+        {
+            "get_IsValueType" => t.IsValueType,
+            "get_IsEnum" => t.IsEnum,
+            "get_IsPrimitive" => t.IsPrimitive && !t.IsEnum,
+            "get_IsInterface" => t.IsInterface,
+            "get_IsArray" => t.IsArray,
+            "get_IsByRef" => t.IsByRef,
+            "get_IsPointer" => t.IsPointer,
+            "get_IsClass" => !t.IsValueType && !t.IsInterface,
+            _ => null,
+        };
+
+        /// <summary>The method a constrained call reaches on the type (a generic method instantiated as called).</summary>
+        MethodDesc? ResolveOn(TypeDesc ct, MethodDesc m, bool isStatic)
+        {
+            var def = m.HasInstantiation ? m.GetMethodDefinition() : m;
+            var algo = Ctx.GetVirtualMethodAlgorithmForType(ct);
+            MethodDesc? r;
+            if (isStatic)
+            {
+                r = algo.ResolveInterfaceMethodToStaticVirtualMethodOnType(def, ct) ?? algo.ResolveVariantInterfaceMethodToStaticVirtualMethodOnType(def, ct);
+                if (r == null && algo.ResolveInterfaceMethodToDefaultImplementationOnType(def, ct, out var dim) == DefaultInterfaceMethodResolution.DefaultImplementation) r = dim;
+            }
+            else
+            {
+                r = def.OwningType.IsInterface ? ct.ResolveInterfaceMethodToVirtualMethodOnType(def) ?? ct.ResolveVariantInterfaceMethodToVirtualMethodOnType(def) : ct.FindVirtualFunctionTargetMethodOnObjectType(def);
+                if (r == null && def.OwningType.IsInterface && algo.ResolveInterfaceMethodToDefaultImplementationOnType(def, ct, out var dim) == DefaultInterfaceMethodResolution.DefaultImplementation) r = dim;
+            }
+            if (r != null && m.HasInstantiation) r = Ctx.GetInstantiatedMethod(r.GetMethodDefinition(), m.Instantiation);
+            return r;
         }
 
         void NewObj(MethodDesc ctor)

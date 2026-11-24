@@ -1452,3 +1452,8 @@ with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   - Not run: the homelab suite and the self-host check (the rename only).
 - 2026-11-23, claude/il-corelib: the runtime side of the stock libraries' native calls (docs/CORELIB.md section 7). All 56 stock P/Invokes and internal calls bound (BuildCoreLib bindings). Deflate is a C# port of zlib-ng 2.2.5 and is identical to .NET's shipped zlib-ng on 30,690 cases (611,069,290 bytes, every return code and position). Inflate is the managed inflater: same output and result on 3,000 streams, per-call positions differ in 737. errno is now Emscripten's. Desk suite 145, 070, 088, 152, 220, 193 pass both ways; hello world unchanged. Homelab suite and self-host check not run (left to the coordinator).
 - 2026-11-23, claude/il-corelib: zlib-ng 2.2.5's inflate ported to C# (Natives/ZLibNgInflate.cs), replacing the managed inflater. Against .NET's native zlib-ng: 72,240 inflate runs identical (2.57 GB output, 833,572 calls: return codes, positions, 18 error messages), including truncated, corrupted and chunked streams. Deflate still identical on 30,690 cases. Homelab suite and self-host check not run on this commit.
+- 2026-11-23, claude/il-frontend-2 (IL front end on the IL CoreLib): Console.WriteLine(42) on claude/il-corelib's
+  framework compiles strictly and prints 42 (1,948,641 bytes; no leak per call, 44 objects live at exit). NetWasm suite,
+  desk, shipped mode: 161 passed, 217 failed, 71 did not compile, 1 timed out (the IL front end's first number). Stub
+  tests 69 of 69. Not run: homelab suite, stress, self-host check (the back end, runtime and old front end are
+  unchanged; the new code is a separate project).

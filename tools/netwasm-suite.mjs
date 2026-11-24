@@ -64,7 +64,8 @@ const rid = opt('--rid', 'win-x86');
 const timeoutMs = +opt('--timeout', 120) * 1000;
 const filter = opt('--filter') ? new RegExp(opt('--filter')) : null;
 const compileCmd = opt('--compile', process.env.IL2WASM_COMPILE);
-const runCmd = opt('--run', 'node host/run.mjs {out}');
+// (the runner by its absolute path: a module runs in its case's directory, binDir, where host/run.mjs is not)
+const runCmd = opt('--run', `node ${join(root, 'host', 'run.mjs').split('\\').join('/')} {out}`);
 const modes = opt('--modes', 'checked,shipped').split(',');
 const repeat = +opt('--repeat', 1);
 const force = flag('--force');

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The IL front end's command line: il2wasm-il <main assembly> -o <module> [checked] [framework dir]. Its own
+       project while the operation-tree front end's command line (Il2Wasm.Cli) is still the one the self-hosted
+       compiler is built from. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>il2wasm-il</AssemblyName>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Il2Wasm/IL/Il2Wasm.IL.csproj" />
+  </ItemGroup>
+</Project>
