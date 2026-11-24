@@ -178,7 +178,7 @@ sealed partial class FunctionLowering
         }
         int site = C.NewEhSite(clauses);
         int rec = E.AddLocal(ValType.I32);
-        E.I32(site); if (_fb >= 0) E.Get(_fb); else E.I32(0); E.Call(C.EhPush); E.Set(rec);
+        E.I32(site); if (_fb >= 0) { E.Get(_fb); _frameBaseEscapes = true; } else E.I32(0); E.Call(C.EhPush); E.Set(rec);
         _twoPass[tr] = twoPass;
         return rec;
     }

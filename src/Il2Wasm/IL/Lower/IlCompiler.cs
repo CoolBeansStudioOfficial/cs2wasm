@@ -70,6 +70,8 @@ public sealed partial class IlCompiler
         _ctx = ctx;
         Module.Tags.Add(ExceptionTag);
         Module.Globals.Add(StackPointer);
+        // (the back end's frame promotion follows it: Wasm/FrameSlots.cs; FunctionLowering records each frame's places)
+        Module.StackPointer = StackPointer;
         Rt = new RtFns(this);
         Facts.Resolve = Implementation;
         if (RcStats.On) RcStats = new RcStats(this);
@@ -716,17 +718,37 @@ public sealed partial class IlCompiler
         return f;
     }
 
-    internal WasmFunction UnboxFn(TypeDesc t)
+    /// <summary>The box checked for an unbox to t. exact: of t itself (a Nullable&lt;T&gt;'s unbox from a box, which the
+    /// CLR allows only of T exactly); otherwise as UnboxableKind allows for an enum or a primitive.</summary>
+    internal WasmFunction UnboxFn(TypeDesc t, bool exact = false)
     {
-        if (_unbox.TryGetValue(t, out var f)) return f;
-        f = Module.AddFunction("rt.unbox " + t, new FuncType([ValType.I32], [ValType.I32]));
-        _unbox[t] = f;
+        bool loose = !exact && UnboxableKind(t) != null;
+        var cache = loose ? _unbox : _unboxExact;
+        if (cache.TryGetValue(t, out var f)) return f;
+        f = Module.AddFunction((loose ? "rt.unbox " : "rt.unbox_exact ") + t, new FuncType([ValType.I32], [ValType.I32]));
+        cache[t] = f;
         var e = new Emitter(f);
-        e.Get(0); e.Call(Rt.NonNull); e.Call(IsInstFn(t)); e.Op(WOp.I32Eqz);
+        e.Get(0); e.Call(Rt.NonNull); e.Call(loose ? UnboxTestFn(t) : IsInstFn(t)); e.Op(WOp.I32Eqz);
         e.If(); e.Get(0); e.I32Addr(StringLiteral(TypeName(t))); e.Call(FunctionFor(CoreMethod("Il2Wasm.Runtime", "ThrowHelpers", "InvalidCast"))); e.Op(WOp.Unreachable); e.End();
         e.Get(0);
         return f;
     }
+
+    /// <summary>An enum's or a primitive's element type, which unbox compares (ECMA-335 III.4.33, as the CLR and
+    /// NativeAOT read it: an enum's box unboxes as its underlying primitive, a primitive's box as an enum of it, and an
+    /// enum's as another enum of the same underlying type; int and uint, bool and byte, char and ushort stay apart);
+    /// null for any other type.</summary>
+    static TypeFlags? UnboxableKind(TypeDesc t) => t.IsEnum ? t.UnderlyingType.Category : t.IsPrimitive ? t.Category : null;
+
+    /// <summary>The unbox test of an enum or a primitive: the constructed boxes of the same element type (UnboxableKind).</summary>
+    WasmFunction UnboxTestFn(TypeDesc t)
+    {
+        if (_unboxTest.TryGetValue(t, out var f)) return f;
+        f = Module.AddFunction("rt.unboxtest " + t, new FuncType([ValType.I32], [ValType.I32]));
+        _unboxTest[t] = f;
+        return f;
+    }
+    readonly Dictionary<TypeDesc, WasmFunction> _unboxTest = new(), _unboxExact = new();
 
     // ------------------------------------------------------------------ statics and initializers
 
@@ -1177,11 +1199,11 @@ public sealed partial class IlCompiler
             if (Environment.GetEnvironmentVariable("IL2WASM_IL_TRACE_DISPATCH") == "1") { e.Get(tid); e.Get(0); e.Load(WOp.I32Load); e.Get(0); e.Call(TraceImport); }
             e.Op(WOp.Unreachable);
         }
-        // type tests: the constructed types that cast to the target
-        foreach (var (t, f) in _isinst)
+        // type tests: the constructed types that cast to the target (an unbox test: the boxes of the same element type)
+        foreach (var (t, f, unbox) in _isinst.Select(p => (p.Key, p.Value, false)).Concat(_unboxTest.Select(p => (p.Key, p.Value, true))).ToList())
         {
             var e = new Emitter(f);
-            var ids = _constructedOrder.Where(x => x.CanCastTo(t)).Select(Final).ToList();
+            var ids = _constructedOrder.Where(x => unbox ? x.IsValueType && UnboxableKind(x) == UnboxableKind(t) : x.CanCastTo(t)).Select(Final).ToList();
             e.Get(0); e.Op(WOp.I32Eqz); e.If(); e.I32(0); e.Op(WOp.Return); e.End();
             if (ids.Count == 0) { e.I32(0); continue; }
             int tid = e.AddLocal(ValType.I32);
@@ -1189,14 +1211,15 @@ public sealed partial class IlCompiler
             EmitIdTest(e, tid, ids);
             e.If(ValType.I32); e.Get(0); e.Else(); e.I32(0); e.End();
         }
-        // destroy: each constructed type's references released, then its memory freed
+        // destroy: each constructed type's references released, then its memory freed, inside the depth queue's
+        // prologue and epilogue (DestroyDepth.cs)
         {
             var e = new Emitter(Rt.Destroy);
             int tid = e.AddLocal(ValType.I32), i = e.AddLocal(ValType.I32), n = e.AddLocal(ValType.I32);
             e.Get(0); e.Load(WOp.I32Load, 4); e.Set(tid);
-            foreach (var x in _constructedOrder)
+            void Case(TypeDesc x)
             {
-                e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
+                if (SealedTail(x) is { } tail) { EmitSealedTailDestroy(e, x, tail); return; }
                 EmitFinalizeStep(e, x);
                 if (x is ArrayType at)
                 {
@@ -1230,9 +1253,12 @@ public sealed partial class IlCompiler
                     if (Kinds.Of(x) == VK.Struct && Kinds.Counted(x)) { e.Get(0); e.I32(IlContext.ObjectHeader); e.Op(WOp.I32Add); e.Call(Rt.ReleaseStruct(x)); }
                     e.Get(0); e.I32(x.IsValueType ? IlContext.ObjectHeader + Math.Max(4, Kinds.SizeOf(x)) : IlContext.InstanceSize((DefType)x));
                 }
-                e.Call(Rt.Free); e.Op(WOp.Return);
-                e.End();
+                e.Call(Rt.Free);
+                // (a leaf is destroyed outside the depth count: EmitDestroySwitch)
+                if (IsLeafDestroy(x) && !s_noDestroySwitch) e.Op(WOp.Return); else EmitDestroyLeave(e);
             }
+            EmitDestroySwitch(e, tid, _constructedOrder.Select(x => (Final(x), IsLeafDestroy(x), (Action)(() => Case(x)))).ToList(), _types.Count + 2);
+            e.Call(_destroyDone!); // (no case: as one)
         }
         // retain_contents: each constructed type's references counted (an object copied whole: MemberwiseClone)
         if (Rt.RetainContentsIfMade is { } rcf)

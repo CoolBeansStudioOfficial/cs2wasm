@@ -267,6 +267,9 @@ public sealed partial class Importer
                     bool taken = (c != 0) == (last is ILOpcode.brtrue or ILOpcode.brtrue_s);
                     Edge(b, taken ? t : _blockAt[end]);
                 }
+                else if (last is ILOpcode.brtrue or ILOpcode.brtrue_s or ILOpcode.brfalse or ILOpcode.brfalse_s && prevAt >= b.ILStart && NonNullBoxAt(prevAt))
+                    // a branch on the box of a value type that is not a Nullable: never null (BoxFolds.cs)
+                    Edge(b, last is ILOpcode.brtrue or ILOpcode.brtrue_s ? t : _blockAt[end]);
                 else { Edge(b, t); Edge(b, _blockAt[end]); }
             }
             else if (last == ILOpcode.switch_)
@@ -566,10 +569,18 @@ public sealed partial class Importer
         /// Type.FromId call and a release per test, 62% of ListSort's count operations through GenericArraySortHelper).</summary>
         void DropFolded(Node n)
         {
-            if (n.Op != Opc.TypeOf || n.Block != B || S.Contains(n)) return;
-            foreach (var x in B.Code) foreach (var o in x.A) if (o == n) return;
-            if (I._cur.TryGetValue(B, out var vars) && vars.ContainsValue(n)) return;
+            if (n.Op is not (Opc.TypeOf or Opc.Box) || !Unused(n)) return;
             B.Code.Remove(n);
+        }
+
+        /// <summary>Nothing uses the value made in this block: not on the stack, not an operand, not in a variable
+        /// (all its uses so far are these; a value of another block may have uses this importer does not see).</summary>
+        bool Unused(Node n)
+        {
+            if (n.Block != B || S.Contains(n)) return false;
+            foreach (var x in B.Code) foreach (var o in x.A) if (o == n) return false;
+            if (I._cur.TryGetValue(B, out var vars) && vars.ContainsValue(n)) return false;
+            return true;
         }
         int _at;
 
@@ -764,8 +775,8 @@ public sealed partial class Importer
                     if (op is ILOpcode.brfalse or ILOpcode.brfalse_s) cond = CompareWith(CmpOp.Eq, v, ZeroOf(v));
                     else if (v.Kind is not (VK.I32 or VK.Ptr)) cond = CompareWith(CmpOp.Ne, v, ZeroOf(v));
                     I.EndStack(B, S, B.Succs);
-                    // (a branch on a constant getter: LinkBlocks kept only the way taken)
-                    if (B.Succs.Count == 1) Terminate(Opc.Br);
+                    // (a branch on a constant getter or a box that is never null: LinkBlocks kept only the way taken)
+                    if (B.Succs.Count == 1) { if (v.Op == Opc.Box) DropFolded(v); Terminate(Opc.Br); }
                     else Terminate(Opc.BrIf, cond);
                     return false;
                 }
@@ -883,6 +894,7 @@ public sealed partial class Importer
                     var o = Pop();
                     if (f.IsStatic) { Push(AddOfType(Opc.LdSFld, f.FieldType).WithX(f)); return true; }
                     if (o.Kind is not (VK.Ref or VK.Ptr or VK.Struct)) throw Invalid("ldfld of a " + o.Kind);
+                    o = InPlace(o); // (a struct just loaded: its field read where it is, StructReads.cs)
                     Push(AddOfType(Opc.LdFld, f.FieldType, o).WithX(f));
                     return true;
                 }
@@ -948,6 +960,7 @@ public sealed partial class Importer
                     var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
                     var o = Pop();
                     if (o.Kind != VK.Ref) throw Invalid($"{op} of a {o.Kind}");
+                    if (CastOfBox(o, t)) { Push(o); return true; } // (BoxFolds.cs)
                     Push(Add(op == ILOpcode.castclass ? Opc.CastClass : Opc.IsInst, VK.Ref, StackType.ObjRef, t, o).WithX(t));
                     return true;
                 }
@@ -964,6 +977,7 @@ public sealed partial class Importer
                     var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
                     var o = Pop();
                     if (!t.IsValueType) { Push(Add(Opc.CastClass, VK.Ref, StackType.ObjRef, t, o).WithX(t)); return true; }
+                    if (UnboxOfBox(o, t) is { } boxed) { Push(boxed); return true; } // (BoxFolds.cs)
                     Push(AddOfType(Opc.UnboxAny, t, o).WithX(t));
                     return true;
                 }
@@ -1183,6 +1197,7 @@ public sealed partial class Importer
         {
             // (typeof(A) and typeof(B) compared as references: the same Type object exactly when the same type)
             if (a.Op == Opc.TypeOf && b.Op == Opc.TypeOf && op is CmpOp.Eq or CmpOp.Ne) return Const(VK.I32, (op == CmpOp.Eq) == (a.X == b.X) ? 1 : 0);
+            if (CompareBoxWithNull(op, a, b) is { } boxCmp) return boxCmp; // (BoxFolds.cs)
             bool ok = a.SType == b.SType && a.SType != StackType.None
                 || a.SType is StackType.Int32 or StackType.NativeInt && b.SType is StackType.Int32 or StackType.NativeInt
                 || a.SType is StackType.ByRef or StackType.NativeInt && b.SType is StackType.ByRef or StackType.NativeInt;

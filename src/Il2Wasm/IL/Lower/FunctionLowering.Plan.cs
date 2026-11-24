@@ -175,6 +175,7 @@ sealed partial class FunctionLowering
         size = (size + 7) & ~7;
         _frameSize = (_frameSize + 7) & ~7;
         _frameObj[n] = (_frameSize, size, type);
+        _frameSlots.Add((_frameSize, size));
         _frameObjOrder.Add(n);
         _frameSize += size;
     }
