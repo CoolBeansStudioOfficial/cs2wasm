@@ -25,7 +25,7 @@ public static class FrameObjects
     public static List<Node> Find(PlanContext ctx)
     {
         var r = new List<Node>();
-        if (s_off) return r;
+        if (s_off || !HasFrameRuntime(ctx.Method.Context)) return r;
         var body = ctx.Body;
         Dictionary<Node, bool>? ok = null;
         foreach (var b in body.Blocks)
@@ -56,6 +56,20 @@ public static class FrameObjects
         Found += r.Count;
         return r;
     }
+
+    /// <summary>The CoreLib has Rt.InitFrameObject (the stub CoreLib of the IL tests does not).</summary>
+    static bool HasFrameRuntime(TypeSystemContext c)
+    {
+        lock (s_frameRuntime)
+        {
+            if (s_frameRuntime.TryGetValue(c, out bool r)) return r;
+            r = c.SystemModule.GetType("Il2Wasm.Runtime"u8, "Rt"u8, throwIfNotFound: false) is MetadataType rt
+                && System.Linq.Enumerable.Any(rt.GetMethods(), m => m.GetName() == "InitFrameObject");
+            s_frameRuntime.Add(c, r);
+            return r;
+        }
+    }
+    static readonly Dictionary<TypeSystemContext, bool> s_frameRuntime = new();
 
     static bool Candidate(ProgramSolution sol, MethodDesc ctor)
     {

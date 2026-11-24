@@ -454,6 +454,15 @@ public static class Plan
         /// <summary>Guaranteed values whose root cannot hold them flip to Owned, to a fixed point (flips only make more
         /// values Owned, which only makes more roots valid): a Val root must be an Owned value of this body; a phi is
         /// Guaranteed only over Guaranteed or Trivial inputs.</summary>
+        HashSet<Node>? _terminal;
+        HashSet<Node> Terminal()
+        {
+            if (_terminal != null) return _terminal;
+            _terminal = [];
+            foreach (var b in _body.Blocks) if (b.Term is { Op: Opc.Ret or Opc.Throw } t) foreach (var x in t.A) _terminal.Add(x);
+            return _terminal;
+        }
+
         void Validate()
         {
             for (bool changed = true; changed;)
@@ -470,6 +479,9 @@ public static class Plan
                         _ => true,
                     };
                     if (ok && v.Op == Opc.Phi) ok = v.A.All(x => !IsRef(x) || KindOf(x) is OwnKind.Guaranteed or OwnKind.Trivial);
+                    // (a return or a throw counts its value after the operation's own releases, which let its root go:
+                    // a borrow of a value of this body that one of them uses is counted at its definition instead)
+                    if (ok && p.Root == RootKind.Val && Terminal().Contains(v)) ok = false;
                     if (!ok) { Flip(v); changed = true; }
                 }
             }

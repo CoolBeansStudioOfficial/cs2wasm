@@ -6,3 +6,4 @@ tests/out/
 !src/Il2Wasm.Wasm/
 .claude/
 artifacts/
+/exp/
