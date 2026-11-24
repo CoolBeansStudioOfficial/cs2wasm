@@ -137,14 +137,14 @@ public static class Verify
                                 if (owns != (c is ArgConv.HandOver or ArgConv.KeepAlive)) throw Fail($"argument {j}: its convention {c} does not match the variant {v} (check 8)", n, b);
                             }
                         }
-                        else if (moved && !Ownership.Consumes(n, j)) throw Fail($"operand {j} moved where it is not consumed (check 6)", n, b);
+                        else if (moved && !Ownership.Consumes(n, j) && !(j == 1 && Plan.IsInserted(n) && n.X is MethodDesc hm && hm == Plan.HoldFromCall(_ctx.Method.Context))) throw Fail($"operand {j} moved where it is not consumed (check 6)", n, b);
                         else if (n.Op == Opc.Ret && _ctx.Entry.Kind == VariantKind.BorrowReturn && Plan.IsRef(a) && !Plan.IsTrivial(a) && Kind(a) == OwnKind.Owned)
                             throw Fail("a borrowed-return entry returns an Owned value (its result must be a borrow of a parameter's path)", a, b);
                     }
                     if (!threaded && (_plan.Counts[n] == CountKind.Atomic || _plan.Loads[n] == LoadKind.LoadRetain || _plan.Accesses[n] == AccessKind.Atomic))
                         throw Fail("an atomic count, load or access in a build without threads (check 9)", n, b);
                     // (7.4: a call that may have held a keeper is followed by its take)
-                    if (Plan.KeeperCalls(_ctx.Method.Context) is { } kc && Plan.NeedsTake(_ctx, n) && (n.Kind != VK.Struct || Plan.TakeField(n) != null))
+                    if (Plan.KeeperCalls(_ctx.Method.Context) is { } kc && Plan.NeedsTake(_ctx, n, _plan.Callees[n]) && (n.Kind != VK.Struct || Plan.TakeField(n) != null))
                     {
                         int t = i + 1;
                         while (t < b.Code.Count && (b.Code[t].Op is Opc.Release or Opc.Retain || b.Code[t].Op == Opc.LdFld && Plan.IsInserted(b.Code[t]))) t++;
@@ -304,8 +304,9 @@ public static class Verify
                 if (!_index.TryGetValue(v, out int i)) continue;
                 // (a terminator's address operand: its objects are let go just before it, as nothing runs after it
                 // here; the address it returns or branches with points into what the caller or a successor keeps, or
-                // into a keeper handed on)
-                if (user.IsTerminator && v != a) continue;
+                // into a keeper handed on; a reference it returns or throws is counted by it, after those releases: its borrow's root must
+                // still hold then)
+                if (user.IsTerminator && v != a && !(Plan.IsRef(a) && user.Op is Opc.Ret or Opc.Throw && _plan.Own[a].Kind == OwnKind.Guaranteed)) continue;
                 if (v == user || Plan.IsInserted(user) && Plan.IsInserted(v)) continue;
                 if (viaBase ? !s.MayHold(i) : !s.MustHold(i))
                     throw Fail($"used by {Body.Format(user)} where it {(viaBase ? "holds no count on any path" : "may not hold its count")} (checks 2, 3, 5)", v, b);

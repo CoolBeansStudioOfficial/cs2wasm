@@ -8,3 +8,5 @@ tests/out/
 artifacts/
 
 .cgbin/
+/exp/
+/exp2/
