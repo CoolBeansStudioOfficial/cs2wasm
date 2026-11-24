@@ -102,6 +102,22 @@ public static class Borrows
 
     // ------------------------------------------------------------------ statistics
 
+    /// <summary>IL2WASM_BORROW_SITES=file (with IL2WASM_BORROW_STATS=1): each counted load's decision, per function in
+    /// node order (the last round's), written at exit.</summary>
+    internal static readonly string? SitesFile = Stats && Environment.GetEnvironmentVariable("IL2WASM_BORROW_SITES") is { Length: > 0 } sf ? sf : null;
+    static readonly List<string> s_sites = [];
+    static ProgramSolution? s_sitesSolution;
+    static int s_sitesHooked;
+    internal static void AddSites(ProgramSolution sol, List<string> lines)
+    {
+        lock (s_sites)
+        {
+            if (!ReferenceEquals(s_sitesSolution, sol)) { s_sites.Clear(); s_sitesSolution = sol; }
+            s_sites.AddRange(lines);
+        }
+        if (Interlocked.Exchange(ref s_sitesHooked, 1) == 0) AppDomain.CurrentDomain.ProcessExit += (_, _) => { lock (s_sites) System.IO.File.WriteAllLines(SitesFile!, s_sites); };
+    }
+
     internal static readonly long[] Counts = new long[(int)Stat.Count];
     static int s_hooked;
     internal static void Count(Stat s, long n = 1)
@@ -248,6 +264,23 @@ sealed class Analyzer
                     if (load) { Borrows.Count(Borrows.Stat.Flipped); Borrows.Count(g.Reason); }
                 }
             }
+        if (Borrows.SitesFile != null)
+        {
+            // (each counted load in block and node order, as lowering emits their retains, for tools/il-borrow-weight's
+            // join with il-rcstats' executed counts)
+            var fn = _ctx.Method.ToString()!;
+            var lines = new List<string>();
+            foreach (var b in _body.Blocks)
+                foreach (var n in b.Code)
+                {
+                    if (n.Kind != VK.Ref) continue;
+                    string? role = n.Op switch { Opc.LdFld => "field", Opc.LdElem => "element", Opc.LdSFld => "static", Opc.VarLd => "local", _ => null };
+                    if (role == null) continue;
+                    string d = Facts.Own[n].Kind == OwnKind.Guaranteed ? "borrowed" : Facts.Flipped[n] ? "flip:" + groups.First(g => g.Members.Contains(n)).Reason.ToString()[4..] : "generic";
+                    lines.Add(fn + "\t" + role + "\t" + d);
+                }
+            Borrows.AddSites(_ctx.Solution, lines);
+        }
     }
 
     // ------------------------------------------------------------------ paths
@@ -405,6 +438,9 @@ sealed class Analyzer
                 }
                 case PK.Root:
                     // (a parameter, or an Owned value: `for (var n = this; n != null; n = n.Next)`)
+                    // (an Owned value made inside the loop, `head = new Node { Next = head }`, is not one value for the
+                    // phi's whole range: the phi is Owned itself, and loops over it are rooted at it)
+                    if (x.Path!.Root == RootKind.Val && Reaches(p.Block, p.A[i].Block)) { ok = false; break; }
                     if (rootPath == null) { rootPath = x.Path; rootNode = x.Path!.Root == RootKind.Val ? p.A[i] : null; }
                     else if (!BorrowPath.Same(rootPath, x.Path)) ok = false;
                     break;
@@ -431,6 +467,21 @@ sealed class Analyzer
         var mi = Member(ext);
         foreach (var c in chain) { if (!ext.Members.Contains(c)) ext.Members.Add(c); _memo[c] = mi; }
         return mi;
+    }
+
+    /// <summary>Block <paramref name="to"/> is reachable from <paramref name="from"/> (itself included).</summary>
+    static bool Reaches(Block from, Block to)
+    {
+        var seen = new HashSet<Block>();
+        var work = new Stack<Block>();
+        work.Push(from);
+        while (work.Count > 0)
+        {
+            var b = work.Pop();
+            if (b == to) return true;
+            if (seen.Add(b)) foreach (var s in b.Succs) work.Push(s);
+        }
+        return false;
     }
 
     void Merge(Group into, Group from)
