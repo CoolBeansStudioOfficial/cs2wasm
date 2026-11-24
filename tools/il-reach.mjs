@@ -19,7 +19,7 @@ for (const l of fs.readFileSync(sizesFile, 'utf8').split(/\r?\n/)) {
   const t = l.indexOf('\t');
   sizes.set(l.slice(t + 1), (sizes.get(l.slice(t + 1)) ?? 0) + +l.slice(0, t));
 }
-const parent = new Map(), via = new Map(), types = [];
+const parent = new Map(), via = new Map(), types = [], data = [];
 for (const l of fs.readFileSync(reachFile, 'utf8').split(/\r?\n/)) {
   if (!l) continue;
   const p = l.split('\t');
@@ -27,11 +27,14 @@ for (const l of fs.readFileSync(reachFile, 'utf8').split(/\r?\n/)) {
     if (p[2] === 'D') { parent.set(p[1], p[3]); via.set(p[1], p[4]); }
     else parent.set(p[1], p[3]);
   } else if (p[0] === 'T') types.push([p[1], p[2]]);
+  else if (p[0] === 'D') data.push([+p[1], p[2]]);
 }
 const size = n => sizes.get(n) ?? 0;
 let total = 0;
 for (const v of sizes.values()) total += v;
 console.log(`code ${total} bytes in ${sizes.size} functions; ${parent.size} methods and stubs reached`);
+console.log(`data ${data.reduce((s, d) => s + d[0], 0)} bytes; largest:`);
+for (const [n, what] of data.sort((a, b) => b[0] - a[0]).slice(0, 12)) console.log(`  ${String(n).padStart(8)}  ${what}`);
 
 // namespaces (the method's type's namespace: the text before the last '.' ahead of the name's '(')
 const nsOf = n => {

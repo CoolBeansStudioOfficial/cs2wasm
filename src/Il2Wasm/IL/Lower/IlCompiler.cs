@@ -268,6 +268,10 @@ public sealed partial class IlCompiler
         }
         foreach (var (slot, f) in _stubs) lines.Add($"M\t{f.Name}\tC\t{N(_whyStub.GetValueOrDefault(slot))}");
         foreach (var (t, c) in _whyConstructed) lines.Add($"T\t{t}\t{N(c)}");
+        // the data: field data by field, literals, the other blobs (type tables)
+        foreach (var (fd, b) in _rva) lines.Add($"D\t{b.Bytes.Length}\tfield {fd}");
+        lines.Add($"D\t{_literalOrder.Sum(s => 18 + 2 * s.Length)}\t{_literalOrder.Count} literals");
+        lines.Add($"D\t{_blobs.Where(b => !_rva.ContainsValue(b)).Sum(b => b.Bytes.Length)}\tother blobs");
         System.IO.File.WriteAllLines(path, lines);
     }
 
@@ -742,7 +746,7 @@ public sealed partial class IlCompiler
             case "Rt.Take": if (m.Instantiation[0] is { IsValueType: false, IsInterface: false, IsObject: false } tk && tk is not MetadataType { IsAbstract: true }) Constructed(tk); break;
             case "Rt.Borrow": e.Call(Rt.Retain); break;
             case "Rt.TypeId": e.Call(Rt.NonNull); e.Load(WOp.I32Load, 4); break;
-            case "Rt.TypeIdOf": e.Tid(TypeId(m.Instantiation[0])); break;
+            case "Rt.TypeIdOf": Reflectable(m.Instantiation[0]); e.Tid(TypeId(m.Instantiation[0])); break;
             case "Rt.HeapBase": e.I32Addr(new LateAddr(() => _heapBase)); break;
             case "Rt.Unreachable": e.Op(WOp.Unreachable); break;
             case "Mem.RefI32": break;
@@ -841,8 +845,7 @@ public sealed partial class IlCompiler
         // the destroy function's callee
         Rt.Free = FunctionFor(CoreMethod("Il2Wasm.Runtime", "Rt", "FreeObject"));
         _ = Rt.NonNull;
-        // the names, for TypeNameById (made now: they are literals)
-        foreach (var t in _types.ToList()) StringLiteral(TypeName(t));
+        // (the names, for TypeNameById: made in GenerateLate, once the reflectable types are known)
     }
 
     /// <summary>The functions whose bodies need the whole program: dispatch stubs, type tests, destroy.</summary>
@@ -850,7 +853,7 @@ public sealed partial class IlCompiler
     {
         // type ids: 1 is string's (CoreLib's contract); the others in a preorder of the class hierarchy from 2
         CloseTypeIds();
-        foreach (var t in _types.ToList()) StringLiteral(TypeName(t));
+        foreach (var t in _types.ToList()) if (IsReflectable(t)) StringLiteral(TypeName(t));
         var order = new List<TypeDesc>();
         var children = new Dictionary<TypeDesc, List<TypeDesc>>();
         var roots = new List<TypeDesc>();
@@ -983,7 +986,7 @@ public sealed partial class IlCompiler
         }
         // the type name table, in final id order
         _typeNamesByFinal = new string[_types.Count + 2];
-        foreach (var t in _types) { _typeNamesByFinal[Final(t)] = TypeName(t); byFinal[Final(t)] = t; }
+        foreach (var t in _types) { if (IsReflectable(t)) _typeNamesByFinal[Final(t)] = TypeName(t); byFinal[Final(t)] = t; }
         EmitTypeTables(Final, _types.Count + 2, byFinal);
         EmitArrayFns(Final);
     }

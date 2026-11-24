@@ -60,6 +60,9 @@ public sealed class ProgramFacts : ISccpOracle
                     case Opc.StSFld: case Opc.LdSFldA:
                         if (n.X is FieldDesc f) { _written.Add(f); _written.Add(f.GetTypicalFieldDefinition()); }
                         break;
+                    case Opc.TypeOf: case Opc.LdToken:
+                        if (n.X is TypeDesc tt) TypeObjects.Add(tt);
+                        break;
                     case Opc.LdFtn: case Opc.LdVirtFtn:
                         if (n.X is MethodDesc fm) _indirect.Add(fm);
                         break;
@@ -77,6 +80,8 @@ public sealed class ProgramFacts : ISccpOracle
     }
 
     readonly Dictionary<MethodDesc, Val> _returns = new();
+    /// <summary>The types typeof and ldtoken name in the code that can run (each a Type object the program can see).</summary>
+    public readonly HashSet<TypeDesc> TypeObjects = [];
     readonly Dictionary<FieldDesc, Val> _fields = new();
 
     public Val InstanceField(Node load) => Previous != null && load.X is FieldDesc f ? Previous.Field(f) : Val.Bottom;

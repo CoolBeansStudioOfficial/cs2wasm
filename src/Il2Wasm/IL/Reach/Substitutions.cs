@@ -37,6 +37,8 @@ public static class Features
         using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
         if (!doc.RootElement.TryGetProperty("runtimeOptions", out var ro) || !ro.TryGetProperty("configProperties", out var cp)) return;
         foreach (var p in cp.EnumerateObject())
+            // (the IL CoreLib is built invariant: Constants.Known folds GlobalizationMode.Invariant whatever the project says)
+            if (p.Name != "System.Globalization.Invariant")
             s_values[p.Name] = p.Value.ValueKind switch
             {
                 System.Text.Json.JsonValueKind.True => "true", System.Text.Json.JsonValueKind.False => "false",

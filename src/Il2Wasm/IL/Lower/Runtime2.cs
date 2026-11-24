@@ -349,17 +349,39 @@ public sealed partial class IlCompiler
     /// <summary>Every type the tables name has an id: bases, elements, interfaces, generic arguments, containing types.</summary>
     void CloseTypeIds()
     {
-        if (_typeTables.Count == 0) return;
-        for (int i = 0; i < _types.Count; i++)
+        // (the types a Type object, an object's GetType() or a type name can be of: the objects' types, typeof's,
+        // handles', Rt.TypeIdOf's, then what the tables lead to from those; other ids only serve casts and dispatch,
+        // and have no names and empty table entries. IL2WASM_NO_REFLECTABLE_TYPES=1, or without the constant
+        // propagation that sees typeof: every type)
+        bool all = s_allReflectable || Il2Wasm.IL.Reach.ProgramFacts.Off;
+        List<TypeDesc> list;
+        if (!all) foreach (var t in Facts.TypeObjects) Reflectable(t);
+        foreach (var t in _constructedOrder) Reflectable(t);
+        list = all ? _types : _reflectableOrder;
+        void Add(TypeDesc t) { TypeId(t); if (!all) Reflectable(t); }
+        for (int i = 0; i < list.Count; i++)
         {
-            var t = _types[i];
-            if (_typeTables.ContainsKey("base") && t.BaseType is { } b) TypeId(b);
-            if (_typeTables.ContainsKey("element") && t is ParameterizedType p) TypeId(p.ParameterType);
-            if (_typeTables.ContainsKey("interfaces")) foreach (var it in t.RuntimeInterfaces) TypeId(it);
-            if (_typeTables.ContainsKey("generic_args")) foreach (var a in t.Instantiation) TypeId(a);
-            if (_typeTables.ContainsKey("declaring") && t is MetadataType { ContainingType: { } ct }) TypeId(ct);
+            var t = list[i];
+            if (_typeTables.ContainsKey("base") && t.BaseType is { } b) Add(b);
+            if (_typeTables.ContainsKey("element") && t is ParameterizedType p) Add(p.ParameterType);
+            if (_typeTables.ContainsKey("interfaces")) foreach (var it in t.RuntimeInterfaces) Add(it);
+            if (_typeTables.ContainsKey("generic_args")) foreach (var a in t.Instantiation) Add(a);
+            if (_typeTables.ContainsKey("declaring") && t is MetadataType { ContainingType: { } ct }) Add(ct);
+            if (_typeTables.ContainsKey("array_of") && !all) foreach (var x in _types.ToList()) if (x is ArrayType { IsSzArray: true } a && a.ElementType == t) Add(x);
         }
+        _allTypesReflectable = all;
+        if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"reflectable: {(all ? "all" : _reflectable.Count.ToString())} of {_types.Count} types; tables {string.Join(",", _typeTables.Keys)}");
     }
+
+    static readonly bool s_allReflectable = Environment.GetEnvironmentVariable("IL2WASM_NO_REFLECTABLE_TYPES") == "1";
+    readonly HashSet<TypeDesc> _reflectable = [];
+    readonly List<TypeDesc> _reflectableOrder = [];
+    bool _allTypesReflectable = true;
+
+    internal void Reflectable(TypeDesc t) { TypeId(t); if (_reflectable.Add(t)) _reflectableOrder.Add(t); }
+
+    /// <summary>A type whose name and table entries the program can see.</summary>
+    bool IsReflectable(TypeDesc t) => _allTypesReflectable || _reflectable.Contains(t);
 
     static string ShortName(TypeDesc t) => t switch
     {
@@ -474,7 +496,7 @@ public sealed partial class IlCompiler
             var vals = new (IAddress? a, int v)[count];
             // (an open generic type, typeof(List<>), has no layout)
             for (int i = 0; i < count; i++) vals[i] = byFinal[i] is { IsGenericDefinition: true } && kind is "size" or "flags2" or "box_offset" ? (null, kind == "flags2" ? 64 | 4 : 0)
-                : byFinal[i] is { } t ? entry(t) : (kind is "name" or "short_name" or "namespace" ? (StringLiteral(""), 0) : kind is "interfaces" or "generic_args" ? (Ids([]), 0) : (null, kind is "base" or "element" or "declaring" or "array_of" ? -1 : 0));
+                : byFinal[i] is { } t && (IsReflectable(t) || kind is not ("name" or "short_name" or "namespace")) ? entry(t) : (kind is "name" or "short_name" or "namespace" ? (StringLiteral(""), 0) : kind is "interfaces" or "generic_args" ? (Ids([]), 0) : (null, kind is "base" or "element" or "declaring" or "array_of" ? -1 : 0));
             var blob = new byte[count * 4];
             var relocs = new List<(int, IAddress)>();
             for (int i = 0; i < count; i++)
