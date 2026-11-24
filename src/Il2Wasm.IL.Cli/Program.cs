@@ -44,14 +44,13 @@ try
     ctx.SetCoreLib();
     var main = ctx.Load(Path.GetFileNameWithoutExtension(input));
     var entry = main.EntryPoint ?? throw new InvalidOperationException($"{input} has no entry point");
-    var c = new IlCompiler(ctx);
+    var c = new IlCompiler(ctx) { Checked = isChecked };
     var natives = Path.Combine(framework, "il2wasm.natives.txt");
     if (File.Exists(natives)) c.LoadNatives(natives);
     var bytes = c.Compile(entry);
     foreach (var w in c.Warnings.Distinct()) Console.Error.WriteLine("warning: " + w);
     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
     File.WriteAllBytes(output, bytes);
-    _ = isChecked; // (a checked build: the module is validated in every build already)
     return 0;
 }
 catch (Exception e)

@@ -33,6 +33,7 @@ try
     if (c.Wants("import")) ImporterChecks.Run(c);
     if (c.Wants("e2e")) EndToEnd.Run(c);
     if (c.Wants("fw")) EndToEnd.RunFramework(c);
+    if (RuntimePrograms.Wants(filter)) RuntimePrograms.Run(c, filter);
 }
 finally { try { Directory.Delete(Build.Dir, true); } catch { } }
 Console.WriteLine($"{c.Passed} passed, {c.Failed} failed");

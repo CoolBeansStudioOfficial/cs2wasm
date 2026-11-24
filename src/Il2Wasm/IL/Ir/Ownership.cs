@@ -180,8 +180,9 @@ public static class Ownership
                     for (int j = k; j < n.A.Length; j++)
                     {
                         if (n.A[j] != v || !Consumes(n, j)) continue;
+                        // (otherwise the store counts the value itself: lowering retains an operand that does not
+                        // move; a Retain here as well counted it twice, a leak)
                         if (lastUse && !moved) { n.Moves |= 1u << j; moved = true; }
-                        else before.Add(Count(Opc.Retain, v, b, body));
                     }
                     if (lastUse && !moved) after.Add(Count(Opc.Release, v, b, body));
                     live.Add(v);

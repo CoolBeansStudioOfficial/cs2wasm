@@ -36,12 +36,12 @@ static class EndToEnd
         return bytes;
     }
 
-    public static string Run(byte[] wasm, string name)
+    public static string Run(byte[] wasm, string name, bool live = true)
     {
         var file = Path.Combine(Build.Dir, name + ".wasm");
         File.WriteAllBytes(file, wasm);
         var psi = new ProcessStartInfo("node", [Path.Combine(RepoRoot, "host", "run.mjs"), file]) { RedirectStandardOutput = true, RedirectStandardError = true };
-        psi.Environment["IL2WASM_PRINT_LIVE"] = "1";
+        if (live) psi.Environment["IL2WASM_PRINT_LIVE"] = "1";
         using var p = Process.Start(psi)!;
         var stdout = p.StandardOutput.ReadToEndAsync();
         var stderr = p.StandardError.ReadToEndAsync();
@@ -140,5 +140,5 @@ static class EndToEnd
         }
     }
 
-    static string Indent(string s) => string.Join("", s.Split('\n').Take(40).Select(l => "       | " + l + "\n"));
+    internal static string Indent(string s) => string.Join("", s.Split('\n').Take(40).Select(l => "       | " + l + "\n"));
 }
