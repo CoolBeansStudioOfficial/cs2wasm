@@ -217,6 +217,12 @@ namespace Il2Wasm.Runtime
         }
     }
 
+    /// <summary>A runtime contract for the compiler's solve (Memory/Solver.cs, MEMORY-IR 3.6): the objects this method
+    /// releases through Rt.Borrow are dependent handles' dependents, which exist only once WeakSlots.LinkDependent or
+    /// WeakSlots.ExchangeDependent can run. While neither is reached, the solve counts no such release.</summary>
+    [System.AttributeUsage(System.AttributeTargets.Method)]
+    internal sealed class ReleasesDependentsAttribute : System.Attribute { }
+
     /// <summary>The slots of weak GC handles, by the address of their target (GCHandle.Mono.cs): a map from the
     /// address to a chain of [slot, next] blocks, in the runtime's own memory (IntMap).</summary>
     internal static class WeakSlots
@@ -234,6 +240,7 @@ namespace Il2Wasm.Runtime
         public static void LinkDependent(int slot, object target) => LinkAs(slot, target, 1);
 
         /// <summary>The dependent handle's slot loses its target (if it has one still) and its dependent.</summary>
+        [ReleasesDependents]
         public static void UnlinkDependent(int slot)
         {
             int a = Mem.LoadI32(slot);
@@ -269,6 +276,7 @@ namespace Il2Wasm.Runtime
         internal static void Hold() { t_hold++; }
 
         /// <summary>The dependents kept since Hold are let go (the outermost Release).</summary>
+        [ReleasesDependents]
         internal static void Release()
         {
             if (--t_hold != 0) return;
@@ -322,6 +330,7 @@ namespace Il2Wasm.Runtime
         /// <summary>The handles to the object at `addr` are cleared: all of them (the object is freed), or the short
         /// ones only (it is about to be finalized, or dies with others whose finalizers are about to run): then the
         /// handles that track resurrection and the dependent handles stay; true when some did.</summary>
+        [ReleasesDependents]
         internal static bool Cleared(int addr, bool all)
         {
             // (the dependents the target's handles held: let go once the lock is, their blocks kept for the list)
