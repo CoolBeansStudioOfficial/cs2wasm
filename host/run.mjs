@@ -114,6 +114,8 @@ for (let n = +(process.env.IL2WASM_REPEAT || 1), i = 1; i <= n; i++) {
   if (n > 1) process.stderr.write(`[host] call ${i} of ${entry}: ${(performance.now() - t).toFixed(0)} ms
 `);
 }
+// (an IL front-end main returns the exit code: an int Main's result or Environment.ExitCode, as .NET's process ends)
+if (entry === 'main' && !failed && typeof r === 'number' && r !== 0 && process.exitCode === undefined) process.exitCode = r;
 const tReturned = performance.now();
 if (snapshot && entry === 'main') snapshot.save(instance, memory, { result: r, failed: failed || process.exitCode !== undefined, threads: threadsStarted, io: httpUsed });
 // (the process lasts while a thread that is not a background one runs, as in .NET)
