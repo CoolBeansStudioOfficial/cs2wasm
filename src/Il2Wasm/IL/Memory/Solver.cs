@@ -139,9 +139,18 @@ public sealed class Solver
         foreach (var slot in _slots) sol.AddSlot(slot);
         sol.Freeze();
         if (s_trace) Console.Error.WriteLine($"mem: solved {sol.Methods.Count} methods, {sol.Slots.Count} slots; {_clock.ElapsedMilliseconds} ms");
-        if (s_trace && sol.Methods.Count > 0)
+        _solution = sol;
+        return sol;
+    }
+
+    ProgramSolution? _solution;
+
+    /// <summary>After lowering: how the reach phase matched it, and the solved facts' share (IL2WASM_MEM_TRACE).</summary>
+    public void Report()
+    {
+        if (s_trace && _solution is { } sol && sol.Methods.Count > 0)
         {
-            // (the facts solved now, to report them: they are only read, so nothing else changes)
+            // (after lowering, so after Signatures.Compute filled the intrinsic table; solved here if no plan asked)
             long t0 = _clock.ElapsedMilliseconds;
             int all = 0, tame = 0, lib = 0, libTame = 0;
             foreach (var m in sol.Methods.Items)
@@ -151,15 +160,9 @@ public sealed class Solver
                 all++; if (t) tame++;
                 if (core) { lib++; if (t) libTame++; }
             }
-            Console.Error.WriteLine($"mem: release effects Wild for {sol.Methods.Items.Count(m => sol.Facts(m).ReleaseEffects.Wild)} methods; {sol.DestroyReport}");
+            Console.Error.WriteLine($"mem: release effects Wild for {sol.Methods.Items.Count(m => sol.Facts(m).ReleaseEffects.Wild)} methods; {sol.DestroyReport}; facts {sol.FactsTime.Release} ms release targets ({sol.FactsTime.ReleaseNodes} release nodes), {sol.FactsTime.Graph} ms graph, {sol.FactsTime.Solve} ms fixed point");
             Console.Error.WriteLine($"mem: Mods not Wild for {tame} of {all} methods, {libTame} of {lib} CoreLib methods ({(lib == 0 ? 0 : 100.0 * libTame / lib):F1}%); facts solved in {_clock.ElapsedMilliseconds - t0} ms");
         }
-        return sol;
-    }
-
-    /// <summary>After lowering: how the reach phase matched it (IL2WASM_MEM_TRACE).</summary>
-    public void Report()
-    {
         if (s_trace) Console.Error.WriteLine($"mem: lowering took {_taken.Count} reached methods, imported {LateImports} late; {Unused} reached methods never lowered; {_clock.ElapsedMilliseconds} ms since the reach phase began, live heap {(s_heap ? GC.GetTotalMemory(true) / (1 << 20) : -1)} MB, peak {System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64 >> 20} MB");
     }
 }
@@ -330,20 +333,40 @@ public sealed class ProgramSolution
     {
         if (_facts != null) return;
         if (!_frozen) throw new InvalidOperationException("the solution is asked for facts before the reach phase ended");
+        var clock = System.Diagnostics.Stopwatch.StartNew();
         int n = Methods.Count;
-        var facts = new MethodFacts[n];
-        var succ = new List<int>[n];
-        // (3.6: a release runs the destroy of the value's types: the finalizers below them and the marks' hooks)
-        var rel = new int[n][];
-        var relWild = new bool[n];
+        // (3.6: a release runs the destroys of the value's types, the finalizers below them and the marks' hooks. Each
+        // distinct set of such targets is one node of the graph (a release node, ids from n), so a method's releases
+        // are a few edges to release nodes and each set's effects are joined once)
+        var setIds = new Dictionary<string, int>();
+        var sets = new List<int[]>();
+        var setOfType = new Dictionary<TypeDesc, int>();
+        int SetOf(TypeDesc t)
+        {
+            if (setOfType.TryGetValue(t, out int id)) return id;
+            var targets = DestroyTargets(t);
+            if (targets.Length == 0) id = -1;
+            else
+            {
+                var key = string.Join(",", targets);
+                if (!setIds.TryGetValue(key, out id)) { id = sets.Count; setIds[key] = id; sets.Add(targets); }
+            }
+            setOfType[t] = id;
+            return id;
+        }
+        var relOf = new int[n][];
         for (int i = 0; i < n; i++)
         {
             var types = _released.GetValueOrDefault(Methods[i]) ?? [Object];
-            var set = new SortedSet<int>();
-            foreach (var t in types) foreach (int j in DestroyTargets(t)) set.Add(j);
-            relWild[i] = set.Remove(-1);
-            rel[i] = [.. set];
+            var l = new SortedSet<int>();
+            foreach (var t in types) if (SetOf(t) is int sid and >= 0) l.Add(n + sid);
+            relOf[i] = [.. l];
         }
+        long tRelease = clock.ElapsedMilliseconds;
+        int total = n + sets.Count;
+        var facts = new MethodFacts[total];
+        var succ = new List<int>[total];
+        var rel = new int[total][];
         for (int i = 0; i < n; i++)
         {
             var m = Methods[i];
@@ -358,17 +381,26 @@ public sealed class ProgramSolution
             foreach (var slot in s.Slots) foreach (var c in Targets(slot)) Callee(c, callees, ref wild, f);
             // (the static constructors a use in the body may start run inside it: their effects are the method's)
             foreach (var t in s.Initializes) if (t.GetStaticConstructor() is { } cctor) Callee(cctor, callees, ref wild, f);
-            f.Mods = new KeySet(Pool.Of(keys), wild);
-            // (3.6: the Mods of the destroys its releases can run, joined below; a finalizer or hook outside the
-            // solution: anything)
-            f.ReleaseEffects = relWild[i] ? KeySet.All : KeySet.Empty;
+            f.Mods = wild ? KeySet.All : new KeySet(Pool.Of(keys), false);
+            // (the Mods of the destroys its releases can run, joined below from its release nodes)
+            f.ReleaseEffects = KeySet.Empty;
             f.Signature = OwnershipSignature.Bottom(m);
             facts[i] = f;
-            succ[i] = callees;
+            succ[i] = callees.Distinct().ToList();
+            rel[i] = relOf[i];
+        }
+        for (int k = 0; k < sets.Count; k++)
+        {
+            // (a target outside the solution: anything)
+            var targets = sets[k];
+            facts[n + k] = new MethodFacts { Mods = KeySet.Empty, ReleaseEffects = targets[0] < 0 ? KeySet.All : KeySet.Empty };
+            succ[n + k] = [];
+            rel[n + k] = targets[0] < 0 ? targets[1..] : targets;
         }
         // (the components over calls and releases together: a finalizer's releases can reach back)
-        var edges = new List<int>[n];
-        for (int i = 0; i < n; i++) { edges[i] = [.. succ[i]]; edges[i].AddRange(rel[i]); }
+        var edges = new List<int>[total];
+        for (int i = 0; i < total; i++) { edges[i] = [.. succ[i]]; edges[i].AddRange(rel[i]); }
+        long tGraph = clock.ElapsedMilliseconds;
         foreach (var comp in Components(edges))
             for (bool changed = true; changed;)
             {
@@ -379,18 +411,21 @@ public sealed class ProgramSolution
                     foreach (int j in succ[i])
                     {
                         var g = facts[j];
-                        var mods = f.Mods.Join(g.Mods, Pool).Join(g.ReleaseEffects, Pool);
+                        var mods = Join(Join(f.Mods, g.Mods), g.ReleaseEffects);
                         bool thr = f.MayThrow | g.MayThrow, obs = f.ObservesLifetime | g.ObservesLifetime;
                         if (mods != f.Mods || thr != f.MayThrow || obs != f.ObservesLifetime) { f.Mods = mods; f.MayThrow = thr; f.ObservesLifetime = obs; changed = true; }
                     }
+                    if (f.ReleaseEffects.Wild) continue;
                     foreach (int j in rel[i])
                     {
                         var g = facts[j];
-                        var re = f.ReleaseEffects.Join(g.Mods, Pool).Join(g.ReleaseEffects, Pool);
+                        var re = Join(Join(f.ReleaseEffects, g.Mods), g.ReleaseEffects);
                         if (re != f.ReleaseEffects) { f.ReleaseEffects = re; changed = true; }
+                        if (re.Wild) break;
                     }
                 }
             }
+        FactsTime = (tRelease, tGraph - tRelease, clock.ElapsedMilliseconds - tGraph, sets.Count);
         _facts = facts;
     }
 
@@ -454,7 +489,19 @@ public sealed class ProgramSolution
             return;
         }
         if (t.IsPointer || t.IsByRef || t.IsFunctionPointer) return;
-        foreach (var x in _carriers!) if (x.CanCastTo(t)) set.UnionWith(_fins![x]);
+        foreach (var x in ConeOf(t)) if (_fins![x].Count > 0) set.UnionWith(_fins[x]);
+    }
+
+    readonly Dictionary<TypeDesc, TypeDesc[]> _cones = new();
+    TypeDesc[]? _constructedArr;
+
+    /// <summary>The constructed types a static type admits (each asked once: the destroys' fixed point asks again).</summary>
+    TypeDesc[] ConeOf(TypeDesc t)
+    {
+        if (_cones.TryGetValue(t, out var r)) return r;
+        r = (_constructedArr ??= [.. Constructed]).Where(x => x.CanCastTo(t)).ToArray();
+        _cones[t] = r;
+        return r;
     }
 
     /// <summary>Per constructed type, the finalizers its destroy can run: its own, and those of what its counted fields
@@ -503,6 +550,12 @@ public sealed class ProgramSolution
             foreach (var f in t.GetFields())
                 if (!f.IsStatic && !f.FieldType.IsPointer && !f.FieldType.IsByRef && !f.FieldType.IsFunctionPointer && !f.FieldType.IsGenericParameter && Il2Wasm.IL.Ir.Kinds.Counted(f.FieldType)) yield return f.FieldType;
     }
+
+    /// <summary>The join, with Wild absorbing (a wild set's keys say nothing more).</summary>
+    KeySet Join(KeySet a, KeySet b) => a.Wild || b.Wild ? KeySet.All : b.Keys.IsEmpty ? a : a.Join(b, Pool);
+
+    /// <summary>The facts' solve time (IL2WASM_MEM_TRACE): release targets, graph, fixed point (ms), release nodes.</summary>
+    internal (long Release, long Graph, long Solve, int ReleaseNodes) FactsTime;
 
     void Callee(MethodDesc c, List<int> callees, ref bool wild, MethodFacts f)
     {
