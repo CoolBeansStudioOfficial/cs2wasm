@@ -62,6 +62,7 @@ namespace Il2Wasm.Runtime
 
         /// <summary>Stores an object into element `pos` (Array.SetValue): a reference of an assignable type, or a box
         /// of the element type (or of a primitive or enum with its bits); null clears a value element.</summary>
+        [RawStores("elements")]
         internal static void SetBoxed(Array a, int pos, object? value)
         {
             int e = TypeInfo.ElementId(Rt.TypeId(a));

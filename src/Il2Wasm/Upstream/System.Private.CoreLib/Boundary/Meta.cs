@@ -228,6 +228,7 @@ namespace Il2Wasm.Runtime
 
         /// <summary>After a call: a by-ref reference argument the thunk wrote into the array goes back to the invoker's
         /// variable (a by-ref value's box was written in place).</summary>
+        [RawStores("elements")]
         public static unsafe void CopyBack(IntPtr* args, RuntimeType[] types, object?[]? r)
         {
             if (r == null) return;

@@ -18,6 +18,20 @@ namespace Il2Wasm.Runtime
     [AttributeUsage(AttributeTargets.Method)]
     public sealed class DeclaredEffectsAttribute : Attribute { }
 
+    /// <summary>On a method: where its stores of references through an address the memory model cannot place (one made
+    /// from an integer: Unsafe.AsRef&lt;object&gt;((void*)address)) land, so the type sets need not count them in every
+    /// slot of their type (docs/AUDIT.md lists every such method: the trust boundary). "elements": an element of an
+    /// array, or memory only references the memory model cannot place read (a span's): never a field or a static;
+    /// "frame": a frame variable of a caller whose address the
+    /// method was handed (a variable whose address is taken, which the type sets do not know already). Any other such
+    /// store of a reference makes the slots of its type take the value's types.</summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class RawStoresAttribute : Attribute
+    {
+        public RawStoresAttribute(string into) { Into = into; }
+        public string Into { get; }
+    }
+
     /// <summary>Marks a library method that is a WASM import of the engine (module, name).</summary>
     [AttributeUsage(AttributeTargets.Method)]
     public sealed class ImportAttribute : Attribute

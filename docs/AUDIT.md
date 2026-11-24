@@ -5875,6 +5875,27 @@ Not run: the homelab suite and the self-host check on this commit.
     s_retired, named nowhere else; a replaced table is kept; an entry once set is never replaced). `Object.GetType`'s
     table entry writes Private(RuntimeType). A method-name list of the heap's internals was tried and dropped as
     brittle.
+  - The raw-write contracts (row b, claude/s1-typesets): a store of a reference through an address the memory model
+    cannot place (one made from an integer, `Unsafe.AsRef<object>((void*)address) = value`) lands, for the type sets
+    (Memory/TypeSets.cs, MEMORY-IR 2.6), in Slot(its type): every reference the solve cannot place reads it, and with
+    an unknown value Slot(object) becomes unknown for every field read of a reference type. The trust boundary, every
+    method marked `[Il2Wasm.Runtime.RawStores(into)]` (Boundary/Runtime.cs; the solve takes the method's such stores
+    as landing where `into` says; IL2WASM_NO_RAW_STORES=1 ignores the contracts), audited:
+    - `Il2WasmArrays.SetBoxed` (Boundary/Arrays.cs, Array.SetValue's element store), "elements": the address is
+      `Data(a) + pos * size` of the array it is given, written only after `TypeInfo.IsAssignable(element, value)`;
+      the store lands in Elem(object), which every element read of a reference type and every Slot read sees.
+    - `Meta.CopyBack` (Boundary/Meta.cs, after a reflective call), "elements": `args[i]` are references into the
+      invoker's span `copyOfArgs` (dotnet/runtime v11.0.0 MethodBaseInvoker.cs, InvokeDirectByRefWithFewArgs:
+      `ByReference.Create(ref copyOfArgs[i])`), whose storage is a local (`copyOfArg`, `stackArgStorage`: frame
+      variables whose address is taken, read as unknown) or `stackalloc` memory; never a field or a static. The
+      invoker reads them back through the span, a Slot read, which sees Elem(object) (the fix below).
+    - `TypeInfo.Set` (Boundary/TypeInfo.cs, a QCall's result), "frame": the slot is an `ObjectHandleOnStack`, and
+      every `ObjectHandleOnStack.Create(ref x)` in the CoreLib (18 `res` and 13 others, by grep) names a local or a
+      parameter of the QCall's caller, never a field or an element: a frame variable whose address is taken.
+    - Not contracted: the span writes of MethodBaseInvoker (`copyOfArgs[i] = arg`, through `Span<object?>`'s
+      indexer: a reference from `Unsafe.Add`, a Slot store like any span's) stay Slot(object) stores, since a span
+      can be over a field (`MemoryMarshal.CreateSpan(ref field, 1)`); so does every other raw store of a reference
+      (the test: an unannotated one in a program still lands in Slot(object), SolverChecks).
   - Cost: Compute takes 94-683 ms per round (6 rounds on hello world, about 1.4 s in all, the first round the
     largest); this includes solving the Mods facts, which plans read anyway (b7fd3c9 made that 2.1 s; 50e543a
     fixed it). Whole-build wall time on the busy
@@ -6158,3 +6179,36 @@ Not run: the homelab suite and the self-host check on this commit.
   - tools/il-speed.mjs (bench and frames by the IL front end against NativeAOT-LLVM wasm);
   - tools/il-live-oracle/run-kernels.sh;
   - IL2WASM_IL_CHECKED=1 in the IL tests.
+
+### S1 row b: TypeSets' cost, the raw-write contracts, an element store's reach (claude/s1-typesets, 2026-11-25)
+
+- TypeSets' compile time (MEMORY-IR 2.6, Memory/TypeSets.cs). The solve was re-evaluating whole bodies per method
+  each time a variable it read grew, and its first evaluation of every body was most of the cost. Now: a method's
+  values are kept between its evaluations and only the nodes that read a variable that grew run again (and what uses
+  their values; reads through a memoised address count for the asking node); values and users live in arrays by a
+  dense slot per reference value (users laid out by value); only reference values and virtual calls are visited
+  and only stores, returns, allocations and calls are sunk; an evaluation's scratch is kept between evaluations;
+  alias lists are brought up to date on demand; a reader already queued is not notified again; exact sets, a
+  slot's targets over a receiver set, and the call's intrinsic sets are cached; SetPool.Join makes nothing when one
+  side holds the other and Filter nothing when all is kept; the roots' slot calls are checked by distinct slot and
+  receiver; the hot methods are compiled optimized at once.
+- Identical sets: IL2WASM_TYPESETS_DUMPALL (Memory/TypeSetsDump.cs: every variable's, value's and virtual call's
+  set, sorted, per solve) against the reference (the first stage, 1f11ae8): the same on hello world, ListSort, Linq
+  and sut-simdcodecs (725,517 lines), and sut-simdcodecs' module byte-identical.
+- Time [homelab, sut-simdcodecs, 5 solves in a 56-60 s compile]: the reference 3.67 s (1,126-1,142 ms, then
+  593-749 ms per solve; 6.1% of the compile), now 2.0 s (578-626 ms, then 310-420 ms; 3.6%). A round is about
+  9.3 s, so a steady solve is 3.3-4% of one; the first carries the JIT. The desk is too loaded to time: wall and
+  thread CPU moved by 40% between runs of the same build. Phases per steady solve: setup about 60 ms (whether a
+  root is called from the IR: 35, the bodies' scan for function pointers and raw stores: 23), first evaluations
+  145-180 ms, later ones 74-110 ms.
+- The raw-write contracts: the trust boundary is recorded next to DeclaredEffects (row a's section above):
+  `[Il2Wasm.Runtime.RawStores("elements" | "frame")]` on Il2WasmArrays.SetBoxed, Meta.CopyBack, TypeInfo.Set.
+- A soundness fix found on the way: an element store (StElem, Elem(T)) did not reach a read through a reference the
+  solve cannot place (Slot(T): a span over an array, `s[0]`), since the aliasing rule kept element stores to element
+  reads. Hidden so far because Slot(object) was unknown (every Slot read of a reference type joined it); the
+  contracts make it matter. Now an element store reaches Slot reads too (field and static reads still never see
+  one). Test: SolverChecks, the call on a span's element of an array that holds a C targets C.F (it passes with
+  Slot(object) unknown too, as it is in every program on the CoreLib today: it guards the rule for when Slot reads
+  are precise). Still open: a
+  field whose address reaches an operation the solve cannot follow (`Unsafe.Add(ref o.f, 0)`,
+  `MemoryMarshal.CreateSpan(ref o.f, 1)`) is read through a Slot that does not see the field's stores.

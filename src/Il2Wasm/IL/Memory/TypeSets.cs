@@ -56,6 +56,15 @@ public sealed partial class ProgramSolution
         return set.Items.ToArray().Select(i => _all![i]);
     }
 
+    /// <summary>The types a memory key holds (a field, a static, an array's elements, a Slot: what a reference the solve
+    /// cannot place reads), or null when not known (or not solved); empty when nothing is stored there.</summary>
+    public IEnumerable<TypeDesc>? KeyTypes(MemKey k)
+    {
+        if (!TypeSetsSolved || _ts is not { } st) return null;
+        if (!st.Ids.TryGetValue(new Var(VarKind.Key, null, 0, k), out int id)) return [];
+        return st.Sets[id] is { } set ? set.Items.ToArray().Select(i => _all![i]) : null;
+    }
+
     /// <summary>A virtual call's targets over its receiver's types (null: not solved; use the slot's).</summary>
     public IReadOnlyList<MethodDesc>? CallTargetsOf(MethodDesc m, int nodeId) =>
         TypeSetsSolved && _methodTypes.TryGetValue(m, out var mt) && mt.Targets != null && mt.Targets.TryGetValue(nodeId, out var t) ? t : null;
@@ -296,7 +305,7 @@ public sealed partial class ProgramSolution
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] bool KeysMayAlias(State st, int rid, int wid)
     {
         MemKey r = st.Vars[rid].Key, w = st.Vars[wid].Key;
-        if (w.Kind == KeyKind.Elem && r.Kind != KeyKind.Elem) return false;
+        if (w.Kind == KeyKind.Elem && r.Kind is KeyKind.Field or KeyKind.Static) return false;
         long k = (long)rid << 32 | (uint)wid;
         if (_aliasById.TryGetValue(k, out var known)) return known;
         return _aliasById[k] = KeysMayAlias(r, w);
@@ -305,7 +314,9 @@ public sealed partial class ProgramSolution
     bool KeysMayAlias0(MemKey r, MemKey w)
     {
         if (r == w) return true;
-        if (w.Kind == KeyKind.Elem && r.Kind != KeyKind.Elem) return false; // (an element store writes elements only)
+        // (an element store writes elements only: a field read never sees one, but a read through a reference the solve
+        // cannot place, a Slot, may be of an element: a span over an array)
+        if (w.Kind == KeyKind.Elem && r.Kind is KeyKind.Field or KeyKind.Static) return false;
         var rt = r.Kind switch { KeyKind.Field or KeyKind.Static => ((FieldDesc)r.Target!).FieldType, KeyKind.Elem or KeyKind.Slot => (TypeDesc)r.Target!, _ => null };
         var wt = (TypeDesc)w.Target!;
         if (rt == null) return false;
@@ -485,9 +496,27 @@ public sealed partial class ProgramSolution
             foreach (int k in keys.Items) if (k != LocalKey) Write(st, new Var(VarKind.Key, null, 0, Keys[k]), of(value), enqueue);
             return;
         }
-        if (s_slotsTrace && addr.Type is ByRefType sb && of(value) == null) Console.Error.WriteLine($"typesets: unknown into Slot {sb.ParameterType} from {m} (address {addr.Op} {addr.X})");
-        if (addr.Type is ByRefType br) Write(st, new Var(VarKind.Key, null, 0, MemKey.Slot(br.ParameterType)), of(value), enqueue);
+        // (a method's [RawStores] contract, the trust boundary: "frame", a caller's frame variable whose address it was
+        // handed, which the type sets read as unknown already; "elements", an array's element. IL2WASM_NO_RAW_STORES=1:
+        // no contract, every such store into the slots of its type)
+        var into = s_noRawStores ? null : RawStoresOf(m);
+        if (into == "frame") return;
+        if (s_slotsTrace && addr.Type is ByRefType sb && of(value) == null) Console.Error.WriteLine($"typesets: unknown into {(into == "elements" ? "Elem" : "Slot")} {sb.ParameterType} from {m} (address {addr.Op} {addr.X})");
+        if (addr.Type is ByRefType br) Write(st, new Var(VarKind.Key, null, 0, into == "elements" ? MemKey.Elem(br.ParameterType) : MemKey.Slot(br.ParameterType)), of(value), enqueue);
         // (a raw pointer: RawRefStore made every slot unknown)
+    }
+
+    static readonly bool s_noRawStores = Environment.GetEnvironmentVariable("IL2WASM_NO_RAW_STORES") == "1";
+    readonly Dictionary<MethodDesc, string?> _rawStores = new();
+
+    /// <summary>A method's [Il2Wasm.Runtime.RawStores] contract ("elements", "frame"), or null (docs/AUDIT.md: the
+    /// methods that carry one).</summary>
+    string? RawStoresOf(MethodDesc m)
+    {
+        if (_rawStores.TryGetValue(m, out var r)) return r;
+        r = m.GetTypicalMethodDefinition() is Internal.TypeSystem.Ecma.EcmaMethod em && Internal.TypeSystem.Ecma.MetadataExtensions.GetDecodedCustomAttribute(em, "Il2Wasm.Runtime", "RawStoresAttribute") is { } a
+            && a.FixedArguments.Length == 1 && a.FixedArguments[0].Value is string into && into is "elements" or "frame" ? into : null;
+        return _rawStores[m] = r;
     }
 
     /// <summary>A method's values between its evaluations, by Node.Id: they only grow, so a later evaluation

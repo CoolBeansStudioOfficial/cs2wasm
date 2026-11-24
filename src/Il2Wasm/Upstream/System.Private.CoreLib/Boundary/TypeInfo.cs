@@ -132,6 +132,7 @@ namespace Il2Wasm.Runtime
         public static RuntimeType? TypeOrNull(int id) => id < 0 ? null : RuntimeType.FromId(id);
 
         /// <summary>Stores a result into the slot a QCall handle points at.</summary>
+        [RawStores("frame")]
         public static void Set(ObjectHandleOnStack res, object? value)
         {
             int slot = Unsafe.As<ObjectHandleOnStack, int>(ref res);

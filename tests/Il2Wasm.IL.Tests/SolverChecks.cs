@@ -31,6 +31,68 @@ static class SolverChecks
         class P { static void Main() { System.Console.WriteLine(System.Collections.Generic.Comparer<int>.Default.Compare(1, 2)); } }
         """;
 
+    // (an element store, read back through a span: the read's address is not one the solve knows, a Slot key)
+    const string SpanRead = """
+        using System;
+        using System.Runtime.CompilerServices;
+        abstract class A { public abstract int F(); }
+        sealed class B : A { public override int F() => 2; }
+        sealed class C : A { public override int F() => 3; }
+        static class P
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)] static int Read(Span<A> s) => s[0].F();
+            static void Main() { var a = new A[1]; a[0] = new C(); Console.WriteLine(Read(a) + new B().F()); }
+        }
+        """;
+
+    // (a store of a reference through an address made from a pointer: Put without a contract, PutElement with
+    // [RawStores("elements")])
+    const string RawWrites = """
+        using System;
+        using System.Runtime.CompilerServices;
+        sealed class Marker { public override string ToString() => "m"; }
+        sealed class Other { public override string ToString() => "o"; }
+        static unsafe class P
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)] static void Put(ref Marker slot, Marker v) => Unsafe.AsRef<Marker>(Unsafe.AsPointer(ref slot)) = v;
+            [Il2Wasm.Runtime.RawStores("elements")]
+            [MethodImpl(MethodImplOptions.NoInlining)] static void PutElement(ref Other slot, Other v) => Unsafe.AsRef<Other>(Unsafe.AsPointer(ref slot)) = v;
+            static void Main()
+            {
+                var a = new Marker[1];
+                var b = new Other[1];
+                Put(ref a[0], new Marker());
+                PutElement(ref b[0], new Other());
+                Console.WriteLine(a[0] + "" + b[0]);
+            }
+        }
+        """;
+
+    static void MetadataTypeOf(ProgramSolution sol, string name, out Internal.TypeSystem.TypeDesc? t) =>
+        t = sol.Methods.Items.Select(m => m.OwningType).FirstOrDefault(x => x is Internal.TypeSystem.MetadataType mt && mt.GetName() == name)
+            ?? sol.Constructed.FirstOrDefault(x => x is Internal.TypeSystem.MetadataType mt && mt.GetName() == name);
+
+    /// <summary>The program's solution from its second solve (the first with type sets, Solver.Solve).</summary>
+    static ProgramSolution SecondSolve(string dir, string name, string source)
+    {
+        var refs = Directory.GetFiles(dir, "*.dll");
+        var dll = Build.Compile(name, [source], refs.Where(r => !Path.GetFileName(r).StartsWith("System.Private.CoreLib")).Append(Path.Combine(dir, "System.Private.CoreLib.dll")).ToArray());
+        var ctx = new IlContext();
+        ctx.AddAssemblies(refs.Append(dll));
+        ctx.SetCoreLib();
+        var entry = ctx.Load(name).EntryPoint!;
+        var comp = new IlCompiler(ctx);
+        ProgramSolution? sol = null;
+        for (int round = 0; round < 2; round++)
+        {
+            var solver = new Solver(comp);
+            solver.Root(entry);
+            solver.Reach();
+            sol = solver.Solve();
+        }
+        return sol!;
+    }
+
     public static void Run(Checks c)
     {
         var dir = EndToEnd.FrameworkDir();
@@ -51,6 +113,31 @@ static class SolverChecks
             var made = solver.Solve().Constructed.Select(t => t.ToString()!).ToList();
             c.True("Comparer<int>.Default: GenericComparer<int> constructed", made.Any(t => t.Contains("GenericComparer`1<int32>")));
             c.True("Comparer<int>.Default: the dead branches' ObjectComparer<int> and EnumComparer<int> are not", !made.Any(t => t.Contains("ObjectComparer`1<int32>") || t.Contains("EnumComparer`1<int32>")));
+        }
+        {
+            // TypeSets (MEMORY-IR 2.6): a store into an array's element reaches a read through a reference the solve
+            // cannot place (a span's element, Slot(A)): the virtual call on what it read targets C.F
+            var sol = SecondSolve(dir, "typesets_span", SpanRead);
+            var read = sol.Methods.Items.First(m => m.GetName() == "Read" && m.OwningType.ToString()!.EndsWith("P"));
+            var call = sol.BodyOf(read)?.Blocks.SelectMany(b => b.Code).FirstOrDefault(n => n.Op == Il2Wasm.IL.Ir.Opc.Call && n.X is Internal.TypeSystem.MethodDesc f && f.GetName() == "F");
+            var targets = call == null ? null : sol.CallTargetsOf(read, call.Id);
+            c.True("type sets: an element store reaches a read through a span (the call's targets: " + (targets == null ? "unsolved" : string.Join(", ", targets)) + ")",
+                sol.TypeSetsSolved && call != null && (targets == null || targets.Any(t => t.OwningType.ToString()!.EndsWith("C"))));
+        }
+        {
+            // the raw-write contracts (TypeSets.RawStoresOf, the trust boundary in docs/AUDIT.md): a raw store of a
+            // reference without one still lands in Slot(its type), the slots every reference the solve cannot place
+            // reads (for object: Slot(object), which every field read of a reference type joins); with "elements" it
+            // lands in the array elements' key instead (the keys' own sets: KeyTypes)
+            var sol = SecondSolve(dir, "typesets_raw", RawWrites);
+            MetadataTypeOf(sol, "Marker", out var marker); MetadataTypeOf(sol, "Other", out var other);
+            List<string>? Of(MemKey k) => sol.KeyTypes(k)?.Select(t => t.ToString()!).ToList();
+            string Show(List<string>? l) => l == null ? "unknown" : "{" + string.Join(", ", l) + "}";
+            var slotMarker = Of(MemKey.Slot(marker!)); var slotOther = Of(MemKey.Slot(other!)); var elemOther = Of(MemKey.Elem(other!));
+            c.True("type sets: an unannotated raw store of a reference lands in Slot(its type): Slot(Marker) " + Show(slotMarker),
+                sol.TypeSetsSolved && slotMarker != null && slotMarker.Any(t => t.EndsWith("Marker")));
+            c.True("type sets: under [RawStores(\"elements\")] it lands in Elem(its type): Elem(Other) " + Show(elemOther) + ", Slot(Other) " + Show(slotOther),
+                sol.TypeSetsSolved && elemOther != null && elemOther.Any(t => t.EndsWith("Other")) && slotOther != null && !slotOther.Any(t => t.EndsWith("Other")));
         }
         foreach (var (name, source, hasDependents) in new[] { ("solver_plain", Plain, false), ("solver_dependents", Dependents, true) })
         {
