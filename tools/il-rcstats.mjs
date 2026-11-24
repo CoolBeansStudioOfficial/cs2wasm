@@ -8,17 +8,19 @@
 //
 //   node tools/il-rcstats.mjs report sites.tsv run.json [--top N] [--by role|category|owner|function|cause]
 //   node tools/il-rcstats.mjs share planSites.tsv plan.json naiveSites.tsv naive.json
-//   node tools/il-rcstats.mjs live sites.tsv run.json [--oracle oracle.json] [--top N]
+//   node tools/il-rcstats.mjs live sites.tsv run.json [--oracle oracle.json --asm <program assembly>] [--top N]
 //   node tools/il-rcstats.mjs run <program.cs | program.dll> [--naive-only] [--top N] [--keep dir] [--json out.json]
-//        [--live] [--expected out.txt] [--fw dir] [--cli il2wasm-il.dll] [--tests Il2Wasm.IL.Tests.dll] [-- program arguments]
+//        [--live [--oracle oracle.json]] [--expected out.txt] [--fw dir] [--cli il2wasm-il.dll] [--tests Il2Wasm.IL.Tests.dll] [-- program arguments]
 //     compiles the program twice (as configured, and with IL2WASM_MEM_NAIVE=1), runs both, and reports each and the
 //     removal share. A .cs is compiled against the framework by the IL tests' `framework` mode, a .dll (a dotnet build
 //     output) by the CLI. The switches of the environment (IL2WASM_MEM_PLAN=1, IL2WASM_NO_*) go to the first build.
 //     Nothing .NET runs: only the modules, under host/run.mjs. --live: live objects per type at exit too;
 //     --expected: the output each build must print (a NetWasm suite case's expected/<case>.txt).
 //
-// The oracle for `live` is {"types": {"<type name as the sites file prints it>": count, ...}}: the reachable set the
-// suite's .NET records give, or a dotnet-gcdump of the oracle run made on the homelab (never .NET cases on the desk).
+// The oracle for `live` is {"types": {"<type name>": count, ...}}: tools/il-live-oracle's heap walk of the same program
+// under .NET after it exits, made on the homelab (never .NET cases on the desk): bash tools/homelab.sh <branch> bash
+// tools/il-live-oracle/run.sh <case id>... prints one per case. Names are compared without assembly prefixes or outer
+// types; the program's own types must be equal, the runtime's and library's internal objects differ by design.
 //
 // Owners: program, containers (System.Collections*), library (the rest of CoreLib and the stock libraries), runtime
 // (Il2Wasm.Runtime's C#), generated (rt.destroy and the other generated functions), helper (struct helpers' own
@@ -158,18 +160,37 @@ function shareText(x) {
   return lines.join('\n');
 }
 
-export function live(a, oracle) {
+// (il2wasm's type names and the runtime's heap-walk names, made comparable: no assembly prefixes, il2wasm's primitive
+// names as .NET's, a generic's arguments in brackets, a nested type by its own name: the walk gives no outer type)
+const PRIM = { bool: 'System.Boolean', char: 'System.Char', int8: 'System.SByte', uint8: 'System.Byte', int16: 'System.Int16', uint16: 'System.UInt16', int32: 'System.Int32', uint32: 'System.UInt32', int64: 'System.Int64', uint64: 'System.UInt64', float32: 'System.Single', float64: 'System.Double', string: 'System.String', object: 'System.Object', 'native int': 'System.IntPtr', 'native uint': 'System.UIntPtr', void: 'System.Void' };
+export function typeKey(name) {
+  let n = name.replace(/\[[A-Za-z0-9_.\-]+\](?=[A-Za-z_<])/g, '').replace(/</g, '[').replace(/>/g, ']');
+  n = n.replace(/native u?int|[A-Za-z_][A-Za-z0-9_]*/g, (w, at) => (PRIM[w] && !/[.+`]$/.test(n.slice(0, at)) && !/^[.`]/.test(n.slice(at + w.length)) ? PRIM[w] : w));
+  return n.replace(/[A-Za-z0-9_.`<>]*\+/g, '');
+}
+
+/// Live objects per type at exit (IL2WASM_IL_COUNT_OBJECTS=1); with an oracle (tools/il-live-oracle's JSON), the
+/// comparison: equal per type on the program's own types (those of assembly asm), the other differences listed (the
+/// runtime's and the library's internal objects differ by design: reflection caches, event sources, the console).
+export function live(a, oracle, asm) {
   const types = a.types, rows = [];
   for (const [id, n] of a.run.live ?? []) rows.push({ type: types.get(id) ?? `type #${id}`, id, n });
   const out = { total: rows.reduce((x, r) => x + r.n, 0), types: Object.fromEntries(rows.sort((x, y) => y.n - x.n).map((r) => [r.type, r.n])) };
   if (oracle) {
+    const mine = new Map(), theirs = new Map(), program = new Set();
+    for (const [k, n] of Object.entries(out.types)) mine.set(typeKey(k), (mine.get(typeKey(k)) ?? 0) + n);
+    for (const [k, n] of Object.entries(oracle.types ?? oracle)) theirs.set(typeKey(k), (theirs.get(typeKey(k)) ?? 0) + n);
+    if (asm) for (const name of types.values()) if (name.startsWith(`[${asm}]`)) program.add(typeKey(name));
     const diff = [];
-    for (const k of new Set([...Object.keys(out.types), ...Object.keys(oracle.types ?? oracle)])) {
-      const m = out.types[k] ?? 0, o = (oracle.types ?? oracle)[k] ?? 0;
-      if (m !== o) diff.push({ type: k, il2wasm: m, dotnet: o });
+    for (const k of new Set([...mine.keys(), ...theirs.keys()])) {
+      const m = mine.get(k) ?? 0, o = theirs.get(k) ?? 0;
+      if (m !== o) diff.push({ type: k, il2wasm: m, dotnet: o, program: program.has(k) });
     }
-    out.diff = diff.sort((x, y) => Math.abs(y.il2wasm - y.dotnet) - Math.abs(x.il2wasm - x.dotnet));
-    out.equal = diff.length === 0;
+    out.diff = diff.sort((x, y) => (y.program - x.program) || Math.abs(y.il2wasm - y.dotnet) - Math.abs(x.il2wasm - x.dotnet));
+    out.programTypes = program.size;
+    out.programDiff = diff.filter((d) => d.program).length;
+    out.equal = out.programDiff === 0;
+    out.dotnetTotal = [...theirs.values()].reduce((x, y) => x + y, 0);
   }
   return out;
 }
@@ -178,8 +199,8 @@ function liveText(l, top) {
   const lines = [`live objects at exit: ${fmt(l.total)} in ${Object.keys(l.types).length} types`];
   for (const [k, n] of Object.entries(l.types).slice(0, top)) lines.push(`  ${String(n).padStart(8)}  ${k}`);
   if (l.diff) {
-    lines.push(l.equal ? 'per type: equal to .NET' : `per type: ${l.diff.length} types differ from .NET (il2wasm, .NET):`);
-    for (const d of l.diff.slice(0, top)) lines.push(`  ${String(d.il2wasm).padStart(8)} ${String(d.dotnet).padStart(8)}  ${d.type}`);
+    lines.push(`against .NET (${fmt(l.dotnetTotal)} live there): ${l.equal ? `equal on the program's ${l.programTypes} types` : `${l.programDiff} of the program's ${l.programTypes} types differ`}; ${l.diff.length - l.programDiff} other types differ (il2wasm, .NET):`);
+    for (const d of l.diff.slice(0, top)) lines.push(`  ${String(d.il2wasm).padStart(8)} ${String(d.dotnet).padStart(8)}  ${d.program ? '(program) ' : ''}${d.type}`);
   }
   return lines.join('\n');
 }
@@ -211,19 +232,21 @@ function runCmd(input, o) {
     const naive = compileAndRun(input, join(dir, name + '.naive.wasm'), { IL2WASM_MEM_NAIVE: '1' }, o);
     const na = analyze(naive.sitesFile, naive.runFile);
     result.naive = { ...totals(na), exit: naive.exit };
-    if (o.live) result.naive.live = live(na);
+    if (o.live) result.naive.live = live(na, o.oracle ? JSON.parse(readFileSync(o.oracle, 'utf8')) : null, name);
     console.log(`== ${name}: naive counting (IL2WASM_MEM_NAIVE=1)\n` + report(na, o));
     if (o.live && na.run.live) console.log(liveText(result.naive.live, o.top));
     const norm = (t) => t.replace(/\r\n/g, '\n');
     const expected = o.expected ? norm(readFileSync(o.expected, 'utf8')) : null;
-    if (expected != null) { result.naive.matches = norm(naive.stdout) === expected; console.log(result.naive.matches ? 'output: as expected' : 'WARNING: the output differs from the expected'); }
+    // (as the suite observes a run: its output, then its exit code)
+    const observed = (r) => norm(r.stdout) + (/(^|\n)exit -?\d+\n?$/.test(expected ?? '') ? `exit ${r.exit}\n` : '');
+    if (expected != null) { result.naive.matches = observed(naive) === expected; console.log(result.naive.matches ? 'output: as expected' : 'WARNING: the output differs from the expected'); }
     if (!o.naiveOnly) {
       const plan = compileAndRun(input, join(dir, name + '.plan.wasm'), {}, o);
       const pa = analyze(plan.sitesFile, plan.runFile);
       result.plan = { ...totals(pa), exit: plan.exit };
       console.log(`== ${name}: as configured (${Object.entries(process.env).filter(([k]) => /^IL2WASM_(MEM_|NO_)/.test(k)).map(([k, v]) => k + '=' + v).join(' ') || 'the defaults'})\n` + report(pa, o));
       if (plan.stdout !== naive.stdout) console.log('WARNING: the two builds printed different output');
-      if (expected != null) result.plan.matches = norm(plan.stdout) === expected;
+      if (expected != null) result.plan.matches = observed(plan) === expected; if (!result.plan.matches) console.log("WARNING: the output of the build as configured differs from the expected");
       result.share = share(pa, na);
       console.log(shareText(result.share));
     }
@@ -239,7 +262,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const dd = argv.indexOf('--');
   const args = dd >= 0 ? argv.slice(0, dd) : argv, progArgs = dd >= 0 ? argv.slice(dd + 1) : [];
   const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
-  const valued = ['--top', '--by', '--oracle', '--keep', '--json', '--fw', '--cli', '--tests', '--expected'];
+  const valued = ['--top', '--by', '--oracle', '--keep', '--json', '--fw', '--cli', '--tests', '--expected', '--asm'];
   const pos = args.filter((a, i) => !a.startsWith('--') && !(i > 0 && valued.includes(args[i - 1])));
   const top = +opt('--top', 20), by = opt('--by', 'site');
   const cmd = pos[0];
@@ -251,10 +274,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     console.log(shareText(share(analyze(pos[1], pos[2]), analyze(pos[3], pos[4]))));
   } else if (cmd === 'live') {
     const o = opt('--oracle') ? JSON.parse(readFileSync(opt('--oracle'), 'utf8')) : null;
-    console.log(liveText(live(analyze(pos[1], pos[2]), o), top));
+    console.log(liveText(live(analyze(pos[1], pos[2]), o, opt('--asm')), top));
   } else if (cmd === 'run') {
     const o = {
-      top, by, args: progArgs, naiveOnly: args.includes('--naive-only'), live: args.includes('--live'), keep: opt('--keep'), json: opt('--json'), expected: opt('--expected'),
+      top, by, args: progArgs, naiveOnly: args.includes('--naive-only'), live: args.includes('--live'), keep: opt('--keep'), json: opt('--json'), expected: opt('--expected'), oracle: opt('--oracle'),
       fw: opt('--fw', process.env.IL2WASM_FRAMEWORK ?? join(root, 'artifacts', 'framework')),
       cli: opt('--cli', join(root, 'src', 'Il2Wasm.IL.Cli', 'bin', 'Release', 'net11.0', 'il2wasm-il.dll')),
       tests: opt('--tests', join(root, 'tests', 'Il2Wasm.IL.Tests', 'bin', 'Release', 'net11.0', 'Il2Wasm.IL.Tests.dll')),
