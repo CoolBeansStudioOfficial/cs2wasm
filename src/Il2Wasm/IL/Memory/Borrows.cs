@@ -665,7 +665,7 @@ sealed class Analyzer
     (KeySet Effects, bool Intrinsic) CallEffect(Node n)
     {
         if (n.Op == Opc.CallI || n.X is not MethodDesc m) return (KeySet.All, false);
-        if (n.Op == Opc.Call && _intrinsics.Contains(m)) return (ProgramSolution.IntrinsicEffects(_ctx.Solution, m), true);
+        if (n.Op == Opc.Call && _intrinsics.Contains(m)) return (ProgramSolution.IntrinsicEffects(_ctx.Solution, _ctx.Method, m), true);
         return (_pb.CallEffects(n), false);
     }
 
