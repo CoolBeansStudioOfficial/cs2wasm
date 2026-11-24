@@ -106,14 +106,14 @@ public sealed partial class IlCompiler
         {
             var c = this;
             var main0 = Reach(entry);
-            var facts = c.Facts.Close(c.SlotImplementations());
+            var facts = c.Facts.Close(c.SlotImplementations(), c._constructedOrder);
             for (int r = 1; r < Il2Wasm.IL.Reach.RoundFacts.Rounds; r++)
             {
                 var next = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, Checked = Checked, _round = r };
                 foreach (var p in _nativePaths) next.LoadNatives(p);
                 next.Facts.Previous = facts;
                 var m = next.Reach(entry);
-                var nf = next.Facts.Close(next.SlotImplementations());
+                var nf = next.Facts.Close(next.SlotImplementations(), next._constructedOrder);
                 // (stable: the same facts, or the same reach and as many facts of each kind; an argument's value can
                 // change between rounds without changing what is reached, and every round's facts are sound)
                 bool stable = nf.SameAs(facts) || next._functions.Count == c._functions.Count && nf.ToString() == facts.ToString();
@@ -305,7 +305,15 @@ public sealed partial class IlCompiler
         return sb.ToString();
     }
 
+    /// <summary>A method's code; outside it no method is being compiled (what is reached then is reached by the generated
+    /// code, not by a call the constant propagation saw: ProgramFacts.MarkIndirect).</summary>
     void CompileMethod(MethodDesc m, WasmFunction f)
+    {
+        try { CompileMethodCore(m, f); }
+        finally { _compiling = null; }
+    }
+
+    void CompileMethodCore(MethodDesc m, WasmFunction f)
     {
         _compiling = m;
         // (IL2WASM_IL_WHY=name: for each method whose name contains it, the chain of methods that first reached it)

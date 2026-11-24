@@ -58,6 +58,8 @@ public sealed class RoundFacts
     public Val Arg(MethodDesc m, int i)
     {
         if (NoConstantArgs || Indirect.Contains(m) || !Args.TryGetValue(m, out var a) || i >= a.Length) return Val.Bottom;
+        // (IL2WASM_IL_ARGS_ONLY=text, a debugging aid: argument facts only for the methods whose name contains it)
+        if (s_argsOnly != null && !m.ToString()!.Contains(s_argsOnly)) return Val.Bottom;
         // (Top: the method was not called last round, so it is not called now: nothing is known)
         return a[i].State == Val.S.Top ? Val.Bottom : a[i];
     }
@@ -68,6 +70,10 @@ public sealed class RoundFacts
 
     /// <summary>Each class instance field's stored values met (a field whose address was taken: Bottom).</summary>
     public Dictionary<FieldDesc, Val> Fields = new();
+    /// <summary>The constructed types and all their bases.</summary>
+    public HashSet<TypeDesc> ConstructedClasses = [];
+    /// <summary>The types Unsafe.As reinterprets to or from.</summary>
+    public HashSet<TypeDesc> Aliased = [];
     public static readonly bool NoFieldValues = Environment.GetEnvironmentVariable("IL2WASM_NO_FIELD_VALUES") == "1";
 
     /// <summary>A class instance field's value: its default (every object starts zeroed) met with every store
@@ -76,6 +82,9 @@ public sealed class RoundFacts
     public Val Field(FieldDesc f)
     {
         if (NoFieldValues || f.IsStatic || !FieldTracked(f)) return Val.Bottom;
+        // (only a field of a class some made object is: a class no object is made of is only ever a view of other
+        // objects, Unsafe.As<RawArrayData>(array), whose memory stfld never wrote; nor of a class Unsafe.As names)
+        if (!ConstructedClasses.Contains(f.OwningType) || Aliased.Contains(f.OwningType)) return Val.Bottom;
         var k = Il2Wasm.IL.Ir.Kinds.Of(f.FieldType);
         var d = k == Il2Wasm.IL.Ir.VK.Ref ? Val.Null : k is Il2Wasm.IL.Ir.VK.I32 or Il2Wasm.IL.Ir.VK.I64 or Il2Wasm.IL.Ir.VK.Ptr ? Val.Of(0) : Val.Bottom;
         if (d.State == Val.S.Bottom) return d;
@@ -84,6 +93,8 @@ public sealed class RoundFacts
 
     public static bool FieldTracked(FieldDesc f) => f.OwningType is MetadataType { IsValueType: false, IsDelegate: false, IsString: false } ot && !ot.IsArray
         && !ot.GetNamespace().StartsWith("Il2Wasm.Runtime", StringComparison.Ordinal) && f.FieldType.Category is not TypeFlags.Single and not TypeFlags.Double;
+
+    static readonly string? s_argsOnly = Environment.GetEnvironmentVariable("IL2WASM_IL_ARGS_ONLY") is { Length: > 0 } ao ? ao : null;
 
     public static readonly bool NoReturnValues = Environment.GetEnvironmentVariable("IL2WASM_NO_RETURN_VALUES") == "1";
 

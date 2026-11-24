@@ -76,6 +76,8 @@ public sealed class ProgramFacts : ISccpOracle
                         // (a removed call is never reached, but its arguments only weaken the meet)
                         direct.Add(cm);
                         Meet(cm, n.A.Select(s.ValueOf).ToArray());
+                        if (cm.HasInstantiation && cm.GetName() == "As" && cm.OwningType is MetadataType { Name: var _ } ut && ut.GetName() == "Unsafe")
+                            for (int k = 0; k < cm.Instantiation.Length; k++) _aliased.Add(cm.Instantiation[k]);
                         break;
                     case Opc.NewObj when n.X is MethodDesc ctor:
                         direct.Add(ctor);
@@ -124,13 +126,17 @@ public sealed class ProgramFacts : ISccpOracle
     public void MarkIndirect(MethodDesc m) => _indirect.Add(m);
 
     /// <summary>This round's facts, for the next.</summary>
-    public RoundFacts Close(Dictionary<MethodDesc, MethodDesc[]> impls)
+    readonly HashSet<TypeDesc> _aliased = [];
+
+    public RoundFacts Close(Dictionary<MethodDesc, MethodDesc[]> impls, IEnumerable<TypeDesc> constructed)
     {
         // (the runtime's own methods are called by the generated code with arguments of its own)
         foreach (var m in _args.Keys)
             if (m.OwningType is MetadataType t && (t.GetNamespace().StartsWith("Il2Wasm.Runtime", StringComparison.Ordinal) || t.ContainingType is MetadataType ct && ct.GetNamespace().StartsWith("Il2Wasm.Runtime", StringComparison.Ordinal)))
                 _indirect.Add(m);
-        return new RoundFacts([.. _written], _args.ToDictionary(), [.. _indirect], impls, _returns) { Fields = _fields };
+        var classes = new HashSet<TypeDesc>();
+        foreach (var t in constructed) for (TypeDesc? b = t; b != null; b = b.BaseType) classes.Add(b);
+        return new RoundFacts([.. _written], _args.ToDictionary(), [.. _indirect], impls, _returns) { Fields = _fields, ConstructedClasses = classes, Aliased = _aliased };
     }
 
     public Val Arg(Body body, int index) => Previous?.Arg(body.Method, index) ?? Val.Bottom;

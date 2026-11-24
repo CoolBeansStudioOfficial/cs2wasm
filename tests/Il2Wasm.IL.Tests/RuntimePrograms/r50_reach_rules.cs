@@ -76,6 +76,12 @@ static class Program
         // a virtual call whose implementations differ
         Console.WriteLine("sides: " + Pick(0).Sides + " " + Pick(1).Sides);
 
+        // a field of a class no object is made of (Array.Length reads Unsafe.As<RawArrayData>(array).Length) is not its
+        // default (r53: a box of an empty Nullable<T> is null)
+        Array markers = new[] { DayOfWeek.Friday, DayOfWeek.Monday, DayOfWeek.Wednesday };
+        Array.Sort(markers);
+        Console.WriteLine("sorted: " + string.Join(",", (DayOfWeek[])markers) + ", length " + markers.Length);
+
         // a call that keeps its argument alive until it is made (GC.KeepAlive: an empty body)
         var fin = new Finalized();
         var weak = new WeakReference(fin);
