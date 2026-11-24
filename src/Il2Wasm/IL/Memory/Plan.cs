@@ -108,16 +108,17 @@ public static class Plan
     internal static bool CanBorrow(Node n) => n.Op is Opc.LdFld or Opc.LdElem or Opc.LdSFld or Opc.LdInd or Opc.VarLd or Opc.Phi or Opc.Arg or Opc.Call;
 
     /// <summary>The parameter a call operand is passed to (this is 0; a constructor's operand k is parameter k+1).</summary>
-    internal static int ParamOf(Node call, int k) => call.Op == Opc.NewObj ? k + 1 : k;
+    internal static int ParamOf(Node call, int k) => Signatures.ParamOf(call, k);
 
     /// <summary>A call site where a variant other than the entry may be chosen (S1: direct calls and constructors).</summary>
     internal static bool DirectSite(Node n) => n.X is MethodDesc m && (n.Op == Opc.Call && n.Sub == (byte)CallKind.Direct || n.Op == Opc.NewObj && m.OwningType is not ArrayType);
 
     /// <summary>The variant takes parameter p owned (HandOver at the caller).</summary>
-    internal static bool Owns(Variant v, int p) => v.Kind == VariantKind.Owned && p < 32 && (v.Mask >> p & 1) != 0;
+    internal static bool Owns(Variant v, int p) => Signatures.Owns(v, p);
 
-    /// <summary>The convention of entry v of m (row a's ConventionOf: the entry is Of; an owned entry is HandOver at its
-    /// mask; a borrowed-return entry lends everything); null for a method outside the solution (the naive convention:
+    /// <summary>The convention of entry v of m (Signatures.ConventionOf's parameters, by the same rule without reading the
+    /// demand: the entry lends everything; an owned entry is HandOver at its mask; a borrowed-return entry lends
+    /// everything); null for a method outside the solution (the naive convention:
     /// the callee retains each parameter on entry).</summary>
     internal static ParamConv[]? ConventionOf(ProgramSolution sol, MethodDesc m, Variant v)
     {
@@ -179,7 +180,9 @@ public static class Plan
         if (memo.TryGetValue(m, out bool r)) return r;
         if (!ReturnsAddress(m) || sol.Summary(m) is not { } s) return memo[m] = false;
         memo[m] = false;
+        // (or it has an owned variant: a parameter handed over is the function's alone, and a span over it needs a keeper)
         r = s.CallsUnknown || s.Constructs.Any(t => t is not DefType { IsByRefLike: true })
+            || Signatures.VariantsOf(sol, m).Any(v => v.Kind == VariantKind.Owned)
             || s.Calls.Concat(s.Intrinsics).Any(c => CountedResult(c) || ReturnsAddress(c) && MayKeep(sol, c, memo))
             || s.Slots.Any(c => CountedResult(c) || ReturnsAddress(c) && sol.Targets(c).Any(t => MayKeep(sol, t, memo)));
         return memo[m] = r;
@@ -279,6 +282,10 @@ public static class Plan
                     continue;
                 }
                 var f = borrows.Own[v];
+                // (an inlined node: the callee plan's fact, Ir/Inline.cs; a borrow rooted in the callee's own
+                // parameters or frame does not carry over, one rooted in a value of this body or a static does)
+                if (f.Kind != OwnKind.Guaranteed && Inline.SourceFactOf(_body, v) is { Own: { Kind: OwnKind.Guaranteed, Path: { Root: RootKind.Val or RootKind.Static } } } sf)
+                    f = sf.Own;
                 // (a call's result is borrowed only in its borrowed-return entry: decided with the variant)
                 if (f.Kind == OwnKind.Guaranteed && f.Path != null && CanBorrow(v) && v.Op is not (Opc.Arg or Opc.Call)) { _kind[v] = OwnKind.Guaranteed; _path[v] = f.Path; }
                 else if (f.Kind == OwnKind.Guaranteed && f.Path != null && v.Op == Opc.Call && DirectSite(v)) { _kind[v] = OwnKind.Guaranteed; _path[v] = f.Path; }
@@ -620,7 +627,8 @@ public static class Plan
                         if (n.Op == Opc.Ret) _keeps.Add(v);
                         else after.Add(Count(Opc.Release, v, b, call ? RcCategory.ArgAfterCall : RcCategory.Generic));
                     }
-                    foreach (var x in Keep(v)) if (!Skip(x, n)) live.Add(x);
+                    // (a borrow's root is not live yet here: the loop below gives it its release at this, its last use)
+                    if (kind == OwnKind.Owned) live.Add(v);
                 }
                 // (a borrow's root and an address's objects: their last use is this one too)
                 for (int k = 0; k < n.A.Length; k++)

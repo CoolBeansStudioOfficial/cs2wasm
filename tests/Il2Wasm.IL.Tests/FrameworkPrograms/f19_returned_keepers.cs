@@ -3,7 +3,7 @@
 // is never freed (the weak reference stays alive); freed too early, the read through the byref sees poison. The
 // naive plan keeps such objects (a leak, its baseline), so this runs with IL2WASM_MEM_PLAN=1 only.
 // plan: only
-// live: 245
+// live: 234
 using System;
 using System.Runtime.CompilerServices;
 

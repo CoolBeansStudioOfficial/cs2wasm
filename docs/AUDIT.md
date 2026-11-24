@@ -5957,3 +5957,12 @@ Not run: the homelab suite and the self-host check on this commit.
   checked build's trap (none seen); FrameOwned/Virtual allocations are not planned (no `Allocs` set). Not run: the
   homelab suite, stress, the self-host check (the old front end and the back end are unchanged; the runtime change is
   a new nested class only the planned IL front end calls).
+- With rows a, b, d, e and f on main (merged at a7c1646) [run, desk]: Plan.cs reads row a's `Owns`/`ParamOf` and row
+  d's `Inline.SourceFactOf` (an inlined node's borrow carries over when rooted in a value of this body or a static).
+  The first integrated run found a planner bug: a Guaranteed operand made its root live before the operation's own
+  root check, so a root whose last use was through a borrow (row b's `Arg(0).f` load in an uncovered method, the
+  naive-convention parameter) was never released (SharedArrayPool.Rent; the verifier caught it). Fixed. Removal share
+  by tools/il-rcstats.mjs (planned against IL2WASM_MEM_NAIVE=1, executed count operations): hello world 68.9% (78.6%
+  outside the runtime), keep.cs 55.9% (68.0%), f19_returned_keepers 43.9% (66.4%). f19's objects live at exit with
+  the plan are 234 on today's main (its object counting changed; naive 934). Not run with the rows integrated: the
+  NetWasm suite (the planned run above is at fb10c7e, rows a, b, d, e, f still stubs).

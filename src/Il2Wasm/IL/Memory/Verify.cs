@@ -61,7 +61,7 @@ public static class Verify
 
         PlanVerifyException Fail(string what, Node? v = null, Block? at = null) =>
             new($"plan verifier: {_ctx.Method}: {what}" + (v != null ? $" (value {Body.Format(v)})" : "") + (at != null ? $" in {at}" : "")
-               + (s_dump ? Environment.NewLine + _body.Dump() : ""));
+               + (s_dump ? Environment.NewLine + _body.Dump() + "borrows:" + string.Concat(_body.Blocks.SelectMany(x => x.Phis.Concat(x.Code)).Where(x => _plan.Own[x].Kind == OwnKind.Guaranteed).Select(x => " " + x + "=" + _plan.Own[x].Path)) : ""));
 
         /// <summary>IL2WASM_VERIFY_DUMP=1: a failure prints the planned body.</summary>
         static readonly bool s_dump = Environment.GetEnvironmentVariable("IL2WASM_VERIFY_DUMP") == "1";
