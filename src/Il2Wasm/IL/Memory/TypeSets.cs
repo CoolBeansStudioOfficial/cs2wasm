@@ -347,8 +347,14 @@ public sealed partial class ProgramSolution
         if (s == null) return ConeSet(t);
         if (s is not { } set || t == null || t.IsObject || set.IsEmpty) return s;
         var cone = ConeOf(t);
-        var keep = set.Items.ToArray().Where(i => Array.BinarySearch(cone, i) >= 0).ToArray();
-        return keep.Length == set.Count ? s : Pool.Of(keep);
+        var items = set.Items;
+        int kept = 0;
+        foreach (int i in items) if (Array.BinarySearch(cone, i) >= 0) kept++;
+        if (kept == items.Length) return s;
+        var keep = new int[kept];
+        int k = 0;
+        foreach (int i in items) if (Array.BinarySearch(cone, i) >= 0) keep[k++] = i;
+        return Pool.Of(keep);
     }
 
     readonly Dictionary<TypeDesc, IdSet?> _coneSets = new();
@@ -566,7 +572,8 @@ public sealed partial class ProgramSolution
             void Index(Node n)
             {
                 ms.ById[n.Id] = n;
-                foreach (var x in n.A) (ms.Users[x.Id] ??= []).Add(n);
+                // (only a reference value changes, so only its users are kept)
+                foreach (var x in n.A) if (x.Kind == VK.Ref) (ms.Users[x.Id] ??= []).Add(n);
                 if (n.Op == Opc.VarSt && n.A.Length > 0 && n.A[0].Kind == VK.Ref) { if (!ms.SlotStores.TryGetValue((int)n.I, out var l)) ms.SlotStores[(int)n.I] = l = []; l.Add(n.A[0]); }
                 if (n.Op == Opc.VarLd) { varLds ??= new(); if (!varLds.TryGetValue((int)n.I, out var l)) varLds[(int)n.I] = l = []; l.Add(n); }
             }

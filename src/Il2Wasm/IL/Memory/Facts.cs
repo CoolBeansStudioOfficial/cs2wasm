@@ -171,15 +171,24 @@ public sealed class SetPool
         if (b.IsEmpty || a.Equals(b)) return a;
         if (a.IsEmpty) return b;
         var x = a.Items; var y = b.Items;
-        var r = new List<int>(x.Length + y.Length);
-        int i = 0, j = 0;
-        while (i < x.Length || j < y.Length)
+        // (the union's size first: when one side holds the other, that side is the union, with nothing made)
+        int n = 0;
+        for (int i = 0, j = 0; i < x.Length || j < y.Length; n++)
         {
-            if (j >= y.Length || i < x.Length && x[i] < y[j]) r.Add(x[i++]);
-            else if (i >= x.Length || y[j] < x[i]) r.Add(y[j++]);
-            else { r.Add(x[i]); i++; j++; }
+            if (j >= y.Length || i < x.Length && x[i] < y[j]) i++;
+            else if (i >= x.Length || y[j] < x[i]) j++;
+            else { i++; j++; }
         }
-        return Intern(r.ToArray());
+        if (n == x.Length) return a;
+        if (n == y.Length) return b;
+        var r = new int[n];
+        for (int i = 0, j = 0, k = 0; k < n; k++)
+        {
+            if (j >= y.Length || i < x.Length && x[i] < y[j]) r[k] = x[i++];
+            else if (i >= x.Length || y[j] < x[i]) r[k] = y[j++];
+            else { r[k] = x[i]; i++; j++; }
+        }
+        return Intern(r);
     }
 }
 
