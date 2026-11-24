@@ -162,6 +162,8 @@ public sealed class SetPool
 
     public IdSet Of(IEnumerable<int> ids) => Intern(ids.Distinct().OrderBy(x => x).ToArray());
     public IdSet Of(int id) => Intern([id]);
+    /// <summary>A set from ids already sorted and distinct (no copy).</summary>
+    public IdSet OfSorted(int[] sorted) => Intern(sorted);
 
     public IdSet Add(IdSet s, int id) => s.Contains(id) ? s : Join(s, Of(id));
 

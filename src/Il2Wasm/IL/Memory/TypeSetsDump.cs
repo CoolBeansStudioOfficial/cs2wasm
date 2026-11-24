@@ -23,7 +23,7 @@ public sealed partial class ProgramSolution
             };
             return v.Kind is VarKind.AddrParam or VarKind.AddrRet ? name : name + " = " + Set(st.Sets[i]);
         }).Concat(_methodTypes.SelectMany(e => Enumerable.Range(0, e.Value.Types.Length).Where(i => e.Value.Has[i]).Select(i => "node " + StableKey.Of(e.Key) + " v" + i + " = " + Set(e.Value.Types[i]))))
-          .Concat(_methodTypes.SelectMany(e => Enumerable.Range(0, e.Value.Targets.Length).Where(i => e.Value.Targets[i] != null).Select(i => "targets " + StableKey.Of(e.Key) + " v" + i + " = " + string.Join(",", e.Value.Targets[i]!.Select(StableKey.Of).OrderBy(n => n, StringComparer.Ordinal)))))
+          .Concat(_methodTypes.SelectMany(e => (e.Value.Targets ?? []).Select(p => "targets " + StableKey.Of(e.Key) + " v" + p.Key + " = " + string.Join(",", p.Value.Select(StableKey.Of).OrderBy(n => n, StringComparer.Ordinal)))))
           .OrderBy(l => l, StringComparer.Ordinal);
         var sb = new StringBuilder("# type sets\n");
         foreach (var l in lines) sb.Append(l).Append('\n');
