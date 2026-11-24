@@ -28,10 +28,15 @@ namespace Il2Wasm.IL.Memory;
 /// IL2WASM_NO_INIT_STORES=1 turns the rule off.</summary>
 public static class InitStores
 {
+    static readonly bool s_trace = Environment.GetEnvironmentVariable("IL2WASM_INIT_TRACE") == "1";
     static readonly bool s_off = Environment.GetEnvironmentVariable("IL2WASM_NO_INIT_STORES") == "1";
 
     /// <summary>Init stores found (all plans of the process), for IL2WASM_PLAN_STATS.</summary>
-    public static int Found;
+    public static int Found, Skipped;
+
+    /// <summary>The most block-object pairs a body's analysis tracks (blocks times objects stored into).</summary>
+    const long Budget = 20_000;
+    const int MaxPasses = 40;
 
     /// <summary>A constructor's effect on <c>this</c>: whether it keeps it in, and the fields (typical definitions) it may
     /// write on it, with those of the constructors it hands over to.</summary>
@@ -72,17 +77,20 @@ public static class InitStores
         // (the objects to track: fresh newobjs, and this in a class's constructor; not those that flow into a phi)
         var inPhi = new HashSet<Node>();
         foreach (var b in body.Blocks) foreach (var p in b.Phis) foreach (var a in p.A) inPhi.Add(a);
+        // (only objects some store is into: the others need no state)
+        var stored = new HashSet<Node>();
+        foreach (var b in body.Blocks)
+            foreach (var n in b.Code)
+                if (n.Op == Opc.StFld && n.A[0].Op is Opc.NewObj or Opc.Arg && !inPhi.Contains(n.A[0])) stored.Add(n.A[0]);
         Node? self = null;
         HashSet<FieldDesc>? selfBefore = null;
-        if (IsClassCtor(ctx.Method) && body.Args.FirstOrDefault(a => a.I == 0) is { } a0 && !inPhi.Contains(a0)
+        if (IsClassCtor(ctx.Method) && body.Args.FirstOrDefault(a => a.I == 0) is { } a0 && stored.Contains(a0)
             && Before(ctx.Solution, ctx.Method, memo) is { } before)
         { self = a0; selfBefore = before; }
-        bool any = self != null;
-        if (!any)
-            foreach (var b in body.Blocks)
-                foreach (var n in b.Code)
-                    if (n.Op == Opc.StFld && n.A[0].Op == Opc.NewObj) { any = true; break; }
-        if (!any) return;
+        stored.RemoveWhere(n => n.Op == Opc.Arg);
+        if (self == null && stored.Count == 0) return;
+        // (compile time: the states are per block and per object; a body past the budget keeps its stores Plain)
+        if ((long)body.Blocks.Count * (stored.Count + (self != null ? 1 : 0)) > Budget) { Skipped++; return; }
 
         var ends = Ownership.FinallyEnds(body);
         var succs = new Dictionary<Block, List<Block>>();
@@ -95,21 +103,50 @@ public static class InitStores
         }
         var outs = new Dictionary<Block, Dictionary<Node, HashSet<FieldDesc>>>();
         var entry = body.Blocks[0];
+        // (reverse post-order from the entry, then the blocks no edge reaches (handlers) the same way: a pass sees a
+        // block's forward predecessors first, so the passes are about the loops' depth, not the body's length)
+        var order = new List<Block>();
+        var seenB = new HashSet<Block>();
+        void Visit(Block x)
+        {
+            var stack = new Stack<(Block, int)>();
+            if (!seenB.Add(x)) return;
+            stack.Push((x, 0));
+            var post = new List<Block>();
+            while (stack.Count > 0)
+            {
+                var (y, i) = stack.Pop();
+                if (i < succs[y].Count)
+                {
+                    stack.Push((y, i + 1));
+                    var t = succs[y][i];
+                    if (seenB.Add(t)) stack.Push((t, 0));
+                }
+                else post.Add(y);
+            }
+            post.Reverse();
+            order.AddRange(post);
+        }
+        Visit(entry);
+        foreach (var b in body.Blocks) Visit(b);
         // (iterate to a fixed point: the states only lose objects and gain fields)
+        int passes = 0;
         for (bool changed = true; changed;)
         {
             changed = false;
-            foreach (var b in body.Blocks)
+            // (a fixed point that needs more passes than this is not waited for: the stores stay Plain)
+            if (++passes > MaxPasses) { Skipped++; if (s_trace) Console.Error.WriteLine($"init stores: {body.Method}: {body.Blocks.Count} blocks, no fixed point in {MaxPasses} passes"); return; }
+            foreach (var b in order)
             {
                 var st = In(b, entry, preds[b], outs, self, selfBefore);
-                Transfer(ctx, b, st, memo, inPhi, null);
+                Transfer(ctx, b, st, memo, stored, null);
                 if (!outs.TryGetValue(b, out var old) || !Same(old, st)) { outs[b] = st; changed = true; }
             }
         }
-        foreach (var b in body.Blocks)
+        foreach (var b in order)
         {
             var st = In(b, entry, preds[b], outs, self, selfBefore);
-            Transfer(ctx, b, st, memo, inPhi, result);
+            Transfer(ctx, b, st, memo, stored, result);
         }
     }
 
@@ -144,7 +181,7 @@ public static class InitStores
         return true;
     }
 
-    static void Transfer(PlanContext ctx, Block b, Dictionary<Node, HashSet<FieldDesc>> st, Memo memo, HashSet<Node> inPhi, HashSet<Node>? result)
+    static void Transfer(PlanContext ctx, Block b, Dictionary<Node, HashSet<FieldDesc>> st, Memo memo, HashSet<Node> stored, HashSet<Node>? result)
     {
         foreach (var n in b.Code)
         {
@@ -175,7 +212,7 @@ public static class InitStores
                 }
                 st.Remove(o);
             }
-            if (n.Op == Opc.NewObj && n.Kind == VK.Ref && n.X is MethodDesc ctor && IsClassCtor(ctor) && !inPhi.Contains(n)
+            if (n.Op == Opc.NewObj && n.Kind == VK.Ref && n.X is MethodDesc ctor && stored.Contains(n) && IsClassCtor(ctor)
                 && Effect(ctx.Solution, ctor, memo) is { Keeps: true } ef)
                 st[n] = new HashSet<FieldDesc>(ef.Writes);
         }

@@ -58,7 +58,7 @@ public static class Plan
         if (s_stats)
             AppDomain.CurrentDomain.ProcessExit += (_, _) =>
             {
-                Console.Error.WriteLine($"plan: {Plans} plans, {Keepers} keepers held ({MovedKeepers} moved), {Takes} takes, {MissedKeepers} keeps not handed on, {Flips} flips, {InitStores.Found} init stores, {FrameObjects.Found} frame objects, {Verify.Checked} verified");
+                Console.Error.WriteLine($"plan: {Plans} plans, {Keepers} keepers held ({MovedKeepers} moved), {Takes} takes, {MissedKeepers} keeps not handed on, {Flips} flips, {InitStores.Found} init stores ({InitStores.Skipped} bodies past the budget), {FrameObjects.Found} frame objects, {Verify.Checked} verified");
                 foreach (var m in s_missed) Console.Error.WriteLine("plan: keep not handed on: " + m);
                 if (s_takeDump) foreach (var (k, c) in s_takeCallees.OrderByDescending(p => p.Value).ThenBy(p => p.Key, StringComparer.Ordinal)) Console.Error.WriteLine($"plan: take after {k}: {c}");
             };
