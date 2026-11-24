@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The .NET side of tools/il-rcstats.mjs live (docs/MEMORY-IR.md 9.2): a startup hook (DOTNET_STARTUP_HOOKS) that,
+       when the program exits, collects, runs the finalizers, collects again, and has the runtime walk its heap
+       (the GCHeapCollect/GCHeapDump events, as dotnet-gcdump does, here through an in-process EventListener), then
+       writes the live objects per type to IL2WASM_LIVE_OUT. No packages. Run it only on the homelab. -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AssemblyName>il-live-oracle</AssemblyName>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>

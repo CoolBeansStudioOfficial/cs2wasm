@@ -1,7 +1,7 @@
 // Minimal engine for tests: creates the shared memory, supplies il2wasm's engine imports, logs boundary calls.
 // usage: node host/run.mjs module.wasm [export=main] [--pages N] [--max-pages N] [-- program arguments...]
 // (the program's command line is the module's file name, then the arguments after --)
-import { readFileSync, writeSync } from 'node:fs';
+import { readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { il2wasmImports, threadImports } from './engine.mjs';
 import { startIo } from './http.mjs';
 import { openSnapshot } from './snapshot.mjs';
@@ -76,6 +76,28 @@ startIo(module, memory);
 if (snapshot) for (const k of Object.keys(imports.il2wasm)) if (k.startsWith('http_')) { const f = imports.il2wasm[k]; imports.il2wasm[k] = (...a) => { httpUsed = true; return f(...a); }; }
 const t0 = performance.now();
 const instance = new WebAssembly.Instance(module, imports);
+// (a module built by the IL front end with IL2WASM_COUNT_RC=1, Lower/RcStats.cs: its count sites' table written at
+// exit, however the program ends: to IL2WASM_RCSTATS_OUT as JSON for tools/il-rcstats.mjs; with IL2WASM_RCSTATS_PRINT=1
+// a summary on stderr; nothing otherwise, as the test harnesses read stderr)
+if (instance.exports.il2wasm_rcstats) process.on('exit', () => {
+  const x = instance.exports, n = x.il2wasm_rcstats_sites(), at = x.il2wasm_rcstats();
+  const hist = Array.from(new BigInt64Array(memory.buffer, at, 18), Number), entered = { retain: hist[16], release: hist[17] };
+  const t = new BigInt64Array(memory.buffer, at + 256, 3 * n), sites = [];
+  for (let i = 0; i < n; i++) if (t[3 * i] !== 0n) sites.push([i, Number(t[3 * i]), Number(t[3 * i + 1]), Number(t[3 * i + 2])]);
+  let live = null;
+  if (x.il2wasm_rcstats_live) {
+    const k = x.il2wasm_rcstats_live_slots(), l = new BigInt64Array(memory.buffer, x.il2wasm_rcstats_live(), k);
+    live = [];
+    for (let i = 0; i < k; i++) if (l[i] !== 0n) live.push([i, Number(l[i])]);
+  }
+  const out = process.env.IL2WASM_RCSTATS_OUT;
+  if (out) writeFileSync(out, JSON.stringify({ version: 1, sites: n, buckets: { retain: hist.slice(0, 7), release: hist.slice(8, 15) }, entered, counts: sites, live }));
+  else if (process.env.IL2WASM_RCSTATS_PRINT === "1") {
+    let r = 0, rl = 0;
+    for (let i = 0; i < 7; i++) { r += hist[i]; rl += hist[8 + i]; }
+    process.stderr.write(`[rcstats] ${r} retains, ${rl} releases run at ${sites.length} of ${n} sites (IL2WASM_RCSTATS_OUT=file for tools/il-rcstats.mjs)${r !== entered.retain || rl !== entered.release ? `; but ${entered.retain} and ${entered.release} entered the functions` : ''}\n`);
+  }
+});
 const restored = snapshot?.restore(instance, memory) ?? false;
 if (!restored) instance.exports.init();
 if (process.env.IL2WASM_HOST_TIMES) process.stderr.write(`[host] node up and the file read ${tRead.toFixed(0)} ms, the module made ${(tModule - tRead).toFixed(0)} ms, instantiate and ${restored ? 'the snapshot put back' : 'init'} ${(performance.now() - t0).toFixed(0)} ms (since start ${performance.now().toFixed(0)} ms)
