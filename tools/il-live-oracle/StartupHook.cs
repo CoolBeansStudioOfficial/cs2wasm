@@ -1,6 +1,6 @@
 // The .NET oracle for live objects per type at exit (docs/MEMORY-IR.md 9.2), as a startup hook:
 //   DOTNET_STARTUP_HOOKS=<path>/il-live-oracle.dll IL2WASM_LIVE_OUT=live.json <program>
-// At exit (ProcessExit): GC.Collect, WaitForPendingFinalizers, GC.Collect, then the runtime's heap walk (the
+// After the program's entry point returns (the hook runs it): GC.Collect, WaitForPendingFinalizers, GC.Collect, then the runtime's heap walk (the
 // GCHeapCollect keyword forces a collection that reports every live object, GCBulkNode, and its type, GCBulkType: the
 // events dotnet-gcdump reads), received in-process by an EventListener. Written: {"types": {"<name>": count}}.
 // IL2WASM_LIVE_DEBUG=1: the events' payload shapes on stderr. Run it on the homelab only (never .NET cases on the desk).
@@ -14,11 +14,27 @@ internal static class StartupHook
     {
         var file = Environment.GetEnvironmentVariable("IL2WASM_LIVE_OUT");
         if (string.IsNullOrEmpty(file)) return;
-        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        // (at ProcessExit the runtime no longer delivers its events to a listener: the hook runs the program's entry
+        // point itself, then walks the heap, then exits with the program's code; Main's frame is gone by then, as
+        // il2wasm's main has returned when it counts)
+        var entry = System.Reflection.Assembly.GetEntryAssembly()?.EntryPoint;
+        if (entry == null) { Console.Error.WriteLine("il-live-oracle: no entry point"); return; }
+        int code = 0;
+        try
         {
-            try { HeapWalk.Write(file); }
-            catch (Exception e) { Console.Error.WriteLine("il-live-oracle: " + e); }
-        };
+            var ps = entry.GetParameters();
+            object? r = entry.Invoke(null, ps.Length == 0 ? null : [Environment.GetCommandLineArgs().Skip(1).ToArray()]);
+            if (r is int i) code = i;
+        }
+        catch (System.Reflection.TargetInvocationException e) when (e.InnerException != null)
+        {
+            Console.Error.WriteLine("Unhandled exception. " + e.InnerException);
+            code = e.InnerException.HResult;
+        }
+        Console.Out.Flush();
+        try { HeapWalk.Write(file); }
+        catch (Exception e) { Console.Error.WriteLine("il-live-oracle: " + e); }
+        Environment.Exit(code);
     }
 }
 
