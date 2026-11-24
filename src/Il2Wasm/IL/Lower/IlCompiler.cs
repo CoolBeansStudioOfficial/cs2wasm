@@ -533,6 +533,9 @@ public sealed partial class IlCompiler
             case "Rt.TlsBase": case "Rt.TlsSize": case "Rt.TakeThrowSite": case "Rt.FirstChanceWanted": case "Rt.FramesWanted": case "Rt.WeakAny": case "Rt.DeadlockDump":
                 e.I32(0); break;
             case "Rt.FusedDrop": e.I32(1); break;
+            // (a delegate's Target: the object it holds; lambdas' singletons are .NET's targets too, as the IL has them)
+            case "Delegate.TargetOf": { int t = e.AddLocal(ValType.I32); e.Set(t); e.Op(WOp.Drop); e.Get(t); e.Call(Rt.Retain); break; }
+            case "Rt.DelegateMethodEntry": e.Op(WOp.Drop); e.I32(0); break;
             // (decided by the instantiation: the string is a literal naming a generic definition in CoreLib)
             case "Generics.IsNullable": e.I32(m.Instantiation[0].IsNullable ? 1 : 0); break;
             case "Generics.IsEnum": e.I32(m.Instantiation[0].IsEnum ? 1 : 0); break;

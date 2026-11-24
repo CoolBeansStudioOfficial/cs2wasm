@@ -1442,3 +1442,8 @@ with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   stub CoreLib. The IL CoreLib's hello world compiles only leniently (335 gaps: Type objects, 28 intrinsics, ldftn).
   Not run: the homelab suite, stress, self-host check, frames and bench (the old front end and the back end are
   unchanged apart from host/run.mjs's IL2WASM_PRINT_LIVE; 145_size_hello passes on the desk).
+- 2026-11-23, claude/il-frontend-2 (IL front end on the IL CoreLib): Console.WriteLine(42) on claude/il-corelib's
+  framework compiles strictly and prints 42 (1,948,641 bytes; no leak per call, 44 objects live at exit). NetWasm suite,
+  desk, shipped mode: 161 passed, 217 failed, 71 did not compile, 1 timed out (the IL front end's first number). Stub
+  tests 69 of 69. Not run: homelab suite, stress, self-host check (the back end, runtime and old front end are
+  unchanged; the new code is a separate project).
