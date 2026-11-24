@@ -1428,7 +1428,8 @@ decides import order. Two consequences, both measured:
   the desk): 625-673 MB against main's 497-549 MB; under workstation GC 431-499 MB against 413-438 MB; with 4 heaps
   equal. Compile time: equal within the desk's noise. `IL2WASM_MEM_REIMPORT=1` keeps only the summary and the import
   decisions and imports the body again at lowering (3.8's fallback: about 0.8 s more on hello world, and it did not
-  bring the server-GC peak down: 575-631 MB). The peak is a step-1 cost on record, not settled.
+  bring the server-GC peak down: 575-631 MB). The coordinator accepted the peak for step 1 (about +23% under server
+  GC, inside 3.8's 25% budget); the rest of the budget is S1's. The CLI's GC mode is unchanged.
 
 **Files.**
 

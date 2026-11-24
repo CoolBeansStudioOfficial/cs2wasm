@@ -5576,3 +5576,32 @@ Not run: the homelab suite and the self-host check on this commit.
   runtime's C# are unchanged by this branch, apart from Boundary/CompilerHelpers.cs, which only the IL front end
   reaches; the IL front end is its own project); frames.mjs and bench.mjs (the IL
   front end does not compile those programs yet).
+
+### Memory model step 1: facts, summary, solver, the phase split (claude/mem-foundation, 2026-11-24)
+
+- What: docs/MEMORY-IR.md 11.3 step 1. `IL/Memory/Facts.cs` (section 2's lattice as side tables, each fact with its
+  join and its emptiness test), `Summary.cs` (`MethodSummary`, `ImportedMethod`, `IReachHost`), `Solver.cs` (the
+  reach phase: imports only, RTA dispatch; `ProgramSolution`: stable ids, dispatch targets, receiver types, Mods
+  over call-graph SCCs on first use), `Pipeline.cs`; `IlCompiler.Reach` split into ReachPhase, SolvePhase and
+  LowerPhase (`Lower/Phases.cs`); `ProgramFacts.Import` writes nothing and `Merge` records each method's facts where
+  its import used to be; stubs with frozen signatures for the six S1 rows (MEMORY-IR.md 11.4). Lowering is still
+  naive (`Ownership.Run`); `IL2WASM_MEM_PLAN=1` runs the stub planner pipeline.
+- Byte identity [run, desk]: hello world on the IL CoreLib 1,377,218 B, the same bytes as main cee3cab; every module
+  the IL tests compile (48) the same bytes as main's (IL2WASM_IL_TESTS_DUMP, a new test-harness hook).
+- Tests [run, desk]: IL tests 109 of 109. NetWasm suite, shipped, desk, case by case against main's CLI on the same
+  cache: 283 passed, 159 failed, 7 did not compile, 1 timed out with both, every one of the 450 case-modes the same status as main (no case lost or gained).
+- Coverage [run]: methods only lowering reaches (the generated code's helpers, finalizers, activation, attribute
+  factories) are late imports, outside the solution. The round before's late methods and late-constructed types
+  seed the next reach phase: hello world's rounds 0 to 5 have 1,002, 3, 1, 0, 0, 0 late imports of about 4,350
+  methods lowered, and the last round imports nothing lowering does not take.
+- Cost [run, desk, hello world, interleaved runs]: compile time equal within the desk's noise (new 11.0-11.4 s,
+  main 10.7-11.5 s). Live data held between the phases: 19 MB of bodies and 4 MB of summaries (measured by dropping
+  them). Peak working set under the CLI's server GC (24 heaps): 625-673 MB against main's 497-549 MB (about +23%,
+  inside 3.8's 25% budget, accepted by the coordinator for step 1; the headroom is S1's); under workstation GC
+  (DOTNET_gcServer=0) 431-499 MB against 413-438 MB. IL2WASM_MEM_REIMPORT=1 (re-import at lowering) costs about
+  0.8 s and did not lower the server-GC peak (575-631 MB). The CLI's GC mode is unchanged.
+- Not done: variant functions have no queue entry in IlCompiler; receiver types come from static types only;
+  intrinsic effects are Wild until Memory/IntrinsicSignatures.cs; ReleaseEffects is All when any finalizer exists;
+  PureCalls' memo depends on import order (3.5) though no module changed; no Groups.cs/Threads.cs stubs. Not run:
+  the homelab suite, stress and the self-host check (the old front end, the runtime and the back end are
+  unchanged).
