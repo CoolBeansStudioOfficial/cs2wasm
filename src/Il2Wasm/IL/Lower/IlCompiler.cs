@@ -105,24 +105,45 @@ public sealed partial class IlCompiler
         // before proved of it, until nothing more is proved; the last round's module is the one encoded)
         if (Il2Wasm.IL.Reach.RoundFacts.Rounds > 1 && !Il2Wasm.IL.Reach.ProgramFacts.Off && _round == 0)
         {
+            int rounds = Il2Wasm.IL.Reach.RoundFacts.Rounds;
+            // (the memory passes that only shape the encoded module run in its round alone, PlanContext.FinalRound:
+            // the last round by the cap, or the one more round run after the facts are stable)
+            bool gate = Il2Wasm.IL.Memory.Pipeline.Planned;
             var c = this;
+            FinalRound = !gate;
             var main0 = Reach(entry);
             var facts = c.Facts.Close(c.SlotImplementations(), c._constructedOrder);
-            for (int r = 1; r < Il2Wasm.IL.Reach.RoundFacts.Rounds; r++)
+            IlCompiler Next(int r, bool final)
             {
-                var next = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, Checked = Checked, _round = r };
+                var next = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, Checked = Checked, _round = r, FinalRound = final };
                 foreach (var p in _nativePaths) next.LoadNatives(p);
                 next.Facts.Previous = facts;
                 c.SeedNext(next);
+                return next;
+            }
+            for (int r = 1; r < rounds; r++)
+            {
+                var next = Next(r, !gate || r == rounds - 1);
                 var m = next.Reach(entry);
                 var nf = next.Facts.Close(next.SlotImplementations(), next._constructedOrder);
                 // (stable: the same facts, or the same reach and as many facts of each kind; an argument's value can
                 // change between rounds without changing what is reached, and every round's facts are sound)
                 bool stable = nf.SameAs(facts) || next._functions.Count == c._functions.Count && nf.ToString() == facts.ToString();
                 c = next; main0 = m;
-                if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"round {r}: {next._functions.Count} methods, {nf}");
+                if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"round {r}: {next._functions.Count} methods, {nf}{(stable ? " (stable)" : "")}");
                 facts = nf;
-                if (stable) break;
+                if (stable)
+                {
+                    // (stable before the cap with the gate on: one more round from the same facts, the encoded one)
+                    if (!c.FinalRound)
+                    {
+                        var last = Next(r + 1, true);
+                        main0 = last.Reach(entry);
+                        c = last;
+                        if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"round {r + 1}: {last._functions.Count} methods (final, after stable)");
+                    }
+                    break;
+                }
             }
             if (c != this) { var bytes = c.Emit(main0); Warnings.AddRange(c.Warnings); return bytes; }
             return Emit(main0);
@@ -131,6 +152,8 @@ public sealed partial class IlCompiler
     }
 
     int _round;
+    /// <summary>This round's module is the one encoded (PlanContext.FinalRound; true without rounds).</summary>
+    internal bool FinalRound = true;
     readonly List<string> _nativePaths = [];
 
     /// <summary>Each dispatch slot reached, with the implementations over the constructed types (for the next round's

@@ -92,9 +92,9 @@ public sealed partial class IlCompiler : IReachHost
     MethodPlan PlanMethod(MethodDesc m, Body body)
     {
         if (!Pipeline.Planned || Solution == null) return MethodPlan.Naive(body, Ownership.Run(body));
-        var ctx = new PlanContext(m, body, Solution, Variant.Entry);
+        var ctx = new PlanContext(m, body, Solution, Variant.Entry) { FinalRound = FinalRound || Pipeline.NoFinalRoundGate };
         var plan = Plan.Build(ctx);
-        if (Pipeline.Inline)
+        if (Pipeline.Inline && ctx.FinalRound)
         {
             for (int step = 0; Inline.Step(ctx, plan, CalleeForInline) is { } site; step++)
             {
@@ -117,7 +117,7 @@ public sealed partial class IlCompiler : IReachHost
         if (Solution == null || !Solution.Covers(callee)) return null;
         var u = ImportMethod(callee);
         if (u.Body == null || u.Error != null) return null;
-        var ctx = new PlanContext(callee, u.Body, Solution, variant);
+        var ctx = new PlanContext(callee, u.Body, Solution, variant) { FinalRound = FinalRound || Pipeline.NoFinalRoundGate };
         return (u.Body, Plan.Build(ctx));
     }
 
