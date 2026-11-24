@@ -124,6 +124,9 @@ public sealed class Body
     public readonly List<Var> Vars = [];
     /// <summary>The method allocates on the shadow stack (localloc): it has a frame.</summary>
     public bool UsesLocAlloc;
+    /// <summary>il-runtime: a filter reads a struct argument (the caller's copy, which a filter's own function cannot
+    /// reach): the method's filters run where their handler is reached, after the inner finally blocks (one pass).</summary>
+    public bool FiltersOnePass;
     int _nextId;
     public int NextId() => _nextId++;
     public int ValueCount => _nextId;

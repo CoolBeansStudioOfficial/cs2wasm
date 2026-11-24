@@ -13,7 +13,7 @@ namespace Il2Wasm.IL.Ir;
 /// arguments written inside a protected region or a finally, fault or filter are variables of their own (VarLd and
 /// VarSt): an exception can leave the region between any two instructions, so their value at the handler is the one
 /// last written, which no SSA value names. Every other variable keeps its try-entry value in the handlers.</summary>
-public sealed class Importer
+public sealed partial class Importer
 {
     readonly MethodDesc _method;
     readonly MethodIL _il;
@@ -226,6 +226,8 @@ public sealed class Importer
                 _body.Vars.Add(new Var { Kind = Kinds.Of(VarType(v)), Type = VarType(v) });
             }
         }
+        // il-runtime: what a filter uses is in the frame (the filter runs as a function of its own: FilterSlots.cs)
+        FilterSlots();
     }
 
     // ---------------------------------------------------------------- the control flow graph

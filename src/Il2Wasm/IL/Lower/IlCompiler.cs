@@ -747,6 +747,8 @@ public sealed partial class IlCompiler
     /// <summary>The functions whose bodies need the whole program: dispatch stubs, type tests, destroy.</summary>
     void GenerateLate()
     {
+        // il-runtime: the first pass's functions (before the type tests: they make some)
+        EmitEhSupport();
         // type ids: 1 is string's (CoreLib's contract); the others in a preorder of the class hierarchy from 2
         CloseTypeIds();
         foreach (var t in _types.ToList()) StringLiteral(TypeName(t));

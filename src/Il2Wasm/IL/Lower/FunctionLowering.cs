@@ -14,7 +14,7 @@ namespace Il2Wasm.IL.Lower;
 /// blocks, loops and ifs (Ramsey's "Beyond Relooper" over each region's graph, with a dispatch loop where a region's
 /// flow is irreducible), try regions as try_table, and every operation lowered with naive counting
 /// (Ir/Ownership.cs): each value in a local of its own, zero when it holds no count.</summary>
-sealed class FunctionLowering
+sealed partial class FunctionLowering
 {
     readonly IlCompiler C;
     readonly Body _body;
@@ -353,6 +353,8 @@ sealed class FunctionLowering
                 E.Op(WOp.Return);
                 return;
             case Opc.Throw:
+                // il-runtime: throw null is a NullReferenceException; the trace and the first pass (Filters.cs)
+                Get(n.A[0]); E.Call(C.Rt.NonNull); E.Call(C.ThrowHook);
                 Get(n.A[0]);
                 if ((n.Moves & 1) != 0) Clear(n.A[0]); else E.Call(C.Rt.Retain);
                 E.Emit(WOp.Throw, 0, 0, C.ExceptionTag);
@@ -360,6 +362,8 @@ sealed class FunctionLowering
             case Opc.Rethrow:
             {
                 var h = Enclosing(b.Region, RegionKind.Catch) ?? throw new InvalidProgramException("rethrow outside a catch");
+                // il-runtime: a rethrow's first pass (Filters.cs)
+                E.Get(_handlerLocals[h].obj); E.Call(C.FirstPass);
                 E.Get(_handlerLocals[h].exn); E.Op(WOp.ThrowRef);
                 return;
             }
@@ -458,6 +462,8 @@ sealed class FunctionLowering
         else
         {
             int obj = E.AddLocal(ValType.I32), exn = E.AddLocal(ValType.ExnRef);
+            // il-runtime: the try's record for the first pass (Filters.cs)
+            int rec = EhEnter(tr);
             var done = E.Block();
             var caught = E.Block(new FuncType([], [ValType.I32, ValType.ExnRef]));
             E.TryTable(null, (1, C.ExceptionTag, caught));
@@ -467,11 +473,18 @@ sealed class FunctionLowering
             E.End();
             E.Set(exn); E.Set(obj);
             RestoreFrame();
-            foreach (var h in tr.Handlers)
+            // il-runtime: a try with a filter takes the first pass's decision (the clause, 1-based), and its record goes
+            int clause = EhCaught(tr, rec, obj);
+            for (int hi = 0; hi < tr.Handlers.Count; hi++)
             {
+                var h = tr.Handlers[hi];
                 _handlerLocals[h] = (obj, exn);
                 bool open = false;
-                if (h.Filter != null)
+                if (clause >= 0)
+                {
+                    E.Get(clause); E.I32(hi + 1); E.Op(WOp.I32Eq); E.If(); open = true;
+                }
+                else if (h.Filter != null)
                 {
                     // (one pass: the filter runs here, after the inner finally blocks have run)
                     _handlerLocals[h.Filter] = (obj, exn);
@@ -493,6 +506,7 @@ sealed class FunctionLowering
             }
             E.Get(exn); E.Op(WOp.ThrowRef);
             E.End();
+            EhLeave(rec);
         }
         // where the leaves go
         if (exits.Count == 0) { E.Op(WOp.Unreachable); return; }
