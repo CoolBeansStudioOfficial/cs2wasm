@@ -87,6 +87,8 @@ public sealed partial class ProgramSolution
     internal void SolveTypeSets(IReadOnlyCollection<MethodDesc> externalRoots)
     {
         if (s_noTypeSets) return;
+        // (the constructed types' index, which the released types and the cones need anyway: not timed as the solve's)
+        EnsureIndex();
         // (IL2WASM_TYPESETS_REPEAT=n: the solve n times over, for profiling it)
         if (int.TryParse(Environment.GetEnvironmentVariable("IL2WASM_TYPESETS_REPEAT"), out int repeat))
             for (int i = 1; i < repeat; i++) { SolveTypeSetsOnce(externalRoots); ResetTypeSets(); }
