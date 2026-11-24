@@ -91,7 +91,12 @@ public sealed partial class IlCompiler : IReachHost
     /// plan (the baseline the removal share is measured against).</summary>
     MethodPlan PlanMethod(MethodDesc m, Body body)
     {
-        if (!Pipeline.Planned || Solution == null) return MethodPlan.Naive(body, Ownership.Run(body));
+        if (!Pipeline.Planned || Solution == null)
+        {
+            var info0 = Ownership.Run(body);
+            if (Borrows.Stats && Solution != null) Borrows.Analyze(new PlanContext(m, body, Solution, Variant.Entry), info0);
+            return MethodPlan.Naive(body, info0);
+        }
         var ctx = new PlanContext(m, body, Solution, Variant.Entry);
         var plan = Plan.Build(ctx);
         if (Pipeline.Inline)
