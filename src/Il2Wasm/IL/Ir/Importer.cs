@@ -569,10 +569,18 @@ public sealed partial class Importer
         /// Type.FromId call and a release per test, 62% of ListSort's count operations through GenericArraySortHelper).</summary>
         void DropFolded(Node n)
         {
-            if (n.Op is not (Opc.TypeOf or Opc.Box) || n.Block != B || S.Contains(n)) return;
-            foreach (var x in B.Code) foreach (var o in x.A) if (o == n) return;
-            if (I._cur.TryGetValue(B, out var vars) && vars.ContainsValue(n)) return;
+            if (n.Op is not (Opc.TypeOf or Opc.Box) || !Unused(n)) return;
             B.Code.Remove(n);
+        }
+
+        /// <summary>Nothing uses the value made in this block: not on the stack, not an operand, not in a variable
+        /// (all its uses so far are these; a value of another block may have uses this importer does not see).</summary>
+        bool Unused(Node n)
+        {
+            if (n.Block != B || S.Contains(n)) return false;
+            foreach (var x in B.Code) foreach (var o in x.A) if (o == n) return false;
+            if (I._cur.TryGetValue(B, out var vars) && vars.ContainsValue(n)) return false;
+            return true;
         }
         int _at;
 

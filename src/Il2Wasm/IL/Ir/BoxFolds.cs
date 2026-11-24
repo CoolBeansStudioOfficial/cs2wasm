@@ -13,7 +13,9 @@ namespace Il2Wasm.IL.Ir;
 ///
 /// The rules (each exact, ECMA-335 III.4.1, III.4.3, III.4.6, III.4.33):
 ///   - box T then unbox.any T (the same type) is the value. For a Nullable&lt;T&gt; too: its box is null or a T's box,
-///     and unbox.any Nullable&lt;T&gt; of either gives the Nullable back as it was;
+///     and unbox.any Nullable&lt;T&gt; of either gives the Nullable back as it was. Only a box nothing else has seen
+///     (made for the unbox, as `(int)(object)x` makes it): a box stored or passed on can be changed through an
+///     interface call on it before it is unboxed;
 ///   - box T compared with null, or branched on, is not null when T is not a Nullable&lt;T&gt; (a Nullable without a
 ///     value boxes as null);
 ///   - box T then isinst T or castclass T (the same type, not a Nullable) is the box itself: the cast succeeds.
@@ -21,8 +23,7 @@ namespace Il2Wasm.IL.Ir;
 /// saves the test or the unbox.
 ///
 /// Switches: IL2WASM_NO_BOX_FOLD=1, none of them. Break twin, for the tests: IL2WASM_BOX_FOLD_BREAK=1 takes a
-/// Nullable's box for not null and folds unbox.any of a box of another type (a Nullable&lt;T&gt;'s box unboxed as T),
-/// both wrong (tests/Il2Wasm.IL.Tests/FrameworkPrograms/f24_box_folds.cs).</summary>
+/// Nullable's box for not null and folds unbox.any of a box of another type (a Nullable&lt;T&gt;'s box unboxed as T) and of a box that was stored and changed, all wrong (tests/Il2Wasm.IL.Tests/FrameworkPrograms/f24_box_folds.cs).</summary>
 public sealed partial class Importer
 {
     internal static readonly bool NoBoxFold = Environment.GetEnvironmentVariable("IL2WASM_NO_BOX_FOLD") == "1";
@@ -50,6 +51,9 @@ public sealed partial class Importer
         {
             if (NoBoxFold || o.Op != Opc.Box || o.X is not TypeDesc bt) return null;
             if (bt != t && !(BoxFoldBreak && bt.IsNullable && bt.Instantiation[0] == t)) return null;
+            // (the box seen by nothing else: no one can have changed what is in it, through an interface call on it,
+            // since it was made. A box stored in a local and unboxed later is a box, NetWasm's fixture-rtti cases)
+            if (!Unused(o) && !BoxFoldBreak) return null;
             var v = o.A[0];
             if (bt != t) v = AddOfType(Opc.LdFld, t, v).WithX(((DefType)bt).GetField("value"u8));
             DropFolded(o);

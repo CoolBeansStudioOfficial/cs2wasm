@@ -2,6 +2,8 @@
 // not null, box then isinst of the same type is the box. What must not fold, and still behaves as .NET:
 // - a Nullable<T> without a value boxes as null: its null test is true (IL2WASM_BOX_FOLD_BREAK=1 takes it for not
 //   null: "nullable null: False");
+// - a box kept and changed through an interface, then unboxed, is read as it is now ("kept 2 1"; the break twin
+//   folds it to the value boxed: "kept 1 1");
 // - unbox.any of a box of another type: a Nullable<int>'s box unboxed as int throws NullReferenceException for none,
 //   and int's box unboxed as long throws InvalidCastException (the break twin folds the first: "0" and no exception).
 // The box a fold consumed goes (no object made); a box that is used again stays and keeps its value from the box.
@@ -10,6 +12,8 @@ using System.Collections.Generic;
 using System.Linq;
 
 struct P { public double X, Y; public override string ToString() => X + "," + Y; }
+interface IBump { void Bump(); }
+struct Ctr : IBump { public int N; public object Tag; public void Bump() => N++; }
 struct Named { public string Name; public int N; public override string ToString() => Name + N; }
 enum Color { Red = 1, Green = 2 }
 
@@ -31,8 +35,18 @@ static class Program
         return (T)o;
     }
 
+    // a box kept in a local and changed through an interface before it is unboxed: the unbox reads the box
+    static string Kept<T>(T v) where T : IBump
+    {
+        object boxed = v!;
+        ((IBump)boxed).Bump();
+        var back = (T)boxed;
+        return back is Ctr c ? "kept " + c.N + " " + ((Ctr)(object)v!).N : "?";
+    }
+
     static void Main()
     {
+        Console.WriteLine(Kept(new Ctr { N = 1, Tag = "t" }));
         Console.WriteLine(RoundTrip(42) + " " + RoundTrip(7L) + " " + RoundTrip(new P { X = 1.5, Y = -2 }) + " " + RoundTrip(new Named { Name = "n", N = 3 }) + " " + RoundTrip(Color.Green));
         Console.WriteLine(RoundTrip<int?>(5) + " [" + RoundTrip<int?>(null) + "] " + RoundTrip<int?>(null).HasValue + " " + RoundTrip("str"));
         Console.WriteLine(AsInt(11) + " " + AsInt<int?>(12));
