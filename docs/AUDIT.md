@@ -6214,9 +6214,20 @@ Not run: the homelab suite and the self-host check on this commit.
   contracts make it matter. Now an element store reaches Slot reads too (field and static reads still never see
   one). Test: SolverChecks, the call on a span's element of an array that holds a C targets C.F (it passes with
   Slot(object) unknown too, as it is in every program on the CoreLib today: it guards the rule for when Slot reads
-  are precise). Still open: a
-  field whose address reaches an operation the solve cannot follow (`Unsafe.Add(ref o.f, 0)`,
-  `MemoryMarshal.CreateSpan(ref o.f, 1)`) is read through a Slot that does not see the field's stores.
+  are precise).
+- Field escapes (TypeSets.EscapeKeys, IL2WASM_NO_FIELD_ESCAPES=1 for the rule before): a field's or a static's read
+  joined every Slot key of a type it can hold, so every reference field's read joined Slot(object), which is unknown
+  in every program on the CoreLib (more than 16 types reach it). Now a field or a static shares its memory with the
+  Slots only once its address escaped: reached an operation the solve does not follow (anything but a read or a
+  write through it, a call's argument, a return, a phi, Unsafe.As/AsRef/AreSame/IsNullRef, the reference-slot
+  methods, a comparison, the address of a field inside it), or an address parameter or result already unknown.
+  From then on its reads see the Slots' stores, and the Slot reads see its stores (the soundness gap: a field read
+  through `Unsafe.Add(ref o.f, 0)` or a span made over it did not see the field's stores). Test: SolverChecks, h.F
+  is read as {Other}, h.G, whose address went into `MemoryMarshal.CreateSpan`, sees the span's Marker.
+- ILLink stubs (IL2WASM_NO_STUB_SUMMARIES=1: not): a substituted method (`EventSource.IsEnabled()`, on
+  ArrayPool's Rent and Return) had no summary, so a call of it was one the solve cannot see, Wild for every caller
+  (the string comparers' GetHashCode through Marvin and SharedArrayPool). It is now in the solution with no effects:
+  its stub returns its constant. Test: SolverChecks.
 - Every destroy was Wild in every program where a mark can be set (ObjectMarks.SetAt reached: a weak reference, a
   ConditionalWeakTable, and so the kernels): each destroy calls ObjectMarks.OnDestroy (a finalizable one OnFinalize),
   generated code no IR edge shows, so they were outside the solution and DestroyEffects returned Wild for a
