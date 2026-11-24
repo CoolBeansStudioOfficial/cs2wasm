@@ -16,7 +16,7 @@ public sealed class PlanVerifyException(string message) : Exception(message);
 /// It runs the planned body forward, with each Owned value's state at each point: held on every path, on some, or on
 /// none (a release or a move clears the value's local, so a release of a value that may not hold a count is a no-op:
 /// the plan's block-entry and handler-entry releases rely on it). Exceptional edges carry every state inside a try to
-/// its handlers, and a finally's end flows to its leave targets. The checks:
+/// its handlers; a leave's own edge stands for the path through its finally. The checks:
 /// 1. an Owned value holds no count at a return (none left on any path: a leak), except the naive keeps the plan
 ///    records; every Owned value is in CountedValues, which an exception leaving the function releases;
 /// 2. every use of an Owned value is on a path where it holds its count (no use after its consuming use); a value is
@@ -176,7 +176,6 @@ public static class Verify
         void Flow()
         {
             var ins = new Dictionary<Block, State>();
-            var ends = Ownership.FinallyEnds(_body);
             // (the entry: nothing held; a block not reached yet is the top, which every join narrows)
             var work = new Queue<Block>();
             var queued = new HashSet<Block>();
@@ -197,14 +196,9 @@ public static class Verify
                 var exc = Ownership.ExceptionSuccs(b).ToList();
                 Run(b, s, exc.Count > 0 ? st => { foreach (var h in exc) Flow(h, st); } : null, check: false);
                 foreach (var t in b.Succs.Distinct()) Flow(t, Edge(b, t, s, check: false));
-                // (a finally's end continues to its leave targets; every path through it began at a leave, whose
-                // edge copied the target's phis first)
-                foreach (var t in ends.GetValueOrDefault(b) ?? [])
-                {
-                    var o = s.Copy();
-                    foreach (var phi in t.Phis) if (_index.TryGetValue(phi, out int i)) o.Set(i, true);
-                    Flow(t, o);
-                }
+                // (a finally's end is not followed to its leave targets: the leave's own edge carries that path's
+                // state, and the finally's entry state, every state of its try, is not that path's. What a finally
+                // lets go is dead at its leave targets by the plan's liveness, which follows the finally's end there)
             }
             // (the checks, on the settled states)
             foreach (var b in _body.Blocks)
