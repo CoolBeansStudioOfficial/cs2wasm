@@ -1015,6 +1015,14 @@ public sealed class Importer
                     if (!rt.IsVoid) Push(c);
                     return true;
                 }
+                case ILOpcode.initblk: case ILOpcode.cpblk:
+                {
+                    // (address, value or source, size): memory.fill and memory.copy
+                    var size = Pop(); var v = Pop(); var addr = Pop();
+                    if (addr.Kind != VK.Ptr || size.SType is not (StackType.Int32 or StackType.NativeInt)) throw Invalid(op.ToString());
+                    Add(op == ILOpcode.initblk ? Opc.InitBlk : Opc.CpBlk, VK.Void, StackType.None, null, addr, v, size);
+                    return true;
+                }
                 case ILOpcode.localloc:
                 {
                     var size = Pop();

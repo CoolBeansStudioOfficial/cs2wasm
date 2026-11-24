@@ -534,6 +534,8 @@ sealed class FunctionLowering
                 return;
             }
             case Opc.LocA: VarAddr((int)n.I); Set(n); return;
+            case Opc.InitBlk: Get(n.A[0]); Get(n.A[1]); Get(n.A[2]); E.Emit(WOp.MemoryFill); return;
+            case Opc.CpBlk: Get(n.A[0]); Get(n.A[1]); Get(n.A[2]); E.Emit(WOp.MemoryCopy); return;
             case Opc.LocAlloc:
             {
                 // below the frame on the shadow stack, zeroed (C# sets localsinit); given back with the frame
