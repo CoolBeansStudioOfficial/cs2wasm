@@ -158,6 +158,16 @@ public sealed partial class IlCompiler
             while (_queue.Count > 0) { var (m, f) = _queue.Dequeue(); CompileMethod(m, f); }
             if (!ResolveDispatch()) break;
         }
+        // the reflection records the code reads (Assemblies.cs: assemblies' attributes), and what their factories reach
+        _compiling = null;
+        _programModule = entry.OwningType is MetadataType emt ? emt.Module as EcmaModule : null;
+        while (RequestAssemblyRecords())
+            for (; ; )
+            {
+                while (_queue.Count > 0) { var (m, f) = _queue.Dequeue(); CompileMethod(m, f); }
+                _compiling = null;
+                if (!ResolveDispatch()) break;
+            }
         _compiling = null;
         return main;
     }
@@ -597,14 +607,25 @@ public sealed partial class IlCompiler
         {
             // (reflection's tables, empty for now: no assembly, resource, name or instance records are kept yet; a
             // type has no reflection record and no generic parameter is a type with an id)
-            case "TypeInfo.AssemblyNames": case "TypeInfo.ManifestResources": case "TypeInfo.NameTable": case "TypeInfo.Instances": case "TypeInfo.ProgramTypes":
+            // (the assemblies and their kept attributes, the manifest resources: Assemblies.cs)
+            case "TypeInfo.AssemblyNames": _assembliesWanted = true; e.I32Addr(new LateAddr(() => _assemblyTable!.Address)); fl.SetResult(n); return true;
+            case "TypeInfo.ManifestResources": _assembliesWanted = true; _resourcesWanted = true; e.I32Addr(new LateAddr(() => _resourceTable!.Address)); fl.SetResult(n); return true;
+            case "TypeInfo.ResourceInit": e.Call(ResourceInitFn); return true;
+            case "TypeInfo.ResourceUnpack": e.Call(ResourceUnpackFn); return true;
+            case "TypeInfo.Invoke":
+            {
+                // (thunk + 1, target, args): the thunk's call through the table
+                int a2 = e.AddLocal(ValType.I32), a1 = e.AddLocal(ValType.I32), fi = e.AddLocal(ValType.I32);
+                e.Set(a2); e.Set(a1); e.Set(fi);
+                e.Get(a1); e.Get(a2); e.Get(fi); e.I32(1); e.Op(WOp.I32Sub);
+                e.Emit(WOp.CallIndirect, 0, 0, ThunkType);
+                fl.SetResult(n); return true;
+            }
+            case "TypeInfo.NameTable": case "TypeInfo.Instances": case "TypeInfo.ProgramTypes":
                 e.I32Addr(EmptyTable); fl.SetResult(n); return true;
             case "TypeInfo.Nested": case "TypeInfo.GenericConstraints": e.Op(WOp.Drop); e.I32Addr(EmptyTable); fl.SetResult(n); return true;
             case "TypeInfo.GenericParam": e.Op(WOp.Drop); e.I32(-1); fl.SetResult(n); return true;
             case "TypeInfo.GenericParamMethod": case "TypeInfo.Meta": e.Op(WOp.Drop); e.I32(0); fl.SetResult(n); return true;
-            case "TypeInfo.Invoke": case "TypeInfo.ResourceInit": case "TypeInfo.ResourceUnpack":
-                // (reached only through a reflection record or a resource, which the module has none of yet)
-                e.Op(WOp.Unreachable); return true;
         }
         switch (key)
         {
@@ -1006,6 +1027,7 @@ public sealed partial class IlCompiler
         foreach (var t in _types) { if (IsReflectable(t)) _typeNamesByFinal[Final(t)] = TypeName(t); byFinal[Final(t)] = t; }
         EmitTypeTables(Final, _types.Count + 2, byFinal);
         EmitArrayFns(Final);
+        EmitAssemblyTables(Final);
     }
 
     string?[] _typeNamesByFinal = [];

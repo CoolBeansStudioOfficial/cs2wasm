@@ -525,7 +525,7 @@ public sealed partial class IlCompiler
                 "declaring" => t => (null, IdOr((t as MetadataType)?.ContainingType)),
                 "attrs" => t => (null, Attributes(t)),
                 "array_of" => t => (null, IdOr(_typeIds.Keys.FirstOrDefault(x => x is ArrayType { IsSzArray: true } a && a.ElementType == t))),
-                "assembly" => t => (null, 0),
+                "assembly" => t => (null, AssemblyIndexOf(t)),
                 "enum_info" => t => (t.IsEnum ? EnumInfo(t) : null, 0),
                 _ => throw new NotSupportedException("type table " + kind),
             };
