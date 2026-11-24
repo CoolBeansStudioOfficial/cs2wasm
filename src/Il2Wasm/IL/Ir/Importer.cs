@@ -539,6 +539,8 @@ public sealed class Importer
         readonly List<Node> S;
         readonly TypeSystemContext Ctx;
         TypeDesc? _constrained;
+        /// <summary>readonly. before an ldelema: the address is not written through, so no exact-type check.</summary>
+        bool _readonly;
 
         public BlockImporter(Importer imp, Block b, List<Node> stack) { I = imp; B = b; S = stack; Ctx = imp._ctx; }
 
@@ -631,7 +633,8 @@ public sealed class Importer
             switch (op)
             {
                 case ILOpcode.nop: case ILOpcode.break_: return true;
-                case ILOpcode.volatile_: case ILOpcode.tail: case ILOpcode.readonly_: return true;
+                case ILOpcode.volatile_: case ILOpcode.tail: return true;
+                case ILOpcode.readonly_: _readonly = true; return true;
                 case ILOpcode.unaligned: rd.ReadILByte(); return true;
                 case ILOpcode.no: rd.ReadILByte(); return true;
                 case ILOpcode.constrained: _constrained = (TypeDesc)I._il.GetObject(rd.ReadILToken()); return true;
@@ -825,7 +828,12 @@ public sealed class Importer
                     var et = (TypeDesc)I._il.GetObject(rd.ReadILToken());
                     var idx = Pop(); var arr = Pop();
                     if (arr.Kind != VK.Ref || idx.SType is not (StackType.Int32 or StackType.NativeInt)) throw Invalid("ldelema");
-                    Push(Add(Opc.LdElemA, VK.Ptr, StackType.ByRef, et.MakeByRefType(), arr, idx).WithX(et));
+                    var ea = Add(Opc.LdElemA, VK.Ptr, StackType.ByRef, et.MakeByRefType(), arr, idx).WithX(et);
+                    // (an address of an element of a reference type: the array must be exactly an array of it,
+                    // ArrayTypeMismatchException otherwise, unless readonly. says it is only read; ECMA-335 III.4.10)
+                    ea.Ovf = !_readonly && !et.IsValueType && !(et is MetadataType { IsSealed: true } && !et.IsInterface) && !et.IsGenericParameter;
+                    _readonly = false;
+                    Push(ea);
                     return true;
                 }
                 case ILOpcode.ldelem: { var et = (TypeDesc)I._il.GetObject(rd.ReadILToken()); var idx = Pop(); var arr = Pop(); Push(LdElem(arr, idx, et)); return true; }

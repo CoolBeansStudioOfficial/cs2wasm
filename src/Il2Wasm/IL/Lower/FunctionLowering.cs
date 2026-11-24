@@ -673,6 +673,14 @@ sealed class FunctionLowering
                 return;
             }
             case Opc.LdElemA:
+                if (n.Ovf)
+                {
+                    // (the exact-type check of ldelema of a reference type: string[] seen as object[] has no object&)
+                    var at = ((TypeDesc)n.X!).MakeArrayType();
+                    C.TypeId(at);
+                    Get(n.A[0]); E.Call(C.Rt.NonNull); E.Load(WOp.I32Load, 4); E.Tid(C.TypeId(at)); E.Op(WOp.I32Ne);
+                    E.If(); E.Call(C.FunctionFor(C.CoreMethod("System", "ThrowHelper", "ThrowArrayTypeMismatchException"))); E.End();
+                }
                 Get(n.A[0]); Get(n.A[1]); E.Call(C.Rt.ElemAddr(Kinds.SizeOf((TypeDesc)n.X!))); Set(n);
                 return;
             case Opc.StElem:
