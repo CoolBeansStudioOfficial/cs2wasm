@@ -103,17 +103,29 @@ public sealed partial class IlCompiler
     {
         // (the whole program to a fixed point, Reach/Rounds.cs: each round reaches the program with what the round
         // before proved of it, until nothing more is proved; the last round's module is the one encoded)
+        if (s_solveRounds && Il2Wasm.IL.Reach.RoundFacts.Rounds > 1 && !Il2Wasm.IL.Reach.ProgramFacts.Off && _round == 0)
+            return CompileSolveRounds(entry);
         if (Il2Wasm.IL.Reach.RoundFacts.Rounds > 1 && !Il2Wasm.IL.Reach.ProgramFacts.Off && _round == 0)
         {
+            int rounds = Il2Wasm.IL.Reach.RoundFacts.Rounds;
+            // (the memory passes that only shape the encoded module run in its round alone, PlanContext.FinalRound:
+            // the last round by the cap, or the one more round run after the facts are stable)
+            bool gate = Il2Wasm.IL.Memory.Pipeline.Planned;
             var c = this;
+            FinalRound = !gate;
             var main0 = Reach(entry);
             var facts = c.Facts.Close(c.SlotImplementations(), c._constructedOrder);
-            for (int r = 1; r < Il2Wasm.IL.Reach.RoundFacts.Rounds; r++)
+            IlCompiler Next(int r, bool final)
             {
-                var next = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, Checked = Checked, _round = r };
+                var next = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, Checked = Checked, _round = r, FinalRound = final };
                 foreach (var p in _nativePaths) next.LoadNatives(p);
                 next.Facts.Previous = facts;
                 c.SeedNext(next);
+                return next;
+            }
+            for (int r = 1; r < rounds; r++)
+            {
+                var next = Next(r, !gate || r == rounds - 1);
                 var m = next.Reach(entry);
                 var nf = next.Facts.Close(next.SlotImplementations(), next._constructedOrder);
                 // (stable: the same facts, or the same reach and as many facts of each kind; an argument's value can
@@ -122,9 +134,20 @@ public sealed partial class IlCompiler
                 // (a round whose solve turned out too optimistic, Solver.NeedsAnotherRound, is never the last)
                 if (next._solver?.NeedsAnotherRound == true) stable = false;
                 c = next; main0 = m;
-                if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"round {r}: {next._functions.Count} methods, {nf}");
+                if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"round {r}: {next._functions.Count} methods, {nf}{(stable ? " (stable)" : "")}");
                 facts = nf;
-                if (stable) break;
+                if (stable)
+                {
+                    // (stable before the cap with the gate on: one more round from the same facts, the encoded one)
+                    if (!c.FinalRound)
+                    {
+                        var last = Next(r + 1, true);
+                        main0 = last.Reach(entry);
+                        c = last;
+                        if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"round {r + 1}: {last._functions.Count} methods (final, after stable)");
+                    }
+                    break;
+                }
             }
             c._solver?.CheckEncodable();
             if (c != this) { var bytes = c.Emit(main0); Warnings.AddRange(c.Warnings); return bytes; }
@@ -136,6 +159,70 @@ public sealed partial class IlCompiler
     }
 
     int _round;
+
+    /// <summary>IL2WASM_IL_SOLVE_ROUNDS=1 (MEMORY-IR 3.4, phase 2): round 0 is a whole round (reach, solve, lower), the
+    /// rounds after it reach and solve only, to the facts' fixed point, and one more whole round from those facts is
+    /// the one encoded. A solve-only round's facts are every reached method's summary merged (a superset of the
+    /// lowered ones), with what only lowering sees taken from round 0: the methods lowering marked indirect, the
+    /// methods it imported late and the types it constructed (seeds of every later round). Each round reaches a subset
+    /// of round 0's program, so round 0's marks stay sound for all of them. IL2WASM_IL_ROUNDS is the safety bound,
+    /// reported when it is hit.</summary>
+    static readonly bool s_solveRounds = Environment.GetEnvironmentVariable("IL2WASM_IL_SOLVE_ROUNDS") == "1";
+    /// <summary>The solve-only rounds' safety bound when IL2WASM_IL_ROUNDS is not set.</summary>
+    const int SolveRoundsBound = 64;
+
+    byte[] CompileSolveRounds(MethodDesc entry)
+    {
+        bool trace = Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1";
+        int bound = Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS") is { Length: > 0 } ? Il2Wasm.IL.Reach.RoundFacts.Rounds : SolveRoundsBound;
+        FinalRound = !Il2Wasm.IL.Memory.Pipeline.Planned;
+        Reach(entry);
+        var facts = Facts.Close(SlotImplementations(), _constructedOrder);
+        var indirect0 = facts.Indirect.ToList();
+        var seedMethods = _solver!.LateMethods.Distinct().ToList();
+        var seedTypes = _constructedOrder.Where(t => !_solver.IsConstructed(t)).ToList();
+        if (trace) Console.Error.WriteLine($"round 0: {_functions.Count} methods, {facts}");
+        _solver = null; Solution = null;
+        IlCompiler Fresh(int r, bool final)
+        {
+            var x = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, Checked = Checked, _round = r, FinalRound = final };
+            foreach (var p in _nativePaths) x.LoadNatives(p);
+            x.Facts.Previous = facts;
+            x._seedMethods = seedMethods; x._seedTypes = seedTypes;
+            return x;
+        }
+        int round = 1;
+        bool fixedPoint = false;
+        for (; round < bound; round++)
+        {
+            var s = Fresh(round, false);
+            s.ReachPhase(entry);
+            s.SolvePhase();
+            var sol = s.Solution!;
+            foreach (var m in sol.Methods.Items) if (sol.Summary(m) is { } sum) s.Facts.Merge(sum);
+            foreach (var m in indirect0) s.Facts.MarkIndirect(m);
+            var impls = new Dictionary<MethodDesc, MethodDesc[]>();
+            foreach (var slot in sol.Slots) impls[slot] = sol.Targets(slot).ToArray();
+            var nf = s.Facts.Close(impls, sol.Constructed);
+            bool same = nf.SameAs(facts) && FieldsText(nf) == FieldsText(facts);
+            if (trace) Console.Error.WriteLine($"round {round} (solve only): {sol.Methods.Count} methods, {nf}{(same ? " (fixed point)" : "")}");
+            facts = nf;
+            if (same) { fixedPoint = true; break; }
+        }
+        if (!fixedPoint) Warnings.Add($"rounds: the solve-only rounds stopped at their bound of {bound} before the facts' fixed point");
+        var last = Fresh(round + 1, true);
+        var main = last.Reach(entry);
+        if (trace) Console.Error.WriteLine($"round {round + 1} (encoded): {last._functions.Count} methods");
+        var bytes = last.Emit(main);
+        Warnings.AddRange(last.Warnings);
+        return bytes;
+    }
+
+    /// <summary>A round's field values as text in a fixed order (the fingerprint of RoundFacts leaves them out).</summary>
+    static string FieldsText(Il2Wasm.IL.Reach.RoundFacts f) =>
+        string.Join("\n", f.Fields.Select(kv => kv.Key + "=" + kv.Value).OrderBy(x => x, StringComparer.Ordinal));
+    /// <summary>This round's module is the one encoded (PlanContext.FinalRound; true without rounds).</summary>
+    internal bool FinalRound = true;
     readonly List<string> _nativePaths = [];
 
     /// <summary>Each dispatch slot reached, with the implementations over the constructed types (for the next round's

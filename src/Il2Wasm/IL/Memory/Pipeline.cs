@@ -15,6 +15,9 @@ public static class Pipeline
     public static readonly bool Planned = !Naive && Environment.GetEnvironmentVariable("IL2WASM_MEM_PLAN") == "1";
     /// <summary>The IR inliner with Canon after each step (IL2WASM_NO_IR_INLINE=1: none).</summary>
     public static readonly bool Inline = Planned && Environment.GetEnvironmentVariable("IL2WASM_NO_IR_INLINE") != "1";
+    /// <summary>IL2WASM_NO_FINAL_ROUND_GATE=1: PlanContext.FinalRound is true in every round (the passes gated on it run
+    /// in every round, as before the gate: for checking that the gate changes no byte).</summary>
+    public static readonly bool NoFinalRoundGate = Environment.GetEnvironmentVariable("IL2WASM_NO_FINAL_ROUND_GATE") == "1";
     /// <summary>The pairing verifier: always in a Debug build of the compiler, else with IL2WASM_VERIFY=1.</summary>
     public static readonly bool Verify = Planned && (Environment.GetEnvironmentVariable("IL2WASM_VERIFY") == "1" || IsDebugBuild);
 #if DEBUG
@@ -44,6 +47,11 @@ public sealed class PlanContext
     public MethodFacts Facts => Solution.Facts(Method);
     /// <summary>The program can start a thread (a reachable Rt.SpawnCore): counts and accesses may need atomics.</summary>
     public bool Threaded => Solution.Threaded;
+    /// <summary>This round's module is the one encoded (IlCompiler.Compile's rounds; true without rounds). Only the
+    /// encoded round's plans reach the output, so a pass whose result no round fact depends on (Inline, and the
+    /// planner's own tables) may run only here: earlier rounds lower the naive plan. A pass that feeds the round
+    /// facts must not be gated.</summary>
+    public bool FinalRound { get; init; } = true;
 }
 
 /// <summary>One inlining step's result (Ir/Inline.cs): the call that was replaced and the blocks the callee's body
