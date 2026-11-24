@@ -6158,3 +6158,63 @@ Not run: the homelab suite and the self-host check on this commit.
   - tools/il-speed.mjs (bench and frames by the IL front end against NativeAOT-LLVM wasm);
   - tools/il-live-oracle/run-kernels.sh;
   - IL2WASM_IL_CHECKED=1 in the IL tests.
+
+### Planner, second stage: Init stores, the keeper's move, forwarded and persistent borrows, frame objects (claude/plan-2, 2026-11-24)
+
+- What, all in the planned build only (`IL2WASM_MEM_PLAN=1`; the naive plan is byte-identical), each with its switch:
+  - `Memory/InitStores.cs` (5.3 `Init`; the old InitOnlyFields.ResolveInitStores and FreshStores rules on SSA): a
+    store `o.f = v` whose old value is known null needs no old-value load or release. o is a `newobj` of this body
+    whose constructor keeps `this` in (stores it nowhere, passes it only to the constructors it hands over to), or
+    `this` in a class's instance constructor (null at entry except the fields the constructors handing over to this one
+    store). A forward analysis over normal and finally-end edges, in reverse post-order: a store or field address marks
+    f written, any other use but a field access, a comparison, a branch or a count lets o out, a phi input lets it out
+    everywhere; a handler starts knowing nothing. A value type's constructor is never fresh (it runs on existing
+    storage). Compile-time bounds: only objects some store is into are tracked, at most 20,000 block-object pairs and
+    40 passes per body (else the stores stay Plain). `IL2WASM_NO_INIT_STORES=1`, `IL2WASM_INIT_TRACE=1`.
+  - `Rt.ReturnKeepers.HoldFrom(addr, owned)` (7.4): when a return keeps exactly one reference base, its count is moved
+    into the hold (a Moves bit on the inserted call): no retain in the hold and no release in the callee. 3 count
+    operations a keeper become 1 (the caller's release at the result's last use). `IL2WASM_NO_KEEP_MOVE=1`. Counters
+    `Rt.ReturnKeepers.Holds/Takes/Taken` (and `Overflows`).
+  - Takes per entry: MayKeep is asked for the entry a call chooses. A method with owned variants keeps from its lend
+    entry only if its body can (a structural superset of the planner's KeepCase: an address's bases, a borrow's root,
+    pointer phis, variables, a callee's keeper). `IL2WASM_NO_KEEP_BODY=1`; `IL2WASM_PLAN_TAKES=1` lists the targets.
+  - `Unsafe.As(object)` forwards its operand (2.1): Guaranteed of an Owned operand (a Val root), or the same borrow of a
+    whole lent parameter (MemoryMarshal.GetArrayDataReference). Lowering (Runtime2.cs) retains its result only when the
+    plan counts it (`FunctionLowering.LoadRetains`, now internal). `IL2WASM_NO_FORWARD_AS=1`.
+  - Persistent statics (2.5, `ProgramSolution.Persistent`): their loads are Static-rooted borrows; their getters'
+    results too, from the getter's `|retborrow` entry (Signatures.ReturnPath accepts a persistent static load,
+    e1510ff, made here at the coordinator's request). `IL2WASM_NO_PERSISTENT_LOADS=1`, `IL2WASM_NO_STATIC_RETBORROW=1`.
+  - `Memory/FrameObjects.cs` (2.3 FrameOwned): a `newobj` of a non-finalizable class of at most 256 bytes whose
+    constructor keeps `this` in, used only as the base of field loads and stores, in comparisons, branches and its
+    counts. Lowering (row f) makes it in the frame and releases its children at its last use. `IL2WASM_NO_FRAME_OBJECTS=1`.
+- A planner bug found on the way, and the verifier gap that hid it: a Guaranteed value rooted in a value or a parameter
+  this function owns, used by a Ret or a Throw (which count it), had its root released before the terminator, so the
+  return retained freed memory (SharedArrayPool.Rent under the checked build; Volatile.Read and Lock.get_WaitEvent have
+  the shape). Such a borrow is now counted at its definition; the verifier checks a returned or thrown reference's root
+  (it skipped every terminator operand).
+- Tests: `f24_init_stores` (every case's old value is non-null at the last store; with the written-set check removed,
+  6 of the 18 weak references stay alive), `f25_borrowed_results` (persistent getter results stored and dropped, a
+  GetArrayDataReference byref over a callee's array, a frame object's child freed).
+- IL tests [run, desk]: planned and verified 188 of 188, planned verified and checked 188 of 188 (before the InitStores
+  compile-time change, 2722759); naive 166 of 166; after 4b4f21d: planned and verified 188 of 188.
+- NetWasm suite [run, desk, shipped, planned, case by case against main's 283/159/7/1]: 283 passed, 160 failed, 7 not compiled (4b4f21d): no case main passes is lost, none gained; the one change is YoungObjectStoreGcTests.StoresIntoObjectsThatMayBeOldKeepWhatTheyStore, timed out on main, now a failure. An earlier build (2722759) lost DateTimeTextCorpusTests (its compile ran past 600 s in InitStores: the fixed point visited blocks in body order and did not settle in a 210-block method); fixed in 4b4f21d (18 s).
+- Removal share [run, desk, tools/il-rcstats.mjs against IL2WASM_MEM_NAIVE=1, the 34 programs of S1-BARS, 2722759]:
+  mean 78.8% (S1-BARS 72.5%), summed 71.2% (64.5%), 4 programs at 90% or more (3). Per program, S1-BARS's figure in
+  brackets: hello 84.7% (67.6), k_Tree 89.4% (52.6; main's merges since gave 84.1, Init stores the rest: the destroy
+  floor), DictionaryInts 74.3 (72.5), ListSort 44.9 (42.9), Linq 81.9 (79.1), WordCount 77.1 (75.3), Strings 75.1
+  (63.1), LinkedNodes 64.5 (63.8), BigInteger 53.8 (41.5), Regex 60.3 (56.1), collector-retention 75.5 (65.3); the
+  NetWasm collection cases 67-91% (62-91).
+- ReturnKeepers [run]: BigInteger's runtime-owned count operations 44,927 before the move, 234 after (naive 2,477).
+  A probe of BigInteger arithmetic and string splitting: static takes 2,861 before the per-entry MayKeep, 1,364 after;
+  executed takes 5,648 before, 2,099 after; holds that ran 0, takes that found a hold 0, overflows 0. The IL tests: 179
+  keepers held (102 moved), 12 keeps not handed on (24 before).
+- Live objects at exit [run]: program types equal to .NET on 33 of 34 (SortedList: S2's cycle, naive the same);
+  planned never above naive on any type. Planned below naive: as S1-BARS (Collection, Regex, collector-retention), and
+  k_Linq's one OutOfMemoryException (naive 1, planned 0): not checked whether it is naive's leak or a static's object
+  freed early.
+- Hello world [run, desk]: 1,199,787 B planned against 1,207,086 B with every new switch off.
+- Not done or not verified: speed (il-speed.mjs, homelab) not run; frame objects are rare on real code (1 site in a
+  BigInteger probe, 98 in the IL tests), because any call taking the object lets it out (no ParamEscape facts yet);
+  BigInteger read 68.4% in an earlier build that had the terminator bug, so that figure is void; the homelab suite,
+  stress and the self-host check not run (the old front end is unchanged; the runtime change is the IL front end's
+  ReturnKeepers class only).
