@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Il2Wasm.IL.Ir;
+using Il2Wasm.IL.Memory;
 using Il2Wasm.IL.Types;
 using Il2Wasm.Wasm;
 using Internal.TypeSystem;
@@ -18,7 +19,7 @@ sealed partial class FunctionLowering
 {
     readonly IlCompiler C;
     readonly Body _body;
-    readonly Il2Wasm.IL.Memory.MethodPlan _own;
+    readonly MethodPlan _own;
     readonly WasmFunction _fn;
     readonly Emitter E;
     readonly Dictionary<Node, int> _local = new();
@@ -29,9 +30,10 @@ sealed partial class FunctionLowering
     readonly Dictionary<Region, int> _filterResult = new();
     readonly Dictionary<Region, Label> _finallyEnd = new();
 
-    public FunctionLowering(IlCompiler c, Body body, Il2Wasm.IL.Memory.MethodPlan own, WasmFunction fn)
+    public FunctionLowering(IlCompiler c, Body body, MethodPlan own, WasmFunction fn)
     {
         C = c; _body = body; _own = own; _fn = fn; E = new Emitter(fn);
+        SelfTest(); // (IL2WASM_LOWER_SELFTEST: FunctionLowering.SelfTest.cs; nothing by default)
         foreach (var a in body.Args) _local[a] = (int)a.I;
         _varLocal = body.Vars.Select(v => v.InFrame ? -1 : E.AddLocal(ValOf(v.Kind))).ToArray();
         // the frame: the variables whose address is taken, on the shadow stack
@@ -51,6 +53,8 @@ sealed partial class FunctionLowering
                 else if (n.Op == Opc.NewObj && n.Kind is VK.I32 or VK.I64 or VK.F32 or VK.F64 or VK.Ptr) _slot[n] = Reserve(((MethodDesc)n.X!).OwningType);
                 if (n.Op is Opc.Call or Opc.NewObj or Opc.CallI)
                     for (int i = 0; i < n.A.Length; i++) if (n.A[i].Kind == VK.Struct) _argSlot[(n, i)] = Reserve(n.A[i].Type!);
+                // (MEMORY-IR 2.3: an object the plan keeps in the frame, Virtual or FrameOwned, gets a slot of its own)
+                if (!own.Allocs.IsEmpty && own.Allocs[n] != AllocKind.Heap) ReserveFrameObject(n);
             }
         _frameSize = (_frameSize + 15) & ~15;
         if (body.UsesLocAlloc && _frameSize == 0) _frameSize = 16;
@@ -91,19 +95,19 @@ sealed partial class FunctionLowering
         int src = E.AddLocal(ValType.I32);
         E.Set(src);
         Get(n); E.Get(src); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryCopy);
-        if (Kinds.Counted(t)) { Get(n); StructCounts(t, true); }
+        if (Kinds.Counted(t) && LoadRetains(n)) { Rc(n, LoadCategory(n)); Get(n); StructCounts(t, true); }
     }
 
     /// <summary>A struct value stored at the address in the local: the old contents released, the new copied in (its
     /// counts moved when it is the value's last use, made again otherwise).</summary>
-    void StoreStruct(int addr, int offset, Node v, TypeDesc t, bool moved)
+    void StoreStruct(int addr, int offset, Node v, TypeDesc t, bool moved, Node site)
     {
         int dst = E.AddLocal(ValType.I32);
         E.Get(addr); if (offset != 0) { E.I32(offset); E.Op(WOp.I32Add); }
         E.Set(dst);
-        if (Kinds.Counted(t)) { E.Get(dst); StructCounts(t, false); }
+        if (Kinds.Counted(t) && OldReleased(site)) { Rc(site, RcCategory.StoreOld); E.Get(dst); StructCounts(t, false); }
         E.Get(dst); Get(v); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryCopy);
-        if (Kinds.Counted(t)) { if (moved) Clear(v); else { E.Get(dst); StructCounts(t, true); } }
+        if (Kinds.Counted(t)) { if (moved) Clear(v); else { Rc(site, RcCategory.StoreRetain); E.Get(dst); StructCounts(t, true); } }
     }
 
     int _frameSize, _fb = -1;
@@ -201,9 +205,12 @@ sealed partial class FunctionLowering
             E.Set(exn);
             foreach (var v in _own.CountedValues)
             {
-                if (v.Kind == VK.Struct) { Get(v); StructCounts(v.Type!, false); }
-                else if (_local.TryGetValue(v, out int l)) { E.Get(l); E.Call(C.Rt.Release); }
+                // (a borrowed value holds no count; a frame object's children go below)
+                if (!Holds(v) || _frameObj.ContainsKey(v)) continue;
+                if (v.Kind == VK.Struct) { Rc(v, RcCategory.Unwind); Get(v); StructCounts(v.Type!, false); }
+                else if (_local.TryGetValue(v, out int l)) { Rc(v, RcCategory.Unwind); E.Get(l); E.Call(C.Rt.Release); }
             }
+            foreach (var fo in _frameObjOrder) FrameDrop(fo);
             for (int i = 0; i < _body.Vars.Count; i++)
             {
                 var vr = _body.Vars[i];
@@ -215,6 +222,7 @@ sealed partial class FunctionLowering
             E.End();
         }
         E.Op(WOp.Unreachable);
+        if (Stats) CountStats();
     }
 
     // ------------------------------------------------------------------ structuring
@@ -342,14 +350,20 @@ sealed partial class FunctionLowering
                 return;
             }
             case Opc.Ret:
+            {
+                // (a borrowed-return entry, 4.4: the result is the caller's borrow, it takes no count)
+                bool borrowed = _own.Entry.Kind == VariantKind.BorrowReturn;
+                if (borrowed && n.A.Length > 0 && (n.Moves & 1) != 0)
+                    throw new PlanVerifyException($"{_body.Method}{_own.Entry.Suffix}: the borrowed-return entry returns an owned value (#{n.A[0].Id})");
                 if (n.A.Length > 0 && n.A[0].Kind == VK.Struct)
                 {
                     int rb = E.AddLocal(ValType.I32);
                     E.Get(_fn.Type.Params.Length - 1); E.Set(rb);
                     E.Get(rb); Get(n.A[0]); E.I32(SizeOfStruct(n.A[0].Type!)); E.Emit(WOp.MemoryCopy);
-                    if (Kinds.Counted(n.A[0].Type!)) { if ((n.Moves & 1) != 0) Clear(n.A[0]); else { E.Get(rb); StructCounts(n.A[0].Type!, true); } }
+                    if (Kinds.Counted(n.A[0].Type!) && !borrowed) { if ((n.Moves & 1) != 0) Clear(n.A[0]); else { Rc(n, RcCategory.Result); E.Get(rb); StructCounts(n.A[0].Type!, true); } }
                 }
-                else if (n.A.Length > 0) { Get(n.A[0]); if (n.A[0].Kind == VK.Ref && (n.Moves & 1) == 0) E.Call(C.Rt.Retain); if ((n.Moves & 1) != 0) Clear(n.A[0]); }
+                else if (n.A.Length > 0) { Get(n.A[0]); if (n.A[0].Kind == VK.Ref && (n.Moves & 1) == 0 && !borrowed) { Rc(n, RcCategory.Result); E.Call(C.Rt.Retain); } if ((n.Moves & 1) != 0) Clear(n.A[0]); }
+            }
                 ReleaseVars();
                 PopFrame();
                 E.Op(WOp.Return);
@@ -358,7 +372,7 @@ sealed partial class FunctionLowering
                 // il-runtime: throw null is a NullReferenceException; the trace and the first pass (Filters.cs)
                 Get(n.A[0]); E.Call(C.Rt.NonNull); E.Call(C.ThrowHook);
                 Get(n.A[0]);
-                if ((n.Moves & 1) != 0) Clear(n.A[0]); else E.Call(C.Rt.Retain);
+                if ((n.Moves & 1) != 0) Clear(n.A[0]); else { Rc(n, RcCategory.Generic); E.Call(C.Rt.Retain); }
                 E.Emit(WOp.Throw, 0, 0, C.ExceptionTag);
                 return;
             case Opc.Rethrow:
@@ -402,13 +416,14 @@ sealed partial class FunctionLowering
         {
             var v = phi.A[pi];
             Get(phi); Get(v); E.I32(SizeOfStruct(phi.Type!)); E.Emit(WOp.MemoryCopy);
-            if (Kinds.Counted(phi.Type!)) { if (_own.PhiMoves.Contains((phi, pi))) Clear(v); else { Get(phi); StructCounts(phi.Type!, true); } }
+            if (Kinds.Counted(phi.Type!)) { if (_own.PhiMoves.Contains((phi, pi))) Clear(v); else if (Holds(phi)) { Rc(phi, RcCategory.Phi); Get(phi); StructCounts(phi.Type!, true); } }
         }
         foreach (var phi in s.Phis.Where(p => p.Kind != VK.Struct))
         {
             var v = phi.A[pi];
             Get(v);
-            if (v.Kind == VK.Ref && !_own.PhiMoves.Contains((phi, pi))) E.Call(C.Rt.Retain);
+            // (a borrowed phi, its inputs borrows of one path: no count)
+            if (v.Kind == VK.Ref && !_own.PhiMoves.Contains((phi, pi)) && Holds(phi)) { Rc(phi, RcCategory.Phi); E.Call(C.Rt.Retain); }
         }
         foreach (var phi in s.Phis) if (phi.Kind != VK.Struct && _own.PhiMoves.Contains((phi, pi))) Clear(phi.A[pi]);
         for (int i = s.Phis.Count - 1; i >= 0; i--) if (s.Phis[i].Kind != VK.Struct) Set(s.Phis[i]);
@@ -552,12 +567,15 @@ sealed partial class FunctionLowering
             case Opc.Const: return; // (materialised where used)
             case Opc.LdNull: E.I32(0); Set(n); return;
             case Opc.LdStr: E.I32Addr(C.StringLiteral((string)n.X!)); Set(n); return;
-            case Opc.Retain when n.A[0].Kind == VK.Struct: Get(n.A[0]); StructCounts(n.A[0].Type!, true); return;
-            case Opc.Release when n.A[0].Kind == VK.Struct: Get(n.A[0]); StructCounts(n.A[0].Type!, false); Clear(n.A[0]); return;
-            case Opc.Retain: Get(n.A[0]); E.Call(C.Rt.Retain); E.Op(WOp.Drop); return;
+            case Opc.Retain or Opc.Release when Kind(n) == CountKind.Elided: return;
+            case Opc.Retain when n.A[0].Kind == VK.Struct: Rc(n, RcCategory.Naive); Get(n.A[0]); StructCounts(n.A[0].Type!, true); return;
+            case Opc.Release when n.A[0].Kind == VK.Struct: Rc(n, RcCategory.Naive); Get(n.A[0]); StructCounts(n.A[0].Type!, false); Clear(n.A[0]); return;
+            case Opc.Retain: Rc(n, RcCategory.Naive); Get(n.A[0]); E.Call(C.Rt.Retain); E.Op(WOp.Drop); return;
             case Opc.Release:
                 if (n.A[0].Op is Opc.LdStr or Opc.LdNull) return;
-                Get(n.A[0]); E.Call(C.Rt.Release); E.I32(0); E.Set(L(n.A[0])); return;
+                // (a frame object's last use: its children go and its slot is emptied, 2.3)
+                if (_frameObj.ContainsKey(n.A[0])) { Rc(n, RcCategory.Naive); FrameDrop(n.A[0]); E.I32(0); E.Set(L(n.A[0])); return; }
+                Rc(n, RcCategory.Naive); Get(n.A[0]); E.Call(C.Rt.Release); E.I32(0); E.Set(L(n.A[0])); return;
             case Opc.CatchVal:
             {
                 var h = _body.Regions.First(r => r.Entry == n.Block && (r.Kind is RegionKind.Catch or RegionKind.Filter) && _handlerLocals.ContainsKey(r));
@@ -566,7 +584,7 @@ sealed partial class FunctionLowering
                 // (the value is a count of its own: the exception in flight keeps one, which the try's obj local holds
                 // until the handler leaves, rethrows or throws; il-runtime: a rethrow used the object after the handler
                 // let it go)
-                E.Call(C.Rt.Retain);
+                if (LoadRetains(n)) { Rc(n, RcCategory.Generic); E.Call(C.Rt.Retain); }
                 Set(n);
                 return;
             }
@@ -675,12 +693,12 @@ sealed partial class FunctionLowering
             {
                 int a = E.AddLocal(ValType.I32);
                 VarAddr((int)n.I); E.Set(a);
-                StoreStruct(a, 0, n.A[0], _body.Vars[(int)n.I].Type, (n.Moves & 1) != 0);
+                StoreStruct(a, 0, n.A[0], _body.Vars[(int)n.I].Type, (n.Moves & 1) != 0, n);
                 return;
             }
             case Opc.VarLd:
                 VarGet((int)n.I);
-                if (n.Kind == VK.Ref) E.Call(C.Rt.Retain);
+                if (n.Kind == VK.Ref && LoadRetains(n)) { Rc(n, LoadCategory(n)); E.Call(C.Rt.Retain); }
                 Set(n);
                 return;
             case Opc.VarSt:
@@ -688,10 +706,11 @@ sealed partial class FunctionLowering
                 int vi = (int)n.I;
                 if (n.A[0].Kind == VK.Ref)
                 {
-                    int old = E.AddLocal(ValType.I32);
-                    VarGet(vi); E.Set(old);
-                    Get(n.A[0]); if ((n.Moves & 1) == 0) E.Call(C.Rt.Retain); VarSet(vi);
-                    E.Get(old); E.Call(C.Rt.Release);
+                    bool oldGoes = OldReleased(n);
+                    int old = oldGoes ? E.AddLocal(ValType.I32) : -1;
+                    if (oldGoes) { VarGet(vi); E.Set(old); }
+                    Get(n.A[0]); if ((n.Moves & 1) == 0) { Rc(n, RcCategory.StoreRetain); E.Call(C.Rt.Retain); } VarSet(vi);
+                    if (oldGoes) { Rc(n, RcCategory.StoreOld); E.Get(old); E.Call(C.Rt.Release); }
                     MovedOut(n);
                 }
                 else { Get(n.A[0]); VarSet(vi); }
@@ -721,6 +740,7 @@ sealed partial class FunctionLowering
             {
                 var at = (ArrayType)n.Type!;
                 C.Constructed(at);
+                if (_frameObj.ContainsKey(n)) { AllocFrame(n); return; }
                 Get(n.A[0]); E.I32(Kinds.SizeOf(at.ElementType)); E.Tid(C.TypeId(at)); E.Call(C.Rt.AllocArray);
                 Set(n);
                 return;
@@ -732,7 +752,7 @@ sealed partial class FunctionLowering
                 Get(n.A[0]); Get(n.A[1]); E.Call(C.Rt.ElemAddr(Kinds.SizeOf(et)));
                 if (n.Kind == VK.Struct) { LoadStruct(n); return; }
                 Load(et, 0);
-                if (n.Kind == VK.Ref) E.Call(C.Rt.Retain);
+                if (n.Kind == VK.Ref && LoadRetains(n)) { Rc(n, LoadCategory(n)); E.Call(C.Rt.Retain); }
                 Set(n);
                 return;
             }
@@ -760,7 +780,7 @@ sealed partial class FunctionLowering
                 {
                     Get(n.A[0]); Get(n.A[2]); E.Call(C.FunctionFor(C.CoreMethod("Il2Wasm.Runtime", "Rt", "StoreCheck")));
                 }
-                StoreAt(addr, 0, n.A[2], et, (n.Moves & 4) != 0);
+                StoreAt(addr, 0, n.A[2], et, (n.Moves & 4) != 0, n);
                 MovedOut(n);
                 return;
             }
@@ -771,7 +791,7 @@ sealed partial class FunctionLowering
                 if (n.A[0].Kind == VK.Ref) E.Call(C.Rt.NonNull);
                 if (n.Kind == VK.Struct) { E.I32(IlContext.FieldOffset(f)); E.Op(WOp.I32Add); LoadStruct(n); return; }
                 Load(f.FieldType, IlContext.FieldOffset(f));
-                if (n.Kind == VK.Ref) E.Call(C.Rt.Retain);
+                if (n.Kind == VK.Ref && LoadRetains(n)) { Rc(n, LoadCategory(n)); E.Call(C.Rt.Retain); }
                 Set(n);
                 return;
             }
@@ -782,7 +802,7 @@ sealed partial class FunctionLowering
                 Get(n.A[0]);
                 if (n.A[0].Kind == VK.Ref) E.Call(C.Rt.NonNull);
                 E.Set(addr);
-                StoreAt(addr, IlContext.FieldOffset(f), n.A[1], f.FieldType, (n.Moves & 2) != 0);
+                StoreAt(addr, IlContext.FieldOffset(f), n.A[1], f.FieldType, (n.Moves & 2) != 0, n);
                 MovedOut(n);
                 return;
             }
@@ -802,7 +822,7 @@ sealed partial class FunctionLowering
                 E.I32Addr(C.StaticAddress(f));
                 if (n.Kind == VK.Struct) { LoadStruct(n); return; }
                 Load(f.FieldType, 0);
-                if (n.Kind == VK.Ref) E.Call(C.Rt.Retain);
+                if (n.Kind == VK.Ref && LoadRetains(n)) { Rc(n, LoadCategory(n)); E.Call(C.Rt.Retain); }
                 Set(n);
                 return;
             }
@@ -812,7 +832,7 @@ sealed partial class FunctionLowering
                 C.CctorCheck(E, f.OwningType);
                 int addr = Temp(ValType.I32);
                 E.I32Addr(C.StaticAddress(f)); E.Set(addr);
-                StoreAt(addr, 0, n.A[0], f.FieldType, (n.Moves & 1) != 0);
+                StoreAt(addr, 0, n.A[0], f.FieldType, (n.Moves & 1) != 0, n);
                 MovedOut(n);
                 return;
             }
@@ -844,22 +864,22 @@ sealed partial class FunctionLowering
             case Opc.LdInd:
                 Get(n.A[0]);
                 Load(n.Type!, 0);
-                if (n.Kind == VK.Ref) E.Call(C.Rt.Retain);
+                if (n.Kind == VK.Ref && LoadRetains(n)) { Rc(n, LoadCategory(n)); E.Call(C.Rt.Retain); }
                 Set(n);
                 return;
             case Opc.StInd:
             {
                 int addr = Temp(ValType.I32);
                 Get(n.A[0]); E.Set(addr);
-                StoreAt(addr, 0, n.A[1], n.Type!, (n.Moves & 2) != 0);
+                StoreAt(addr, 0, n.A[1], n.Type!, (n.Moves & 2) != 0, n);
                 MovedOut(n);
                 return;
             }
             // (a cast to Nullable<T> is one to T: a Nullable's box is its value's)
             case Opc.CastClass:
-                Get(n.A[0]); E.Call(C.CastFn(NonNullable((TypeDesc)n.X!))); E.Call(C.Rt.Retain); Set(n); return;
+                Get(n.A[0]); E.Call(C.CastFn(NonNullable((TypeDesc)n.X!))); if (LoadRetains(n)) { Rc(n, RcCategory.Generic); E.Call(C.Rt.Retain); } Set(n); return;
             case Opc.IsInst:
-                Get(n.A[0]); E.Call(C.IsInstFn(NonNullable((TypeDesc)n.X!))); E.Call(C.Rt.Retain); Set(n); return;
+                Get(n.A[0]); E.Call(C.IsInstFn(NonNullable((TypeDesc)n.X!))); if (LoadRetains(n)) { Rc(n, RcCategory.Generic); E.Call(C.Rt.Retain); } Set(n); return;
             case Opc.Box when ((TypeDesc)n.X!).IsNullable:
             {
                 // a Nullable<T> boxes as its value (a T's box), or as null when it has none (ECMA-335 III.4.1)
@@ -902,8 +922,8 @@ sealed partial class FunctionLowering
             {
                 var t = (TypeDesc)n.X!;
                 C.Constructed(t);
-                E.I32(IlContext.ObjectHeader + Math.Max(4, Kinds.SizeOf(t))); E.Tid(C.TypeId(t)); E.Call(C.Rt.AllocObject);
-                Set(n);
+                if (_frameObj.ContainsKey(n)) AllocFrame(n);
+                else { E.I32(IlContext.ObjectHeader + Math.Max(4, Kinds.SizeOf(t))); E.Tid(C.TypeId(t)); E.Call(C.Rt.AllocObject); Set(n); }
                 if (n.A[0].Kind == VK.Struct)
                 {
                     int a = E.AddLocal(ValType.I32);
@@ -990,15 +1010,17 @@ sealed partial class FunctionLowering
     }
 
     /// <summary>A store at addr+offset; a reference's old value is released after the new one is in place.</summary>
-    void StoreAt(int addr, int offset, Node v, TypeDesc t, bool moved)
+    void StoreAt(int addr, int offset, Node v, TypeDesc t, bool moved, Node site)
     {
-        if (v.Kind == VK.Struct) { StoreStruct(addr, offset, v, t, moved); return; }
+        if (v.Kind == VK.Struct) { StoreStruct(addr, offset, v, t, moved, site); return; }
         if (v.Kind == VK.Ref)
         {
-            int old = E.AddLocal(ValType.I32);
-            E.Get(addr); E.Load(WOp.I32Load, offset); E.Set(old);
-            E.Get(addr); Get(v); if (!moved) E.Call(C.Rt.Retain); E.Store(WOp.I32Store, offset);
-            E.Get(old); E.Call(C.Rt.Release);
+            // (an initializing store, 5.3: the old value is known null, it is neither read nor released)
+            bool oldGoes = OldReleased(site);
+            int old = oldGoes ? E.AddLocal(ValType.I32) : -1;
+            if (oldGoes) { E.Get(addr); E.Load(WOp.I32Load, offset); E.Set(old); }
+            E.Get(addr); Get(v); if (!moved) { Rc(site, RcCategory.StoreRetain); E.Call(C.Rt.Retain); } E.Store(WOp.I32Store, offset);
+            if (oldGoes) { Rc(site, RcCategory.StoreOld); E.Get(old); E.Call(C.Rt.Release); }
         }
         else { E.Get(addr); Get(v); Store(t, offset); }
     }
@@ -1116,10 +1138,11 @@ sealed partial class FunctionLowering
     void Call(Node n)
     {
         var m = (MethodDesc)n.X!;
-        if (C.TryIntrinsic(E, m, n, this)) return;
+        if (TryIntrinsicCall(m, n)) return;
         var kind = (CallKind)n.Sub;
         if (IlCompiler.IsDelegateInvoke(m) && m.GetTypicalMethodDefinition() is Internal.TypeSystem.Ecma.EcmaMethod { IsRuntimeImplemented: true })
         {
+            EntryOnly(n);
             PushCallArgs(n);
             if (n.Kind == VK.Struct) Get(n);
             E.Call(C.DelegateInvoke(m));
@@ -1129,9 +1152,10 @@ sealed partial class FunctionLowering
         }
         if (kind == CallKind.Direct && n.Ovf && n.A.Length > 0 && n.A[0].Kind == VK.Ref) { Get(n.A[0]); E.Call(C.Rt.NonNull); E.Op(WOp.Drop); }
         if (kind == CallKind.Direct) C.CctorCheckForCall(E, m);
+        if (kind != CallKind.Direct) EntryOnly(n);
         PushCallArgs(n);
         if (n.Kind == VK.Struct) Get(n);
-        E.Call(kind == CallKind.Direct ? C.FunctionFor(m) : C.DispatchFor(m));
+        E.Call(kind == CallKind.Direct ? Direct(n, m) : C.DispatchFor(m));
         if (n.HasValue && n.Kind != VK.Struct) Set(n);
         AfterCall(n);
     }
@@ -1139,15 +1163,26 @@ sealed partial class FunctionLowering
     /// <summary>A call's arguments; a struct argument is a copy of its own (the callee may change it), counted.</summary>
     void PushCallArgs(Node n, int count = -1)
     {
-        for (int i = 0; i < (count < 0 ? n.A.Length : count); i++)
+        int end = count < 0 ? n.A.Length : count;
+        for (int i = 0; i < end; i++)
         {
             var a = n.A[i];
-            if (a.Kind != VK.Struct) { Get(a); continue; }
+            // (4.3: a count handed over moves into the call; KeepAlive is one more count, the callee's)
+            if (a.Kind != VK.Struct)
+            {
+                Get(a);
+                if (a.Kind == VK.Ref && Conv(n, i) == ArgConv.KeepAlive && !ArgMoves(n, i)) { Rc(n, RcCategory.OwnedConvention); E.Call(C.Rt.Retain); }
+                continue;
+            }
             int off = _argSlot[(n, i)];
             FrameAddr(off); Get(a); E.I32(SizeOfStruct(a.Type!)); E.Emit(WOp.MemoryCopy);
-            if (Kinds.Counted(a.Type!)) { FrameAddr(off); StructCounts(a.Type!, true); }
+            if (Kinds.Counted(a.Type!) && !ArgMoves(n, i)) { FrameAddr(off); StructCounts(a.Type!, true); }
             FrameAddr(off);
         }
+        // (the moved operands' locals cleared once all are pushed: an operand can be passed twice)
+        if (n.Moves != 0 || !_own.Args.IsEmpty)
+            for (int i = 0; i < end; i++)
+                if (ArgMoves(n, i) && (n.A[i].Kind == VK.Ref || n.A[i].Kind == VK.Struct && Kinds.Counted(n.A[i].Type!))) Clear(n.A[i]);
     }
 
     /// <summary>The argument copies' counts released after the call.</summary>
@@ -1157,6 +1192,8 @@ sealed partial class FunctionLowering
         {
             var a = n.A[i];
             if (a.Kind != VK.Struct || !Kinds.Counted(a.Type!)) continue;
+            // (the callee's: handed over or kept alive for it)
+            if (ArgMoves(n, i) || Conv(n, i) == ArgConv.KeepAlive) continue;
             int off = _argSlot[(n, i)];
             FrameAddr(off); StructCounts(a.Type!, false);
             FrameAddr(off); E.I32(0); E.I32(SizeOfStruct(a.Type!)); E.Emit(WOp.MemoryFill);
@@ -1171,6 +1208,7 @@ sealed partial class FunctionLowering
         var ctor = (MethodDesc)n.X!;
         if (ctor.OwningType is ArrayType mat)
         {
+            EntryOnly(n);
             PushCallArgs(n);
             E.Call(C.MdArrayCtor(mat, ctor.Signature.Length));
             Set(n);
@@ -1184,7 +1222,7 @@ sealed partial class FunctionLowering
                 && Enumerable.Range(0, x.Signature.Length).All(i => x.Signature[i] == ctor.Signature[i]))
                 ?? throw new NotSupportedException($"string has no Ctor for {ctor}");
             PushCallArgs(n);
-            E.Call(C.FunctionFor(sctor));
+            E.Call(Direct(n, sctor));
             Set(n);
             AfterCall(n);
             return;
@@ -1203,7 +1241,11 @@ sealed partial class FunctionLowering
             Set(n);
             var target = n.A[0];
             int tOff = IlContext.FieldOffset(IlCompiler.DelegateFieldOf(t, "_target")), fOff = IlContext.FieldOffset(IlCompiler.DelegateFieldOf(t, "_fn"));
-            E.Get(L(n)); Get(target); if (target.Kind == VK.Ref) E.Call(C.Rt.Retain); E.Store(WOp.I32Store, tOff);
+            EntryOnly(n);
+            // (the target is stored: its count moves in at its last use, else it is counted again)
+            bool tMoves = target.Kind == VK.Ref && ArgMoves(n, 0);
+            E.Get(L(n)); Get(target); if (target.Kind == VK.Ref && !tMoves) { Rc(n, RcCategory.StoreRetain); E.Call(C.Rt.Retain); } E.Store(WOp.I32Store, tOff);
+            if (tMoves) Clear(target);
             var fm = (MethodDesc)n.A[1].X!;
             E.Get(L(n)); E.I32Fn(C.Module, C.DelegateTargetFn(fm, n.A[1].Op == Opc.LdVirtFtn, t)); E.Store(WOp.I32Store, fOff);
             return;
@@ -1216,7 +1258,7 @@ sealed partial class FunctionLowering
             FrameAddr(at); E.I32(0); E.I32(8); E.Emit(WOp.MemoryFill);
             FrameAddr(at);
             PushCallArgs(n);
-            E.Call(C.FunctionFor(ctor));
+            E.Call(Direct(n, ctor));
             AfterCall(n);
             FrameAddr(at);
             E.Load(n.Kind switch { VK.I64 => WOp.I64Load, VK.F32 => WOp.F32Load, VK.F64 => WOp.F64Load, _ => WOp.I32Load });
@@ -1230,17 +1272,18 @@ sealed partial class FunctionLowering
             Get(n); E.I32(0); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryFill);
             Get(n);
             PushCallArgs(n);
-            E.Call(C.FunctionFor(ctor));
+            E.Call(Direct(n, ctor));
             AfterCall(n);
             return;
         }
         C.Constructed(t);
         C.CctorCheckForCall(E, ctor);
-        E.I32(IlContext.InstanceSize(t)); E.Tid(C.TypeId(t)); E.Call(C.Rt.AllocObject);
-        Set(n);
+        // (2.3: an object that does not outlive the frame is made in it)
+        if (_frameObj.ContainsKey(n)) AllocFrame(n);
+        else { E.I32(IlContext.InstanceSize(t)); E.Tid(C.TypeId(t)); E.Call(C.Rt.AllocObject); Set(n); }
         E.Get(L(n));
         PushCallArgs(n);
-        E.Call(C.FunctionFor(ctor));
+        E.Call(Direct(n, ctor));
         AfterCall(n);
     }
 }

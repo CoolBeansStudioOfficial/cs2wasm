@@ -89,11 +89,13 @@ public sealed partial class IlCompiler : IReachHost
     /// <summary>A method's plan, between the solve and lowering (section 1.2's per-method phase). The naive plan
     /// (Ir/Ownership.cs) unless IL2WASM_MEM_PLAN=1 turns the planner on; IL2WASM_MEM_NAIVE=1 always means the naive
     /// plan (the baseline the removal share is measured against).</summary>
-    MethodPlan PlanMethod(MethodDesc m, Body body)
+    MethodPlan PlanMethod(MethodDesc m, Body body, Variant entry = default)
     {
-        if (!Pipeline.Planned || Solution == null) return MethodPlan.Naive(body, Ownership.Run(body));
-        var ctx = new PlanContext(m, body, Solution, Variant.Entry);
+        // (a variant's plan is for its own entry: IlCompiler.VariantFor)
+        if (!Pipeline.Planned || Solution == null) { var naive = MethodPlan.Naive(body, Ownership.Run(body)); naive.Entry = entry; return naive; }
+        var ctx = new PlanContext(m, body, Solution, entry);
         var plan = Plan.Build(ctx);
+        plan.Entry = entry;
         if (Pipeline.Inline)
             for (int step = 0; Inline.Step(ctx, plan, CalleeForInline) is { } site; step++)
             {
