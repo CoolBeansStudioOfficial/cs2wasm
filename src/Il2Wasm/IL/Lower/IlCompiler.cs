@@ -279,7 +279,7 @@ public sealed partial class IlCompiler
     {
         Solution = _solver!.Solve();
         // (IL2WASM_BORROW_STATS: the borrows are measured on the naive plan with the solve the planner would see)
-        if (Il2Wasm.IL.Memory.Pipeline.Planned || Il2Wasm.IL.Memory.Borrows.Stats) Il2Wasm.IL.Memory.Signatures.Compute(Solution);
+        if (Il2Wasm.IL.Memory.Pipeline.Planned || Il2Wasm.IL.Memory.Borrows.Stats) { Il2Wasm.IL.Memory.Signatures.Compute(Solution); Solution.SignaturesComputed = true; }
     }
 
     /// <summary>Executed counts per count site (IL2WASM_COUNT_RC=1, Lower/RcStats.cs), or null.</summary>

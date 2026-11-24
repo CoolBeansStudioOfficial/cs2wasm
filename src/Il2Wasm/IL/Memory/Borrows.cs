@@ -62,6 +62,7 @@ public static class Borrows
     internal static readonly bool NoLocal = Env("IL2WASM_NO_LOCAL_BORROWS");
     internal static readonly bool NoInitOnly = Env("IL2WASM_NO_INIT_ONLY");
     internal static readonly bool NoSelfStores = Env("IL2WASM_NO_SELF_STORES");
+    internal static readonly bool NoReturnMods = Env("IL2WASM_NO_RETURN_MODS");
     internal static readonly bool BreakSpec = Env("IL2WASM_SPEC_BORROWS_BREAK");
     internal static readonly bool BreakInitOnly = Env("IL2WASM_INIT_ONLY_BREAK");
     internal static readonly bool BreakSelfStores = Env("IL2WASM_SELF_STORES_BREAK");
@@ -204,6 +205,7 @@ sealed class Analyzer
     public readonly BorrowFacts Facts = new();
     readonly HashSet<int> _addressTakenVars = [], _filterWrittenVars = [];
     readonly HashSet<MethodDesc> _intrinsics;
+    string? _cause;
     OwnershipSignature? _sig;
     int _order;
 
@@ -500,7 +502,8 @@ sealed class Analyzer
     void Fail(Group g, Borrows.Stat why, BorrowEvidence ev)
     {
         g.Holds = false; g.Reason = why; g.Evidence = ev;
-        if (Borrows.Trace) Console.Error.WriteLine($"borrow flip {_ctx.Method} {string.Join(",", g.Members.Select(m => m + ":" + m.Op))} path {g.Path}: {why.ToString()[4..]}");
+        if (Borrows.Trace) Console.Error.WriteLine($"borrow flip {_ctx.Method} {string.Join(",", g.Members.Select(m => m + ":" + m.Op))} path {g.Path}: {why.ToString()[4..]}{(_cause != null ? " at " + _cause : "")}");
+        _cause = null;
     }
 
     void Decide(Group g)
@@ -585,7 +588,8 @@ sealed class Analyzer
         g.Evidence = BorrowEvidence.None;
     }
 
-    static bool Counted(Node v) => v.Op is not (Opc.LdNull or Opc.LdStr) && (v.Kind == VK.Ref || v.Kind == VK.Struct && v.Type != null && Kinds.Counted(v.Type));
+    // (a type object is immortal too: its release frees nothing)
+    static bool Counted(Node v) => v.Op is not (Opc.LdNull or Opc.LdStr or Opc.TypeOf) && (v.Kind == VK.Ref || v.Kind == VK.Struct && v.Type != null && Kinds.Counted(v.Type));
 
     bool Release(Group g, AliasSet alias, TypeDesc? t)
     {
@@ -631,8 +635,8 @@ sealed class Analyzer
             case Opc.Call when members.Contains(n) && IsCast(n): break; // (Unsafe.As of the group's own value: a forward)
             case Opc.Call: case Opc.NewObj: case Opc.CallI:
             {
-                var (e, intrinsic) = CallEffect(n);
-                if (alias.Hits(e)) { Fail(g, e.Wild ? (intrinsic ? Borrows.Stat.FlipIntrinsic : Borrows.Stat.FlipCallWild) : Borrows.Stat.FlipCallKey, new BorrowEvidence(e, false, false)); return true; }
+                var (e, intrinsic) = CallEffect(n, members);
+                if (alias.Hits(e)) { if (Borrows.Trace) _cause = n.Op + " " + (n.X as MethodDesc)?.ToString(); Fail(g, e.Wild ? (intrinsic ? Borrows.Stat.FlipIntrinsic : Borrows.Stat.FlipCallWild) : Borrows.Stat.FlipCallKey, new BorrowEvidence(e, false, false)); return true; }
                 break;
             }
             case Opc.Release when n.A.Length > 0 && !members.Contains(n.A[0]) && Counted(n.A[0]):
@@ -662,11 +666,22 @@ sealed class Analyzer
         return false;
     }
 
-    (KeySet Effects, bool Intrinsic) CallEffect(Node n)
+    /// <summary>A call's effects on a group: the callees' whole Mods when the group is live into a handler the call's
+    /// exception can reach (the callee may write on its way out, and the handler uses the borrow), else only what the
+    /// callees may write on the runs that return (ProgramSolution.ReturnMods: a throw helper's work is then none of
+    /// the group's business, since the group is dead if it throws). IL2WASM_NO_RETURN_MODS=1: always the whole Mods.</summary>
+    (KeySet Effects, bool Intrinsic) CallEffect(Node n, HashSet<Node> members)
     {
         if (n.Op == Opc.CallI || n.X is not MethodDesc m) return (KeySet.All, false);
-        if (n.Op == Opc.Call && _intrinsics.Contains(m)) return (ProgramSolution.IntrinsicEffects(_ctx.Solution, _ctx.Method, m), true);
-        return (_pb.CallEffects(n), false);
+        if (n.Op == Opc.Call && _intrinsics.Contains(m))
+        {
+            // (Interlocked.Exchange(ref this._f, v) and the like: the key of the address, as Summary records it)
+            if (IntrinsicSignatures.WritesThroughFirstRef(m) && n.A.Length > 0 && MethodSummary.AddressKey(n.A[0]) is { } ak)
+                return (new KeySet(_ctx.Solution.Pool.Of(_pb.Id(ak)), false), true);
+            return (ProgramSolution.IntrinsicEffects(_ctx.Solution, _ctx.Method, m), true);
+        }
+        bool full = Borrows.NoReturnMods || Ownership.ExceptionSuccs(n.Block).Any(h => _info!.LiveIn.TryGetValue(h, out var li) && li.Overlaps(members));
+        return (_pb.CallEffects(n, full), false);
     }
 
     /// <summary>Per block, where the value is live: from after its definition (or the block's start) to its last use
@@ -909,9 +924,11 @@ sealed class ProgramBorrows
 
     // ---- calls: Mods ∪ ReleaseEffects of every target
 
-    readonly Dictionary<MethodDesc, KeySet> _calls = new();
+    readonly Dictionary<MethodDesc, KeySet> _calls = new(), _returns = new();
 
-    public KeySet CallEffects(Node call)
+    /// <summary>Mods ∪ ReleaseEffects of every target (<paramref name="full"/>), or only what they may write on the runs
+    /// that return: their ReturnMods ∪ ReleaseEffects, and nothing for a target that never returns.</summary>
+    public KeySet CallEffects(Node call, bool full = true)
     {
         var targets = _s.CallTargets(call);
         // (no target known: a call the solve cannot see through)
@@ -919,7 +936,7 @@ sealed class ProgramBorrows
         var e = KeySet.Empty;
         foreach (var t in targets)
         {
-            e = e.Join(Of(t), _s.Pool);
+            e = e.Join(full ? Of(t) : OfReturn(t), _s.Pool);
             if (e.Wild) break;
         }
         return e;
@@ -936,6 +953,16 @@ sealed class ProgramBorrows
             r = f.Mods.Join(f.ReleaseEffects, _s.Pool);
         }
         _calls[t] = r;
+        return r;
+    }
+
+    KeySet OfReturn(MethodDesc t)
+    {
+        if (_returns.TryGetValue(t, out var r)) return r;
+        if (!_s.Covers(t)) r = KeySet.All;
+        else if (_s.Summary(t) is { MayReturn: false } && ProgramSolution.DeclaredEffects(_s, t) == null) r = KeySet.Empty;
+        else r = _s.ReturnMods(t);
+        _returns[t] = r;
         return r;
     }
 
