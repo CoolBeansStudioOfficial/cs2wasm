@@ -66,6 +66,12 @@ public sealed class ProgramFacts : ISccpOracle
                     case Opc.LdFtn: case Opc.LdVirtFtn:
                         if (n.X is MethodDesc fm) _indirect.Add(fm);
                         break;
+                    case Opc.Call when n.X is MethodDesc am && am.GetName() is "CreateInstance" or "MakeArrayType" && n.A.Length > 0 && n.A[0].Op == Opc.TypeOf && n.A[0].X is TypeDesc et
+                        && am.OwningType is MetadataType { Name: var _ } amt && amt.GetNamespace() == "System" && amt.GetName() is "Array" or "Type" or "RuntimeType" or "Activator":
+                        // (an array made at run time of a type the code names: Array.CreateInstance(typeof(X), n), typeof(X).MakeArrayType())
+                        ArrayElementTypes.Add(et);
+                        if ((CallKind)n.Sub == CallKind.Direct) { direct.Add(am); Meet(am, n.A.Select(s.ValueOf).ToArray()); }
+                        break;
                     case Opc.Call when (CallKind)n.Sub == CallKind.Direct && n.X is MethodDesc cm:
                         // (a removed call is never reached, but its arguments only weaken the meet)
                         direct.Add(cm);
@@ -82,6 +88,9 @@ public sealed class ProgramFacts : ISccpOracle
     readonly Dictionary<MethodDesc, Val> _returns = new();
     /// <summary>The types typeof and ldtoken name in the code that can run (each a Type object the program can see).</summary>
     public readonly HashSet<TypeDesc> TypeObjects = [];
+    /// <summary>The types code that can run makes arrays of at run time, by name (typeof straight into
+    /// Array.CreateInstance or MakeArrayType).</summary>
+    public readonly HashSet<TypeDesc> ArrayElementTypes = [];
     readonly Dictionary<FieldDesc, Val> _fields = new();
 
     public Val InstanceField(Node load) => Previous != null && load.X is FieldDesc f ? Previous.Field(f) : Val.Bottom;
