@@ -108,7 +108,21 @@ public sealed class Solver
     }
 
     /// <summary>A method lowering reached and imported itself.</summary>
-    public void Late(ImportedMethod u) { LateImports++; LateMethods.Add(u.Method); _late.Add(u.Method); }
+    public void Late(ImportedMethod u)
+    {
+        LateImports++; LateMethods.Add(u.Method); _late.Add(u.Method);
+        if (ProgramState.IsDependentSetter(u.Method))
+        {
+            ProgramState.Of(u.Method.Context).DependentsSeen = true;
+            // (this round's solve left the dependents' releases out: its plans would be wrong. DependentHandle's code
+            // is IL the reach phase sees, never a helper only generated code calls, so this cannot happen; if it does,
+            // it is a compiler error, not a quiet miscompile)
+            if (_skipDependents) throw new InvalidOperationException("release effects: " + u.Method + " was imported late after the solve left dependents' releases out");
+        }
+    }
+
+    bool _skipDependents;
+    static readonly bool s_verify = Environment.GetEnvironmentVariable("IL2WASM_VERIFY") == "1";
     readonly HashSet<MethodDesc> _late = [];
 
     /// <summary>The methods lowering imported itself, in order: the next round's reach phase starts from them too, so
@@ -134,7 +148,20 @@ public sealed class Solver
         var sol = new ProgramSolution(_host);
         // (row a: Signatures.Compute reads covered bodies, read-only, before lowering takes them)
         sol.BodyOf = m => _units.TryGetValue(m, out var u) && u != null ? (u.Body ?? (u.Il != null && u.Error == null && !u.Substituted ? Il2Wasm.IL.Ir.Importer.Import(u.Method, u.Il, u.Facts) : null)) : null;
-        foreach (var m in _order) if (_units[m] is { Summary: { } s } u) sol.AddMethod(m, s, u.Body is { } b ? ProgramSolution.ReleasedTypes(b) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null);
+        // (ObjectMarks' [ReleasesDependents] contract: dependents exist only once WeakSlots.LinkDependent or
+        // ExchangeDependent can run, in any round of this program, a late import included; round 0 cannot know its own
+        // late imports yet, so the rule starts at round 1)
+        var state = ProgramState.Of(_order.Count > 0 ? _order[0].Context : null);
+        if (_order.Any(ProgramState.IsDependentSetter)) state.DependentsSeen = true;
+        bool skip = !state.DependentsSeen && state.Solves > 0;
+        state.Solves++;
+        _skipDependents = skip;
+        sol.DependentsReleased = !skip;
+        foreach (var m in _order) if (_units[m] is { Summary: { } s } u) sol.AddMethod(m, s, u.Body is { } b ? ProgramSolution.ReleasedTypes(b, skip) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null);
+        if (s_verify)
+            foreach (var m in _order)
+                if (_units[m] is { Body: { } vb } && ProgramSolution.ReleaseViolations(vb, skip) is { Count: > 0 } bad)
+                    throw new InvalidOperationException("release effects: " + m + ": " + string.Join("; ", bad));
         foreach (var t in _constructed) sol.AddConstructed(t);
         foreach (var slot in _slots) sol.AddSlot(slot);
         sol.Freeze();
@@ -203,8 +230,9 @@ public sealed class ProgramSolution
 
     /// <summary>The types a body may release: every counted value (a reference: its static type, object when the IR has
     /// none; a struct with references) and every counted slot it stores (the old value goes).</summary>
-    internal static TypeDesc[] ReleasedTypes(Il2Wasm.IL.Ir.Body body)
+    internal static TypeDesc[] ReleasedTypes(Il2Wasm.IL.Ir.Body body, bool skipDependents = false)
     {
+        bool dependents = skipDependents && ReleasesDependents(body.Method);
         var set = new HashSet<TypeDesc>();
         var obj = body.Method.Context.GetWellKnownType(WellKnownType.Object);
         void Add(TypeDesc? t, Il2Wasm.IL.Ir.VK kind)
@@ -217,6 +245,7 @@ public sealed class ProgramSolution
             foreach (var n in b.Phis.Concat(b.Code))
             {
                 if (n.Op is Il2Wasm.IL.Ir.Opc.LdNull or Il2Wasm.IL.Ir.Opc.LdStr) continue;
+                if (dependents && IsBorrow(n)) continue;
                 Add(n.Type, n.Kind);
                 switch (n.Op)
                 {
@@ -225,10 +254,62 @@ public sealed class ProgramSolution
                     case Il2Wasm.IL.Ir.Opc.VarSt: Slot(body.Vars[(int)n.I].Type); break;
                     case Il2Wasm.IL.Ir.Opc.StInd or Il2Wasm.IL.Ir.Opc.InitObj: Slot(n.X as TypeDesc ?? n.A.ElementAtOrDefault(1)?.Type ?? obj); break;
                     case Il2Wasm.IL.Ir.Opc.CpBlk: set.Add(obj); break;
+                    // (Rt.ReleaseElements<T>(addr, count): T's at an address, the elements' type itself)
+                    case Il2Wasm.IL.Ir.Opc.Call when n.X is MethodDesc rm && rm.GetName() == "ReleaseElements" && IsRt(rm) && rm.HasInstantiation: Slot(rm.Instantiation[0]); break;
                 }
             }
         return set.OrderBy(t => StableKey.Of(t), StringComparer.Ordinal).ToArray();
     }
+
+    /// <summary>The dependents' releases count (a dependent can exist: WeakSlots.LinkDependent or ExchangeDependent
+    /// reached in some round, or this is round 0); false: ObjectMarks' [ReleasesDependents] methods release none.</summary>
+    public bool DependentsReleased { get; internal set; } = true;
+
+    static bool ReleasesDependents(MethodDesc m) => m.GetTypicalMethodDefinition() is Internal.TypeSystem.Ecma.EcmaMethod em && em.HasCustomAttribute("Il2Wasm.Runtime", "ReleasesDependentsAttribute");
+
+    /// <summary>Rt.Borrow&lt;T&gt;(int): an object from an address (no count of its own).</summary>
+    static bool IsBorrow(Il2Wasm.IL.Ir.Node n) => n.Op == Il2Wasm.IL.Ir.Opc.Call && n.X is MethodDesc m && m.GetName() == "Borrow" && IsRt(m);
+    static bool IsRt(MethodDesc m) => m.OwningType is MetadataType t && t.GetName() == "Rt" && t.GetNamespace() == "Il2Wasm.Runtime";
+
+    /// <summary>The check behind the Rt.Release and Rt.ReleaseElements intrinsics' effects (IntrinsicSignatures: none
+    /// of their own, because the solve's release nodes cover them): each such call's operand, followed back through
+    /// casts, is a counted value of the body whose static type is in its released types, and not an object made from an
+    /// address with a type narrower than object (Rt.Borrow&lt;T&gt;, Unsafe.As of an int), which would claim less than
+    /// the object may be. Dependents' releases left out by the [ReleasesDependents] rule are exempt. The problems, or
+    /// none. Run in every solve with IL2WASM_VERIFY=1.</summary>
+    public static List<string> ReleaseViolations(Il2Wasm.IL.Ir.Body body, bool skipDependents)
+    {
+        var bad = new List<string>();
+        var types = ReleasedTypes(body, skipDependents).ToHashSet();
+        bool dependents = skipDependents && ReleasesDependents(body.Method);
+        var obj = body.Method.Context.GetWellKnownType(WellKnownType.Object);
+        foreach (var b in body.Blocks)
+            foreach (var n in b.Code)
+            {
+                if (n.Op != Il2Wasm.IL.Ir.Opc.Call || n.X is not MethodDesc rm || !IsRt(rm) || rm.GetName() is not ("Release" or "ReleaseElements") || n.A.Length == 0) continue;
+                if (rm.GetName() == "ReleaseElements")
+                {
+                    // (the elements' type is a type argument: counted or not, it is among the released types when counted)
+                    var et = rm.HasInstantiation ? rm.Instantiation[0] : null;
+                    if (et == null || et.IsGenericParameter) bad.Add("ReleaseElements without a type");
+                    else if (Il2Wasm.IL.Ir.Kinds.Of(et) is Il2Wasm.IL.Ir.VK.Ref or Il2Wasm.IL.Ir.VK.Struct && Il2Wasm.IL.Ir.Kinds.Counted(et) && !types.Contains(et)) bad.Add($"ReleaseElements<{et}> not among the released types");
+                    continue;
+                }
+                var x = n.A[0];
+                for (int guard = 0; guard < 16; guard++)
+                {
+                    if (dependents && IsBorrow(x)) break;
+                    if (x.Kind != Il2Wasm.IL.Ir.VK.Ref) { bad.Add($"{rm.GetName()} of v{x.Id}, not a reference"); break; }
+                    var st = x.Type is { IsValueType: false } xt ? xt : obj;
+                    if (!types.Contains(st)) { bad.Add($"{rm.GetName()} of v{x.Id} ({st}) not among the released types"); break; }
+                    if (IsBorrow(x) && x.X is MethodDesc bm && bm.HasInstantiation && !bm.Instantiation[0].IsObject) { bad.Add($"{rm.GetName()} of Rt.Borrow<{bm.Instantiation[0]}>: narrower than the object may be"); break; }
+                    if (x.Op is Il2Wasm.IL.Ir.Opc.CastClass or Il2Wasm.IL.Ir.Opc.IsInst || x.Op == Il2Wasm.IL.Ir.Opc.Call && x.A.Length == 1 && x.X is MethodDesc am && am.GetName() == "As" && am.OwningType is MetadataType ut && ut.GetName() == "Unsafe") { x = x.A[0]; continue; }
+                    break;
+                }
+            }
+        return bad;
+    }
+
     internal void AddConstructed(TypeDesc t) => _constructed.Add(t);
     internal void AddSlot(MethodDesc slot) => Slots.Add(slot);
 
@@ -604,4 +685,20 @@ public sealed class ProgramSolution
         }
         return result;
     }
+}
+
+/// <summary>What the rounds of one program's compilation share (they share its type system context): how many solves
+/// ran, and whether a dependent handle's setter was ever reached or imported late.</summary>
+sealed class ProgramState
+{
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, ProgramState> s_of = new();
+    static readonly ProgramState s_none = new();
+    public int Solves;
+    public bool DependentsSeen;
+
+    public static ProgramState Of(TypeSystemContext? ctx) { if (ctx == null) return s_none; lock (s_of) return s_of.GetValue(ctx, _ => new ProgramState()); }
+
+    /// <summary>WeakSlots.LinkDependent or ExchangeDependent: the only ways a dependent comes to exist.</summary>
+    public static bool IsDependentSetter(MethodDesc m) => m.GetName() is "LinkDependent" or "ExchangeDependent"
+        && m.OwningType is MetadataType t && t.GetName() == "WeakSlots" && t.GetNamespace() == "Il2Wasm.Runtime";
 }

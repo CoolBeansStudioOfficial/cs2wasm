@@ -31,6 +31,7 @@ try
 {
     if (c.Wants("types")) TypeSystemChecks.Run(c);
     if (c.Wants("import")) ImporterChecks.Run(c);
+    if (c.Wants("solver")) SolverChecks.Run(c);
     if (c.Wants("borrows")) BorrowChecks.Run(c);
     if (c.Wants("e2e")) EndToEnd.Run(c);
     if (c.Wants("fw")) EndToEnd.RunFramework(c);
