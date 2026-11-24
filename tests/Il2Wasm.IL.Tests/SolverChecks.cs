@@ -110,6 +110,23 @@ static class SolverChecks
         }
         """;
 
+    // (Holder.F, an object field, only ever holds a string; Fin's finalizer runs a delegate, Wild)
+    const string DestroyFields = """
+        using System;
+        sealed class Fin { static Action s_a = () => Console.WriteLine("a"); ~Fin() { s_a(); } }
+        sealed class Holder { public object F; }
+        static class P
+        {
+            static object s_keep;
+            static void Main()
+            {
+                var h = new Holder { F = "s" };
+                s_keep = new Fin();
+                Console.WriteLine(h.F);
+            }
+        }
+        """;
+
     static void MetadataTypeOf(ProgramSolution sol, string name, out Internal.TypeSystem.TypeDesc? t) =>
         t = sol.Methods.Items.Select(m => m.OwningType).FirstOrDefault(x => x is Internal.TypeSystem.MetadataType mt && mt.GetName() == name)
             ?? sol.Constructed.FirstOrDefault(x => x is Internal.TypeSystem.MetadataType mt && mt.GetName() == name);
@@ -219,6 +236,19 @@ static class SolverChecks
                 kind = ld == null ? "no load" : facts.Own[ld].Kind.ToString();
             }
             c.Eq("borrows: a load held across a call on a receiver that can only be null", kind, "Guaranteed");
+        }
+        {
+            // a destroy releases what a load of each field would give: Holder.F, declared object, holds only strings, so
+            // Holder's destroy cannot run Fin's finalizer (Solver.HeldTypes, TypeSets.FieldHolds; with
+            // IL2WASM_NO_DESTROY_FIELD_SETS=1 the declared object admits Fin, and the destroy can run it)
+            var sol = SecondSolve(dir, "solver_destroy_fields", DestroyFields);
+            MetadataTypeOf(sol, "Holder", out var holder);
+            MetadataTypeOf(sol, "Fin", out var fin);
+            int finId = fin?.GetFinalizer() is { } fm ? sol.Methods.IdOf(fm) : -1;
+            bool runs = holder != null && sol.DestroyTargets(holder).Contains(finId);
+            bool off = Environment.GetEnvironmentVariable("IL2WASM_NO_DESTROY_FIELD_SETS") == "1";
+            c.True($"solver: a destroy of a holder whose object field holds only strings does not run Fin's finalizer (finalizer id {finId}, runs {runs})",
+                finId >= 0 && runs == off);
         }
         foreach (var (name, source, hasDependents) in new[] { ("solver_plain", Plain, false), ("solver_dependents", Dependents, true) })
         {

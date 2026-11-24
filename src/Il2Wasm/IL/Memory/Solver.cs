@@ -1095,7 +1095,7 @@ public sealed partial class ProgramSolution
         x is DefType { IsValueType: false, IsInterface: false } && !x.IsArray && !x.IsString && !x.IsObject ? x.GetFinalizer() : null;
 
     /// <summary>The method ids a destroy of a value of the type can run, sorted; -1 for one outside the solution.</summary>
-    int[] DestroyTargets(TypeDesc t)
+    public int[] DestroyTargets(TypeDesc t)
     {
         if (_destroyTargets.TryGetValue(t, out var r)) return r;
         if (_val == null) PrepareDestroys();
@@ -1210,7 +1210,7 @@ public sealed partial class ProgramSolution
         if (_finIds.Length > 0)
         {
             var children = new TypeDesc[all.Length][];
-            for (int i = 0; i < all.Length; i++) children[i] = ChildTypes(all[i]).Distinct().ToArray();
+            for (int i = 0; i < all.Length; i++) children[i] = HeldTypes(all[i]).Distinct().ToArray();
             var acc = new ulong[_words];
             for (bool changed = true; changed;)
             {
@@ -1231,7 +1231,44 @@ public sealed partial class ProgramSolution
             }
         }
         _belowFinal = true;
+        if (Environment.GetEnvironmentVariable("IL2WASM_DESTROY_WHY") is { Length: > 0 } dw)
+        {
+            // (diagnosis: for the constructed types whose name contains it, the children that carry finalizers, a few
+            // levels down)
+            string Fins(ulong[] b) => string.Join(",", Enumerable.Range(0, _finIds.Length).Where(i => (b[i >> 6] & (1UL << (i & 63))) != 0).Take(3).Select(i => Methods[_finIds[i]].OwningType.ToString()));
+            void Show(TypeDesc t, int depth, HashSet<TypeDesc> seen)
+            {
+                if (depth > 4 || !seen.Add(t)) return;
+                foreach (var c in HeldTypes(t).Distinct())
+                {
+                    var b = Below(c);
+                    if (b.All(w => w == 0)) continue;
+                    Console.Error.WriteLine("mem: destroy why: " + new string(' ', depth * 2) + t + " holds " + c + " -> " + Fins(b));
+                    foreach (int x in ConeOf(c).Take(8)) if (_val[x].Any(w => w != 0)) Show(all[x], depth + 1, seen);
+                }
+            }
+            for (int i = 0; i < all.Length; i++) if (all[i].ToString()!.EndsWith(dw, StringComparison.Ordinal)) Show(all[i], 0, []);
+        }
         _carriers = Enumerable.Range(0, all.Length).Where(i => _val[i].Any(w => w != 0)).Select(i => all[i]).ToList();
+    }
+
+    static readonly bool s_noDestroyFieldSets = Environment.GetEnvironmentVariable("IL2WASM_NO_DESTROY_FIELD_SETS") == "1";
+
+    /// <summary>What a constructed type's destroy can release: its counted children (ChildTypes), with a reference field
+    /// of a class narrowed to the types the type sets say a load of it gives (FieldHolds: what was stored into it, or
+    /// into the slots it may alias), when they are solved and know it. A destroy releases what a load would see:
+    /// Exception._data, an IDictionary, is null or a ListDictionaryInternal, not every finalizable type there is.
+    /// IL2WASM_NO_DESTROY_FIELD_SETS=1: the declared types.</summary>
+    IEnumerable<TypeDesc> HeldTypes(TypeDesc x)
+    {
+        if (s_noDestroyFieldSets || !TypeSetsSolved || x is ArrayType) { foreach (var c in ChildTypes(x)) yield return c; yield break; }
+        for (var t = x as DefType; t != null; t = t.BaseType)
+            foreach (var f in t.GetFields())
+            {
+                if (f.IsStatic || f.FieldType.IsPointer || f.FieldType.IsByRef || f.FieldType.IsFunctionPointer || f.FieldType.IsGenericParameter || !Il2Wasm.IL.Ir.Kinds.Counted(f.FieldType)) continue;
+                if (!f.FieldType.IsValueType && FieldHolds(f) is { } held) { foreach (var h in held) yield return h; }
+                else yield return f.FieldType;
+            }
     }
 
     /// <summary>A constructed type's counted children: an array's element type, a class's instance fields (its base

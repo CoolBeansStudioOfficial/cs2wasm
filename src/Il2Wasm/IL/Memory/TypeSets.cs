@@ -65,6 +65,22 @@ public sealed partial class ProgramSolution
         return st.Sets[id] is { } set ? set.Items.ToArray().Select(i => _all![i]) : null;
     }
 
+    /// <summary>The constructed types a load of an instance field can give once the type sets are solved, as ReadKey
+    /// joins them: the field key's set and those of the slot-like keys it may alias. Null: not solved, or unknown (Top).</summary>
+    internal IEnumerable<TypeDesc>? FieldHolds(FieldDesc f)
+    {
+        if (!TypeSetsSolved || _ts is not { } st) return null;
+        // (a key no operation named: a fresh one, as a reader would make it, empty but for the slots it may alias)
+        int id = VarId(st, new Var(VarKind.Key, null, 0, FKey(f)));
+        IdSet? acc = st.Sets[id];
+        foreach (int s in AliasesOf(st, id))
+        {
+            if (acc == null) break;
+            acc = Join(acc, st.Sets[s]);
+        }
+        return acc is { } set ? set.Items.ToArray().Select(i => _all![i]) : null;
+    }
+
     /// <summary>A virtual call's targets over its receiver's types (null: not solved; use the slot's).</summary>
     public IReadOnlyList<MethodDesc>? CallTargetsOf(MethodDesc m, int nodeId) =>
         TypeSetsSolved && _methodTypes.TryGetValue(m, out var mt) && mt.Targets != null && mt.Targets.TryGetValue(nodeId, out var t) ? t : null;
