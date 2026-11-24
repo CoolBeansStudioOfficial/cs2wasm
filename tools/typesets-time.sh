@@ -12,3 +12,4 @@ for i in 1 2; do
   total=$(( ($(date +%s%N) - start) / 1000000 ))
   echo "run $i: compile $total ms; typesets: $(grep -E '^typesets: [0-9]' artifacts/tt-trace.txt | sed -E 's/.*; ([0-9]+) ms.*/\1/' | tr '\n' ' ')"
 done
+grep -E '^typesets: (phases|evaluate)' artifacts/tt-trace.txt | cut -c1-220
