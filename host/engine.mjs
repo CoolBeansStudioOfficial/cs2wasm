@@ -266,6 +266,15 @@ export function il2wasmImports(module, getMemory, out) {
     main_can_block: () => (out.mainCanBlock ? 1 : 0),
     now_ms: () => Date.now(),
     monotonic_ns: () => process.hrtime.bigint(),
+    // Console.Clear (Natives/InternalCalls.cs: as Mono's browser runtime, the console's own clear)
+    console_clear: () => console.clear(),
+    // Mono's JavaScript interop (Natives/InternalCalls.cs): its JavaScript side is not implemented in this host
+    js_bind_import: () => { throw new Error('il2wasm host: [JSImport] (Mono\'s JavaScript interop) is not implemented'); },
+    js_invoke_import: () => { throw new Error('il2wasm host: [JSImport] (Mono\'s JavaScript interop) is not implemented'); },
+    js_invoke_function: () => { throw new Error('il2wasm host: Mono\'s JavaScript interop is not implemented'); },
+    js_cancel_promise: () => { throw new Error('il2wasm host: Mono\'s JavaScript interop is not implemented'); },
+    js_resolve_or_reject_promise: () => { throw new Error('il2wasm host: Mono\'s JavaScript interop is not implemented'); },
+    js_release_cs_owned_object: () => { throw new Error('il2wasm host: Mono\'s JavaScript interop is not implemented'); },
     random_seed: () => 12345,
     utc_offset_minutes: () => 0,
     capture_stack: (ptr, cap) => {

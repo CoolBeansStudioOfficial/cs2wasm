@@ -5335,3 +5335,84 @@ What was agreed for decisions 1 and 2:
   delegates and function pointers (ldftn, ldvirtftn, calli), generic sharing (everything is instantiated), generic
   virtual methods, two-pass filters (one pass now), thread-safe static constructors, array-store covariance checks,
   floating-point remainder, finalizers and weak references, stack traces and the line table from the PDB.
+### il2wasm step 1: the core library as IL (claude/il-corelib, 2026-11-23)
+
+What was done:
+
+- `tools/BuildCoreLib` (and `tools/build-corelib.mjs`) builds `System.Private.CoreLib.dll` and its PDB ahead of time
+  with Roslyn. The inputs are the old `Library`'s: the manifest, the edits and il2wasm's own files. The manifest's
+  156 substitutions are applied as source bodies.
+- The framework directory holds that CoreLib and the 180 stock IL assemblies of
+  Microsoft.NETCore.App.Runtime.Mono.browser-wasm 11.0.0, which is built from runtime deae2e32, our v11.0.0 tag.
+- docs/CORELIB.md covers the build, the pack, the reference check, the native entry points and hello world's reach.
+  docs/CORELIB-INTRINSICS.md lists the 220 intrinsics, the 39 intrinsic fields, the 40 upstream intrinsics and the
+  host imports, with what the old compiler emitted for each.
+
+Measured:
+
+- **Build.** About 10 s. Byte-identical on rebuild (`node tools/build-corelib.mjs --check`: 183 files).
+- **Reference check.** 0 of 12,172 TypeRefs and 0 of 29,032 MemberRefs from the stock libraries are missing or not
+  public. The checker reports 37 types and 51 members missing against .NET 8's CoreLib.
+- **Native entry points.** 28 in the stock libraries:
+  - 19 in libSystem.Native, of which hello world reaches `SystemNative_Write` and 3 error helpers;
+  - 9 in libSystem.IO.Compression.Native (zlib).
+
+  Our CoreLib has no P/Invoke.
+- **Hello world** reaches CoreLib and System.Console, nothing else.
+
+Runtime change: one local in `Rt.AllocObjectSlow` is renamed (CS0136, which emit refuses and binding tolerated). The
+old compiler's hello world module is byte-identical with and without it (checked and as shipped, 27,784 B).
+
+Not done:
+
+- the IL front end (claude/il-frontend);
+- runtime bodies for the 28 native entry points;
+- hybrid-globalization `GetLocaleInfo`;
+- the full homelab suite and the self-host check. They were not run, because the only runtime change is that rename.
+
+### il2wasm step 1b: the runtime side of the stock libraries' native calls (claude/il-corelib, 2026-11-23)
+
+What was done:
+
+- `natives.txt` is the binding table the IL front end reads: (library, entry point) and internal calls mapped to
+  CoreLib methods (docs/CORELIB.md section 7). `BuildCoreLib bindings` shows all 56 of the stock libraries'
+  P/Invokes and internal calls bound, with matching WASM signatures, and none unbound.
+- libSystem.Native's 19 entry points behave as the browser runtime's System.Native over Emscripten 6.0.2.
+- errno is Emscripten's (generated from the headers), and CoreLib's own boundary moves to it from PAL codes.
+- The JavaScript interop's internal calls are host imports; today's hosts throw on them, since they do not implement
+  Mono's protocol.
+- GetLocaleInfo has a body under invariant globalization.
+- libSystem.IO.Compression.Native: deflate is a C# port of zlib-ng 2.2.5; inflate is the managed inflater.
+
+Measured:
+
+- **Deflate.** tests/CoreLibNatives: 30,690 cases identical to .NET's shipped zlib-ng in output (611,069,290 bytes),
+  return codes and stream positions, over every level, strategy and window, with random chunking and flushes. The
+  only byte compared differently is the gzip header's OS byte, by design (Windows 10, Emscripten 3).
+- **Inflate.** 3,000 streams with the same output and final result. The per-call positions differ in 737 of them.
+- **Desk suite.** 145, 070, 088, 152, 220 and 193 pass both ways. Hello world is unchanged (27,784 B, the same hash).
+- **CoreLib build.** Still byte-identical on rebuild (184 files).
+
+Not done:
+
+- a port of zlib-ng's inflate (positions and error texts);
+- the hosts' side of Mono's JavaScript interop;
+- [JSExport] binding;
+- FS.mmap's EACCES check;
+- the homelab suite and the self-host check (left to the coordinator).
+
+### il2wasm step 1c: zlib-ng's inflate ported (claude/il-corelib, 2026-11-23)
+
+`Natives/ZLibNgInflate.cs` is zlib-ng 2.2.5's inflate.c, inftrees.c and inffast_tpl.h in C#, with the licence notice.
+It replaces the managed inflater.
+
+Measured with tests/CoreLibNatives against .NET's shipped native zlib-ng: 72,240 inflate runs identical
+(2,568,441,758 output bytes, 833,572 calls). Each call's return code, stream positions and error message matched.
+
+- The runs cover every stream of the deflate corpus, read eight ways: DeflateStream's way, random chunks and
+  flushes, auto-detect, truncated, with trailing bytes, and four bit-flip corruptions.
+- 18 distinct zlib-ng error messages came up.
+- Deflate is still identical on its 30,690 cases. CoreLib rebuilds byte-identical, and all 56 bindings hold.
+- Desk: 145 and 070 pass both ways; hello world is unchanged.
+
+Not run: the homelab suite and the self-host check on this commit.

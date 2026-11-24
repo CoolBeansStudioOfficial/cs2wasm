@@ -1442,3 +1442,13 @@ with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   stub CoreLib. The IL CoreLib's hello world compiles only leniently (335 gaps: Type objects, 28 intrinsics, ldftn).
   Not run: the homelab suite, stress, self-host check, frames and bench (the old front end and the back end are
   unchanged apart from host/run.mjs's IL2WASM_PRINT_LIVE; 145_size_hello passes on the desk).
+- 2026-11-23, claude/il-corelib: il2wasm step 1, the core library as IL (docs/CORELIB.md, AUDIT "il2wasm step 1").
+  - CoreLib builds ahead of time to IL in about 10 s, byte-identical on rebuild.
+  - The stock pack chosen is Mono.browser-wasm 11.0.0, built from runtime deae2e32 = v11.0.0.
+  - The stock libraries reference 12,172 types and 29,032 members of CoreLib, and none is missing or not public.
+  - The stock libraries have 28 native entry points.
+  - Hello world reaches CoreLib and System.Console only.
+  - Old-compiler hello world: byte-identical before and after the one runtime rename.
+  - Not run: the homelab suite and the self-host check (the rename only).
+- 2026-11-23, claude/il-corelib: the runtime side of the stock libraries' native calls (docs/CORELIB.md section 7). All 56 stock P/Invokes and internal calls bound (BuildCoreLib bindings). Deflate is a C# port of zlib-ng 2.2.5 and is identical to .NET's shipped zlib-ng on 30,690 cases (611,069,290 bytes, every return code and position). Inflate is the managed inflater: same output and result on 3,000 streams, per-call positions differ in 737. errno is now Emscripten's. Desk suite 145, 070, 088, 152, 220, 193 pass both ways; hello world unchanged. Homelab suite and self-host check not run (left to the coordinator).
+- 2026-11-23, claude/il-corelib: zlib-ng 2.2.5's inflate ported to C# (Natives/ZLibNgInflate.cs), replacing the managed inflater. Against .NET's native zlib-ng: 72,240 inflate runs identical (2.57 GB output, 833,572 calls: return codes, positions, 18 error messages), including truncated, corrupted and chunked streams. Deflate still identical on 30,690 cases. Homelab suite and self-host check not run on this commit.

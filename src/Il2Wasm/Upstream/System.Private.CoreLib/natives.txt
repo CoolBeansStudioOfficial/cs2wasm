@@ -1,0 +1,50 @@
+# il2wasm: the native libraries and internal calls that CoreLib's runtime serves (docs/CORELIB.md section 7).
+# Tab-separated. Types are metadata names (Namespace.Type, nested after '/'); every target is a static method of
+# System.Private.CoreLib.
+#   library<TAB><module name>                        a library the runtime provides (a P/Invoke into it with no row
+#                                                    below throws EntryPointNotFoundException; one into a library
+#                                                    named nowhere throws DllNotFoundException: SPEC 8)
+#   pinvoke<TAB><module name><TAB><entry point><TAB><target type><TAB><target method>
+#   internalcall<TAB><assembly><TAB><declaring type><TAB><method><TAB><target type><TAB><target method>
+library	libSystem.Native
+pinvoke	libSystem.Native	SystemNative_ConvertErrorPalToPlatform	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_ConvertErrorPalToPlatform
+pinvoke	libSystem.Native	SystemNative_ConvertErrorPlatformToPal	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_ConvertErrorPlatformToPal
+pinvoke	libSystem.Native	SystemNative_StrErrorR	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_StrErrorR
+pinvoke	libSystem.Native	SystemNative_Write	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_Write
+pinvoke	libSystem.Native	SystemNative_FTruncate	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_FTruncate
+pinvoke	libSystem.Native	SystemNative_FcntlSetFD	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_FcntlSetFD
+pinvoke	libSystem.Native	SystemNative_FStat	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_FStat
+pinvoke	libSystem.Native	SystemNative_Stat	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_Stat
+pinvoke	libSystem.Native	SystemNative_Unlink	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_Unlink
+pinvoke	libSystem.Native	SystemNative_GetCryptographicallySecureRandomBytes	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_GetCryptographicallySecureRandomBytes
+pinvoke	libSystem.Native	SystemNative_MMap	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_MMap
+pinvoke	libSystem.Native	SystemNative_MUnmap	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_MUnmap
+pinvoke	libSystem.Native	SystemNative_MSync	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_MSync
+pinvoke	libSystem.Native	SystemNative_MAdvise	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_MAdvise
+pinvoke	libSystem.Native	SystemNative_SysConf	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_SysConf
+pinvoke	libSystem.Native	SystemNative_ShmOpen	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_ShmOpen
+pinvoke	libSystem.Native	SystemNative_ShmUnlink	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_ShmUnlink
+pinvoke	libSystem.Native	SystemNative_MemfdCreate	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_MemfdCreate
+pinvoke	libSystem.Native	SystemNative_IsMemfdSupported	Il2Wasm.Runtime.Natives.SystemNative	SystemNative_IsMemfdSupported
+internalcall	System.Console	System.ConsolePal	Clear	Il2Wasm.Runtime.Natives.ConsoleNative	Clear
+internalcall	System.Runtime.InteropServices.JavaScript	Interop/Runtime	BindJSImportST	Il2Wasm.Runtime.Natives.JsInteropNative	BindJSImportST
+internalcall	System.Runtime.InteropServices.JavaScript	Interop/Runtime	InvokeJSImportST	Il2Wasm.Runtime.Natives.JsInteropNative	InvokeJSImportST
+internalcall	System.Runtime.InteropServices.JavaScript	Interop/Runtime	InvokeJSFunction	Il2Wasm.Runtime.Natives.JsInteropNative	InvokeJSFunction
+internalcall	System.Runtime.InteropServices.JavaScript	Interop/Runtime	CancelPromise	Il2Wasm.Runtime.Natives.JsInteropNative	CancelPromise
+internalcall	System.Runtime.InteropServices.JavaScript	Interop/Runtime	ResolveOrRejectPromise	Il2Wasm.Runtime.Natives.JsInteropNative	ResolveOrRejectPromise
+internalcall	System.Runtime.InteropServices.JavaScript	Interop/Runtime	ReleaseCSOwnedObject	Il2Wasm.Runtime.Natives.JsInteropNative	ReleaseCSOwnedObject
+internalcall	System.Runtime.InteropServices.JavaScript	Interop/Runtime	RegisterGCRoot	Il2Wasm.Runtime.Natives.JsInteropNative	RegisterGCRoot
+internalcall	System.Runtime.InteropServices.JavaScript	Interop/Runtime	DeregisterGCRoot	Il2Wasm.Runtime.Natives.JsInteropNative	DeregisterGCRoot
+internalcall	System.Runtime.InteropServices.JavaScript	Interop/Runtime	BindAssemblyExports	Il2Wasm.Runtime.Natives.JsInteropNative	BindAssemblyExports
+internalcall	System.Runtime.InteropServices.JavaScript	Interop/Runtime	GetAssemblyExport	Il2Wasm.Runtime.Natives.JsInteropNative	GetAssemblyExport
+internalcall	System.Runtime.InteropServices.JavaScript	Interop/Runtime	AssemblyGetEntryPoint	Il2Wasm.Runtime.Natives.JsInteropNative	AssemblyGetEntryPoint
+library	libSystem.IO.Compression.Native
+pinvoke	libSystem.IO.Compression.Native	CompressionNative_DeflateInit2_	Il2Wasm.Runtime.Natives.CompressionNative	CompressionNative_DeflateInit2_
+pinvoke	libSystem.IO.Compression.Native	CompressionNative_Deflate	Il2Wasm.Runtime.Natives.CompressionNative	CompressionNative_Deflate
+pinvoke	libSystem.IO.Compression.Native	CompressionNative_DeflateEnd	Il2Wasm.Runtime.Natives.CompressionNative	CompressionNative_DeflateEnd
+pinvoke	libSystem.IO.Compression.Native	CompressionNative_DeflateReset	Il2Wasm.Runtime.Natives.CompressionNative	CompressionNative_DeflateReset
+pinvoke	libSystem.IO.Compression.Native	CompressionNative_InflateInit2_	Il2Wasm.Runtime.Natives.CompressionNative	CompressionNative_InflateInit2_
+pinvoke	libSystem.IO.Compression.Native	CompressionNative_Inflate	Il2Wasm.Runtime.Natives.CompressionNative	CompressionNative_Inflate
+pinvoke	libSystem.IO.Compression.Native	CompressionNative_InflateEnd	Il2Wasm.Runtime.Natives.CompressionNative	CompressionNative_InflateEnd
+pinvoke	libSystem.IO.Compression.Native	CompressionNative_InflateReset2_	Il2Wasm.Runtime.Natives.CompressionNative	CompressionNative_InflateReset2_
+pinvoke	libSystem.IO.Compression.Native	CompressionNative_Crc32	Il2Wasm.Runtime.Natives.CompressionNative	CompressionNative_Crc32
