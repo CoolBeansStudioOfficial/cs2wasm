@@ -35,6 +35,7 @@ namespace Il2Wasm.IL.Lower;
 public sealed class RcStats
 {
     public static readonly bool On = Environment.GetEnvironmentVariable("IL2WASM_COUNT_RC") == "1";
+    static readonly string? s_body = Environment.GetEnvironmentVariable("IL2WASM_COUNT_RC_BODY") is { Length: > 0 } bn ? bn : null;
     public static readonly string? SitesFile = Environment.GetEnvironmentVariable("IL2WASM_COUNT_RC_SITES") is { Length: > 0 } f ? f : null;
 
     /// <summary>Bytes before the first site: the buckets of retains (8 i64), of releases (8 i64), then the calls that
@@ -42,7 +43,18 @@ public sealed class RcStats
     const int Header = 256, SiteBytes = 24, ReleaseBuckets = 64, EnteredRetain = 128, EnteredRelease = 136;
 
     readonly IlCompiler _c;
-    internal RcStats(IlCompiler c) { _c = c; }
+    internal RcStats(IlCompiler c)
+    {
+        _c = c;
+        // (the back end writes the counts' common case out in loops, Wasm/RcFastPaths.cs, by default: a count done there
+        // is no call, so no site would see it. Measuring, every count stays a call; the pass reads the switch when the
+        // module is encoded, after this)
+        if (Environment.GetEnvironmentVariable("IL2WASM_RC_FAST") != "0")
+        {
+            if (Environment.GetEnvironmentVariable("IL2WASM_RC_FAST") is { Length: > 0 } v) Console.Error.WriteLine($"rcstats: IL2WASM_RC_FAST={v} ignored: the counts' fast paths are off while counting");
+            Environment.SetEnvironmentVariable("IL2WASM_RC_FAST", "0");
+        }
+    }
 
     // ------------------------------------------------------------------ the lowering's tags
 
@@ -150,6 +162,16 @@ public sealed class RcStats
         foreach (var f in _c.Module.Functions) foreach (var x in f.Body) if (x.Op == WOp.Call && x.Ref is WasmFunction g && (IsCountFn(g.Name) || g.Name is "rt.retain_contents")) calls++;
         _capacity = int.TryParse(Environment.GetEnvironmentVariable("IL2WASM_COUNT_RC_MAX"), out int cap) && cap > 0 ? cap : Math.Max(1 << 14, 3 * calls + (1 << 14));
         _table = _c.NamedStatic("rcstats.table", Header + SiteBytes * (_capacity + 1), 8);
+        // (rt.retain and rt.release count the calls that reach them, against the sites' sum. The counter is an atomic
+        // add, and the back end's inliner keeps a function with atomics a call: a copy of rt.retain written into a loop,
+        // as the back end does with small leaf functions, would be a count no site sees. Only inlining differs from
+        // the module as built without counting)
+        foreach (var (fn, at) in new[] { (_c.Rt.Retain, EnteredRetain), (_c.Rt.Release, EnteredRelease) })
+        {
+            var pre = new Emitter(new WasmFunction("tmp", fn.Type));
+            pre.I32Addr(_table); pre.I64(1); pre.Emit(WOp.I64AtomicRmwAdd, at, 3); pre.Op(WOp.Drop);
+            fn.Body.InsertRange(0, pre.Fn.Body);
+        }
 
         // (IL2WASM_IL_COUNT_OBJECTS: objects per type, made and freed)
         if (_c.CountObjects)
@@ -233,15 +255,7 @@ public sealed class RcStats
         foreach (var f in fns)
         {
             if (own.Contains(f)) continue;
-            if (f.Name is "rt.retain" or "rt.release")
-            {
-                // (the calls that reach the function itself, against the sites' sum: a copy of it written into a
-                // caller would be a count no site saw, which the host reports)
-                var pre = new Emitter(new WasmFunction("tmp", f.Type));
-                pre.I32Addr(_table); pre.I64(1); pre.Emit(WOp.I64AtomicRmwAdd, f.Name == "rt.retain" ? EnteredRetain : EnteredRelease, 3); pre.Op(WOp.Drop);
-                f.Body.InsertRange(0, pre.Fn.Body);
-                continue;
-            }
+            if (f.Name is "rt.retain" or "rt.release") continue;
             // (a body the back end shares among identical ones, "shared <name>": its first method's)
             if (!methods.TryGetValue(f, out var md) && f.Name.StartsWith("shared ", StringComparison.Ordinal)) byName.TryGetValue(f.Name[7..], out md);
             string owner = OwnerOf(f, md);
@@ -249,6 +263,12 @@ public sealed class RcStats
             // (the sites first, on the body as optimized, then the counters, from the end: the classification reads
             // the instructions around each call as they were)
             var here = new List<(int At, int Id, WasmFunction Hit)>();
+            // (IL2WASM_COUNT_RC_BODY=name: the optimized bodies of the functions whose name contains it, on stderr)
+            if (s_body != null && f.Name.Contains(s_body, StringComparison.Ordinal))
+            {
+                Console.Error.WriteLine($"== {f.Name} (optimized)");
+                for (int i = 0; i < b.Count; i++) Console.Error.WriteLine($"{i,5}: {b[i].Op} {b[i].Imm} {(b[i].Ref is WasmFunction rf ? rf.Name : b[i].Ref)}");
+            }
             for (int i = 0; i < b.Count; i++)
             {
                 if (b[i].Op != WOp.Call || b[i].Ref is not WasmFunction g) continue;
