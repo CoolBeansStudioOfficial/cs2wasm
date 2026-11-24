@@ -115,9 +115,11 @@ public sealed partial class ProgramSolution
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long cpu0 = s_typeSetsTrace ? ThreadCpuTicks() : 0;
         EnsureIndex();
+        long idxMs = clock.ElapsedMilliseconds;
         var st = _ts = new State();
         var bodies = new Dictionary<MethodDesc, Body>();
         foreach (var m in Methods.Items) if (HeldBody(m) is { } b) bodies[m] = b;
+        long bodiesMs = clock.ElapsedMilliseconds;
         // the methods something outside the IR may call
         // (a root no IR edge reaches: the entry, an export, a seed only generated code calls. A seed the IR reaches too
         // is called by generated code only if it is one of the kinds below: lowering's own calls are to Il2Wasm.Runtime's
@@ -168,7 +170,7 @@ public sealed partial class ProgramSolution
         _methodStates.Clear();
         static long Ms(long t) => t * 1000 / System.Diagnostics.Stopwatch.Frequency;
         if (s_typeSetsTrace) Console.Error.WriteLine($"typesets: evaluate: build {Ms(_tBuild)}, loop {Ms(_tLoop - _tBuild)} ({_nVisits} visits, {_nValue} values, {_nTargets} targets), sinks {Ms(_tSinks)} ({_nSinks}) ms, ids {_nIds}");
-        if (s_typeSetsTrace) Console.Error.WriteLine($"typesets: phases: setup {setupMs} ms (callees {irMs}), first evaluations {firstTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms, later {laterTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms");
+        if (s_typeSetsTrace) Console.Error.WriteLine($"typesets: phases: setup {setupMs} ms (index {idxMs}, bodies {bodiesMs}, callees {irMs}), first evaluations {firstTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms, later {laterTicks * 1000 / System.Diagnostics.Stopwatch.Frequency} ms");
         TypeSetsSolved = true;
         TypeSetsTime = (clock.ElapsedMilliseconds, bodies.Count, evaluations, st.Vars.Count, st.Sets.Count(x => x == null));
         if (s_typeSetsTrace)
