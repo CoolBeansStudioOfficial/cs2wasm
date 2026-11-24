@@ -1410,6 +1410,28 @@ owner. Runtime.cs edits are confined to new regions per agent.
 
 ## 13. Open questions for the owner
 
+**Ruled 2026-11-23: the owner accepted every proposed answer below.** SPEC 4.1 (borrowed-return specializations) and
+4.4 (the finalizer thread's identity and the blocked-lock case) were amended to match.
+
+| # | Ruling |
+|---|---|
+| Q1 | The 2026-11-18 region page-return acceptance lapses: no regions; SPEC 4.3 governs. |
+| Q2 | The drop check stays in the fallback only; S2 measures how often it runs and its cost, and the numbers go to the owner (ruling 2). |
+| Q3 | The run-time owner-chain search (at most 8 steps, constant bound) stays in the fallback. |
+| Q4 | Borrow-returning specializations are allowed where every caller borrows; the method's own entry returns owned (SPEC 4.1). |
+| Q5 | A finalizer that would block on a lock the interrupted code holds is reported to the host and ends the instance (SPEC 4.4). |
+| Q6 | The finalizer thread: `ManagedThreadId` 2, `Name` null, `IsBackground` true (SPEC 4.4). |
+| Q7 | Scheduling-dependent free order for racy releases of shared objects is allowed; single-threaded and correctly synchronized programs stay deterministic. |
+| Q8 | As 4.3 says: an inlined call and a cheap intrinsic are not further calls; exceptional paths are; the rule covers `this` and structs with references. |
+| Q9 | Size decides specialization (deterministic); executed counts only tune the caps. |
+| Q10 | `Published` plain counts on the static hand-off proof are accepted, verified by the checked build. |
+| Q11 | Confirmed: persistent static graphs are never freed and their finalizers never run. |
+| Q12 | Confirmed: an exception that escapes an inline finalizer ends the instance. |
+| Q13 | Yes: the finalizer context has its own `[ThreadStatic]` and `AsyncLocal` state (SPEC 4.4). |
+| Q14 | 3.8's budget (at most 20% of build time, at most 25% more peak memory) is accepted as targets; the whole build still has to shrink toward NativeAOT-LLVM's. |
+
+The questions as they were put:
+
 Each needs a ruling. None is decided here.
 
 - **Q1. Region and group page return (AUDIT step 7.D, accepted 2026-11-18) and SPEC 4.3.** The 2026-11-18 decision

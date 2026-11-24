@@ -144,7 +144,8 @@ heap) are unacceptable for games and interactive pages on throttled devices.
 - **Retroactive owners.** If a borrowing value's source is written while the borrow is live, the value becomes an owner
   instead. Behaviour never changes, only cost.
 - **Specialization by ownership.** A function is specialized for the ownership its callers need. Large functions and
-  virtual-dispatch groups get one shared, borrow-first specialization. Return values are owned.
+  virtual-dispatch groups get one shared, borrow-first specialization. Return values are owned; a specialization may return a borrow where every one of its callers
+  borrows the result, while the method's own entry still returns owned.
 - **Calls (owner).** A call is the statement that ends a last-use argument's life: by default the caller lends it
   and releases it right after the call returns. When the callee keeps running after its own last use of that
   argument (a loop or further calls follow that use), the caller hands its ownership over instead, so the object is
@@ -183,9 +184,11 @@ heap) are unacceptable for games and interactive pages on throttled devices.
 - **Finalizers run** when an object's last owner releases it (or with its group), exactly once. Any timing the CLR
   allows is fine; a finalizer that never runs is a leak.
 - **Finalizers run inline (owner)**, at the store or release that frees their object, never on a separate thread or
-  later. Inside a finalizer, `Thread.CurrentThread` and `ManagedThreadId` report a finalizer thread, and locks the
-  interrupted code holds are not the finalizer's own; a finalizer that would block on such a lock (it would wait under
-  CoreCLR) throws or is reported. In a group, the order is: clear the group's short weak references, run all its
+  later. Inside a finalizer, `Thread.CurrentThread` reports a finalizer thread (`ManagedThreadId` 2, `Name` null,
+  `IsBackground` true, its own `[ThreadStatic]` and `AsyncLocal` state), and locks the interrupted code holds are not
+  the finalizer's own. A finalizer that would block on such a lock (it would wait under CoreCLR) is reported to the
+  host and ends the instance, as an exception that escapes a finalizer does (it ends the process under .NET). In a
+  group, the order is: clear the group's short weak references, run all its
   finalizers, keep the group if a finalizer gave it an outside reference again, otherwise free it.
 - **Weak references** (`WeakReference`, `WeakReference<T>`, weak and resurrection-tracking `GCHandle`s,
   `ConditionalWeakTable`, `DependentHandle`) keep .NET's observable meaning: a short weak reference reads empty before
