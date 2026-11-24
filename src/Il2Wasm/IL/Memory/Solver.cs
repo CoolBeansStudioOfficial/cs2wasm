@@ -79,10 +79,29 @@ public sealed class Solver
                 foreach (var t in s.Constructs) { _irConstructed.Add(t); Construct(t); }
                 foreach (var slot in s.Slots) if (_slotSet.Add(slot)) _slots.Add(slot);
             }
-            if (!Dispatch()) break;
+            if (!Dispatch() && !MarksReached()) break;
         }
         if (s_trace) Console.Error.WriteLine($"mem: reached {_units.Count} methods ({_units.Count(u => u.Value?.Summary != null)} imported), {_slots.Count} slots, {_constructed.Count} constructed types; {_clock.ElapsedMilliseconds} ms, live heap {(s_heap ? GC.GetTotalMemory(true) / (1 << 20) : -1)} MB, peak {System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64 >> 20} MB");
     }
+
+    /// <summary>Once a mark can be set (ObjectMarks.SetAt reached), every destroy calls ObjectMarks.OnDestroy and a
+    /// finalizable one OnFinalize (Lower/Finalizers.cs: generated code, which no IR edge shows): they are rooted, so
+    /// that their facts are solved; out of the solution, every destroy's effects were Wild. True when they were new.
+    /// IL2WASM_NO_MARKS_ROOTS=1: not rooted.</summary>
+    bool MarksReached()
+    {
+        if (s_noMarksRoots || _marksRooted) return false;
+        var setAt = _units.Keys.FirstOrDefault(m => m.GetName() == "SetAt" && m.OwningType is MetadataType mt && mt.GetName() == "ObjectMarks" && mt.GetNamespace() == "Il2Wasm.Runtime");
+        if (setAt == null) return false;
+        _marksRooted = true;
+        bool any = false;
+        foreach (var m in ((MetadataType)setAt.OwningType).GetMethods())
+            if (m.GetName() is "OnDestroy" or "OnFinalize" && !_units.ContainsKey(m)) { Root(m); any = true; }
+        return any;
+    }
+
+    bool _marksRooted;
+    static readonly bool s_noMarksRoots = Environment.GetEnvironmentVariable("IL2WASM_NO_MARKS_ROOTS") == "1";
 
     void Construct(TypeDesc t)
     {
@@ -1041,15 +1060,18 @@ public sealed partial class ProgramSolution
         System.IO.File.AppendAllText(file, sb.ToString());
     }
 
+    /// <summary>IL2WASM_DESTROY_TRACE=1: why a destroy's effects are Wild.</summary>
+    static readonly bool s_destroyTrace = Environment.GetEnvironmentVariable("IL2WASM_DESTROY_TRACE") == "1";
+
     public KeySet DestroyEffects(TypeDesc? t)
     {
         SolveFacts();
         var e = KeySet.Empty;
         foreach (int j in DestroyTargets(t ?? Object))
         {
-            if (j < 0) return KeySet.All;
+            if (j < 0) { if (s_destroyTrace) Console.Error.WriteLine($"mem: destroy of {t}: a target outside the solution (targets {string.Join(",", DestroyTargets(t ?? Object))}; marks {_onDestroy}/{_onFinalize}; finalizers {string.Join(",", _finIds!)})"); return KeySet.All; }
             e = e.Join(_facts![j].Mods, Pool).Join(_facts[j].ReleaseEffects, Pool);
-            if (e.Wild) break;
+            if (e.Wild) { if (s_destroyTrace) Console.Error.WriteLine($"mem: destroy of {t}: Wild by {Methods[j]} (Mods {(_facts[j].Mods.Wild ? "Wild" : "known")}, release effects {(_facts[j].ReleaseEffects.Wild ? "Wild" : "known")})"); break; }
         }
         return e;
     }

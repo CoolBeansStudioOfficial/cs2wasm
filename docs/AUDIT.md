@@ -5892,10 +5892,15 @@ Not run: the homelab suite and the self-host check on this commit.
     - `TypeInfo.Set` (Boundary/TypeInfo.cs, a QCall's result), "frame": the slot is an `ObjectHandleOnStack`, and
       every `ObjectHandleOnStack.Create(ref x)` in the CoreLib (18 `res` and 13 others, by grep) names a local or a
       parameter of the QCall's caller, never a field or an element: a frame variable whose address is taken.
-    - Not contracted: the span writes of MethodBaseInvoker (`copyOfArgs[i] = arg`, through `Span<object?>`'s
-      indexer: a reference from `Unsafe.Add`, a Slot store like any span's) stay Slot(object) stores, since a span
-      can be over a field (`MemoryMarshal.CreateSpan(ref field, 1)`); so does every other raw store of a reference
-      (the test: an unannotated one in a program still lands in Slot(object), SolverChecks).
+    - `MethodBaseInvoker.CheckArguments` (dotnet/runtime's file, not this repository's: the contract is by name in
+      TypeSets.RawStoresOf), "elements": its store `copyOfParameters[i] = arg` goes through `Span<object?>`'s indexer
+      (an address the solve cannot place); every caller's span (MethodBaseInvoker.cs, .Constructor.cs) is over a local
+      (`copyOfArg`), a local struct (`stackArgStorage`) or `stackalloc` memory, never a field. It was the last store of
+      an unknown value into Slot(object) in WordCount (IL2WASM_TYPESETS_SLOTS=1), so it was what made every field
+      read of a reference type unknown there.
+    - Not contracted: every other store through an address the solve cannot place, a span's included (a span can be
+      over a field: `MemoryMarshal.CreateSpan(ref field, 1)`), stays a Slot store (the test: an unannotated raw store
+      in a program still lands in Slot(its type), SolverChecks).
   - Cost: Compute takes 94-683 ms per round (6 rounds on hello world, about 1.4 s in all, the first round the
     largest); this includes solving the Mods facts, which plans read anyway (b7fd3c9 made that 2.1 s; 50e543a
     fixed it). Whole-build wall time on the busy

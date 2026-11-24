@@ -607,6 +607,7 @@ sealed class Analyzer
     {
         var e = _pb.DestroyEffects(t);
         if (!alias.Hits(e)) return false;
+        if (Borrows.Trace) _cause ??= "a release of " + t + " (destroy effects " + (e.Wild ? "*" : string.Join(",", e.Keys.Items.ToArray().Select(k => _ctx.Solution.Keys[k].ToString()))) + ")";
         Fail(g, Borrows.Stat.FlipRelease, new BorrowEvidence(e, false, false));
         return true;
     }

@@ -516,6 +516,9 @@ public sealed partial class ProgramSolution
         if (_rawStores.TryGetValue(m, out var r)) return r;
         r = m.GetTypicalMethodDefinition() is Internal.TypeSystem.Ecma.EcmaMethod em && Internal.TypeSystem.Ecma.MetadataExtensions.GetDecodedCustomAttribute(em, "Il2Wasm.Runtime", "RawStoresAttribute") is { } a
             && a.FixedArguments.Length == 1 && a.FixedArguments[0].Value is string into && into is "elements" or "frame" ? into : null;
+        // (dotnet/runtime's MethodBaseInvoker.CheckArguments, not a file of this repository: its span copyOfParameters is
+        // over a local, a stack-allocated struct or stackalloc memory in every caller, never a field)
+        if (r == null && m.GetName() == "CheckArguments" && m.OwningType is MetadataType mbi && mbi.GetName() == "MethodBaseInvoker" && mbi.GetNamespace() == "System.Reflection") r = "elements";
         return _rawStores[m] = r;
     }
 
