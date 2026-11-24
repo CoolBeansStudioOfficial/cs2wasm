@@ -213,7 +213,7 @@ public sealed class Solver
         sol.Freeze();
         sol.HeldBodies = m => _units.TryGetValue(m, out var u) && u is { Error: null, Substituted: false } ? u.Body : null;
         // (the type sets from round 1 on: round 0 cannot know its own late imports, whose stores they do not see)
-        if (state.Solves > 1) sol.SolveTypeSets(_externalRoots);
+        if (state.Solves > 1) { sol.SolveTypeSets(_externalRoots); sol.DumpTypeSets(); }
         _typeSets = sol.TypeSetsSolved;
         foreach (var m in _order)
             if (_units[m] is { Summary: { } } u)
