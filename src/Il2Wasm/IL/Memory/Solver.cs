@@ -139,6 +139,20 @@ public sealed class Solver
         foreach (var slot in _slots) sol.AddSlot(slot);
         sol.Freeze();
         if (s_trace) Console.Error.WriteLine($"mem: solved {sol.Methods.Count} methods, {sol.Slots.Count} slots; {_clock.ElapsedMilliseconds} ms");
+        if (s_trace && sol.Methods.Count > 0)
+        {
+            // (the facts solved now, to report them: they are only read, so nothing else changes)
+            long t0 = _clock.ElapsedMilliseconds;
+            int all = 0, tame = 0, lib = 0, libTame = 0;
+            foreach (var m in sol.Methods.Items)
+            {
+                bool core = m.OwningType is MetadataType { Module: var mod } && mod == m.Context.SystemModule;
+                bool t = !sol.Facts(m).Mods.Wild;
+                all++; if (t) tame++;
+                if (core) { lib++; if (t) libTame++; }
+            }
+            Console.Error.WriteLine($"mem: Mods not Wild for {tame} of {all} methods, {libTame} of {lib} CoreLib methods ({(lib == 0 ? 0 : 100.0 * libTame / lib):F1}%); facts solved in {_clock.ElapsedMilliseconds - t0} ms");
+        }
         return sol;
     }
 
@@ -299,6 +313,8 @@ public sealed class ProgramSolution
             var callees = new List<int>();
             foreach (var c in s.Calls) Callee(c, callees, ref wild, f);
             foreach (var slot in s.Slots) foreach (var c in Targets(slot)) Callee(c, callees, ref wild, f);
+            // (the static constructors a use in the body may start run inside it: their effects are the method's)
+            foreach (var t in s.Initializes) if (t.GetStaticConstructor() is { } cctor) Callee(cctor, callees, ref wild, f);
             f.Mods = new KeySet(Pool.Of(keys), wild);
             // (3.6, conservatively until DestroyEffects is solved per type: any release may run a finalizer, which
             // may write anything, when the program has one)
