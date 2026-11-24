@@ -87,6 +87,7 @@ public static class Plan
     static readonly int s_slow = int.TryParse(Environment.GetEnvironmentVariable("IL2WASM_PLAN_SLOW"), out int ms) ? ms : 0;
 
     static readonly bool s_noLoopPhiRoot = Environment.GetEnvironmentVariable("IL2WASM_NO_LOOP_PHI_ROOT") == "1";
+    static readonly bool s_noDeadVars = Environment.GetEnvironmentVariable("IL2WASM_NO_DEAD_VARS") == "1";
     static readonly bool s_loopPhiRootBreak = Environment.GetEnvironmentVariable("IL2WASM_LOOP_PHI_ROOT_BREAK") == "1";
 
     /// <summary>IL2WASM_PLAN_DUMP=text: the planned body of each method whose name contains it, on stderr.</summary>
@@ -929,6 +930,31 @@ public static class Plan
                 if (IsRef(a) && Owned(a)) entry.Code.Insert(entry.Code.IndexOf(a) + 1, Count(Opc.Retain, a, entry, RcCategory.Naive));
         }
 
+        /// <summary>The reference variables never read whose stores hold no count of their own (IL2WASM_NO_DEAD_VARS=1:
+        /// none): a store of a lent parameter into a variable nothing reads keeps nothing alive the caller does not.</summary>
+        void DeadVars(HashSet<int> dead)
+        {
+            if (s_noDeadVars) return;
+            var read = new HashSet<int>();
+            var stored = new Dictionary<int, bool>();
+            foreach (var b in _body.Blocks)
+                foreach (var n in b.Phis.Concat(b.Code))
+                {
+                    if (n.Op is Opc.VarLd or Opc.LocA) read.Add((int)n.I);
+                    else if (n.Op == Opc.VarSt && n.A.Length > 0)
+                    {
+                        int slot = (int)n.I;
+                        // (a lent parameter lives through the call: what the pinned address points into stays; a borrow of a
+                        // field could flip while the raw pointer, which no borrow tracks, is still in use)
+                        var x = n.A[0];
+                        bool borrowed = x.Kind == VK.Ref && (n.Moves & 1) == 0 && (IsTrivial(x) || KindOf(x) == OwnKind.Trivial || x.Op == Opc.Arg && KindOf(x) == OwnKind.Guaranteed);
+                        stored[slot] = (stored.TryGetValue(slot, out var all) ? all : true) && borrowed;
+                    }
+                }
+            foreach (var (slot, borrowedOnly) in stored)
+                if (borrowedOnly && !read.Contains(slot) && slot < _body.Vars.Count && _body.Vars[slot].Kind == VK.Ref && _body.Vars[slot].ArgIndex < 0) dead.Add(slot);
+        }
+
         MethodPlan Result()
         {
             var counted = new List<Node>();
@@ -938,6 +964,7 @@ public static class Plan
                 foreach (var n in b.Code) if (IsRef(n) && KindOf(n) != OwnKind.Guaranteed) counted.Add(n);
             }
             var plan = new MethodPlan(_body, counted, _phiMoves, _bases) { Entry = _ctx.Entry };
+            DeadVars(plan.DeadVars);
             foreach (var (n, k) in _kind)
                 plan.Own[n] = k switch { OwnKind.Guaranteed => OwnFact.Borrowed(_path[n]), OwnKind.Trivial => OwnFact.Trivial, _ => OwnFact.Owned };
             foreach (var (n, c) in _args) plan.Args[n] = c;

@@ -558,6 +558,10 @@ public sealed class MethodPlan
     public readonly NodeTable<RcCategory> Categories = new(RcCategory.None);
     /// <summary>The method's own entry this plan is for.</summary>
     public Variant Entry = Variant.Entry;
+    /// <summary>Reference variables no operation reads (no load, no address) whose every store is of a lent parameter
+    /// or a trivial value: lowering neither stores into them nor releases them (the pinned local of string's
+    /// `fixed (char* src = &amp;_firstChar)`, given `this`).</summary>
+    public readonly HashSet<int> DeadVars = [];
 
     public MethodPlan(Body body, List<Node> counted, HashSet<(Node, int)> phiMoves, Dictionary<Node, List<Node>> bases)
     {

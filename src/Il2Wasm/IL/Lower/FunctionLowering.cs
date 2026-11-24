@@ -241,6 +241,7 @@ sealed partial class FunctionLowering
             for (int i = 0; i < _body.Vars.Count; i++)
             {
                 var vr = _body.Vars[i];
+                if (vr.Kind == VK.Ref && _own.DeadVars.Contains(i)) continue;
                 if (vr.Kind == VK.Ref) { VarGet(i); E.Call(C.Rt.Release); }
                 else if (vr.Kind == VK.Struct && vr.ArgIndex < 0 && Kinds.Counted(vr.Type)) { VarAddr(i); StructCounts(vr.Type, false); }
             }
@@ -468,6 +469,7 @@ sealed partial class FunctionLowering
         for (int i = 0; i < _body.Vars.Count; i++)
         {
             var vr = _body.Vars[i];
+            if (vr.Kind == VK.Ref && _own.DeadVars.Contains(i)) continue;
             if (vr.Kind == VK.Ref) { VarGet(i); E.Call(C.Rt.Release); E.I32(0); VarSet(i); }
             else if (vr.Kind == VK.Struct && vr.ArgIndex < 0 && Kinds.Counted(vr.Type)) { VarAddr(i); StructCounts(vr.Type, false); VarAddr(i); E.I32(0); E.I32(SizeOfStruct(vr.Type)); E.Emit(WOp.MemoryFill); }
         }
@@ -737,6 +739,8 @@ sealed partial class FunctionLowering
             case Opc.VarSt:
             {
                 int vi = (int)n.I;
+                // (a variable nothing reads, given only a lent parameter: Plan.DeadVars)
+                if (_own.DeadVars.Contains(vi)) return;
                 if (n.A[0].Kind == VK.Ref)
                 {
                     bool oldGoes = OldReleased(n);

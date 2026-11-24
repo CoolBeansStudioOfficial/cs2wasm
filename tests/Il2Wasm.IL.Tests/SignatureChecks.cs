@@ -39,6 +39,11 @@ static class SignatureChecks
             static int Work(int k) { int s = 0; for (int i = 0; i < k; i++) s += i; return s; }
             public static int Late(Node n) { int a = Work(3); return a + n.X; }
             public static int Guard(Node n) { if (n.X < 0) Fail(); return n.X; }
+            public static unsafe int Pin(Node n) { fixed (int* p = &n.X) { return *p + 1; } }
+            static Node s_name = new Node();
+            static Node Make() => s_name;
+            public static unsafe int PinField(Node n) { fixed (int* p = &n.Next.X) { return *p + 2; } }
+            public static unsafe int PinNew(int k) { fixed (int* p = &Make().X) { return *p + k; } }
             static void Fail() => throw new Exception();
             public static void Main()
             {
@@ -52,6 +57,7 @@ static class SignatureChecks
                 t.L = new T { V = 2 };
                 Console.WriteLine(W(t));
                 Console.WriteLine(Walk());
+                Console.WriteLine(Pin(n) + PinField(n) + PinNew(2));
             }
         }
         """;
@@ -65,6 +71,7 @@ static class SignatureChecks
         // (the last plan of Main and of each of W's entries: the variants their calls of W take)
         var callees = new Dictionary<string, string>();
         string? walkPhi = null;
+        var deadVars = new Dictionary<string, int>();
         Plan.Built = (ctx, plan) =>
         {
             if (ctx.Method.OwningType is MetadataType wt && wt.GetName() == "S" && ctx.Method.GetName() == "Walk")
@@ -73,6 +80,8 @@ static class SignatureChecks
                 var phi = ctx.Body.Blocks.SelectMany(b => b.Phis).LastOrDefault(x => x.Kind == Il2Wasm.IL.Ir.VK.Ref && x.A.Any(a => a.Op == Il2Wasm.IL.Ir.Opc.LdFld));
                 lock (callees) walkPhi = phi == null ? "no phi" : plan.Own[phi].Kind.ToString();
             }
+            if (ctx.Method.OwningType is MetadataType pt && pt.GetName() == "S" && ctx.Method.GetName() is "Pin" or "PinField" or "PinNew")
+                lock (callees) deadVars[ctx.Method.GetName()] = plan.DeadVars.Count;
             if (ctx.Method.OwningType is not MetadataType ot || ot.GetName() != "S" || ctx.Method.GetName() is not ("Main" or "W")) return;
             var calls = ctx.Body.Blocks.SelectMany(b => b.Code).Where(n => n.Op == Il2Wasm.IL.Ir.Opc.Call && n.X is MethodDesc cm && cm.GetName() == "W");
             lock (callees) callees[ctx.Method.GetName() + ctx.Entry.Suffix] = string.Join(" ", calls.Select(n => plan.Callees[n].Suffix is { Length: > 0 } s ? s : "entry"));
@@ -104,5 +113,12 @@ static class SignatureChecks
         // head, which the phi's uses keep alive (Plan.PhiRootInput; IL2WASM_NO_LOOP_PHI_ROOT=1: Owned; the break twin
         // IL2WASM_LOOP_PHI_ROOT_BREAK=1 takes any Owned input, and the verifier rejects it, check 7)
         c.Eq("a loop phi whose Owned input is its root: borrowed", walkPhi, "Guaranteed");
+        // a pinned local nothing reads, given only a lent parameter: neither stored into nor released
+        // (Plan.DeadVars; IL2WASM_NO_DEAD_VARS=1: none); given a call's result, which it owns, it keeps its count
+        bool noDead = Environment.GetEnvironmentVariable("IL2WASM_NO_DEAD_VARS") == "1";
+        c.Eq("a pinned borrow nothing reads: a dead variable", deadVars.GetValueOrDefault("Pin", -1), noDead ? 0 : 1);
+        c.Eq("a pinned call result: no dead variable", deadVars.GetValueOrDefault("PinNew", -1), 0);
+        // (a borrow of a field could flip while the raw pointer, which no borrow tracks, is in use: it keeps its count)
+        c.Eq("a pinned field's borrow: no dead variable", deadVars.GetValueOrDefault("PinField", -1), 0);
     }
 }
