@@ -6008,3 +6008,78 @@ Not run: the homelab suite and the self-host check on this commit.
   - hello world: no time gain (19.6-20.2 s against 19.5-20.0 s) and peak 456-517 MB against 466-483 MB;
   - f06: no time gain (22.8-24.9 s against 22.7-24.1 s) and peak 633-660 MB against 594-599 MB.
   A single import with the decisions kept is as cheap as the copy.
+### Memory model S1 row c: the OSSA planner and the pairing verifier (claude/s1-plan, 2026-11-24)
+
+- What: `IL/Memory/Plan.cs` replaces `Ownership.Insert` under `IL2WASM_MEM_PLAN=1`, on Ownership's own analysis
+  (`Ownership.Analyze`, now public). `Ownership.Run`, the naive plan, stays the default and `IL2WASM_MEM_NAIVE`'s
+  baseline. Every counted value is Owned, Guaranteed or Trivial:
+  - parameters follow the planned entry's convention: Lend is `Guaranteed(Arg)` (no retain on entry, no release,
+    4.2); HandOver (an owned variant's mask) is Owned without the entry retain; a method outside the solution keeps
+    the naive entry retain, because generated code (rt.destroy, dispatch stubs, delegate Invoke, the start) calls it;
+  - Borrows' Guaranteed loads, phis and borrowed-return results are taken where lowering can leave them uncounted,
+    validated to a fixed point (a `Val` root must be Owned; a phi borrows only over Guaranteed or Trivial inputs); a
+    Guaranteed value's uses keep its root alive;
+  - at direct sites the call rule's HandOver bits make the mask, `ChooseVariant` picks the variant, and each operand
+    is HandOver (a Moves bit), KeepAlive or Lend (`Args`, `Callees`, as row f lowers them); a borrowed result needs
+    the borrowed-return entry and that entry a borrowed result (an Owned return there is rejected by the verifier);
+  - 7.3: a phi of addresses has its inputs' bases, and a struct with references is a base of an address made from
+    it; GC.KeepAlive's argument is held by this frame (a borrow whose root may be written flips); a dead Owned phi
+    is released at its block's entry;
+  - 7.4, the returned-span keeper: at a return whose address's object only this function holds (made, given by a
+    call, handed over, or a keeper taken from a call), `Rt.ReturnKeepers.Hold(addr)` counts the object the returned
+    address points into, once per return; after every call to a target that may keep, `Rt.ReturnKeepers.Take(addr)`
+    gives that count to the caller as an Owned base of the result, released at the result's last use. A take matches
+    only the newest hold and only if the returned address points into it. `MayKeep` is a least fixed point over the
+    calls, the same predicate on both sides. The ring is a nested class with statics of its own (the naive module is
+    unchanged). **S3: the ring must become per thread.** An overflow (a hold pushed out before its take) frees late:
+    the checked build traps on it. `IL2WASM_NO_RETURN_KEEP=1` turns the keeper off.
+  - A body planned again (Canon) has its earlier plan taken out first; facts the solution does not have are read as
+    Owned.
+- `IL/Memory/Verify.cs` (`IL2WASM_VERIFY=1`, Debug builds): a forward may/must analysis of each Owned value's count
+  over normal and exceptional edges (every state in a try reaches its handlers; a leave's own edge stands for the path
+  through its finally): no count left at a return on any path (the planner's recorded naive keeps aside), no use where
+  a count may be gone, no value made again while it may hold one, every Owned value in CountedValues; Guaranteed roots
+  held at every use; an address's own bases held on some path (a variable's bases are everything ever stored in it,
+  more than a path holds, by design); Moves bits only on consuming operands or handed-over arguments; Guaranteed phis
+  over Guaranteed inputs; argument conventions against the variant; no atomic kinds without threads; every may-keep
+  call followed by its take. Switches: `IL2WASM_VERIFY_DUMP=1` (the body on a failure), `IL2WASM_PLAN_DUMP=<text>`,
+  `IL2WASM_PLAN_STATS=1`, `IL2WASM_PLAN_SLOW=<ms>`.
+- Naive-plan bugs the verifier found, fixed in `Ownership.cs` too, each with an IL test that fails on main:
+  - a struct with references was not a base of an address made from it: `ref At(Make(n))` freed the array under the
+    byref (f20_struct_bases: main prints -116, .NET 4246);
+  - a dead phi (a conditional's value nothing uses once a constant branch is gone) kept its count, an object per pass
+    (f21_dead_phi: main "20 True", .NET "20 False"; NetWasm's SortedSet<T>.Enumerator.MoveNext has the shape).
+- Tests [run, desk]: IL tests 113 of 113 with `IL2WASM_MEM_PLAN=1 IL2WASM_VERIFY=1` (1,154,286 plans verified, none
+  failed; 2,322 keepers held, 6,234 takes, every keep handed on), 111 of 111 naive (f19 runs with the plan only). New
+  `f19_returned_keepers` with two new FrameworkPrograms headers (`// plan: only`, `// live: n`): spans and byrefs over
+  callee-made objects, a keeper handed on through a second function, and NetWasm's fixture-memory.collector-retention
+  shape (`ref new Payload().Number`, row e's repro): 245 objects live at exit with the plan (hello world's 46 and the
+  number-string cache's 199), both weak references dead as under .NET; 945 and alive with `IL2WASM_NO_RETURN_KEEP=1`
+  (the test fails) and in the naive plan.
+- NetWasm suite [run, desk, shipped], case by case against main's 283/159/7/1 (pass/fail/not compiled/timed out):
+  - planned and verified (fb10c7e): 284/157/8/1; no case main passes lost, one gained
+    (CoreLibScalarCorpusTests.ClampSignAndAbsThrowWithDesktopsMessages); 7 of the 8 not compiled are main's intrinsic
+    errors, the 8th a verifier false alarm on a case main fails at run time, fixed in a8b3f3a;
+  - naive with the two fixes (a8b3f3a): 283/159/7/1, every case-mode the same status as main.
+- Hello world [run, desk]: naive bytes identical to main's, fixes included. Planned 1,306,945 B against 1,375,189 B
+  (with object counting; the lent parameters' entry retains and last-use releases gone); 46 objects live at exit
+  both. Compile time, interleaved, a loaded desk: naive 24.2-24.8 s, planned 24.5-27.3 s, planned with the verifier
+  24.8-25.9 s. sut-simdcodecs: naive 147 s, planned 584 s until the planner stopped reading the solved facts where it
+  needs nothing from them, then planned and verified 93 s: `ProgramSolution.Facts`' first use per round solves the
+  whole program's Mods, 112 s there (routed to the solver's owner; rows a and b read Facts, so it comes back).
+- Removal share: not measured. With rows a and b as stubs the only dynamic change is the parameter convention; the
+  share needs row e's counters and rows a, b and f together.
+- Not done: row d's `Inline.SourceFactOf` (not on main yet) is not read; row a's `ConventionOf`/`Owns`/`ParamOf` are
+  mirrored in Plan.cs with the same rules until row a lands; the ring's overflow count has no reporter outside the
+  checked build's trap (none seen); FrameOwned/Virtual allocations are not planned (no `Allocs` set). Not run: the
+  homelab suite, stress, the self-host check (the old front end and the back end are unchanged; the runtime change is
+  a new nested class only the planned IL front end calls).
+- With rows a, b, d, e and f on main (merged at a7c1646) [run, desk]: Plan.cs reads row a's `Owns`/`ParamOf` and row
+  d's `Inline.SourceFactOf` (an inlined node's borrow carries over when rooted in a value of this body or a static).
+  The first integrated run found a planner bug: a Guaranteed operand made its root live before the operation's own
+  root check, so a root whose last use was through a borrow (row b's `Arg(0).f` load in an uncovered method, the
+  naive-convention parameter) was never released (SharedArrayPool.Rent; the verifier caught it). Fixed. Removal share
+  by tools/il-rcstats.mjs (planned against IL2WASM_MEM_NAIVE=1, executed count operations): hello world 68.9% (78.6%
+  outside the runtime), keep.cs 55.9% (68.0%), f19_returned_keepers 43.9% (66.4%). f19's objects live at exit with
+  the plan are 234 on today's main (its object counting changed; naive 934). Not run with the rows integrated: the
+  NetWasm suite (the planned run above is at fb10c7e, rows a, b, d, e, f still stubs).

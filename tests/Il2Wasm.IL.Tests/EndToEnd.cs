@@ -94,7 +94,7 @@ static class EndToEnd
     }
 
     /// <summary>A program against the framework (the real CoreLib): its module's bytes.</summary>
-    public static byte[] CompileOnFramework(string dir, string name, string source)
+    public static byte[] CompileOnFramework(string dir, string name, string source, bool countObjects = false)
     {
         var refs = Directory.GetFiles(dir, "*.dll");
         var dll = Build.Compile(name, [source], refs.Where(r => !Path.GetFileName(r).StartsWith("System.Private.CoreLib")).Append(Path.Combine(dir, "System.Private.CoreLib.dll")).ToArray());
@@ -103,6 +103,7 @@ static class EndToEnd
         ctx.SetCoreLib();
         var entry = ctx.Load(name).EntryPoint!;
         var comp = new IlCompiler(ctx);
+        if (countObjects) comp.CountObjects = true;
         if (File.Exists(Path.Combine(dir, "il2wasm.natives.txt"))) comp.LoadNatives(Path.Combine(dir, "il2wasm.natives.txt"));
         return Dump("fw." + name, comp.Compile(entry));
     }
@@ -127,18 +128,25 @@ static class EndToEnd
             var name = Path.GetFileNameWithoutExtension(file);
             if (!c.WantsProgram(name)) continue;
             var src = File.ReadAllText(file);
+            // ("// plan: only": a program whose output depends on the memory model's plan, IL2WASM_MEM_PLAN=1; the naive
+            // plan is the baseline that leaks there. "// live: n": with the plan, the objects live at exit, counted)
+            var lines = src.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
+            if (lines.Contains("// plan: only") && !Il2Wasm.IL.Memory.Pipeline.Planned) { c.Info($"{name}: with IL2WASM_MEM_PLAN=1 only"); continue; }
+            int expectLive = lines.FirstOrDefault(l => l.StartsWith("// live: ")) is { } ll ? int.Parse(ll[9..].Trim()) : -1;
             string expected, actual;
             try { expected = Build.Oracle(name, src); }
             catch (Exception e) { c.True($"{name}: the oracle ran ({e.Message})", false); continue; }
+            int live = -1;
             try
             {
-                var wasm = CompileOnFramework(fw, name, src);
+                var wasm = CompileOnFramework(fw, name, src, countObjects: expectLive >= 0);
                 actual = Run(wasm, name);
                 int at = actual.LastIndexOf("live: ", StringComparison.Ordinal);
-                if (at >= 0) actual = actual[..at];
-                c.Info($"{name}: {wasm.Length} bytes");
+                if (at >= 0) { if (expectLive >= 0) live = int.Parse(actual[(at + 6)..].Trim()); actual = actual[..at]; }
+                c.Info($"{name}: {wasm.Length} bytes" + (live >= 0 ? $", {live} objects live at the end" : ""));
             }
             catch (Exception e) { actual = "(compile failed) " + e.Message; }
+            if (expectLive >= 0) c.Eq($"{name}: objects live at the end (no leak)", live, expectLive);
             if (actual != expected)
             {
                 c.True(name, false);

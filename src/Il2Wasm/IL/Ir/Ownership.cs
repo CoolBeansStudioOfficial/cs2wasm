@@ -33,13 +33,13 @@ public static class Ownership
     /// object an operand address points into): field and element addresses, a box's data, address arithmetic and
     /// conversion, and a call's returned byref (a span's, an array's data reference, an accessor's). A pointer loaded
     /// from memory points into nothing known here.</summary>
-    static bool Derives(Node n) => n.Kind == VK.Ptr && n.Op is Opc.LdFldA or Opc.LdElemA or Opc.Unbox or Opc.Bin or Opc.Conv or Opc.Call or Opc.CallI
+    internal static bool Derives(Node n) => n.Kind == VK.Ptr && n.Op is Opc.LdFldA or Opc.LdElemA or Opc.Unbox or Opc.Bin or Opc.Conv or Opc.Call or Opc.CallI
         || ByRefLike(n) && n.Op is Opc.Call or Opc.CallI or Opc.NewObj or Opc.LdObj or Opc.MkRefAny
         || n.Kind == VK.Ptr && n.Op == Opc.RefAnyVal
         || n.Kind == VK.I32 && n.Op == Opc.Call && IsAddressOf(n);
 
     /// <summary>A value of a byref-like struct (a Span: it holds an address into an object, so it keeps it as one).</summary>
-    static bool ByRefLike(Node n) => n.Kind == VK.Struct && n.Type is Internal.TypeSystem.DefType { IsByRefLike: true };
+    internal static bool ByRefLike(Node n) => n.Kind == VK.Struct && n.Type is Internal.TypeSystem.DefType { IsByRefLike: true };
 
     /// <summary>il-runtime: the runtime's own addresses of an object as an int (Rt.AddressOf, ArrayData, StringData):
     /// the runtime's C# was written for the operation-tree front end, which kept a local to the end of its scope, so
@@ -60,7 +60,7 @@ public static class Ownership
 
     /// <summary>The bases of each derived address, in definition order (an address of an address has its bases).
     /// Phis are not followed: an address carried around a loop does not keep its object.</summary>
-    static void FindBases(Body body, Info info)
+    internal static void FindBases(Body body, Info info)
     {
         // (a variable of an address or a span (a local the IL stores a Span in, a ref local in the frame): everything
         // ever stored into it, for every read of it, wherever it is: a span local read in a loop keeps the array it
@@ -84,7 +84,9 @@ public static class Ownership
                     else if (Derives(n))
                         foreach (var a in n.A)
                         {
-                            if (a.Kind == VK.Ref && a.Op is not (Opc.LdNull or Opc.LdStr)) (l ??= []).Add(a);
+                            // (a struct with references is a base too: a span made from an ArraySegment points into
+                            // the array the segment holds)
+                            if (IsRef(a) && a.Op is not (Opc.LdNull or Opc.LdStr)) (l ??= []).Add(a);
                             else if (info.Bases.TryGetValue(a, out var ab)) (l ??= []).AddRange(ab);
                         }
                     if (l == null) continue;
@@ -96,7 +98,7 @@ public static class Ownership
 
     /// <summary>A reference that something besides this function holds: an argument (the caller's), one loaded from
     /// a field, element, static, variable or address, or a cast of one (castclass, isinst, Unsafe.As).</summary>
-    static bool HeldElsewhere(Node v) => v.Op is Opc.Arg or Opc.LdFld or Opc.LdElem or Opc.LdSFld or Opc.VarLd or Opc.LdInd
+    internal static bool HeldElsewhere(Node v) => v.Op is Opc.Arg or Opc.LdFld or Opc.LdElem or Opc.LdSFld or Opc.VarLd or Opc.LdInd
         || v.Op is Opc.CastClass or Opc.IsInst && HeldElsewhere(v.A[0])
         || v.Op == Opc.Call && v.A.Length == 1 && v.A[0].Kind == VK.Ref && v.X is Internal.TypeSystem.MethodDesc m && m.GetName() == "As"
             && m.OwningType is Internal.TypeSystem.MetadataType { Name: var _ } ut && ut.GetName() == "Unsafe" && HeldElsewhere(v.A[0]);
@@ -105,7 +107,7 @@ public static class Ownership
     static IEnumerable<Node> Kept(Node a, Info info) => IsRef(a) ? [a] : info.Bases.TryGetValue(a, out var l) ? l : [];
 
     /// <summary>A value that holds counts: a reference, or a struct with references in it.</summary>
-    static bool IsRef(Node n) => n.Kind == VK.Ref || n.Kind == VK.Struct && n.Type != null && Kinds.Counted(n.Type);
+    internal static bool IsRef(Node n) => n.Kind == VK.Ref || n.Kind == VK.Struct && n.Type != null && Kinds.Counted(n.Type);
 
     /// <summary>Operand i of n takes a count (a store of it).</summary>
     public static bool Consumes(Node n, int i) => n.Op switch
@@ -115,13 +117,21 @@ public static class Ownership
         _ => false,
     };
 
-    public static Info Run(Body body)
+    /// <summary>The analysis without the insertion (Memory/Plan.cs builds on it): the edges split, the reference
+    /// values, the bases and the naive liveness.</summary>
+    public static Info Analyze(Body body)
     {
         SplitEdges(body);
         var info = new Info();
         foreach (var b in body.Blocks) { foreach (var n in b.Phis) if (IsRef(n)) info.RefValues.Add(n); foreach (var n in b.Code) if (IsRef(n)) info.RefValues.Add(n); }
         FindBases(body, info);
         Liveness(body, info);
+        return info;
+    }
+
+    public static Info Run(Body body)
+    {
+        var info = Analyze(body);
         foreach (var b in body.Blocks) Insert(body, b, info);
         // the arguments are counted on entry
         // (each right after its argument: before the release of an argument nothing uses, which follows it)
@@ -133,7 +143,7 @@ public static class Ownership
 
     /// <summary>An edge from a block with several successors into a block with phis gets a block of its own, where the
     /// phis' copies go.</summary>
-    static void SplitEdges(Body body)
+    internal static void SplitEdges(Body body)
     {
         foreach (var p in body.Blocks.ToList())
         {
@@ -166,7 +176,7 @@ public static class Ownership
     public static IEnumerable<Block> BlocksWithin(Region r) => r.Blocks.Concat(r.Children.SelectMany(BlocksWithin));
 
     /// <summary>A finally's end continues to its try's leave targets (the leaves run the finally first).</summary>
-    static Dictionary<Block, List<Block>> FinallyEnds(Body body)
+    internal static Dictionary<Block, List<Block>> FinallyEnds(Body body)
     {
         var d = new Dictionary<Block, List<Block>>();
         foreach (var r in body.Regions)
@@ -179,7 +189,7 @@ public static class Ownership
         return d;
     }
 
-    static void Liveness(Body body, Info info)
+    internal static void Liveness(Body body, Info info)
     {
         var ends = FinallyEnds(body);
         foreach (var b in body.Blocks) { info.LiveIn[b] = []; info.LiveOut[b] = []; }
@@ -308,6 +318,8 @@ public static class Ownership
                     }
         dead.ExceptWith(info.LiveIn[b]);
         foreach (var phi in b.Phis) dead.Remove(phi);
+        // (a phi nothing uses: its count, moved or copied in, goes at once, or it is lost on every pass)
+        foreach (var phi in b.Phis) if (IsRef(phi) && !live.Contains(phi)) dead.Add(phi);
         foreach (var v in dead.OrderBy(v => v.Id)) output.Add(Count(Opc.Release, v, b, body));
         output.Reverse();
         // (a handler's caught value comes first, before what its entry releases)
