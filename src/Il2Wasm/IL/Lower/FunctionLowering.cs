@@ -18,7 +18,7 @@ sealed partial class FunctionLowering
 {
     readonly IlCompiler C;
     readonly Body _body;
-    readonly Ownership.Info _own;
+    readonly Il2Wasm.IL.Memory.MethodPlan _own;
     readonly WasmFunction _fn;
     readonly Emitter E;
     readonly Dictionary<Node, int> _local = new();
@@ -29,7 +29,7 @@ sealed partial class FunctionLowering
     readonly Dictionary<Region, int> _filterResult = new();
     readonly Dictionary<Region, Label> _finallyEnd = new();
 
-    public FunctionLowering(IlCompiler c, Body body, Ownership.Info own, WasmFunction fn)
+    public FunctionLowering(IlCompiler c, Body body, Il2Wasm.IL.Memory.MethodPlan own, WasmFunction fn)
     {
         C = c; _body = body; _own = own; _fn = fn; E = new Emitter(fn);
         foreach (var a in body.Args) _local[a] = (int)a.I;
@@ -172,14 +172,14 @@ sealed partial class FunctionLowering
             for (int i = 0; i < 3; i++) { if (i < ps.Length && ps[i] == ValType.I32) E.Get(i); else E.I32(0); }
             E.Call(C.TraceImport);
         }
-        bool hasRefs = _own.RefValues.Count > 0 || _body.Vars.Any(v => v.Kind == VK.Ref) || _fb >= 0;
+        bool hasRefs = _own.CountedValues.Count > 0 || _body.Vars.Any(v => v.Kind == VK.Ref) || _fb >= 0;
         if (_fb >= 0)
         {
             E.GGet(C.StackPointer); E.I32(_frameSize); E.Op(WOp.I32Sub); E.Tee(_fb); E.GSet(C.StackPointer);
             E.Get(_fb); E.I32(0); E.I32(_frameSize); E.Emit(WOp.MemoryFill);
         }
         // (pre-create the locals of the reference values: the cleanup below names them all)
-        foreach (var v in _own.RefValues) if (v.Op != Opc.Const && v.Kind != VK.Struct) L(v);
+        foreach (var v in _own.CountedValues) if (v.Op != Opc.Const && v.Kind != VK.Struct) L(v);
         // (the shape the back end's passes know: block $ok, block $c (exnref), try_table, the body, br $ok)
         Label? cleanup = null, ok = null;
         int exn = -1;
@@ -199,7 +199,7 @@ sealed partial class FunctionLowering
             E.End();
             // an exception leaves the function: every count it holds is released
             E.Set(exn);
-            foreach (var v in _own.RefValues)
+            foreach (var v in _own.CountedValues)
             {
                 if (v.Kind == VK.Struct) { Get(v); StructCounts(v.Type!, false); }
                 else if (_local.TryGetValue(v, out int l)) { E.Get(l); E.Call(C.Rt.Release); }

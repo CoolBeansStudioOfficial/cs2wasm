@@ -72,6 +72,7 @@ public sealed partial class IlCompiler
         Module.Globals.Add(StackPointer);
         Rt = new RtFns(this);
         Facts.Resolve = Implementation;
+        if (RcStats.On) RcStats = new RcStats(this);
         _literalAt = [];
         // (string's type id is fixed at 1: the CoreLib's string allocation writes it)
         Constructed(_ctx.GetWellKnownType(WellKnownType.String));
@@ -112,6 +113,7 @@ public sealed partial class IlCompiler
                 var next = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, Checked = Checked, _round = r };
                 foreach (var p in _nativePaths) next.LoadNatives(p);
                 next.Facts.Previous = facts;
+                c.SeedNext(next);
                 var m = next.Reach(entry);
                 var nf = next.Facts.Close(next.SlotImplementations(), next._constructedOrder);
                 // (stable: the same facts, or the same reach and as many facts of each kind; an argument's value can
@@ -141,7 +143,64 @@ public sealed partial class IlCompiler
         return r;
     }
 
+    /// <summary>One round over the whole program, in the three phases of docs/MEMORY-IR.md 1.2: reach (every method
+    /// reached is imported and summarized, nothing lowered: Memory/Solver.cs), the solve, then lowering from main in
+    /// the order lowering reaches methods (each one planned, then lowered with the body the reach phase imported).</summary>
     WasmFunction Reach(MethodDesc entry)
+    {
+        ReachPhase(entry);
+        SolvePhase();
+        var main = LowerPhase(entry);
+        _solver!.Report();
+        return main;
+    }
+
+    /// <summary>Phase 1: the program reached from its roots (the entry and the exports), each method imported.</summary>
+    void ReachPhase(MethodDesc entry)
+    {
+        _solver = new Il2Wasm.IL.Memory.Solver(this);
+        _solver.Root(entry);
+        if (entry.OwningType is MetadataType { Module: EcmaModule em }) foreach (var (_, m) in ExportMethods(em)) _solver.Root(m);
+        // (what the round before's generated code reached and constructed: the parts lowering makes, which the IR
+        // does not show; each round reaches a subset of the round before's program, so these are a sound start)
+        if (_seedMethods != null) foreach (var m in _seedMethods) _solver.Root(m);
+        if (_seedTypes != null) foreach (var t in _seedTypes) _solver.SeedConstructed(t);
+        _solver.Reach();
+    }
+
+    List<MethodDesc>? _seedMethods;
+    List<TypeDesc>? _seedTypes;
+
+    /// <summary>The next round's seeds from this round: the methods lowering imported itself and this round's seeds
+    /// that were lowered, and the types lowering constructed that the reach phase did not see in the IR.</summary>
+    void SeedNext(IlCompiler next)
+    {
+        next._seedMethods = (_seedMethods ?? []).Where(_solver!.WasLowered).Concat(_solver.LateMethods).Distinct().ToList();
+        next._seedTypes = _constructedOrder.Where(t => !_solver.IsConstructed(t)).ToList();
+        // (this round's solve is done with: its summaries go)
+        _solver = null;
+        Solution = null;
+    }
+
+    /// <summary>Phase 2: the whole-program solution (what plans read).</summary>
+    void SolvePhase()
+    {
+        Solution = _solver!.Solve();
+        if (Il2Wasm.IL.Memory.Pipeline.Planned) Il2Wasm.IL.Memory.Signatures.Compute(Solution);
+    }
+
+    /// <summary>Executed counts per count site (IL2WASM_COUNT_RC=1, Lower/RcStats.cs), or null.</summary>
+    internal readonly RcStats? RcStats;
+
+    Il2Wasm.IL.Memory.Solver? _solver;
+    /// <summary>IL2WASM_MEM_TRACE=2: each method lowering imports itself (not reached by the reach phase), with what
+    /// reached it.</summary>
+    static readonly bool s_lateTrace = Environment.GetEnvironmentVariable("IL2WASM_MEM_TRACE") == "2";
+    /// <summary>The round's whole-program solution (null before the solve phase).</summary>
+    internal Il2Wasm.IL.Memory.ProgramSolution? Solution;
+
+    /// <summary>Phase 3: every method reached from main lowered (and the generated parts, and what they reach).</summary>
+    WasmFunction LowerPhase(MethodDesc entry)
     {
         var main = FunctionFor(entry);
         // il-runtime: [UnmanagedCallersOnly(EntryPoint)] exports, wrapped (Exports.cs)
@@ -319,12 +378,17 @@ public sealed partial class IlCompiler
         // (IL2WASM_IL_WHY=name: for each method whose name contains it, the chain of methods that first reached it)
         if (Environment.GetEnvironmentVariable("IL2WASM_IL_WHY") is { Length: > 0 } why && m.ToString()!.Contains(why))
             Console.Error.WriteLine($"why {m}:{WhyReached(m)}");
+        // (the body the reach phase imported; a method only lowering reaches is imported now: a late import)
+        var u = _solver?.Take(m);
+        if (u == null)
+        {
+            u = ImportMethod(m);
+            _solver?.Late(u);
+            if (s_lateTrace) Console.Error.WriteLine($"mem: late {m} <- {(_why.GetValueOrDefault(m) is { } w ? w.ToString() : _whyDispatch.TryGetValue(m, out var d) ? "dispatch " + d.slot : "generated")}");
+        }
+        if (u.ErrorBeforeImport) u.Error!.Throw();
         var typical = m.GetTypicalMethodDefinition() as EcmaMethod;
-        MethodIL? il = typical != null ? EcmaMethodIL.Create(typical) : null;
-        if (il != null && m != typical) il = new InstantiatedMethodIL(m, il);
-        // ([UnsafeAccessor]: a body made for the instantiation)
-        il ??= UnsafeAccessors.Body(m);
-        if (il == null)
+        if (u.Il == null)
         {
             Warnings.Add($"{m} has no IL body: it traps");
             new Emitter(f).Op(WOp.Unreachable);
@@ -341,10 +405,13 @@ public sealed partial class IlCompiler
         }
         try
         {
-            var body = Facts.Import(m, il);
-            var own = Ownership.Run(body);
+            // (this round's facts from the method's constant propagation, recorded where its import used to be)
+            if (u.Summary != null) Facts.Merge(u.Summary);
+            u.Error?.Throw();
+            var body = u.TakeBody()!;
+            var plan = PlanMethod(m, body);
             if (s_dump != null && m.ToString().Contains(s_dump)) Console.Error.WriteLine($"== {m}\n{body.Dump()}");
-            new FunctionLowering(this, body, own, f).Run();
+            new FunctionLowering(this, body, plan, f).Run();
         }
         catch (Exception e) when (e is NotSupportedException or InvalidProgramException)
         {
@@ -891,6 +958,8 @@ public sealed partial class IlCompiler
     {
         // il-runtime: the first pass's functions (before the type tests: they make some)
         EmitEhSupport();
+        // (the executed-count table and its dump: Lower/RcStats.cs)
+        RcStats?.EmitLate();
         // type ids: 1 is string's (CoreLib's contract); the others in a preorder of the class hierarchy from 2
         CloseTypeIds();
         foreach (var t in _types.ToList()) if (IsReflectable(t)) StringLiteral(TypeName(t));

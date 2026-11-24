@@ -17,18 +17,7 @@ public sealed partial class IlCompiler
     /// <summary>Each [UnmanagedCallersOnly(EntryPoint = ...)] method of the module, compiled and exported.</summary>
     void RootExports(EcmaModule module)
     {
-        foreach (var t in module.GetAllTypes())
-        {
-            if (t.HasInstantiation) continue;
-            foreach (var m in t.GetMethods())
-            {
-                if (m is not EcmaMethod em || !m.Signature.IsStatic || m.HasInstantiation) continue;
-                if (em.GetDecodedCustomAttribute("System.Runtime.InteropServices", "UnmanagedCallersOnlyAttribute") is not { } a) continue;
-                var name = a.NamedArguments.FirstOrDefault(x => x.Name == "EntryPoint").Value as string;
-                if (name == null) continue;
-                Export(name, m);
-            }
-        }
+        foreach (var (name, m) in ExportMethods(module)) Export(name, m);
     }
 
     void Export(string name, MethodDesc m)

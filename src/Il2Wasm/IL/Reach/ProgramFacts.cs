@@ -29,62 +29,41 @@ public sealed class ProgramFacts : ISccpOracle
 
     public ProgramFacts() { Pure = new PureCalls(Substitutions); }
 
-    public Body Import(MethodDesc m, MethodIL il)
+    /// <summary>A method imported: the importer, the constant propagation with these facts, and when it decided a
+    /// branch or a call, the import again with them. Nothing of this round's facts is written here: the summary
+    /// (Memory/Summary.cs) carries what the constant propagation saw, and <see cref="Merge"/> records it when lowering
+    /// reaches the method (the reach phase imports before lowering, in an order of its own).</summary>
+    public Body Import(MethodDesc m, MethodIL il, Il2Wasm.IL.Memory.IReachHost host, out Il2Wasm.IL.Memory.MethodSummary? summary, out ImportFacts? facts)
     {
+        summary = null;
+        facts = null;
         var body = Importer.Import(m, il);
-        if (Off) return body;
+        if (Off) { summary = Il2Wasm.IL.Memory.MethodSummary.Build(m, null, null, body, host); return body; }
         var s = Sccp.Solve(body, this);
-        Record(m, body, s);
-        var facts = Sccp.Facts(body, s);
-        return facts == null ? body : Importer.Import(m, il, facts);
+        // (set before the second import: when it throws, the caller still records what the first one saw)
+        summary = Il2Wasm.IL.Memory.MethodSummary.FromConstants(m, body, s);
+        facts = Sccp.Facts(body, s);
+        var final = facts == null ? body : Importer.Import(m, il, facts);
+        summary.AddEdges(final, host);
+        return final;
     }
 
-    void Record(MethodDesc m, Body body, Sccp s)
+    /// <summary>This round's facts from one method's summary: what each import recorded before the phase split, in the
+    /// same order (each kind of fact in node order).</summary>
+    public void Merge(Il2Wasm.IL.Memory.MethodSummary sum)
     {
-        var direct = new HashSet<MethodDesc>();
-        _directCallees[m] = direct;
-        var ret = Val.Top;
-        foreach (var b in s.ExecutableBlocks)
-            foreach (var n in b.Code)
-                switch (n.Op)
-                {
-                    case Opc.StFld when n.X is FieldDesc sf:
-                        _fields[sf] = _fields.TryGetValue(sf, out var fv) ? Val.Meet(fv, s.ValueOf(n.A[1])) : s.ValueOf(n.A[1]);
-                        break;
-                    case Opc.LdFldA when n.X is FieldDesc af:
-                        _fields[af] = Val.Bottom;
-                        break;
-                    case Opc.Ret when n.A.Length > 0:
-                        ret = Val.Meet(ret, s.ValueOf(n.A[0]));
-                        break;
-                    case Opc.StSFld: case Opc.LdSFldA:
-                        if (n.X is FieldDesc f) { _written.Add(f); _written.Add(f.GetTypicalFieldDefinition()); }
-                        break;
-                    case Opc.TypeOf: case Opc.LdToken: case Opc.MkRefAny: // (__reftype gives a TypedReference's type object)
-                        if (n.X is TypeDesc tt) TypeObjects.Add(tt);
-                        break;
-                    case Opc.LdFtn: case Opc.LdVirtFtn:
-                        if (n.X is MethodDesc fm) _indirect.Add(fm);
-                        break;
-                    case Opc.Call when n.X is MethodDesc am && am.GetName() is "CreateInstance" or "MakeArrayType" && n.A.Length > 0 && n.A[0].Op == Opc.TypeOf && n.A[0].X is TypeDesc et
-                        && am.OwningType is MetadataType { Name: var _ } amt && amt.GetNamespace() == "System" && amt.GetName() is "Array" or "Type" or "RuntimeType" or "Activator":
-                        // (an array made at run time of a type the code names: Array.CreateInstance(typeof(X), n), typeof(X).MakeArrayType())
-                        ArrayElementTypes.Add(et);
-                        if ((CallKind)n.Sub == CallKind.Direct) { direct.Add(am); Meet(am, n.A.Select(s.ValueOf).ToArray()); }
-                        break;
-                    case Opc.Call when (CallKind)n.Sub == CallKind.Direct && n.X is MethodDesc cm:
-                        // (a removed call is never reached, but its arguments only weaken the meet)
-                        direct.Add(cm);
-                        Meet(cm, n.A.Select(s.ValueOf).ToArray());
-                        if (cm.HasInstantiation && cm.GetName() == "As" && cm.OwningType is MetadataType { Name: var _ } ut && ut.GetName() == "Unsafe")
-                            for (int k = 0; k < cm.Instantiation.Length; k++) _aliased.Add(cm.Instantiation[k]);
-                        break;
-                    case Opc.NewObj when n.X is MethodDesc ctor:
-                        direct.Add(ctor);
-                        Meet(ctor, [Val.NonNull, .. n.A.Select(s.ValueOf)]);
-                        break;
-                }
-        if (!m.Signature.ReturnType.IsVoid && !Opaque(m)) _returns[m] = ret;
+        if (Off) return;
+        var m = sum.Method;
+        _directCallees[m] = sum.Direct;
+        foreach (var (f, v, address) in sum.FieldStores)
+            _fields[f] = address ? Val.Bottom : _fields.TryGetValue(f, out var fv) ? Val.Meet(fv, v) : v;
+        foreach (var f in sum.StaticsWritten) { _written.Add(f); _written.Add(f.GetTypicalFieldDefinition()); }
+        foreach (var t in sum.TypeObjects) TypeObjects.Add(t);
+        foreach (var fm in sum.FunctionPointers) _indirect.Add(fm);
+        foreach (var t in sum.ArrayElementTypes) ArrayElementTypes.Add(t);
+        foreach (var (c, args) in sum.ArgMeets) Meet(c, args);
+        foreach (var t in sum.Aliased) _aliased.Add(t);
+        if (sum.Return is { } ret) _returns[m] = ret;
     }
 
     readonly Dictionary<MethodDesc, Val> _returns = new();
@@ -99,7 +78,7 @@ public sealed class ProgramFacts : ISccpOracle
 
     /// <summary>A method whose IL is not what runs: an intrinsic (il2wasm's or upstream's), an import, a P/Invoke or an
     /// internal call. Its IL says nothing about its value.</summary>
-    static bool Opaque(MethodDesc m) => m.GetTypicalMethodDefinition() is not Internal.TypeSystem.Ecma.EcmaMethod em || em.IsPInvoke || em.IsInternalCall
+    internal static bool Opaque(MethodDesc m) => m.GetTypicalMethodDefinition() is not Internal.TypeSystem.Ecma.EcmaMethod em || em.IsPInvoke || em.IsInternalCall
         || em.HasCustomAttribute("Il2Wasm.Runtime", "IntrinsicAttribute") || em.HasCustomAttribute("Il2Wasm.Runtime", "ImportAttribute")
         || em.HasCustomAttribute("System.Runtime.CompilerServices", "IntrinsicAttribute") || Il2Wasm.IL.Lower.IlCompiler.IsUpstreamIntrinsic(m);
 
