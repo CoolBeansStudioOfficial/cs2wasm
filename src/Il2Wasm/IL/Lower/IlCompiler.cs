@@ -327,6 +327,37 @@ public sealed partial class IlCompiler
         return f;
     }
 
+    // ------------------------------------------------------------------ the variant queue (docs/MEMORY-IR.md 4.4)
+
+    readonly Dictionary<(MethodDesc, Il2Wasm.IL.Memory.Variant), WasmFunction> _variantFns = new();
+    readonly Dictionary<WasmFunction, Il2Wasm.IL.Memory.Variant> _variantOf = new();
+
+    /// <summary>A specialization variant of a method (an owned entry, a borrowed-return entry: Signatures.VariantsOf),
+    /// the function a direct call whose plan chose it calls (MethodPlan.Callees). Made when first asked for, named by
+    /// its stable suffix, with the entry's own signature, and queued as the methods are: CompileMethodCore lowers it
+    /// from a fresh import of the method, planned for that entry.</summary>
+    internal WasmFunction VariantFor(MethodDesc m, Il2Wasm.IL.Memory.Variant v)
+    {
+        if (v.Kind == Il2Wasm.IL.Memory.VariantKind.Entry) return FunctionFor(m);
+        if (_variantFns.TryGetValue((m, v), out var f)) return f;
+        // (only a method lowered from its own IL has variants: not an array's method, a delegate's Invoke, an import,
+        // a P/Invoke, an internal call, the counted allocator)
+        var typical = m.GetTypicalMethodDefinition() as EcmaMethod;
+        if (m is ArrayMethod || typical == null || IsDelegateInvoke(m) && typical.IsRuntimeImplemented || typical.IsPInvoke || typical.IsInternalCall
+            || typical.HasCustomAttribute("Il2Wasm.Runtime", "ImportAttribute"))
+            throw new Il2Wasm.IL.Memory.PlanVerifyException($"{m} has no IL body of its own: it has no variant {v.Suffix}");
+        if (Il2Wasm.IL.Memory.Pipeline.Verify && Solution != null && Solution.Covers(m) && !Il2Wasm.IL.Memory.Signatures.VariantsOf(Solution, m).Contains(v))
+            throw new Il2Wasm.IL.Memory.PlanVerifyException($"{m}: the variant {v.Suffix} is not one Signatures.VariantsOf makes");
+        if (_compiling == null || !Facts.IsDirectCallee(_compiling, m)) Facts.MarkIndirect(m);
+        f = Module.AddFunction(m.ToString() + v.Suffix, Sig(m));
+        SetFrame(f, m);
+        _variantFns[(m, v)] = f;
+        _variantOf[f] = v;
+        _queue.Enqueue((m, f));
+        if (!_why.ContainsKey(m)) _why[m] = _compiling;
+        return f;
+    }
+
     readonly Dictionary<MethodDesc, MethodDesc?> _whyStub = new();
     readonly Dictionary<MethodDesc, (MethodDesc slot, TypeDesc type)> _whyDispatch = new();
     (MethodDesc slot, TypeDesc type) _dispatchWhy;
@@ -378,8 +409,11 @@ public sealed partial class IlCompiler
         // (IL2WASM_IL_WHY=name: for each method whose name contains it, the chain of methods that first reached it)
         if (Environment.GetEnvironmentVariable("IL2WASM_IL_WHY") is { Length: > 0 } why && m.ToString()!.Contains(why))
             Console.Error.WriteLine($"why {m}:{WhyReached(m)}");
-        // (the body the reach phase imported; a method only lowering reaches is imported now: a late import)
-        var u = _solver?.Take(m);
+        // (the body the reach phase imported; a method only lowering reaches is imported now: a late import. A variant
+        // is imported afresh, as the inliner's callees are: the entry's body is the entry's; its facts are merged
+        // again, which changes nothing, and stand even when no call uses the entry)
+        bool isVariant = _variantOf.TryGetValue(f, out var variant);
+        var u = isVariant ? ImportMethod(m) : _solver?.Take(m);
         if (u == null)
         {
             u = ImportMethod(m);
@@ -399,6 +433,7 @@ public sealed partial class IlCompiler
         // (an ILLink substitution: the stub is the body)
         if (Facts.Substitutions.Method(m) is { } stub)
         {
+            if (isVariant) throw new Il2Wasm.IL.Memory.PlanVerifyException($"{m} is an ILLink substitution: it has no variant {variant.Suffix}");
             var se = new Emitter(f);
             if (stub.HasValue) { if (f.Type.Results[0] == ValType.I64) se.I64(stub.Value); else se.I32((int)stub.Value); }
             return;
@@ -409,7 +444,7 @@ public sealed partial class IlCompiler
             if (u.Summary != null) Facts.Merge(u.Summary);
             u.Error?.Throw();
             var body = u.TakeBody()!;
-            var plan = PlanMethod(m, body);
+            var plan = PlanMethod(m, body, variant);
             if (s_dump != null && m.ToString().Contains(s_dump)) Console.Error.WriteLine($"== {m}\n{body.Dump()}");
             new FunctionLowering(this, body, plan, f).Run();
         }

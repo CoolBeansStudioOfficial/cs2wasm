@@ -5605,3 +5605,63 @@ Not run: the homelab suite and the self-host check on this commit.
   PureCalls' memo depends on import order (3.5) though no module changed; no Groups.cs/Threads.cs stubs. Not run:
   the homelab suite, stress and the self-host check (the old front end, the runtime and the back end are
   unchanged).
+
+### Memory model S1 row f: lowering from MethodPlan, the variant queue (claude/s1-lowering, 2026-11-24)
+
+- What: `Lower/FunctionLowering.cs` (with `FunctionLowering.Plan.cs`) lowers from the plan's tables, on the contract
+  the coordinator accepted.
+  - `Own` Guaranteed or Trivial: no count at the load, cast, catch value or phi copy, and no release on unwind.
+  - `Counts` Elided: nothing. `Atomic`/`LoadRetain`: lowered plain only when the solution is single-threaded,
+    otherwise an internal error until S3.
+  - `Stores` Init (or `Counts` Elided at a store): the old value is neither read nor released.
+  - `Args`, aligned with call.A, and call `Moves` bits: HandOver moves the caller's count in. KeepAlive is one retain
+    at the push, kept by the callee. The 4.6 protection around a Lend call is explicit Retain and Release nodes.
+  - `Callees`: direct calls and constructors call the chosen variant; any other site with a variant is an error.
+  - Entry BorrowReturn: a return takes no count.
+  - `Allocs` Virtual or FrameOwned (a class object, a non-Nullable box, or an array of constant length, at most
+    256 B, not finalizable): a frame slot made by `Rt.InitFrameObject`, with an immortal header. The plan's Release
+    of the object releases its children and empties the slot; re-making the slot and unwinding release what it still
+    holds (SPEC 4.3: never later than the object's last use). Virtual is lowered as a frame slot for now.
+  - `Lower/RcStats.cs`'s `Count` at every count operation, the implied ones included (load retain, store old and
+    retain, phi, unwind, argument keep-alive, return).
+- The variant queue, the one IlCompiler change of S1:
+  - `IlCompiler.VariantFor(m, v)` makes `m + v.Suffix` with the entry's signature, queues it on the method queue,
+    and refuses methods with no IL of their own; under `Pipeline.Verify` it also refuses a variant that
+    `Signatures.VariantsOf` does not list.
+  - `CompileMethodCore` lowers a variant from a fresh import, merging its facts again (idempotent).
+  - `PlanMethod` takes the entry, so `PlanContext.Entry` is the variant.
+- Test aid: `IL2WASM_LOWER_SELFTEST=1` rewrites naive plans into equivalent ones that use these paths:
+  - an argument whose last use is a direct call is handed over, and the call takes `Owned(mask)`, whose plan drops
+    those parameters' entry retains;
+  - `=2` adds FrameOwned for local objects of a constructor that only calls Object's.
+  `IL2WASM_LOWER_STATS=1` reports frame sites and variants. Both are off by default.
+- Byte identity [run, desk]:
+  - hello world (`Console.WriteLine("Hello, World!")`, IL CoreLib) 1,374,328 B, the same bytes as main;
+  - every module the IL tests compile (48) the same as main's, by default and with `IL2WASM_MEM_PLAN=1` (stub
+    planner).
+- Tests [run, desk]: IL tests 109/109 by default, with MEM_PLAN=1, and with SELFTEST=1 and =2. With row c's
+  planner (a local merge of claude/s1-plan 71355f3, MEM_PLAN=1, framework rebuilt): 109/109.
+- Frame objects [run]: 0 on hello world, the IL tests and the bench kernels, because no planner sets `Allocs` yet
+  (row c's first stage does not). Under SELFTEST=2: hello world and the bench have 0 sites (their objects all
+  escape or have constructors with work); a scratch program has 2 sites (an object in a loop with two string
+  fields, and one outside), with the same output and the same live count at exit (343) as on the heap.
+- Variants [run]: none with the stub Signatures. Under SELFTEST=1 (a variant at every last-use site, no size cap:
+  an upper bound, not 4.4's policy): hello world 1,027 Owned variants, 1,409,885 B (+35.6 KB, +2.6%); the bench
+  kernels (tools/bench/Programs.cs as one program) 1,218 variants, 1,669,678 B against 1,631,081 B (+2.4%),
+  checksums and live count (1,405) unchanged.
+- With row c's planner [run]: hello world 1,297,010 B (-5.6%); the bench kernels 1,536,608 B (-5.8%), checksums
+  and live count unchanged.
+- NetWasm suite [run, desk, shipped, SELFTEST=2 so the new paths run]: 283 passed, 159 failed, 7 did not compile,
+  1 timed out. All 450 case-modes have the same status as main's results on the same cache (none lost, none gained).
+- Cost [run, desk, hello world, framework mode with its Roslyn step, interleaved]: base 20.8-22.5 s, peak 516-526
+  MB; new 19.9-22.1 s, peak 486-513 MB. Equal within the noise: with the tables unset, lowering only adds
+  emptiness tests.
+- Not done:
+  - a variant at a dispatch site (a group's shared entry needs per-group stubs in GenerateLate);
+  - a frame object's finalizer (an internal error for now);
+  - true scalar replacement for Virtual (it needs the IR shape after inlining, row d);
+  - AccessKind, which lives in IlCompiler.TryIntrinsic's Interlocked lowering;
+  - group store kinds (S2).
+  No planner sets Allocs yet, so frame allocation is unmeasured on real plans. Not run: the homelab suite, bench.mjs
+  and frames.mjs speed, stress, and the self-host check (the old front end, the runtime and the back end are
+  unchanged).
