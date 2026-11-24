@@ -27,11 +27,31 @@ static class SolverChecks
         }
         """;
 
+    const string Comparers = """
+        class P { static void Main() { System.Console.WriteLine(System.Collections.Generic.Comparer<int>.Default.Compare(1, 2)); } }
+        """;
+
     public static void Run(Checks c)
     {
         var dir = EndToEnd.FrameworkDir();
         c.Section("solver: release effects on the IL CoreLib");
         if (dir == null) { c.Info("no artifacts/framework (node tools/build-corelib.mjs): skipped"); return; }
+        {
+            // Generics.Implements/IsNullable/IsEnum fold in the constant propagation as lowering decides them
+            // (PureCalls.GenericsTest): Comparer<int>.CreateComparer's branches for enums, nullables and other types go,
+            // and with them the comparers only they construct (IL2WASM_NO_GENERICS_FOLD=1 brings them back)
+            var refs = Directory.GetFiles(dir, "*.dll");
+            var dll = Build.Compile("solver_comparers", [Comparers], refs.Where(r => !Path.GetFileName(r).StartsWith("System.Private.CoreLib")).Append(Path.Combine(dir, "System.Private.CoreLib.dll")).ToArray());
+            var ctx = new IlContext();
+            ctx.AddAssemblies(refs.Append(dll));
+            ctx.SetCoreLib();
+            var solver = new Solver(new IlCompiler(ctx));
+            solver.Root(ctx.Load("solver_comparers").EntryPoint!);
+            solver.Reach();
+            var made = solver.Solve().Constructed.Select(t => t.ToString()!).ToList();
+            c.True("Comparer<int>.Default: GenericComparer<int> constructed", made.Any(t => t.Contains("GenericComparer`1<int32>")));
+            c.True("Comparer<int>.Default: the dead branches' ObjectComparer<int> and EnumComparer<int> are not", !made.Any(t => t.Contains("ObjectComparer`1<int32>") || t.Contains("EnumComparer`1<int32>")));
+        }
         foreach (var (name, source, hasDependents) in new[] { ("solver_plain", Plain, false), ("solver_dependents", Dependents, true) })
         {
             var refs = Directory.GetFiles(dir, "*.dll");
