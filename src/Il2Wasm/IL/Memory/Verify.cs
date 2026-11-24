@@ -129,8 +129,8 @@ public static class Verify
                             }
                         }
                         else if (moved && !Ownership.Consumes(n, j)) throw Fail($"operand {j} moved where it is not consumed (check 6)", n, b);
-                        else if (moved && n.Op == Opc.Ret && _ctx.Entry.Kind == VariantKind.BorrowReturn && Plan.IsRef(a) && !Plan.IsTrivial(a))
-                            throw Fail("a borrowed-return entry returns an Owned value with a Moves bit", a, b);
+                        else if (n.Op == Opc.Ret && _ctx.Entry.Kind == VariantKind.BorrowReturn && Plan.IsRef(a) && !Plan.IsTrivial(a) && Kind(a) == OwnKind.Owned)
+                            throw Fail("a borrowed-return entry returns an Owned value (its result must be a borrow of a parameter's path)", a, b);
                     }
                     if (!threaded && (_plan.Counts[n] == CountKind.Atomic || _plan.Loads[n] == LoadKind.LoadRetain || _plan.Accesses[n] == AccessKind.Atomic))
                         throw Fail("an atomic count, load or access in a build without threads (check 9)", n, b);

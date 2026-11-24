@@ -606,7 +606,9 @@ public static class Plan
                     }
                     if (lastUse && !moved)
                     {
-                        if (n.IsTerminator && n.Op == Opc.Ret) before.Add(Count(Opc.Release, v, b, RcCategory.Generic));
+                        // (a return in a borrowed-return entry: the value must be a borrow; an Owned one cannot be
+                        // released before the return that reads it, so it is left to the verifier to reject)
+                        if (n.Op == Opc.Ret) _keeps.Add(v);
                         else after.Add(Count(Opc.Release, v, b, call ? RcCategory.ArgAfterCall : RcCategory.Generic));
                     }
                     foreach (var x in Keep(v)) if (!Skip(x, n)) live.Add(x);
@@ -666,7 +668,8 @@ public static class Plan
         bool KeepCase(Node v, Node addr)
         {
             if (addr.Kind == VK.Ptr && addr.Type is not ByRefType) return false;
-            if (v.Op == Opc.Arg) return true;
+            // (a parameter handed over is this function's alone; one counted on entry, the naive convention, its caller holds too)
+            if (v.Op == Opc.Arg) return _conv != null;
             return !HeldElsewhere(v, new HashSet<Node>());
         }
 
