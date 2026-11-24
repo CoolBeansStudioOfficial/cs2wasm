@@ -6140,7 +6140,7 @@ Not run: the homelab suite and the self-host check on this commit.
 - Speed [run, homelab, built on the desk; the homelab has no Emscripten SDK]:
   - bench kernels: geometric mean 2.69x NativeAOT-LLVM wasm planned, 4.49x naive; tree 1.95x, word_count 0.97x,
     nbody 14.7x;
-  - nbody's time is struct copies and unrolled frames, not counts (profile in S1-BARS);
+  - nbody's time is whole-struct copies per field read, zeroed frames and unwind tries in uninlined operators, not counts (profile in S1-BARS);
   - frames: no spikes above NativeAOT in 4 scenes; bigdrop overflows the stack in destroy (bug 4).
 - Cost [run, desk]:
   - planned modules 5.7% smaller (hello world 1,204,423 B against 1,277,136 B; above the old 970,075 B bar);
