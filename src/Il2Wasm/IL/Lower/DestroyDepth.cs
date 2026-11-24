@@ -110,7 +110,8 @@ public sealed partial class IlCompiler
             var dflt = e.Block();
             var labels = new Label[cs.Count];
             for (int k = cs.Count - 1; k >= 0; k--) labels[k] = e.Block();
-            var targets = new Label[idCount];
+            // (as far as the highest id with somewhere to go: a higher one takes the default)
+            var targets = new Label[Math.Min(idCount, cs.Concat(rest != null ? others : []).Select(c => c.id).DefaultIfEmpty(-1).Max() + 1)];
             for (int k = 0; k < targets.Length; k++) targets[k] = dflt;
             if (rest != null) foreach (var c in others) targets[c.id] = rest;
             for (int k = 0; k < cs.Count; k++) targets[cs[k].id] = labels[k];
