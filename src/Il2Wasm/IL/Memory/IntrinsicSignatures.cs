@@ -186,11 +186,35 @@ public static class IntrinsicSignatures
         return s.Cheap && !(s.Releases && releasesRunCode);
     }
 
+    /// <summary>The runtime's types that own private tables in memory of their own (no object, no program key): the
+    /// object marks and weak-handle chains (Boundary/ObjectMarks.cs: IntMap, ObjectMarks, WeakSlots). A raw store in
+    /// one of their methods writes those tables (or a dying object's header), which no program load reads.</summary>
+    static readonly HashSet<string> s_privateTypes = ["IntMap", "ObjectMarks", "WeakSlots"];
+
+    /// <summary>The private key a raw store of the caller writes, or null: the caller is a method of a private-table
+    /// type (Rt's allocator is not one: it is part of Rt, whose other methods write program objects; its entry points
+    /// are [DeclaredEffects] instead). The key is <see cref="MemKey.Private"/> of the outermost type.</summary>
+    static MemKey? PrivateKey(MethodDesc? caller)
+    {
+        if (caller?.OwningType is not MetadataType t || t.Module != t.Context.SystemModule) return null;
+        var outer = t;
+        while (outer.ContainingType is MetadataType ct) outer = ct;
+        if (outer.GetNamespace() != "Il2Wasm.Runtime") return null;
+        if (s_privateTypes.Contains(outer.GetName())) return MemKey.Private(outer);
+        return null;
+    }
+
     /// <summary>The keys an intrinsic call may write, as dense keys of the solution (the IntrinsicEffects hook):
     /// its own writes, joined with every key when it releases and a release can run program code.</summary>
-    public static KeySet Effects(ProgramSolution solution, MethodDesc m, bool releasesRunCode)
+    public static KeySet Effects(ProgramSolution solution, MethodDesc m, bool releasesRunCode) => Effects(solution, null, m, releasesRunCode);
+
+    /// <summary>As <see cref="Effects(ProgramSolution, MethodDesc, bool)"/>, for a call in <paramref name="caller"/>:
+    /// a raw Mem store, copy or fill there writes the caller type's private key (<see cref="PrivateKey"/>).</summary>
+    public static KeySet Effects(ProgramSolution solution, MethodDesc? caller, MethodDesc m, bool releasesRunCode)
     {
         var s = Of(m);
+        if (s.Writes == IntrinsicWrites.Wild && !s.Releases && m.OwningType is MetadataType { } mt && mt.GetName() == "Mem" && PrivateKey(caller) is { } pk)
+            return new KeySet(solution.Pool.Of(solution.Keys.Intern(pk)), false);
         if (s.Releases && releasesRunCode) return KeySet.All;
         switch (s.Writes)
         {
@@ -210,6 +234,18 @@ public static class IntrinsicSignatures
                     return new KeySet(solution.Pool.Of(solution.Keys.Intern(MemKey.Slot(cbr.ParameterType))), false);
                 return KeySet.All;
         }
+    }
+
+    /// <summary>A method marked [Il2Wasm.Runtime.DeclaredEffects] (Boundary/Runtime.cs: the heap's entry points): the
+    /// solver takes its effects as declared and does not solve its body. It writes only its type's private memory
+    /// (<see cref="MemKey.Private"/> of the outermost type), may throw a fresh exception (control flow, not a program
+    /// write), returns fresh memory, runs no program code and releases nothing. Null: not declared.</summary>
+    public static KeySet? DeclaredEffects(ProgramSolution solution, MethodDesc m)
+    {
+        if (m.GetTypicalMethodDefinition() is not EcmaMethod em || !em.HasCustomAttribute("Il2Wasm.Runtime", "DeclaredEffectsAttribute")) return null;
+        var outer = (MetadataType)m.OwningType;
+        while (outer.ContainingType is MetadataType ct) outer = ct;
+        return new KeySet(solution.Pool.Of(solution.Keys.Intern(MemKey.Private(outer))), false);
     }
 
     /// <summary>Every [Il2Wasm.Runtime.Intrinsic] method of the system module that the table has no entry for (a

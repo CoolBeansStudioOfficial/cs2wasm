@@ -114,7 +114,8 @@ public static class Signatures
         if (st.Computed) return;
         st.Computed = true;
         // the intrinsics' effects from the hand table (the hook is the solution's, read when facts are solved)
-        ProgramSolution.IntrinsicEffects = (s, m) => IntrinsicSignatures.Effects(s, m, StateOf(s).ReleasesRunCode);
+        ProgramSolution.IntrinsicEffects = (s, caller, m) => IntrinsicSignatures.Effects(s, caller, m, StateOf(s).ReleasesRunCode);
+        ProgramSolution.DeclaredEffects = IntrinsicSignatures.DeclaredEffects;
         int n = solution.Methods.Count;
         // local facts, one pass per body (in MethodId order: deterministic)
         for (int id = 0; id < n; id++)
@@ -658,7 +659,7 @@ public static class Signatures
             if (s.WildStores) { Note("raw store / block copy"); root = true; }
             if (s.CallsUnknown) { Note("calli / delegate invoke"); root = true; }
             foreach (var c in s.Calls.Concat(s.Slots.SelectMany(x => sol.Targets(x)))) if (!sol.Covers(c)) { Note("uncovered callee " + c.OwningType + "::" + c.GetName()); root = true; }
-            foreach (var im in s.Intrinsics) if (IntrinsicSignatures.Effects(sol, im, st.ReleasesRunCode).Wild) { Note("intrinsic " + im.OwningType.ToString()!.Split('.').Last() + "." + im.GetName()); root = true; }
+            foreach (var im in s.Intrinsics) if (IntrinsicSignatures.Effects(sol, m, im, st.ReleasesRunCode).Wild) { Note("intrinsic " + im.OwningType.ToString()!.Split('.').Last() + "." + im.GetName()); root = true; }
             if (root) roots++;
         }
         foreach (var t in sol.Constructed)

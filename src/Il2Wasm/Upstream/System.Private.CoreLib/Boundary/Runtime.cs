@@ -11,6 +11,13 @@ namespace Il2Wasm.Runtime
     [AttributeUsage(AttributeTargets.Method | AttributeTargets.Field)]
     public sealed class IntrinsicAttribute : Attribute { }
 
+    /// <summary>On a method: the memory model takes its effects as declared instead of solving its body (docs/AUDIT.md
+    /// lists every such method: the trust boundary). Declared: it writes only its type's private memory (the heap's
+    /// blocks, pages and records, or a dead or fresh object's words: no program key), may throw (a fresh exception:
+    /// out of memory, an overflow), returns fresh memory, runs no program code and releases nothing.</summary>
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class DeclaredEffectsAttribute : Attribute { }
+
     /// <summary>Marks a library method that is a WASM import of the engine (module, name).</summary>
     [AttributeUsage(AttributeTargets.Method)]
     public sealed class ImportAttribute : Attribute
@@ -1056,10 +1063,12 @@ namespace Il2Wasm.Runtime
         const int KindPlain = 0, KindArena = 1;
 
         // (memory that is no object stays at a multiple of 8: a thread's stack, words read atomically; Free rounds alike)
+        [DeclaredEffects]
         public static int Alloc(int size) => AllocBlock((size + 15) & ~7, KindPlain) + 8;
 
         /// <summary>Alloc for the first thread's own block of thread statics: before there is one, nothing may read a
         /// thread static, the thread's lists of free blocks among them.</summary>
+        [DeclaredEffects]
         public static int AllocFirst(int size)
         {
             if (SingleThreaded()) return AllocBlock((size + 15) & ~7, KindPlain) + 8;
@@ -1664,12 +1673,14 @@ namespace Il2Wasm.Runtime
         }
 
         /// <summary>Frees memory Alloc gave (not an object: FreeObject).</summary>
+        [DeclaredEffects]
         public static void Free(int addr, int size)
         {
             FreeBlock(addr - 8, (size + 15) & ~7, KindPlain);
         }
 
         /// <summary>Frees an object's memory (its destruction: the compiler's destroy functions).</summary>
+        [DeclaredEffects]
         public static void FreeObject(int addr, int size)
         {
             // The usual case in one small piece (an engine puts a small function into its callers, a large one it
@@ -1715,6 +1726,7 @@ namespace Il2Wasm.Runtime
         /// set the object's count word to zero): the block is kept aside for the next allocation of its size, the one
         /// that was there goes back to its page.</summary>
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        [DeclaredEffects]
         public static void FreeFixed(int addr, int s)
         {
             int hotSlot = s_hot + s;
@@ -1825,6 +1837,7 @@ namespace Il2Wasm.Runtime
             for (int p = addr + size - 8; (uint)p >= (uint)addr; p -= 8) Mem.StoreI64(p, 0);
         }
 
+        [DeclaredEffects]
         public static int AllocObject(int size, int typeId)
         {
             // The usual case in one small piece, without a call (an engine puts a small function into its callers, a
@@ -1962,6 +1975,7 @@ namespace Il2Wasm.Runtime
             return a;
         }
 
+        [DeclaredEffects]
         public static int AllocArray(int length, int elemSize, int typeId)
         {
             if (length < 0) ThrowHelpers.Overflow();
@@ -1991,6 +2005,7 @@ namespace Il2Wasm.Runtime
             return te >= 0 && fe >= 0 && TypeInfo.Rank(to) == TypeInfo.Rank(from) && (TypeInfo.Flags(te) & 1) == 0 && (TypeInfo.Flags(fe) & 1) == 0 && ElementFits(te, fe);
         }
 
+        [DeclaredEffects]
         public static int AllocArrayWithHeader(int length, int elemSize, int typeId, int dataOffset)
         {
             long total = dataOffset + (long)length * elemSize;
@@ -2011,6 +2026,7 @@ namespace Il2Wasm.Runtime
             return Take<string>(a);
         }
 
+        [DeclaredEffects]
         public static int AllocString(int length)
         {
             int a = AllocObject(16 + length * 2 + 2, 1);
