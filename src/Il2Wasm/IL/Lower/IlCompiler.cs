@@ -1211,14 +1211,15 @@ public sealed partial class IlCompiler
             EmitIdTest(e, tid, ids);
             e.If(ValType.I32); e.Get(0); e.Else(); e.I32(0); e.End();
         }
-        // destroy: each constructed type's references released, then its memory freed
+        // destroy: each constructed type's references released, then its memory freed, inside the depth queue's
+        // prologue and epilogue (DestroyDepth.cs)
         {
             var e = new Emitter(Rt.Destroy);
             int tid = e.AddLocal(ValType.I32), i = e.AddLocal(ValType.I32), n = e.AddLocal(ValType.I32);
             e.Get(0); e.Load(WOp.I32Load, 4); e.Set(tid);
-            foreach (var x in _constructedOrder)
+            void Case(TypeDesc x)
             {
-                e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
+                if (SealedTail(x) is { } tail) { EmitSealedTailDestroy(e, x, tail); return; }
                 EmitFinalizeStep(e, x);
                 if (x is ArrayType at)
                 {
@@ -1252,9 +1253,12 @@ public sealed partial class IlCompiler
                     if (Kinds.Of(x) == VK.Struct && Kinds.Counted(x)) { e.Get(0); e.I32(IlContext.ObjectHeader); e.Op(WOp.I32Add); e.Call(Rt.ReleaseStruct(x)); }
                     e.Get(0); e.I32(x.IsValueType ? IlContext.ObjectHeader + Math.Max(4, Kinds.SizeOf(x)) : IlContext.InstanceSize((DefType)x));
                 }
-                e.Call(Rt.Free); e.Op(WOp.Return);
-                e.End();
+                e.Call(Rt.Free);
+                // (a leaf is destroyed outside the depth count: EmitDestroySwitch)
+                if (IsLeafDestroy(x) && !s_noDestroySwitch) e.Op(WOp.Return); else EmitDestroyLeave(e);
             }
+            EmitDestroySwitch(e, tid, _constructedOrder.Select(x => (Final(x), IsLeafDestroy(x), (Action)(() => Case(x)))).ToList(), _types.Count + 2);
+            e.Call(_destroyDone!); // (no case: as one)
         }
         // retain_contents: each constructed type's references counted (an object copied whole: MemberwiseClone)
         if (Rt.RetainContentsIfMade is { } rcf)

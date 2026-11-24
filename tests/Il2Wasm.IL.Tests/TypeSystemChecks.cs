@@ -79,6 +79,10 @@ static class TypeSystemChecks
         c.Eq("Gen<int> canonical form (value types are not shared)", gInt.ConvertToCanonForm(CanonicalFormKind.Specific).ToString(), "[types]Gen`1<int32>");
         c.Eq("Gen<int> static s_last size", gInt.NonGCStaticFieldSize.AsInt, 4);
         c.Eq("Gen<string> static s_last in the reference block", gStr.GCStaticFieldSize.AsInt, 4);
+        // (the type table's flags2 of !0, an open type's generic argument: not ByRef-like, as a generic parameter under
+        // .NET, without asking the type system, which cannot say before a substitution: a Debug build asserted in
+        // TypeDesc.InitializeTypeFlags and stopped at its dialog)
+        c.Eq("flags2 of a signature variable", Il2Wasm.IL.Lower.IlCompiler.Flags2(ctx.GetSignatureVariable(0, false)), 0);
 
         c.Section("type system: virtual slots (vtables) and resolution");
         var leaf = T("Leaf");
