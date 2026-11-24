@@ -29,8 +29,10 @@ public static class Canon
     public static void Run(PlanContext ctx, MethodPlan plan, InlineSite site)
     {
         int before = s_trace ? CountOps(plan) : 0;
+        Inline.CanonClock.Start();
         var fresh = Plan.Build(ctx);
         CopyInto(fresh, plan);
+        Inline.CanonClock.Stop();
         if (s_trace) Console.Error.WriteLine($"canon: {ctx.Method} counts {before} -> {CountOps(plan)}");
     }
 

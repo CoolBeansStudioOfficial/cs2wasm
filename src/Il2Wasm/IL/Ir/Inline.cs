@@ -20,8 +20,10 @@ namespace Il2Wasm.IL.Ir;
 ///   - Canon.Run plans the caller again. So the result is OSSA by construction, and the counts the callee spent on
 ///     its own arguments (the entry retain and the release at its last use) are gone: the planner sees the caller's
 ///     value, which the caller keeps across the inlined code.
-/// One Step inlines one level of sites (block and node order). The calls the inlined code brings are the next
-/// level's candidates, up to MaxLevels. The InlineSite returned is the level's first site.
+/// A callee's prototype is closed under inlining: its own small callees are spliced into it once, by the same rules
+/// and within its own budget. So one Step does the whole caller, and the caller is planned again once. The InlineSite
+/// returned is the first site. A recursive callee gets no prototype while its own is being made, so a cycle is never
+/// inlined into itself.
 ///
 /// What keeps behaviour identical:
 ///   - Stack traces (SPEC 6.3). They are frames from the PDB (Lower/DebugInfo.cs), and lowering has no per-node
@@ -51,7 +53,7 @@ namespace Il2Wasm.IL.Ir;
 /// the IR only, and lowering's late imports can construct more.
 ///
 /// Size (deterministic): a callee of at most Budget nodes after its plan is stripped (arguments and branches not
-/// counted); twice that for [AggressiveInlining]. Per caller: at most MaxLevels levels, and at most
+/// counted, its nested callees included); twice that for [AggressiveInlining]. Per caller: at most
 /// max(MinGrowth, the caller's own size) nodes added in all.
 ///
 /// Switches:
@@ -68,8 +70,9 @@ public static class Inline
     /// <summary>The size budget in IR nodes (the old front end's figure: FINISH.md stream K); a target.</summary>
     public const int Budget = 24;
 
-    const int MaxLevels = 3;
     const int MinGrowth = 64;
+    /// <summary>IL bytes per budgeted node above which a callee is not imported to be measured.</summary>
+    const int ILBytesPerNode = 6;
 
     static readonly int s_budget = int.TryParse(Environment.GetEnvironmentVariable("IL2WASM_INLINE_BUDGET"), out var b) ? b : Budget;
     static readonly bool s_noHidden = Environment.GetEnvironmentVariable("IL2WASM_NO_INLINE_HIDDEN") == "1";
@@ -82,6 +85,18 @@ public static class Inline
     /// <summary>Sites inlined since the process started (all compilations).</summary>
     public static int SitesInlined;
 
+    /// <summary>IL2WASM_INLINE_TIMES=1: the time in Step, in making prototypes (the callee callback's import and plan
+    /// included) and in Canon's re-plan, printed at exit.</summary>
+    internal static readonly System.Diagnostics.Stopwatch StepClock = new(), ProtoClock = new(), CanonClock = new();
+    static readonly bool s_times = Environment.GetEnvironmentVariable("IL2WASM_INLINE_TIMES") == "1";
+    static int s_imported, s_kept, s_asked;
+    static Inline()
+    {
+        if (s_times)
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => Console.Error.WriteLine(
+                $"inline times: step {StepClock.ElapsedMilliseconds} ms (prototypes {ProtoClock.ElapsedMilliseconds} ms), canon {CanonClock.ElapsedMilliseconds} ms, {SitesInlined} sites; prototypes asked {s_asked}, imported {s_imported}, kept {s_kept}");
+    }
+
     /// <summary>The facts the callee's own plan had for a node, carried to its copy in the caller (null: a node the
     /// splice made, or one of the caller's own). Plan.Build can start from them: they hold inside the callee
     /// whatever the caller is.</summary>
@@ -93,16 +108,14 @@ public static class Inline
     public static SourceFact? SourceFactOf(Body body, Node n) =>
         s_sourceFacts.TryGetValue(body, out var d) && d.TryGetValue(n, out var f) ? f : null;
 
-    /// <summary>Per caller plan: the levels done, the nodes each inlined node came with (its inline chain), growth.</summary>
+    /// <summary>Per caller plan: whether its step ran, and the methods inlined into it.</summary>
     sealed class State
     {
-        public int Level;
-        public int Grown;
-        public int Original;
-        public readonly Dictionary<Node, (int Level, MethodDesc[] Chain)> Origin = new();
-        /// <summary>Every method inlined into the caller, in first-inlined order.</summary>
+        public bool Done;
+        /// <summary>Every method inlined into the caller (nested ones too), in first-inlined order.</summary>
         public readonly List<MethodDesc> Inlined = [];
         public readonly HashSet<MethodDesc> InlinedSet = [];
+        public void Add(MethodDesc m) { if (InlinedSet.Add(m)) Inlined.Add(m); }
     }
 
     /// <summary>The methods inlined into this plan's body (each once, in the order first inlined). Their facts are
@@ -127,76 +140,110 @@ public static class Inline
         public bool DerefsThis;
         /// <summary>It may throw or take a trace other than by dereferencing this.</summary>
         public bool MayThrow;
+        /// <summary>The source facts of the nodes its own nested inlining brought (the others: its plan's).</summary>
+        public readonly Dictionary<Node, SourceFact> Facts = new();
+        /// <summary>The methods inlined into it, nested ones too.</summary>
+        public readonly List<MethodDesc> Inlined = [];
     }
 
     static readonly ConditionalWeakTable<ProgramSolution, Dictionary<MethodDesc, Proto?>> s_protos = new();
 
-    /// <summary>One inlining step on the caller's planned body: one level of call sites (in block and node order) is
-    /// replaced by the callees' bodies, which <paramref name="callee"/> gives for the entry each site uses (null: not
-    /// inlined). Returns the level's first site, or null when nothing more is inlined (the body is then unchanged).
-    /// After a non-null result the body holds no plan: Canon.Run plans it again.</summary>
+    /// <summary>One inlining step on the caller's planned body: its call sites (in block and node order) are replaced
+    /// by the callees' bodies, which <paramref name="callee"/> gives for the entry each site uses (null: not inlined).
+    /// A callee's body is already closed under inlining (its own small callees are in it), so one step does the
+    /// whole method: the next call returns null. Returns the first site, or null when nothing is inlined (the body is
+    /// then unchanged). After a non-null result the body holds no plan: Canon.Run plans it again.</summary>
     public static InlineSite? Step(PlanContext ctx, MethodPlan plan, Func<MethodDesc, Variant, (Body Body, MethodPlan Plan)?> callee)
     {
         // (a late import is outside the solution: nothing is known of its calls)
-        if (ctx.Summary is null) return null;
+        if (ctx.Summary is not { } own) return null;
+        StepClock.Start();
+        try { return StepCore(ctx, plan, callee, own); }
+        finally { StepClock.Stop(); }
+    }
+
+    static InlineSite? StepCore(PlanContext ctx, MethodPlan plan, Func<MethodDesc, Variant, (Body Body, MethodPlan Plan)?> callee, MethodSummary own)
+    {
         var body = ctx.Body;
-        var st = s_state.GetValue(plan, _ => new State { Original = Size(body) });
-        if (st.Level >= MaxLevels) return null;
-        int level = st.Level++;
-        var sites = new List<(Node Call, MethodDesc Target, Proto P, MethodDesc[] Chain)>();
-        int growth = st.Grown, cap = Math.Max(MinGrowth, st.Original);
+        var st = s_state.GetValue(plan, _ => new State());
+        if (st.Done) return null;
+        st.Done = true;
+        var sites = new List<(Node Call, MethodDesc Target, Proto P)>();
+        int growth = 0, cap = Math.Max(MinGrowth, Size(body));
         foreach (var blk in body.Blocks)
         {
             if (InFilter(blk.Region)) continue;
             foreach (var n in blk.Code)
             {
-                if (n.Op != Opc.Call || n.X is not MethodDesc m) continue;
-                var (nl, chain) = st.Origin.TryGetValue(n, out var o) ? o : (0, []);
-                if (nl != level) continue;
-                bool knownNonNull = n.A.Length > 0 && IsKnownNonNull(n.A[0]);
-                var kind = (CallKind)n.Sub;
-                if (kind != CallKind.Direct)
-                {
-                    // (devirtualized: the receiver is made right here, its type exact)
-                    if (s_noDevirt || n.A.Length == 0 || n.A[0].Op != Opc.NewObj) continue;
-                    var targets = ctx.Solution.CallTargets(n);
-                    if (targets.Count != 1) continue;
-                    m = targets[0];
-                }
-                if (m == ctx.Method || chain.Contains(m)) continue;
-                var origin = chain.Length > 0 ? chain[^1] : ctx.Method;
-                if (ctx.Solution.Summary(origin) is not { } os || os.Intrinsics.Contains(m)) continue;
-                if (ProtoOf(ctx.Solution, m, callee) is not { } p) continue;
-                if (!SiteFits(n, p, knownNonNull)) continue;
-                if (growth + p.Size > cap) continue;
+                if (Candidate(ctx.Solution, own, ctx.Method, n, callee) is not { } c) continue;
+                if (growth + c.P.Size > cap) continue;
                 if (SitesInlined + sites.Count >= s_limit) continue;
-                growth += p.Size;
-                sites.Add((n, m, p, chain));
+                growth += c.P.Size;
+                sites.Add((n, c.Target, c.P));
             }
         }
         if (sites.Count == 0) return null;
         if (s_trace) Console.Error.WriteLine($"strip: {ctx.Method} counts {body.Blocks.Sum(x => x.Code.Count(n => n.Op is Opc.Retain or Opc.Release))}");
         Strip(body);
         var facts = s_sourceFacts.GetValue(body, _ => new());
-        (Node Call, MethodDesc Target, Block Head, Node TailTerm)? first = null;
         var touched = new List<Block>();
-        foreach (var (call, target, p, chain) in sites)
+        var replaced = new Dictionary<Node, Node>();
+        (Block Head, Node TailTerm)? first = null;
+        foreach (var (call, target, p) in sites)
         {
-            var site = Splice(body, call, target, p, [.. chain, target], level + 1, st, facts, touched);
+            var site = Splice(body, call, p, facts, touched, replaced);
             first ??= site;
-            if (st.InlinedSet.Add(target)) st.Inlined.Add(target);
+            st.Add(target);
+            foreach (var m in p.Inlined) st.Add(m);
             System.Threading.Interlocked.Increment(ref SitesInlined);
             if (s_trace) Console.Error.WriteLine($"inline: {ctx.Method} <- {target}");
         }
-        st.Grown = growth;
-        // (straight chains the splices made are one block again: the call's block with the callee's entry, a lone
-        // return's block with the rest of the call's block)
+        Finish(body, touched, replaced);
+        var f = first!.Value;
+        return new InlineSite(sites[0].Call, sites[0].Target, f.Head, f.TailTerm.Block);
+    }
+
+    /// <summary>A call node that may be inlined, with its target and the target's prototype (the site's own checks
+    /// included; the size caps are the caller's).</summary>
+    static (MethodDesc Target, Proto P)? Candidate(ProgramSolution sol, MethodSummary origin, MethodDesc caller, Node n, Func<MethodDesc, Variant, (Body Body, MethodPlan Plan)?> callee)
+    {
+        if (n.Op != Opc.Call || n.X is not MethodDesc m) return null;
+        bool knownNonNull = n.A.Length > 0 && IsKnownNonNull(n.A[0]);
+        if ((CallKind)n.Sub != CallKind.Direct)
+        {
+            // (devirtualized: the receiver is made right here, its type exact)
+            if (s_noDevirt || n.A.Length == 0 || n.A[0].Op != Opc.NewObj) return null;
+            var targets = sol.CallTargets(n);
+            if (targets.Count != 1) return null;
+            m = targets[0];
+        }
+        if (m == caller || origin.Intrinsics.Contains(m)) return null;
+        if (ProtoOf(sol, m, callee) is not { } p) return null;
+        if (!SiteFits(n, p, knownNonNull)) return null;
+        return (m, p);
+    }
+
+    /// <summary>After the splices: the straight chains they made joined, the replaced calls' uses given their results,
+    /// the blocks numbered again.</summary>
+    static void Finish(Body body, List<Block> touched, Dictionary<Node, Node> replaced)
+    {
+        // (a call's block with the callee's entry, a lone return's block with the rest of the call's block)
         var gone = new HashSet<Block>();
         foreach (var x in touched) if (!gone.Contains(x)) MergeChain(body, x, gone);
-        body.Blocks.RemoveAll(gone.Contains);
+        if (gone.Count > 0) body.Blocks.RemoveAll(gone.Contains);
+        if (replaced.Count > 0)
+            foreach (var x in body.Blocks)
+            {
+                foreach (var n in x.Phis) Resolve(n, replaced);
+                foreach (var n in x.Code) Resolve(n, replaced);
+            }
         for (int i = 0; i < body.Blocks.Count; i++) body.Blocks[i].Id = i;
-        var f = first!.Value;
-        return new InlineSite(f.Call, f.Target, f.Head, f.TailTerm.Block);
+    }
+
+    static void Resolve(Node n, Dictionary<Node, Node> replaced)
+    {
+        for (int k = 0; k < n.A.Length; k++)
+            while (replaced.TryGetValue(n.A[k], out var r)) n.A[k] = r;
     }
 
     /// <summary>Takes a plan out of a body: its Retain and Release nodes, and the Moves bits.</summary>
@@ -262,7 +309,13 @@ public static class Inline
     {
         var cache = s_protos.GetValue(sol, _ => new());
         if (cache.TryGetValue(m, out var p)) return p;
-        p = MakeProto(sol, m, callee);
+        s_asked++;
+        // (while it is made, a recursive request gets none: recursion is never inlined)
+        cache[m] = null;
+        bool outer = !ProtoClock.IsRunning;
+        if (outer) ProtoClock.Start();
+        try { p = MakeProto(sol, m, callee); }
+        finally { if (outer) ProtoClock.Stop(); }
         cache[m] = p;
         return p;
     }
@@ -273,16 +326,49 @@ public static class Inline
         if (em.IsNoInlining || em.IsSynchronized || em.IsPInvoke || em.IsInternalCall || em.IsRuntimeImplemented || em.IsAbstract) return null;
         if (TriggersCctor(m)) return null;
         if (sol.Summary(m) is not { } sum || sum.ObservesLifetime) return null;
-        if (callee(m, Variant.Entry) is not { } c) return null;
-        var body = c.Body;
-        if (body.Regions.Count > 1 || body.Vars.Count > 0 || body.UsesLocAlloc || body.FiltersOnePass) return null;
+        int limit = em.IsAggressiveInlining ? 2 * s_budget : s_budget;
+        // (a body whose IL is far longer than the budget is not imported to be measured: compile time. An IL
+        // instruction makes at most one node, and the shortest take one byte, but most take more; ILBytesPerNode
+        // bytes a node leaves room for what the import's decided branches remove)
+        if (Internal.IL.EcmaMethodIL.Create(em) is { } il && il.GetILBytes().Length > ILBytesPerNode * limit) return null;
+        // (the body the reach phase imported, while lowering has not taken it: copied and planned here; else imported
+        // again through the callback. Both are the import lowering would lower)
+        Body body;
+        MethodPlan plan;
+        if (sol.HeldBody(m) is { } held)
+        {
+            if (!Shaped(held) || Size(held) > limit) return null;
+            body = Clone(held).Item1;
+            plan = Memory.Plan.Build(new PlanContext(m, body, sol, Variant.Entry));
+        }
+        else
+        {
+            s_imported++;
+            if (callee(m, Variant.Entry) is not { } c) return null;
+            body = c.Body; plan = c.Plan;
+        }
+        if (!Shaped(body)) return null;
         Strip(body);
         var entry = body.Blocks[0];
         if (entry.Preds.Count > 0 || entry.Phis.Count > 0) return null;
         if (!body.Blocks.Any(x => x.Term?.Op == Opc.Ret)) return null;
-        var p = new Proto { Body = body, Plan = c.Plan, Size = Size(body), Hidden = IsHiddenFrame(m) };
-        int limit = em.IsAggressiveInlining ? 2 * s_budget : s_budget;
+        var p = new Proto { Body = body, Plan = plan, Size = Size(body), Hidden = IsHiddenFrame(m) };
         if (p.Size > limit) return null;
+        // its own callees, by the same rules, as long as it stays within its budget
+        var touched = new List<Block>();
+        var replaced = new Dictionary<Node, Node>();
+        foreach (var blk in body.Blocks.ToList())
+            foreach (var n in blk.Code.ToList())
+            {
+                if (Candidate(sol, sum, m, n, callee) is not { } nc) continue;
+                if (p.Size - 1 + nc.P.Size > limit) continue;
+                p.Size += nc.P.Size - 1;
+                Splice(body, n, nc.P, p.Facts, touched, replaced);
+                if (!p.Inlined.Contains(nc.Target)) p.Inlined.Add(nc.Target);
+                foreach (var x in nc.P.Inlined) if (!p.Inlined.Contains(x)) p.Inlined.Add(x);
+            }
+        Finish(body, touched, replaced);
+        p.Size = Size(body);
         var thisArg = !m.Signature.IsStatic && body.Args.Length > 0 && body.Args[0].Kind == VK.Ref ? body.Args[0] : null;
         foreach (var blk in body.Blocks)
             foreach (var n in blk.Phis.Concat(blk.Code))
@@ -297,8 +383,12 @@ public static class Inline
                 }
             }
         if (thisArg != null) p.FirstEffectDerefsThis = FirstEffectDerefsThis(body, thisArg, sol);
+        s_kept++;
         return p;
     }
+
+    /// <summary>A body the splice can copy: no regions but its root, no variables, no localloc.</summary>
+    static bool Shaped(Body b) => b.Regions.Count <= 1 && b.Vars.Count == 0 && !b.UsesLocAlloc && !b.FiltersOnePass;
 
     /// <summary>A call of it runs a .cctor check (Statics.CctorCheckForCall).</summary>
     static bool TriggersCctor(MethodDesc m) =>
@@ -344,7 +434,9 @@ public static class Inline
             case Opc.LdSFld: case Opc.StSFld: case Opc.LdSFldA:
                 return n.X is FieldDesc f && f.OwningType.GetStaticConstructor() == null ? Effect.None : Effect.MayThrow;
             case Opc.Call when n.X is MethodDesc t && (CallKind)n.Sub == CallKind.Direct:
-                if (TriggersCctor(t) || !sol.Covers(t) || sol.Facts(t).MayThrow || sol.Facts(t).ObservesLifetime) return Effect.MayThrow;
+                // (the local summary is enough: any call makes a summary MayThrow, so one that is not makes no calls, and its
+                // solved facts are its own; reading them here does not start the whole-program solve)
+                if (TriggersCctor(t) || sol.Summary(t) is not { MayThrow: false, ObservesLifetime: false }) return Effect.MayThrow;
                 if (n.Ovf && n.A.Length > 0 && n.A[0].Kind == VK.Ref) return n.A[0] == thisArg ? Effect.DerefThis : Effect.MayThrow;
                 return Effect.None;
             default:
@@ -377,11 +469,15 @@ public static class Inline
 
     // ------------------------------------------------------------------ the splice
 
-    static (Node, MethodDesc, Block, Node) Splice(Body body, Node call, MethodDesc target, Proto p, MethodDesc[] chain, int level, State st, Dictionary<Node, SourceFact> facts, List<Block> touched)
+    /// <summary>Puts a copy of the prototype's body in place of the call (the call's uses are recorded in
+    /// <paramref name="replaced"/>, and Finish gives them the result). Returns the call's block and the terminator of
+    /// the rest of it.</summary>
+    static (Block, Node) Splice(Body body, Node call, Proto p, Dictionary<Node, SourceFact> facts, List<Block> touched, Dictionary<Node, Node> replaced)
     {
         var (cb, map) = Clone(p.Body);
         foreach (var (src, copy) in map)
-            facts[copy] = new SourceFact(p.Plan.Own[src], p.Plan.Allocs[src], p.Plan.Loads[src], p.Plan.Stores[src], p.Plan.Accesses[src], p.Plan.Args[src], p.Plan.Callees[src]);
+            facts[copy] = p.Facts.TryGetValue(src, out var sf) ? sf
+                : new SourceFact(p.Plan.Own[src], p.Plan.Allocs[src], p.Plan.Loads[src], p.Plan.Stores[src], p.Plan.Accesses[src], p.Plan.Args[src], p.Plan.Callees[src]);
         var blk = call.Block;
         int at = blk.Code.IndexOf(call);
         var region = blk.Region;
@@ -405,7 +501,6 @@ public static class Inline
             {
                 n.Id = body.NextId(); n.ILOffset = call.ILOffset;
                 for (int k = 0; k < n.A.Length; k++) if (subst.TryGetValue(n.A[k], out var r)) n.A[k] = r;
-                st.Origin[n] = (level, chain);
             }
             if (x.Term is { Op: Opc.Ret } ret)
             {
@@ -430,13 +525,9 @@ public static class Inline
                 result = new Node { Op = Opc.Phi, Kind = call.Kind, SType = call.SType, Type = call.Type, Block = tail, Id = body.NextId(), ILOffset = call.ILOffset, A = rets.Select(r => r.Item2!).ToArray() };
                 tail.Phis.Add(result);
             }
-            foreach (var x in body.Blocks)
-            {
-                foreach (var n in x.Phis) Replace(n, call, result);
-                foreach (var n in x.Code) Replace(n, call, result);
-            }
+            replaced[call] = result;
         }
-        return (call, target, blk, tail.Code[^1]);
+        return (blk, tail.Code[^1]);
     }
 
     /// <summary>Joins a block and its successor while the block ends in a branch to a block that only it reaches, in
@@ -456,11 +547,6 @@ public static class Inline
         }
     }
 
-    static void Replace(Node n, Node from, Node to)
-    {
-        for (int k = 0; k < n.A.Length; k++) if (n.A[k] == from) n.A[k] = to;
-    }
-
     static Block NewBlock(Body body, Region region)
     {
         var x = new Block { Id = body.Blocks.Count, ILStart = -1, Region = region };
@@ -473,16 +559,20 @@ public static class Inline
     /// splice), and the map from each node to its copy.</summary>
     static (Body, Dictionary<Node, Node>) Clone(Body src)
     {
-        var dst = new Body { Method = src.Method, Root = src.Root };
+        // (a root region of its own: planning the copy adds blocks to its region)
+        var root = new Region { Kind = RegionKind.Root, Start = src.Root.Start, End = src.Root.End };
+        var dst = new Body { Method = src.Method, Root = root };
+        dst.Regions.Add(root);
         var bmap = new Dictionary<Block, Block>();
-        foreach (var x in src.Blocks) bmap[x] = new Block { Id = x.Id, ILStart = x.ILStart, Region = x.Region };
+        foreach (var x in src.Blocks) { var y = new Block { Id = x.Id, ILStart = x.ILStart, Region = root }; bmap[x] = y; root.Blocks.Add(y); }
+        root.Entry = bmap[src.Blocks[0]];
         var nmap = new Dictionary<Node, Node>();
         foreach (var x in src.Blocks)
             foreach (var n in x.Phis.Concat(x.Code))
                 nmap[n] = new Node
                 {
                     Op = n.Op, Kind = n.Kind, SType = n.SType, Type = n.Type, X = n.X, I = n.I, D = n.D, Sub = n.Sub, Ovf = n.Ovf,
-                    Unsigned = n.Unsigned, Small = n.Small, Block = bmap[x], Id = n.Id, ILOffset = n.ILOffset,
+                    Unsigned = n.Unsigned, Small = n.Small, Block = bmap[x], Id = dst.NextId(), ILOffset = n.ILOffset,
                 };
         foreach (var x in src.Blocks)
         {
