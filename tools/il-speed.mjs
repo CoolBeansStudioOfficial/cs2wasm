@@ -4,7 +4,7 @@
 // front end; this builds the same sources with the IL front end (one .cs each: the sources plus a Main, through the IL
 // tests' `framework` mode) and times them the way those tools do. Building needs the Emscripten SDK (the desk);
 // running needs only Node, so a build directory can be copied to another machine (the homelab) and run there.
-//   node tools/il-speed.mjs build <dir> [--fw <framework>] [--tests <Il2Wasm.IL.Tests.dll>] [--config name=K=V,K=V ...]
+//   node tools/il-speed.mjs build <dir> [--fw <framework>] [--tests <Il2Wasm.IL.Tests.dll>] [--config name=K=V,K=V ...] [--rebuild-aot]
 //   node tools/il-speed.mjs run <dir> [--runs N] [--js-young MB] [--json file] [--only bench|frames]
 // Default configs: naive (IL2WASM_MEM_NAIVE=1) and plan (IL2WASM_MEM_PLAN=1). Runs are interleaved (NativeAOT, then
 // each config, per run); each statistic is the best (bench: the best of five in-process repetitions, then the best
@@ -39,14 +39,16 @@ const codeSize = (file) => {
 
 if (cmd === 'build') {
   mkdirSync(dir, { recursive: true });
-  const env = emsdkEnv();
   for (const [proj, sub] of [['bench-naot-wasm', 'naot-bench'], ['frames-naot-wasm', 'naot-frames']]) {
+    if (existsSync(join(dir, sub)) && !args.includes('--rebuild-aot')) continue;
+    const env = emsdkEnv();
     console.error(`publishing ${proj} (NativeAOT-LLVM, WebAssembly)...`);
     execFileSync('dotnet', ['publish', join(root, 'tools', proj, `${proj}.csproj`), '-c', 'Release', '-o', join(dir, sub), '-v', 'q', '--nologo'], { stdio: ['ignore', 'ignore', 'inherit'], env });
   }
   copyFileSync(join(root, 'tools', 'bench-naot-wasm', 'peak.cjs'), join(dir, 'peak.cjs'));
   writeFileSync(join(dir, 'bench.cs'), readFileSync(join(root, 'tools', 'bench', 'Programs.cs'), 'utf8') + '\nstatic class IlMain { static void Main() => Bench.RunAll(); }\n');
-  writeFileSync(join(dir, 'frames.cs'), readFileSync(join(root, 'tools', 'frames', 'Frames.cs'), 'utf8') + '\nstatic class IlMain { static void Main(string[] args) => Frames.Run(args[0]); }\n');
+  // (one module per scene: the IL front end's main passes Main(string[]) no arguments yet, IlCompiler.Finish)
+  for (const sc of scenes) writeFileSync(join(dir, `frames_${sc}.cs`), readFileSync(join(root, 'tools', 'frames', 'Frames.cs'), 'utf8') + `\nstatic class IlMain { static void Main() => Frames.Run("${sc}"); }\n`);
   const fw = opt('--fw', process.env.IL2WASM_FRAMEWORK ?? join(root, 'artifacts', 'framework'));
   const tests = opt('--tests', join(root, 'tests', 'Il2Wasm.IL.Tests', 'bin', 'Release', 'net11.0', 'Il2Wasm.IL.Tests.dll'));
   const configs = args.flatMap((a, i) => (a === '--config' ? [args[i + 1]] : []));
