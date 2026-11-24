@@ -25,7 +25,16 @@ public sealed class PureCalls
     readonly Substitutions _subs;
     readonly Dictionary<MethodDesc, Body?> _bodies = new();
     readonly Dictionary<(MethodDesc, string), (bool, Val)> _memo = new();
+    /// <summary>The evaluations in progress (a call back into one of them: not pure).</summary>
+    readonly HashSet<(MethodDesc, string)> _active = [];
     int _depth;
+    /// <summary>The evaluation under way met the depth bound or a call into an evaluation in progress above it: its
+    /// result depends on where it was asked from, so it is kept only for the rest of the outermost evaluation
+    /// (_local, cleared when it ends), never in _memo (MEMORY-IR 3.5: answers must not depend on the order methods are
+    /// imported in). An untainted result is what the call evaluated at depth 0 gives; a tainted one is a function of
+    /// the outermost call it was made for.</summary>
+    bool _tainted;
+    readonly Dictionary<(MethodDesc, string), (bool, Val)> _local = new();
 
     public PureCalls(Substitutions subs) { _subs = subs; }
 
@@ -38,13 +47,20 @@ public sealed class PureCalls
         if (!valueOnly && !m.Signature.IsStatic) return (false, Val.Bottom);
         var key = (m, string.Join(",", args.Select(a => a.ToString())));
         if (_memo.TryGetValue(key, out var r)) return r;
-        if (_depth >= MaxDepth) return (false, Val.Bottom);
-        // (a recursive call while this one is evaluated: not pure)
-        _memo[key] = (false, Val.Bottom);
+        if (_local.TryGetValue(key, out r)) { _tainted = true; return r; }
+        // (a recursive call while this one is evaluated, or one too deep: not pure, here)
+        if (_depth >= MaxDepth || _active.Contains(key)) { _tainted = true; return (false, Val.Bottom); }
+        bool outer = _tainted;
+        _tainted = false;
+        _active.Add(key);
         _depth++;
         try { r = Run(m, args); }
-        finally { _depth--; }
-        _memo[key] = r;
+        finally { _depth--; _active.Remove(key); }
+        bool mine = _tainted;
+        _tainted = outer | mine;
+        if (mine) _local[key] = r;
+        else _memo[key] = r;
+        if (_depth == 0) { _local.Clear(); _tainted = false; }
         return r;
     }
 
