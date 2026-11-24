@@ -108,7 +108,31 @@ public sealed class Solver
     }
 
     /// <summary>A method lowering reached and imported itself.</summary>
-    public void Late(ImportedMethod u) { LateImports++; LateMethods.Add(u.Method); _late.Add(u.Method); }
+    public void Late(ImportedMethod u)
+    {
+        LateImports++; LateMethods.Add(u.Method); _late.Add(u.Method);
+        if (ProgramState.IsDependentSetter(u.Method))
+        {
+            // (from now on the program has dependents; this round's solve left their releases out, so its plans may be
+            // wrong: another round must be made, whose solve counts them)
+            ProgramState.Of(u.Method.Context).DependentsSeen = true;
+            if (_skipDependents) NeedsAnotherRound = true;
+        }
+    }
+
+    bool _skipDependents;
+
+    /// <summary>This round's module must not be the one encoded: its solve left out releases a late import showed can
+    /// happen (ObjectMarks' [ReleasesDependents]). The round loop goes on (IlCompiler.Compile).</summary>
+    public bool NeedsAnotherRound { get; private set; }
+
+    /// <summary>Before a round's module is encoded: a hard error when it needed another round and none is left.</summary>
+    public void CheckEncodable()
+    {
+        if (NeedsAnotherRound)
+            throw new InvalidOperationException("release effects: a dependent handle's setter was imported late in the last round, after its solve left dependents' releases out (raise IL2WASM_IL_ROUNDS)");
+    }
+    static readonly bool s_verify = Environment.GetEnvironmentVariable("IL2WASM_VERIFY") == "1";
     readonly HashSet<MethodDesc> _late = [];
 
     /// <summary>The methods lowering imported itself, in order: the next round's reach phase starts from them too, so
@@ -134,14 +158,37 @@ public sealed class Solver
         var sol = new ProgramSolution(_host);
         // (row a: Signatures.Compute reads covered bodies, read-only, before lowering takes them)
         sol.BodyOf = m => _units.TryGetValue(m, out var u) && u != null ? (u.Body ?? (u.Il != null && u.Error == null && !u.Substituted ? Il2Wasm.IL.Ir.Importer.Import(u.Method, u.Il, u.Facts) : null)) : null;
-        foreach (var m in _order) if (_units[m] is { Summary: { } s } u) sol.AddMethod(m, s, u.Body is { } b ? ProgramSolution.ReleasedTypes(b) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null);
+        // (ObjectMarks' [ReleasesDependents] contract: dependents exist only once WeakSlots.LinkDependent or
+        // ExchangeDependent can run, in any round of this program, a late import included; round 0 cannot know its own
+        // late imports yet, so the rule starts at round 1)
+        var state = ProgramState.Of(_order.Count > 0 ? _order[0].Context : null);
+        if (_order.Any(ProgramState.IsDependentSetter)) state.DependentsSeen = true;
+        bool skip = !state.DependentsSeen && state.Solves > 0;
+        state.Solves++;
+        _skipDependents = skip;
+        sol.DependentsReleased = !skip;
+        foreach (var m in _order) if (_units[m] is { Summary: { } s } u) sol.AddMethod(m, s, u.Body is { } b ? ProgramSolution.ReleasedTypes(b, skip) : u.Body == null && (u.Il == null || u.Substituted) ? [] : null);
+        if (s_verify)
+            foreach (var m in _order)
+                if (_units[m] is { Body: { } vb } && ProgramSolution.ReleaseViolations(vb, skip) is { Count: > 0 } bad)
+                    throw new InvalidOperationException("release effects: " + m + ": " + string.Join("; ", bad));
         foreach (var t in _constructed) sol.AddConstructed(t);
         foreach (var slot in _slots) sol.AddSlot(slot);
         sol.Freeze();
+        sol.HeldBodies = m => _units.TryGetValue(m, out var u) && u is { Error: null, Substituted: false } ? u.Body : null;
         if (s_trace) Console.Error.WriteLine($"mem: solved {sol.Methods.Count} methods, {sol.Slots.Count} slots; {_clock.ElapsedMilliseconds} ms");
-        if (s_trace && sol.Methods.Count > 0)
+        _solution = sol;
+        return sol;
+    }
+
+    ProgramSolution? _solution;
+
+    /// <summary>After lowering: how the reach phase matched it, and the solved facts' share (IL2WASM_MEM_TRACE).</summary>
+    public void Report()
+    {
+        if (s_trace && _solution is { } sol && sol.Methods.Count > 0)
         {
-            // (the facts solved now, to report them: they are only read, so nothing else changes)
+            // (after lowering, so after Signatures.Compute filled the intrinsic table; solved here if no plan asked)
             long t0 = _clock.ElapsedMilliseconds;
             int all = 0, tame = 0, lib = 0, libTame = 0;
             foreach (var m in sol.Methods.Items)
@@ -151,15 +198,10 @@ public sealed class Solver
                 all++; if (t) tame++;
                 if (core) { lib++; if (t) libTame++; }
             }
-            Console.Error.WriteLine($"mem: release effects Wild for {sol.Methods.Items.Count(m => sol.Facts(m).ReleaseEffects.Wild)} methods; {sol.DestroyReport}");
+            Console.Error.WriteLine($"mem: release effects Wild for {sol.Methods.Items.Count(m => sol.Facts(m).ReleaseEffects.Wild)} methods; {sol.DestroyReport}; facts {sol.FactsTime.Release} ms release targets ({sol.FactsTime.ReleaseNodes} release nodes), {sol.FactsTime.Graph} ms graph, {sol.FactsTime.Solve} ms fixed point");
             Console.Error.WriteLine($"mem: Mods not Wild for {tame} of {all} methods, {libTame} of {lib} CoreLib methods ({(lib == 0 ? 0 : 100.0 * libTame / lib):F1}%); facts solved in {_clock.ElapsedMilliseconds - t0} ms");
         }
-        return sol;
-    }
-
-    /// <summary>After lowering: how the reach phase matched it (IL2WASM_MEM_TRACE).</summary>
-    public void Report()
-    {
+        if (Environment.GetEnvironmentVariable("IL2WASM_MEM_FACTS_DUMP") is { Length: > 0 } dump && _solution is { } ds && ds.Methods.Count > 0) ds.DumpFacts(dump);
         if (s_trace) Console.Error.WriteLine($"mem: lowering took {_taken.Count} reached methods, imported {LateImports} late; {Unused} reached methods never lowered; {_clock.ElapsedMilliseconds} ms since the reach phase began, live heap {(s_heap ? GC.GetTotalMemory(true) / (1 << 20) : -1)} MB, peak {System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64 >> 20} MB");
     }
 }
@@ -171,8 +213,14 @@ public sealed class Solver
 public sealed class ProgramSolution
 {
     readonly IReachHost _host;
-    /// <summary>A covered method's body before lowering takes it (Signatures.Compute reads it; null once taken or when there is none).</summary>
+    /// <summary>A covered method's body before lowering takes it (Signatures.Compute reads it; null once taken or when there is none).
+    /// Use BodyOf when you need a body (it imports again when the held one is gone); HeldBody when you would rather skip the method than pay for an import.</summary>
     public Func<MethodDesc, Il2Wasm.IL.Ir.Body?> BodyOf { get; internal set; } = _ => null;
+    internal Func<MethodDesc, Body?>? HeldBodies;
+    /// <summary>The body the reach phase imported for a method, while lowering has not taken it (null otherwise, and
+    /// with IL2WASM_MEM_REIMPORT=1). Read only: the IR inliner (Ir/Inline.cs) copies it instead of importing the
+    /// method again. Use HeldBody when you would rather skip the method than pay for an import; BodyOf when you need a body.</summary>
+    public Body? HeldBody(MethodDesc m) => HeldBodies?.Invoke(m);
     readonly IdTable<MethodDesc> _methods = new();
     readonly IdTable<TypeDesc> _types = new();
     /// <summary>The methods of the solution, by MethodId (assigned on first use, in stable order).</summary>
@@ -200,8 +248,9 @@ public sealed class ProgramSolution
 
     /// <summary>The types a body may release: every counted value (a reference: its static type, object when the IR has
     /// none; a struct with references) and every counted slot it stores (the old value goes).</summary>
-    internal static TypeDesc[] ReleasedTypes(Il2Wasm.IL.Ir.Body body)
+    internal static TypeDesc[] ReleasedTypes(Il2Wasm.IL.Ir.Body body, bool skipDependents = false)
     {
+        bool dependents = skipDependents && ReleasesDependents(body.Method);
         var set = new HashSet<TypeDesc>();
         var obj = body.Method.Context.GetWellKnownType(WellKnownType.Object);
         void Add(TypeDesc? t, Il2Wasm.IL.Ir.VK kind)
@@ -214,6 +263,7 @@ public sealed class ProgramSolution
             foreach (var n in b.Phis.Concat(b.Code))
             {
                 if (n.Op is Il2Wasm.IL.Ir.Opc.LdNull or Il2Wasm.IL.Ir.Opc.LdStr) continue;
+                if (dependents && IsBorrow(n)) continue;
                 Add(n.Type, n.Kind);
                 switch (n.Op)
                 {
@@ -222,10 +272,62 @@ public sealed class ProgramSolution
                     case Il2Wasm.IL.Ir.Opc.VarSt: Slot(body.Vars[(int)n.I].Type); break;
                     case Il2Wasm.IL.Ir.Opc.StInd or Il2Wasm.IL.Ir.Opc.InitObj: Slot(n.X as TypeDesc ?? n.A.ElementAtOrDefault(1)?.Type ?? obj); break;
                     case Il2Wasm.IL.Ir.Opc.CpBlk: set.Add(obj); break;
+                    // (Rt.ReleaseElements<T>(addr, count): T's at an address, the elements' type itself)
+                    case Il2Wasm.IL.Ir.Opc.Call when n.X is MethodDesc rm && rm.GetName() == "ReleaseElements" && IsRt(rm) && rm.HasInstantiation: Slot(rm.Instantiation[0]); break;
                 }
             }
         return set.OrderBy(t => StableKey.Of(t), StringComparer.Ordinal).ToArray();
     }
+
+    /// <summary>The dependents' releases count (a dependent can exist: WeakSlots.LinkDependent or ExchangeDependent
+    /// reached in some round, or this is round 0); false: ObjectMarks' [ReleasesDependents] methods release none.</summary>
+    public bool DependentsReleased { get; internal set; } = true;
+
+    static bool ReleasesDependents(MethodDesc m) => m.GetTypicalMethodDefinition() is Internal.TypeSystem.Ecma.EcmaMethod em && em.HasCustomAttribute("Il2Wasm.Runtime", "ReleasesDependentsAttribute");
+
+    /// <summary>Rt.Borrow&lt;T&gt;(int): an object from an address (no count of its own).</summary>
+    static bool IsBorrow(Il2Wasm.IL.Ir.Node n) => n.Op == Il2Wasm.IL.Ir.Opc.Call && n.X is MethodDesc m && m.GetName() == "Borrow" && IsRt(m);
+    static bool IsRt(MethodDesc m) => m.OwningType is MetadataType t && t.GetName() == "Rt" && t.GetNamespace() == "Il2Wasm.Runtime";
+
+    /// <summary>The check behind the Rt.Release and Rt.ReleaseElements intrinsics' effects (IntrinsicSignatures: none
+    /// of their own, because the solve's release nodes cover them): each such call's operand, followed back through
+    /// casts, is a counted value of the body whose static type is in its released types, and not an object made from an
+    /// address with a type narrower than object (Rt.Borrow&lt;T&gt;, Unsafe.As of an int), which would claim less than
+    /// the object may be. Dependents' releases left out by the [ReleasesDependents] rule are exempt. The problems, or
+    /// none. Run in every solve with IL2WASM_VERIFY=1.</summary>
+    public static List<string> ReleaseViolations(Il2Wasm.IL.Ir.Body body, bool skipDependents)
+    {
+        var bad = new List<string>();
+        var types = ReleasedTypes(body, skipDependents).ToHashSet();
+        bool dependents = skipDependents && ReleasesDependents(body.Method);
+        var obj = body.Method.Context.GetWellKnownType(WellKnownType.Object);
+        foreach (var b in body.Blocks)
+            foreach (var n in b.Code)
+            {
+                if (n.Op != Il2Wasm.IL.Ir.Opc.Call || n.X is not MethodDesc rm || !IsRt(rm) || rm.GetName() is not ("Release" or "ReleaseElements") || n.A.Length == 0) continue;
+                if (rm.GetName() == "ReleaseElements")
+                {
+                    // (the elements' type is a type argument: counted or not, it is among the released types when counted)
+                    var et = rm.HasInstantiation ? rm.Instantiation[0] : null;
+                    if (et == null || et.IsGenericParameter) bad.Add("ReleaseElements without a type");
+                    else if (Il2Wasm.IL.Ir.Kinds.Of(et) is Il2Wasm.IL.Ir.VK.Ref or Il2Wasm.IL.Ir.VK.Struct && Il2Wasm.IL.Ir.Kinds.Counted(et) && !types.Contains(et)) bad.Add($"ReleaseElements<{et}> not among the released types");
+                    continue;
+                }
+                var x = n.A[0];
+                for (int guard = 0; guard < 16; guard++)
+                {
+                    if (dependents && IsBorrow(x)) break;
+                    if (x.Kind != Il2Wasm.IL.Ir.VK.Ref) { bad.Add($"{rm.GetName()} of v{x.Id}, not a reference"); break; }
+                    var st = x.Type is { IsValueType: false } xt ? xt : obj;
+                    if (!types.Contains(st)) { bad.Add($"{rm.GetName()} of v{x.Id} ({st}) not among the released types"); break; }
+                    if (IsBorrow(x) && x.X is MethodDesc bm && bm.HasInstantiation && !bm.Instantiation[0].IsObject) { bad.Add($"{rm.GetName()} of Rt.Borrow<{bm.Instantiation[0]}>: narrower than the object may be"); break; }
+                    if (x.Op is Il2Wasm.IL.Ir.Opc.CastClass or Il2Wasm.IL.Ir.Opc.IsInst || x.Op == Il2Wasm.IL.Ir.Opc.Call && x.A.Length == 1 && x.X is MethodDesc am && am.GetName() == "As" && am.OwningType is MetadataType ut && ut.GetName() == "Unsafe") { x = x.A[0]; continue; }
+                    break;
+                }
+            }
+        return bad;
+    }
+
     internal void AddConstructed(TypeDesc t) => _constructed.Add(t);
     internal void AddSlot(MethodDesc slot) => Slots.Add(slot);
 
@@ -269,7 +371,8 @@ public sealed class ProgramSolution
     {
         if (_targets.TryGetValue(slot, out var r)) return r;
         var set = new HashSet<MethodDesc>();
-        for (int i = 0, k = ConstructedCount; i < k; i++) if (_host.Resolve(Types[i], slot) is { } impl) set.Add(impl);
+        // (only the constructed types the slot's owner admits can implement it: its cone)
+        foreach (int i in ConeOf(slot.OwningType)) if (_host.Resolve(_all![i], slot) is { } impl) set.Add(impl);
         r = set.OrderBy(m => StableKey.Of(m), StringComparer.Ordinal).ToArray();
         _targets[slot] = r;
         return r;
@@ -322,7 +425,10 @@ public sealed class ProgramSolution
 
     /// <summary>Effects of an intrinsic call (its body is the compiler's own): the table of Memory/IntrinsicSignatures.cs
     /// once it exists; until then, any key.</summary>
-    public static Func<ProgramSolution, MethodDesc, KeySet> IntrinsicEffects = (_, _) => KeySet.All;
+    public static Func<ProgramSolution, MethodDesc, MethodDesc, KeySet> IntrinsicEffects = (_, _, _) => KeySet.All;
+    /// <summary>The effects a method declares ([Il2Wasm.Runtime.DeclaredEffects]: the heap's entry points), from
+    /// Memory/IntrinsicSignatures.cs; null: solve its body.</summary>
+    public static Func<ProgramSolution, MethodDesc, KeySet?> DeclaredEffects = (_, _) => null;
 
     /// <summary>Mods, release effects, throw/return and lifetime observation over the call graph: Tarjan's strongly
     /// connected components, callees first, each component joined to its fixed point (3.3).</summary>
@@ -330,20 +436,40 @@ public sealed class ProgramSolution
     {
         if (_facts != null) return;
         if (!_frozen) throw new InvalidOperationException("the solution is asked for facts before the reach phase ended");
+        var clock = System.Diagnostics.Stopwatch.StartNew();
         int n = Methods.Count;
-        var facts = new MethodFacts[n];
-        var succ = new List<int>[n];
-        // (3.6: a release runs the destroy of the value's types: the finalizers below them and the marks' hooks)
-        var rel = new int[n][];
-        var relWild = new bool[n];
+        // (3.6: a release runs the destroys of the value's types, the finalizers below them and the marks' hooks. Each
+        // distinct set of such targets is one node of the graph (a release node, ids from n), so a method's releases
+        // are a few edges to release nodes and each set's effects are joined once)
+        var setIds = new Dictionary<string, int>();
+        var sets = new List<int[]>();
+        var setOfType = new Dictionary<TypeDesc, int>();
+        int SetOf(TypeDesc t)
+        {
+            if (setOfType.TryGetValue(t, out int id)) return id;
+            var targets = DestroyTargets(t);
+            if (targets.Length == 0) id = -1;
+            else
+            {
+                var key = string.Join(",", targets);
+                if (!setIds.TryGetValue(key, out id)) { id = sets.Count; setIds[key] = id; sets.Add(targets); }
+            }
+            setOfType[t] = id;
+            return id;
+        }
+        var relOf = new int[n][];
         for (int i = 0; i < n; i++)
         {
             var types = _released.GetValueOrDefault(Methods[i]) ?? [Object];
-            var set = new SortedSet<int>();
-            foreach (var t in types) foreach (int j in DestroyTargets(t)) set.Add(j);
-            relWild[i] = set.Remove(-1);
-            rel[i] = [.. set];
+            var l = new SortedSet<int>();
+            foreach (var t in types) if (SetOf(t) is int sid and >= 0) l.Add(n + sid);
+            relOf[i] = [.. l];
         }
+        long tRelease = clock.ElapsedMilliseconds;
+        int total = n + sets.Count;
+        var facts = new MethodFacts[total];
+        var succ = new List<int>[total];
+        var rel = new int[total][];
         for (int i = 0; i < n; i++)
         {
             var m = Methods[i];
@@ -352,23 +478,34 @@ public sealed class ProgramSolution
             var keys = new List<int>();
             bool wild = s.WildStores || s.CallsUnknown;
             foreach (var k in s.Stores) if (k.Kind != KeyKind.Var) keys.Add(Keys.Intern(k));
-            foreach (var im in s.Intrinsics) { var e = IntrinsicEffects(this, im); wild |= e.Wild; foreach (int k in e.Keys.Items) keys.Add(k); }
+            foreach (var im in s.Intrinsics) { var e = IntrinsicEffects(this, m, im); wild |= e.Wild; foreach (int k in e.Keys.Items) keys.Add(k); }
             var callees = new List<int>();
             foreach (var c in s.Calls) Callee(c, callees, ref wild, f);
             foreach (var slot in s.Slots) foreach (var c in Targets(slot)) Callee(c, callees, ref wild, f);
             // (the static constructors a use in the body may start run inside it: their effects are the method's)
             foreach (var t in s.Initializes) if (t.GetStaticConstructor() is { } cctor) Callee(cctor, callees, ref wild, f);
-            f.Mods = new KeySet(Pool.Of(keys), wild);
-            // (3.6: the Mods of the destroys its releases can run, joined below; a finalizer or hook outside the
-            // solution: anything)
-            f.ReleaseEffects = relWild[i] ? KeySet.All : KeySet.Empty;
+            f.Mods = wild ? KeySet.All : new KeySet(Pool.Of(keys), false);
+            // (the Mods of the destroys its releases can run, joined below from its release nodes)
+            f.ReleaseEffects = KeySet.Empty;
             f.Signature = OwnershipSignature.Bottom(m);
             facts[i] = f;
-            succ[i] = callees;
+            succ[i] = callees.Distinct().ToList();
+            rel[i] = relOf[i];
+            // (declared effects: its body is not solved; it may throw a fresh exception, releases nothing)
+            if (DeclaredEffects(this, m) is { } declared) { f.Mods = declared; f.ReleaseEffects = KeySet.Empty; f.MayThrow = true; f.ObservesLifetime = false; succ[i] = []; rel[i] = []; }
+        }
+        for (int k = 0; k < sets.Count; k++)
+        {
+            // (a target outside the solution: anything)
+            var targets = sets[k];
+            facts[n + k] = new MethodFacts { Mods = KeySet.Empty, ReleaseEffects = targets[0] < 0 ? KeySet.All : KeySet.Empty };
+            succ[n + k] = [];
+            rel[n + k] = targets[0] < 0 ? targets[1..] : targets;
         }
         // (the components over calls and releases together: a finalizer's releases can reach back)
-        var edges = new List<int>[n];
-        for (int i = 0; i < n; i++) { edges[i] = [.. succ[i]]; edges[i].AddRange(rel[i]); }
+        var edges = new List<int>[total];
+        for (int i = 0; i < total; i++) { edges[i] = [.. succ[i]]; edges[i].AddRange(rel[i]); }
+        long tGraph = clock.ElapsedMilliseconds;
         foreach (var comp in Components(edges))
             for (bool changed = true; changed;)
             {
@@ -379,18 +516,21 @@ public sealed class ProgramSolution
                     foreach (int j in succ[i])
                     {
                         var g = facts[j];
-                        var mods = f.Mods.Join(g.Mods, Pool).Join(g.ReleaseEffects, Pool);
+                        var mods = Join(Join(f.Mods, g.Mods), g.ReleaseEffects);
                         bool thr = f.MayThrow | g.MayThrow, obs = f.ObservesLifetime | g.ObservesLifetime;
                         if (mods != f.Mods || thr != f.MayThrow || obs != f.ObservesLifetime) { f.Mods = mods; f.MayThrow = thr; f.ObservesLifetime = obs; changed = true; }
                     }
+                    if (f.ReleaseEffects.Wild) continue;
                     foreach (int j in rel[i])
                     {
                         var g = facts[j];
-                        var re = f.ReleaseEffects.Join(g.Mods, Pool).Join(g.ReleaseEffects, Pool);
+                        var re = Join(Join(f.ReleaseEffects, g.Mods), g.ReleaseEffects);
                         if (re != f.ReleaseEffects) { f.ReleaseEffects = re; changed = true; }
+                        if (re.Wild) break;
                     }
                 }
             }
+        FactsTime = (tRelease, tGraph - tRelease, clock.ElapsedMilliseconds - tGraph, sets.Count);
         _facts = facts;
     }
 
@@ -398,7 +538,6 @@ public sealed class ProgramSolution
 
     TypeDesc Object => _object ??= (_arrival.Count > 0 ? _arrival[0].Context : _constructed[0].Context).GetWellKnownType(WellKnownType.Object);
     TypeDesc? _object;
-    Dictionary<TypeDesc, SortedSet<int>>? _fins;
     List<TypeDesc>? _carriers;
     readonly Dictionary<TypeDesc, int[]> _destroyTargets = new();
     int _onDestroy = -2, _onFinalize = -2;
@@ -409,6 +548,21 @@ public sealed class ProgramSolution
     /// elements, over the constructed types) and, once a weak mark can be set (ObjectMarks.SetAt reached), of
     /// ObjectMarks.OnDestroy (every destroy) and OnFinalize (a finalizable one). Freeing writes no live object's field,
     /// so a type with none of these has no effect. Anything when one of them is outside the solution.</summary>
+    /// <summary>IL2WASM_MEM_FACTS_DUMP=file: every method's solved facts, one line each in method id order, appended per
+    /// solve (to compare two builds of the solver: the solution must not change).</summary>
+    internal void DumpFacts(string file)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("# solve of ").Append(Methods.Count).Append(" methods\n");
+        string Keys(KeySet k) => k.Wild ? "*" : string.Join(",", k.Keys.Items.ToArray().Select(i => this.Keys[i].ToString()).OrderBy(x => x, StringComparer.Ordinal));
+        for (int i = 0; i < Methods.Count; i++)
+        {
+            var f = Facts(Methods[i]);
+            sb.Append(StableKey.Of(Methods[i])).Append('\t').Append(Keys(f.Mods)).Append('\t').Append(Keys(f.ReleaseEffects)).Append('\t').Append(f.MayThrow ? 'T' : '-').Append(f.ObservesLifetime ? 'O' : '-').Append('\n');
+        }
+        System.IO.File.AppendAllText(file, sb.ToString());
+    }
+
     public KeySet DestroyEffects(TypeDesc? t)
     {
         SolveFacts();
@@ -429,9 +583,10 @@ public sealed class ProgramSolution
     int[] DestroyTargets(TypeDesc t)
     {
         if (_destroyTargets.TryGetValue(t, out var r)) return r;
-        if (_fins == null) PrepareDestroys();
+        if (_val == null) PrepareDestroys();
+        var bits = Below(t);
         var set = new SortedSet<int>();
-        Below(t, set, []);
+        for (int i = 0; i < _finIds!.Length; i++) if ((bits[i >> 6] & (1UL << (i & 63))) != 0) set.Add(_finIds[i]);
         if (_onDestroy != -2)
         {
             set.Add(_onDestroy);
@@ -442,23 +597,73 @@ public sealed class ProgramSolution
         return r;
     }
 
-    /// <summary>The finalizers the destroy of a value of type t can reach: a reference's, every constructed carrier the
-    /// type admits; a struct's, its counted fields'.</summary>
-    void Below(TypeDesc t, SortedSet<int> set, HashSet<TypeDesc> seen)
+    // The finalizers below each type, as bit sets over the program's finalizers (bit i is _finIds[i]): _val per
+    // constructed type (index in _all), a least fixed point; Below(t) for any static type, cached once the point is
+    // reached. Cones (the constructed types a static type admits) come from an index of base classes for a class, the
+    // whole set for object, CanCastTo for the rest (interfaces, arrays).
+    int[]? _finIds;
+    int _words;
+    ulong[][]? _val;
+    TypeDesc[]? _all;
+    Dictionary<TypeDesc, List<int>>? _byBase;
+    readonly Dictionary<TypeDesc, int[]> _cones = new();
+    readonly Dictionary<TypeDesc, ulong[]> _below = new();
+    bool _belowFinal;
+
+    /// <summary>The constructed types (indices in _all) a static type admits.</summary>
+    int[] ConeOf(TypeDesc t)
+    {
+        if (_cones.TryGetValue(t, out var r)) return r;
+        EnsureIndex();
+        if (t.IsObject) r = Enumerable.Range(0, _all!.Length).ToArray();
+        // (a generic delegate type can be variant: CanCastTo below)
+        else if (t is DefType { IsInterface: false } && !t.IsArray && !(t.IsDelegate && t.HasInstantiation)) r = _byBase!.TryGetValue(t, out var l) ? [.. l] : [];
+        else r = Enumerable.Range(0, _all!.Length).Where(i => _all[i].CanCastTo(t)).ToArray();
+        _cones[t] = r;
+        return r;
+    }
+
+    /// <summary>The finalizers a destroy of a value of static type t can reach: a reference's, those of every constructed
+    /// type it admits; a struct's, its counted fields'.</summary>
+    ulong[] Below(TypeDesc t)
+    {
+        if (_belowFinal && _below.TryGetValue(t, out var known)) return known;
+        var acc = new ulong[_words];
+        BelowInto(t, acc, []);
+        if (_belowFinal) _below[t] = acc;
+        return acc;
+    }
+
+    void BelowInto(TypeDesc t, ulong[] acc, HashSet<TypeDesc> seen)
     {
         if (!seen.Add(t)) return;
         if (t.IsValueType)
         {
             if (t is DefType dt && Il2Wasm.IL.Ir.Kinds.Counted(t))
-                foreach (var f in dt.GetFields()) if (!f.IsStatic && Il2Wasm.IL.Ir.Kinds.Counted(f.FieldType)) Below(f.FieldType, set, seen);
+                foreach (var f in dt.GetFields()) if (!f.IsStatic && Il2Wasm.IL.Ir.Kinds.Counted(f.FieldType)) BelowInto(f.FieldType, acc, seen);
             return;
         }
         if (t.IsPointer || t.IsByRef || t.IsFunctionPointer) return;
-        foreach (var x in _carriers!) if (x.CanCastTo(t)) set.UnionWith(_fins![x]);
+        if (_belowFinal && _below.TryGetValue(t, out var k)) { for (int w = 0; w < _words; w++) acc[w] |= k[w]; return; }
+        foreach (int x in ConeOf(t)) { var v = _val![x]; for (int w = 0; w < _words; w++) acc[w] |= v[w]; }
+    }
+
+    /// <summary>The constructed types in id order, and the index of their base classes (for the cones).</summary>
+    void EnsureIndex()
+    {
+        if (_all != null) return;
+        var all = _all = [.. Constructed];
+        _byBase = new Dictionary<TypeDesc, List<int>>();
+        for (int i = 0; i < all.Length; i++)
+            for (var b = all[i]; b != null; b = b.BaseType)
+            {
+                if (!_byBase.TryGetValue(b, out var l)) _byBase[b] = l = [];
+                l.Add(i);
+            }
     }
 
     /// <summary>Per constructed type, the finalizers its destroy can run: its own, and those of what its counted fields
-    /// and elements can hold (a fixed point over the constructed types); the carriers are the types with any.</summary>
+    /// and elements can hold (a least fixed point over the constructed types).</summary>
     void PrepareDestroys()
     {
         bool IsMarks(MethodDesc m, string name) => m.GetName() == name && m.OwningType is MetadataType mt && mt.GetName() == "ObjectMarks" && mt.GetNamespace() == "Il2Wasm.Runtime";
@@ -468,30 +673,50 @@ public sealed class ProgramSolution
             _onDestroy = Methods.Items.FirstOrDefault(m => IsMarks(m, "OnDestroy")) is { } od ? MethodId(od) : -1;
             _onFinalize = Methods.Items.FirstOrDefault(m => IsMarks(m, "OnFinalize")) is { } of ? MethodId(of) : -1;
         }
-        var fins = new Dictionary<TypeDesc, SortedSet<int>>();
-        var all = Constructed;
-        foreach (var x in all)
+        EnsureIndex();
+        var all = _all!;
+        var own = new int[all.Length];
+        var ids = new SortedSet<int>();
+        for (int i = 0; i < all.Length; i++)
         {
-            var s = new SortedSet<int>();
-            if (FinalizerOf(x) is { } fin) s.Add(MethodId(fin) is int id and >= 0 ? id : -1);
-            fins[x] = s;
+            own[i] = FinalizerOf(all[i]) is { } fin ? (MethodId(fin) is int id and >= 0 ? id : -1) : -2;
+            if (own[i] != -2) ids.Add(own[i]);
         }
-        _fins = fins;
-        for (bool changed = true; changed;)
+        _finIds = [.. ids];
+        _words = Math.Max(1, (_finIds.Length + 63) / 64);
+        var bit = new Dictionary<int, int>();
+        for (int i = 0; i < _finIds.Length; i++) bit[_finIds[i]] = i;
+        _val = new ulong[all.Length][];
+        for (int i = 0; i < all.Length; i++)
         {
-            changed = false;
-            _carriers = all.Where(x => fins[x].Count > 0).ToList();
-            if (_carriers.Count == 0) break;
-            foreach (var x in all)
+            _val[i] = new ulong[_words];
+            if (own[i] != -2) { int k = bit[own[i]]; _val[i][k >> 6] |= 1UL << (k & 63); }
+        }
+        if (_finIds.Length > 0)
+        {
+            var children = new TypeDesc[all.Length][];
+            for (int i = 0; i < all.Length; i++) children[i] = ChildTypes(all[i]).Distinct().ToArray();
+            var acc = new ulong[_words];
+            for (bool changed = true; changed;)
             {
-                var s = fins[x];
-                int before = s.Count;
-                var seen = new HashSet<TypeDesc>();
-                foreach (var c in ChildTypes(x)) Below(c, s, seen);
-                if (s.Count != before) changed = true;
+                changed = false;
+                for (int i = 0; i < all.Length; i++)
+                {
+                    if (children[i].Length == 0) continue;
+                    Array.Clear(acc);
+                    var seen = new HashSet<TypeDesc>();
+                    foreach (var c in children[i]) BelowInto(c, acc, seen);
+                    var v = _val[i];
+                    for (int w = 0; w < _words; w++)
+                    {
+                        ulong nv = v[w] | acc[w];
+                        if (nv != v[w]) { v[w] = nv; changed = true; }
+                    }
+                }
             }
         }
-        _carriers ??= [];
+        _belowFinal = true;
+        _carriers = Enumerable.Range(0, all.Length).Where(i => _val[i].Any(w => w != 0)).Select(i => all[i]).ToList();
     }
 
     /// <summary>A constructed type's counted children: an array's element type, a class's instance fields (its base
@@ -503,6 +728,12 @@ public sealed class ProgramSolution
             foreach (var f in t.GetFields())
                 if (!f.IsStatic && !f.FieldType.IsPointer && !f.FieldType.IsByRef && !f.FieldType.IsFunctionPointer && !f.FieldType.IsGenericParameter && Il2Wasm.IL.Ir.Kinds.Counted(f.FieldType)) yield return f.FieldType;
     }
+
+    /// <summary>The join, with Wild absorbing (a wild set's keys say nothing more).</summary>
+    KeySet Join(KeySet a, KeySet b) => a.Wild || b.Wild ? KeySet.All : b.Keys.IsEmpty ? a : a.Join(b, Pool);
+
+    /// <summary>The facts' solve time (IL2WASM_MEM_TRACE): release targets, graph, fixed point (ms), release nodes.</summary>
+    internal (long Release, long Graph, long Solve, int ReleaseNodes) FactsTime;
 
     void Callee(MethodDesc c, List<int> callees, ref bool wild, MethodFacts f)
     {
@@ -551,4 +782,20 @@ public sealed class ProgramSolution
         }
         return result;
     }
+}
+
+/// <summary>What the rounds of one program's compilation share (they share its type system context): how many solves
+/// ran, and whether a dependent handle's setter was ever reached or imported late.</summary>
+sealed class ProgramState
+{
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, ProgramState> s_of = new();
+    static readonly ProgramState s_none = new();
+    public int Solves;
+    public bool DependentsSeen;
+
+    public static ProgramState Of(TypeSystemContext? ctx) { if (ctx == null) return s_none; lock (s_of) return s_of.GetValue(ctx, _ => new ProgramState()); }
+
+    /// <summary>WeakSlots.LinkDependent or ExchangeDependent: the only ways a dependent comes to exist.</summary>
+    public static bool IsDependentSetter(MethodDesc m) => m.GetName() is "LinkDependent" or "ExchangeDependent"
+        && m.OwningType is MetadataType t && t.GetName() == "WeakSlots" && t.GetNamespace() == "Il2Wasm.Runtime";
 }

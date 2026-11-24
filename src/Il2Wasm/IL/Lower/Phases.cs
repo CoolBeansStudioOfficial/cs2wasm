@@ -89,17 +89,29 @@ public sealed partial class IlCompiler : IReachHost
     /// <summary>A method's plan, between the solve and lowering (section 1.2's per-method phase). The naive plan
     /// (Ir/Ownership.cs) unless IL2WASM_MEM_PLAN=1 turns the planner on; IL2WASM_MEM_NAIVE=1 always means the naive
     /// plan (the baseline the removal share is measured against).</summary>
-    MethodPlan PlanMethod(MethodDesc m, Body body)
+    MethodPlan PlanMethod(MethodDesc m, Body body, Variant entry = default)
     {
-        if (!Pipeline.Planned || Solution == null) return MethodPlan.Naive(body, Ownership.Run(body));
-        var ctx = new PlanContext(m, body, Solution, Variant.Entry);
+        // (a variant's plan is for its own entry: IlCompiler.VariantFor)
+        if (!Pipeline.Planned || Solution == null)
+        {
+            var info0 = Ownership.Run(body);
+            if (Borrows.Stats && Solution != null) Borrows.Analyze(new PlanContext(m, body, Solution, entry), info0);
+            var naive = MethodPlan.Naive(body, info0); naive.Entry = entry; return naive;
+        }
+        var ctx = new PlanContext(m, body, Solution, entry) { FinalRound = FinalRound || Pipeline.NoFinalRoundGate };
         var plan = Plan.Build(ctx);
-        if (Pipeline.Inline)
+        plan.Entry = entry;
+        if (Pipeline.Inline && ctx.FinalRound)
+        {
             for (int step = 0; Inline.Step(ctx, plan, CalleeForInline) is { } site; step++)
             {
                 Canon.Run(ctx, plan, site);
                 if (Pipeline.Verify) Verify.Check(ctx, plan);
             }
+            // (an inlined callee's facts are the caller's now: recorded as its own lowering would have recorded them)
+            foreach (var c in Inline.InlinedInto(plan))
+                if (Solution.Summary(c) is { } s) { Facts.Merge(s); Facts.AddDirectCallees(m, s.Direct); }
+        }
         if (Pipeline.Verify) Verify.Check(ctx, plan);
         return plan;
     }
@@ -112,7 +124,7 @@ public sealed partial class IlCompiler : IReachHost
         if (Solution == null || !Solution.Covers(callee)) return null;
         var u = ImportMethod(callee);
         if (u.Body == null || u.Error != null) return null;
-        var ctx = new PlanContext(callee, u.Body, Solution, variant);
+        var ctx = new PlanContext(callee, u.Body, Solution, variant) { FinalRound = FinalRound || Pipeline.NoFinalRoundGate };
         return (u.Body, Plan.Build(ctx));
     }
 

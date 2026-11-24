@@ -104,6 +104,17 @@ public sealed class ProgramFacts : ISccpOracle
 
     public void MarkIndirect(MethodDesc m) => _indirect.Add(m);
 
+    /// <summary>The IR inliner put a callee's body into the caller: the callee's own direct calls are the caller's now
+    /// (their argument meets are in the callee's summary, merged too), so lowering them in the caller does not make
+    /// their targets indirect.</summary>
+    public void AddDirectCallees(MethodDesc caller, IEnumerable<MethodDesc> callees)
+    {
+        if (Off) return;
+        var d = _directCallees.TryGetValue(caller, out var old) ? new HashSet<MethodDesc>(old) : [];
+        d.UnionWith(callees);
+        _directCallees[caller] = d;
+    }
+
     /// <summary>This round's facts, for the next.</summary>
     readonly HashSet<TypeDesc> _aliased = [];
 

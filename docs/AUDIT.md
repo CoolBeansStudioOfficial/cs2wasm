@@ -5606,6 +5606,291 @@ Not run: the homelab suite and the self-host check on this commit.
   the homelab suite, stress and the self-host check (the old front end, the runtime and the back end are
   unchanged).
 
+### Memory model S1 row f: lowering from MethodPlan, the variant queue (claude/s1-lowering, 2026-11-24)
+
+- What: `Lower/FunctionLowering.cs` (with `FunctionLowering.Plan.cs`) lowers from the plan's tables, on the contract
+  the coordinator accepted.
+  - `Own` Guaranteed or Trivial: no count at the load, cast, catch value or phi copy, and no release on unwind.
+  - `Counts` Elided: nothing. `Atomic`/`LoadRetain`: lowered plain only when the solution is single-threaded,
+    otherwise an internal error until S3.
+  - `Stores` Init (or `Counts` Elided at a store): the old value is neither read nor released.
+  - `Args`, aligned with call.A, and call `Moves` bits: HandOver moves the caller's count in. KeepAlive is one retain
+    at the push, kept by the callee. The 4.6 protection around a Lend call is explicit Retain and Release nodes.
+  - `Callees`: direct calls and constructors call the chosen variant; any other site with a variant is an error.
+  - Entry BorrowReturn: a return takes no count.
+  - `Allocs` Virtual or FrameOwned (a class object, a non-Nullable box, or an array of constant length, at most
+    256 B, not finalizable): a frame slot made by `Rt.InitFrameObject`, with an immortal header. The plan's Release
+    of the object releases its children and empties the slot; re-making the slot and unwinding release what it still
+    holds (SPEC 4.3: never later than the object's last use). Virtual is lowered as a frame slot for now.
+  - `Lower/RcStats.cs`'s `Count` at every count operation, the implied ones included (load retain, store old and
+    retain, phi, unwind, argument keep-alive, return).
+- The variant queue, the one IlCompiler change of S1:
+  - `IlCompiler.VariantFor(m, v)` makes `m + v.Suffix` with the entry's signature, queues it on the method queue,
+    and refuses methods with no IL of their own; under `Pipeline.Verify` it also refuses a variant that
+    `Signatures.VariantsOf` does not list.
+  - `CompileMethodCore` lowers a variant from a fresh import, merging its facts again (idempotent).
+  - `PlanMethod` takes the entry, so `PlanContext.Entry` is the variant.
+- Test aid: `IL2WASM_LOWER_SELFTEST=1` rewrites naive plans into equivalent ones that use these paths:
+  - an argument whose last use is a direct call is handed over, and the call takes `Owned(mask)`, whose plan drops
+    those parameters' entry retains;
+  - `=2` adds FrameOwned for local objects of a constructor that only calls Object's.
+  `IL2WASM_LOWER_STATS=1` reports frame sites and variants. Both are off by default.
+- Byte identity [run, desk]:
+  - hello world (`Console.WriteLine("Hello, World!")`, IL CoreLib) 1,374,328 B, the same bytes as main;
+  - every module the IL tests compile (48) the same as main's, by default and with `IL2WASM_MEM_PLAN=1` (stub
+    planner).
+- Tests [run, desk]: IL tests 109/109 by default, with MEM_PLAN=1, and with SELFTEST=1 and =2. With row c's
+  planner (a local merge of claude/s1-plan 71355f3, MEM_PLAN=1, framework rebuilt): 109/109.
+- Frame objects [run]: 0 on hello world, the IL tests and the bench kernels, because no planner sets `Allocs` yet
+  (row c's first stage does not). Under SELFTEST=2: hello world and the bench have 0 sites (their objects all
+  escape or have constructors with work); a scratch program has 2 sites (an object in a loop with two string
+  fields, and one outside), with the same output and the same live count at exit (343) as on the heap.
+- Variants [run]: none with the stub Signatures. Under SELFTEST=1 (a variant at every last-use site, no size cap:
+  an upper bound, not 4.4's policy): hello world 1,027 Owned variants, 1,409,885 B (+35.6 KB, +2.6%); the bench
+  kernels (tools/bench/Programs.cs as one program) 1,218 variants, 1,669,678 B against 1,631,081 B (+2.4%),
+  checksums and live count (1,405) unchanged.
+- With row c's planner [run]: hello world 1,297,010 B (-5.6%); the bench kernels 1,536,608 B (-5.8%), checksums
+  and live count unchanged.
+- NetWasm suite [run, desk, shipped, SELFTEST=2 so the new paths run]: 283 passed, 159 failed, 7 did not compile,
+  1 timed out. All 450 case-modes have the same status as main's results on the same cache (none lost, none gained).
+- Cost [run, desk, hello world, framework mode with its Roslyn step, interleaved]: base 20.8-22.5 s, peak 516-526
+  MB; new 19.9-22.1 s, peak 486-513 MB. Equal within the noise: with the tables unset, lowering only adds
+  emptiness tests.
+- Not done:
+  - a variant at a dispatch site (a group's shared entry needs per-group stubs in GenerateLate);
+  - a frame object's finalizer (an internal error for now);
+  - true scalar replacement for Virtual (it needs the IR shape after inlining, row d);
+  - AccessKind, which lives in IlCompiler.TryIntrinsic's Interlocked lowering;
+  - group store kinds (S2).
+  No planner sets Allocs yet, so frame allocation is unmeasured on real plans. Not run: the homelab suite, bench.mjs
+  and frames.mjs speed, stress, and the self-host check (the old front end, the runtime and the back end are
+  unchanged).
+### Memory model S1 row b: speculative borrows (claude/s1-borrows), and the solver's effects (claude/s1-solver-effects, 2026-11-24)
+
+- What (row b, `IL/Memory/Borrows.cs`, MEMORY-IR 4.6). Counted reference loads start as borrows of their source path:
+  `LdFld`, `LdElem`, `LdSFld`, `VarLd` of a frame variable whose address is never taken, their casts, and loop phis
+  (LocalBorrows on SSA: inputs that are null, one path, or values read out of the phi itself). A group of such values
+  is decided as a whole, over the union of its members' live ranges and keys, parents before children; a child of a
+  flipped parent is re-rooted at the parent's Owned value. Proof 1: no aliasing store in the body (type-based keys;
+  self-stores exempt), no call whose Mods/ReleaseEffects hit a key, no release whose DestroyEffects hit one, no static
+  constructor started by the body's own node, FilterMods when live into a handler, the root alive. Proof 2: S1 is
+  `!Threaded`, or init-only keys. Init-only follows InitOnlyFields (initonly class field, never address-taken, no
+  FieldInfo.SetValue reached, one store per constructor of its own type, on this, outside loops, no chained double
+  store). Paths are at most 3 steps; anything else is generic, Owned. Lowering does not read the facts yet (row c).
+- Switches: `IL2WASM_NO_SPEC_BORROWS`, `NO_FIELD/ELEM/STATIC/VAR/LOCAL_BORROWS`, `NO_INIT_ONLY`, `NO_SELF_STORES`;
+  break twins `SPEC_BORROWS_BREAK`, `INIT_ONLY_BREAK`, `SELF_STORES_BREAK`. `IL2WASM_BORROW_STATS=1` (counts at exit,
+  last round), `IL2WASM_BORROW_TRACE=1` (each flip), `IL2WASM_BORROW_SITES=file` (each load's decision, for the new
+  `tools/il-borrow-weight.mjs`, which zips them with tools/il-rcstats.mjs' executed retain sites per function and role).
+- Tests [run, desk]: `BorrowChecks` (tests/Il2Wasm.IL.Tests, section "borrows"), 19 checks twice: with the naive
+  plan's counts in the body and with them removed (the planner's view, implied releases); each switch and break twin
+  makes its checks fail (run one by one). IL tests 147 of 147 with `IL2WASM_MEM_TRACE=1 IL2WASM_BORROW_STATS=1` (the
+  solve and the analysis forced in every compile).
+- Static sites [run, desk, last round]: hello world 2142 counted loads, 827 borrowed (38.6%), 390 generic, 925
+  flipped (Release 438, CallWild 364, RootDies 98, Filter 13, Intrinsic 7, Store 3, Cctor 1, VarWrite 1). The
+  framework programs f01-f11 are 37.9-40.4% (CoreLib start-up). The stub-CoreLib programs 01-09: 1/1, 9/11, 4/10,
+  1/2, 3/5, 1/1, 19/21, 1/10 (8 generic: fields of structs), 2/5.
+- Executed [run, desk, naive builds, IL2WASM_COUNT_RC, one run of each kernel of tools/bench/Programs.cs]: borrowed
+  share of executed counted loads, and the largest flip reason:
+
+  | kernel | executed loads | borrowed | flips |
+  |---|---|---|---|
+  | Tree | 2,408,600 | 0.0% | Release 50.0%, CallWild 50.0% (Walk's n.Left/n.Right) |
+  | DictionaryInts | 5,167,809 | 48.3% | Release 45.8%, generic 4.2%, RootDies 1.7% |
+  | ListSort | 221,847,099 | 66.5% | Release 33.4% |
+  | Linq | 8,444,285 | 72.5% | Release 17.9%, CallWild 7.2%, Parent 2.4% |
+  | WordCount | 1,443,010 | 33.3% | Release 50.0%, generic 8.3%, RootDies 8.3% |
+  | LinkedNodes | 4,500,201 | 2.2% | CallWild 88.9%, RootDies 6.7% |
+
+  Fewer than 1,100 executed loads per kernel could not be matched (the back end inlined or merged their sites).
+  A finding outside this row: `RuntimeType.FromId` runs 73.7 million times in ListSort (3 loads each), on most
+  comparisons; it looks like a type test that is not folded.
+- What decides the flips: every release is a barrier while a destroy can reach a finalizer, and with weak marks
+  reached every destroy runs ObjectMarks.OnDestroy, whose Mods were Wild (IntMap.Remove -> Mem.StoreI32). Row a's
+  private keys and declared heap effects take that part. What remains is finalizer reach through object, interface
+  and abstract cones: per-key TypeSets (2.6), next. Bounds measured with unsound diagnostics (hello world, CoreLib Mods
+  not Wild, with row a's intrinsic table): 30.8% today; 37.6% with perfect value TypeSets; with the marks' hooks free
+  33.5%, 36.2% with perfect field TypeSets, 57.0% with both.
+- Solver (claude/s1-solver-effects, merged to main at 50e543a; coordinator-sanctioned): (a) a summary's Initializes
+  are callee edges (Mods include the static constructors a call may start); (b) per-type DestroyEffects (3.6): a
+  least fixed point of finalizers below each constructed type through counted fields and elements, the weak marks'
+  hooks as real targets, a method's releases from its bodies' counted value types and stored slots, one release node
+  per distinct target set; `ProgramSolution.DestroyEffects(type)`. Byte identity [run]: hello world and all 48 IL test
+  modules the same bytes as main. CoreLib Mods not Wild on hello world: 19.7% (main) -> 18.4% (cctor edges: soundness)
+  -> 22.8% (6 rounds), 22.5% at 1 round; 29.6% with row a's table on the same tree. Facts time per round after the
+  release-node fix: 263-292 ms at 1 round (2,335 ms at b7fd3c9), 350/224/74/96/66 ms over 6 rounds.
+- Lever 2 skipped (coordinator, 2026-11-24): treating raw stores of non-counted values as no program key gains at most
+  +0.4 points (30.8% -> 31.2%, an unsound bound). The sound form needs the address's bases to be reference-free, and
+  most such stores go through char*/byte* parameters, so it needs an interprocedural fixed point over pointer
+  arguments, which round-0 late imports (callers outside the solve) make unsound.
+- Not done: per-key TypeSets; `BorrowReturn` results (row a's `Facts.BorrowReturn`; the planner must then pick the
+  `|retborrow` variant); `LdInd` through path-known addresses; struct-typed loads (always Owned here). Not run: the
+  NetWasm suite (no output changes until row c reads the facts), the homelab suite, stress, self-host.
+### Memory model S1 row e: executed counts per site, live objects per type against .NET (claude/s1-rcstats, 2026-11-24)
+
+- What: docs/MEMORY-IR.md 9.1 and 9.2.
+  - `Lower/RcStats.cs` (IL2WASM_COUNT_RC=1): every call of rt.retain and rt.release in the final module gets a
+    counter of its own after the back end's passes (Module.AfterOptimize). That covers the program's, the library's,
+    the runtime's and the generated functions. A call of a struct helper is a site of calls, whose own counts
+    tools/il-rcstats.mjs charges to its callers.
+  - Per site the table counts: executed; changed a count (the object is not null and not immortal); popular (the
+    object's count was 8 or more before the operation, Shahriyar's 3-bit overflow). Every operation is also bucketed
+    by the object's count before it.
+  - `RcStats.Count` (frozen interface) tags the count call FunctionLowering just emitted with its RcCategory and the
+    role of its node. Row f places the calls. Untagged sites are classified from the compiler method that emitted
+    them and the optimized instructions around them; a released value is traced back to its local's last store
+    (field load, parameter, call result, allocation).
+  - With IL2WASM_IL_COUNT_OBJECTS=1 as well, objects are counted per type: at Rt.AllocObject's entry (its type id) and
+    at Rt.FreeObject's (the header's type id).
+  - `host/run.mjs` writes the table at exit to IL2WASM_RCSTATS_OUT; IL2WASM_RCSTATS_PRINT=1 gives a summary on stderr.
+  - `tools/il-rcstats.mjs`: report / share / live / run. `run` compiles a .cs or a case dll twice (as configured, and
+    IL2WASM_MEM_NAIVE=1), runs both, and gives the removal share overall, without the runtime, and per owner (program,
+    containers, library, runtime, generated). It also gives a breakdown by role and category and the top sites, and
+    checks the output against `--expected`.
+  - `tools/il-live-oracle`: the .NET side of 9.2, for the homelab only. It is a startup hook that runs the program's
+    entry point, then GC.Collect, WaitForPendingFinalizers, GC.Collect, then the runtime's heap walk (GCHeapCollect
+    with type names, read from CoreLib's own in-process EventPipe session by reflection). It uses no packages: an
+    EventListener drops the bulk events' arrays, and at ProcessExit no events are delivered. `il-rcstats live
+    --oracle` requires equality per type on the program's own types. The library's internals are listed apart:
+    reflection caches, event sources and the console differ by design.
+- Measuring changes nothing that executes, with two exceptions.
+  - rt.retain and rt.release get an atomic entry counter. The back end's inliner keeps functions with atomics as
+    calls; without that it writes rt.retain, a small leaf, into loops, and those counts are seen by no site
+    ([run]: NBody 776 retains counted of 1,249,159). The host checks that the sites add up to the entries; they did
+    on every run below.
+  - Wasm/RcFastPaths is forced off (IL2WASM_RC_FAST=0) for the same reason.
+- Byte identity [run, desk], switch off, against main 95d6f25: hello world on the IL CoreLib (1,375,107 B) and every
+  module the IL tests compile (48, IL2WASM_IL_TESTS_DUMP) are the same bytes. IL tests 109 of 109 on both.
+- Cost of the switch [run, desk, hello world]: compile 15.1 s against 10.7 s (the Emitter's existing per-call cause
+  stack walk, plus the site pass); the module grows from 1,375,107 to 1,541,503 B; 30,613 sites.
+- Naive baselines [run, desk, IL2WASM_MEM_NAIVE=1, one run each; ops = executed retains + releases]. The plan is
+  still the stub, so the share as configured is 0% until rows a to d land.
+
+  | program | ops | changed a count | popular | program / library / runtime+generated | parameter | field | element | static | store-old | destroy | live at exit |
+  |---|---|---|---|---|---|---|---|---|---|---|---|
+  | hello world | 1,911 | 61% | 1% | 0 / 99 / 1% | 36% | 8% | 5% | 13% | 9% | 0% | 46 |
+  | bench DictionaryInts | 15,587,520 | 83% | 0% | 0 / 100 / 0% | 25% | 30% | 5% | 23% | 0% | 0% | 70 |
+  | bench WordCount | 7,550,995 | 93% | 12% | 13 / 87 / 0% | 52% | 24% | 5% | 13% | 2% | 0% | 76 |
+  | bench Strings | 6,581,167 | 74% | 7% | 7 / 93 / 0% | 49% | 7% | 7% | 26% | 0% | 0% | 381 |
+  | bench Tree | 15,312,501 | 58% | 0% | 79 / 11 / 11% | 53% | 31% | 0% | 0% | 5% | 11% | 44 |
+  | bench ListSort | 475,315,181 | 69% | 0% | 0 / 100 / 0% | 3% | 0% | 16% | 62% | 0% | 0% | 383 |
+  | bench Linq | 32,954,570 | 91% | 7% | 9 / 91 / 0% | 40% | 26% | 4% | 15% | 1% | 0% | 571 |
+  | bench NBody | 2,498,767 | 100% | 0% | 100 / 0 / 0% | 0% | 0% | 100% | 0% | 0% | 0% | 67 |
+  | bench Shapes | 9,865,423 | 100% | 0% | 100 / 0 / 0% | 50% | 0% | 50% | 0% | 0% | 0% | 67 |
+  | bench LinkedNodes | 13,802,311 | 98% | 59% | 68 / 30 / 1% | 32% | 45% | 1% | 3% | 3% | 1% | 67 |
+
+  24 allocation-heavy NetWasm cases (shipped, passing at main): BigInteger, Collection, ComplexMutableCollection,
+  Dictionary, EnumerableIteratorContract, HashSet, the six Immutable* cases, LambdaIterator, LinkedList, List,
+  ObjectModelCollection, OrderedDictionary, Queue, RegexReplacement, SortedCollections, SortedList, Stack and
+  fixture-memory.collector-retention.
+  - They run 5,456 (LambdaIterator) to 4,509,937 (BigInteger) count operations, 92-99% of them in library code.
+  - Parameters' entry retains and last-use releases are 29-82% of all count operations: the +0 convention's target.
+  - All 24 print the oracle's output with the counters on. Per-case tables: `node tools/il-rcstats.mjs run <case
+    dll> --naive-only --live`.
+- Findings [run].
+  - In ListSort, 62% of all count operations (about 295M of 475M) are 5 sites in RuntimeType.FromId(int32): a static
+    load, an element load, and their releases. They are reached from GenericArraySortHelper<int>.LessThan through
+    unfolded typeof tests. This is a target for SCCP or the planner.
+  - Live objects against .NET's heap walk: on the program's own types, 22 of the 24 cases are equal. Two are not.
+    - SortedList: 3 SortedList<int,int>, each with its KeyList and ValueList, plus their DescendingComparer, stay
+      live; .NET has none. SortedList.Keys caches a KeyList that points back at its list: a cycle. In S1 cycle groups
+      are still the stub, so this is S2's to free.
+    - fixture-memory.collector-retention: 1 Payload stays live; .NET has none. `ref new Payload(41).Number` is
+      returned, and this is Ownership.cs's deliberate keep of an object under a returned byref (MEMORY-IR 7.4).
+- Not done:
+  - MethodPlan.Categories and the Count tags exist but are untested end to end until row f places the Count calls;
+    the untagged classification is heuristic.
+  - Counting needs the back end's optimizer (IL2WASM_IL_NO_OPT=1 gives no counters).
+  - The live check covers only objects that go through Rt.AllocObject and Rt.FreeObject.
+  - The oracle's walk sees .NET's own runtime objects, so only program types are compared for equality.
+  - Not run: the NetWasm suite with the switch off. It is byte-identical by construction: RcStats is null when off,
+    and the IL tests' modules matched. Also not run: the homelab suite, stress and the self-host check (no runtime,
+    back end or old front end change).
+- Diagnosis of the findings [run, desk, small repros, naive counting as on main].
+  - SortedList: a cycle. A SortedList<int,int> whose Keys are read stays live with its KeyList; one whose Keys are
+    not read is freed. `keyList ??= new KeyList(this)` caches the view, and KeyList keeps the list in `_dict`.
+    S2's groups cover it.
+  - collector-retention: `static ref int F() => ref new Payload().Number` (IR: `v1 = NewObj; v2 = LdFldA v1;
+    Ret v2`). Ownership.Insert's keep rule drops the base's release at a Ret of a byref into an object only the
+    function holds. This is MEMORY-IR 7.4's keeper return.
+  - RuntimeType.FromId in GenericArraySortHelper<int>.LessThan: the importer folds `typeof(T) == typeof(X)` to a
+    constant (Importer.cs ~1219), but the two TypeOf nodes it already added stay in the block with no use. Naive
+    counting releases them, and each is lowered as a call of Type.FromId: about 24 dead calls per comparison. The fix
+    is removing pure TypeOf nodes the fold leaves unused.
+### S1 row a: ownership signatures and the intrinsic table (claude/s1-signatures, 2026-11-24)
+
+- What: `IL/Memory/Signatures.cs` (MEMORY-IR.md 4.1-4.5) and a new `IL/Memory/IntrinsicSignatures.cs`. Runs only
+  with `IL2WASM_MEM_PLAN=1` (in SolvePhase); with it off nothing changes.
+  - Demand per counted parameter (this and structs with references included, Q8): HandOver by store (stored,
+    returned, thrown or boxed at a last use, or passed at its last use to a direct callee's HandOver parameter: a
+    least fixed point over the call graph, 5 rounds on hello world) or by KeepsRunningAfter (dead at a loop header,
+    or at a further call). A further call is not a cheap intrinsic, not a call the inliner would take (3.7's budget,
+    or AggressiveInlining up to 400 nodes) whose callee runs nothing long (no loop, no further call), and not a
+    throw helper (a callee with no return and no loop). Liveness runs through handlers and finally ends, so
+    exceptional exits count. OwnedParams' `IsListAdd`/`IsMapInsert` are not needed: `List<T>.Add` and
+    `AddWithResize` come out HandOver by store.
+  - Borrowed returns (Q4): every return gives one Arg-rooted path of at most 3 field or element steps, and the
+    method neither writes nor calls.
+  - Entries (agreed with rows c and f through the coordinator): every method's Entry is all-Lend, because generated
+    code, dispatch stubs, delegates and late imports never hand a count over. HandOver lives only in owned variants
+    (`|own<mask>`, bit i = parameter i, this = 0), picked only at direct Call/NewObj sites; virtual sites use the
+    Entry in S1 (no per-group stubs). 4.4's caps by size (Q9): at most 25 nodes, an owned variant for every needed
+    mask (up to 15); up to 400, the all-HandOver one; above, one owned variant every planned caller uses
+    (KeepAlive at live-on arguments), so the Entry is made only if an unplanned caller needs it. Indirect reach and
+    group membership need no cap of their own, since neither ever calls a variant.
+  - Switches: `IL2WASM_NO_HANDOVER`, `IL2WASM_NO_OWNED_ENTRY`, `IL2WASM_NO_BORROW_RETURN`; break twins
+    `IL2WASM_HANDOVER_BREAK` (a handed-over count goes to the lending Entry: a leak) and
+    `IL2WASM_BORROW_RETURN_BREAK` (a borrowed return despite writes). Reports: `IL2WASM_SIG_STATS=1|2`,
+    `IL2WASM_SIG_DUMP=name`.
+  - IntrinsicSignatures.cs: the 220 il2wasm intrinsics (+ `Rt.TypeNameById`), the 38 upstream ones and Activation's
+    RuntimeType cases, 262 entries. Each entry gives what the intrinsic writes (nothing, a `ref T` slot, chars, or
+    raw), whether it releases, whether it is cheap and whether it returns. Every il2wasm intrinsic of the CoreLib
+    has an entry (the report lists any that does not: none). It fills `ProgramSolution.IntrinsicEffects` (now
+    `Func<ProgramSolution, MethodDesc, KeySet>`, with `ProgramSolution.BodyOf`, both on main at 95d6f25 by request).
+- Measured [run, desk, hello world on the IL CoreLib]:
+  - In the last round, 1,151 of 4,358 methods get a non-trivial signature: 1,499 HandOver of 3,413 counted
+    parameters (530 by store, 1,186 keep running; a parameter can have both reasons) and 61 borrowed returns.
+  - Variants against the caps: 779 small methods allow 1,359 owned variants, 309 medium methods 309, and 6 large
+    methods 6, at most 15 per method. These are allowed, not made: row f makes a variant on demand.
+  - Mods not Wild, CoreLib, 1 round (after row b's per-type DestroyEffects and cctor edges in the solver, 7697b32):
+    22.5% (850 of 3,771) without the table, 29.6% with it, 30.1% with the private keys and the heap's declared
+    effects, 30.4% (1,146) with RuntimeType's table, GCHandle and Monitor private too. Before row b's solver change:
+    24.1% with the table, 32.4% with an experimental DestroyEffects of my own (removed for the solver's), 56.5% with
+    release effects ignored (an unsound bound). Remaining Wild roots by own body (119 methods): Rt Mem stores (68
+    call sites; by owner: the heap's internals, reached only through the declared entry points; program objects in
+    Rt.MoveItems and Il2WasmArrays.GetBoxed/SetBoxed; fresh objects only in RuntimeHelpers.InternalBox and
+    object.MemberwiseClone, which a per-site fresh-store rule would clear; none unknown), raw stores and block copies
+    (42), `SpanHelpers.Memmove` (22), `Generics.New` (12, a constructor by name). The callers mostly stay Wild by
+    their releases: values typed `object`/`Type` whose cone admits a finalizable type need per-key TypeSets (2.6).
+  - Borrows (row b's s1-borrows merged locally, IL2WASM_BORROW_STATS, hello world, 1 round): 2,513 counted loads, 971
+    borrowed (38.6%), 1,086 flipped, the same with and without the table and the declared effects (first reasons
+    move only: CallWild 426 to 424, Intrinsic 8 to 7, Release 521 to 524). The Mods gain buys no borrow here yet.
+  - Runtime-private memory (`KeyKind.Private`, `MemKey.Private(type)`; Facts.cs, coordinator-applied): raw Mem stores,
+    copies and fills in `IntMap`, `ObjectMarks` and `WeakSlots` (Boundary/ObjectMarks.cs: the marks' and weak
+    handles' tables, a dying object's header), `GCHandle` (its 8-byte slots) and `Monitor` (its sync-entry table)
+    write Private(their type). The trust boundary, every method marked `[Il2Wasm.Runtime.DeclaredEffects]` (the
+    solver takes its effects as declared: writes Private(its type) only, may throw a fresh exception, releases
+    nothing, its body not solved): in Boundary/Runtime.cs `Rt.Alloc`, `Rt.AllocFirst`, `Rt.Free`, `Rt.FreeObject`,
+    `Rt.FreeFixed`, `Rt.AllocObject`, `Rt.AllocArray`, `Rt.AllocArrayWithHeader`, `Rt.AllocString`; in
+    Boundary/Type.Il2Wasm.cs `RuntimeType.FromId` and `RuntimeType.ByRefOf` (they fill only s_byId, s_byRef and
+    s_retired, named nowhere else; a replaced table is kept; an entry once set is never replaced). `Object.GetType`'s
+    table entry writes Private(RuntimeType). A method-name list of the heap's internals was tried and dropped as
+    brittle.
+  - Cost: Compute takes 94-683 ms per round (6 rounds on hello world, about 1.4 s in all, the first round the
+    largest); this includes solving the Mods facts, which plans read anyway (b7fd3c9 made that 2.1 s; 50e543a
+    fixed it). Whole-build wall time on the busy
+    desk: 19.0-21.2 s naive against 19.6-23.1 s planned, interleaved, within the noise. Peak working set
+    planned: 473-527 MB.
+  - Hello world: 1,375,101 B, byte-identical with planning on and off (the plan does not read signatures yet).
+- Tests [run, desk]: IL tests 109 of 109 with and without `IL2WASM_MEM_PLAN=1`; the new `SignatureChecks` (13,
+  planned mode) pass. NetWasm suite, shipped, desk, with `IL2WASM_MEM_PLAN=1`, at f064f9f: 283 passed, 159 failed,
+  7 did not compile, 1 timed out; compared case by case with step 1's main record (mf-base): all 450 case-modes have
+  the same status and the same module hash. The later commits (private keys, declared effects, the CoreLib
+  attributes) were checked on hello world only: byte-identical, planned and not.
+- Not done: the variant queue is row f's; the call rule changes no output until row c's planner and row f's lowering
+  read it, so the break twins have no conformance test whose output changes yet; group signatures are
+  computed (`GroupDemand`) but never used, since virtual sites call the Entry; struct-parameter HandOver must be
+  honoured by row c's plan (bits are set for them); the KeepsRunning reading of "inlined" follows 3.7's policy,
+  not Inline.cs's actual decisions (a stub today).
 ### Memory model S1 row c: the OSSA planner and the pairing verifier (claude/s1-plan, 2026-11-24)
 
 - What: `IL/Memory/Plan.cs` replaces `Ownership.Insert` under `IL2WASM_MEM_PLAN=1`, on Ownership's own analysis
