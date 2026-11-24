@@ -257,6 +257,13 @@ static class SolverChecks
             var rel = sol.ReleasedBy(set);
             string relShow = rel == null ? "unknown" : string.Join(", ", rel);
             c.True($"solver: the old value of the holder's field is a string ({relShow})", off ? rel == null || rel.Any(t => t.IsObject) : rel != null && !rel.Any(t => t.IsObject) && rel.Any(t => t.IsString));
+            // a raw clear of memory without references writes no program key (IntrinsicWrites.NoReferences, the trust
+            // boundary in docs/AUDIT.md; IL2WASM_NO_CLEAR_NO_REFS=1: Wild)
+            var sh = (Internal.TypeSystem.MetadataType)holder!.Context.SystemModule.GetType("System"u8, "SpanHelpers"u8);
+            var cwr = sh.GetMethods().First(m => m.GetName() == "ClearWithoutReferences");
+            var ce = IntrinsicSignatures.Effects(sol, cwr, true);
+            bool noClear = Environment.GetEnvironmentVariable("IL2WASM_NO_CLEAR_NO_REFS") == "1";
+            c.True($"solver: SpanHelpers.ClearWithoutReferences writes no key (Wild {ce.Wild}, {ce.Keys.Count} keys)", noClear ? ce.Wild : !ce.Wild && ce.Keys.IsEmpty);
         }
         foreach (var (name, source, hasDependents) in new[] { ("solver_plain", Plain, false), ("solver_dependents", Dependents, true) })
         {

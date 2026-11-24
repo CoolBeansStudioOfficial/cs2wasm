@@ -22,6 +22,11 @@ public enum IntrinsicWrites : byte
     /// <summary>Raw memory, a block copy or fill, or code the compiler cannot see (a thunk, a delegate, a
     /// constructor called by name): any key.</summary>
     Wild,
+    /// <summary>A raw clear of memory that holds no counted reference (SpanHelpers.ClearWithoutReferences: its callers
+    /// call it only when RuntimeHelpers.IsReferenceOrContainsReferences, which lowering answers with Kinds.Counted, or
+    /// ObjectHasReferences says so): it writes no key a borrow, a persistent static or a type set reads, since those
+    /// are all of counted references. The trust boundary is in docs/AUDIT.md. IL2WASM_NO_CLEAR_NO_REFS=1: Wild.</summary>
+    NoReferences,
 }
 
 /// <summary>An intrinsic's hand-written signature (4.1: "the only hand-written signatures are the intrinsics, whose
@@ -150,7 +155,8 @@ public static class IntrinsicSignatures
         // (Unsafe.Copy: through a ref T destination, else through a void*: SlotOrRaw below)
         (Raw, "System.Runtime.CompilerServices.Unsafe.Copy System.Runtime.CompilerServices.Unsafe.CopyBlock System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned "
             + "System.Runtime.CompilerServices.Unsafe.InitBlock System.Runtime.CompilerServices.Unsafe.InitBlockUnaligned "
-            + "System.SpanHelpers.ClearWithoutReferences System.SpanHelpers.Memmove System.SpanHelpers.memmove System.SpanHelpers.memset"),
+            + "System.SpanHelpers.Memmove System.SpanHelpers.memmove System.SpanHelpers.memset"),
+        (new IntrinsicSignature(IntrinsicWrites.NoReferences), "System.SpanHelpers.ClearWithoutReferences"),
         // (the narrow overloads are intrinsic, through ref byte/ushort; the others run their IL, which is not an intrinsic)
         (RefSlot, "System.Threading.Interlocked.CompareExchange System.Threading.Interlocked.Exchange"),
         // (Object.GetType's lowering calls Type.FromId, whose RuntimeType.FromId is [DeclaredEffects]: it fills the
@@ -228,6 +234,7 @@ public static class IntrinsicSignatures
     /// its own writes, joined with every key when it releases and a release can run program code.</summary>
     public static KeySet Effects(ProgramSolution solution, MethodDesc m, bool releasesRunCode) => Effects(solution, null, m, releasesRunCode);
 
+    static readonly bool s_noClearNoRefs = System.Environment.GetEnvironmentVariable("IL2WASM_NO_CLEAR_NO_REFS") == "1";
     static readonly bool s_noReleaseNodes = System.Environment.GetEnvironmentVariable("IL2WASM_NO_RELEASE_NODES_FOR_INTRINSICS") == "1";
 
     /// <summary>Rt.Release and Rt.ReleaseElements, whose releases the solve's release nodes count.</summary>
@@ -250,6 +257,7 @@ public static class IntrinsicSignatures
         switch (s.Writes)
         {
             case IntrinsicWrites.None: return KeySet.Empty;
+            case IntrinsicWrites.NoReferences: return s_noClearNoRefs ? KeySet.All : KeySet.Empty;
             case IntrinsicWrites.RefSlot:
                 // (the location is the first parameter: ref T)
                 if (m.Signature.Length > 0 && m.Signature[0] is ByRefType br) return new KeySet(solution.Pool.Of(solution.Keys.Intern(MemKey.Slot(br.ParameterType))), false);
