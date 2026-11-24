@@ -3,6 +3,11 @@
 // usage: dotnet run --project tests/Il2Wasm.IL.Tests [-- filter]
 using Il2Wasm.IL.Tests;
 
+// (a crash reports and exits instead of opening Windows' error dialog on the owner's desk: an unhandled exception
+// exits with 70, and the error mode, which child processes inherit, turns off the hard-error and fault boxes)
+AppDomain.CurrentDomain.UnhandledException += (_, e) => { Console.Error.WriteLine($"unhandled: {e.ExceptionObject}"); Environment.Exit(70); };
+if (OperatingSystem.IsWindows()) NoDialogs.SetErrorMode(0x8003);
+
 if (args.Length == 3 && args[0] == "compile")
 {
     // (a program by name to a module, for debugging: compile 03_objects out.wasm)
@@ -58,4 +63,9 @@ sealed class Checks(string filter)
         if (ok) { Passed++; Console.WriteLine("   ok   " + what); }
         else { Failed++; Console.WriteLine("   FAIL " + what + detail + "   [" + _section + "]"); }
     }
+}
+
+static partial class NoDialogs
+{
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")] internal static partial uint SetErrorMode(uint mode);
 }

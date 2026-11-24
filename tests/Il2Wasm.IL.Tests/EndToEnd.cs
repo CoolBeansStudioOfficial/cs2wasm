@@ -29,12 +29,15 @@ static class EndToEnd
         ctx.SetCoreLib();
         var m = ctx.Load(name);
         var entry = m.EntryPoint ?? throw new Exception(name + " has no entry point");
-        var c = new IlCompiler(ctx);
+        var c = new IlCompiler(ctx) { Checked = s_checked };
         c.LiveCounter = ctx.SystemModule.GetType("Il2Wasm.Runtime"u8, "Rt"u8).GetMethods().First(x => x.GetName() == "get_LiveBlocks");
         var bytes = c.Compile(entry);
         warnings?.AddRange(c.Warnings);
         return Dump(name, bytes);
     }
+
+    /// <summary>IL2WASM_IL_CHECKED=1: every program compiled as the checked build (Lower/Checks.cs), as framework mode does.</summary>
+    static readonly bool s_checked = Environment.GetEnvironmentVariable("IL2WASM_IL_CHECKED") == "1";
 
     public static string Run(byte[] wasm, string name, bool live = true)
     {
@@ -102,7 +105,7 @@ static class EndToEnd
         ctx.AddAssemblies(refs.Append(dll));
         ctx.SetCoreLib();
         var entry = ctx.Load(name).EntryPoint!;
-        var comp = new IlCompiler(ctx);
+        var comp = new IlCompiler(ctx) { Checked = s_checked };
         if (countObjects) comp.CountObjects = true;
         if (File.Exists(Path.Combine(dir, "il2wasm.natives.txt"))) comp.LoadNatives(Path.Combine(dir, "il2wasm.natives.txt"));
         return Dump("fw." + name, comp.Compile(entry));
