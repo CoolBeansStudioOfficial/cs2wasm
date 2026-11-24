@@ -5891,3 +5891,120 @@ Not run: the homelab suite and the self-host check on this commit.
   computed (`GroupDemand`) but never used, since virtual sites call the Entry; struct-parameter HandOver must be
   honoured by row c's plan (bits are set for them); the KeepsRunning reading of "inlined" follows 3.7's policy,
   not Inline.cs's actual decisions (a stub today).
+### Memory model S1 row d: the IR inliner and Canon (claude/s1-inline, 2026-11-24)
+
+- What: `Ir/Inline.cs` (MEMORY-IR 3.7) and `Memory/Canon.cs`.
+  - Inline.Step strips the caller's plan (Retain/Release nodes, Moves bits) and splices callee bodies in at every
+    chosen site. Each callee is a prototype: the reach phase's held body (`ProgramSolution.HeldBody`), cloned,
+    planned and stripped, with its own small callees already spliced in. The callee callback is the fallback.
+  - Canon.Run plans the caller again and copies the result into the plan object lowering holds. So the plan is
+    OSSA by construction, and the counts the callee spent on its arguments (entry retain, last-use release) are gone.
+  - The callee plan's per-node facts go to the copies (`Inline.SourceFactOf`) for Plan.Build to start from.
+  - On only with IL2WASM_MEM_PLAN=1, and only in the encoded round (`PlanContext.FinalRound`, below).
+- What keeps behaviour identical:
+  - Stack traces: only hidden-frame callees ([StackTraceHidden], Il2Wasm.Runtime), or callees from which no exception
+    can leave and that take no trace, are inlined. Every inlined node gets the call's IL offset.
+  - callvirt's null check: the receiver is made right there, or the callee's first effect dereferences this.
+  - Excluded: callees with regions, variables (pinned locals included), localloc, struct arguments or results, or an
+    address result (a byref, or Rt.AddressOf/ArrayData/StringData, whose objects Ownership keeps alive by the call's
+    rule); .cctor triggers, NoInlining, Synchronized, ObservesLifetime, intrinsics, recursion; call sites in filters.
+  - Devirtualization only for a receiver made in the same body: the solution's constructed types come from the IR
+    only, and late imports can construct more.
+  - Size: 24 nodes (48 for AggressiveInlining), nested callees included. Per caller, growth of at most
+    max(64, its size). Callees with more than 6 IL bytes per budgeted node are not imported to be measured.
+- Bugs found and fixed on the way [run]:
+  - Rt.ArrayData inlined freed a buffer under its address. The checked build printed poison in place of "Hello,
+    World!", found by bisecting with IL2WASM_INLINE_LIMIT. Address results are now excluded.
+  - A callee inlined at every site is never lowered, so its summary was never merged into the round's facts
+    (Phases.cs now merges it). r60_ir_inline fails without the merge: a field Set writes looks unwritten, so Peek's
+    branch folds to zero; and a parameter folds to the other site's constant.
+  - FunctionFor marked the calls an inlined body brings into its caller as indirect. That is sound but loses facts,
+    and hello world's round facts differed from a no-inline build from round 2 on.
+    `ProgramFacts.AddDirectCallees` fixes it: the round facts are now identical with and without inlining in every
+    round.
+- Frozen-file changes, each coordinator-approved and its own commit:
+  - Phases.cs: the merge, and AddDirectCallees beside it;
+  - Solver.cs: ProgramSolution.HeldBody;
+  - IlCompiler.cs/Pipeline.cs: PlanContext.FinalRound. It is the cap's round, or, when the facts are stable earlier,
+    one more round from the same facts, which is the one encoded. Only with IL2WASM_MEM_PLAN=1;
+    IL2WASM_NO_FINAL_ROUND_GATE=1 turns it off for checking.
+- Measured [run, desk; the desk was shared, so absolute times are high]:
+  - Hello world, IL CoreLib, IL2WASM_MEM_PLAN=1: 1,366,221 B with inlining, 1,374,328 B without (-8.1 KB, -0.59%).
+    The default build is unchanged.
+  - Sites: about 2,880 per round, 17,113 over 6 rounds before the gate; with the gate only the encoded round's.
+  - Executed count operations (tools/il-rcstats.mjs, with the naive planner, inlining on against off):
+    - hello world: 777 against 919 (-15.5%);
+    - every IL-test framework and runtime program measured: fewer, from 1.9% (f16_ascii_casing) to 51.9%
+      (f05_delegates_checked). For example f07_boxed_structs 742,524 against 906,766, r03_activator 21,238 against
+      34,166.
+    No program printed differently.
+  - Compile time of the inliner on hello world: step 1.5 s + re-plan 1.0 s over 6 rounds before the gate (from about
+    9 s before HeldBody, the local MayThrow test and the IL prefilter); 0.17 s + 0.08 s with the gate.
+  - The final-round gate: hello world and all 50 modules the IL tests compile are byte-identical with the gate on and
+    off (IL2WASM_NO_FINAL_ROUND_GATE=1). Rounds reach `stable` before the cap on 9 of the IL tests' 50 compiles (6 at
+    round 1, 3 at round 2), which then pay one extra round; hello world never does.
+  - Rounds on hello world (the default build), bytes and time by cap: 1: 1,533,122 B, 9.5 s; 2: 1,431,713 B;
+    3: 1,387,288 B; 4: 1,375,438 B; 5: 1,374,751 B; 6: 1,374,328 B, 19.5 s; 8: 1,374,030 B, 23.4 s. Rounds 2-5 each
+    spend 0.9-1.1 s in reach and 0.55-1.0 s in lowering. The facts still change at round 4->5: 26 argument meets
+    refine (exception constructors' message argument Bottom -> NonNull string, `this` becoming typed). Next, approved:
+    solve-only rounds to the fixed point (IL2WASM_IL_SOLVE_ROUNDS=1), then import memoization once PureCalls' memo
+    is order-free.
+  - IL tests: 111 of 111 with IL2WASM_MEM_PLAN=1, by default, with the gate off, and with IL2WASM_IL_SOLVE_ROUNDS=1
+    (109 + r60_ir_inline shipped and checked).
+  - NetWasm suite, shipped, desk, IL2WASM_MEM_PLAN=1 with the inliner: 283 passed, 159 failed, 7 did not compile,
+    1 timed out. Every one of the 450 case-modes has the same status as mf-base's results (none lost or gained).
+  - IL2WASM_IL_SOLVE_ROUNDS=1 (a switch only; the default is unchanged): round 0 whole, then reach-and-solve rounds to
+    the facts' fixed point, then one whole round encoded. Hello world reaches the fixed point at solve round 11:
+    1,374,441 B (+113 B against the default; 78 reached methods are never lowered, mostly reflection and attribute
+    paths, and their merged summaries weaken the facts), 23.8-24.5 s against 17.9-18.9 s, because each solve round
+    still imports everything. IL tests: all 50 compiles reach the fixed point (41 at round 11, 9 at round 5).
+- Switches: IL2WASM_NO_IR_INLINE, IL2WASM_NO_INLINE_HIDDEN, IL2WASM_NO_INLINE_DEVIRT, IL2WASM_INLINE_BUDGET,
+  IL2WASM_INLINE_LIMIT (bisecting), IL2WASM_INLINE_TRACE, IL2WASM_INLINE_TIMES. Break twins IL2WASM_INLINE_TRACE_BREAK
+  (r60's top frame becomes Main) and IL2WASM_INLINE_NULL_BREAK (r60's null calls no longer throw).
+- Not done:
+  - throwing callees, which need a per-node inline scope in lowering (noted by the coordinator for later);
+  - guarded devirtualization;
+  - Canon's own pair cancellation and allocation re-decision: with the naive planner the re-plan leaves no pairs, and
+    row c's planner decides allocations;
+  - struct arguments and variables.
+- Not verified:
+  - bench.mjs kernels (the IL front end does not compile them yet);
+  - the homelab suite and stress (no runtime or back-end change).
+  Prototypes inside a recursive cycle depend on which member is asked for first (deterministic: lowering order is
+  fixed).
+
+### Rounds: an import cache, solve-only rounds, the hybrid (claude/s1-inline, 2026-11-24)
+
+- What keeps changing on hello world (IL2WASM_IL_ROUNDS_DUMP) [run]: the round facts still change at round 4->5 (26
+  argument meets, 1 return). These are refinements as code removed in the round before drops callers: exception
+  constructors' message argument goes Bottom -> NonNull string, and `this` becomes typed. Module bytes by cap: 3:
+  1,387,288; 4: 1,375,438; 5: 1,374,751; 6: 1,374,328 (the default); 8: 1,374,030. A round (rounds 2-5) spends
+  0.9-1.1 s in reach (import) and 0.55-1.0 s in lowering. Capping rounds was rejected: it trades output for time.
+- PureCalls' memo is order-free (c2a095a): a result that met the depth bound, or a call into an evaluation in
+  progress, is kept only until the outermost evaluation ends. The first version kept none, and it blew up
+  exponentially on hello world. Bytes identical on hello world and all 50 IL-test modules.
+- Import cache, on by default (IL2WASM_NO_IMPORT_CACHE=1: off; Reach/ImportCache.cs):
+  - RoundFacts' accessors log every read an import makes, with its answer.
+  - A later round whose facts answer every read the same way imports the method once, with the decisions kept, and
+    reuses its summary. ProgramFacts.Meet copies argument arrays, so summaries are never written after they are
+    built.
+  - Hello world [run, desk, interleaved]: byte-identical; imports kept per round 0, 3,876, 4,114, 4,260, 4,261 of
+    about 4,350; 14.3-15.1 s against 16.3-16.8 s (about -10%). Peak working set: hello world 466-483 MB against
+    449-484 MB; f06_async_sync 594-599 MB against 545-579 MB (+4-9%), because the cache holds summaries and read logs.
+  - IL tests: all 50 modules byte-identical, with IL2WASM_MEM_PLAN=1 and by default. NetWasm suite, shipped, desk: every case compiled with the cache and without it, and all 443 modules that compile
+    are byte-identical (the 7 that do not compile fail both ways); 283 passed, 159 failed, 7 did not compile, 1 timed
+    out, all 450 case-modes the same status as main.
+- IL2WASM_IL_SOLVE_ROUNDS=1 (off): reach-and-solve rounds to the facts' fixed point (round 11 on hello world), then
+  one whole round. 1,374,441 B (+113 B against the default): 78 reached methods are never lowered (reflection and
+  attribute paths seeded from round 0, EqualityComparer<nint>), and their merged summaries weaken the facts.
+- IL2WASM_IL_SOLVE_ROUNDS=2, the hybrid (off; the option to revisit once rounds are cheap): after each solve-only
+  fixed point, a whole round re-derives the lowering-only marks (seeds still lowered, indirect marks, constructed
+  types), until a whole round's facts are the fixed point's.
+  - Hello world: 1,374,033 B, -295 B against the default and 3 B above cap 8's 1,374,030. Solve fixed point at 11,
+    whole round 12, fixed point at 14, whole round 15 settled. 19.7 s, about +20% with the cache.
+  - IL tests 111 of 111: all 50 compiles settle, using 91 whole rounds after round 0.
+- A pristine copy of each kept body, so that a hit is a copy instead of an import (tried, not kept), with the
+  cache, interleaved:
+  - hello world: no time gain (19.6-20.2 s against 19.5-20.0 s) and peak 456-517 MB against 466-483 MB;
+  - f06: no time gain (22.8-24.9 s against 22.7-24.1 s) and peak 633-660 MB against 594-599 MB.
+  A single import with the decisions kept is as cheap as the copy.
