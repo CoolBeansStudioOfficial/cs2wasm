@@ -596,15 +596,15 @@ public sealed partial class IlCompiler
                         // released, then the bytes moved (overlapping ranges are fine)
                         if (Kinds.Counted(et))
                         {
-                            Elem(e, 0, 1, es); e.Get(4); e.Call(Rt.Range(et, true));
-                            Elem(e, 2, 3, es); e.Get(4); e.Call(Rt.Range(et, false));
+                            Elem(e, 0, 1, es, ArrayDataOffset(a)); e.Get(4); e.Call(Rt.Range(et, true));
+                            Elem(e, 2, 3, es, ArrayDataOffset(a)); e.Get(4); e.Call(Rt.Range(et, false));
                         }
-                        Elem(e, 2, 3, es); Elem(e, 0, 1, es); e.Get(4); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryCopy);
+                        Elem(e, 2, 3, es, ArrayDataOffset(a)); Elem(e, 0, 1, es, ArrayDataOffset(a)); e.Get(4); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryCopy);
                         e.Op(WOp.Return);
                         break;
                     case "clear":
-                        if (Kinds.Counted(et)) { Elem(e, 0, 1, es); e.Get(2); e.Call(Rt.Range(et, false)); }
-                        Elem(e, 0, 1, es); e.I32(0); e.Get(2); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryFill);
+                        if (Kinds.Counted(et)) { Elem(e, 0, 1, es, ArrayDataOffset(a)); e.Get(2); e.Call(Rt.Range(et, false)); }
+                        Elem(e, 0, 1, es, ArrayDataOffset(a)); e.I32(0); e.Get(2); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryFill);
                         e.Op(WOp.Return);
                         break;
                 }
@@ -623,7 +623,7 @@ public sealed partial class IlCompiler
     }
 
     /// <summary>The address of element (local i) of the array in local a.</summary>
-    static void Elem(Emitter e, int a, int i, int es) { e.Get(a); e.I32(16); e.Op(WOp.I32Add); e.Get(i); e.I32(es); e.Op(WOp.I32Mul); e.Op(WOp.I32Add); }
+    static void Elem(Emitter e, int a, int i, int es, int data = 16) { e.Get(a); e.I32(data); e.Op(WOp.I32Add); e.Get(i); e.I32(es); e.Op(WOp.I32Mul); e.Op(WOp.I32Add); }
 
     // ------------------------------------------------------------------ delegates
 
@@ -680,9 +680,13 @@ public sealed partial class IlCompiler
     /// <summary>The function a delegate of this method holds (called with the target first, as Invoke calls it): the
     /// method itself for an instance method of a class; a thunk that drops the target for a static method, or that
     /// passes a boxed struct's data.</summary>
-    internal WasmFunction DelegateTargetFn(MethodDesc m, bool virtualCall)
+    internal WasmFunction DelegateTargetFn(MethodDesc m, bool virtualCall, TypeDesc? delegateType = null)
     {
         if (!m.Signature.IsStatic && !m.OwningType.IsValueType) return virtualCall && m.IsVirtual && !m.IsFinal ? DispatchFor(m) : FunctionFor(m);
+        // (a static method closed over its first argument, an extension method's delegate: the target is that argument)
+        if (m.Signature.IsStatic && delegateType != null && delegateType.GetMethods().FirstOrDefault(x => x.GetName() == "Invoke") is { } inv
+            && m.Signature.Length == inv.Signature.Length + 1)
+            return FunctionFor(m);
         if (_thunks.TryGetValue(m, out var f)) return f;
         var inner = Sig(m);
         var ps = new List<ValType>();

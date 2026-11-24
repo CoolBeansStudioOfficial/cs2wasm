@@ -32,6 +32,7 @@ try
     if (c.Wants("types")) TypeSystemChecks.Run(c);
     if (c.Wants("import")) ImporterChecks.Run(c);
     if (c.Wants("e2e")) EndToEnd.Run(c);
+    if (c.Wants("fw")) EndToEnd.RunFramework(c);
     if (RuntimePrograms.Wants(filter)) RuntimePrograms.Run(c, filter);
 }
 finally { try { Directory.Delete(Build.Dir, true); } catch { } }
@@ -42,9 +43,9 @@ sealed class Checks(string filter)
 {
     public int Passed, Failed;
     string _section = "";
-    public bool Wants(string group) => filter.Length == 0 || group.Contains(filter) || filter.Contains(group) || group == "e2e" && char.IsDigit(filter[0]);
+    public bool Wants(string group) => filter.Length == 0 || group.Contains(filter) || filter.Contains(group) || group == "e2e" && char.IsDigit(filter[0]) || group == "fw" && filter.StartsWith("f");
     /// <summary>A program by name: all, or those the filter (a number prefix: "03") names.</summary>
-    public bool WantsProgram(string name) => filter.Length == 0 || filter == "e2e" || name.StartsWith(filter);
+    public bool WantsProgram(string name) => filter.Length == 0 || filter is "e2e" or "fw" || name.StartsWith(filter);
     public void Section(string s) { _section = s; Console.WriteLine("== " + s); }
     public void Info(string s) => Console.WriteLine("   " + s);
     public void True(string what, bool ok) => Report(what, ok, "");
