@@ -318,6 +318,8 @@ public static class Ownership
                     }
         dead.ExceptWith(info.LiveIn[b]);
         foreach (var phi in b.Phis) dead.Remove(phi);
+        // (a phi nothing uses: its count, moved or copied in, goes at once, or it is lost on every pass)
+        foreach (var phi in b.Phis) if (IsRef(phi) && !live.Contains(phi)) dead.Add(phi);
         foreach (var v in dead.OrderBy(v => v.Id)) output.Add(Count(Opc.Release, v, b, body));
         output.Reverse();
         // (a handler's caught value comes first, before what its entry releases)
