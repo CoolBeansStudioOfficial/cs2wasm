@@ -166,6 +166,41 @@ public sealed partial class IlCompiler
     /// <summary>(ex): a catch took the exception: its trace ends at this frame.</summary>
     internal WasmFunction OnCatchFn => _onCatch ??= TryCoreMethod("Il2Wasm.Runtime", "Rt", "OnCatch") is { } oc ? FunctionFor(oc) : Module.AddFunction("rt.on_catch", new FuncType([ValType.I32], []));
 
+    /// <summary>The functions that can be on the stack when a trace is taken: those that call the host's capture_stack
+    /// or stack_depth, and their callers at any depth (through the table: every function that calls indirectly).</summary>
+    static HashSet<WasmFunction> FramesSeenByTraces(List<WasmFunction> fns)
+    {
+        var callers = new Dictionary<WasmFunction, List<WasmFunction>>();
+        var indirect = new List<WasmFunction>();
+        var inTable = new HashSet<WasmFunction>();
+        var targets = new List<WasmFunction>();
+        foreach (var f in fns)
+            foreach (var ins in f.Body)
+            {
+                if (ins.Op == Op.CallIndirect) indirect.Add(f);
+                else if (ins.Op == Op.Call && ins.Ref is WasmFunction g)
+                {
+                    if (!callers.TryGetValue(g, out var l)) callers[g] = l = [];
+                    l.Add(f);
+                    if (g.IsImport && (g.Name.Contains("CaptureStack") || g.Name.Contains("StackDepth"))) targets.Add(f);
+                }
+                else if (ins.Op == Op.I32Const && ins.Ref is WasmFunction t) inTable.Add(t);
+            }
+        foreach (var f in fns) if (f.TableRoot) inTable.Add(f);
+        var seen = new HashSet<WasmFunction>();
+        var work = new Stack<WasmFunction>();
+        void Mark(WasmFunction f)
+        {
+            if (!seen.Add(f)) return;
+            work.Push(f);
+            if (inTable.Contains(f) && indirect.Count > 0) { var cs = indirect.ToList(); indirect.Clear(); foreach (var c in cs) Mark(c); }
+        }
+        foreach (var t in targets) Mark(t);
+        while (work.Count > 0)
+            if (callers.TryGetValue(work.Pop(), out var cs)) foreach (var c in cs) Mark(c);
+        return seen;
+    }
+
     /// <summary>The encoded module with the frames and lines sections after it.</summary>
     byte[] WithDebugSections(WasmModule.Encoded enc)
     {
@@ -173,13 +208,16 @@ public sealed partial class IlCompiler
         int nfn = enc.FunctionOrder.Count == 0 ? 0 : enc.FunctionOrder.Max(f => f.Index) + 1;
         fr.U32(nfn);
         var bits = new byte[(nfn + 7) / 8];
-        foreach (var f in enc.FunctionOrder) if (f.FrameName != null) bits[f.Index >> 3] |= (byte)(1 << (f.Index & 7));
+        // (only the functions that can be on the stack when a trace is taken: callers, at any depth, of the host's
+        // capture_stack and stack_depth, through the table too; as RuntimeGen.FramesSeenByTraces)
+        var onStack = FramesSeenByTraces(enc.FunctionOrder);
+        foreach (var f in enc.FunctionOrder) if (f.FrameName != null && onStack.Contains(f)) bits[f.Index >> 3] |= (byte)(1 << (f.Index & 7));
         fr.Bytes(bits);
         var strings = new List<string>();
         var stringIndex = new Dictionary<string, int>();
         int Str(string s) { if (!stringIndex.TryGetValue(s, out int i)) { i = strings.Count; strings.Add(s); stringIndex[s] = i; } return i; }
         var framesW = new Writer();
-        var libFrames = enc.FunctionOrder.Where(f => f.FrameName != null && !f.ProgramCode).ToList();
+        var libFrames = enc.FunctionOrder.Where(f => f.FrameName != null && !f.ProgramCode && onStack.Contains(f)).ToList();
         framesW.U32(libFrames.Count);
         foreach (var f in libFrames)
         {
