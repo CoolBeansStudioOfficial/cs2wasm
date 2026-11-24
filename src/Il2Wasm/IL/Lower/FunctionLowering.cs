@@ -944,7 +944,7 @@ sealed partial class FunctionLowering
                 Get(n); E.I32(0); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryFill);
                 E.Get(o);
                 E.If();
-                E.Get(o); E.Call(C.UnboxFn(vt)); E.Op(WOp.Drop);
+                E.Get(o); E.Call(C.UnboxFn(vt, exact: true)); E.Op(WOp.Drop);
                 Get(n); if (vf != 0) { E.I32(vf); E.Op(WOp.I32Add); } E.Get(o); E.I32(IlContext.ObjectHeader); E.Op(WOp.I32Add); E.I32(es); E.Emit(WOp.MemoryCopy);
                 Get(n); E.I32(1); E.Store(WOp.I32Store8, hv);
                 if (Kinds.Counted(vt)) { Get(n); if (vf != 0) { E.I32(vf); E.Op(WOp.I32Add); } StructCounts(vt, true); }

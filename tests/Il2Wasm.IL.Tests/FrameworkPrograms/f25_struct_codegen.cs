@@ -84,7 +84,12 @@ static class Program
         // the stack after many exceptions through frames of struct temporaries
         long mark = StackMark();
         int caught = 0;
-        for (int i = 0; i < 200000; i++) if (Catch(i) == -1) caught++;
+        for (int i = 0; i < 200000; i++)
+        {
+            if (Catch(i) == -1) caught++;
+            // (a catch in this function: the frames the exception left are given back here, not at a return)
+            try { Depth(new V3(i, 1, 0), 3); } catch (InvalidOperationException) { caught++; }
+        }
         Console.WriteLine("caught " + caught + ", stack ok: " + (StackMark() == mark));
         // a loop of struct arithmetic (NBody's shape)
         var bodies = new V3[16];
