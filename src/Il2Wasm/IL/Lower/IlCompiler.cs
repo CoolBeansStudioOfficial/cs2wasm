@@ -101,6 +101,7 @@ public sealed partial class IlCompiler
 
     public byte[] Compile(MethodDesc entry)
     {
+        if (Il2Wasm.IL.Reach.ImportCache.On && _round == 0) Facts.Cache = new Il2Wasm.IL.Reach.ImportCache();
         // (the whole program to a fixed point, Reach/Rounds.cs: each round reaches the program with what the round
         // before proved of it, until nothing more is proved; the last round's module is the one encoded)
         if (s_solveRounds && Il2Wasm.IL.Reach.RoundFacts.Rounds > 1 && !Il2Wasm.IL.Reach.ProgramFacts.Off && _round == 0)
@@ -120,6 +121,7 @@ public sealed partial class IlCompiler
                 var next = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, Checked = Checked, _round = r, FinalRound = final };
                 foreach (var p in _nativePaths) next.LoadNatives(p);
                 next.Facts.Previous = facts;
+                next.Facts.Cache = Facts.Cache;
                 c.SeedNext(next);
                 return next;
             }
@@ -132,7 +134,7 @@ public sealed partial class IlCompiler
                 // change between rounds without changing what is reached, and every round's facts are sound)
                 bool stable = nf.SameAs(facts) || next._functions.Count == c._functions.Count && nf.ToString() == facts.ToString();
                 c = next; main0 = m;
-                if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"round {r}: {next._functions.Count} methods, {nf}{(stable ? " (stable)" : "")}");
+                if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"round {r}: {next._functions.Count} methods, {nf}{(stable ? " (stable)" : "")}{CacheText()}");
                 facts = nf;
                 if (stable)
                 {
@@ -162,7 +164,8 @@ public sealed partial class IlCompiler
     /// methods it imported late and the types it constructed (seeds of every later round). Each round reaches a subset
     /// of round 0's program, so round 0's marks stay sound for all of them. IL2WASM_IL_ROUNDS is the safety bound,
     /// reported when it is hit.</summary>
-    static readonly bool s_solveRounds = Environment.GetEnvironmentVariable("IL2WASM_IL_SOLVE_ROUNDS") == "1";
+    static readonly int s_solveRoundsMode = int.TryParse(Environment.GetEnvironmentVariable("IL2WASM_IL_SOLVE_ROUNDS"), out var sr) ? sr : 0;
+    static readonly bool s_solveRounds = s_solveRoundsMode is 1 or 2;
     /// <summary>The solve-only rounds' safety bound when IL2WASM_IL_ROUNDS is not set.</summary>
     const int SolveRoundsBound = 64;
 
@@ -183,34 +186,70 @@ public sealed partial class IlCompiler
             var x = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, Checked = Checked, _round = r, FinalRound = final };
             foreach (var p in _nativePaths) x.LoadNatives(p);
             x.Facts.Previous = facts;
+            x.Facts.Cache = Facts.Cache;
             x._seedMethods = seedMethods; x._seedTypes = seedTypes;
             return x;
         }
         int round = 1;
         bool fixedPoint = false;
-        for (; round < bound; round++)
+        // (IL2WASM_IL_SOLVE_ROUNDS=2, the hybrid: after the solve-only fixed point a whole round, lowered, gives the
+        // lowering-only facts again for what is reached now: the seeds it still lowered and imported, its indirect
+        // marks, its constructed types. When its own facts are the fixed point's, it is the round encoded; else the
+        // solve-only rounds go on from them)
+        bool hybrid = s_solveRoundsMode == 2;
+        IlCompiler? last = null;
+        WasmFunction? main = null;
+        for (int whole = 0; ; whole++)
         {
-            var s = Fresh(round, false);
-            s.ReachPhase(entry);
-            s.SolvePhase();
-            var sol = s.Solution!;
-            foreach (var m in sol.Methods.Items) if (sol.Summary(m) is { } sum) s.Facts.Merge(sum);
-            foreach (var m in indirect0) s.Facts.MarkIndirect(m);
-            var impls = new Dictionary<MethodDesc, MethodDesc[]>();
-            foreach (var slot in sol.Slots) impls[slot] = sol.Targets(slot).ToArray();
-            var nf = s.Facts.Close(impls, sol.Constructed);
-            bool same = nf.SameAs(facts) && FieldsText(nf) == FieldsText(facts);
-            if (trace) Console.Error.WriteLine($"round {round} (solve only): {sol.Methods.Count} methods, {nf}{(same ? " (fixed point)" : "")}");
-            facts = nf;
-            if (same) { fixedPoint = true; break; }
+            fixedPoint = false;
+            for (; round < bound; round++)
+            {
+                var s = Fresh(round, false);
+                s.ReachPhase(entry);
+                s.SolvePhase();
+                var sol = s.Solution!;
+                foreach (var m in sol.Methods.Items) if (sol.Summary(m) is { } sum) s.Facts.Merge(sum);
+                foreach (var m in indirect0) s.Facts.MarkIndirect(m);
+                var impls = new Dictionary<MethodDesc, MethodDesc[]>();
+                foreach (var slot in sol.Slots) impls[slot] = sol.Targets(slot).ToArray();
+                var nf = s.Facts.Close(impls, sol.Constructed);
+                bool same = nf.SameAs(facts) && FieldsText(nf) == FieldsText(facts);
+                if (trace) Console.Error.WriteLine($"round {round} (solve only): {sol.Methods.Count} methods, {nf}{(same ? " (fixed point)" : "")}{CacheText()}");
+                facts = nf;
+                if (same) { fixedPoint = true; break; }
+            }
+            if (!fixedPoint) Warnings.Add($"rounds: the solve-only rounds stopped at their bound of {bound} before the facts' fixed point");
+            round++;
+            last = Fresh(round, true);
+            main = last.Reach(entry);
+            if (!hybrid || !fixedPoint || whole >= MaxWholeRounds) break;
+            var wf = last.Facts.Close(last.SlotImplementations(), last._constructedOrder);
+            bool settled = wf.SameAs(facts) && FieldsText(wf) == FieldsText(facts);
+            if (trace) Console.Error.WriteLine($"round {round} (whole): {last._functions.Count} methods, {wf}{(settled ? " (settled)" : "")}{CacheText()}");
+            if (settled) break;
+            // (the next solve-only rounds start from this whole round's facts and lowering-only marks)
+            indirect0 = wf.Indirect.ToList();
+            seedMethods = (seedMethods).Where(last._solver!.WasLowered).Concat(last._solver.LateMethods).Distinct().ToList();
+            seedTypes = last._constructedOrder.Where(t => !last._solver.IsConstructed(t)).ToList();
+            facts = wf;
+            round++;
         }
-        if (!fixedPoint) Warnings.Add($"rounds: the solve-only rounds stopped at their bound of {bound} before the facts' fixed point");
-        var last = Fresh(round + 1, true);
-        var main = last.Reach(entry);
-        if (trace) Console.Error.WriteLine($"round {round + 1} (encoded): {last._functions.Count} methods");
-        var bytes = last.Emit(main);
+        if (trace) Console.Error.WriteLine($"round {round} (encoded): {last!._functions.Count} methods");
+        var bytes = last.Emit(main!);
         Warnings.AddRange(last.Warnings);
         return bytes;
+    }
+
+    /// <summary>The hybrid's bound on whole rounds after the first (IL2WASM_IL_SOLVE_ROUNDS=2).</summary>
+    const int MaxWholeRounds = 8;
+
+    /// <summary>The import cache's counts so far, for the rounds' trace (and resets them).</summary>
+    string CacheText()
+    {
+        if (Facts.Cache is not { } k) return "";
+        var t = $"; imports kept {k.Hits}, made {k.Misses}";
+        k.Hits = 0; k.Misses = 0;
+        return t;
     }
 
     /// <summary>A round's field values as text in a fixed order (the fingerprint of RoundFacts leaves them out).</summary>

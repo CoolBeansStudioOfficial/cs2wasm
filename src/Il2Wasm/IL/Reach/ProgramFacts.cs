@@ -20,6 +20,8 @@ public sealed class ProgramFacts : ISccpOracle
     public readonly PureCalls Pure;
     /// <summary>The round before's facts (null in the first round).</summary>
     public RoundFacts? Previous;
+    /// <summary>IL2WASM_IL_IMPORT_CACHE=1: imports kept across rounds (shared by the rounds of one compilation).</summary>
+    public ImportCache? Cache;
 
     // this round's
     readonly HashSet<FieldDesc> _written = [];
@@ -37,14 +39,25 @@ public sealed class ProgramFacts : ISccpOracle
     {
         summary = null;
         facts = null;
+        // (the round before imported it with facts that answer every read it made as these do: the same import)
+        if (!Off && Cache != null && Previous != null && Cache.Hit(m, Previous) is { } hit)
+        {
+            summary = hit.Summary; facts = hit.Facts;
+            return facts == null ? Importer.Import(m, il) : Importer.Import(m, il, facts);
+        }
         var body = Importer.Import(m, il);
         if (Off) { summary = Il2Wasm.IL.Memory.MethodSummary.Build(m, null, null, body, host); return body; }
-        var s = Sccp.Solve(body, this);
+        var log = Cache != null && Previous != null ? new List<(char, object, int, string)>() : null;
+        if (log != null) Previous!.Log = log;
+        Sccp s;
+        try { s = Sccp.Solve(body, this); }
+        finally { if (log != null) Previous!.Log = null; }
         // (set before the second import: when it throws, the caller still records what the first one saw)
         summary = Il2Wasm.IL.Memory.MethodSummary.FromConstants(m, body, s);
         facts = Sccp.Facts(body, s);
         var final = facts == null ? body : Importer.Import(m, il, facts);
         summary.AddEdges(final, host);
+        if (log != null) Cache!.Put(m, log, facts, summary);
         return final;
     }
 
@@ -96,7 +109,8 @@ public sealed class ProgramFacts : ISccpOracle
 
     void Meet(MethodDesc m, Val[] args)
     {
-        if (!_args.TryGetValue(m, out var a)) { _args[m] = args; return; }
+        // (a copy: the summary's own array stays as the import made it, so a summary can be used again: ImportCache)
+        if (!_args.TryGetValue(m, out var a)) { _args[m] = (Val[])args.Clone(); return; }
         for (int i = 0; i < a.Length && i < args.Length; i++) a[i] = Val.Meet(a[i], args[i]);
     }
 
@@ -142,7 +156,7 @@ public sealed class ProgramFacts : ISccpOracle
         if (args.Length > 0 && args[0].Type is { IsValueType: false } exact && Resolve?.Invoke(exact, m) is { } one)
             return ValueOf(one, args);
         // otherwise every implementation over the types the round before constructed, with the same value
-        if (Previous != null && Previous.Implementations.TryGetValue(m, out var impls) && impls.Length > 0)
+        if (Previous != null && Previous.Impls(m) is { Length: > 0 } impls)
         {
             var r = Val.Top;
             foreach (var impl in impls)

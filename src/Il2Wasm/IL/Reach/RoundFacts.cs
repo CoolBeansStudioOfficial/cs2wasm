@@ -54,8 +54,32 @@ public sealed class RoundFacts
 
     public override string ToString() => $"{Fields.Count(f => f.Value.State != Val.S.Bottom)} fields with a value, {WrittenStatics.Count} statics written, {Args.Count(a => !Indirect.Contains(a.Key) && a.Value.Any(v => v.IsConst))} methods with a constant argument, {Implementations.Count} slots";
 
+    /// <summary>The reads an import makes of these facts, while ProgramFacts.Import records them (ImportCache): each
+    /// read's kind, key, index and answer.</summary>
+    internal List<(char Kind, object Key, int Index, string Answer)>? Log;
+
+    /// <summary>A read again, as ImportCache replays it on a later round's facts.</summary>
+    internal string Answer(char kind, object key, int index) => kind switch
+    {
+        'a' => ArgCore((MethodDesc)key, index).ToString(),
+        'r' => ReturnCore((MethodDesc)key).ToString(),
+        'f' => FieldCore((FieldDesc)key).ToString(),
+        'w' => WrittenCore((FieldDesc)key) ? "1" : "0",
+        'i' => ImplsText(ImplsCore((MethodDesc)key)),
+        _ => throw new InvalidOperationException("read " + kind),
+    };
+
+    static string ImplsText(MethodDesc[]? impls) => impls == null ? "-" : string.Join(";", impls.Select(x => x.ToString()));
+
     /// <summary>The value of a method's argument at every call, or Bottom.</summary>
     public Val Arg(MethodDesc m, int i)
+    {
+        var v = ArgCore(m, i);
+        Log?.Add(('a', m, i, v.ToString()));
+        return v;
+    }
+
+    Val ArgCore(MethodDesc m, int i)
     {
         if (NoConstantArgs || Indirect.Contains(m) || !Args.TryGetValue(m, out var a) || i >= a.Length) return Val.Bottom;
         // (IL2WASM_IL_ARGS_ONLY=text, a debugging aid: argument facts only for the methods whose name contains it)
@@ -65,7 +89,24 @@ public sealed class RoundFacts
     }
 
     /// <summary>A method's value at every return (IL2WASM_NO_RETURN_VALUES=1: none), or Bottom.</summary>
-    public Val Return(MethodDesc m) =>
+    public Val Return(MethodDesc m)
+    {
+        var v = ReturnCore(m);
+        Log?.Add(('r', m, 0, v.ToString()));
+        return v;
+    }
+
+    /// <summary>A slot's implementations over the round's constructed types (null: the slot was not reached).</summary>
+    public MethodDesc[]? Impls(MethodDesc slot)
+    {
+        var v = ImplsCore(slot);
+        Log?.Add(('i', slot, 0, ImplsText(v)));
+        return v;
+    }
+
+    MethodDesc[]? ImplsCore(MethodDesc slot) => Implementations.TryGetValue(slot, out var i) ? i : null;
+
+    Val ReturnCore(MethodDesc m) =>
         !NoReturnValues && Returns.TryGetValue(m, out var v) && v.State is Val.S.Const or Val.S.NonNull or Val.S.Typed ? v : Val.Bottom;
 
     /// <summary>Each class instance field's stored values met (a field whose address was taken: Bottom).</summary>
@@ -80,6 +121,13 @@ public sealed class RoundFacts
     /// reached; Bottom for a field of a value type, a delegate, a string or an array (their storage is written by more
     /// than stfld), and for a field whose type is not an integer or a reference.</summary>
     public Val Field(FieldDesc f)
+    {
+        var v = FieldCore(f);
+        Log?.Add(('f', f, 0, v.ToString()));
+        return v;
+    }
+
+    Val FieldCore(FieldDesc f)
     {
         if (NoFieldValues || f.IsStatic || !FieldTracked(f)) return Val.Bottom;
         // (only a field of a class some made object is: a class no object is made of is only ever a view of other
@@ -98,5 +146,12 @@ public sealed class RoundFacts
 
     public static readonly bool NoReturnValues = Environment.GetEnvironmentVariable("IL2WASM_NO_RETURN_VALUES") == "1";
 
-    public bool Written(FieldDesc f) => NoUnwrittenStatics || WrittenStatics.Contains(f.GetTypicalFieldDefinition()) || WrittenStatics.Contains(f);
+    public bool Written(FieldDesc f)
+    {
+        bool v = WrittenCore(f);
+        Log?.Add(('w', f, 0, v ? "1" : "0"));
+        return v;
+    }
+
+    bool WrittenCore(FieldDesc f) => NoUnwrittenStatics || WrittenStatics.Contains(f.GetTypicalFieldDefinition()) || WrittenStatics.Contains(f);
 }
