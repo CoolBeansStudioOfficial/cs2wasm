@@ -6118,3 +6118,43 @@ Not run: the homelab suite and the self-host check on this commit.
   modules) against its base; IL tests 157-159 of 157-159.
 - Not done: per-key TypeSets (2.6); the remaining WordCount roots; Persistent as a whole-object fact (2.5) beyond one
   static; the release of a value loaded from a slot (it frees only if the slot is written meanwhile, counted there).
+
+### Memory model S1 against its bars (claude/s1-bars, 2026-11-24)
+
+- What: S1's bars measured on main 7b71d43, planned (`IL2WASM_MEM_PLAN=1`) against naive. The programs are hello
+  world, the nine bench kernels and 24 allocation-heavy NetWasm cases. The full tables are in docs/S1-BARS.md.
+- Removal share [run, desk, executed]:
+  - mean 72.5% over 34 programs; summed over all operations 64.5%;
+  - 3 of 34 at 90% or more (NBody 100.0%, Shapes 99.9%, Dictionary case 90.9%); Tree 52.6%, ListSort 42.9%,
+    LinkedNodes 63.8%, BigInteger 41.5%;
+  - **fails** the 90% target.
+- Top causes, in points of naive:
+  - box/unbox pairs in the generic comparers: ListSort 48.9;
+  - the owned variant chosen for a recursive walk's field-load arguments: Tree 31.5;
+  - loop-carried reference phis: LinkedNodes 31.9;
+  - old-value releases at stores: mean 2.7;
+  - byref getters retaining their array: Strings 10.7.
+- Leaks [run; .NET side on the homelab]:
+  - planned equal to .NET on program types on 33 of 34; SortedList is a cycle, S2's;
+  - planned never above naive on any type; collector-retention's naive leak is freed by the keeper.
+- Speed [run, homelab, built on the desk; the homelab has no Emscripten SDK]:
+  - bench kernels: geometric mean 2.69x NativeAOT-LLVM wasm planned, 4.49x naive; tree 1.95x, word_count 0.97x,
+    nbody 14.7x;
+  - nbody's time is whole-struct copies per field read, zeroed frames and unwind tries in uninlined operators, not counts (profile in S1-BARS);
+  - frames: no spikes above NativeAOT in 4 scenes; bigdrop overflows the stack in destroy (bug 4).
+- Cost [run, desk]:
+  - planned modules 5.7% smaller (hello world 1,204,423 B against 1,277,136 B; above the old 970,075 B bar);
+  - compile +28%, which is 22% of the planned build: above 3.8's 20%;
+  - peak memory +10%.
+- Checked [run]: IL tests 178/178 planned and verified, 161/161 naive; the kernels 20/20 builds, no traps, checksums
+  equal.
+- Bugs:
+  1. RcStats owner of variants: fixed here, 91452f0, byte-identical with counting off;
+  2. owned variant for recursive field-load arguments: row b;
+  3. Main(string[]) null args: fixed on main, 83371bb;
+  4. destroy recursion overflows the stack on a 200,000-node chain: claude/il-destroy-depth.
+- New tools:
+  - tools/s1-bars.mjs, tools/s1-causes.mjs;
+  - tools/il-speed.mjs (bench and frames by the IL front end against NativeAOT-LLVM wasm);
+  - tools/il-live-oracle/run-kernels.sh;
+  - IL2WASM_IL_CHECKED=1 in the IL tests.

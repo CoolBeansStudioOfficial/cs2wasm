@@ -71,9 +71,13 @@ public static class Plan
         if (s_slow > 0 && System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds is var ms && ms >= s_slow)
             Console.Error.WriteLine($"plan: {ms:F0} ms for {ctx.Method} ({ctx.Body.Blocks.Count} blocks, {ctx.Body.ValueCount} values)");
         System.Threading.Interlocked.Increment(ref Plans);
+        Built?.Invoke(ctx, plan);
         if (s_dump != null && ctx.Method.ToString()!.Contains(s_dump)) Console.Error.WriteLine("plan of " + ctx.Method + " (" + ctx.Entry + "):" + Environment.NewLine + ctx.Body.Dump());
         return plan;
     }
+
+    /// <summary>Called with each plan Build makes, with its context (the tests read the variants chosen through it).</summary>
+    public static Action<PlanContext, MethodPlan>? Built;
 
     /// <summary>IL2WASM_PLAN_SLOW=ms: each plan that takes at least that long, on stderr.</summary>
     static readonly int s_slow = int.TryParse(Environment.GetEnvironmentVariable("IL2WASM_PLAN_SLOW"), out int ms) ? ms : 0;
@@ -390,13 +394,19 @@ public static class Plan
             if (DirectSite(n) && _ctx.Solution.Covers((MethodDesc)n.X!) && Signatures.VariantsOf(_ctx.Solution, (MethodDesc)n.X!).Count > 0)
             {
                 uint mask = 0;
+                // (the Owned values another operand keeps, through a borrow or an address: not handed over here)
+                var through = new HashSet<Node>();
+                foreach (var a in n.A) foreach (var kv in Keep(a)) if (kv != a) through.Add(kv);
+                var seen = new HashSet<Node>();
                 for (int k = 0; k < n.A.Length; k++)
                 {
                     var a = n.A[k];
                     if (!IsRef(a)) continue;
                     int p = ParamOf(n, k);
                     if (p >= 32) continue;
-                    if (Signatures.CallRule(_ctx, n, k, !liveAfter.Contains(a)) == ArgConv.HandOver) mask |= 1u << p;
+                    // (only a count the caller holds, once: not a borrow, a field's or an element's load, a literal)
+                    bool owned = Owned(a) && !IsTrivial(a) && a.Op is not (Opc.LdFld or Opc.LdSFld or Opc.LdElem or Opc.LdInd or Opc.LdObj) && !through.Contains(a) && seen.Add(a);
+                    if (Signatures.CallRule(_ctx, n, k, !liveAfter.Contains(a), owned) == ArgConv.HandOver) mask |= 1u << p;
                 }
                 v = Signatures.ChooseVariant(_ctx, n, mask);
                 // (an owned entry for parameters that are not there, or a callee outside the solution: the entry)

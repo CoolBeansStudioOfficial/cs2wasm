@@ -7,6 +7,9 @@
 using Il2Wasm.IL.Lower;
 using Il2Wasm.IL.Types;
 
+// (a crash, a stack overflow included, ends the process without Windows' error dialogs on the desk)
+if (OperatingSystem.IsWindows()) NoDialogs.SetErrorMode(0x8003);
+
 string? input = null, output = null, framework = Environment.GetEnvironmentVariable("IL2WASM_FRAMEWORK");
 bool isChecked = false;
 for (int i = 0; i < args.Length; i++)
@@ -68,4 +71,9 @@ static string? FindFramework()
         for (var d = new DirectoryInfo(start); d != null; d = d.Parent)
             if (File.Exists(Path.Combine(d.FullName, "artifacts", "framework", "System.Private.CoreLib.dll"))) return Path.Combine(d.FullName, "artifacts", "framework");
     return null;
+}
+
+static class NoDialogs
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] internal static extern uint SetErrorMode(uint mode);
 }

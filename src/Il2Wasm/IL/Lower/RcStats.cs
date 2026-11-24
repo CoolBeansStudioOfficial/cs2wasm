@@ -435,8 +435,9 @@ public sealed class RcStats
 
 public sealed partial class IlCompiler
 {
-    /// <summary>RcStats: the methods' functions (to tell program, library and runtime code apart).</summary>
-    internal IEnumerable<(MethodDesc, WasmFunction)> RcFunctionMap() => _functions.Select(p => (p.Key, p.Value));
+    /// <summary>RcStats: the methods' functions (to tell program, library and runtime code apart), their
+    /// specialization variants' functions included (an owned or borrowed-return entry is its method's code).</summary>
+    internal IEnumerable<(MethodDesc, WasmFunction)> RcFunctionMap() => _functions.Select(p => (p.Key, p.Value)).Concat(_variantFns.Select(p => (p.Key.Item1, p.Value)));
 
     /// <summary>RcStats: how many types have ids (the per-type table's size, before the ids are final).</summary>
     internal int RcTypeCount() => _types.Count + 2;
