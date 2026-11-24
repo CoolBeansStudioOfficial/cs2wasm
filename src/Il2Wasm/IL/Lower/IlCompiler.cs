@@ -212,6 +212,8 @@ public sealed partial class IlCompiler
         var typical = m.GetTypicalMethodDefinition() as EcmaMethod;
         MethodIL? il = typical != null ? EcmaMethodIL.Create(typical) : null;
         if (il != null && m != typical) il = new InstantiatedMethodIL(m, il);
+        // ([UnsafeAccessor]: a body made for the instantiation)
+        il ??= UnsafeAccessors.Body(m);
         if (il == null)
         {
             Warnings.Add($"{m} has no IL body: it traps");
