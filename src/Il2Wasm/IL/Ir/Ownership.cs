@@ -62,25 +62,35 @@ public static class Ownership
     /// Phis are not followed: an address carried around a loop does not keep its object.</summary>
     static void FindBases(Body body, Info info)
     {
-        var varBases = new Dictionary<int, List<Node>>();
-        foreach (var b in body.Blocks)
+        // (a variable of an address or a span (a local the IL stores a Span in, a ref local in the frame): everything
+        // ever stored into it, for every read of it, wherever it is: a span local read in a loop keeps the array it
+        // was made over. A read on a path before the store makes the base live there too: at worst a count kept
+        // longer, never one let go early. Repeated until nothing changes: a read's bases feed what is made from it)
+        var varBases = new Dictionary<int, HashSet<Node>>();
+        for (bool changed = true; changed;)
         {
-            varBases.Clear();
-            foreach (var n in b.Code)
-            {
-                // (a variable of an address or a span: what was stored into it earlier in the block, its address
-                // or value read later in the same block keeps)
-                if (n.Op == Opc.VarSt && n.A.Length > 0 && info.Bases.TryGetValue(n.A[0], out var sb)) { varBases[(int)n.I] = sb; continue; }
-                if (n.Op is Opc.LocA or Opc.VarLd && varBases.TryGetValue((int)n.I, out var vb)) { info.Bases[n] = vb; continue; }
-                if (!Derives(n)) continue;
-                List<Node>? l = null;
-                foreach (var a in n.A)
+            changed = false;
+            foreach (var b in body.Blocks)
+                foreach (var n in b.Code)
                 {
-                    if (a.Kind == VK.Ref && a.Op is not (Opc.LdNull or Opc.LdStr)) (l ??= []).Add(a);
-                    else if (info.Bases.TryGetValue(a, out var ab)) (l ??= []).AddRange(ab);
+                    List<Node>? l = null;
+                    if (n.Op == Opc.VarSt && n.A.Length > 0 && info.Bases.TryGetValue(n.A[0], out var sb))
+                    {
+                        if (!varBases.TryGetValue((int)n.I, out var set)) varBases[(int)n.I] = set = [];
+                        foreach (var x in sb) changed |= set.Add(x);
+                        continue;
+                    }
+                    if (n.Op is Opc.LocA or Opc.VarLd) { if (varBases.TryGetValue((int)n.I, out var vb)) l = vb.ToList(); }
+                    else if (Derives(n))
+                        foreach (var a in n.A)
+                        {
+                            if (a.Kind == VK.Ref && a.Op is not (Opc.LdNull or Opc.LdStr)) (l ??= []).Add(a);
+                            else if (info.Bases.TryGetValue(a, out var ab)) (l ??= []).AddRange(ab);
+                        }
+                    if (l == null) continue;
+                    var d = l.Distinct().ToList();
+                    if (!info.Bases.TryGetValue(n, out var old) || old.Count != d.Count) { info.Bases[n] = d; changed = true; }
                 }
-                if (l != null) info.Bases[n] = l.Distinct().ToList();
-            }
         }
     }
 
