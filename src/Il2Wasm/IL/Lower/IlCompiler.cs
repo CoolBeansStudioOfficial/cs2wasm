@@ -604,18 +604,23 @@ public sealed partial class IlCompiler
             }
             case "TextScan.Upper16": case "TextScan.Lower16":
             {
-                // eight chars: the ASCII letters' case changed (x -/+ 32 where x - base <u 26) into dst; the lanes above
-                // 127 of src as a mask
+                // eight chars: the lanes above 127 of src as a mask; when there are none, the ASCII letters' case
+                // changed (x -/+ 32 where x - base <u 26) into dst (with one, nothing is written: the scalar loop
+                // stops at that char, and .NET writes nothing past it)
                 bool up = key == "TextScan.Upper16";
-                int d = e.AddLocal(ValType.I32), s = e.AddLocal(ValType.I32);
+                int d = e.AddLocal(ValType.I32), s = e.AddLocal(ValType.I32), mk = e.AddLocal(ValType.I32);
                 e.Set(d); e.Set(s);
+                e.Get(s); e.Emit(WOp.V128Load); e.I32(127); e.Op(WOp.I16x8Splat); e.Op(WOp.I16x8GtU); e.Op(WOp.I16x8Bitmask); e.Set(mk);
+                e.Get(mk); e.Op(WOp.I32Eqz);
+                e.If();
                 e.Get(d);
                 e.Get(s); e.Emit(WOp.V128Load);
                 e.Get(s); e.Emit(WOp.V128Load); e.I32(up ? 'a' : 'A'); e.Op(WOp.I16x8Splat); e.Op(WOp.I16x8Sub);
                 e.I32(26); e.Op(WOp.I16x8Splat); e.Op(WOp.I16x8LtU); e.I32(32); e.Op(WOp.I16x8Splat); e.Op(WOp.V128And);
                 e.Op(up ? WOp.I16x8Sub : WOp.I16x8Add);
                 e.Emit(WOp.V128Store);
-                e.Get(s); e.Emit(WOp.V128Load); e.I32(127); e.Op(WOp.I16x8Splat); e.Op(WOp.I16x8GtU); e.Op(WOp.I16x8Bitmask);
+                e.End();
+                e.Get(mk);
                 break;
             }
             case "TextScan.Eq16Any3":
