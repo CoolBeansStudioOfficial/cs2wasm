@@ -7,7 +7,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Il2Wasm/IL/Il2Wasm.IL.csproj" />
     <!-- the stub CoreLib and the test programs are compiled by the tests (Roslyn), not into them -->
-    <Compile Remove="CoreLibStub/**;Programs/**" />
-    <None Include="CoreLibStub/**;Programs/**" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Remove="CoreLibStub/**;Programs/**;RuntimePrograms/**" />
+    <None Include="CoreLibStub/**;Programs/**;RuntimePrograms/**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

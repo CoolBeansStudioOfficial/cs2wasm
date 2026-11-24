@@ -206,6 +206,20 @@ public sealed partial class IlCompiler
                 e.Set(len); e.I32(0); e.Get(len); e.Emit(WOp.MemoryFill);
                 break;
             }
+            // (byte and ushort: upstream's "must expand intrinsic" calls itself; the 8- and 16-bit atomics)
+            case "System.Threading.Interlocked.Exchange" when m.Signature[1].Category is TypeFlags.Byte or TypeFlags.UInt16:
+                fl.PushArgs(n);
+                e.Emit(m.Signature[1].Category == TypeFlags.Byte ? WOp.I32AtomicRmw8XchgU : WOp.I32AtomicRmw16XchgU, 0, m.Signature[1].Category == TypeFlags.Byte ? 0 : 1);
+                break;
+            case "System.Threading.Interlocked.CompareExchange" when m.Signature[1].Category is TypeFlags.Byte or TypeFlags.UInt16:
+            {
+                // (location, value, comparand) -> the instruction's (address, expected, replacement)
+                fl.PushArgs(n);
+                int cmp = e.AddLocal(ValType.I32), val = e.AddLocal(ValType.I32);
+                e.Set(cmp); e.Set(val); e.Get(cmp); e.Get(val);
+                e.Emit(m.Signature[1].Category == TypeFlags.Byte ? WOp.I32AtomicRmw8CmpxchgU : WOp.I32AtomicRmw16CmpxchgU, 0, m.Signature[1].Category == TypeFlags.Byte ? 0 : 1);
+                break;
+            }
             case "System.Threading.Interlocked.MemoryBarrier":
             case "System.Threading.Volatile.ReadBarrier":
             case "System.Threading.Volatile.WriteBarrier":

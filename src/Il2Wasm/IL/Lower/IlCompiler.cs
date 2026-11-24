@@ -314,6 +314,7 @@ public sealed partial class IlCompiler
                 if (!_resolved.Add((x, slot))) continue;
                 if (Implementation(x, slot) is { } impl && !_functions.ContainsKey(impl)) { FunctionFor(impl); any = true; }
             }
+        if (RequestFinalizers()) any = true;
         return any || _queue.Count > 0;
     }
 
@@ -815,6 +816,7 @@ public sealed partial class IlCompiler
             foreach (var x in _constructedOrder)
             {
                 e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
+                EmitFinalizeStep(e, x);
                 if (x is ArrayType at)
                 {
                     int es = Kinds.SizeOf(at.ElementType);

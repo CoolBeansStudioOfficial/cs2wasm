@@ -47,6 +47,8 @@ sealed class FunctionLowering
             foreach (var n in b.Phis.Concat(b.Code))
             {
                 if (n.Kind == VK.Struct) _slot[n] = Reserve(n.Type!);
+                // (a primitive made by its constructor, new IntPtr(v): made in a frame slot, then read)
+                else if (n.Op == Opc.NewObj && n.Kind is VK.I32 or VK.I64 or VK.F32 or VK.F64 or VK.Ptr) _slot[n] = Reserve(((MethodDesc)n.X!).OwningType);
                 if (n.Op is Opc.Call or Opc.NewObj)
                     for (int i = 0; i < n.A.Length; i++) if (n.A[i].Kind == VK.Struct) _argSlot[(n, i)] = Reserve(n.A[i].Type!);
             }
@@ -352,7 +354,7 @@ sealed class FunctionLowering
                 return;
             case Opc.Throw:
                 Get(n.A[0]);
-                if ((n.Moves & 1) != 0) Clear(n.A[0]);
+                if ((n.Moves & 1) != 0) Clear(n.A[0]); else E.Call(C.Rt.Retain);
                 E.Emit(WOp.Throw, 0, 0, C.ExceptionTag);
                 return;
             case Opc.Rethrow:
@@ -1050,6 +1052,21 @@ sealed class FunctionLowering
             E.Get(L(n)); Get(target); if (target.Kind == VK.Ref) E.Call(C.Rt.Retain); E.Store(WOp.I32Store, tOff);
             var fm = (MethodDesc)n.A[1].X!;
             E.Get(L(n)); E.I32Fn(C.Module, C.DelegateTargetFn(fm, n.A[1].Op == Opc.LdVirtFtn)); E.Store(WOp.I32Store, fOff);
+            return;
+        }
+        if (t.IsValueType && n.Kind != VK.Struct)
+        {
+            // a primitive (IntPtr's constructors): made in a frame slot, then read
+            C.CctorCheckForCall(E, ctor);
+            int at = _slot[n];
+            FrameAddr(at); E.I32(0); E.I32(8); E.Emit(WOp.MemoryFill);
+            FrameAddr(at);
+            PushCallArgs(n);
+            E.Call(C.FunctionFor(ctor));
+            AfterCall(n);
+            FrameAddr(at);
+            E.Load(n.Kind switch { VK.I64 => WOp.I64Load, VK.F32 => WOp.F32Load, VK.F64 => WOp.F64Load, _ => WOp.I32Load });
+            Set(n);
             return;
         }
         if (t.IsValueType)
