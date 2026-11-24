@@ -1039,6 +1039,28 @@ public sealed partial class Importer
                     if (!rt.IsVoid) Push(c);
                     return true;
                 }
+                case ILOpcode.mkrefany:
+                {
+                    // a TypedReference: the address and its type
+                    var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
+                    var addr = Pop();
+                    if (addr.Kind != VK.Ptr) throw Invalid("mkrefany of a " + addr.Kind);
+                    Push(AddOfType(Opc.MkRefAny, Ctx.GetWellKnownType(WellKnownType.TypedReference), addr).WithX(t));
+                    return true;
+                }
+                case ILOpcode.refanyval:
+                {
+                    var t = (TypeDesc)I._il.GetObject(rd.ReadILToken());
+                    var tr = Pop();
+                    Push(Add(Opc.RefAnyVal, VK.Ptr, StackType.ByRef, t.MakeByRefType(), tr).WithX(t));
+                    return true;
+                }
+                case ILOpcode.refanytype:
+                {
+                    var tr = Pop();
+                    Push(AddOfType(Opc.RefAnyType, Ctx.SystemModule.GetType("System"u8, "RuntimeTypeHandle"u8), tr));
+                    return true;
+                }
                 case ILOpcode.initblk: case ILOpcode.cpblk:
                 {
                     // (address, value or source, size): memory.fill and memory.copy

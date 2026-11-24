@@ -5480,3 +5480,50 @@ Not run: the homelab suite and the self-host check on this commit.
   did not compile, 1 timed out (main: 186 passed).
 - Not done: generic sharing (every instantiation is still its own code), Delegate.Method, DynamicInvoke,
   DelegateArity (method reflection records), member reflection records beyond assemblies.
+### IL front end: the runtime's semantics (claude/il-runtime, 2026-11-23)
+
+- Finalizers and weak references (SPEC 4.4), Lower/Finalizers.cs: the destroy path runs a class's finalizer (the
+  most derived Finalize override: in IL a C# destructor already calls its base's) with a temporary count, an object
+  its finalizer brings back lives on and is not finalized again (Rt.FinalizedBit) unless GC.ReRegisterForFinalize
+  asks; ObjectMarks.OnFinalize clears the short weak handles before the finalizer and skips a suppressed one,
+  OnDestroy clears the rest (WeakTrackResurrection, ConditionalWeakTable's dependents). Compiled in only once
+  ObjectMarks.SetAt is reached. No groups in the IL front end yet: Rt.WeakDyingAll is not wired (nothing dies as a
+  group). Test r01 [run, desk, against .NET in process].
+- Static constructors (SPEC 3), Lower/Statics.cs: ECMA's precise triggers (static field, static method, any
+  constructor including a base call, a value type's instance method); the old front end's state word (0, -1, -2)
+  and the InitChecks shape; an exception becomes a TypeInitializationException, the same object at every later
+  access (CoreCLR's). One thread only: the threaded protocol (owner id in the word, waits, cycle detection) is not
+  ported, because the IL front end compiles no threads yet. Test r02.
+- Activator (SPEC 6.6), Lower/Activation.cs: RuntimeType.CreateInstanceOfT, CreateInstanceMono and
+  CallDefaultStructConstructor served by generated switches over the constructed and typeof'd types, with CoreCLR's
+  messages and TargetInvocationException wrapping (ThrowHelpers.CannotCreate, InvocationFailed in Runtime.cs). Test r03.
+- Two-pass filters (SPEC 3), Lower/Filters.cs and Ir/FilterSlots.cs: records [site, frame base] on a stack of their
+  own while a try with catches runs; throw and rethrow walk them first (rt.first_pass), a filter running as its own
+  function on the method's frame (what a filter uses is a frame variable); a try with a filter takes the exception
+  only as decided. Without filters in the program the functions are empty and inlined away. A filter that reads a
+  struct argument keeps its method in one pass. A stale decision (a later throw's first pass inside a finally) is
+  re-decided from the site, which can run a filter twice (as the old front end). Test r04.
+- Stack traces (SPEC 6.3), Lower/DebugInfo.cs: frame names in .NET's format from metadata, file and line from the
+  portable PDB's sequence points, the il2wasm.frames/lines/inline sections, Rt.OnThrow at a throw and Rt.OnCatch at
+  the handler. The frames section is about 83 KB of a 2.27 MB hello world. Test r05.
+- Exports (SPEC 6.2), Lower/Exports.cs: [UnmanagedCallersOnly(EntryPoint)] methods exported, an escaping exception
+  reported to the host with its trace and the export returning zero. Test r00.
+- The checked build, Lower/Checks.cs: Rt.Checked is 1 (poisoned, never-reused freed memory), rt.release traps on a
+  release too many, rt.retain on a freed object. It found, and this branch fixes: pinned locals not keeping their
+  object (Ir/Pinning.cs; shipped too: fixed over a temporary array read freed memory), the runtime's int addresses
+  of objects (Rt.ArrayData etc.) not keeping theirs (the console wrote freed memory), and a rethrow using an
+  exception its handler had let go. Test r06.
+- Counting bugs found on the way and fixed (il-codegen's area, told): a store of a value that lives on was counted
+  twice (a leak); new IntPtr(v) wrote through address 0; Interlocked byte/ushort atomics recursed.
+- NetWasm suite [run, desk, own cache copy of the work directory, oracle records from the shared cache]: at a04d832
+  (with il-codegen through d2ce0aa) **257 passed**, 182 failed, 11 did not compile, 0 timed out, the same in the
+  shipped and the checked build (no case differs between the two; 439 of 450 case-modes per mode with a stable
+  oracle). At 29b8e62 (finalizers and static constructors on main 179edef; checked = shipped then): 182 passed, 218
+  failed, 49 did not compile, 1 timed out.
+- Homelab: at a04d832 the old suite 264 of 264 checked and 264 of 264 as shipped; at 8b92adb the self-hosted compiler
+  byte for byte with the .NET-hosted one on 145, 220, 193 and 088, hello world in 7.0 to 7.2 s over 3 rounds (27,723
+  bytes). IL tests 94 of 94 [desk]. Not run: stress (no new old-suite tests), frames.mjs and bench.mjs (the old front
+  end and the back end are unchanged; Runtime.cs only gained two methods the old front end never reaches).
+- Not done: thread-safe static constructors with real threads (no threads in the IL front end yet), weak references
+  of groups (no groups yet), filters in a method whose filter reads a struct argument (one pass), Activator for
+  types the program never constructs nor names with typeof.

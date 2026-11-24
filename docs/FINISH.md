@@ -1465,3 +1465,12 @@ with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   of 85. NetWasm suite, desk, shipped, with the merged 4d29bf0 (before the assembly records): 224 passed, 214 failed, 11 did not compile, 1 timed out (main reported 186). Not run: homelab suite, stress, self-host check (the old front
   end, the back end's passes and the runtime are unchanged; the one Wasm/ change is the IL2WASM_SIZES_FILE report; 145
   passes both ways). Not done: generic sharing, Delegate.Method/DynamicInvoke/DelegateArity.
+- 2026-11-23, claude/il-runtime (the IL front end's runtime semantics; AUDIT "IL front end: the runtime's
+  semantics"): finalizers and weak references on the destroy path, static constructors with .NET's triggers and
+  TypeInitializationException, Activator.CreateInstance, two-pass filters, stack traces from the PDB,
+  [UnmanagedCallersOnly] exports with exception reporting, and a checked build that differs from the shipped one
+  (poisoned freed memory, traps on a release too many). The checked build found three use-after-frees, fixed:
+  pinned locals, the runtime's int addresses of objects, rethrow. NetWasm suite on the desk: 257 passed in both
+  builds at a04d832 (main had 186). Homelab: old suite 264/264 both modes; self-hosted compiler byte for byte on
+  145, 220, 193, 088, hello world 7.1 s. Not done: threaded static constructors (no threads in the IL front end),
+  group weak references (no groups). Not run: stress, frames.mjs, bench.mjs (old front end and back end unchanged).
