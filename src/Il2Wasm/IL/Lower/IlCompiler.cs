@@ -1189,18 +1189,18 @@ public sealed partial class IlCompiler
             EmitIdTest(e, tid, ids);
             e.If(ValType.I32); e.Get(0); e.Else(); e.I32(0); e.End();
         }
-        // destroy: each constructed type's references released, then its memory freed (rt.destroy_now), under the
-        // depth queue of rt.destroy (EmitDestroyQueue)
+        // destroy: each constructed type's references released, then its memory freed, inside the depth queue's
+        // prologue and epilogue (DestroyDepth.cs)
         {
-            var now = EmitDestroyQueue();
-            var e = new Emitter(now);
+            var e = new Emitter(Rt.Destroy);
             int tid = e.AddLocal(ValType.I32), i = e.AddLocal(ValType.I32), n = e.AddLocal(ValType.I32);
+            var done = EmitDestroyPrologue(e);
             e.Get(0); e.Load(WOp.I32Load, 4); e.Set(tid);
             foreach (var x in _constructedOrder)
             {
                 e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
-                if (SealedTail(x) is { } tail) { EmitSealedTailDestroy(e, x, tail); e.End(); continue; }
-                EmitFinalizeStep(e, x);
+                if (SealedTail(x) is { } tail) { EmitSealedTailDestroy(e, x, tail, done); e.End(); continue; }
+                EmitFinalizeStep(e, x, done);
                 if (x is ArrayType at)
                 {
                     int es = Kinds.SizeOf(at.ElementType);
@@ -1233,9 +1233,10 @@ public sealed partial class IlCompiler
                     if (Kinds.Of(x) == VK.Struct && Kinds.Counted(x)) { e.Get(0); e.I32(IlContext.ObjectHeader); e.Op(WOp.I32Add); e.Call(Rt.ReleaseStruct(x)); }
                     e.Get(0); e.I32(x.IsValueType ? IlContext.ObjectHeader + Math.Max(4, Kinds.SizeOf(x)) : IlContext.InstanceSize((DefType)x));
                 }
-                e.Call(Rt.Free); e.Op(WOp.Return);
+                e.Call(Rt.Free); e.Br(done);
                 e.End();
             }
+            EmitDestroyEpilogue(e);
         }
         // retain_contents: each constructed type's references counted (an object copied whole: MemberwiseClone)
         if (Rt.RetainContentsIfMade is { } rcf)

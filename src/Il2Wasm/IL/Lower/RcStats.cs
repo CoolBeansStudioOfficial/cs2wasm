@@ -338,7 +338,7 @@ public sealed class RcStats
         string first = cause.Split(" <- ")[0];
         if (owner is "generated" or "helper")
         {
-            if (f.Name is "rt.destroy" or "rt.destroy_now" || f.Name.StartsWith("destroy", StringComparison.Ordinal)) return ("destroy", "Destroy");
+            if (f.Name == "rt.destroy" || f.Name.StartsWith("destroy", StringComparison.Ordinal)) return ("destroy", "Destroy");
             return (owner == "helper" ? "struct" : "runtime", "untagged");
         }
         string role = first switch

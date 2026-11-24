@@ -53,8 +53,8 @@ public sealed partial class IlCompiler
     }
 
     /// <summary>In a destroy function (the object in local 0): the finalizer and the weak handles, before the object's
-    /// references are released. Returns from the function when the finalizer brought the object back.</summary>
-    void EmitFinalizeStep(Emitter e, TypeDesc x)
+    /// references are released. Leaves the case (done) when the finalizer brought the object back.</summary>
+    void EmitFinalizeStep(Emitter e, TypeDesc x, Label done)
     {
         var fin = FinalizerOf(x);
         if (fin == null)
@@ -73,7 +73,7 @@ public sealed partial class IlCompiler
         e.Get(0); e.Call(FunctionFor(fin));
         // (brought back: it lives on, and the temporary count goes like any other)
         e.Get(0); e.Load(WOp.I32Load); e.I32(1); e.Op(WOp.I32Ne);
-        e.If(); e.Get(0); e.Call(Rt.Release); e.Op(WOp.Return); e.End();
+        e.If(); e.Get(0); e.Call(Rt.Release); e.Br(done); e.End();
         e.Get(0); e.I32(0); e.Store(WOp.I32Store);
         e.End();
         e.End();

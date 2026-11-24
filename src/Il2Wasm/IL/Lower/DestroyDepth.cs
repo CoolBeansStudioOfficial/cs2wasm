@@ -20,22 +20,24 @@ namespace Il2Wasm.IL.Lower;
 //     next) holds null or an object of exactly that class there, so when this object's reference is the last, its
 //     destruction is this case again: a loop, not a call. That field is let go of last, after the memory is freed
 //     (any order C# allows). IL2WASM_NO_SEALED_TAIL=1: off (the queue alone).
+// The depth's prologue and epilogue are in rt.destroy itself, around its dispatch on the type (the old front end's
+// were a small rt.destroy around rt.destroy_now): a small rt.destroy is inlined by V8 into rt.release, which is then
+// too large for V8 to inline where it is called (measured: ListSort 13-22% slower, Linq 16-20%, Dictionary 12-17%;
+// the same with --no-wasm-inlining as without the queue). A queued object is taken from the list by a call of
+// rt.destroy itself at depth 0, which empties what is left of the list before it returns.
 public sealed partial class IlCompiler
 {
     const int MaxDestroyNesting = 48;
     static readonly bool s_noSealedTail = Environment.GetEnvironmentVariable("IL2WASM_NO_SEALED_TAIL") == "1";
     WasmGlobal? _destroyDepth, _destroyPending;
 
-    /// <summary>rt.destroy as the depth queue around rt.destroy_now (the dispatch on the type, returned for the
-    /// caller to write).</summary>
-    WasmFunction EmitDestroyQueue()
+    /// <summary>rt.destroy's start: an object too deep goes on the list (and the function returns); otherwise the
+    /// depth goes up and a block opens, which each type's case leaves (br) when it is done.</summary>
+    Label EmitDestroyPrologue(Emitter w)
     {
-        var now = Module.AddFunction("rt.destroy_now", new FuncType([ValType.I32], []));
         _destroyDepth = new WasmGlobal("rt.destroy.depth", ValType.I32, true, 0);
         _destroyPending = new WasmGlobal("rt.destroy.pending", ValType.I32, true, 0);
         Module.Globals.Add(_destroyDepth); Module.Globals.Add(_destroyPending);
-        var w = new Emitter(Rt.Destroy);
-        int q = w.AddLocal(ValType.I32);
         // (too deep: on the list, through its count word)
         w.GGet(_destroyDepth); w.I32(MaxDestroyNesting); w.Op(WOp.I32GeU);
         w.If();
@@ -44,22 +46,26 @@ public sealed partial class IlCompiler
         w.Op(WOp.Return);
         w.End();
         w.GGet(_destroyDepth); w.I32(1); w.Op(WOp.I32Add); w.GSet(_destroyDepth);
-        w.Get(0); w.Call(now);
-        w.GGet(_destroyDepth); w.I32(1); w.Op(WOp.I32Sub); w.GSet(_destroyDepth);
-        // (the outermost: what waits, one by one, each with its count word put back to 0)
-        w.GGet(_destroyDepth); w.Op(WOp.I32Eqz);
+        return w.Block();
+    }
+
+    /// <summary>rt.destroy's end: the block the cases leave closes, the depth goes down, and the outermost
+    /// destruction destroys what waits, one by one, each with its count word put back to 0.</summary>
+    void EmitDestroyEpilogue(Emitter w)
+    {
+        w.End();
+        int q = w.AddLocal(ValType.I32);
+        w.GGet(_destroyDepth!); w.I32(1); w.Op(WOp.I32Sub); w.GSet(_destroyDepth!);
+        w.GGet(_destroyDepth!); w.Op(WOp.I32Eqz);
         w.If();
         var exit = w.Block(); var top = w.Loop();
-        w.GGet(_destroyPending); w.Tee(q); w.Op(WOp.I32Eqz); w.BrIf(exit);
-        w.Get(q); w.Load(WOp.I32Load); w.GSet(_destroyPending);
+        w.GGet(_destroyPending!); w.Tee(q); w.Op(WOp.I32Eqz); w.BrIf(exit);
+        w.Get(q); w.Load(WOp.I32Load); w.GSet(_destroyPending!);
         w.Get(q); w.I32(0); w.Store(WOp.I32Store);
-        w.I32(1); w.GSet(_destroyDepth);
-        w.Get(q); w.Call(now);
-        w.I32(0); w.GSet(_destroyDepth);
+        w.Get(q); w.Call(Rt.Destroy);
         w.Br(top);
         w.End(); w.End();
         w.End();
-        return now;
     }
 
     /// <summary>The field a destruction of x loops on (the last instance field of x's own type), or null: x a sealed
@@ -76,12 +82,12 @@ public sealed partial class IlCompiler
         return tail;
     }
 
-    /// <summary>x's case of rt.destroy_now as a loop over its tail field (SealedTail).</summary>
-    void EmitSealedTailDestroy(Emitter e, TypeDesc x, FieldDesc tail)
+    /// <summary>x's case of rt.destroy as a loop over its tail field (SealedTail); it leaves by done.</summary>
+    void EmitSealedTailDestroy(Emitter e, TypeDesc x, FieldDesc tail, Label done)
     {
         int next = e.AddLocal(ValType.I32), c = e.AddLocal(ValType.I32);
         var top = e.Loop();
-        EmitFinalizeStep(e, x); // (no finalizer: the weak handles only)
+        EmitFinalizeStep(e, x, done); // (no finalizer: the weak handles only)
         for (TypeDesc? t = x; t != null; t = t.BaseType)
             foreach (var fd in t.GetFields())
             {
@@ -109,6 +115,6 @@ public sealed partial class IlCompiler
         e.End();
         e.End();
         e.End();
-        e.Op(WOp.Return);
+        e.Br(done);
     }
 }
