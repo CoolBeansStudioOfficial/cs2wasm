@@ -86,7 +86,12 @@ internal static unsafe class HeapWalk
             if (p == null) continue;
             var span = new ReadOnlySpan<byte>(p, len);
             if (id == BulkNodeEvent) nodes += Nodes(span, countByType);
-            else if (id == BulkTypeEvent) Types(span, names);
+            else if (id == BulkTypeEvent)
+            {
+                if (s_debug && names.Count == 0) Console.Error.WriteLine("il-live-oracle: BulkType " + len + " bytes: " + Convert.ToHexString(span[..Math.Min(len, 120)]));
+                Types(span, names);
+            }
+            if (s_debug && id == BulkNodeEvent && nodes <= 3000) Console.Error.WriteLine("il-live-oracle: BulkNode " + len + " bytes: " + Convert.ToHexString(span[..Math.Min(len, 80)]));
         }
         disable.Invoke(null, [session]);
         if (s_debug) Console.Error.WriteLine($"il-live-oracle: {events} events, {nodes} objects, {names.Count} types named");
