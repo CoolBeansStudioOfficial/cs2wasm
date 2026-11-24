@@ -614,7 +614,7 @@ sealed class Analyzer
     (KeySet Effects, bool Intrinsic) CallEffect(Node n)
     {
         if (n.Op == Opc.CallI || n.X is not MethodDesc m) return (KeySet.All, false);
-        if (n.Op == Opc.Call && _intrinsics.Contains(m)) return (ProgramSolution.IntrinsicEffects(m), true);
+        if (n.Op == Opc.Call && _intrinsics.Contains(m)) return (ProgramSolution.IntrinsicEffects(_ctx.Solution, m), true);
         return (_pb.CallEffects(n), false);
     }
 
@@ -843,97 +843,20 @@ sealed class ProgramBorrows
         return r;
     }
 
-    // ---- destroy effects (3.6): what a release of a value of a type can write
+    // ---- destroy effects (3.6): the solve's, per type (ProgramSolution.DestroyEffects)
 
-    bool? _marks;
-    HashSet<TypeDesc>? _finReach;
     readonly Dictionary<TypeDesc, KeySet> _destroy = new();
 
-    static MethodDesc? FinalizerOf(TypeDesc x) =>
-        x is DefType { IsValueType: false, IsInterface: false } && !x.IsArray && !x.IsString && !x.IsObject ? x.GetFinalizer() : null;
-
-    /// <summary>A release of a value of static type t: nothing when no constructed type below it (through its counted
-    /// fields and elements) has a finalizer and no weak mark can be set (ObjectMarks.SetAt not reached); else any key.
-    /// Freeing writes no live object's field.</summary>
+    /// <summary>A release of a value of static type t: the Mods of the finalizers and weak-mark hooks its destroy can
+    /// run (freeing writes no live object's field).</summary>
     public KeySet DestroyEffects(TypeDesc? t)
     {
-        if (_marks == null)
-        {
-            bool IsMarks(MethodDesc m, string name) => m.GetName() == name && m.OwningType is MetadataType mt && mt.GetName() == "ObjectMarks" && mt.GetNamespace() == "Il2Wasm.Runtime";
-            _marks = _s.Methods.Items.Any(m => IsMarks(m, "SetAt"));
-            _marksEffects = KeySet.Empty;
-            if (_marks == true)
-            {
-                // (every destroy then calls ObjectMarks.OnDestroy, a finalizable one OnFinalize too: Lower/Finalizers.cs;
-                // when the solve does not cover them, anything)
-                var hooks = _s.Methods.Items.Where(m => IsMarks(m, "OnDestroy") || IsMarks(m, "OnFinalize")).ToList();
-                _marksEffects = hooks.Count < 2 ? KeySet.All : hooks.Aggregate(KeySet.Empty, (e, m) => e.Join(Of(m), _s.Pool));
-            }
-            if (Borrows.Trace) Console.Error.WriteLine($"borrows: weak marks {(_marks == true ? "reached, each destroy writes " + _marksEffects : "not reached")}");
-        }
-        if (_finReach == null) ComputeFinReach();
-        if (_finReach!.Count == 0) return _marksEffects;
-        t ??= _s.Constructed.FirstOrDefault()?.Context.GetWellKnownType(WellKnownType.Object);
-        if (t == null) return KeySet.All;
+        if (t == null) return _s.DestroyEffects(null);
         if (_destroy.TryGetValue(t, out var r)) return r;
-        r = Reaches(t, []) ? KeySet.All : _marksEffects;
-        _destroy[t] = r;
-        return r;
+        return _destroy[t] = _s.DestroyEffects(t);
     }
 
-    KeySet _marksEffects;
-
-    bool Reaches(TypeDesc t, HashSet<TypeDesc> seen)
-    {
-        if (!seen.Add(t)) return false;
-        if (t.IsValueType)
-        {
-            if (t is not DefType dt || !Kinds.Counted(t)) return false;
-            foreach (var f in dt.GetFields()) if (!f.IsStatic && Kinds.Counted(f.FieldType) && Reaches(f.FieldType, seen)) return true;
-            return false;
-        }
-        foreach (var x in _finReach!) if (x.CanCastTo(t)) return true;
-        return false;
-    }
-
-    /// <summary>The constructed types whose destroy can run a finalizer: those with one, and those with a counted field
-    /// or element whose type admits one of them (to a fixed point).</summary>
-    void ComputeFinReach()
-    {
-        var set = new HashSet<TypeDesc>();
-        var all = _s.Constructed;
-        foreach (var x in all) if (FinalizerOf(x) != null) set.Add(x);
-        if (set.Count == 0) { _finReach = set; return; }
-        for (bool changed = true; changed;)
-        {
-            changed = false;
-            foreach (var x in all)
-            {
-                if (set.Contains(x)) continue;
-                if (ChildTypes(x).Any(c => ChildReaches(c, set, []))) { set.Add(x); changed = true; }
-            }
-        }
-        _finReach = set;
-        if (Borrows.Trace) Console.Error.WriteLine($"borrows: {set.Count} constructed types can reach a finalizer: {string.Join(", ", set.Where(x => FinalizerOf(x) != null).Take(20))}");
-    }
-
-    static IEnumerable<TypeDesc> ChildTypes(TypeDesc x)
-    {
-        if (x is ArrayType at) { yield return at.ElementType; yield break; }
-        for (var t = x as DefType; t != null; t = t.BaseType)
-            foreach (var f in t.GetFields()) if (!f.IsStatic && Kinds.Of(f.FieldType) is VK.Ref or VK.Struct) yield return f.FieldType;
-    }
-
-    static bool ChildReaches(TypeDesc c, HashSet<TypeDesc> set, HashSet<TypeDesc> seen)
-    {
-        if (!seen.Add(c)) return false;
-        if (c.IsValueType) return c is DefType dt && Kinds.Counted(c) && dt.GetFields().Any(f => !f.IsStatic && Kinds.Of(f.FieldType) is VK.Ref or VK.Struct && ChildReaches(f.FieldType, set, seen));
-        if (c.IsPointer || c.IsByRef || c.IsFunctionPointer) return false;
-        foreach (var x in set) if (x.CanCastTo(c)) return true;
-        return false;
-    }
-
-    // ---- calls: Mods ∪ ReleaseEffects of every target, with the static constructors they may start
+    // ---- calls: Mods ∪ ReleaseEffects of every target
 
     readonly Dictionary<MethodDesc, KeySet> _calls = new();
 
@@ -958,66 +881,11 @@ sealed class ProgramBorrows
         else
         {
             var f = _s.Facts(t);
+            // (the solve's Mods include the static constructors it may start)
             r = f.Mods.Join(f.ReleaseEffects, _s.Pool);
-            if (!r.Wild) r = r.Join(CctorClosure(t), _s.Pool);
         }
         _calls[t] = r;
         return r;
-    }
-
-    // the static constructors a method may start, with everything it calls (the solve's Mods leave them out)
-    KeySet[]? _cctorClosure;
-
-    KeySet CctorClosure(MethodDesc m)
-    {
-        if (_cctorClosure == null) SolveCctors();
-        int id = _s.MethodId(m);
-        return id < 0 ? KeySet.All : _cctorClosure![id];
-    }
-
-    IEnumerable<MethodDesc> Callees(MethodSummary su) => su.Calls.Concat(su.Slots.SelectMany(_s.Targets));
-
-    IEnumerable<MethodDesc> Started(MethodSummary su) => su.Initializes.Select(t => t.GetStaticConstructor()).Where(c => c != null)!;
-
-    /// <summary>CM(m) = ⋃ over cctors c m starts: Mods(c) ∪ RE(c) ∪ CM(c), ∪ CM(g) over its callees: a fixed point
-    /// (every set only grows).</summary>
-    void SolveCctors()
-    {
-        int n = _s.Methods.Count;
-        var cm = new KeySet[n];
-        var succ = new List<int>[n];
-        var direct = new KeySet[n];
-        var preds = new List<int>[n];
-        for (int i = 0; i < n; i++) preds[i] = [];
-        for (int i = 0; i < n; i++)
-        {
-            succ[i] = [];
-            direct[i] = KeySet.Empty;
-            var su = _s.Summary(_s.Methods[i]);
-            if (su == null) continue;
-            foreach (var c in Started(su))
-            {
-                int j = _s.MethodId(c);
-                if (j < 0) { direct[i] = KeySet.All; continue; }
-                var fc = _s.Facts(c);
-                direct[i] = direct[i].Join(fc.Mods, _s.Pool).Join(fc.ReleaseEffects, _s.Pool);
-                succ[i].Add(j);
-            }
-            foreach (var g in Callees(su)) { int j = _s.MethodId(g); if (j >= 0) succ[i].Add(j); }
-        }
-        for (int i = 0; i < n; i++) foreach (int j in succ[i]) preds[j].Add(i);
-        var work = new Queue<int>();
-        for (int i = 0; i < n; i++) { cm[i] = direct[i]; if (!cm[i].IsEmpty) work.Enqueue(i); }
-        while (work.Count > 0)
-        {
-            int j = work.Dequeue();
-            foreach (int i in preds[j])
-            {
-                var x = cm[i].Join(cm[j], _s.Pool);
-                if (x != cm[i]) { cm[i] = x; work.Enqueue(i); }
-            }
-        }
-        _cctorClosure = cm;
     }
 
     /// <summary>What a node of the method may start itself (Summary's Initializes rules): a static of another type, a
