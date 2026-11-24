@@ -95,7 +95,7 @@ public sealed class MethodSummary
     public readonly List<MethodDesc> Slots = [];
     /// <summary>Each virtual or interface call's slot with its receiver's static type (null: not a reference, or none),
     /// in node order: the targets are the slot's implementations over the constructed types the receiver admits.</summary>
-    public readonly List<(MethodDesc Slot, TypeDesc? Receiver)> SlotCalls = [];
+    public readonly List<(MethodDesc Slot, TypeDesc? Receiver, int NodeId)> SlotCalls = [];
     public readonly List<TypeDesc> Constructs = [];
     /// <summary>Types whose static constructor a use may start.</summary>
     public readonly List<TypeDesc> Initializes = [];
@@ -212,7 +212,7 @@ public sealed class MethodSummary
                             Calls.Add(m);
                             if (!m.IsStaticConstructor && (m.Signature.IsStatic || m.IsConstructor || m.OwningType.IsValueType) && m.OwningType is MetadataType { IsBeforeFieldInit: false } it) Initializes.Add(it);
                         }
-                        else { Slots.Add(m); SlotCalls.Add((m, n.A.Length > 0 && n.A[0].Kind == VK.Ref ? n.A[0].Type : null)); }
+                        else { Slots.Add(m); SlotCalls.Add((m, n.A.Length > 0 && n.A[0].Kind == VK.Ref ? n.A[0].Type : null, n.Id)); }
                         if (m.OwningType is MetadataType gc && gc.GetName() == "GC" && gc.GetNamespace() == "System" && m.GetName() == "KeepAlive") ObservesLifetime = true;
                         break;
                     case Opc.CallI:
@@ -234,7 +234,7 @@ public sealed class MethodSummary
                         Calls.Add(fm);
                         break;
                     case Opc.LdVirtFtn when n.X is MethodDesc vm:
-                        if (vm.IsVirtual && !vm.IsFinal) { Slots.Add(vm); SlotCalls.Add((vm, n.A.Length > 0 && n.A[0].Kind == VK.Ref ? n.A[0].Type : null)); } else Calls.Add(vm);
+                        if (vm.IsVirtual && !vm.IsFinal) { Slots.Add(vm); SlotCalls.Add((vm, n.A.Length > 0 && n.A[0].Kind == VK.Ref ? n.A[0].Type : null, -1)); } else Calls.Add(vm);
                         break;
                     case Opc.NewArr when n.Type is ArrayType at:
                         Constructs.Add(at); MayThrow = true;
