@@ -675,6 +675,14 @@ sealed class FunctionLowering
                 var et = (TypeDesc)n.X!;
                 int addr = Temp(ValType.I32);
                 Get(n.A[0]); Get(n.A[1]); E.Call(C.Rt.ElemAddr(Kinds.SizeOf(et))); E.Set(addr);
+                // a reference stored into an array whose element type it may not be (string[] as object[]): the
+                // covariance check (ArrayTypeMismatchException), unless the array's element type has no subtypes
+                // that an array of it could be, or the value is null
+                if (n.Ovf && n.A[2].Kind == VK.Ref && n.A[2].Op != Opc.LdNull
+                    && !(n.A[0].Type is ArrayType { ElementType: var se } && (se.IsValueType || se is MetadataType { IsSealed: true } && !se.IsInterface)))
+                {
+                    Get(n.A[0]); Get(n.A[2]); E.Call(C.FunctionFor(C.CoreMethod("Il2Wasm.Runtime", "Rt", "StoreCheck")));
+                }
                 StoreAt(addr, 0, n.A[2], et, (n.Moves & 4) != 0);
                 MovedOut(n);
                 return;
