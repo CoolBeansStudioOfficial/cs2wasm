@@ -13,7 +13,7 @@ namespace Il2Wasm.IL.Ir;
 /// arguments written inside a protected region or a finally, fault or filter are variables of their own (VarLd and
 /// VarSt): an exception can leave the region between any two instructions, so their value at the handler is the one
 /// last written, which no SSA value names. Every other variable keeps its try-entry value in the handlers.</summary>
-public sealed class Importer
+public sealed partial class Importer
 {
     readonly MethodDesc _method;
     readonly MethodIL _il;
@@ -230,6 +230,10 @@ public sealed class Importer
                 _body.Vars.Add(new Var { Kind = Kinds.Of(VarType(v)), Type = VarType(v) });
             }
         }
+        // il-runtime: what a filter uses is in the frame (the filter runs as a function of its own: FilterSlots.cs)
+        FilterSlots();
+        // il-runtime: a pinned local holds its object (Pinning.cs)
+        PinSlots();
     }
 
     // ---------------------------------------------------------------- the control flow graph
@@ -540,13 +544,15 @@ public sealed class Importer
 
     // ---------------------------------------------------------------- one block's instructions
 
-    sealed class BlockImporter
+    sealed partial class BlockImporter
     {
         readonly Importer I;
         readonly Block B;
         readonly List<Node> S;
         readonly TypeSystemContext Ctx;
         TypeDesc? _constrained;
+        /// <summary>readonly. before an ldelema: the address is not written through, so no exact-type check.</summary>
+        bool _readonly;
 
         public BlockImporter(Importer imp, Block b, List<Node> stack) { I = imp; B = b; S = stack; Ctx = imp._ctx; }
 
@@ -588,6 +594,7 @@ public sealed class Importer
         void StoreVar(int v, Node val)
         {
             val = Coerce(val, I.VarType(v));
+            Pin(v, val); // il-runtime: Pinning.cs
             if (I._slotOf.TryGetValue(v, out int slot)) { var n = Add(Opc.VarSt, VK.Void, StackType.None, null, val); n.I = slot; return; }
             I.Write(v, B, val);
         }
@@ -639,7 +646,8 @@ public sealed class Importer
             switch (op)
             {
                 case ILOpcode.nop: case ILOpcode.break_: return true;
-                case ILOpcode.volatile_: case ILOpcode.tail: case ILOpcode.readonly_: return true;
+                case ILOpcode.volatile_: case ILOpcode.tail: return true;
+                case ILOpcode.readonly_: _readonly = true; return true;
                 case ILOpcode.unaligned: rd.ReadILByte(); return true;
                 case ILOpcode.no: rd.ReadILByte(); return true;
                 case ILOpcode.constrained: _constrained = (TypeDesc)I._il.GetObject(rd.ReadILToken()); return true;
@@ -836,7 +844,12 @@ public sealed class Importer
                     var et = (TypeDesc)I._il.GetObject(rd.ReadILToken());
                     var idx = Pop(); var arr = Pop();
                     if (arr.Kind != VK.Ref || idx.SType is not (StackType.Int32 or StackType.NativeInt)) throw Invalid("ldelema");
-                    Push(Add(Opc.LdElemA, VK.Ptr, StackType.ByRef, et.MakeByRefType(), arr, idx).WithX(et));
+                    var ea = Add(Opc.LdElemA, VK.Ptr, StackType.ByRef, et.MakeByRefType(), arr, idx).WithX(et);
+                    // (an address of an element of a reference type: the array must be exactly an array of it,
+                    // ArrayTypeMismatchException otherwise, unless readonly. says it is only read; ECMA-335 III.4.10)
+                    ea.Ovf = !_readonly && !et.IsValueType && !(et is MetadataType { IsSealed: true } && !et.IsInterface) && !et.IsGenericParameter;
+                    _readonly = false;
+                    Push(ea);
                     return true;
                 }
                 case ILOpcode.ldelem: { var et = (TypeDesc)I._il.GetObject(rd.ReadILToken()); var idx = Pop(); var arr = Pop(); Push(LdElem(arr, idx, et)); return true; }
@@ -1024,6 +1037,14 @@ public sealed class Importer
                     var c = rt.IsVoid ? Add(Opc.CallI, VK.Void, StackType.None, null, args) : AddOfType(Opc.CallI, rt, args);
                     c.X = csig;
                     if (!rt.IsVoid) Push(c);
+                    return true;
+                }
+                case ILOpcode.initblk: case ILOpcode.cpblk:
+                {
+                    // (address, value or source, size): memory.fill and memory.copy
+                    var size = Pop(); var v = Pop(); var addr = Pop();
+                    if (addr.Kind != VK.Ptr || size.SType is not (StackType.Int32 or StackType.NativeInt)) throw Invalid(op.ToString());
+                    Add(op == ILOpcode.initblk ? Opc.InitBlk : Opc.CpBlk, VK.Void, StackType.None, null, addr, v, size);
                     return true;
                 }
                 case ILOpcode.localloc:

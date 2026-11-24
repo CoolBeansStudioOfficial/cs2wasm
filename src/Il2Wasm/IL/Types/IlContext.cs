@@ -49,6 +49,8 @@ public sealed class IlContext : MetadataTypeSystemContext
 
     /// <summary>The assemblies loaded so far.</summary>
     public IEnumerable<EcmaModule> Modules => _modules.Values;
+    /// <summary>The file an assembly was loaded from (by its simple name), or null.</summary>
+    public string? PathOf(string simpleName) => _paths.TryGetValue(simpleName, out var p) ? p : null;
 
     public void SetCoreLib(string simpleName = "System.Private.CoreLib") => SetSystemModule(Load(simpleName));
 

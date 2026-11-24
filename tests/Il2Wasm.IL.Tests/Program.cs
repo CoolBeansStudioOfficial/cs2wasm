@@ -19,7 +19,7 @@ if (args.Length == 4 && args[0] == "framework")
     ctx.AddAssemblies(refs.Append(dll));
     ctx.SetCoreLib();
     var entry = ctx.Load(Path.GetFileNameWithoutExtension(args[2])).EntryPoint!;
-    var comp = new Il2Wasm.IL.Lower.IlCompiler(ctx);
+    var comp = new Il2Wasm.IL.Lower.IlCompiler(ctx) { Checked = Environment.GetEnvironmentVariable("IL2WASM_IL_CHECKED") == "1" };
     if (File.Exists(Path.Combine(dir, "il2wasm.natives.txt"))) comp.LoadNatives(Path.Combine(dir, "il2wasm.natives.txt"));
     File.WriteAllBytes(args[3], comp.Compile(entry));
     foreach (var w in comp.Warnings.Distinct().OrderBy(w => w)) Console.Error.WriteLine("warning: " + w);

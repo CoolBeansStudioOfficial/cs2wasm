@@ -14,7 +14,7 @@ namespace Il2Wasm.IL.Lower;
 /// blocks, loops and ifs (Ramsey's "Beyond Relooper" over each region's graph, with a dispatch loop where a region's
 /// flow is irreducible), try regions as try_table, and every operation lowered with naive counting
 /// (Ir/Ownership.cs): each value in a local of its own, zero when it holds no count.</summary>
-sealed class FunctionLowering
+sealed partial class FunctionLowering
 {
     readonly IlCompiler C;
     readonly Body _body;
@@ -305,6 +305,8 @@ sealed class FunctionLowering
         var b = ((BNode)x).B;
         foreach (var n in b.Code)
         {
+            // il-runtime: each operation's file and line, from the PDB (DebugInfo.cs)
+            if (n.ILOffset >= 0) E.CurrentPos = C.PositionOf(_body.Method, n.ILOffset);
             if (n.IsTerminator) { EmitTerminator(x, b, n, ctx); return; }
             EmitOp(n);
         }
@@ -353,6 +355,8 @@ sealed class FunctionLowering
                 E.Op(WOp.Return);
                 return;
             case Opc.Throw:
+                // il-runtime: throw null is a NullReferenceException; the trace and the first pass (Filters.cs)
+                Get(n.A[0]); E.Call(C.Rt.NonNull); E.Call(C.ThrowHook);
                 Get(n.A[0]);
                 if ((n.Moves & 1) != 0) Clear(n.A[0]); else E.Call(C.Rt.Retain);
                 E.Emit(WOp.Throw, 0, 0, C.ExceptionTag);
@@ -360,6 +364,9 @@ sealed class FunctionLowering
             case Opc.Rethrow:
             {
                 var h = Enclosing(b.Region, RegionKind.Catch) ?? throw new InvalidProgramException("rethrow outside a catch");
+                // il-runtime: a rethrow's first pass (Filters.cs)
+                E.Get(_handlerLocals[h].obj); E.Call(C.FirstPass);
+                E.I32(0); E.Set(_handlerLocals[h].obj); // (its count goes on with the exception)
                 E.Get(_handlerLocals[h].exn); E.Op(WOp.ThrowRef);
                 return;
             }
@@ -458,6 +465,9 @@ sealed class FunctionLowering
         else
         {
             int obj = E.AddLocal(ValType.I32), exn = E.AddLocal(ValType.ExnRef);
+            // il-runtime: the try's record for the first pass (Filters.cs)
+            E.I32(0); E.Set(obj); // il-runtime: no exception held yet
+            int rec = EhEnter(tr);
             var done = E.Block();
             var caught = E.Block(new FuncType([], [ValType.I32, ValType.ExnRef]));
             E.TryTable(null, (1, C.ExceptionTag, caught));
@@ -467,11 +477,18 @@ sealed class FunctionLowering
             E.End();
             E.Set(exn); E.Set(obj);
             RestoreFrame();
-            foreach (var h in tr.Handlers)
+            // il-runtime: a try with a filter takes the first pass's decision (the clause, 1-based), and its record goes
+            int clause = EhCaught(tr, rec, obj);
+            for (int hi = 0; hi < tr.Handlers.Count; hi++)
             {
+                var h = tr.Handlers[hi];
                 _handlerLocals[h] = (obj, exn);
                 bool open = false;
-                if (h.Filter != null)
+                if (clause >= 0)
+                {
+                    E.Get(clause); E.I32(hi + 1); E.Op(WOp.I32Eq); E.If(); open = true;
+                }
+                else if (h.Filter != null)
                 {
                     // (one pass: the filter runs here, after the inner finally blocks have run)
                     _handlerLocals[h.Filter] = (obj, exn);
@@ -487,12 +504,29 @@ sealed class FunctionLowering
                 {
                     E.Get(obj); E.Call(C.IsInstFn(h.CatchType)); E.If(); open = true;
                 }
-                EmitLevel(new Level(h, h.Entry), (lv, done, exits));
+                // il-runtime: the catch took it: the exception's trace ends at this frame (DebugInfo.cs)
+                E.Get(obj); E.Call(C.OnCatchFn);
+                // il-runtime: an exception out of the handler lets the one in flight go (a rethrow hands it on)
+                {
+                    int hx = E.AddLocal(ValType.ExnRef);
+                    var hdone = E.Block();
+                    var hcaught = E.Block(ValType.ExnRef);
+                    E.TryTable(null, (3, null, hcaught));
+                    EmitLevel(new Level(h, h.Entry), (lv, done, exits));
+                    E.End();
+                    E.Br(hdone);
+                    E.End();
+                    E.Set(hx); E.Get(obj); E.Call(C.Rt.Release); E.I32(0); E.Set(obj); E.Get(hx); E.Op(WOp.ThrowRef);
+                    E.End();
+                }
                 if (open) E.End();
                 else break;
             }
             E.Get(exn); E.Op(WOp.ThrowRef);
             E.End();
+            EhLeave(rec);
+            // il-runtime: the handler left: the exception in flight goes
+            E.Get(obj); E.Call(C.Rt.Release); E.I32(0); E.Set(obj);
         }
         // where the leaves go
         if (exits.Count == 0) { E.Op(WOp.Unreachable); return; }
@@ -529,11 +563,16 @@ sealed class FunctionLowering
                 var h = _body.Regions.First(r => r.Entry == n.Block && (r.Kind is RegionKind.Catch or RegionKind.Filter) && _handlerLocals.ContainsKey(r));
                 E.Get(_handlerLocals[h].obj);
                 // (a filter's value is its own count: the exception in flight keeps one)
-                if (h.Kind == RegionKind.Filter) E.Call(C.Rt.Retain);
+                // (the value is a count of its own: the exception in flight keeps one, which the try's obj local holds
+                // until the handler leaves, rethrows or throws; il-runtime: a rethrow used the object after the handler
+                // let it go)
+                E.Call(C.Rt.Retain);
                 Set(n);
                 return;
             }
             case Opc.LocA: VarAddr((int)n.I); Set(n); return;
+            case Opc.InitBlk: Get(n.A[0]); Get(n.A[1]); Get(n.A[2]); E.Emit(WOp.MemoryFill); return;
+            case Opc.CpBlk: Get(n.A[0]); Get(n.A[1]); Get(n.A[2]); E.Emit(WOp.MemoryCopy); return;
             case Opc.LocAlloc:
             {
                 // below the frame on the shadow stack, zeroed (C# sets localsinit); given back with the frame
@@ -580,6 +619,8 @@ sealed class FunctionLowering
             case Opc.LdVirtFtn:
             {
                 var vm = (MethodDesc)n.X!;
+                // (ldvirtftn on null: NullReferenceException)
+                Get(n.A[0]); E.Call(C.Rt.NonNull); E.Op(WOp.Drop);
                 E.I32Fn(C.Module, vm.IsVirtual && !vm.IsFinal ? C.DispatchFor(vm) : C.FunctionFor(vm)); Set(n);
                 return;
             }
@@ -669,6 +710,14 @@ sealed class FunctionLowering
                 return;
             }
             case Opc.LdElemA:
+                if (n.Ovf)
+                {
+                    // (the exact-type check of ldelema of a reference type: string[] seen as object[] has no object&)
+                    var at = ((TypeDesc)n.X!).MakeArrayType();
+                    C.TypeId(at);
+                    Get(n.A[0]); E.Call(C.Rt.NonNull); E.Load(WOp.I32Load, 4); E.Tid(C.TypeId(at)); E.Op(WOp.I32Ne);
+                    E.If(); E.Call(C.FunctionFor(C.CoreMethod("System", "ThrowHelper", "ThrowArrayTypeMismatchException"))); E.End();
+                }
                 Get(n.A[0]); Get(n.A[1]); E.Call(C.Rt.ElemAddr(Kinds.SizeOf((TypeDesc)n.X!))); Set(n);
                 return;
             case Opc.StElem:
@@ -779,10 +828,49 @@ sealed class FunctionLowering
                 MovedOut(n);
                 return;
             }
+            // (a cast to Nullable<T> is one to T: a Nullable's box is its value's)
             case Opc.CastClass:
-                Get(n.A[0]); E.Call(C.CastFn((TypeDesc)n.X!)); E.Call(C.Rt.Retain); Set(n); return;
+                Get(n.A[0]); E.Call(C.CastFn(NonNullable((TypeDesc)n.X!))); E.Call(C.Rt.Retain); Set(n); return;
             case Opc.IsInst:
-                Get(n.A[0]); E.Call(C.IsInstFn((TypeDesc)n.X!)); E.Call(C.Rt.Retain); Set(n); return;
+                Get(n.A[0]); E.Call(C.IsInstFn(NonNullable((TypeDesc)n.X!))); E.Call(C.Rt.Retain); Set(n); return;
+            case Opc.Box when ((TypeDesc)n.X!).IsNullable:
+            {
+                // a Nullable<T> boxes as its value (a T's box), or as null when it has none (ECMA-335 III.4.1)
+                var t = (TypeDesc)n.X!;
+                var vt = t.Instantiation[0];
+                C.Constructed(vt);
+                var (hv, vf) = NullableFields(t);
+                int es = IlCompiler.SizeOfAny(vt);
+                Get(n.A[0]); E.Load(WOp.I32Load8U, hv);
+                E.If();
+                E.I32(IlContext.ObjectHeader + Math.Max(4, es)); E.Tid(C.TypeId(vt)); E.Call(C.Rt.AllocObject); Set(n);
+                Get(n); E.I32(IlContext.ObjectHeader); E.Op(WOp.I32Add); Get(n.A[0]); if (vf != 0) { E.I32(vf); E.Op(WOp.I32Add); } E.I32(es); E.Emit(WOp.MemoryCopy);
+                if (Kinds.Counted(vt) && (n.Moves & 1) == 0) { Get(n); E.I32(IlContext.ObjectHeader); E.Op(WOp.I32Add); StructCounts(vt, true); }
+                E.Else();
+                E.I32(0); Set(n);
+                E.End();
+                if ((n.Moves & 1) != 0 && Kinds.Counted(t)) Clear(n.A[0]);
+                return;
+            }
+            case Opc.UnboxAny when ((TypeDesc)n.X!).IsNullable:
+            {
+                // to a Nullable<T>: none from null, else the T's box's value (InvalidCastException for any other)
+                var t = (TypeDesc)n.X!;
+                var vt = t.Instantiation[0];
+                var (hv, vf) = NullableFields(t);
+                int es = IlCompiler.SizeOfAny(vt);
+                int o = E.AddLocal(ValType.I32);
+                Get(n.A[0]); E.Set(o);
+                Get(n); E.I32(0); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryFill);
+                E.Get(o);
+                E.If();
+                E.Get(o); E.Call(C.UnboxFn(vt)); E.Op(WOp.Drop);
+                Get(n); if (vf != 0) { E.I32(vf); E.Op(WOp.I32Add); } E.Get(o); E.I32(IlContext.ObjectHeader); E.Op(WOp.I32Add); E.I32(es); E.Emit(WOp.MemoryCopy);
+                Get(n); E.I32(1); E.Store(WOp.I32Store8, hv);
+                if (Kinds.Counted(vt)) { Get(n); if (vf != 0) { E.I32(vf); E.Op(WOp.I32Add); } StructCounts(vt, true); }
+                E.End();
+                return;
+            }
             case Opc.Box:
             {
                 var t = (TypeDesc)n.X!;
@@ -811,6 +899,15 @@ sealed class FunctionLowering
             }
         }
         throw new NotSupportedException($"{_body.Method}: IR {n.Op} is not lowered yet");
+    }
+
+    static TypeDesc NonNullable(TypeDesc t) => t.IsNullable ? t.Instantiation[0] : t;
+
+    /// <summary>A Nullable&lt;T&gt;'s hasValue and value offsets.</summary>
+    static (int hasValue, int value) NullableFields(TypeDesc t)
+    {
+        var fs = t.GetFields().Where(f => !f.IsStatic).ToList();
+        return (IlContext.FieldOffset(fs.First(f => f.GetName() == "hasValue")), IlContext.FieldOffset(fs.First(f => f.GetName() == "value")));
     }
 
     void ZeroOf(TypeDesc t)
@@ -1059,7 +1156,13 @@ sealed class FunctionLowering
         }
         if (t.IsDelegate && ctor.Signature.Length == 2 && n.A[1].Op is Opc.LdFtn or Opc.LdVirtFtn)
         {
-            // a delegate: its target and the function it calls with it
+            // a delegate: its target and the function it calls with it (an instance method's target must not be
+            // null: ArgumentException, as the CLR's delegate constructor throws; ldvirtftn already threw for it)
+            var fm0 = (MethodDesc)n.A[1].X!;
+            if (!fm0.Signature.IsStatic && n.A[0].Kind == VK.Ref && n.A[1].Op == Opc.LdFtn)
+            {
+                Get(n.A[0]); E.Op(WOp.I32Eqz); E.If(); E.Call(C.DelegateNullThis()); E.End();
+            }
             C.Constructed(t);
             E.I32(IlContext.InstanceSize(t)); E.Tid(C.TypeId(t)); E.Call(C.Rt.AllocObject);
             Set(n);

@@ -33,15 +33,44 @@ public static class Ownership
     /// object an operand address points into): field and element addresses, a box's data, address arithmetic and
     /// conversion, and a call's returned byref (a span's, an array's data reference, an accessor's). A pointer loaded
     /// from memory points into nothing known here.</summary>
-    static bool Derives(Node n) => n.Kind == VK.Ptr && n.Op is Opc.LdFldA or Opc.LdElemA or Opc.Unbox or Opc.Bin or Opc.Conv or Opc.Call or Opc.CallI;
+    static bool Derives(Node n) => n.Kind == VK.Ptr && n.Op is Opc.LdFldA or Opc.LdElemA or Opc.Unbox or Opc.Bin or Opc.Conv or Opc.Call or Opc.CallI
+        || ByRefLike(n) && n.Op is Opc.Call or Opc.CallI or Opc.NewObj or Opc.LdObj
+        || n.Kind == VK.I32 && n.Op == Opc.Call && IsAddressOf(n);
+
+    /// <summary>A value of a byref-like struct (a Span: it holds an address into an object, so it keeps it as one).</summary>
+    static bool ByRefLike(Node n) => n.Kind == VK.Struct && n.Type is Internal.TypeSystem.DefType { IsByRefLike: true };
+
+    /// <summary>il-runtime: the runtime's own addresses of an object as an int (Rt.AddressOf, ArrayData, StringData):
+    /// the runtime's C# was written for the operation-tree front end, which kept a local to the end of its scope, so
+    /// `Engine.Write(Rt.ArrayData(text), n)` relied on text living on; an int derived from them keeps the object as an
+    /// address does (the int itself: arithmetic on it is not followed).</summary>
+    static bool IsAddressOf(Node n) => n.X is Internal.TypeSystem.MethodDesc m && m.OwningType is Internal.TypeSystem.MetadataType t
+        && t.GetName() == "Rt" && t.GetNamespace() == "Il2Wasm.Runtime" && m.GetName() is "AddressOf" or "ArrayData" or "StringData";
+
+    /// <summary>il-runtime: the reference an address points into, as Derives follows it (a pinned local keeps it:
+    /// Importer's Pinning.cs), or null.</summary>
+    public static Node? RootOf(Node n)
+    {
+        if (n.Kind == VK.Ref) return n.Op is Opc.LdNull or Opc.LdStr ? null : n;
+        if (!Derives(n)) return null;
+        foreach (var a in n.A) if (RootOf(a) is { } r) return r;
+        return null;
+    }
 
     /// <summary>The bases of each derived address, in definition order (an address of an address has its bases).
     /// Phis are not followed: an address carried around a loop does not keep its object.</summary>
     static void FindBases(Body body, Info info)
     {
+        var varBases = new Dictionary<int, List<Node>>();
         foreach (var b in body.Blocks)
+        {
+            varBases.Clear();
             foreach (var n in b.Code)
             {
+                // (a variable of an address or a span: what was stored into it earlier in the block, its address
+                // or value read later in the same block keeps)
+                if (n.Op == Opc.VarSt && n.A.Length > 0 && info.Bases.TryGetValue(n.A[0], out var sb)) { varBases[(int)n.I] = sb; continue; }
+                if (n.Op is Opc.LocA or Opc.VarLd && varBases.TryGetValue((int)n.I, out var vb)) { info.Bases[n] = vb; continue; }
                 if (!Derives(n)) continue;
                 List<Node>? l = null;
                 foreach (var a in n.A)
@@ -51,6 +80,7 @@ public static class Ownership
                 }
                 if (l != null) info.Bases[n] = l.Distinct().ToList();
             }
+        }
     }
 
     /// <summary>The counted values a use of operand a keeps alive: a itself, or the bases of an address.</summary>
@@ -228,7 +258,9 @@ public static class Ownership
                     foreach (var v in bases)
                     {
                         if (!seen.Add(v)) continue;
-                        if (!live.Contains(v)) after.Add(Count(Opc.Release, v, b, body));
+                        // (a terminator's: before it, as nothing runs after it here; the address it returns or
+                        // branches with points into an object its caller or successor keeps)
+                        if (!live.Contains(v)) (n.IsTerminator ? before : after).Add(Count(Opc.Release, v, b, body));
                         live.Add(v);
                     }
                 }

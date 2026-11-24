@@ -1,4 +1,5 @@
-// The argument throw helpers (CallerArgumentExpression names), their messages; array covariance store checks.
+// The argument throw helpers (CallerArgumentExpression names), their messages; array covariance store checks and
+// ldelema's exact-type check (readonly. exempt).
 using System;
 
 static class Program
@@ -29,5 +30,9 @@ static class Program
         Exception[] ex = new ArgumentException[1];
         Show(() => ex[0] = new ArgumentNullException("p"));
         Show(() => ex[0] = new InvalidOperationException());
+        Show(() => { ref object r = ref objs[0]; r = "x"; });
+        Show(() => { ref object r = ref exact[0]; r = "x"; });
+        Show(() => Console.WriteLine(Read(objs)));
     }
+    static string Read<T>(T[] a) { ref readonly T r = ref a[0]; return r?.ToString() ?? "null"; }
 }

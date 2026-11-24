@@ -10,6 +10,12 @@ static class Program
 {
     static ref int First(int[] a) => ref a[0];
     static ref int FieldOf(Holder h) => ref h.V;
+    // (a function that returns an address into an object it was given: the object is not kept by the address after
+    // the return, here nor in .NET: the weak reference finds it dead once nothing holds it)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static unsafe nint AddressOf(byte[] b) => (nint)System.Runtime.CompilerServices.Unsafe.AsPointer(ref MemoryMarshal.GetArrayDataReference(b));
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static WeakReference<byte[]> Weak() { var b = new byte[3]; var a = AddressOf(b); var h = GCHandle.Alloc(b, GCHandleType.Pinned); var p = h.AddrOfPinnedObject(); h.Free(); return new WeakReference<byte[]>(b); }
 
     static void Main()
     {
@@ -42,5 +48,8 @@ static class Program
         arr = null;
         var junk6 = new P[1];
         Console.WriteLine(rp.X + rp.S + junk6.Length);
+        var w = Weak();
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        Console.WriteLine(w.TryGetTarget(out _));
     }
 }

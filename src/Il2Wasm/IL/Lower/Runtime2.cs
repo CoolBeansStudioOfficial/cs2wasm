@@ -469,7 +469,8 @@ public sealed partial class IlCompiler
     static int Flags2(TypeDesc t)
     {
         int f = 0;
-        bool counted = t switch
+        // (an open type, typeof(KeyValuePair<,>) or a signature variable's array: no layout, nothing counted)
+        bool counted = t.ContainsSignatureVariables(treatGenericParameterLikeSignatureVariable: true) ? false : t switch
         {
             ArrayType a => Kinds.Counted(a.ElementType),
             MetadataType { IsValueType: false } c => ((DefType)c).ContainsGCPointers,
@@ -519,7 +520,7 @@ public sealed partial class IlCompiler
                 "element" => t => (null, IdOr((t as ParameterizedType)?.ParameterType)),
                 "rank" => t => (null, t is ArrayType a ? a.Rank : 0),
                 "cor" => t => (null, CorElementType(t)),
-                "size" => t => (null, t is DefType dt && !t.IsInterface ? (t.IsValueType ? SizeOfAny(t) : IlContext.InstanceSize(dt)) : 0),
+                "size" => t => (null, t is DefType dt && !t.IsInterface && !t.ContainsSignatureVariables(treatGenericParameterLikeSignatureVariable: true) ? (t.IsValueType ? SizeOfAny(t) : IlContext.InstanceSize(dt)) : 0),
                 "box_offset" => t => (null, t.IsValueType ? IlContext.ObjectHeader : 0),
                 "interfaces" => t => (Ids(t.RuntimeInterfaces), 0),
                 "generic_args" => t => (Ids(Enumerable.Range(0, t.Instantiation.Length).Select(i => t.Instantiation[i])), 0),
@@ -746,6 +747,23 @@ public sealed partial class IlCompiler
             if (p == 0 && !m.Signature.IsStatic) { e.I32(IlContext.ObjectHeader); e.Op(WOp.I32Add); }
         }
         e.Call(FunctionFor(m));
+        return f;
+    }
+
+    WasmFunction? _delegateNullThis;
+    /// <summary>Throws what the CLR's delegate constructor throws for an instance method with a null target.</summary>
+    internal WasmFunction DelegateNullThis()
+    {
+        if (_delegateNullThis != null) return _delegateNullThis;
+        var f = _delegateNullThis = Module.AddFunction("rt.delegate_null_this", new FuncType([], []));
+        var at = (DefType)_ctx.SystemModule.GetType("System"u8, "ArgumentException"u8);
+        var ctor = at.GetMethods().First(x => x.IsConstructor && x.Signature.Length == 1 && x.Signature[0].IsString);
+        Constructed(at);
+        var e = new Emitter(f);
+        int o = e.AddLocal(ValType.I32);
+        e.I32(IlContext.InstanceSize(at)); e.Tid(TypeId(at)); e.Call(Rt.AllocObject); e.Set(o);
+        e.Get(o); e.I32Addr(StringLiteral("Delegate to an instance method cannot have null 'this'.")); e.Call(FunctionFor(ctor));
+        e.Get(o); e.Emit(WOp.Throw, 0, 0, ExceptionTag);
         return f;
     }
 

@@ -83,15 +83,20 @@ public sealed partial class IlCompiler
         e.I32Addr(flag); e.Load(WOp.I32Load); e.Op(WOp.I32Eqz);
         e.If();
         e.I32Addr(flag); e.I32(-1); e.Store(WOp.I32Store);
+        // (a boundary for the first pass: what the initializer throws is the runtime's to wrap, Filters.cs)
+        int rec = e.AddLocal(ValType.I32);
+        e.I32(0); e.I32(0); e.Call(EhPush); e.Set(rec);
         var caught = e.Block(ValType.I32);
         e.TryTable(null, (0, ExceptionTag, caught));
         e.Call(FunctionFor(cctor));
         e.End();
+        e.Get(rec); e.Call(EhPop);
         e.Op(WOp.Return);
         e.End();
         // (the inner exception on the stack, owned: wrapped and thrown)
         int inner = e.AddLocal(ValType.I32);
         e.Set(inner);
+        e.Get(rec); e.Call(EhPop);
         e.I32Addr(flag); e.I32Addr(saved); e.I32Addr(StringLiteral(InitName(t))); e.Get(inner);
         e.Call(_cctorFailed);
         e.Op(WOp.Unreachable);
@@ -101,5 +106,11 @@ public sealed partial class IlCompiler
     }
 
     /// <summary>Throws the exception object on the stack (it holds the count the exception in flight keeps).</summary>
-    internal void EmitThrow(Emitter e) => e.Emit(WOp.Throw, 0, 0, ExceptionTag);
+    internal void EmitThrow(Emitter e)
+    {
+        // (the first pass of the throw: Filters.cs)
+        int x = e.AddLocal(ValType.I32);
+        e.Tee(x); e.Call(ThrowHook);
+        e.Get(x); e.Emit(WOp.Throw, 0, 0, ExceptionTag);
+    }
 }

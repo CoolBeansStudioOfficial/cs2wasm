@@ -17,7 +17,7 @@ public enum Opc : byte
     // values
     Const, Arg, Phi, Bin, Un, Cmp, Conv, LdNull, LdStr, LdToken, Call, NewObj, NewArr, LdLen, LdElem, StElem, LdElemA,
     LdFld, StFld, LdFldA, LdSFld, StSFld, LdSFldA, LdInd, StInd, CastClass, IsInst, Box, UnboxAny, VarLd, VarSt,
-    CatchVal, Intrinsic, CheckFinite, Retain, Release, LocA, LdObj, InitObj, Unbox, SizeOf, LocAlloc, TypeOf, InitArray, CreateSpan, LdFtn, LdVirtFtn, CallI,
+    CatchVal, Intrinsic, CheckFinite, Retain, Release, LocA, LdObj, InitObj, Unbox, SizeOf, LocAlloc, TypeOf, InitArray, CreateSpan, LdFtn, LdVirtFtn, CallI, InitBlk, CpBlk,
     // terminators
     Br, BrIf, Switch, Ret, Throw, Rethrow, Leave, EndFinally, EndFilter, Unreachable,
 }
@@ -124,6 +124,9 @@ public sealed class Body
     public readonly List<Var> Vars = [];
     /// <summary>The method allocates on the shadow stack (localloc): it has a frame.</summary>
     public bool UsesLocAlloc;
+    /// <summary>il-runtime: a filter reads a struct argument (the caller's copy, which a filter's own function cannot
+    /// reach): the method's filters run where their handler is reached, after the inner finally blocks (one pass).</summary>
+    public bool FiltersOnePass;
     int _nextId;
     public int NextId() => _nextId++;
     public int ValueCount => _nextId;
