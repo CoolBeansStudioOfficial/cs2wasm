@@ -4,9 +4,7 @@
 //   node tools/s1-bars.mjs <keep dir>... [--top N] [--md]
 // Each keep dir holds <name>.naive.wasm.{sites.tsv,run.json} and <name>.plan.wasm.{sites.tsv,run.json} (built with
 // --live). --oracles <dir>...: directories of tools/il-live-oracle results, <program>.json, for the live comparison.
-// Lower/RcStats.cs gives a specialization variant (a function named "<method>|ownN", or "shared <method>|ownN") no
-// method, so it reports it as "generated", and il-rcstats leaves "generated" out of "without the runtime". Here a
-// variant's sites are given the owner of the method its name names, by the same rules as RcStats.OwnerOf.
+// (needs a build whose Lower/RcStats.cs gives specialization variants their method's owner: from claude/s1-bars 2026-11-24)
 import { readdirSync, existsSync, readFileSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { analyze, live } from './il-rcstats.mjs';
@@ -17,26 +15,12 @@ const top = +opt('--top', 10);
 const oracleDirs = []; { const i = args.indexOf('--oracles'); if (i >= 0) for (let j = i + 1; j < args.length && !args[j].startsWith('--'); j++) oracleDirs.push(args[j]); }
 const dirs = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--top' && !oracleDirs.includes(a));
 
-export function variantOwner(fn) {
-  const m = /^(?:shared )?\[([^\]]+)\]([^(|]*).*\|own\d+/.exec(fn);
-  if (!m) return null;
-  const asm = m[1], name = m[2];
-  if (name.startsWith('Il2Wasm.Runtime')) return 'runtime';
-  const lib = asm === 'S.P.CoreLib' || asm === 'System.Private.CoreLib' || asm === 'netstandard' || asm === 'mscorlib' || asm.startsWith('System.') || asm.startsWith('Microsoft.');
-  if (!lib) return 'program';
-  return name.startsWith('System.Collections') ? 'containers' : 'library';
-}
-
 const isRuntime = (r) => r.owner === 'runtime' || r.owner === 'generated' && r.role !== 'destroy';
 function load(dir, kind) {
   const f = readdirSync(dir).find((x) => x.endsWith(`.${kind}.wasm.sites.tsv`));
   if (!f) return null;
   const base = join(dir, f.slice(0, -'.sites.tsv'.length));
-  const a = analyze(base + '.sites.tsv', base + '.run.json');
-  let moved = 0;
-  for (const r of a.rows) if (r.owner === 'generated') { const o = variantOwner(r.fn); if (o) { r.owner = o; moved += r.ops; } }
-  a.moved = moved;
-  return a;
+  return analyze(base + '.sites.tsv', base + '.run.json');
 }
 const sum = (rows, f = (r) => r.ops) => rows.reduce((x, r) => x + f(r), 0);
 const by = (rows, key) => { const m = new Map(); for (const r of rows) m.set(key(r), (m.get(key(r)) ?? 0) + r.ops); return m; };
@@ -60,7 +44,7 @@ for (const d of dirs) {
     name, naive: sum(n.rows), plan: sum(p.rows),
     naiveNoRt: sum(n.rows.filter((r) => !isRuntime(r))), planNoRt: sum(p.rows.filter((r) => !isRuntime(r))),
     owners: Object.fromEntries(owners.map((o) => [o, { naive: nO.get(o) ?? 0, plan: pO.get(o) ?? 0 }])),
-    moved: p.moved, plan_rows: p.rows, res,
+    plan_rows: p.rows, res,
   });
 }
 
@@ -75,7 +59,6 @@ for (const r of results) {
 const T = (f) => results.reduce((x, r) => x + f(r), 0);
 console.log(`\nsummed over the ${results.length} programs: ${share(T((r) => r.plan), T((r) => r.naive)).toFixed(1)}% removed (${fmt(T((r) => r.plan))} of ${fmt(T((r) => r.naive))}); without the runtime ${share(T((r) => r.planNoRt), T((r) => r.naiveNoRt)).toFixed(1)}%`);
 console.log(`mean of the per-program shares: ${(T((r) => share(r.plan, r.naive)) / results.length).toFixed(1)}%; without the runtime ${(T((r) => share(r.planNoRt, r.naiveNoRt)) / results.length).toFixed(1)}%; programs at 90% or more: ${results.filter((r) => share(r.plan, r.naive) >= 90).length} of ${results.length}`);
-console.log(`(variant sites moved from "generated" to their method's owner: ${results.map((r) => `${r.name} ${fmt(r.moved)}`).join(', ')})`);
 
 // what remains in the planned builds: by category (each program weighted by its naive count, so each program's
 // remaining share sums to its 100 - removed), and the top sites
@@ -96,11 +79,12 @@ for (const r of results) {
 }
 
 console.log('\nlive objects at exit (program types against .NET):');
-console.log('| program | naive live | naive program types differing | planned live | planned program types differing | differences |');
-console.log('|---|---|---|---|---|---|');
+console.log('| program | .NET live (all types) | naive live | naive program types differing | planned live | planned program types differing | planned against naive, per type | differences |');
+console.log('|---|---|---|---|---|---|---|---|');
 for (const r of results) {
   const L = r.res, nl = L?.naive?.live, pl = L?.plan?.live;
   const d = (l) => l?.diff ? (l.equal ? `equal (${l.programTypes} types)` : `${l.programDiff} of ${l.programTypes}`) : 'no oracle';
   const list = (l) => (l?.diff ?? []).filter((x) => x.program).map((x) => `${x.type} ${x.il2wasm} vs ${x.dotnet}`).join('; ');
-  console.log(`| ${r.name} | ${nl?.total ?? '-'} | ${d(nl)} | ${pl?.total ?? '-'} | ${d(pl)} | ${[list(nl) && 'naive: ' + list(nl), list(pl) && 'planned: ' + list(pl)].filter(Boolean).join(' / ')} |`);
+    const pd = nl && pl ? Object.keys({ ...nl.types, ...pl.types }).filter((k) => (nl.types[k] ?? 0) !== (pl.types[k] ?? 0)).map((k) => `${k} ${pl.types[k] ?? 0} vs ${nl.types[k] ?? 0}`) : null;
+  console.log(`| ${r.name} | ${nl?.dotnetTotal ?? '-'} | ${nl?.total ?? '-'} | ${d(nl)} | ${pl?.total ?? '-'} | ${d(pl)} | ${pd == null ? '-' : pd.length ? pd.slice(0, 6).join('; ') : 'equal'} | ${[list(nl) && 'naive: ' + list(nl), list(pl) && 'planned: ' + list(pl)].filter(Boolean).join(' / ')} |`);
 }
