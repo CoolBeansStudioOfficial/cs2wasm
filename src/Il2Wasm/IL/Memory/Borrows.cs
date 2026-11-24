@@ -778,6 +778,7 @@ sealed class AliasSet(IdSet ids, bool any, Func<MemKey, bool> contains)
 /// keys, destroy effects per type, the static constructors a call may start, FilterMods.</summary>
 sealed class ProgramBorrows
 {
+    static readonly bool s_noEmptyTargets = Environment.GetEnvironmentVariable("IL2WASM_NO_EMPTY_TARGETS") == "1";
     static readonly ConditionalWeakTable<ProgramSolution, ProgramBorrows> s_of = new();
     public static ProgramBorrows Of(ProgramSolution s) { lock (s_of) return s_of.GetValue(s, x => new ProgramBorrows(x)); }
 
@@ -948,9 +949,12 @@ sealed class ProgramBorrows
     public KeySet CallEffects(Node call, bool full = true, MethodDesc? caller = null)
     {
         // (a virtual call's targets over its receiver's type set, when the type sets know it)
-        var targets = (caller != null && call.Op == Opc.Call && (CallKind)call.Sub != CallKind.Direct ? _s.CallTargetsOf(caller, call.Id) : null) ?? _s.CallTargets(call);
-        // (no target known: a call the solve cannot see through)
-        if (targets.Count == 0) return KeySet.All;
+        var typed = caller != null && call.Op == Opc.Call && (CallKind)call.Sub != CallKind.Direct ? _s.CallTargetsOf(caller, call.Id) : null;
+        var targets = typed ?? _s.CallTargets(call);
+        // (no target: over the type sets, a receiver that can only be null, `_comparer` of a HashSet<long> made with
+        // the default comparer: the call can only throw, it writes nothing. IL2WASM_NO_EMPTY_TARGETS=1: Wild. Else a
+        // call the solve cannot see through)
+        if (targets.Count == 0) return typed != null && !s_noEmptyTargets && call.X is MethodDesc { OwningType.IsDelegate: false } ? KeySet.Empty : KeySet.All;
         var e = KeySet.Empty;
         foreach (var t in targets)
         {

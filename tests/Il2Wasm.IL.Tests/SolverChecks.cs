@@ -96,6 +96,20 @@ static class SolverChecks
         class P { static void Main() { System.Console.WriteLine(Log.Shared.IsEnabled()); } }
         """;
 
+    // (Box.C holds only what an empty array's element holds: its receiver set is empty; the borrow of b.S is held
+    // across the call on it)
+    const string NullReceiver = """
+        using System.Collections.Generic;
+        using System.Runtime.CompilerServices;
+        sealed class Box { public string S = "x"; public IComparer<int> C; }
+        static class P
+        {
+            static readonly IComparer<int>[] s_none = new IComparer<int>[1];
+            [MethodImpl(MethodImplOptions.NoInlining)] static int F(Box b) { var s = b.S; int r = b.C != null ? b.C.Compare(1, 2) : 0; int n = s.Length + r; System.GC.KeepAlive(b); return n; }
+            static void Main() { System.Console.WriteLine(F(new Box { C = s_none[0] })); }
+        }
+        """;
+
     static void MetadataTypeOf(ProgramSolution sol, string name, out Internal.TypeSystem.TypeDesc? t) =>
         t = sol.Methods.Items.Select(m => m.OwningType).FirstOrDefault(x => x is Internal.TypeSystem.MetadataType mt && mt.GetName() == name)
             ?? sol.Constructed.FirstOrDefault(x => x is Internal.TypeSystem.MetadataType mt && mt.GetName() == name);
@@ -190,6 +204,21 @@ static class SolverChecks
             var sol = SecondSolve(dir, "solver_stubs", Stubs);
             var ie = sol.Methods.Items.FirstOrDefault(m => m.GetName() == "IsEnabled" && m.Signature.Length == 0 && m.OwningType is Internal.TypeSystem.MetadataType et && et.GetName() == "EventSource");
             c.True("solver: EventSource.IsEnabled(), an ILLink stub, is in the solution with no effects (" + (ie == null ? "not reached: " + string.Join(", ", sol.Methods.Items.Where(m => m.ToString()!.Contains("EventSource") || m.ToString()!.Contains("SharedArrayPool")).Select(m => m.ToString()).Take(6)) : "covered " + sol.Covers(ie) + ", Mods " + sol.Facts(ie).Mods) + ")", ie != null && sol.Covers(ie) && !sol.Facts(ie).Mods.Wild && sol.Facts(ie).Mods.IsEmpty);
+        }
+        {
+            // a virtual call whose receiver set is empty (only null reaches it) can only throw: no effects on a borrow
+            // (Borrows.CallEffects; IL2WASM_NO_EMPTY_TARGETS=1: Wild, and b.S flips)
+            var sol = SecondSolve(dir, "borrows_null_receiver", NullReceiver);
+            var fm = sol.Methods.Items.First(m => m.GetName() == "F" && m.OwningType.ToString()!.EndsWith("P"));
+            var body = sol.BodyOf(fm);
+            string kind = "no body";
+            if (body != null)
+            {
+                var facts = Borrows.Analyze(new PlanContext(fm, body, sol, Variant.Entry), Il2Wasm.IL.Ir.Ownership.Run(body));
+                var ld = body.Blocks.SelectMany(b => b.Code).FirstOrDefault(n => n.Op == Il2Wasm.IL.Ir.Opc.LdFld && n.X is Internal.TypeSystem.FieldDesc f && f.GetName() == "S");
+                kind = ld == null ? "no load" : facts.Own[ld].Kind.ToString();
+            }
+            c.Eq("borrows: a load held across a call on a receiver that can only be null", kind, "Guaranteed");
         }
         foreach (var (name, source, hasDependents) in new[] { ("solver_plain", Plain, false), ("solver_dependents", Dependents, true) })
         {
