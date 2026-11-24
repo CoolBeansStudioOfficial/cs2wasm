@@ -256,7 +256,7 @@ function runCmd(input, o) {
       result.plan = { ...totals(pa), exit: plan.exit };
       console.log(`== ${name}: as configured (${Object.entries(process.env).filter(([k]) => /^IL2WASM_(MEM_|NO_)/.test(k)).map(([k, v]) => k + '=' + v).join(' ') || 'the defaults'})\n` + report(pa, o));
       if (plan.stdout !== naive.stdout) console.log('WARNING: the two builds printed different output');
-      if (expected != null) result.plan.matches = observed(plan) === expected; if (!result.plan.matches) console.log("WARNING: the output of the build as configured differs from the expected");
+      if (expected != null) { result.plan.matches = observed(plan) === expected; if (!result.plan.matches) console.log("WARNING: the output of the build as configured differs from the expected"); }
       result.share = share(pa, na);
       console.log(shareText(result.share));
     }
