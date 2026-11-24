@@ -1457,3 +1457,11 @@ with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   desk, shipped mode: 161 passed, 217 failed, 71 did not compile, 1 timed out (the IL front end's first number). Stub
   tests 69 of 69. Not run: homelab suite, stress, self-host check (the back end, runtime and old front end are
   unchanged; the new code is a separate project).
+- 2026-11-23, claude/il-generics (IL front end: reachability and reflection records; docs/AUDIT.md, the entry
+  "reachability to a fixed point, substitutions, assemblies' reflection records"): SCCP with a second import, ILLink
+  substitutions, pure calls, whole-program rounds (unwritten statics, constant arguments, return values, field values,
+  virtual-call values), assembly records with attributes and manifest resources, reflected arrays. Hello world
+  1,949,547 -> 845,943 B (before merging main); 970,075 B on merged main (2,145,227 B with every rule off). Tests 85
+  of 85. NetWasm suite, desk, shipped, with the merged 4d29bf0 (before the assembly records): 224 passed, 214 failed, 11 did not compile, 1 timed out (main reported 186). Not run: homelab suite, stress, self-host check (the old front
+  end, the back end's passes and the runtime are unchanged; the one Wasm/ change is the IL2WASM_SIZES_FILE report; 145
+  passes both ways). Not done: generic sharing, Delegate.Method/DynamicInvoke/DelegateArity.

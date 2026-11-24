@@ -256,7 +256,9 @@ const oracleEnv = () => ({
 
 // ---- build ----
 
-const binDir = (c) => join(work, 'cases', c.dir, 'bin', config, 'net11.0', rid);
+// (--cases <dir>: the built cases of another work directory, for a private run: its own results and modules)
+const casesDir = resolve(opt('--cases', join(work, 'cases')));
+const binDir = (c) => join(casesDir, c.dir, 'bin', config, 'net11.0', rid);
 const exePath = (c) => join(binDir(c), process.platform === 'win32' ? 'case.exe' : 'case');
 const dllPath = (c) => join(binDir(c), 'case.dll');
 
@@ -348,7 +350,7 @@ async function runIl2wasm(cases) {
     if (!force && results[key]?.status === 'pass' && results[key].compiler === compileCmd && results[key].hash === o.hash) return;
     const out = join(work, 'modules', mode, `${c.dir}.wasm`);
     mkdirSync(dirname(out), { recursive: true });
-    const vars = { dll: dllPath(c), project: join(work, 'cases', c.dir, 'case.csproj'), casedir: join(work, 'cases', c.dir), out, mode, checked: mode === 'checked' ? '--checked' : '', root };
+    const vars = { dll: dllPath(c), project: join(casesDir, c.dir, 'case.csproj'), casedir: join(casesDir, c.dir), out, mode, checked: mode === 'checked' ? '--checked' : '', root };
     let compile = { code: 0, ms: 0, stderr: '', stdout: '' };
     if (!standin) {
       const words = template(compileCmd, vars);

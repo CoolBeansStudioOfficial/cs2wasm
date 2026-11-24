@@ -86,6 +86,7 @@ public sealed partial class IlCompiler
     /// <summary>Reads the binding table of the runtime-provided native libraries (the framework's il2wasm.natives.txt).</summary>
     public void LoadNatives(string path)
     {
+        _nativePaths.Add(path);
         foreach (var raw in File.ReadAllLines(path))
         {
             var line = raw.Trim('\r');
@@ -154,6 +155,28 @@ public sealed partial class IlCompiler
     // ------------------------------------------------------------------ upstream's intrinsics, by name
 
     /// <summary>Upstream methods the runtime implements (their IL is the JIT's placeholder), as the old compiler did.</summary>
+    /// <summary>The CoreLib methods TryUpstreamIntrinsic replaces (keep in step with its cases): their IL is not what
+    /// runs, so the constant propagation reads nothing from it (Reach/ProgramFacts.Opaque).</summary>
+    static readonly HashSet<string> s_upstreamIntrinsics =
+    [
+        "System.Double.ConvertToIntegerNative", "System.Numerics.BitOperations.LeadingZeroCount", "System.Numerics.BitOperations.Log2", "System.Numerics.BitOperations.PopCount",
+        "System.Numerics.BitOperations.RotateLeft", "System.Numerics.BitOperations.RotateRight", "System.Numerics.BitOperations.TrailingZeroCount", "System.Object.GetType",
+        "System.Runtime.CompilerServices.RuntimeHelpers.GetRawData", "System.Runtime.CompilerServices.RuntimeHelpers.IsBitwiseEquatable",
+        "System.Runtime.CompilerServices.RuntimeHelpers.IsReferenceOrContainsReferences", "System.Runtime.CompilerServices.RuntimeHelpers.ObjectHasComponentSize",
+        "System.Runtime.CompilerServices.Unsafe.AddByteOffset", "System.Runtime.CompilerServices.Unsafe.AreSame", "System.Runtime.CompilerServices.Unsafe.As",
+        "System.Runtime.CompilerServices.Unsafe.AsPointer", "System.Runtime.CompilerServices.Unsafe.AsRef", "System.Runtime.CompilerServices.Unsafe.ByteOffset",
+        "System.Runtime.CompilerServices.Unsafe.Copy", "System.Runtime.CompilerServices.Unsafe.CopyBlock", "System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned",
+        "System.Runtime.CompilerServices.Unsafe.InitBlock", "System.Runtime.CompilerServices.Unsafe.InitBlockUnaligned", "System.Runtime.CompilerServices.Unsafe.IsAddressGreaterThan",
+        "System.Runtime.CompilerServices.Unsafe.IsAddressLessThan", "System.Runtime.CompilerServices.Unsafe.SizeOf", "System.Runtime.CompilerServices.Unsafe.SkipInit",
+        "System.Runtime.CompilerServices.Unsafe.SubtractByteOffset", "System.Runtime.CompilerServices.Unsafe.Unbox", "System.Single.ConvertToIntegerNative",
+        "System.SpanHelpers.ClearWithoutReferences", "System.SpanHelpers.Memmove", "System.SpanHelpers.memmove", "System.SpanHelpers.memset",
+        "System.Threading.Interlocked.CompareExchange", "System.Threading.Interlocked.Exchange", "System.Threading.Interlocked.MemoryBarrier",
+        "System.Threading.Volatile.ReadBarrier", "System.Threading.Volatile.WriteBarrier",
+    ];
+
+    public static bool IsUpstreamIntrinsic(MethodDesc m) => m.OwningType is MetadataType ot
+        && s_upstreamIntrinsics.Contains((ot.GetNamespace().Length > 0 ? ot.GetNamespace() + "." : "") + ot.GetName() + "." + m.GetName());
+
     internal bool TryUpstreamIntrinsic(Emitter e, MethodDesc m, Node n, FunctionLowering fl)
     {
         if (m.OwningType is not MetadataType ot || ot.Module != _ctx.SystemModule) return false;
@@ -363,17 +386,39 @@ public sealed partial class IlCompiler
     /// <summary>Every type the tables name has an id: bases, elements, interfaces, generic arguments, containing types.</summary>
     void CloseTypeIds()
     {
-        if (_typeTables.Count == 0) return;
-        for (int i = 0; i < _types.Count; i++)
+        // (the types a Type object, an object's GetType() or a type name can be of: the objects' types, typeof's,
+        // handles', Rt.TypeIdOf's, then what the tables lead to from those; other ids only serve casts and dispatch,
+        // and have no names and empty table entries. IL2WASM_NO_REFLECTABLE_TYPES=1, or without the constant
+        // propagation that sees typeof: every type)
+        bool all = s_allReflectable || Il2Wasm.IL.Reach.ProgramFacts.Off;
+        List<TypeDesc> list;
+        if (!all) foreach (var t in Facts.TypeObjects) Reflectable(t);
+        foreach (var t in _constructedOrder) Reflectable(t);
+        list = all ? _types : _reflectableOrder;
+        void Add(TypeDesc t) { TypeId(t); if (!all) Reflectable(t); }
+        for (int i = 0; i < list.Count; i++)
         {
-            var t = _types[i];
-            if (_typeTables.ContainsKey("base") && t.BaseType is { } b) TypeId(b);
-            if (_typeTables.ContainsKey("element") && t is ParameterizedType p) TypeId(p.ParameterType);
-            if (_typeTables.ContainsKey("interfaces")) foreach (var it in t.RuntimeInterfaces) TypeId(it);
-            if (_typeTables.ContainsKey("generic_args")) foreach (var a in t.Instantiation) TypeId(a);
-            if (_typeTables.ContainsKey("declaring") && t is MetadataType { ContainingType: { } ct }) TypeId(ct);
+            var t = list[i];
+            if (_typeTables.ContainsKey("base") && t.BaseType is { } b) Add(b);
+            if (_typeTables.ContainsKey("element") && t is ParameterizedType p) Add(p.ParameterType);
+            if (_typeTables.ContainsKey("interfaces")) foreach (var it in t.RuntimeInterfaces) Add(it);
+            if (_typeTables.ContainsKey("generic_args")) foreach (var a in t.Instantiation) Add(a);
+            if (_typeTables.ContainsKey("declaring") && t is MetadataType { ContainingType: { } ct }) Add(ct);
+            if (_typeTables.ContainsKey("array_of") && !all) foreach (var x in _types.ToList()) if (x is ArrayType { IsSzArray: true } a && a.ElementType == t) Add(x);
         }
+        _allTypesReflectable = all;
+        if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"reflectable: {(all ? "all" : _reflectable.Count.ToString())} of {_types.Count} types; tables {string.Join(",", _typeTables.Keys)}");
     }
+
+    static readonly bool s_allReflectable = Environment.GetEnvironmentVariable("IL2WASM_NO_REFLECTABLE_TYPES") == "1";
+    readonly HashSet<TypeDesc> _reflectable = [];
+    readonly List<TypeDesc> _reflectableOrder = [];
+    bool _allTypesReflectable = true;
+
+    internal void Reflectable(TypeDesc t) { TypeId(t); if (_reflectable.Add(t)) _reflectableOrder.Add(t); }
+
+    /// <summary>A type whose name and table entries the program can see.</summary>
+    bool IsReflectable(TypeDesc t) => _allTypesReflectable || _reflectable.Contains(t);
 
     static string ShortName(TypeDesc t) => t switch
     {
@@ -481,14 +526,14 @@ public sealed partial class IlCompiler
                 "declaring" => t => (null, IdOr((t as MetadataType)?.ContainingType)),
                 "attrs" => t => (null, Attributes(t)),
                 "array_of" => t => (null, IdOr(_typeIds.Keys.FirstOrDefault(x => x is ArrayType { IsSzArray: true } a && a.ElementType == t))),
-                "assembly" => t => (null, 0),
+                "assembly" => t => (null, AssemblyIndexOf(t)),
                 "enum_info" => t => (t.IsEnum ? EnumInfo(t) : null, 0),
                 _ => throw new NotSupportedException("type table " + kind),
             };
             var vals = new (IAddress? a, int v)[count];
             // (an open generic type, typeof(List<>), has no layout)
             for (int i = 0; i < count; i++) vals[i] = byFinal[i] is { IsGenericDefinition: true } && kind is "size" or "flags2" or "box_offset" ? (null, kind == "flags2" ? 64 | 4 : 0)
-                : byFinal[i] is { } t ? entry(t) : (kind is "name" or "short_name" or "namespace" ? (StringLiteral(""), 0) : kind is "interfaces" or "generic_args" ? (Ids([]), 0) : (null, kind is "base" or "element" or "declaring" or "array_of" ? -1 : 0));
+                : byFinal[i] is { } t && (IsReflectable(t) || kind is not ("name" or "short_name" or "namespace")) ? entry(t) : (kind is "name" or "short_name" or "namespace" ? (StringLiteral(""), 0) : kind is "interfaces" or "generic_args" ? (Ids([]), 0) : (null, kind is "base" or "element" or "declaring" or "array_of" ? -1 : 0));
             var blob = new byte[count * 4];
             var relocs = new List<(int, IAddress)>();
             for (int i = 0; i < count; i++)

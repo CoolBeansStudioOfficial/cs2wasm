@@ -44,6 +44,8 @@ try
     ctx.SetCoreLib();
     var main = ctx.Load(Path.GetFileNameWithoutExtension(input));
     var entry = main.EntryPoint ?? throw new InvalidOperationException($"{input} has no entry point");
+    // (the project's feature switches: its runtimeconfig.json's configProperties)
+    Il2Wasm.IL.Reach.Features.LoadRuntimeConfig(Path.ChangeExtension(Path.GetFullPath(input), ".runtimeconfig.json"));
     var c = new IlCompiler(ctx) { Checked = isChecked };
     var natives = Path.Combine(framework, "il2wasm.natives.txt");
     if (File.Exists(natives)) c.LoadNatives(natives);

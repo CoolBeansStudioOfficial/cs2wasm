@@ -47,6 +47,9 @@ public sealed class IlContext : MetadataTypeSystemContext
         return m;
     }
 
+    /// <summary>The assemblies loaded so far.</summary>
+    public IEnumerable<EcmaModule> Modules => _modules.Values;
+
     public void SetCoreLib(string simpleName = "System.Private.CoreLib") => SetSystemModule(Load(simpleName));
 
     public override ModuleDesc ResolveAssembly(AssemblyNameInfo name, bool throwIfNotFound) =>

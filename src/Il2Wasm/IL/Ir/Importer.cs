@@ -35,11 +35,15 @@ public sealed class Importer
     readonly Dictionary<Block, int> _handlerOf = new();
     Block _entry = null!;
 
-    public static Body Import(MethodDesc method, MethodIL il) => new Importer(method, il).Run();
+    /// <summary>What a whole-program analysis proved about this method's code (ImportFacts.cs): branches that go one
+    /// way, static calls with a known value. Null: none.</summary>
+    readonly ImportFacts? _facts;
 
-    Importer(MethodDesc method, MethodIL il)
+    public static Body Import(MethodDesc method, MethodIL il, ImportFacts? facts = null) => new Importer(method, il, facts).Run();
+
+    Importer(MethodDesc method, MethodIL il, ImportFacts? facts)
     {
-        _method = method; _il = il; _code = il.GetILBytes(); _ctx = method.Context;
+        _method = method; _il = il; _code = il.GetILBytes(); _ctx = method.Context; _facts = facts;
         _body.Method = method;
         var sig = method.Signature;
         bool hasThis = !sig.IsStatic;
@@ -244,7 +248,11 @@ public sealed class Importer
             while (rd.Offset < end) { prevAt = lastAt; lastAt = rd.Offset; last = rd.ReadILOpcode(); rd.Skip(last); }
             rd.Seek(lastAt);
             rd.ReadILOpcode();
-            if (IsBranch(last))
+            // (a conditional branch or switch the facts decided: only the way taken)
+            if ((IsBranch(last) && last is not (ILOpcode.br or ILOpcode.br_s or ILOpcode.leave or ILOpcode.leave_s) || last == ILOpcode.switch_)
+                && _facts?.BranchTo.TryGetValue(b.ILStart, out int to) == true && _blockAt.TryGetValue(to, out var tb))
+                Edge(b, tb);
+            else if (IsBranch(last))
             {
                 var t = _blockAt[rd.ReadBranchDestination(last)];
                 if (last is ILOpcode.br or ILOpcode.br_s or ILOpcode.leave or ILOpcode.leave_s) Edge(b, t);
@@ -756,7 +764,9 @@ public sealed class Importer
                     var b2 = Pop(); var a2 = Pop();
                     var cond = CompareWith(cmp, a2, b2);
                     I.EndStack(B, S, B.Succs);
-                    Terminate(Opc.BrIf, cond);
+                    // (a branch the facts decided: LinkBlocks kept only the way taken)
+                    if (B.Succs.Count == 1) Terminate(Opc.Br);
+                    else Terminate(Opc.BrIf, cond);
                     return false;
                 }
                 case ILOpcode.switch_:
@@ -766,7 +776,8 @@ public sealed class Importer
                     var v = Pop();
                     if (v.SType is not (StackType.Int32 or StackType.NativeInt)) throw Invalid("switch on a " + v.SType);
                     I.EndStack(B, S, B.Succs);
-                    Terminate(Opc.Switch, v);
+                    if (B.Succs.Count == 1) Terminate(Opc.Br);
+                    else Terminate(Opc.Switch, v);
                     return false;
                 }
                 case ILOpcode.ret:
@@ -1147,6 +1158,13 @@ public sealed class Importer
         void Call(MethodDesc m, bool virt)
         {
             if (_constrained == null && Importer.ConstantGetter(m) is long cv) { Push(Const(VK.I32, cv)); return; }
+            // (a static call the facts prove pure under its constant arguments: its value, or nothing for a void one)
+            if (_constrained == null && m.Signature.IsStatic && I._facts?.Calls.TryGetValue(_at, out var cf) == true)
+            {
+                for (int i = 0; i < m.Signature.Length; i++) Pop();
+                if (cf.Kind != VK.Void) Push(Const(cf.Kind, cf.Value));
+                return;
+            }
             // typeof(T).IsValueType and its kind: known for the instantiation (as the JIT and NativeAOT fold it)
             if (S.Count > 0 && S[^1].Op == Opc.TypeOf && !m.Signature.IsStatic && m.Signature.Length == 0 && m.OwningType is MetadataType { Name: var _ } tt0 && tt0.GetName() == "Type"
                 && S[^1].X is TypeDesc known && TypeQuery(m.GetName(), known) is bool q)
