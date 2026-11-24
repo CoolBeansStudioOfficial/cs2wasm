@@ -325,7 +325,10 @@ public sealed class ProgramSolution
 
     /// <summary>Effects of an intrinsic call (its body is the compiler's own): the table of Memory/IntrinsicSignatures.cs
     /// once it exists; until then, any key.</summary>
-    public static Func<ProgramSolution, MethodDesc, KeySet> IntrinsicEffects = (_, _) => KeySet.All;
+    public static Func<ProgramSolution, MethodDesc, MethodDesc, KeySet> IntrinsicEffects = (_, _, _) => KeySet.All;
+    /// <summary>The effects a method declares ([Il2Wasm.Runtime.DeclaredEffects]: the heap's entry points), from
+    /// Memory/IntrinsicSignatures.cs; null: solve its body.</summary>
+    public static Func<ProgramSolution, MethodDesc, KeySet?> DeclaredEffects = (_, _) => null;
 
     /// <summary>Mods, release effects, throw/return and lifetime observation over the call graph: Tarjan's strongly
     /// connected components, callees first, each component joined to its fixed point (3.3).</summary>
@@ -375,7 +378,7 @@ public sealed class ProgramSolution
             var keys = new List<int>();
             bool wild = s.WildStores || s.CallsUnknown;
             foreach (var k in s.Stores) if (k.Kind != KeyKind.Var) keys.Add(Keys.Intern(k));
-            foreach (var im in s.Intrinsics) { var e = IntrinsicEffects(this, im); wild |= e.Wild; foreach (int k in e.Keys.Items) keys.Add(k); }
+            foreach (var im in s.Intrinsics) { var e = IntrinsicEffects(this, m, im); wild |= e.Wild; foreach (int k in e.Keys.Items) keys.Add(k); }
             var callees = new List<int>();
             foreach (var c in s.Calls) Callee(c, callees, ref wild, f);
             foreach (var slot in s.Slots) foreach (var c in Targets(slot)) Callee(c, callees, ref wild, f);
@@ -388,6 +391,8 @@ public sealed class ProgramSolution
             facts[i] = f;
             succ[i] = callees.Distinct().ToList();
             rel[i] = relOf[i];
+            // (declared effects: its body is not solved; it may throw a fresh exception, releases nothing)
+            if (DeclaredEffects(this, m) is { } declared) { f.Mods = declared; f.ReleaseEffects = KeySet.Empty; f.MayThrow = true; f.ObservesLifetime = false; succ[i] = []; rel[i] = []; }
         }
         for (int k = 0; k < sets.Count; k++)
         {
