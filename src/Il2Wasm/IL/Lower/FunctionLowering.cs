@@ -580,6 +580,8 @@ sealed class FunctionLowering
             case Opc.LdVirtFtn:
             {
                 var vm = (MethodDesc)n.X!;
+                // (ldvirtftn on null: NullReferenceException)
+                Get(n.A[0]); E.Call(C.Rt.NonNull); E.Op(WOp.Drop);
                 E.I32Fn(C.Module, vm.IsVirtual && !vm.IsFinal ? C.DispatchFor(vm) : C.FunctionFor(vm)); Set(n);
                 return;
             }
@@ -1107,7 +1109,13 @@ sealed class FunctionLowering
         }
         if (t.IsDelegate && ctor.Signature.Length == 2 && n.A[1].Op is Opc.LdFtn or Opc.LdVirtFtn)
         {
-            // a delegate: its target and the function it calls with it
+            // a delegate: its target and the function it calls with it (an instance method's target must not be
+            // null: ArgumentException, as the CLR's delegate constructor throws; ldvirtftn already threw for it)
+            var fm0 = (MethodDesc)n.A[1].X!;
+            if (!fm0.Signature.IsStatic && n.A[0].Kind == VK.Ref && n.A[1].Op == Opc.LdFtn)
+            {
+                Get(n.A[0]); E.Op(WOp.I32Eqz); E.If(); E.Call(C.DelegateNullThis()); E.End();
+            }
             C.Constructed(t);
             E.I32(IlContext.InstanceSize(t)); E.Tid(C.TypeId(t)); E.Call(C.Rt.AllocObject);
             Set(n);

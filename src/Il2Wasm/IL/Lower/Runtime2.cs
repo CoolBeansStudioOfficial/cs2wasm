@@ -704,5 +704,22 @@ public sealed partial class IlCompiler
         return f;
     }
 
+    WasmFunction? _delegateNullThis;
+    /// <summary>Throws what the CLR's delegate constructor throws for an instance method with a null target.</summary>
+    internal WasmFunction DelegateNullThis()
+    {
+        if (_delegateNullThis != null) return _delegateNullThis;
+        var f = _delegateNullThis = Module.AddFunction("rt.delegate_null_this", new FuncType([], []));
+        var at = (DefType)_ctx.SystemModule.GetType("System"u8, "ArgumentException"u8);
+        var ctor = at.GetMethods().First(x => x.IsConstructor && x.Signature.Length == 1 && x.Signature[0].IsString);
+        Constructed(at);
+        var e = new Emitter(f);
+        int o = e.AddLocal(ValType.I32);
+        e.I32(IlContext.InstanceSize(at)); e.Tid(TypeId(at)); e.Call(Rt.AllocObject); e.Set(o);
+        e.Get(o); e.I32Addr(StringLiteral("Delegate to an instance method cannot have null 'this'.")); e.Call(FunctionFor(ctor));
+        e.Get(o); e.Emit(WOp.Throw, 0, 0, ExceptionTag);
+        return f;
+    }
+
     internal static bool IsDelegateInvoke(MethodDesc m) => m.OwningType.IsDelegate && m.GetName() == "Invoke" && !m.Signature.IsStatic;
 }
