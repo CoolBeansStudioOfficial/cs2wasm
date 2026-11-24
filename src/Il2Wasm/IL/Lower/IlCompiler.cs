@@ -23,6 +23,8 @@ sealed class LateAddr(Func<int> f) : IAddress { public int Address => f(); }
 public sealed partial class IlCompiler
 {
     readonly IlContext _ctx;
+    /// <summary>The whole program's facts for each import (Reach/: substitutions, feature switches, calls evaluated).</summary>
+    internal readonly Il2Wasm.IL.Reach.ProgramFacts Facts = new();
     internal readonly WasmModule Module = new();
     internal readonly RtFns Rt;
     internal readonly WasmTag ExceptionTag = new("cs_exception", new FuncType([ValType.I32], []));
@@ -69,6 +71,7 @@ public sealed partial class IlCompiler
         Module.Tags.Add(ExceptionTag);
         Module.Globals.Add(StackPointer);
         Rt = new RtFns(this);
+        Facts.Resolve = Implementation;
         _literalAt = [];
         // (string's type id is fixed at 1: the CoreLib's string allocation writes it)
         Constructed(_ctx.GetWellKnownType(WellKnownType.String));
@@ -79,18 +82,66 @@ public sealed partial class IlCompiler
     internal MethodDesc CoreMethod(string ns, string type, string name)
     {
         var t = _ctx.SystemModule.GetType(Encoding.UTF8.GetBytes(ns), Encoding.UTF8.GetBytes(type), throwIfNotFound: true);
-        return t.GetMethods().FirstOrDefault(m => m.GetName() == name) ?? throw new InvalidOperationException($"CoreLib has no {ns}.{type}.{name}");
+        var r = t.GetMethods().FirstOrDefault(m => m.GetName() == name) ?? throw new InvalidOperationException($"CoreLib has no {ns}.{type}.{name}");
+        // (the generated code calls it with arguments of its own)
+        Facts.MarkIndirect(r);
+        return r;
     }
 
     MethodDesc? TryCoreMethod(string ns, string type, string name)
     {
         var t = _ctx.SystemModule.GetType(Encoding.UTF8.GetBytes(ns), Encoding.UTF8.GetBytes(type), throwIfNotFound: false);
-        return t?.GetMethods().FirstOrDefault(m => m.GetName() == name);
+        var r = t?.GetMethods().FirstOrDefault(m => m.GetName() == name);
+        if (r != null) Facts.MarkIndirect(r);
+        return r;
     }
 
     // ------------------------------------------------------------------ the whole program
 
     public byte[] Compile(MethodDesc entry)
+    {
+        // (the whole program to a fixed point, Reach/Rounds.cs: each round reaches the program with what the round
+        // before proved of it, until nothing more is proved; the last round's module is the one encoded)
+        if (Il2Wasm.IL.Reach.RoundFacts.Rounds > 1 && !Il2Wasm.IL.Reach.ProgramFacts.Off && _round == 0)
+        {
+            var c = this;
+            var main0 = Reach(entry);
+            var facts = c.Facts.Close(c.SlotImplementations());
+            for (int r = 1; r < Il2Wasm.IL.Reach.RoundFacts.Rounds; r++)
+            {
+                var next = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, _round = r };
+                foreach (var p in _nativePaths) next.LoadNatives(p);
+                next.Facts.Previous = facts;
+                var m = next.Reach(entry);
+                var nf = next.Facts.Close(next.SlotImplementations());
+                // (stable: the same facts, or the same reach and as many facts of each kind; an argument's value can
+                // change between rounds without changing what is reached, and every round's facts are sound)
+                bool stable = nf.SameAs(facts) || next._functions.Count == c._functions.Count && nf.ToString() == facts.ToString();
+                c = next; main0 = m;
+                if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"round {r}: {next._functions.Count} methods, {nf}");
+                facts = nf;
+                if (stable) break;
+            }
+            if (c != this) { var bytes = c.Emit(main0); Warnings.AddRange(c.Warnings); return bytes; }
+            return Emit(main0);
+        }
+        return Emit(Reach(entry));
+    }
+
+    int _round;
+    readonly List<string> _nativePaths = [];
+
+    /// <summary>Each dispatch slot reached, with the implementations over the constructed types (for the next round's
+    /// devirtualization).</summary>
+    Dictionary<MethodDesc, MethodDesc[]> SlotImplementations()
+    {
+        var r = new Dictionary<MethodDesc, MethodDesc[]>();
+        foreach (var slot in _stubs.Keys)
+            r[slot] = _constructedOrder.Select(x => Implementation(x, slot)).Where(i => i != null).Distinct().ToArray()!;
+        return r;
+    }
+
+    WasmFunction Reach(MethodDesc entry)
     {
         var main = FunctionFor(entry);
         for (; ; )
@@ -99,6 +150,7 @@ public sealed partial class IlCompiler
             if (!ResolveDispatch()) break;
         }
         // the runtime's whole-program functions
+        _compiling = null;
         Finish(main, entry);
         // the generated parts may reach more code (a destroy reaches FreeObject): compile it too
         for (; ; )
@@ -106,7 +158,15 @@ public sealed partial class IlCompiler
             while (_queue.Count > 0) { var (m, f) = _queue.Dequeue(); CompileMethod(m, f); }
             if (!ResolveDispatch()) break;
         }
+        _compiling = null;
+        return main;
+    }
+
+
+    byte[] Emit(WasmFunction main)
+    {
         GenerateLate();
+        if (Environment.GetEnvironmentVariable("IL2WASM_IL_REACH") is { Length: > 0 } reach) WriteReach(reach);
         Layout();
         Module.TypeIdMap = id => _finalIds[id];
         Module.ValidateAlways = true;
@@ -148,6 +208,8 @@ public sealed partial class IlCompiler
 
     internal WasmFunction FunctionFor(MethodDesc m)
     {
+        // (a method reached other than by the calls the constant propagation saw: its arguments are not known)
+        if (_compiling == null || !Facts.IsDirectCallee(_compiling, m)) Facts.MarkIndirect(m);
         if (_functions.TryGetValue(m, out var f)) return f;
         if (m.GetTypicalMethodDefinition() is EcmaMethod em && em.GetDecodedCustomAttribute("Il2Wasm.Runtime", "ImportAttribute") is { } imp)
         {
@@ -184,7 +246,29 @@ public sealed partial class IlCompiler
         _functions[m] = f;
         _queue.Enqueue((m, f));
         _why[m] = _compiling;
+        if (_dispatchWhy.slot != null) _whyDispatch[m] = _dispatchWhy;
         return f;
+    }
+
+    readonly Dictionary<MethodDesc, MethodDesc?> _whyStub = new();
+    readonly Dictionary<MethodDesc, (MethodDesc slot, TypeDesc type)> _whyDispatch = new();
+    (MethodDesc slot, TypeDesc type) _dispatchWhy;
+
+    /// <summary>IL2WASM_IL_REACH=path: every method compiled with what first reached it (a caller, or a dispatch slot and
+    /// the constructed type it was resolved for), and every constructed type with the method that first made it: the
+    /// size report's first-caller chains (tools/il-reach.mjs reads it with IL2WASM_SIZES_FILE's sizes).</summary>
+    void WriteReach(string path)
+    {
+        var lines = new List<string>();
+        string N(MethodDesc? c) => c != null && _functions.TryGetValue(c, out var cf) ? cf.Name : "";
+        foreach (var (m, f) in _functions)
+        {
+            if (_whyDispatch.TryGetValue(m, out var d)) lines.Add($"M\t{f.Name}\tD\tdispatch {d.slot}\t{d.type}");
+            else lines.Add($"M\t{f.Name}\tC\t{N(_why.GetValueOrDefault(m))}");
+        }
+        foreach (var (slot, f) in _stubs) lines.Add($"M\t{f.Name}\tC\t{N(_whyStub.GetValueOrDefault(slot))}");
+        foreach (var (t, c) in _whyConstructed) lines.Add($"T\t{t}\t{N(c)}");
+        System.IO.File.WriteAllLines(path, lines);
     }
 
     readonly Dictionary<MethodDesc, MethodDesc?> _why = new();
@@ -213,9 +297,16 @@ public sealed partial class IlCompiler
         }
         if (typical!.IsAggressiveInlining) f.InlineHint = true;
         if (typical.IsNoInlining) f.NoInline = true;
+        // (an ILLink substitution: the stub is the body)
+        if (Facts.Substitutions.Method(m) is { } stub)
+        {
+            var se = new Emitter(f);
+            if (stub.HasValue) { if (f.Type.Results[0] == ValType.I64) se.I64(stub.Value); else se.I32((int)stub.Value); }
+            return;
+        }
         try
         {
-            var body = Importer.Import(m, il);
+            var body = Facts.Import(m, il);
             var own = Ownership.Run(body);
             if (s_dump != null && m.ToString().Contains(s_dump)) Console.Error.WriteLine($"== {m}\n{body.Dump()}");
             new FunctionLowering(this, body, own, f).Run();
@@ -243,8 +334,10 @@ public sealed partial class IlCompiler
     internal void Constructed(TypeDesc t)
     {
         TypeId(t);
-        if (_constructed.Add(t)) _constructedOrder.Add(t);
+        if (_constructed.Add(t)) { _constructedOrder.Add(t); _whyConstructed[t] = _compiling; }
     }
+
+    readonly Dictionary<TypeDesc, MethodDesc?> _whyConstructed = new();
 
     // ------------------------------------------------------------------ dispatch
 
@@ -254,6 +347,7 @@ public sealed partial class IlCompiler
         if (slot.HasInstantiation) throw new NotSupportedException($"the generic virtual method {slot}");
         f = Module.AddFunction("dispatch " + slot, Sig(slot));
         _stubs[slot] = f;
+        _whyStub[slot] = _compiling;
         return f;
     }
 
@@ -312,7 +406,7 @@ public sealed partial class IlCompiler
             foreach (var x in _constructedOrder.ToList())
             {
                 if (!_resolved.Add((x, slot))) continue;
-                if (Implementation(x, slot) is { } impl && !_functions.ContainsKey(impl)) { FunctionFor(impl); any = true; }
+                if (Implementation(x, slot) is { } impl && !_functions.ContainsKey(impl)) { _compiling = null; _dispatchWhy = (slot, x); FunctionFor(impl); _dispatchWhy = default; any = true; }
             }
         return any || _queue.Count > 0;
     }

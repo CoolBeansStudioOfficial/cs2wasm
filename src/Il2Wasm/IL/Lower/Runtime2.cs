@@ -86,6 +86,7 @@ public sealed partial class IlCompiler
     /// <summary>Reads the binding table of the runtime-provided native libraries (the framework's il2wasm.natives.txt).</summary>
     public void LoadNatives(string path)
     {
+        _nativePaths.Add(path);
         foreach (var raw in File.ReadAllLines(path))
         {
             var line = raw.Trim('\r');

@@ -68,6 +68,8 @@ internal sealed class WasmModule
     }
 
     static readonly List<(int, string)>? s_sizes = Environment.GetEnvironmentVariable("IL2WASM_SIZES") == "1" ? [] : null;
+    /// <summary>IL2WASM_SIZES_FILE=path: every function's encoded body size and name, one per line (a size report).</summary>
+    static readonly List<string>? s_sizesFile = Environment.GetEnvironmentVariable("IL2WASM_SIZES_FILE") is { Length: > 0 } ? [] : null;
     static readonly string? s_dump = Environment.GetEnvironmentVariable("IL2WASM_DUMP") is { Length: > 0 } d ? d : null;
     /// <summary>The fields each loop and each call can store (Wasm/FieldLoads.cs); null: that pass is off.</summary>
     public FieldHoist? FieldHoist;
@@ -576,6 +578,7 @@ internal sealed class WasmModule
             }
             body.Byte(0x0B);
             if (s_sizes != null) s_sizes.Add((body.Length, f.FrameName ?? f.Name));
+            s_sizesFile?.Add($"{body.Length}\t{f.Name}");
             if (s_dump != null && (f.FrameName ?? f.Name).Contains(s_dump)) { Console.Error.WriteLine($"== {f.FrameName ?? f.Name} [{f.Name}] ({body.Length} bytes)"); foreach (var ins in f.Body) Console.Error.WriteLine("  " + ins); }
             code.U32(body.Length);
             int start = code.Length;
@@ -583,6 +586,7 @@ internal sealed class WasmModule
             if (bodyInlines != null) foreach (var (off, scope) in bodyInlines) relInlines.Add((start + off, scope));
             code.Bytes(body.ToArray());
         }
+        if (s_sizesFile != null) { System.IO.File.WriteAllLines(Environment.GetEnvironmentVariable("IL2WASM_SIZES_FILE")!, s_sizesFile); s_sizesFile.Clear(); }
         if (s_sizes != null)
         {
             Console.Error.WriteLine($"code {code.Length} bytes in {defined.Count} functions; largest:");

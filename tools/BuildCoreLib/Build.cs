@@ -32,6 +32,21 @@ static class Build
         : Path.Combine(Environment.GetEnvironmentVariable("IL2WASM_CACHE") is { Length: > 0 } c ? c
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "il2wasm"), "runtime-" + Tag);
 
+    /// <summary>CoreLib's ILLink substitution files as its project includes them for a 32-bit little-endian target
+    /// with no Arm, x86 or WASM hardware intrinsics (System.Private.CoreLib.Shared.projitems). The build embeds them
+    /// as one ILLink.Substitutions.xml resource, as the runtime's own build does; the compiler applies every
+    /// assembly's. (Copies of v11.0.0's files are in Upstream/System.Private.CoreLib/ILLink.)</summary>
+    static readonly string[] IlLinkSubstitutions = [.. new[] { "Shared", "LittleEndian", "32bit", "NoArmIntrinsics", "NoX86Intrinsics", "NoWasmIntrinsics" }
+        .Select(n => $"ILLink.Substitutions.{n}.xml")];
+
+    static byte[] MergedSubstitutions()
+    {
+        var merged = new System.Xml.Linq.XElement("linker");
+        foreach (var f in IlLinkSubstitutions)
+            merged.Add(System.Xml.Linq.XDocument.Parse(File.ReadAllText(Path.Combine(UpstreamDir, Lib, "ILLink", f))).Root!.Elements());
+        return Encoding.UTF8.GetBytes(merged.ToString().Replace("\r\n", "\n"));
+    }
+
     public static string UpstreamDir => Path.Combine(Program.RepoRoot, "src", "Il2Wasm", "Upstream");
 
     public static int Run(string outDir)
@@ -81,7 +96,9 @@ static class Build
         var pdbPath = Path.Combine(outDir, Lib + ".pdb");
         using var dll = new MemoryStream();
         using var pdb = new MemoryStream();
-        var result = comp.Emit(dll, pdb, options: new EmitOptions(debugInformationFormat: DebugInformationFormat.PortablePdb, pdbFilePath: Lib + ".pdb",
+        var substitutionsXml = MergedSubstitutions();
+        var result = comp.Emit(dll, pdb, manifestResources: [new ResourceDescription("ILLink.Substitutions.xml", () => new MemoryStream(substitutionsXml), isPublic: false)],
+            options: new EmitOptions(debugInformationFormat: DebugInformationFormat.PortablePdb, pdbFilePath: Lib + ".pdb",
             pdbChecksumAlgorithm: HashAlgorithmName.SHA256));
         var errors = result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
         Console.Error.WriteLine($"corelib: {sw.ElapsedMilliseconds,6} ms  emitted ({errors.Count} errors, {result.Diagnostics.Count(d => d.Severity == DiagnosticSeverity.Warning)} warnings)");
