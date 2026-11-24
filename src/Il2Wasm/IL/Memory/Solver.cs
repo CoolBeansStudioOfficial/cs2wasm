@@ -346,18 +346,7 @@ public sealed class ProgramSolution
         var all = ReleasedTypes(body, skipDependents, onlyReturning: true, argsApart: true, neverReturns: neverReturns);
         var r = new List<(TypeDesc, int, FieldDesc?, MethodDesc?)>();
         foreach (var t in all) r.Add((t, -1, null, null));
-        // (the parameters' values, apart: a parameter is released as its own type, as ReleasedTypes would count it)
         var obj = body.Method.Context.GetWellKnownType(WellKnownType.Object);
-        foreach (var a in body.Args)
-        {
-            if (a.Kind != Il2Wasm.IL.Ir.VK.Ref) continue;
-            var t = a.Type == null ? obj : !a.Type.IsValueType ? a.Type : a.Type.IsNullable ? a.Type.Instantiation[0] : a.Type;
-            r.Add((t, (int)a.I, null, null));
-            // (a cast of the parameter: the same object, the cast's type)
-            foreach (var b in body.Blocks) foreach (var n in b.Code)
-                if (n.Kind == Il2Wasm.IL.Ir.VK.Ref && n.A.Length > 0 && n.A[0] == a && IsForward(n))
-                    r.Add((n.Type == null ? obj : !n.Type.IsValueType ? n.Type : n.Type, (int)a.I, null, null));
-        }
         // (the values read from a static readonly field, apart: if the field is persistent, ProgramSolution.Persistent,
         // the object outlives every release of them)
         foreach (var b in body.Blocks)
@@ -558,8 +547,12 @@ public sealed class ProgramSolution
                 // (null, literal strings and type objects hold no count: immortal, FunctionLowering's TypeOf)
                 if (n.Op is Il2Wasm.IL.Ir.Opc.LdNull or Il2Wasm.IL.Ir.Opc.LdStr or Il2Wasm.IL.Ir.Opc.TypeOf) continue;
                 if (dependents && IsBorrow(n)) continue;
-                // (argsApart: a parameter's value and its casts are listed with the parameter, ReleasedOnReturn)
-                if (argsApart && (n.Op == Il2Wasm.IL.Ir.Opc.Arg || IsForward(n) && n.A[0].Op == Il2Wasm.IL.Ir.Opc.Arg || n.Kind == Il2Wasm.IL.Ir.VK.Ref && (StaticReadOnlyLoad(n) != null || GetterCall(n) != null))) continue;
+                // (a parameter's object, or a cast of it, is not the method's to free: the caller holds it for the whole
+                // call, or hands its count over at its last use, and then counts that release as its own at the call,
+                // Borrows' moved operands. So a method's releases never include its parameters)
+                if (n.Kind == Il2Wasm.IL.Ir.VK.Ref && (n.Op == Il2Wasm.IL.Ir.Opc.Arg || IsForward(n) && n.A[0].Op == Il2Wasm.IL.Ir.Opc.Arg)) continue;
+                // (argsApart: the values read from statics and getters are listed apart, ReleasedOnReturn)
+                if (argsApart && n.Kind == Il2Wasm.IL.Ir.VK.Ref && (StaticReadOnlyLoad(n) != null || GetterCall(n) != null)) continue;
                 // (Generics.New<T..>("Name"): an object of exactly the type its literal names, MethodSummary.NewByName)
                 if (n.Op == Il2Wasm.IL.Ir.Opc.Call && n.X is MethodDesc nm && MethodSummary.NewByName(nm, n) is { } made) { set.Add(made.OwningType); continue; }
                 // (one lowering makes a trap: no value, nothing to release)
@@ -594,6 +587,9 @@ public sealed class ProgramSolution
                     // (CpBlk and InitBlk lower to memory.copy and memory.fill: no count, nothing released)
                     // (Rt.ReleaseElements<T>(addr, count): T's at an address, the elements' type itself)
                     case Il2Wasm.IL.Ir.Opc.Call when n.X is MethodDesc rm && rm.GetName() == "ReleaseElements" && IsRt(rm) && rm.HasInstantiation: Slot(rm.Instantiation[0]); break;
+                    // (the runtime's own code releasing a parameter by hand, Rt.Release(p): that one is the method's)
+                    case Il2Wasm.IL.Ir.Opc.Call when n.X is MethodDesc pm && pm.GetName() == "Release" && IsRt(pm) && n.A.Length == 1 && n.A[0] is var pa && (pa.Op == Il2Wasm.IL.Ir.Opc.Arg || IsForward(pa) && pa.A[0].Op == Il2Wasm.IL.Ir.Opc.Arg):
+                        Add(pa.Type, Il2Wasm.IL.Ir.VK.Ref); break;
                 }
             }
         }

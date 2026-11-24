@@ -635,6 +635,10 @@ sealed class Analyzer
             case Opc.Call when members.Contains(n) && IsCast(n): break; // (Unsafe.As of the group's own value: a forward)
             case Opc.Call: case Opc.NewObj: case Opc.CallI:
             {
+                // (an argument whose count the call takes, at its last use: the callee may free it, and a callee's
+                // release effects leave out its parameters, Solver.ReleasedTypes: it is this call's release)
+                for (int mk = 0; mk < n.A.Length; mk++)
+                    if ((n.Moves & (1u << mk)) != 0 && Counted(n.A[mk]) && !members.Contains(n.A[mk]) && Release(g, alias, n.A[mk].Type)) return true;
                 var (e, intrinsic) = CallEffect(n, members);
                 if (alias.Hits(e)) { if (Borrows.Trace) _cause = n.Op + " " + (n.X as MethodDesc)?.ToString(); Fail(g, e.Wild ? (intrinsic ? Borrows.Stat.FlipIntrinsic : Borrows.Stat.FlipCallWild) : Borrows.Stat.FlipCallKey, new BorrowEvidence(e, false, false)); return true; }
                 break;
