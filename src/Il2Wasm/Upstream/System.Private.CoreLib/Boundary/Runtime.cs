@@ -2189,13 +2189,48 @@ namespace Il2Wasm.Runtime
             /// <summary>Holds that pushed out an older one not taken yet (a bug: that object is then freed later than
             /// its last use; the checked build stops at it).</summary>
             public static int Overflows;
+            /// <summary>Executed holds, takes, and takes that found their hold (the measurements of docs/AUDIT.md's
+            /// plan-2 entry: a take after a call that held nothing costs a call and finds nothing).</summary>
+            public static int Holds, Takes, Taken;
 
             /// <summary>The object the returning function's address points into is counted until the caller takes it.</summary>
             public static void Hold(int addr)
             {
                 int o = ObjectOf(addr);
                 if (o == 0) return;
+                Holds++;
                 Retain(Borrow<object>(o));
+                int old;
+                switch (s_holdN++ & 3)
+                {
+                    case 0: old = s_hold0; s_hold0 = o; break;
+                    case 1: old = s_hold1; s_hold1 = o; break;
+                    case 2: old = s_hold2; s_hold2 = o; break;
+                    default: old = s_hold3; s_hold3 = o; break;
+                }
+                if (old != 0)
+                {
+                    Overflows++;
+                    if (Checked()) { ChkSay("il2wasm checked: a returned span's keeper was pushed out before its caller took it"); Unreachable(); }
+                    Release(Borrow<object>(old));
+                }
+            }
+
+            /// <summary>Hold, with the returning function's own count of the object it holds (its one kept base, moved
+            /// into the call): when the address points into it, that count is the hold's and nothing is counted; else
+            /// the object the address points into is counted as Hold does and the base's count goes.</summary>
+            public static void HoldFrom(int addr, object owned)
+            {
+                int v = AddressOf(owned);
+                int o = ObjectOf(addr);
+                if (o != v)
+                {
+                    if (v != 0) Release(Borrow<object>(v));
+                    Hold(addr);
+                    return;
+                }
+                if (o == 0) return;
+                Holds++;
                 int old;
                 switch (s_holdN++ & 3)
                 {
@@ -2216,6 +2251,7 @@ namespace Il2Wasm.Runtime
             /// it, owned by the caller now; else null.</summary>
             public static object? Take(int addr)
             {
+                Takes++;
                 if (s_holdN == 0) return null;
                 int o = ObjectOf(addr);
                 if (o == 0) return null;
@@ -2224,6 +2260,7 @@ namespace Il2Wasm.Runtime
                 if (k != o) return null;
                 switch (i) { case 0: s_hold0 = 0; break; case 1: s_hold1 = 0; break; case 2: s_hold2 = 0; break; default: s_hold3 = 0; break; }
                 s_holdN--;
+                Taken++;
                 return Take<object>(o);
             }
         }

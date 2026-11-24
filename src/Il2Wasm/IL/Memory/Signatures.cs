@@ -35,6 +35,7 @@ public static class Signatures
     static readonly bool s_noOwnedEntry = Environment.GetEnvironmentVariable("IL2WASM_NO_OWNED_ENTRY") == "1";
     /// <summary>IL2WASM_NO_BORROW_RETURN=1: no borrowed-return variant.</summary>
     static readonly bool s_noBorrowReturn = Environment.GetEnvironmentVariable("IL2WASM_NO_BORROW_RETURN") == "1";
+    static readonly bool s_noStaticReturn = Environment.GetEnvironmentVariable("IL2WASM_NO_STATIC_RETBORROW") == "1";
     /// <summary>IL2WASM_HANDOVER_BREAK=1 (the rule's test): the call rule hands a last-use argument over, but the call
     /// goes to the Entry, which lends: the count handed over is never released (a leak the live-object check shows).</summary>
     static readonly bool s_handOverBreak = Environment.GetEnvironmentVariable("IL2WASM_HANDOVER_BREAK") == "1";
@@ -452,6 +453,11 @@ public static class Signatures
             if (Forwards(v)) { v = v.A[0]; continue; }
             switch (v.Op)
             {
+                // (a getter of a persistent static, MEMORY-IR 2.5: the object is held for the program's life by a static
+                // nothing writes again, so the caller's borrow needs no proof; its fields can change, so no steps.
+                // IL2WASM_NO_STATIC_RETBORROW=1: off)
+                case Opc.LdSFld when !s_noStaticReturn && steps.Count == 0 && v.Kind == VK.Ref && v.X is FieldDesc sf && sol.Persistent(sf):
+                    return new BorrowPath(RootKind.Static, sol.Keys.Intern(MemKey.Static(sf)));
                 case Opc.Arg when v.Kind == VK.Ref:
                     if (steps.Count > BorrowPath.MaxSteps) return null;
                     steps.Reverse();

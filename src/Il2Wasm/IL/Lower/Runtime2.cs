@@ -191,8 +191,8 @@ public sealed partial class IlCompiler
                 fl.PushArgs(n); break;
             case "System.Runtime.CompilerServices.Unsafe.As":
                 fl.PushArgs(n);
-                // (As<T>(object): the reference as T, a count of its own)
-                if (n.Kind == VK.Ref) e.Call(Rt.Retain);
+                // (As<T>(object): the reference as T, a count of its own unless the plan borrows it, 2.1's forwarding)
+                if (n.Kind == VK.Ref && fl.LoadRetains(n)) e.Call(Rt.Retain);
                 break;
             case "System.Runtime.CompilerServices.Unsafe.AreSame": fl.PushArgs(n); e.Op(WOp.I32Eq); break;
             case "System.Runtime.CompilerServices.Unsafe.IsAddressGreaterThan": fl.PushArgs(n); e.Op(WOp.I32GtU); break;

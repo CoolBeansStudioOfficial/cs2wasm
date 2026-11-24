@@ -43,20 +43,24 @@ public static class Plan
     internal static readonly ConditionalWeakTable<Body, HashSet<Node>> KnownKeeps = new();
 
     /// <summary>Counters for the report (all plans of the process).</summary>
-    public static int Keepers, MissedKeepers, Takes, Flips, Plans;
+    public static int Keepers, MovedKeepers, MissedKeepers, Takes, Flips, Plans;
 
     /// <summary>IL2WASM_PLAN_STATS=1: the counters, and each method whose returned address keeps a base the protocol
     /// does not reach, on stderr when the process exits.</summary>
     static readonly bool s_stats = Environment.GetEnvironmentVariable("IL2WASM_PLAN_STATS") == "1";
     static readonly SortedSet<string> s_missed = new(StringComparer.Ordinal);
+    /// <summary>IL2WASM_PLAN_TAKES=1: the targets of the calls a take follows, with their static counts, at exit.</summary>
+    static readonly bool s_takeDump = Environment.GetEnvironmentVariable("IL2WASM_PLAN_TAKES") == "1";
+    static readonly Dictionary<string, int> s_takeCallees = new(StringComparer.Ordinal);
 
     static Plan()
     {
         if (s_stats)
             AppDomain.CurrentDomain.ProcessExit += (_, _) =>
             {
-                Console.Error.WriteLine($"plan: {Plans} plans, {Keepers} keepers held, {Takes} takes, {MissedKeepers} keeps not handed on, {Flips} flips, {Verify.Checked} verified");
+                Console.Error.WriteLine($"plan: {Plans} plans, {Keepers} keepers held ({MovedKeepers} moved), {Takes} takes, {MissedKeepers} keeps not handed on, {Flips} flips, {InitStores.Found} init stores ({InitStores.Skipped} bodies past the budget), {FrameObjects.Found} frame objects, {Verify.Checked} verified");
                 foreach (var m in s_missed) Console.Error.WriteLine("plan: keep not handed on: " + m);
+                if (s_takeDump) foreach (var (k, c) in s_takeCallees.OrderByDescending(p => p.Value).ThenBy(p => p.Key, StringComparer.Ordinal)) Console.Error.WriteLine($"plan: take after {k}: {c}");
             };
     }
 
@@ -163,21 +167,53 @@ public static class Plan
     }
     static readonly Dictionary<TypeSystemContext, (MethodDesc, MethodDesc)?> s_keeperCalls = new();
 
+    /// <summary>IL2WASM_NO_KEEP_MOVE=1: a hold always counts the object again and the function's own count of it goes
+    /// after (3 count operations a keeper, against 1 with the move).</summary>
+    static readonly bool s_noKeepMove = Environment.GetEnvironmentVariable("IL2WASM_NO_KEEP_MOVE") == "1";
+
+    /// <summary>Rt.ReturnKeepers.HoldFrom (null without it, or with IL2WASM_NO_KEEP_MOVE=1).</summary>
+    internal static MethodDesc? HoldFromCall(TypeSystemContext c)
+    {
+        if (s_noKeepMove || KeeperCalls(c) is not { } kc) return null;
+        lock (s_holdFrom)
+        {
+            if (s_holdFrom.TryGetValue(c, out var r)) return r;
+            r = ((MetadataType)kc.Hold.OwningType).GetMethods().FirstOrDefault(x => x.GetName() == "HoldFrom");
+            s_holdFrom.Add(c, r);
+            return r;
+        }
+    }
+    static readonly Dictionary<TypeSystemContext, MethodDesc?> s_holdFrom = new();
+
     /// <summary>The method may hand its caller a keeper (7.4): it is in the solution, returns an address, and either makes
     /// an object (a type that can be on the heap: a byref-like struct cannot), calls what it cannot see (calli, a
     /// delegate), calls something whose result is counted (Unsafe's forwarding casts aside), or calls a target that
     /// may itself hand it a keeper (the only ways an object only it holds comes to be). The callee hands a keeper only
     /// where this holds, and every caller of such a target takes after the call. A least fixed point over the calls
     /// (a recursion in progress counts as no keeper), memoized per solution.</summary>
-    internal static bool MayKeep(ProgramSolution sol, MethodDesc m)
+    internal static bool MayKeep(ProgramSolution sol, MethodDesc m) => MayKeep(sol, m, Variant.Entry);
+
+    /// <summary>MayKeep for one entry of m: an owned entry by the rule above; any other entry (its parameters lent)
+    /// of a method with owned variants by its body alone (the owned variants' parameters are what makes the rule
+    /// say yes for those).</summary>
+    internal static bool MayKeep(ProgramSolution sol, MethodDesc m, Variant v)
     {
         if (!ReturnsAddress(m) || sol.Summary(m) is null) return false;
         Dictionary<MethodDesc, bool> memo;
         lock (s_mayKeep) { if (!s_mayKeep.TryGetValue(sol, out memo!)) s_mayKeep.Add(sol, memo = new()); }
-        lock (memo) return MayKeep(sol, m, memo);
+        lock (memo)
+        {
+            if (!MayKeep(sol, m, memo)) return false;
+            if (v.Kind == VariantKind.Owned || s_noKeepBody || !Signatures.VariantsOf(sol, m).Any(x => x.Kind == VariantKind.Owned)) return true;
+            var lend = s_mayKeepLend.GetValue(memo, _ => new Dictionary<MethodDesc, bool>());
+            if (lend.TryGetValue(m, out bool r)) return r;
+            r = sol.BodyOf(m) is not { } body || BodyMayKeep(sol, body, memo);
+            return lend[m] = r;
+        }
     }
 
     static readonly ConditionalWeakTable<ProgramSolution, Dictionary<MethodDesc, bool>> s_mayKeep = new();
+    static readonly ConditionalWeakTable<Dictionary<MethodDesc, bool>, Dictionary<MethodDesc, bool>> s_mayKeepLend = new();
 
     static bool MayKeep(ProgramSolution sol, MethodDesc m, Dictionary<MethodDesc, bool> memo)
     {
@@ -189,7 +225,77 @@ public static class Plan
             || Signatures.VariantsOf(sol, m).Any(v => v.Kind == VariantKind.Owned)
             || s.Calls.Concat(s.Intrinsics).Any(c => CountedResult(c) || ReturnsAddress(c) && MayKeep(sol, c, memo))
             || s.Slots.Any(c => CountedResult(c) || ReturnsAddress(c) && sol.Targets(c).Any(t => MayKeep(sol, t, memo)));
+        // (and its body: some return's address may point into an object only it holds. Without it every caller takes
+        // after every call of a function returning a span: 5,648 takes ran in a BigInteger and string program, and
+        // none found a hold. An owned variant's parameters are the function's own: the clause above keeps those)
+        if (r && !s_noKeepBody && !Signatures.VariantsOf(sol, m).Any(v => v.Kind == VariantKind.Owned) && sol.BodyOf(m) is { } body)
+            r = BodyMayKeep(sol, body, memo);
         return memo[m] = r;
+    }
+
+    /// <summary>IL2WASM_NO_KEEP_BODY=1: MayKeep from the summary alone.</summary>
+    static readonly bool s_noKeepBody = Environment.GetEnvironmentVariable("IL2WASM_NO_KEEP_BODY") == "1";
+
+    /// <summary>Some return of the body gives an address whose objects may include one only this function holds: a
+    /// superset of the planner's KeepCase over Keep (an address's bases, a borrow's root), read off the import. An object
+    /// is held elsewhere when it is a parameter (lent; an owned variant is decided before), a static's, or a variable's;
+    /// a field or element load is followed to the object it is read from (its borrow's root may be that object);
+    /// anything made or returned by a call may be the function's alone; a variable's address, a pointer phi and an
+    /// address a call returns (with its keeper, when its target may keep) are followed.</summary>
+    static bool BodyMayKeep(ProgramSolution sol, Body body, Dictionary<MethodDesc, bool> memo)
+    {
+        var seen = new HashSet<Node>();
+        Dictionary<long, List<Node>>? varStores = null;
+        bool Keeps(Node x)
+        {
+            if (!seen.Add(x)) return false;
+            if (x.Kind == VK.Ref || x.Kind == VK.Struct && IsRef(x) && !Ownership.ByRefLike(x))
+            {
+                if (IsTrivial(x)) return false;
+                switch (x.Op)
+                {
+                    case Opc.Arg or Opc.LdSFld or Opc.VarLd: return false;
+                    case Opc.LdFld or Opc.LdElem or Opc.CastClass or Opc.IsInst: return x.A.Length > 0 && Keeps(x.A[0]);
+                    case Opc.LdInd: return x.A.Length > 0 && Keeps(x.A[0]);
+                    case Opc.Phi: return x.A.Any(Keeps);
+                    case Opc.Call when IsForwardingAs(x) || x.X is MethodDesc um && um.OwningType is MetadataType ut && ut.GetName() == "Unsafe" && x.A.Length == 1:
+                        return Keeps(x.A[0]);
+                    default: return true;
+                }
+            }
+            if (x.Op == Opc.Phi) return x.A.Any(Keeps);
+            if (x.Op is Opc.VarLd or Opc.LocA)
+            {
+                if (varStores == null)
+                {
+                    varStores = new();
+                    foreach (var b in body.Blocks)
+                        foreach (var n in b.Code)
+                            if (n.Op == Opc.VarSt && n.A.Length > 0)
+                            {
+                                if (!varStores.TryGetValue(n.I, out var l)) varStores[n.I] = l = [];
+                                l.Add(n.A[0]);
+                            }
+                }
+                return varStores.TryGetValue(x.I, out var vs) && vs.Any(Keeps);
+            }
+            bool r = false;
+            if (Ownership.Derives(x)) foreach (var a in x.A) r |= Keeps(a);
+            if (r) return true;
+            if (x.Op == Opc.CallI) return true;
+            if (x.Op == Opc.Call && x.X is MethodDesc c && (x.Kind == VK.Ptr || x.Kind == VK.Struct))
+            {
+                if (c.OwningType.IsDelegate && c.GetName() == "Invoke") return true;
+                if (x.Sub == (byte)CallKind.Direct) return ReturnsAddress(c) && MayKeep(sol, c, memo);
+                var ts = sol.CallTargets(x);
+                return ts.Count == 0 || ts.Any(t => MayKeep(sol, t, memo));
+            }
+            return false;
+        }
+        foreach (var b in body.Blocks)
+            foreach (var n in b.Code)
+                if (n.Op == Opc.Ret && n.A.Length == 1 && n.A[0].Kind is VK.Ptr or VK.Struct && Keeps(n.A[0])) return true;
+        return false;
     }
 
     static bool CountedResult(MethodDesc c)
@@ -201,7 +307,7 @@ public static class Plan
     /// <summary>A call after which the caller takes a keeper: its result is an address and some target may keep (a
     /// target not known here, as through calli or a delegate, is taken after too: a take matches nothing when
     /// nothing was held).</summary>
-    internal static bool NeedsTake(PlanContext ctx, Node n)
+    internal static bool NeedsTake(PlanContext ctx, Node n, Variant callee = default)
     {
         if (n.Op is not (Opc.Call or Opc.CallI) || IsInserted(n)) return false;
         if (n.Kind != VK.Ptr && !(n.Kind == VK.Struct && n.Type is DefType { IsByRefLike: true })) return false;
@@ -209,7 +315,7 @@ public static class Plan
         if (n.Op == Opc.CallI) return true;
         var m = (MethodDesc)n.X!;
         if (m.OwningType.IsDelegate && m.GetName() == "Invoke") return true;
-        if (n.Sub == (byte)CallKind.Direct) return MayKeep(ctx.Solution, m);
+        if (n.Sub == (byte)CallKind.Direct) return MayKeep(ctx.Solution, m, callee);
         var targets = ctx.Solution.CallTargets(n);
         if (targets.Count == 0) return true;
         foreach (var t in targets) if (MayKeep(ctx.Solution, t)) return true;
@@ -223,6 +329,14 @@ public static class Plan
         foreach (var f in ((DefType)n.Type!).GetFields()) if (!f.IsStatic && Kinds.Of(f.FieldType) == VK.Ptr) return f;
         return null;
     }
+
+    /// <summary>IL2WASM_NO_FORWARD_AS=1: Unsafe.As(object)'s result is counted as a call's (a retain, a release).</summary>
+    static readonly bool s_noPersistent = Environment.GetEnvironmentVariable("IL2WASM_NO_PERSISTENT_LOADS") == "1";
+    static readonly bool s_noForwardAs = Environment.GetEnvironmentVariable("IL2WASM_NO_FORWARD_AS") == "1";
+
+    /// <summary>Unsafe.As&lt;T&gt;(object), the reference forwarding cast (lowering's intrinsic: its operand as it is).</summary>
+    internal static bool IsForwardingAs(Node n) => n.Op == Opc.Call && n.Sub == (byte)CallKind.Direct && n.Kind == VK.Ref && n.A.Length == 1 && n.A[0].Kind == VK.Ref
+        && n.X is MethodDesc m && m.GetName() == "As" && m.OwningType is MetadataType t && t.GetName() == "Unsafe" && t.GetNamespace() == "System.Runtime.CompilerServices";
 
     internal static bool IsGcKeepAlive(Node n) => n.Op == Opc.Call && n.X is MethodDesc m && m.GetName() == "KeepAlive"
         && m.OwningType is MetadataType t && t.GetName() == "GC" && t.GetNamespace() == "System";
@@ -246,16 +360,18 @@ public static class Plan
         ParamConv[]? _conv;
         (MethodDesc Hold, MethodDesc Take)? _keeper;
         bool _mayKeep;
+        HashSet<Node> _init = [];
 
         public Planner(PlanContext ctx) { _ctx = ctx; _body = ctx.Body; }
 
         public MethodPlan Run()
         {
+            _init = InitStores.Find(_ctx);
             var info = Ownership.Analyze(_body);
             var borrows = Borrows.Analyze(_ctx, info);
             _conv = ConventionOf(_ctx.Solution, _ctx.Method, _ctx.Entry);
             _keeper = KeeperCalls(_ctx.Method.Context);
-            _mayKeep = _keeper != null && MayKeep(_ctx.Solution, _ctx.Method);
+            _mayKeep = _keeper != null && MayKeep(_ctx.Solution, _ctx.Method, _ctx.Entry);
             foreach (var b in _body.Blocks) { foreach (var n in b.Phis) _byId[n.Id] = n; foreach (var n in b.Code) _byId[n.Id] = n; }
             Kinds(info, borrows);
             Variants(info);
@@ -295,6 +411,34 @@ public static class Plan
                 else if (f.Kind == OwnKind.Guaranteed && f.Path != null && v.Op == Opc.Call && DirectSite(v)) { _kind[v] = OwnKind.Guaranteed; _path[v] = f.Path; }
                 else _kind[v] = OwnKind.Owned;
             }
+            // (2.5's Persistent statics: an object a static holds for the program's life, which nothing writes again,
+            // needs no count to be read, and a getter of one (Signatures' Static-rooted borrowed return) gives a borrow
+            // too, from its borrowed-return entry. IL2WASM_NO_PERSISTENT_LOADS=1: off)
+            if (!s_noPersistent)
+                foreach (var v in info.RefValues)
+                {
+                    if (v.Op == Opc.LdSFld && v.Kind == VK.Ref && v.X is FieldDesc sf && !sf.IsThreadStatic && _ctx.Solution.Persistent(sf))
+                    { _kind[v] = OwnKind.Guaranteed; _path[v] = new BorrowPath(RootKind.Static, _ctx.Solution.Keys.Intern(MemKey.Static(sf))); }
+                    else if (v.Op == Opc.Call && v.Kind == VK.Ref && DirectSite(v) && v.X is MethodDesc gm && _ctx.Solution.Covers(gm)
+                        && Signatures.Demand(_ctx.Solution, gm).ReturnBorrow is { Root: RootKind.Static, Steps.Length: 0 } sp
+                        && Signatures.VariantsOf(_ctx.Solution, gm).Contains(new Variant(VariantKind.BorrowReturn)))
+                    { _kind[v] = OwnKind.Guaranteed; _path[v] = sp; }
+                }
+            // (2.1's forwarding operations: Unsafe.As(object) is its operand under another type, with no count of its own:
+            // a borrow of the operand when that is Owned here, or the same borrow when the operand is a whole parameter,
+            // which the caller holds over the call. A borrow with a longer path is counted: its proof covers only its
+            // own uses)
+            if (!s_noForwardAs)
+                foreach (var b in _body.Blocks)
+                    foreach (var v in b.Code)
+                    {
+                        if (!IsForwardingAs(v) || !_kind.ContainsKey(v)) continue;
+                        var a = v.A[0];
+                        var k = KindOf(a);
+                        if (k == OwnKind.Trivial) { _kind[v] = OwnKind.Trivial; _path.Remove(v); }
+                        else if (k == OwnKind.Owned && IsRef(a)) { _kind[v] = OwnKind.Guaranteed; _path[v] = new BorrowPath(RootKind.Val, a.Id); }
+                        else if (k == OwnKind.Guaranteed && _path.TryGetValue(a, out var p) && p.Root == RootKind.Arg && p.Steps.Length == 0) { _kind[v] = OwnKind.Guaranteed; _path[v] = p; }
+                    }
             // (GC.KeepAlive: its argument is held by this frame to the call; a borrow whose root another write can
             // let go is counted instead)
             foreach (var b in _body.Blocks)
@@ -310,6 +454,15 @@ public static class Plan
         /// <summary>Guaranteed values whose root cannot hold them flip to Owned, to a fixed point (flips only make more
         /// values Owned, which only makes more roots valid): a Val root must be an Owned value of this body; a phi is
         /// Guaranteed only over Guaranteed or Trivial inputs.</summary>
+        HashSet<Node>? _terminal;
+        HashSet<Node> Terminal()
+        {
+            if (_terminal != null) return _terminal;
+            _terminal = [];
+            foreach (var b in _body.Blocks) if (b.Term is { Op: Opc.Ret or Opc.Throw } t) foreach (var x in t.A) _terminal.Add(x);
+            return _terminal;
+        }
+
         void Validate()
         {
             for (bool changed = true; changed;)
@@ -326,6 +479,9 @@ public static class Plan
                         _ => true,
                     };
                     if (ok && v.Op == Opc.Phi) ok = v.A.All(x => !IsRef(x) || KindOf(x) is OwnKind.Guaranteed or OwnKind.Trivial);
+                    // (a return or a throw counts its value after the operation's own releases, which let its root go:
+                    // a borrow of a value of this body that one of them uses is counted at its definition instead)
+                    if (ok && Terminal().Contains(v) && RootNode(p) != null) ok = false;
                     if (!ok) { Flip(v); changed = true; }
                 }
             }
@@ -413,7 +569,8 @@ public static class Plan
                 if (v.Kind == VariantKind.Owned && !_ctx.Solution.Covers((MethodDesc)n.X!)) v = Variant.Entry;
             }
             // (a borrowed result needs the borrowed-return entry, and that entry needs a borrowed result)
-            if (n.HasValue && IsRef(n) && n.Op == Opc.Call)
+            if (IsForwardingAs(n)) { }
+            else if (n.HasValue && IsRef(n) && n.Op == Opc.Call)
             {
                 bool borrowed = KindOf(n) == OwnKind.Guaranteed;
                 if (borrowed && v.Kind != VariantKind.BorrowReturn) Flip(n);
@@ -432,7 +589,7 @@ public static class Plan
                 for (int i = 0; i < b.Code.Count; i++)
                 {
                     var n = b.Code[i];
-                    if (!NeedsTake(_ctx, n)) continue;
+                    if (!NeedsTake(_ctx, n, _variant.GetValueOrDefault(n))) continue;
                     Node addr = n;
                     if (n.Kind == VK.Struct)
                     {
@@ -453,6 +610,7 @@ public static class Plan
                     _variant[t] = Variant.Entry;
                     (_takes ??= new())[n] = t;
                     Takes++;
+                    if (s_takeDump) lock (s_takeCallees) { var key = n.X?.ToString() ?? n.Op.ToString(); s_takeCallees[key] = s_takeCallees.GetValueOrDefault(key) + 1; }
                 }
         }
 
@@ -732,6 +890,17 @@ public static class Plan
                 MarkInserted(addr);
                 hold.Add(addr);
             }
+            // (one kept base, a reference: its own count is moved into the hold, which keeps it when the address points
+            // into it; no count is taken and none let go: HoldFrom)
+            if (kept.Count == 1 && kept[0].Kind == VK.Ref && HoldFromCall(_ctx.Method.Context) is { } hf)
+            {
+                var hm = new Node { Op = Opc.Call, Sub = (byte)CallKind.Direct, Kind = VK.Void, X = hf, A = [addr, kept[0]], Block = b, Id = _body.NextId(), ILOffset = -1, Moves = 1u << 1 };
+                MarkInserted(hm);
+                hold.Add(hm);
+                before.InsertRange(0, hold);
+                Keepers++; MovedKeepers++;
+                return;
+            }
             var h = new Node { Op = Opc.Call, Sub = (byte)CallKind.Direct, Kind = VK.Void, X = kc.Hold, A = [addr], Block = b, Id = _body.NextId(), ILOffset = -1 };
             MarkInserted(h);
             hold.Add(h);
@@ -763,6 +932,10 @@ public static class Plan
             foreach (var (n, c) in _args) plan.Args[n] = c;
             foreach (var (n, v) in _variant) if (v != Variant.Entry) plan.Callees[n] = v;
             foreach (var (n, c) in _cat) plan.Categories[n] = c;
+            // (5.3's Init: a store into an object only this code knows, whose field is still null)
+            foreach (var n in _init) plan.Stores[n] = StoreKind.Init;
+            // (2.3's FrameOwned: an object nothing outside this frame can reach)
+            foreach (var n in FrameObjects.Find(_ctx)) plan.Allocs[n] = AllocKind.FrameOwned;
             if (_keeps.Count > 0) KnownKeeps.AddOrUpdate(_body, _keeps);
             else KnownKeeps.Remove(_body);
             return plan;
