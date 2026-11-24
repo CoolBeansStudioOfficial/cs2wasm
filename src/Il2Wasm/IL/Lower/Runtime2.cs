@@ -424,7 +424,8 @@ public sealed partial class IlCompiler
     static int Flags2(TypeDesc t)
     {
         int f = 0;
-        bool counted = t switch
+        // (an open type, typeof(KeyValuePair<,>) or a signature variable's array: no layout, nothing counted)
+        bool counted = t.ContainsSignatureVariables(treatGenericParameterLikeSignatureVariable: true) ? false : t switch
         {
             ArrayType a => Kinds.Counted(a.ElementType),
             MetadataType { IsValueType: false } c => ((DefType)c).ContainsGCPointers,
@@ -474,7 +475,7 @@ public sealed partial class IlCompiler
                 "element" => t => (null, IdOr((t as ParameterizedType)?.ParameterType)),
                 "rank" => t => (null, t is ArrayType a ? a.Rank : 0),
                 "cor" => t => (null, CorElementType(t)),
-                "size" => t => (null, t is DefType dt && !t.IsInterface ? (t.IsValueType ? SizeOfAny(t) : IlContext.InstanceSize(dt)) : 0),
+                "size" => t => (null, t is DefType dt && !t.IsInterface && !t.ContainsSignatureVariables(treatGenericParameterLikeSignatureVariable: true) ? (t.IsValueType ? SizeOfAny(t) : IlContext.InstanceSize(dt)) : 0),
                 "box_offset" => t => (null, t.IsValueType ? IlContext.ObjectHeader : 0),
                 "interfaces" => t => (Ids(t.RuntimeInterfaces), 0),
                 "generic_args" => t => (Ids(Enumerable.Range(0, t.Instantiation.Length).Select(i => t.Instantiation[i])), 0),
