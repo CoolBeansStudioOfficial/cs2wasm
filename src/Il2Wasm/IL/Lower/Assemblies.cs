@@ -57,6 +57,29 @@ public sealed partial class IlCompiler
         return t.GetTypeDefinition() is EcmaType et ? AssemblyIndex((EcmaModule)et.Module) : 0;
     }
 
+    /// <summary>When the code can make an array of a Type at run time (TypeInfo.ArrayOf: Array.CreateInstance,
+    /// Type.MakeArrayType), the one-dimensional array of each type that is a Type object in code that can run (typeof,
+    /// ldtoken) is made a type of the program, so it has code (its dispatch, its destroy) as .NET has it
+    /// (IL2WASM_NO_REFLECTED_ARRAYS=1: none); true when any is new.</summary>
+    bool RequestArrayTypes()
+    {
+        if (!_typeTables.ContainsKey("array_of") || s_noReflectedArrays) return false;
+        bool any = false;
+        foreach (var t in Facts.TypeObjects.ToList())
+        {
+            if (t.IsByRef || t.IsPointer || t.IsFunctionPointer || t.IsVoid || t.IsGenericDefinition || t.ContainsSignatureVariables()
+                || t is MetadataType { IsByRefLike: true } || t.IsCanonicalSubtype(CanonicalFormKind.Any)) continue;
+            var at = t.MakeArrayType();
+            if (_constructed.Contains(at)) continue;
+            Constructed(at);
+            Reflectable(at);
+            any = true;
+        }
+        return any;
+    }
+
+    static readonly bool s_noReflectedArrays = Environment.GetEnvironmentVariable("IL2WASM_NO_REFLECTED_ARRAYS") == "1";
+
     /// <summary>The assemblies' attributes the program can ask for, with their factories; true when anything new was
     /// made (its code is to be compiled).</summary>
     bool RequestAssemblyRecords()
