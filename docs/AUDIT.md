@@ -5605,3 +5605,84 @@ Not run: the homelab suite and the self-host check on this commit.
   PureCalls' memo depends on import order (3.5) though no module changed; no Groups.cs/Threads.cs stubs. Not run:
   the homelab suite, stress and the self-host check (the old front end, the runtime and the back end are
   unchanged).
+
+### Memory model S1 row e: executed counts per site, live objects per type against .NET (claude/s1-rcstats, 2026-11-24)
+
+- What: docs/MEMORY-IR.md 9.1 and 9.2.
+  - `Lower/RcStats.cs` (IL2WASM_COUNT_RC=1): every call of rt.retain and rt.release in the final module gets a
+    counter of its own after the back end's passes (Module.AfterOptimize). That covers the program's, the library's,
+    the runtime's and the generated functions. A call of a struct helper is a site of calls, whose own counts
+    tools/il-rcstats.mjs charges to its callers.
+  - Per site the table counts: executed; changed a count (the object is not null and not immortal); popular (the
+    object's count was 8 or more before the operation, Shahriyar's 3-bit overflow). Every operation is also bucketed
+    by the object's count before it.
+  - `RcStats.Count` (frozen interface) tags the count call FunctionLowering just emitted with its RcCategory and the
+    role of its node. Row f places the calls. Untagged sites are classified from the compiler method that emitted
+    them and the optimized instructions around them; a released value is traced back to its local's last store
+    (field load, parameter, call result, allocation).
+  - With IL2WASM_IL_COUNT_OBJECTS=1 as well, objects are counted per type: at Rt.AllocObject's entry (its type id) and
+    at Rt.FreeObject's (the header's type id).
+  - `host/run.mjs` writes the table at exit to IL2WASM_RCSTATS_OUT; IL2WASM_RCSTATS_PRINT=1 gives a summary on stderr.
+  - `tools/il-rcstats.mjs`: report / share / live / run. `run` compiles a .cs or a case dll twice (as configured, and
+    IL2WASM_MEM_NAIVE=1), runs both, and gives the removal share overall, without the runtime, and per owner (program,
+    containers, library, runtime, generated). It also gives a breakdown by role and category and the top sites, and
+    checks the output against `--expected`.
+  - `tools/il-live-oracle`: the .NET side of 9.2, for the homelab only. It is a startup hook that runs the program's
+    entry point, then GC.Collect, WaitForPendingFinalizers, GC.Collect, then the runtime's heap walk (GCHeapCollect
+    with type names, read from CoreLib's own in-process EventPipe session by reflection). It uses no packages: an
+    EventListener drops the bulk events' arrays, and at ProcessExit no events are delivered. `il-rcstats live
+    --oracle` requires equality per type on the program's own types. The library's internals are listed apart:
+    reflection caches, event sources and the console differ by design.
+- Measuring changes nothing that executes, with two exceptions.
+  - rt.retain and rt.release get an atomic entry counter. The back end's inliner keeps functions with atomics as
+    calls; without that it writes rt.retain, a small leaf, into loops, and those counts are seen by no site
+    ([run]: NBody 776 retains counted of 1,249,159). The host checks that the sites add up to the entries; they did
+    on every run below.
+  - Wasm/RcFastPaths is forced off (IL2WASM_RC_FAST=0) for the same reason.
+- Byte identity [run, desk], switch off, against main 95d6f25: hello world on the IL CoreLib (1,375,107 B) and every
+  module the IL tests compile (48, IL2WASM_IL_TESTS_DUMP) are the same bytes. IL tests 109 of 109 on both.
+- Cost of the switch [run, desk, hello world]: compile 15.1 s against 10.7 s (the Emitter's existing per-call cause
+  stack walk, plus the site pass); the module grows from 1,375,107 to 1,541,503 B; 30,613 sites.
+- Naive baselines [run, desk, IL2WASM_MEM_NAIVE=1, one run each; ops = executed retains + releases]. The plan is
+  still the stub, so the share as configured is 0% until rows a to d land.
+
+  | program | ops | changed a count | popular | program / library / runtime+generated | parameter | field | element | static | store-old | destroy | live at exit |
+  |---|---|---|---|---|---|---|---|---|---|---|---|
+  | hello world | 1,911 | 61% | 1% | 0 / 99 / 1% | 36% | 8% | 5% | 13% | 9% | 0% | 46 |
+  | bench DictionaryInts | 15,587,520 | 83% | 0% | 0 / 100 / 0% | 25% | 30% | 5% | 23% | 0% | 0% | 70 |
+  | bench WordCount | 7,550,995 | 93% | 12% | 13 / 87 / 0% | 52% | 24% | 5% | 13% | 2% | 0% | 76 |
+  | bench Strings | 6,581,167 | 74% | 7% | 7 / 93 / 0% | 49% | 7% | 7% | 26% | 0% | 0% | 381 |
+  | bench Tree | 15,312,501 | 58% | 0% | 79 / 11 / 11% | 53% | 31% | 0% | 0% | 5% | 11% | 44 |
+  | bench ListSort | 475,315,181 | 69% | 0% | 0 / 100 / 0% | 3% | 0% | 16% | 62% | 0% | 0% | 383 |
+  | bench Linq | 32,954,570 | 91% | 7% | 9 / 91 / 0% | 40% | 26% | 4% | 15% | 1% | 0% | 571 |
+  | bench NBody | 2,498,767 | 100% | 0% | 100 / 0 / 0% | 0% | 0% | 100% | 0% | 0% | 0% | 67 |
+  | bench Shapes | 9,865,423 | 100% | 0% | 100 / 0 / 0% | 50% | 0% | 50% | 0% | 0% | 0% | 67 |
+  | bench LinkedNodes | 13,802,311 | 98% | 59% | 68 / 30 / 1% | 32% | 45% | 1% | 3% | 3% | 1% | 67 |
+
+  24 allocation-heavy NetWasm cases (shipped, passing at main): BigInteger, Collection, ComplexMutableCollection,
+  Dictionary, EnumerableIteratorContract, HashSet, the six Immutable* cases, LambdaIterator, LinkedList, List,
+  ObjectModelCollection, OrderedDictionary, Queue, RegexReplacement, SortedCollections, SortedList, Stack and
+  fixture-memory.collector-retention.
+  - They run 5,456 (LambdaIterator) to 4,509,937 (BigInteger) count operations, 92-99% of them in library code.
+  - Parameters' entry retains and last-use releases are 29-82% of all count operations: the +0 convention's target.
+  - All 24 print the oracle's output with the counters on. Per-case tables: `node tools/il-rcstats.mjs run <case
+    dll> --naive-only --live`.
+- Findings [run].
+  - In ListSort, 62% of all count operations (about 295M of 475M) are 5 sites in RuntimeType.FromId(int32): a static
+    load, an element load, and their releases. They are reached from GenericArraySortHelper<int>.LessThan through
+    unfolded typeof tests. This is a target for SCCP or the planner.
+  - Live objects against .NET's heap walk: on the program's own types, 22 of the 24 cases are equal. Two are not.
+    - SortedList: 3 SortedList<int,int>, each with its KeyList and ValueList, plus their DescendingComparer, stay
+      live; .NET has none. SortedList.Keys caches a KeyList that points back at its list: a cycle. In S1 cycle groups
+      are still the stub, so this is S2's to free.
+    - fixture-memory.collector-retention: 1 Payload stays live; .NET has none. `ref new Payload(41).Number` is
+      returned, and this is Ownership.cs's deliberate keep of an object under a returned byref (MEMORY-IR 7.4).
+- Not done:
+  - MethodPlan.Categories and the Count tags exist but are untested end to end until row f places the Count calls;
+    the untagged classification is heuristic.
+  - Counting needs the back end's optimizer (IL2WASM_IL_NO_OPT=1 gives no counters).
+  - The live check covers only objects that go through Rt.AllocObject and Rt.FreeObject.
+  - The oracle's walk sees .NET's own runtime objects, so only program types are compared for equality.
+  - Not run: the NetWasm suite with the switch off. It is byte-identical by construction: RcStats is null when off,
+    and the IL tests' modules matched. Also not run: the homelab suite, stress and the self-host check (no runtime,
+    back end or old front end change).
