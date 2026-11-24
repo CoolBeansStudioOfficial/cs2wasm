@@ -1387,6 +1387,163 @@ owner. Runtime.cs edits are confined to new regions per agent.
 
 ---
 
+### 11.4 Frozen interfaces (step 1)
+
+Step 1 is built on `claude/mem-foundation` [run]: the facts, the summary, the solver with reach and dispatch moved out
+of `IlCompiler.Reach`, the phase split, and a stub with its interface for each S1 row. Lowering still uses the naive
+`Ir/Ownership.cs`; every module is byte-identical to main's (hello world on the IL CoreLib, every module the IL tests
+compile). Changes to the files marked **frozen** go through the coordinator.
+
+**The pipeline as built.** The rounds stay the outer loop (3.4). Each round is `IlCompiler.Reach(entry)`:
+
+```
+ReachPhase   Solver.Root(entry, the exports, the round before's seeds); Solver.Reach()
+             each method: IReachHost.Import -> IlCompiler.ImportMethod -> ProgramFacts.Import
+               (importer, Sccp, import with the decisions) -> MethodSummary; nothing lowered, no module change
+             edges: direct calls, constructors (string's Ctor), ldftn, ldvirtftn, cctors a use may start,
+               constructed types (newobj, newarr, box) with their finalizers, slots x constructed types (RTA)
+SolvePhase   Solution = Solver.Solve()               (ProgramSolution; facts solved when first asked for)
+             IL2WASM_MEM_PLAN=1: Signatures.Compute(Solution)
+LowerPhase   today's loop, unchanged order: FunctionFor from main, the dispatch, Finish, the requests
+             CompileMethodCore: Solver.Take(m) ?? ImportMethod(m) (a late import)
+               -> ProgramFacts.Merge(summary) (this round's facts, recorded where the import used to be)
+               -> PlanMethod -> FunctionLowering(this, body, plan, f)
+PlanMethod   default: MethodPlan.Naive(body, Ownership.Run(body))
+             IL2WASM_MEM_PLAN=1: Plan.Build(ctx); while Inline.Step(...) is a site: Canon.Run, Verify.Check;
+             Verify.Check (Pipeline.Verify)
+```
+
+Lowering keeps its own order, so function, type id and literal order are as before; the reach phase's order only
+decides import order. Two consequences, both measured:
+
+- **Coverage.** Lowering still reaches what the IR does not show: the runtime helpers the generated code calls,
+  `Finish`, `RequestFinalizers`, `RequestActivation`, the attribute factories. Each such method is a late import,
+  outside the solution (`ProgramSolution.Covers` is false; `Facts` gives the top). The methods lowering imported late,
+  and the types it constructed that the IR did not show, seed the next round's reach phase. Hello world on the IL
+  CoreLib, rounds 0 to 5: 1,002, 3, 1, 0, 0, 0 late imports (of about 4,350 methods lowered), and 0 reached methods
+  that lowering never took in the last round. Round 0, and any build with `IL2WASM_IL_ROUNDS=1`, has the late
+  imports: a plan must treat an uncovered callee as unknown.
+- **Memory.** All of a round's bodies are held from the reach phase to their lowering: 19 MB of bodies and 4 MB of
+  summaries live on hello world (measured by dropping them). Peak working set under the CLI's server GC (24 heaps on
+  the desk): 625-673 MB against main's 497-549 MB; under workstation GC 431-499 MB against 413-438 MB; with 4 heaps
+  equal. Compile time: equal within the desk's noise. `IL2WASM_MEM_REIMPORT=1` keeps only the summary and the import
+  decisions and imports the body again at lowering (3.8's fallback: about 0.8 s more on hello world, and it did not
+  bring the server-GC peak down: 575-631 MB). The peak is a step-1 cost on record, not settled.
+
+**Files.**
+
+| File | Owner | State |
+|---|---|---|
+| `IL/Memory/Facts.cs` | step 1 (frozen) | the lattice of section 2 and `MethodPlan` |
+| `IL/Memory/Summary.cs` | step 1 (frozen) | `ImportedMethod`, `IReachHost`, `MethodSummary` |
+| `IL/Memory/Solver.cs` | step 1 (frozen) | `Solver` (reach, dispatch), `ProgramSolution` |
+| `IL/Memory/Pipeline.cs` | step 1 (frozen) | switches, `PlanContext`, `InlineSite` |
+| `IL/Lower/Phases.cs`, `IL/Lower/IlCompiler.cs` | step 1 (frozen) | the phases, `ImportMethod`, `PlanMethod`, `CalleeForInline` |
+| `IL/Reach/ProgramFacts.cs` | step 1 | `Import` writes nothing; `Merge(MethodSummary)` records what `Record` did |
+| `IL/Memory/Signatures.cs` | S1 a | stub: everything Lend, own entry |
+| `IL/Memory/Borrows.cs` | S1 b | stub: every value Owned |
+| `IL/Memory/Plan.cs`, `IL/Memory/Verify.cs` | S1 c | stub: the naive plan; no checks |
+| `IL/Ir/Inline.cs`, `IL/Memory/Canon.cs` | S1 d | stub: nothing inlined |
+| `IL/Lower/RcStats.cs` | S1 e | stub: off |
+| `IL/Lower/FunctionLowering.cs` (and `Filters.cs`) | S1 f | reads `MethodPlan` (`CountedValues`, `PhiMoves`); the tables are not read yet |
+
+**Facts.cs** (namespace `Il2Wasm.IL.Memory`). Every fact starts at its bottom and only grows by its join; a must-fact
+is the emptiness test of its counter-evidence.
+
+| Type | Section | Members |
+|---|---|---|
+| `IdTable<T>` | 2, 3.5 | `int Intern(T)`, `int IdOf(T)` (-1: none), `T this[int]`, `Count`, `Items`, `int[] StableOrder(Func<T,string> key)` |
+| `StableKey` | 3.5 | `static string Of(object)` (the printed identity of a method, field or type) |
+| `KeyKind`, `MemKey` | 2.2, 3.2 | `Field`, `Elem`, `Static`, `Slot` (any slot of a type written through a `ref T`), `Var` (own frame; never in Mods); `MemKey.Field(f)` keys by the typical definition |
+| `KeyTable` | 2 | dense key ids: `Intern`, `IdOf`, `this[int]`, `StableOrder()` |
+| `IdSet`, `SetPool` | 2 | sorted, interned id sets: `IsEmpty`, `Contains`, `IsSubsetOf`, `Overlaps`, `Items`; `SetPool.Of`, `Add`, `Join` |
+| `KeySet` | 2.8 | `(IdSet Keys, bool Wild)`: `Empty`, `All`, `IsEmpty`, `Hits(key)`, `HitsAny(IdSet)`, `Join` |
+| `OwnKind`, `OwnFact` | 2.1 | `Trivial < Guaranteed < Owned`; `OwnFact(Kind, BorrowPath? Path)`, `Join` (two borrows of one path stay one, else Owned) |
+| `RootKind`, `PathStep`, `BorrowPath` | 2.2 | root `Arg`/`Val`/`Static`/`Var` with `Index`; at most `MaxSteps` = 3 `PathStep(Key, Elem)`; `Then(step)` is null (generic) past the cap; `Keys()`; `Same` |
+| `BorrowEvidence` | 4.6 | `(KeySet Writes, bool RootMayDie, bool OtherThread)`; `Holds`; `Join` |
+| `AllocKind` | 2.3 | `Virtual < FrameOwned < Heap` |
+| `Escape`, `ParamEscape` | 2.8 | flags `Returned`, `Stored`, `Thrown`, `ToThread`, `Unknown`; `ParamEscape(Ways, StoredKeys)`, `Join` |
+| `ThreadEsc`, `AbstractObject`, `SiteTable` | 2.4, 6.3 | `Local < Published < Shared`; `AbstractObject(Method, ILOffset, ContextMethod, ContextOffset)` (context depth 1); dense `SiteId`s |
+| `EdgeKind`, `Proof`, `ProofEvidence` | 2.5, 5.2 | `Outside`, `Down`, `Up`, `Part`, `Inside`; proofs `Part`, `Up`, `DownStore`, `Fresh`, `ConstructionOnly`, `OwnedArray`, `Persistent`, each with its violating store sites; `Holds` |
+| `ChainPos`, `CycleFact` | 2.5, 5.1 | `Below(base, depth)` with `None`/`Unknown` and `Join`; `CycleFact(Scc)`, `CycleCapable` |
+| `TypeSet` | 2.6 | `(IdSet Types, int Cone)`, `Cap` = 16, saturates to `ConeOf(declared)`; `Single`, `Join(o, declared, pool)` |
+| `Lattice` | | the joins of the enums; `Join(Val, Val)` is SCCP's `Val.Meet` |
+| `CountKind`, `StoreKind`, `LoadKind`, `AccessKind`, `ArgConv` | 2.7, 5.3, 6.5, 6.6, 4.3 | `Elided`/`Plain`/`Atomic`; 5.3's twelve kinds; `Plain`/`LoadRetain`; `Plain`/`Atomic`; `Lend`/`HandOver`/`KeepAlive` |
+| `ParamConv`, `HandOverReason` | 4.1-4.5 | `Lend < HandOver`; reasons `Stores`, `KeepsRunning`, `Group`, `Indirect`, `Large` |
+| `VariantKind`, `Variant` | 4.4, 3.5 | `Entry`, `Owned` (with `Mask`), `Lend`, `BorrowReturn`; `Suffix` is the stable name suffix (`|own<mask>`, `|lend`, `|retborrow`) |
+| `RcCategory` | 9.1 | the categories of 9.1, plus `Naive` |
+| `OwnershipSignature` | 4.1 | `ParamConv[] Params`, `HandOverReason[] Reasons` (this is 0), `BorrowPath? ReturnBorrow`; `Bottom(m)`; `bool JoinFrom(o)` |
+| `MethodFacts` | 2.8 | `KeySet Mods`, `KeySet ReleaseEffects`, `ParamEscape[] ParamEscapes`, `OwnershipSignature? Signature`, `Escape NotFresh` (`FreshReturn`), `BorrowPath? BorrowReturn`, `MayReturn` (`NeverReturns`), `MayThrow`, `RunsFilters`, `ObservesLifetime` |
+| `NodeTable<T>` | 0, 2 | a fact per `Node.Id`, unset reads as the bottom given; grows for nodes added later |
+| `MethodPlan` | 1.2 | `Body`, `List<Node> CountedValues`, `HashSet<(Node,int)> PhiMoves` (`PhiMove(phi, pred)`), `Bases`; tables `Own`, `Counts`, `Stores`, `Loads`, `Accesses`, `Allocs`, `Args` (`ArgConv[]?` per call), `Callees` (`Variant` per call), `Categories`; `Variant Entry`; `static Naive(body, Ownership.Info)` |
+
+A `MethodPlan` table left unset lowers as today (every count `Plain`, every store `Plain`, arguments as today, every
+allocation `Heap`): `MethodPlan.Naive` is exactly `Ownership.Run`'s result.
+
+**Summary.cs.**
+
+- `ImportedMethod`: `Method`, `MethodIL? Il`, `Body? Body`, `MethodSummary? Summary`, `ImportFacts? Facts`,
+  `bool Substituted`, `ExceptionDispatchInfo? Error`, `bool ErrorBeforeImport`, `Body? TakeBody()`. An import's
+  failure is rethrown where lowering reaches the method, so errors are reported where and as before.
+- `IReachHost` (IlCompiler implements it): `ImportedMethod? Import(MethodDesc)` (null: no IL to import),
+  `bool LoweredInline(MethodDesc)`, `MethodDesc ConstructorTarget(MethodDesc)`, `IEnumerable<MethodDesc>
+  TypeEdges(TypeDesc)`, `MethodDesc? Resolve(TypeDesc exact, MethodDesc slot)`.
+- `MethodSummary`, built once per body with no shared state (`Build(m, first, sccp, body, host)`, or
+  `FromConstants(m, first, sccp)` then `AddEdges(body, host)`):
+  - the constant propagation's facts, in node order: `Direct`, `ArgMeets`, `FieldStores`, `Return`,
+    `StaticsWritten`, `TypeObjects`, `FunctionPointers`, `ArrayElementTypes`, `Aliased`;
+  - reach edges of the body lowering lowers: `Calls`, `Slots`, `Constructs`, `Initializes`;
+  - memory: `Stores` (`MemKey`s stored directly), `WildStores`, `CallsUnknown` (calli, a delegate's Invoke),
+    `Intrinsics` (calls lowering expands), `MayThrow`, `MayReturn`, `ObservesLifetime` (`GC.KeepAlive` for now).
+
+**Solver.cs.**
+
+- `Solver(IReachHost)`: `Root(m)`, `Reach()`, `ImportedMethod? Take(m)` (once; the body is lowering's),
+  `Late(ImportedMethod)`, `LateMethods`, `LateImports`, `Unused`, `IsConstructed(t)` (by the IR),
+  `SeedConstructed(t)`, `WasLowered(m)`, `ProgramSolution Solve()`, `Report()`.
+- `ProgramSolution`: `Methods` (`IdTable<MethodDesc>`, MethodIds in stable order, made on first use), `Types`
+  (constructed types first: ids below `ConstructedCount`; then declared types a Cone names), `Keys`, `Sites`, `Pool`,
+  `Slots`, `Constructed`, `Threaded` (Rt.SpawnCore reached), `Covers(m)`, `MethodId(m)`, `Summary(m)`,
+  `Targets(slot)` (implementations over the constructed types, stable order), `CallTargets(Node call)`,
+  `TypeSet ReceiverTypes(Node call)` (the type of an object made right there, else the constructed types the
+  receiver's static type admits, Cone past 16), `MethodFacts Facts(m)` (the top for a method not covered), and
+  `static Func<MethodDesc, KeySet> IntrinsicEffects` (the hook for `Memory/IntrinsicSignatures.cs`; `All` until then).
+- `Facts(m)` solves on first use: local Mods from `Stores`, `Wild` for `WildStores`, `CallsUnknown`, an uncovered
+  callee or an intrinsic (until `IntrinsicEffects` is filled); closed over the call graph (Tarjan, callees first,
+  each component to its fixed point; virtual calls through `Targets`) with `MayThrow` and `ObservesLifetime`.
+  `ReleaseEffects` is `All` when any constructed type has a finalizer, else `Empty` (3.6's `DestroyEffects` per type
+  is S1 or S2 work). Every `Signature` starts at `Bottom` for `Signatures.Compute` to raise.
+
+**Pipeline.cs.** `Pipeline.Naive` (`IL2WASM_MEM_NAIVE=1`), `Planned` (`IL2WASM_MEM_PLAN=1`, not naive), `Inline`
+(planned, not `IL2WASM_NO_IR_INLINE=1`), `Verify` (planned, and `IL2WASM_VERIFY=1` or a Debug build).
+`PlanContext(MethodDesc Method, Body Body, ProgramSolution Solution, Variant Entry)` with `Summary`, `Facts`,
+`Threaded`. `InlineSite(Node Call, MethodDesc Callee, Block First, Block Last)`.
+
+**The S1 stubs** (each file's signatures are frozen; the bodies are the agents'):
+
+| File | Signatures |
+|---|---|
+| `Signatures.cs` | `static void Compute(ProgramSolution)`; `static OwnershipSignature Of(ProgramSolution, MethodDesc)` (an uncovered method: every parameter HandOver, reason Indirect); `static OwnershipSignature GroupOf(ProgramSolution, Node call)`; `static ArgConv CallRule(PlanContext, Node call, int arg, bool lastUse)`; `static bool KeepsRunningAfter(ProgramSolution, Body, int parameter)`; `static Variant ChooseVariant(PlanContext, Node call, uint handedOverMask)`; `static IReadOnlyList<Variant> VariantsOf(ProgramSolution, MethodDesc)` |
+| `Borrows.cs` | `sealed class BorrowFacts { NodeTable<OwnFact> Own; NodeTable<BorrowEvidence> Evidence; NodeTable<bool> Flipped; }`; `static BorrowFacts Analyze(PlanContext, Ownership.Info liveness)`; `static BorrowPath? PathOf(PlanContext, Node value)` |
+| `Plan.cs` | `static MethodPlan Build(PlanContext)` |
+| `Verify.cs` | `static void Check(PlanContext, MethodPlan)`; `sealed class PlanVerifyException(string)` |
+| `Ir/Inline.cs` | `const int Budget = 24`; `static InlineSite? Step(PlanContext, MethodPlan, Func<MethodDesc, Variant, (Body Body, MethodPlan Plan)?> callee)`; the callee function is `IlCompiler.CalleeForInline` (imports the callee again and plans it for that entry) |
+| `Canon.cs` | `static void Run(PlanContext, MethodPlan, InlineSite)` |
+| `Lower/RcStats.cs` | `static bool On` (`IL2WASM_COUNT_RC=1`), `static string? SitesFile`; `IlCompiler.RcStats` (null when off); `int Site(MethodDesc, Node countOp, RcCategory)`; `void Count(Emitter, MethodDesc, Node countOp, RcCategory)` (FunctionLowering calls it at each count operation: agent f places the calls, agent e writes the body); `void EmitLate()` (GenerateLate calls it) |
+| `FunctionLowering.cs` | `FunctionLowering(IlCompiler, Body, MethodPlan, WasmFunction)`; reads `CountedValues` and `PhiMoves` today; S1 f makes it read `Counts`, `Stores`, `Loads`, `Accesses`, `Allocs`, `Args`, `Callees`, `Own` |
+
+**Not done in step 1, on record.**
+
+- Variant functions: `Signatures.VariantsOf` and `MethodPlan.Callees` exist, but `IlCompiler` has no queue entry
+  for a (method, variant) pair yet: making one is an `IlCompiler` change for agents a and f through the coordinator.
+- Receiver types come from static types: the constant propagation's values are for the first import's nodes, not
+  the body lowered.
+- `IntrinsicEffects` is `All` until `IntrinsicSignatures.cs` exists, so Mods is `Wild` for most CoreLib methods.
+- `PureCalls` memoizes results that depend on the depth and recursion guards, so its answers can depend on the order
+  methods are imported in (3.5). The reach phase imports in an order of its own; every module still matched main's
+  byte for byte, but the dependence is there until `PureCalls` is made order-free.
+- `Groups.cs` and `Threads.cs` (S2, S3) have no stubs.
+
 ## 12. Literature recommendations not adopted (they conflict with the constraints)
 
 | Recommendation or technique | Source | Conflict | Instead |
