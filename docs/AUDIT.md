@@ -5665,3 +5665,63 @@ Not run: the homelab suite and the self-host check on this commit.
   No planner sets Allocs yet, so frame allocation is unmeasured on real plans. Not run: the homelab suite, bench.mjs
   and frames.mjs speed, stress, and the self-host check (the old front end, the runtime and the back end are
   unchanged).
+### Memory model S1 row b: speculative borrows (claude/s1-borrows), and the solver's effects (claude/s1-solver-effects, 2026-11-24)
+
+- What (row b, `IL/Memory/Borrows.cs`, MEMORY-IR 4.6). Counted reference loads start as borrows of their source path:
+  `LdFld`, `LdElem`, `LdSFld`, `VarLd` of a frame variable whose address is never taken, their casts, and loop phis
+  (LocalBorrows on SSA: inputs that are null, one path, or values read out of the phi itself). A group of such values
+  is decided as a whole, over the union of its members' live ranges and keys, parents before children; a child of a
+  flipped parent is re-rooted at the parent's Owned value. Proof 1: no aliasing store in the body (type-based keys;
+  self-stores exempt), no call whose Mods/ReleaseEffects hit a key, no release whose DestroyEffects hit one, no static
+  constructor started by the body's own node, FilterMods when live into a handler, the root alive. Proof 2: S1 is
+  `!Threaded`, or init-only keys. Init-only follows InitOnlyFields (initonly class field, never address-taken, no
+  FieldInfo.SetValue reached, one store per constructor of its own type, on this, outside loops, no chained double
+  store). Paths are at most 3 steps; anything else is generic, Owned. Lowering does not read the facts yet (row c).
+- Switches: `IL2WASM_NO_SPEC_BORROWS`, `NO_FIELD/ELEM/STATIC/VAR/LOCAL_BORROWS`, `NO_INIT_ONLY`, `NO_SELF_STORES`;
+  break twins `SPEC_BORROWS_BREAK`, `INIT_ONLY_BREAK`, `SELF_STORES_BREAK`. `IL2WASM_BORROW_STATS=1` (counts at exit,
+  last round), `IL2WASM_BORROW_TRACE=1` (each flip), `IL2WASM_BORROW_SITES=file` (each load's decision, for the new
+  `tools/il-borrow-weight.mjs`, which zips them with tools/il-rcstats.mjs' executed retain sites per function and role).
+- Tests [run, desk]: `BorrowChecks` (tests/Il2Wasm.IL.Tests, section "borrows"), 19 checks twice: with the naive
+  plan's counts in the body and with them removed (the planner's view, implied releases); each switch and break twin
+  makes its checks fail (run one by one). IL tests 147 of 147 with `IL2WASM_MEM_TRACE=1 IL2WASM_BORROW_STATS=1` (the
+  solve and the analysis forced in every compile).
+- Static sites [run, desk, last round]: hello world 2142 counted loads, 827 borrowed (38.6%), 390 generic, 925
+  flipped (Release 438, CallWild 364, RootDies 98, Filter 13, Intrinsic 7, Store 3, Cctor 1, VarWrite 1). The
+  framework programs f01-f11 are 37.9-40.4% (CoreLib start-up). The stub-CoreLib programs 01-09: 1/1, 9/11, 4/10,
+  1/2, 3/5, 1/1, 19/21, 1/10 (8 generic: fields of structs), 2/5.
+- Executed [run, desk, naive builds, IL2WASM_COUNT_RC, one run of each kernel of tools/bench/Programs.cs]: borrowed
+  share of executed counted loads, and the largest flip reason:
+
+  | kernel | executed loads | borrowed | flips |
+  |---|---|---|---|
+  | Tree | 2,408,600 | 0.0% | Release 50.0%, CallWild 50.0% (Walk's n.Left/n.Right) |
+  | DictionaryInts | 5,167,809 | 48.3% | Release 45.8%, generic 4.2%, RootDies 1.7% |
+  | ListSort | 221,847,099 | 66.5% | Release 33.4% |
+  | Linq | 8,444,285 | 72.5% | Release 17.9%, CallWild 7.2%, Parent 2.4% |
+  | WordCount | 1,443,010 | 33.3% | Release 50.0%, generic 8.3%, RootDies 8.3% |
+  | LinkedNodes | 4,500,201 | 2.2% | CallWild 88.9%, RootDies 6.7% |
+
+  Fewer than 1,100 executed loads per kernel could not be matched (the back end inlined or merged their sites).
+  A finding outside this row: `RuntimeType.FromId` runs 73.7 million times in ListSort (3 loads each), on most
+  comparisons; it looks like a type test that is not folded.
+- What decides the flips: every release is a barrier while a destroy can reach a finalizer, and with weak marks
+  reached every destroy runs ObjectMarks.OnDestroy, whose Mods were Wild (IntMap.Remove -> Mem.StoreI32). Row a's
+  private keys and declared heap effects take that part. What remains is finalizer reach through object, interface
+  and abstract cones: per-key TypeSets (2.6), next. Bounds measured with unsound diagnostics (hello world, CoreLib Mods
+  not Wild, with row a's intrinsic table): 30.8% today; 37.6% with perfect value TypeSets; with the marks' hooks free
+  33.5%, 36.2% with perfect field TypeSets, 57.0% with both.
+- Solver (claude/s1-solver-effects, merged to main at 50e543a; coordinator-sanctioned): (a) a summary's Initializes
+  are callee edges (Mods include the static constructors a call may start); (b) per-type DestroyEffects (3.6): a
+  least fixed point of finalizers below each constructed type through counted fields and elements, the weak marks'
+  hooks as real targets, a method's releases from its bodies' counted value types and stored slots, one release node
+  per distinct target set; `ProgramSolution.DestroyEffects(type)`. Byte identity [run]: hello world and all 48 IL test
+  modules the same bytes as main. CoreLib Mods not Wild on hello world: 19.7% (main) -> 18.4% (cctor edges: soundness)
+  -> 22.8% (6 rounds), 22.5% at 1 round; 29.6% with row a's table on the same tree. Facts time per round after the
+  release-node fix: 263-292 ms at 1 round (2,335 ms at b7fd3c9), 350/224/74/96/66 ms over 6 rounds.
+- Lever 2 skipped (coordinator, 2026-11-24): treating raw stores of non-counted values as no program key gains at most
+  +0.4 points (30.8% -> 31.2%, an unsound bound). The sound form needs the address's bases to be reference-free, and
+  most such stores go through char*/byte* parameters, so it needs an interprocedural fixed point over pointer
+  arguments, which round-0 late imports (callers outside the solve) make unsound.
+- Not done: per-key TypeSets; `BorrowReturn` results (row a's `Facts.BorrowReturn`; the planner must then pick the
+  `|retborrow` variant); `LdInd` through path-known addresses; struct-typed loads (always Owned here). Not run: the
+  NetWasm suite (no output changes until row c reads the facts), the homelab suite, stress, self-host.

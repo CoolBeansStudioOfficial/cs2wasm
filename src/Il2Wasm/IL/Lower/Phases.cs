@@ -92,7 +92,12 @@ public sealed partial class IlCompiler : IReachHost
     MethodPlan PlanMethod(MethodDesc m, Body body, Variant entry = default)
     {
         // (a variant's plan is for its own entry: IlCompiler.VariantFor)
-        if (!Pipeline.Planned || Solution == null) { var naive = MethodPlan.Naive(body, Ownership.Run(body)); naive.Entry = entry; return naive; }
+        if (!Pipeline.Planned || Solution == null)
+        {
+            var info0 = Ownership.Run(body);
+            if (Borrows.Stats && Solution != null) Borrows.Analyze(new PlanContext(m, body, Solution, entry), info0);
+            var naive = MethodPlan.Naive(body, info0); naive.Entry = entry; return naive;
+        }
         var ctx = new PlanContext(m, body, Solution, entry);
         var plan = Plan.Build(ctx);
         plan.Entry = entry;
