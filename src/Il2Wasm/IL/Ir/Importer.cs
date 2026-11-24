@@ -562,6 +562,15 @@ public sealed partial class Importer
             var n = S[^1]; S.RemoveAt(S.Count - 1); return n;
         }
         void Push(Node n) => S.Add(n);
+        /// <summary>A typeof a fold consumed: removed when nothing else uses it (it is pure; left in, it was a
+        /// Type.FromId call and a release per test, 62% of ListSort's count operations through GenericArraySortHelper).</summary>
+        void DropFolded(Node n)
+        {
+            if (n.Op != Opc.TypeOf || n.Block != B || S.Contains(n)) return;
+            foreach (var x in B.Code) foreach (var o in x.A) if (o == n) return;
+            if (I._cur.TryGetValue(B, out var vars) && vars.ContainsValue(n)) return;
+            B.Code.Remove(n);
+        }
         int _at;
 
         Node Add(Opc op, VK k, StackType st, TypeDesc? t, params Node[] a)
@@ -1212,7 +1221,7 @@ public sealed partial class Importer
             if (S.Count > 0 && S[^1].Op == Opc.TypeOf && !m.Signature.IsStatic && m.Signature.Length == 0 && m.OwningType is MetadataType { Name: var _ } tt0 && tt0.GetName() == "Type"
                 && S[^1].X is TypeDesc known && TypeQuery(m.GetName(), known) is bool q)
             {
-                Pop();
+                DropFolded(Pop());
                 Push(Const(VK.I32, q ? 1 : 0));
                 return;
             }
@@ -1222,6 +1231,7 @@ public sealed partial class Importer
             {
                 var b2 = Pop(); var a2 = Pop();
                 bool same = a2.X == b2.X;
+                DropFolded(b2); DropFolded(a2);
                 Push(Const(VK.I32, (m.GetName() == "op_Equality") == same ? 1 : 0));
                 return;
             }

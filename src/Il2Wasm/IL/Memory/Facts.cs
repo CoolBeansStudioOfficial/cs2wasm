@@ -75,8 +75,10 @@ public static class StableKey
 
 /// <summary>The kinds of memory location a store or a borrow path names (section 2.2, RefStores' rules): an instance
 /// field by its typical definition (FieldLoads' key), the elements of arrays of an element type, a static field,
-/// any slot of a type written through a <c>ref T</c> (an address of unknown target), and a frame variable.</summary>
-public enum KeyKind : byte { Field, Elem, Static, Slot, Var }
+/// any slot of a type written through a <c>ref T</c> (an address of unknown target), a frame variable, and a runtime
+/// type's private memory (its own tables in memory no object holds: no program load reads it, so no borrow path names
+/// it; Memory/IntrinsicSignatures.cs).</summary>
+public enum KeyKind : byte { Field, Elem, Static, Slot, Var, Private }
 
 /// <summary>A memory location key before it has a dense id: the summary of one method names keys by their type
 /// system objects (no shared state while summaries are built), the solver interns them (<see cref="KeyTable"/>).</summary>
@@ -88,6 +90,9 @@ public readonly record struct MemKey(KeyKind Kind, object? Target, int Index = 0
     public static MemKey Slot(TypeDesc t) => new(KeyKind.Slot, t);
     /// <summary>A frame variable of the method itself (Body.Vars index): never part of a callee's Mods.</summary>
     public static MemKey Var(int slot) => new(KeyKind.Var, null, slot);
+    /// <summary>A runtime type's private memory (the heap's records, the object marks' tables): written by the runtime
+    /// only, read by no program load.</summary>
+    public static MemKey Private(TypeDesc owner) => new(KeyKind.Private, owner);
     public override string ToString() => Kind + " " + (Target != null ? StableKey.Of(Target) : Index.ToString());
 }
 
