@@ -6217,3 +6217,13 @@ Not run: the homelab suite and the self-host check on this commit.
   are precise). Still open: a
   field whose address reaches an operation the solve cannot follow (`Unsafe.Add(ref o.f, 0)`,
   `MemoryMarshal.CreateSpan(ref o.f, 1)`) is read through a Slot that does not see the field's stores.
+- Every destroy was Wild in every program where a mark can be set (ObjectMarks.SetAt reached: a weak reference, a
+  ConditionalWeakTable, and so the kernels): each destroy calls ObjectMarks.OnDestroy (a finalizable one OnFinalize),
+  generated code no IR edge shows, so they were outside the solution and DestroyEffects returned Wild for a
+  target outside it (IL2WASM_DESTROY_TRACE=1 says why). Solver.Reach now roots them once SetAt is reached
+  (IL2WASM_NO_MARKS_ROOTS=1: not); their facts are known from the second solve on (the first's OnDestroy is Wild:
+  WeakSlots.Cleared reaches every finalizer without the type sets). The borrow of LinkedNodes' loop `n = n.Next`
+  now holds in Borrows (it flipped on "a release of string"), but the planner still counts it: Plan.Validate makes a
+  phi Owned when an input is Owned, and the loop's entry input is its root, `head`. That rule is the planner's
+  (claude/plan-2's file): a phi whose Owned inputs are all the group's root could stay a borrow of it.
+- Tests: SolverChecks (the span read, the raw stores with and without a contract, the marks' roots).
