@@ -536,19 +536,19 @@ public static class Signatures
         return g;
     }
 
-    /// <summary>The call rule (4.3) for one counted operand (an index into call.A): HandOver at its last use to a
-    /// parameter the callee's demand hands over, at a direct site that can call an owned variant; else Lend. For a
-    /// large callee (one owned variant every planned caller uses) a live-on operand of a HandOver parameter is
-    /// KeepAlive. The final convention is decided by the variant ChooseVariant picks: operand k is owned by the call
-    /// iff <c>Owns(v, ParamOf(call, k))</c> (HandOver at a last use, KeepAlive otherwise), else Lend.</summary>
-    public static ArgConv CallRule(PlanContext ctx, Node call, int arg, bool lastUse)
+    /// <summary>The call rule (4.3) for one counted operand (an index into call.A): HandOver when the caller holds it
+    /// Owned (<paramref name="owned"/>: its own count, not a borrow, not a field's or an element's load, not kept
+    /// through another operand) and this is its last use, to a parameter the callee's demand hands over, at a direct
+    /// site that can call an owned variant; else Lend. The final convention is decided by the variant ChooseVariant
+    /// picks: operand k is owned by the call iff <c>Owns(v, ParamOf(call, k))</c> (HandOver at a last use, KeepAlive
+    /// otherwise), else Lend.</summary>
+    public static ArgConv CallRule(PlanContext ctx, Node call, int arg, bool lastUse, bool owned)
     {
         if (s_noHandOver || s_noOwnedEntry || DirectSite(call) is not { } callee || !ctx.Solution.Covers(callee)) return ArgConv.Lend;
         int p = ParamOf(call, arg);
         var d = Demand(ctx.Solution, callee);
         if (p < 0 || p >= d.Params.Length || p >= MaxParams || d.Params[p] != ParamConv.HandOver) return ArgConv.Lend;
-        if (lastUse) return ArgConv.HandOver;
-        return SizeOf(ctx.Solution, callee) > LargeMethod ? ArgConv.KeepAlive : ArgConv.Lend;
+        return lastUse && (owned || s_variantAlways) ? ArgConv.HandOver : ArgConv.Lend;
     }
 
     /// <summary>KeepsRunningAfter(m, i) (4.3, Q8): a path from a last use of parameter i to an exit passes a loop header
@@ -565,11 +565,18 @@ public static class Signatures
 
     static int SizeOf(ProgramSolution sol, MethodDesc m) => StateOf(sol).Locals.TryGetValue(m, out var l) ? l.Size : int.MaxValue;
 
+    /// <summary>IL2WASM_OWNED_VARIANT_ALWAYS=1 (the cost rule's test): the old choice, an owned variant for any last
+    /// use (borrowed or loaded too), and a medium or large callee's all-HandOver variant whatever it costs the caller.</summary>
+    static readonly bool s_variantAlways = Environment.GetEnvironmentVariable("IL2WASM_OWNED_VARIANT_ALWAYS") == "1";
+
     /// <summary>The callee entry a call uses (4.4), for the parameters handed over at their last use
-    /// (<paramref name="handedOverMask"/>, bit i = parameter i): a small method's owned variant for exactly that mask;
-    /// a medium one's all-HandOver variant when any is handed over; a large one's all-HandOver variant always (when it
-    /// has HandOver parameters); else the borrowed-return variant when the method has one; else the Entry. Only direct
-    /// sites (row f).</summary>
+    /// (<paramref name="handedOverMask"/>, bit i = parameter i, only operands the caller holds Owned): with none, the
+    /// borrowed-return variant when the method has one, else the Entry. Else a small method's owned variant for
+    /// exactly that mask; a medium or large one's all-HandOver variant only when what it saves is at least what it
+    /// adds: each of its other parameters with a counted operand is a KeepAlive (a retain in the caller and a release
+    /// in the callee, 2 operations the Entry does not do), and each handed-over parameter the callee stores saves 2
+    /// (the store's retain and the caller's release; one that only keeps running saves none, but frees early). Only
+    /// direct sites (row f).</summary>
     public static Variant ChooseVariant(PlanContext ctx, Node call, uint handedOverMask)
     {
         if (DirectSite(call) is not { } callee || !ctx.Solution.Covers(callee)) return Variant.Entry;
@@ -583,15 +590,33 @@ public static class Signatures
         // could be handed over for it; a variant that owns it would release the caller's count. Such a site takes a
         // variant without this, or the Entry)
         bool thisFree = call.Op == Opc.NewObj;
-        if (mask != 0 || size > LargeMethod && all != 0)
+        if (s_variantAlways ? mask != 0 || size > LargeMethod && all != 0 : mask != 0)
         {
             var want = new Variant(VariantKind.Owned, size <= SmallMethod && mask != 0 ? mask : all);
-            if (vs.Contains(want) && !(thisFree && Owns(want, 0))) return want;
+            if (vs.Contains(want) && !(thisFree && Owns(want, 0)) && (s_variantAlways || Pays(ctx, call, want.Mask, mask))) return want;
             var full = new Variant(VariantKind.Owned, all);
-            if (vs.Contains(full) && !(thisFree && Owns(full, 0))) return full;
+            if (vs.Contains(full) && !(thisFree && Owns(full, 0)) && (s_variantAlways || Pays(ctx, call, all, mask))) return full;
         }
         var br = new Variant(VariantKind.BorrowReturn);
         return mask == 0 && vs.Contains(br) ? br : Variant.Entry;
+    }
+
+    /// <summary>An owned variant for <paramref name="owns"/> at a site that hands over <paramref name="handed"/>: the
+    /// operations it saves (2 per handed-over parameter the callee stores) at least those it adds (2 per KeepAlive:
+    /// an owned parameter whose operand is counted and not handed over).</summary>
+    static bool Pays(PlanContext ctx, Node call, uint owns, uint handed)
+    {
+        var d = Demand(ctx.Solution, (MethodDesc)call.X!);
+        int saves = 0, adds = 0;
+        for (int k = 0; k < call.A.Length; k++)
+        {
+            var a = call.A[k];
+            int p = ParamOf(call, k);
+            if (p < 0 || p >= MaxParams || (owns & (1u << p)) == 0 || !Ownership.IsRef(a) || a.Op is Opc.LdNull or Opc.LdStr || a.Op == Opc.Const && a.Kind == VK.Ref) continue;
+            if ((handed & (1u << p)) == 0) adds += 2;
+            else if (p < d.Reasons.Length && (d.Reasons[p] & HandOverReason.Stores) != 0) saves += 2;
+        }
+        return saves >= adds;
     }
 
     static uint HandOverMask(OwnershipSignature d)
