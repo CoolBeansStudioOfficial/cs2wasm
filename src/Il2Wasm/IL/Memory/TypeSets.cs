@@ -41,6 +41,7 @@ public sealed partial class ProgramSolution
     // targets over their receivers' sets
     sealed class MethodTypes
     {
+        public int[] Dense = [];
         public IdSet?[] Types = [];
         public bool[] Has = [];
         public Dictionary<int, MethodDesc[]>? Targets;
@@ -51,7 +52,7 @@ public sealed partial class ProgramSolution
     /// not known (Top, or the sets were not solved): then the value's static type's cone is all one can say.</summary>
     public IEnumerable<TypeDesc>? ExactTypes(MethodDesc m, Node n)
     {
-        if (!TypeSetsSolved || !_methodTypes.TryGetValue(m, out var mt) || n.Id >= mt.Types.Length || mt.Types[n.Id] is not { } set) return null;
+        if (!TypeSetsSolved || !_methodTypes.TryGetValue(m, out var mt) || n.Id >= mt.Dense.Length || mt.Dense[n.Id] == 0 || mt.Types[mt.Dense[n.Id] - 1] is not { } set) return null;
         return set.Items.ToArray().Select(i => _all![i]);
     }
 
@@ -163,7 +164,7 @@ public sealed partial class ProgramSolution
             Evaluate(m, bodies[m], st, Enqueue);
             if (firstEval) firstTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0; else laterTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
         }
-        foreach (var (m, ms) in _methodStates) _methodTypes[m] = new MethodTypes { Types = ms.Local, Has = ms.Has, Targets = ms.Targets };
+        foreach (var (m, ms) in _methodStates) _methodTypes[m] = new MethodTypes { Dense = ms.Dense, Types = ms.Local, Has = ms.Has, Targets = ms.Targets };
         _methodStates.Clear();
         static long Ms(long t) => t * 1000 / System.Diagnostics.Stopwatch.Frequency;
         if (s_typeSetsTrace) Console.Error.WriteLine($"typesets: evaluate: build {Ms(_tBuild)}, loop {Ms(_tLoop - _tBuild)} ({_nVisits} visits, {_nValue} values, {_nTargets} targets), sinks {Ms(_tSinks)} ({_nSinks}) ms, ids {_nIds}");
@@ -486,6 +487,8 @@ public sealed partial class ProgramSolution
     /// recomputes only the nodes that read a variable that grew, and what uses them.</summary>
     sealed class MethodState
     {
+        /// <summary>A reference value's slot (1-based, 0: none) in Local, Has and UserStart, by Node.Id.</summary>
+        public int[] Dense = [];
         public IdSet?[] Local = [];
         public bool[] Has = [];
         public Dictionary<int, MethodDesc[]>? Targets;
@@ -521,7 +524,7 @@ public sealed partial class ProgramSolution
     /// <summary>The call of cm in m is one of m's intrinsics (by the method state's set while m is evaluated).</summary>
     bool IsIntrinsic(MethodDesc m, MethodDesc cm)
     {
-        if (_curState is { } cs && _curMethod == m) return cs.Intrinsics?.Contains(cm) ?? false;
+        if (_curState is { } cs && _curMethod == m) return cs.Intrinsics?.Contains(cm) ?? cs.Summary?.Intrinsics.Contains(cm) ?? false;
         return Summary(m)?.Intrinsics.Contains(cm) ?? false;
     }
     MethodDesc? _curMethod;
@@ -552,18 +555,27 @@ public sealed partial class ProgramSolution
         {
             ms = _methodStates[m] = new MethodState
             {
-                Local = new IdSet?[count], Has = new bool[count],
-                UserStart = new int[count + 1], Summary = Summary(m), Method = m, Intrinsics = Summary(m) is { Intrinsics.Count: > 0 } isu ? [.. isu.Intrinsics] : null,
+                Dense = new int[count], Summary = Summary(m), Method = m, Intrinsics = Summary(m) is { Intrinsics.Count: > 8 } isu ? [.. isu.Intrinsics] : null,
             };
             foreach (var bl in body.Blocks) foreach (var n in bl.Code) if (n.Op == Opc.LocA) ms.Taken.Add((int)n.I);
             ms.Blocks = Reachable(body);
             // the users of each reference value (only those change): its operands' users, and for a value stored into a
             // variable that variable's loads; counted, then laid out by value (UserStart[id] .. UserStart[id + 1])
             Dictionary<int, List<Node>>? varLds = null;
-            var start = ms.UserStart;
+            var dense = ms.Dense;
+            int nRef = 0;
+            foreach (var bl in ms.Blocks)
+            {
+                foreach (var n in bl.Phis) if (n.Kind == VK.Ref) dense[n.Id] = ++nRef;
+                foreach (var n in bl.Code) if (n.Kind == VK.Ref) dense[n.Id] = ++nRef;
+            }
+            ms.Local = new IdSet?[nRef];
+            ms.Has = new bool[nRef];
+            var start = ms.UserStart = new int[nRef + 1];
+            // (a value of a block that cannot run never changes: its users are not kept)
             void Count(Node n)
             {
-                foreach (var x in n.A) if (x.Kind == VK.Ref) start[x.Id + 1]++;
+                foreach (var x in n.A) if (x.Kind == VK.Ref && dense[x.Id] > 0) start[dense[x.Id]]++;
                 if (n.Op == Opc.VarSt && n.A.Length > 0 && n.A[0].Kind == VK.Ref) { if (!ms.SlotStores.TryGetValue((int)n.I, out var l)) ms.SlotStores[(int)n.I] = l = []; l.Add(n.A[0]); }
                 if (n.Op == Opc.VarLd) { varLds ??= new(); if (!varLds.TryGetValue((int)n.I, out var l)) varLds[(int)n.I] = l = []; l.Add(n); }
             }
@@ -571,24 +583,25 @@ public sealed partial class ProgramSolution
             if (varLds != null)
                 foreach (var (slot, stores) in ms.SlotStores)
                     if (varLds.TryGetValue(slot, out var lds))
-                        foreach (var v in stores) start[v.Id + 1] += lds.Count;
-            for (int i = 1; i <= count; i++) start[i] += start[i - 1];
-            var users = ms.Users = new Node[start[count]];
-            var fill = new int[count];
-            void Fill(Node n) { foreach (var x in n.A) if (x.Kind == VK.Ref) users[start[x.Id] + fill[x.Id]++] = n; }
+                        foreach (var v in stores) if (dense[v.Id] > 0) start[dense[v.Id]] += lds.Count;
+            for (int i = 1; i <= nRef; i++) start[i] += start[i - 1];
+            var users = ms.Users = new Node[start[nRef]];
+            var fill = new int[nRef];
+            void Fill(Node n) { foreach (var x in n.A) if (x.Kind == VK.Ref && dense[x.Id] is > 0 and var d) users[start[d - 1] + fill[d - 1]++] = n; }
             foreach (var bl in ms.Blocks) { foreach (var n in bl.Phis) Fill(n); foreach (var n in bl.Code) Fill(n); }
             if (varLds != null)
                 foreach (var (slot, stores) in ms.SlotStores)
                     if (varLds.TryGetValue(slot, out var lds))
-                        foreach (var v in stores) foreach (var ld in lds) users[start[v.Id] + fill[v.Id]++] = ld;
+                        foreach (var v in stores) if (dense[v.Id] is > 0 and var d) foreach (var ld in lds) users[start[d - 1] + fill[d - 1]++] = ld;
         }
         _tBuild += System.Diagnostics.Stopwatch.GetTimestamp() - tq0;
         var local = ms!.Local;
         var has = ms.Has;
+        var dn = ms.Dense;
         var addrs = _addrs;
         addrs.Clear();
         _addrDeps.Clear();
-        IdSet? Of(Node v) => v.Op == Opc.LdNull ? IdSet.Empty : v.Id < local.Length && has[v.Id] ? local[v.Id] : IdSet.Empty;
+        IdSet? Of(Node v) => v.Op == Opc.LdNull ? IdSet.Empty : v.Id < dn.Length && dn[v.Id] is > 0 and var d && has[d - 1] ? local[d - 1] : IdSet.Empty;
         Func<Node, IdSet?> of = Of;
         _curState = ms; _curMethod = m;
         var work = _work;
@@ -624,7 +637,8 @@ public sealed partial class ProgramSolution
                 // (unknown: the static type's cone when it is small)
                 _nValue++;
                 var v = Value(m, body, n, st, of, ms, addrs) ?? ConeSet(n.Type);
-                if (!has[n.Id] || !Same(local[n.Id], v)) { local[n.Id] = v; has[n.Id] = true; changed = true; }
+                int di = dn[n.Id] - 1;
+                if (!has[di] || !Same(local[di], v)) { local[di] = v; has[di] = true; changed = true; }
             }
             if (n.Op == Opc.Call && (CallKind)n.Sub != CallKind.Direct && n.X is MethodDesc vm && !IsIntrinsic(m, vm))
             {
@@ -634,7 +648,7 @@ public sealed partial class ProgramSolution
                 var ot = ms.Targets != null && ms.Targets.TryGetValue(n.Id, out var otv) ? otv : null;
                 if (ot == null || !ot.SequenceEqual(t)) { (ms.Targets ??= new())[n.Id] = t; Sink(n); if (!changed && n.Kind == VK.Ref && ot != null) { Push(n); } }
             }
-            if (changed) for (int k = ms.UserStart[n.Id], e = ms.UserStart[n.Id + 1]; k < e; k++) { var u = ms.Users[k]; Push(u); Sink(u); }
+            if (changed) for (int k = ms.UserStart[dn[n.Id] - 1], e = ms.UserStart[dn[n.Id]]; k < e; k++) { var u = ms.Users[k]; Push(u); Sink(u); }
             if (changed) Sink(n);
         }
         _curNode = null;
@@ -649,7 +663,7 @@ public sealed partial class ProgramSolution
         {
             Console.Error.WriteLine("typesets: body of " + m + ": " + body.Dump());
             for (int i = 0; i < count; i++)
-                if (has[i]) Console.Error.WriteLine("typesets:   v" + i + " = " + (local[i] is { } x ? "{" + string.Join(", ", x.Items.ToArray().Select(t => _all![t].ToString())) + "}" : "unknown"));
+                if (dn[i] > 0 && has[dn[i] - 1]) Console.Error.WriteLine("typesets:   v" + i + " = " + (local[dn[i] - 1] is { } x ? "{" + string.Join(", ", x.Items.ToArray().Select(t => _all![t].ToString())) + "}" : "unknown"));
         }
     }
 

@@ -22,7 +22,7 @@ public sealed partial class ProgramSolution
                 _ => v.Kind + " " + StableKey.Of(v.Method!) + " #" + v.Index,
             };
             return v.Kind is VarKind.AddrParam or VarKind.AddrRet ? name : name + " = " + Set(st.Sets[i]);
-        }).Concat(_methodTypes.SelectMany(e => Enumerable.Range(0, e.Value.Types.Length).Where(i => e.Value.Has[i]).Select(i => "node " + StableKey.Of(e.Key) + " v" + i + " = " + Set(e.Value.Types[i]))))
+        }).Concat(_methodTypes.SelectMany(e => Enumerable.Range(0, e.Value.Dense.Length).Where(i => e.Value.Dense[i] > 0 && e.Value.Has[e.Value.Dense[i] - 1]).Select(i => "node " + StableKey.Of(e.Key) + " v" + i + " = " + Set(e.Value.Types[e.Value.Dense[i] - 1]))))
           .Concat(_methodTypes.SelectMany(e => (e.Value.Targets ?? []).Select(p => "targets " + StableKey.Of(e.Key) + " v" + p.Key + " = " + string.Join(",", p.Value.Select(StableKey.Of).OrderBy(n => n, StringComparer.Ordinal)))))
           .OrderBy(l => l, StringComparer.Ordinal);
         var sb = new StringBuilder("# type sets\n");
