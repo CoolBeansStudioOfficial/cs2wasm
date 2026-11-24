@@ -132,6 +132,8 @@ public sealed class Solver
     public ProgramSolution Solve()
     {
         var sol = new ProgramSolution(_host);
+        // (row a: Signatures.Compute reads covered bodies, read-only, before lowering takes them)
+        sol.BodyOf = m => _units.TryGetValue(m, out var u) && u != null ? (u.Body ?? (u.Il != null && u.Error == null && !u.Substituted ? Il2Wasm.IL.Ir.Importer.Import(u.Method, u.Il, u.Facts) : null)) : null;
         foreach (var m in _order) if (_units[m] is { Summary: { } s }) sol.AddMethod(m, s);
         foreach (var t in _constructed) sol.AddConstructed(t);
         foreach (var slot in _slots) sol.AddSlot(slot);
@@ -154,6 +156,8 @@ public sealed class Solver
 public sealed class ProgramSolution
 {
     readonly IReachHost _host;
+    /// <summary>A covered method's body before lowering takes it (Signatures.Compute reads it; null once taken or when there is none).</summary>
+    public Func<MethodDesc, Il2Wasm.IL.Ir.Body?> BodyOf { get; internal set; } = _ => null;
     readonly IdTable<MethodDesc> _methods = new();
     readonly IdTable<TypeDesc> _types = new();
     /// <summary>The methods of the solution, by MethodId (assigned on first use, in stable order).</summary>
@@ -270,7 +274,7 @@ public sealed class ProgramSolution
 
     /// <summary>Effects of an intrinsic call (its body is the compiler's own): the table of Memory/IntrinsicSignatures.cs
     /// once it exists; until then, any key.</summary>
-    public static Func<MethodDesc, KeySet> IntrinsicEffects = _ => KeySet.All;
+    public static Func<ProgramSolution, MethodDesc, KeySet> IntrinsicEffects = (_, _) => KeySet.All;
 
     /// <summary>Mods, release effects, throw/return and lifetime observation over the call graph: Tarjan's strongly
     /// connected components, callees first, each component joined to its fixed point (3.3).</summary>
@@ -291,7 +295,7 @@ public sealed class ProgramSolution
             var keys = new List<int>();
             bool wild = s.WildStores || s.CallsUnknown;
             foreach (var k in s.Stores) if (k.Kind != KeyKind.Var) keys.Add(Keys.Intern(k));
-            foreach (var im in s.Intrinsics) { var e = IntrinsicEffects(im); wild |= e.Wild; foreach (int k in e.Keys.Items) keys.Add(k); }
+            foreach (var im in s.Intrinsics) { var e = IntrinsicEffects(this, im); wild |= e.Wild; foreach (int k in e.Keys.Items) keys.Add(k); }
             var callees = new List<int>();
             foreach (var c in s.Calls) Callee(c, callees, ref wild, f);
             foreach (var slot in s.Slots) foreach (var c in Targets(slot)) Callee(c, callees, ref wild, f);
