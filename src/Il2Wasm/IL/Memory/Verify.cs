@@ -302,8 +302,9 @@ public static class Verify
                 if (!_index.TryGetValue(v, out int i)) continue;
                 // (a terminator's address operand: its objects are let go just before it, as nothing runs after it
                 // here; the address it returns or branches with points into what the caller or a successor keeps, or
-                // into a keeper handed on)
-                if (user.IsTerminator && v != a) continue;
+                // into a keeper handed on; a reference it returns or throws is counted by it, after those releases: its borrow's root must
+                // still hold then)
+                if (user.IsTerminator && v != a && !(Plan.IsRef(a) && user.Op is Opc.Ret or Opc.Throw && _plan.Own[a].Kind == OwnKind.Guaranteed)) continue;
                 if (v == user || Plan.IsInserted(user) && Plan.IsInserted(v)) continue;
                 if (viaBase ? !s.MayHold(i) : !s.MustHold(i))
                     throw Fail($"used by {Body.Format(user)} where it {(viaBase ? "holds no count on any path" : "may not hold its count")} (checks 2, 3, 5)", v, b);

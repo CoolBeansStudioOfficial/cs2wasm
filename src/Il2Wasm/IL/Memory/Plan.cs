@@ -481,7 +481,7 @@ public static class Plan
                     if (ok && v.Op == Opc.Phi) ok = v.A.All(x => !IsRef(x) || KindOf(x) is OwnKind.Guaranteed or OwnKind.Trivial);
                     // (a return or a throw counts its value after the operation's own releases, which let its root go:
                     // a borrow of a value of this body that one of them uses is counted at its definition instead)
-                    if (ok && p.Root == RootKind.Val && Terminal().Contains(v)) ok = false;
+                    if (ok && Terminal().Contains(v) && RootNode(p) != null) ok = false;
                     if (!ok) { Flip(v); changed = true; }
                 }
             }
