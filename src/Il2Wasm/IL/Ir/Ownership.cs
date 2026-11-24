@@ -23,7 +23,38 @@ public static class Ownership
         public readonly HashSet<(Node, int)> PhiMoves = [];
         /// <summary>All reference values of the body (each one's local is released when an exception leaves).</summary>
         public readonly List<Node> RefValues = [];
+        /// <summary>An address into an object (a field's, an element's, a box's data) and the references it points
+        /// into: each of those lives as long as the address is used (a GC's interior pointer: the object must not be
+        /// freed under it).</summary>
+        public readonly Dictionary<Node, List<Node>> Bases = new();
     }
+
+    /// <summary>The operations whose address result points into one of their operands (the operand's object, or the
+    /// object an operand address points into): field and element addresses, a box's data, address arithmetic and
+    /// conversion, and a call's returned byref (a span's, an array's data reference, an accessor's). A pointer loaded
+    /// from memory points into nothing known here.</summary>
+    static bool Derives(Node n) => n.Kind == VK.Ptr && n.Op is Opc.LdFldA or Opc.LdElemA or Opc.Unbox or Opc.Bin or Opc.Conv or Opc.Call or Opc.CallI;
+
+    /// <summary>The bases of each derived address, in definition order (an address of an address has its bases).
+    /// Phis are not followed: an address carried around a loop does not keep its object.</summary>
+    static void FindBases(Body body, Info info)
+    {
+        foreach (var b in body.Blocks)
+            foreach (var n in b.Code)
+            {
+                if (!Derives(n)) continue;
+                List<Node>? l = null;
+                foreach (var a in n.A)
+                {
+                    if (a.Kind == VK.Ref && a.Op is not (Opc.LdNull or Opc.LdStr)) (l ??= []).Add(a);
+                    else if (info.Bases.TryGetValue(a, out var ab)) (l ??= []).AddRange(ab);
+                }
+                if (l != null) info.Bases[n] = l.Distinct().ToList();
+            }
+    }
+
+    /// <summary>The counted values a use of operand a keeps alive: a itself, or the bases of an address.</summary>
+    static IEnumerable<Node> Kept(Node a, Info info) => IsRef(a) ? [a] : info.Bases.TryGetValue(a, out var l) ? l : [];
 
     /// <summary>A value that holds counts: a reference, or a struct with references in it.</summary>
     static bool IsRef(Node n) => n.Kind == VK.Ref || n.Kind == VK.Struct && n.Type != null && Kinds.Counted(n.Type);
@@ -41,6 +72,7 @@ public static class Ownership
         SplitEdges(body);
         var info = new Info();
         foreach (var b in body.Blocks) { foreach (var n in b.Phis) if (IsRef(n)) info.RefValues.Add(n); foreach (var n in b.Code) if (IsRef(n)) info.RefValues.Add(n); }
+        FindBases(body, info);
         Liveness(body, info);
         foreach (var b in body.Blocks) Insert(body, b, info);
         // the arguments are counted on entry
@@ -117,7 +149,7 @@ public static class Ownership
                     if (b.Succs.Contains(s))
                     {
                         int pi = s.Preds.IndexOf(b);
-                        if (pi >= 0) foreach (var phi in s.Phis) if (IsRef(phi.A[pi])) outSet.Add(phi.A[pi]);
+                        if (pi >= 0) foreach (var phi in s.Phis) foreach (var k in Kept(phi.A[pi], info)) outSet.Add(k);
                     }
                 }
                 var live = new HashSet<Node>(outSet);
@@ -125,7 +157,7 @@ public static class Ownership
                 {
                     var n = b.Code[i];
                     live.Remove(n);
-                    foreach (var a in n.A) if (IsRef(a)) live.Add(a);
+                    foreach (var a in n.A) foreach (var k in Kept(a, info)) live.Add(k);
                 }
                 foreach (var phi in b.Phis) live.Remove(phi);
                 if (!outSet.SetEquals(info.LiveOut[b])) { info.LiveOut[b] = outSet; changed = true; }
@@ -157,6 +189,8 @@ public static class Ownership
             // (values counted again for a phi are live through the copy: they are released at the successor's
             // entry if nothing else needs them there)
             foreach (var phi in s.Phis) if (IsRef(phi.A[pi])) live.Add(phi.A[pi]);
+            // (an address copied into a phi: its objects live through the copy)
+            foreach (var phi in s.Phis) if (!IsRef(phi.A[pi]) && info.Bases.TryGetValue(phi.A[pi], out var pb)) live.UnionWith(pb);
         }
         var code = b.Code;
         var output = new List<Node>(code.Count * 2);
@@ -186,6 +220,17 @@ public static class Ownership
                     }
                     if (lastUse && !moved) after.Add(Count(Opc.Release, v, b, body));
                     live.Add(v);
+                }
+                // (an address's last use is its objects' last use too)
+                for (int k = 0; k < n.A.Length; k++)
+                {
+                    if (IsRef(n.A[k]) || !info.Bases.TryGetValue(n.A[k], out var bases)) continue;
+                    foreach (var v in bases)
+                    {
+                        if (!seen.Add(v)) continue;
+                        if (!live.Contains(v)) after.Add(Count(Opc.Release, v, b, body));
+                        live.Add(v);
+                    }
                 }
             }
             after.Reverse();
