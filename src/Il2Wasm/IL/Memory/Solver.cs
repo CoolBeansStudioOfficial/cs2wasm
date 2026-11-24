@@ -175,6 +175,7 @@ public sealed class Solver
         foreach (var t in _constructed) sol.AddConstructed(t);
         foreach (var slot in _slots) sol.AddSlot(slot);
         sol.Freeze();
+        sol.HeldBodies = m => _units.TryGetValue(m, out var u) && u is { Error: null, Substituted: false } ? u.Body : null;
         if (s_trace) Console.Error.WriteLine($"mem: solved {sol.Methods.Count} methods, {sol.Slots.Count} slots; {_clock.ElapsedMilliseconds} ms");
         _solution = sol;
         return sol;
@@ -211,8 +212,14 @@ public sealed class Solver
 public sealed class ProgramSolution
 {
     readonly IReachHost _host;
-    /// <summary>A covered method's body before lowering takes it (Signatures.Compute reads it; null once taken or when there is none).</summary>
+    /// <summary>A covered method's body before lowering takes it (Signatures.Compute reads it; null once taken or when there is none).
+    /// Use BodyOf when you need a body (it imports again when the held one is gone); HeldBody when you would rather skip the method than pay for an import.</summary>
     public Func<MethodDesc, Il2Wasm.IL.Ir.Body?> BodyOf { get; internal set; } = _ => null;
+    internal Func<MethodDesc, Body?>? HeldBodies;
+    /// <summary>The body the reach phase imported for a method, while lowering has not taken it (null otherwise, and
+    /// with IL2WASM_MEM_REIMPORT=1). Read only: the IR inliner (Ir/Inline.cs) copies it instead of importing the
+    /// method again. Use HeldBody when you would rather skip the method than pay for an import; BodyOf when you need a body.</summary>
+    public Body? HeldBody(MethodDesc m) => HeldBodies?.Invoke(m);
     readonly IdTable<MethodDesc> _methods = new();
     readonly IdTable<TypeDesc> _types = new();
     /// <summary>The methods of the solution, by MethodId (assigned on first use, in stable order).</summary>

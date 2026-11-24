@@ -98,15 +98,20 @@ public sealed partial class IlCompiler : IReachHost
             if (Borrows.Stats && Solution != null) Borrows.Analyze(new PlanContext(m, body, Solution, entry), info0);
             var naive = MethodPlan.Naive(body, info0); naive.Entry = entry; return naive;
         }
-        var ctx = new PlanContext(m, body, Solution, entry);
+        var ctx = new PlanContext(m, body, Solution, entry) { FinalRound = FinalRound || Pipeline.NoFinalRoundGate };
         var plan = Plan.Build(ctx);
         plan.Entry = entry;
-        if (Pipeline.Inline)
+        if (Pipeline.Inline && ctx.FinalRound)
+        {
             for (int step = 0; Inline.Step(ctx, plan, CalleeForInline) is { } site; step++)
             {
                 Canon.Run(ctx, plan, site);
                 if (Pipeline.Verify) Verify.Check(ctx, plan);
             }
+            // (an inlined callee's facts are the caller's now: recorded as its own lowering would have recorded them)
+            foreach (var c in Inline.InlinedInto(plan))
+                if (Solution.Summary(c) is { } s) { Facts.Merge(s); Facts.AddDirectCallees(m, s.Direct); }
+        }
         if (Pipeline.Verify) Verify.Check(ctx, plan);
         return plan;
     }
@@ -119,7 +124,7 @@ public sealed partial class IlCompiler : IReachHost
         if (Solution == null || !Solution.Covers(callee)) return null;
         var u = ImportMethod(callee);
         if (u.Body == null || u.Error != null) return null;
-        var ctx = new PlanContext(callee, u.Body, Solution, variant);
+        var ctx = new PlanContext(callee, u.Body, Solution, variant) { FinalRound = FinalRound || Pipeline.NoFinalRoundGate };
         return (u.Body, Plan.Build(ctx));
     }
 
