@@ -2189,12 +2189,16 @@ namespace Il2Wasm.Runtime
             /// <summary>Holds that pushed out an older one not taken yet (a bug: that object is then freed later than
             /// its last use; the checked build stops at it).</summary>
             public static int Overflows;
+            /// <summary>Executed holds, takes, and takes that found their hold (the measurements of docs/AUDIT.md's
+            /// plan-2 entry: a take after a call that held nothing costs a call and finds nothing).</summary>
+            public static int Holds, Takes, Taken;
 
             /// <summary>The object the returning function's address points into is counted until the caller takes it.</summary>
             public static void Hold(int addr)
             {
                 int o = ObjectOf(addr);
                 if (o == 0) return;
+                Holds++;
                 Retain(Borrow<object>(o));
                 int old;
                 switch (s_holdN++ & 3)
@@ -2226,6 +2230,7 @@ namespace Il2Wasm.Runtime
                     return;
                 }
                 if (o == 0) return;
+                Holds++;
                 int old;
                 switch (s_holdN++ & 3)
                 {
@@ -2246,6 +2251,7 @@ namespace Il2Wasm.Runtime
             /// it, owned by the caller now; else null.</summary>
             public static object? Take(int addr)
             {
+                Takes++;
                 if (s_holdN == 0) return null;
                 int o = ObjectOf(addr);
                 if (o == 0) return null;
@@ -2254,6 +2260,7 @@ namespace Il2Wasm.Runtime
                 if (k != o) return null;
                 switch (i) { case 0: s_hold0 = 0; break; case 1: s_hold1 = 0; break; case 2: s_hold2 = 0; break; default: s_hold3 = 0; break; }
                 s_holdN--;
+                Taken++;
                 return Take<object>(o);
             }
         }

@@ -142,7 +142,7 @@ public static class Verify
                     if (!threaded && (_plan.Counts[n] == CountKind.Atomic || _plan.Loads[n] == LoadKind.LoadRetain || _plan.Accesses[n] == AccessKind.Atomic))
                         throw Fail("an atomic count, load or access in a build without threads (check 9)", n, b);
                     // (7.4: a call that may have held a keeper is followed by its take)
-                    if (Plan.KeeperCalls(_ctx.Method.Context) is { } kc && Plan.NeedsTake(_ctx, n) && (n.Kind != VK.Struct || Plan.TakeField(n) != null))
+                    if (Plan.KeeperCalls(_ctx.Method.Context) is { } kc && Plan.NeedsTake(_ctx, n, _plan.Callees[n]) && (n.Kind != VK.Struct || Plan.TakeField(n) != null))
                     {
                         int t = i + 1;
                         while (t < b.Code.Count && (b.Code[t].Op is Opc.Release or Opc.Retain || b.Code[t].Op == Opc.LdFld && Plan.IsInserted(b.Code[t]))) t++;

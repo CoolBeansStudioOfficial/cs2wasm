@@ -38,7 +38,7 @@ sealed partial class FunctionLowering
     bool Holds(Node v) => _own.Own.IsEmpty || _own.Own[v].Kind == OwnKind.Owned;
 
     /// <summary>A load (or a cast, a catch value) of a counted value takes a count.</summary>
-    bool LoadRetains(Node n)
+    internal bool LoadRetains(Node n)
     {
         if (_own.Own.IsEmpty && _own.Counts.IsEmpty && _own.Loads.IsEmpty) return true;
         if (!Holds(n)) return false;
