@@ -10,11 +10,12 @@
 //   node tools/il-rcstats.mjs share planSites.tsv plan.json naiveSites.tsv naive.json
 //   node tools/il-rcstats.mjs live sites.tsv run.json [--oracle oracle.json] [--top N]
 //   node tools/il-rcstats.mjs run <program.cs | program.dll> [--naive-only] [--top N] [--keep dir] [--json out.json]
-//        [--fw dir] [--cli il2wasm-il.dll] [--tests Il2Wasm.IL.Tests.dll] [-- program arguments]
+//        [--live] [--expected out.txt] [--fw dir] [--cli il2wasm-il.dll] [--tests Il2Wasm.IL.Tests.dll] [-- program arguments]
 //     compiles the program twice (as configured, and with IL2WASM_MEM_NAIVE=1), runs both, and reports each and the
 //     removal share. A .cs is compiled against the framework by the IL tests' `framework` mode, a .dll (a dotnet build
 //     output) by the CLI. The switches of the environment (IL2WASM_MEM_PLAN=1, IL2WASM_NO_*) go to the first build.
-//     Nothing .NET runs: only the modules, under host/run.mjs.
+//     Nothing .NET runs: only the modules, under host/run.mjs. --live: live objects per type at exit too;
+//     --expected: the output each build must print (a NetWasm suite case's expected/<case>.txt).
 //
 // The oracle for `live` is {"types": {"<type name as the sites file prints it>": count, ...}}: the reachable set the
 // suite's .NET records give, or a dotnet-gcdump of the oracle run made on the homelab (never .NET cases on the desk).
@@ -213,12 +214,16 @@ function runCmd(input, o) {
     if (o.live) result.naive.live = live(na);
     console.log(`== ${name}: naive counting (IL2WASM_MEM_NAIVE=1)\n` + report(na, o));
     if (o.live && na.run.live) console.log(liveText(result.naive.live, o.top));
+    const norm = (t) => t.replace(/\r\n/g, '\n');
+    const expected = o.expected ? norm(readFileSync(o.expected, 'utf8')) : null;
+    if (expected != null) { result.naive.matches = norm(naive.stdout) === expected; console.log(result.naive.matches ? 'output: as expected' : 'WARNING: the output differs from the expected'); }
     if (!o.naiveOnly) {
       const plan = compileAndRun(input, join(dir, name + '.plan.wasm'), {}, o);
       const pa = analyze(plan.sitesFile, plan.runFile);
       result.plan = { ...totals(pa), exit: plan.exit };
       console.log(`== ${name}: as configured (${Object.entries(process.env).filter(([k]) => /^IL2WASM_(MEM_|NO_)/.test(k)).map(([k, v]) => k + '=' + v).join(' ') || 'the defaults'})\n` + report(pa, o));
       if (plan.stdout !== naive.stdout) console.log('WARNING: the two builds printed different output');
+      if (expected != null) result.plan.matches = norm(plan.stdout) === expected;
       result.share = share(pa, na);
       console.log(shareText(result.share));
     }
@@ -234,7 +239,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const dd = argv.indexOf('--');
   const args = dd >= 0 ? argv.slice(0, dd) : argv, progArgs = dd >= 0 ? argv.slice(dd + 1) : [];
   const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
-  const valued = ['--top', '--by', '--oracle', '--keep', '--json', '--fw', '--cli', '--tests'];
+  const valued = ['--top', '--by', '--oracle', '--keep', '--json', '--fw', '--cli', '--tests', '--expected'];
   const pos = args.filter((a, i) => !a.startsWith('--') && !(i > 0 && valued.includes(args[i - 1])));
   const top = +opt('--top', 20), by = opt('--by', 'site');
   const cmd = pos[0];
@@ -249,10 +254,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     console.log(liveText(live(analyze(pos[1], pos[2]), o), top));
   } else if (cmd === 'run') {
     const o = {
-      top, by, args: progArgs, naiveOnly: args.includes('--naive-only'), live: args.includes('--live'), keep: opt('--keep'), json: opt('--json'),
+      top, by, args: progArgs, naiveOnly: args.includes('--naive-only'), live: args.includes('--live'), keep: opt('--keep'), json: opt('--json'), expected: opt('--expected'),
       fw: opt('--fw', process.env.IL2WASM_FRAMEWORK ?? join(root, 'artifacts', 'framework')),
-      cli: opt('--cli', join(root, 'src', 'Il2Wasm.IL.Cli', 'bin', 'Release', 'net10.0', 'il2wasm-il.dll')),
-      tests: opt('--tests', join(root, 'tests', 'Il2Wasm.IL.Tests', 'bin', 'Release', 'net10.0', 'Il2Wasm.IL.Tests.dll')),
+      cli: opt('--cli', join(root, 'src', 'Il2Wasm.IL.Cli', 'bin', 'Release', 'net11.0', 'il2wasm-il.dll')),
+      tests: opt('--tests', join(root, 'tests', 'Il2Wasm.IL.Tests', 'bin', 'Release', 'net11.0', 'Il2Wasm.IL.Tests.dll')),
     };
     if (o.live) process.env.IL2WASM_IL_COUNT_OBJECTS = '1';
     for (const p of pos.slice(1)) runCmd(p, o);

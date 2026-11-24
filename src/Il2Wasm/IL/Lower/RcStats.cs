@@ -246,6 +246,9 @@ public sealed class RcStats
             if (!methods.TryGetValue(f, out var md) && f.Name.StartsWith("shared ", StringComparison.Ordinal)) byName.TryGetValue(f.Name[7..], out md);
             string owner = OwnerOf(f, md);
             var b = f.Body;
+            // (the sites first, on the body as optimized, then the counters, from the end: the classification reads
+            // the instructions around each call as they were)
+            var here = new List<(int At, int Id, WasmFunction Hit)>();
             for (int i = 0; i < b.Count; i++)
             {
                 if (b[i].Op != WOp.Call || b[i].Ref is not WasmFunction g) continue;
@@ -257,11 +260,14 @@ public sealed class RcStats
                 var (role, cat) = Classify(f, b, i, cause, owner);
                 string kind = g.Name == "rt.retain" ? "retain" : g.Name == "rt.release" ? "release" : "call " + g.Name;
                 sites.Add(new SiteInfo(kind, owner, role, cat, f.Name, cause.StartsWith("tag ", StringComparison.Ordinal) ? "" : cause, Context(f, b, i)));
+                // (a helper's operand stays below on the stack)
+                here.Add((i, id, !obj ? _callHit : g.Name == "rt.retain" ? _retainHit : _releaseHit));
+            }
+            for (int k = here.Count - 1; k >= 0; k--)
+            {
                 var tmp = new Emitter(new WasmFunction("tmp", f.Type));
-                if (obj) { tmp.I32(id); tmp.Call(g.Name == "rt.retain" ? _retainHit : _releaseHit); }
-                else { tmp.I32(id); tmp.Call(_callHit); } // (the helper's operand stays below on the stack)
-                b.InsertRange(i, tmp.Fn.Body);
-                i += tmp.Fn.Body.Count;
+                tmp.I32(here[k].Id); tmp.Call(here[k].Hit);
+                b.InsertRange(here[k].At, tmp.Fn.Body);
             }
         }
         _sitesFn.Body.Clear();
@@ -331,7 +337,7 @@ public sealed class RcStats
     /// <summary>A store's release of the old value comes after the store; its retain of the new one before it.</summary>
     static bool IsStoreOld(List<Instr> b, int i) => b[i].Ref is WasmFunction { Name: "rt.release" };
 
-    static string FromContext(WasmFunction f, List<Instr> b, int i)
+    static string FromContext(WasmFunction f, List<Instr> b, int i, int depth = 0)
     {
         if (i == 0) return "other";
         var p = b[i - 1];
@@ -344,10 +350,27 @@ public sealed class RcStats
             if (k >= 0 && b[k].Op is WOp.I32Add or WOp.I32Shl or WOp.I32Mul) return "element";
             return "field";
         }
-        if (p.Op is WOp.LocalGet or WOp.LocalTee) return p.Imm < f.Type.Params.Length ? "parameter" : "local";
+        if (p.Op is WOp.LocalGet or WOp.LocalTee) return p.Imm < f.Type.Params.Length ? "parameter" : depth < 4 ? OfLocal(f, b, i - 1, (int)p.Imm, depth + 1) : "local";
         if (p.Op == WOp.Call && p.Ref is WasmFunction g)
-            return g.Name.StartsWith("rt.cast", StringComparison.Ordinal) || g.Name.StartsWith("rt.isinst", StringComparison.Ordinal) ? "cast" : "return";
+        {
+            if (g.Name is "rt.retain" && depth < 4) return FromContext(f, b, i - 1, depth + 1);
+            if (g.Name.StartsWith("rt.cast", StringComparison.Ordinal) || g.Name.StartsWith("rt.isinst", StringComparison.Ordinal)) return depth < 4 ? FromContext(f, b, i - 1, depth + 1) : "cast";
+            return g.Name.Contains("Rt.Alloc", StringComparison.Ordinal) ? "new" : "return";
+        }
         return "other";
+    }
+
+    /// <summary>What the local a value is read from last got, before position i in the body (the nearest store to
+    /// it before, not a clear: an approximation across branches): the source of the value counted.</summary>
+    static string OfLocal(WasmFunction f, List<Instr> b, int i, int local, int depth)
+    {
+        for (int k = i - 1; k > 0; k--)
+        {
+            if (b[k].Op is not (WOp.LocalSet or WOp.LocalTee) || b[k].Imm != local) continue;
+            if (b[k - 1].Op == WOp.I32Const && b[k - 1].Ref == null && b[k - 1].Imm == 0) continue; // (a clear: the count moved or went)
+            return FromContext(f, b, k, depth);
+        }
+        return "local";
     }
 
     static string Context(WasmFunction f, List<Instr> b, int i)
