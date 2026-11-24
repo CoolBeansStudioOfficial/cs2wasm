@@ -169,6 +169,17 @@ static class SolverChecks
                             if (v.Count > 0) { bad++; example ??= m + ": " + v[0]; }
                         }
                     c.True($"{name}: every Rt.Release / ReleaseElements operand is a released type ({bodies} bodies){(example != null ? " first: " + example : "")}", bad == 0 && bodies > 100);
+                    if (hasDependents)
+                    {
+                        // (a mark can be set: every destroy calls ObjectMarks.OnDestroy, generated code no IR edge shows;
+                        // it is rooted, so a destroy's effects are its facts, not Wild for a method outside the solution.
+                        // IL2WASM_NO_MARKS_ROOTS=1: not rooted)
+                        var str = ctx.SystemModule.Context.GetWellKnownType(Internal.TypeSystem.WellKnownType.String);
+                        c.True($"{name}: ObjectMarks.OnDestroy is in the solution once a mark can be set", sol.Methods.Items.Any(m => m.GetName() == "OnDestroy" && m.OwningType is Internal.TypeSystem.MetadataType om && om.GetName() == "ObjectMarks"));
+                        var od = sol.Methods.Items.FirstOrDefault(m => m.GetName() == "OnDestroy" && m.OwningType is Internal.TypeSystem.MetadataType om2 && om2.GetName() == "ObjectMarks");
+                        var odf = od == null ? null : sol.Facts(od);
+                        c.True($"{name}: a string's destroy has OnDestroy's effects (Wild only if they are)", odf != null && sol.DestroyEffects(str).Wild == (odf.Mods.Wild || odf.ReleaseEffects.Wild));
+                    }
                 }
             }
             if (!hasDependents)
