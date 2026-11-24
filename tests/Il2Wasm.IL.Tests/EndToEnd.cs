@@ -85,5 +85,60 @@ static class EndToEnd
         }
     }
 
+    /// <summary>The framework directory (the IL CoreLib and the stock libraries): IL2WASM_FRAMEWORK, else the repository's
+    /// artifacts/framework (node tools/build-corelib.mjs); null when there is none.</summary>
+    public static string? FrameworkDir()
+    {
+        var d = Environment.GetEnvironmentVariable("IL2WASM_FRAMEWORK") ?? Path.Combine(RepoRoot, "artifacts", "framework");
+        return File.Exists(Path.Combine(d, "System.Private.CoreLib.dll")) ? d : null;
+    }
+
+    /// <summary>A program against the framework (the real CoreLib): its module's bytes.</summary>
+    public static byte[] CompileOnFramework(string dir, string name, string source)
+    {
+        var refs = Directory.GetFiles(dir, "*.dll");
+        var dll = Build.Compile(name, [source], refs.Where(r => !Path.GetFileName(r).StartsWith("System.Private.CoreLib")).Append(Path.Combine(dir, "System.Private.CoreLib.dll")).ToArray());
+        var ctx = new IlContext();
+        ctx.AddAssemblies(refs.Append(dll));
+        ctx.SetCoreLib();
+        var entry = ctx.Load(name).EntryPoint!;
+        var comp = new IlCompiler(ctx);
+        if (File.Exists(Path.Combine(dir, "il2wasm.natives.txt"))) comp.LoadNatives(Path.Combine(dir, "il2wasm.natives.txt"));
+        return comp.Compile(entry);
+    }
+
+    /// <summary>The programs of FrameworkPrograms/*.cs (the IL features the NetWasm suite's failures came down to, each
+    /// its smallest repro), compiled against the real CoreLib and run under host/run.mjs; .NET is the oracle.</summary>
+    public static void RunFramework(Checks c)
+    {
+        c.Section("end to end on the IL CoreLib: FrameworkPrograms against .NET");
+        var fw = FrameworkDir();
+        if (fw == null) { c.Info("no framework (node tools/build-corelib.mjs, or IL2WASM_FRAMEWORK): skipped"); return; }
+        foreach (var file in Directory.GetFiles(Build.Here("FrameworkPrograms"), "*.cs").OrderBy(f => f, StringComparer.Ordinal))
+        {
+            var name = Path.GetFileNameWithoutExtension(file);
+            if (!c.WantsProgram(name)) continue;
+            var src = File.ReadAllText(file);
+            string expected, actual;
+            try { expected = Build.Oracle(name, src); }
+            catch (Exception e) { c.True($"{name}: the oracle ran ({e.Message})", false); continue; }
+            try
+            {
+                var wasm = CompileOnFramework(fw, name, src);
+                actual = Run(wasm, name);
+                int at = actual.LastIndexOf("live: ", StringComparison.Ordinal);
+                if (at >= 0) actual = actual[..at];
+                c.Info($"{name}: {wasm.Length} bytes");
+            }
+            catch (Exception e) { actual = "(compile failed) " + e.Message; }
+            if (actual != expected)
+            {
+                c.True(name, false);
+                Console.WriteLine("     expected:\n" + Indent(expected) + "     actual:\n" + Indent(actual));
+            }
+            else c.True(name, true);
+        }
+    }
+
     static string Indent(string s) => string.Join("", s.Split('\n').Take(40).Select(l => "       | " + l + "\n"));
 }

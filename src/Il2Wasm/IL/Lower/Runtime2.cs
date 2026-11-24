@@ -581,15 +581,15 @@ public sealed partial class IlCompiler
                         // released, then the bytes moved (overlapping ranges are fine)
                         if (Kinds.Counted(et))
                         {
-                            Elem(e, 0, 1, es); e.Get(4); e.Call(Rt.Range(et, true));
-                            Elem(e, 2, 3, es); e.Get(4); e.Call(Rt.Range(et, false));
+                            Elem(e, 0, 1, es, ArrayDataOffset(a)); e.Get(4); e.Call(Rt.Range(et, true));
+                            Elem(e, 2, 3, es, ArrayDataOffset(a)); e.Get(4); e.Call(Rt.Range(et, false));
                         }
-                        Elem(e, 2, 3, es); Elem(e, 0, 1, es); e.Get(4); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryCopy);
+                        Elem(e, 2, 3, es, ArrayDataOffset(a)); Elem(e, 0, 1, es, ArrayDataOffset(a)); e.Get(4); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryCopy);
                         e.Op(WOp.Return);
                         break;
                     case "clear":
-                        if (Kinds.Counted(et)) { Elem(e, 0, 1, es); e.Get(2); e.Call(Rt.Range(et, false)); }
-                        Elem(e, 0, 1, es); e.I32(0); e.Get(2); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryFill);
+                        if (Kinds.Counted(et)) { Elem(e, 0, 1, es, ArrayDataOffset(a)); e.Get(2); e.Call(Rt.Range(et, false)); }
+                        Elem(e, 0, 1, es, ArrayDataOffset(a)); e.I32(0); e.Get(2); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryFill);
                         e.Op(WOp.Return);
                         break;
                 }
@@ -608,7 +608,7 @@ public sealed partial class IlCompiler
     }
 
     /// <summary>The address of element (local i) of the array in local a.</summary>
-    static void Elem(Emitter e, int a, int i, int es) { e.Get(a); e.I32(16); e.Op(WOp.I32Add); e.Get(i); e.I32(es); e.Op(WOp.I32Mul); e.Op(WOp.I32Add); }
+    static void Elem(Emitter e, int a, int i, int es, int data = 16) { e.Get(a); e.I32(data); e.Op(WOp.I32Add); e.Get(i); e.I32(es); e.Op(WOp.I32Mul); e.Op(WOp.I32Add); }
 
     // ------------------------------------------------------------------ delegates
 

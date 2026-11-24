@@ -47,7 +47,7 @@ sealed class FunctionLowering
             foreach (var n in b.Phis.Concat(b.Code))
             {
                 if (n.Kind == VK.Struct) _slot[n] = Reserve(n.Type!);
-                if (n.Op is Opc.Call or Opc.NewObj)
+                if (n.Op is Opc.Call or Opc.NewObj or Opc.CallI)
                     for (int i = 0; i < n.A.Length; i++) if (n.A[i].Kind == VK.Struct) _argSlot[(n, i)] = Reserve(n.A[i].Type!);
             }
         _frameSize = (_frameSize + 15) & ~15;
@@ -558,7 +558,7 @@ sealed class FunctionLowering
             case Opc.InitArray:
             {
                 var data = C.FieldData((FieldDesc)n.X!);
-                Get(n.A[0]); E.Call(C.Rt.NonNull); E.I32(16); E.Op(WOp.I32Add);
+                Get(n.A[0]); E.Call(C.Rt.NonNull); E.I32(n.A[0].Type is ArrayType iat ? IlCompiler.ArrayDataOffset(iat) : 16); E.Op(WOp.I32Add);
                 E.I32Addr(data); E.I32(data.Bytes.Length); E.Emit(WOp.MemoryCopy);
                 return;
             }
@@ -590,13 +590,13 @@ sealed class FunctionLowering
                 if (sret) ps.Add(ValType.I32);
                 var ft = new FuncType(ps.ToArray(), sig.ReturnType.IsVoid || sret ? [] : [ValOf(Kinds.Of(sig.ReturnType))]);
                 var fp = n.A[^1];
-                var args = new Node { Op = Opc.Call, A = n.A[..^1] };
-                for (int i = 0; i < args.A.Length; i++) if (args.A[i].Kind == VK.Struct) throw new NotSupportedException("calli with a struct argument");
-                foreach (var a in args.A) Get(a);
+                // (struct arguments: copies of their own, as a call's; the result's buffer; then the function)
+                PushCallArgs(n, n.A.Length - 1);
                 if (sret) Get(n);
                 Get(fp);
                 E.Emit(WOp.CallIndirect, 0, 0, ft);
                 if (n.HasValue && n.Kind != VK.Struct) Set(n);
+                AfterCall(n);
                 return;
             }
             case Opc.VarLd when n.Kind == VK.Struct: VarAddr((int)n.I); LoadStruct(n); return;
@@ -994,9 +994,9 @@ sealed class FunctionLowering
     }
 
     /// <summary>A call's arguments; a struct argument is a copy of its own (the callee may change it), counted.</summary>
-    void PushCallArgs(Node n)
+    void PushCallArgs(Node n, int count = -1)
     {
-        for (int i = 0; i < n.A.Length; i++)
+        for (int i = 0; i < (count < 0 ? n.A.Length : count); i++)
         {
             var a = n.A[i];
             if (a.Kind != VK.Struct) { Get(a); continue; }
@@ -1026,6 +1026,13 @@ sealed class FunctionLowering
     void NewObj(Node n)
     {
         var ctor = (MethodDesc)n.X!;
+        if (ctor.OwningType is ArrayType mat)
+        {
+            PushCallArgs(n);
+            E.Call(C.MdArrayCtor(mat, ctor.Signature.Length));
+            Set(n);
+            return;
+        }
         var t = (DefType)ctor.OwningType;
         if (t.IsString)
         {

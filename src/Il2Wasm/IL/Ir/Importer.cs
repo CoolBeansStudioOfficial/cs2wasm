@@ -1230,8 +1230,15 @@ public sealed class Importer
         {
             var t = ctor.OwningType;
 
-            if (t.IsArray) throw new NotSupportedException($"{I._method}: newobj of a multi-dimensional array {t}");
             var sig = ctor.Signature;
+            if (t.IsArray)
+            {
+                // a multi-dimensional array: its lengths (or lower bounds and lengths) are the constructor's arguments
+                var dims = new Node[sig.Length];
+                for (int i = sig.Length - 1; i >= 0; i--) dims[i] = Coerce(Pop(), sig[i]);
+                Push(Add(Opc.NewObj, VK.Ref, StackType.ObjRef, t, dims).WithX(ctor));
+                return;
+            }
             var args = new Node[sig.Length];
             for (int i = sig.Length - 1; i >= 0; i--) args[i] = Coerce(Pop(), sig[i]);
             if (t.IsValueType) { Push(AddOfType(Opc.NewObj, t, args).WithX(ctor)); return; }

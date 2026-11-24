@@ -149,6 +149,7 @@ public sealed partial class IlCompiler
     internal WasmFunction FunctionFor(MethodDesc m)
     {
         if (_functions.TryGetValue(m, out var f)) return f;
+        if (m is ArrayMethod am) return MdArrayMethod(am);
         if (m.GetTypicalMethodDefinition() is EcmaMethod em && em.GetDecodedCustomAttribute("Il2Wasm.Runtime", "ImportAttribute") is { } imp)
         {
             f = Module.AddImport((string)imp.FixedArguments[0].Value!, (string)imp.FixedArguments[1].Value!, m.ToString(), Sig(m));
@@ -251,7 +252,8 @@ public sealed partial class IlCompiler
     internal WasmFunction DispatchFor(MethodDesc slot)
     {
         if (_stubs.TryGetValue(slot, out var f)) return f;
-        if (slot.HasInstantiation) throw new NotSupportedException($"the generic virtual method {slot}");
+        // (a generic virtual method: a stub per instantiation called, every program method instantiated; each case the
+        // override of the method's definition on the receiver's type, instantiated as called: NativeAOT's resolution)
         f = Module.AddFunction("dispatch " + slot, Sig(slot));
         _stubs[slot] = f;
         return f;
@@ -260,6 +262,16 @@ public sealed partial class IlCompiler
     MethodDesc? Implementation(TypeDesc x, MethodDesc slot)
     {
         if (_impl.TryGetValue((x, slot), out var r)) return r;
+        if (slot.HasInstantiation && !slot.IsGenericMethodDefinition)
+        {
+            // a generic virtual method: the override of its definition (on the slot's instantiated type), then that
+            // method instantiated with the call's method arguments
+            var def = Implementation(x, slot.GetMethodDefinition());
+            r = def == null ? null : _ctx.GetInstantiatedMethod(def.GetMethodDefinition(), slot.Instantiation);
+            _impl[(x, slot)] = r;
+            if (Environment.GetEnvironmentVariable("IL2WASM_IL_DISPATCH") == "1") Console.Error.WriteLine($"dispatch {slot} on {x}: {r?.ToString() ?? "none"}");
+            return r;
+        }
         MethodDesc? impl = null;
         if (x is ArrayType arr && x.CanCastTo(slot.OwningType))
         {
@@ -824,12 +836,12 @@ public sealed partial class IlCompiler
                         e.Get(0); e.Load(WOp.I32Load, 12); e.Set(n); e.I32(0); e.Set(i);
                         var brk = e.Block(); var loop = e.Loop();
                         e.Get(i); e.Get(n); e.Op(WOp.I32GeU); e.BrIf(brk);
-                        e.Get(0); e.Get(i); e.I32(2); e.Op(WOp.I32Shl); e.Op(WOp.I32Add); e.Load(WOp.I32Load, 16); e.Call(Rt.Release);
+                        e.Get(0); e.Get(i); e.I32(2); e.Op(WOp.I32Shl); e.Op(WOp.I32Add); e.Load(WOp.I32Load, ArrayDataOffset(at)); e.Call(Rt.Release);
                         e.Get(i); e.I32(1); e.Op(WOp.I32Add); e.Set(i); e.Br(loop);
                         e.End(); e.End();
                     }
-                    else if (Kinds.Counted(at.ElementType)) { e.Get(0); e.I32(16); e.Op(WOp.I32Add); e.Get(0); e.Load(WOp.I32Load, 12); e.Call(Rt.Range(at.ElementType, false)); }
-                    e.Get(0); e.Get(0); e.Load(WOp.I32Load, 12); e.I32(es); e.Op(WOp.I32Mul); e.I32(16); e.Op(WOp.I32Add);
+                    else if (Kinds.Counted(at.ElementType)) { e.Get(0); e.I32(ArrayDataOffset(at)); e.Op(WOp.I32Add); e.Get(0); e.Load(WOp.I32Load, 12); e.Call(Rt.Range(at.ElementType, false)); }
+                    e.Get(0); e.Get(0); e.Load(WOp.I32Load, 12); e.I32(es); e.Op(WOp.I32Mul); e.I32(ArrayDataOffset(at)); e.Op(WOp.I32Add);
                 }
                 else if (x.IsString)
                 {
@@ -863,7 +875,7 @@ public sealed partial class IlCompiler
                 {
                     if (!Kinds.Counted(at.ElementType)) continue;
                     e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
-                    e.Get(0); e.I32(16); e.Op(WOp.I32Add); e.Get(0); e.Load(WOp.I32Load, 12); e.Call(Rt.Range(at.ElementType, true));
+                    e.Get(0); e.I32(ArrayDataOffset(at)); e.Op(WOp.I32Add); e.Get(0); e.Load(WOp.I32Load, 12); e.Call(Rt.Range(at.ElementType, true));
                     e.Op(WOp.Return); e.End();
                     continue;
                 }
@@ -1245,6 +1257,18 @@ public sealed partial class IlCompiler
             e.Get(old);
         });
 
-        public WasmFunction FRem(bool d) => throw new NotSupportedException("the remainder of floating-point values");
+        /// <summary>C#'s floating remainder (fmod, exact): the runtime's Rt.FMod; a float's through double (exact: the
+        /// remainder of two floats is a float).</summary>
+        public WasmFunction FRem(bool d)
+        {
+            var fmod = c.FunctionFor(c.CoreMethod("Il2Wasm.Runtime", "Rt", "FMod"));
+            if (d) return fmod;
+            return Cached("rt.fmodf", FT([ValType.F32, ValType.F32], [ValType.F32]), e =>
+            {
+                e.Get(0); e.Op(WOp.F64PromoteF32); e.Get(1); e.Op(WOp.F64PromoteF32);
+                e.Call(fmod);
+                e.Op(WOp.F32DemoteF64);
+            });
+        }
     }
 }
