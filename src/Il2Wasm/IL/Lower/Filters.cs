@@ -40,7 +40,18 @@ public sealed partial class IlCompiler
     internal WasmFunction FirstPass => _firstPass ??= Module.AddFunction("rt.first_pass", new FuncType([I], []));
     internal WasmFunction EhDecide => _ehDecide ??= Module.AddFunction("rt.eh_decide", new FuncType([I, I], [I]));
     /// <summary>(ex): before a throw, the exception's trace and the first pass.</summary>
-    internal WasmFunction ThrowHook => _throwHook ??= Module.AddFunction("rt.throw_hook", new FuncType([I], []));
+    internal WasmFunction ThrowHook
+    {
+        get
+        {
+            if (_throwHook != null) return _throwHook;
+            _throwHook = Module.AddFunction("rt.throw_hook", new FuncType([I], []));
+            // (the trace: DebugInfo.cs)
+            if (TryCoreMethod("Il2Wasm.Runtime", "Rt", "OnThrow") is { } ot) _onThrow = FunctionFor(ot);
+            return _throwHook;
+        }
+    }
+    WasmFunction? _onThrow;
 
     internal int NewEhSite(List<(TypeDesc? type, WasmFunction? filter, bool onePass)> clauses)
     {
@@ -146,6 +157,7 @@ public sealed partial class IlCompiler
     void EmitThrowHookBody()
     {
         var e = new Emitter(_throwHook!);
+        if (_onThrow != null) { e.Get(0); e.Call(_onThrow); }
         if (_anyFilter) { e.Get(0); e.Call(FirstPass); }
     }
 }

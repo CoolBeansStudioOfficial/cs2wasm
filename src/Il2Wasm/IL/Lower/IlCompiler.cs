@@ -110,6 +110,7 @@ public sealed partial class IlCompiler
         Layout();
         Module.TypeIdMap = id => _finalIds[id];
         Module.ValidateAlways = true;
+        Module.PosShown = p => p >= 0 && p < _positions.Count; // il-runtime: positions are the program's own (DebugInfo.cs)
         // (IL2WASM_IL_BODY=name: the WASM bodies of the functions whose name contains it, before the back end's passes)
         if (Environment.GetEnvironmentVariable("IL2WASM_IL_BODY") is { Length: > 0 } wb)
             foreach (var f in Module.Functions.Where(f => f.Name.Contains(wb)))
@@ -132,7 +133,7 @@ public sealed partial class IlCompiler
             throw;
         }
         if (Module.ValidationProblems.Count > 0) throw new InvalidOperationException("invalid module:\n" + string.Join("\n", Module.ValidationProblems.Take(10)));
-        return enc.Bytes;
+        return WithDebugSections(enc); // il-runtime: the frames and lines sections (DebugInfo.cs)
     }
 
     static FuncType Sig(MethodDesc m)
@@ -185,6 +186,7 @@ public sealed partial class IlCompiler
             return native;
         }
         f = Module.AddFunction(m.ToString(), Sig(m));
+        SetFrame(f, m); // il-runtime: its frame in traces (DebugInfo.cs)
         _functions[m] = f;
         _queue.Enqueue((m, f));
         _why[m] = _compiling;
@@ -740,6 +742,7 @@ public sealed partial class IlCompiler
         // the destroy function's callee
         Rt.Free = FunctionFor(CoreMethod("Il2Wasm.Runtime", "Rt", "FreeObject"));
         _ = Rt.NonNull;
+        _ = ThrowHook; _ = OnCatchFn; // il-runtime: throws the generated parts make (Filters.cs, DebugInfo.cs)
         // the names, for TypeNameById (made now: they are literals)
         foreach (var t in _types.ToList()) StringLiteral(TypeName(t));
     }

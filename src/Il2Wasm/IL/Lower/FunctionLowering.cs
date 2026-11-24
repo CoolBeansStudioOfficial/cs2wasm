@@ -305,6 +305,8 @@ sealed partial class FunctionLowering
         var b = ((BNode)x).B;
         foreach (var n in b.Code)
         {
+            // il-runtime: each operation's file and line, from the PDB (DebugInfo.cs)
+            if (n.ILOffset >= 0) E.CurrentPos = C.PositionOf(_body.Method, n.ILOffset);
             if (n.IsTerminator) { EmitTerminator(x, b, n, ctx); return; }
             EmitOp(n);
         }
@@ -500,6 +502,8 @@ sealed partial class FunctionLowering
                 {
                     E.Get(obj); E.Call(C.IsInstFn(h.CatchType)); E.If(); open = true;
                 }
+                // il-runtime: the catch took it: the exception's trace ends at this frame (DebugInfo.cs)
+                E.Get(obj); E.Call(C.OnCatchFn);
                 EmitLevel(new Level(h, h.Entry), (lv, done, exits));
                 if (open) E.End();
                 else break;
