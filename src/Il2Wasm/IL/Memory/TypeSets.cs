@@ -796,10 +796,14 @@ public sealed partial class ProgramSolution
     {
         var rs = receiver != null && receiver.Kind == VK.Ref ? of(receiver) : null;
         if (rs is not { } set) return Targets(slot, receiver?.Kind == VK.Ref ? receiver.Type : null);
+        if (_targetsOver.TryGetValue((slot, set), out var known)) return known;
         var r = new HashSet<MethodDesc>();
         foreach (int i in set.Items) if (_host.Resolve(_all![i], slot) is { } impl) r.Add(impl);
-        return r.OrderBy(x => StableKey.Of(x), StringComparer.Ordinal);
+        return _targetsOver[(slot, set)] = r.OrderBy(x => StableKey.Of(x), StringComparer.Ordinal).ToArray();
     }
+
+    // (a slot's targets over a receiver set: the same for every call that asks)
+    readonly Dictionary<(MethodDesc, IdSet), MethodDesc[]> _targetsOver = new();
 
     void Sinks(MethodDesc m, Node n, State st, Func<Node, IdSet?> of, Action<MethodDesc> enqueue, Dictionary<int, IdSet?> addrs)
     {
