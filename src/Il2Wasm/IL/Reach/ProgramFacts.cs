@@ -60,7 +60,7 @@ public sealed class ProgramFacts : ISccpOracle
                     case Opc.StSFld: case Opc.LdSFldA:
                         if (n.X is FieldDesc f) { _written.Add(f); _written.Add(f.GetTypicalFieldDefinition()); }
                         break;
-                    case Opc.TypeOf: case Opc.LdToken:
+                    case Opc.TypeOf: case Opc.LdToken: case Opc.MkRefAny: // (__reftype gives a TypedReference's type object)
                         if (n.X is TypeDesc tt) TypeObjects.Add(tt);
                         break;
                     case Opc.LdFtn: case Opc.LdVirtFtn:
