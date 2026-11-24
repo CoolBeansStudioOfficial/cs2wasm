@@ -54,6 +54,10 @@ namespace Il2Wasm.Runtime
         /// block (count, then each string's length and characters) into the buffer: its length in characters.</summary>
         [Import("il2wasm", "args_block")] static extern int Block(char* buffer, int size);
 
+        /// <summary>Main(string[])'s argument: the command line after the program's name (never null, as .NET
+        /// passes it).</summary>
+        public static string[] MainArgs() { var all = Args(); return all.Length <= 1 ? [] : all[1..]; }
+
         public static string[] Args()
         {
             int n = Block(null, 0);

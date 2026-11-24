@@ -1080,15 +1080,23 @@ public sealed partial class IlCompiler
     void Finish(WasmFunction main, MethodDesc entry)
     {
         // main: the entry, with an exception that escapes it reported to the host
-        var mf = Module.AddFunction("main", new FuncType([], []));
+        // (it returns the exit code, as .NET's process gets it: an int Main's result, otherwise Environment.ExitCode;
+        // Main(string[]) gets the command line after the program's name, never null)
+        var mf = Module.AddFunction("main", new FuncType([], [ValType.I32]));
         mf.Exports.Add("main");
         _mainExport = mf;
         var e = new Emitter(mf);
+        int argv = -1;
+        if (entry.Signature.Length == 1 && TryCoreMethod("Il2Wasm.Runtime", "CommandLine", "MainArgs") is { } mainArgs)
+        { argv = e.AddLocal(ValType.I32); e.Call(FunctionFor(mainArgs)); e.Set(argv); }
         var caught = e.Block(ValType.I32);
         e.TryTable(null, (0, ExceptionTag, caught));
-        if (entry.Signature.Length == 1) e.I32(0);
+        if (entry.Signature.Length == 1) { if (argv >= 0) e.Get(argv); else e.I32(0); }
         e.Call(main);
-        if (!entry.Signature.ReturnType.IsVoid) e.Op(WOp.Drop);
+        bool intMain = !entry.Signature.ReturnType.IsVoid;
+        // (the caller lends the arguments: generated code never hands a count over; released once Main returns)
+        if (argv >= 0) { e.Get(argv); e.Call(Rt.Release); }
+        if (!intMain) { if (TryCoreMethod("System", "Environment", "get_ExitCode") is { } exitCode) e.Call(FunctionFor(exitCode)); else e.I32(0); }
         e.Op(WOp.Return);
         e.End();
         e.Op(WOp.Unreachable);
@@ -1098,6 +1106,7 @@ public sealed partial class IlCompiler
         e.Set(ex);
         if (TryCoreMethod("Il2Wasm.Runtime", "Rt", "ReportUnhandled") is { } report) { e.Get(ex); e.Call(FunctionFor(report)); }
         e.Get(ex); e.Call(Rt.Release);
+        e.I32(0); // (the host reports the exception and sets the exit code)
 
         if (CountObjects)
         {
