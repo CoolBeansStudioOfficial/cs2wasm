@@ -103,8 +103,10 @@ public static class Verify
                 foreach (var phi in b.Phis)
                 {
                     if (!Plan.IsRef(phi) || Kind(phi) != OwnKind.Guaranteed) continue;
+                    // (its own root may be an input: the root holds its count where the phi is used, Use checks)
                     foreach (var a in phi.A)
-                        if (Plan.IsRef(a) && Kind(a) == OwnKind.Owned && !Plan.IsTrivial(a)) throw Fail("a Guaranteed phi has an Owned input (check 7)", phi, b);
+                        if (Plan.IsRef(a) && Kind(a) == OwnKind.Owned && !Plan.IsTrivial(a) && !(_plan.Own[phi].Path is { Root: RootKind.Val } pp && pp.Index == a.Id))
+                            throw Fail("a Guaranteed phi has an Owned input other than its root (check 7)", phi, b);
                 }
                 for (int i = 0; i < b.Code.Count; i++)
                 {

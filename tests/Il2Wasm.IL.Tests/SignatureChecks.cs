@@ -23,6 +23,14 @@ static class SignatureChecks
         public static class S
         {
             public static long W(T n) => n == null ? 0 : n.V + W(n.L) + W(n.R);
+            public static int Walk()
+            {
+                Node head = null;
+                for (int i = 0; i < 4; i++) head = new Node { X = i, Next = head };
+                int s = 0;
+                for (var n = head; n != null; n = n.Next) s += n.X;
+                return s + head.X;
+            }
             static Node s_held;
             public static void Keep(Node n) { s_held = n; }
             public static void Pass(Node n) { Keep(n); }
@@ -43,6 +51,7 @@ static class SignatureChecks
                 var t = new T { V = 1 };
                 t.L = new T { V = 2 };
                 Console.WriteLine(W(t));
+                Console.WriteLine(Walk());
             }
         }
         """;
@@ -55,8 +64,15 @@ static class SignatureChecks
         Signatures.Observed = s => sol = s;
         // (the last plan of Main and of each of W's entries: the variants their calls of W take)
         var callees = new Dictionary<string, string>();
+        string? walkPhi = null;
         Plan.Built = (ctx, plan) =>
         {
+            if (ctx.Method.OwningType is MetadataType wt && wt.GetName() == "S" && ctx.Method.GetName() == "Walk")
+            {
+                // (the walk's phi: n = head, then n.Next; its Owned entry input is its path's root, head)
+                var phi = ctx.Body.Blocks.SelectMany(b => b.Phis).LastOrDefault(x => x.Kind == Il2Wasm.IL.Ir.VK.Ref && x.A.Any(a => a.Op == Il2Wasm.IL.Ir.Opc.LdFld));
+                lock (callees) walkPhi = phi == null ? "no phi" : plan.Own[phi].Kind.ToString();
+            }
             if (ctx.Method.OwningType is not MetadataType ot || ot.GetName() != "S" || ctx.Method.GetName() is not ("Main" or "W")) return;
             var calls = ctx.Body.Blocks.SelectMany(b => b.Code).Where(n => n.Op == Il2Wasm.IL.Ir.Opc.Call && n.X is MethodDesc cm && cm.GetName() == "W");
             lock (callees) callees[ctx.Method.GetName() + ctx.Entry.Suffix] = string.Join(" ", calls.Select(n => plan.Callees[n].Suffix is { Length: > 0 } s ? s : "entry"));
@@ -84,5 +100,9 @@ static class SignatureChecks
         c.Eq("W's root at its last use: the owned variant", callees.GetValueOrDefault("Main"), "|own1");
         c.Eq("W's calls on its fields' loads, in the Entry: the Entry", callees.GetValueOrDefault("W"), "entry entry");
         c.Eq("W's calls on its fields' loads, in its owned variant: the Entry", callees.GetValueOrDefault("W|own1"), "entry entry");
+        // the loop phi over a list's Next links whose entry input is the list's head, an Owned value: borrowed from the
+        // head, which the phi's uses keep alive (Plan.PhiRootInput; IL2WASM_NO_LOOP_PHI_ROOT=1: Owned; the break twin
+        // IL2WASM_LOOP_PHI_ROOT_BREAK=1 takes any Owned input, and the verifier rejects it, check 7)
+        c.Eq("a loop phi whose Owned input is its root: borrowed", walkPhi, "Guaranteed");
     }
 }

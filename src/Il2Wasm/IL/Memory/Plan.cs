@@ -82,6 +82,9 @@ public static class Plan
     /// <summary>IL2WASM_PLAN_SLOW=ms: each plan that takes at least that long, on stderr.</summary>
     static readonly int s_slow = int.TryParse(Environment.GetEnvironmentVariable("IL2WASM_PLAN_SLOW"), out int ms) ? ms : 0;
 
+    static readonly bool s_noLoopPhiRoot = Environment.GetEnvironmentVariable("IL2WASM_NO_LOOP_PHI_ROOT") == "1";
+    static readonly bool s_loopPhiRootBreak = Environment.GetEnvironmentVariable("IL2WASM_LOOP_PHI_ROOT_BREAK") == "1";
+
     /// <summary>IL2WASM_PLAN_DUMP=text: the planned body of each method whose name contains it, on stderr.</summary>
     static readonly string? s_dump = Environment.GetEnvironmentVariable("IL2WASM_PLAN_DUMP") is { Length: > 0 } d ? d : null;
 
@@ -307,6 +310,11 @@ public static class Plan
 
         void Flip(Node v) { _kind[v] = OwnKind.Owned; _path.Remove(v); Flips++; }
 
+        /// <summary>An Owned input a Guaranteed phi may take: its path's root itself (IL2WASM_LOOP_PHI_ROOT_BREAK=1, the
+        /// rule's test: any Owned input, which the verifier rejects, check 7).</summary>
+        bool PhiRootInput(BorrowPath p, Node x) =>
+            !s_noLoopPhiRoot && KindOf(x) == OwnKind.Owned && (s_loopPhiRootBreak || p.Root == RootKind.Val && p.Index == x.Id);
+
         /// <summary>Guaranteed values whose root cannot hold them flip to Owned, to a fixed point (flips only make more
         /// values Owned, which only makes more roots valid): a Val root must be an Owned value of this body; a phi is
         /// Guaranteed only over Guaranteed or Trivial inputs.</summary>
@@ -325,7 +333,10 @@ public static class Plan
                         RootKind.Arg => _body.Args.Any(a => a.I == p.Index),
                         _ => true,
                     };
-                    if (ok && v.Op == Opc.Phi) ok = v.A.All(x => !IsRef(x) || KindOf(x) is OwnKind.Guaranteed or OwnKind.Trivial);
+                    // (a phi is Guaranteed over Guaranteed or Trivial inputs, and over its own root: a loop's entry input
+                    // `n = head` of `for (var n = head; n != null; n = n.Next)`, which holds its count while the phi is
+                    // live, kept by the phi's uses. IL2WASM_NO_LOOP_PHI_ROOT=1: an Owned root input makes the phi Owned)
+                    if (ok && v.Op == Opc.Phi) ok = v.A.All(x => !IsRef(x) || KindOf(x) is OwnKind.Guaranteed or OwnKind.Trivial || PhiRootInput(p, x));
                     if (!ok) { Flip(v); changed = true; }
                 }
             }
