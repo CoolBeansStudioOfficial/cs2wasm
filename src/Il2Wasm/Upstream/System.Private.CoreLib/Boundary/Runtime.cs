@@ -2160,6 +2160,57 @@ namespace Il2Wasm.Runtime
             if (d != 0) Release(Borrow<object>(d));
         }
 
+        // ---- the IL front end's returned-span keepers (Memory/Plan.cs, docs/MEMORY-IR.md 7.4; S1 row c's region)
+        // (a function that returns a span or a byref into an object only it held hands that object's count to its
+        // caller: ReturnHold before it returns, ReturnTake right after the call, which gives the count to the caller as
+        // an owned base of the returned value, released at that value's last use. A take matches only the newest hold
+        // and only when the returned address points into the held object, so a take after a call that held nothing
+        // takes nothing. S3: the ring must become per thread.)
+        static int s_hold0, s_hold1, s_hold2, s_hold3, s_holdN;
+        /// <summary>Holds that pushed out an older one not taken yet (a bug: that object is then freed later than its
+        /// last use; the checked build stops at it).</summary>
+        public static int ReturnHoldOverflows;
+
+        /// <summary>The returning function's object (the base of what it returns) is counted until the caller takes it.</summary>
+        public static void ReturnHold(int obj)
+        {
+            int o = ObjectOf(obj);
+            if (o == 0) return;
+            Retain(Borrow<object>(o));
+            int old;
+            switch (s_holdN++ & 3)
+            {
+                case 0: old = s_hold0; s_hold0 = o; break;
+                case 1: old = s_hold1; s_hold1 = o; break;
+                case 2: old = s_hold2; s_hold2 = o; break;
+                default: old = s_hold3; s_hold3 = o; break;
+            }
+            if (old != 0)
+            {
+                ReturnHoldOverflows++;
+                if (Checked()) { ChkSay("il2wasm checked: a returned span's keeper was pushed out before its caller took it"); Unreachable(); }
+                Release(Borrow<object>(old));
+            }
+        }
+
+        /// <summary>After a call that may have held a keeper: the newest hold, if the returned address points into it,
+        /// owned by the caller now; else null.</summary>
+        public static object? ReturnTake(int addr)
+        {
+            if (s_holdN == 0) return null;
+            int o = ObjectOf(addr);
+            if (o == 0) return null;
+            int i = (s_holdN - 1) & 3;
+            int k = i == 0 ? s_hold0 : i == 1 ? s_hold1 : i == 2 ? s_hold2 : s_hold3;
+            if (k != o) return null;
+            switch (i) { case 0: s_hold0 = 0; break; case 1: s_hold1 = 0; break; case 2: s_hold2 = 0; break; default: s_hold3 = 0; break; }
+            s_holdN--;
+            return Take<object>(o);
+        }
+
+        /// <summary>ReturnTake for a returned byref-like struct: the address in its field at the offset.</summary>
+        public static object? ReturnTakeIn(int structAddr, int offset) => ReturnTake(Mem.LoadI32(structAddr + offset));
+
         /// <summary>One of the object's seven words (k: 4 to 28, the word that many bytes before its header); 0 until
         /// it is written (the block is cleared when the object is made).</summary>
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] static int PL(int obj, int k) => Mem.LoadI32(obj - k);
