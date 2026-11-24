@@ -1474,3 +1474,12 @@ with IL2WASM_DUMP=name to read a function's code). Heavy runs through `tests/out
   builds at a04d832 (main had 186). Homelab: old suite 264/264 both modes; self-hosted compiler byte for byte on
   145, 220, 193, 088, hello world 7.1 s. Not done: threaded static constructors (no threads in the IL front end),
   group weak references (no groups). Not run: stress, frames.mjs, bench.mjs (old front end and back end unchanged).
+- 2026-11-23 evening, claude/il-codegen (IL importer and lowering correctness, AUDIT "IL front end: importer and
+  lowering correctness"): NetWasm suite, desk, shipped mode, each run whole: 163 passed at main 179edef, then 186,
+  226, 255 (d2ce0aa, now on main), 262 (with claude/il-runtime a04d832), 263 (f96d770), 265 (162ff60). In: generic virtual
+  methods, multi-dimensional arrays, calli with structs, float remainder, [UnsafeAccessor], initblk/cpblk, array
+  covariance and ldelema checks, Nullable boxing, delegate fixes, arrays' generic interfaces, the double release
+  of a boxed struct's references, string.Empty, addresses and spans keeping their objects. tests/Il2Wasm.IL.Tests
+  101 of 101 (18 new programs on the real CoreLib); TypedReference. Not run: homelab suite, stress, self-host check, frames, bench
+  (the old front end and back end passes are unchanged; the one library change, Boundary/CompilerHelpers.cs, is
+  reached only by the IL front end).

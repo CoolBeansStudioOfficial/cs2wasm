@@ -5527,3 +5527,52 @@ Not run: the homelab suite and the self-host check on this commit.
 - Not done: thread-safe static constructors with real threads (no threads in the IL front end yet), weak references
   of groups (no groups yet), filters in a method whose filter reads a struct argument (one pass), Activator for
   types the program never constructs nor names with typeof.
+### IL front end: importer and lowering correctness, driven by the NetWasm suite (claude/il-codegen, 2026-11-23)
+
+- Method: the NetWasm suite on the desk (shipped mode, oracle records pulled from the homelab, a cache of its own
+  under the session's scratch directory), failures grouped by first difference and stack, the smallest repro of
+  each group written as a program of tests/Il2Wasm.IL.Tests/FrameworkPrograms (`fw`, f01 to f16: compiled against
+  the real IL CoreLib, run under host/run.mjs, .NET in process as the oracle), then the fix at the cause. No
+  NetWasm code is in the repository; every test is il2wasm's own.
+- Suite, shipped mode, desk, each run whole with --force [run]: main 179edef 163 passed, 237 failed, 49 did not
+  compile, 1 timed out; after the first two commits 186/252/11/1; f8a57e0 226/212/11/1; d2ce0aa 255/184/11/0;
+  9e69375 (with claude/il-runtime a04d832) 262/178/9/1; f96d770 263/178/8/1; 162ff60 (with TypedReference) 265/177/7/1, nothing that passed before failing at any stage after its fix (two regressions of f96d770 fixed in 162ff60). da78abc (UnsafeAccessor through NativeAOT's generator) not run whole: its two cases checked alone.
+- Features: generic virtual methods (a stub per instantiation called; each case the override of the method's
+  definition on the receiver, instantiated with the call's method arguments: NativeAOT's resolution);
+  multi-dimensional arrays in the layout the runtime's Array reads (lengths at 16 + 4 d, elements from
+  (16 + 4 rank) rounded to 8; newobj with lengths or zero lower bounds; generated Get, Set, Address, bounds-checked
+  and row-major; the data offset in destroy, retain_contents, copy, clear and InitializeArray); calli with struct
+  arguments; floating-point remainder (Rt.FMod); [UnsafeAccessor] bodies (all five kinds, generic owners and
+  methods; a missing member throws MissingMethodException or MissingFieldException); initblk and cpblk; array
+  covariance store checks and ldelema's exact-type check (readonly. exempt); Nullable<T> box and unbox as ECMA-335
+  says; delegates of static virtuals on type arguments (constrained. ldftn), of another delegate's Invoke, of
+  extension methods (closed over the first argument), and the CLR's errors for a null target.
+- Bugs found by measurement: a T[] had none of IEnumerable<T>, IList<T>, IReadOnlyList<T> and the rest (the IL
+  CoreLib has no Array<T>, which NativeAOT's type system reads them from; now its SimpleArrayOfT algorithm);
+  a boxed struct with references released them twice when the box was freed (heap corruption: every struct
+  enumerator used through an interface, async Start's null test); string.Empty read as null (an [Intrinsic] field
+  no initializer sets); a reference released while an address into its object was still used (unbox then ldfld,
+  ref a[i], spans over new arrays); a returned address's base released after the ret (a leak per call:
+  GCHandle.AddrOfPinnedObject); the 64-bit checked multiply trapped on MinValue * -1 and checked double
+  conversions at 2^63 did not throw; open types (typeof(KeyValuePair<,>)) failed the type tables; TextScan's
+  vector case change wrote past a non-ASCII char.
+- Addresses and spans as roots (Ownership.cs): an address made from a reference (field and element addresses,
+  unbox, address arithmetic and conversion, a call's returned byref), and a byref-like struct a call or newobj
+  makes, carries its bases; a use of it is a use of them. A span or ref variable keeps everything ever stored into
+  it, for every read of it (flow-insensitive: at worst a count kept longer); phis are not followed (an address
+  carried around a loop in SSA does not keep its object; il-runtime's Pinning.cs covers fixed). At a return the
+  bases are released before it when something else holds them (an argument, a load, a cast of one) or the result
+  is a raw address; otherwise an object only the callee held stays under the returned span or byref (a leak, where
+  a GC keeps it). A first version (6026574) released every base before the return and freed spans' arrays; a
+  leaked count in GetArrayDataReference had hidden the one-block limit for variables (TextInfo, SearchValues).
+- TypedReference (mkrefany, refanyval, refanytype).
+- Not done: UnsafeAccessorTypeAttribute's type translation and
+  the invalid-attribute errors; DynamicInterfaceCastable; DelegateArity, DynamicInvoke and Delegate.Method
+  (reflection tables, claude/il-generics); Array.CreateInstance of array types the program never makes and SR
+  resource lookups (claude/il-generics); the zero-length Array.Copy type check and Stopwatch.Frequency (CoreLib's
+  code, not codegen). Unknown: whether the leaked base of a returned span over a callee-made object matters in
+  practice.
+- Not run: the homelab suite, stress and the self-host check (the old front end, the back end's passes and the
+  runtime's C# are unchanged by this branch, apart from Boundary/CompilerHelpers.cs, which only the IL front end
+  reaches; the IL front end is its own project); frames.mjs and bench.mjs (the IL
+  front end does not compile those programs yet).
