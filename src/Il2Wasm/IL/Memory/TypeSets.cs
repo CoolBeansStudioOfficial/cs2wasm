@@ -110,7 +110,7 @@ public sealed partial class ProgramSolution
         TypeSetsSolved = false;
     }
 
-    void SolveTypeSetsOnce(IReadOnlyCollection<MethodDesc> externalRoots)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] void SolveTypeSetsOnce(IReadOnlyCollection<MethodDesc> externalRoots)
     {
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long cpu0 = s_typeSetsTrace ? ThreadCpuTicks() : 0;
@@ -188,7 +188,7 @@ public sealed partial class ProgramSolution
         if (s_typeSetsTrace) Console.Error.WriteLine($"typesets: {bodies.Count} bodies, {evaluations} evaluations, {st.Vars.Count} variables ({TypeSetsTime.TopVars} unknown){(st.RawRefStore ? ", a reference stored through a raw pointer: every slot unknown" : "")}; {clock.ElapsedMilliseconds} ms, cpu {(ThreadCpuTicks() - cpu0) / 10000} ms");
     }
 
-    int VarId(State st, Var v)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] int VarId(State st, Var v)
     {
         if (st.Ids.TryGetValue(v, out int id)) return id;
         id = st.Vars.Count;
@@ -217,7 +217,7 @@ public sealed partial class ProgramSolution
 
     /// <summary>The slot-like keys that may alias a read key (other than itself): each list is brought up to date with
     /// the keys that appeared since it was last asked for.</summary>
-    List<int> AliasesOf(State st, int id)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] List<int> AliasesOf(State st, int id)
     {
         if (!_aliasesOf.TryGetValue(id, out var r)) _aliasesOf[id] = r = new AliasList();
         for (; r.Seen < st.SlotLike.Count; r.Seen++)
@@ -231,7 +231,7 @@ public sealed partial class ProgramSolution
     readonly Dictionary<int, AliasList> _aliasesOfWrite = new();
 
     /// <summary>The read keys a write to slot-like key id may reach (other than itself), brought up to date the same way.</summary>
-    List<int> ReadersOfWrite(State st, int id)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] List<int> ReadersOfWrite(State st, int id)
     {
         if (!_aliasesOfWrite.TryGetValue(id, out var r)) _aliasesOfWrite[id] = r = new AliasList();
         for (; r.Seen < st.ReadKeyList.Count; r.Seen++)
@@ -244,7 +244,7 @@ public sealed partial class ProgramSolution
 
     static bool IsDelegateBase(MetadataType t) => t.GetNamespace() == "System" && t.GetName() is "Delegate" or "MulticastDelegate";
 
-    IdSet? Join(IdSet? a, IdSet? b)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] IdSet? Join(IdSet? a, IdSet? b)
     {
         if (a is not { } x || b is not { } y) return null;
         var u = Pool.Join(x, y);
@@ -252,7 +252,7 @@ public sealed partial class ProgramSolution
     }
 
     /// <summary>Grows a variable; its readers (and, for a slot-like key, the readers of the keys it aliases) run again.</summary>
-    void Write(State st, Var v, IdSet? add, Action<MethodDesc> enqueue)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] void Write(State st, Var v, IdSet? add, Action<MethodDesc> enqueue)
     {
         int id = VarId(st, v);
         var old = st.Sets[id];
@@ -265,7 +265,7 @@ public sealed partial class ProgramSolution
             foreach (int rk in ReadersOfWrite(st, id)) Notify(st, rk, enqueue);
     }
 
-    IdSet? ReadVar(State st, Var v, MethodDesc reader)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] IdSet? ReadVar(State st, Var v, MethodDesc reader)
     {
         int id = VarId(st, v);
         st.Readers[id].Add(ReaderState(reader));
@@ -286,7 +286,7 @@ public sealed partial class ProgramSolution
     readonly Dictionary<long, bool> _aliasById = new();
 
     /// <summary>KeysMayAlias of two key variables, by their ids (an element store reaches elements only: no lookup).</summary>
-    bool KeysMayAlias(State st, int rid, int wid)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] bool KeysMayAlias(State st, int rid, int wid)
     {
         MemKey r = st.Vars[rid].Key, w = st.Vars[wid].Key;
         if (w.Kind == KeyKind.Elem && r.Kind != KeyKind.Elem) return false;
@@ -312,7 +312,7 @@ public sealed partial class ProgramSolution
 
     /// <summary>A read of a key: the key's set and those of the slot-like keys that may alias it, kept to the types the
     /// read's static type admits.</summary>
-    IdSet? ReadKey(State st, MemKey k, TypeDesc? staticType, MethodDesc reader)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] IdSet? ReadKey(State st, MemKey k, TypeDesc? staticType, MethodDesc reader)
     {
         int id = VarId(st, new Var(VarKind.Key, null, 0, k));
         st.Readers[id].Add(ReaderState(reader));
@@ -328,7 +328,7 @@ public sealed partial class ProgramSolution
     }
 
     /// <summary>The types of a set that a static type admits (all of it for object or no type).</summary>
-    IdSet? Filter(IdSet? s, TypeDesc? t)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] IdSet? Filter(IdSet? s, TypeDesc? t)
     {
         // (unknown: every constructed type the static type admits, when they are few: the cone the static type gives)
         if (s == null) return ConeSet(t);
@@ -392,7 +392,7 @@ public sealed partial class ProgramSolution
 
     /// <summary>A reference's address set: the key ids it may point at, or null (unknown: a raw pointer, address
     /// arithmetic, an intrinsic it does not know).</summary>
-    IdSet? AddrOf(MethodDesc m, Node a, State st, Dictionary<int, IdSet?> addrs)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] IdSet? AddrOf(MethodDesc m, Node a, State st, Dictionary<int, IdSet?> addrs)
     {
         if (addrs.TryGetValue(a.Id, out var known))
         {
@@ -437,7 +437,7 @@ public sealed partial class ProgramSolution
     /// <summary>The join of address sets (no cap: keys are few).</summary>
     IdSet? JoinAddr(IdSet? a, IdSet? b) => a is { } x && b is { } y ? Pool.Join(x, y) : null;
 
-    void WriteAddr(State st, Var v, IdSet? add, Action<MethodDesc> enqueue)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] void WriteAddr(State st, Var v, IdSet? add, Action<MethodDesc> enqueue)
     {
         int id = VarId(st, v);
         var old = st.Sets[id];
@@ -449,7 +449,7 @@ public sealed partial class ProgramSolution
     }
 
     /// <summary>A variable grew: its readers run again, from the nodes that read it.</summary>
-    void Notify(State st, int id, Action<MethodDesc> enqueue)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] void Notify(State st, int id, Action<MethodDesc> enqueue)
     {
         // (a reader with a variable changed already is queued: a method's Changed is emptied only when it runs)
         foreach (var rs in st.Readers[id])
@@ -458,7 +458,7 @@ public sealed partial class ProgramSolution
 
     /// <summary>A read through a reference: the keys it may point at (unknown for a frame variable), or the slots of
     /// its type when its address set is unknown.</summary>
-    IdSet? ReadThrough(MethodDesc m, Node addr, TypeDesc? staticType, State st, Dictionary<int, IdSet?> addrs)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] IdSet? ReadThrough(MethodDesc m, Node addr, TypeDesc? staticType, State st, Dictionary<int, IdSet?> addrs)
     {
         if (AddrOf(m, addr, st, addrs) is { } keys)
         {
@@ -470,7 +470,7 @@ public sealed partial class ProgramSolution
     }
 
     /// <summary>A store through a reference.</summary>
-    void WriteThrough(MethodDesc m, Node addr, Node value, State st, Dictionary<int, IdSet?> addrs, Func<Node, IdSet?> of, Action<MethodDesc> enqueue)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] void WriteThrough(MethodDesc m, Node addr, Node value, State st, Dictionary<int, IdSet?> addrs, Func<Node, IdSet?> of, Action<MethodDesc> enqueue)
     {
         if (value.Kind != VK.Ref) return;
         if (AddrOf(m, addr, st, addrs) is { } keys)
@@ -533,7 +533,7 @@ public sealed partial class ProgramSolution
     MethodState ReaderState(MethodDesc reader) => _curState is { } cs && _curMethod == reader ? cs : _methodStates[reader];
 
     /// <summary>Notes that the node being computed read a variable (it runs again when the variable grows).</summary>
-    void NoteRead(int id)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] void NoteRead(int id)
     {
         if (_curState == null || _curNode == null) return;
         if (_addrCollect.Count > 0) _addrCollect[^1].Add(id);
@@ -545,7 +545,7 @@ public sealed partial class ProgramSolution
 
     /// <summary>One method's values, to their local fixed point, and what they flow into: the whole body the first time,
     /// then only the nodes that read a variable that grew, what uses their values, and the sinks among them.</summary>
-    void Evaluate(MethodDesc m, Body body, State st, Action<MethodDesc> enqueue)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] void Evaluate(MethodDesc m, Body body, State st, Action<MethodDesc> enqueue)
     {
         bool first = !_methodStates.TryGetValue(m, out var ms);
         long tq0 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -717,7 +717,7 @@ public sealed partial class ProgramSolution
 
     static bool Same(IdSet? a, IdSet? b) => a is { } x ? b is { } y && x.Equals(y) : b == null;
 
-    IdSet? Value(MethodDesc m, Body body, Node n, State st, Func<Node, IdSet?> of, MethodState ms, Dictionary<int, IdSet?> addrs)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] IdSet? Value(MethodDesc m, Body body, Node n, State st, Func<Node, IdSet?> of, MethodState ms, Dictionary<int, IdSet?> addrs)
     {
         switch (n.Op)
         {
@@ -805,7 +805,7 @@ public sealed partial class ProgramSolution
     // (a slot's targets over a receiver set: the same for every call that asks)
     readonly Dictionary<(MethodDesc, IdSet), MethodDesc[]> _targetsOver = new();
 
-    void Sinks(MethodDesc m, Node n, State st, Func<Node, IdSet?> of, Action<MethodDesc> enqueue, Dictionary<int, IdSet?> addrs)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)] void Sinks(MethodDesc m, Node n, State st, Func<Node, IdSet?> of, Action<MethodDesc> enqueue, Dictionary<int, IdSet?> addrs)
     {
         void Key(MemKey k, Node v) { if (v.Kind == VK.Ref) Write(st, new Var(VarKind.Key, null, 0, k), of(v), enqueue); }
         void Args(MethodDesc target, Node call, int skip, IdSet? self)
