@@ -5605,3 +5605,79 @@ Not run: the homelab suite and the self-host check on this commit.
   PureCalls' memo depends on import order (3.5) though no module changed; no Groups.cs/Threads.cs stubs. Not run:
   the homelab suite, stress and the self-host check (the old front end, the runtime and the back end are
   unchanged).
+
+### S1 row a: ownership signatures and the intrinsic table (claude/s1-signatures, 2026-11-24)
+
+- What: `IL/Memory/Signatures.cs` (MEMORY-IR.md 4.1-4.5) and a new `IL/Memory/IntrinsicSignatures.cs`. Runs only
+  with `IL2WASM_MEM_PLAN=1` (in SolvePhase); with it off nothing changes.
+  - Demand per counted parameter (this and structs with references included, Q8): HandOver by store (stored,
+    returned, thrown or boxed at a last use, or passed at its last use to a direct callee's HandOver parameter: a
+    least fixed point over the call graph, 5 rounds on hello world) or by KeepsRunningAfter (dead at a loop header,
+    or at a further call). A further call is not a cheap intrinsic, not a call the inliner would take (3.7's budget,
+    or AggressiveInlining up to 400 nodes) whose callee runs nothing long (no loop, no further call), and not a
+    throw helper (a callee with no return and no loop). Liveness runs through handlers and finally ends, so
+    exceptional exits count. OwnedParams' `IsListAdd`/`IsMapInsert` are not needed: `List<T>.Add` and
+    `AddWithResize` come out HandOver by store.
+  - Borrowed returns (Q4): every return gives one Arg-rooted path of at most 3 field or element steps, and the
+    method neither writes nor calls.
+  - Entries (agreed with rows c and f through the coordinator): every method's Entry is all-Lend, because generated
+    code, dispatch stubs, delegates and late imports never hand a count over. HandOver lives only in owned variants
+    (`|own<mask>`, bit i = parameter i, this = 0), picked only at direct Call/NewObj sites; virtual sites use the
+    Entry in S1 (no per-group stubs). 4.4's caps by size (Q9): at most 25 nodes, an owned variant for every needed
+    mask (up to 15); up to 400, the all-HandOver one; above, one owned variant every planned caller uses
+    (KeepAlive at live-on arguments), so the Entry is made only if an unplanned caller needs it. Indirect reach and
+    group membership need no cap of their own, since neither ever calls a variant.
+  - Switches: `IL2WASM_NO_HANDOVER`, `IL2WASM_NO_OWNED_ENTRY`, `IL2WASM_NO_BORROW_RETURN`; break twins
+    `IL2WASM_HANDOVER_BREAK` (a handed-over count goes to the lending Entry: a leak) and
+    `IL2WASM_BORROW_RETURN_BREAK` (a borrowed return despite writes). Reports: `IL2WASM_SIG_STATS=1|2`,
+    `IL2WASM_SIG_DUMP=name`.
+  - IntrinsicSignatures.cs: the 220 il2wasm intrinsics (+ `Rt.TypeNameById`), the 38 upstream ones and Activation's
+    RuntimeType cases, 262 entries. Each entry gives what the intrinsic writes (nothing, a `ref T` slot, chars, or
+    raw), whether it releases, whether it is cheap and whether it returns. Every il2wasm intrinsic of the CoreLib
+    has an entry (the report lists any that does not: none). It fills `ProgramSolution.IntrinsicEffects` (now
+    `Func<ProgramSolution, MethodDesc, KeySet>`, with `ProgramSolution.BodyOf`, both on main at 95d6f25 by request).
+- Measured [run, desk, hello world on the IL CoreLib]:
+  - In the last round, 1,151 of 4,358 methods get a non-trivial signature: 1,499 HandOver of 3,413 counted
+    parameters (530 by store, 1,186 keep running; a parameter can have both reasons) and 61 borrowed returns.
+  - Variants against the caps: 779 small methods allow 1,359 owned variants, 309 medium methods 309, and 6 large
+    methods 6, at most 15 per method. These are allowed, not made: row f makes a variant on demand.
+  - Mods not Wild, CoreLib, 1 round (after row b's per-type DestroyEffects and cctor edges in the solver, 7697b32):
+    22.5% (850 of 3,771) without the table, 29.6% with it, 30.1% with the private keys and the heap's declared
+    effects, 30.4% (1,146) with RuntimeType's table, GCHandle and Monitor private too. Before row b's solver change:
+    24.1% with the table, 32.4% with an experimental DestroyEffects of my own (removed for the solver's), 56.5% with
+    release effects ignored (an unsound bound). Remaining Wild roots by own body (119 methods): Rt Mem stores (68
+    call sites; by owner: the heap's internals, reached only through the declared entry points; program objects in
+    Rt.MoveItems and Il2WasmArrays.GetBoxed/SetBoxed; fresh objects only in RuntimeHelpers.InternalBox and
+    object.MemberwiseClone, which a per-site fresh-store rule would clear; none unknown), raw stores and block copies
+    (42), `SpanHelpers.Memmove` (22), `Generics.New` (12, a constructor by name). The callers mostly stay Wild by
+    their releases: values typed `object`/`Type` whose cone admits a finalizable type need per-key TypeSets (2.6).
+  - Borrows (row b's s1-borrows merged locally, IL2WASM_BORROW_STATS, hello world, 1 round): 2,513 counted loads, 971
+    borrowed (38.6%), 1,086 flipped, the same with and without the table and the declared effects (first reasons
+    move only: CallWild 426 to 424, Intrinsic 8 to 7, Release 521 to 524). The Mods gain buys no borrow here yet.
+  - Runtime-private memory (`KeyKind.Private`, `MemKey.Private(type)`; Facts.cs, coordinator-applied): raw Mem stores,
+    copies and fills in `IntMap`, `ObjectMarks` and `WeakSlots` (Boundary/ObjectMarks.cs: the marks' and weak
+    handles' tables, a dying object's header), `GCHandle` (its 8-byte slots) and `Monitor` (its sync-entry table)
+    write Private(their type). The trust boundary, every method marked `[Il2Wasm.Runtime.DeclaredEffects]` (the
+    solver takes its effects as declared: writes Private(its type) only, may throw a fresh exception, releases
+    nothing, its body not solved): in Boundary/Runtime.cs `Rt.Alloc`, `Rt.AllocFirst`, `Rt.Free`, `Rt.FreeObject`,
+    `Rt.FreeFixed`, `Rt.AllocObject`, `Rt.AllocArray`, `Rt.AllocArrayWithHeader`, `Rt.AllocString`; in
+    Boundary/Type.Il2Wasm.cs `RuntimeType.FromId` and `RuntimeType.ByRefOf` (they fill only s_byId, s_byRef and
+    s_retired, named nowhere else; a replaced table is kept; an entry once set is never replaced). `Object.GetType`'s
+    table entry writes Private(RuntimeType). A method-name list of the heap's internals was tried and dropped as
+    brittle.
+  - Cost: Compute takes 94-683 ms per round (6 rounds on hello world, about 1.4 s in all, the first round the
+    largest); this includes solving the Mods facts, which plans read anyway (b7fd3c9 made that 2.1 s; 50e543a
+    fixed it). Whole-build wall time on the busy
+    desk: 19.0-21.2 s naive against 19.6-23.1 s planned, interleaved, within the noise. Peak working set
+    planned: 473-527 MB.
+  - Hello world: 1,375,101 B, byte-identical with planning on and off (the plan does not read signatures yet).
+- Tests [run, desk]: IL tests 109 of 109 with and without `IL2WASM_MEM_PLAN=1`; the new `SignatureChecks` (13,
+  planned mode) pass. NetWasm suite, shipped, desk, with `IL2WASM_MEM_PLAN=1`, at f064f9f: 283 passed, 159 failed,
+  7 did not compile, 1 timed out; compared case by case with step 1's main record (mf-base): all 450 case-modes have
+  the same status and the same module hash. The later commits (private keys, declared effects, the CoreLib
+  attributes) were checked on hello world only: byte-identical, planned and not.
+- Not done: the variant queue is row f's; the call rule changes no output until row c's planner and row f's lowering
+  read it, so the break twins have no conformance test whose output changes yet; group signatures are
+  computed (`GroupDemand`) but never used, since virtual sites call the Entry; struct-parameter HandOver must be
+  honoured by row c's plan (bits are set for them); the KeepsRunning reading of "inlined" follows 3.7's policy,
+  not Inline.cs's actual decisions (a stub today).
