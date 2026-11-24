@@ -5891,3 +5891,38 @@ Not run: the homelab suite and the self-host check on this commit.
   computed (`GroupDemand`) but never used, since virtual sites call the Entry; struct-parameter HandOver must be
   honoured by row c's plan (bits are set for them); the KeepsRunning reading of "inlined" follows 3.7's policy,
   not Inline.cs's actual decisions (a stub today).
+
+### S1 row b, continued: release effects, the facts solve's cost, the kernels' CallWild roots (claude/s1-solver-effects, 2026-11-24)
+
+- Tree at 0% borrowed [run]: Walk's n.Left/n.Right flipped on Release and CallWild. Every TreeNode release ran
+  ObjectMarks.OnDestroy (weak marks reached), whose WeakSlots.Cleared released `Rt.Borrow<object>` dependents
+  (every finalizer, AssemblyLoadContext.Finalize's unload event among them), and the Rt.Release intrinsic was All.
+  Fixes: ObjectMarks' `[ReleasesDependents]` contract (dependents' releases count only once a dependent setter is
+  reached, in any round, late imports included; a late setter after a solve that left them out forces another round,
+  and is a hard error only in the round encoded), and Rt.Release/ReleaseElements counted by the solve's release nodes
+  (checked by ProgramSolution.ReleaseViolations under IL2WASM_VERIFY=1 and in SolverChecks).
+- Facts solve cost [run, sut-simdcodecs, 6 rounds]: 2.4-2.8 s per round's first Facts (row c's 112 s was a branch
+  without 50e543a) -> 0.4-0.7 s, about 2-4% of a round: bit-set destroys, indexed cones, slot targets over the owner's
+  cone. Results identical: IL2WASM_MEM_FACTS_DUMP, 139,909 lines over the 6 rounds, the same bytes.
+- CallWild roots [run]: IL2WASM_MEM_WHY=<method text> prints the chain to the first Wild root (whole Mods and return
+  path). Roots fixed: throw helpers (ProgramSolution.ReturnMods: callees outside every try that never return drop out,
+  releases of blocks that can still return only; Borrows uses it unless the group is live into a reachable handler),
+  exact release types (boxes, Generics.New results, frame variables' stored types, StInd's slot, CpBlk none, type
+  objects immortal, persistent static readonly fields and their getters, parameters never the callee's), Generics.New's
+  constructor as a call edge, Interlocked/Atomic through a known address, the S1 no-op stubs pure, virtual targets
+  over the receiver's static type.
+- Executed loads from memory borrowed (naive builds, tools/il-borrow-weight.mjs), start of the day -> now: Tree 0.0 ->
+  100.0%, LinkedNodes 2.2 -> 95.6%, Linq 72.5 -> 95.9%, DictionaryInts 48.3 -> 89.2%, ListSort 66.5 -> 80.2% (the
+  typeof fix, the coordinator's, included), WordCount 33.3 -> 60.0%. What remains: ListSort's IComparer<int>.Compare
+  dispatched over every constructed comparer (needs the receiver's type set: per-key TypeSets, 2.6); WordCount's
+  Dictionary<string,...> paths (string comparers' OrdinalIgnoreCase paths); generic (struct) loads; RootDies.
+- Tag drift (for lowering's owner): il-rcstats' role tags sit on a neighbouring count call (Tree's Walk: the second
+  field load's retain is tagged "parameter", a release "field"), so il-borrow-weight now matches loads to the retain
+  right after an i32.load instead of by role. RcStats.Count tags "the next untagged count call" of the node, which is not
+  always the node's own.
+- Lever 2 (raw stores of non-counted values as no key) skipped: an unsound bound of +0.4 points; the sound form needs an
+  interprocedural fixed point over pointer arguments' bases, unsound while round-0 late imports exist.
+- Bars [run, desk]: every commit byte-identical with the plan off (hello world, k_Tree, k_LinkedNodes, all IL test
+  modules) against its base; IL tests 157-159 of 157-159.
+- Not done: per-key TypeSets (2.6); the remaining WordCount roots; Persistent as a whole-object fact (2.5) beyond one
+  static; the release of a value loaded from a slot (it frees only if the slot is written meanwhile, counted there).
