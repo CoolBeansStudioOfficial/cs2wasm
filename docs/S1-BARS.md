@@ -13,7 +13,7 @@ Measurement only: no compiler code changed, apart from the RcStats owner fix the
 | bar (MEMORY-IR 11, S1; 3.8) | result | verdict |
 |---|---|---|
 | removal share at least 90% executed, on the IL tests, the bench kernels and NetWasm cases with allocation | mean of 34 programs 72.5% (73% without the runtime); summed over every operation 64.5%; only 3 of 34 at 90% or more (NBody 100.0%, Shapes 99.9%, Dictionary case 90.9%) | **fails** |
-| no leaks: live objects at exit equal .NET's per type (program types) | planned equal on 33 of 34. The exception is SortedList, a cycle that is S2's (naive the same). Planned never above naive on any type. collector-retention, which leaks under naive, is fixed by the plan's keeper | **passes** (one S2 cycle, known) |
+| no leaks: live objects at exit equal .NET's per type (program types) | planned equal on 33 of 34. The exception is SortedList, a cycle that is S2's (naive the same). Planned never above naive on any type. The three cases where the plan frees more than naive are naive leaks (proven below), not early frees | **passes** (one S2 cycle, known) |
 | bench.mjs's `tree` and binarytrees-shaped kernels at or below NativeAOT-LLVM (wasm, same engine) | tree 1.95x NativeAOT's (naive 3.54x); every kernel's geometric mean 2.69x (naive 4.49x); word_count alone below (0.97x) | **fails** |
 | frames.mjs: no spikes above NativeAOT-LLVM | churn, collections, strings and tree have p99.9 and worst frame below NativeAOT's, planned and naive; medians 2.2-4.7x slower. bigdrop **does not run**: destroy recursion overflows the stack (bug 4) | **fails** (bigdrop) |
 | hello world size not above 970,075 B (AUDIT il-generics) | planned 1,204,423 B, naive 1,277,136 B: the plan is 5.7% smaller, but both are above the old figure. The IL front end's hello world has grown since that figure was recorded (step 1: 1,377,218 B) | **fails** as written; the plan itself shrinks the module |
@@ -257,8 +257,40 @@ These are the IL front end's struct lowering, not the memory model.
   - RegexReplacement: 9 `Dictionary<string,int>.Entry[]`;
   - collector-retention: one `int[]` and the Payload.
 
-  Library types aren't compared against .NET (its reflection caches and event sources differ by design), so these
-  three are not proven to be naive's leaks rather than early frees. These cases were not run under the checked build, which traps on a use after free.
+  All three are **naive's leaks, not early frees in the planned build**. Each shape was reduced to a repro:
+  C:\s1b\k\early_array.cs, early_dict.cs and early_regex.cs. tools/il-rcstats.mjs run --live shows the same one-array
+  difference per type on each.
+
+  **Evidence that the plan does not free early:**
+  - The planned and verified build, compiled checked (`IL2WASM_IL_CHECKED=1`: freed memory poisoned, never reused,
+    traps on a retain of a freed object or a release too many), prints the same output as naive and as the shipped
+    build on all three: 42, 115, `a#b#c#`. There is no trap and nothing on stderr.
+  - .NET's heap walk of the two NetWasm cases (rcs/oracle) has **0** live `Dictionary<int,int>.Entry[]` and **0** live
+    `Dictionary<string,int>.Entry[]` at exit. The planned count is 0 too; naive's is 1 and 9.
+
+  **Where naive keeps them.** The cause is the one rule, Ir/Ownership.cs:294 (MEMORY-IR 7.4). At a return of an
+  address, a base the function holds is not released when `!HeldElsewhere(base)`. HeldElsewhere (Ownership.cs:101)
+  accepts arguments and loads (Arg, LdFld, LdElem, LdSFld, VarLd, LdInd, casts of them). It does not accept a NewArr,
+  a call result or a **Phi**. A base outside that list keeps the count it holds forever.
+  - **Arrays (collector-retention input 5).** `static ref int ArrayInterior() => ref new[] { 7, 41, 9 }[1];` is
+    `v2 = NewArr int32; v5 = LdElemA v2 1; Ret v5`. The NewArr's count is never released, so the array outlives the
+    caller's last use of the ref; .NET collects it after that use. This is the deliberate leak MEMORY-IR 7.4
+    describes, the same as `ref new Payload(41).Number` (input 6). The planned build's returned-address keeper
+    (Rt.ReturnKeepers Hold/Take) hands the count to the caller, which releases it at the ref's last use.
+  - **Dictionary entries (Collection's MutateDictionaryThroughReferences; RegexReplacement through
+    RegexWriter.StringCode).** `Dictionary<K,V>.CollectionsMarshalHelper.GetValueRefOrAddDefault` returns
+    `ref entries[i].value`. On the add path `entries` is `v140 = Phi(v18, v138)`: two loads of `_entries`, before and
+    after Resize (IL2WASM_IL_DUMP, naive, the `<int32,int32>` instance). Naive counting retains the phi's copy, and the
+    returned address `LdFldA(LdElemA v140 ...)` has the phi as its base. A Phi is not HeldElsewhere, so the copy's
+    count is kept. The array keeps one count after its dictionary has released it, so one entries array leaks per
+    dictionary whose first entry comes in through GetValueRefOrAddDefault: one in Collection, and 9 in
+    RegexReplacement, one per RegexWriter `_stringTable` (`Dictionary<string,int>`, `StringCode` →
+    `CollectionsMarshal.GetValueRefOrAddDefault<string,int>`). The planned build's phi is Guaranteed over two loads
+    of a field of a lent parameter, so it holds no count to keep.
+
+  The naive build is the baseline only and is not shipped. Its leaks are recorded here and not fixed. A fix in
+  Ownership.cs would be to treat a Phi whose inputs are all HeldElsewhere as held elsewhere. That would change the
+  naive module's bytes and the removal share's baseline, so it is the coordinator's call.
 
 ## 3. Speed against NativeAOT-LLVM's WebAssembly build (homelab, same Node)
 
