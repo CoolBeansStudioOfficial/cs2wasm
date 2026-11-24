@@ -90,6 +90,12 @@ static class SolverChecks
         }
         """;
 
+    // (EventSource.IsEnabled(), an ILLink stub: ArrayPool's Rent and Return test it)
+    const string Stubs = """
+        sealed class Log : System.Diagnostics.Tracing.EventSource { public static readonly Log Shared = new(); }
+        class P { static void Main() { System.Console.WriteLine(Log.Shared.IsEnabled()); } }
+        """;
+
     static void MetadataTypeOf(ProgramSolution sol, string name, out Internal.TypeSystem.TypeDesc? t) =>
         t = sol.Methods.Items.Select(m => m.OwningType).FirstOrDefault(x => x is Internal.TypeSystem.MetadataType mt && mt.GetName() == name)
             ?? sol.Constructed.FirstOrDefault(x => x is Internal.TypeSystem.MetadataType mt && mt.GetName() == name);
@@ -177,6 +183,13 @@ static class SolverChecks
                 sol.TypeSetsSolved && f != null && f.Count == 1 && f[0].EndsWith("Other"));
             c.True("type sets: one whose address escaped into a span sees the span's store: h.G " + Show(g),
                 sol.TypeSetsSolved && (g == null || g.Any(t => t.EndsWith("Marker"))));
+        }
+        {
+            // an ILLink substitution's stub is in the solution with no effects (IL2WASM_NO_STUB_SUMMARIES=1: out of it, a
+            // call of it is one the solve cannot see, Wild)
+            var sol = SecondSolve(dir, "solver_stubs", Stubs);
+            var ie = sol.Methods.Items.FirstOrDefault(m => m.GetName() == "IsEnabled" && m.Signature.Length == 0 && m.OwningType is Internal.TypeSystem.MetadataType et && et.GetName() == "EventSource");
+            c.True("solver: EventSource.IsEnabled(), an ILLink stub, is in the solution with no effects (" + (ie == null ? "not reached: " + string.Join(", ", sol.Methods.Items.Where(m => m.ToString()!.Contains("EventSource") || m.ToString()!.Contains("SharedArrayPool")).Select(m => m.ToString()).Take(6)) : "covered " + sol.Covers(ie) + ", Mods " + sol.Facts(ie).Mods) + ")", ie != null && sol.Covers(ie) && !sol.Facts(ie).Mods.Wild && sol.Facts(ie).Mods.IsEmpty);
         }
         foreach (var (name, source, hasDependents) in new[] { ("solver_plain", Plain, false), ("solver_dependents", Dependents, true) })
         {
