@@ -6228,6 +6228,11 @@ Not run: the homelab suite and the self-host check on this commit.
   ArrayPool's Rent and Return) had no summary, so a call of it was one the solve cannot see, Wild for every caller
   (the string comparers' GetHashCode through Marvin and SharedArrayPool). It is now in the solution with no effects:
   its stub returns its constant. Test: SolverChecks.
+- Empty receiver sets (Borrows.CallEffects, IL2WASM_NO_EMPTY_TARGETS=1: Wild): a virtual call whose receiver's type
+  set is empty (only null reaches it) has no targets, and no targets meant Wild. With the field escapes the sets
+  got precise enough to be empty: HashSet<long>'s `_comparer` with the default comparer is always null, and its
+  `comparer.GetHashCode` (never run) made Linq lose 3.2 points (79.1% to 75.9%) until such a call counted as one
+  that can only throw. Test: SolverChecks (a load held across a call on a receiver that can only be null).
 - Every destroy was Wild in every program where a mark can be set (ObjectMarks.SetAt reached: a weak reference, a
   ConditionalWeakTable, and so the kernels): each destroy calls ObjectMarks.OnDestroy (a finalizable one OnFinalize),
   generated code no IR edge shows, so they were outside the solution and DestroyEffects returned Wild for a
