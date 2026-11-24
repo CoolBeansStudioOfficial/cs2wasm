@@ -6158,3 +6158,65 @@ Not run: the homelab suite and the self-host check on this commit.
   - tools/il-speed.mjs (bench and frames by the IL front end against NativeAOT-LLVM wasm);
   - tools/il-live-oracle/run-kernels.sh;
   - IL2WASM_IL_CHECKED=1 in the IL tests.
+
+### IL destroy depth: the depth queue, the sealed tail, leaves and a br_table dispatch (claude/il-destroy-depth, 2026-11-24)
+
+- Bug [run, desk]: dropping a 200,000-item acyclic chain nested rt.release -> rt.destroy as deep as the chain, and
+  the IL front end hit "RangeError: Maximum call stack size exceeded". This happened under naive counting and the
+  plan, shipped and checked, in C:\s1b\k\chain_drop.cs and in tools/frames' bigdrop. .NET prints both lines.
+- Ported from the old front end (RuntimeGen.EmitDestroyDispatch, EmitDestroy, RuntimeFns2.IdSwitch;
+  src/Il2Wasm/IL/Lower/DestroyDepth.cs):
+  - the depth queue: past 48 nested destructions a dead object goes on a list through its count word. The outermost
+    destruction drains the list within the same release (SPEC 4.3);
+  - the sealed tail: a sealed class without a finalizer loops on its last field of its own class
+    (IL2WASM_NO_SEALED_TAIL=1);
+  - the leaves: a destruction that releases nothing and runs no finalizer skips the depth count;
+  - the dispatch on the type id is a br_table (IL2WASM_NO_DESTROY_SWITCH=1: the chain of tests, every case
+    counted).
+- Shape, measured [run, desk profile and homelab]:
+  - first port, the old shape (a small rt.destroy around rt.destroy_now): V8 inlined the small function into
+    rt.release, and rt.release then stopped being inlined at its callers. ListSort was 13-22% slower, Linq 16-20%,
+    Dictionary 12-17%. With --no-wasm-inlining, main and branch ran the same. A wrapper that only called
+    rt.destroy_now was as fast as main;
+  - the depth code inside rt.destroy, with the cases branching to one epilogue (fa144b0): homelab naive
+    ListSort +15-21%, Dictionary +12%. The cost came from the branch structure alone: the same function without
+    the depth code was as slow, and 372 B of dead code added to main's rt.destroy cost nothing;
+  - the cases returning after a call of rt.destroy_done: Linq still +3-6%;
+  - then the br_table dispatch and the leaves. rt.destroy had been 15% of Linq's time under naive counting (desk
+    profile).
+- Tests:
+  - FrameworkPrograms/f40_deep_destroys covers a sealed chain of 200k; an unsealed chain of 200k with derived
+    finalizable items; trees of depth 100k down Left and down Right; a finalizable chain of 100k with a weak
+    reference. Its output matches .NET's expected output;
+  - rules broken on purpose: unsealed classes taken for sealed tails make the derived finalizer count 0 instead of
+    200; unsealed classes taken for leaves make f40 overflow the stack.
+- Debug.Assert in TypeDesc.InitializeTypeFlags: hello world's type table holds !0 and !1, signature variables of an
+  open type's generic arguments. Flags2 asked them IsByRefLike, which the type system refuses to answer before a
+  substitution; a Debug build stopped at a FailFast dialog. A signature variable is now not ByRef-like, as a .NET
+  generic parameter is not. Release output is unchanged. TypeSystemChecks gets "flags2 of a signature variable".
+- Speed, homelab, tools/il-speed.mjs, 9 interleaved runs, best ms, main bc1f88e -> 739271e (no sealed tail):
+
+  | Kernel | naive | plan |
+  |---|---|---|
+  | ListSort | 171.0 -> 155.0 (156.7) | 145.6 -> 125.4 (125.2) |
+  | Linq | 70.5 -> 66.6 (66.0) | 50.6 -> 47.1 (45.3) |
+  | Tree | 32.7 -> 32.7 (36.1) | 17.3 -> 16.2 (19.4) |
+  | Dictionary | 21.6 -> 21.0 | 18.0 -> 17.6 |
+  | Geometric mean vs NativeAOT | 4.53x -> 4.39x | 2.64x -> 2.55x |
+
+  LinkedNodes, NBody, Shapes, Strings and WordCount stay within 2%.
+- bigdrop (IL front end, desk): main crashes. Branch: median 0.005 ms, p99.9 2.0 ms, worst 5.1 ms (the frame that
+  drops 150,000 objects).
+- Hello world on the IL CoreLib: naive 1,268,996 -> 1,269,225 B; with the plan, 1,206,573 -> 1,209,364 B (at
+  c420a06, before the tables were trimmed).
+- Bars:
+  - IL tests at 739271e [run, desk]: naive 165 of 166, plan+verify 185 of 186. The failure is f23_main_args (Main(string[])
+    gets null), and main fails it too;
+  - NetWasm suite, shipped, desk: main 283 passed; branch at 12d04dd 283, and at 739271e 283. 449 of 450 cases keep
+    their status. YoungObjectStoreGcTests...-0 fails on main and times out on the branch, both near the 120 s limit.
+- Not done:
+  - threads: the IL front end has none yet. The old front end's per-thread pending list (Rt.PendDestroy) is not
+    ported;
+  - the flat destroys (one level of leaf fields without the dispatch);
+  - a chain that runs through ConditionalWeakTable dependents of leaf objects is not depth-counted, as in the old
+    front end.
