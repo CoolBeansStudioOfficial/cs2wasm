@@ -987,7 +987,7 @@ sealed class FunctionLowering
             return;
         }
         if (kind == CallKind.Direct && n.Ovf && n.A.Length > 0 && n.A[0].Kind == VK.Ref) { Get(n.A[0]); E.Call(C.Rt.NonNull); E.Op(WOp.Drop); }
-        if (kind == CallKind.Direct && m.Signature.IsStatic) C.CctorCheckForCall(E, m);
+        if (kind == CallKind.Direct) C.CctorCheckForCall(E, m);
         PushCallArgs(n);
         if (n.Kind == VK.Struct) Get(n);
         E.Call(kind == CallKind.Direct ? C.FunctionFor(m) : C.DispatchFor(m));

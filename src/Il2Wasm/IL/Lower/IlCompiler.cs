@@ -414,30 +414,6 @@ public sealed partial class IlCompiler
         return a;
     }
 
-    /// <summary>The type's static constructor runs before this access, once (single-threaded for now: SPEC 3's
-    /// thread-safe initialization needs the runtime's per-type lock, not yet here).</summary>
-    internal void CctorCheck(Emitter e, TypeDesc t)
-    {
-        if (t.GetStaticConstructor() is not { } cctor) return;
-        if (!_init.TryGetValue(t, out var f))
-        {
-            f = Module.AddFunction("init " + t, new FuncType([], []));
-            _init[t] = f;
-            var flag = InitFlag(t);
-            var b = new Emitter(f);
-            b.I32Addr(flag); b.Load(WOp.I32Load); b.If(); b.Op(WOp.Return); b.End();
-            b.I32Addr(flag); b.I32(1); b.Store(WOp.I32Store);
-            b.Call(FunctionFor(cctor));
-        }
-        e.I32Addr(InitFlag(t)); e.Load(WOp.I32Load); e.Op(WOp.I32Eqz); e.If(); e.Call(f); e.End();
-    }
-
-    /// <summary>A static method or a constructor of a type without beforefieldinit triggers its initializer.</summary>
-    internal void CctorCheckForCall(Emitter e, MethodDesc m)
-    {
-        if (m.IsStaticConstructor) return;
-        if (m.OwningType is MetadataType { IsBeforeFieldInit: false } t) CctorCheck(e, t);
-    }
 
     // ------------------------------------------------------------------ literals
 
