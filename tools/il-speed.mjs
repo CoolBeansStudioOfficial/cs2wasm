@@ -133,7 +133,9 @@ if (cmd === 'build') {
         for (const n of names) {
           const w = spawnSync(process.execPath, [...nodeFlags, host, join(dir, `frames_${scene}-${n}.wasm`)], { encoding: 'utf8', env: { ...process.env, IL2WASM_PRINT_MEMORY: '1' }, maxBuffer: 1 << 26 });
           const sw = w.status === 0 && stats(w.stdout, scene);
-          if (!sw) fail(`frames_${scene}-${n} failed on ${scene}`, w);
+          // (a module that fails a scene is reported, and the other scenes and configs still run)
+          if (!sw) { res[n] = { failed: (w.stderr || '').split(/\r?\n/).find((l) => /Error|trap|exception/i.test(l)) ?? `exit ${w.status}` }; console.error(`frames_${scene}-${n} failed: ${res[n].failed}`); continue; }
+          if (res[n]?.failed) continue;
           sw.peak = +(/memory: (\d+) pages/.exec(w.stderr)?.[1] ?? 0) * 65536;
           res[n] = low(res[n], sw);
         }
@@ -148,14 +150,16 @@ if (cmd === 'build') {
       console.log(`${scene.padEnd(12)} ${'NativeAOT'.padEnd(10)} ${ms(a.median)} ${ms(a.p99)} ${ms(a.p999)} ${ms(a.worst)} ${ms(a.mean)}  ${mb(a.peak)}`);
       for (const n of names) {
         const s = res[n];
+        if (s.failed) { console.log(`${''.padEnd(12)} ${n.padEnd(10)} FAILED: ${s.failed}`); continue; }
         console.log(`${''.padEnd(12)} ${n.padEnd(10)} ${ms(s.median)} ${ms(s.p99)} ${ms(s.p999)} ${ms(s.worst)} ${ms(s.mean)}  ${mb(s.peak)}${s.check === a.check ? '' : `   CHECKSUM DIFFERS: ${a.check} vs ${s.check}`}`);
         const r = (k) => (s[k] / a[k]).toFixed(2).padStart(7) + 'x';
         console.log(`${''.padEnd(12)} ${('  ratio').padEnd(10)} ${r('median')} ${r('p99')} ${r('p999')} ${r('worst')} ${r('mean')} ${(s.peak / a.peak).toFixed(2).padStart(6)}x${s.worst > a.worst || s.p999 > a.p999 ? '   SPIKES ABOVE NATIVEAOT' : ''}`);
       }
     }
     for (const n of names) {
-      const g = (k) => Math.pow(Object.values(out.frames).reduce((x, r) => x * r[n][k] / r.naot[k], 1), 1 / Object.keys(out.frames).length).toFixed(2);
-      console.log(`${n}: geometric mean over the scenes, mean frame ${g('mean')}x NativeAOT's, median ${g('median')}x, worst ${g('worst')}x`);
+      const ok = Object.values(out.frames).filter((r) => !r[n].failed);
+      const g = (k) => Math.pow(ok.reduce((x, r) => x * r[n][k] / r.naot[k], 1), 1 / ok.length).toFixed(2);
+      console.log(`${n}: geometric mean over the ${ok.length} scenes it ran, mean frame ${g('mean')}x NativeAOT's, median ${g('median')}x, worst ${g('worst')}x`);
     }
   }
   if (opt('--json')) writeFileSync(opt('--json'), JSON.stringify(out, null, 1));
