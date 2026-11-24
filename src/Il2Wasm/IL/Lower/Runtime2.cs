@@ -155,6 +155,28 @@ public sealed partial class IlCompiler
     // ------------------------------------------------------------------ upstream's intrinsics, by name
 
     /// <summary>Upstream methods the runtime implements (their IL is the JIT's placeholder), as the old compiler did.</summary>
+    /// <summary>The CoreLib methods TryUpstreamIntrinsic replaces (keep in step with its cases): their IL is not what
+    /// runs, so the constant propagation reads nothing from it (Reach/ProgramFacts.Opaque).</summary>
+    static readonly HashSet<string> s_upstreamIntrinsics =
+    [
+        "System.Double.ConvertToIntegerNative", "System.Numerics.BitOperations.LeadingZeroCount", "System.Numerics.BitOperations.Log2", "System.Numerics.BitOperations.PopCount",
+        "System.Numerics.BitOperations.RotateLeft", "System.Numerics.BitOperations.RotateRight", "System.Numerics.BitOperations.TrailingZeroCount", "System.Object.GetType",
+        "System.Runtime.CompilerServices.RuntimeHelpers.GetRawData", "System.Runtime.CompilerServices.RuntimeHelpers.IsBitwiseEquatable",
+        "System.Runtime.CompilerServices.RuntimeHelpers.IsReferenceOrContainsReferences", "System.Runtime.CompilerServices.RuntimeHelpers.ObjectHasComponentSize",
+        "System.Runtime.CompilerServices.Unsafe.AddByteOffset", "System.Runtime.CompilerServices.Unsafe.AreSame", "System.Runtime.CompilerServices.Unsafe.As",
+        "System.Runtime.CompilerServices.Unsafe.AsPointer", "System.Runtime.CompilerServices.Unsafe.AsRef", "System.Runtime.CompilerServices.Unsafe.ByteOffset",
+        "System.Runtime.CompilerServices.Unsafe.Copy", "System.Runtime.CompilerServices.Unsafe.CopyBlock", "System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned",
+        "System.Runtime.CompilerServices.Unsafe.InitBlock", "System.Runtime.CompilerServices.Unsafe.InitBlockUnaligned", "System.Runtime.CompilerServices.Unsafe.IsAddressGreaterThan",
+        "System.Runtime.CompilerServices.Unsafe.IsAddressLessThan", "System.Runtime.CompilerServices.Unsafe.SizeOf", "System.Runtime.CompilerServices.Unsafe.SkipInit",
+        "System.Runtime.CompilerServices.Unsafe.SubtractByteOffset", "System.Runtime.CompilerServices.Unsafe.Unbox", "System.Single.ConvertToIntegerNative",
+        "System.SpanHelpers.ClearWithoutReferences", "System.SpanHelpers.Memmove", "System.SpanHelpers.memmove", "System.SpanHelpers.memset",
+        "System.Threading.Interlocked.CompareExchange", "System.Threading.Interlocked.Exchange", "System.Threading.Interlocked.MemoryBarrier",
+        "System.Threading.Volatile.ReadBarrier", "System.Threading.Volatile.WriteBarrier",
+    ];
+
+    public static bool IsUpstreamIntrinsic(MethodDesc m) => m.OwningType is MetadataType ot
+        && s_upstreamIntrinsics.Contains((ot.GetNamespace().Length > 0 ? ot.GetNamespace() + "." : "") + ot.GetName() + "." + m.GetName());
+
     internal bool TryUpstreamIntrinsic(Emitter e, MethodDesc m, Node n, FunctionLowering fl)
     {
         if (m.OwningType is not MetadataType ot || ot.Module != _ctx.SystemModule) return false;
@@ -205,6 +227,20 @@ public sealed partial class IlCompiler
                 fl.PushArgs(n);
                 int len = e.AddLocal(ValType.I32);
                 e.Set(len); e.I32(0); e.Get(len); e.Emit(WOp.MemoryFill);
+                break;
+            }
+            // (byte and ushort: upstream's "must expand intrinsic" calls itself; the 8- and 16-bit atomics)
+            case "System.Threading.Interlocked.Exchange" when m.Signature[1].Category is TypeFlags.Byte or TypeFlags.UInt16:
+                fl.PushArgs(n);
+                e.Emit(m.Signature[1].Category == TypeFlags.Byte ? WOp.I32AtomicRmw8XchgU : WOp.I32AtomicRmw16XchgU, 0, m.Signature[1].Category == TypeFlags.Byte ? 0 : 1);
+                break;
+            case "System.Threading.Interlocked.CompareExchange" when m.Signature[1].Category is TypeFlags.Byte or TypeFlags.UInt16:
+            {
+                // (location, value, comparand) -> the instruction's (address, expected, replacement)
+                fl.PushArgs(n);
+                int cmp = e.AddLocal(ValType.I32), val = e.AddLocal(ValType.I32);
+                e.Set(cmp); e.Set(val); e.Get(cmp); e.Get(val);
+                e.Emit(m.Signature[1].Category == TypeFlags.Byte ? WOp.I32AtomicRmw8CmpxchgU : WOp.I32AtomicRmw16CmpxchgU, 0, m.Signature[1].Category == TypeFlags.Byte ? 0 : 1);
                 break;
             }
             case "System.Threading.Interlocked.MemoryBarrier":
@@ -604,15 +640,15 @@ public sealed partial class IlCompiler
                         // released, then the bytes moved (overlapping ranges are fine)
                         if (Kinds.Counted(et))
                         {
-                            Elem(e, 0, 1, es); e.Get(4); e.Call(Rt.Range(et, true));
-                            Elem(e, 2, 3, es); e.Get(4); e.Call(Rt.Range(et, false));
+                            Elem(e, 0, 1, es, ArrayDataOffset(a)); e.Get(4); e.Call(Rt.Range(et, true));
+                            Elem(e, 2, 3, es, ArrayDataOffset(a)); e.Get(4); e.Call(Rt.Range(et, false));
                         }
-                        Elem(e, 2, 3, es); Elem(e, 0, 1, es); e.Get(4); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryCopy);
+                        Elem(e, 2, 3, es, ArrayDataOffset(a)); Elem(e, 0, 1, es, ArrayDataOffset(a)); e.Get(4); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryCopy);
                         e.Op(WOp.Return);
                         break;
                     case "clear":
-                        if (Kinds.Counted(et)) { Elem(e, 0, 1, es); e.Get(2); e.Call(Rt.Range(et, false)); }
-                        Elem(e, 0, 1, es); e.I32(0); e.Get(2); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryFill);
+                        if (Kinds.Counted(et)) { Elem(e, 0, 1, es, ArrayDataOffset(a)); e.Get(2); e.Call(Rt.Range(et, false)); }
+                        Elem(e, 0, 1, es, ArrayDataOffset(a)); e.I32(0); e.Get(2); e.I32(es); e.Op(WOp.I32Mul); e.Emit(WOp.MemoryFill);
                         e.Op(WOp.Return);
                         break;
                 }
@@ -631,7 +667,7 @@ public sealed partial class IlCompiler
     }
 
     /// <summary>The address of element (local i) of the array in local a.</summary>
-    static void Elem(Emitter e, int a, int i, int es) { e.Get(a); e.I32(16); e.Op(WOp.I32Add); e.Get(i); e.I32(es); e.Op(WOp.I32Mul); e.Op(WOp.I32Add); }
+    static void Elem(Emitter e, int a, int i, int es, int data = 16) { e.Get(a); e.I32(data); e.Op(WOp.I32Add); e.Get(i); e.I32(es); e.Op(WOp.I32Mul); e.Op(WOp.I32Add); }
 
     // ------------------------------------------------------------------ delegates
 
@@ -688,9 +724,13 @@ public sealed partial class IlCompiler
     /// <summary>The function a delegate of this method holds (called with the target first, as Invoke calls it): the
     /// method itself for an instance method of a class; a thunk that drops the target for a static method, or that
     /// passes a boxed struct's data.</summary>
-    internal WasmFunction DelegateTargetFn(MethodDesc m, bool virtualCall)
+    internal WasmFunction DelegateTargetFn(MethodDesc m, bool virtualCall, TypeDesc? delegateType = null)
     {
         if (!m.Signature.IsStatic && !m.OwningType.IsValueType) return virtualCall && m.IsVirtual && !m.IsFinal ? DispatchFor(m) : FunctionFor(m);
+        // (a static method closed over its first argument, an extension method's delegate: the target is that argument)
+        if (m.Signature.IsStatic && delegateType != null && delegateType.GetMethods().FirstOrDefault(x => x.GetName() == "Invoke") is { } inv
+            && m.Signature.Length == inv.Signature.Length + 1)
+            return FunctionFor(m);
         if (_thunks.TryGetValue(m, out var f)) return f;
         var inner = Sig(m);
         var ps = new List<ValType>();

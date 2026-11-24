@@ -90,7 +90,7 @@ public sealed class ProgramFacts : ISccpOracle
     /// internal call. Its IL says nothing about its value.</summary>
     static bool Opaque(MethodDesc m) => m.GetTypicalMethodDefinition() is not Internal.TypeSystem.Ecma.EcmaMethod em || em.IsPInvoke || em.IsInternalCall
         || em.HasCustomAttribute("Il2Wasm.Runtime", "IntrinsicAttribute") || em.HasCustomAttribute("Il2Wasm.Runtime", "ImportAttribute")
-        || em.HasCustomAttribute("System.Runtime.CompilerServices", "IntrinsicAttribute");
+        || em.HasCustomAttribute("System.Runtime.CompilerServices", "IntrinsicAttribute") || Il2Wasm.IL.Lower.IlCompiler.IsUpstreamIntrinsic(m);
 
     /// <summary>The implementation a virtual slot has on an object of this exact type (the compiler's dispatch).</summary>
     public Func<TypeDesc, MethodDesc, MethodDesc?>? Resolve;

@@ -286,6 +286,8 @@ namespace Il2Wasm.Runtime
 
     public static class Rt
     {
+        /// <summary>The array covariance store check (the stub has no type tables: its programs store only what fits).</summary>
+        public static void StoreCheck(int arr, int val) { }
         [Intrinsic] public static extern int AddressOf(object o);
         /// <summary>Wraps an address whose count the caller owns.</summary>
         [Intrinsic] public static extern T Take<T>(int addr);

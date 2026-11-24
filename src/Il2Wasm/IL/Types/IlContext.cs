@@ -19,7 +19,7 @@ public sealed class IlContext : MetadataTypeSystemContext
     readonly MetadataFieldLayoutAlgorithm _layout = new Il2WasmFieldLayout();
     readonly MetadataRuntimeInterfacesAlgorithm _interfaces = new();
     readonly MetadataVirtualMethodAlgorithm _virtuals = new();
-    ArrayOfTRuntimeInterfacesAlgorithm? _arrayInterfaces;
+    RuntimeInterfacesAlgorithm? _arrayInterfaces;
 
     /// <summary>The object header il2wasm's runtime uses: count, type id, hash code (12 bytes).</summary>
     public const int ObjectHeader = 12;
@@ -54,8 +54,12 @@ public sealed class IlContext : MetadataTypeSystemContext
 
     public override FieldLayoutAlgorithm GetLayoutAlgorithmForType(DefType type) => _layout;
 
+    // (a T[]'s interfaces: NativeAOT's CoreLib declares them on Array<T>; the IL CoreLib (Mono's) has no Array<T>, and
+    // its arrays implement Array's interfaces and IEnumerable<T>, ICollection<T>, IList<T>, IReadOnlyList<T> and
+    // IReadOnlyCollection<T> of their element type, as the CLR's do)
     protected override RuntimeInterfacesAlgorithm GetRuntimeInterfacesAlgorithmForNonPointerArrayType(ArrayType type) =>
-        _arrayInterfaces ??= new ArrayOfTRuntimeInterfacesAlgorithm(SystemModule.GetType("System"u8, "Array`1"u8, throwIfNotFound: false) ?? GetWellKnownType(WellKnownType.Array) as MetadataType);
+        _arrayInterfaces ??= SystemModule.GetType("System"u8, "Array`1"u8, throwIfNotFound: false) is MetadataType arrayOfT
+            ? new ArrayOfTRuntimeInterfacesAlgorithm(arrayOfT) : new SimpleArrayOfTRuntimeInterfacesAlgorithm(SystemModule);
 
     protected override RuntimeInterfacesAlgorithm GetRuntimeInterfacesAlgorithmForDefType(DefType type) => _interfaces;
 

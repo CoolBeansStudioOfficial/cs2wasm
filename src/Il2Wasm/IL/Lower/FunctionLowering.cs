@@ -47,7 +47,9 @@ sealed class FunctionLowering
             foreach (var n in b.Phis.Concat(b.Code))
             {
                 if (n.Kind == VK.Struct) _slot[n] = Reserve(n.Type!);
-                if (n.Op is Opc.Call or Opc.NewObj)
+                // (a primitive made by its constructor, new IntPtr(v): made in a frame slot, then read)
+                else if (n.Op == Opc.NewObj && n.Kind is VK.I32 or VK.I64 or VK.F32 or VK.F64 or VK.Ptr) _slot[n] = Reserve(((MethodDesc)n.X!).OwningType);
+                if (n.Op is Opc.Call or Opc.NewObj or Opc.CallI)
                     for (int i = 0; i < n.A.Length; i++) if (n.A[i].Kind == VK.Struct) _argSlot[(n, i)] = Reserve(n.A[i].Type!);
             }
         _frameSize = (_frameSize + 15) & ~15;
@@ -352,7 +354,7 @@ sealed class FunctionLowering
                 return;
             case Opc.Throw:
                 Get(n.A[0]);
-                if ((n.Moves & 1) != 0) Clear(n.A[0]);
+                if ((n.Moves & 1) != 0) Clear(n.A[0]); else E.Call(C.Rt.Retain);
                 E.Emit(WOp.Throw, 0, 0, C.ExceptionTag);
                 return;
             case Opc.Rethrow:
@@ -558,7 +560,7 @@ sealed class FunctionLowering
             case Opc.InitArray:
             {
                 var data = C.FieldData((FieldDesc)n.X!);
-                Get(n.A[0]); E.Call(C.Rt.NonNull); E.I32(16); E.Op(WOp.I32Add);
+                Get(n.A[0]); E.Call(C.Rt.NonNull); E.I32(n.A[0].Type is ArrayType iat ? IlCompiler.ArrayDataOffset(iat) : 16); E.Op(WOp.I32Add);
                 E.I32Addr(data); E.I32(data.Bytes.Length); E.Emit(WOp.MemoryCopy);
                 return;
             }
@@ -590,13 +592,13 @@ sealed class FunctionLowering
                 if (sret) ps.Add(ValType.I32);
                 var ft = new FuncType(ps.ToArray(), sig.ReturnType.IsVoid || sret ? [] : [ValOf(Kinds.Of(sig.ReturnType))]);
                 var fp = n.A[^1];
-                var args = new Node { Op = Opc.Call, A = n.A[..^1] };
-                for (int i = 0; i < args.A.Length; i++) if (args.A[i].Kind == VK.Struct) throw new NotSupportedException("calli with a struct argument");
-                foreach (var a in args.A) Get(a);
+                // (struct arguments: copies of their own, as a call's; the result's buffer; then the function)
+                PushCallArgs(n, n.A.Length - 1);
                 if (sret) Get(n);
                 Get(fp);
                 E.Emit(WOp.CallIndirect, 0, 0, ft);
                 if (n.HasValue && n.Kind != VK.Struct) Set(n);
+                AfterCall(n);
                 return;
             }
             case Opc.VarLd when n.Kind == VK.Struct: VarAddr((int)n.I); LoadStruct(n); return;
@@ -673,6 +675,14 @@ sealed class FunctionLowering
                 var et = (TypeDesc)n.X!;
                 int addr = Temp(ValType.I32);
                 Get(n.A[0]); Get(n.A[1]); E.Call(C.Rt.ElemAddr(Kinds.SizeOf(et))); E.Set(addr);
+                // a reference stored into an array whose element type it may not be (string[] as object[]): the
+                // covariance check (ArrayTypeMismatchException), unless the array's element type has no subtypes
+                // that an array of it could be, or the value is null
+                if (n.Ovf && n.A[2].Kind == VK.Ref && n.A[2].Op != Opc.LdNull
+                    && !(n.A[0].Type is ArrayType { ElementType: var se } && (se.IsValueType || se is MetadataType { IsSealed: true } && !se.IsInterface)))
+                {
+                    Get(n.A[0]); Get(n.A[2]); E.Call(C.FunctionFor(C.CoreMethod("Il2Wasm.Runtime", "Rt", "StoreCheck")));
+                }
                 StoreAt(addr, 0, n.A[2], et, (n.Moves & 4) != 0);
                 MovedOut(n);
                 return;
@@ -994,9 +1004,9 @@ sealed class FunctionLowering
     }
 
     /// <summary>A call's arguments; a struct argument is a copy of its own (the callee may change it), counted.</summary>
-    void PushCallArgs(Node n)
+    void PushCallArgs(Node n, int count = -1)
     {
-        for (int i = 0; i < n.A.Length; i++)
+        for (int i = 0; i < (count < 0 ? n.A.Length : count); i++)
         {
             var a = n.A[i];
             if (a.Kind != VK.Struct) { Get(a); continue; }
@@ -1026,6 +1036,13 @@ sealed class FunctionLowering
     void NewObj(Node n)
     {
         var ctor = (MethodDesc)n.X!;
+        if (ctor.OwningType is ArrayType mat)
+        {
+            PushCallArgs(n);
+            E.Call(C.MdArrayCtor(mat, ctor.Signature.Length));
+            Set(n);
+            return;
+        }
         var t = (DefType)ctor.OwningType;
         if (t.IsString)
         {
@@ -1049,7 +1066,22 @@ sealed class FunctionLowering
             int tOff = IlContext.FieldOffset(IlCompiler.DelegateFieldOf(t, "_target")), fOff = IlContext.FieldOffset(IlCompiler.DelegateFieldOf(t, "_fn"));
             E.Get(L(n)); Get(target); if (target.Kind == VK.Ref) E.Call(C.Rt.Retain); E.Store(WOp.I32Store, tOff);
             var fm = (MethodDesc)n.A[1].X!;
-            E.Get(L(n)); E.I32Fn(C.Module, C.DelegateTargetFn(fm, n.A[1].Op == Opc.LdVirtFtn)); E.Store(WOp.I32Store, fOff);
+            E.Get(L(n)); E.I32Fn(C.Module, C.DelegateTargetFn(fm, n.A[1].Op == Opc.LdVirtFtn, t)); E.Store(WOp.I32Store, fOff);
+            return;
+        }
+        if (t.IsValueType && n.Kind != VK.Struct)
+        {
+            // a primitive (IntPtr's constructors): made in a frame slot, then read
+            C.CctorCheckForCall(E, ctor);
+            int at = _slot[n];
+            FrameAddr(at); E.I32(0); E.I32(8); E.Emit(WOp.MemoryFill);
+            FrameAddr(at);
+            PushCallArgs(n);
+            E.Call(C.FunctionFor(ctor));
+            AfterCall(n);
+            FrameAddr(at);
+            E.Load(n.Kind switch { VK.I64 => WOp.I64Load, VK.F32 => WOp.F32Load, VK.F64 => WOp.F64Load, _ => WOp.I32Load });
+            Set(n);
             return;
         }
         if (t.IsValueType)

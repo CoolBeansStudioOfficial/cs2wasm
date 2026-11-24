@@ -109,7 +109,7 @@ public sealed partial class IlCompiler
             var facts = c.Facts.Close(c.SlotImplementations());
             for (int r = 1; r < Il2Wasm.IL.Reach.RoundFacts.Rounds; r++)
             {
-                var next = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, _round = r };
+                var next = new IlCompiler(_ctx) { StackSize = StackSize, LiveCounter = LiveCounter, CountObjects = CountObjects, Lenient = Lenient, Checked = Checked, _round = r };
                 foreach (var p in _nativePaths) next.LoadNatives(p);
                 next.Facts.Previous = facts;
                 var m = next.Reach(entry);
@@ -211,6 +211,10 @@ public sealed partial class IlCompiler
         // (a method reached other than by the calls the constant propagation saw: its arguments are not known)
         if (_compiling == null || !Facts.IsDirectCallee(_compiling, m)) Facts.MarkIndirect(m);
         if (_functions.TryGetValue(m, out var f)) return f;
+        if (m is ArrayMethod am) return MdArrayMethod(am);
+        // (a delegate type's Invoke has no IL: the generated invoke, also as a function value, a delegate of a
+        // delegate's Invoke)
+        if (IsDelegateInvoke(m) && m.GetTypicalMethodDefinition() is EcmaMethod { IsRuntimeImplemented: true }) return _functions[m] = DelegateInvoke(m);
         if (m.GetTypicalMethodDefinition() is EcmaMethod em && em.GetDecodedCustomAttribute("Il2Wasm.Runtime", "ImportAttribute") is { } imp)
         {
             f = Module.AddImport((string)imp.FixedArguments[0].Value!, (string)imp.FixedArguments[1].Value!, m.ToString(), Sig(m));
@@ -348,7 +352,8 @@ public sealed partial class IlCompiler
     internal WasmFunction DispatchFor(MethodDesc slot)
     {
         if (_stubs.TryGetValue(slot, out var f)) return f;
-        if (slot.HasInstantiation) throw new NotSupportedException($"the generic virtual method {slot}");
+        // (a generic virtual method: a stub per instantiation called, every program method instantiated; each case the
+        // override of the method's definition on the receiver's type, instantiated as called: NativeAOT's resolution)
         f = Module.AddFunction("dispatch " + slot, Sig(slot));
         _stubs[slot] = f;
         _whyStub[slot] = _compiling;
@@ -358,6 +363,16 @@ public sealed partial class IlCompiler
     MethodDesc? Implementation(TypeDesc x, MethodDesc slot)
     {
         if (_impl.TryGetValue((x, slot), out var r)) return r;
+        if (slot.HasInstantiation && !slot.IsGenericMethodDefinition)
+        {
+            // a generic virtual method: the override of its definition (on the slot's instantiated type), then that
+            // method instantiated with the call's method arguments
+            var def = Implementation(x, slot.GetMethodDefinition());
+            r = def == null ? null : _ctx.GetInstantiatedMethod(def.GetMethodDefinition(), slot.Instantiation);
+            _impl[(x, slot)] = r;
+            if (Environment.GetEnvironmentVariable("IL2WASM_IL_DISPATCH") == "1") Console.Error.WriteLine($"dispatch {slot} on {x}: {r?.ToString() ?? "none"}");
+            return r;
+        }
         MethodDesc? impl = null;
         if (x is ArrayType arr && x.CanCastTo(slot.OwningType))
         {
@@ -412,6 +427,7 @@ public sealed partial class IlCompiler
                 if (!_resolved.Add((x, slot))) continue;
                 if (Implementation(x, slot) is { } impl && !_functions.ContainsKey(impl)) { _compiling = null; _dispatchWhy = (slot, x); FunctionFor(impl); _dispatchWhy = default; any = true; }
             }
+        if (RequestFinalizers()) any = true;
         return any || _queue.Count > 0;
     }
 
@@ -912,6 +928,7 @@ public sealed partial class IlCompiler
             foreach (var x in _constructedOrder)
             {
                 e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
+                EmitFinalizeStep(e, x);
                 if (x is ArrayType at)
                 {
                     int es = Kinds.SizeOf(at.ElementType);
@@ -921,12 +938,12 @@ public sealed partial class IlCompiler
                         e.Get(0); e.Load(WOp.I32Load, 12); e.Set(n); e.I32(0); e.Set(i);
                         var brk = e.Block(); var loop = e.Loop();
                         e.Get(i); e.Get(n); e.Op(WOp.I32GeU); e.BrIf(brk);
-                        e.Get(0); e.Get(i); e.I32(2); e.Op(WOp.I32Shl); e.Op(WOp.I32Add); e.Load(WOp.I32Load, 16); e.Call(Rt.Release);
+                        e.Get(0); e.Get(i); e.I32(2); e.Op(WOp.I32Shl); e.Op(WOp.I32Add); e.Load(WOp.I32Load, ArrayDataOffset(at)); e.Call(Rt.Release);
                         e.Get(i); e.I32(1); e.Op(WOp.I32Add); e.Set(i); e.Br(loop);
                         e.End(); e.End();
                     }
-                    else if (Kinds.Counted(at.ElementType)) { e.Get(0); e.I32(16); e.Op(WOp.I32Add); e.Get(0); e.Load(WOp.I32Load, 12); e.Call(Rt.Range(at.ElementType, false)); }
-                    e.Get(0); e.Get(0); e.Load(WOp.I32Load, 12); e.I32(es); e.Op(WOp.I32Mul); e.I32(16); e.Op(WOp.I32Add);
+                    else if (Kinds.Counted(at.ElementType)) { e.Get(0); e.I32(ArrayDataOffset(at)); e.Op(WOp.I32Add); e.Get(0); e.Load(WOp.I32Load, 12); e.Call(Rt.Range(at.ElementType, false)); }
+                    e.Get(0); e.Get(0); e.Load(WOp.I32Load, 12); e.I32(es); e.Op(WOp.I32Mul); e.I32(ArrayDataOffset(at)); e.Op(WOp.I32Add);
                 }
                 else if (x.IsString)
                 {
@@ -934,7 +951,7 @@ public sealed partial class IlCompiler
                 }
                 else
                 {
-                    for (TypeDesc? c = x; c != null; c = c.BaseType)
+                    for (TypeDesc? c = x.IsValueType ? null : x; c != null; c = c.BaseType) // (a box: its value's counts below)
                         foreach (var fd in c.GetFields())
                         {
                             if (fd.IsStatic) continue;
@@ -960,7 +977,7 @@ public sealed partial class IlCompiler
                 {
                     if (!Kinds.Counted(at.ElementType)) continue;
                     e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
-                    e.Get(0); e.I32(16); e.Op(WOp.I32Add); e.Get(0); e.Load(WOp.I32Load, 12); e.Call(Rt.Range(at.ElementType, true));
+                    e.Get(0); e.I32(ArrayDataOffset(at)); e.Op(WOp.I32Add); e.Get(0); e.Load(WOp.I32Load, 12); e.Call(Rt.Range(at.ElementType, true));
                     e.Op(WOp.Return); e.End();
                     continue;
                 }
@@ -1214,11 +1231,17 @@ public sealed partial class IlCompiler
                     case BinOp.Add: e.Get(0); e.Get(res); e.Op(WOp.I64Xor); e.Get(1); e.Get(res); e.Op(WOp.I64Xor); e.Op(WOp.I64And); e.I64(0); e.Op(WOp.I64LtS); break;
                     case BinOp.Sub: e.Get(0); e.Get(1); e.Op(WOp.I64Xor); e.Get(0); e.Get(res); e.Op(WOp.I64Xor); e.Op(WOp.I64And); e.I64(0); e.Op(WOp.I64LtS); break;
                     default:
-                        // a * b overflows when a != 0 and res / a != b (and the one signed case the division cannot see)
+                        // a * b overflows when a != 0 and res / a != b; signed, a = -1 overflows only for b = MinValue
+                        // (and res / -1 would trap there: MinValue / -1)
                         e.Get(0); e.I64(0); e.Op(WOp.I64Ne);
                         e.If(ValType.I32);
-                        e.Get(res); e.Get(0); e.Op(un ? WOp.I64DivU : WOp.I64DivS); e.Get(1); e.Op(WOp.I64Ne);
-                        if (!un) { e.Get(0); e.I64(-1); e.Op(WOp.I64Eq); e.Get(1); e.I64(long.MinValue); e.Op(WOp.I64Eq); e.Op(WOp.I32And); e.Op(WOp.I32Or); }
+                        if (!un)
+                        {
+                            e.Get(0); e.I64(-1); e.Op(WOp.I64Eq);
+                            e.If(ValType.I32); e.Get(1); e.I64(long.MinValue); e.Op(WOp.I64Eq);
+                            e.Else(); e.Get(res); e.Get(0); e.Op(WOp.I64DivS); e.Get(1); e.Op(WOp.I64Ne); e.End();
+                        }
+                        else { e.Get(res); e.Get(0); e.Op(WOp.I64DivU); e.Get(1); e.Op(WOp.I64Ne); }
                         e.Else(); e.I32(0); e.End();
                         break;
                 }
@@ -1244,7 +1267,8 @@ public sealed partial class IlCompiler
                     int d = e.AddLocal(ValType.F64); e.Set(d);
                     // (truncation first: -0.9 converts to 0)
                     e.Get(d); e.Op(WOp.F64Trunc); e.F64((double)lo); e.Op(WOp.F64Lt);
-                    e.Get(d); e.Op(WOp.F64Trunc); e.F64((double)hi); e.Op(WOp.F64Gt); e.Op(WOp.I32Or);
+                    // (the bound past the largest, exact as a double: 2^63 - 1 is not one, 2^63 is)
+                    e.Get(d); e.Op(WOp.F64Trunc); e.F64((double)(hi + 1)); e.Op(WOp.F64Ge); e.Op(WOp.I32Or);
                     e.Get(d); e.Get(d); e.Op(WOp.F64Ne); e.Op(WOp.I32Or);
                     e.If(); e.Call(Throw("Overflow")); e.End();
                     e.Get(d);
@@ -1342,6 +1366,18 @@ public sealed partial class IlCompiler
             e.Get(old);
         });
 
-        public WasmFunction FRem(bool d) => throw new NotSupportedException("the remainder of floating-point values");
+        /// <summary>C#'s floating remainder (fmod, exact): the runtime's Rt.FMod; a float's through double (exact: the
+        /// remainder of two floats is a float).</summary>
+        public WasmFunction FRem(bool d)
+        {
+            var fmod = c.FunctionFor(c.CoreMethod("Il2Wasm.Runtime", "Rt", "FMod"));
+            if (d) return fmod;
+            return Cached("rt.fmodf", FT([ValType.F32, ValType.F32], [ValType.F32]), e =>
+            {
+                e.Get(0); e.Op(WOp.F64PromoteF32); e.Get(1); e.Op(WOp.F64PromoteF32);
+                e.Call(fmod);
+                e.Op(WOp.F32DemoteF64);
+            });
+        }
     }
 }

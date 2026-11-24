@@ -53,7 +53,7 @@ public sealed class PureCalls
         if (_bodies.TryGetValue(m, out var b)) return b;
         b = null;
         if (m.GetTypicalMethodDefinition() is EcmaMethod em && !em.IsPInvoke && !em.IsInternalCall && !em.IsAbstract && !em.IsSynchronized
-            && !em.HasCustomAttribute("Il2Wasm.Runtime", "IntrinsicAttribute") && !em.HasCustomAttribute("System.Runtime.CompilerServices", "IntrinsicAttribute")
+            && !em.HasCustomAttribute("Il2Wasm.Runtime", "IntrinsicAttribute") && !em.HasCustomAttribute("System.Runtime.CompilerServices", "IntrinsicAttribute") && !Il2Wasm.IL.Lower.IlCompiler.IsUpstreamIntrinsic(m)
             && !(m.Signature.IsStatic && m.OwningType is MetadataType { HasStaticConstructor: true, IsBeforeFieldInit: false }))
         {
             MethodIL? il = EcmaMethodIL.Create(em);
@@ -142,7 +142,11 @@ public sealed class PureCalls
         if (m.Signature.IsStatic)
         {
             var (pure, v) = Evaluate(m, args);
-            if (pure) { removable = true; return v; }
+            // (a call that takes a reference keeps its object alive until it is made: GC.KeepAlive's empty body is a
+            // use, and with counting the end of a lifetime is observable through finalizers and weak references. Such
+            // a call stays; only its value is known)
+            bool keepsAlive = call.A.Any(a => Kinds.Counted(a.Type ?? m.Context.GetWellKnownType(WellKnownType.Object)) && a.Kind is VK.Ref or VK.Struct && a.Op is not (Opc.LdStr or Opc.LdNull));
+            if (pure) { removable = !keepsAlive; return keepsAlive && v.State == Val.S.Bottom ? Val.Bottom : v; }
         }
         else if (!m.IsAbstract)
         {

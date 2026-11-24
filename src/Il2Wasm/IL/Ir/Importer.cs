@@ -988,6 +988,13 @@ public sealed class Importer
                 case ILOpcode.ldftn:
                 {
                     var fm = (MethodDesc)I._il.GetObject(rd.ReadILToken());
+                    if (_constrained != null)
+                    {
+                        // constrained. T ldftn: a static virtual's implementation on T (a delegate of T.M)
+                        var ct = _constrained;
+                        _constrained = null;
+                        fm = ResolveOn(ct, fm, fm.Signature.IsStatic) ?? throw new InvalidProgramException($"{I._method}: {ct} does not implement {fm}");
+                    }
                     Push(Add(Opc.LdFtn, VK.Ptr, StackType.NativeInt, Ctx.GetWellKnownType(WellKnownType.IntPtr)).WithX(fm));
                     return true;
                 }
@@ -1248,8 +1255,15 @@ public sealed class Importer
         {
             var t = ctor.OwningType;
 
-            if (t.IsArray) throw new NotSupportedException($"{I._method}: newobj of a multi-dimensional array {t}");
             var sig = ctor.Signature;
+            if (t.IsArray)
+            {
+                // a multi-dimensional array: its lengths (or lower bounds and lengths) are the constructor's arguments
+                var dims = new Node[sig.Length];
+                for (int i = sig.Length - 1; i >= 0; i--) dims[i] = Coerce(Pop(), sig[i]);
+                Push(Add(Opc.NewObj, VK.Ref, StackType.ObjRef, t, dims).WithX(ctor));
+                return;
+            }
             var args = new Node[sig.Length];
             for (int i = sig.Length - 1; i >= 0; i--) args[i] = Coerce(Pop(), sig[i]);
             if (t.IsValueType) { Push(AddOfType(Opc.NewObj, t, args).WithX(ctor)); return; }
