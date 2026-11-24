@@ -119,15 +119,20 @@ public sealed partial class IlCompiler
                 // (stable: the same facts, or the same reach and as many facts of each kind; an argument's value can
                 // change between rounds without changing what is reached, and every round's facts are sound)
                 bool stable = nf.SameAs(facts) || next._functions.Count == c._functions.Count && nf.ToString() == facts.ToString();
+                // (a round whose solve turned out too optimistic, Solver.NeedsAnotherRound, is never the last)
+                if (next._solver?.NeedsAnotherRound == true) stable = false;
                 c = next; main0 = m;
                 if (Environment.GetEnvironmentVariable("IL2WASM_IL_ROUNDS_TRACE") == "1") Console.Error.WriteLine($"round {r}: {next._functions.Count} methods, {nf}");
                 facts = nf;
                 if (stable) break;
             }
+            c._solver?.CheckEncodable();
             if (c != this) { var bytes = c.Emit(main0); Warnings.AddRange(c.Warnings); return bytes; }
             return Emit(main0);
         }
-        return Emit(Reach(entry));
+        var only = Reach(entry);
+        _solver?.CheckEncodable();
+        return Emit(only);
     }
 
     int _round;

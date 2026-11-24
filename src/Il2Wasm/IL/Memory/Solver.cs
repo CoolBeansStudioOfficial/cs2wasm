@@ -113,15 +113,25 @@ public sealed class Solver
         LateImports++; LateMethods.Add(u.Method); _late.Add(u.Method);
         if (ProgramState.IsDependentSetter(u.Method))
         {
+            // (from now on the program has dependents; this round's solve left their releases out, so its plans may be
+            // wrong: another round must be made, whose solve counts them)
             ProgramState.Of(u.Method.Context).DependentsSeen = true;
-            // (this round's solve left the dependents' releases out: its plans would be wrong. DependentHandle's code
-            // is IL the reach phase sees, never a helper only generated code calls, so this cannot happen; if it does,
-            // it is a compiler error, not a quiet miscompile)
-            if (_skipDependents) throw new InvalidOperationException("release effects: " + u.Method + " was imported late after the solve left dependents' releases out");
+            if (_skipDependents) NeedsAnotherRound = true;
         }
     }
 
     bool _skipDependents;
+
+    /// <summary>This round's module must not be the one encoded: its solve left out releases a late import showed can
+    /// happen (ObjectMarks' [ReleasesDependents]). The round loop goes on (IlCompiler.Compile).</summary>
+    public bool NeedsAnotherRound { get; private set; }
+
+    /// <summary>Before a round's module is encoded: a hard error when it needed another round and none is left.</summary>
+    public void CheckEncodable()
+    {
+        if (NeedsAnotherRound)
+            throw new InvalidOperationException("release effects: a dependent handle's setter was imported late in the last round, after its solve left dependents' releases out (raise IL2WASM_IL_ROUNDS)");
+    }
     static readonly bool s_verify = Environment.GetEnvironmentVariable("IL2WASM_VERIFY") == "1";
     readonly HashSet<MethodDesc> _late = [];
 

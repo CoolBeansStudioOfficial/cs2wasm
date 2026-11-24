@@ -64,6 +64,29 @@ static class SolverChecks
                     c.True($"{name}: every Rt.Release / ReleaseElements operand is a released type ({bodies} bodies){(example != null ? " first: " + example : "")}", bad == 0 && bodies > 100);
                 }
             }
+            if (!hasDependents)
+            {
+                // a dependent handle's setter imported late (lowering reached it, the reach phase did not) after a solve
+                // that left the dependents' releases out: no error, another round, whose solve counts them; a hard
+                // error only if that round's module were the one encoded
+                var solver = new Solver(comp);
+                solver.Root(entry);
+                solver.Reach();
+                var sol = solver.Solve();
+                c.True($"{name}: a further round still leaves them out", !sol.DependentsReleased);
+                var ws = (Internal.TypeSystem.MetadataType)ctx.SystemModule.GetType("Il2Wasm.Runtime"u8, "WeakSlots"u8);
+                var link = ws.GetMethods().Single(m => m.GetName() == "LinkDependent");
+                bool threw = false;
+                try { solver.Late(new ImportedMethod(link)); } catch (InvalidOperationException) { threw = true; }
+                c.True($"{name}: the late setter does not fail the compile; the round asks for another", !threw && solver.NeedsAnotherRound);
+                bool encodable = true;
+                try { solver.CheckEncodable(); } catch (InvalidOperationException) { encodable = false; }
+                c.True($"{name}: that round's module may not be encoded (a hard error if it were the last)", !encodable);
+                var again = new Solver(comp);
+                again.Root(entry);
+                again.Reach();
+                c.True($"{name}: the next round counts the dependents' releases", again.Solve().DependentsReleased);
+            }
             c.True($"{name}: round 0 counts the dependents' releases", first!.DependentsReleased);
             c.Eq($"{name}: round 1 counts them {(hasDependents ? "(a dependent handle can be made)" : "not (none can)")}", second!.DependentsReleased, hasDependents);
         }
