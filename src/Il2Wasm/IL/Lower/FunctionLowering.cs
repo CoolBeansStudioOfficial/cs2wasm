@@ -571,6 +571,33 @@ sealed partial class FunctionLowering
                 return;
             }
             case Opc.LocA: VarAddr((int)n.I); Set(n); return;
+            case Opc.MkRefAny:
+            {
+                // TypedReference { RuntimeTypeHandle type; ref byte _value; IntPtr _type }: the type as its id
+                var (th, val, tp) = TypedRefFields(n.Type!);
+                int tid = C.TypeId((TypeDesc)n.X!);
+                Get(n); E.I32(0); E.I32(SizeOfStruct(n.Type!)); E.Emit(WOp.MemoryFill);
+                Get(n); Get(n.A[0]); E.Store(WOp.I32Store, val);
+                Get(n); E.Tid(tid); E.Store(WOp.I32Store, tp);
+                if (th >= 0) { Get(n); E.Tid(tid); E.Store(WOp.I32Store, th); }
+                return;
+            }
+            case Opc.RefAnyVal:
+            {
+                // the address, when the reference is of exactly that type (InvalidCastException otherwise)
+                var (_, val, tp) = TypedRefFields(n.A[0].Type!);
+                Get(n.A[0]); E.Load(WOp.I32Load, tp); E.Tid(C.TypeId((TypeDesc)n.X!)); E.Op(WOp.I32Ne);
+                E.If(); E.Call(C.ThrowNew("InvalidCastException")); E.End();
+                Get(n.A[0]); E.Load(WOp.I32Load, val); Set(n);
+                return;
+            }
+            case Opc.RefAnyType:
+            {
+                var (_, _, tp) = TypedRefFields(n.A[0].Type!);
+                Get(n); E.I32(0); E.I32(SizeOfStruct(n.Type!)); E.Emit(WOp.MemoryFill);
+                Get(n); Get(n.A[0]); E.Load(WOp.I32Load, tp); E.Store(WOp.I32Store);
+                return;
+            }
             case Opc.InitBlk: Get(n.A[0]); Get(n.A[1]); Get(n.A[2]); E.Emit(WOp.MemoryFill); return;
             case Opc.CpBlk: Get(n.A[0]); Get(n.A[1]); Get(n.A[2]); E.Emit(WOp.MemoryCopy); return;
             case Opc.LocAlloc:
@@ -899,6 +926,14 @@ sealed partial class FunctionLowering
             }
         }
         throw new NotSupportedException($"{_body.Method}: IR {n.Op} is not lowered yet");
+    }
+
+    /// <summary>TypedReference's fields: its RuntimeTypeHandle (-1 if none), its address and its type.</summary>
+    static (int handle, int value, int type) TypedRefFields(TypeDesc t)
+    {
+        var fs = t.GetFields().Where(f => !f.IsStatic).ToList();
+        var h = fs.FirstOrDefault(f => f.GetName() == "type");
+        return (h != null ? IlContext.FieldOffset(h) : -1, IlContext.FieldOffset(fs.First(f => f.GetName() == "_value")), IlContext.FieldOffset(fs.First(f => f.GetName() == "_type")));
     }
 
     static TypeDesc NonNullable(TypeDesc t) => t.IsNullable ? t.Instantiation[0] : t;

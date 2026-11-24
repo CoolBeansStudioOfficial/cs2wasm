@@ -722,5 +722,22 @@ public sealed partial class IlCompiler
         return f;
     }
 
+    readonly Dictionary<string, WasmFunction> _throwNew = new();
+    /// <summary>Throws a new System.{name}() (its parameterless constructor: .NET's default message).</summary>
+    internal WasmFunction ThrowNew(string name)
+    {
+        if (_throwNew.TryGetValue(name, out var f)) return f;
+        f = _throwNew[name] = Module.AddFunction("rt.throw_new " + name, new FuncType([], []));
+        var at = (DefType)_ctx.SystemModule.GetType("System"u8, System.Text.Encoding.UTF8.GetBytes(name));
+        var ctor = at.GetMethods().First(x => x.IsConstructor && x.Signature.Length == 0);
+        Constructed(at);
+        var e = new Emitter(f);
+        int o = e.AddLocal(ValType.I32);
+        e.I32(IlContext.InstanceSize(at)); e.Tid(TypeId(at)); e.Call(Rt.AllocObject); e.Set(o);
+        e.Get(o); e.Call(FunctionFor(ctor));
+        e.Get(o); e.Emit(WOp.Throw, 0, 0, ExceptionTag);
+        return f;
+    }
+
     internal static bool IsDelegateInvoke(MethodDesc m) => m.OwningType.IsDelegate && m.GetName() == "Invoke" && !m.Signature.IsStatic;
 }

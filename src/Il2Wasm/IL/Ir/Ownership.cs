@@ -34,7 +34,8 @@ public static class Ownership
     /// conversion, and a call's returned byref (a span's, an array's data reference, an accessor's). A pointer loaded
     /// from memory points into nothing known here.</summary>
     static bool Derives(Node n) => n.Kind == VK.Ptr && n.Op is Opc.LdFldA or Opc.LdElemA or Opc.Unbox or Opc.Bin or Opc.Conv or Opc.Call or Opc.CallI
-        || ByRefLike(n) && n.Op is Opc.Call or Opc.CallI or Opc.NewObj or Opc.LdObj
+        || ByRefLike(n) && n.Op is Opc.Call or Opc.CallI or Opc.NewObj or Opc.LdObj or Opc.MkRefAny
+        || n.Kind == VK.Ptr && n.Op == Opc.RefAnyVal
         || n.Kind == VK.I32 && n.Op == Opc.Call && IsAddressOf(n);
 
     /// <summary>A value of a byref-like struct (a Span: it holds an address into an object, so it keeps it as one).</summary>
