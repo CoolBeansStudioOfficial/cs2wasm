@@ -40,7 +40,7 @@ internal static class StartupHook
 
 internal static unsafe class HeapWalk
 {
-    const ulong KwGC = 0x1, KwType = 0x80000, KwHeapDump = 0x100000, KwHeapCollect = 0x800000;
+    const ulong KwGC = 0x1, KwType = 0x80000, KwHeapDump = 0x100000, KwHeapCollect = 0x800000, KwTypeNames = 0x1000000;
     const uint BulkTypeEvent = 15, BulkNodeEvent = 18;
     static readonly bool s_debug = Environment.GetEnvironmentVariable("IL2WASM_LIVE_DEBUG") == "1";
 
@@ -59,7 +59,7 @@ internal static unsafe class HeapWalk
         var disable = ep.GetMethods(all).First(m => m.Name == "Disable");
         var cfg = Array.CreateInstance(cfgT, 1);
         cfg.SetValue(Activator.CreateInstance(cfgT, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null,
-            ["Microsoft-Windows-DotNETRuntime", KwGC | KwType | KwHeapDump | KwHeapCollect, 5u, null], null), 0);
+            ["Microsoft-Windows-DotNETRuntime", KwGC | KwType | KwHeapDump | KwHeapCollect | KwTypeNames, 5u, null], null), 0);
         var fmt = Enum.ToObject(fmtT, 1); // NetTrace
         ulong session = (ulong)enable.Invoke(null, [null, fmt, 1024u, cfg])!;
         if (s_debug) Console.Error.WriteLine($"il-live-oracle: session {session}");
@@ -68,6 +68,7 @@ internal static unsafe class HeapWalk
         byte* buf = stackalloc byte[size];
         var countByType = new Dictionary<ulong, long>();
         var names = new Dictionary<ulong, string>();
+        var typeArgs = new Dictionary<ulong, ulong[]>();
         long nodes = 0, events = 0, last = Environment.TickCount64, start = last;
         var args = new object?[] { session, Pointer.Box(buf, next.GetParameters()[1].ParameterType) };
         while (Environment.TickCount64 - start < 120_000)
@@ -89,7 +90,7 @@ internal static unsafe class HeapWalk
             else if (id == BulkTypeEvent)
             {
                 if (s_debug && names.Count == 0) Console.Error.WriteLine("il-live-oracle: BulkType " + len + " bytes: " + Convert.ToHexString(span[..Math.Min(len, 120)]));
-                Types(span, names);
+                Types(span, names, typeArgs);
             }
             if (s_debug && id == BulkNodeEvent && nodes <= 3000) Console.Error.WriteLine("il-live-oracle: BulkNode " + len + " bytes: " + Convert.ToHexString(span[..Math.Min(len, 80)]));
         }
@@ -98,7 +99,7 @@ internal static unsafe class HeapWalk
         var types = new SortedDictionary<string, long>(StringComparer.Ordinal);
         foreach (var (tid, n) in countByType)
         {
-            var name = names.TryGetValue(tid, out var s) ? s : "type#" + tid.ToString("x");
+            var name = NameOf(tid, names, typeArgs, 0);
             types[name] = types.GetValueOrDefault(name) + n;
         }
         var sb = new StringBuilder("{\"version\":1,\"nodes\":").Append(nodes).Append(",\"types\":{");
@@ -106,6 +107,16 @@ internal static unsafe class HeapWalk
         foreach (var (k, v) in types) { if (!first) sb.Append(','); first = false; sb.Append('"').Append(k.Replace("\\", "\\\\").Replace("\"", "\\\"")).Append("\":").Append(v); }
         sb.Append("}}");
         File.WriteAllText(file, sb.ToString());
+    }
+
+    /// <summary>A type's name with its type arguments (the event gives a generic instantiation's arguments as type
+    /// ids): Name[Arg,Arg].</summary>
+    static string NameOf(ulong id, Dictionary<ulong, string> names, Dictionary<ulong, ulong[]> typeArgs, int depth)
+    {
+        var n = names.TryGetValue(id, out var s) && s.Length > 0 ? s : "type#" + id.ToString("x");
+        if (depth < 8 && typeArgs.TryGetValue(id, out var a) && !n.Contains('['))
+            n += "[" + string.Join(",", a.Select(x => NameOf(x, names, typeArgs, depth + 1))) + "]";
+        return n;
     }
 
     /// <summary>GCBulkNode: Index u32, Count u32, ClrInstanceID u16, then Count of {Address (a pointer: 4 bytes on
@@ -126,7 +137,7 @@ internal static unsafe class HeapWalk
 
     /// <summary>GCBulkType: Count u32, ClrInstanceID u16, then Count of {TypeID u64, ModuleID u64, TypeNameID u32,
     /// Flags u32, CorElementType u8, Name (UTF-16, NUL), TypeParameterCount u32, TypeParameters u64[]}.</summary>
-    static void Types(ReadOnlySpan<byte> s, Dictionary<ulong, string> names)
+    static void Types(ReadOnlySpan<byte> s, Dictionary<ulong, string> names, Dictionary<ulong, ulong[]> typeArgs)
     {
         if (s.Length < 6) return;
         int count = BitConverter.ToInt32(s), at = 6;
@@ -138,7 +149,14 @@ internal static unsafe class HeapWalk
             names[id] = Encoding.Unicode.GetString(s[at..end]);
             at = end + 2;
             if (at + 4 > s.Length) break;
-            int tp = BitConverter.ToInt32(s[at..]); at += 4 + 8 * tp;
+            int tp = BitConverter.ToInt32(s[at..]); at += 4;
+            if (tp > 0 && at + 8 * tp <= s.Length)
+            {
+                var a = new ulong[tp];
+                for (int k = 0; k < tp; k++) a[k] = BitConverter.ToUInt64(s[(at + 8 * k)..]);
+                typeArgs[id] = a;
+            }
+            at += 8 * tp;
         }
     }
 }
