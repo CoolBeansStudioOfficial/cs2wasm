@@ -810,10 +810,11 @@ sealed partial class FunctionLowering
                 int addr = Temp(ValType.I32);
                 Get(n.A[0]); Get(n.A[1]); E.Call(C.Rt.ElemAddr(Kinds.SizeOf(et))); E.Set(addr);
                 // a reference stored into an array whose element type it may not be (string[] as object[]): the
-                // covariance check (ArrayTypeMismatchException), unless the array's element type has no subtypes
-                // that an array of it could be, or the value is null
+                // covariance check (ArrayTypeMismatchException), unless the value is null, or the array's element type
+                // is sealed and the value is of that type (an object stored into a string[] reached through an object[]
+                // local is checked: the array's exact type does not say what the value is)
                 if (n.Ovf && n.A[2].Kind == VK.Ref && n.A[2].Op != Opc.LdNull
-                    && !(n.A[0].Type is ArrayType { ElementType: var se } && (se.IsValueType || se is MetadataType { IsSealed: true } && !se.IsInterface)))
+                    && !(n.A[0].Type is ArrayType { ElementType: var se } && (se.IsValueType || se is MetadataType { IsSealed: true } && !se.IsInterface && n.A[2].Type == se)))
                 {
                     Get(n.A[0]); Get(n.A[2]); E.Call(C.FunctionFor(C.CoreMethod("Il2Wasm.Runtime", "Rt", "StoreCheck")));
                 }
@@ -1175,6 +1176,9 @@ sealed partial class FunctionLowering
     void Call(Node n)
     {
         var m = (MethodDesc)n.X!;
+        // (an Interlocked or Volatile operation on a null location throws NullReferenceException before it reads or
+        // writes, as desktop's does; a plain load of address 0 would not trap in the engine)
+        if (IsLocationAccessCall(m)) { Get(n.A[0]); E.Call(C.Rt.NonNull); E.Op(WOp.Drop); }
         if (TryIntrinsicCall(m, n)) return;
         var kind = (CallKind)n.Sub;
         if (IlCompiler.IsDelegateInvoke(m) && m.GetTypicalMethodDefinition() is Internal.TypeSystem.Ecma.EcmaMethod { IsRuntimeImplemented: true })
@@ -1196,6 +1200,12 @@ sealed partial class FunctionLowering
         if (n.HasValue && n.Kind != VK.Struct) Set(n);
         AfterCall(n);
     }
+
+    /// <summary>A static System.Threading.Interlocked or Volatile method whose first parameter is a location (a reference).</summary>
+    bool IsLocationAccessCall(MethodDesc m) =>
+        m.OwningType is MetadataType ot && ot.Module == C.Context.SystemModule && ot.GetNamespace() == "System.Threading"
+        && ot.GetName() is "Interlocked" or "Volatile"
+        && m.Signature.Length > 0 && m.Signature[0].IsByRef;
 
     /// <summary>A call's arguments; a struct argument is a copy of its own (the callee may change it), counted.</summary>
     void PushCallArgs(Node n, int count = -1)

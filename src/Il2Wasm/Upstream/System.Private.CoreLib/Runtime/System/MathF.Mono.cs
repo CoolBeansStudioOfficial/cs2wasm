@@ -54,7 +54,7 @@ namespace System
                 public static float Tanh(float x) => (float)CMath.Tanh(x);
 
         [Intrinsic]
-                public static float FusedMultiplyAdd(float x, float y, float z) => (float)CMath.Fma(x, y, z);
+                public static float FusedMultiplyAdd(float x, float y, float z) => CMath.FmaSingle(x, y, z);
 
                 public static float Log2(float x) => (float)CMath.Log2(x);
 

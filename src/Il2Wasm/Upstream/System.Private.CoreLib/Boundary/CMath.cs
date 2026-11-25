@@ -925,21 +925,38 @@ namespace System
             return e - 1023;
         }
 
-        /// <summary>x·y+z with a single rounding (Dekker products and two-sum).</summary>
+        /// <summary>x·y+z with a single rounding: Boldo and Melquiond's emulated fma. The product is exact (TwoProd), the
+        /// addend and the product's high part are summed exactly (TwoSum), and the two low parts are added rounding to
+        /// odd, so the final rounding is the only one that loses bits (the sum rounded once more would round twice).</summary>
         public static double Fma(double x, double y, double z)
         {
             if (double.IsNaN(x) || double.IsNaN(y) || double.IsNaN(z) || double.IsInfinity(x) || double.IsInfinity(y) || x == 0 || y == 0) return x * y + z;
             double p = x * y;
             if (double.IsInfinity(p) || double.IsInfinity(z) || z == 0) return p + z;
-            // exact product p + e
-            const double split = 134217729.0;
-            double cx = split * x, xh = cx - (cx - x), xl = x - xh;
-            double cy = split * y, yh = cy - (cy - y), yl = y - yh;
-            double e = ((xh * yh - p) + xh * yl + xl * yh) + xl * yl;
-            double s = p + z;
-            double bb = s - p;
-            double err = (p - (s - bb)) + (z - bb);
-            return s + (err + e);
+            TwoProd(x, y, out double uh, out double ul);
+            TwoSum(z, uh, out double th, out double tl);
+            return th + AddRoundToOdd(tl, ul);
+        }
+
+        /// <summary>x·y+z rounded once to single precision: the product is exact in double, and the sum is rounded to odd
+        /// in double (two bits more than single), so rounding that to single is the single rounding.</summary>
+        public static float FmaSingle(float x, float y, float z)
+        {
+            double p = (double)x * y, dz = z;
+            if (double.IsNaN(p) || double.IsNaN(dz) || double.IsInfinity(dz) || p == 0 || dz == 0) return (float)(p + dz);
+            return (float)AddRoundToOdd(p, dz);
+        }
+
+        /// <summary>a + b rounded to odd: the sum rounded to nearest, unless it is inexact and its last bit is even, then the
+        /// neighbour toward the exact sum (a + b lies between the two).</summary>
+        static double AddRoundToOdd(double a, double b)
+        {
+            TwoSum(a, b, out double s, out double e);
+            if (e == 0 || !double.IsFinite(s)) return s;
+            long bits = BitConverter.DoubleToInt64Bits(s);
+            if ((bits & 1) != 0) return s;
+            // (the exact sum is beyond s in magnitude when e has s's sign: the next magnitude up)
+            return BitConverter.Int64BitsToDouble((e > 0) == (s > 0) ? bits + 1 : bits - 1);
         }
     }
 }
