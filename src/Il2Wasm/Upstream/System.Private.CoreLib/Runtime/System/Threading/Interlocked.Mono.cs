@@ -12,11 +12,22 @@ namespace System.Threading
 {
     public static partial class Interlocked
     {
-        public static int CompareExchange(ref int location1, int value, int comparand) => Atomic.CompareExchange32(ref location1, comparand, value);
+        // A null location throws NullReferenceException before anything is read or written (as the CLR's ref dereference does).
+        static unsafe void CheckLocation<T>(ref T location)
+        {
+            if (Unsafe.AsPointer(ref location) == null) throw new NullReferenceException();
+        }
+
+        public static int CompareExchange(ref int location1, int value, int comparand)
+        {
+            CheckLocation(ref location1);
+            return Atomic.CompareExchange32(ref location1, comparand, value);
+        }
 
         [return: NotNullIfNotNull(nameof(location1))]
         public static unsafe object? CompareExchange(ref object? location1, object? value, object? comparand)
         {
+            CheckLocation(ref location1);
             ref int slot = ref Unsafe.As<object?, int>(ref location1);
             int v = Rt.AddressOf(value!), c = Rt.AddressOf(comparand!);
             if (Rt.SingleThreaded())
@@ -73,19 +84,24 @@ namespace System.Threading
             return Rt.Take<object>(old);
         }
 
-        public static int Decrement(ref int location) => Atomic.Add32(ref location, -1) - 1;
+        public static int Decrement(ref int location) { CheckLocation(ref location); return Atomic.Add32(ref location, -1) - 1; }
 
-        public static long Decrement(ref long location) => Atomic.Add64(ref location, -1) - 1;
+        public static long Decrement(ref long location) { CheckLocation(ref location); return Atomic.Add64(ref location, -1) - 1; }
 
-        public static int Increment(ref int location) => Atomic.Add32(ref location, 1) + 1;
+        public static int Increment(ref int location) { CheckLocation(ref location); return Atomic.Add32(ref location, 1) + 1; }
 
-        public static long Increment(ref long location) => Atomic.Add64(ref location, 1) + 1;
+        public static long Increment(ref long location) { CheckLocation(ref location); return Atomic.Add64(ref location, 1) + 1; }
 
-        public static int Exchange(ref int location1, int value) => Atomic.Exchange32(ref location1, value);
+        public static int Exchange(ref int location1, int value)
+        {
+            CheckLocation(ref location1);
+            return Atomic.Exchange32(ref location1, value);
+        }
 
         [return: NotNullIfNotNull(nameof(location1))]
         public static unsafe object? Exchange([NotNullIfNotNull(nameof(value))] ref object? location1, object? value)
         {
+            CheckLocation(ref location1);
             ref int slot = ref Unsafe.As<object?, int>(ref location1);
             int v = Rt.AddressOf(value!);
             if (v != 0) Rt.Retain(value!);
@@ -120,15 +136,23 @@ namespace System.Threading
             return Rt.Take<object>(old);
         }
 
-        public static long CompareExchange(ref long location1, long value, long comparand) => Atomic.CompareExchange64(ref location1, comparand, value);
+        public static long CompareExchange(ref long location1, long value, long comparand)
+        {
+            CheckLocation(ref location1);
+            return Atomic.CompareExchange64(ref location1, comparand, value);
+        }
 
-        public static long Exchange(ref long location1, long value) => Atomic.Exchange64(ref location1, value);
+        public static long Exchange(ref long location1, long value)
+        {
+            CheckLocation(ref location1);
+            return Atomic.Exchange64(ref location1, value);
+        }
 
-        public static long Read(ref long location) => Atomic.Load64(ref location);
+        public static long Read(ref long location) { CheckLocation(ref location); return Atomic.Load64(ref location); }
 
-        public static int Add(ref int location1, int value) => Atomic.Add32(ref location1, value) + value;
+        public static int Add(ref int location1, int value) { CheckLocation(ref location1); return Atomic.Add32(ref location1, value) + value; }
 
-        public static long Add(ref long location1, long value) => Atomic.Add64(ref location1, value) + value;
+        public static long Add(ref long location1, long value) { CheckLocation(ref location1); return Atomic.Add64(ref location1, value) + value; }
 
         public static void MemoryBarrierProcessWide() => Atomic.Fence();
     }

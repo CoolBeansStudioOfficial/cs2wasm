@@ -130,6 +130,15 @@ namespace System
             if (destinationIndex < 0)
                 throw new ArgumentOutOfRangeException(nameof(destinationIndex), SR.ArgumentOutOfRange_NeedNonNegNum);
 
+            // (Array.ConstrainedCopy: a copy that can fail is refused before anything is copied, as the CLR does: two
+            // reference arrays whose source elements are not assignable to the destination's element type)
+            if (reliable)
+            {
+                int rs = Il2Wasm.Runtime.TypeInfo.ElementId(Il2Wasm.Runtime.Rt.TypeId(sourceArray)), rd = Il2Wasm.Runtime.TypeInfo.ElementId(Il2Wasm.Runtime.Rt.TypeId(destinationArray));
+                if ((Il2Wasm.Runtime.TypeInfo.Flags(rs) & 1) == 0 && (Il2Wasm.Runtime.TypeInfo.Flags(rd) & 1) == 0 && !Il2Wasm.Runtime.TypeInfo.IsAssignable(rd, rs))
+                    throw new ArrayTypeMismatchException(SR.ArrayTypeMismatch_ConstrainedCopy);
+            }
+
             // il2wasm: the arrays themselves, not handles to local copies (a count taken and let go for each)
             if (FastCopy(sourceArray, sourceIndex, destinationArray, destinationIndex, length))
                 return;
