@@ -434,3 +434,77 @@ or released.
 - bigdrop is not measured (bug 4). bench and frames have not been rerun since bug 3's fix (83371bb); the per-scene
   modules don't depend on it.
 - Compile times are from a desk other sessions were also using: runs of the same build differ by up to 4 s.
+
+## Speed re-measure 2026-11-25
+
+Measurement only. Branch `claude/span-uaf-merged` (head 58349a0), checked out as `speed`, pushed as `claude/s1-speed`.
+
+Method (as in "How it was measured" (3)): `node tools/il-speed.mjs build .vb/speed --fw .vb/fw` on the desk (Release
+test host, NativeAOT-LLVM bench and frames publishes, naive and plan modules of bench and of the five frames scenes).
+The directory (27 MB) was copied to the homelab (`C:/Users/Levi/hl/speed-s1`) with scp, and run there with
+`bash tools/homelab.sh claude/s1-speed node tools/il-speed.mjs run C:/Users/Levi/hl/speed-s1 --runs 3 --js-young 32`,
+once with `--only bench` and once with `--only frames` in the same invocation (both were run in full, twice:
+run 1 and run 2, each a separate invocation with 3 internal runs; the statistics are the best over the 3 runs for
+bench and the lowest over the 3 runs for frames). Node 24.19.0 on the homelab for every side. Both builds, both runs:
+no build or run failed, and no CHECKSUM DIFFERS or SPIKES flag was printed.
+
+### bench.mjs kernels (each as a multiple of NativeAOT-LLVM wasm; below 1 is faster)
+
+| kernel | NativeAOT ms (run 1 / run 2) | naive run 1 | naive run 2 | planned run 1 | planned run 2 |
+|---|---|---|---|---|---|
+| dictionary | 6.0 / 5.9 | 2.33x | 2.31x | 1.31x | 1.32x |
+| word_count | 2.8 / 2.8 | 2.90x | 2.81x | 0.92x | 0.93x |
+| strings | 2.7 / 2.7 | 3.18x | 3.23x | 1.40x | 1.38x |
+| tree | 9.6 / 9.6 | 3.35x | 3.24x | 1.61x | 1.60x |
+| list_sort | 42.9 / 42.5 | 1.15x | 1.12x | 0.72x | 0.71x |
+| linq | 20.4 / 20.2 | 2.01x | 1.93x | 1.01x | 1.02x |
+| nbody | 1.8 / 1.8 | 2.29x | 2.35x | 1.41x | 1.45x |
+| shapes | 1.3 / 1.3 | 4.34x | 4.46x | 1.49x | 1.61x |
+| linked_list | 3.4 / 3.2 | 5.12x | 5.08x | 1.39x | 1.45x |
+| **geometric mean** | | **2.73x** | **2.71x** | **1.22x** | **1.23x** |
+
+Peak memory (both runs): NativeAOT-LLVM 71.3 MB, naive 32.0 MB, planned 32.0 MB. Code size, no custom sections
+(both runs): NativeAOT-LLVM 1,328.4 KB, naive 1,366.8 KB, planned 1,257.3 KB.
+
+### frames.mjs scenes (each as a multiple of NativeAOT-LLVM's; below 1 is faster)
+
+Per scene, run 1 / run 2. The mean, median, p99.9 and worst columns are the script's ratios.
+
+| scene | side | mean frame | median | p99.9 | worst frame |
+|---|---|---|---|---|---|
+| churn | naive | 3.37x / 3.39x | 3.65x / 3.68x | 0.26x / 0.22x | 0.33x / 0.30x |
+| churn | planned | 2.00x / 2.02x | 2.16x / 2.19x | 0.17x / 0.13x | 0.19x / 0.18x |
+| collections | naive | 2.05x / 2.05x | 2.67x / 2.68x | 0.18x / 0.18x | 0.15x / 0.15x |
+| collections | planned | 1.19x / 1.19x | 1.50x / 1.50x | 0.18x / 0.18x | 0.15x / 0.14x |
+| strings | naive | 2.83x / 2.85x | 3.17x / 3.17x | 0.61x / 0.65x | 0.24x / 0.28x |
+| strings | planned | 1.37x / 1.36x | 1.51x / 1.51x | 0.45x / 0.40x | 0.20x / 0.14x |
+| tree | naive | 6.47x / 6.52x | 8.40x / 8.45x | 0.64x / 0.63x | 0.56x / 0.56x |
+| tree | planned | 2.98x / 3.00x | 3.86x / 3.89x | 0.31x / 0.32x | 0.29x / 0.29x |
+| bigdrop | naive | 0.25x / 0.25x | 1.10x / 1.10x | 0.19x / 0.19x | 0.32x / 0.31x |
+| bigdrop | planned | 0.21x / 0.21x | 0.79x / 0.82x | 0.17x / 0.18x | 0.33x / 0.33x |
+
+Geometric mean over the five scenes (computed from the per-scene ratios above; the script's own summary lines give
+mean 2.00x / 2.01x and median 3.10x / 3.11x for naive, and mean 1.15x / 1.16x and median 1.72x / 1.74x for planned,
+with the worst frame 0.29x naive and 0.22x / 0.20x planned):
+
+| side | run | mean frame | median | p99.9 | worst frame |
+|---|---|---|---|---|---|
+| naive | 1 | 2.02x | 3.03x | 0.32x | 0.29x |
+| naive | 2 | 2.01x | 3.04x | 0.32x | 0.29x |
+| planned | 1 | 1.17x | 1.69x | 0.24x | 0.22x |
+| planned | 2 | 1.17x | 1.69x | 0.22x | 0.20x |
+
+Peak memory (both runs, the same in each): NativeAOT-LLVM 59.3 MB on churn, collections, strings and tree, 71.1 MB on
+bigdrop. Naive and planned 16.0 MB on churn, collections, strings and bigdrop; 96.0 MB on tree, for both.
+
+Observations, not investigated:
+- bigdrop runs on both builds now. Section 3's table has it failing with RangeError (bug 4) on both; here the build
+  from the same head (58349a0) completes, and its worst frame is about 3 ms against NativeAOT-LLVM's 9.6-9.7 ms.
+  Why it passes now was not checked.
+- Every planned p99.9 and worst-frame ratio is below 1 in both runs (highest planned p99.9 0.45x, strings run 1; highest
+  planned worst frame 0.33x, bigdrop). NativeAOT-LLVM's p99.9 is
+  about 1.1 ms in churn and collections, which is the tail the comparison is against.
+- Run-to-run spread is small: the planned bench geometric mean moved from 1.22x to 1.23x and the naive from 2.73x to 2.71x.
+
+Not done: the checked build, the NetWasm suite and compile-time measurements were not part of this run. The
+`.vb/` build directory is local to the worktree and was not committed.
