@@ -558,6 +558,14 @@ public sealed partial class IlCompiler
         var typical = m.GetTypicalMethodDefinition() as EcmaMethod;
         if (u.Il == null)
         {
+            // (a delegate's BeginInvoke and EndInvoke are the runtime's, and .NET's throw PlatformNotSupportedException)
+            if (m.OwningType.IsDelegate && m.Name.ToString() is "BeginInvoke" or "EndInvoke")
+            {
+                var pe = new Emitter(f);
+                pe.Call(FunctionFor(CoreMethod("Il2Wasm.Runtime", "ThrowHelpers", "PlatformNotSupported")));
+                pe.Op(WOp.Unreachable);
+                return;
+            }
             Warnings.Add($"{m} has no IL body: it traps");
             new Emitter(f).Op(WOp.Unreachable);
             return;

@@ -26,9 +26,12 @@ namespace System
             _type = RuntimeTypeHandle.GetMonoClass(targetType);
         }
 
+        // il2wasm: the referenced value as an object, as an array element is (Il2WasmArrays.BoxAt); _type is the type's id
         public static unsafe object? ToObject(TypedReference value)
-            => InternalToObject(&value);
-
-                internal static unsafe object InternalToObject(void* value) => throw Il2Wasm.Runtime.TypeInfo.NotYet("TypedReference");
+        {
+            int e = (int)value._type;
+            int addr = (int)Unsafe.AsPointer(ref value._value);
+            return Il2Wasm.Runtime.Il2WasmArrays.BoxAt(e, addr, Il2Wasm.Runtime.TypeInfo.Size(e), "TypedReference of a struct with references");
+        }
     }
 }

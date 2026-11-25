@@ -52,8 +52,15 @@ namespace Il2Wasm.Runtime
             int e = TypeInfo.ElementId(Rt.TypeId(a));
             int size = ElementSize(a);
             int addr = Data(a) + pos * size;
+            return BoxAt(e, addr, size, "boxing an array element of a struct with references");
+        }
+
+        /// <summary>The value of type `e` (`size` bytes) at `addr` as an object: a reference as it is, a value boxed.
+        /// `what` names the operation in the error a struct with references gets (not supported yet).</summary>
+        internal static object? BoxAt(int e, int addr, int size, string what)
+        {
             if ((TypeInfo.Flags(e) & 1) == 0) return Rt.Borrow<object>(Mem.LoadI32(addr));
-            if ((TypeInfo.Flags2(e) & 1) != 0 || IsNullable(e)) throw TypeInfo.NotYet("boxing an array element of a struct with references");
+            if ((TypeInfo.Flags2(e) & 1) != 0 || IsNullable(e)) throw TypeInfo.NotYet(what);
             int off = TypeInfo.BoxOffset(e);
             int box = Rt.AllocObject(off + size, e);
             Mem.Copy(box + off, addr, size);
