@@ -1,7 +1,7 @@
 // Struct code generation: field reads where the struct is (Ir/StructReads.cs), frames given back at a catch instead of
 // in a handler of each function (FunctionLowering.RestoreFrame, IL2WASM_NO_SP_AT_CATCH=1 restores the old shape),
 // the back end's frame promotion (Wasm/FrameSlots.cs), and the IR inliner's struct arguments and results
-// (Ir/Inline.cs, with IL2WASM_MEM_PLAN=1).
+// (Ir/Inline.cs, on by default).
 // - Reads through an address keep their checks: a null object's struct field, an index out of range, a static's
 //   initializer, in the order .NET runs them.
 // - A frame-only function has no handler of its own: the catch gives the stack back. Thrown through 200,000 times

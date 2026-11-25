@@ -1,7 +1,7 @@
 // Returned spans and byrefs over objects only the callee held (docs/MEMORY-IR.md 7.4): the callee hands the object
 // to its caller (Rt.ReturnKeepers), which lets it go at the returned value's last use. Without the keeper the object
 // is never freed (the weak reference stays alive); freed too early, the read through the byref sees poison. The
-// naive plan keeps such objects (a leak, its baseline), so this runs with IL2WASM_MEM_PLAN=1 only.
+// naive plan keeps such objects (a leak, its baseline), so this runs with the planner only (skipped under IL2WASM_MEM_NAIVE=1).
 // plan: only
 // live: 234
 using System;

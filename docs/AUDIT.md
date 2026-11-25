@@ -5,6 +5,8 @@ written with: read `cs2wasm` as il2wasm, `cs2wasmc` as the command line `il2wasm
 `IL2WASM_*`, `src/Cs2Wasm*` and `tests/Cs2Wasm.Tests` as `src/Il2Wasm*` and `tests/Il2Wasm.Tests`, the namespace
 `Cs2Wasm` as `Il2Wasm` (the import module `cs2wasm` is `il2wasm`).
 
+Default from 2026-11-25: the IL front end's ownership planner is on; `IL2WASM_MEM_NAIVE=1` gives the naive baseline (`IL2WASM_MEM_PLAN=1` is accepted as a no-op).
+
 Audit of 2026-11-18 against `docs/SPEC.md`, the Invisible API design (`bazoodle/docs/invisible-api.md`) and the three
 production goals:
 

@@ -140,10 +140,10 @@ static class EndToEnd
             var name = Path.GetFileNameWithoutExtension(file);
             if (!all && !c.WantsProgram(name)) continue;
             var src = File.ReadAllText(file);
-            // ("// plan: only": a program whose output depends on the memory model's plan, IL2WASM_MEM_PLAN=1; the naive
-            // plan is the baseline that leaks there. "// live: n": with the plan, the objects live at exit, counted)
+            // ("// plan: only": a program whose output depends on the memory model's plan; the naive plan
+            // (IL2WASM_MEM_NAIVE=1) is the baseline that leaks there. "// live: n": with the plan, the objects live at exit, counted)
             var lines = src.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
-            if (lines.Contains("// plan: only") && !Il2Wasm.IL.Memory.Pipeline.Planned) { c.Info($"{name}: with IL2WASM_MEM_PLAN=1 only"); continue; }
+            if (lines.Contains("// plan: only") && !Il2Wasm.IL.Memory.Pipeline.Planned) { c.Info($"{name}: naive mode (IL2WASM_MEM_NAIVE=1): skipped"); continue; }
             int expectLive = lines.FirstOrDefault(l => l.StartsWith("// live: ")) is { } ll ? int.Parse(ll[9..].Trim()) : -1;
             string expected, actual;
             try { expected = Build.Oracle(name, src); }

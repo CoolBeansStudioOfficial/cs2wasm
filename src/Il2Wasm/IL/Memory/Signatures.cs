@@ -11,7 +11,7 @@ using Internal.TypeSystem.Ecma;
 namespace Il2Wasm.IL.Memory;
 
 /// <summary>Ownership signatures, dispatch-group signatures, the call rule and the specialization policy
-/// (docs/MEMORY-IR.md section 4.1 to 4.5). S1 agent a's file. Nothing reads it unless IL2WASM_MEM_PLAN=1.
+/// (docs/MEMORY-IR.md section 4.1 to 4.5). S1 agent a's file. Nothing reads it under IL2WASM_MEM_NAIVE=1.
 /// <para><b>Entries and variants</b> (agreed with rows c and f, 2026-11-24). Every method's own function, the
 /// <see cref="Variant.Entry"/>, has the all-Lend convention: every parameter is <c>Guaranteed(Arg(i))</c> inside and
 /// the result is owned. That is what every caller that is not a planned IR call site assumes (generated code:

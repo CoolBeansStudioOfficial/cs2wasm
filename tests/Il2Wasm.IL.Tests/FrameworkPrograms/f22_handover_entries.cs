@@ -5,7 +5,7 @@
 // - a struct parameter: it arrives as an address into the caller's copy, which the callee's plan does not count. An
 //   owned variant took the struct's references from the caller and never released them (the weak reference stayed
 //   alive).
-// The naive plan has no variants, so this runs with IL2WASM_MEM_PLAN=1 only.
+// The naive plan has no variants, so this runs with the planner only (skipped under IL2WASM_MEM_NAIVE=1).
 // plan: only
 // live: 53
 using System;

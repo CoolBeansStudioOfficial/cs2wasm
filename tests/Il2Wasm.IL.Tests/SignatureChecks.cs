@@ -8,7 +8,7 @@ namespace Il2Wasm.IL.Tests;
 /// one used after the further call, or only before a throw helper, is Lend; getters and `return this` are borrowed
 /// returns; the owned variants follow the size caps. The call rule: a tree walk's root, an Owned value at its last
 /// use, goes to the owned variant; the walk's own calls on its fields' loads (borrows, not the caller's counts) go to
-/// the Entry, in the Entry and in the owned variant alike. Runs only with IL2WASM_MEM_PLAN=1 (Compute runs only then).</summary>
+/// the Entry, in the Entry and in the owned variant alike. Runs only with the planner (Compute runs only then; skipped under IL2WASM_MEM_NAIVE=1).</summary>
 static class SignatureChecks
 {
     const string Source = """
@@ -72,7 +72,7 @@ static class SignatureChecks
     public static void Run(Checks c)
     {
         c.Section("memory: ownership signatures (Signatures.cs)");
-        if (!Pipeline.Planned) { c.Info("needs IL2WASM_MEM_PLAN=1: skipped"); return; }
+        if (!Pipeline.Planned) { c.Info("needs the planner (not IL2WASM_MEM_NAIVE=1): skipped"); return; }
         ProgramSolution? sol = null;
         Signatures.Observed = s => sol = s;
         // (the last plan of Main and of each of W's entries: the variants their calls of W take)

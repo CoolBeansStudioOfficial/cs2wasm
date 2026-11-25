@@ -87,7 +87,7 @@ public sealed partial class IlCompiler : IReachHost
     MethodDesc? IReachHost.Resolve(TypeDesc exact, MethodDesc slot) => Implementation(exact, slot);
 
     /// <summary>A method's plan, between the solve and lowering (section 1.2's per-method phase). The naive plan
-    /// (Ir/Ownership.cs) unless IL2WASM_MEM_PLAN=1 turns the planner on; IL2WASM_MEM_NAIVE=1 always means the naive
+    /// (Ir/Ownership.cs) only with IL2WASM_MEM_NAIVE=1; the planner is the default; IL2WASM_MEM_NAIVE=1 always means the naive
     /// plan (the baseline the removal share is measured against).</summary>
     MethodPlan PlanMethod(MethodDesc m, Body body, Variant entry = default)
     {

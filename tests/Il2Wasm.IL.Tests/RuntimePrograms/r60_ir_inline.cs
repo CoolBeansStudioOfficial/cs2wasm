@@ -1,4 +1,4 @@
-// The IR inliner (docs/MEMORY-IR.md 3.7, Ir/Inline.cs; on with IL2WASM_MEM_PLAN=1): what inlining must keep.
+// The IR inliner (docs/MEMORY-IR.md 3.7, Ir/Inline.cs; on by default): what inlining must keep.
 // - What an inlined callee does is still seen by the next round's facts: lowering merges an inlined callee's
 //   summary (Lower/Phases.cs). Without that, the field Set writes (Set is inlined at its only site) looks unwritten,
 //   so Peek's value folds to 0 and Main's branch on it is decided wrongly; and Note2's argument from the inlined

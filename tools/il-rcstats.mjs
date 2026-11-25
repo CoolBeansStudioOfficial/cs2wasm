@@ -13,7 +13,7 @@
 //        [--live [--oracle oracle.json]] [--expected out.txt] [--fw dir] [--cli il2wasm-il.dll] [--tests Il2Wasm.IL.Tests.dll] [-- program arguments]
 //     compiles the program twice (as configured, and with IL2WASM_MEM_NAIVE=1), runs both, and reports each and the
 //     removal share. A .cs is compiled against the framework by the IL tests' `framework` mode, a .dll (a dotnet build
-//     output) by the CLI. The switches of the environment (IL2WASM_MEM_PLAN=1, IL2WASM_NO_*) go to the first build.
+//     output) by the CLI. The switches of the environment (IL2WASM_NO_*) go to the first build.
 //     Nothing .NET runs: only the modules, under host/run.mjs. --live: live objects per type at exit too;
 //     --expected: the output each build must print (a NetWasm suite case's expected/<case>.txt).
 //

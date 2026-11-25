@@ -6,6 +6,8 @@ analysis. It carries cs2wasm's memory model over first-class: the rules and runt
 operation-tree front end (`src/Il2Wasm/Compiler`) are restated here on the IR. They are not re-derived, and they are
 not grafted on later.
 
+Default from 2026-11-25: the planner is on; `IL2WASM_MEM_NAIVE=1` gives the naive baseline (`IL2WASM_MEM_PLAN=1` is accepted as a no-op).
+
 Binding inputs:
 
 - docs/SPEC.md sections 4, 5 and 7, with the owner's rulings of 2026-11-23 now in the text:

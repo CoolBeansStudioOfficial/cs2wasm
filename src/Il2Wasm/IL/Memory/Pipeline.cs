@@ -5,14 +5,14 @@ using Internal.TypeSystem;
 
 namespace Il2Wasm.IL.Memory;
 
-/// <summary>Which parts of the memory model's per-method phase run (docs/MEMORY-IR.md 1.2, 3.8's switches). Until the
-/// planner is built, lowering uses the naive plan (Ir/Ownership.cs) unless IL2WASM_MEM_PLAN=1; IL2WASM_MEM_NAIVE=1
-/// always means the naive plan, the baseline the removal share is measured against.</summary>
+/// <summary>Which parts of the memory model's per-method phase run (docs/MEMORY-IR.md 1.2, 3.8's switches). The planner is
+/// the default; IL2WASM_MEM_NAIVE=1 selects the naive plan (Ir/Ownership.cs), the baseline the removal share is measured
+/// against. IL2WASM_MEM_PLAN=1 is still accepted and is a no-op.</summary>
 public static class Pipeline
 {
     public static readonly bool Naive = Environment.GetEnvironmentVariable("IL2WASM_MEM_NAIVE") == "1";
-    /// <summary>Plan.Build (and Signatures.Compute after the solve) replace Ownership.Run.</summary>
-    public static readonly bool Planned = !Naive && Environment.GetEnvironmentVariable("IL2WASM_MEM_PLAN") == "1";
+    /// <summary>Plan.Build (and Signatures.Compute after the solve) replace Ownership.Run. On unless IL2WASM_MEM_NAIVE=1.</summary>
+    public static readonly bool Planned = !Naive;
     /// <summary>The IR inliner with Canon after each step (IL2WASM_NO_IR_INLINE=1: none).</summary>
     public static readonly bool Inline = Planned && Environment.GetEnvironmentVariable("IL2WASM_NO_IR_INLINE") != "1";
     /// <summary>IL2WASM_NO_FINAL_ROUND_GATE=1: PlanContext.FinalRound is true in every round (the passes gated on it run
