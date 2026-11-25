@@ -363,7 +363,8 @@ public static class Ownership
         foreach (var p in b.Preds) foreach (var v in info.LiveOut[p]) dead.Add(v);
         if (b.Preds.Count == 0 && b != body.Blocks[0])
             foreach (var r in body.Regions)
-                if (r.Entry == b && (r.IsHandler || r.Kind == RegionKind.Filter))
+                // (a filter's entry releases nothing of its try: see Plan.cs)
+                if (r.Entry == b && r.IsHandler && r.Kind != RegionKind.Filter)
                     foreach (var tb in BlocksWithin(r.Try!).Concat(r.Filter != null && r.Filter != r ? BlocksWithin(r.Filter) : []))
                     {
                         foreach (var v in info.LiveIn[tb]) dead.Add(v);
