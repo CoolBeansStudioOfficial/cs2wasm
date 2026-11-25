@@ -495,7 +495,23 @@ public sealed partial class ProgramSolution
     {
         if (s_noElementAddresses) return null;
         if (IsArrayDataReference(cm) is { } et) return Pool.Of(Keys.Intern(MemKey.Elem(et)));
+        if (!s_noElementArithmetic && ElementArithmetic(m, cm) && a.A.Length > 0 && IsRef(a.A[0]) && AddrOf(m, a.A[0], st, addrs) is { } inner && OnlyElements(inner)) return inner;
         return null;
+    }
+
+    static readonly bool s_noElementArithmetic = Environment.GetEnvironmentVariable("IL2WASM_NO_ELEMENT_ARITHMETIC") == "1";
+
+    /// <summary>Unsafe.Add, Subtract, AddByteOffset and SubtractByteOffset on a ref T (intrinsics or calls): of an address that
+    /// is only array elements, the same arrays' elements (an array is one block; a field's address moved on could be
+    /// another field's, so only elements). IL2WASM_NO_ELEMENT_ARITHMETIC=1: unknown, as before.</summary>
+    bool ElementArithmetic(MethodDesc m, MethodDesc cm) => cm.OwningType is MetadataType { } ut && ut.GetName() == "Unsafe" && ut.GetNamespace() == "System.Runtime.CompilerServices"
+        && cm.GetName() is "Add" or "Subtract" or "AddByteOffset" or "SubtractByteOffset" && cm.Signature.Length == 2 && cm.Signature[0] is ByRefType;
+
+    bool OnlyElements(IdSet s)
+    {
+        if (s.IsEmpty) return false;
+        foreach (int k in s.Items) if (k == LocalKey || Keys[k].Kind != KeyKind.Elem) return false;
+        return true;
     }
 
     /// <summary>MemoryMarshal.GetArrayDataReference&lt;T&gt;(T[]): T; else null.</summary>

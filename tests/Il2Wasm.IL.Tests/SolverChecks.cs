@@ -117,10 +117,12 @@ static class SolverChecks
         using System.Runtime.InteropServices;
         class A { public virtual int M() => 1; }
         sealed class B : A { public override int M() => 2; }
+        sealed class C : A { public override int M() => 3; }
         static class P
         {
             [MethodImpl(MethodImplOptions.NoInlining)] static void Put(A[] arr) => MemoryMarshal.GetArrayDataReference(arr) = new B();
-            static void Main() { var arr = new A[] { new A() }; Put(arr); Console.WriteLine(arr[0].M()); }
+            [MethodImpl(MethodImplOptions.NoInlining)] static void PutAt(A[] arr, int i) => Unsafe.Add(ref MemoryMarshal.GetArrayDataReference(arr), i) = new C();
+            static void Main() { var arr = new A[] { new A(), new A() }; Put(arr); PutAt(arr, 1); Console.WriteLine(arr[0].M() + arr[1].M()); }
         }
         """;
 
@@ -264,6 +266,10 @@ static class SolverChecks
             bool noAddr = Environment.GetEnvironmentVariable("IL2WASM_NO_ELEMENT_ADDRESSES") == "1";
             c.True("type sets: a write through GetArrayDataReference reaches the elements: Elem(A) " + (elem == null ? "unknown" : "{" + string.Join(", ", elem) + "}"),
                 sol.TypeSetsSolved && elem != null && elem.Any(t => t.EndsWith("B")) != noAddr);
+            // (and one through Unsafe.Add of it lands there too, not in Slot(A): IL2WASM_NO_ELEMENT_ARITHMETIC=1 the Slot)
+            bool noArith = noAddr || Environment.GetEnvironmentVariable("IL2WASM_NO_ELEMENT_ARITHMETIC") == "1";
+            c.True("type sets: a write through Unsafe.Add of it too: Elem(A) " + (elem == null ? "unknown" : "{" + string.Join(", ", elem) + "}"),
+                sol.TypeSetsSolved && elem != null && elem.Any(t => t.EndsWith("C")) != noArith);
         }
         {
             // a destroy releases what a load of each field would give: Holder.F, declared object, holds only strings, so
