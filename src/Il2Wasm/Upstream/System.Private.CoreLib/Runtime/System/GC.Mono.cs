@@ -27,14 +27,38 @@ namespace System
 
     public static partial class GC
     {
-        // il2wasm: no collector; counting frees objects as they become unreachable
-        private static int GetCollectionCount(int generation) => 0;
+        // il2wasm: no collector; counting frees objects as they become unreachable. A "collection" here finds nothing
+        // left to free, but it still counts as .NET's does: GC.Collect(n) raises the count of every generation <= n.
+        // The counters live in a nested class with no initializers: touching a static field of GC itself would run
+        // GC's static constructor (one more live object, which the IL tests' leak checks see).
+        private const int MaxGen = 2;
+        private static class CollectionCounts
+        {
+            public static int Gen0, Gen1, Gen2, LastCollected;
+        }
 
-        // il2wasm: no collector; counting frees objects as they become unreachable
-        private static int GetMaxGeneration() => 0;
+        private static int GetCollectionCount(int generation)
+        {
+            switch (generation)
+            {
+                case 0: return System.Threading.Volatile.Read(ref CollectionCounts.Gen0);
+                case 1: return System.Threading.Volatile.Read(ref CollectionCounts.Gen1);
+                case 2: return System.Threading.Volatile.Read(ref CollectionCounts.Gen2);
+                default: return 0;
+            }
+        }
 
-        // il2wasm: no collector; counting frees objects as they become unreachable
-        private static void InternalCollect(int generation) { }
+        private static int GetMaxGeneration() => MaxGen;
+
+        private static void InternalCollect(int generation)
+        {
+            // .NET collects the oldest generation it has when asked for an older one
+            int top = generation > MaxGen ? MaxGen : generation;
+            if (top >= 0) System.Threading.Interlocked.Increment(ref CollectionCounts.Gen0);
+            if (top >= 1) System.Threading.Interlocked.Increment(ref CollectionCounts.Gen1);
+            if (top >= 2) System.Threading.Interlocked.Increment(ref CollectionCounts.Gen2);
+            System.Threading.Volatile.Write(ref CollectionCounts.LastCollected, top);
+        }
 
         // il2wasm: no collector; counting frees objects as they become unreachable
         private static void AddPressure(ulong bytesAllocated) { }
@@ -171,7 +195,12 @@ namespace System
         }
 
         // il2wasm: no collector; counting frees objects as they become unreachable
-        public static long GetTotalMemory(bool forceFullCollection) => Il2Wasm.Runtime.Rt.HeapUsed();
+        public static long GetTotalMemory(bool forceFullCollection)
+        {
+            // a forced measurement is a full collection on .NET, so it counts as one
+            if (forceFullCollection) InternalCollect(MaxGen);
+            return Il2Wasm.Runtime.Rt.HeapUsed();
+        }
 
         private static bool _RegisterForFullGCNotification(int maxGenerationPercentage, int largeObjectHeapPercentage)
         {
@@ -280,6 +309,10 @@ namespace System
                              out data._totalCommittedBytes,
                              out data._heapSizeBytes,
                              out data._fragmentedBytes);
+
+            // the last collection: its index is the collections so far, its generation the oldest it collected
+            data._index = GetCollectionCount(0);
+            data._generation = System.Threading.Volatile.Read(ref CollectionCounts.LastCollected);
 
             return new GCMemoryInfo(data);
         }
