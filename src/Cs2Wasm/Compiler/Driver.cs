@@ -1352,6 +1352,10 @@ internal sealed partial class Driver
             Console.Error.WriteLine($"  {g.Sum(m => m.Fn.Body.Count),8} {g.Count(),5}  {g.Key}");
     }
 
+    // CS2WASM_TRACE_COMPILE=1 (a diagnosis of output that differs between two builds of the compiler): each method as
+    // it is compiled, in order, with its instructions and locals
+    static readonly bool s_traceCompile = Environment.GetEnvironmentVariable("CS2WASM_TRACE_COMPILE") == "1";
+
     void Drain(RuntimeGen rt)
     {
         bool progress = true;
@@ -1371,7 +1375,7 @@ internal sealed partial class Driver
                     if (!ThreadMode && !s_expNoThreadMode && !s_noThreads && mi.Sym.Name == "SpawnCore" && mi.Sym.ContainingType?.Name == "Threads") throw new ThreadsSeen();
                     Compiling = mi;
                     CurrentFn = mi.Fn;
-                    try { if (mi.Compile != null) mi.Compile(); else FunctionCompiler.Compile(this, mi); mi.Fn.Body.TrimExcess(); mi.Fn.Locals.TrimExcess(); }
+                    try { if (mi.Compile != null) mi.Compile(); else FunctionCompiler.Compile(this, mi); mi.Fn.Body.TrimExcess(); mi.Fn.Locals.TrimExcess(); if (s_traceCompile) Console.Error.WriteLine("compiled " + mi.Fn.Body.Count + " " + mi.Fn.Locals.Count + " " + Display(mi.Sym)); }
                     catch (CompileException ex)
                     {
                         if (Environment.GetEnvironmentVariable("CS2WASM_DEBUG") != null) Console.Error.WriteLine(ex.StackTrace);

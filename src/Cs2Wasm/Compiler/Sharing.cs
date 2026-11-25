@@ -325,6 +325,10 @@ internal sealed partial class Sharing
     }
 
     static readonly bool s_debug = Environment.GetEnvironmentVariable("CS2WASM_SHARING_DEBUG") == "1";
+    /// <summary>CS2WASM_SHARING_WALK=key (a diagnosis): every source and node ArrayIdsOf goes through from that start.</summary>
+    /// <summary>CS2WASM_SHARING_TRACE=1 (a diagnosis): every step of Analyze's walk, and every node visit, with its filter.</summary>
+    static readonly bool s_trace = Environment.GetEnvironmentVariable("CS2WASM_SHARING_TRACE") == "1";
+    static readonly string? s_walk = Environment.GetEnvironmentVariable("CS2WASM_SHARING_WALK");
     public static bool Debug => s_debug;
     static readonly bool s_off = Environment.GetEnvironmentVariable("CS2WASM_NO_SHARING") == "1";
 
@@ -404,6 +408,7 @@ internal sealed partial class Sharing
         var unfiltered = new HashSet<string>();
         bool Visit(string key)
         {
+            if (s_trace) Console.Error.WriteLine("trace visit " + key + " |" + (filter != null ? Types.Key(filter) : "-") + " u" + unfiltered.Contains(key) + " s" + seenNodes.Contains(FK(key)) + " c" + filtersSeen.GetValueOrDefault(key));
             if (unfiltered.Contains(key)) return false;
             if (filter == null) { unfiltered.Add(key); return true; }
             if (!seenNodes.Add(FK(key))) return false;
@@ -549,6 +554,7 @@ internal sealed partial class Sharing
             var (s, why, f) = work.Pop();
             filter = f;
             steps++;
+            if (s_trace) Console.Error.WriteLine("trace pop " + s.Kind + " " + s.Key + " #" + s.Index + " " + (s.Type != null ? Types.Key(s.Type) : "-") + " |" + (f != null ? Types.Key(f) : "-"));
             switch (s.Kind)
             {
                 case K.Exact:
@@ -629,9 +635,11 @@ internal sealed partial class Sharing
             if (s_debug) Console.Error.WriteLine("broad-array " + Types.Key(t) + " [" + (tag ?? "?") + "]");
             foreach (var id in TopIds(t)) if (D.TypeById[id] is IArrayTypeSymbol) r.Add(id);
         }
+        bool walk = s_walk != null && start == s_walk;
         void Node(string key, ITypeSymbol? declared)
         {
             if (!seen.Add(key)) return;
+            if (walk) Console.Error.WriteLine("walk node " + key + " (" + (_nodes.TryGetValue(key, out var wl) ? wl.Count : -1) + " sources)");
             if (_nodes.TryGetValue(key, out var l) && l.Count > 0) foreach (var x in l) work.Push(x);
             else if (key.StartsWith("site ") && D.Arenas.SiteByKey(key[5..]) is { } site && site.Sources.Count > 0) foreach (var x in site.Sources) work.Push(x);
             else Top(declared);
@@ -641,6 +649,7 @@ internal sealed partial class Sharing
         {
             var s = work.Pop();
             tag = s.Key;
+            if (walk) Console.Error.WriteLine("walk pop " + s.Kind + " " + s.Key + " #" + s.Index + " " + (s.Type != null ? Types.Key(s.Type) : "-"));
             switch (s.Kind)
             {
                 case K.Exact: if (s.Type is IArrayTypeSymbol && D.ExistingTypeId(D.Types.Canonical(s.Type)) is int eid) r.Add(eid); break;
