@@ -381,6 +381,7 @@ public sealed partial class IlCompiler
             "BaseId" => "base", "ElementId" => "element", "Rank" => "rank", "CorElementType" => "cor", "Size" => "size",
             "BoxOffset" => "box_offset", "EnumInfo" => "enum_info", "Interfaces" => "interfaces", "DeclaringId" => "declaring",
             "Attributes" => "attrs", "GenericArgs" => "generic_args", "ArrayOf" => "array_of", "AssemblyOf" => "assembly", "Meta" => "meta",
+            "DelegateArity" => "delegate_arity",
             _ => null,
         };
         if (kind == null) return false;
@@ -517,7 +518,7 @@ public sealed partial class IlCompiler
         foreach (var (kind, fn) in _typeTables)
         {
             // (no type has a record: the table is not made, and Meta reads 0)
-            if (kind == "meta" && _typeAttributes.Count == 0) { new Emitter(fn).I32(0); continue; }
+            if (kind == "meta" && _typeAttributes.Count == 0 && _typeMethods.Count == 0) { new Emitter(fn).I32(0); continue; }
             Func<TypeDesc, (IAddress?, int)> entry = kind switch
             {
                 "name" => t => (StringLiteral(TypeName(t)), 0),
@@ -539,12 +540,13 @@ public sealed partial class IlCompiler
                 "assembly" => t => (null, AssemblyIndexOf(t)),
                 "enum_info" => t => (t.IsEnum ? EnumInfo(t) : null, 0),
                 "meta" => t => (TypeRecord(t, final), 0),
+                "delegate_arity" => t => (null, t.IsDelegate && !t.IsGenericDefinition && !t.IsCanonicalSubtype(CanonicalFormKind.Any) && !t.ContainsSignatureVariables() ? DelegateInvokeOf(t).Signature.Length : -1),
                 _ => throw new NotSupportedException("type table " + kind),
             };
             var vals = new (IAddress? a, int v)[count];
             // (an open generic type, typeof(List<>), has no layout)
             for (int i = 0; i < count; i++) vals[i] = byFinal[i] is { IsGenericDefinition: true } && kind is "size" or "flags2" or "box_offset" ? (null, kind == "flags2" ? 64 | 4 : 0)
-                : byFinal[i] is { } t && (IsReflectable(t) || kind is not ("name" or "short_name" or "namespace")) ? entry(t) : (kind is "name" or "short_name" or "namespace" ? (StringLiteral(""), 0) : kind is "interfaces" or "generic_args" ? (Ids([]), 0) : (null, kind is "base" or "element" or "declaring" or "array_of" ? -1 : 0));
+                : byFinal[i] is { } t && (IsReflectable(t) || kind is not ("name" or "short_name" or "namespace")) ? entry(t) : (kind is "name" or "short_name" or "namespace" ? (StringLiteral(""), 0) : kind is "interfaces" or "generic_args" ? (Ids([]), 0) : (null, kind is "base" or "element" or "declaring" or "array_of" or "delegate_arity" ? -1 : 0));
             var blob = new byte[count * 4];
             var relocs = new List<(int, IAddress)>();
             for (int i = 0; i < count; i++)

@@ -121,7 +121,9 @@ namespace System
             ArgumentNullException.ThrowIfNull(method);
             if (type is not RuntimeType rt || !rt.IsSubclassOf(typeof(MulticastDelegate)))
                 throw new ArgumentException(SR.Arg_MustBeDelegate, nameof(type));
-            int n = rt.GetMethod("Invoke")!.GetParameters().Length;
+            // (the count from the compiler's table: a reflection lookup of Invoke would need a record for every delegate type)
+            int n = Il2Wasm.Runtime.TypeInfo.DelegateArity(rt.TypeId);
+            if (n < 0) throw new ArgumentException(SR.Arg_MustBeDelegate, nameof(type));
             int k = method.GetParameters().Length;
             int mode = -1;
             if (!method.IsStatic)

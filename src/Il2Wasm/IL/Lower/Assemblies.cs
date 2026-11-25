@@ -144,16 +144,29 @@ public sealed partial class IlCompiler
 
     static readonly bool s_noTypeAttributes = Environment.GetEnvironmentVariable("IL2WASM_NO_TYPE_ATTRIBUTES") == "1";
 
-    /// <summary>A type's reflection record for Meta: ten words, all zero but nattrs (word 8) and attrs (word 9, a list
-    /// of (type id, factory + 1) pairs). Null when the type has no attribute the program can ask for.</summary>
+    /// <summary>A type's reflection record for Meta: ten words, all zero but the method count and table (words 4 and 5,
+    /// the methods' records: MethodRecords.cs), nattrs (word 8) and attrs (word 9, a list of (type id, factory + 1)
+    /// pairs). Null when the type has neither an attribute nor a method the program can ask for.</summary>
     Blob? TypeRecord(TypeDesc t, Func<TypeDesc, int> final)
     {
-        if (!_typeAttributes.TryGetValue(t, out var list)) return null;
-        var pairs = list.SelectMany(a => new[] { final(a.Type), Module.TableSlot(a.Factory) + 1 }).ToArray();
-        var lb = DataBlob([.. pairs.SelectMany(BitConverter.GetBytes)], 4);
+        _typeAttributes.TryGetValue(t, out var list);
+        _typeMethods.TryGetValue(t, out var methods);
+        if ((list == null || list.Count == 0) && (methods == null || methods.Count == 0)) return null;
         var words = new int[10];
-        words[8] = list.Count;
-        return DataBlob([.. words.SelectMany(BitConverter.GetBytes)], 4, new List<(int, IAddress)> { (9 * 4, lb) });
+        var relocs = new List<(int, IAddress)>();
+        if (list is { Count: > 0 })
+        {
+            var pairs = list.SelectMany(a => new[] { final(a.Type), Module.TableSlot(a.Factory) + 1 }).ToArray();
+            var lb = DataBlob([.. pairs.SelectMany(BitConverter.GetBytes)], 4);
+            words[8] = list.Count;
+            relocs.Add((9 * 4, lb));
+        }
+        if (methods is { Count: > 0 })
+        {
+            words[4] = methods.Count;
+            relocs.Add((5 * 4, MethodTable(methods, final)));
+        }
+        return DataBlob([.. words.SelectMany(BitConverter.GetBytes)], 4, relocs);
     }
 
     /// <summary>The assemblies' attributes the program can ask for, with their factories; true when anything new was

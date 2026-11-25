@@ -78,6 +78,7 @@ public sealed class ProgramFacts : ISccpOracle
         foreach (var t in sum.AttributeQueryTypes) AttributeQueryTypes.Add(t);
         AttributeQueryUnknownTarget |= sum.AttributeQueryUnknownTarget;
         AttributeQueryUnknownType |= sum.AttributeQueryUnknownType;
+        foreach (var q in sum.MethodQueries) MethodQueries.Add(q);
         foreach (var (c, args) in sum.ArgMeets) Meet(c, args);
         foreach (var t in sum.Aliased) _aliased.Add(t);
         if (sum.Return is { } ret) _returns[m] = ret;
@@ -95,6 +96,9 @@ public sealed class ProgramFacts : ISccpOracle
     public readonly HashSet<TypeDesc> AttributeQueryTargets = [];
     public readonly HashSet<TypeDesc> AttributeQueryTypes = [];
     public bool AttributeQueryUnknownTarget, AttributeQueryUnknownType;
+    /// <summary>The method reflection queries the code that can run makes (Type.GetMethod, GetMethods): the Type object
+    /// each asks of (null: any type) and the name (null: any name). Each query is a record of the methods it can find.</summary>
+    public readonly List<(TypeDesc? Target, string? Name)> MethodQueries = [];
     readonly Dictionary<FieldDesc, Val> _fields = new();
 
     public Val InstanceField(Node load) => Previous != null && load.X is FieldDesc f ? Previous.Field(f) : Val.Bottom;

@@ -89,6 +89,9 @@ public sealed class MethodSummary
     public readonly List<TypeDesc> AttributeQueryTargets = [];
     public readonly List<TypeDesc> AttributeQueryTypes = [];
     public bool AttributeQueryUnknownTarget, AttributeQueryUnknownType;
+    /// <summary>The method reflection queries (Type.GetMethod, Type.GetMethods): the Type object asked of (null: not one
+    /// the code names, any type) and the name asked for (null: any name).</summary>
+    public readonly List<(TypeDesc? Target, string? Name)> MethodQueries = [];
     public readonly List<TypeDesc> Aliased = [];
 
     // ---- reach edges (from the body lowering lowers)
@@ -170,6 +173,21 @@ public sealed class MethodSummary
         else AttributeQueryTypes.Add(asked);
     }
 
+    static readonly HashSet<string> s_methodQueries = ["GetMethod", "GetMethods"];
+
+    /// <summary>A method reflection query (Type.GetMethod(name, ...), Type.GetMethods(...)): the Type object it asks of (its
+    /// receiver, a typeof the code names; otherwise any type) and the name (a constant first argument of GetMethod; any
+    /// name for GetMethods). Queries from the core library's own code are not noted (as for attributes: its unknown
+    /// lookups would make every reflectable type's methods of that name kept).</summary>
+    void NoteMethodQuery(MethodDesc qm, Node n, MethodDesc caller)
+    {
+        if (!s_methodQueries.Contains(qm.GetName()) || qm.OwningType is not MetadataType { Name: var _ } ot || ot.GetName() != "Type" || ot.GetNamespace() != "System") return;
+        if (caller.OwningType is MetadataType cm && cm.Module == cm.Context.SystemModule) return;
+        TypeDesc? target = n.A.Length > 0 && n.A[0].Op == Opc.TypeOf && n.A[0].X is TypeDesc tt ? tt : null;
+        string? name = qm.GetName() == "GetMethod" && n.A.Length > 1 && n.A[1].Op == Opc.LdStr && n.A[1].X is string s ? s : null;
+        MethodQueries.Add((target, name));
+    }
+
     void ConstantFacts(Body body, Sccp s)
     {
         var ret = Val.Top;
@@ -177,6 +195,7 @@ public sealed class MethodSummary
             foreach (var n in b.Code)
             {
                 if (n.Op == Opc.Call && n.X is MethodDesc qm) NoteAttributeQuery(qm, n, body.Method);
+                if (n.Op == Opc.Call && n.X is MethodDesc mq) NoteMethodQuery(mq, n, body.Method);
                 switch (n.Op)
                 {
                     case Opc.StFld when n.X is FieldDesc sf:

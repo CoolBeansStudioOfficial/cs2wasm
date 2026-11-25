@@ -118,7 +118,8 @@ public sealed partial class IlCompiler
     /// or ref-like value.</summary>
     static bool ThunkableDelegate(TypeDesc t)
     {
-        if (!t.IsDelegate || t.IsCanonicalSubtype(CanonicalFormKind.Any) || t.ContainsSignatureVariables()) return false;
+        // (an open generic delegate, Getter<,>, has no code and no Invoke to call: its signature has variables)
+        if (!t.IsDelegate || t.IsGenericDefinition || t.IsCanonicalSubtype(CanonicalFormKind.Any) || t.ContainsSignatureVariables()) return false;
         var sig = DelegateInvokeOf(t).Signature;
         foreach (var p in sig) if (!Plain(p)) return false;
         return Plain(sig.ReturnType) || sig.ReturnType.IsVoid;

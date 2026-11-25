@@ -48,6 +48,8 @@ namespace Il2Wasm.Runtime
         [Intrinsic] public static extern int EnumInfo(int id);
         /// <summary>[count, ids...]</summary>
         [Intrinsic] public static extern int GenericArgs(int id);
+        /// <summary>A delegate type's parameter count (its Invoke's), -1 for other types.</summary>
+        [Intrinsic] public static extern int DelegateArity(int id);
         /// <summary>The id of the type's one-dimensional array type, -1 when the program has none.</summary>
         [Intrinsic] public static extern int ArrayOf(int id);
         /// <summary>The type's reflection record (Meta), 0 when reflection does not reach it.</summary>
