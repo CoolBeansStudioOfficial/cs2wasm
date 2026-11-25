@@ -67,11 +67,13 @@ public sealed partial class IlCompiler
     {
         if (!_typeTables.ContainsKey("array_of") || s_noReflectedArrays) return false;
         bool any = false;
-        // (an attribute type a Type object names can reach CreateInstance without the program naming it: the attribute
-        // query makes its result as an array of that type, GetCustomAttribute(type, typeof(A)). Every Type object would
-        // add the arrays of all the types the program names, far more than the attribute queries need.)
+        // (an attribute query makes its result as an array of the attribute type it asks for: the types the program's
+        // queries name (ProgramFacts.AttributeQueryTypes), or every attribute type when a query's type is not known)
         var attributeType = _ctx.SystemModule.GetType("System"u8, "Attribute"u8, throwIfNotFound: false);
-        foreach (var t in Facts.ArrayElementTypes.Concat(Facts.TypeObjects.Where(x => attributeType != null && IsSubclassOf(x, attributeType))).ToList())
+        bool anyAttribute = NoFactsGathered() || Facts.AttributeQueryUnknownType;
+        IEnumerable<TypeDesc> attributeArrays = Facts.AttributeQueryTypes.Where(x => attributeType != null && IsSubclassOf(x, attributeType));
+        if (anyAttribute && attributeType != null) attributeArrays = attributeArrays.Concat(Facts.TypeObjects.Where(x => IsSubclassOf(x, attributeType)));
+        foreach (var t in Facts.ArrayElementTypes.Concat(attributeArrays).ToList())
         {
             if (t.IsByRef || t.IsPointer || t.IsFunctionPointer || t.IsVoid || t.IsGenericDefinition || t.ContainsSignatureVariables()
                 || t is MetadataType { IsByRefLike: true } || t.IsCanonicalSubtype(CanonicalFormKind.Any)) continue;
@@ -102,11 +104,17 @@ public sealed partial class IlCompiler
     {
         if (!_typeTables.ContainsKey("meta") || s_noTypeAttributes) return false;
         var attributeType = _ctx.SystemModule.GetType("System"u8, "Attribute"u8, throwIfNotFound: false);
-        bool all = attributeType != null && Facts.TypeObjects.Contains(attributeType) || Il2Wasm.IL.Reach.ProgramFacts.Off;
+        // (a type's record is needed when a query can ask of it: the Type object it names, or a type it derives from,
+        // for the inherited attributes; an attribute is kept when the query can ask for its type or a base of it)
+        bool anyTarget = NoFactsGathered() || Facts.AttributeQueryUnknownTarget;
+        bool anyType = NoFactsGathered() || Facts.AttributeQueryUnknownType;
+        var targets = new HashSet<TypeDesc>();
+        foreach (var q in Facts.AttributeQueryTargets) for (var b = q; b != null; b = b.BaseType) targets.Add(b);
         bool any = false;
         foreach (var t in _types.ToList())
         {
             if (!IsReflectable(t) || _typeAttributesDone.Contains(t) || t.IsGenericDefinition || t.ContainsSignatureVariables(treatGenericParameterLikeSignatureVariable: true)) continue;
+            if (!anyTarget && !targets.Contains(t)) continue;
             if (t.GetTypeDefinition() is not EcmaType et) { _typeAttributesDone.Add(t); continue; }
             _typeAttributesDone.Add(t);
             var m = (EcmaModule)et.Module;
@@ -117,8 +125,8 @@ public sealed partial class IlCompiler
                 var ca = md.GetCustomAttribute(h);
                 if (m.GetObject(ca.Constructor, NotFoundBehavior.ReturnNull) is not MethodDesc ctor) continue;
                 var at = ctor.OwningType;
-                bool wanted = all;
-                for (var b = at; b != null && !wanted && !b.IsObject; b = b.BaseType) if (Facts.TypeObjects.Contains(b) && b != attributeType) wanted = true;
+                bool wanted = anyType;
+                for (var b = at; b != null && !wanted && !b.IsObject; b = b.BaseType) if (Facts.AttributeQueryTypes.Contains(b)) wanted = true;
                 if (!wanted) continue;
                 var f = AttributeFactory(m, ca, ctor);
                 if (f == null) continue;
@@ -130,6 +138,9 @@ public sealed partial class IlCompiler
         }
         return any;
     }
+
+    /// <summary>No facts were gathered (IL2WASM_NO_* switches): every type and attribute counts as asked of.</summary>
+    static bool NoFactsGathered() => Il2Wasm.IL.Reach.ProgramFacts.Off;
 
     static readonly bool s_noTypeAttributes = Environment.GetEnvironmentVariable("IL2WASM_NO_TYPE_ATTRIBUTES") == "1";
 

@@ -511,6 +511,8 @@ public sealed partial class IlCompiler
         int IdOr(TypeDesc? t) => t != null && _typeIds.ContainsKey(t) ? final(t) : -1;
         foreach (var (kind, fn) in _typeTables)
         {
+            // (no type has a record: the table is not made, and Meta reads 0)
+            if (kind == "meta" && _typeAttributes.Count == 0) { new Emitter(fn).I32(0); continue; }
             Func<TypeDesc, (IAddress?, int)> entry = kind switch
             {
                 "name" => t => (StringLiteral(TypeName(t)), 0),
