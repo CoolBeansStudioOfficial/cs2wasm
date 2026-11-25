@@ -871,6 +871,7 @@ public sealed partial class IlCompiler
             // (the assemblies and their kept attributes, the manifest resources: Assemblies.cs)
             case "TypeInfo.AssemblyNames": _assembliesWanted = true; e.I32Addr(new LateAddr(() => _assemblyTable!.Address)); fl.SetResult(n); return true;
             case "TypeInfo.ManifestResources": _assembliesWanted = true; _resourcesWanted = true; e.I32Addr(new LateAddr(() => _resourceTable!.Address)); fl.SetResult(n); return true;
+            case "TypeInfo.RefTable": _refTableWanted = true; e.I32Addr(new LateAddr(() => _refTable!.Address)); fl.SetResult(n); return true;
             case "TypeInfo.ResourceInit": e.Call(ResourceInitFn); return true;
             case "TypeInfo.ResourceUnpack": e.Call(ResourceUnpackFn); return true;
             case "TypeInfo.Invoke":
@@ -1316,6 +1317,7 @@ public sealed partial class IlCompiler
         _typeNamesByFinal = new string[_types.Count + 2];
         foreach (var t in _types) { if (IsReflectable(t)) _typeNamesByFinal[Final(t)] = TypeName(t); byFinal[Final(t)] = t; }
         EmitTypeTables(Final, _types.Count + 2, byFinal);
+        EmitRefTable(byFinal);
         EmitArrayFns(Final);
         EmitDelegateSupport();
         EmitCreateInstance(Final);

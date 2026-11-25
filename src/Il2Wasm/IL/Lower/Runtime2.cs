@@ -381,7 +381,6 @@ public sealed partial class IlCompiler
             "BaseId" => "base", "ElementId" => "element", "Rank" => "rank", "CorElementType" => "cor", "Size" => "size",
             "BoxOffset" => "box_offset", "EnumInfo" => "enum_info", "Interfaces" => "interfaces", "DeclaringId" => "declaring",
             "Attributes" => "attrs", "GenericArgs" => "generic_args", "ArrayOf" => "array_of", "AssemblyOf" => "assembly", "Meta" => "meta",
-            "RefOffsets" => "ref_offsets",
             _ => null,
         };
         if (kind == null) return false;
@@ -539,7 +538,6 @@ public sealed partial class IlCompiler
                 "array_of" => t => (null, IdOr(_typeIds.Keys.FirstOrDefault(x => x is ArrayType { IsSzArray: true } a && a.ElementType == t))),
                 "assembly" => t => (null, AssemblyIndexOf(t)),
                 "enum_info" => t => (t.IsEnum ? EnumInfo(t) : null, 0),
-                "ref_offsets" => t => (RefOffsetsBlob(t) is { } rl ? rl : null, 0),
                 "meta" => t => (TypeRecord(t, final), 0),
                 _ => throw new NotSupportedException("type table " + kind),
             };
@@ -576,10 +574,12 @@ public sealed partial class IlCompiler
     }
 
     readonly Dictionary<string, Blob> _refOffsetLists = new();
+    bool _refTableWanted;
+    Blob? _refTable;
 
     /// <summary>A value type's reference slots, flattened through its fields (and its inline arrays): [count, offsets...]
-    /// in ascending order, the offsets from the start of the value. Null for a value with no reference slot (the table
-    /// reads 0), and for an open type, which has no layout.</summary>
+    /// in ascending order, the offsets from the start of the value. Null for a value with no reference slot, and for an
+    /// open type, which has no layout.</summary>
     Blob? RefOffsetsBlob(TypeDesc t)
     {
         if (t is not MetadataType { IsValueType: true, ContainsGCPointers: true } mt || t.ContainsSignatureVariables(treatGenericParameterLikeSignatureVariable: true)) return null;
@@ -591,6 +591,27 @@ public sealed partial class IlCompiler
         if (!_refOffsetLists.TryGetValue(key, out var b))
             _refOffsetLists[key] = b = DataBlob([.. BitConverter.GetBytes(offsets.Count), .. offsets.SelectMany(BitConverter.GetBytes)], 4);
         return b;
+    }
+
+    /// <summary>TypeInfo.RefTable, made when the program's code asks for it (Equals and GetHashCode of a value type with
+    /// reference slots reach it): [count, (final type id, offsets blob)...] ascending by id, for the value types that have
+    /// reference slots. The runtime searches it by id.</summary>
+    void EmitRefTable(TypeDesc?[] byFinal)
+    {
+        if (!_refTableWanted) return;
+        var words = new List<int>();
+        var relocs = new List<(int, IAddress)>();
+        var entries = new List<(int id, Blob list)>();
+        for (int i = 0; i < byFinal.Length; i++)
+            if (byFinal[i] is { } t && RefOffsetsBlob(t) is { } list) entries.Add((i, list));
+        words.Add(entries.Count);
+        foreach (var (id, list) in entries)
+        {
+            words.Add(id);
+            relocs.Add((words.Count * 4, list));
+            words.Add(0);
+        }
+        _refTable = DataBlob([.. words.SelectMany(BitConverter.GetBytes)], 4, relocs);
     }
 
     readonly Dictionary<TypeDesc, Blob> _enumInfo = new();

@@ -34,7 +34,7 @@ namespace System
             int id = Il2Wasm.Runtime.Rt.TypeId(o1);
             int off = Il2Wasm.Runtime.TypeInfo.BoxOffset(id), n = Il2Wasm.Runtime.TypeInfo.Size(id);
             int a = Il2Wasm.Runtime.Rt.AddressOf(o1) + off, b = Il2Wasm.Runtime.Rt.AddressOf(o2) + off;
-            int refs = Il2Wasm.Runtime.TypeInfo.RefOffsets(id), count = refs == 0 ? 0 : Il2Wasm.Runtime.Mem.LoadI32(refs);
+            int refs = RefOffsetsOf(id), count = refs == 0 ? 0 : Il2Wasm.Runtime.Mem.LoadI32(refs);
             int pos = 0;
             for (int k = 0; k < count; k++)
             {
@@ -66,7 +66,7 @@ namespace System
             // field hashes its trailing bytes (0 when none are left). A value with no reference slot hashes its bytes.
             int id = Il2Wasm.Runtime.Rt.TypeId(this);
             int a = Il2Wasm.Runtime.Rt.AddressOf(this) + Il2Wasm.Runtime.TypeInfo.BoxOffset(id), n = Il2Wasm.Runtime.TypeInfo.Size(id);
-            int refs = Il2Wasm.Runtime.TypeInfo.RefOffsets(id), count = refs == 0 ? 0 : Il2Wasm.Runtime.Mem.LoadI32(refs);
+            int refs = RefOffsetsOf(id), count = refs == 0 ? 0 : Il2Wasm.Runtime.Mem.LoadI32(refs);
             if (count == 0)
                 return BytesHash(a, n);
             int pos = 0;
@@ -96,6 +96,20 @@ namespace System
             uint h = 2166136261;
             for (int i = 0; i < n; i++) h = (h ^ (uint)Il2Wasm.Runtime.Mem.LoadU8(p + i)) * 16777619;
             return (int)h;
+        }
+
+        /// <summary>The reference slots' table of a value type (TypeInfo.RefTable, searched by id): [count, offsets...], or
+        /// 0 when the type has none.</summary>
+        private static int RefOffsetsOf(int id)
+        {
+            int t = Il2Wasm.Runtime.TypeInfo.RefTable(), lo = 0, hi = Il2Wasm.Runtime.Mem.LoadI32(t) - 1;
+            while (lo <= hi)
+            {
+                int mid = (lo + hi) >> 1, p = t + 4 + 8 * mid, x = Il2Wasm.Runtime.Mem.LoadI32(p);
+                if (x == id) return Il2Wasm.Runtime.Mem.LoadI32(p + 4);
+                if (x < id) lo = mid + 1; else hi = mid - 1;
+            }
+            return 0;
         }
 
         private static bool SameBytes(int a, int b, int n)
