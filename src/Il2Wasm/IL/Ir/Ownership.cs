@@ -87,7 +87,8 @@ public static class Ownership
     }
 
     /// <summary>The bases of each derived address, in definition order (an address of an address has its bases).
-    /// Phis are not followed: an address carried around a loop does not keep its object.</summary>
+    /// Phis of addresses are not followed: an address carried around a loop does not keep its object; phis of byref-like
+    /// values (spans) are.</summary>
     internal static void FindBases(Body body, Info info)
     {
         // (a variable of an address or a span (a local the IL stores a Span in, a ref local in the frame): everything
@@ -99,6 +100,20 @@ public static class Ownership
         {
             changed = false;
             foreach (var b in body.Blocks)
+            {
+                // (a phi of byref-like values, `c ? new BitHelper(span) : new BitHelper(new int[n])`: its inputs' bases,
+                // so a span made in one arm keeps its array wherever the phi's value goes. IL2WASM_NO_BYREFLIKE_LOCAL_WRITES=1:
+                // not followed, as addresses are not)
+                if (!s_noByRefLikeLocals)
+                    foreach (var phi in b.Phis)
+                    {
+                        if (!ByRefLike(phi)) continue;
+                        List<Node>? pl = null;
+                        foreach (var x in phi.A) if (x != phi && info.Bases.TryGetValue(x, out var xb)) (pl ??= []).AddRange(xb);
+                        if (pl == null) continue;
+                        var pd = pl.Distinct().ToList();
+                        if (!info.Bases.TryGetValue(phi, out var po) || po.Count != pd.Count) { info.Bases[phi] = pd; changed = true; }
+                    }
                 foreach (var n in b.Code)
                 {
                     List<Node>? l = null;
@@ -130,6 +145,7 @@ public static class Ownership
                     var d = l.Distinct().ToList();
                     if (!info.Bases.TryGetValue(n, out var old) || old.Count != d.Count) { info.Bases[n] = d; changed = true; }
                 }
+            }
         }
     }
 
