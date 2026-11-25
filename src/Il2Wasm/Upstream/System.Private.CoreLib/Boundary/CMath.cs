@@ -617,6 +617,67 @@ namespace System
         // ------------------------------------------------------------------ pow
         static readonly double[] bp = [1.0, 1.5], dp_h = [0.0, 5.84962487220764160156e-01], dp_l = [0.0, 1.35003920212974897128e-08];
 
+        // ln 2 as a double-double
+        const double Ln2DdHi = 6.931471805599452862e-01, Ln2DdLo = 2.319046813846299558e-17;
+
+        /// <summary>exp(a) for a double-double a, |a| below 709: 2^k · (rh + rl), with rh + rl in about [0.7, 1.42] in
+        /// double-double (about 2^-92 relative error).</summary>
+        static void ExpDD(double ah, double al, out int k, out double rh, out double rl)
+        {
+            double kd = Rt.RoundEven(ah * InvLn2);
+            TwoProd(kd, Ln2DdHi, out double ph, out double pl);
+            pl += kd * Ln2DdLo;
+            TwoSum(ah, -ph, out double sh, out double se);
+            se += al - pl;
+            QuickTwoSum(sh, se, out rh, out rl);
+            rh *= 1.0 / 256; rl *= 1.0 / 256;
+            double sum_h = InvFact[11], sum_l = 0;
+            for (int n = 10; n >= 0; n--)
+            {
+                DDMul(sum_h, sum_l, rh, rl, out sum_h, out sum_l);
+                TwoSum(sum_h, InvFact[n], out double t, out double te);
+                QuickTwoSum(t, te + sum_l, out sum_h, out sum_l);
+            }
+            for (int i = 0; i < 8; i++) DDMul(sum_h, sum_l, sum_h, sum_l, out sum_h, out sum_l);
+            rh = sum_h; rl = sum_l;
+            k = (int)kd;
+        }
+
+        /// <summary>ln m for m in [1/√2, √2] as a double-double: the double log, corrected by one Newton step on exp.</summary>
+        static void LogDD(double m, out double lh, out double ll)
+        {
+            double y0 = Log(m);
+            ExpDD(y0, 0, out int k, out double eh, out double el);
+            double t = m * Rt.F64FromBits((long)(0x3ff - k) << 52);
+            double d = (t - eh) - el;
+            QuickTwoSum(y0, d / eh, out lh, out ll);
+        }
+
+        /// <summary>x^y, correctly rounded, for finite x > 0 and |y| below 2^31 whose result is normal: ln x in double-double
+        /// (x = 2^e · m, a subnormal x scaled up first), y·ln x in double-double, and exp of that rounded once. Returns
+        /// false outside that range (overflow, underflow to subnormal), where the fdlibm code in Pow takes over.</summary>
+        static bool PowDD(double ax, double y, out double result)
+        {
+            int scale = 0;
+            if (ax < 2.2250738585072014e-308) { ax *= 18014398509481984.0; scale = -54; } // (2^54: a subnormal base, exact)
+            long bits = Rt.F64Bits(ax);
+            int e = (int)((bits >> 52) & 0x7ff) - 1023 + scale;
+            double m = Rt.F64FromBits((bits & 0x000FFFFFFFFFFFFFL) | 0x3ff0000000000000L);
+            if (m > 1.4142135623730951) { m *= 0.5; e++; }
+            LogDD(m, out double lh, out double ll);
+            TwoProd(e, Ln2DdHi, out double ph, out double pl);
+            pl += e * Ln2DdLo + ll;
+            TwoSum(ph, lh, out double xh, out double xe);
+            xe += pl;
+            QuickTwoSum(xh, xe, out xh, out xe);
+            DDMul(y, 0.0, xh, xe, out double th, out double tl);
+            result = 0;
+            if (!(th <= 709.0 && th >= -708.0)) return false;
+            ExpDD(th, tl, out int k, out double rh, out double rl);
+            result = rh * Rt.F64FromBits((long)(k + 1023) << 52);
+            return true;
+        }
+
         public static double Pow(double x, double y)
         {
             const double two53 = 9007199254740992.0, huge = 1.0e300, tiny = 1.0e-300,
@@ -678,6 +739,7 @@ namespace System
             if ((nflag | yisint) == 0) return (x - x) / (x - x);
             double sgn = 1.0;
             if ((nflag | (yisint - 1)) == 0) sgn = -1.0;
+            if (iy <= 0x41e00000 && ix < 0x7ff00000 && PowDD(ax, y, out double pdd)) return sgn * pdd;
             if (iy > 0x41e00000)
             {
                 if (iy > 0x43f00000)
@@ -926,17 +988,144 @@ namespace System
             return e - 1023;
         }
 
-        /// <summary>x·y+z with a single rounding: Boldo and Melquiond's emulated fma. The product is exact (TwoProd), the
-        /// addend and the product's high part are summed exactly (TwoSum), and the two low parts are added rounding to
-        /// odd, so the final rounding is the only one that loses bits (the sum rounded once more would round twice).</summary>
+        /// <summary>x·y+z with a single rounding. Mid-range operands use Boldo and Melquiond's emulated fma: the product is
+        /// exact (TwoProd), the addend and the product's high part are summed exactly (TwoSum), and the two low parts are
+        /// added rounding to odd, so the final rounding is the only one that loses bits. Other finite operands (the
+        /// product may overflow, underflow or be subnormal) are computed exactly on an integer grid (FmaExact).</summary>
         public static double Fma(double x, double y, double z)
         {
-            if (double.IsNaN(x) || double.IsNaN(y) || double.IsNaN(z) || double.IsInfinity(x) || double.IsInfinity(y) || x == 0 || y == 0) return x * y + z;
-            double p = x * y;
-            if (double.IsInfinity(p) || double.IsInfinity(z) || z == 0) return p + z;
-            TwoProd(x, y, out double uh, out double ul);
-            TwoSum(z, uh, out double th, out double tl);
-            return th + AddRoundToOdd(tl, ul);
+            if (!double.IsFinite(x) || !double.IsFinite(y)) return x * y + z;
+            if (!double.IsFinite(z)) return z;
+            if (x == 0 || y == 0) return x * y + z;
+            if (z == 0) return x * y;
+            if (FmaMidRange(x) && FmaMidRange(y) && FmaMidRange(z))
+            {
+                TwoProd(x, y, out double uh, out double ul);
+                TwoSum(z, uh, out double th, out double tl);
+                return th + AddRoundToOdd(tl, ul);
+            }
+            return FmaExact(x, y, z);
+        }
+
+        // Operands whose exponents are within 2^±400: the product's exponent stays within 2^±800, so the emulation's
+        // splitting and error terms neither overflow nor underflow, and a nonzero result is at least 2^-906 (normal).
+        static bool FmaMidRange(double v)
+        {
+            int e = (int)((Rt.F64Bits(v) >> 52) & 0x7ff);
+            return e >= 1023 - 400 && e <= 1023 + 400;
+        }
+
+        /// <summary>x·y+z for finite, nonzero operands, computed exactly: the product and the addend are placed on one
+        /// integer grid (at most about 4300 bits), and that exact sum is rounded once to double, with subnormal rounding
+        /// at 2^-1074 and overflow to infinity. An exact sum of zero is +0 (round to nearest).</summary>
+        static double FmaExact(double x, double y, double z)
+        {
+            bool neg = (x < 0) != (y < 0), zneg = z < 0;
+            Decompose(x, out ulong mx, out int ex);
+            Decompose(y, out ulong my, out int ey);
+            Decompose(z, out ulong mz, out int ez);
+            int ep = ex + ey;
+            int bas = ep < ez ? ep : ez;
+            var p = new uint[FmaLimbs];
+            int s = ep - bas;
+            ulong x0 = (uint)mx, x1 = mx >> 32, y0 = (uint)my, y1 = my >> 32;
+            AddWordAt(p, x0 * y0, s);
+            AddWordAt(p, x0 * y1, s + 32);
+            AddWordAt(p, x1 * y0, s + 32);
+            AddWordAt(p, x1 * y1, s + 64);
+            var q = new uint[FmaLimbs];
+            AddWordAt(q, mz, ez - bas);
+            uint[] m;
+            bool mneg;
+            if (neg == zneg) { AddMag(p, q); m = p; mneg = neg; }
+            else
+            {
+                int c = CompareMag(p, q);
+                if (c == 0) return 0.0;
+                if (c > 0) { SubMag(p, q); m = p; mneg = neg; }
+                else { SubMag(q, p); m = q; mneg = zneg; }
+            }
+            int top = TopBit(m);
+            // the result's last place: 2^(top-52) for a normal result, 2^-1074 for a subnormal one
+            int drop = top - 52, minDrop = -1074 - bas;
+            if (drop < minDrop) drop = minDrop;
+            ulong qv = 0;
+            bool round = false, sticky = false;
+            for (int i = top, lo = drop > 0 ? drop : 0; i >= lo; i--) qv = (qv << 1) | (uint)FmaBit(m, i);
+            if (drop > 0) { round = FmaBit(m, drop - 1) != 0; sticky = FmaAnyBelow(m, drop - 1); }
+            if (round && (sticky || (qv & 1) != 0)) qv++;
+            double r = ScaleB((double)qv, bas + (drop > 0 ? drop : 0));
+            return mneg ? -r : r;
+        }
+
+        const int FmaLimbs = 136;
+
+        static void Decompose(double v, out ulong m, out int e)
+        {
+            long b = Rt.F64Bits(v);
+            int be = (int)((b >> 52) & 0x7ff);
+            ulong frac = (ulong)b & 0xFFFFFFFFFFFFFUL;
+            if (be == 0) { m = frac; e = -1074; }
+            else { m = frac | (1UL << 52); e = be - 1075; }
+        }
+
+        // a += w · 2^pos
+        static void AddWordAt(uint[] a, ulong w, int pos)
+        {
+            int i = pos >> 5, off = pos & 31;
+            ulong lo = w << off;
+            uint hi = off == 0 ? 0u : (uint)(w >> (64 - off));
+            ulong s = (ulong)a[i] + (uint)lo;
+            a[i] = (uint)s;
+            ulong carry = s >> 32;
+            s = (ulong)a[i + 1] + (lo >> 32) + carry;
+            a[i + 1] = (uint)s;
+            carry = s >> 32;
+            s = (ulong)a[i + 2] + hi + carry;
+            a[i + 2] = (uint)s;
+            carry = s >> 32;
+            for (int k = i + 3; carry != 0; k++) { s = (ulong)a[k] + carry; a[k] = (uint)s; carry = s >> 32; }
+        }
+
+        static void AddMag(uint[] a, uint[] b)
+        {
+            ulong carry = 0;
+            for (int i = 0; i < a.Length; i++) { ulong s = (ulong)a[i] + b[i] + carry; a[i] = (uint)s; carry = s >> 32; }
+        }
+
+        // a -= b, with |a| >= |b|
+        static void SubMag(uint[] a, uint[] b)
+        {
+            long borrow = 0;
+            for (int i = 0; i < a.Length; i++)
+            {
+                long d = (long)a[i] - b[i] - borrow;
+                borrow = d < 0 ? 1 : 0;
+                a[i] = (uint)(d < 0 ? d + (1L << 32) : d);
+            }
+        }
+
+        static int CompareMag(uint[] a, uint[] b)
+        {
+            for (int i = a.Length - 1; i >= 0; i--) if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+            return 0;
+        }
+
+        static int TopBit(uint[] a)
+        {
+            for (int i = a.Length - 1; i >= 0; i--)
+                if (a[i] != 0) { int b = 31; while (((a[i] >> b) & 1) == 0) b--; return 32 * i + b; }
+            return -1;
+        }
+
+        static uint FmaBit(uint[] a, int pos) => pos < 0 ? 0u : (a[pos >> 5] >> (pos & 31)) & 1u;
+
+        static bool FmaAnyBelow(uint[] a, int pos)
+        {
+            int full = pos >> 5;
+            for (int i = 0; i < full; i++) if (a[i] != 0) return true;
+            int r = pos & 31;
+            return r > 0 && (a[full] & ((1u << r) - 1)) != 0;
         }
 
         /// <summary>x·y+z rounded once to single precision: the product is exact in double, and the sum is rounded to odd
