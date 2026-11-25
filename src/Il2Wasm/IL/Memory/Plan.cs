@@ -88,6 +88,8 @@ public static class Plan
 
     static readonly bool s_noLoopPhiRoot = Environment.GetEnvironmentVariable("IL2WASM_NO_LOOP_PHI_ROOT") == "1";
     static readonly bool s_noDeadVars = Environment.GetEnvironmentVariable("IL2WASM_NO_DEAD_VARS") == "1";
+    static readonly bool s_noPersistentPhis = Environment.GetEnvironmentVariable("IL2WASM_NO_PERSISTENT_PHIS") == "1";
+    static readonly bool s_noReturnThis = Environment.GetEnvironmentVariable("IL2WASM_NO_RETURN_THIS_THROUGH_CALLS") == "1";
     static readonly bool s_loopPhiRootBreak = Environment.GetEnvironmentVariable("IL2WASM_LOOP_PHI_ROOT_BREAK") == "1";
 
     /// <summary>IL2WASM_PLAN_DUMP=text: the planned body of each method whose name contains it, on stderr.</summary>
@@ -428,6 +430,28 @@ public static class Plan
                         && Signatures.VariantsOf(_ctx.Solution, gm).Contains(new Variant(VariantKind.BorrowReturn)))
                     { _kind[v] = OwnKind.Guaranteed; _path[v] = sp; }
                 }
+            // (a phi over persistent statics' borrows, `useChars ? CharsAsBytes : Bytes`: each input's object is held by a
+            // static nothing writes again, so the phi's is too, whichever it is; its path is one of them, which no write
+            // flips. IL2WASM_NO_PERSISTENT_PHIS=1: Owned, counted at the phi)
+            if (!s_noPersistent && !s_noPersistentPhis)
+                for (bool changed = true; changed;)
+                {
+                    changed = false;
+                    foreach (var b in _body.Blocks)
+                        foreach (var v in b.Phis)
+                        {
+                            if (v.Kind != VK.Ref || KindOf(v) != OwnKind.Owned || !_kind.ContainsKey(v)) continue;
+                            BorrowPath? first = null;
+                            bool all = true;
+                            foreach (var x in v.A)
+                            {
+                                if (!IsRef(x) || KindOf(x) == OwnKind.Trivial) continue;
+                                if (KindOf(x) == OwnKind.Guaranteed && _path.TryGetValue(x, out var xp) && xp.Root == RootKind.Static && xp.Steps.Length == 0 && PersistentRoot(x)) first ??= xp;
+                                else { all = false; break; }
+                            }
+                            if (all && first != null) { _kind[v] = OwnKind.Guaranteed; _path[v] = first; _persistentPhis.Add(v); changed = true; }
+                        }
+                }
             // (2.1's forwarding operations: Unsafe.As(object) is its operand under another type, with no count of its own:
             // a borrow of the operand when that is Owned here, or the same borrow when the operand is a whole parameter,
             // which the caller holds over the call. A borrow with a longer path is counted: its proof covers only its
@@ -443,6 +467,24 @@ public static class Plan
                         else if (k == OwnKind.Owned && IsRef(a)) { _kind[v] = OwnKind.Guaranteed; _path[v] = new BorrowPath(RootKind.Val, a.Id); }
                         else if (k == OwnKind.Guaranteed && _path.TryGetValue(a, out var p) && p.Root == RootKind.Arg && p.Steps.Length == 0) { _kind[v] = OwnKind.Guaranteed; _path[v] = p; }
                     }
+            // (a call that returns one of its parameters whole, `return this` (Signatures' Arg-rooted borrowed return
+            // with no steps, StringBuilder.Append): its result is that operand under the callee's result type, as for
+            // Unsafe.As above, taken from its borrowed-return entry. IL2WASM_NO_RETURN_THIS_THROUGH_CALLS=1: counted)
+            if (!s_noForwardAs && !s_noReturnThis)
+                foreach (var b in _body.Blocks)
+                    foreach (var v in b.Code)
+                    {
+                        if (v.Op != Opc.Call || v.Kind != VK.Ref || !DirectSite(v) || !_kind.ContainsKey(v) || KindOf(v) != OwnKind.Owned || v.X is not MethodDesc rm || !_ctx.Solution.Covers(rm)) continue;
+                        if (Signatures.Demand(_ctx.Solution, rm).ReturnBorrow is not { Root: RootKind.Arg, Steps.Length: 0 } rp) continue;
+                        if (!Signatures.VariantsOf(_ctx.Solution, rm).Contains(new Variant(VariantKind.BorrowReturn))) continue;
+                        int k = -1;
+                        for (int j = 0; j < v.A.Length; j++) if (ParamOf(v, j) == rp.Index) { k = j; break; }
+                        if (k < 0 || !IsRef(v.A[k])) continue;
+                        var a = v.A[k];
+                        var ak = KindOf(a);
+                        if (ak == OwnKind.Owned && !IsTrivial(a)) { _kind[v] = OwnKind.Guaranteed; _path[v] = new BorrowPath(RootKind.Val, a.Id); }
+                        else if (ak == OwnKind.Guaranteed && _path.TryGetValue(a, out var ap) && ap.Root is RootKind.Arg or RootKind.Static && ap.Steps.Length == 0) { _kind[v] = OwnKind.Guaranteed; _path[v] = ap; }
+                    }
             // (GC.KeepAlive: its argument is held by this frame to the call; a borrow whose root another write can
             // let go is counted instead)
             foreach (var b in _body.Blocks)
@@ -454,6 +496,15 @@ public static class Plan
         }
 
         void Flip(Node v) { _kind[v] = OwnKind.Owned; _path.Remove(v); Flips++; }
+
+        /// <summary>The phis made borrows of persistent statics (their inputs are such loads, getters or phis).</summary>
+        readonly HashSet<Node> _persistentPhis = [];
+
+        /// <summary>A borrow whose object a persistent static holds: a load of one, a getter's borrowed return of one, or a
+        /// phi over them (the persistent rule above).</summary>
+        bool PersistentRoot(Node x) => _persistentPhis.Contains(x)
+            || x.Op == Opc.LdSFld && x.X is FieldDesc sf && !sf.IsThreadStatic && _ctx.Solution.Persistent(sf)
+            || x.Op == Opc.Call && x.X is MethodDesc gm && _ctx.Solution.Covers(gm) && Signatures.Demand(_ctx.Solution, gm).ReturnBorrow is { Root: RootKind.Static, Steps.Length: 0 };
 
         /// <summary>An Owned input a Guaranteed phi may take: its path's root itself (IL2WASM_LOOP_PHI_ROOT_BREAK=1, the
         /// rule's test: any Owned input, which the verifier rejects, check 7).</summary>
