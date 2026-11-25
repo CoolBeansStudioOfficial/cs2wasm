@@ -171,6 +171,15 @@ public sealed partial class IlCompiler
                 if (!ResolveDispatch()) break;
             }
         _compiling = null;
+        // the type graph and its cycle-capable types (Cycles.cs); the runtime's group functions, when there are any
+        while (AnalyzeCycles())
+            for (; ; )
+            {
+                while (_queue.Count > 0) { var (m, f) = _queue.Dequeue(); CompileMethod(m, f); }
+                _compiling = null;
+                if (!ResolveDispatch()) break;
+            }
+        _compiling = null;
         return main;
     }
 
@@ -236,7 +245,7 @@ public sealed partial class IlCompiler
         }
         // (CountObjects: the runtime's allocation and free of objects counted, il2wasm_live reads the count)
         if (CountObjects && m.OwningType is MetadataType { Name: var _ } rtt && rtt.GetName() == "Rt" && rtt.GetNamespace() == "Il2Wasm.Runtime"
-            && m.GetName() is "AllocObject" or "FreeObject" or "FreeFixed" && !_countWrapping)
+            && m.GetName() is "AllocObject" or "FreeObject" or "FreeFixed" or "AllocObjectArena" or "FreeObjectArena" && !_countWrapping)
         {
             _countWrapping = true;
             var inner = FunctionFor(m);
@@ -246,11 +255,12 @@ public sealed partial class IlCompiler
             _counted ??= NamedStatic("il2wasm.live", 4, 4);
             var e = new Emitter(w);
             // (IL2WASM_IL_WATCH=address: a free of that block traps, so its stack shows who)
-            if (m.GetName() != "AllocObject") WatchEvent(e, 4);
+            bool isAlloc = m.GetName() is "AllocObject" or "AllocObjectArena";
+            if (!isAlloc) WatchEvent(e, 4);
             for (int i = 0; i < inner.Type.Params.Length; i++) e.Get(i);
             e.Call(inner);
-            if (m.GetName() == "AllocObject") { int res = e.AddLocal(ValType.I32); e.Tee(res); e.Set(res); WatchEvent(e, 3, res); e.Get(res); }
-            e.I32Addr(_counted); e.I32Addr(_counted); e.Load(WOp.I32Load); e.I32(m.GetName() == "AllocObject" ? 1 : -1); e.Op(WOp.I32Add); e.Store(WOp.I32Store);
+            if (isAlloc) { int res = e.AddLocal(ValType.I32); e.Tee(res); e.Set(res); WatchEvent(e, 3, res); e.Get(res); }
+            e.I32Addr(_counted); e.I32Addr(_counted); e.Load(WOp.I32Load); e.I32(isAlloc ? 1 : -1); e.Op(WOp.I32Add); e.Store(WOp.I32Store);
             return w;
         }
         // a P/Invoke or an internal call: the runtime's method that serves it (or what .NET throws)
@@ -659,9 +669,10 @@ public sealed partial class IlCompiler
             case "Rt.NullRef": e.I32(0); break;
             case "Rt.Share": e.Op(WOp.Drop); break; // (one thread: nothing is shared)
             case "Rt.Rethrow": e.Call(Rt.Retain); e.Emit(WOp.Throw, 0, 0, ExceptionTag); break;
-            case "Rt.TlsBase": case "Rt.TlsSize": case "Rt.TakeThrowSite": case "Rt.FirstChanceWanted": case "Rt.FramesWanted": case "Rt.WeakAny": case "Rt.DeadlockDump":
+            case "Rt.TlsBase": case "Rt.TlsSize": case "Rt.TakeThrowSite": case "Rt.FirstChanceWanted": case "Rt.FramesWanted": case "Rt.DeadlockDump":
                 e.I32(0); break;
-            case "Rt.FusedDrop": e.I32(1); break;
+            case "Rt.FusedDrop": e.I32(FusedDrop ? 1 : 0); break;
+            case "Rt.WeakAny": e.Call(WeakAnyFn); break;
             // (a delegate's Target: the object it holds; lambdas' singletons are .NET's targets too, as the IL has them)
             case "Delegate.TargetOf": { int t = e.AddLocal(ValType.I32); e.Set(t); e.Op(WOp.Drop); e.Get(t); e.Call(Rt.Retain); break; }
             case "Rt.DelegateMethodEntry": e.Op(WOp.Drop); e.I32(0); break;
@@ -701,19 +712,23 @@ public sealed partial class IlCompiler
                 e.I32(2); e.Op(WOp.I32ShrU); e.I32(63); e.Op(WOp.I32And); e.I32(6); e.Op(WOp.I32Shl);
                 e.I32Addr(NamedStatic("rt.ref.locks", 64 * 64, 64)); e.Op(WOp.I32Add);
                 break;
-            // (no groups yet: a store through an address is a plain one)
-            case "Rt.LinkAt": e.Op(WOp.Drop); break;
-            case "Rt.UnlinkAt": e.Op(WOp.Drop); e.Call(Rt.Release); break;
-            case "Rt.ArenaIsSlot": e.Op(WOp.Drop); e.Op(WOp.Drop); e.I32(0); break;
-            // (no type is cycle-capable yet: no object is ever a group's member, and these are never reached at run time)
-            case "Rt.ArenaClearObject": case "Rt.ArenaFinalizeObject": case "Rt.ArenaFreeObject": case "Rt.ArenaVisitObject": e.Op(WOp.Drop); break;
-            case "Rt.ArenaFinType": case "Rt.ArenaSlots": e.Op(WOp.Drop); e.I32(0); break;
+            // the groups' runtime (Cycles.cs, CyclesGen.cs): a store through an address, and the generated per-type parts
+            case "Rt.LinkAt": e.Call(LinkAtFor(_ctx.GetWellKnownType(WellKnownType.Object))); break;
+            case "Rt.UnlinkAt": e.Call(UnlinkAtFor(_ctx.GetWellKnownType(WellKnownType.Object))); break;
+            case "Rt.ArenaIsSlot": e.Call(ArenaIsSlotFn); break;
+            case "Rt.ArenaClearObject": e.Call(ArenaClearFn); break;
+            case "Rt.ArenaFinalizeObject": e.Call(ArenaFinFn); break;
+            case "Rt.ArenaFreeObject": e.Call(ArenaFreeFn); break;
+            case "Rt.ArenaVisitObject": e.Call(ArenaVisitFn); break;
+            case "Rt.ArenaFinType": e.Call(ArenaFinTypeFn); break;
+            case "Rt.ArenaSlots": e.Call(ArenaSlotsFn); break;
             case "Rt.ThrowSites": case "Rt.FrameMethods": e.I32(0); break;
-            case "Rt.ArrayGrow": e.Op(WOp.Drop); e.Op(WOp.Drop); e.Op(WOp.Drop); e.Op(WOp.Drop); e.I32(0); break;
+            case "Rt.ArrayGrow": e.Call(ArrayGrowFn); break;
             case "Rt.ReleaseThreadStatics": case "Rt.RefLock": case "Rt.RefUnlock": break;
-            case "Rt.WeakDying": case "Rt.FirstChance": case "Rt.MemStatsRecord": e.Op(WOp.Drop); if (n.HasValue) e.I32(0); break;
+            case "Rt.WeakDying": e.Call(WeakDyingFn); break;
+            case "Rt.FirstChance": case "Rt.MemStatsRecord": e.Op(WOp.Drop); if (n.HasValue) e.I32(0); break;
             case var sw when IsSwitch(sw, out int value): e.I32(value); break;
-            case "Rt.SccOf": e.Op(WOp.Drop); e.I32(0); break; // (no type is cycle-capable yet: no groups)
+            case "Rt.SccOf": e.Call(SccOfFn); break;
             case "Rt.MemStatsHash": e.Op(WOp.Drop); break;
             case "Rt.ArrayMoveMode": e.I32(0); break;
             case "Rt.MarkConstructed": Constructed(m.Instantiation[0]); e.Tid(TypeId(m.Instantiation[0])); break;
@@ -801,8 +816,8 @@ public sealed partial class IlCompiler
             case "Rt.SingleThreaded": case "Rt.RipePages": case "Rt.HoldPages": e.I32(1); break;
             case "Rt.ThreadId": e.I32(1); break;
             case "Rt.BulkEnter": case "Rt.BulkExit": case "Rt.HoldEpoch": case "Rt.ReleaseEpoch": case "Rt.RuntimeLock": case "Rt.RuntimeUnlock": case "Rt.MemStatsGrow": break;
-            case "Rt.PartWeak": e.Op(WOp.Drop); break;
-            case "Rt.MoveRefs": e.Op(WOp.Drop); e.Op(WOp.Drop); e.Op(WOp.Drop); e.I32(0); break;
+            case "Rt.PartWeak": e.Call(PartWeakFn); break;
+            case "Rt.MoveRefs": e.Call(MoveRefsFn); break;
             // (the shared memory's atomic instructions: right with one thread, and with more)
             case "Atomic.Load32": e.Load(WOp.I32AtomicLoad); break;
             case "Atomic.Store32": e.Store(WOp.I32AtomicStore); break;
@@ -985,7 +1000,7 @@ public sealed partial class IlCompiler
                     if (Kinds.Of(x) == VK.Struct && Kinds.Counted(x)) { e.Get(0); e.I32(IlContext.ObjectHeader); e.Op(WOp.I32Add); e.Call(Rt.ReleaseStruct(x)); }
                     e.Get(0); e.I32(x.IsValueType ? IlContext.ObjectHeader + Math.Max(4, Kinds.SizeOf(x)) : IlContext.InstanceSize((DefType)x));
                 }
-                e.Call(Rt.Free); e.Op(WOp.Return);
+                e.Call(FreeFor(x)); e.Op(WOp.Return);
                 e.End();
             }
         }
@@ -1002,6 +1017,7 @@ public sealed partial class IlCompiler
                     if (!Kinds.Counted(at.ElementType)) continue;
                     e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
                     e.Get(0); e.I32(ArrayDataOffset(at)); e.Op(WOp.I32Add); e.Get(0); e.Load(WOp.I32Load, 12); e.Call(Rt.Range(at.ElementType, true));
+                    LinkContents(e, x);
                     e.Op(WOp.Return); e.End();
                     continue;
                 }
@@ -1009,7 +1025,7 @@ public sealed partial class IlCompiler
                 {
                     if (!Kinds.Counted(x)) continue;
                     e.Get(tid); e.I32(Final(x)); e.Op(WOp.I32Eq); e.If();
-                    e.Get(0); e.I32(IlContext.ObjectHeader); e.Op(WOp.I32Add); e.Call(Rt.RetainStruct(x)); e.Op(WOp.Return); e.End();
+                    e.Get(0); e.I32(IlContext.ObjectHeader); e.Op(WOp.I32Add); e.Call(Rt.RetainStruct(x)); LinkContents(e, x); e.Op(WOp.Return); e.End();
                     continue;
                 }
                 var refs = new List<FieldDesc>();
@@ -1022,6 +1038,7 @@ public sealed partial class IlCompiler
                     if (Kinds.Of(fd.FieldType) == VK.Ref) { e.Get(0); e.Load(WOp.I32Load, IlContext.FieldOffset(fd)); e.Call(Rt.Retain); e.Op(WOp.Drop); }
                     else { e.Get(0); e.I32(IlContext.FieldOffset(fd)); e.Op(WOp.I32Add); e.Call(Rt.RetainStruct(fd.FieldType)); }
                 }
+                LinkContents(e, x);
                 e.Op(WOp.Return); e.End();
             }
         }
@@ -1032,9 +1049,18 @@ public sealed partial class IlCompiler
         EmitArrayFns(Final);
         EmitCreateInstance(Final);
         EmitAssemblyTables(Final);
+        // the groups' generated parts, and the stores' placeholders resolved (CyclesGen.cs)
+        GenerateCycles();
     }
 
     string?[] _typeNamesByFinal = [];
+
+    /// <summary>A copy of an object of a cycle-capable type (MemberwiseClone): its references in slots that can close a
+    /// cycle are linked, as the stores they stand for (Rt.ArenaLinkContents).</summary>
+    void LinkContents(Emitter e, TypeDesc x)
+    {
+        if (_cyclesOn && IsCycleType(x)) { e.Get(0); e.Call(RtFn("ArenaLinkContents", 1)); }
+    }
 
     /// <summary>tid is one of the ids: ranges of consecutive ids, each one unsigned comparison.</summary>
     static void EmitIdTest(Emitter e, int tid, IEnumerable<int> idsIn)

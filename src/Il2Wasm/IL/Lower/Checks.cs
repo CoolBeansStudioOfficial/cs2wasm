@@ -24,15 +24,17 @@ public sealed partial class IlCompiler
 
     const int PoisonedCount = 0x0EAD0000;
 
-    /// <summary>At the start of rt.retain (release false) or rt.release: the checked build's trap.</summary>
-    internal void CheckedCount(Emitter e, bool release)
+    /// <summary>At the start of rt.retain (release false) or rt.release: the checked build's trap. groups: a member of a group that is going has a count of zero while its group's destruction releases
+    /// what refers to it (Rt.ArenaFree): a zero is a release too many only for an object of a type that is no group's.</summary>
+    internal void CheckedCount(Emitter e, bool release, bool groups = false)
     {
         if (!_checked) return;
         int t = e.AddLocal(ValType.I32);
         e.Get(0);
         e.If();
         e.Get(0); e.Load(WOp.I32Load); e.Tee(t); e.I32(PoisonedCount); e.Op(WOp.I32Eq);
-        if (release) { e.Get(t); e.Op(WOp.I32Eqz); e.Op(WOp.I32Or); }
+        if (release && groups) { e.Get(t); e.Op(WOp.I32Eqz); e.Get(0); e.Load(WOp.I32Load, 4); e.Call(SccOfFn); e.Op(WOp.I32Eqz); e.Op(WOp.I32And); e.Op(WOp.I32Or); }
+        else if (release) { e.Get(t); e.Op(WOp.I32Eqz); e.Op(WOp.I32Or); }
         e.If(); e.Op(WOp.Unreachable); e.End();
         e.End();
     }

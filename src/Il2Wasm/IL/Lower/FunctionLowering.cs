@@ -760,7 +760,13 @@ sealed partial class FunctionLowering
                 {
                     Get(n.A[0]); Get(n.A[2]); E.Call(C.FunctionFor(C.CoreMethod("Il2Wasm.Runtime", "Rt", "StoreCheck")));
                 }
-                StoreAt(addr, 0, n.A[2], et, (n.Moves & 4) != 0);
+                if (n.A[2].Kind == VK.Ref)
+                {
+                    // (a store into an array's element: its group's link where the array can be on a cycle, Cycles.cs)
+                    var (link, unlink) = C.ArrayStore(et);
+                    StoreLinked(addr, 0, n.A[2], (n.Moves & 4) != 0, link, unlink, () => Get(n.A[0]), slotIsZero: true);
+                }
+                else StoreAt(addr, 0, n.A[2], et, (n.Moves & 4) != 0, heap: true);
                 MovedOut(n);
                 return;
             }
@@ -782,13 +788,22 @@ sealed partial class FunctionLowering
                 Get(n.A[0]);
                 if (n.A[0].Kind == VK.Ref) E.Call(C.Rt.NonNull);
                 E.Set(addr);
-                StoreAt(addr, IlContext.FieldOffset(f), n.A[1], f.FieldType, (n.Moves & 2) != 0);
+                int off = IlContext.FieldOffset(f);
+                if (n.A[1].Kind == VK.Ref && n.A[0].Kind == VK.Ref && !f.OwningType.IsValueType)
+                {
+                    // (a class's field: the site's link where it can close a cycle, Cycles.cs)
+                    var site = C.FieldStore(f, n.A[1].Op == Opc.LdNull ? null : n.A[1].Type ?? f.FieldType);
+                    StoreLinked(addr, off, n.A[1], (n.Moves & 2) != 0, site.Link, site.Unlink, () => E.Get(addr), slotIsZero: false);
+                }
+                else if (n.A[1].Kind == VK.Ref) StoreByAddress(addr, off, n.A[1], f.FieldType, (n.Moves & 2) != 0);
+                else StoreAt(addr, off, n.A[1], f.FieldType, (n.Moves & 2) != 0, heap: true);
                 MovedOut(n);
                 return;
             }
             case Opc.LdFldA:
             {
                 var f = (FieldDesc)n.X!;
+                C.FieldAddressTaken(f);
                 Get(n.A[0]);
                 if (n.A[0].Kind == VK.Ref) E.Call(C.Rt.NonNull);
                 E.I32(IlContext.FieldOffset(f)); E.Op(WOp.I32Add);
@@ -832,10 +847,17 @@ sealed partial class FunctionLowering
                 Get(n.A[0]); E.Set(a);
                 if (Kinds.Of(t) == VK.Struct)
                 {
-                    if (Kinds.Counted(t)) { E.Get(a); StructCounts(t, false); }
-                    E.Get(a); E.I32(0); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryFill);
+                    // (memory that may be an object's: each reference let go as a store of null by address, Cycles.cs)
+                    if (Kinds.Counted(t)) { E.Get(a); E.Call(C.StructClear(t)); }
+                    else { E.Get(a); E.I32(0); E.I32(SizeOfStruct(t)); E.Emit(WOp.MemoryFill); }
                 }
-                else if (Kinds.Of(t) == VK.Ref) { int old = E.AddLocal(ValType.I32); E.Get(a); E.Load(WOp.I32Load); E.Set(old); E.Get(a); E.I32(0); E.Store(WOp.I32Store); E.Get(old); E.Call(C.Rt.Release); }
+                else if (Kinds.Of(t) == VK.Ref)
+                {
+                    int old = E.AddLocal(ValType.I32);
+                    E.I32(0); E.Get(a); E.Call(C.LinkAtFor(t)); E.Op(WOp.Drop);
+                    E.Get(a); E.Load(WOp.I32Load); E.Set(old); E.Get(a); E.I32(0); E.Store(WOp.I32Store);
+                    E.Get(old); E.Get(a); E.Call(C.UnlinkAtFor(t));
+                }
                 else { E.Get(a); ZeroOf(t); Store(t, 0); }
                 return;
             }
@@ -851,7 +873,8 @@ sealed partial class FunctionLowering
             {
                 int addr = Temp(ValType.I32);
                 Get(n.A[0]); E.Set(addr);
-                StoreAt(addr, 0, n.A[1], n.Type!, (n.Moves & 2) != 0);
+                if (n.A[1].Kind == VK.Ref) StoreByAddress(addr, 0, n.A[1], n.Type!, (n.Moves & 2) != 0);
+                else StoreAt(addr, 0, n.A[1], n.Type!, (n.Moves & 2) != 0, heap: true);
                 MovedOut(n);
                 return;
             }
@@ -990,9 +1013,21 @@ sealed partial class FunctionLowering
     }
 
     /// <summary>A store at addr+offset; a reference's old value is released after the new one is in place.</summary>
-    void StoreAt(int addr, int offset, Node v, TypeDesc t, bool moved)
+    void StoreAt(int addr, int offset, Node v, TypeDesc t, bool moved, bool heap = false)
     {
-        if (v.Kind == VK.Struct) { StoreStruct(addr, offset, v, t, moved); return; }
+        if (v.Kind == VK.Struct)
+        {
+            // (into memory that may be an object's: its references stored by address, Cycles.cs)
+            if (heap && Kinds.Counted(t))
+            {
+                E.Get(addr); if (offset != 0) { E.I32(offset); E.Op(WOp.I32Add); }
+                Get(v); E.I32(moved ? 1 : 0); E.Call(C.StructStore(t));
+                if (moved) Clear(v);
+                return;
+            }
+            StoreStruct(addr, offset, v, t, moved);
+            return;
+        }
         if (v.Kind == VK.Ref)
         {
             int old = E.AddLocal(ValType.I32);
@@ -1001,6 +1036,33 @@ sealed partial class FunctionLowering
             E.Get(old); E.Call(C.Rt.Release);
         }
         else { E.Get(addr); Get(v); Store(t, offset); }
+    }
+
+    /// <summary>A reference stored into a slot of an object the code names (a field's: container and slot; an array's
+    /// element: container, slot 0): the value linked into the container's group (a placeholder, Cycles.cs), the
+    /// exchange, the old value unlinked.</summary>
+    void StoreLinked(int addr, int offset, Node v, bool moved, WasmFunction link, WasmFunction unlink, Action pushContainer, bool slotIsZero)
+    {
+        int val = E.AddLocal(ValType.I32), old = E.AddLocal(ValType.I32);
+        void Slot() { if (slotIsZero) E.I32(0); else { E.Get(addr); if (offset != 0) { E.I32(offset); E.Op(WOp.I32Add); } } }
+        Get(v); if (!moved) E.Call(C.Rt.Retain);
+        pushContainer(); Slot(); E.Call(link); E.Set(val);
+        E.Get(addr); E.Load(WOp.I32Load, offset); E.Set(old);
+        E.Get(addr); E.Get(val); E.Store(WOp.I32Store, offset);
+        E.Get(old); pushContainer(); Slot(); E.Call(unlink);
+    }
+
+    /// <summary>A reference stored into a slot known by its address alone (stind, a field of a struct through a byref):
+    /// the runtime finds the object the slot is in (Rt.ArenaLinkAt, a placeholder: Cycles.cs).</summary>
+    void StoreByAddress(int addr, int offset, Node v, TypeDesc slotType, bool moved)
+    {
+        int val = E.AddLocal(ValType.I32), old = E.AddLocal(ValType.I32);
+        void Slot() { E.Get(addr); if (offset != 0) { E.I32(offset); E.Op(WOp.I32Add); } }
+        Get(v); if (!moved) E.Call(C.Rt.Retain);
+        Slot(); E.Call(C.LinkAtFor(slotType)); E.Set(val);
+        E.Get(addr); E.Load(WOp.I32Load, offset); E.Set(old);
+        E.Get(addr); E.Get(val); E.Store(WOp.I32Store, offset);
+        E.Get(old); Slot(); E.Call(C.UnlinkAtFor(slotType));
     }
 
     void Binary(Node n)
@@ -1202,6 +1264,7 @@ sealed partial class FunctionLowering
             E.I32(IlContext.InstanceSize(t)); E.Tid(C.TypeId(t)); E.Call(C.Rt.AllocObject);
             Set(n);
             var target = n.A[0];
+            C.DelegateTarget(t, target.Op == Opc.LdNull ? null : target.Type);
             int tOff = IlContext.FieldOffset(IlCompiler.DelegateFieldOf(t, "_target")), fOff = IlContext.FieldOffset(IlCompiler.DelegateFieldOf(t, "_fn"));
             E.Get(L(n)); Get(target); if (target.Kind == VK.Ref) E.Call(C.Rt.Retain); E.Store(WOp.I32Store, tOff);
             var fm = (MethodDesc)n.A[1].X!;

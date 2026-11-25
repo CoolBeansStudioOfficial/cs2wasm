@@ -637,6 +637,37 @@ public sealed partial class IlCompiler
                     case "rank": e.I32(a.Rank); e.Op(WOp.Return); break;
                     case "elem_size": e.I32(es); e.Op(WOp.Return); break;
                     case "counted": e.I32(Kinds.Counted(et) ? 1 : 0); e.Op(WOp.Return); break;
+                    case "copy" when HasCyclicElements(a):
+                        // (an array whose elements can close a cycle: element by element, as stores, Rt.ArenaArrayCopy;
+                        // its indices count from 16, where a vector's elements start)
+                        if (Kinds.Of(et) == VK.Ref)
+                        {
+                            int lead = (ArrayDataOffset(a) - 16) / 4;
+                            e.Get(0); e.Get(1); if (lead != 0) { e.I32(lead); e.Op(WOp.I32Add); }
+                            e.Get(2); e.Get(3); if (lead != 0) { e.I32(lead); e.Op(WOp.I32Add); }
+                            e.Get(4); e.Call(RtFn("ArenaArrayCopy", 5));
+                        }
+                        else EmitElementCopy(e, a, es);
+                        e.Op(WOp.Return);
+                        break;
+                    case "clear" when HasCyclicElements(a):
+                        if (Kinds.Of(et) == VK.Ref)
+                        {
+                            int lead = (ArrayDataOffset(a) - 16) / 4;
+                            e.Get(0); e.Get(1); if (lead != 0) { e.I32(lead); e.Op(WOp.I32Add); } e.Get(2); e.Call(RtFn("ArenaArrayClear", 3));
+                        }
+                        else
+                        {
+                            int k = e.AddLocal(ValType.I32);
+                            e.I32(0); e.Set(k);
+                            var ex = e.Block(); var tp = e.Loop();
+                            e.Get(k); e.Get(2); e.Op(WOp.I32GeS); e.BrIf(ex);
+                            Elem(e, 0, 1, es, ArrayDataOffset(a)); e.Get(k); e.I32(es); e.Op(WOp.I32Mul); e.Op(WOp.I32Add); e.Call(StructClear(et));
+                            e.Get(k); e.I32(1); e.Op(WOp.I32Add); e.Set(k); e.Br(tp);
+                            e.End(); e.End();
+                        }
+                        e.Op(WOp.Return);
+                        break;
                     case "copy":
                         // (src, si, dst, di, length, size): the source's elements counted, the destination's old ones
                         // released, then the bytes moved (overlapping ranges are fine)
@@ -666,6 +697,37 @@ public sealed partial class IlCompiler
             e.Get(0); e.Set(t);
             EmitIdTest(e, t, ids);
         }
+    }
+
+    /// <summary>(src, si, dst, di, length) of an array of structs whose references can close a cycle: each element a
+    /// struct's store (CyclesGen.EmitStructStore), in the order an overlap needs.</summary>
+    void EmitElementCopy(Emitter e, ArrayType a, int es)
+    {
+        var et = a.ElementType;
+        int s = e.AddLocal(ValType.I32), d = e.AddLocal(ValType.I32), k = e.AddLocal(ValType.I32);
+        Elem(e, 0, 1, es, ArrayDataOffset(a)); e.Set(s);
+        Elem(e, 2, 3, es, ArrayDataOffset(a)); e.Set(d);
+        void One() { e.Get(d); e.Get(k); e.I32(es); e.Op(WOp.I32Mul); e.Op(WOp.I32Add); e.Get(s); e.Get(k); e.I32(es); e.Op(WOp.I32Mul); e.Op(WOp.I32Add); e.I32(0); e.Call(StructStore(et)); }
+        e.Get(d); e.Get(s); e.Op(WOp.I32LeU);
+        e.If();
+        {
+            e.I32(0); e.Set(k);
+            var ex = e.Block(); var tp = e.Loop();
+            e.Get(k); e.Get(4); e.Op(WOp.I32GeS); e.BrIf(ex);
+            One();
+            e.Get(k); e.I32(1); e.Op(WOp.I32Add); e.Set(k);
+            e.Br(tp); e.End(); e.End();
+        }
+        e.Else();
+        {
+            e.Get(4); e.Set(k);
+            var ex = e.Block(); var tp = e.Loop();
+            e.Get(k); e.I32(0); e.Op(WOp.I32LeS); e.BrIf(ex);
+            e.Get(k); e.I32(1); e.Op(WOp.I32Sub); e.Set(k);
+            One();
+            e.Br(tp); e.End(); e.End();
+        }
+        e.End();
     }
 
     /// <summary>The address of element (local i) of the array in local a.</summary>

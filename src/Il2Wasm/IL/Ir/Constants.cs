@@ -23,10 +23,12 @@ public static class Constants
         {
             case "Checked": return CheckedBuild ? 1 : 0; // il-runtime: the checked build (Lower/Checks.cs)
             case "ThreadMode": case "ShareCheck": case "MemStatsOn": case "WideSizes": case "RuntimeLockHeld":
-            case "FirstChanceWanted": case "FramesWanted": case "WeakAny": case "DeadlockDump": case "ArrayMoveMode":
+            case "FirstChanceWanted": case "FramesWanted": case "DeadlockDump": case "ArrayMoveMode":
                 return 0;
-            case "SingleThreaded": case "RipePages": case "HoldPages": case "FusedDrop":
+            case "SingleThreaded": case "RipePages": case "HoldPages":
                 return 1;
+            // (the fused drop of a group without finalizers: not in the checked build, as RuntimeGen.FusedDrop)
+            case "FusedDrop": return CheckedBuild ? 0 : 1;
         }
         return Switch(name);
     }
