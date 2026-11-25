@@ -641,12 +641,18 @@ public static class Signatures
     /// <summary>The variants a method may have (each lowered with its own plan when a call site picks it), in stable key
     /// order: owned variants by mask (4.4's caps by size), then the borrowed-return variant. Every variant
     /// ChooseVariant can return is listed (row f's verifier check).</summary>
+    static bool IsRuntimeMethod(MethodDesc m) => m.OwningType is Internal.TypeSystem.MetadataType t
+        && (t.GetNamespace() is "Il2Wasm.Runtime" || t.ContainingType is Internal.TypeSystem.MetadataType { } ct && ct.GetNamespace() == "Il2Wasm.Runtime");
+
     public static IReadOnlyList<Variant> VariantsOf(ProgramSolution solution, MethodDesc m)
     {
         if (!solution.Covers(m)) return [];
         var r = new List<Variant>();
         var d = Demand(solution, m);
-        uint all = s_noHandOver || s_noOwnedEntry ? 0 : HandOverMask(d);
+        // (no owned variants for the runtime's own methods: their C# was written for callers that keep every argument
+        // alive over the call, and it reads objects through raw addresses (Rt.AddressOf(v) + offset) that the plan does
+        // not follow, so an argument handed over was freed before Il2WasmArrays.SetBoxed copied from it)
+        uint all = s_noHandOver || s_noOwnedEntry || IsRuntimeMethod(m) ? 0 : HandOverMask(d);
         if (all != 0)
         {
             if (SizeOf(solution, m) <= SmallMethod)
