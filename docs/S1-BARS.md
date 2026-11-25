@@ -1,5 +1,52 @@
 # Memory-model slice S1 against its bars (claude/s1-bars, 2026-11-24)
 
+## Re-measure 2026-11-25 (span-uaf-merged)
+
+Branch `claude/span-uaf-merged` (58349a0), built Release: framework by `tools/build-corelib.mjs`, IL tests and the IL CLI by `dotnet build -c Release`. Each program was run with `IL2WASM_MEM_PLAN=1 node tools/il-rcstats.mjs run <program> --fw <FW> --tests <IL tests dll> --json <out>`: one build planned, one naive (`IL2WASM_MEM_NAIVE=1`). The NetWasm cases are the 24 case dlls of a seeded `rcshare` suite cache (`tools/netwasm-suite.mjs build --filter`, no .NET case was run). Each cell is the 2026-11-24 figure (old), then today's (new).
+
+| program | naive ops (old → new) | planned ops (old → new) | removal share (old → new) | without the runtime (old → new) |
+| --- | --- | --- | --- | --- |
+| hello | 926 → 931 | 300 → 145 | 67.6% → 84.4% | 67.5% → 84.7% |
+| k_Tree | 15,311,468 → 14,500,490 | 7,250,066 → 811,178 | 52.6% → 94.4% | 52.6% → 94.4% |
+| k_DictionaryInts | 10,866,505 → 9,671,553 | 2,989,906 → 1,594,675 | 72.5% → 83.5% | 72.5% → 83.5% |
+| k_ListSort | 32,939,479 → 16,822,459 | 18,795,962 → 1,992,819 | 42.9% → 88.2% | 43.0% → 88.5% |
+| k_Linq | 26,401,177 → 24,352,211 | 5,529,966 → 1,978,031 | 79.1% → 91.9% | 79.1% → 91.9% |
+| k_WordCount | 6,828,074 → 6,828,080 | 1,684,392 → 1,202,622 | 75.3% → 82.4% | 75.3% → 82.4% |
+| k_Strings | 4,449,008 → 4,448,929 | 1,640,063 → 551,269 | 63.1% → 87.6% | 63.1% → 87.6% |
+| k_NBody | 2,497,746 → 2,497,752 | 469 → 303 | 100.0% → 100.0% | 100.0% → 100.0% |
+| k_Shapes | 9,864,402 → 9,864,408 | 8,533 → 8,367 | 99.9% → 99.9% | 99.9% → 99.9% |
+| k_LinkedNodes | 13,801,278 → 13,701,284 | 5,000,386 → 800,176 | 63.8% → 94.2% | 63.8% → 94.2% |
+| Collection | 32,201 → 32,071 | 6,589 → 3,824 | 79.5% → 88.1% | 80.7% → 89.3% |
+| ComplexMutableCollection | 75,505 → 74,003 | 26,453 → 19,837 | 65.0% → 73.2% | 65.4% → 73.7% |
+| Dictionary | 320,762 → 320,668 | 29,241 → 27,092 | 90.9% → 91.6% | 91.2% → 91.8% |
+| HashSet | 185,311 → 178,370 | 29,668 → 20,327 | 84.0% → 88.6% | 84.0% → 88.6% |
+| ImmutableArray | 8,690 → 8,706 | 2,885 → 1,767 | 66.8% → 79.7% | 66.9% → 79.9% |
+| ImmutableDictionary | 44,333 → 44,240 | 13,315 → 10,661 | 70.0% → 75.9% | 70.1% → 76.1% |
+| ImmutableHashSet | 45,795 → 45,132 | 17,188 → 14,137 | 62.5% → 68.7% | 62.4% → 68.7% |
+| ImmutableList | 59,117 → 56,805 | 18,220 → 13,187 | 69.2% → 76.8% | 69.6% → 77.0% |
+| ImmutableQueueStack | 36,360 → 36,355 | 6,659 → 4,866 | 81.7% → 86.6% | 82.1% → 87.0% |
+| ImmutableSortedDictionary | 43,451 → 42,953 | 11,866 → 8,263 | 72.7% → 80.8% | 72.8% → 80.9% |
+| ImmutableSortedSet | 45,873 → 45,495 | 13,467 → 9,757 | 70.6% → 78.6% | 70.8% → 78.8% |
+| LinkedList | 40,913 → 40,907 | 8,865 → 6,330 | 78.3% → 84.5% | 78.7% → 84.9% |
+| List | 19,309 → 19,310 | 3,996 → 2,126 | 79.3% → 89.0% | 79.6% → 89.4% |
+| ObjectModelCollection | 33,256 → 33,261 | 4,346 → 2,715 | 86.9% → 91.8% | 87.6% → 92.6% |
+| OrderedDictionary | 34,448 → 34,423 | 8,068 → 5,474 | 76.6% → 84.1% | 76.8% → 84.4% |
+| Queue | 21,846 → 21,867 | 3,792 → 2,147 | 82.6% → 90.2% | 83.0% → 90.6% |
+| SortedCollections | 43,572 → 43,122 | 12,381 → 8,645 | 71.6% → 80.0% | 71.7% → 80.1% |
+| SortedList | 43,348 → 43,314 | 10,190 → 6,849 | 76.5% → 84.2% | 76.9% → 84.6% |
+| Stack | 39,519 → 39,548 | 8,583 → 5,964 | 78.3% → 84.9% | 78.6% → 85.3% |
+| BigInteger | 3,810,827 → 3,805,481 | 2,227,723 → 1,752,822 | 41.5% → 53.9% | 42.7% → 53.9% |
+| LambdaIterator | 4,516 → 4,528 | 1,574 → 887 | 65.1% → 80.4% | 65.1% → 80.4% |
+| EnumerableIteratorContract | 24,182 → 24,192 | 5,225 → 2,527 | 78.4% → 89.6% | 78.6% → 89.8% |
+| RegexReplacement | 67,552 → 67,465 | 29,645 → 25,046 | 56.1% → 62.9% | 57.2% → 64.1% |
+| collector-retention | 6,262 → 6,272 | 2,175 → 1,299 | 65.3% → 79.3% | 65.3% → 79.3% |
+
+- programs measured: 34 of 34
+- mean of the per-program removal shares: 83.8% (without the runtime 84.1%)
+- programs at 90% or more: 8 of 34 (without the runtime: 8 of 34)
+- summed over the programs: 107,756,585 naive, 10,896,134 planned, 89.9% removed
+
+
 Measured on main 7b71d43, with all six S1 rows and the solver effects. The only change is this branch's RcStats fix
 (91452f0, instrumentation only: with counting off, the bytes are identical). Two builds of every program:
 
