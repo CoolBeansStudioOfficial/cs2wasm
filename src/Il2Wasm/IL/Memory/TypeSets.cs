@@ -485,6 +485,24 @@ public sealed partial class ProgramSolution
         _ => null,
     };
 
+    static readonly bool s_noElementAddresses = Environment.GetEnvironmentVariable("IL2WASM_NO_ELEMENT_ADDRESSES") == "1";
+
+    /// <summary>An array element's address the solve can place (IL2WASM_NO_ELEMENT_ADDRESSES=1: none, the rule before):
+    /// MemoryMarshal.GetArrayDataReference&lt;T&gt;(T[]) is element 0 of the array, Elem(T). Its IL goes through
+    /// Array.RawData's byte field, whose key no element read sees, so a write through it was missed by the element
+    /// reads (seen only through the Slot keys that field's escape joins). Null: not one.</summary>
+    IdSet? ElementAddress(MethodDesc m, Node a, MethodDesc cm, State st, Dictionary<int, IdSet?> addrs)
+    {
+        if (s_noElementAddresses) return null;
+        if (IsArrayDataReference(cm) is { } et) return Pool.Of(Keys.Intern(MemKey.Elem(et)));
+        return null;
+    }
+
+    /// <summary>MemoryMarshal.GetArrayDataReference&lt;T&gt;(T[]): T; else null.</summary>
+    static TypeDesc? IsArrayDataReference(MethodDesc cm) =>
+        cm.HasInstantiation && cm.Instantiation.Length == 1 && cm.GetName() == "GetArrayDataReference" && cm.Signature.Length == 1 && cm.Signature[0] is ArrayType
+        && cm.OwningType is MetadataType { } t && t.GetName() == "MemoryMarshal" && t.GetNamespace() == "System.Runtime.InteropServices" ? cm.Instantiation[0] : null;
+
     int _localKey = -1;
     /// <summary>The key id that stands for the method's own frame variables (a LocA): writes through it are the
     /// variable's, whose reads are unknown already.</summary>
@@ -511,6 +529,7 @@ public sealed partial class ProgramSolution
             case Opc.LdFldA or Opc.LdSFldA or Opc.LdElemA when AddressKeyOf(a) is { } k: r = Pool.Of(Keys.Intern(k)); break;
             case Opc.LocA: r = Pool.Of(LocalKey); break;
             case Opc.Arg when IsRef(a): r = ReadVar(st, new Var(VarKind.AddrParam, m, (int)a.I, default), m); break;
+            case Opc.Call when a.X is MethodDesc cm && IsRef(a) && ElementAddress(m, a, cm, st, addrs) is { } ea: r = ea; break;
             case Opc.Call when a.X is MethodDesc cm && IsRef(a):
             {
                 var su = Summary(m);
