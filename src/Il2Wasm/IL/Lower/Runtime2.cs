@@ -381,6 +381,7 @@ public sealed partial class IlCompiler
             "BaseId" => "base", "ElementId" => "element", "Rank" => "rank", "CorElementType" => "cor", "Size" => "size",
             "BoxOffset" => "box_offset", "EnumInfo" => "enum_info", "Interfaces" => "interfaces", "DeclaringId" => "declaring",
             "Attributes" => "attrs", "GenericArgs" => "generic_args", "ArrayOf" => "array_of", "AssemblyOf" => "assembly", "Meta" => "meta",
+            "RefOffsets" => "ref_offsets",
             _ => null,
         };
         if (kind == null) return false;
@@ -538,6 +539,7 @@ public sealed partial class IlCompiler
                 "array_of" => t => (null, IdOr(_typeIds.Keys.FirstOrDefault(x => x is ArrayType { IsSzArray: true } a && a.ElementType == t))),
                 "assembly" => t => (null, AssemblyIndexOf(t)),
                 "enum_info" => t => (t.IsEnum ? EnumInfo(t) : null, 0),
+                "ref_offsets" => t => (RefOffsetsBlob(t) is { } rl ? rl : null, 0),
                 "meta" => t => (TypeRecord(t, final), 0),
                 _ => throw new NotSupportedException("type table " + kind),
             };
@@ -571,6 +573,24 @@ public sealed partial class IlCompiler
             e.Get(id); e.I32(count); e.Op(WOp.I32GeU); e.If(); e.I32(0); e.Set(id); e.End();
             e.Get(id); e.I32(2); e.Op(WOp.I32Shl); e.I32Addr(table); e.Op(WOp.I32Add); e.Load(WOp.I32Load);
         }
+    }
+
+    readonly Dictionary<string, Blob> _refOffsetLists = new();
+
+    /// <summary>A value type's reference slots, flattened through its fields (and its inline arrays): [count, offsets...]
+    /// in ascending order, the offsets from the start of the value. Null for a value with no reference slot (the table
+    /// reads 0), and for an open type, which has no layout.</summary>
+    Blob? RefOffsetsBlob(TypeDesc t)
+    {
+        if (t is not MetadataType { IsValueType: true, ContainsGCPointers: true } mt || t.ContainsSignatureVariables(treatGenericParameterLikeSignatureVariable: true)) return null;
+        var map = GCPointerMap.FromInstanceLayout(mt);
+        var offsets = new List<int>();
+        for (int i = 0; i < map.Size; i++) if (map[i]) offsets.Add(i * t.Context.Target.PointerSize);
+        if (offsets.Count == 0) return null;
+        var key = string.Join(",", offsets);
+        if (!_refOffsetLists.TryGetValue(key, out var b))
+            _refOffsetLists[key] = b = DataBlob([.. BitConverter.GetBytes(offsets.Count), .. offsets.SelectMany(BitConverter.GetBytes)], 4);
+        return b;
     }
 
     readonly Dictionary<TypeDesc, Blob> _enumInfo = new();

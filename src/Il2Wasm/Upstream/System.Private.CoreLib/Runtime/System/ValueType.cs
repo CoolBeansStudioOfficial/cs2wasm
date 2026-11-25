@@ -29,28 +29,26 @@ namespace System
             if (o1_type != o2_type)
                 return false;
 
-            object[] fields;
-            bool res = InternalEquals(o1, o2, out fields);
-            if (fields == null)
-                return res;
-
-            for (int i = 0; i < fields.Length; i += 2)
+            // il2wasm: the bytes outside the reference slots compare raw; each reference slot compares by object.Equals, as
+            // .NET does for a field (the slots: TypeInfo.RefOffsets, flattened through the fields)
+            int id = Il2Wasm.Runtime.Rt.TypeId(o1);
+            int off = Il2Wasm.Runtime.TypeInfo.BoxOffset(id), n = Il2Wasm.Runtime.TypeInfo.Size(id);
+            int a = Il2Wasm.Runtime.Rt.AddressOf(o1) + off, b = Il2Wasm.Runtime.Rt.AddressOf(o2) + off;
+            int refs = Il2Wasm.Runtime.TypeInfo.RefOffsets(id), count = refs == 0 ? 0 : Il2Wasm.Runtime.Mem.LoadI32(refs);
+            int pos = 0;
+            for (int k = 0; k < count; k++)
             {
-                object meVal = fields[i];
-                object youVal = fields[i + 1];
-                if (meVal == null)
-                {
-                    if (youVal == null)
-                        continue;
-
+                int r = Il2Wasm.Runtime.Mem.LoadI32(refs + 4 + 4 * k);
+                if (!SameBytes(a + pos, b + pos, r - pos))
                     return false;
-                }
-
-                if (!meVal.Equals(youVal))
+                object? meVal = Il2Wasm.Runtime.Rt.Borrow<object>(Il2Wasm.Runtime.Mem.LoadI32(a + r));
+                object? youVal = Il2Wasm.Runtime.Rt.Borrow<object>(Il2Wasm.Runtime.Mem.LoadI32(b + r));
+                if (!object.Equals(meVal, youVal))
                     return false;
+                pos = r + 4;
             }
 
-            return true;
+            return SameBytes(a + pos, b + pos, n - pos);
         }
 
         public override bool Equals([NotNullWhen(true)] object? obj)
@@ -63,14 +61,27 @@ namespace System
 
         public override int GetHashCode()
         {
-            int result = InternalGetHashCode(this, out object[]? fields);
+            // il2wasm: as .NET, the first field that is not a null reference decides: the bytes before a reference slot
+            // hash if any come first (a value is never null), a reference slot hashes its object, and a value with no such
+            // field hashes its trailing bytes (0 when none are left). A value with no reference slot hashes its bytes.
+            int id = Il2Wasm.Runtime.Rt.TypeId(this);
+            int a = Il2Wasm.Runtime.Rt.AddressOf(this) + Il2Wasm.Runtime.TypeInfo.BoxOffset(id), n = Il2Wasm.Runtime.TypeInfo.Size(id);
+            int refs = Il2Wasm.Runtime.TypeInfo.RefOffsets(id), count = refs == 0 ? 0 : Il2Wasm.Runtime.Mem.LoadI32(refs);
+            if (count == 0)
+                return BytesHash(a, n);
+            int pos = 0;
+            for (int k = 0; k < count; k++)
+            {
+                int r = Il2Wasm.Runtime.Mem.LoadI32(refs + 4 + 4 * k);
+                if (r > pos)
+                    return BytesHash(a + pos, r - pos);
+                object? value = Il2Wasm.Runtime.Rt.Borrow<object>(Il2Wasm.Runtime.Mem.LoadI32(a + r));
+                if (value != null)
+                    return value.GetHashCode();
+                pos = r + 4;
+            }
 
-            if (fields != null)
-                for (int i = 0; i < fields.Length; ++i)
-                    if (fields[i] != null)
-                        result ^= fields[i].GetHashCode();
-
-            return result;
+            return n > pos ? BytesHash(a + pos, n - pos) : 0;
         }
 
         public override string? ToString()
@@ -79,24 +90,16 @@ namespace System
         }
 
 
-                private static int InternalGetHashCode(object o, out object[]? fields)
+                /// <summary>FNV-1a over n bytes at p.</summary>
+        private static int BytesHash(int p, int n)
         {
-            // il2wasm: the bytes of the value (FNV-1a); fields holding references are not visited yet
-            fields = null;
-            int id = Il2Wasm.Runtime.Rt.TypeId(o);
-            int p = Il2Wasm.Runtime.Rt.AddressOf(o) + Il2Wasm.Runtime.TypeInfo.BoxOffset(id), n = Il2Wasm.Runtime.TypeInfo.Size(id);
             uint h = 2166136261;
             for (int i = 0; i < n; i++) h = (h ^ (uint)Il2Wasm.Runtime.Mem.LoadU8(p + i)) * 16777619;
             return (int)h;
         }
 
-                private static bool InternalEquals(object o1, object o2, out object[] fields)
+        private static bool SameBytes(int a, int b, int n)
         {
-            // il2wasm: the values compare by their bytes; fields holding references are compared by identity yet
-            fields = null!;
-            int id = Il2Wasm.Runtime.Rt.TypeId(o1);
-            int off = Il2Wasm.Runtime.TypeInfo.BoxOffset(id), n = Il2Wasm.Runtime.TypeInfo.Size(id);
-            int a = Il2Wasm.Runtime.Rt.AddressOf(o1) + off, b = Il2Wasm.Runtime.Rt.AddressOf(o2) + off;
             for (int i = 0; i < n; i++) if (Il2Wasm.Runtime.Mem.LoadU8(a + i) != Il2Wasm.Runtime.Mem.LoadU8(b + i)) return false;
             return true;
         }

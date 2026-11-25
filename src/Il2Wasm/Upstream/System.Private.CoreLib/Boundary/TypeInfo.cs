@@ -44,6 +44,9 @@ namespace Il2Wasm.Runtime
         [Intrinsic] public static extern int Size(int id);
         /// <summary>Where a box of the value type keeps its data.</summary>
         [Intrinsic] public static extern int BoxOffset(int id);
+        /// <summary>A value type's reference slots, flattened through its fields: [count, offsets...] ascending, from the
+        /// start of the value; 0 when it has none.</summary>
+        [Intrinsic] public static extern int RefOffsets(int id);
         /// <summary>An enum's table: [count, flags, size, unsigned], then (value: i64, name) per member, by unsigned value.</summary>
         [Intrinsic] public static extern int EnumInfo(int id);
         /// <summary>[count, ids...]</summary>
