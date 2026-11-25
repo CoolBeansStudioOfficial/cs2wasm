@@ -901,7 +901,10 @@ public static class Plan
             bool handler = false;
             if (b.Preds.Count == 0 && b != _body.Blocks[0])
                 foreach (var r in _body.Regions)
-                    if (r.Entry == b && (r.IsHandler || r.Kind == RegionKind.Filter))
+                    // (a filter's entry releases nothing of its try: the try's values are the handler's to release when
+                    // the filter takes the exception, the function's cleanup when it does not; a filter releasing them
+                    // here released them twice, and, as a function of its own, released the frame base)
+                    if (r.Entry == b && r.IsHandler && r.Kind != RegionKind.Filter)
                     {
                         handler = true;
                         foreach (var tb in Ownership.BlocksWithin(r.Try!).Concat(r.Filter != null && r.Filter != r ? Ownership.BlocksWithin(r.Filter) : []))
