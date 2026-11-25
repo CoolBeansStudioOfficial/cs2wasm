@@ -118,10 +118,11 @@ namespace System
             ArgumentNullException.ThrowIfNull(sourceArray);
             ArgumentNullException.ThrowIfNull(destinationArray);
 
-            ArgumentOutOfRangeException.ThrowIfNegative(length);
-
+            // (the rank is checked before any index or length: a rank mismatch with a negative length is a RankException)
             if (sourceArray.Rank != destinationArray.Rank)
                 throw new RankException(SR.Rank_MustMatch);
+
+            ArgumentOutOfRangeException.ThrowIfNegative(length);
 
             if (sourceIndex < 0)
                 throw new ArgumentOutOfRangeException(nameof(sourceIndex), SR.ArgumentOutOfRange_NeedNonNegNum);

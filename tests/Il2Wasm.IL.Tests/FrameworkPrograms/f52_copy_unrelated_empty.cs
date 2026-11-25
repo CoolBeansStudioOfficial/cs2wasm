@@ -16,6 +16,11 @@ static class Program
 
     static void Main()
     {
+        // the rank is checked before the indices and the length: a rank mismatch with a negative length is a RankException
+        try { Array.Copy(new int[1], -1, new int[1, 1], -1, -1); Console.WriteLine("rank: no throw"); }
+        catch (RankException) { Console.WriteLine("rank: RankException"); }
+        catch (ArgumentOutOfRangeException) { Console.WriteLine("rank: ArgumentOutOfRangeException"); }
+
         Console.WriteLine("unrelated empty: " + Try(Array.Empty<string>(), Array.Empty<Item>(), 0));
         Console.WriteLine("unrelated one: " + Try(new string[1], new Item[1], 1));
         Console.WriteLine("downcast empty: " + Try(Array.Empty<object>(), Array.Empty<string>(), 0));
