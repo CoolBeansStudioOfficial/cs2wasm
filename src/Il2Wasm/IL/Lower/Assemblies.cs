@@ -59,14 +59,21 @@ public sealed partial class IlCompiler
 
     /// <summary>When the code can make an array of a Type at run time (TypeInfo.ArrayOf: Array.CreateInstance,
     /// Type.MakeArrayType), the one-dimensional array of each type code that can run names straight into one of those
-    /// (typeof(X), ProgramFacts.ArrayElementTypes) is made a type of the program, with its code (dispatch, destroy); a Type
-    /// that comes from elsewhere still finds no array (the runtime says so) unless the program makes it
+    /// (typeof(X), ProgramFacts.ArrayElementTypes) is made a type of the program, with its code (dispatch, destroy), and
+    /// so is each attribute type a Type object names (an attribute query makes its result as an array of that type);
+    /// a Type that comes from elsewhere still finds no array (the runtime says so) unless the program makes it
     /// (IL2WASM_NO_REFLECTED_ARRAYS=1: none); true when any is new.</summary>
     bool RequestArrayTypes()
     {
         if (!_typeTables.ContainsKey("array_of") || s_noReflectedArrays) return false;
         bool any = false;
-        foreach (var t in Facts.ArrayElementTypes.ToList())
+        // (an attribute query makes its result as an array of the attribute type it asks for: the types the program's
+        // queries name (ProgramFacts.AttributeQueryTypes), or every attribute type when a query's type is not known)
+        var attributeType = _ctx.SystemModule.GetType("System"u8, "Attribute"u8, throwIfNotFound: false);
+        bool anyAttribute = NoFactsGathered() || Facts.AttributeQueryUnknownType;
+        IEnumerable<TypeDesc> attributeArrays = Facts.AttributeQueryTypes.Where(x => attributeType != null && IsSubclassOf(x, attributeType));
+        if (anyAttribute && attributeType != null) attributeArrays = attributeArrays.Concat(Facts.TypeObjects.Where(x => IsSubclassOf(x, attributeType)));
+        foreach (var t in Facts.ArrayElementTypes.Concat(attributeArrays).ToList())
         {
             if (t.IsByRef || t.IsPointer || t.IsFunctionPointer || t.IsVoid || t.IsGenericDefinition || t.ContainsSignatureVariables()
                 || t is MetadataType { IsByRefLike: true } || t.IsCanonicalSubtype(CanonicalFormKind.Any)) continue;
@@ -80,6 +87,74 @@ public sealed partial class IlCompiler
     }
 
     static readonly bool s_noReflectedArrays = Environment.GetEnvironmentVariable("IL2WASM_NO_REFLECTED_ARRAYS") == "1";
+
+    static bool IsSubclassOf(TypeDesc t, TypeDesc baseType)
+    {
+        for (var b = t.BaseType; b != null; b = b.BaseType) if (b == baseType) return true;
+        return false;
+    }
+
+    readonly Dictionary<TypeDesc, List<(TypeDesc Type, WasmFunction Factory)>> _typeAttributes = new();
+    readonly HashSet<TypeDesc> _typeAttributesDone = [];
+
+    /// <summary>The attributes of the reflectable types the program can ask for, with their factories (the type's
+    /// reflection record, TypeInfo.Meta; the rule of the assemblies' attributes: an attribute kept when its type, or a
+    /// base of it, is a Type object the code names). True when anything new was made.</summary>
+    bool RequestTypeAttributes()
+    {
+        if (!_typeTables.ContainsKey("meta") || s_noTypeAttributes) return false;
+        var attributeType = _ctx.SystemModule.GetType("System"u8, "Attribute"u8, throwIfNotFound: false);
+        // (a type's record is needed when a query can ask of it: the Type object it names, or a type it derives from,
+        // for the inherited attributes; an attribute is kept when the query can ask for its type or a base of it)
+        bool anyTarget = NoFactsGathered() || Facts.AttributeQueryUnknownTarget;
+        bool anyType = NoFactsGathered() || Facts.AttributeQueryUnknownType;
+        var targets = new HashSet<TypeDesc>();
+        foreach (var q in Facts.AttributeQueryTargets) for (var b = q; b != null; b = b.BaseType) targets.Add(b);
+        bool any = false;
+        foreach (var t in _types.ToList())
+        {
+            if (!IsReflectable(t) || _typeAttributesDone.Contains(t) || t.IsGenericDefinition || t.ContainsSignatureVariables(treatGenericParameterLikeSignatureVariable: true)) continue;
+            if (!anyTarget && !targets.Contains(t)) continue;
+            if (t.GetTypeDefinition() is not EcmaType et) { _typeAttributesDone.Add(t); continue; }
+            _typeAttributesDone.Add(t);
+            var m = (EcmaModule)et.Module;
+            var md = m.MetadataReader;
+            var list = new List<(TypeDesc Type, WasmFunction Factory)>();
+            foreach (var h in md.GetTypeDefinition(et.Handle).GetCustomAttributes())
+            {
+                var ca = md.GetCustomAttribute(h);
+                if (m.GetObject(ca.Constructor, NotFoundBehavior.ReturnNull) is not MethodDesc ctor) continue;
+                var at = ctor.OwningType;
+                bool wanted = anyType;
+                for (var b = at; b != null && !wanted && !b.IsObject; b = b.BaseType) if (Facts.AttributeQueryTypes.Contains(b)) wanted = true;
+                if (!wanted) continue;
+                var f = AttributeFactory(m, ca, ctor);
+                if (f == null) continue;
+                list.Add((at, f));
+            }
+            if (list.Count == 0) continue;
+            _typeAttributes[t] = list;
+            any = true;
+        }
+        return any;
+    }
+
+    /// <summary>No facts were gathered (IL2WASM_NO_* switches): every type and attribute counts as asked of.</summary>
+    static bool NoFactsGathered() => Il2Wasm.IL.Reach.ProgramFacts.Off;
+
+    static readonly bool s_noTypeAttributes = Environment.GetEnvironmentVariable("IL2WASM_NO_TYPE_ATTRIBUTES") == "1";
+
+    /// <summary>A type's reflection record for Meta: ten words, all zero but nattrs (word 8) and attrs (word 9, a list
+    /// of (type id, factory + 1) pairs). Null when the type has no attribute the program can ask for.</summary>
+    Blob? TypeRecord(TypeDesc t, Func<TypeDesc, int> final)
+    {
+        if (!_typeAttributes.TryGetValue(t, out var list)) return null;
+        var pairs = list.SelectMany(a => new[] { final(a.Type), Module.TableSlot(a.Factory) + 1 }).ToArray();
+        var lb = DataBlob([.. pairs.SelectMany(BitConverter.GetBytes)], 4);
+        var words = new int[10];
+        words[8] = list.Count;
+        return DataBlob([.. words.SelectMany(BitConverter.GetBytes)], 4, new List<(int, IAddress)> { (9 * 4, lb) });
+    }
 
     /// <summary>The assemblies' attributes the program can ask for, with their factories; true when anything new was
     /// made (its code is to be compiled).</summary>

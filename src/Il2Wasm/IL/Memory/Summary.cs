@@ -86,6 +86,9 @@ public sealed class MethodSummary
     public readonly List<TypeDesc> TypeObjects = [];
     public readonly List<MethodDesc> FunctionPointers = [];
     public readonly List<TypeDesc> ArrayElementTypes = [];
+    public readonly List<TypeDesc> AttributeQueryTargets = [];
+    public readonly List<TypeDesc> AttributeQueryTypes = [];
+    public bool AttributeQueryUnknownTarget, AttributeQueryUnknownType;
     public readonly List<TypeDesc> Aliased = [];
 
     // ---- reach edges (from the body lowering lowers)
@@ -138,11 +141,42 @@ public sealed class MethodSummary
     /// <summary>The reach edges and memory facts of the body lowering lowers.</summary>
     public void AddEdges(Body body, IReachHost host) => Edges(body, host);
 
+    static readonly HashSet<string> s_attributeQueries = ["GetCustomAttribute", "GetCustomAttributes", "IsDefined", "GetCustomAttributesData"];
+
+    /// <summary>A reflection query of attributes (Attribute.GetCustomAttribute, Type.IsDefined, CustomAttributeExtensions,
+    /// ...): the Type object it asks of (its first argument, or the receiver) and the attribute type it asks for (a
+    /// Type argument or a generic argument). Where either is not a Type object the code names, that side is unknown
+    /// (any type, any attribute type).</summary>
+    void NoteAttributeQuery(MethodDesc qm, Node n, MethodDesc caller)
+    {
+        if (!s_attributeQueries.Contains(qm.GetName()) || qm.OwningType is not MetadataType ot || ot.GetNamespace() is not ("System" or "System.Reflection")) return;
+        // (a query inside the core library is one of the reflection implementation's own forwarders, which pass on
+        // their parameters: the program's query that reaches them is the one that counts. Those are not noted: the
+        // core library's own constant queries would make arrays of attribute types every program then carries, about
+        // 8 KB on hello world. A core-library query the program reaches with a constant type is therefore not covered.)
+        if (caller.OwningType is MetadataType cm && cm.Module == cm.Context.SystemModule) return;
+        if (n.A.Length == 0 || n.A[0].Op != Opc.TypeOf || n.A[0].X is not TypeDesc target) AttributeQueryUnknownTarget = true;
+        else AttributeQueryTargets.Add(target);
+        TypeDesc? asked = null;
+        if (qm.HasInstantiation) asked = qm.Instantiation.Length > 0 ? qm.Instantiation[0] : null;
+        else
+        {
+            int offset = qm.Signature.IsStatic ? 0 : 1;
+            for (int j = 0; j < qm.Signature.Length && asked == null; j++)
+                if (qm.Signature[j] is MetadataType pt && pt.GetName() is "Type" && pt.GetNamespace() == "System") asked = n.A.Length > j + offset && n.A[j + offset].Op == Opc.TypeOf && n.A[j + offset].X is TypeDesc tt ? tt : null;
+        }
+        if (asked == null || asked.ContainsSignatureVariables(treatGenericParameterLikeSignatureVariable: true) || asked is MetadataType ab && ab.GetName() is "Attribute" && ab.GetNamespace() == "System")
+            AttributeQueryUnknownType = true;
+        else AttributeQueryTypes.Add(asked);
+    }
+
     void ConstantFacts(Body body, Sccp s)
     {
         var ret = Val.Top;
         foreach (var b in s.ExecutableBlocks)
             foreach (var n in b.Code)
+            {
+                if (n.Op == Opc.Call && n.X is MethodDesc qm) NoteAttributeQuery(qm, n, body.Method);
                 switch (n.Op)
                 {
                     case Opc.StFld when n.X is FieldDesc sf:
@@ -181,6 +215,7 @@ public sealed class MethodSummary
                         ArgMeets.Add((ctor, [Val.NonNull, .. n.A.Select(s.ValueOf)]));
                         break;
                 }
+            }
         if (!body.Method.Signature.ReturnType.IsVoid && !ProgramFacts.Opaque(body.Method)) Return = ret;
     }
 

@@ -356,7 +356,7 @@ public sealed partial class IlCompiler
         // the reflection records the code reads (Assemblies.cs: assemblies' attributes), and what their factories reach
         _compiling = null;
         _programModule = entry.OwningType is MetadataType emt ? emt.Module as EcmaModule : null;
-        while (RequestArrayTypes() | RequestAssemblyRecords() | RequestDelegateThunks())
+        while (RequestArrayTypes() | RequestAssemblyRecords() | RequestDelegateThunks() | RequestTypeAttributes())
             for (; ; )
             {
                 while (_queue.Count > 0) { var (m, f) = _queue.Dequeue(); CompileMethod(m, f); }
@@ -886,7 +886,7 @@ public sealed partial class IlCompiler
                 e.I32Addr(EmptyTable); fl.SetResult(n); return true;
             case "TypeInfo.Nested": case "TypeInfo.GenericConstraints": e.Op(WOp.Drop); e.I32Addr(EmptyTable); fl.SetResult(n); return true;
             case "TypeInfo.GenericParam": e.Op(WOp.Drop); e.I32(-1); fl.SetResult(n); return true;
-            case "TypeInfo.GenericParamMethod": case "TypeInfo.Meta": e.Op(WOp.Drop); e.I32(0); fl.SetResult(n); return true;
+            case "TypeInfo.GenericParamMethod": e.Op(WOp.Drop); e.I32(0); fl.SetResult(n); return true;
         }
         switch (key)
         {

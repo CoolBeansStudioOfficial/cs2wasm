@@ -74,6 +74,10 @@ public sealed class ProgramFacts : ISccpOracle
         foreach (var t in sum.TypeObjects) TypeObjects.Add(t);
         foreach (var fm in sum.FunctionPointers) _indirect.Add(fm);
         foreach (var t in sum.ArrayElementTypes) ArrayElementTypes.Add(t);
+        foreach (var t in sum.AttributeQueryTargets) AttributeQueryTargets.Add(t);
+        foreach (var t in sum.AttributeQueryTypes) AttributeQueryTypes.Add(t);
+        AttributeQueryUnknownTarget |= sum.AttributeQueryUnknownTarget;
+        AttributeQueryUnknownType |= sum.AttributeQueryUnknownType;
         foreach (var (c, args) in sum.ArgMeets) Meet(c, args);
         foreach (var t in sum.Aliased) _aliased.Add(t);
         if (sum.Return is { } ret) _returns[m] = ret;
@@ -85,6 +89,12 @@ public sealed class ProgramFacts : ISccpOracle
     /// <summary>The types code that can run makes arrays of at run time, by name (typeof straight into
     /// Array.CreateInstance or MakeArrayType).</summary>
     public readonly HashSet<TypeDesc> ArrayElementTypes = [];
+    /// <summary>The Type objects the code that can run asks attributes of (the first argument of a query), and the
+    /// attribute types it asks for (a Type or generic argument naming an attribute type). The Unknown flags: a query
+    /// whose Type is not one the code names (any type, or any attribute type).</summary>
+    public readonly HashSet<TypeDesc> AttributeQueryTargets = [];
+    public readonly HashSet<TypeDesc> AttributeQueryTypes = [];
+    public bool AttributeQueryUnknownTarget, AttributeQueryUnknownType;
     readonly Dictionary<FieldDesc, Val> _fields = new();
 
     public Val InstanceField(Node load) => Previous != null && load.X is FieldDesc f ? Previous.Field(f) : Val.Bottom;
