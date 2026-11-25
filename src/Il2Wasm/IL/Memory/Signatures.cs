@@ -422,7 +422,7 @@ public static class Signatures
     {
         if (m.Signature.ReturnType is var rt && (rt.IsVoid || Kinds.Of(rt) != VK.Ref)) return null;
         BorrowPath? path = null;
-        bool any = false, blocked = false;
+        bool any = false, blocked = false, viaCast = false;
         foreach (var b in body.Blocks)
             foreach (var x in b.Code)
             {
@@ -433,6 +433,7 @@ public static class Signatures
                         var p = x.A.Length == 1 ? PathOf(sol, body, x.A[0]) : null;
                         if (p == null || any && !BorrowPath.Same(p, path)) return null;
                         path = p; any = true;
+                        if (x.A[0].Op is Opc.CastClass or Opc.IsInst) viaCast = true;
                         break;
                     }
                     case Opc.Call or Opc.CallI or Opc.NewObj or Opc.NewArr or Opc.Box or Opc.Throw or Opc.Rethrow or Opc.LocAlloc:
@@ -444,7 +445,9 @@ public static class Signatures
         // (a call or a store could let a field's object go, so a path with steps needs none; a whole parameter, which
         // the caller holds over the call, or a persistent static, survives them: StringBuilder.Append's `return this`.
         // IL2WASM_NO_RETURN_THIS_THROUGH_CALLS=1: any call or store keeps the Entry only)
-        if (blocked && !(path is { Steps.Length: 0, Root: RootKind.Arg or RootKind.Static } && !s_noReturnThisThroughCalls)) return null;
+        // (only the parameter or the static itself: a cast of it, as Enum.ValidateRuntimeType returns, is a value of its own
+        // that the plan counts, so its entry cannot return it as a borrow)
+        if (blocked && !(path is { Steps.Length: 0, Root: RootKind.Arg or RootKind.Static } && !viaCast && !s_noReturnThisThroughCalls)) return null;
         return path;
     }
 
