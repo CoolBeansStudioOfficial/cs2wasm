@@ -375,7 +375,7 @@ public sealed partial class IlCompiler
             "FullName" => "name", "Name" => "short_name", "Namespace" => "namespace", "Flags" => "flags", "Flags2" => "flags2",
             "BaseId" => "base", "ElementId" => "element", "Rank" => "rank", "CorElementType" => "cor", "Size" => "size",
             "BoxOffset" => "box_offset", "EnumInfo" => "enum_info", "Interfaces" => "interfaces", "DeclaringId" => "declaring",
-            "Attributes" => "attrs", "GenericArgs" => "generic_args", "ArrayOf" => "array_of", "AssemblyOf" => "assembly",
+            "Attributes" => "attrs", "GenericArgs" => "generic_args", "ArrayOf" => "array_of", "AssemblyOf" => "assembly", "Meta" => "meta",
             _ => null,
         };
         if (kind == null) return false;
@@ -531,6 +531,7 @@ public sealed partial class IlCompiler
                 "array_of" => t => (null, IdOr(_typeIds.Keys.FirstOrDefault(x => x is ArrayType { IsSzArray: true } a && a.ElementType == t))),
                 "assembly" => t => (null, AssemblyIndexOf(t)),
                 "enum_info" => t => (t.IsEnum ? EnumInfo(t) : null, 0),
+                "meta" => t => (TypeRecord(t, final), 0),
                 _ => throw new NotSupportedException("type table " + kind),
             };
             var vals = new (IAddress? a, int v)[count];
