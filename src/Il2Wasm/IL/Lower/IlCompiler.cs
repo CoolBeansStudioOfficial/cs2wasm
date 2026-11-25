@@ -606,6 +606,9 @@ public sealed partial class IlCompiler
     {
         TypeId(t);
         if (_constructed.Add(t)) { _constructedOrder.Add(t); _whyConstructed[t] = _compiling; }
+        // a value element's box is made by the runtime (Array.Copy, GetValue, Clone box an element of the array's type):
+        // that box must be a constructed type too, or an unbox or a cast to the element type cannot find it
+        if (t is ArrayType { ElementType.IsValueType: true } vt) Constructed(vt.ElementType);
     }
 
     readonly Dictionary<TypeDesc, MethodDesc?> _whyConstructed = new();

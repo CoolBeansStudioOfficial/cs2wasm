@@ -812,8 +812,10 @@ sealed partial class FunctionLowering
                 // a reference stored into an array whose element type it may not be (string[] as object[]): the
                 // covariance check (ArrayTypeMismatchException), unless the array's element type has no subtypes
                 // that an array of it could be, or the value is null
+                // (the declared element type of the store, not the array node's type: an array of a sealed type seen
+                // through object[] (object[] values = new string[1]; values[0] = new Box()) is refined to string[] there)
                 if (n.Ovf && n.A[2].Kind == VK.Ref && n.A[2].Op != Opc.LdNull
-                    && !(n.A[0].Type is ArrayType { ElementType: var se } && (se.IsValueType || se is MetadataType { IsSealed: true } && !se.IsInterface)))
+                    && !(et.IsValueType || et is MetadataType { IsSealed: true } && !et.IsInterface))
                 {
                     Get(n.A[0]); Get(n.A[2]); E.Call(C.FunctionFor(C.CoreMethod("Il2Wasm.Runtime", "Rt", "StoreCheck")));
                 }
