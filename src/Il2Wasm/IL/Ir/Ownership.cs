@@ -60,6 +60,32 @@ public static class Ownership
         return null;
     }
 
+    static readonly bool s_noByRefLikeLocals = System.Environment.GetEnvironmentVariable("IL2WASM_NO_BYREFLIKE_LOCAL_WRITES") == "1";
+
+    /// <summary>The frame variable of a byref-like struct (a Span) that operand a addresses, through field addresses
+    /// inside it (`ldloca s`, `ldloca s; ldflda _reference`), or -1.</summary>
+    internal static int ByRefLikeLocal(Body body, Node a)
+    {
+        for (int guard = 0; guard < 8 && a.Op == Opc.LdFldA && a.A.Length == 1; guard++) a = a.A[0];
+        return a.Op == Opc.LocA && (int)a.I < body.Vars.Count && body.Vars[(int)a.I].Type is Internal.TypeSystem.DefType { IsByRefLike: true } ? (int)a.I : -1;
+    }
+
+    /// <summary>The variables a node writes through an address of a byref-like local, and what it writes there: a
+    /// constructor or any call on the local's address (`new ReadOnlySpan&lt;byte&gt;(a, off, n)` into a local is
+    /// `Call ..ctor(LocA, a, off, n)`), or a store through it, keeps every reference operand and the bases of every
+    /// address operand, for all of the local's reads, as a span stored into it does (IL2WASM_NO_BYREFLIKE_LOCAL_WRITES=1:
+    /// not).</summary>
+    internal static IEnumerable<(int Slot, Node Operand)> ByRefLikeLocalWrites(Body body, Node n)
+    {
+        if (s_noByRefLikeLocals || n.Op is Opc.VarSt or Opc.VarLd or Opc.LocA || n.A.Length < 2) yield break;
+        for (int k = 0; k < n.A.Length; k++)
+        {
+            int slot = ByRefLikeLocal(body, n.A[k]);
+            if (slot < 0) continue;
+            for (int j = 0; j < n.A.Length; j++) if (j != k) yield return (slot, n.A[j]);
+        }
+    }
+
     /// <summary>The bases of each derived address, in definition order (an address of an address has its bases).
     /// Phis are not followed: an address carried around a loop does not keep its object.</summary>
     internal static void FindBases(Body body, Info info)
@@ -76,6 +102,15 @@ public static class Ownership
                 foreach (var n in b.Code)
                 {
                     List<Node>? l = null;
+                    foreach (var (slot, x) in ByRefLikeLocalWrites(body, n))
+                    {
+                        IEnumerable<Node> kept = IsRef(x) ? (x.Op is Opc.LdNull or Opc.LdStr ? [] : [x]) : info.Bases.TryGetValue(x, out var xb) ? xb : [];
+                        foreach (var y in kept)
+                        {
+                            if (!varBases.TryGetValue(slot, out var set)) varBases[slot] = set = [];
+                            changed |= set.Add(y);
+                        }
+                    }
                     if (n.Op == Opc.VarSt && n.A.Length > 0 && info.Bases.TryGetValue(n.A[0], out var sb))
                     {
                         if (!varBases.TryGetValue((int)n.I, out var set)) varBases[(int)n.I] = set = [];
