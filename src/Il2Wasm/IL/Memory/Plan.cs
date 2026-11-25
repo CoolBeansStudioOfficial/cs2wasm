@@ -653,6 +653,16 @@ public static class Plan
                     foreach (var n in b.Code)
                     {
                         List<Node>? l = null;
+                        foreach (var (slot, x) in Ownership.ByRefLikeLocalWrites(_body, n))
+                        {
+                            if (IsInserted(n)) break;
+                            IEnumerable<Node> kept = IsRef(x) ? (IsTrivial(x) ? [] : [x]) : _bases.TryGetValue(x, out var xb) ? xb : [];
+                            foreach (var y in kept)
+                            {
+                                if (!varBases.TryGetValue(slot, out var set)) varBases[slot] = set = [];
+                                changed |= set.Add(y);
+                            }
+                        }
                         if (n.Op == Opc.VarSt && n.A.Length > 0 && _bases.TryGetValue(n.A[0], out var sb))
                         {
                             if (!varBases.TryGetValue((int)n.I, out var set)) varBases[(int)n.I] = set = [];
