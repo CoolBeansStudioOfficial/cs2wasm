@@ -2207,10 +2207,15 @@ namespace Il2Wasm.Runtime
             /// plan-2 entry: a take after a call that held nothing costs a call and finds nothing).</summary>
             public static int Holds, Takes, Taken;
 
+            /// <summary>The object an address returned by a function points into: an interior address is always past its
+            /// object's start, and an empty span over an array points at the array's end, which is the next block's
+            /// start (a freed object), so the byte before the address decides.</summary>
+            static int KeptBy(int addr) => addr == 0 ? 0 : ObjectOf(addr - 1);
+
             /// <summary>The object the returning function's address points into is counted until the caller takes it.</summary>
             public static void Hold(int addr)
             {
-                int o = ObjectOf(addr);
+                int o = KeptBy(addr);
                 if (o == 0) return;
                 Holds++;
                 Retain(Borrow<object>(o));
@@ -2236,11 +2241,13 @@ namespace Il2Wasm.Runtime
             public static void HoldFrom(int addr, object owned)
             {
                 int v = AddressOf(owned);
-                int o = ObjectOf(addr);
+                int o = KeptBy(addr);
                 if (o != v)
                 {
-                    if (v != 0) Release(Borrow<object>(v));
+                    // (hold first: the object the address points into may be kept only by the base, a field's array
+                    // in it, and releasing the base first freed it before the hold retained it)
                     Hold(addr);
+                    if (v != 0) Release(Borrow<object>(v));
                     return;
                 }
                 if (o == 0) return;
@@ -2267,7 +2274,7 @@ namespace Il2Wasm.Runtime
             {
                 Takes++;
                 if (s_holdN == 0) return null;
-                int o = ObjectOf(addr);
+                int o = KeptBy(addr);
                 if (o == 0) return null;
                 int i = (s_holdN - 1) & 3;
                 int k = i == 0 ? s_hold0 : i == 1 ? s_hold1 : i == 2 ? s_hold2 : s_hold3;
