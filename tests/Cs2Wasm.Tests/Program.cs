@@ -1,6 +1,8 @@
 // Conformance runner (section 10): each program in tests/Conformance runs under .NET (the oracle) and through
 // cs2wasm + the Node host; outputs must match exactly.
-// usage: dotnet run --project tests/Cs2Wasm.Tests [-- filter] [--keep]
+// usage: dotnet run --project tests/Cs2Wasm.Tests [-- filter] [--keep] [--unchecked] [--shard k/n]
+// --shard k/n: only the programs whose number in the list is k modulo n (and the API and Godot checks in shard 0), so
+// that n runners share the suite (tools/suite.mjs runs them side by side)
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.Loader;
@@ -12,7 +14,9 @@ var root = FindRoot();
 var dir = Path.Combine(root, "tests", "Conformance");
 var outDir = Path.Combine(root, "tests", "out");
 Directory.CreateDirectory(outDir);
-string? filter = args.FirstOrDefault(a => !a.StartsWith("--"));
+string? filter = args.FirstOrDefault(a => !a.StartsWith("--") && !a.Contains('/'));
+int shardK = 0, shardN = 1;
+if (Array.IndexOf(args, "--shard") is int si and >= 0 && si + 1 < args.Length && args[si + 1].Split('/') is [var sk, var sn]) { shardK = int.Parse(sk); shardN = int.Parse(sn); }
 bool verbose = args.Contains("--verbose");
 // (the conformance programs are built checked: a use after free shows; --unchecked builds them as shipped)
 bool checkedBuild = !args.Contains("--unchecked");
@@ -48,13 +52,13 @@ int pass = 0, fail = 0, gaps = 0;
 var report = new StringBuilder();
 // the HTTP server of the programs that use HTTP (072_http): one for the run
 Process? httpServer = null;
-if (programs.Any(p => p.name.EndsWith("_http") && (filter == null || p.name.Contains(filter))))
+if (programs.Where((p, i) => i % shardN == shardK).Any(p => p.name.EndsWith("_http") && (filter == null || p.name.Contains(filter))))
 {
     httpServer = Process.Start(new ProcessStartInfo("node", [Path.Combine(dir, "http-server.mjs")]) { RedirectStandardOutput = true })!;
     httpServer.StandardOutput.ReadLine(); // "ready <port>"
 }
 foreach (var n in skipped) { var l = $"SKIP {n} (GodotSharp sources not found at {godotSharp})"; Console.WriteLine(l); report.AppendLine(l); }
-foreach (var (name, sources, symbols) in programs.Where(p => filter == null || p.name.Contains(filter)))
+foreach (var (name, sources, symbols) in programs.Where((p, i) => (filter == null || p.name.Contains(filter)) && i % shardN == shardK))
 {
     var src = sources[0].text;
     var file = sources[0].path;
@@ -98,19 +102,19 @@ foreach (var (name, sources, symbols) in programs.Where(p => filter == null || p
     else if (gap != null) { gaps++; var gl = $"GAP  {name}  ({gap})\n  " + Diff(expected, actual).Replace("\n", "\n  "); Console.WriteLine(gl); report.AppendLine(gl); }
     else Fail(name, $"output differs (exit {code})\n{Diff(expected, actual)}{(stderr.Length > 0 ? "\nstderr: " + stderr : "")}");
 }
-if (filter == null || "godot".Contains(filter) || filter.StartsWith("godot_"))
+if (shardK == 0 && (filter == null || "godot".Contains(filter) || filter.StartsWith("godot_")))
     foreach (var (n, failure, skip) in GodotChecks.Run(root, outDir))
     {
         if (filter != null && !n.Contains(filter) && filter != "godot") continue;
         if (skip != null) { var l = $"SKIP {n} ({skip})"; Console.WriteLine(l); report.AppendLine(l); }
         else if (failure == null) Pass(n, "engine calls equal stock Godot's"); else Fail(n, failure);
     }
-if (filter == null || filter == "api")
+if (shardK == 0 && (filter == null || filter == "api"))
     foreach (var (n, failure) in ApiChecks.Run(root, outDir))
         if (failure == null) Pass("api: " + n, "ok"); else Fail("api: " + n, failure);
 try { httpServer?.Kill(); } catch { }
 Console.WriteLine($"\n{pass} passed, {fail} failed" + (gaps > 0 ? $", {gaps} known gap{(gaps == 1 ? "" : "s")}" : ""));
-File.WriteAllText(Path.Combine(outDir, "report.txt"), report.ToString());
+File.WriteAllText(Path.Combine(outDir, shardN == 1 ? "report.txt" : $"report-{shardK}.txt"), report.ToString());
 return fail == 0 ? 0 : 1;
 
 void Pass(string n, string info) { pass++; var l = $"PASS {n}  ({info})"; Console.WriteLine(l); report.AppendLine(l); }
