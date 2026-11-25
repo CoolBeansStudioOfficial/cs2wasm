@@ -434,3 +434,70 @@ or released.
 - bigdrop is not measured (bug 4). bench and frames have not been rerun since bug 3's fix (83371bb); the per-scene
   modules don't depend on it.
 - Compile times are from a desk other sessions were also using: runs of the same build differ by up to 4 s.
+
+## Leaks re-measure 2026-11-25
+
+Branch claude/s1-leaks, from origin/claude/span-uaf-merged (58349a0). Release builds of the framework (FW, build-corelib),
+the CLI and Il2Wasm.IL.Tests. Measurement only: no code changed.
+
+- Method: section 2's. Desk: `node tools/il-rcstats.mjs run <program> --live --keep ...`, one program at a time, naive
+  and as configured. Nothing .NET runs on the desk. The programs are the 34 of section 2: hello, the nine kernels
+  (built on the desk from tools/bench/Programs.cs, as run-kernels.sh builds them), and the 24 NetWasm cases (each case's
+  built `case.dll` in the desk's NetWasm work cache (the homelab's is the same pinned commit); the case id is the one whose name starts with the program's name,
+  e.g. SortedList is `SortedListCompatibilityCorpusTests.SortedListsMatchDesktopAcrossCompilerProfilesAndTargets`).
+- .NET oracle, homelab only: `tools/homelab.sh claude/s1-leaks bash tools/il-live-oracle/run-kernels.sh` (hello and the
+  kernels) and `... run.sh <24 case ids>` (the homelab's il2wasm\netwasm cache). All 34 returned a heap walk.
+- Comparison: il-rcstats' `live` against each oracle, program types only (the program's own assembly).
+
+| program | .NET live (all types) | naive live | naive program types vs .NET | planned live | planned program types vs .NET | planned above naive on any type |
+| --- | ---: | ---: | --- | ---: | --- | --- |
+| hello | 3431 | 34 | equal (0 types) | 34 | equal (0 types) | no |
+| k_Tree | 3430 | 32 | equal (1 types) | 32 | equal (1 types) | no |
+| k_DictionaryInts | 3454 | 56 | equal (0 types) | 56 | equal (0 types) | no |
+| k_ListSort | 3753 | 362 | equal (0 types) | 362 | equal (0 types) | no |
+| k_Linq | 3748 | 558 | equal (1 types) | 558 | equal (1 types) | no |
+| k_WordCount | 3455 | 62 | equal (0 types) | 62 | equal (0 types) | no |
+| k_Strings | 3775 | 366 | equal (0 types) | 366 | equal (0 types) | no |
+| k_NBody | 3454 | 55 | equal (2 types) | 55 | equal (2 types) | no |
+| k_Shapes | 3454 | 55 | equal (5 types) | 55 | equal (5 types) | no |
+| k_LinkedNodes | 3454 | 55 | equal (1 types) | 55 | equal (1 types) | no |
+| Collection | 3564 | 79 | equal (4 types) | 79 | equal (4 types) | no |
+| ComplexMutableCollection | 3586 | 156 | equal (5 types) | 156 | equal (5 types) | no |
+| Dictionary | 3541 | 62 | equal (1 types) | 62 | equal (1 types) | no |
+| HashSet | 3648 | 84 | equal (5 types) | 84 | equal (5 types) | no |
+| ImmutableArray | 3554 | 60 | equal (2 types) | 60 | equal (2 types) | no |
+| ImmutableDictionary | 3635 | 183 | equal (2 types) | 183 | equal (2 types) | no |
+| ImmutableHashSet | 3595 | 105 | equal (3 types) | 105 | equal (3 types) | no |
+| ImmutableList | 3604 | 164 | equal (2 types) | 164 | equal (2 types) | no |
+| ImmutableQueueStack | 3571 | 140 | equal (2 types) | 140 | equal (2 types) | no |
+| ImmutableSortedDictionary | 3620 | 167 | equal (3 types) | 167 | equal (3 types) | no |
+| ImmutableSortedSet | 3588 | 148 | equal (3 types) | 148 | equal (3 types) | no |
+| LinkedList | 3596 | 174 | equal (1 types) | 174 | equal (1 types) | no |
+| List | 3646 | 67 | equal (2 types) | 67 | equal (2 types) | no |
+| ObjectModelCollection | 3642 | 65 | equal (2 types) | 65 | equal (2 types) | no |
+| OrderedDictionary | 3572 | 137 | equal (2 types) | 137 | equal (2 types) | no |
+| Queue | 3648 | 62 | equal (3 types) | 62 | equal (3 types) | no |
+| SortedCollections | 3590 | 143 | equal (4 types) | 143 | equal (4 types) | no |
+| SortedList | 3597 | 162 | 1 of 2 program types differ | 162 | 1 of 2 program types differ | no |
+| Stack | 3595 | 153 | equal (3 types) | 153 | equal (3 types) | no |
+| BigInteger | 3913 | 670 | equal (2 types) | 670 | equal (2 types) | no |
+| LambdaIterator | 3470 | 55 | equal (3 types) | 55 | equal (3 types) | no |
+| EnumerableIteratorContract | 3549 | 65 | equal (5 types) | 65 | equal (5 types) | no |
+| RegexReplacement | 4399 | 636 | equal (2 types) | 636 | equal (2 types) | no |
+| collector-retention | 3447 | 61 | 1 of 6 program types differ | 61 | 1 of 6 program types differ | no |
+
+- **Program types.** Equal to .NET on 32 of 34 programs, naive and planned. Two differ, the same way in both builds:
+  - SortedList: `NetWasm.Correctness.SortedLists.DescendingComparer` 1 vs 0 (the known S2 cycle; naive and planned alike).
+  - collector-retention: `NetWasm.Correctness.CollectorLifetime.Payload` 1 vs 0, naive and planned. Section 2 had the
+    planned build equal here. On this branch the plan leaves the Payload live at exit, so the returned-address keeper
+    no longer frees it. This is a regression against section 2's result and needs a look at the planned build.
+- **Planned against naive.** The planned build is never above naive on any type of any program. On this branch the
+  live counts of the two builds are equal on every type of every program (the totals in the table are equal in each
+  row). Section 2 had three programs where the plan freed more; those are now equal:
+  Collection (planned 78 to 79), RegexReplacement (627 to 636), collector-retention (59 to 61).
+- **Other types.** Every program also has 127 to 155 types that differ from .NET outside the program's own assembly
+  (runtime and library internal objects, which differ by design). The count is the same for naive and planned.
+  They are not listed here.
+- **Totals.** BigInteger's live total is 670 in both builds here, against 682 in section 2. Not investigated; its
+  program types are equal.
+- Not done: no fix; the collector-retention regression is reported, not changed.
