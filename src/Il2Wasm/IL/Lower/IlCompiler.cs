@@ -356,7 +356,7 @@ public sealed partial class IlCompiler
         // the reflection records the code reads (Assemblies.cs: assemblies' attributes), and what their factories reach
         _compiling = null;
         _programModule = entry.OwningType is MetadataType emt ? emt.Module as EcmaModule : null;
-        while (RequestArrayTypes() | RequestAssemblyRecords())
+        while (RequestArrayTypes() | RequestAssemblyRecords() | RequestDelegateThunks())
             for (; ; )
             {
                 while (_queue.Count > 0) { var (m, f) = _queue.Dequeue(); CompileMethod(m, f); }
@@ -973,6 +973,11 @@ public sealed partial class IlCompiler
             case "Rt.MemStatsHash": e.Op(WOp.Drop); break;
             case "Rt.ArrayMoveMode": e.I32(0); break;
             case "Rt.MarkConstructed": Constructed(m.Instantiation[0]); e.Tid(TypeId(m.Instantiation[0])); break;
+            // (the delegate thunks: DelegateThunks.cs, the dispatch written once the types are final)
+            case "Rt.ObjectArrayDelegate": _objectArrayUsed = true; e.Call(ObjectArrayDelegateFn); break;
+            case "Rt.DelegateArity": _dynamicUsed = true; e.Call(DelegateArityFn); break;
+            case "Rt.DynamicInvokeRaw": _dynamicUsed = true; e.Call(DynamicInvokeFn); break;
+            case "Rt.DynamicArguments": _dynamicUsed = true; e.Call(DynamicArgumentsFn); break;
             case "Rt.ArrayRankAt": case "Il2WasmArrays.RankOf": e.Call(ArrayFn("rank")); break;
             case "Rt.ArrayElementSizeAt": case "Il2WasmArrays.ElementSize": e.Call(ArrayFn("elem_size")); break;
             case "Il2WasmArrays.HasCountedElements": e.Call(ArrayFn("counted")); break;
@@ -1301,6 +1306,7 @@ public sealed partial class IlCompiler
         foreach (var t in _types) { if (IsReflectable(t)) _typeNamesByFinal[Final(t)] = TypeName(t); byFinal[Final(t)] = t; }
         EmitTypeTables(Final, _types.Count + 2, byFinal);
         EmitArrayFns(Final);
+        EmitDelegateSupport();
         EmitCreateInstance(Final);
         EmitAssemblyTables(Final);
     }

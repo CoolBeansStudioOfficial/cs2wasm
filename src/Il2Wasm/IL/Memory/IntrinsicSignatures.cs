@@ -105,7 +105,7 @@ public static class IntrinsicSignatures
         // finalizer)
         (Pure, "Rt.ArenaClearObject Rt.ArrayGrow Rt.MoveRefs Rt.ReleaseThreadStatics Rt.WeakDying Rt.PartWeak Rt.ArenaFreeObject Rt.ArenaFinalizeObject"),
         // runs code the compiler does not see as an edge: first-chance handlers, a delegate
-        (RunsCode, "Rt.FirstChance Rt.DynamicInvokeRaw"),
+        (RunsCode, "Rt.FirstChance Rt.DynamicInvokeRaw Rt.DynamicArguments"),
         // ---- Atomic (15): through ref int / ref long
         (Pure, "Atomic.Load32 Atomic.Load64 Atomic.Fence Atomic.Notify"),
         (RefSlot, "Atomic.Store32 Atomic.Add32 Atomic.Exchange32 Atomic.CompareExchange32 Atomic.CountAdd32 Atomic.CountCompareExchange32 "

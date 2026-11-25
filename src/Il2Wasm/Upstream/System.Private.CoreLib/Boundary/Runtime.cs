@@ -995,6 +995,9 @@ namespace Il2Wasm.Runtime
         [Intrinsic] public static extern System.Delegate? ObjectArrayDelegate(int delegateTypeId, System.Func<object?[], object?> handler);
         /// <summary>Invokes the delegate with the arguments unboxed from the array, the result boxed (DynamicInvoke).</summary>
         [Intrinsic] public static extern object? DynamicInvokeRaw(System.Delegate d, object?[]? args);
+        /// <summary>The arguments as the delegate's parameters take them (CoreCLR's argument check: null for a value type is its
+        /// default, a primitive widens, anything else must be of the parameter's type); ArgumentException otherwise.</summary>
+        [Intrinsic] public static extern object?[] DynamicArguments(System.Delegate d, object?[]? args);
         /// <summary>The delegate type's parameter count; -1 when the program has no DynamicInvoke for it.</summary>
         [Intrinsic] public static extern int DelegateArity(System.Delegate d);
         /// <summary>The reflection record entry of the method a method-group delegate's function calls; 0 if none.</summary>
