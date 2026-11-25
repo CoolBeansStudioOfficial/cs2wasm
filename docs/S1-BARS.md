@@ -501,3 +501,54 @@ the CLI and Il2Wasm.IL.Tests. Measurement only: no code changed.
 - **Totals.** BigInteger's live total is 670 in both builds here, against 682 in section 2. Not investigated; its
   program types are equal.
 - Not done: no fix; the collector-retention regression is reported, not changed.
+
+## Leaks, planned, 2026-11-25
+
+Branch claude/s1-leaks-2, from claude/s1-leaks (c5a36ca, the re-measure above). The build is origin/main 79faeb4: Release builds of the framework (build-corelib), the CLI and Il2Wasm.IL.Tests. Measurement only: no code changed. This replaces the planned column of the section above, which was naive: that run did not set IL2WASM_MEM_PLAN=1.
+
+- Method: the section above's programs and oracles (the 34 .NET heap walks in the scratchpad, from the homelab; reused, not re-run). Per program: `IL2WASM_MEM_PLAN=1 node tools/il-rcstats.mjs run <program> --live --oracle <oracle>` (planned; its header reads "as configured (IL2WASM_MEM_PLAN=1)" in all 34 runs, and its naive build is also run) and `node tools/il-rcstats.mjs run <program> --live --oracle <oracle> --naive-only` without the variable (naive).
+- The planned live counts are not printed by `run` (it prints the live counts of the naive build only), so they were taken from the planned build's kept files with the same steps as `run`'s planned build (IL2WASM_MEM_PLAN=1, IL2WASM_COUNT_RC=1, IL2WASM_COUNT_RC_SITES, IL2WASM_IL_COUNT_OBJECTS=1; host/run.mjs; `il-rcstats live --top 100000`). Compared on the program's own assembly: `hello`, `k_*` by their names; the 24 NetWasm cases by `case` (the case assembly's name; the first pass used the program name and found no program types, corrected).
+- The naive counts are from the `run` JSON (naive build, no variable).
+- Program types: equal to .NET on 32 of 34 programs, naive and planned, except the two noted below.
+  - SortedList: `NetWasm.Correctness.SortedLists.DescendingComparer` 1 vs 0 in both builds (the known S2 cycle).
+  - collector-retention: `NetWasm.Correctness.CollectorLifetime.Payload` 1 vs 0 in naive only. Planned is equal, as in section 2. The regression in the section above (planned keeps Payload live) is not present on main.
+- Planned against naive: the planned build is never above naive on any type of any program. It is below naive on five programs (all still equal on the program's own types): k_Linq 558 to 557, Collection 79 to 78, BigInteger 670 to 668, RegexReplacement 636 to 627, collector-retention 61 to 59.
+- Not explained: BigInteger's naive build differs between the two runs, 672 live in the run whose environment has IL2WASM_MEM_PLAN=1 and 670 in the run without it (the difference is 2 `string` objects, 239 vs 237; the program's types are equal in both). So IL2WASM_MEM_PLAN may not be fully overridden by IL2WASM_MEM_NAIVE, or the count is not deterministic. Not investigated.
+- Not done: no fix. The other types (runtime and library internals) that differ from .NET are not listed.
+
+| program | .NET live (all types) | naive live | naive program types vs .NET | planned live | planned program types vs .NET | planned above naive on any type |
+| --- | ---: | ---: | --- | ---: | --- | --- |
+| hello | 3431 | 34 | equal (0 types) | 34 | equal (0 types) | no |
+| k_Tree | 3430 | 32 | equal (1 types) | 32 | equal (1 types) | no |
+| k_DictionaryInts | 3454 | 56 | equal (0 types) | 56 | equal (0 types) | no |
+| k_ListSort | 3753 | 362 | equal (0 types) | 362 | equal (0 types) | no |
+| k_Linq | 3748 | 558 | equal (1 types) | 557 | equal (1 types) | no |
+| k_WordCount | 3455 | 62 | equal (0 types) | 62 | equal (0 types) | no |
+| k_Strings | 3775 | 366 | equal (0 types) | 366 | equal (0 types) | no |
+| k_NBody | 3454 | 55 | equal (2 types) | 55 | equal (2 types) | no |
+| k_Shapes | 3454 | 55 | equal (5 types) | 55 | equal (5 types) | no |
+| k_LinkedNodes | 3454 | 55 | equal (1 types) | 55 | equal (1 types) | no |
+| Collection | 3564 | 79 | equal (4 types) | 78 | equal (4 types) | no |
+| ComplexMutableCollection | 3586 | 156 | equal (5 types) | 156 | equal (5 types) | no |
+| Dictionary | 3541 | 62 | equal (1 types) | 62 | equal (1 types) | no |
+| HashSet | 3648 | 84 | equal (5 types) | 84 | equal (5 types) | no |
+| ImmutableArray | 3554 | 60 | equal (2 types) | 60 | equal (2 types) | no |
+| ImmutableDictionary | 3635 | 183 | equal (2 types) | 183 | equal (2 types) | no |
+| ImmutableHashSet | 3595 | 105 | equal (3 types) | 105 | equal (3 types) | no |
+| ImmutableList | 3604 | 164 | equal (2 types) | 164 | equal (2 types) | no |
+| ImmutableQueueStack | 3571 | 140 | equal (2 types) | 140 | equal (2 types) | no |
+| ImmutableSortedDictionary | 3620 | 167 | equal (3 types) | 167 | equal (3 types) | no |
+| ImmutableSortedSet | 3588 | 148 | equal (3 types) | 148 | equal (3 types) | no |
+| LinkedList | 3596 | 174 | equal (1 types) | 174 | equal (1 types) | no |
+| List | 3646 | 67 | equal (2 types) | 67 | equal (2 types) | no |
+| ObjectModelCollection | 3642 | 65 | equal (2 types) | 65 | equal (2 types) | no |
+| OrderedDictionary | 3572 | 137 | equal (2 types) | 137 | equal (2 types) | no |
+| Queue | 3648 | 62 | equal (3 types) | 62 | equal (3 types) | no |
+| SortedCollections | 3590 | 143 | equal (4 types) | 143 | equal (4 types) | no |
+| SortedList | 3597 | 162 | 1 of 2 differ: NetWasm.Correctness.SortedLists.DescendingComparer 1 vs 0 | 162 | 1 of 2 differ: NetWasm.Correctness.SortedLists.DescendingComparer 1 vs 0 | no |
+| Stack | 3595 | 153 | equal (3 types) | 153 | equal (3 types) | no |
+| BigInteger | 3913 | 670 | equal (2 types) | 668 | equal (2 types) | no |
+| LambdaIterator | 3470 | 55 | equal (3 types) | 55 | equal (3 types) | no |
+| EnumerableIteratorContract | 3549 | 65 | equal (5 types) | 65 | equal (5 types) | no |
+| RegexReplacement | 4399 | 636 | equal (2 types) | 627 | equal (2 types) | no |
+| collector-retention | 3447 | 61 | 1 of 6 differ: NetWasm.Correctness.CollectorLifetime.Payload 1 vs 0 | 59 | equal (6 types) | no |
