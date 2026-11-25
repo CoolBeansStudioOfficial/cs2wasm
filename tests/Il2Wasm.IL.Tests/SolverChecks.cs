@@ -110,6 +110,18 @@ static class SolverChecks
         }
         """;
 
+    // (Array.Clear of a char[] and of a string[]: the first's elements hold no count)
+    const string Clears = """
+        using System;
+        using System.Runtime.CompilerServices;
+        static class P
+        {
+            [MethodImpl(MethodImplOptions.NoInlining)] static void Wipe(char[] a) => Array.Clear(a);
+            [MethodImpl(MethodImplOptions.NoInlining)] static void WipeStrings(string[] a) => Array.Clear(a, 0, a.Length);
+            static void Main() { var c = new char[] { 'x' }; Wipe(c); var s = new string[] { new string('y', 2) }; WipeStrings(s); Console.WriteLine((int)c[0] + (s[0] == null ? 1 : 0)); }
+        }
+        """;
+
     // (B is stored into an A[] only through MemoryMarshal.GetArrayDataReference)
     const string ArrayDataRef = """
         using System;
@@ -255,6 +267,19 @@ static class SolverChecks
                 kind = ld == null ? "no load" : facts.Own[ld].Kind.ToString();
             }
             c.Eq("borrows: a load held across a call on a receiver that can only be null", kind, "Guaranteed");
+        }
+        {
+            // a call of Array.Clear on arrays whose elements hold no count writes, on its returning runs, only their
+            // elements: the effect is taken at the call site by the array's types (ProgramSolution.ElementsClearedAt;
+            // IL2WASM_NO_SITE_EFFECTS=1: the callee's own, Wild through Il2WasmArrays.ClearElements). On a string[] the
+            // callee's own effects stay
+            var sol = SecondSolve(dir, "solver_clears", Clears);
+            Internal.TypeSystem.MethodDesc Find(string name) => sol.Methods.Items.First(m => m.GetName() == name && m.OwningType.ToString()!.EndsWith("P"));
+            var wipe = sol.ReturnMods(Find("Wipe"));
+            var strs = sol.ReturnMods(Find("WipeStrings"));
+            bool noSite = Environment.GetEnvironmentVariable("IL2WASM_NO_SITE_EFFECTS") == "1";
+            c.True($"solver: Array.Clear of a char[] writes its elements only on return (Wild {wipe.Wild}; of a string[]: Wild {strs.Wild})",
+                noSite ? wipe.Wild : !wipe.Wild && wipe.Keys.Items.ToArray().All(k => sol.Keys[k].Kind == KeyKind.Elem));
         }
         {
             // a write through MemoryMarshal.GetArrayDataReference<T>(arr) is a write to the array's elements, Elem(T)
