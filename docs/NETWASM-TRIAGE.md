@@ -18,7 +18,6 @@ Groups are sorted by count, largest first. Each failing case is in exactly one g
 | Wasm trap: `unreachable` at runtime (exit 1) | 3 | `InlineArrayStructureMarshallingCompilationTests.InlineArraysAndFixedBuffersMatchDesktop`, `MethodGroupTargetCompilationTests.AMethodGroupOfAnyKindOfMethodRunsAsDesktopDoes-15`, `NativeLayoutStructureMarshallingCompilationTests.NativeLayoutStructuresMatchDesktop` |
 | Environment: line endings only (expected CRLF, actual LF) | 3 | `sut-configuration`, `sut-sep`, `sut-simdcodecs` |
 | Exception mismatch: PlatformNotSupportedException | 3 | `MethodGroupTargetCompilationTests.AMethodGroupOfAnyKindOfMethodRunsAsDesktopDoes-4`, `MethodGroupTargetCompilationTests.AMethodGroupOfAnyKindOfMethodRunsAsDesktopDoes-5`, `sut-switchmediator` |
-| Exception mismatch: PlatformNotSupportedException | 3 | `MethodGroupTargetCompilationTests.AMethodGroupOfAnyKindOfMethodRunsAsDesktopDoes-4`, `MethodGroupTargetCompilationTests.AMethodGroupOfAnyKindOfMethodRunsAsDesktopDoes-5`, `sut-switchmediator` |
 | Missing feature: boxing an array element of a struct with references | 2 | `ArrayCopyBoxingCompatibilityCorpusTests.ArrayCopyBoxesAndUnboxesAcross-e313bc949d39`, `NullableArrayReadbackLinkedTests.NullableReadbackUsesNativeBoxingAndCollector-0` |
 | Exception mismatch: NullReferenceException | 2 | `CoreLibScalarCorpusTests.ClampSignAndAbsThrowWithDesktopsMessages`, `HttpModernSurfaceCompatibilityCorpusTests.ModernHttpSurfaceMatchesDesk-1b876fd1d58b` |
 | Missing feature: pinned arrays | 2 | `UninitializedArrayCompilationTests.AllocatesAsDesktopOnTheNativeRuntime-0`, `sut-memorypack` |
@@ -34,7 +33,7 @@ Groups are sorted by count, largest first. Each failing case is in exactly one g
 | Timeout | 1 | `YoungObjectStoreGcTests.StoresIntoObjectsThatMayBeOldKeepWhatTheyStore-0` |
 | Host/worker: threads entry missing | 1 | `sut-imagesharp` |
 
-Total: 170
+Total: 167
 
 ## Sample messages
 
@@ -91,12 +90,6 @@ Sample: stderr: `RuntimeError: unreachable at ... NetWasm.Correctness.InlineArra
 Output otherwise identical
 
 Sample: expected `"App = \r"` / actual `"App = "`
-
-### Exception mismatch: PlatformNotSupportedException (3)
-
-MethodGroupTarget cases throw it; sut-switchmediator dies with it unhandled at AsyncHelpers.SystemJS_MarkAsyncMain (exit 3)
-
-Sample: `System.PlatformNotSupportedException: Operation is not supported on this platform.`
 
 ### Exception mismatch: PlatformNotSupportedException (3)
 
