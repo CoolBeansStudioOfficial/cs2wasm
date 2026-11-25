@@ -131,7 +131,7 @@ public static class IntrinsicSignatures
         (Pure, "TypeInfo.FullName TypeInfo.Name TypeInfo.Namespace TypeInfo.Flags TypeInfo.Flags2 TypeInfo.BaseId TypeInfo.ElementId "
             + "TypeInfo.AssemblyOf TypeInfo.GenericParam TypeInfo.GenericConstraints TypeInfo.GenericParamMethod TypeInfo.AssemblyNames "
             + "TypeInfo.ManifestResources TypeInfo.DeclaringId TypeInfo.Rank TypeInfo.Attributes TypeInfo.CorElementType TypeInfo.Size "
-            + "TypeInfo.BoxOffset TypeInfo.EnumInfo TypeInfo.GenericArgs TypeInfo.ArrayOf TypeInfo.Meta TypeInfo.Interfaces "
+            + "TypeInfo.BoxOffset TypeInfo.EnumInfo TypeInfo.GenericArgs TypeInfo.ArrayOf TypeInfo.Meta TypeInfo.Marshaling TypeInfo.Interfaces "
             + "TypeInfo.NameTable TypeInfo.ProgramTypes TypeInfo.Nested TypeInfo.Instances"),
         (Raw, "TypeInfo.ResourceInit TypeInfo.ResourceUnpack"),
         (RunsCode, "TypeInfo.Invoke"),

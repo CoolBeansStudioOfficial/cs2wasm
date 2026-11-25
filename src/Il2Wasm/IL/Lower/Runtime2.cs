@@ -381,6 +381,7 @@ public sealed partial class IlCompiler
             "BaseId" => "base", "ElementId" => "element", "Rank" => "rank", "CorElementType" => "cor", "Size" => "size",
             "BoxOffset" => "box_offset", "EnumInfo" => "enum_info", "Interfaces" => "interfaces", "DeclaringId" => "declaring",
             "Attributes" => "attrs", "GenericArgs" => "generic_args", "ArrayOf" => "array_of", "AssemblyOf" => "assembly", "Meta" => "meta",
+            "Marshaling" => "marshal",
             _ => null,
         };
         if (kind == null) return false;
@@ -448,6 +449,7 @@ public sealed partial class IlCompiler
             case TypeFlags.SzArray: return 0x1D;
             case TypeFlags.Array: return 0x14;
             case TypeFlags.Pointer: return 0x0F;
+            case TypeFlags.FunctionPointer: return 0x1B;
             case TypeFlags.Boolean: return 0x02; case TypeFlags.Char: return 0x03; case TypeFlags.SByte: return 0x04; case TypeFlags.Byte: return 0x05;
             case TypeFlags.Int16: return 0x06; case TypeFlags.UInt16: return 0x07; case TypeFlags.Int32: return 0x08; case TypeFlags.UInt32: return 0x09;
             case TypeFlags.Int64: return 0x0A; case TypeFlags.UInt64: return 0x0B; case TypeFlags.Single: return 0x0C; case TypeFlags.Double: return 0x0D;
@@ -518,6 +520,7 @@ public sealed partial class IlCompiler
         {
             // (no type has a record: the table is not made, and Meta reads 0)
             if (kind == "meta" && _typeAttributes.Count == 0) { new Emitter(fn).I32(0); continue; }
+            if (kind == "marshal" && _marshalWanted.Count == 0) { new Emitter(fn).I32(0); continue; }
             Func<TypeDesc, (IAddress?, int)> entry = kind switch
             {
                 "name" => t => (StringLiteral(TypeName(t)), 0),
@@ -539,6 +542,7 @@ public sealed partial class IlCompiler
                 "assembly" => t => (null, AssemblyIndexOf(t)),
                 "enum_info" => t => (t.IsEnum ? EnumInfo(t) : null, 0),
                 "meta" => t => (TypeRecord(t, final), 0),
+                "marshal" => t => (MarshalRecord(t, final), 0),
                 _ => throw new NotSupportedException("type table " + kind),
             };
             var vals = new (IAddress? a, int v)[count];

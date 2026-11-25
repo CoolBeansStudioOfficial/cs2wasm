@@ -52,6 +52,9 @@ namespace Il2Wasm.Runtime
         [Intrinsic] public static extern int ArrayOf(int id);
         /// <summary>The type's reflection record (Meta), 0 when reflection does not reach it.</summary>
         [Intrinsic] public static extern int Meta(int id);
+        /// <summary>The type's marshalling record (IlCompiler.MarshalRecord: its fields for the native layout), 0 when no
+        /// marshalling call the program makes can name the type.</summary>
+        [Intrinsic] public static extern int Marshaling(int id);
         /// <summary>Calls a reflection thunk or attribute factory by its table index + 1.</summary>
         [Intrinsic] public static extern object? Invoke(int thunk, object? target, object?[]? args);
         /// <summary>[count, ids...]: all the interfaces the type implements.</summary>

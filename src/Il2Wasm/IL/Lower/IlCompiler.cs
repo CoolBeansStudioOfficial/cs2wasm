@@ -356,7 +356,7 @@ public sealed partial class IlCompiler
         // the reflection records the code reads (Assemblies.cs: assemblies' attributes), and what their factories reach
         _compiling = null;
         _programModule = entry.OwningType is MetadataType emt ? emt.Module as EcmaModule : null;
-        while (RequestArrayTypes() | RequestAssemblyRecords() | RequestDelegateThunks() | RequestTypeAttributes())
+        while (RequestArrayTypes() | RequestAssemblyRecords() | RequestDelegateThunks() | RequestTypeAttributes() | RequestMarshalRecords())
             for (; ; )
             {
                 while (_queue.Count > 0) { var (m, f) = _queue.Dequeue(); CompileMethod(m, f); }
